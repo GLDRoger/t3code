@@ -109,7 +109,7 @@ const sessionEnded = EnvironmentSupervisor.EnvironmentSupervisor.pipe(
  * That answer holds only for its session: when the session ends the stream shows `onSessionEnd`,
  * then resubscribes on the next connected session instead of ending.
  */
-function resubscribeWhenKinReturns<A, E, R>(
+export function resubscribeWhenKinReturns<A, E, R>(
   stream: Stream.Stream<A, E, R>,
   onDisabled: Stream.Stream<A>,
   onSessionEnd: Stream.Stream<A>,
@@ -142,7 +142,7 @@ function resubscribeWhenKinReturns<A, E, R>(
  * Resubscribes after `unavailable`: 1 s, doubling to 30 s, starting over once events flow again
  * or a new session comes up.
  */
-function retryWhileKinUnavailable<A, E, R>(stream: Stream.Stream<A, E, R>) {
+export function retryWhileKinUnavailable<A, E, R>(stream: Stream.Stream<A, E, R>) {
   let attempt = 0;
   const run = (): Stream.Stream<A, E, R | EnvironmentSupervisor.EnvironmentSupervisor> =>
     stream.pipe(

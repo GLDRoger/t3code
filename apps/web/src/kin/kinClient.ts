@@ -8,6 +8,7 @@ import {
   retryKinProbe,
   type KinSynced,
 } from "@t3tools/client-runtime/kin/kinStreams";
+import { KIN_WORK_LABEL, kinWorkLiveStream } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type { KinChatState } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
   createEnvironmentQueryAtomFamily,
@@ -26,12 +27,17 @@ import {
   type KinPeopleListInput,
   type KinLeadAccessInput,
   type KinLeadsListInput,
+  type KinOrgId,
   type KinOrgsListInput,
+  type KinOwnerTimeZoneGetInput,
+  type KinWorkGetInput,
+  type KinWorkSubscribeInput,
 } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
-import { AtomRegistry, type AsyncResult } from "effect/reactivity";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -101,6 +107,46 @@ const memoryRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   tag: "kin.memory.list",
 });
 const readMemory = guardedRead(memoryRead);
+
+const workSummaryRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:work:summary:read",
+  tag: "kin.work.summary",
+});
+const readWorkSummary = guardedRead(workSummaryRead);
+const workListRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:work:list:read",
+  tag: "kin.work.list",
+});
+const workItemRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:work:item:read",
+  tag: "kin.work.get",
+});
+const readWorkItem = guardedRead(workItemRead);
+const workZoneRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:work:zone:read",
+  tag: "kin.triggers.getTimeZone",
+});
+const readWorkZone = guardedRead(workZoneRead);
+
+/** Work's change number and counts, kept current by the host's own announcements. */
+const workLive = createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {
+  label: KIN_WORK_LABEL,
+  subscribe: (input: KinWorkSubscribeInput) =>
+    kinWorkLiveStream(input, (summaryInput) =>
+      readWorkSummary(summaryInput).pipe(
+        Effect.provideService(AtomRegistry.AtomRegistry, appAtomRegistry),
+      ),
+    ),
+});
+// A task on screen is read again when Work's change number moves.
+const workSeq = Atom.family((key: string) => {
+  const [environmentId, orgId] = JSON.parse(key) as [EnvironmentId, KinOrgId];
+  return Atom.make(
+    (get) =>
+      Option.getOrNull(AsyncResult.value(get(workLive({ environmentId, input: { orgId } }))))
+        ?.seq ?? null,
+  );
+});
 
 const readOrgs = guardedRead(orgsRead);
 const readLeads = guardedRead(leadsRead);
@@ -362,5 +408,45 @@ export const kinClient = {
     label: "kin:memory:forget",
     tag: "kin.memory.forget",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.itemId },
+  }),
+  workLive,
+  /** Its `permissionAtom` says whether this browser may read Work at all. */
+  workRead: workSummaryRead,
+  /** One page of a filter; the list's controller decides when. */
+  workList: workListRead,
+  /** One task with its links and history. */
+  workItem: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:work:item",
+    execute: Effect.fn("KinWebClient.workItem")(function* (input: KinWorkGetInput) {
+      return yield* readWorkItem(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: ({
+      environmentId,
+      input,
+    }: {
+      readonly environmentId: EnvironmentId;
+      readonly input: KinWorkGetInput;
+    }) => workSeq(JSON.stringify([environmentId, input.orgId])),
+  }),
+  /** Where the owner's days begin and end, so an all-day due date reads as the day it was set. */
+  workZone: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:work:zone",
+    execute: Effect.fn("KinWebClient.workZone")(function* (input: KinOwnerTimeZoneGetInput) {
+      return yield* readWorkZone(input);
+    }),
+    staleTimeMs: 5 * 60_000,
+    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
+      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  workCreate: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:create",
+    tag: "kin.work.create",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+  }),
+  workAssign: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:assign",
+    tag: "kin.work.assign",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
   }),
 };

@@ -1,0 +1,996 @@
+// @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
+import {
+  EnvironmentAuthorizationError,
+  KinChatError,
+  type KinChatId,
+  type KinOrgId,
+  type KinOrgsListResult,
+  type KinPerson,
+  type KinRecord,
+  type KinRecordChange,
+  type KinRecordDetail,
+  type KinRecordKey,
+  type KinRecordLink,
+  type KinRecordState,
+  type KinWorkActor,
+  type KinWorkAssignInput,
+  type KinWorkCreateInput,
+  type KinWorkListInput,
+  type KinWorkPrincipal,
+  type KinWorkSummary,
+} from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import { AsyncResult } from "effect/reactivity";
+
+import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
+import { kinLinkToOpen } from "./kinChatFeed.ts";
+import { formatKinTime, kinAgentAvatar, type KinAvatarView } from "./kinScreenState.ts";
+import type { KinWorkLive } from "./kinWorkStream.ts";
+
+export const KIN_WORK_TITLE = "Work";
+export const KIN_WORK_NEW = "New task";
+export const KIN_WORK_SEARCH_PLACEHOLDER = "Search tasks";
+export const KIN_WORK_LOAD_FAILED = "Couldn't load Work";
+export const KIN_WORK_STALE = "Offline. Showing the last update.";
+export const KIN_WORK_ONLY_OWNER = {
+  title: "Only the owner can open this",
+  detail: "Work is shown to the person who runs this workspace for now.",
+};
+export const KIN_WORK_OFFLINE = {
+  title: "You're offline",
+  detail: "Work comes back when the connection does.",
+};
+export const KIN_WORK_GONE = {
+  title: "This task isn't here any more",
+  detail: "Open Work to see what there is now.",
+};
+export const KIN_WORK_ITEM_FAILED = {
+  title: "Couldn't load this task",
+  detail: "Check your connection to the server and try again.",
+};
+export const KIN_WORK_TITLE_MAX = 280;
+export const KIN_WORK_NOTES_MAX = 4_000;
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Who is who
+
+/** Names for the people and leads Work mentions, and which person is looking. */
+export interface KinWorkNames {
+  readonly people: ReadonlyMap<string, string>;
+  readonly agents: ReadonlyMap<string, string>;
+  readonly me: string | null;
+  /** The owner's time zone, where an all-day due date is a calendar day. Null until read. */
+  readonly zone: string | null;
+}
+
+export function kinWorkNames(input: {
+  readonly orgs: KinOrgsListResult | null;
+  readonly orgId: KinOrgId;
+  readonly people: ReadonlyArray<KinPerson> | null;
+  readonly zone: string | null;
+}): KinWorkNames {
+  const org = input.orgs?.orgs.find((held) => held.orgId === input.orgId);
+  return {
+    people: new Map((input.people ?? []).map((person) => [person.personId, person.displayName])),
+    agents: new Map((org?.agents ?? []).map((agent) => [agent.agentId, agent.displayName])),
+    me: input.orgs?.me.find((me) => me.orgId === input.orgId)?.personId ?? null,
+    zone: input.zone,
+  };
+}
+
+export const kinWorkPrincipalKey = (who: KinWorkPrincipal): string =>
+  who._tag === "person" ? `person:${who.personId}` : `agent:${who.agentId}`;
+
+const samePrincipal = (a: KinWorkPrincipal | null, b: KinWorkPrincipal | null) =>
+  a !== null && b !== null && kinWorkPrincipalKey(a) === kinWorkPrincipalKey(b);
+
+const isMe = (who: KinWorkPrincipal, names: KinWorkNames) =>
+  who._tag === "person" && who.personId === names.me;
+
+/** "You", a name, or a plain stand-in for someone the directory no longer lists. */
+function kinWorkName(who: KinWorkPrincipal, names: KinWorkNames, you = "You"): string {
+  if (who._tag === "agent") return names.agents.get(who.agentId) ?? "A lead";
+  return isMe(who, names) ? you : (names.people.get(who.personId) ?? "A teammate");
+}
+
+const kinWorkAvatar = (who: KinWorkPrincipal): KinAvatarView =>
+  who._tag === "agent"
+    ? kinAgentAvatar(who.agentId)
+    : { kind: "person", seed: `person:${who.personId}` };
+
+// Filters
+
+export type KinWorkViewId = "open" | "doing" | "waiting" | "late" | "week" | "closed";
+
+/** What the list shows: one view, optionally one person's or lead's, optionally matching words. */
+export interface KinWorkFilter {
+  readonly view: KinWorkViewId;
+  readonly owner: KinWorkPrincipal | null;
+  readonly text: string;
+}
+
+export const KIN_WORK_DEFAULT_FILTER: KinWorkFilter = { view: "open", owner: null, text: "" };
+
+const VIEWS: ReadonlyArray<{ readonly id: KinWorkViewId; readonly label: string }> = [
+  { id: "open", label: "Open" },
+  { id: "doing", label: "In progress" },
+  { id: "waiting", label: "Waiting" },
+  { id: "late", label: "Late" },
+  { id: "week", label: "Due this week" },
+  { id: "closed", label: "Closed" },
+];
+
+export const kinWorkSameFilter = (a: KinWorkFilter, b: KinWorkFilter) =>
+  a.view === b.view &&
+  a.text.trim() === b.text.trim() &&
+  (a.owner === null ? b.owner === null : samePrincipal(a.owner, b.owner));
+
+/** The host's query for a filter. "Due this week" is asked as of `nowMs`, like the host's count. */
+export function kinWorkListQuery(
+  orgId: KinOrgId,
+  filter: KinWorkFilter,
+  nowMs: number,
+): Omit<KinWorkListInput, "cursor" | "limit"> {
+  const text = filter.text.trim().slice(0, 200);
+  const view: Omit<KinWorkListInput, "orgId"> =
+    filter.view === "doing"
+      ? { states: ["doing"] }
+      : filter.view === "waiting"
+        ? { states: ["waiting"] }
+        : filter.view === "late"
+          ? { late: true }
+          : filter.view === "week"
+            ? { open: true, dueBy: new Date(nowMs + WEEK_MS).toISOString() }
+            : { open: filter.view === "open" };
+  return {
+    orgId,
+    ...view,
+    ...(filter.owner === null ? {} : { owner: filter.owner }),
+    ...(text === "" ? {} : { text }),
+  };
+}
+
+/**
+ * The rows a view shows of what the host returned. The host's "due by" also returns what is
+ * already late, which "Due this week" doesn't count, so those are left to the Late view.
+ */
+export const kinWorkShown = (
+  filter: KinWorkFilter,
+  records: ReadonlyArray<KinRecord>,
+): ReadonlyArray<KinRecord> =>
+  filter.view === "week" ? records.filter((record) => !record.late) : records;
+
+// The overview: counts by view and by owner
+
+export interface KinWorkChip {
+  readonly id: KinWorkViewId;
+  readonly label: string;
+  /** Null where the host keeps no count (closed work). */
+  readonly count: number | null;
+  readonly selected: boolean;
+  readonly accessibilityLabel: string;
+}
+
+export interface KinWorkOwnerView {
+  readonly key: string;
+  readonly owner: KinWorkPrincipal;
+  readonly name: string;
+  readonly avatar: KinAvatarView;
+  readonly open: number;
+  /** "5 open · 1 late · 2 waiting". */
+  readonly line: string;
+  readonly selected: boolean;
+}
+
+export interface KinWorkOverview {
+  readonly chips: ReadonlyArray<KinWorkChip>;
+  /** Everyone with open work, most first. */
+  readonly owners: ReadonlyArray<KinWorkOwnerView>;
+}
+
+type Counts = Pick<KinWorkSummary, "open" | "doing" | "waiting" | "late" | "dueThisWeek">;
+const NO_COUNTS: Counts = { open: 0, doing: 0, waiting: 0, late: 0, dueThisWeek: 0 };
+
+const countFor = (counts: Counts, view: KinWorkViewId): number | null =>
+  view === "open"
+    ? counts.open
+    : view === "doing"
+      ? counts.doing
+      : view === "waiting"
+        ? counts.waiting
+        : view === "late"
+          ? counts.late
+          : view === "week"
+            ? counts.dueThisWeek
+            : null;
+
+const ownerLine = (counts: Counts) =>
+  [
+    `${counts.open} open`,
+    counts.late > 0 ? `${counts.late} late` : null,
+    counts.waiting > 0 ? `${counts.waiting} waiting` : null,
+  ]
+    .filter((part) => part !== null)
+    .join(" · ");
+
+export function kinWorkOverview(
+  summary: KinWorkSummary | null,
+  filter: KinWorkFilter,
+  names: KinWorkNames,
+): KinWorkOverview {
+  const { owner } = filter;
+  const counts: Counts | null =
+    summary === null
+      ? null
+      : owner === null
+        ? summary
+        : (summary.owners.find((row) => samePrincipal(row.owner, owner)) ?? NO_COUNTS);
+  return {
+    chips: VIEWS.map((view) => {
+      const count = counts === null ? null : countFor(counts, view.id);
+      return {
+        id: view.id,
+        label: view.label,
+        count,
+        selected: filter.view === view.id,
+        accessibilityLabel: count === null ? view.label : `${view.label}, ${count}`,
+      };
+    }),
+    owners: (summary?.owners ?? []).map((row) => ({
+      key: kinWorkPrincipalKey(row.owner),
+      owner: row.owner,
+      name: kinWorkName(row.owner, names),
+      avatar: kinWorkAvatar(row.owner),
+      open: row.open,
+      line: ownerLine(row),
+      selected: samePrincipal(row.owner, owner),
+    })),
+  };
+}
+
+/** The second line of the way in: what most needs a look. */
+export function kinWorkEntrySummary(summary: KinWorkSummary | null): string {
+  if (summary === null) return "What you and your leads are working on";
+  if (summary.open === 0) return "Nothing open";
+  const parts = [
+    summary.late > 0 ? `${summary.late} late` : null,
+    summary.waiting > 0 ? `${summary.waiting} waiting` : null,
+    summary.dueThisWeek > 0 ? `${summary.dueThisWeek} due this week` : null,
+  ].filter((part) => part !== null);
+  return parts.length === 0 ? `${summary.open} open` : parts.join(" · ");
+}
+
+// What a screen reading Work shows
+
+export type KinWorkScreenState =
+  | { readonly _tag: "refused" }
+  | { readonly _tag: "loading" }
+  | { readonly _tag: "offline" }
+  | { readonly _tag: "failed" }
+  | {
+      readonly _tag: "ready";
+      readonly live: KinWorkLive;
+      /** What is shown may be behind: the connection is down or the last read failed. */
+      readonly stale: boolean;
+    };
+
+const isKinChatError = Schema.is(KinChatError);
+const isAuthorizationError = Schema.is(EnvironmentAuthorizationError);
+
+/** The host said this viewer may not read Work. */
+export const kinWorkRefused = (error: unknown): boolean =>
+  isAuthorizationError(error) || (isKinChatError(error) && error.reason === "not_allowed");
+
+const failuresOf = (cause: Cause.Cause<unknown>) =>
+  cause.reasons.filter(Cause.isFailReason).map((reason) => reason.error);
+
+export function kinWorkScreenState(input: {
+  /** This session holds the scope to read Work at all. */
+  readonly allowed: boolean;
+  readonly connected: boolean;
+  readonly live: AsyncResult.AsyncResult<KinWorkLive, unknown>;
+}): KinWorkScreenState {
+  if (!input.allowed) return { _tag: "refused" };
+  const { live } = input;
+  if (AsyncResult.isFailure(live) && failuresOf(live.cause).some(kinWorkRefused))
+    return { _tag: "refused" };
+  const held = Option.getOrNull(AsyncResult.value(live));
+  if (held === null || held.summary === null) {
+    if (AsyncResult.isFailure(live) || held?.failed === true) return { _tag: "failed" };
+    return input.connected ? { _tag: "loading" } : { _tag: "offline" };
+  }
+  return {
+    _tag: "ready",
+    live: held,
+    stale: !input.connected || held.failed || AsyncResult.isFailure(live),
+  };
+}
+
+// Rows
+
+const STATE_LABEL: Record<KinRecordState, string> = {
+  open: "Not started",
+  doing: "In progress",
+  waiting: "Waiting",
+  done: "Done",
+  dropped: "Dropped",
+};
+
+const dayFormat = new Intl.DateTimeFormat(undefined, {
+  weekday: "short",
+  day: "numeric",
+  month: "short",
+});
+const dayYearFormat = new Intl.DateTimeFormat(undefined, {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+});
+const clockFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+
+const startOfDay = (date: Date) =>
+  new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+
+/** "today", "tomorrow", "yesterday", "Fri 14 Nov", or "14 Nov 2027" for another year. */
+function kinWorkDay(date: Date, now: Date): string {
+  const days = Math.round((startOfDay(date) - startOfDay(now)) / DAY_MS);
+  if (days === 0) return "today";
+  if (days === 1) return "tomorrow";
+  if (days === -1) return "yesterday";
+  return date.getFullYear() === now.getFullYear()
+    ? dayFormat.format(date)
+    : dayYearFormat.format(date);
+}
+
+const zoneDays = new Map<string, Intl.DateTimeFormat | null>();
+
+/** The calendar day `date` falls on in `zone`, as that same day on this device. */
+function dayInZone(date: Date, zone: string | null): Date {
+  if (zone === null) return date;
+  let format = zoneDays.get(zone);
+  if (format === undefined) {
+    try {
+      format = new Intl.DateTimeFormat("en-CA", {
+        timeZone: zone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      });
+    } catch {
+      format = null;
+    }
+    zoneDays.set(zone, format);
+  }
+  if (format === null) return date;
+  const parts = format.formatToParts(date);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((held) => held.type === type)?.value);
+  return new Date(part("year"), part("month") - 1, part("day"));
+}
+
+const dueText = (
+  record: Pick<KinRecord, "dueAt" | "dueAllDay">,
+  names: KinWorkNames,
+  now: Date,
+): string | null => {
+  if (record.dueAt === null) return null;
+  const due = new Date(record.dueAt);
+  if (Number.isNaN(due.getTime())) return null;
+  // An all-day date is a day where the owner is; a viewer elsewhere must not see the day after.
+  if (record.dueAllDay) return kinWorkDay(dayInZone(due, names.zone), now);
+  return `${kinWorkDay(due, now)}, ${clockFormat.format(due)}`;
+};
+
+const statusText = (record: KinRecord, names: KinWorkNames): string =>
+  record.state === "waiting" && record.waitingOn !== null
+    ? `Waiting on ${kinWorkName(record.waitingOn, names, "you")}`
+    : STATE_LABEL[record.state];
+
+export interface KinWorkRowView {
+  readonly key: KinRecordKey;
+  readonly title: string;
+  readonly state: KinRecordState;
+  /** "In progress", "Waiting on Priya", "Done". */
+  readonly status: string;
+  readonly owner: string;
+  readonly ownerAvatar: KinAvatarView;
+  /** "Due Fri 14 Nov"; null with no date or once it is closed. */
+  readonly due: string | null;
+  readonly late: boolean;
+  /** A lead picked it up on its own and nobody has confirmed it. */
+  readonly suggested: boolean;
+  /** A lead has something running on it right now. */
+  readonly working: boolean;
+  /** "W-12 · Tech lead · In progress · Due Fri 14 Nov". */
+  readonly line: string;
+  readonly accessibilityLabel: string;
+}
+
+const closed = (state: KinRecordState) => state === "done" || state === "dropped";
+
+export function kinWorkRow(record: KinRecord, names: KinWorkNames, now: Date): KinWorkRowView {
+  const owner = kinWorkName(record.owner, names);
+  const status = record.working ? "Working on it now" : statusText(record, names);
+  const day = closed(record.state) ? null : dueText(record, names, now);
+  const due = day === null ? null : `Due ${day}`;
+  const parts = [
+    record.key,
+    owner,
+    status,
+    due,
+    record.pullRequest === null ? null : `PR #${record.pullRequest.number}`,
+    record.confirmed ? null : "Suggested",
+  ].filter((part) => part !== null);
+  return {
+    key: record.key,
+    title: record.title,
+    state: record.state,
+    status,
+    owner,
+    ownerAvatar: kinWorkAvatar(record.owner),
+    due,
+    late: record.late,
+    suggested: !record.confirmed,
+    working: record.working,
+    line: parts.join(" · "),
+    accessibilityLabel: [record.title, ...parts.slice(1), record.late ? "Late" : null]
+      .filter((part) => part !== null)
+      .join(". "),
+  };
+}
+
+/** "Showing 50 of 132", once there is more than one page. */
+export function kinWorkListFooter(
+  filter: KinWorkFilter,
+  shown: number,
+  total: number | null,
+  more: boolean,
+): string | null {
+  if (!more) return null;
+  // The host's total for "due this week" also counts what is late, which this view leaves out.
+  return total === null || filter.view === "week"
+    ? `Showing the first ${shown}`
+    : `Showing ${shown} of ${total}`;
+}
+
+/** Why a filter shows nothing, in the filter's own words, and whether to offer a new task. */
+export function kinWorkNothing(filter: KinWorkFilter): {
+  readonly title: string;
+  readonly detail: string;
+  readonly offerNew: boolean;
+} {
+  const text = filter.text.trim();
+  if (text !== "")
+    return { title: `Nothing matches “${text}”`, detail: "Try another word.", offerNew: false };
+  const theirs = filter.owner !== null;
+  const whose = theirs ? " for them" : "";
+  switch (filter.view) {
+    case "open":
+      return {
+        title: `Nothing open${whose}`,
+        detail: theirs
+          ? "Give them a task and it shows up here."
+          : "Add a task, or ask a lead in chat to keep track of something. Give one to a lead and it gets on with it.",
+        offerNew: true,
+      };
+    case "doing":
+      return {
+        title: `Nothing in progress${whose}`,
+        detail: "Nobody has started on anything.",
+        offerNew: false,
+      };
+    case "waiting":
+      return {
+        title: `Nothing is waiting${whose}`,
+        detail: "No one is blocked on anyone.",
+        offerNew: false,
+      };
+    case "late":
+      return {
+        title: `Nothing is late${whose}`,
+        detail: "Everything with a date is on time.",
+        offerNew: false,
+      };
+    case "week":
+      return {
+        title: `Nothing due this week${whose}`,
+        detail: "The next seven days are clear.",
+        offerNew: false,
+      };
+    case "closed":
+      return {
+        title: `Nothing closed yet${whose}`,
+        detail: "Finished work shows up here.",
+        offerNew: false,
+      };
+  }
+}
+
+// One task
+
+export interface KinWorkLinkView {
+  readonly key: string;
+  readonly kind: "pull_request" | "worker" | "message" | "task" | "note" | "link";
+  readonly label: string;
+  readonly detail: string | null;
+  /** What a tap opens: a web page, or the chat it came from. Null when it only names something. */
+  readonly open:
+    | { readonly type: "url"; readonly href: string }
+    | { readonly type: "chat"; readonly chatId: KinChatId }
+    | null;
+}
+
+export interface KinWorkHistoryLine {
+  readonly key: string;
+  /** "9:41" today, "7 Nov" otherwise. */
+  readonly when: string;
+  readonly text: string;
+}
+
+export interface KinWorkItemView {
+  readonly key: KinRecordKey;
+  readonly rev: number;
+  /** "W-12", or "W-12 · Issue". */
+  readonly heading: string;
+  readonly title: string;
+  readonly state: KinRecordState;
+  readonly status: string;
+  readonly late: boolean;
+  readonly owner: {
+    readonly principal: KinWorkPrincipal;
+    readonly name: string;
+    readonly avatar: KinAvatarView;
+    readonly lead: boolean;
+  };
+  /** "Fri 14 Nov"; null with no date. */
+  readonly due: string | null;
+  /** "You gave this to Tech lead · Nov 7". */
+  readonly given: string | null;
+  /** Things worth a line of their own: unconfirmed, private, owed by the other side. */
+  readonly remarks: ReadonlyArray<string>;
+  readonly notes: string | null;
+  readonly links: ReadonlyArray<KinWorkLinkView>;
+  readonly history: ReadonlyArray<KinWorkHistoryLine>;
+  /** Shown under the history when the host cut it short. */
+  readonly historyNote: string | null;
+  readonly assignLabel: string;
+}
+
+const CATEGORY_LABEL = { task: null, issue: "Issue", obligation: "Commitment" } as const;
+
+const actorName = (actor: KinWorkActor, names: KinWorkNames) =>
+  actor._tag === "system" ? "Kin" : kinWorkName(actor, names);
+
+const principalFromText = (text: string | null): KinWorkPrincipal | null => {
+  if (text === null) return null;
+  const split = text.indexOf(":");
+  const id = text.slice(split + 1);
+  if (split < 0 || id === "") return null;
+  const kind = text.slice(0, split);
+  // Ids arrive as the host wrote them into the history; they are only looked up by name here.
+  return kind === "person"
+    ? ({ _tag: "person", personId: id } as KinWorkPrincipal)
+    : kind === "agent"
+      ? ({ _tag: "agent", agentId: id } as KinWorkPrincipal)
+      : null;
+};
+
+const dayFromText = (text: string | null, now: Date) => {
+  if (text === null) return null;
+  const date = new Date(text);
+  return Number.isNaN(date.getTime()) ? null : kinWorkDay(date, now);
+};
+
+/** One change in words. Bookkeeping fields (labels, kinds) stay out of it. */
+function changeText(change: KinRecordChange, names: KinWorkNames, now: Date): string {
+  const who = actorName(change.by, names);
+  const field = (name: string) => change.fields.find((held) => held.field === name);
+  if (change.kind === "created") {
+    return change.via === "import" ? "Brought over from your leads' notes" : `${who} added this`;
+  }
+  if (change.kind === "linked") {
+    const link = change.fields[0];
+    if (link?.field === "worker") return `${who} started work on it`;
+    if (link?.field === "pull_request") return `${who} linked ${link.to ?? "a pull request"}`;
+    return `${who} added a link`;
+  }
+  const clauses: Array<string> = [];
+  const owner = field("owner");
+  const to = principalFromText(owner?.to ?? null);
+  if (to !== null) {
+    clauses.push(
+      change.by._tag !== "system" && samePrincipal(change.by, to)
+        ? "took it on"
+        : `gave it to ${kinWorkName(to, names, "you")}`,
+    );
+  }
+  const state = field("state")?.to;
+  const waitingOn = principalFromText(field("waitingOn")?.to ?? null);
+  if (state === "doing") clauses.push("started on it");
+  else if (state === "done") clauses.push("finished it");
+  else if (state === "dropped") clauses.push("dropped it");
+  else if (state === "open") clauses.push("put it back to not started");
+  else if (state === "waiting" || waitingOn !== null)
+    clauses.push(
+      waitingOn === null
+        ? "marked it waiting"
+        : `marked it waiting on ${kinWorkName(waitingOn, names, "you")}`,
+    );
+  const due = field("due");
+  if (due !== undefined) {
+    const day = dayFromText(due.to, now);
+    clauses.push(day === null ? "took the date off" : `set it due ${day}`);
+  }
+  if (field("title") !== undefined) clauses.push("renamed it");
+  if (field("notes") !== undefined) clauses.push("changed the notes");
+  if (field("confirmed")?.to === "true") clauses.push("confirmed it");
+  return `${who} ${clauses.length === 0 ? "updated it" : clauses.join(", ")}`;
+}
+
+function linkView(link: KinRecordLink, working: boolean): KinWorkLinkView | null {
+  const key = `${link.kind}:${link.target}`;
+  switch (link.kind) {
+    case "pull_request": {
+      const href = kinLinkToOpen(link.target);
+      return {
+        key,
+        kind: "pull_request",
+        label: link.label ?? "Pull request",
+        detail: null,
+        open: href === null ? null : { type: "url", href },
+      };
+    }
+    case "worker":
+      return {
+        key,
+        kind: "worker",
+        label: link.label ?? "Work a lead started",
+        detail: working ? "Running now" : null,
+        open: null,
+      };
+    case "message":
+      return link.chatId === null
+        ? null
+        : {
+            key,
+            kind: "message",
+            label: "Where this came from",
+            detail: "Open the chat",
+            open: { type: "chat", chatId: link.chatId },
+          };
+    case "record":
+      return {
+        key,
+        kind: "task",
+        label: link.label ?? "A related task",
+        detail: link.relation === "blocks" ? "Blocks this" : null,
+        open: null,
+      };
+    case "memory":
+      return {
+        key,
+        kind: "note",
+        label: "From what your leads remember",
+        detail: null,
+        open: null,
+      };
+    case "url": {
+      const href = kinLinkToOpen(link.target);
+      return href === null
+        ? null
+        : {
+            key,
+            kind: "link",
+            label: link.label ?? href,
+            detail: null,
+            open: { type: "url", href },
+          };
+    }
+  }
+}
+
+export function kinWorkItemView(
+  item: KinRecordDetail,
+  names: KinWorkNames,
+  now: Date,
+  changesCap: number,
+): KinWorkItemView {
+  const row = kinWorkRow(item, names, now);
+  const category = item.category === null ? null : CATEGORY_LABEL[item.category];
+  const ownerName = kinWorkName(item.owner, names);
+  const giver = item.assignedBy;
+  const given =
+    giver === null || samePrincipal(giver, item.owner)
+      ? null
+      : [
+          `${kinWorkName(giver, names)} gave this to ${kinWorkName(item.owner, names, "you")}`,
+          item.assignedAt === null ? null : formatKinTime(new Date(item.assignedAt), now),
+        ]
+          .filter((part) => part !== null)
+          .join(" · ");
+  // The latest link to one target says the most: "PR #12 merged" over "PR #12".
+  const links = new Map<string, KinWorkLinkView>();
+  for (const link of item.links) {
+    const view = linkView(link, item.working);
+    if (view !== null) links.set(view.key, view);
+  }
+  const notes = item.notes.trim();
+  return {
+    key: item.key,
+    rev: item.rev,
+    heading: category === null ? item.key : `${item.key} · ${category}`,
+    title: item.title,
+    state: item.state,
+    status: row.status,
+    late: item.late,
+    owner: {
+      principal: item.owner,
+      name: ownerName,
+      avatar: row.ownerAvatar,
+      lead: item.owner._tag === "agent",
+    },
+    due: dueText(item, names, now),
+    given,
+    remarks: [
+      item.confirmed
+        ? null
+        : "A lead picked this up on its own. Tell it in chat whether to keep it.",
+      item.side === "theirs" ? "The other side owes this. The owner is whoever chases it." : null,
+      item.sensitive ? "Private: kept to you." : null,
+    ].filter((part) => part !== null),
+    notes: notes === "" ? null : notes,
+    links: [...links.values()],
+    history: item.changes.map((change) => ({
+      key: String(change.seq),
+      when: formatKinTime(new Date(change.at), now),
+      text: changeText(change, names, now),
+    })),
+    historyNote: item.changes.length >= changesCap ? "Earlier history isn't shown." : null,
+    assignLabel: "Give to someone else",
+  };
+}
+
+/** What a screen showing one task shows. */
+export type KinWorkItemState =
+  | { readonly _tag: "loading" }
+  | { readonly _tag: "gone" }
+  | { readonly _tag: "failed" }
+  | { readonly _tag: "ready"; readonly item: KinRecordDetail };
+
+/**
+ * `given` is the host's answer to the owner's last hand-over, shown until a read catches up
+ * with it, so the new owner is on screen the moment the host says so.
+ */
+export function kinWorkItemState(
+  result: AsyncResult.AsyncResult<KinRecordDetail, unknown>,
+  given: KinRecordDetail | null,
+): KinWorkItemState {
+  const read = Option.getOrNull(AsyncResult.value(result));
+  const item = given !== null && (read === null || given.rev >= read.rev) ? given : read;
+  if (
+    AsyncResult.isFailure(result) &&
+    failuresOf(result.cause).some((error) => isKinChatError(error) && error.reason === "not_found")
+  )
+    return { _tag: "gone" };
+  if (item !== null) return { _tag: "ready", item };
+  return AsyncResult.isFailure(result) ? { _tag: "failed" } : { _tag: "loading" };
+}
+
+// Giving a task to someone
+
+export interface KinWorkAssignee {
+  readonly key: string;
+  readonly principal: KinWorkPrincipal;
+  readonly name: string;
+  readonly avatar: KinAvatarView;
+  /** It is theirs already. */
+  readonly current: boolean;
+}
+
+export const KIN_WORK_ASSIGN = {
+  title: "Give this to",
+  leads: "Leads",
+  leadsHint: "A lead starts on it right away and tells you in your chat with it when it's done.",
+  people: "People",
+};
+
+/** Who a task can go to: the org's leads, then its people with the viewer first. */
+export function kinWorkAssignees(input: {
+  readonly orgs: KinOrgsListResult | null;
+  readonly orgId: KinOrgId;
+  readonly people: ReadonlyArray<KinPerson> | null;
+  readonly names: KinWorkNames;
+  readonly current: KinWorkPrincipal | null;
+}): {
+  readonly leads: ReadonlyArray<KinWorkAssignee>;
+  readonly people: ReadonlyArray<KinWorkAssignee>;
+} {
+  const { names, current } = input;
+  const view = (principal: KinWorkPrincipal): KinWorkAssignee => ({
+    key: kinWorkPrincipalKey(principal),
+    principal,
+    name: kinWorkName(principal, names),
+    avatar: kinWorkAvatar(principal),
+    current: samePrincipal(principal, current),
+  });
+  const org = input.orgs?.orgs.find((held) => held.orgId === input.orgId);
+  const me = input.orgs?.me.find((held) => held.orgId === input.orgId)?.personId;
+  const others = (input.people ?? [])
+    .filter((person) => person.personId !== me)
+    .map((person) => view({ _tag: "person", personId: person.personId }));
+  return {
+    leads: (org?.agents ?? [])
+      .filter((agent) => !agent.retired)
+      .map((agent) => view({ _tag: "agent", agentId: agent.agentId })),
+    people: me === undefined ? others : [view({ _tag: "person", personId: me }), ...others],
+  };
+}
+
+// Adding a task
+
+export interface KinWorkDraft {
+  readonly title: string;
+  /** Null keeps it with the owner. */
+  readonly owner: KinWorkPrincipal | null;
+  /** A calendar day, `YYYY-MM-DD`; null for no date. */
+  readonly due: string | null;
+  readonly notes: string;
+}
+
+export const KIN_WORK_NO_DRAFT: KinWorkDraft = { title: "", owner: null, due: null, notes: "" };
+
+export const KIN_WORK_NEW_COPY = {
+  title: KIN_WORK_NEW,
+  titleLabel: "What needs doing",
+  titlePlaceholder: "Send Acme the revised quote",
+  ownerLabel: "Give it to",
+  dueLabel: "Due",
+  noDue: "No date",
+  notesLabel: "Notes",
+  notesPlaceholder: "Anything they need to know. Long briefs are better said in chat.",
+  submit: "Add task",
+};
+
+/** What happens next, said before the owner commits to it. */
+export function kinWorkDraftHint(draft: KinWorkDraft, names: KinWorkNames): string | null {
+  return draft.owner?._tag === "agent"
+    ? `${kinWorkName(draft.owner, names)} starts on it right away and tells you in your chat when it's done.`
+    : null;
+}
+
+const pad = (value: number) => String(value).padStart(2, "0");
+/** A local calendar day as the host takes it for an all-day date. */
+export const kinWorkDayOf = (date: Date) =>
+  `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+
+const dayPattern = /^\d{4}-\d{2}-\d{2}$/;
+
+/** A picked day read back for display: "Fri 14 Nov". */
+export function kinWorkDueLabel(day: string, now: Date): string {
+  const [year, month, date] = day.split("-").map((part) => Number.parseInt(part, 10));
+  const label = kinWorkDay(new Date(year ?? 1970, (month ?? 1) - 1, date ?? 1), now);
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+/** The days people actually pick, for a phone where a calendar is a lot of taps. */
+export function kinWorkDueChoices(
+  now: Date,
+): ReadonlyArray<{ readonly label: string; readonly day: string }> {
+  const at = (days: number) => new Date(now.getFullYear(), now.getMonth(), now.getDate() + days);
+  const weekday = now.getDay();
+  const toFriday = 5 - weekday;
+  const toMonday = ((8 - weekday) % 7) + (weekday === 1 ? 7 : 0);
+  return [
+    { label: "Today", day: kinWorkDayOf(at(0)) },
+    { label: "Tomorrow", day: kinWorkDayOf(at(1)) },
+    ...(toFriday > 1 ? [{ label: "Friday", day: kinWorkDayOf(at(toFriday)) }] : []),
+    ...(toMonday > 1 ? [{ label: "Next Monday", day: kinWorkDayOf(at(toMonday)) }] : []),
+    { label: "In two weeks", day: kinWorkDayOf(at(14)) },
+  ];
+}
+
+export type KinWorkDraftCheck =
+  | {
+      readonly ok: true;
+      readonly input: Omit<KinWorkCreateInput, "orgId" | "clientRequestId">;
+    }
+  | { readonly ok: false; readonly problem: string };
+
+export function kinWorkDraftCheck(draft: KinWorkDraft): KinWorkDraftCheck {
+  const title = draft.title.trim();
+  if (title === "") return { ok: false, problem: "Say what needs doing." };
+  if (title.length > KIN_WORK_TITLE_MAX)
+    return { ok: false, problem: `Keep it under ${KIN_WORK_TITLE_MAX} characters.` };
+  const notes = draft.notes.trim();
+  if (notes.length > KIN_WORK_NOTES_MAX)
+    return { ok: false, problem: "Those notes are too long. Say the rest in chat." };
+  if (draft.due !== null && !dayPattern.test(draft.due))
+    return { ok: false, problem: "That date doesn't look right." };
+  return {
+    ok: true,
+    input: {
+      title,
+      ...(draft.owner === null ? {} : { owner: draft.owner }),
+      ...(draft.due === null ? {} : { dueAt: draft.due, dueAllDay: true }),
+      ...(notes === "" ? {} : { notes }),
+    },
+  };
+}
+
+// The owner's two changes
+
+export const KIN_WORK_CHANGED =
+  "This changed while you were looking at it. Here is the latest, so check it and try again.";
+const KIN_WORK_NOT_SENT = "That didn't go through. Check your connection and try again.";
+
+/** Why a change didn't go through, in words for the owner. */
+function problemOf(error: unknown): string {
+  if (isAuthorizationError(error)) return "This device isn't allowed to change Work.";
+  if (!isKinChatError(error)) return KIN_WORK_NOT_SENT;
+  switch (error.reason) {
+    case "conflict":
+      return KIN_WORK_CHANGED;
+    case "not_found":
+      return "That isn't there any more. Someone may have left, or the task was removed.";
+    case "not_allowed":
+      return "Only the owner can change Work for now.";
+    case "unavailable":
+    case "disabled":
+      return "Kin isn't answering right now. Try again in a moment.";
+    default:
+      return "That didn't go through. Check the details and try again.";
+  }
+}
+
+type Sent<A> = Promise<AtomCommandResult<A, unknown>>;
+
+export type KinWorkChangeResult =
+  | { readonly ok: true; readonly item: KinRecordDetail }
+  | {
+      readonly ok: false;
+      readonly problem: string;
+      /** The task moved on since it was read: show the latest before trying again. */
+      readonly changed: boolean;
+    };
+
+/** Adding a task and giving one to someone, each answered with the task or a reason in words. */
+export function createKinWorkActions(options: {
+  readonly orgId: KinOrgId;
+  readonly create: (input: KinWorkCreateInput) => Sent<KinRecordDetail>;
+  readonly assign: (input: KinWorkAssignInput) => Sent<KinRecordDetail>;
+  /** Reads a task again after the host refused a change to it. */
+  readonly reread: (key: KinRecordKey) => void;
+}) {
+  const { orgId } = options;
+  const settle = (result: AtomCommandResult<KinRecordDetail, unknown>): KinWorkChangeResult => {
+    if (AsyncResult.isSuccess(result)) return { ok: true, item: result.value };
+    const error = squashAtomCommandFailure(result);
+    return {
+      ok: false,
+      problem: problemOf(error),
+      changed: isKinChatError(error) && error.reason === "conflict",
+    };
+  };
+  return {
+    /** `requestId` stays the same across retries of one form, so a retry never adds a second. */
+    add: async (
+      input: Omit<KinWorkCreateInput, "orgId" | "clientRequestId">,
+      requestId: string,
+    ): Promise<KinWorkChangeResult> =>
+      settle(await options.create({ orgId, ...input, clientRequestId: requestId })),
+    /** Hands it over as the owner saw it; the host refuses if it changed since. */
+    give: async (
+      item: { readonly key: KinRecordKey; readonly rev: number },
+      to: KinWorkPrincipal,
+    ): Promise<KinWorkChangeResult> => {
+      const outcome = settle(await options.assign({ orgId, key: item.key, to, rev: item.rev }));
+      if (!outcome.ok) options.reread(item.key);
+      return outcome;
+    },
+  };
+}
+
+export type KinWorkActions = ReturnType<typeof createKinWorkActions>;

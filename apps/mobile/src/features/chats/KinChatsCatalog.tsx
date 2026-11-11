@@ -21,6 +21,7 @@ import { AppText } from "../../components/ui/AppText";
 import { Chip } from "../../components/ui/Chip";
 import { KinChatsView } from "./KinChatsScreen";
 import { KinMemoryEntryRow } from "./KinMemoryScreen";
+import { KinWorkEntryRow } from "./KinWorkScreen";
 import { KinLeadProfileView } from "./KinLeadScreen";
 import type { KinInboxState } from "@t3tools/client-runtime/kin/kinInboxModel";
 import type { KinDirectory, KinInboxScreenState } from "@t3tools/client-runtime/kin/kinScreenState";
@@ -281,10 +282,16 @@ export function KinChatsCatalog() {
           directory={directory}
           onRetry={() => setNote("Retry pressed")}
           memory={
-            <KinMemoryEntryRow
-              summary="3 things are waiting for your yes"
-              onPress={() => setNote("Opens Memory")}
-            />
+            <>
+              <KinWorkEntryRow
+                summary="3 late · 2 waiting · 6 due this week"
+                onPress={() => setNote("Opens Work")}
+              />
+              <KinMemoryEntryRow
+                summary="3 things are waiting for your yes"
+                onPress={() => setNote("Opens Memory")}
+              />
+            </>
           }
           onOpenWaiting={() => setNote("Opens Waiting on you")}
           onOpenChat={(chatId) => setNote(`Opens chat ${chatId}`)}

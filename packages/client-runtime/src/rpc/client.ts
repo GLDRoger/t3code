@@ -78,6 +78,7 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.terminalObserve
   | typeof KIN_CHAT_WS_METHODS.chatsSubscribe
   | typeof KIN_CHAT_WS_METHODS.chatSubscribe
+  | "kin.work.subscribe"
   | typeof KIN_PUSH_WS_METHODS.watch;
 
 export type EnvironmentStreamCommandRpcTag =
