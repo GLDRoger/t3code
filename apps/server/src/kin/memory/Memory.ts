@@ -38,6 +38,7 @@ import { VcsProcess } from "../../vcs/VcsProcess.ts";
 import * as MemoryCache from "./MemoryCache.ts";
 import { mergeMemoryFiles, uniqueMergeBase } from "./merge.ts";
 import { buildIndex, indexIsStale } from "./buildIndex.ts";
+import { leadOwner, readableFiles } from "./quoteAccess.ts";
 import { MemoryConfig } from "./MemoryConfig.ts";
 import {
   MemoryItemError,
@@ -846,7 +847,7 @@ const make = Effect.gen(function* () {
       files.set(relative, text);
       if (!itemFolders.some((folder) => relative.startsWith(`${folder}/`))) return;
       if (!parsedBlobs.has(sha)) {
-        const parsed = yield* parseFrontMatter(orgId, relative, text).pipe(
+        const parsed = yield* parseFrontMatter(orgId, relative, text, false, true).pipe(
           Effect.catchTags({
             MemoryItemError: (error) =>
               Effect.logWarning("Skipping malformed memory item", {
@@ -1883,6 +1884,27 @@ const make = Effect.gen(function* () {
           Effect.provideService(VcsProcess, vcs),
         )),
       );
+    // The lead reads these with its own tools, so they hold a quote only as its owner may read it.
+    const withSql = Effect.provideService(SqlClient.SqlClient, sql);
+    const owner =
+      view === undefined ? undefined : yield* sqlRead(orgId, withSql(leadOwner(orgId, view.lead)));
+    const unquoted = yield* sqlRead(
+      orgId,
+      withSql(
+        readableFiles(
+          orgId,
+          owner,
+          kept.map(({ relative }, index) => ({
+            path: relative,
+            text: blobs[index]!.toString("utf8"),
+          })),
+        ),
+      ),
+    );
+    for (const [index, { relative }] of kept.entries()) {
+      const text = unquoted.get(relative);
+      if (text !== undefined) blobs[index] = Buffer.from(text);
+    }
     const readTarget = readDirFor(paths, view);
     yield* io(
       orgId,

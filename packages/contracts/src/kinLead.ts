@@ -269,8 +269,8 @@ export const MemoryItemFrontMatter = Schema.Struct({
   source: Schema.String,
   said_by: TrimmedNonEmptyString,
   trust: MemoryTrust,
-  // The cited message's own words that say it, checked against that message when written.
-  // Server-written; absent on items saved before quotes, and on what nobody said in words.
+  // The person's exact words, checked to be in the cited message when written; nothing checks
+  // that they bear the item out. Server-written; absent before quotes and on unworded events.
   quote: Schema.optional(Schema.String),
   links: Schema.Array(Schema.String),
   // Whether only the owner's own turns may see the item. Absent on an item nobody has labelled

@@ -548,6 +548,7 @@ describe("ChatWake", () => {
       "kin/chat/approvalCards.ts",
       "kin/lead/ChatWake.ts",
       "kin/lead/WorkerTracker.ts",
+      "kin/lead/layer.ts",
       "kin/push/KinPushDispatch.ts",
     ]);
   });

@@ -89,6 +89,16 @@ it.effect.each([
     sensitive: { "claims/team.md": false, "claims/fresh.md": false },
     suggested: ["team", "fresh"],
   },
+  {
+    name: "money said only in its quote keeps an item the owner's",
+    tree: [
+      [
+        "claims/quoted.md",
+        claim("quoted", { sensitive: false, quote: "Invented retainer of $4,000 a month" }),
+      ],
+    ],
+    sensitive: { "claims/quoted.md": true },
+  },
 ] as const)("keepLabels: $name", (row) =>
   Effect.gen(function* () {
     const tree = new Map([...base, ...row.tree]);

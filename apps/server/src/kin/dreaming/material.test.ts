@@ -191,9 +191,12 @@ it.effect("leaves out what a teammate could read or steer: their chats and share
         ["deferrals/def-legacy.md", fixtureItem({ id: "def-legacy", chat: "dm" })],
       ]),
     });
+    // A reminder is marked so, so nothing made from it reads as what the owner stated.
     assert.deepStrictEqual(
-      full.entries.filter((entry) => entry.kind === "item").map((entry) => entry.ref),
-      ["memory:deferrals/def-owner.md"],
+      full.entries
+        .filter((entry) => entry.kind === "item")
+        .map(({ ref, reminder }) => ({ ref, reminder })),
+      [{ ref: "memory:deferrals/def-owner.md", reminder: true }],
     );
   }).pipe(Effect.provide(layer)),
 );

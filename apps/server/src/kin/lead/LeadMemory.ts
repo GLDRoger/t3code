@@ -41,6 +41,7 @@ import * as Memory from "../memory/Memory.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import * as Cache from "../memory/MemoryCache.ts";
 import { MemoryItemError, memoryDateMillis, parseFrontMatter } from "../memory/frontMatter.ts";
+import { leadOwner, withReadableQuotes } from "../memory/quoteAccess.ts";
 import { QUOTE_MAX, QUOTE_REFUSALS, writeRefusal } from "../memory/keeping.ts";
 import {
   authorise,
@@ -649,6 +650,13 @@ const make = Effect.gen(function* () {
         "Only the agent that set it up can cancel or replace it, from the chat it was set up in or the owner's direct chat.",
       );
   });
+  /** Heads as the owner reads them in his own turn: a quote only from a message he can open. */
+  const ownersView = Effect.fn("LeadMemory.ownersView")(function* <
+    H extends { readonly source: string; readonly quote?: string | undefined },
+  >(ctx: Effect.Success<ReturnType<typeof resolve>>, heads: ReadonlyArray<H>) {
+    const owner = yield* leadOwner(ctx.orgId, ctx.agentId).pipe(provideSql);
+    return yield* withReadableQuotes(ctx.orgId, owner, heads).pipe(provideSql);
+  });
   /** The one gate on a shared turn's memory writes: none at all while team memory is off. */
   const sharedWrites = Effect.fn("LeadMemory.sharedWrites")(function* (audience: TurnAudience) {
     if (audience !== "owner_only" && !(yield* teamMemoryOn)) return yield* invalid(SHARED_REFUSAL);
@@ -731,7 +739,7 @@ const make = Effect.gen(function* () {
     yield* checkSource(ctx, input.sourceEventId);
     const { body, sensitive: asked, ...fields } = input.item;
     const content = contentOf({ head: fields, body });
-    // The quote is judged with the words it backs: it is stored beside them.
+    // The quote is judged with the item's words: it is stored beside them.
     const judged = input.quote === undefined ? content : `${content}\n${input.quote}`;
     if (looksLikeSecret(judged)) return yield* invalid(SECRET_REFUSAL);
     // Judged on the words sent alone, so the refusal says nothing about what is stored.
@@ -921,9 +929,12 @@ const make = Effect.gen(function* () {
       );
       const counts = new Map<string, number>();
       for (const item of found) counts.set(item.id, (counts.get(item.id) ?? 0) + 1);
-      return found
-        .map((item) => ({ ...item, duplicate: (counts.get(item.id) ?? 0) > 1 }))
-        .slice(0, input.limit ?? 50);
+      return yield* ownersView(
+        ctx,
+        found
+          .map((item) => ({ ...item, duplicate: (counts.get(item.id) ?? 0) > 1 }))
+          .slice(0, input.limit ?? 50),
+      );
     }, Effect.mapError(failure)),
     read: Effect.fn("LeadMemory.read")(function* (scope, input) {
       const { ctx, audience } = yield* turn(scope);
@@ -940,8 +951,10 @@ const make = Effect.gen(function* () {
       // Review dates and invalidation are not in the projection, so a shared turn never gets them.
       if (shared) return { item: shareable(item) };
       const now = DateTime.toEpochMillis(yield* DateTime.now);
+      const [head] = yield* ownersView(ctx, [item.head]);
       return {
         ...item,
+        head: head!,
         reviewOverdue: item.head.review_by !== null && memoryDateMillis(item.head.review_by) < now,
         misleading: item.head.invalid_at !== null,
       };
