@@ -52,6 +52,12 @@ import { KinLeadPrompt, type KinLeadPromptInput } from "./LeadPrompt.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
+import * as ProjectEnrichmentService from "../../project/ProjectEnrichmentService.ts";
+import * as ProjectFaviconResolver from "../../project/ProjectFaviconResolver.ts";
+import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
+import * as WorkspacePaths from "../../workspace/WorkspacePaths.ts";
+import * as RuntimeLayer from "../../orchestration-v2/runtimeLayer.ts";
+import * as ThreadCommandExecutor from "../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ProjectSetupScriptRunner from "../../project/ProjectSetupScriptRunner.ts";
 import * as ProjectCloneTracker from "../../project/ProjectCloneTracker.ts";
 import * as WorktreeSetupTracker from "../../project/WorktreeSetupTracker.ts";
@@ -155,6 +161,11 @@ type HarnessOptions = {
   readonly onReadyLeads?: () => void;
   /** The project id bootstrap returns, read on each call. */
   readonly projectId?: () => ProjectId;
+  /**
+   * The real project service on the harness database instead of one fixed project; each turn
+   * runs in its project's root, offered here when the turn resolves it.
+   */
+  readonly realProjects?: Queue.Queue<string | null>;
 };
 
 export function harness(options: HarnessOptions = {}) {
@@ -403,7 +414,15 @@ function parts(options: HarnessOptions) {
   const orchestration = ProviderReplayHarness.layerWithRegistry(
     { name: "kin-wakeup" },
     ProviderAdapterRegistry.layerFromAdapters([adapter]),
-    { databaseLayer: database },
+    {
+      databaseLayer: database,
+      ...(options.realProjects === undefined
+        ? {}
+        : {
+            projectCwd: (cwd: string | null) =>
+              Queue.offer(options.realProjects!, cwd).pipe(Effect.asVoid),
+          }),
+    },
   );
   const settings = ServerSettings.layerTest(options.settings);
   const receipts = CommandReceiptStore.layer.pipe(Layer.provide(database));
@@ -427,11 +446,34 @@ function parts(options: HarnessOptions) {
   );
   const current = () =>
     options.projectId === undefined ? project : { ...project, id: options.projectId() };
-  const projectLayer = Layer.mock(ProjectService.ProjectService)({
-    bootstrap: () => Effect.sync(() => ({ project: current(), created: true })),
-    getById: () => Effect.sync(() => Option.some(current())),
-    getByWorkspaceRoot: () => Effect.sync(() => Option.some(current())),
-  });
+  const projectLayer =
+    options.realProjects !== undefined
+      ? RuntimeLayer.layerProjectService.pipe(
+          Layer.provide(
+            ProjectEnrichmentService.layer.pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
+                    resolve: () => Effect.succeed(null),
+                  }),
+                  Layer.mock(ProjectFaviconResolver.ProjectFaviconResolver)({
+                    invalidate: () => Effect.void,
+                    resolvePath: () => Effect.succeed(null),
+                  }),
+                ),
+              ),
+            ),
+          ),
+          Layer.provide(
+            Layer.mergeAll(WorkspacePaths.layer, ThreadCommandExecutor.layer, settings, database),
+          ),
+          Layer.provide(NodeServices.layer),
+        )
+      : Layer.mock(ProjectService.ProjectService)({
+          bootstrap: () => Effect.sync(() => ({ project: current(), created: true })),
+          getById: () => Effect.sync(() => Option.some(current())),
+          getByWorkspaceRoot: () => Effect.sync(() => Option.some(current())),
+        });
   const external = Layer.mergeAll(
     projectLayer,
     WorktreeSetupTracker.layer,

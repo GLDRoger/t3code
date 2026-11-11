@@ -116,7 +116,7 @@ export function KinLeadSheet(props: {
           <div className="flex items-center gap-3 pe-8">
             <KinAvatar avatar={props.avatar} />
             <div className="flex min-w-0 flex-col">
-              <SheetTitle>{about.kind === "own" ? about.lead.name : about.contact.name}</SheetTitle>
+              <SheetTitle>{about.kind === "own" ? about.lead.name : null}</SheetTitle>
               {about.kind === "own" ? (
                 <SheetDescription>
                   {kinDomainLabel(about.lead.domain)}
@@ -191,7 +191,7 @@ export function KinLeadSheet(props: {
           <AlertDialogHeader>
             <AlertDialogTitle>{KIN_CLEAR_CHAT_TITLE}</AlertDialogTitle>
             <AlertDialogDescription>
-              {kinClearChatBody(about.kind === "own" ? about.lead.name : about.contact.name)}
+              {kinClearChatBody(about.kind === "own" ? about.lead.name : null)}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

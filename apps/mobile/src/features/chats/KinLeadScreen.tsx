@@ -151,7 +151,12 @@ function KinLeadBody(props: {
                 orgId={lead.orgId}
                 chatId={lead.ownerChatId}
               />
-              <KinLeadClearChat environmentId={environmentId} lead={lead} />
+              <KinLeadClearChat
+                environmentId={environmentId}
+                orgId={lead.orgId}
+                chatId={lead.ownerChatId}
+                remembers={lead.name}
+              />
             </>
           ) : contact !== null ? (
             <>
@@ -160,6 +165,12 @@ function KinLeadBody(props: {
                 environmentId={environmentId}
                 orgId={contact.orgId}
                 chatId={contact.chatId}
+              />
+              <KinLeadClearChat
+                environmentId={environmentId}
+                orgId={contact.orgId}
+                chatId={contact.chatId}
+                remembers={null}
               />
             </>
           ) : AsyncResult.isInitial(result) ? (
@@ -238,9 +249,12 @@ function KinLeadNotifications(props: {
 /** Empties the viewer's chat with this lead, once they confirm; the chat behind shows it. */
 function KinLeadClearChat(props: {
   readonly environmentId: EnvironmentId;
-  readonly lead: KinLeadProfile;
+  readonly orgId: KinOrgId;
+  readonly chatId: KinChatId;
+  /** The viewer's own lead, which keeps what it remembers; null for someone else's lead. */
+  readonly remembers: string | null;
 }) {
-  const { environmentId, lead } = props;
+  const { environmentId } = props;
   const navigation = useNavigation();
   const host = useKinHostAt(environmentId);
   const inbox = useAtomValue(kinClient.inbox({ environmentId, input: {} }));
@@ -248,11 +262,11 @@ function KinLeadClearChat(props: {
   const runClear = useAtomCommand(kinClient.clear, "Clearing this chat");
   const { personId } = kinFeedViewer(
     host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
-    lead.orgId,
+    props.orgId,
   );
   const chat =
     inbox._tag === "Success"
-      ? inbox.value.value.chats.find((held) => held.chatId === lead.ownerChatId)
+      ? inbox.value.value.chats.find((held) => held.chatId === props.chatId)
       : undefined;
   // The host decides again on the call; this only hides what it would refuse.
   if (!canClear || chat === undefined || !kinOwnsDirectChat(chat.kind, chat.members, personId))
@@ -266,7 +280,7 @@ function KinLeadClearChat(props: {
         onPress={() =>
           Dialog.confirm({
             title: KIN_CLEAR_CHAT_TITLE,
-            message: kinClearChatBody(lead.name),
+            message: kinClearChatBody(props.remembers),
             confirmText: KIN_CLEAR_CHAT_ACTION,
             destructive: true,
             onConfirm: () =>

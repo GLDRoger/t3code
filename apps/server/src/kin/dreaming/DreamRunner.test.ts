@@ -357,6 +357,17 @@ const runRow = Effect.fn("test.runRow")(function* () {
       full, ended_at AS "endedAt" FROM kin_dream_runs WHERE org_id = ${orgId} ORDER BY owner_date`;
 });
 
+/** Something the owner said just now: new material for the next dream. */
+const ownerSays = Effect.fn("test.ownerSays")(function* (id: string) {
+  const sql = yield* SqlClient.SqlClient;
+  const at = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+  const [chat] = yield* sql<{
+    seq: number;
+  }>`UPDATE kin_chats SET last_seq = last_seq + 1 WHERE chat_id = 'owner-chat' RETURNING last_seq AS seq`;
+  yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id, author_member_id, author_role, kind, body, mentions_json, status, created_at)
+    VALUES (${id}, ${orgId}, 'owner-chat', ${chat!.seq}, 'human', 'owner', 'owner-member', 'owner', 'text', 'Another invented note.', '[]', 'posted', ${at})`;
+});
+
 const pending = Effect.fn("test.pending")(function* () {
   const sql = yield* SqlClient.SqlClient;
   return (yield* sql<{
@@ -456,6 +467,7 @@ it.live("a dream clears scratch a crashed dream left and refuses a symlinked dre
       yield* fs.makeDirectory(`${root}/outside/dream_20261108_victim`, { recursive: true });
       yield* fs.writeFileString(`${root}/outside/dream_20261108_victim/keep.md`, "Keep\n");
       yield* fs.symlink(`${root}/outside`, `${root}/state/dreams`);
+      yield* ownerSays("owner-msg-2");
       const refused = yield* runner.run(orgId, { full: false, ownerDate: "2026-11-09" });
       expect(refused._tag).toBe("failed");
       if (refused._tag === "failed")
@@ -519,7 +531,7 @@ it.live.each([
   { behavior: "failed-turn", failure: "The dream session failed" },
   { behavior: "paused", failure: "Kin was paused during the dream" },
 ] as const)(
-  "a $behavior dream fails, pushes nothing and tells the owner",
+  "a $behavior dream fails, pushes nothing and tells the owner nothing",
   ({ behavior, failure }) =>
     fixture(({ git, remote, root, main, behave, notices, turns, turnThreads }) =>
       Effect.gen(function* () {
@@ -534,9 +546,7 @@ it.live.each([
         expect(row?.status).toBe("failed");
         expect(row?.failure).toContain(failure);
         expect(row?.head).toBeNull();
-        expect(notices).toHaveLength(1);
-        expect(notices[0]).toContain("merged nothing");
-        expect(notices[0]).not.toContain("ghp_");
+        expect(notices).toEqual([]);
         // The stop switch's fan-out finds the running turn's thread.
         expect(turnThreads).toEqual(
           turns.map((turn) => DreamSession.dreamThreadId(turn.dreamId, turn.turn)),
@@ -619,7 +629,7 @@ it.live(
         expect(yield* git(root, ["ls-remote", "--heads", remote])).not.toContain(
           "dream/2026-01-01",
         );
-        expect(notices).toHaveLength(1);
+        expect(notices).toEqual([]);
         expect(yield* pending()).toEqual([]);
       }),
     ),
@@ -705,6 +715,55 @@ it.live("while a dream runs, a second run is busy and drain fails only stale row
       expect(turns.map((turn) => turn.dreamId.slice(0, 14))).toEqual(["dream_20261108"]);
       expect(yield* runner.cancel(orgId)).toBe(true);
       expect((yield* Fiber.join(first))._tag).toBe("cancelled");
+    }),
+  ),
+);
+
+it.live(
+  "the owner hears once, on the third failed night in a row, and again only after a success",
+  () =>
+    fixture(({ behave, notices, turns }) =>
+      Effect.gen(function* () {
+        const runner = yield* DreamRunner.DreamRunner;
+        const night = (day: number) =>
+          runner.run(orgId, { full: false, ownerDate: `2026-11-${String(day).padStart(2, "0")}` });
+        behave("failed-turn");
+        for (const day of [8, 9]) expect((yield* night(day))._tag).toBe("failed");
+        expect(notices).toEqual([]);
+        expect((yield* night(10))._tag).toBe("failed");
+        expect(notices).toHaveLength(1);
+        expect(notices[0]).toContain("Nothing is lost");
+        expect(notices[0]).not.toMatch(/dream|merge|branch|material/i);
+        // A failed night's material stays new, so each retry still runs.
+        expect(turns).toHaveLength(3);
+        expect((yield* night(11))._tag).toBe("failed");
+        expect(notices).toHaveLength(1);
+        behave("good");
+        expect((yield* night(12))._tag).toBe("succeeded");
+        behave("failed-turn");
+        yield* ownerSays("owner-msg-2");
+        for (const day of [13, 14]) expect((yield* night(day))._tag).toBe("failed");
+        expect(notices).toHaveLength(1);
+        expect((yield* night(15))._tag).toBe("failed");
+        expect(notices).toHaveLength(2);
+      }),
+    ),
+);
+
+it.live("a night with nothing new since the last good one runs no model and posts nothing", () =>
+  fixture(({ turns, notices, root, remote, git }) =>
+    Effect.gen(function* () {
+      const runner = yield* DreamRunner.DreamRunner;
+      expect((yield* runner.run(orgId, { full: false, ownerDate: "2026-11-08" }))._tag).toBe(
+        "succeeded",
+      );
+      expect(turns).toHaveLength(1);
+      const quiet = yield* runner.run(orgId, { full: false, ownerDate: "2026-11-09" });
+      expect(quiet._tag).toBe("succeeded");
+      expect(turns).toHaveLength(1);
+      expect(notices).toEqual([]);
+      expect((yield* runRow()).map((row) => row.status)).toEqual(["succeeded", "succeeded"]);
+      expect(yield* git(root, ["ls-remote", "--heads", remote])).not.toContain("dream/2026-11-09");
     }),
   ),
 );
