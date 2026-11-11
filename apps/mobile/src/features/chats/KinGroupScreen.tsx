@@ -3,6 +3,11 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import { EnvironmentId, KinChatId, KinOrgId, type KinChatMembersResult } from "@t3tools/contracts";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
 import {
+  KIN_CLEAR_CHAT_ACTION,
+  KIN_CLEAR_CHAT_TITLE,
+  kinClearChatBody,
+} from "@t3tools/client-runtime/kin/kinClearChat";
+import {
   kinGroupCountLabel,
   kinGroupMemberViews,
   kinGroupNameCheck,
@@ -167,6 +172,8 @@ function KinGroupDetails(props: {
   const setLead = useAtomCommand(kinClient.groupSetLead, { reportFailure: false });
   const removeMember = useAtomCommand(kinClient.groupRemoveMember, { reportFailure: false });
   const deleteGroup = useAtomCommand(kinClient.groupDelete, { reportFailure: false });
+  const canClear = useAtomValue(kinClient.clear.permissionAtom(environmentId)) && canChange;
+  const clear = useAtomCommand(kinClient.clear, { reportFailure: false });
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const title = group.chat.title ?? "Group";
@@ -227,6 +234,21 @@ function KinGroupDetails(props: {
         void change(member.memberId, `remove ${member.name}`, () =>
           removeMember({ environmentId, input: { chatId, memberId: member.memberId } }),
         ),
+    });
+
+  const askClear = () =>
+    Dialog.confirm({
+      title: KIN_CLEAR_CHAT_TITLE,
+      message: kinClearChatBody("group"),
+      confirmText: KIN_CLEAR_CHAT_ACTION,
+      destructive: true,
+      onConfirm: () =>
+        void change("clear", "clear this chat", () =>
+          clear({ environmentId, input: { chatId } }),
+        ).then((done) => {
+          // Nothing to announce: the chat behind this screen is empty.
+          if (done) navigation.goBack();
+        }),
     });
 
   const askDelete = () =>
@@ -351,6 +373,18 @@ function KinGroupDetails(props: {
             disabled={busy !== null}
             onPress={askRename}
           />
+          {canClear ? (
+            <View className="border-t border-border-subtle">
+              <ListActionRow
+                label={KIN_CLEAR_CHAT_ACTION}
+                icon="bubble.left"
+                tone="danger"
+                loading={busy === "clear"}
+                disabled={busy !== null}
+                onPress={askClear}
+              />
+            </View>
+          ) : null}
           <View className="border-t border-border-subtle">
             <ListActionRow
               label="Delete group"

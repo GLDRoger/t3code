@@ -1,6 +1,7 @@
 import { ACTIVE_RUN_STATUSES } from "../../orchestration-v2/ThreadManagementService.ts";
 import type { McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
 import {
+  KinWakeupId,
   KinOrg,
   KinOrgId,
   KinPerson,
@@ -22,7 +23,6 @@ import {
   KinChatHistoryInput,
   type KinChatHistoryResult,
   ThreadId,
-  type KinWakeupId,
   IsoDateTime,
   NonNegativeInt,
   TrimmedNonEmptyString,
@@ -298,6 +298,10 @@ export class KinChatRepository extends Context.Service<
     ) => Effect.Effect<
       {
         readonly reset: boolean;
+        /** The reset is a clear made after the caller's cursor: nothing it holds survives. */
+        readonly cleared?: boolean;
+        /** The chat's `last_seq` at its last clear; 0 when it never was. */
+        readonly clearedSeq: number;
         readonly lastSeq: number;
         readonly lastChangeSeq: number;
         readonly messages: ReadonlyArray<KinMessage>;
@@ -388,6 +392,28 @@ export class KinChatRepository extends Context.Service<
     readonly endAgentThread: (
       input: Scope & { readonly threadId: ThreadId; readonly endedAt: IsoDateTime },
     ) => Effect.Effect<boolean, RepositoryError>;
+    /**
+     * Deletes everything said in a chat and every row keyed by one of its messages; the chat, its
+     * members, read positions and `last_seq` stay. Turns answering those messages are marked
+     * aborted and what was queued about them never runs. Returns what the caller finishes after
+     * the commit.
+     */
+    readonly clearChat: (
+      input: ChatScope & { readonly clearedAt: IsoDateTime; readonly clearedAtMs: number },
+    ) => Effect.Effect<
+      {
+        readonly lastSeq: number;
+        readonly lastChangeSeq: number;
+        readonly attachmentIds: ReadonlyArray<string>;
+        /** The open items it closed. */
+        readonly waiting: ReadonlyArray<KinWaitingItem>;
+        readonly taskCards: ReadonlyArray<KinWidget>;
+        readonly abortedWakeupIds: ReadonlyArray<KinWakeupId>;
+        /** Leads whose queued events were dropped. */
+        readonly agentIds: ReadonlyArray<KinAgentId>;
+      },
+      RepositoryError
+    >;
   }
 >()("t3/kin/chat/KinChatRepository") {}
 
@@ -914,8 +940,25 @@ const make = Effect.gen(function* () {
         const chat = yield* requireRecord(chatOne(input));
         const counters = yield* sql<{
           change_seq: number;
-        }>`SELECT change_seq FROM kin_chats WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
+          cleared_change_seq: number;
+          clearedSeq: number;
+        }>`SELECT change_seq, cleared_change_seq, cleared_seq AS "clearedSeq" FROM kin_chats WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
         const lastChangeSeq = counters[0]!.change_seq;
+        const clearedSeq = counters[0]!.clearedSeq;
+        // Deleted rows can't be replayed as changes: a cursor from before the clear starts over.
+        if (
+          input.afterChangeSeq !== undefined &&
+          input.afterChangeSeq < counters[0]!.cleared_change_seq
+        )
+          return {
+            reset: true,
+            cleared: true,
+            clearedSeq,
+            lastSeq: chat.lastSeq,
+            lastChangeSeq,
+            messages: [],
+            widgets: [],
+          };
         // Without a change cursor, replay only new messages; change_seq runs ahead of seq.
         const afterChangeSeq = input.afterChangeSeq ?? lastChangeSeq;
         const visible = sql`(${member.role === "owner" ? 1 : 0} = 1 OR status NOT IN ('suggested', 'dismissed') OR author_member_id = ${member.memberId})`;
@@ -935,7 +978,14 @@ const make = Effect.gen(function* () {
               ) ORDER BY seq LIMIT 201`,
         })(input);
         if (messages.length > 200)
-          return { reset: true, lastSeq: chat.lastSeq, lastChangeSeq, messages: [], widgets: [] };
+          return {
+            reset: true,
+            clearedSeq,
+            lastSeq: chat.lastSeq,
+            lastChangeSeq,
+            messages: [],
+            widgets: [],
+          };
         const widgets =
           messages.length === 0
             ? []
@@ -949,6 +999,7 @@ const make = Effect.gen(function* () {
           reset: false,
           messages: messages.map((m) => messageForViewer(m, member.principal)),
           widgets,
+          clearedSeq,
           lastSeq: chat.lastSeq,
           lastChangeSeq,
         };
@@ -1600,6 +1651,83 @@ const make = Effect.gen(function* () {
         return changed.length > 0;
       },
       Effect.mapError(toRepositoryError("KinChatRepository.endAgentThread")),
+    ),
+    clearChat: Effect.fn("KinChatRepository.clearChat")(
+      function* (input) {
+        yield* requireRecord(chatOne(input));
+        const said = sql`SELECT message_id FROM kin_messages
+          WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
+        const about = sql`tag IN ('chat.message', 'widget.action', 'chat.reaction')
+          AND json_extract(json, '$.messageId') IN (${said})`;
+        const attachments = yield* sql<{ id: string }>`
+          SELECT attachment_id AS id FROM kin_message_attachments
+          WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} ORDER BY attachment_id`;
+        const taskCards = yield* SqlSchema.findAll({
+          Request: Schema.Unknown,
+          Result: WidgetRow,
+          execute: () => sql`SELECT ${sql.literal(widgetColumns)} FROM kin_widgets
+            WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND type = 'task'
+            ORDER BY widget_id`,
+        })(input);
+        // A turn answering a deleted message has nothing left to answer: it stops like one
+        // aborted for its audience, and no later wake-up is given the message again.
+        const aborted = yield* sql<{ wakeupId: string }>`
+          UPDATE kin_wakeups SET aborted_at = ${input.clearedAtMs}
+          WHERE org_id = ${input.orgId} AND status = 'running' AND aborted_at IS NULL
+            AND settled_at IS NULL
+            AND wakeup_id IN (SELECT wakeup_id FROM kin_events
+              WHERE org_id = ${input.orgId} AND state = 'claimed' AND ${about})
+          RETURNING wakeup_id AS "wakeupId"`;
+        const dropped = yield* sql<{ agentId: string }>`
+          UPDATE kin_events SET state = 'expired'
+          WHERE org_id = ${input.orgId} AND state IN ('queued', 'claimed') AND ${about}
+          RETURNING agent_id AS "agentId"`;
+        const open = yield* sql<{ id: string }>`SELECT waiting_id AS id FROM kin_waiting
+          WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND resolved_at IS NULL
+          ORDER BY waiting_id`;
+        // Waiting rows stay as history of what was asked, without the message or card they named.
+        yield* sql`UPDATE kin_waiting SET message_id = NULL, widget_id = NULL,
+            resolved_at = COALESCE(resolved_at, ${input.clearedAt}),
+            resolution = COALESCE(resolution, 'cancelled')
+          WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
+        const waiting =
+          open.length === 0
+            ? []
+            : yield* SqlSchema.findAll({
+                Request: Schema.Unknown,
+                Result: WaitingRow,
+                execute: () => sql`SELECT ${sql.literal(waitingColumns)} FROM kin_waiting
+                  WHERE org_id = ${input.orgId} AND waiting_id IN ${sql.in(open.map((row) => row.id))}
+                  ORDER BY waiting_id`,
+              })(input);
+        yield* sql`DELETE FROM kin_floor_grants WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
+        yield* sql`DELETE FROM kin_floor_notices WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
+        yield* sql`DELETE FROM kin_floor_runs WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
+        yield* sql`DELETE FROM kin_ping_deliveries WHERE org_id = ${input.orgId} AND message_id IN (${said})`;
+        yield* sql`DELETE FROM kin_handoffs WHERE org_id = ${input.orgId} AND message_id IN (${said})`;
+        yield* sql`DELETE FROM kin_reaction_wakes WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
+        yield* sql`DELETE FROM kin_reactions WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
+        yield* sql`DELETE FROM kin_message_attachments WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
+        yield* sql`DELETE FROM kin_widgets WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
+        yield* sql`DELETE FROM kin_messages WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
+        // `last_seq` keeps counting: members' read and join positions are seqs of this chat.
+        const [counters] = yield* sql<{ lastSeq: number; lastChangeSeq: number }>`
+          UPDATE kin_chats SET last_message_at = NULL, change_seq = change_seq + 1,
+            cleared_change_seq = change_seq + 1, cleared_seq = last_seq
+          WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}
+          RETURNING last_seq AS "lastSeq", change_seq AS "lastChangeSeq"`;
+        return {
+          lastSeq: counters!.lastSeq,
+          lastChangeSeq: counters!.lastChangeSeq,
+          attachmentIds: attachments.map((row) => row.id),
+          waiting,
+          taskCards,
+          abortedWakeupIds: aborted.map((row) => KinWakeupId.make(row.wakeupId)),
+          agentIds: [...new Set(dropped.map((row) => KinAgentId.make(row.agentId)))],
+        };
+      },
+      (effect) => sql.withTransaction(effect),
+      Effect.mapError(toRepositoryError("KinChatRepository.clearChat")),
     ),
   });
 });

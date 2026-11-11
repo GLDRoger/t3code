@@ -106,9 +106,11 @@ export function kinEarlierPage(
   chatId: KinChatId,
   messages: ReadonlyArray<KinMessage>,
   exhausted: boolean,
+  /** The chat's seq at its last clear, 0 when it never was: its first message is the next. */
+  clearedSeq: number,
 ): KinChatHistoryInput | null {
   const oldest = messages[0];
-  if (exhausted || oldest === undefined || oldest.seq <= 1) return null;
+  if (exhausted || oldest === undefined || oldest.seq <= clearedSeq + 1) return null;
   return { chatId, beforeSeq: oldest.seq, limit: KIN_HISTORY_PAGE_SIZE };
 }
 
