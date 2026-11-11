@@ -88,6 +88,8 @@ import * as PublishCard from "../widgets/workerPublishCard.ts";
 import * as OwnerWork from "../work/ownerWork.ts";
 import { pullRequestMerged, WORK_NOT_YOURS } from "../work/workerEntries.ts";
 import { WITHDRAWN_WORK } from "../work/workPrompt.ts";
+import { eventWithdrawn } from "../work/workerAttempts.ts";
+import { runKinMigrations } from "../persistence/KinMigrations.ts";
 
 const leadThread = ThreadId.make("lead-thread");
 const leadId = KinAgentId.make("lead");
@@ -3728,25 +3730,88 @@ const sameWakeup = (
     return json as { readonly messageId: string };
   });
 
+/**
+ * The database as the upgrade from K058 leaves it: what K059 to K062 made never existed, so their
+ * tables and the K060 column go, and the migrations run forward over the rows K058 knew.
+ */
+const upgradedFromK058 = (sql: SqlClient.SqlClient) =>
+  Effect.gen(function* () {
+    yield* sql`DROP TABLE kin_worker_attempts`;
+    yield* sql`DROP TABLE kin_wakeup_sensitive_reads`;
+    yield* sql`DROP INDEX idx_kin_records_register`;
+    yield* sql`DROP INDEX idx_kin_records_repo`;
+    yield* sql`ALTER TABLE kin_records DROP COLUMN repo`;
+    yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 59`;
+    assert.deepStrictEqual(
+      (yield* runKinMigrations()).map(([id]) => id),
+      [59, 60, 61, 62],
+    );
+  }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
+const attemptRows = (sql: SqlClient.SqlClient, workerId: KinWorkerId) =>
+  sql<{ sourceEventId: string | null; withdrawnAt: number | null }>`SELECT
+      source_event_id AS "sourceEventId", withdrawn_at AS "withdrawnAt"
+    FROM kin_worker_attempts WHERE worker_id = ${workerId} ORDER BY started_at`;
+
 it.effect.each([
-  ["on this server", true],
-  ["in the worker environment", false],
+  ["on this server", true, "tracked"],
+  ["in the worker environment", false, "tracked"],
+  ["on this server, begun before Kin tracked attempts", true, "legacy"],
+  ["in the worker environment, begun before Kin tracked attempts", false, "legacy"],
+  ["on this server, followed up in this turn before Kin tracked attempts", true, "followed up"],
+  [
+    "in the worker environment, followed up in this turn before Kin tracked attempts",
+    false,
+    "followed up",
+  ],
 ] as const)(
   "work the owner withdrew is never started again %s from the owner's message that asked for it",
-  ([, onHost]) =>
+  ([, onHost, era]) =>
     run(({ ctx, remote, local, workers, tracker }) =>
       Effect.gen(function* () {
         if (onHost) yield* goLocal(ctx, remote);
         const launches = () =>
           onHost ? local.launches.length : remote.tools("t3_thread_launch").length;
         const first = yield* workers.delegate(scope, delegateInput);
-        yield* ownerSets(ctx, (yield* entryOf(ctx)).key, "done");
+        // Delegated in an earlier turn; this turn's follow-up began the attempt now running.
+        if (era === "followed up") {
+          yield* ctx.sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at,
+              ended_at, status, event_ids)
+            VALUES ('earlier', ${ctx.orgId}, ${leadId}, 'test', -10, -5, 'completed', '[]')`;
+          yield* ctx.sql`UPDATE kin_workers SET wakeup_id = 'earlier'
+            WHERE worker_id = ${first.workerId}`;
+        }
+        if (era !== "tracked") yield* upgradedFromK058(ctx.sql);
+        const entry = yield* entryOf(ctx);
+        yield* ownerSets(ctx, entry.key, "done");
         yield* settled(tracker, ctx.orgId, first.workerId);
+        // An upgraded worker's withdrawal names no event: nothing recorded one.
+        if (era !== "tracked")
+          assert.deepStrictEqual(
+            (yield* attemptRows(ctx.sql, first.workerId)).map((row) => row.sourceEventId),
+            [null],
+          );
         // The same turn asks again from the same message, under another title and no entry.
         assert.include(
           yield* Effect.flip(workers.delegate(scope, { ...delegateInput, title: "Again" })),
           { reason: "not_allowed", message: WORK_NOT_YOURS },
         );
+        assert.include(
+          yield* Effect.flip(
+            workers.delegate(scope, { ...delegateInput, title: "Again", entry: entry.key }),
+          ),
+          { reason: "not_allowed", message: WORK_NOT_YOURS },
+        );
+        if (!onHost)
+          assert.include(
+            yield* Effect.flip(
+              workers.followUp(scope, {
+                workerId: first.workerId,
+                brief: "Carry on.",
+                sourceEventId: "lead-event",
+              }),
+            ),
+            { reason: "not_allowed", message: WORK_NOT_YOURS },
+          );
         // A reaction on that same message in the wake-up is the same instruction.
         const { messageId } = yield* sameWakeup(ctx, "reaction-event", {
           _tag: "chat.reaction",
@@ -3770,13 +3835,35 @@ it.effect.each([
           body: "Actually, do it after all",
           clientMessageId: "fresh",
         });
-        yield* sameWakeup(ctx, "fresh-event", { messageId: fresh.messageId });
-        yield* workers.delegate(scope, {
+        const freshEvent = yield* sameWakeup(ctx, "fresh-event", { messageId: fresh.messageId });
+        const freshAsk = workers.delegate(scope, {
           ...delegateInput,
           title: "Fresh ask",
           sourceEventId: "fresh-event",
         });
-        assert.strictEqual(launches(), 2);
+        if (era === "tracked") {
+          yield* freshAsk;
+          assert.strictEqual(launches(), 2);
+          return;
+        }
+        // Without the event, the whole wake-up that began the work counts as withdrawn.
+        assert.include(yield* Effect.flip(freshAsk), {
+          reason: "not_allowed",
+          message: WORK_NOT_YOURS,
+        });
+        assert.strictEqual(launches(), 1);
+        // A turn the owner wakes after the withdrawal is not.
+        yield* ctx.sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at,
+            status, event_ids)
+          VALUES ('later', ${ctx.orgId}, ${leadId}, 'test', 1, 'completed', '[]')`;
+        assert.isFalse(
+          yield* eventWithdrawn({
+            orgId: ctx.orgId,
+            agentId: leadId,
+            wakeupId: "later",
+            event: { ...freshEvent, eventId: "later-event" } as unknown as KinEvent,
+          }),
+        );
       }),
     ),
 );
@@ -4106,7 +4193,7 @@ const finishRemote = Effect.fn("WorkersTest.finishRemote")(function* (
 const ended = (sql: SqlClient.SqlClient, workerId: KinWorkerId) =>
   sql<{ endedAt: number | null }>`SELECT ended_at AS "endedAt" FROM kin_workers
     WHERE worker_id = ${workerId}`.pipe(Effect.map((rows) => rows[0]!.endedAt !== null));
-/** The lead's own sensitive entry, made in its turn; making it shows the lead nothing new. */
+/** A sensitive entry of the lead's, as if made in an earlier turn: this one has seen nothing. */
 const sensitiveEntry = Effect.fn("WorkersTest.sensitiveEntry")(function* (
   ctx: Effect.Success<ReturnType<typeof setup>>,
 ) {
@@ -4114,6 +4201,7 @@ const sensitiveEntry = Effect.fn("WorkersTest.sensitiveEntry")(function* (
     sourceEventId: "lead-event",
     records: [{ title: "Invented client rollout", sensitive: true }],
   }).pipe(Effect.provideContext(ctx.services));
+  yield* ctx.sql`DELETE FROM kin_wakeup_sensitive_reads`;
   return created.records[0]!.key;
 });
 const waitingReport = {
@@ -4182,6 +4270,31 @@ it.effect.each([
           WHERE worker_id = ${workerId}`;
         assert.strictEqual(approved!.by, ctx.person.personId);
         assert.isNotNull(approved!.at);
+      }),
+    ),
+);
+
+it.effect(
+  "a worker begun before Kin tracked attempts, finishing on a public repository, waits for the owner",
+  () =>
+    run(({ ctx, remote, workers, tracker }) =>
+      Effect.gen(function* () {
+        remote.state.visibility = "public";
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        yield* upgradedFromK058(ctx.sql);
+        assert.lengthOf(yield* attemptRows(ctx.sql, workerId), 0);
+        yield* finishRemote(ctx, remote, workerId);
+        yield* settled(tracker, ctx.orgId, workerId);
+        // Its row is made as it publishes, and what it never recorded publishes nothing.
+        assert.deepStrictEqual(yield* attemptRows(ctx.sql, workerId), [
+          { sourceEventId: null, withdrawnAt: null },
+        ]);
+        assert.deepStrictEqual(remote.writes, []);
+        const [card] = yield* publishCards(ctx.sql);
+        assert.deepStrictEqual(card!.state.why, ["public_repository"]);
+        yield* tapCard(ctx, card!, "publish");
+        yield* settled(tracker, ctx.orgId, workerId);
+        assert.deepStrictEqual(remote.writes, ["push", "pull_request"]);
       }),
     ),
 );
