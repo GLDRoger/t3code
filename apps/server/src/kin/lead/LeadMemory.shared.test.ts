@@ -82,11 +82,11 @@ const loaded = () => {
   return items;
 };
 const pick = (id: string, admit?: (item: MemoryItem) => boolean) =>
-  Effect.suspend(() => {
+  Effect.gen(function* () {
     const matches = loaded().filter((item) => item.head.id === id && (admit?.(item) ?? true));
-    if (matches[0] === undefined) return Effect.fail(new Memory.MemoryNotFound({ orgId, id }));
-    if (matches.length > 1) return Effect.fail(new Memory.MemoryDuplicateId({ orgId, id }));
-    return Effect.succeed(matches[0]);
+    if (matches[0] === undefined) return yield* new Memory.MemoryNotFound({ orgId, id });
+    if (matches.length > 1) return yield* new Memory.MemoryDuplicateId({ orgId, id });
+    return matches[0];
   });
 const memory = Layer.mock(Memory.Memory)({
   items: () => Effect.sync(loaded),
