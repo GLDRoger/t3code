@@ -1,3 +1,4 @@
+import { kinTabBar, useKinTab } from "./components/KinTab";
 import { LegendList } from "@legendapp/list/react-native";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
@@ -155,23 +156,26 @@ function NamedList(props: {
   readonly onOpen: (key: KinRecordKey) => void;
 }) {
   const navigation = useNavigation();
+  const tab = useKinTab();
   const { state, list, add, nothing, rows } = props;
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
         title={KIN_WORK_TITLE}
-        onBack={() => navigation.goBack()}
         refresh={{ accessibilityLabel: "Refresh", onPress: list.refresh }}
         {...(add === null
           ? {}
           : { actions: [{ accessibilityLabel: add.label, icon: "plus", onPress: add.onPress }] })}
-        search={{
-          value: props.search.text,
-          onChangeText: props.onSearch,
-          placeholder: props.search.placeholder,
-          closeAccessibilityLabel: "Close search",
-          clearAccessibilityLabel: "Clear search",
-        }}
+        {...kinTabBar(tab, {
+          onBack: () => navigation.goBack(),
+          search: {
+            value: props.search.text,
+            onChangeText: props.onSearch,
+            placeholder: props.search.placeholder,
+            closeAccessibilityLabel: "Close search",
+            clearAccessibilityLabel: "Clear search",
+          },
+        })}
       />
       <ScreenContent surface="screen">
         <LegendList<NamedRow>
@@ -180,8 +184,8 @@ function NamedList(props: {
           contentInsetAdjustmentBehavior="automatic"
           keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled"
-          // The search field floats over the foot of the list.
-          contentContainerStyle={{ paddingBottom: 96 }}
+          // The search field, or the tab dock, floats over the foot of the list.
+          contentContainerStyle={{ paddingBottom: tab === null ? 96 : 24 + tab.bottomClearance }}
           data={rows}
           keyExtractor={(row) => row.key}
           extraData={props.extra}

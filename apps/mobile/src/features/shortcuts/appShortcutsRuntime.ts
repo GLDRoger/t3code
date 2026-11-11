@@ -147,3 +147,11 @@ export function installAppShortcuts(navigate: (href: string) => void): () => voi
     unsubscribe();
   };
 }
+
+/** A Kin-only app has no threads to jump to, so it drops what an earlier install published. */
+export function clearAppShortcuts(): () => void {
+  void QuickActions.setItems([]).catch((error: unknown) => {
+    console.warn("[app-shortcuts] failed to clear launcher shortcuts", error);
+  });
+  return () => {};
+}

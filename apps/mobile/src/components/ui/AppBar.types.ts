@@ -62,6 +62,8 @@ export interface AppBarSearch {
   /** Defaults to the placeholder. */
   readonly accessibilityLabel?: string;
   readonly mode?: "inline" | "collapsible";
+  /** iOS: the field sits under the title, for a page whose foot is taken by a tab dock. */
+  readonly placement?: "top";
   readonly compactToolbar?: boolean;
   readonly compactPlaceholder?: string;
   readonly closeAccessibilityLabel?: string;

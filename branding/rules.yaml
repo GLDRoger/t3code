@@ -57,6 +57,12 @@ text:
     from: t3code-preview
     to: kin-preview
     exact: true
+  # Kin's mobile app is Kin and nothing else: no coding threads, tabs or settings. Coding lives in
+  # the T3 Code app. See KIN_ONLY in apps/mobile/src/lib/kinOnly.ts.
+  - files: [apps/mobile/app.config.ts, apps/mobile/src/lib/kinOnly.ts]
+    from: "kin-only:off"
+    to: "kin-only:on"
+    exact: true
   - files: [apps/mobile/app.config.ts]
     from: connect to T3 Code servers
     to: connect to servers
@@ -513,6 +519,12 @@ ignore:
       - apps/server/src/mcp/toolkits/**
       - apps/server/src/mcp/McpInvocationContext.ts
       - apps/server/src/mcp/WorktreeMcpService.ts
+
+  - reason: >-
+      Kin's mobile app has no coding threads, so where a task links to one it names the T3 Code
+      app as the place that thread opens.
+    files: [apps/mobile/src/features/chats/kinOnlyCopy.ts]
+    text: "T3 Code"
 
   # Shared state kept on purpose; each is a name in the user's repos or the build, not an app's own data.
   - reason: >-

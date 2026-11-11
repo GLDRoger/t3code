@@ -48,7 +48,7 @@ import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { useNowMinuteMs } from "../../lib/clock";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { appAtomRegistry } from "../../state/atom-registry";
-import { useOpenWorkspaceDetail } from "../layout/useOpenWorkspaceDetail";
+import { useOpenKinThread } from "./state/useOpenKinThread";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
@@ -149,7 +149,7 @@ function KinWorkItemGate(props: ItemTarget) {
 
 function KinWorkItemBody(props: ItemTarget) {
   const navigation = useNavigation();
-  const openDetail = useOpenWorkspaceDetail();
+  const openThread = useOpenKinThread();
   const { environmentId, orgId, itemKey } = props;
   const itemAtom = kinClient.workItem({ environmentId, input: { orgId, key: itemKey } });
   const { state: changed, changes } = useKinWorkChanges(props);
@@ -486,7 +486,7 @@ function KinWorkItemBody(props: ItemTarget) {
               onOpen={() => openLink(link)}
               onOpenThread={(thread) => {
                 navigation.goBack();
-                openDetail({ name: "Thread", params: thread });
+                openThread(thread);
               }}
             />
           ))}

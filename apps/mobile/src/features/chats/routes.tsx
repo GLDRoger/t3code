@@ -2,6 +2,7 @@ import { createNativeStackScreen } from "@react-navigation/native-stack";
 
 import { pageRoute, sheetRoute } from "../layout/route-options";
 import { KinApprovalsScreen } from "./approvals/KinApprovalsScreen";
+import { KinAgentsScreen } from "./KinAgentsScreen";
 import { KinChatScreen } from "./KinChatScreen";
 import { KinChatsScreen } from "./KinChatsScreen";
 import { KinClientScreen } from "./KinClientScreen";
@@ -119,6 +120,11 @@ export const KIN_SCREENS = {
     screen: KinLeadScreen,
     linking: "kin/:environmentId/:orgId/leads/:agentId",
     options: sheetRoute({ detent: 0.75 }),
+  }),
+  KinAgents: createNativeStackScreen({
+    screen: KinAgentsScreen,
+    linking: "kin/:environmentId/:orgId/agents",
+    options: pageRoute({ title: "Agents" }),
   }),
   // A full sheet, so the keyboard never covers the field being typed in.
   KinLeadForm: createNativeStackScreen({
