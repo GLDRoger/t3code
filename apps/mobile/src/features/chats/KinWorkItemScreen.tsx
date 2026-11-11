@@ -4,11 +4,17 @@ import {
   KIN_WORK_GONE,
   KIN_WORK_ITEM_FAILED,
   KIN_WORK_ONLY_OWNER,
+  kinWorkAssignees,
   kinWorkItemState,
   kinWorkItemView,
   type KinWorkItemView,
   type KinWorkLinkView,
 } from "@t3tools/client-runtime/kin/kinWork";
+import {
+  KIN_WORK_COPY,
+  kinWorkApplied,
+  type KinWorkNotice,
+} from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
   EnvironmentId,
   KIN_RECORD_CHANGES_CAP,
@@ -32,16 +38,25 @@ import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
+import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { useNowMinuteMs } from "../../lib/clock";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { appAtomRegistry } from "../../state/atom-registry";
+import { useOpenWorkspaceDetail } from "../layout/useOpenWorkspaceDetail";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
+import { KinWorkDueRow, KinWorkStatusRow } from "./components/KinWorkTaskMenus";
 import { kinClient } from "./state/kinClient";
-import { useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
+import {
+  useKinWorkChanges,
+  useKinWorkDirectory,
+  useKinWorkItemWatch,
+  useKinWorkPlace,
+  type KinWorkTarget,
+} from "./state/useKinWork";
 
 export type KinWorkItemParams = {
   readonly environmentId: string;
@@ -80,7 +95,8 @@ export function KinWorkItemScreen({ route }: StaticScreenProps<KinWorkItemParams
       </Frame>
     );
   }
-  return <KinWorkItemGate environmentId={environmentId} orgId={orgId} itemKey={key} />;
+  // A fresh screen per task, so one task's changes never show on the next one opened from it.
+  return <KinWorkItemGate key={key} environmentId={environmentId} orgId={orgId} itemKey={key} />;
 }
 
 function Frame(props: {
@@ -122,11 +138,16 @@ function KinWorkItemGate(props: ItemTarget) {
 
 function KinWorkItemBody(props: ItemTarget) {
   const navigation = useNavigation();
+  const openDetail = useOpenWorkspaceDetail();
   const { environmentId, orgId, itemKey } = props;
   const itemAtom = kinClient.workItem({ environmentId, input: { orgId, key: itemKey } });
-  const state = kinWorkItemState(useAtomValue(itemAtom), null);
+  const { state: changed, changes } = useKinWorkChanges(props);
+  const state = kinWorkItemState(useAtomValue(itemAtom), changed.answers[itemKey] ?? null);
+  useKinWorkItemWatch(props, itemKey, state._tag === "ready" ? state.item.seq : null);
   const directory = useKinWorkDirectory(props, true);
   const canGive = useAtomValue(kinClient.workAssign.permissionAtom(environmentId));
+  const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
+  const place = useKinWorkPlace(environmentId);
   const now = new Date(useNowMinuteMs());
   const close = () => navigation.goBack();
 
@@ -160,10 +181,34 @@ function KinWorkItemBody(props: ItemTarget) {
       </Frame>
     );
   }
-  const view = kinWorkItemView(state.item, directory.names, now, KIN_RECORD_CHANGES_CAP);
+  const { item } = state;
+  const { orgs, people, names } = directory;
+  const view = kinWorkItemView(
+    kinWorkApplied(item, changed),
+    names,
+    now,
+    KIN_RECORD_CHANGES_CAP,
+    place,
+  );
+  const saving = changed.pending[itemKey] !== undefined;
+  const notice = changed.notice?.key === itemKey ? changed.notice : null;
+  // An older host reads and hands over; everything else needs one that takes changes.
+  const act =
+    canChange && view.editable
+      ? (action: Parameters<typeof changes.run>[1]) => void changes.run(item, action, names)
+      : null;
+  const waitingOn = kinWorkAssignees({ orgs, orgId, people, names, current: view.waitingOn });
   const openChat = (chatId: KinChatId) => {
     navigation.goBack();
     navigation.navigate("KinChat", { environmentId, orgId, chatId });
+  };
+  const openLink = (link: KinWorkLinkView) => {
+    const { open } = link;
+    if (open === null) return;
+    if (open.type === "chat") return openChat(open.chatId);
+    if (open.type === "task")
+      return navigation.navigate("KinWorkItem", { environmentId, orgId, task: open.key });
+    void tryOpenExternalUrl(open.href, "markdown-link");
   };
   return (
     <Frame title={view.heading} onClose={close}>
@@ -194,13 +239,82 @@ function KinWorkItemBody(props: ItemTarget) {
           ),
         )}
       </View>
+      {act === null || view.suggestion === null ? null : (
+        <View className="gap-3 px-2">
+          <Text textRole="body" className="text-foreground">
+            {view.suggestion} Keep it?
+          </Text>
+          <View className="flex-row gap-2">
+            <Button
+              tone="primary"
+              size="compact"
+              label={KIN_WORK_COPY.keep}
+              disabled={saving}
+              onPress={() => act({ type: "confirm" })}
+            />
+            <Button
+              tone="secondary"
+              size="compact"
+              label={KIN_WORK_COPY.decline}
+              disabled={saving}
+              onPress={() => act({ type: "decline" })}
+            />
+          </View>
+        </View>
+      )}
+      {act === null ? null : (
+        <View className="gap-2">
+          {view.closed ? (
+            <Button
+              tone="secondary"
+              fullWidth
+              icon="arrow.uturn.backward"
+              label={KIN_WORK_COPY.reopen}
+              loading={saving}
+              onPress={() => act({ type: "state", state: "open" })}
+            />
+          ) : (
+            <Button
+              tone="primary"
+              fullWidth
+              icon="checkmark"
+              label={KIN_WORK_COPY.done}
+              loading={saving}
+              onPress={() => act({ type: "state", state: "done" })}
+            />
+          )}
+          {view.leadNote === null ? null : (
+            <Text textRole="footnote" className="px-2 text-foreground-muted">
+              {view.leadNote}
+            </Text>
+          )}
+        </View>
+      )}
+      {notice === null ? null : (
+        <KinWorkNoticeLine
+          notice={notice}
+          saving={saving}
+          onUndo={() => void changes.undo(names, item)}
+          onDismiss={changes.dismiss}
+        />
+      )}
       <ListSection>
         <ListRowLayout
           leading={<KinAvatar avatar={view.owner.avatar} size="mini" />}
           label={view.owner.name}
           detail="Has it"
         />
-        {view.due === null ? null : (
+        {act === null || view.closed ? null : (
+          <KinWorkStatusRow
+            view={view}
+            people={[...waitingOn.people, ...waitingOn.leads]}
+            disabled={saving}
+            onAct={act}
+          />
+        )}
+        {act !== null && !view.closed ? (
+          <KinWorkDueRow view={view} now={now} disabled={saving} onAct={act} />
+        ) : view.due === null ? null : (
           <ListRowLayout
             icon="clock"
             label={view.due.charAt(0).toUpperCase() + view.due.slice(1)}
@@ -210,9 +324,17 @@ function KinWorkItemBody(props: ItemTarget) {
         {canGive && view.assignLabel !== null ? (
           <ListActionRow
             label={view.assignLabel}
+            disabled={saving}
             onPress={() =>
               navigation.navigate("KinWorkAssign", { environmentId, orgId, task: itemKey })
             }
+          />
+        ) : null}
+        {canGive && view.takeBack ? (
+          <ListActionRow
+            label={KIN_WORK_COPY.takeBack}
+            disabled={saving}
+            onPress={() => void changes.run(item, { type: "takeBack" }, names)}
           />
         ) : null}
         {view.owner.principal._tag === "agent" ? (
@@ -223,6 +345,15 @@ function KinWorkItemBody(props: ItemTarget) {
             onOpen={openChat}
           />
         ) : null}
+        {act === null ? null : (
+          <ListActionRow
+            label="Edit title and notes"
+            disabled={saving}
+            onPress={() =>
+              navigation.navigate("KinWorkEdit", { environmentId, orgId, task: itemKey })
+            }
+          />
+        )}
       </ListSection>
       {view.notes === null ? null : (
         <View className="gap-2 px-2">
@@ -237,7 +368,15 @@ function KinWorkItemBody(props: ItemTarget) {
       {view.links.length === 0 ? null : (
         <ListSection title="Links">
           {view.links.map((link) => (
-            <KinWorkLink key={link.key} link={link} onOpenChat={openChat} />
+            <KinWorkLink
+              key={link.key}
+              link={link}
+              onOpen={() => openLink(link)}
+              onOpenThread={(thread) => {
+                navigation.goBack();
+                openDetail({ name: "Thread", params: thread });
+              }}
+            />
           ))}
         </ListSection>
       )}
@@ -246,27 +385,55 @@ function KinWorkItemBody(props: ItemTarget) {
   );
 }
 
+/** What just happened to the task: said quietly when it worked, plainly when it didn't. */
+function KinWorkNoticeLine(props: {
+  readonly notice: KinWorkNotice;
+  readonly saving: boolean;
+  readonly onUndo: () => void;
+  readonly onDismiss: () => void;
+}) {
+  const { notice } = props;
+  return (
+    <Notice
+      message={notice.text}
+      tone={notice.kind === "failed" ? "danger" : "default"}
+      {...(notice.kind === "saved" ? { icon: "checkmark.circle" as const } : {})}
+      {...(notice.undo === null
+        ? { onDismiss: props.onDismiss }
+        : {
+            action: { label: KIN_WORK_COPY.undo, onPress: props.onUndo, pending: props.saving },
+          })}
+    />
+  );
+}
+
 function KinWorkLink(props: {
   readonly link: KinWorkLinkView;
-  readonly onOpenChat: (chatId: KinChatId) => void;
+  readonly onOpen: () => void;
+  readonly onOpenThread: (thread: NonNullable<KinWorkLinkView["thread"]>) => void;
 }) {
   const { link } = props;
+  const { thread } = link;
   const content = {
     icon: LINK_SYMBOL[link.kind],
     label: link.label,
     ...(link.detail === null ? {} : { description: link.detail }),
   };
-  const open = link.open;
-  if (open === null) return <ListRowLayout {...content} />;
   return (
-    <ListRow
-      {...content}
-      onPress={() =>
-        open.type === "chat"
-          ? props.onOpenChat(open.chatId)
-          : void tryOpenExternalUrl(open.href, "markdown-link")
-      }
-    />
+    <>
+      {link.open === null ? (
+        <ListRowLayout {...content} />
+      ) : (
+        <ListRow {...content} onPress={props.onOpen} />
+      )}
+      {/* A lead's work opens its thread the way its task card does. */}
+      {thread === null ? null : (
+        <ListActionRow
+          label={KIN_WORK_COPY.openThread}
+          onPress={() => props.onOpenThread(thread)}
+        />
+      )}
+    </>
   );
 }
 

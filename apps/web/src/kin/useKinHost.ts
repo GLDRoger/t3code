@@ -88,6 +88,12 @@ const kinHostAtAtom = Atom.family((environmentId: EnvironmentId) =>
   }).pipe(Atom.withLabel(`kin:host:${environmentId}`)),
 );
 
+/** Whether the host a route names is reachable right now, asked at the moment of a change. */
+export function kinHostConnected(environmentId: EnvironmentId): boolean {
+  const host = appAtomRegistry.get(kinHostAtAtom(environmentId));
+  return host._tag === "host" && host.connected;
+}
+
 /** The connected environment that hosts Kin. `none` on plain T3 servers and with Kin off. */
 export function useKinHost(): KinHost {
   return useAtomValue(kinHostAtom);

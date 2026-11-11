@@ -7,6 +7,8 @@ import {
   KinRecordId,
   type KinRecord,
   type KinRecordDetail,
+  EnvironmentId,
+  ThreadId,
   type KinWorkAssignInput,
   type KinWorkSummary,
 } from "@t3tools/contracts";
@@ -20,7 +22,9 @@ import {
   KIN_WORK_DEFAULT_FILTER,
   createKinWorkActions,
   kinWorkDraftCheck,
+  kinWorkHostEdits,
   kinWorkItemView,
+  kinWorkListFooter,
   kinWorkListQuery,
   kinWorkOverview,
   kinWorkRow,
@@ -43,6 +47,11 @@ const names: KinWorkNames = {
   zone: "UTC",
 };
 const now = new Date("2026-11-11T08:00:00.000Z");
+const hostEnvironment = EnvironmentId.make("invented-host");
+const place = {
+  environmentId: hostEnvironment,
+  isKnownEnvironment: (environmentId: EnvironmentId) => environmentId === hostEnvironment,
+};
 const record = (patch: Partial<KinRecord> = {}): KinRecord => ({
   recordId: KinRecordId.make("rec-1"),
   orgId,
@@ -84,10 +93,10 @@ describe("kinWorkListQuery", () => {
     ["doing", { states: ["doing"] }],
     ["waiting", { states: ["waiting"] }],
     ["late", { late: true }],
-    ["week", { open: true, dueBy: "2026-11-18T08:00:00.000Z" }],
+    ["week", { open: true, dueBy: "2026-11-18T08:00:00.000Z", late: false }],
     ["closed", { open: false }],
   ] as const)("asks the host for the %s view", (view, expected) => {
-    expect(kinWorkListQuery(orgId, { view, owner: null, text: "" }, now.getTime())).toEqual({
+    expect(kinWorkListQuery(orgId, { view, owner: null, text: "" }, now.getTime(), true)).toEqual({
       orgId,
       ...expected,
     });
@@ -95,16 +104,19 @@ describe("kinWorkListQuery", () => {
 
   it("adds whose it is and the words searched for, trimmed", () => {
     expect(
-      kinWorkListQuery(orgId, { view: "open", owner: lead, text: "  quote " }, now.getTime()),
+      kinWorkListQuery(orgId, { view: "open", owner: lead, text: "  quote " }, now.getTime(), true),
     ).toEqual({ orgId, open: true, owner: lead, text: "quote" });
   });
 
-  it("leaves what is already late out of due this week, as the count does", () => {
+  it("hides what is late from due this week only for a host that can't leave it out itself", () => {
+    const week = { ...KIN_WORK_DEFAULT_FILTER, view: "week" } as const;
     const rows = [record({ key: "W-1", late: true }), record({ key: "W-2" })];
-    expect(
-      kinWorkShown({ ...KIN_WORK_DEFAULT_FILTER, view: "week" }, rows).map((row) => row.key),
-    ).toEqual(["W-2"]);
-    expect(kinWorkShown(KIN_WORK_DEFAULT_FILTER, rows)).toHaveLength(2);
+    expect(kinWorkListQuery(orgId, week, now.getTime(), false)).not.toHaveProperty("late");
+    expect(kinWorkShown(week, rows, false).map((row) => row.key)).toEqual(["W-2"]);
+    // A host that filters sends whole pages, so nothing it sent is hidden and its total is right.
+    expect(kinWorkShown(week, rows, true)).toHaveLength(2);
+    expect(kinWorkListFooter(week, 50, 132, true, true)).toBe("Showing 50 of 132");
+    expect(kinWorkListFooter(week, 50, 132, true, false)).toBe("Showing the first 50");
   });
 });
 
@@ -129,6 +141,13 @@ describe("kinWorkOverview", () => {
 
   it("counts everyone's work, then one owner's once they are picked", () => {
     expect(counts()).toEqual({ open: 7, doing: 2, waiting: 1, late: 3, week: 4, closed: null });
+    expect(kinWorkHostEdits(summary)).toBe(false);
+    const newer = { ...summary, closed: 12 };
+    expect(kinWorkHostEdits(newer)).toBe(true);
+    expect(kinWorkOverview(newer, KIN_WORK_DEFAULT_FILTER, names).chips.at(-1)).toMatchObject({
+      id: "closed",
+      count: 12,
+    });
     expect(counts({ ...KIN_WORK_DEFAULT_FILTER, owner: me })).toMatchObject({ open: 2, late: 0 });
     // Someone with nothing open isn't in the host's list at all.
     expect(counts({ ...KIN_WORK_DEFAULT_FILTER, owner: priya })).toMatchObject({ open: 0 });
@@ -174,7 +193,13 @@ describe("kinWorkScreenState", () => {
       {
         allowed: true,
         connected: true,
-        live: AsyncResult.success({ seq: 4, summary: null, failed: true }),
+        live: AsyncResult.success({
+          seq: 4,
+          summary: null,
+          failed: true,
+          changed: {},
+          unnamed: 0,
+        }),
       },
       "failed",
     ],
@@ -226,6 +251,7 @@ describe("kinWorkItemView", () => {
       names,
       now,
       50,
+      place,
     );
     expect(view.history.map((line) => line.text)).toEqual([
       "Tech lead marked it waiting on Priya",
@@ -253,6 +279,7 @@ describe("kinWorkItemView", () => {
       names,
       now,
       50,
+      place,
     );
     expect(view.links.map((held) => [held.label, held.open?.type ?? null])).toEqual([
       ["PR #12 merged", "url"],
@@ -260,7 +287,93 @@ describe("kinWorkItemView", () => {
   });
 });
 
+describe("a task on an older host", () => {
+  const suggested = detail({ owner: lead, confirmed: false, createdBy: lead });
+
+  it("offers no changes, and sends a suggestion's answer to chat", () => {
+    const view = kinWorkItemView(suggested, names, now, 50, place);
+    expect(view).toMatchObject({ editable: false, suggestion: "Tech lead suggested this task." });
+    expect(view.remarks.join(" ")).toContain("Tell it in chat");
+  });
+
+  it("offers them on a host that sends a task's own change number", () => {
+    const view = kinWorkItemView({ ...suggested, seq: 9 }, names, now, 50, place);
+    expect(view).toMatchObject({ editable: true, takeBack: true });
+    expect(view.remarks).toEqual([]);
+    expect(view.leadNote).toContain("tells Tech lead to stop");
+  });
+});
+
+describe("links to other tasks and to a lead's work", () => {
+  const link = {
+    relation: "relates",
+    chatId: null,
+    label: null,
+    createdAt: now.toISOString(),
+  } as const;
+  const worker = (remoteEnvironmentId: EnvironmentId | null) =>
+    ({
+      ...link,
+      kind: "worker",
+      relation: "attempt",
+      target: `run-${remoteEnvironmentId ?? "host"}`,
+      worker: {
+        threadId: ThreadId.make("invented-thread"),
+        remoteEnvironmentId,
+        running: false,
+        pullRequest: { url: "https://github.com/invented/repo/pull/7", number: 7 },
+      },
+    }) as const;
+
+  it("opens a related task by its key, and only names one an older host can't place", () => {
+    const view = kinWorkItemView(
+      detail({
+        links: [
+          {
+            ...link,
+            kind: "record",
+            target: "rec-2",
+            record: { recordId: KinRecordId.make("rec-2"), key: "W-2", title: "Invented other" },
+          },
+          { ...link, kind: "record", target: "rec-3", label: "W-3" },
+        ],
+      }),
+      names,
+      now,
+      50,
+      place,
+    );
+    expect(view.links.map((held) => [held.label, held.open])).toEqual([
+      ["Invented other", { type: "task", key: "W-2" }],
+      ["W-3", null],
+    ]);
+  });
+
+  it("opens a lead's pull request, and its thread only where this device knows the way", () => {
+    const view = kinWorkItemView(
+      detail({ links: [worker(null), worker(EnvironmentId.make("invented-elsewhere"))] }),
+      names,
+      now,
+      50,
+      place,
+    );
+    expect(view.links.map((held) => [held.open?.type, held.thread])).toEqual([
+      ["url", { environmentId: hostEnvironment, threadId: "invented-thread" }],
+      ["url", null],
+    ]);
+  });
+});
+
 describe("kinWorkRow", () => {
+  it("offers one tap only where it changes nothing but the task", () => {
+    const tick = (patch: Partial<KinRecord>) => kinWorkRow(record(patch), names, now).tick;
+    expect(tick({})).toBe("done");
+    expect(tick({ state: "done" })).toBe("reopen");
+    // Finishing a lead's task tells it to stop, and a suggestion wants a yes or no first.
+    expect(tick({ owner: lead })).toBeNull();
+    expect(tick({ confirmed: false })).toBeNull();
+  });
+
   it("shows an all-day due date as the owner's calendar day, wherever it is read", () => {
     const due = record({ dueAt: "2026-11-20T23:59:59.999Z", dueAllDay: true });
     const far = { ...names, zone: "Pacific/Kiritimati" };

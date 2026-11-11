@@ -24,7 +24,6 @@ import {
   type KinLeadAccessInput,
   type KinMemoryListInput,
   type KinLeadsListInput,
-  type KinOrgId,
   type KinOrgsListInput,
   type KinOwnerTimeZoneGetInput,
   type KinPushWatchInput,
@@ -169,15 +168,6 @@ const workLive = createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, 
         Effect.provideService(AtomRegistry.AtomRegistry, appAtomRegistry),
       ),
     ),
-});
-// A task on screen is read again when Work's change number moves.
-const workSeq = Atom.family((key: string) => {
-  const [environmentId, orgId] = JSON.parse(key) as [EnvironmentId, KinOrgId];
-  return Atom.make(
-    (get) =>
-      Option.getOrNull(AsyncResult.value(get(workLive({ environmentId, input: { orgId } }))))
-        ?.seq ?? null,
-  );
 });
 
 /** A dropped connection can leave a read pending; "Load earlier" fails after this and offers Retry. */
@@ -460,13 +450,9 @@ export const kinClient = {
       return yield* readWorkItem(input);
     }),
     staleTimeMs: 30_000,
-    refreshTrigger: ({
-      environmentId,
-      input,
-    }: {
-      readonly environmentId: EnvironmentId;
-      readonly input: KinWorkGetInput;
-    }) => workSeq(JSON.stringify([environmentId, input.orgId])),
+    // Read again on reconnecting; between those, the screen's watch reads only when this task changed.
+    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
+      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
   }),
   /** Where the owner's days begin and end, so an all-day due date reads as the day it was set. */
   workZone: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
@@ -486,6 +472,18 @@ export const kinClient = {
     label: "kin:work:assign",
     tag: "kin.work.assign",
     concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+  }),
+  workUpdate: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:update",
+    tag: "kin.work.update",
+  }),
+  workConfirm: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:confirm",
+    tag: "kin.work.confirm",
+  }),
+  workDecline: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:decline",
+    tag: "kin.work.decline",
   }),
   memorySetVisibility: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:memory:set-visibility",

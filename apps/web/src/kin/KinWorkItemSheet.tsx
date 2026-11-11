@@ -3,14 +3,26 @@ import {
   KIN_WORK_ASSIGN,
   KIN_WORK_GONE,
   KIN_WORK_ITEM_FAILED,
-  createKinWorkActions,
+  KIN_WORK_NOTES_MAX,
+  KIN_WORK_TITLE_MAX,
   kinWorkAssignees,
+  kinWorkDayOf,
+  kinWorkDueChoices,
   kinWorkItemState,
   kinWorkItemView,
   type KinWorkAssignee,
   type KinWorkItemView,
   type KinWorkLinkView,
 } from "@t3tools/client-runtime/kin/kinWork";
+import {
+  KIN_WORK_COPY,
+  KIN_WORK_STATE_CHOICES,
+  kinWorkApplied,
+  kinWorkEditMoved,
+  type KinWorkAction,
+  type KinWorkEdit,
+  type KinWorkNotice,
+} from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
   KIN_RECORD_CHANGES_CAP,
   type KinRecordDetail,
@@ -20,25 +32,36 @@ import { Link } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import {
+  CheckIcon,
+  ChevronDownIcon,
   ExternalLinkIcon,
   LinkIcon,
   ListChecksIcon,
   MessageSquareIcon,
   NotebookTextIcon,
+  PencilIcon,
   PlayIcon,
+  RotateCcwIcon,
 } from "lucide-react";
-import { useState } from "react";
+import { useId } from "react";
 
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
-import { Alert, AlertDescription } from "../components/ui/alert";
+import { Alert, AlertAction, AlertDescription } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import { Calendar } from "../components/ui/calendar";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
 import {
   Menu,
   MenuGroup,
   MenuGroupLabel,
   MenuItem,
   MenuPopup,
+  MenuSeparator,
+  MenuSub,
+  MenuSubPopup,
+  MenuSubTrigger,
   MenuTrigger,
 } from "../components/ui/menu";
 import {
@@ -49,13 +72,19 @@ import {
   SheetTitle,
 } from "../components/ui/sheet";
 import { Skeleton } from "../components/ui/skeleton";
+import { Textarea } from "../components/ui/textarea";
 import { appAtomRegistry } from "../rpc/atomRegistry";
-import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
-import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
+import {
+  useKinWorkItemWatch,
+  useKinWorkPlace,
+  type KinWorkChangesHandle,
+  type KinWorkDirectory,
+  type KinWorkTarget,
+} from "./useKinWork";
 
 const LINK_ICON: Record<KinWorkLinkView["kind"], typeof LinkIcon> = {
   pull_request: PullRequestGlyph.pullRequest,
@@ -71,44 +100,29 @@ export function KinWorkItemSheet(
   props: KinWorkTarget & {
     readonly itemKey: KinRecordKey;
     readonly directory: KinWorkDirectory;
+    readonly changes: KinWorkChangesHandle;
+    readonly onOpenKey: (key: KinRecordKey) => void;
     readonly onClose: () => void;
   },
 ) {
   const { environmentId, orgId, itemKey } = props;
+  const { state: changed, changes } = props.changes;
+  const { names } = props.directory;
   const itemAtom = kinClient.workItem({ environmentId, input: { orgId, key: itemKey } });
   const result = useAtomValue(itemAtom);
-  const [given, setGiven] = useState<KinRecordDetail | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
+  const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
   const canGive = useAtomValue(kinClient.workAssign.permissionAtom(environmentId));
-  const create = useAtomCommand(kinClient.workCreate, { reportFailure: false });
-  const assign = useAtomCommand(kinClient.workAssign, { reportFailure: false });
-  const [actions] = useState(() =>
-    createKinWorkActions({
-      orgId,
-      create: (input) => create({ environmentId, input }),
-      assign: (input) => assign({ environmentId, input }),
-      reread: () => appAtomRegistry.refresh(itemAtom),
-    }),
-  );
+  const place = useKinWorkPlace(environmentId);
   const now = new Date(useNowMinuteMs());
-  const state = kinWorkItemState(result, given);
-
-  const give = async (item: KinRecordDetail, to: KinWorkAssignee) => {
-    if (busy) return;
-    setBusy(true);
-    setProblem(null);
-    const outcome = await actions.give(item, to.principal);
-    setBusy(false);
-    if (outcome.ok) setGiven(outcome.item);
-    else setProblem(outcome.problem);
-  };
+  const state = kinWorkItemState(result, changed.answers[itemKey] ?? null);
+  useKinWorkItemWatch(props, itemKey, state._tag === "ready" ? state.item.seq : null);
+  const saving = changed.pending[itemKey] !== undefined;
 
   return (
     <Sheet
       open
       onOpenChange={(open) => {
-        if (!open && !busy) props.onClose();
+        if (!open && !saving) props.onClose();
       }}
     >
       <SheetPopup side="right">
@@ -116,10 +130,25 @@ export function KinWorkItemSheet(
           <KinWorkItem
             {...props}
             item={state.item}
-            view={kinWorkItemView(state.item, props.directory.names, now, KIN_RECORD_CHANGES_CAP)}
-            busy={busy}
-            problem={problem}
-            onGive={canGive ? (to) => void give(state.item, to) : null}
+            view={kinWorkItemView(
+              kinWorkApplied(state.item, changed),
+              names,
+              now,
+              KIN_RECORD_CHANGES_CAP,
+              place,
+            )}
+            now={now}
+            saving={saving}
+            notice={changed.notice?.key === itemKey ? changed.notice : null}
+            edit={changed.edit?.key === itemKey ? changed.edit : null}
+            canChange={canChange}
+            canGive={canGive}
+            onAct={(action) => void changes.run(state.item, action, names)}
+            onUndo={() => void changes.undo(names, state.item)}
+            onStartEdit={() => changes.startEdit(state.item)}
+            onEdit={changes.setEdit}
+            onCancelEdit={changes.cancelEdit}
+            onSaveEdit={() => void changes.saveEdit(state.item, names)}
           />
         ) : (
           <>
@@ -163,12 +192,47 @@ export function KinWorkItemSheet(
   );
 }
 
-function Section(props: { readonly title: string; readonly children: React.ReactNode }) {
+function Section(props: {
+  readonly title: string;
+  readonly action?: React.ReactNode;
+  readonly children: React.ReactNode;
+}) {
   return (
     <section className="flex flex-col gap-2">
-      <h3 className="text-xs font-medium text-muted-foreground">{props.title}</h3>
+      <div className="flex min-h-6 items-center justify-between gap-2">
+        <h3 className="text-xs font-medium text-muted-foreground">{props.title}</h3>
+        {props.action}
+      </div>
       {props.children}
     </section>
+  );
+}
+
+/** What just happened to the task: said quietly when it worked, plainly when it didn't. */
+function KinWorkNoticeLine(props: {
+  readonly notice: KinWorkNotice;
+  readonly saving: boolean;
+  readonly onUndo: () => void;
+}) {
+  const { notice } = props;
+  if (notice.kind !== "saved") {
+    return (
+      <Alert variant={notice.kind === "failed" ? "error" : "warning"}>
+        <AlertDescription>{notice.text}</AlertDescription>
+      </Alert>
+    );
+  }
+  return (
+    <Alert variant="success">
+      <AlertDescription>{notice.text}</AlertDescription>
+      {notice.undo === null ? null : (
+        <AlertAction>
+          <Button size="xs" variant="outline" disabled={props.saving} onClick={props.onUndo}>
+            {KIN_WORK_COPY.undo}
+          </Button>
+        </AlertAction>
+      )}
+    </Alert>
   );
 }
 
@@ -177,14 +241,27 @@ function KinWorkItem(
     readonly item: KinRecordDetail;
     readonly view: KinWorkItemView;
     readonly directory: KinWorkDirectory;
-    readonly busy: boolean;
-    readonly problem: string | null;
-    readonly onGive: ((to: KinWorkAssignee) => void) | null;
+    readonly now: Date;
+    readonly saving: boolean;
+    readonly notice: KinWorkNotice | null;
+    readonly edit: KinWorkEdit | null;
+    readonly canChange: boolean;
+    readonly canGive: boolean;
+    readonly onAct: (action: KinWorkAction) => void;
+    readonly onUndo: () => void;
+    readonly onStartEdit: () => void;
+    readonly onEdit: (patch: Partial<Pick<KinWorkEdit, "title" | "notes">>) => void;
+    readonly onCancelEdit: () => void;
+    readonly onSaveEdit: () => void;
+    readonly onOpenKey: (key: KinRecordKey) => void;
     readonly onClose: () => void;
   },
 ) {
-  const { view, environmentId, orgId } = props;
+  const { view, environmentId, orgId, saving, edit } = props;
   const { orgs, people, names } = props.directory;
+  // An older host reads and hands over; everything else needs one that takes changes.
+  const change = props.canChange && view.editable ? props.onAct : null;
+  const give = props.canGive ? props.onAct : null;
   const assignees = kinWorkAssignees({
     orgs,
     orgId,
@@ -192,6 +269,10 @@ function KinWorkItem(
     names,
     current: view.owner.principal,
   });
+  const waitingOn = kinWorkAssignees({ orgs, orgId, people, names, current: view.waitingOn });
+  const moved = edit === null ? null : kinWorkEditMoved(edit, props.item);
+  const titleId = useId();
+  const notesId = useId();
   return (
     <>
       <SheetHeader>
@@ -202,6 +283,24 @@ function KinWorkItem(
       </SheetHeader>
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
         <div className="flex flex-col gap-3">
+          {view.suggestion === null || change === null ? null : (
+            <Alert variant="info">
+              <AlertDescription>{view.suggestion} Keep it?</AlertDescription>
+              <AlertAction>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={saving}
+                  onClick={() => change({ type: "decline" })}
+                >
+                  {KIN_WORK_COPY.decline}
+                </Button>
+                <Button size="xs" disabled={saving} onClick={() => change({ type: "confirm" })}>
+                  {KIN_WORK_COPY.keep}
+                </Button>
+              </AlertAction>
+            </Alert>
+          )}
           <div className="flex flex-wrap items-center gap-2 text-sm text-foreground">
             <KinWorkStateIcon state={view.state} />
             <span>{view.status}</span>
@@ -210,7 +309,45 @@ function KinWorkItem(
                 Late
               </Badge>
             ) : null}
+            {saving ? (
+              <span role="status" className="text-xs text-muted-foreground">
+                {KIN_WORK_COPY.saving}
+              </span>
+            ) : null}
           </div>
+          {change === null ? null : (
+            <div className="flex flex-wrap items-center gap-2">
+              {view.closed ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={saving}
+                  onClick={() => change({ type: "state", state: "open" })}
+                >
+                  <RotateCcwIcon />
+                  {KIN_WORK_COPY.reopen}
+                </Button>
+              ) : (
+                <>
+                  <Button
+                    size="sm"
+                    disabled={saving}
+                    onClick={() => change({ type: "state", state: "done" })}
+                  >
+                    <CheckIcon />
+                    {KIN_WORK_COPY.done}
+                  </Button>
+                  <StatusMenu view={view} waitingOn={waitingOn} saving={saving} onAct={change} />
+                </>
+              )}
+            </div>
+          )}
+          {change === null || view.leadNote === null ? null : (
+            <p className="text-xs text-muted-foreground">{view.leadNote}</p>
+          )}
+          {props.notice === null || edit !== null ? null : (
+            <KinWorkNoticeLine notice={props.notice} saving={saving} onUndo={props.onUndo} />
+          )}
           <dl className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-2 text-sm">
             <dt className="text-muted-foreground">With</dt>
             <dd className="flex min-w-0 items-center gap-2">
@@ -218,7 +355,13 @@ function KinWorkItem(
               <span className="truncate text-foreground">{view.owner.name}</span>
             </dd>
             <dt className="text-muted-foreground">Due</dt>
-            <dd className="text-foreground first-letter:uppercase">{view.due ?? "No date"}</dd>
+            <dd className="flex min-w-0 items-center gap-2 text-foreground">
+              {change === null || view.closed ? (
+                <span className="first-letter:uppercase">{view.due ?? KIN_WORK_COPY.noDate}</span>
+              ) : (
+                <DueMenu view={view} now={props.now} saving={saving} onAct={change} />
+              )}
+            </dd>
           </dl>
           {view.given === null ? null : (
             <p className="text-xs text-muted-foreground">{view.given}</p>
@@ -229,21 +372,26 @@ function KinWorkItem(
             </p>
           ))}
         </div>
-        {props.problem === null ? null : (
-          <Alert variant="error">
-            <AlertDescription>{props.problem}</AlertDescription>
-          </Alert>
-        )}
-        {props.onGive === null && view.owner.principal._tag !== "agent" ? null : (
+        {give === null && view.owner.principal._tag !== "agent" ? null : (
           <div className="flex flex-col items-start gap-2">
             <div className="flex flex-wrap gap-2">
-              {props.onGive === null || view.assignLabel === null ? null : (
+              {give === null || view.assignLabel === null ? null : (
                 <GiveMenu
                   label={view.assignLabel}
                   assignees={assignees}
-                  busy={props.busy}
-                  onGive={props.onGive}
+                  busy={saving}
+                  onGive={(to) => give({ type: "give", to: to.principal })}
                 />
+              )}
+              {give === null || !view.takeBack ? null : (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={saving}
+                  onClick={() => give({ type: "takeBack" })}
+                >
+                  {KIN_WORK_COPY.takeBack}
+                </Button>
               )}
               {view.owner.principal._tag === "agent" ? (
                 <KinWorkLeadChat
@@ -255,14 +403,83 @@ function KinWorkItem(
                 />
               ) : null}
             </div>
-            {props.onGive === null || view.assignLabel === null ? null : (
+            {give === null || view.assignLabel === null ? null : (
               <p className="text-xs text-muted-foreground">{KIN_WORK_ASSIGN.leadsHint}</p>
             )}
           </div>
         )}
-        {view.notes === null ? null : (
-          <Section title="Notes">
-            <p className="whitespace-pre-wrap text-sm text-foreground">{view.notes}</p>
+        {edit !== null ? (
+          <form
+            className="flex flex-col gap-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              props.onSaveEdit();
+            }}
+          >
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor={titleId}>Title</Label>
+              <Input
+                id={titleId}
+                value={edit.title}
+                maxLength={KIN_WORK_TITLE_MAX}
+                autoComplete="off"
+                autoFocus
+                onChange={(event) => props.onEdit({ title: event.target.value })}
+              />
+              {moved?.title == null ? null : (
+                <p className="text-xs text-muted-foreground">It now says: {moved.title}</p>
+              )}
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor={notesId}>Notes</Label>
+              <Textarea
+                id={notesId}
+                rows={4}
+                value={edit.notes}
+                maxLength={KIN_WORK_NOTES_MAX}
+                onChange={(event) => props.onEdit({ notes: event.target.value })}
+              />
+              {moved?.notes == null ? null : (
+                <p className="whitespace-pre-wrap text-xs text-muted-foreground">
+                  They now say: {moved.notes}
+                </p>
+              )}
+            </div>
+            {props.notice === null ? null : (
+              <KinWorkNoticeLine notice={props.notice} saving={saving} onUndo={props.onUndo} />
+            )}
+            <div className="flex justify-end gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={saving}
+                onClick={props.onCancelEdit}
+              >
+                {KIN_WORK_COPY.cancel}
+              </Button>
+              <Button type="submit" size="sm" disabled={saving} aria-busy={saving}>
+                {KIN_WORK_COPY.save}
+              </Button>
+            </div>
+          </form>
+        ) : view.notes === null && change === null ? null : (
+          <Section
+            title="Notes"
+            action={
+              change === null ? null : (
+                <Button size="xs" variant="ghost" disabled={saving} onClick={props.onStartEdit}>
+                  <PencilIcon />
+                  {KIN_WORK_COPY.edit}
+                </Button>
+              )
+            }
+          >
+            {view.notes === null ? (
+              <p className="text-sm text-muted-foreground">No notes.</p>
+            ) : (
+              <p className="whitespace-pre-wrap text-sm text-foreground">{view.notes}</p>
+            )}
           </Section>
         )}
         {view.links.length === 0 ? null : (
@@ -275,6 +492,7 @@ function KinWorkItem(
                     environmentId={environmentId}
                     orgId={orgId}
                     onOpen={props.onClose}
+                    onOpenKey={props.onOpenKey}
                   />
                 </li>
               ))}
@@ -298,6 +516,132 @@ function KinWorkItem(
         </Section>
       </div>
     </>
+  );
+}
+
+/** Where the task stands, other than done: started, waiting on someone, or not worth doing. */
+function StatusMenu(props: {
+  readonly view: KinWorkItemView;
+  readonly waitingOn: ReturnType<typeof kinWorkAssignees>;
+  readonly saving: boolean;
+  readonly onAct: (action: KinWorkAction) => void;
+}) {
+  const { view } = props;
+  const people = [...props.waitingOn.people, ...props.waitingOn.leads];
+  return (
+    <Menu>
+      <MenuTrigger render={<Button size="sm" variant="outline" disabled={props.saving} />}>
+        {KIN_WORK_COPY.status}
+        <ChevronDownIcon />
+      </MenuTrigger>
+      <MenuPopup align="start">
+        {KIN_WORK_STATE_CHOICES.map((choice) => (
+          <MenuItem
+            key={choice.state}
+            disabled={view.state === choice.state}
+            onClick={() => props.onAct({ type: "state", state: choice.state })}
+          >
+            <KinWorkStateIcon state={choice.state} />
+            {choice.label}
+          </MenuItem>
+        ))}
+        <MenuSub>
+          <MenuSubTrigger>
+            <KinWorkStateIcon state="waiting" />
+            {KIN_WORK_COPY.waitingOn}
+          </MenuSubTrigger>
+          <MenuSubPopup>
+            {people.map((row) => (
+              <MenuItem
+                key={row.key}
+                disabled={row.current}
+                onClick={() =>
+                  props.onAct({ type: "state", state: "waiting", waitingOn: row.principal })
+                }
+              >
+                <KinAvatar avatar={row.avatar} size="xs" />
+                <span className="min-w-0 flex-1 truncate">{row.name}</span>
+              </MenuItem>
+            ))}
+            {people.length === 0 ? null : <MenuSeparator />}
+            <MenuItem
+              disabled={view.state === "waiting" && view.waitingOn === null}
+              onClick={() => props.onAct({ type: "state", state: "waiting", waitingOn: null })}
+            >
+              {KIN_WORK_COPY.waitingOnNobody}
+            </MenuItem>
+          </MenuSubPopup>
+        </MenuSub>
+        <MenuSeparator />
+        <MenuItem
+          variant="destructive"
+          onClick={() => props.onAct({ type: "state", state: "dropped" })}
+        >
+          <KinWorkStateIcon state="dropped" />
+          {KIN_WORK_COPY.drop}
+        </MenuItem>
+      </MenuPopup>
+    </Menu>
+  );
+}
+
+/** The due date as its own control: the days people pick, any other day, or none. */
+function DueMenu(props: {
+  readonly view: KinWorkItemView;
+  readonly now: Date;
+  readonly saving: boolean;
+  readonly onAct: (action: KinWorkAction) => void;
+}) {
+  const { view } = props;
+  const picked = view.dueDay === null ? undefined : new Date(`${view.dueDay}T00:00:00`);
+  return (
+    <Menu>
+      <MenuTrigger
+        render={
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={props.saving}
+            aria-label={`Due: ${view.due ?? KIN_WORK_COPY.noDate}. Change`}
+          />
+        }
+      >
+        <span className="first-letter:uppercase">{view.due ?? KIN_WORK_COPY.noDate}</span>
+        <ChevronDownIcon />
+      </MenuTrigger>
+      <MenuPopup align="start">
+        {kinWorkDueChoices(props.now).map((choice) => (
+          <MenuItem
+            key={choice.day}
+            disabled={choice.day === view.dueDay}
+            onClick={() => props.onAct({ type: "due", day: choice.day })}
+          >
+            {choice.label}
+          </MenuItem>
+        ))}
+        <MenuSub>
+          <MenuSubTrigger>{KIN_WORK_COPY.pickDate}</MenuSubTrigger>
+          <MenuSubPopup>
+            <Calendar
+              mode="single"
+              selected={picked}
+              defaultMonth={picked ?? props.now}
+              onSelect={(date) => {
+                if (date !== undefined) props.onAct({ type: "due", day: kinWorkDayOf(date) });
+              }}
+            />
+          </MenuSubPopup>
+        </MenuSub>
+        {view.due === null ? null : (
+          <>
+            <MenuSeparator />
+            <MenuItem onClick={() => props.onAct({ type: "due", day: null })}>
+              {KIN_WORK_COPY.noDate}
+            </MenuItem>
+          </>
+        )}
+      </MenuPopup>
+    </Menu>
   );
 }
 
@@ -373,9 +717,14 @@ const LINK_ROW =
 const LINK_ROW_OPENS = "hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset";
 
 function KinWorkLink(
-  props: KinWorkTarget & { readonly link: KinWorkLinkView; readonly onOpen: () => void },
+  props: KinWorkTarget & {
+    readonly link: KinWorkLinkView;
+    readonly onOpen: () => void;
+    readonly onOpenKey: (key: KinRecordKey) => void;
+  },
 ) {
   const { link } = props;
+  const { open } = link;
   const Icon = LINK_ICON[link.kind];
   const content = (
     <>
@@ -386,32 +735,55 @@ function KinWorkLink(
       )}
     </>
   );
-  if (link.open === null) return <div className={LINK_ROW}>{content}</div>;
-  if (link.open.type === "chat") {
-    return (
+  // A lead's work opens its thread the way its task card does, beside whatever the row opens.
+  const thread =
+    link.thread === null ? null : (
+      <Button
+        size="xs"
+        variant="ghost"
+        onClick={props.onOpen}
+        render={<Link to="/$environmentId/$threadId" params={link.thread} />}
+      >
+        {KIN_WORK_COPY.openThread}
+      </Button>
+    );
+  const row =
+    open === null ? (
+      <div className={LINK_ROW}>{content}</div>
+    ) : open.type === "chat" ? (
       <Link
         to="/kin/$environmentId/$orgId/$chatId"
-        params={{
-          environmentId: props.environmentId,
-          orgId: props.orgId,
-          chatId: link.open.chatId,
-        }}
+        params={{ environmentId: props.environmentId, orgId: props.orgId, chatId: open.chatId }}
         onClick={props.onOpen}
         className={`${LINK_ROW} ${LINK_ROW_OPENS}`}
       >
         {content}
       </Link>
+    ) : open.type === "task" ? (
+      <button
+        type="button"
+        onClick={() => props.onOpenKey(open.key)}
+        className={`${LINK_ROW} ${LINK_ROW_OPENS}`}
+      >
+        {content}
+      </button>
+    ) : (
+      <a
+        href={open.href}
+        target="_blank"
+        rel="noreferrer"
+        className={`${LINK_ROW} ${LINK_ROW_OPENS}`}
+      >
+        {content}
+        <ExternalLinkIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+      </a>
     );
-  }
-  return (
-    <a
-      href={link.open.href}
-      target="_blank"
-      rel="noreferrer"
-      className={`${LINK_ROW} ${LINK_ROW_OPENS}`}
-    >
-      {content}
-      <ExternalLinkIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
-    </a>
+  return thread === null ? (
+    row
+  ) : (
+    <div className="flex items-center gap-1">
+      <div className="min-w-0 flex-1">{row}</div>
+      {thread}
+    </div>
   );
 }

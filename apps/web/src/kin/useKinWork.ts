@@ -4,18 +4,28 @@ import {
   kinWorkScreenState,
   type KinWorkScreenState,
 } from "@t3tools/client-runtime/kin/kinWork";
+import {
+  createKinWorkChanges,
+  createKinWorkItemWatch,
+  kinWorkChangesStart,
+} from "@t3tools/client-runtime/kin/kinWorkChanges";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type {
   EnvironmentId,
   KinOrgId,
   KinOwnerTimeZone,
   KinPeopleListResult,
+  KinRecordKey,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
+import { useEffect, useState } from "react";
 
+import { environmentCatalog } from "../connection/catalog";
+import { appAtomRegistry } from "../rpc/atomRegistry";
+import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
-import { useKinHostAt } from "./useKinHost";
+import { kinHostConnected, useKinHostAt } from "./useKinHost";
 
 export interface KinWorkTarget {
   readonly environmentId: EnvironmentId;
@@ -68,3 +78,64 @@ export function useKinWorkDirectory({ environmentId, orgId }: KinWorkTarget, ena
 }
 
 export type KinWorkDirectory = ReturnType<typeof useKinWorkDirectory>;
+
+/** The owner's changes to tasks on one host, shared by the list and the task beside it. */
+export function useKinWorkChanges({ environmentId, orgId }: KinWorkTarget) {
+  const update = useAtomCommand(kinClient.workUpdate, { reportFailure: false });
+  const assign = useAtomCommand(kinClient.workAssign, { reportFailure: false });
+  const confirm = useAtomCommand(kinClient.workConfirm, { reportFailure: false });
+  const decline = useAtomCommand(kinClient.workDecline, { reportFailure: false });
+  const [state, setState] = useState(() => kinWorkChangesStart());
+  const [changes] = useState(() =>
+    createKinWorkChanges({
+      orgId,
+      update: (input) => update({ environmentId, input }),
+      assign: (input) => assign({ environmentId, input }),
+      confirm: (input) => confirm({ environmentId, input }),
+      decline: (input) => decline({ environmentId, input }),
+      reread: (key) =>
+        appAtomRegistry.refresh(kinClient.workItem({ environmentId, input: { orgId, key } })),
+      online: () => kinHostConnected(environmentId),
+      onChange: setState,
+    }),
+  );
+  return { state, changes };
+}
+
+export type KinWorkChangesHandle = ReturnType<typeof useKinWorkChanges>;
+
+/** Reads the open task again when Work says it changed, and not for anyone else's change. */
+export function useKinWorkItemWatch(
+  { environmentId, orgId }: KinWorkTarget,
+  key: KinRecordKey,
+  heldSeq: number | undefined | null,
+) {
+  const live = Option.getOrNull(
+    AsyncResult.value(useAtomValue(kinWorkLiveAtom({ environmentId, orgId }))),
+  );
+  const [watch] = useState(() =>
+    createKinWorkItemWatch({
+      key,
+      reread: () =>
+        appAtomRegistry.refresh(kinClient.workItem({ environmentId, input: { orgId, key } })),
+    }),
+  );
+  const named = live?.changed[key] ?? 0;
+  const unnamed = live?.unnamed ?? 0;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the open task from the host again when the host announces a change to it
+  useEffect(() => {
+    watch.changed(
+      { changed: { [key]: named }, unnamed },
+      heldSeq === null ? null : heldSeq === undefined ? {} : { seq: heldSeq },
+    );
+  }, [watch, key, named, unnamed, heldSeq]);
+}
+
+/** Which environments this browser can open a thread in, as a task card decides it. */
+export function useKinWorkPlace(environmentId: EnvironmentId) {
+  const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
+  return {
+    environmentId,
+    isKnownEnvironment: (id: EnvironmentId) => !catalog.isReady || catalog.entries.has(id),
+  };
+}
