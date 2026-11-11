@@ -952,7 +952,7 @@ const make = Effect.gen(function* () {
     if (!existing && fm.kind !== "deferral") {
       const refusal =
         fm.quote !== undefined
-          ? quoteRefusal(fm.quote, change.sourceEventId === undefined ? undefined : source.text)
+          ? quoteRefusal(fm.quote, "text" in source ? source.text : undefined)
           : fields.trust === "owner" || fields.trust === "member"
             ? QUOTE_MISSING
             : undefined;
