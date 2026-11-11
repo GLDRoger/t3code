@@ -73,7 +73,11 @@ export function KinMessageAttachments(props: {
   );
   const openImage = (id: string) => {
     const images = attachments.flatMap((attachment) => {
-      const src = attachment.type === "image" ? url(attachment.id) : undefined;
+      // The dialog outlives the handoff that frees local copies, so it takes the host's when minted.
+      const src =
+        attachment.type === "image"
+          ? (hostUrlById.get(attachment.id) ?? local.get(attachment.id))
+          : undefined;
       return src === undefined
         ? []
         : [{ id: attachment.id, src, name: attachment.name, mimeType: attachment.mimeType }];
