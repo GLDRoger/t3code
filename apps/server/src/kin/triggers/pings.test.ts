@@ -538,6 +538,12 @@ describe("KinPings", () => {
         chatId,
         body: "System activity is not an answer",
       };
+      // The chat's one person owns no lead: the owner's words are refused there.
+      assert.isTrue(
+        Repo.isPrivateWriteRefused(
+          yield* Effect.flip(chat.notice({ ...noticeRequest, audience: "owner" })),
+        ),
+      );
       const notice = yield* chat.notice({ ...noticeRequest, audience: "chat" });
       assert.deepStrictEqual(yield* chat.notice({ ...noticeRequest, audience: "chat" }), notice);
       assert.strictEqual(
