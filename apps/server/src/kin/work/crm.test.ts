@@ -40,6 +40,7 @@ const at = "2026-11-11T00:00:00.000Z";
 const owner = { _tag: "person" as const, orgId, personId: ownerId };
 const mate = { _tag: "person" as const, orgId, personId: mateId };
 const DAY = 24 * 60 * 60 * 1000;
+type Services = KinIdentity | KinRecords.KinRecords | SqlClient.SqlClient;
 
 const scope: McpInvocationScope = {
   environmentId: EnvironmentId.make("fixture"),
@@ -546,12 +547,13 @@ it.effect(
       });
       assert.include(reopened, { active: true, closedAt: null });
       // A key from the wrong list, and another org's client, are not found.
-      for (const refused of [
+      const wrongList: ReadonlyArray<Effect.Effect<unknown, KinChatError, Services>> = [
         Clients.updateParty([owner], { orgId, key: entry.key, rev: 1, name: "x" }),
         Clients.party([owner], { orgId, key: "CT-1" }),
         OwnerWork.update([owner], { orgId, key: "C-1", rev: 4, title: "x" }),
         OwnerWork.create([owner], { orgId, title: "x", party: "CT-1", clientRequestId: "z" }),
-      ])
+      ];
+      for (const refused of wrongList)
         assert.include(yield* refused.pipe(Effect.asVoid, Effect.flip), { reason: "not_found" });
       const sql = yield* SqlClient.SqlClient;
       yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
