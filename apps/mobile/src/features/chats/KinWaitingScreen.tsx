@@ -30,7 +30,7 @@ export function KinWaitingScreen() {
             <EmptyState
               variant="plain"
               title="Nothing is waiting on you."
-              detail="Approvals and questions from your leads show up here."
+              detail="Approvals and questions from your agents show up here."
             />
           );
         }

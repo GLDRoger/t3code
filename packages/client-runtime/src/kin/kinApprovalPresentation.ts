@@ -184,7 +184,7 @@ function askedLine(view: Extract<KinApprovalView, { _tag: "full" }>) {
   if (PERSON_REQUESTERS.has(requestedBy.agentId))
     return { text: "You asked for this.", warning: false };
   const lead = view.leadName === undefined ? "" : clamp(view.leadName, 60);
-  return { text: `Asked by ${lead || "your lead"}.`, warning: false };
+  return { text: `Asked by ${lead || "your agent"}.`, warning: false };
 }
 
 function fullView(
@@ -241,7 +241,7 @@ function fullView(
   } else if (action.target._tag === "level") {
     const name = lead || action.target.agentId;
     title = `Let ${name} ${RAISE_GRANTS[action.target.level]}`;
-    fact("lead", "Lead", name);
+    fact("lead", "Agent", name);
     fact("where", "Applies to", action.target.chatId === undefined ? "All chats" : "One chat");
   } else if (action.target._tag === "device_key") {
     const label = view.keyDeviceLabel === undefined ? "" : clamp(view.keyDeviceLabel, 80);
@@ -262,7 +262,7 @@ function fullView(
   const reason = PERSON_REQUESTERS.has(action.requestedBy.agentId)
     ? null
     : clamp(action.reason, 500)
-      ? { label: `${lead || "Your lead"} says`, text: clamp(action.reason, 500) }
+      ? { label: `${lead || "Your agent"} says`, text: clamp(action.reason, 500) }
       : null;
   const status =
     input.busy === "approving"
@@ -303,7 +303,7 @@ function redactedView(view: Extract<KinApprovalView, { _tag: "redacted" }>): Kin
     view.kind === "merge_pull_request" && view.number !== null
       ? `Merge #${view.number}${view.repo === null ? "" : ` in ${view.repo}`}`
       : view.kind === "set_level"
-        ? "Change what a lead may do"
+        ? "Change what an agent may do"
         : view.kind === "register_approver_key"
           ? "Let a new phone approve"
           : "A request for the owner";

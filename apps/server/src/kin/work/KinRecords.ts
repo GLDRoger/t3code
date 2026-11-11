@@ -379,7 +379,7 @@ const make = Effect.gen(function* () {
     if (rows.length === 0)
       return yield* new KinChatError({
         reason: "not_found",
-        message: `No ${who._tag === "agent" ? "lead" : "person"} ${principalId(who).slice(0, 60)} here ${role}.`,
+        message: `No ${who._tag === "agent" ? "agent" : "person"} ${principalId(who).slice(0, 60)} here ${role}.`,
       });
   });
 

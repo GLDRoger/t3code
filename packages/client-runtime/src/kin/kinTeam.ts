@@ -26,7 +26,7 @@ export const KIN_TEAMMATE_NAME_MAX = 80;
 export const KIN_TEAM_ADD_COPY = {
   title: "Add a teammate",
   detail:
-    "Kin makes a link for you to send them. Opening it lets them chat with you and with the leads and groups you add them to. They can't see your code or settings.",
+    "Kin makes a link for you to send them. Opening it lets them chat with you and with the agents and groups you add them to. They can't see your code or settings.",
   nameLabel: "Their name",
   namePlaceholder: "Sami Okafor",
   nameHint: "This is how they appear in chats.",
@@ -148,7 +148,7 @@ export function kinTeamEntrySummary(
   list: KinTeamList | null,
   ownerPersonId: string | null,
 ): string {
-  if (list === null) return "The people who chat with you and your leads";
+  if (list === null) return "The people who chat with you and your agents";
   const rows = kinTeamView(list, KIN_TEAM_NO_EDITS, ownerPersonId);
   const joined = rows.filter((row) => row.state === "joined").length;
   const waiting = rows.filter((row) => row.state === "invited").length;

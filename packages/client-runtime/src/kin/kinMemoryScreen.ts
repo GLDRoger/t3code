@@ -20,10 +20,10 @@ import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runti
 
 export const KIN_MEMORY_TITLE = "Memory";
 export const KIN_MEMORY_SEARCH_PLACEHOLDER = "Search what they remember";
-export const KIN_MEMORY_LOAD_FAILED = "Couldn't load what your leads remember.";
+export const KIN_MEMORY_LOAD_FAILED = "Couldn't load what your agents remember.";
 export const KIN_MEMORY_EMPTY = {
   title: "Nothing remembered yet",
-  detail: "What your leads learn while working with you shows up here.",
+  detail: "What your agents learn while working with you shows up here.",
 };
 const KIN_MEMORY_CHANGE_FAILED = "Couldn't change that. Try again.";
 const isKinChatError = Schema.is(KinChatError);
@@ -32,7 +32,7 @@ const problemOf = (cause: unknown) =>
   !isKinChatError(cause)
     ? KIN_MEMORY_CHANGE_FAILED
     : cause.reason === "not_found"
-      ? "Your leads no longer remember that, so nothing changed."
+      ? "Your agents no longer remember that, so nothing changed."
       : cause.reason === "not_allowed"
         ? cause.message
         : KIN_MEMORY_CHANGE_FAILED;
@@ -41,7 +41,7 @@ export const KIN_MEMORY_FORGET = {
   action: "Forget",
   title: "Forget this?",
   body: (title: string) =>
-    `Your leads will stop using “${title}”. You can't bring it back from here.`,
+    `Your agents will stop using “${title}”. You can't bring it back from here.`,
 };
 const SHARE = "Let the team know";
 const KEEP = "Keep to myself";
@@ -56,17 +56,17 @@ const SECTIONS: ReadonlyArray<{
   {
     state: "suggested",
     title: "Waiting for your yes",
-    hint: "Your leads think the team could know these. Until you say yes, only you can.",
+    hint: "Your agents think the team could know these. Until you say yes, only you can.",
   },
   {
     state: "team",
     title: "The team can know",
-    hint: "Your leads can use these when they work with teammates.",
+    hint: "Your agents can use these when they work with teammates.",
   },
   {
     state: "only_owner",
     title: "Only you",
-    hint: "Your leads use these only when they work with you.",
+    hint: "Your agents use these only when they work with you.",
   },
 ];
 
@@ -295,7 +295,7 @@ export function kinMemoryView(
 export function kinMemoryEntrySummary(list: KinMemoryListResult | null): string {
   const waiting = list?.items.filter((item) => item.visibility === "suggested").length ?? 0;
   return waiting === 0
-    ? "What your leads remember"
+    ? "What your agents remember"
     : waiting === 1
       ? "1 thing is waiting for your yes"
       : `${waiting} things are waiting for your yes`;

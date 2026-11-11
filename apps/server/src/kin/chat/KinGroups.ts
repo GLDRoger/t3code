@@ -298,7 +298,7 @@ const make = Effect.gen(function* () {
       const agentIds = [...new Set(input.agentIds)];
       const personIds = [...new Set(input.personIds)].filter((id) => id !== person.personId);
       if (agentIds.length + personIds.length === 0)
-        return yield* invalid("Add at least one lead or person.");
+        return yield* invalid("Add at least one agent or person.");
       if (agentIds.length + personIds.length >= KIN_GROUP_MAX_MEMBERS)
         return yield* invalid(`A group holds up to ${KIN_GROUP_MAX_MEMBERS}.`);
       for (const agentId of agentIds) yield* ownersLead(input.orgId, agentId);
@@ -435,7 +435,7 @@ const make = Effect.gen(function* () {
         ...chat,
         principal: { _tag: "agent", agentId: input.agentId },
       });
-      if (Option.isNone(lead)) return yield* invalid("That lead isn't in this group.");
+      if (Option.isNone(lead)) return yield* invalid("That agent isn't in this group.");
       if (chat.leadAgentId === input.agentId) return chat;
       const updated = yield* repo.updateChat({
         orgId: chat.orgId,

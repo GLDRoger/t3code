@@ -603,7 +603,7 @@ function KinChatPage(props: {
   // A lead's details hold its mute; a chat without them asks about the mute directly.
   const details: KinChatDetails | null =
     lead !== null
-      ? { open: lead.open, hint: "Opens this lead's details" }
+      ? { open: lead.open, hint: "Opens this agent's details" }
       : props.group != null
         ? { open: props.group, hint: "Opens this group's details" }
         : mute == null
@@ -916,7 +916,7 @@ function KinChatFeed(props: {
     const member = props.members.find((candidate) => candidate.memberId === memberId);
     if (member === undefined) return null;
     return member.principal._tag === "agent"
-      ? (props.viewer.agentNames.get(member.principal.agentId) ?? "Lead")
+      ? (props.viewer.agentNames.get(member.principal.agentId) ?? "Agent")
       : (props.viewer.memberNames?.get(memberId) ?? (member.role === "owner" ? "Owner" : "Member"));
   };
   const feedRows = buildKinFeedRows(

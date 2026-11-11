@@ -411,7 +411,7 @@ const make = Effect.gen(function* () {
           yield* consume;
         });
         if (paused) return yield* skip("Kin is paused.");
-        if (lead === undefined) return yield* skip("there is no lead to run it.");
+        if (lead === undefined) return yield* skip("there is no agent to run it.");
         if (!admitted) return yield* skip("today's budget is used up.");
         if (!confirmed) {
           if (row.askedSha256 === hash) {
@@ -636,7 +636,7 @@ const make = Effect.gen(function* () {
           yield* consume;
         });
         if (paused) return yield* skip("Kin is paused.");
-        if (lead === undefined) return yield* skip("there is no lead to run it.");
+        if (lead === undefined) return yield* skip("there is no agent to run it.");
         if (!admitted) return yield* skip("today's budget is used up.");
         if (source.kind === "fire" && now - dueAt > SCHEDULED_RUN_LATE_MS)
           return yield* skip("Kin was offline when it was due.");

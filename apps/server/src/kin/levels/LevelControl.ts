@@ -79,16 +79,16 @@ const raiseReason = (name: string, level: KinLevel, inChat: boolean) => {
 
 const refused = (reason: KinChatError["reason"], message: string) =>
   new KinChatError({ reason, message });
-const notAllowed = refused("not_allowed", "Only the lead's owner can change what it may do.");
+const notAllowed = refused("not_allowed", "Only the agent's owner can change what it may do.");
 const notFound = refused("not_found", "Kin record not found.");
 const unavailable = refused("unavailable", "Kin is unavailable.");
 const LEVEL_REFUSALS: Record<KinLevels.KinLevelRefused["reason"], KinChatError> = {
   not_a_lead: notFound,
   not_found: notFound,
-  conflict: refused("invalid_state", "The lead's permission changed meanwhile; try again."),
+  conflict: refused("invalid_state", "The agent's permission changed meanwhile; try again."),
   invalid_level: refused(
     "invalid_state",
-    "Lower goes down; raise goes up, and a chat at most back to the lead's own.",
+    "Lower goes down; raise goes up, and a chat at most back to the agent's own.",
   ),
   not_granted: refused("not_allowed", "This change needs the owner's signed approval."),
 };

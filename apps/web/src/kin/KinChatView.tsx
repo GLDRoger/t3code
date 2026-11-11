@@ -569,7 +569,7 @@ function KinChatFeed(props: {
     const member = props.members.find((candidate) => candidate.memberId === memberId);
     if (member === undefined) return null;
     return member.principal._tag === "agent"
-      ? (props.viewer.agentNames.get(member.principal.agentId) ?? "Lead")
+      ? (props.viewer.agentNames.get(member.principal.agentId) ?? "Agent")
       : (props.viewer.memberNames?.get(memberId) ?? (member.role === "owner" ? "Owner" : "Member"));
   };
   const dayStart = new Date(nowMs);
@@ -1200,7 +1200,7 @@ function KinComposer(props: {
         </p>
       )}
       {mention === null ? null : (
-        <div role="listbox" aria-label="Leads you can ask" className="flex flex-wrap gap-1.5 px-1">
+        <div role="listbox" aria-label="Agents you can ask" className="flex flex-wrap gap-1.5 px-1">
           {mention.matches.map((lead, index) => (
             <Button
               key={lead.memberId}

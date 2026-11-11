@@ -186,7 +186,7 @@ const HELD_REFUSAL = "the owner publishes this from Kin's card";
 const stopFailedNotice = (key: string) =>
   `Kin couldn't stop the work on ${key} after you closed it or took it back, so it may still be running. Open its thread to stop it there.`;
 const leadStopFailedNotice = (title: string) =>
-  `Kin couldn't stop "${title}" when its lead asked, so it may still be running. Open its thread to stop it there.`;
+  `Kin couldn't stop "${title}" when its agent asked, so it may still be running. Open its thread to stop it there.`;
 /** What a stop found already on GitHub, from what Kin recorded or checked there; never deleted. */
 const publishedBeforeStopNotice = (
   what: string,
@@ -1463,11 +1463,11 @@ const make = Effect.gen(function* () {
     yield* threads.stopDelegatedTasks({
       threadId: subagent.threadId,
       commandId: CommandId.make(`kin-stray:${subagent.id}`),
-      reason: "Kin leads start workers only through kin_delegate.",
+      reason: "Kin agents start workers only through kin_delegate.",
     });
     if (Option.isSome(writer))
       yield* writer.value.appendJournal(lead.orgId, lead.wakeupId, [
-        "Did: Kin stopped a delegate_task the lead started; workers start only through kin_delegate.",
+        "Did: Kin stopped a delegate_task the agent started; workers start only through kin_delegate.",
       ]);
   });
   const process: WorkerTracker["Service"]["process"] = (stored) =>

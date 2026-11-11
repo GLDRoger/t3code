@@ -195,7 +195,7 @@ function KinGroupDialog(props: { readonly target: KinGroupFormTarget }) {
             <DialogTitle>{creating ? "New group" : "Add to group"}</DialogTitle>
             <DialogDescription>
               {creating
-                ? "A chat with any mix of your leads and people. Everyone reads what is said while they are in it."
+                ? "A chat with any mix of your agents and people. Everyone reads what is said while they are in it."
                 : "They see only what is said after they join, not earlier messages."}
             </DialogDescription>
           </DialogHeader>
@@ -215,12 +215,12 @@ function KinGroupDialog(props: { readonly target: KinGroupFormTarget }) {
                 </div>
               ) : null}
               {loading ? (
-                <p className="text-sm text-muted-foreground">Loading your leads and people…</p>
+                <p className="text-sm text-muted-foreground">Loading your agents and people…</p>
               ) : (
                 <>
                   {leads.length === 0 ? null : (
                     <fieldset className="flex flex-col gap-1.5">
-                      <legend className="text-xs font-medium text-muted-foreground">Leads</legend>
+                      <legend className="text-xs font-medium text-muted-foreground">Agents</legend>
                       <ul className="flex flex-col">
                         {leads.map((lead) => (
                           <PickRow
@@ -240,7 +240,7 @@ function KinGroupDialog(props: { readonly target: KinGroupFormTarget }) {
                       </ul>
                       {creating ? (
                         <p className="text-xs text-muted-foreground">
-                          The first lead you pick answers when a message names no one. Name another
+                          The first agent you pick answers when a message names no one. Name another
                           with @ to ask it instead.
                         </p>
                       ) : null}
@@ -263,16 +263,16 @@ function KinGroupDialog(props: { readonly target: KinGroupFormTarget }) {
                         ))}
                       </ul>
                       <p className="text-xs text-muted-foreground">
-                        People in a group can ask its leads to talk things through. Only you can
-                        have a lead start work.
+                        People in a group can ask its agents to talk things through. Only you can
+                        have an agent start work.
                       </p>
                     </fieldset>
                   )}
                   {leads.length === 0 && people.length === 0 ? (
                     <p className="text-sm text-muted-foreground">
                       {creating
-                        ? "No leads or people to add yet. You can make the group and add them later."
-                        : "Every lead and person you could add is already in this group."}
+                        ? "No agents or people to add yet. You can make the group and add them later."
+                        : "Every agent and person you could add is already in this group."}
                     </p>
                   ) : null}
                 </>

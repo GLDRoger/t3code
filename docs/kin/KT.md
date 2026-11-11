@@ -114,17 +114,17 @@ Kin runs from a source build on an always-on Linux machine, as a dedicated `kin`
 
 ## Words we use
 
-| Word          | Meaning                                                                              |
-| ------------- | ------------------------------------------------------------------------------------ |
-| Lead          | An agent that talks in chats, decides and keeps memory. One per domain.              |
-| Worker        | A T3 thread a lead starts for one piece of work, in its own worktree.                |
-| Wake-up       | One run of a lead over a batch of events for one chat.                               |
-| Owner         | The person whose machine, subscriptions and repos Kin uses. Only the owner approves. |
-| Grant         | The owner's signed, single-use approval of one pending action.                       |
-| Floor manager | Plain code that decides which agent may speak in a chat. There is no judge model.    |
-| Deferral      | "Let's do this Friday": a memory item with a due time and what to do then.           |
-| Dream         | The nightly job that tidies memory into a PR and prepares the morning brief.         |
-| L0–L3         | The server's internal permission gate per lead and chat. Never shown to the owner.   |
+| Word          | Meaning                                                                                                             |
+| ------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Lead          | The code name for an agent that talks in chats, decides and keeps memory. People and agents only ever read "agent". |
+| Worker        | A T3 thread a lead starts for one piece of work, in its own worktree.                                               |
+| Wake-up       | One run of a lead over a batch of events for one chat.                                                              |
+| Owner         | The person whose machine, subscriptions and repos Kin uses. Only the owner approves.                                |
+| Grant         | The owner's signed, single-use approval of one pending action.                                                      |
+| Floor manager | Plain code that decides which agent may speak in a chat. There is no judge model.                                   |
+| Deferral      | "Let's do this Friday": a memory item with a due time and what to do then.                                          |
+| Dream         | The nightly job that tidies memory into a PR and prepares the morning brief.                                        |
+| L0–L3         | The server's internal permission gate per lead and chat. Never shown to the owner.                                  |
 
 ## Who to ask
 

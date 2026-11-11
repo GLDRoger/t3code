@@ -41,7 +41,7 @@ export const KinApprovalsToolkit = Toolkit.make(requestAction);
 
 const notALead = new KinApprovalError({
   reason: "not_a_lead",
-  message: "Only a Kin lead in a running wake-up can request actions.",
+  message: "Only a Kin agent in a running wake-up can request actions.",
 });
 const unavailable = new KinApprovalError({
   reason: "unavailable",

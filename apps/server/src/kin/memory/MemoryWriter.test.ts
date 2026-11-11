@@ -456,7 +456,7 @@ it.live.each([
         // A restart now recovers wake1 with only its receipts: its commit is in history,
         // just no longer at the branch head, so nothing is recommitted or reported lost.
         restarted = true;
-        yield* writer.appendJournal(orgId, "wake1", ["Lead ended without calling kin_end."]);
+        yield* writer.appendJournal(orgId, "wake1", ["Agent ended without calling kin_end."]);
         expect(yield* writer.commitWakeup(orgId, "wake1", "completed")).toEqual(first);
         expect(yield* git(paths.writer, ["rev-parse", "HEAD"])).toBe(second.commit);
         const journal = yield* git(paths.writer, [
@@ -464,7 +464,7 @@ it.live.each([
           `${second.commit}:journal/2026/11-08.md`,
         ]);
         expect(journal).not.toContain("lost on restart");
-        expect(journal).not.toContain("Lead ended without calling kin_end.");
+        expect(journal).not.toContain("Agent ended without calling kin_end.");
         return;
       }
       if (scenario === "prompt-snapshot-stale-head") {
@@ -495,7 +495,7 @@ it.live.each([
       if (scenario === "recovered-no-end") {
         const committed = yield* writer.commitWakeup(orgId, "wake1", "completed");
         yield* writer.discard(orgId, "wake1");
-        yield* writer.appendJournal(orgId, "wake1", ["Lead ended without calling kin_end."]);
+        yield* writer.appendJournal(orgId, "wake1", ["Agent ended without calling kin_end."]);
         expect(yield* writer.commitWakeup(orgId, "wake1", "completed")).toEqual(committed);
         return;
       }

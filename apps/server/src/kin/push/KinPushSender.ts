@@ -124,7 +124,7 @@ const approvalPushText = (action: KinPendingAction) => {
     case "device_key":
       return "Adding an approver key is waiting on you";
     case "level":
-      return "A permission change for a lead is waiting on you";
+      return "A permission change for an agent is waiting on you";
     case "content":
       return action.kind === "memory_purge"
         ? "A memory purge is waiting on you"
