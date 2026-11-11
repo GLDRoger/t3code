@@ -482,16 +482,22 @@ const profileOf = (
 });
 
 /**
- * The person's own live leads, oldest first, then with `includeRetired` their retired ones.
- * Someone with none, such as a teammate, gets none. Plain reads, outside a transaction, so a
- * client's list never holds the writer's lock.
+ * The person's own live leads, oldest first, then with `includeRetired` their retired ones; only
+ * the org's owner sees retired leads, and anyone else's ask is ignored. Someone with none, such as
+ * a teammate, gets none. Plain reads, outside a transaction, so a client's list never holds the
+ * writer's lock.
  */
 export const profiles = Effect.fn("KinLeadProvision.profiles")(function* (
   person: PersonIdentity,
   options: { readonly includeRetired?: boolean | undefined } = {},
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const own = (yield* leadsIn(person.orgId, { liveOnly: options.includeRetired !== true })).filter(
+  const { owner } = yield* KinIdentity;
+  const includeRetired =
+    options.includeRetired === true &&
+    person.orgId === owner.orgId &&
+    person.personId === owner.personId;
+  const own = (yield* leadsIn(person.orgId, { liveOnly: !includeRetired })).filter(
     (lead) => lead.ownerPersonId === person.personId,
   );
   const leads = [

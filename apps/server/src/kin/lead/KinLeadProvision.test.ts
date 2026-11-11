@@ -434,6 +434,10 @@ describe("KinLeadProvision", () => {
           }))._tag,
           "retired",
         );
+        // Retired agents, and who retired them, are listed for the org's owner alone.
+        const sam = { ...(yield* KinIdentity).owner, personId: teammate };
+        assert.deepStrictEqual(yield* Provision.profiles(sam, { includeRetired: true }), []);
+        assert.deepStrictEqual(yield* Provision.profiles(sam), []);
       }).pipe(Effect.provide(paired)),
   );
 
@@ -596,6 +600,45 @@ describe("KinLeadProvision", () => {
           ],
           actions: closedActions,
         });
+        assert.deepStrictEqual(yield* sql`SELECT COUNT(*) AS n FROM kin_retirement_holds`, [
+          { n: 0 },
+        ]);
+
+        // Retired again: the timers and schedules the restore resumed wait again, and a second
+        // restore resumes them; what the first retirement stopped or closed stays as it was.
+        yield* TestClock.adjust("1 minute");
+        yield* Provision.retireOnHost(growth.agentId);
+        const held = yield* state;
+        assert.deepStrictEqual(held.triggers, [
+          { trigger_id: "deferral:ada-call:due", enabled: 1, next_run_at: due },
+          { trigger_id: "deferral:growth-call:due", enabled: 0, next_run_at: due },
+          { trigger_id: "schedule:growth-weekly", enabled: 0, next_run_at: due },
+        ]);
+        assert.deepStrictEqual(held.schedules, [
+          { task_id: "sch-off", pending_enabled: null },
+          { task_id: "sch-on", pending_enabled: 0 },
+        ]);
+        assert.deepStrictEqual(held.attempts, stoppedAttempts);
+        assert.deepStrictEqual(held.actions, closedActions);
+        assert.deepStrictEqual(
+          yield* sql`SELECT kind, target_id FROM kin_retirement_holds ORDER BY kind, target_id`,
+          [
+            { kind: "schedule", target_id: "sch-on" },
+            { kind: "trigger", target_id: "deferral:growth-call:due" },
+            { kind: "trigger", target_id: "schedule:growth-weekly" },
+          ],
+        );
+        yield* Provision.restoreOnHost(growth.agentId);
+        const resumed = yield* state;
+        assert.deepStrictEqual(resumed.triggers, [
+          { trigger_id: "deferral:ada-call:due", enabled: 1, next_run_at: due },
+          { trigger_id: "deferral:growth-call:due", enabled: 1, next_run_at: due },
+          { trigger_id: "schedule:growth-weekly", enabled: 1, next_run_at: due },
+        ]);
+        assert.deepStrictEqual(resumed.schedules, [
+          { task_id: "sch-off", pending_enabled: null },
+          { task_id: "sch-on", pending_enabled: 1 },
+        ]);
         assert.deepStrictEqual(yield* sql`SELECT COUNT(*) AS n FROM kin_retirement_holds`, [
           { n: 0 },
         ]);
