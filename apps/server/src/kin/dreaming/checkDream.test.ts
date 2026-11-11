@@ -374,6 +374,16 @@ it.effect.each([
     failures: [statedFails("title")],
   },
   {
+    name: "refuses rewriting its summary",
+    files: [["claims/stated.md", stated({ what: "Invented other summary" })]],
+    failures: [statedFails("what")],
+  },
+  {
+    name: "refuses moving its due date",
+    files: [["claims/stated.md", stated({ due: "2026-12-01T00:00:00.000Z" })]],
+    failures: [statedFails("due")],
+  },
+  {
     name: "refuses invalidating it",
     files: [["claims/stated.md", stated({ invalid_at: "2026-11-08T00:00:00.000Z" })]],
     failures: [statedFails("invalid_at")],

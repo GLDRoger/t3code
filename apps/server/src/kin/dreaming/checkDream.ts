@@ -51,6 +51,8 @@ const STATED_FIELDS = [
   "source_event",
   "quote",
   "invalid_at",
+  "what",
+  "due",
 ] as const;
 
 /**
