@@ -134,7 +134,7 @@ export const makeCardWriter = Effect.gen(function* () {
     now: number,
   ) {
     const row = widgetRow(orgId, chatId, messageId, widget, iso(now));
-    yield* repo.insertWidget(row);
+    yield* repo.insertWidget({ ...row, audience: "owner" });
     const message = yield* repo.getMessage({ orgId, messageId });
     if (Option.isSome(message))
       yield* publish({ type: "message.posted", orgId, message: message.value });
@@ -156,6 +156,7 @@ export const makeCardWriter = Effect.gen(function* () {
     const message = yield* repo.insertMessage({
       orgId,
       chatId,
+      audience: "owner",
       messageId,
       author: { _tag: "system" },
       kind: "system",
@@ -172,7 +173,7 @@ export const makeCardWriter = Effect.gen(function* () {
       editedAt: null,
     });
     const row = widgetRow(orgId, chatId, message.messageId, widget, at);
-    yield* repo.insertWidget(row);
+    yield* repo.insertWidget({ ...row, audience: "owner" });
     yield* publish({
       type: "message.posted",
       orgId,
@@ -192,6 +193,7 @@ export const makeCardWriter = Effect.gen(function* () {
     const at = iso(now);
     const updated = yield* repo.updateWidget({
       ...widget,
+      audience: "owner",
       state,
       expectedRevision: widget.revision,
       closedAt: closed === undefined ? widget.closedAt : closed ? at : null,
@@ -256,6 +258,7 @@ const make = Effect.gen(function* () {
         .insertMessage({
           orgId,
           chatId: delivery.chatId,
+          audience: "owner",
           messageId: KinMessageId.make(`kin-run-failed:${delivery.eventId}`),
           author: { _tag: "system" },
           kind: "system",

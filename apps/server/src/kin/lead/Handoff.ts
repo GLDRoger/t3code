@@ -332,6 +332,7 @@ const make = Effect.gen(function* () {
         const { message } = yield* chat.notice({
           orgId: ctx.orgId,
           chatId: target!.ownerChatId,
+          audience: "owner",
           messageId: KinMessageId.make(`kin-handoff:${id}`),
           body,
         });

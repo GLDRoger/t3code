@@ -32,6 +32,7 @@ import { SharedHead, SharedItem, authorise, fingerprint, reaching } from "../mem
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { SHARED_REFUSAL } from "./Audience.ts";
 import * as Lead from "./LeadMemory.ts";
+import { recordingSchedules } from "../triggers/kinSchedules.testkit.ts";
 
 // Shared turns against a memory whose snapshots the test controls, so an interleaving is exact.
 const orgId = KinOrgId.make("fixture-org");
@@ -117,6 +118,7 @@ const writer = Layer.mock(Writer.MemoryWriter)({
 const decodeWrite = Schema.decodeUnknownEffect(Lead.WriteInput);
 const withTeamMemory = (env: Record<string, string>) =>
   Lead.layer.pipe(
+    Layer.provide(recordingSchedules([], [])),
     Layer.provide(memory),
     Layer.provide(identity),
     Layer.provide(writer),

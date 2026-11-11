@@ -41,7 +41,7 @@ import { OrchestrationEventStore } from "../../persistence/OrchestrationEventSto
 import * as ProjectService from "../../project/ProjectService.ts";
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
-import { KinChatRepository } from "../chat/KinChatRepository.ts";
+import { KinChatRepository, type WriteAudience } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { freezeMovedCard, workerChat } from "./ChatSharing.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
@@ -150,6 +150,7 @@ const WorkerRow = Schema.Struct({
 type WorkerRow = typeof WorkerRow.Type & {
   /** Set once its chat was shared after private work began: `chatId` is then the owner chat. */
   readonly moved: { readonly from: string | null; readonly leadName: string } | undefined;
+  readonly audience: WriteAudience;
 };
 const decodeWorker = Schema.decodeUnknownEffect(WorkerRow);
 const decodeAuthor = Schema.decodeUnknownEffect(KinAuthor);
@@ -217,9 +218,11 @@ const make = Effect.gen(function* () {
     const route = yield* workerChat({ orgId, workerId }).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
     );
+    const audience = route?.audience ?? "owner";
     return route?.moved === undefined
-      ? { ...worker, moved: undefined }
+      ? { ...worker, moved: undefined, audience }
       : {
+          audience,
           ...worker,
           chatId: route.chatId === null ? null : KinChatId.make(route.chatId),
           moved: route.moved,
@@ -355,6 +358,7 @@ const make = Effect.gen(function* () {
       .createTaskCard({
         orgId: worker.orgId,
         chatId,
+        audience: worker.audience,
         authorAgentId: worker.agentId,
         threadId: worker.threadId,
         title: worker.title ?? "Worker",
@@ -370,14 +374,17 @@ const make = Effect.gen(function* () {
    * Cards are best effort: a worker's outcome never waits on its card. Routed from the row as
    * stored now, in the card write's transaction: a join during a remote call may have moved it.
    */
-  const card = <A, E>(worker: WorkerRow, effect: (chatId: KinChatId) => Effect.Effect<A, E>) =>
+  const card = <A, E>(
+    worker: WorkerRow,
+    effect: (chatId: KinChatId, audience: WriteAudience) => Effect.Effect<A, E>,
+  ) =>
     sql
       .withTransaction(
         Effect.gen(function* () {
           const current = yield* workerRow(worker.orgId, worker.workerId);
           if (current === undefined || current.chatId === null) return;
           yield* movedCard(current, current.chatId);
-          yield* effect(current.chatId);
+          yield* effect(current.chatId, current.audience);
         }),
       )
       .pipe(
@@ -430,10 +437,11 @@ const make = Effect.gen(function* () {
     );
     if (!recorded) return false;
     if (stoppedStatuses.has(input.status))
-      yield* card(worker, (chatId) =>
+      yield* card(worker, (chatId, audience) =>
         chat.setTaskCardClosed({
           orgId: worker.orgId,
           chatId,
+          audience,
           threadId: worker.threadId,
           closed: true,
         }),
@@ -576,9 +584,9 @@ const make = Effect.gen(function* () {
     }
     const state = withPublished(remoteTaskCardState(read.thread, worker.repositoryKey), worker);
     if (shown.card === undefined || !cardStateEquivalent(shown.card, state))
-      yield* card(worker, (chatId) =>
+      yield* card(worker, (chatId, audience) =>
         chat
-          .setTaskCardState({ orgId, chatId, threadId: worker.threadId, state })
+          .setTaskCardState({ orgId, chatId, audience, threadId: worker.threadId, state })
           .pipe(Effect.tap(() => Effect.sync(() => void (shown.card = state)))),
       );
     if (waited.timedOut) return false;
@@ -609,10 +617,11 @@ const make = Effect.gen(function* () {
         ? yield* publish(worker, read.thread.worktreePath)
         : undefined;
     if (published !== undefined && "url" in published)
-      yield* card(worker, (chatId) =>
+      yield* card(worker, (chatId, audience) =>
         chat.setTaskCardState({
           orgId,
           chatId,
+          audience,
           threadId: worker.threadId,
           state: withPublished(state, {
             pullRequestUrl: published.url,
@@ -739,8 +748,8 @@ const make = Effect.gen(function* () {
         `Kin can no longer reach this worker. ${WorkerEnvironment.describeFailure(error).known}`,
       ),
     });
-    yield* card(worker, (chatId) =>
-      chat.setTaskCardClosed({ orgId, chatId, threadId: worker.threadId, closed: true }),
+    yield* card(worker, (chatId, audience) =>
+      chat.setTaskCardClosed({ orgId, chatId, audience, threadId: worker.threadId, closed: true }),
     );
   });
 

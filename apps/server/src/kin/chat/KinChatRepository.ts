@@ -35,7 +35,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { messageForViewer } from "./messageView.ts";
-import { readableBy, recordJoin } from "./sharing.ts";
+import { chatShared, readableBy, recordJoin } from "./sharing.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlSchema from "effect/sql/SqlSchema";
 import {
@@ -70,7 +70,18 @@ const AttachmentChat = Schema.Struct({
 type AttachmentChat = typeof AttachmentChat.Type;
 type ChatScope = Scope & { readonly chatId: KinChatId };
 type MemberScope = ChatScope & { readonly memberId: KinMemberId };
+/**
+ * Who a write's words are for. Invariant: `owner` words never land where anyone else reads; this
+ * write's transaction checks the chat, and a join moves or closes the owner's things in its own
+ * (`onPersonJoined`, `settleCards`), so no commit order puts them above a new member's floor.
+ */
+export type WriteAudience = "owner" | "chat";
+const PRIVATE_WRITE_REFUSED = "Kin withheld this: someone besides the owner reads that chat.";
+export const isPrivateWriteRefused = (error: unknown) =>
+  isKinChatError(error) && error.message === PRIVATE_WRITE_REFUSED;
+type Audience = { readonly audience: WriteAudience };
 type InsertMessage = Omit<KinMessage, "seq" | "authorRole" | "clientMessageId"> & {
+  readonly audience: WriteAudience;
   readonly caller?: McpThreadCaller | undefined;
   // The reply bridge posts for a wake-up it resolved itself; its running row is the authority.
   readonly wakeupId?: KinWakeupId | undefined;
@@ -376,12 +387,13 @@ export class KinChatRepository extends Context.Service<
       },
     ) => Effect.Effect<ReadonlyArray<KinMessage>, RepositoryError>;
     readonly insertWidget: (
-      input: Omit<KinWidget, "revision">,
+      input: Omit<KinWidget, "revision"> & Audience,
     ) => Effect.Effect<void, RepositoryError>;
     readonly updateWidget: (
-      input: Omit<KinWidget, "revision" | "type" | "widgetClass" | "chatId" | "messageId"> & {
-        readonly expectedRevision: typeof NonNegativeInt.Type;
-      },
+      input: Omit<KinWidget, "revision" | "type" | "widgetClass" | "chatId" | "messageId"> &
+        Audience & {
+          readonly expectedRevision: typeof NonNegativeInt.Type;
+        },
     ) => Effect.Effect<KinWidget, RepositoryError>;
     readonly getReadState: (
       input: MemberScope,
@@ -629,6 +641,14 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toRepositoryError("KinChatRepository.wakeupRunning")),
   );
+  // Inside the write's transaction, so a join commits wholly before or after this write.
+  const ownerOnly = Effect.fn("KinChatRepository.ownerOnly")(function* (
+    audience: WriteAudience,
+    input: ChatScope,
+  ) {
+    if (audience === "owner" && (yield* chatShared(sql, input)))
+      return yield* new KinChatError({ reason: "not_allowed", message: PRIVATE_WRITE_REFUSED });
+  });
   const validateWidgetReferences = Effect.fn("KinChatRepository.validateWidgetReferences")(
     function* (input: Pick<KinWidget, "orgId" | "chatId" | "awaiting" | "source">) {
       for (const personId of input.awaiting) {
@@ -1453,6 +1473,7 @@ const make = Effect.gen(function* () {
                   message: "Kin record not found.",
                 });
             }
+            yield* ownerOnly(input.audience, input);
             const mentions = yield* encodeMentions(input.mentions);
             const attachmentsJson =
               attachments.length === 0 ? null : yield* encodeAttachments(attachments);
@@ -1566,6 +1587,7 @@ const make = Effect.gen(function* () {
       function* (input) {
         yield* decodeWidgetText(input);
         yield* requireRecord(chatOne(input));
+        yield* ownerOnly(input.audience, input);
         const message = yield* requireRecord(messageOne(input));
         if (message.chatId !== input.chatId)
           return yield* new KinChatError({ reason: "not_found", message: "Kin record not found." });
@@ -1593,6 +1615,7 @@ const make = Effect.gen(function* () {
         return yield* sql.withTransaction(
           Effect.gen(function* () {
             const widget = yield* requireRecord(widgetOne(input));
+            yield* ownerOnly(input.audience, widget);
             yield* validateWidgetReferences({ ...input, chatId: widget.chatId });
             const state = yield* encodeWidgetState(input.state);
             const awaiting = yield* encodeAwaiting(input.awaiting);

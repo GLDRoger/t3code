@@ -103,7 +103,7 @@ export const onPersonRemoved = Effect.fn("KinChatSharing.onPersonRemoved")(funct
 /**
  * Where a worker's report and card go: its own chat, or its lead's owner chat once that chat was
  * shared after an owner-only turn gave it the work, or a join raised its floor above where the
- * work began (`moved`). From stored rows only.
+ * work began (`moved`). From stored rows only. `audience`: private work's words are the owner's.
  */
 export const workerChat = Effect.fn("KinChatSharing.workerChat")(function* (input: {
   readonly orgId: KinOrgId;
@@ -115,7 +115,9 @@ export const workerChat = Effect.fn("KinChatSharing.workerChat")(function* (inpu
     ownerChatId: string;
     moved: number;
     leadName: string;
+    context: string;
   }>`SELECT k.chat_id AS "chatId", l.owner_chat_id AS "ownerChatId", a.display_name AS "leadName",
+      k.context,
       (k.moved_at IS NOT NULL OR (k.context = 'private' AND c.shared_at IS NOT NULL)) AS moved
     FROM kin_workers k JOIN kin_leads l ON l.org_id = k.org_id AND l.agent_id = k.agent_id
     JOIN kin_agents a ON a.org_id = k.org_id AND a.agent_id = k.agent_id
@@ -126,8 +128,13 @@ export const workerChat = Effect.fn("KinChatSharing.workerChat")(function* (inpu
     ? {
         chatId: row.ownerChatId,
         moved: { from: row.chatId, leadName: row.leadName },
+        audience: "owner" as const,
       }
-    : { chatId: row.chatId, moved: undefined };
+    : {
+        chatId: row.chatId,
+        moved: undefined,
+        audience: row.context === "shared" ? ("chat" as const) : ("owner" as const),
+      };
 });
 
 /**
@@ -160,6 +167,8 @@ export const freezeMovedCard = Effect.fn("KinChatSharing.freezeMovedCard")(funct
     const state = typeof widget.state === "object" && widget.state !== null ? widget.state : {};
     const frozen = yield* repo.updateWidget({
       ...widget,
+      // The fixed line replaces the card's own words.
+      audience: "chat",
       state: { ...state, title, model: null, pullRequests: [], lastError: null, updatedAt: at },
       awaiting: [],
       expectedRevision: widget.revision,
@@ -210,6 +219,7 @@ export const settleCards = Effect.fn("KinChatSharing.settleCards")(function* (in
       const line = yield* repo.insertMessage({
         orgId: input.orgId,
         chatId: lead.ownerChatId,
+        audience: "owner",
         messageId: KinMessageId.make(`${row.widgetId}:moved`),
         author: { _tag: "system" },
         kind: "system",
@@ -237,6 +247,8 @@ export const settleCards = Effect.fn("KinChatSharing.settleCards")(function* (in
     }
     const closed = yield* repo.updateWidget({
       ...widget,
+      // Closing writes no words.
+      audience: "chat",
       awaiting: [],
       expectedRevision: widget.revision,
       closedAt: at,

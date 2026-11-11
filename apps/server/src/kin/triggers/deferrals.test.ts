@@ -185,6 +185,7 @@ const tapOnce = Effect.fn("test.deferralTap")(function* (
   const at = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
   // Stands in for the gated dispatcher: chat act refuses deferral taps today.
   const message = yield* repo.insertMessage({
+    audience: "chat",
     orgId,
     chatId: KinChatId.make("chat-a"),
     messageId: KinMessageId.make(`tap-${actionId}-${label}`),
@@ -260,6 +261,7 @@ it.effect("applies verified owner taps on the confirm card and ignores forged on
     const real = Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId }));
     const forgedId = KinWidgetId.make("model-card");
     const anchor = yield* repo.insertMessage({
+      audience: "chat",
       orgId,
       chatId: real.chatId,
       messageId: KinMessageId.make(forgedId),
@@ -278,6 +280,7 @@ it.effect("applies verified owner taps on the confirm card and ignores forged on
       editedAt: null,
     });
     yield* repo.insertWidget({
+      audience: "chat",
       orgId,
       chatId: real.chatId,
       messageId: anchor.messageId,

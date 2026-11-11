@@ -66,6 +66,7 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
+import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as DateTime from "effect/DateTime";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
@@ -2064,6 +2065,7 @@ describe("WakeupRunner", () => {
             Layer.mock(KinEventQueue.KinEventQueue)({}),
             Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
             Layer.mock(ThreadManagement.ThreadManagementService)({}),
+            Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
             Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
             Layer.mock(ProjectService.ProjectService)({}),
             Layer.mock(ServerSettings.ServerSettingsService)({}),

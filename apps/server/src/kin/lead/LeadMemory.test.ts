@@ -49,6 +49,8 @@ import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import { KinHandoff } from "./Handoff.ts";
 import { SHARED_REFUSAL } from "./Audience.ts";
 import * as Lead from "./LeadMemory.ts";
+import * as KinSchedules from "../triggers/kinSchedules.ts";
+import { recordingSchedules } from "../triggers/kinSchedules.testkit.ts";
 import { KinWorkers } from "./Workers.ts";
 import * as KinRepoReads from "../github/KinRepoReads.ts";
 import * as Registry from "./KinLeadRegistry.ts";
@@ -313,8 +315,11 @@ it.live(
         Layer.provide(Layer.succeed(Writer.MemoryWriterHooks, { notify: () => Effect.void })),
         Layer.provide(recovery),
       );
+      const nativeSaves: KinSchedules.SaveInput[] = [];
+      const nativeCancels: string[] = [];
       const toolkit = registration.pipe(
         Layer.provideMerge(Lead.layer),
+        Layer.provide(recordingSchedules(nativeSaves, nativeCancels)),
         Layer.provideMerge(writer),
         Layer.provideMerge(hookedMemory),
         Layer.provideMerge(Registry.layer),
@@ -776,6 +781,8 @@ it.live(
           [{ item_id: "team-item" }],
         );
         const scheduled = yield* service.schedule(scope, scheduleInput);
+        // kin_cancel removes a native schedule through the same owner-only gate.
+        yield* service.cancel(scope, { itemId: scheduled.itemId, sourceEventId: "fixture-event" });
         yield* service.journal(scope, {
           saw: ["Invented request"],
           did: ["Wrote memory"],
@@ -821,15 +828,16 @@ it.live(
         assert.include(content, "trust: owner");
         assert.include(content, `chat: ${chat.chatId}`);
         assert.include(content, "source_event: fixture-event");
-        const task = yield* git(remote, [
-          "show",
-          `${committed.commit}:deferrals/${scheduled.itemId}.md`,
-        ]);
-        assert.include(task, "what: Summarise the open PRs");
-        assert.match(task, /every:\n\s+at: "?08:00"?\n\s+days:\n\s+- 1\n\s+- 5\n/);
-        assert.include(task, "trust: owner");
-        assert.include(task, "source_event: fixture-event");
-        assert.isTrue(task.trimEnd().endsWith("Invented request"));
+        // A schedule is a native task with its Kin row now, not a memory item.
+        assert.notInclude(files, `deferrals/${scheduled.itemId}.md`);
+        assert.deepInclude(nativeSaves[0], {
+          scheduleId: scheduled.itemId,
+          existing: false,
+          prompt: "Summarise the open PRs",
+          every: { at: "08:00", days: [1, 5] },
+          sourceEvent: "fixture-event",
+        });
+        assert.deepStrictEqual(nativeCancels, [scheduled.itemId]);
         const saved = (id: string) => git(remote, ["show", `${committed.commit}:claims/${id}.md`]);
         assert.include(yield* saved("amount-claim"), "sensitive: true");
         assert.include(yield* saved("vault-claim"), "sensitive: true");

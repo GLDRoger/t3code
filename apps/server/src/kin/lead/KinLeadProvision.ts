@@ -398,7 +398,7 @@ const decodeTracked = Schema.decodeUnknownEffect(Schema.Array(TrackedRow));
 /**
  * What each lead has in hand, from stored rows: its running workers, the deferrals still waiting
  * to come due and the scheduled tasks still on. A deferral belongs to its chat's first-joined
- * lead, the one the trigger wakes for it (`orgLeads.liveLead`).
+ * lead, the one the trigger wakes for it (`orgLeads.liveLead`); a native schedule to its row's.
  */
 const tracked = Effect.fn("KinLeadProvision.tracked")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
@@ -442,6 +442,14 @@ const tracked = Effect.fn("KinLeadProvision.tracked")(function* (orgId: KinOrgId
     JOIN kin_triggers f ON f.org_id = t.org_id
       AND f.trigger_id = 'schedule:' || t.item_id AND f.enabled = 1 AND f.next_run_at IS NOT NULL
     WHERE t.org_id = ${orgId} AND t.state = 'active' AND t.paused = 0
+    UNION ALL
+    SELECT 'scheduled', n.title, NULL, COALESCE(w.chat_id, s.chat_id), s.agent_id, 3, s.updated_at,
+      NULL, NULL
+    FROM kin_schedules s
+    JOIN scheduled_tasks n ON n.task_id = s.task_id AND n.enabled = 1
+    LEFT JOIN kin_widgets w ON w.org_id = s.org_id
+      AND w.widget_id = 'scheduled:' || s.org_id || ':' || s.schedule_id
+    WHERE s.org_id = ${orgId} AND s.deleted_at IS NULL AND COALESCE(s.pending_enabled, 1) = 1
     ORDER BY rank, at, title`.pipe(
     Effect.mapError(toPersistenceSqlError("KinLeadProvision.tracked")),
   );

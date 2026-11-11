@@ -30,6 +30,7 @@ export const layer = Layer.effect(
           const message = yield* chat.insertMessage({
             orgId: notice.orgId,
             chatId: lead.ownerChatId,
+            audience: "owner",
             messageId: KinMessageId.make(`kin-memory:${SecureRandom.uuidV4Unsafe()}`),
             author: { _tag: "system" },
             kind: "text",

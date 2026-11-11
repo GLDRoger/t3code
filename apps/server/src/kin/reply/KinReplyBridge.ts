@@ -35,6 +35,7 @@ import {
   KIN_WAKEUP_CHAR_LIMIT,
   KIN_WAKEUP_MESSAGE_LIMIT,
 } from "../chat/KinChatService.ts";
+import { isPrivateWriteRefused } from "../chat/KinChatRepository.ts";
 import {
   KinIdentity,
   isSteerMessage,
@@ -435,6 +436,7 @@ const make = Effect.gen(function* () {
             messageId: KinMessageId.make(`kin-audience-moved:${wake.wakeupId}`),
             orgId: wake.orgId,
             chatId: wake.lane.chatId,
+            audience: "chat",
             body: `${wake.lane.leadName} didn't reply: someone joined while it was working. Send it again.`,
           });
         }
@@ -802,6 +804,7 @@ const make = Effect.gen(function* () {
         messageId: KinMessageId.make(`kin-no-reply:${wake.wakeupId}`),
         orgId: wake.orgId,
         chatId: wake.lane.chatId,
+        audience: "chat",
         body: `${wake.lane.leadName} didn't reply.`,
       });
     },
@@ -834,6 +837,7 @@ const make = Effect.gen(function* () {
         messageId: KinMessageId.make(`${notice.prefix}:${input.wakeupId}`),
         orgId: input.orgId,
         chatId: input.lane.chatId,
+        audience: "chat",
         body: notice.body(input.lane.leadName),
       });
     },
@@ -861,12 +865,16 @@ const make = Effect.gen(function* () {
     const ownerOnly = yield* ownerOnlyChat({ orgId, agentId: wakeup.agentId }, lane.chatId).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
     );
-    yield* chat.notice({
-      messageId: KinMessageId.make(`kin-setup:${wakeupId}`),
-      orgId,
-      chatId: lane.chatId,
-      body: setupNotice(lane.leadName, input.outcome, ownerOnly),
-    });
+    const setup = (ownerOnly: boolean) =>
+      chat.notice({
+        messageId: KinMessageId.make(`kin-setup:${wakeupId}`),
+        orgId,
+        chatId: lane.chatId,
+        audience: ownerOnly ? "owner" : "chat",
+        body: setupNotice(lane.leadName, input.outcome, ownerOnly),
+      });
+    // Someone may join after `ownerOnly` was read: then they get the line anyone may read.
+    yield* setup(ownerOnly).pipe(Effect.catchIf(isPrivateWriteRefused, () => setup(false)));
   });
 
   const end = Effect.fn("KinReplyBridge.end")(function* (input: {

@@ -274,6 +274,7 @@ export const makeDeferralCards = Effect.gen(function* () {
     if (Option.isSome(existing)) {
       const widget = yield* repo.updateWidget({
         ...existing.value,
+        audience: "owner",
         expectedRevision: existing.value.revision,
         state,
         closedAt: null,
@@ -286,6 +287,7 @@ export const makeDeferralCards = Effect.gen(function* () {
     const message = yield* repo.insertMessage({
       orgId,
       chatId: input.chatId,
+      audience: "owner",
       messageId: KinMessageId.make(widgetId),
       author: { _tag: "system" },
       kind: "system",
@@ -316,7 +318,7 @@ export const makeDeferralCards = Effect.gen(function* () {
       closedAt: null,
       updatedAt: at,
     };
-    yield* repo.insertWidget(widget);
+    yield* repo.insertWidget({ ...widget, audience: "owner" });
     // The insert links the message to the card; clients only attach a card through that link.
     yield* publish({ type: "message.posted", orgId, message: { ...message, widgetId } });
     yield* publish({ type: "widget.updated", orgId, widget: { ...widget, revision: 1 } });

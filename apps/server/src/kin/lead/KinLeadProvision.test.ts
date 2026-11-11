@@ -413,6 +413,26 @@ describe("KinLeadProvision", () => {
         yield* scheduled("daily", 0);
         yield* scheduled("resting", 1, null);
         yield* scheduled("dropped", 0, null);
+        // A native schedule is tracked by its own lead while its task is on.
+        const native = (id: string, enabled: number) =>
+          sql`INSERT INTO scheduled_tasks (task_id, title, prompt, enabled, schedule_json, project_id,
+              workspace_strategy_json, model_selection_json, runtime_mode, interaction_mode,
+              created_by, creation_source, created_at, updated_at, last_run_status, run_count)
+            VALUES (${`scheduled-task:kin:schedule:${orgId}:${id}`}, ${`Native ${id}`}, 'Invented', ${enabled},
+              '{"type":"fixed_time","timeOfDay":"09:00"}', 'project', '{}', '{}', 'approval-required',
+              'plan', 'system', 'server', '2026-11-09T00:00:00.000Z', '2026-11-09T00:00:00.000Z',
+              'never', 0)`.pipe(
+            Effect.andThen(
+              sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
+                  source_event, said_by, audience, content_sha256, inbox_thread_id, created_at,
+                  updated_at)
+                VALUES (${`scheduled-task:kin:schedule:${orgId}:${id}`}, ${orgId}, ${id},
+                  ${tech.agentId}, ${tech.ownerChatId}, 'event', 'owner', 'owner_only', 'hash',
+                  'inbox', 0, 1)`,
+            ),
+          );
+        yield* native("sch-on", 1);
+        yield* native("sch-off", 0);
         const chatId = tech.ownerChatId;
         const [ada, other] = yield* Provision.profiles(person);
         assert.deepInclude(ada, {
@@ -427,6 +447,7 @@ describe("KinLeadProvision", () => {
               chatId,
             },
             { kind: "scheduled", title: "Title of daily", chatId },
+            { kind: "scheduled", title: "Native sch-on", chatId },
           ],
         });
         assert.deepInclude(other, { working: false, tracking: [] });
