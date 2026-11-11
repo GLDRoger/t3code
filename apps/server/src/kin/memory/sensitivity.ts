@@ -76,13 +76,12 @@ export interface Shown {
   readonly body: string;
 }
 
-/** Who let the team know an item, from stored rows: the owner three ways, or a teammate's own words. */
-export type Sharing =
-  | "owner_message"
-  | "owner_label"
-  | "owner_setting"
-  | "owner_confirmed"
-  | "teammate";
+/**
+ * Who let the team know an item, from stored rows: the owner's own message that wrote it, his
+ * setting or confirmation on the Memory screen, or a teammate's own words. Older rows may say
+ * `owner_label`, which chat no longer grants.
+ */
+export type Sharing = "owner_message" | "owner_setting" | "owner_confirmed" | "teammate";
 
 /** The one projection every shared-turn surface returns, built from the fixed field list above. */
 export const shareable = ({ head, body }: Shown): SharedItem => ({
@@ -279,8 +278,7 @@ export const hold = Effect.fn("KinSensitivity.hold")(function* (orgId: KinOrgId,
 
 /**
  * The team may know `content` of the item, from here until anyone changes it. Callers settle
- * `how` from stored rows: the owner's own message, tool, setting or confirmation, or a teammate's
- * own message in a shared turn. Ends any hold and any open suggestion.
+ * `how` from stored rows (`Sharing`). Ends any hold and any open suggestion.
  */
 export const authorise = Effect.fn("KinSensitivity.authorise")(function* (
   orgId: KinOrgId,

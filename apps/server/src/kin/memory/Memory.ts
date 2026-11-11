@@ -285,15 +285,6 @@ export class Memory extends Context.Service<
       id: KinMemoryItemId,
       view?: MemoryView,
     ) => Effect.Effect<MemoryCache.MemoryItem, MemoryFailure | MemoryNotFound | MemoryDuplicateId>;
-    /** As `readItemQuietly`, with the commit time (ms) of its file's last change, from one snapshot. */
-    readonly readItemChangedAt: (
-      orgId: KinOrgId,
-      id: KinMemoryItemId,
-      view?: MemoryView,
-    ) => Effect.Effect<
-      { readonly item: MemoryCache.MemoryItem; readonly changedAt: number },
-      MemoryFailure | MemoryNotFound | MemoryDuplicateId
-    >;
     /** Every current item with its body, without recording a read. */
     readonly items: (
       orgId: KinOrgId,
@@ -2112,32 +2103,6 @@ const make = Effect.gen(function* () {
     ),
     readItemQuietly: Effect.fn("Memory.readItemQuietly")((orgId, id, view) =>
       locked(orgId, readItem(orgId, id, false, view)),
-    ),
-    readItemChangedAt: Effect.fn("Memory.readItemChangedAt")((orgId, id, view) =>
-      locked(
-        orgId,
-        Effect.gen(function* () {
-          const snapshot = yield* load(orgId, false, view);
-          const matches = snapshot.items.filter((item) => item.head.id === id);
-          const item = matches[0];
-          if (!item) return yield* new MemoryNotFound({ orgId, id });
-          if (matches.length > 1) return yield* new MemoryDuplicateId({ orgId, id });
-          const { writer } = yield* pathsFor(orgId);
-          const seconds = Number(
-            (yield* git(orgId, writer, [
-              "log",
-              "-1",
-              "--format=%ct",
-              snapshot.head,
-              "--",
-              item.head.path,
-            ])).trim(),
-          );
-          if (!Number.isSafeInteger(seconds) || seconds <= 0)
-            return yield* new MemoryError({ orgId, operation: "changedAt", reason: "No commit" });
-          return { item, changedAt: seconds * 1000 };
-        }),
-      ),
     ),
     rebuildIndex: Effect.fn("Memory.rebuildIndexLocked")((orgId) =>
       locked(orgId, rebuildIndex(orgId)),
