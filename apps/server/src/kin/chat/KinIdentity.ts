@@ -56,8 +56,10 @@ export const wakeupMessageId = (wakeupId: KinWakeupId) => `kin-wakeup-msg:${wake
 export const steerMessageId = (wakeupId: KinWakeupId, n: number) =>
   `kin-steer-msg:${wakeupId}:${n}`;
 export const rescueMessageId = (wakeupId: KinWakeupId) => `kin-rescue-msg:${wakeupId}`;
+export const isSteerMessage = (wakeupId: KinWakeupId, messageId: string) =>
+  messageId.startsWith(`kin-steer-msg:${wakeupId}:`);
 export const isAdoptedRunMessage = (wakeupId: KinWakeupId, messageId: string) =>
-  messageId === rescueMessageId(wakeupId) || messageId.startsWith(`kin-steer-msg:${wakeupId}:`);
+  messageId === rescueMessageId(wakeupId) || isSteerMessage(wakeupId, messageId);
 export type PersonIdentity = {
   readonly _tag: "person";
   readonly orgId: KinOrgId;
