@@ -18,6 +18,7 @@ import SuggestionsByVersion from "./migrations/K056_SuggestionsByVersion.ts";
 import Schedules from "./migrations/K057_Schedules.ts";
 import Work from "./migrations/K058_Work.ts";
 import WorkerWithdrawals from "./migrations/K059_WorkerWithdrawals.ts";
+import WorkerAttempts from "./migrations/K060_WorkerAttempts.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -116,6 +117,7 @@ const loader = Migrator.fromRecord({
   "57_Schedules": Schedules,
   "58_Work": Work,
   "59_WorkerWithdrawals": WorkerWithdrawals,
+  "60_WorkerAttempts": WorkerAttempts,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

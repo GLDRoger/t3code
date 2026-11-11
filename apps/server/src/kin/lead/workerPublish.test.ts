@@ -166,6 +166,7 @@ const fixture = Effect.fn("WorkerPublishTest.fixture")(function* (
     ),
   );
   const admitted: Array<Publish.PublishStep> = [];
+  const outcomes: Array<Publish.PublishOutcome> = [];
   const publish = (worktreePath = tree) =>
     service.publish({
       workerId,
@@ -173,15 +174,22 @@ const fixture = Effect.fn("WorkerPublishTest.fixture")(function* (
       worktreePath,
       ...(options.local === true ? { local: { projectRoot: worker } } : {}),
       title: "Fix",
-      admit: (step: Publish.PublishStep) =>
-        step === options.refuseAt
-          ? Effect.fail(new Publish.KinWorkerPublishRefused({ reason: "refused" }))
-          : Effect.sync(() => void admitted.push(step)),
+      progress: {
+        begin: (intent) =>
+          intent.step === options.refuseAt
+            ? Effect.fail(new Publish.KinWorkerPublishRefused({ reason: "refused" }))
+            : Effect.sync(() => void admitted.push(intent.step)),
+        done: (outcome) => Effect.sync(() => void outcomes.push(outcome)),
+      },
     });
+  const inspect = service.inspect({ workerId, repositoryKey: "github.com/acme/app" });
   const scratch = fs.readDirectory(`${root}/state/kin-worker-publish`);
   const log = (format: string) => git(tree, "log", `--format=${format}`, "main..HEAD");
   return {
     publish,
+    inspect,
+    outcomes,
+    origin,
     admitted,
     head,
     remoteBranch,

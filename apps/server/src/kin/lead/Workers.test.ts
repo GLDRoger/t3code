@@ -36,15 +36,18 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Result from "effect/Result";
 import * as Schedule from "effect/Schedule";
+import * as Scope from "effect/Scope";
 import * as TestClock from "effect/testing/TestClock";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ServerConfig } from "../../config.ts";
+import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
@@ -250,6 +253,8 @@ const fakeWorkers = () => {
     ended: Effect.Effect<void>;
     /** Runs just before the publisher asks Kin to admit a write. */
     beforeWrite: (step: Publish.PublishStep) => Effect.Effect<void>;
+    /** Runs once a write landed on GitHub, before its answer: failing is a lost answer. */
+    landed: (step: Publish.PublishStep) => Effect.Effect<void, Publish.KinWorkerPublishRefused>;
     /** Runs once every write is made, before the publisher answers. */
     afterWrites: Effect.Effect<void>;
   } = {
@@ -258,6 +263,7 @@ const fakeWorkers = () => {
     sent: Effect.void,
     ended: Effect.void,
     beforeWrite: () => Effect.void,
+    landed: () => Effect.void,
     afterWrites: Effect.void,
   };
   const signal = (thread: RemoteThread) => {
@@ -500,22 +506,51 @@ const fakeWorkers = () => {
   const published: Array<Record<string, unknown>> = [];
   /** The writes it made, each only once Kin admitted it. */
   const writes: Array<Publish.PublishStep> = [];
+  /** GitHub as the writes left it; `unreachable` fails every check of it. */
+  const github: {
+    branch: string | null;
+    pull: { readonly url: string; readonly number: number } | null;
+    unreachable: boolean;
+    diverged: boolean;
+  } = { branch: null, pull: null, unreachable: false, diverged: false };
+  const sha = "a".repeat(40);
+  const pr = { url: "https://github.com/acme/app/pull/9", number: 9 };
   const publisher = Publish.KinWorkerPublish.of({
     publish: (input) =>
       Effect.gen(function* () {
         published.push(input);
         if (state.publishRefusal !== undefined)
           return yield* new Publish.KinWorkerPublishRefused({ reason: state.publishRefusal });
-        const steps: ReadonlyArray<Publish.PublishStep> =
-          input.local === undefined ? ["push", "pull_request"] : ["commit", "push", "pull_request"];
-        for (const step of steps) {
+        const write = Effect.fn("FakePublish.write")(function* (
+          step: Publish.PublishStep,
+          land: () => void,
+        ) {
           yield* hooks.beforeWrite(step);
-          yield* input.admit(step);
+          yield* input.progress.begin({ step, sha: step === "commit" ? null : sha });
           writes.push(step);
+          land();
+          yield* hooks.landed(step);
+        });
+        if (input.local !== undefined) {
+          yield* write("commit", () => {});
+          yield* input.progress.done({ step: "commit", sha });
         }
+        if (github.diverged)
+          return yield* new Publish.KinWorkerPublishRefused({
+            reason: "the branch on GitHub has commits the worker's branch doesn't",
+            diverged: true,
+          });
+        if (github.branch !== sha) yield* write("push", () => void (github.branch = sha));
+        yield* input.progress.done({ step: "push", sha });
+        if (github.pull === null) yield* write("pull_request", () => void (github.pull = pr));
+        yield* input.progress.done({ step: "pull_request", ...pr });
         yield* hooks.afterWrites;
-        return { url: "https://github.com/acme/app/pull/9", number: 9, sha: "a".repeat(40) };
+        return { ...pr, sha };
       }),
+    inspect: () =>
+      github.unreachable
+        ? Effect.fail(new Publish.KinWorkerPublishRefused({ reason: "could not reach GitHub" }))
+        : Effect.succeed({ branchSha: github.branch, pullRequest: github.pull }),
   });
   return {
     calls,
@@ -529,6 +564,7 @@ const fakeWorkers = () => {
     tools,
     published,
     writes,
+    github,
     publisher,
   };
 };
@@ -712,6 +748,14 @@ const run = <A, E>(
     readonly stopped: Array<ThreadId>;
     readonly workers: Workers.KinWorkers["Service"];
     readonly tracker: Tracker.WorkerTracker["Service"];
+    /**
+     * The process restarting: the tracker's scope closes, so its followers die wherever they
+     * are, and a fresh tracker and workers over the same database start.
+     */
+    readonly restart: Effect.Effect<{
+      readonly workers: Workers.KinWorkers["Service"];
+      readonly tracker: Tracker.WorkerTracker["Service"];
+    }>;
   }) => Effect.Effect<A, E, SqlClient.SqlClient | OrchestratorV2 | Registry.KinLeadRegistry>,
   level = "L2",
   spacing = Duration.zero,
@@ -733,48 +777,70 @@ const run = <A, E>(
       dispatch: local.threads.dispatch as never,
       interruptThread: local.threads.interruptThread,
     });
-    return yield* Effect.gen(function* () {
-      return yield* test({
+    const stack = Workers.layer.pipe(
+      Layer.provideMerge(Tracker.layer),
+      Layer.provideMerge(Registry.layer),
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(WorkerEnvironment.KinWorkerEnvironment, remote.service),
+          Layer.succeed(Publish.KinWorkerPublish, remote.publisher),
+          threads,
+          local.launcher,
+          ServerSettings.layerTest({
+            providerInstances: { claude: { driver: ProviderDriverKind.make("claudeAgent") } },
+          } as never),
+          Layer.succeed(ServerConfig, { stateDir: "/state" } as never),
+          NodeServices.layer,
+          EventStore.layer,
+          memory,
+          repositories,
+          NodeCrypto.layer,
+          // Connected on this host, with no project here: the owner's to reach, no one else's.
+          Layer.succeed(KinGithubRepoScope, KinGithubRepoScope.of({ repos: ["GLDRoger/t3code"] })),
+          ConfigProvider.layer(ConfigProvider.fromUnknown(hostConfig)),
+        ),
+      ),
+      Layer.provide(Layer.succeedContext(ctx.services)),
+    );
+    const build = Effect.gen(function* () {
+      const scope = yield* Scope.make();
+      const built = yield* Layer.buildWithScope(Layer.fresh(stack), scope);
+      return { scope, built };
+    });
+    const first = yield* build;
+    let current = first.scope;
+    const outer = yield* Effect.context<OrchestratorV2 | ServerEnvironment>();
+    const restart = Effect.gen(function* () {
+      yield* Scope.close(current, Exit.void);
+      const next = yield* build;
+      current = next.scope;
+      const tracker = Context.get(next.built, Tracker.WorkerTracker);
+      yield* tracker.start.pipe(Scope.provide(next.scope));
+      return { workers: Context.get(next.built, Workers.KinWorkers), tracker };
+    }).pipe(
+      Effect.provideService(Tracker.WorkerTrackerRetry, Schedule.recurs(16)),
+      Effect.provideService(Tracker.WorkerTrackerSpacing, spacing),
+      Effect.provide(outer),
+      Effect.orDie,
+    );
+    return yield* Effect.suspend(() =>
+      test({
         ctx,
         remote,
         local,
         stopped,
-        workers: yield* Workers.KinWorkers,
-        tracker: yield* Tracker.WorkerTracker,
-      });
-    }).pipe(
+        workers: Context.get(first.built, Workers.KinWorkers),
+        tracker: Context.get(first.built, Tracker.WorkerTracker),
+        restart,
+      }),
+    ).pipe(
       Effect.provideService(Tracker.WorkerTrackerRetry, Schedule.recurs(16)),
       Effect.provideService(Tracker.WorkerTrackerSpacing, spacing),
-      Effect.provide(
-        Workers.layer.pipe(
-          Layer.provideMerge(Tracker.layer),
-          Layer.provideMerge(Registry.layer),
-          Layer.provide(
-            Layer.mergeAll(
-              Layer.succeed(WorkerEnvironment.KinWorkerEnvironment, remote.service),
-              Layer.succeed(Publish.KinWorkerPublish, remote.publisher),
-              threads,
-              local.launcher,
-              ServerSettings.layerTest({
-                providerInstances: { claude: { driver: ProviderDriverKind.make("claudeAgent") } },
-              } as never),
-              Layer.succeed(ServerConfig, { stateDir: "/state" } as never),
-              NodeServices.layer,
-              EventStore.layer,
-              memory,
-              repositories,
-              NodeCrypto.layer,
-              // Connected on this host, with no project here: the owner's to reach, no one else's.
-              Layer.succeed(
-                KinGithubRepoScope,
-                KinGithubRepoScope.of({ repos: ["GLDRoger/t3code"] }),
-              ),
-              ConfigProvider.layer(ConfigProvider.fromUnknown(hostConfig)),
-            ),
-          ),
-          Layer.provide(Layer.succeedContext(ctx.services)),
-        ),
+      Effect.provideService(
+        Registry.KinLeadRegistry,
+        Context.get(first.built, Registry.KinLeadRegistry),
       ),
+      Effect.ensuring(Effect.suspend(() => Scope.close(current, Exit.void))),
     );
   }).pipe(
     Effect.provide(
@@ -1381,12 +1447,11 @@ it.effect("a reviewer needs a different instance and model and sees only the aut
         worktreePath: `/home/kin-worker/.t3/worktrees/app/${threadId}`,
       });
       // The publisher asks again just before each write, and a pause refuses it there.
-      const admit = remote.published[0]!.admit as (
-        step: Publish.PublishStep,
-      ) => Effect.Effect<void, Publish.KinWorkerPublishRefused>;
-      yield* admit("pull_request");
+      const progress = remote.published[0]!.progress as Parameters<
+        Publish.KinWorkerPublish["Service"]["publish"]
+      >[0]["progress"];
       yield* pause(ctx.sql, ctx.orgId);
-      assert.include(yield* Effect.flip(admit("pull_request")), {
+      assert.include(yield* Effect.flip(progress.begin({ step: "pull_request", sha: "a" })), {
         reason: "Kin is paused; ask the worker for a follow-up after the owner resumes",
       });
       assert.notInclude(brief, delegateInput.brief);
@@ -2785,7 +2850,7 @@ it.effect(
             worktreePath: "/home/user/.t3/worktrees/app/kin-worker",
             local: { projectRoot: "/home/user/app" },
             title: delegateInput.title,
-            admit: (remote.published[0] as { admit: unknown }).admit,
+            progress: (remote.published[0] as { progress: unknown }).progress,
           },
         ]);
         assert.deepStrictEqual(remote.writes, ["commit", "push", "pull_request"]);
@@ -3404,9 +3469,9 @@ it.effect(
 );
 
 it.effect(
-  "a restart replays a withdrawal on the attempts it covered only, never on work started after a reopen, and only until it settles",
+  "a restart sends a withdrawal's stop to the attempts it covered only, never to work started after a reopen, and only while it is pending",
   () =>
-    run(({ ctx, remote, local, workers, tracker }) =>
+    run(({ ctx, remote, local, workers, restart }) =>
       Effect.gen(function* () {
         yield* goLocal(ctx, remote);
         const first = yield* workers.delegate(scope, delegateInput);
@@ -3416,19 +3481,22 @@ it.effect(
         yield* ownerSets(ctx, entry.key, "done");
         local.interrupts.fail = false;
         assert.lengthOf(yield* notices(ctx.sql, "kin-stop-failed:"), 1);
-        // The owner reopens it, and the lead starts a second attempt on it.
+        // The owner reopens it, which gives it to the lead afresh, and a second attempt starts.
         yield* ownerSets(ctx, entry.key, "doing");
+        const assigned = yield* claim(ctx.sql, { tag: "record.changed", reason: "assigned" });
         const second = yield* workers.delegate(scope, {
           ...delegateInput,
           title: "Second try",
           entry: entry.key,
+          sourceEventId: assigned,
         });
-        // Failed and told: a restart doesn't replay it.
-        yield* tracker.start;
+        // Failed and told: a restart doesn't send it again.
+        yield* restart;
         assert.deepStrictEqual(local.interrupted, []);
-        // As if the process had died before the stop ran.
-        yield* ctx.sql`UPDATE kin_worker_withdrawals SET state = 'pending'`;
-        yield* tracker.start;
+        // As if the process had died before the stop was sent.
+        yield* ctx.sql`UPDATE kin_worker_attempts SET stop_state = 'pending'
+          WHERE stopped_at IS NOT NULL`;
+        const { tracker } = yield* restart;
         assert.deepStrictEqual(local.interrupted, [localThreadId(first.workerId)]);
         yield* settled(tracker, ctx.orgId, first.workerId);
         assert.strictEqual(
@@ -3439,12 +3507,12 @@ it.effect(
           (yield* workerRow(ctx.sql, ctx.orgId, second.workerId)).status,
           "queued",
         );
-        // Settled now: the next start stops nothing.
-        yield* tracker.start;
+        // Sent now: the next start stops nothing.
+        yield* restart;
         assert.deepStrictEqual(local.interrupted, [localThreadId(first.workerId)]);
         assert.lengthOf(yield* notices(ctx.sql, "kin-stop-failed:"), 1);
         assert.lengthOf(remote.published, 0);
-      }).pipe(Effect.scoped),
+      }),
     ),
 );
 
