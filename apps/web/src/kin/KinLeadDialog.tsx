@@ -127,11 +127,11 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
           }}
         >
           <DialogHeader>
-            <DialogTitle>{lead === null ? "New lead" : `Edit ${lead.name}`}</DialogTitle>
+            <DialogTitle>{lead === null ? "New agent" : `Edit ${lead.name}`}</DialogTitle>
             <DialogDescription>
               {lead === null
-                ? "A lead owns one area of the company. You chat with it like a colleague."
-                : "Changes apply from this lead's next reply."}
+                ? "An agent owns one area of the company. You chat with it like a colleague."
+                : "Changes apply from this agent's next reply."}
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>
@@ -187,7 +187,7 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
                 >
                   {charter.length > KIN_LEAD_CHARTER_MAX
                     ? `${charter.length - KIN_LEAD_CHARTER_MAX} characters too long.`
-                    : "The lead reads this before every reply. You can change it later."}
+                    : "The agent reads this before every reply. You can change it later."}
                 </p>
               </div>
               <div className="flex flex-col gap-1.5">
@@ -209,7 +209,7 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
                 >
                   {intro.length > KIN_LEAD_INTRO_MAX
                     ? `${intro.length - KIN_LEAD_INTRO_MAX} characters too long.`
-                    : "Optional. People you let message this lead see this and nothing above."}
+                    : "Optional. People you let message this agent see this and nothing above."}
                 </p>
               </div>
               {error === null ? null : (
@@ -224,7 +224,7 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
               Cancel
             </Button>
             <Button type="submit" disabled={!canSave} aria-busy={busy}>
-              {lead === null ? "Create lead" : "Save changes"}
+              {lead === null ? "Create agent" : "Save changes"}
             </Button>
           </DialogFooter>
         </form>

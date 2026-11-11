@@ -825,7 +825,7 @@ it.live(
         // After kin_end the refusal is about authority, so it stays unexplained.
         assert.strictEqual(
           (yield* service.write(scope, input).pipe(Effect.flip)).message,
-          "Lead operation is not allowed.",
+          "Agent operation is not allowed.",
         );
         const committed = yield* (yield* Writer.MemoryWriter).commitWakeup(
           orgId,
@@ -996,7 +996,7 @@ it.live(
           })
           .pipe(Effect.flip);
         assert.strictEqual(foreign.reason, "not_allowed");
-        assert.include(foreign.message, "Only the lead that set it up");
+        assert.include(foreign.message, "Only the agent that set it up");
         const foreignTrigger = yield* sql<{ enabled: number }>`SELECT enabled FROM kin_triggers
           WHERE org_id = ${orgId} AND trigger_id = 'deferral:foreign-me:due'`;
         assert.deepStrictEqual(foreignTrigger, [{ enabled: 1 }]);

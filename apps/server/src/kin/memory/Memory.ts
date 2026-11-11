@@ -1327,7 +1327,7 @@ const make = Effect.gen(function* () {
           yield* notify({
             orgId,
             branch: row.branch,
-            reason: `Shadow memory at ${row.head} never reached the remote and is gone from this server; the lead's shadow memory restarts from the default branch`,
+            reason: `Shadow memory at ${row.head} never reached the remote and is gone from this server; the agent's shadow memory restarts from the default branch`,
             needsOwner: true,
           });
       }

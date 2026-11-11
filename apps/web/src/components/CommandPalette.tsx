@@ -1686,7 +1686,7 @@ function OpenCommandPaletteDialog(props: {
     actionItems.push({
       kind: "action",
       value: "action:kin-switch-list",
-      searchTerms: ["kin", "chats", "leads", "coding", "threads", "switch", "list"],
+      searchTerms: ["kin", "chats", "agents", "leads", "coding", "threads", "switch", "list"],
       title: kinListSwitch.title,
       icon: <MessagesSquareIcon className={ITEM_ICON_CLASS} />,
       shortcutCommand: "kin.switchList",
@@ -1700,8 +1700,8 @@ function OpenCommandPaletteDialog(props: {
     actionItems.push({
       kind: "action",
       value: "action:kin-new-lead",
-      searchTerms: ["kin", "lead", "new", "create", "add", "agent", "teammate"],
-      title: "New lead",
+      searchTerms: ["kin", "agent", "lead", "new", "create", "add", "teammate"],
+      title: "New agent",
       icon: <UserRoundPlusIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         // The form lives on Kin's page, so it opens there.
@@ -1715,7 +1715,18 @@ function OpenCommandPaletteDialog(props: {
     actionItems.push({
       kind: "action",
       value: "action:kin-work",
-      searchTerms: ["kin", "work", "tasks", "tracker", "tickets", "assign", "late", "due", "leads"],
+      searchTerms: [
+        "kin",
+        "work",
+        "tasks",
+        "tracker",
+        "tickets",
+        "assign",
+        "late",
+        "due",
+        "agents",
+        "leads",
+      ],
       title: "Work: what's open and who has it",
       icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
@@ -1765,8 +1776,8 @@ function OpenCommandPaletteDialog(props: {
     actionItems.push({
       kind: "action",
       value: "action:kin-memory",
-      searchTerms: ["kin", "memory", "remember", "leads", "team", "share"],
-      title: "What your leads remember",
+      searchTerms: ["kin", "memory", "remember", "agents", "leads", "team", "share"],
+      title: "What your agents remember",
       icon: <BrainIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         await navigate({

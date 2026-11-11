@@ -359,10 +359,10 @@ it.effect(
         for (const to of ["Finance", "finance", "Chief of staff", "Nobody"]) {
           const refused = yield* pass("ask-event", to);
           assert.strictEqual(refused.reason, "not_found");
-          assert.include(refused.message, "The leads are: Tech lead (engineering).");
+          assert.include(refused.message, "The agents are: Tech lead (engineering).");
         }
         yield* sql`UPDATE kin_agents SET retired_at = ${at} WHERE org_id = ${orgId} AND agent_id = ${tech}`;
-        assert.include((yield* pass("ask-event")).message, "no other lead");
+        assert.include((yield* pass("ask-event")).message, "no other agent");
 
         const events = yield* sql`SELECT event_id FROM kin_events
           WHERE org_id = ${orgId} AND dedupe_key LIKE 'handoff:%' ORDER BY event_id`;
@@ -398,7 +398,7 @@ it.effect(
         yield* ask("huge-event", "x".repeat(8_100));
         const huge = yield* Effect.flip(pass("huge-event"));
         assert.strictEqual(huge.reason, "not_allowed");
-        assert.include(huge.message, "too long for another lead to be shown whole");
+        assert.include(huge.message, "too long for another agent to be shown whole");
         assert.include(huge.message, "Nothing was passed on.");
         // Whole on its own, but not with the lead's words added.
         yield* ask("close-event", "y".repeat(7_000));

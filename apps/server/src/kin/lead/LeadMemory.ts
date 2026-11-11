@@ -168,7 +168,7 @@ export const SearchResult = Schema.Array(
 );
 /** An authority refusal: who is calling, or when. Its reason is never spelled out. */
 const denied = () =>
-  new KinChatError({ reason: "not_allowed", message: "Lead operation is not allowed." });
+  new KinChatError({ reason: "not_allowed", message: "Agent operation is not allowed." });
 /** A request the lead can fix: the message says what to change. */
 const invalid = (message: string) => new KinChatError({ reason: "not_allowed", message });
 const missing = () => new KinChatError({ reason: "not_found", message: "Kin record not found." });
@@ -603,7 +603,7 @@ const make = Effect.gen(function* () {
     if (allowed === "shared") return yield* invalid(SHARED_REFUSAL);
     if (!allowed)
       return yield* invalid(
-        "Only the lead that set it up can cancel or replace it, from the chat it was set up in or the owner's direct chat.",
+        "Only the agent that set it up can cancel or replace it, from the chat it was set up in or the owner's direct chat.",
       );
     const { orgId: _org, path, ...frontMatter } = head;
     yield* receipt(
@@ -646,7 +646,7 @@ const make = Effect.gen(function* () {
       (asked !== undefined && asked.chatId !== schedule.chatId)
     )
       return yield* invalid(
-        "Only the lead that set it up can cancel or replace it, from the chat it was set up in or the owner's direct chat.",
+        "Only the agent that set it up can cancel or replace it, from the chat it was set up in or the owner's direct chat.",
       );
   });
   /** The one gate on a shared turn's memory writes: none at all while team memory is off. */

@@ -171,7 +171,7 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         // The org's memory is one repo, so one lead's models dream for all of them.
         const lead = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
-        if (lead === undefined) return yield* Effect.fail("No active lead for this organization");
+        if (lead === undefined) return yield* Effect.fail("No active agent for this organization");
         const [previous] = yield* sql<{
           until: number;
         }>`SELECT material_until AS until FROM kin_dream_runs

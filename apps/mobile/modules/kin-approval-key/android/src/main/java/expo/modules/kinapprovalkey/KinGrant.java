@@ -129,7 +129,7 @@ final class KinGrant {
         if (!level.matches("L[0-3]")) throw new NotAGrantException("level is not L0-L3");
         String chat =
             target.containsKey("chatId") ? " in chat \"" + shown(target, "chatId", ID) + "\"" : " in all chats";
-        text = "Set lead \"" + shown(target, "agentId", ID) + "\" to " + level + chat;
+        text = "Set agent \"" + shown(target, "agentId", ID) + "\" to " + level + chat;
         break;
       }
       case "change_rules":

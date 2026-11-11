@@ -701,7 +701,7 @@ it.effect("below L3 the owner-only ceiling and the set_level ban still refuse", 
       assert.include(refusal(yield* call(raise)), {
         reason: "unsupported_kind",
         message:
-          "Leads can never ask to change their own permissions; only the owner changes them.",
+          "Agents can never ask to change their own permissions; only the owner changes them.",
       });
       assert.lengthOf(yield* rows, 0);
     }).pipe(Effect.provide(layerWith(githubUnread)));

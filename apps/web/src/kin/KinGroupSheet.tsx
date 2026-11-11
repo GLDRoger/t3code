@@ -203,7 +203,7 @@ export function KinGroupSheet(props: {
             </ul>
             {leads.length === 0 ? (
               <p className="text-xs text-muted-foreground">
-                No lead is in this group, so messages here get no answer from one.
+                No agent is in this group, so messages here get no answer from one.
               </p>
             ) : null}
             {canChange ? (
@@ -216,7 +216,7 @@ export function KinGroupSheet(props: {
                   appAtomRegistry.set(kinGroupFormAtom, { environmentId, orgId, chatId })
                 }
               >
-                Add leads or people
+                Add agents or people
               </Button>
             ) : null}
           </Section>
@@ -243,7 +243,7 @@ export function KinGroupSheet(props: {
                 ))}
               </RadioGroup>
               <p className="text-xs text-muted-foreground">
-                Name another lead with @ in a message to ask it instead.
+                Name another agent with @ in a message to ask it instead.
               </p>
             </Section>
           ) : null}

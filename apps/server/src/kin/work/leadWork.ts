@@ -52,7 +52,7 @@ import { sensitiveShown, showsSensitive } from "./workerAttempts.ts";
 
 const Who = TrimmedNonEmptyString.check(Schema.isMaxLength(120)).annotate({
   description:
-    '"me" for you, "owner" for the owner, or a lead\'s agentId from kin_leads. Never a name.',
+    '"me" for you, "owner" for the owner, or an agent\'s agentId from kin_leads. Never a name.',
 });
 const Due = Schema.NullOr(
   Schema.String.check(
@@ -338,7 +338,7 @@ const namer = Effect.fn("KinWorkTools.namer")(function* (lead: Lead) {
       : who._tag === "agent"
         ? who.agentId === lead.agentId
           ? "you"
-          : `${agentNames.get(who.agentId) ?? "a lead"} (${who.agentId})`
+          : `${agentNames.get(who.agentId) ?? "an agent"} (${who.agentId})`
         : (personNames.get(who.personId) ?? "a person");
 });
 

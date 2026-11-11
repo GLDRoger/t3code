@@ -282,7 +282,7 @@ function GroupForm(props: {
               className="items-center py-8"
               accessible
               accessibilityRole="progressbar"
-              accessibilityLabel="Loading your leads and people"
+              accessibilityLabel="Loading your agents and people"
             >
               <AppActivityIndicator />
             </View>
@@ -290,10 +290,10 @@ function GroupForm(props: {
             <>
               {leads.length === 0 ? null : (
                 <ListSection
-                  title="Leads"
+                  title="Agents"
                   footer={
                     creating
-                      ? "The first lead you pick answers when a message names no one. Name another with @ to ask it instead."
+                      ? "The first agent you pick answers when a message names no one. Name another with @ to ask it instead."
                       : undefined
                   }
                 >
@@ -319,7 +319,7 @@ function GroupForm(props: {
               {people.length === 0 ? null : (
                 <ListSection
                   title="People"
-                  footer="Someone added later sees only what is said after they join, not earlier messages. People in a group can ask its leads to talk things through. Only you can have a lead start work."
+                  footer="Someone added later sees only what is said after they join, not earlier messages. People in a group can ask its agents to talk things through. Only you can have an agent start work."
                 >
                   {people.map((person, index) => (
                     <SelectionRow
@@ -346,8 +346,8 @@ function GroupForm(props: {
                   title={creating ? "No one to add yet" : "Everyone is already here"}
                   detail={
                     creating
-                      ? "Make a lead, or add a teammate from Team in your chat list. You can still make the group and add them later."
-                      : "Every lead and person you could add is in this group."
+                      ? "Make an agent, or add a teammate from Team in your chat list. You can still make the group and add them later."
+                      : "Every agent and person you could add is in this group."
                   }
                 />
               ) : null}

@@ -49,7 +49,7 @@ import { retireLabels } from "./sensitivity.ts";
 import * as MemoryLander from "./MemoryLander.ts";
 import { MemoryPullRequests } from "./MemoryPullRequests.ts";
 
-export const LEAD_ENDED_WITHOUT_KIN_END = "Lead ended without calling kin_end.";
+export const LEAD_ENDED_WITHOUT_KIN_END = "Agent ended without calling kin_end.";
 
 export interface WakeupContext extends JournalContext {
   readonly orgId: KinOrgId;
@@ -1068,7 +1068,7 @@ const make = Effect.gen(function* () {
                           recovery.notify({
                             orgId,
                             branch,
-                            reason: `The memory repo refused ${branch}, so this lead's shadow memory is only on this server. Kin pushes it again with the next commit; check that the memory deploy key can push kin/shadow/*`,
+                            reason: `The memory repo refused ${branch}, so this agent's shadow memory is only on this server. Kin pushes it again with the next commit; check that the memory deploy key can push kin/shadow/*`,
                           }),
                         ),
                       ),

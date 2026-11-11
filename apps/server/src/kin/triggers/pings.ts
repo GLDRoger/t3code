@@ -57,7 +57,7 @@ const missing = new KinChatError({ reason: "not_found", message: "Kin record not
 const conflict = new KinChatError({ reason: "not_allowed", message: "Ping retry conflict." });
 const ownerMismatch = new KinChatError({
   reason: "not_allowed",
-  message: "Ping owner does not match the active lead.",
+  message: "Ping owner does not match the active agent.",
 });
 const invalid = new KinChatError({ reason: "invalid_state", message: "Invalid ping input." });
 type Error =

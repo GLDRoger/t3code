@@ -291,7 +291,7 @@ function KinGroupDetails(props: {
         title="Members"
         footer={
           leads.length === 0
-            ? "No lead is in this group, so messages here get no answer from one."
+            ? "No agent is in this group, so messages here get no answer from one."
             : undefined
         }
       >
@@ -328,7 +328,7 @@ function KinGroupDetails(props: {
         {canChange ? (
           <View className="border-t border-border-subtle">
             <ListActionRow
-              label="Add leads or people"
+              label="Add agents or people"
               icon="plus"
               disabled={busy !== null}
               onPress={() => navigation.navigate("KinGroupForm", { environmentId, orgId, chatId })}
@@ -339,7 +339,7 @@ function KinGroupDetails(props: {
       {canChange && leads.length > 1 ? (
         <ListSection
           title="Answers when no one is named"
-          footer="Name another lead with @ in a message to ask it instead."
+          footer="Name another agent with @ in a message to ask it instead."
         >
           {leads.map((lead, index) => (
             <ListChoiceRow

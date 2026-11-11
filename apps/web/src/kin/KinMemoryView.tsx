@@ -116,7 +116,7 @@ export function KinMemoryView(props: KinMemoryTarget) {
           <EmptyHeader>
             <EmptyTitle>Only the owner can open this</EmptyTitle>
             <EmptyDescription>
-              What the leads remember is shown to the person who runs this workspace.
+              What the agents remember is shown to the person who runs this workspace.
             </EmptyDescription>
           </EmptyHeader>
         </Empty>
@@ -160,7 +160,7 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
       <div
         className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-4"
         role="status"
-        aria-label="Loading what your leads remember"
+        aria-label="Loading what your agents remember"
       >
         {[0, 1, 2, 3].map((index) => (
           <div key={index} className="flex flex-col gap-1.5">

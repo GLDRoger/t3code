@@ -178,7 +178,7 @@ const make = Effect.gen(function* () {
       status: "due",
     } as const satisfies KinReminderCard;
     const widgetId = KinWidgetId.make(kinReminderWidgetId(orgId, itemId, fireAt));
-    const fallbackBody = `Reminder: ${title}.${lateNote(fireAt, now, input.timeZone)} (${input.leadName ?? "Your lead"} couldn't write this one, so Kin sent it.)`;
+    const fallbackBody = `Reminder: ${title}.${lateNote(fireAt, now, input.timeZone)} (${input.leadName ?? "Your agent"} couldn't write this one, so Kin sent it.)`;
     if (input.lead !== undefined) {
       const dedupeKey = fire.fireId;
       const eventId = KinEventId.make(`reminder_${hex(`${orgId.length}:${orgId}${dedupeKey}`)}`);
@@ -379,7 +379,7 @@ const make = Effect.gen(function* () {
 
         if (onDue === "start") {
           const lead = yield* deferralLead(sql, orgId, item);
-          if (lead === undefined) reasons.push("there is no active lead");
+          if (lead === undefined) reasons.push("there is no active agent");
           else if (!startsAtLevel(lead.level)) reasons.push("starting work isn't open to me here");
         }
 

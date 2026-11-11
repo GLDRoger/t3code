@@ -8,10 +8,10 @@ const refuse = (message: string) =>
   Effect.fail(new KinApprovalError({ reason: "invalid_state", message }));
 
 const REFUSALS: Record<KinLevels.KinLevelRefused["reason"], string> = {
-  not_a_lead: "The lead is retired or gone.",
-  conflict: "What the lead may do changed meanwhile.",
-  not_found: "The lead is no longer in that chat.",
-  invalid_level: "What the lead may do no longer matches what was approved.",
+  not_a_lead: "The agent is retired or gone.",
+  conflict: "What the agent may do changed meanwhile.",
+  not_found: "The agent is no longer in that chat.",
+  invalid_level: "What the agent may do no longer matches what was approved.",
   not_granted: "No claimed owner grant backs this change.",
 };
 const refusal = (error: KinLevels.KinLevelRefused) => refuse(REFUSALS[error.reason]);
@@ -39,7 +39,7 @@ export const makeSetLevelHandler = Effect.gen(function* () {
   });
 
   const precheck = Effect.fn("setLevel.precheck")(function* (action: KinPendingAction) {
-    if (yield* reached(action)) return yield* refuse("The lead can already do this.");
+    if (yield* reached(action)) return yield* refuse("The agent can already do this.");
   });
 
   const run = Effect.fn("setLevel.run")(function* (action: KinPendingAction, _grant: KinGrant) {

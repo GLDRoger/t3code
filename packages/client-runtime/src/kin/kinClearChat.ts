@@ -11,7 +11,7 @@ export const KIN_CLEAR_CHAT_FAILED = "Couldn't clear this chat. Try again.";
 export function kinClearChatBody(remembers: string | null): string {
   const gone = "This deletes every message here for good.";
   if (remembers === null) return gone;
-  return `${gone} What ${remembers === "group" ? "the leads remember" : `${remembers} remembers`} is kept.`;
+  return `${gone} What ${remembers === "group" ? "the agents remember" : `${remembers} remembers`} is kept.`;
 }
 
 /**

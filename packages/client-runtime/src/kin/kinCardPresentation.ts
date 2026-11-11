@@ -363,7 +363,7 @@ const PUBLISH_END: Record<
   declined: "Not published. The changes stay on the host.",
   replaced: "This card is out of date: a newer one asks about the latest changes.",
   stopped: "The work was stopped, so nothing was published.",
-  failed: "Kin couldn't publish it. Your lead says why.",
+  failed: "Kin couldn't publish it. Your agent says why.",
 };
 const fileLine = (file: KinWorkerPublishCard["files"][number]) =>
   `${clamp(file.path, 200)} ${
@@ -384,7 +384,7 @@ function kinWorkerPublishCardView(widget: KinWidget): KinDeferralCardView | null
     ? [
         ...card.why.map((why) => PUBLISH_WHY[why]),
         `Branch ${clamp(card.branch, 200)}, commit ${card.sha.slice(0, 7)}.`,
-        `Pull request title, from your lead (unchecked): "${clamp(card.pullRequestTitle, 200)}"`,
+        `Pull request title, from your agent (unchecked): "${clamp(card.pullRequestTitle, 200)}"`,
         ...card.files.map(fileLine),
         ...(card.moreFiles > 0
           ? [`and ${card.moreFiles} more file${card.moreFiles === 1 ? "" : "s"}.`]
