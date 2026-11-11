@@ -643,6 +643,10 @@
       "types": "./src/kin/kinDeferralPresentation.ts",
       "default": "./src/kin/kinDeferralPresentation.ts"
     },
+    "./kin/kinMemoryScreen": {
+      "types": "./src/kin/kinMemoryScreen.ts",
+      "default": "./src/kin/kinMemoryScreen.ts"
+    },
     "./kin/kinMemoryChangesPresentation": {
       "types": "./src/kin/kinMemoryChangesPresentation.ts",
       "default": "./src/kin/kinMemoryChangesPresentation.ts"

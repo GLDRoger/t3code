@@ -80,6 +80,9 @@ describe("command permissions", () => {
     "kin.triggers.setTimeZone",
     "kin.lead.create",
     "kin.lead.update",
+    "kin.memory.list",
+    "kin.memory.setVisibility",
+    "kin.memory.confirmSuggestions",
   ] as const)("guards the Kin owner setting %s with the destination settings grant", (method) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -109,7 +112,7 @@ describe("command permissions", () => {
     ),
   );
   it.effect.each(Object.values(KIN_PUSH_WS_METHODS))(
-    "requires the destination read grant for %s",
+    "requires the destination chat grant for %s",
     (method) =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -121,8 +124,8 @@ describe("command permissions", () => {
             sessions(env),
             AsyncResult.success({
               ...grant(false),
-              scopes: [AuthOrchestrationReadScope],
-              permissions: [AuthOrchestrationReadScope],
+              scopes: [AuthKinChatScope],
+              permissions: [AuthKinChatScope],
             }),
           );
           expect(registry.get(push.permissionAtom(env))).toBe(true);

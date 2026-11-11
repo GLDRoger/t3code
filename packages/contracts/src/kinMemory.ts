@@ -72,6 +72,8 @@ export const KinMemoryListItem = Schema.Struct({
   itemId: KinMemoryItemId,
   kind: MemoryItemKind,
   title: Schema.String,
+  /** What it says in a line or two, so the owner can decide without opening anything. */
+  preview: Schema.optional(Schema.String),
   visibility: KinMemoryVisibility,
   from: Schema.NullOr(Schema.Struct({ name: Schema.String, chatName: Schema.String })),
 });

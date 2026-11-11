@@ -13,7 +13,7 @@ import {
   type KinInboxScreenState,
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import type { EnvironmentId, KinChatSummary, KinWaitingItem } from "@t3tools/contracts";
-import { Link, useParams } from "@tanstack/react-router";
+import { Link, useMatchRoute, useParams } from "@tanstack/react-router";
 import { BellOffIcon, ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import { useState } from "react";
 
@@ -26,6 +26,8 @@ import { Skeleton } from "../components/ui/skeleton";
 import { cn } from "../lib/utils";
 import { KinAvatar } from "./KinAvatar";
 import { ApproveOnPhone } from "./KinCards";
+import { KinMemoryEntry } from "./KinMemoryView";
+import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinInbox } from "./useKinHost";
 
@@ -58,6 +60,7 @@ export function KinChatList() {
   const { host, state, retry } = useKinInbox();
   const nowMs = useNowMinuteMs();
   const { isMobile, setOpenMobile } = useSidebar();
+  const memoryOpen = useMatchRoute()({ to: "/kin/$environmentId/$orgId/memory" }) !== false;
   if (state._tag === "loading") {
     return (
       <div className="flex flex-col gap-1" role="status" aria-label="Loading chats">
@@ -102,6 +105,10 @@ export function KinChatList() {
   const rows = kinChatListRows(view, directory);
   const stale = !(state.connected && state.inbox.live);
   const now = new Date(nowMs);
+  const mine = kinNewLeadTarget(host);
+  const closeSidebar = () => {
+    if (isMobile) setOpenMobile(false);
+  };
   return (
     <div className="flex flex-col gap-1">
       {stale ? (
@@ -115,6 +122,14 @@ export function KinChatList() {
         directory={directory}
         environmentId={state.environmentId}
       />
+      {mine === null ? null : (
+        <KinMemoryEntry
+          environmentId={mine.environmentId}
+          orgId={mine.orgId}
+          active={memoryOpen}
+          onOpen={closeSidebar}
+        />
+      )}
       {rows.length === 0 ? (
         <Empty size="compact">
           <EmptyHeader>
@@ -131,9 +146,7 @@ export function KinChatList() {
               environmentId={state.environmentId}
               active={row.chat.chatId === openChatId}
               now={now}
-              onOpen={() => {
-                if (isMobile) setOpenMobile(false);
-              }}
+              onOpen={closeSidebar}
             />
           ))}
         </ul>

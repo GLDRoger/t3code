@@ -1,0 +1,283 @@
+import { useAtomValue } from "@effect/atom-react";
+import {
+  KIN_MEMORY_EMPTY,
+  KIN_MEMORY_LOAD_FAILED,
+  KIN_MEMORY_NO_EDITS,
+  KIN_MEMORY_SEARCH_PLACEHOLDER,
+  KIN_MEMORY_TITLE,
+  createKinMemoryActions,
+  kinMemoryEntrySummary,
+  kinMemoryView,
+  type KinMemoryActions,
+  type KinMemoryConfirmAll,
+  type KinMemoryRow,
+} from "@t3tools/client-runtime/kin/kinMemoryScreen";
+import type { EnvironmentId, KinMemoryListResult, KinOrgId } from "@t3tools/contracts";
+import { LegendList } from "@legendapp/list/react";
+import { Link } from "@tanstack/react-router";
+import * as Option from "effect/Option";
+import { AsyncResult } from "effect/reactivity";
+import { ArrowLeftIcon, BrainIcon } from "lucide-react";
+import { useState } from "react";
+
+import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../components/WorkspaceBreadcrumb";
+import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
+import { Alert, AlertDescription } from "../components/ui/alert";
+import { Button } from "../components/ui/button";
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
+import { Input } from "../components/ui/input";
+import { Skeleton } from "../components/ui/skeleton";
+import { isElectron } from "../env";
+import { appAtomRegistry } from "../rpc/atomRegistry";
+import { useAtomCommand } from "../state/use-atom-command";
+import { kinClient } from "./kinClient";
+
+interface KinMemoryTarget {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+}
+
+/** The way in from the chat list, for the owner only. Its second line says how much waits. */
+export function KinMemoryEntry(
+  props: KinMemoryTarget & { readonly active: boolean; readonly onOpen: () => void },
+) {
+  const allowed = useAtomValue(kinClient.memorySetVisibility.permissionAtom(props.environmentId));
+  return allowed ? <PermittedMemoryEntry {...props} /> : null;
+}
+
+function PermittedMemoryEntry(
+  props: KinMemoryTarget & { readonly active: boolean; readonly onOpen: () => void },
+) {
+  const { environmentId, orgId } = props;
+  const result = useAtomValue(kinClient.memory({ environmentId, input: { orgId } }));
+  const list = Option.getOrNull(AsyncResult.value(result));
+  // The host refused: this browser may change settings but isn't the owner's.
+  if (list === null && AsyncResult.isFailure(result)) return null;
+  return (
+    <Link
+      to="/kin/$environmentId/$orgId/memory"
+      params={{ environmentId, orgId }}
+      aria-current={props.active ? "page" : undefined}
+      data-active={props.active}
+      onClick={props.onOpen}
+      className="flex items-center gap-2.5 rounded-md px-2 py-2 outline-none ring-ring hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset data-[active=true]:bg-sidebar-row-selected"
+    >
+      <span className="flex size-10 shrink-0 items-center justify-center text-sidebar-muted-foreground">
+        <BrainIcon aria-hidden className="size-4.5" />
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="truncate text-sm font-medium text-sidebar-foreground">
+          {KIN_MEMORY_TITLE}
+        </span>
+        <span className="truncate text-xs text-sidebar-muted-foreground">
+          {kinMemoryEntrySummary(list)}
+        </span>
+      </span>
+    </Link>
+  );
+}
+
+/** What the owner's leads remember, and who may know each thing. */
+export function KinMemoryView(props: KinMemoryTarget) {
+  const allowed = useAtomValue(kinClient.memorySetVisibility.permissionAtom(props.environmentId));
+  return (
+    <>
+      <WorkspacePageHeader electron={isElectron}>
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          aria-label="Back to chats"
+          className="md:hidden"
+          render={<Link to="/kin" />}
+        >
+          <ArrowLeftIcon />
+        </Button>
+        <WorkspaceBreadcrumb ariaLabel={KIN_MEMORY_TITLE}>
+          <WorkspaceBreadcrumbItem current>
+            <h1 className="truncate">{KIN_MEMORY_TITLE}</h1>
+          </WorkspaceBreadcrumbItem>
+        </WorkspaceBreadcrumb>
+      </WorkspacePageHeader>
+      {allowed ? (
+        <KinMemoryBody {...props} />
+      ) : (
+        <Empty size="compact">
+          <EmptyHeader>
+            <EmptyTitle>Only the owner can open this</EmptyTitle>
+            <EmptyDescription>
+              What the leads remember is shown to the person who runs this workspace.
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      )}
+    </>
+  );
+}
+
+function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
+  const listAtom = kinClient.memory({ environmentId, input: { orgId } });
+  const result = useAtomValue(listAtom);
+  const setVisibility = useAtomCommand(kinClient.memorySetVisibility, { reportFailure: false });
+  const confirm = useAtomCommand(kinClient.memoryConfirm, { reportFailure: false });
+  const [edits, setEdits] = useState(KIN_MEMORY_NO_EDITS);
+  const [search, setSearch] = useState("");
+  const [actions] = useState(() =>
+    createKinMemoryActions({
+      orgId,
+      setVisibility: (input) => setVisibility({ environmentId, input }),
+      confirmSuggestions: (input) => confirm({ environmentId, input }),
+      update: setEdits,
+      refresh: () => appAtomRegistry.refresh(listAtom),
+    }),
+  );
+  // What was last read stays up while it is read again.
+  const list = Option.getOrNull(AsyncResult.value(result));
+  if (list === null) {
+    return AsyncResult.isFailure(result) ? (
+      <div className="mx-auto flex w-full max-w-3xl flex-col items-start gap-3 p-4">
+        <Alert variant="error">
+          <AlertDescription>{KIN_MEMORY_LOAD_FAILED}</AlertDescription>
+        </Alert>
+        <Button size="sm" variant="outline" onClick={() => appAtomRegistry.refresh(listAtom)}>
+          Retry
+        </Button>
+      </div>
+    ) : (
+      <div
+        className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-4"
+        role="status"
+        aria-label="Loading what your leads remember"
+      >
+        {[0, 1, 2, 3].map((index) => (
+          <div key={index} className="flex flex-col gap-1.5">
+            <Skeleton className="h-3.5 w-2/5" />
+            <Skeleton className="h-3 w-4/5" />
+          </div>
+        ))}
+      </div>
+    );
+  }
+  if (list.items.length === 0) {
+    return (
+      <Empty size="compact">
+        <EmptyHeader>
+          <EmptyTitle>{KIN_MEMORY_EMPTY.title}</EmptyTitle>
+          <EmptyDescription>{KIN_MEMORY_EMPTY.detail}</EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    );
+  }
+  const view = kinMemoryView(list, edits, search);
+  return (
+    // The leads of a busy company remember hundreds of things; only the rows in view mount.
+    <LegendList<KinMemoryRow>
+      data={view.rows}
+      keyExtractor={(row) => row.key}
+      getItemType={(row) => row.type}
+      extraData={view.confirmAll}
+      recycleItems
+      ListHeaderComponent={
+        view.searchable || edits.problem !== null ? (
+          <div className="mx-auto flex w-full max-w-3xl flex-col gap-2 px-4 pt-2">
+            {view.searchable ? (
+              <Input
+                type="search"
+                aria-label={KIN_MEMORY_SEARCH_PLACEHOLDER}
+                placeholder={KIN_MEMORY_SEARCH_PLACEHOLDER}
+                value={search}
+                onChange={(event) => setSearch(event.currentTarget.value)}
+              />
+            ) : null}
+            {edits.problem === null ? null : (
+              <Alert variant="error">
+                <AlertDescription>{edits.problem}</AlertDescription>
+              </Alert>
+            )}
+          </div>
+        ) : null
+      }
+      ListEmptyComponent={
+        <p
+          role="status"
+          className="mx-auto w-full max-w-3xl px-4 py-6 text-sm text-muted-foreground"
+        >
+          {view.noMatch}
+        </p>
+      }
+      renderItem={({ item: row }) => (
+        <div className="mx-auto w-full max-w-3xl px-4">
+          {row.type === "section" ? (
+            <KinMemorySection
+              row={row}
+              confirmAll={row.state === "suggested" ? view.confirmAll : null}
+              onConfirmAll={(all) => void actions.confirmAll(list, all)}
+            />
+          ) : (
+            <KinMemoryItem row={row} list={list} actions={actions} />
+          )}
+        </div>
+      )}
+      estimatedItemSize={64}
+      drawDistance={640}
+      className="min-h-0 flex-1 overscroll-contain pb-6"
+    />
+  );
+}
+
+function KinMemorySection(props: {
+  readonly row: Extract<KinMemoryRow, { readonly type: "section" }>;
+  readonly confirmAll: KinMemoryConfirmAll | null;
+  readonly onConfirmAll: (all: KinMemoryConfirmAll) => void;
+}) {
+  const { row, confirmAll } = props;
+  return (
+    <div className="flex flex-wrap items-end gap-x-4 gap-y-2 border-b pt-6 pb-2">
+      <div className="flex min-w-0 flex-1 basis-64 flex-col gap-0.5">
+        <h2 className="text-sm font-medium text-foreground">
+          {row.title} <span className="font-normal text-muted-foreground">{row.count}</span>
+        </h2>
+        <p className="text-xs text-muted-foreground">{row.hint}</p>
+      </div>
+      {confirmAll === null ? null : (
+        <Button size="sm" onClick={() => props.onConfirmAll(confirmAll)}>
+          {confirmAll.label}
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function KinMemoryItem(props: {
+  readonly row: Extract<KinMemoryRow, { readonly type: "item" }>;
+  readonly list: KinMemoryListResult;
+  readonly actions: KinMemoryActions;
+}) {
+  const { item } = props.row;
+  return (
+    <div className="flex flex-col gap-2 border-b border-border/60 py-3 sm:flex-row sm:items-start sm:gap-4">
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="text-sm text-foreground">{item.title}</span>
+        {item.preview === null ? null : (
+          <span className="line-clamp-2 text-xs text-muted-foreground">{item.preview}</span>
+        )}
+        {item.from === null ? null : (
+          <span className="text-xs text-muted-foreground">{item.from}</span>
+        )}
+      </div>
+      <div className="flex shrink-0 flex-wrap gap-1.5">
+        {item.actions.map((action) => (
+          <Button
+            key={action.to}
+            size="xs"
+            variant={action.to === "team" ? "outline" : "ghost"}
+            disabled={item.busy}
+            aria-label={action.accessibilityLabel}
+            onClick={() => void props.actions.change(props.list, item.itemId, action.to)}
+          >
+            {action.label}
+          </Button>
+        ))}
+      </div>
+    </div>
+  );
+}

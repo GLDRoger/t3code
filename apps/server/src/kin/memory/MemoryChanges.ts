@@ -97,6 +97,12 @@ const ownerOnly = refused("not_allowed", "Only the owner can see or change this.
 const unavailable = refused("unavailable", "Kin memory is unavailable. Try again.");
 const stale = refused("conflict", "This changed again since, so it wasn't undone.");
 const isKinChatError = Schema.is(KinChatError);
+const PREVIEW_MAX = 200;
+/** The item's own one-line account, else the start of what it says. */
+const previewOf = ({ head, body }: MemoryItem) => {
+  const text = (head.what ?? body).replace(/\s+/g, " ").trim();
+  return text.length > PREVIEW_MAX ? `${text.slice(0, PREVIEW_MAX - 1).trimEnd()}…` : text;
+};
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -110,6 +116,7 @@ const make = Effect.gen(function* () {
     itemId: item.head.id,
     kind: item.head.kind,
     title: item.head.title,
+    preview: previewOf(item),
     visibility: visibility(item, labels),
     from:
       item.head.shared_from === undefined

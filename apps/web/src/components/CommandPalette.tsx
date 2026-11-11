@@ -58,6 +58,7 @@ import {
   BugIcon,
   ChartNoAxesColumnIcon,
   MessagesSquareIcon,
+  BrainIcon,
   UserRoundPlusIcon,
   CheckIcon,
   ChevronRightIcon,
@@ -419,6 +420,11 @@ function OpenCommandPaletteDialog(props: {
     kinNewLead === null
       ? noKinLeadPermissionAtom
       : kinClient.leadCreate.permissionAtom(kinNewLead.environmentId),
+  );
+  const canOpenKinMemory = useAtomValue(
+    kinNewLead === null
+      ? noKinLeadPermissionAtom
+      : kinClient.memorySetVisibility.permissionAtom(kinNewLead.environmentId),
   );
   const { openChildSearch, setOpen } = props;
   // Keyed by palette session: the intent and restored search only seed this
@@ -1687,6 +1693,22 @@ function OpenCommandPaletteDialog(props: {
         // The form lives on Kin's page, so it opens there.
         await navigate({ href: kinListSwitchHref("threads") });
         openKinLeadForm(kinNewLead);
+      },
+    });
+  }
+
+  if (kinNewLead !== null && canOpenKinMemory) {
+    actionItems.push({
+      kind: "action",
+      value: "action:kin-memory",
+      searchTerms: ["kin", "memory", "remember", "leads", "team", "share"],
+      title: "What your leads remember",
+      icon: <BrainIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await navigate({
+          to: "/kin/$environmentId/$orgId/memory",
+          params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
+        });
       },
     });
   }
