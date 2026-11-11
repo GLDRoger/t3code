@@ -33,6 +33,87 @@ const entriesOf = Effect.fn("KinWorkEntries.entriesOf")(function* (
     ORDER BY r.record_id`;
 });
 
+/** Whether another worker's attempt at the entry is still open. */
+const othersAt = Effect.fn("KinWorkEntries.othersAt")(function* (
+  input: { readonly orgId: KinOrgId; readonly workerId: KinWorkerId },
+  recordId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const open = yield* sql`SELECT 1 FROM kin_record_links l
+    JOIN kin_workers k ON k.org_id = l.org_id AND k.worker_id = l.target
+    WHERE l.org_id = ${input.orgId} AND l.record_id = ${recordId} AND l.kind = 'worker'
+      AND k.worker_id != ${input.workerId} AND k.ended_at IS NULL
+    ORDER BY k.worker_id LIMIT 1`;
+  return open.length > 0;
+});
+
+/** What a lead hears when the entry or event it started work from no longer gives it the work. */
+export const WORK_NOT_YOURS =
+  "That Work entry is closed or isn't yours now, so nothing started. Don't start work on it unless the owner gives it to you again.";
+
+/**
+ * In the worker row's transaction, before it is written: whether the turn's event and the named
+ * entry still let this lead start work. A record event counts only when it gave the lead the
+ * entry, and only while the owner's assignment of that open entry stands; a report counts only
+ * from a worker no withdrawal stopped; a named entry must be open and this lead's.
+ */
+export const workMayStart = Effect.fn("KinWorkEntries.workMayStart")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+  readonly ownerPersonId: string;
+  readonly event: KinEvent;
+  readonly entryKey?: string;
+  /** A follow-up of this worker: no withdrawal stopped it, and its entries are still this lead's. */
+  readonly followsUp?: KinWorkerId;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const held = (row: EntryRow | undefined) =>
+    row !== undefined &&
+    row.state !== "done" &&
+    row.state !== "dropped" &&
+    row.ownerKind === "agent" &&
+    row.ownerId === input.agentId;
+  if (input.event._tag === "record.changed") {
+    if (input.event.reason !== "assigned") return false;
+    const [row] = yield* sql<EntryRow>`${entryColumns(sql)}
+      WHERE org_id = ${input.orgId} AND record_id = ${input.event.recordId} ORDER BY record_id`;
+    if (!held(row) || row?.assignedBy !== input.ownerPersonId) return false;
+  }
+  if (input.event._tag === "worker.report") {
+    const withdrawn = yield* sql`SELECT 1 FROM kin_worker_withdrawals
+      WHERE org_id = ${input.orgId} AND worker_id = ${input.event.workerId}
+      ORDER BY seq LIMIT 1`;
+    if (withdrawn.length > 0) return false;
+  }
+  if (input.followsUp !== undefined) {
+    const withdrawn = yield* sql`SELECT 1 FROM kin_worker_withdrawals
+      WHERE org_id = ${input.orgId} AND worker_id = ${input.followsUp} ORDER BY seq LIMIT 1`;
+    if (withdrawn.length > 0) return false;
+    const elsewhere = yield* sql`SELECT 1 FROM kin_record_links l
+      JOIN kin_records r ON r.org_id = l.org_id AND r.record_id = l.record_id
+      WHERE l.org_id = ${input.orgId} AND l.kind = 'worker' AND l.target = ${input.followsUp}
+        AND NOT (r.owner_kind = 'agent' AND r.owner_id = ${input.agentId})
+      ORDER BY r.record_id LIMIT 1`;
+    if (elsewhere.length > 0) return false;
+  }
+  if (input.entryKey !== undefined) {
+    const [row] = yield* sql<EntryRow>`${entryColumns(sql)}
+      WHERE org_id = ${input.orgId} AND key = ${input.entryKey} ORDER BY record_id`;
+    // An unknown key starts a new entry of the lead's, as `workerStarted` does.
+    if (row !== undefined && !held(row)) return false;
+  }
+  return true;
+});
+type EntryRow = {
+  readonly state: string;
+  readonly ownerKind: string;
+  readonly ownerId: string;
+  readonly assignedBy: string | null;
+};
+const entryColumns = (sql: SqlClient.SqlClient) =>
+  sql`SELECT state, owner_kind AS "ownerKind", owner_id AS "ownerId",
+    assigned_by_person_id AS "assignedBy" FROM kin_records`;
+
 /**
  * In the worker row's transaction: the entry it serves, made when it names none. A review is an
  * attempt at the entry of the work it reviews and moves nothing.
@@ -93,7 +174,10 @@ export const workerStarted = Effect.fn("KinWorkEntries.workerStarted")(function*
   );
 });
 
-/** After a run ends: its PR is linked; a run that failed or was stopped leaves the work open. */
+/**
+ * After a run ends: its PR is linked; a run that failed or was stopped leaves the work open,
+ * unless another attempt at it is still running.
+ */
 export const workerEnded = Effect.fn("KinWorkEntries.workerEnded")(function* (input: {
   readonly orgId: KinOrgId;
   readonly workerId: KinWorkerId;
@@ -119,7 +203,7 @@ export const workerEnded = Effect.fn("KinWorkEntries.workerEnded")(function* (in
       entry.originKey === `worker:${input.workerId}`
     )
       yield* records.update(input.orgId, writer, entry.key, { state: "done" });
-    else if (input.status !== "completed")
+    else if (input.status !== "completed" && !(yield* othersAt(input, entry.recordId)))
       yield* records.update(input.orgId, writer, entry.key, { state: "open" });
   }
 });

@@ -47,7 +47,7 @@ import * as KinLevels from "./KinLevels.ts";
 import { SHARED_REFUSAL, destination, effectiveAudience, turnChat } from "./Audience.ts";
 import { workerChat } from "./ChatSharing.ts";
 import { KinRecords } from "../work/KinRecords.ts";
-import { workerStarted } from "../work/workerEntries.ts";
+import { WORK_NOT_YOURS, workMayStart, workerStarted } from "../work/workerEntries.ts";
 import { sharedTurnMayTouch, toolAdmitted } from "./SharedTools.ts";
 import { isOrgPaused, STOP_REASON } from "./orgState.ts";
 import { resolveLead } from "./LeadMemory.ts";
@@ -64,7 +64,14 @@ import {
 } from "./workerProjects.ts";
 import { publishBranch } from "./workerPublish.ts";
 import { localThreadId } from "./workThread.ts";
-import { endedStatuses, launchRequestId, unboundThreadId, WorkerTracker } from "./WorkerTracker.ts";
+import {
+  endedStatuses,
+  launchRequestId,
+  STOPPED_BEFORE_START,
+  unboundThreadId,
+  WITHDRAWN_REASON,
+  WorkerTracker,
+} from "./WorkerTracker.ts";
 
 const text = (max: number) => Schema.String.check(Schema.isMaxLength(max));
 
@@ -734,7 +741,7 @@ const make = Effect.gen(function* () {
           });
     const chatId = plan.chatId;
     // The row exists before the launch there, so a crash between them is found at the next start.
-    yield* sql.withTransaction(
+    const startedAt = yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* lead(scope);
         // The gate's check again where the row is written: a join may have aborted the turn.
@@ -764,6 +771,17 @@ const make = Effect.gen(function* () {
             (target.hostProjectId === null || !still.projects.includes(target.hostProjectId)))
         )
           return yield* denied(NOT_HERE);
+        // Here, not before: the owner may have closed or taken back the work since.
+        if (
+          !(yield* workMayStart({
+            orgId: ctx.orgId,
+            agentId: ctx.agentId,
+            ownerPersonId: config.ownerPersonId,
+            event: plan.event,
+            ...(input.entry === undefined ? {} : { entryKey: input.entry }),
+          }).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
+        )
+          return yield* denied(WORK_NOT_YOURS);
         const startedAt = yield* Clock.currentTimeMillis;
         // The environment is written now, so a launch whose reply is lost can be found there.
         const inserted = yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id,
@@ -793,13 +811,17 @@ const make = Effect.gen(function* () {
         if (inserted.length === 0) {
           const stored = yield* worker(ctx, workerId);
           if (stored.wakeupId !== ctx.wakeupId) return yield* denied();
-          yield* sql`UPDATE kin_workers SET status = 'queued', started_at = ${startedAt}, ended_at = NULL,
+          const retried =
+            yield* sql`UPDATE kin_workers SET status = 'queued', started_at = ${startedAt}, ended_at = NULL,
               remote_project_id = ${projectId}, repository_key = ${repositoryKey},
               context = CASE WHEN context = 'private' THEN 'private' ELSE ${context} END,
               environment_id = CASE WHEN thread_id = ${unboundThreadId(workerId)}
                 THEN ${environmentId} ELSE environment_id END
-            WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId} AND status = 'failed'`;
+            WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId} AND status = 'failed'
+            RETURNING worker_id`;
+          return retried.length > 0 ? startedAt : stored.startedAt;
         }
+        return startedAt;
       }),
     );
     // The same request id there makes a retry return the thread the first launch started.
@@ -818,7 +840,7 @@ const make = Effect.gen(function* () {
       message: brief,
       clientRequestId: launchRequestId(workerId),
     });
-    const launched = yield* launch.pipe(
+    const launchBound = launch.pipe(
       // A lost reply or a timeout may follow a launch that happened; asking again finds it.
       Effect.catchIf(isAmbiguous, () => launch),
       Effect.catchIf(isAmbiguous, (error) =>
@@ -852,10 +874,26 @@ const make = Effect.gen(function* () {
             there("The worker could not start. Retry the same call or tell the owner."),
           ),
       }),
+      Effect.tap(
+        (launched) =>
+          sql`UPDATE kin_workers SET thread_id = ${launched.threadId}
+          WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId}`,
+      ),
     );
+    // A stop that came first means no launch; one during it reaches the thread as it returns.
+    const admitted = yield* tracker
+      .launch({ orgId: ctx.orgId, workerId, startedAt }, launchBound)
+      .pipe(
+        Effect.catchTags({
+          OrchestratorMcpFailure: (error) =>
+            Effect.fail(error).pipe(
+              there("The worker could not start. Retry the same call or tell the owner."),
+            ),
+        }),
+      );
+    if (Option.isNone(admitted)) return yield* denied(STOPPED_BEFORE_START);
+    const launched = admitted.value;
     const threadId = launched.threadId;
-    yield* sql`UPDATE kin_workers SET thread_id = ${threadId}
-      WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId}`;
     yield* stopIfPaused(ctx.orgId, {
       environmentId,
       threadId,
@@ -900,6 +938,7 @@ const make = Effect.gen(function* () {
         const chats = [askingChat(event, config.ownerChatId), stored.chatId];
         return {
           config,
+          event,
           worker: stored,
           open: yield* open(ctx, chats),
           reach: yield* reach(ctx, config, chats),
@@ -921,6 +960,14 @@ const make = Effect.gen(function* () {
       return yield* denied("That worker never started. Start a new one with kin_delegate.");
     const environmentId = plan.worker.environmentId;
     const workerChatId = plan.worker.chatId;
+    // Never restarts work the owner withdrew, nor work on an entry that is no longer this lead's.
+    const mayFollowUp = workMayStart({
+      orgId: ctx.orgId,
+      agentId: ctx.agentId,
+      ownerPersonId: plan.config.ownerPersonId,
+      event: plan.event,
+      followsUp: input.workerId,
+    }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     // Last before the send: the gate's check again, and what a follow-up brings back lands in
     // the worker's chat, so the turn must be one that may write there.
     yield* sql.withTransaction(
@@ -941,6 +988,7 @@ const make = Effect.gen(function* () {
             )) !== "allowed")
         )
           return yield* denied(SHARED_REFUSAL);
+        if (!(yield* mayFollowUp)) return yield* denied(WORK_NOT_YOURS);
         // Before the send: an owner-only turn's brief makes the work private, for good.
         if (audience === "owner_only")
           yield* sql`UPDATE kin_workers SET context = 'private'
@@ -963,9 +1011,36 @@ const make = Effect.gen(function* () {
       })
       .pipe(there("The follow-up could not be sent. Retry the same call or tell the owner."));
     // A new started_at marks newer work, so a follower still reporting the last run can't close it.
-    yield* sql`UPDATE kin_workers SET status = 'queued', ended_at = NULL,
-      started_at = ${yield* Clock.currentTimeMillis}
-      WHERE org_id = ${ctx.orgId} AND worker_id = ${input.workerId}`;
+    const startedAt = yield* Clock.currentTimeMillis;
+    const still = yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* sql`UPDATE kin_workers SET status = 'queued', ended_at = NULL,
+          started_at = ${startedAt}
+          WHERE org_id = ${ctx.orgId} AND worker_id = ${input.workerId}`;
+        return yield* mayFollowUp;
+      }),
+    );
+    // Withdrawn during the send, when no attempt of it was open to stop: stopped here instead.
+    if (!still) {
+      yield* tracker
+        .stop({
+          orgId: ctx.orgId,
+          agentId: ctx.agentId,
+          workerId: input.workerId,
+          startedAt,
+          reason: WITHDRAWN_REASON,
+          key: `kin-follow-up-withdrawn:${input.workerId}:${startedAt}`,
+        })
+        .pipe(
+          Effect.catchTags({
+            OrchestratorMcpFailure: (error) =>
+              Effect.fail(error).pipe(
+                there("The worker could not be stopped. Retry or tell the owner."),
+              ),
+          }),
+        );
+      return yield* denied(WORK_NOT_YOURS);
+    }
     yield* stopIfPaused(ctx.orgId, {
       environmentId,
       threadId: plan.worker.threadId,
@@ -1031,16 +1106,19 @@ const make = Effect.gen(function* () {
         })).stopped,
       };
     if (Option.isNone(env.environmentId)) return yield* denied(LOCAL_BUILD_ONLY);
-    if (record.environmentId === null || !bound(record))
-      return { workerId: input.workerId, stopped: false };
-    const environmentId = record.environmentId;
-    // A follow-up in the same wake-up starts a new run, which a second stop must still reach.
-    const stopped = yield* WorkerEnvironment.stopThere(env, {
-      environmentId,
-      threadId: record.threadId,
-      key,
-      reason,
-    }).pipe(there("The worker could not be stopped. Retry or tell the owner."));
+    if (record.environmentId === null) return { workerId: input.workerId, stopped: false };
+    // Through the tracker, so a run that ends meanwhile publishes nothing; an unconfirmed launch
+    // is stopped once its follower finds the thread. A follow-up's run gets a new key.
+    const stopped = yield* tracker
+      .stop({ orgId: ctx.orgId, agentId: ctx.agentId, workerId: input.workerId, reason, key })
+      .pipe(
+        Effect.catchTags({
+          OrchestratorMcpFailure: (error) =>
+            Effect.fail(error).pipe(
+              there("The worker could not be stopped. Retry or tell the owner."),
+            ),
+        }),
+      );
     if (record.chatId !== null)
       yield* chat
         .setTaskCardClosed({
@@ -1056,7 +1134,7 @@ const make = Effect.gen(function* () {
             Effect.logWarning("Kin worker task card could not close", { cause }),
           ),
         );
-    return { workerId: input.workerId, stopped: stopped.status === "interrupt_requested" };
+    return { workerId: input.workerId, stopped: stopped.stopped };
   }, guarded("KinWorkers.stop"));
 
   return KinWorkers.of({ delegate, followUp, stop });

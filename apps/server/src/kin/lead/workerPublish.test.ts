@@ -27,8 +27,8 @@ const fixture = Effect.fn("WorkerPublishTest.fixture")(function* (
   options: {
     readonly changes?: ReadonlyArray<Change>;
     readonly maxIncomingBytes?: number;
-    /** Answers for the publisher's pause checks, in order; then not paused. */
-    readonly paused?: ReadonlyArray<boolean>;
+    /** The write Kin refuses, as a pause or a stop of the worker does; each admitted one is listed. */
+    readonly refuseAt?: Publish.PublishStep;
     /** A worker on this server: a worktree of the clone, its edits left uncommitted. */
     readonly local?: boolean;
   } = {},
@@ -165,7 +165,7 @@ const fixture = Effect.fn("WorkerPublishTest.fixture")(function* (
       ),
     ),
   );
-  const pauses = [...(options.paused ?? [])];
+  const admitted: Array<Publish.PublishStep> = [];
   const publish = (worktreePath = tree) =>
     service.publish({
       workerId,
@@ -173,11 +173,27 @@ const fixture = Effect.fn("WorkerPublishTest.fixture")(function* (
       worktreePath,
       ...(options.local === true ? { local: { projectRoot: worker } } : {}),
       title: "Fix",
-      paused: Effect.sync(() => pauses.shift() ?? false),
+      admit: (step: Publish.PublishStep) =>
+        step === options.refuseAt
+          ? Effect.fail(new Publish.KinWorkerPublishRefused({ reason: "refused" }))
+          : Effect.sync(() => void admitted.push(step)),
     });
   const scratch = fs.readDirectory(`${root}/state/kin-worker-publish`);
   const log = (format: string) => git(tree, "log", `--format=${format}`, "main..HEAD");
-  return { publish, head, remoteBranch, requests, tokens, scratch, root, worker, tree, git, log };
+  return {
+    publish,
+    admitted,
+    head,
+    remoteBranch,
+    requests,
+    tokens,
+    scratch,
+    root,
+    worker,
+    tree,
+    git,
+    log,
+  };
 });
 
 it.live(
@@ -302,19 +318,37 @@ it.live("refuses a fetch above the disk ceiling and leaves no scratch repository
   }).pipe(Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer)), Effect.scoped),
 );
 
-it.live("stops at a pause that lands before the push, or before the PR", () =>
+it.live("asks before each write and stops at a refusal before the push, or before the PR", () =>
   Effect.gen(function* () {
-    const paused = {
-      reason: "Kin is paused; ask the worker for a follow-up after the owner resumes",
-    };
-    const beforePush = yield* fixture({ "src/fix.ts": "export {};\n" }, { paused: [true] });
-    assert.include(yield* Effect.flip(beforePush.publish()), paused);
+    const beforePush = yield* fixture({ "src/fix.ts": "export {};\n" }, { refuseAt: "push" });
+    assert.include(yield* Effect.flip(beforePush.publish()), { reason: "refused" });
     assert.strictEqual(yield* beforePush.remoteBranch, "");
-    const beforePr = yield* fixture({ "src/fix.ts": "export {};\n" }, { paused: [false, true] });
-    assert.include(yield* Effect.flip(beforePr.publish()), paused);
+    const beforePr = yield* fixture({ "src/fix.ts": "export {};\n" }, { refuseAt: "pull_request" });
+    assert.include(yield* Effect.flip(beforePr.publish()), { reason: "refused" });
+    assert.deepStrictEqual(beforePr.admitted, ["push"]);
     assert.strictEqual(yield* beforePr.remoteBranch, beforePr.head);
     assert.isFalse(beforePr.requests.some((request) => request.method === "POST"));
+    const all = yield* fixture({ "src/fix.ts": "export {};\n" });
+    yield* all.publish();
+    assert.deepStrictEqual(all.admitted, ["push", "pull_request"]);
   }).pipe(Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer)), Effect.scoped),
+);
+
+it.live(
+  "a local worker's edits refused before the commit stay uncommitted, with nothing pushed",
+  () =>
+    Effect.gen(function* () {
+      const { publish, remoteBranch, log, tree, git, admitted } = yield* fixture(
+        { "README.md": "# Acme app\n", "src/new.ts": "export {};\n" },
+        { local: true, refuseAt: "commit" },
+      );
+      assert.include(yield* Effect.flip(publish()), { reason: "refused" });
+      assert.deepStrictEqual(admitted, []);
+      assert.strictEqual(yield* log("%H"), "");
+      assert.notStrictEqual(yield* git(tree, "status", "--porcelain"), "");
+      assert.strictEqual(yield* git(tree, "diff", "--cached", "--name-only"), "");
+      assert.strictEqual(yield* remoteBranch, "");
+    }).pipe(Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer)), Effect.scoped),
 );
 
 it.live("refuses a worktree path it can't pass on", () =>

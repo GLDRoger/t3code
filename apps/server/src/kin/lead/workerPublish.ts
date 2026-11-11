@@ -38,6 +38,9 @@ export class KinWorkerPublishRefused extends Schema.TaggedError<KinWorkerPublish
   { reason: Schema.String },
 ) {}
 
+/** Each write a publish makes, in order; the two after `commit` reach GitHub. */
+export type PublishStep = "commit" | "push" | "pull_request";
+
 export interface PublishedPullRequest {
   readonly url: string;
   readonly number: number;
@@ -64,8 +67,11 @@ export class KinWorkerPublish extends Context.Service<
        */
       readonly local?: { readonly projectRoot: string };
       readonly title: string;
-      /** Read again just before each GitHub write; true stops the publish there. */
-      readonly paused: Effect.Effect<boolean>;
+      /**
+       * Asked just before each write; a refusal ends the publish there, so no write starts after
+       * the owner's pause or a stop of the worker.
+       */
+      readonly admit: (step: PublishStep) => Effect.Effect<void, KinWorkerPublishRefused>;
     }) => Effect.Effect<PublishedPullRequest, KinWorkerPublishRefused>;
   }
 >()("t3/kin/lead/workerPublish/KinWorkerPublish") {}
@@ -193,6 +199,7 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
     worktreePath: string,
     local: { readonly projectRoot: string },
     branch: string,
+    admit: Effect.Effect<void, KinWorkerPublishRefused>,
   ) {
     const failed = (step: string) => () => refuse(`git couldn't ${step}`);
     const outside = refuse("the worktree isn't one of the project's own");
@@ -220,6 +227,8 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
       worktree: true,
     }).pipe(Effect.mapError(failed("read the worktree's changes")));
     if (changes.length === 0) return;
+    // Admitted whole: once staging starts, the commit finishes, so a stop never leaves half of one.
+    yield* admit;
     yield* git(worktree, ["add", "--all"], { worktree: true }).pipe(
       Effect.mapError(failed("stage the worker's changes")),
     );
@@ -243,7 +252,8 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
       const branch = publishBranch(input.workerId);
       const incoming = `refs/kin/incoming/${input.workerId}`;
       const failed = (step: string) => () => refuse(`git couldn't ${step}`);
-      if (input.local !== undefined) yield* commitLocal(input.worktreePath, input.local, branch);
+      if (input.local !== undefined)
+        yield* commitLocal(input.worktreePath, input.local, branch, input.admit("commit"));
 
       // Contents write stays here: `holder: "server"` is fixed, never taken from any input.
       const minted = yield* app
@@ -359,14 +369,7 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
           `${branch} adds or changes a symbolic link, which Kin never publishes`,
         );
 
-      const stopIfPaused = Effect.gen(function* () {
-        if (yield* input.paused)
-          return yield* refuse(
-            "Kin is paused; ask the worker for a follow-up after the owner resumes",
-          );
-      });
-      yield* stopIfPaused;
-
+      yield* input.admit("push");
       // Kin's branch for this worker only, so a follow-up's rewrite replaces it.
       yield* git(
         cache,
@@ -380,7 +383,6 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
         ],
         { env: auth },
       ).pipe(Effect.mapError(failed(`push ${branch} to GitHub`)));
-      yield* stopIfPaused;
 
       const owner = repo.split("/")[0]!;
       const listed = yield* call(
@@ -394,6 +396,7 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
           : undefined;
       if (existing !== undefined && existing._tag === "Some")
         return { url: existing.value.html_url, number: existing.value.number, sha: head };
+      yield* input.admit("pull_request");
       const opened = yield* call("pulls.create", "POST", "/pulls", {
         title: input.title,
         head: branch,
