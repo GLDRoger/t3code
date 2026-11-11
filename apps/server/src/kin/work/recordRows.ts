@@ -96,6 +96,29 @@ export const samePrincipal = (left: Principal | null, right: Principal | null) =
 export const actorOf = (kind: string, id: string | null): Actor =>
   kind === "system" ? { _tag: "system" } : (principal(kind, id) ?? { _tag: "system" });
 
+/** Whether `r`'s client, its project or its project's client is labelled sensitive (design 4.9). */
+const inheritedSensitive = (sql: SqlClient.SqlClient) => sql`EXISTS (SELECT 1 FROM kin_records s
+    WHERE s.org_id = r.org_id AND s.sensitive = 1 AND s.record_id IN (r.party_id, r.project_id,
+      (SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id AND p.record_id = r.project_id)))`;
+
+/** `r`'s own label or one it inherits: the one definition every sensitivity check uses. */
+export const sensitiveNow = (sql: SqlClient.SqlClient) =>
+  sql`(r.sensitive = 1 OR ${inheritedSensitive(sql)})`;
+
+/**
+ * Whether an entry is sensitive now: its own label, or its client's, project's or project's
+ * client's. Reads through the caller's transaction; `undefined` when the org has no such entry.
+ */
+export const effectivelySensitive = Effect.fn("KinRecords.effectivelySensitive")(function* (
+  orgId: KinOrgId,
+  recordId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ sensitive: number }>`SELECT ${sensitiveNow(sql)} AS sensitive
+    FROM kin_records r WHERE r.org_id = ${orgId} AND r.record_id = ${recordId}`;
+  return row === undefined ? undefined : row.sensitive === 1;
+});
+
 /**
  * The columns every read selects, with the derived ones: a running worker, the last PR, the client
  * and project as they are now, and the label they lend it. Joins stay inside the entry's org.
@@ -114,9 +137,7 @@ export const selectRecords = (sql: SqlClient.SqlClient) => sql`
     r.fields_json AS "fieldsJson",
     pa.key AS "partyKey", pa.title AS "partyTitle", pj.key AS "projectKey",
     pj.title AS "projectTitle",
-    (COALESCE(pa.sensitive, 0) = 1 OR COALESCE(pj.sensitive, 0) = 1
-      OR EXISTS (SELECT 1 FROM kin_records pp WHERE pp.org_id = pj.org_id
-        AND pp.record_id = pj.party_id AND pp.sensitive = 1)) AS "inheritedSensitive",
+    ${inheritedSensitive(sql)} AS "inheritedSensitive",
     EXISTS (SELECT 1 FROM kin_record_links l JOIN kin_workers k
         ON k.org_id = l.org_id AND k.worker_id = l.target
       WHERE l.org_id = r.org_id AND l.record_id = r.record_id AND l.kind = 'worker'
