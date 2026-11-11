@@ -103,10 +103,10 @@ export const attemptBegun = Effect.fn("KinWorkerAttempts.attemptBegun")(function
   yield* noteSensitivity(attempt);
 });
 
-/** The row for an attempt started before K061, or one written by a path that names no event. */
+/** The row for an attempt started before K061: every later one is written as it begins. */
 const ensure = (sql: SqlClient.SqlClient, attempt: Attempt) =>
-  sql`INSERT INTO kin_worker_attempts (org_id, worker_id, started_at, agent_id)
-    SELECT org_id, worker_id, started_at, agent_id FROM kin_workers
+  sql`INSERT INTO kin_worker_attempts (org_id, worker_id, started_at, agent_id, legacy)
+    SELECT org_id, worker_id, started_at, agent_id, 1 FROM kin_workers
     WHERE org_id = ${attempt.orgId} AND worker_id = ${attempt.workerId}
       AND started_at = ${attempt.startedAt}
     ON CONFLICT (org_id, worker_id, started_at) DO NOTHING`;
@@ -165,13 +165,13 @@ export const withdrawAttempts = Effect.fn("KinWorkerAttempts.withdrawAttempts")(
       AND k.agent_id = ${input.agentId} AND k.ended_at IS NULL
     ORDER BY k.worker_id`;
   yield* sql`INSERT INTO kin_worker_attempts (org_id, worker_id, started_at, agent_id,
-      withdrawn_at, stopped_at, stop_reason, stop_key, stop_label, stop_state)
+      withdrawn_at, stopped_at, stop_reason, stop_key, stop_label, stop_state, legacy)
     SELECT k.org_id, k.worker_id, k.started_at, k.agent_id, ${input.at},
       CASE WHEN k.ended_at IS NULL THEN ${input.at} END,
       CASE WHEN k.ended_at IS NULL THEN ${WITHDRAWN_REASON} END,
       CASE WHEN k.ended_at IS NULL THEN 'kin-withdrawn:' || k.worker_id || ':' || ${input.seq} END,
       CASE WHEN k.ended_at IS NULL THEN ${input.key} END,
-      CASE WHEN k.ended_at IS NULL THEN 'pending' END
+      CASE WHEN k.ended_at IS NULL THEN 'pending' END, 1
     FROM kin_record_links l JOIN kin_workers k ON k.org_id = l.org_id AND k.worker_id = l.target
     WHERE l.org_id = ${input.orgId} AND l.record_id = ${input.recordId} AND l.kind = 'worker'
       AND k.agent_id = ${input.agentId}
@@ -188,7 +188,8 @@ export const withdrawAttempts = Effect.fn("KinWorkerAttempts.withdrawAttempts")(
 
 /**
  * In a write's transaction: whether the attempt's work is sensitive now, through an entry it is an
- * attempt at, or a wake-up that started or followed it up having been shown a sensitive entry.
+ * attempt at, or a wake-up that started or followed it up having been shown a sensitive entry. A
+ * legacy attempt (pre-K061) can't show what started it, so it counts as sensitive.
  * Once true it stays true on the row, so detaching or relabelling mid-run changes nothing.
  */
 export const noteSensitivity = Effect.fn("KinWorkerAttempts.noteSensitivity")(function* (
@@ -198,8 +199,8 @@ export const noteSensitivity = Effect.fn("KinWorkerAttempts.noteSensitivity")(fu
   const at = yield* Clock.currentTimeMillis;
   yield* sql`UPDATE kin_worker_attempts SET sensitive_at = ${at}
     WHERE org_id = ${attempt.orgId} AND worker_id = ${attempt.workerId}
-      AND started_at = ${attempt.startedAt} AND sensitive_at IS NULL AND (
-        EXISTS (SELECT 1 FROM kin_record_links l
+      AND started_at = ${attempt.startedAt} AND sensitive_at IS NULL AND (legacy = 1
+        OR EXISTS (SELECT 1 FROM kin_record_links l
           JOIN kin_records r ON r.org_id = l.org_id AND r.record_id = l.record_id
           WHERE l.org_id = ${attempt.orgId} AND l.kind = 'worker' AND l.target = ${attempt.workerId}
             AND ${sensitiveNow(sql)})
@@ -493,8 +494,7 @@ export const unsettledStops = Effect.fn("KinWorkerAttempts.unsettledStops")(func
 
 /**
  * Whether the owner withdrew work this event started: the event itself, or one of its wake-up
- * naming the same chat message (a tap or reaction on it, or the message again). An attempt with no
- * event (pre-K061) withdraws its whole wake-up instead; missing provenance never permits.
+ * naming the same chat message (a tap or reaction on it, or the message again).
  */
 export const eventWithdrawn = Effect.fn("KinWorkerAttempts.eventWithdrawn")(function* (input: {
   readonly orgId: KinOrgId;
@@ -513,18 +513,12 @@ export const eventWithdrawn = Effect.fn("KinWorkerAttempts.eventWithdrawn")(func
     same.push(sql`(e.wakeup_id = ${input.wakeupId}
       AND json_extract(e.json, '$.chatId') = ${event.chatId}
       AND json_extract(e.json, '$.messageId') = ${event.messageId})`);
-  // The worker's wake-up, or the lead's one running at `started_at` (one at a time, K034), began
-  // it; with no worker row, any wake-up begun before the withdrawal may have.
-  same.push(sql`(a.source_event_id IS NULL AND (
-    EXISTS (SELECT 1 FROM kin_workers k WHERE k.org_id = a.org_id AND k.worker_id = a.worker_id
-      AND k.wakeup_id = ${input.wakeupId})
-    OR EXISTS (SELECT 1 FROM kin_wakeups w WHERE w.org_id = a.org_id
-      AND w.agent_id = a.agent_id AND w.wakeup_id = ${input.wakeupId}
-      AND w.started_at <= a.started_at AND (w.ended_at IS NULL OR w.ended_at >= a.started_at))
-    OR (NOT EXISTS (SELECT 1 FROM kin_workers k
-        WHERE k.org_id = a.org_id AND k.worker_id = a.worker_id)
-      AND EXISTS (SELECT 1 FROM kin_wakeups w WHERE w.org_id = a.org_id
-        AND w.wakeup_id = ${input.wakeupId} AND w.started_at <= a.withdrawn_at))))`);
+  // A withdrawn legacy attempt names no event, so no event this lead received before that
+  // withdrawal authorises any work again, wherever it is claimed and whatever entry it names; an
+  // event not found counts as received before. A fresh message or assignment is needed.
+  same.push(sql`(a.source_event_id IS NULL AND NOT EXISTS (SELECT 1 FROM kin_events r
+    WHERE r.org_id = a.org_id AND r.agent_id = a.agent_id AND r.event_id = ${event.eventId}
+      AND r.received_at > a.withdrawn_at AND r.queued_at > a.withdrawn_at))`);
   const found = yield* sql`SELECT 1 FROM kin_worker_attempts a
     LEFT JOIN kin_events e ON e.org_id = a.org_id AND e.event_id = a.source_event_id
     WHERE a.org_id = ${input.orgId} AND a.agent_id = ${input.agentId}
