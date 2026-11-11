@@ -3,7 +3,7 @@ import { KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
-import { QUOTE_MISSING } from "../memory/keeping.ts";
+import { QUOTE_MISSING, QUOTE_TOO_LONG } from "../memory/keeping.ts";
 import { checkDream } from "./checkDream.ts";
 import type { MaterialEntry } from "./material.ts";
 
@@ -38,6 +38,51 @@ const material: ReadonlyArray<MaterialEntry> = [
   },
 ];
 const existing = fixtureItem({ id: "clm-001", kind: "claim", source: "old", trust: "member" });
+const statedRef = "memory:claims/stated.md";
+const statedQuote = "ship the invented report on Friday";
+/** What the owner said, saved with his words. */
+const stated = (overrides: Record<string, unknown> = {}) =>
+  fixtureItem({
+    id: "clm-stated",
+    kind: "claim",
+    source: ownerRef,
+    said_by: "fixture-owner",
+    trust: "owner",
+    quote: statedQuote,
+    sensitive: false,
+    ...overrides,
+  });
+const statedEntry: MaterialEntry = {
+  ref: statedRef,
+  kind: "item",
+  saidBy: "fixture-owner",
+  trust: "owner",
+  at: "2026-11-01T00:00:00.000Z",
+  text: stated(),
+  quote: statedQuote,
+};
+const reminderRef = "memory:deferrals/remind.md";
+const reminderEntry: MaterialEntry = {
+  ref: reminderRef,
+  kind: "item",
+  saidBy: "fixture-owner",
+  trust: "owner",
+  at: "2026-11-01T00:00:00.000Z",
+  text: fixtureItem({ id: "def-remind", said_by: "fixture-owner" }),
+  reminder: true,
+};
+const longRef = "memory:claims/long.md";
+const longQuote = `Invented ${"long ".repeat(80)}words`;
+const longEntry: MaterialEntry = {
+  ref: longRef,
+  kind: "item",
+  saidBy: "fixture-owner",
+  trust: "owner",
+  at: "2026-11-01T00:00:00.000Z",
+  text: fixtureItem({ id: "clm-long", kind: "claim", quote: longQuote }),
+  quote: longQuote,
+};
+const items: ReadonlyArray<MaterialEntry> = [...material, statedEntry, reminderEntry, longEntry];
 const teammateSaid = (overrides: Record<string, unknown> = {}) =>
   fixtureItem({
     id: "clm-said",
@@ -53,6 +98,7 @@ const base = new Map([
   ["claims/said.md", teammateSaid()],
   ["INDEX.md", "As of 2026-11-07T00:00:00.000Z\n"],
   ["claims/existing.md", existing],
+  ["claims/stated.md", stated()],
   ["journal/2026/11-07.md", "\n## 10:00 · wake-up\n"],
 ]);
 const newClaim = (overrides: Record<string, unknown> = {}) =>
@@ -235,12 +281,12 @@ it.effect.each([
       ],
     },
     failures: [
-      "claims/existing.md changes its quote",
+      "claims/existing.md holds what a person stated, so a dream may not change its quote",
       "claims/folded.md quote: must keep the quote of memory:claims/existing.md as it is",
     ],
   },
   {
-    name: "rejects re-attributing an existing item to unknown provenance",
+    name: "rejects re-attributing what a person stated",
     tree: new Map([
       ...goodTree,
       ["claims/existing.md", fixtureItem({ id: "clm-001", kind: "claim", source: "old" })],
@@ -249,7 +295,9 @@ it.effect.each([
       ...goodDream,
       changes: [...goodDream.changes, { path: "claims/existing.md", sources: [ownerRef] }],
     },
-    failures: ["claims/existing.md source old is not in the material"],
+    failures: [
+      "claims/existing.md holds what a person stated, so a dream may not change its trust",
+    ],
   },
   {
     name: "rejects a change to what a teammate's chat left, and passing it off as the owner's",
@@ -264,6 +312,7 @@ it.effect.each([
     },
     failures: [
       "claims/said.md came from a chat other people read and is not a dream's to change",
+      "claims/said.md holds what a person stated, so a dream may not change its title",
       "claims/new.md changes who let the team know it",
     ],
   },
@@ -306,5 +355,123 @@ it.effect.each([
         "claims/new.md",
         "journal/2026/11-07.md",
       ]);
+  }),
+);
+
+const statedFails = (field: string) =>
+  `claims/stated.md holds what a person stated, so a dream may not change its ${field}`;
+const replacedOnlyByItsOwn =
+  "claims/stated.md may be replaced only by an item made from it, with its trust and quote";
+it.effect.each([
+  {
+    name: "refuses rewording what a person stated",
+    files: [["claims/stated.md", stated().replace("Invented fixture body.", "Invented other.")]],
+    failures: [statedFails("body")],
+  },
+  {
+    name: "refuses retitling it",
+    files: [["claims/stated.md", stated({ title: "Invented other title" })]],
+    failures: [statedFails("title")],
+  },
+  {
+    name: "refuses invalidating it",
+    files: [["claims/stated.md", stated({ invalid_at: "2026-11-08T00:00:00.000Z" })]],
+    failures: [statedFails("invalid_at")],
+  },
+  {
+    name: "refuses closing it",
+    files: [["claims/stated.md", stated({ status: "done" })]],
+    failures: [statedFails("status")],
+  },
+  {
+    name: "refuses replacing it with the agent's own item",
+    files: [
+      ["claims/stated.md", stated({ superseded_by: "clm-agent", status: "superseded" })],
+      [
+        "claims/inferred.md",
+        newClaim({
+          id: "clm-agent",
+          source: agentRef,
+          said_by: "fixture-lead",
+          trust: "agent",
+          quote: undefined,
+        }),
+      ],
+    ],
+    failures: [replacedOnlyByItsOwn],
+  },
+  {
+    name: "refuses replacing it with an item in other words",
+    files: [
+      ["claims/stated.md", stated({ superseded_by: "clm-reworded", status: "superseded" })],
+      [
+        "claims/reworded.md",
+        newClaim({ id: "clm-reworded", source: statedRef, quote: "the invented report on Friday" }),
+      ],
+    ],
+    failures: [
+      replacedOnlyByItsOwn,
+      `claims/reworded.md quote: must keep the quote of ${statedRef} as it is`,
+    ],
+  },
+  {
+    name: "lets an item made from it, with its trust and quote, replace it, and its labels change",
+    files: [
+      [
+        "claims/stated.md",
+        stated({
+          superseded_by: "clm-merged",
+          status: "superseded",
+          review_by: "2026-12-01",
+          sensitive: true,
+          links: ["issue #12", "merged"],
+        }),
+      ],
+      ["claims/merged.md", newClaim({ id: "clm-merged", source: statedRef })],
+    ],
+    failures: [],
+  },
+  {
+    name: "refuses passing a reminder off as the owner's statement",
+    files: [
+      ["claims/reminded.md", newClaim({ id: "clm-r", source: reminderRef, quote: undefined })],
+    ],
+    failures: [
+      "claims/reminded.md claims owner from a reminder; what a reminder says is at most agent",
+    ],
+  },
+  {
+    name: "lets an item made from a reminder be the agent's",
+    files: [
+      [
+        "claims/reminded.md",
+        newClaim({ id: "clm-r", source: reminderRef, trust: "agent", quote: undefined }),
+      ],
+    ],
+    failures: [],
+  },
+  {
+    name: "refuses carrying over a quote past the limit",
+    files: [["claims/long-copy.md", newClaim({ id: "clm-lc", source: longRef, quote: longQuote })]],
+    failures: [`claims/long-copy.md quote: ${QUOTE_TOO_LONG}`],
+  },
+] as const)("checkDream $name", (row) =>
+  Effect.gen(function* () {
+    const result = yield* checkDream({
+      orgId,
+      base,
+      tree: new Map([...goodTree, ...row.files]),
+      special: [],
+      dreamJson: json({
+        ...goodDream,
+        changes: [
+          ...goodDream.changes,
+          ...row.files.map(([path]) => ({ path, sources: [statedRef] })),
+        ],
+      }),
+      material: items,
+      requireResolutions: true,
+    });
+    assert.deepStrictEqual(result.failures, [...row.failures]);
   }),
 );

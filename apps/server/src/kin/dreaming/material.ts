@@ -22,6 +22,8 @@ export interface MaterialEntry {
   readonly text: string;
   /** An item's checked quote, which an item folded from it carries over. */
   readonly quote?: string;
+  /** A reminder or scheduled task: what it says was never a statement, whoever asked for it. */
+  readonly reminder?: true;
   /** An item nobody has said who may know: the dream labels it (`DreamRunner`). */
   readonly unlabelled?: true;
 }
@@ -201,6 +203,7 @@ export const collectMaterial = Effect.fn("DreamMaterial.collect")(
         ...(parsed.value.frontMatter.quote === undefined
           ? {}
           : { quote: parsed.value.frontMatter.quote }),
+        ...(parsed.value.frontMatter.kind === "deferral" ? { reminder: true as const } : {}),
         ...(unlabelled ? { unlabelled: true as const } : {}),
       });
     }

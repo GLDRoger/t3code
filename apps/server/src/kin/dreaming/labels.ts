@@ -85,7 +85,8 @@ export const keepLabels = Effect.fn("DreamLabels.keep")(function* (input: {
     const sensitive =
       labelBefore(id) === true ||
       input.labels.held.has(id) ||
-      mustBeSensitive(content) ||
+      // The quote is stored beside those words, and money or access in it is as private.
+      mustBeSensitive(`${content}\n${frontMatter.quote ?? ""}`) ||
       [...(sources.get(id) ?? [])].some(wasSensitive) ||
       // A label the dream dropped comes back; one nobody ever set reads as the owner's alone.
       (frontMatter.sensitive ?? labelBefore(id) ?? true);

@@ -117,3 +117,20 @@ it.effect.each([
     }
   }),
 );
+
+it.effect("a reader keeps an item whose quote is not text, without the quote", () =>
+  Effect.gen(function* () {
+    const orgId = KinOrgId.make("fixture-org");
+    const text = fixtureItem({ quote: ["Invented", "words"] });
+    expect((yield* parseFrontMatter(orgId, "deferrals/x.md", text).pipe(Effect.result))._tag).toBe(
+      "Failure",
+    );
+    const read = yield* parseFrontMatter(orgId, "deferrals/x.md", text, false, true);
+    expect(read.frontMatter.id).toBe("def-001");
+    expect("quote" in read.frontMatter).toBe(false);
+    const quoted = fixtureItem({ quote: "Invented words" });
+    expect(
+      (yield* parseFrontMatter(orgId, "deferrals/x.md", quoted, false, true)).frontMatter.quote,
+    ).toBe("Invented words");
+  }),
+);

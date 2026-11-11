@@ -846,7 +846,7 @@ const make = Effect.gen(function* () {
       files.set(relative, text);
       if (!itemFolders.some((folder) => relative.startsWith(`${folder}/`))) return;
       if (!parsedBlobs.has(sha)) {
-        const parsed = yield* parseFrontMatter(orgId, relative, text).pipe(
+        const parsed = yield* parseFrontMatter(orgId, relative, text, false, true).pipe(
           Effect.catchTags({
             MemoryItemError: (error) =>
               Effect.logWarning("Skipping malformed memory item", {

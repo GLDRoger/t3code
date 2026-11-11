@@ -1,10 +1,10 @@
-import type { KinOrgId } from "@t3tools/contracts";
+import type { KinOrgId, MemoryTrust } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { isCheckoutPath, isItemPath } from "../memory/checkoutPaths.ts";
 import { parseFrontMatter } from "../memory/frontMatter.ts";
-import { QUOTE_MISSING, quoteRefusal } from "../memory/keeping.ts";
+import { QUOTE_MAX, QUOTE_MISSING, QUOTE_TOO_LONG, quoteRefusal } from "../memory/keeping.ts";
 import { kinShapeFailure } from "../memory/lint.ts";
 import type { MaterialEntry } from "./material.ts";
 
@@ -41,6 +41,17 @@ export const DreamJson = Schema.Struct({
 });
 export type DreamJson = typeof DreamJson.Type;
 const decodeDream = Schema.decodeUnknownEffect(Schema.fromJsonString(DreamJson));
+const rank = (trust: MemoryTrust) => ["external", "agent", "member", "owner"].indexOf(trust);
+/** What a person stated stays theirs as said: a dream changes none of these on it. */
+const STATED_FIELDS = [
+  "title",
+  "trust",
+  "said_by",
+  "source",
+  "source_event",
+  "quote",
+  "invalid_at",
+] as const;
 
 /**
  * The code checks a dream must pass before anything is committed. `tree` is what the
@@ -71,6 +82,18 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
   const report = dream?._tag === "Some" ? dream.value : undefined;
   const material = new Map(input.material.map((entry) => [entry.ref, entry]));
   const listed = new Set(report?.changes.map((change) => change.path));
+
+  // Every item file the dream wrote, so a supersession can be judged by the item it points to.
+  const written = new Map<
+    string,
+    { readonly source: string; readonly trust: MemoryTrust; readonly quote?: string | undefined }
+  >();
+  for (const [path, text] of changes)
+    if (isItemPath(path)) {
+      const parsed = yield* parseFrontMatter(input.orgId, path, text).pipe(Effect.option);
+      if (parsed._tag === "Some")
+        written.set(parsed.value.frontMatter.id, parsed.value.frontMatter);
+    }
 
   for (const [path, text] of changes) {
     if (path === "rules.md") {
@@ -111,6 +134,31 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
       earlier?.shared_by?.at !== fm.shared_by?.at
     )
       failures.push(`${path} changes who let the team know it`);
+    if (earlier !== undefined && (earlier.trust === "owner" || earlier.trust === "member")) {
+      const refuse = (field: string) =>
+        failures.push(`${path} holds what a person stated, so a dream may not change its ${field}`);
+      if (previous?._tag === "Some" && previous.value.body !== parsed.success.body) refuse("body");
+      for (const field of STATED_FIELDS) if (earlier[field] !== fm[field]) refuse(field);
+      // Only an item tonight made from it, never above its trust and with its words, replaces it.
+      if (earlier.superseded_by !== fm.superseded_by) {
+        const next = fm.superseded_by === null ? undefined : written.get(fm.superseded_by);
+        if (
+          next === undefined ||
+          next.source !== `memory:${path}` ||
+          rank(next.trust) > rank(earlier.trust) ||
+          next.quote !== earlier.quote
+        )
+          failures.push(
+            `${path} may be replaced only by an item made from it, with its trust and quote`,
+          );
+      }
+      if (
+        earlier.status !== fm.status &&
+        !(fm.status === "superseded" && earlier.superseded_by !== fm.superseded_by)
+      )
+        refuse("status");
+      continue;
+    }
     const kept =
       previous?._tag === "Some" &&
       previous.value.frontMatter.trust === fm.trust &&
@@ -122,7 +170,13 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
     }
     const author = material.get(fm.source);
     if (author === undefined) failures.push(`${path} source ${fm.source} is not in the material`);
-    else if (author.trust !== fm.trust || author.saidBy !== fm.said_by)
+    // A reminder was asked for, not stated: what is made from it is at most the agent's.
+    else if (author.reminder === true && author.saidBy === fm.said_by) {
+      if (rank(fm.trust) > Math.min(rank(author.trust), rank("agent")))
+        failures.push(
+          `${path} claims ${fm.trust} from a reminder; what a reminder says is at most agent`,
+        );
+    } else if (author.trust !== fm.trust || author.saidBy !== fm.said_by)
       failures.push(
         `${path} claims ${fm.trust} from ${fm.said_by}; the source was ${author.trust} from ${author.saidBy}`,
       );
@@ -131,9 +185,11 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
     if (author !== undefined && fm.kind !== "deferral") {
       const refusal =
         author.kind === "item"
-          ? author.quote === fm.quote
-            ? undefined
-            : `must keep the quote of ${fm.source} as it is`
+          ? author.quote !== fm.quote
+            ? `must keep the quote of ${fm.source} as it is`
+            : fm.quote !== undefined && fm.quote.length > QUOTE_MAX
+              ? QUOTE_TOO_LONG
+              : undefined
           : fm.quote !== undefined
             ? quoteRefusal(fm.quote, author.text)
             : author.kind === "chat" && author.trust !== "agent"
