@@ -27,6 +27,7 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadWork from "./leadWork.ts";
+import { KinWorkToolkit } from "./mcp/tools.ts";
 import * as Clients from "./ownerClients.ts";
 import * as OwnerWork from "./ownerWork.ts";
 import { effectivelySensitive } from "./recordRows.ts";
@@ -570,6 +571,43 @@ it.effect(
         { reason: "not_found" },
       );
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("every Work tool whose result shows the lead a sensitive entry marks its wake-up", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* seed;
+    yield* setup("ask-event");
+    yield* LeadWork.update(scope, { key: "C-1", sourceEventId: "ask-event", sensitive: true });
+    // One row per tool the lead has: a tool added without one fails to typecheck and here.
+    const calls = {
+      records_query: LeadWork.query(scope, { keys: ["W-2"] }),
+      record_get: LeadWork.get(scope, { key: "W-2" }),
+      // Setting up a client that exists returns it, and shows it, sensitive.
+      record_create: LeadWork.create(scope, {
+        sourceEventId: "again-event",
+        records: [{ list: "clients", title: "Invented Acme" }],
+      }),
+      record_update: LeadWork.update(scope, {
+        key: "W-2",
+        sourceEventId: "ask-event",
+        notes: "Invented note",
+      }),
+    } satisfies Record<keyof typeof KinWorkToolkit.tools, unknown>;
+    assert.deepStrictEqual(
+      Object.keys(calls).toSorted(),
+      Object.keys(KinWorkToolkit.tools).toSorted(),
+    );
+    for (const [tool, call] of Object.entries(calls)) {
+      yield* sql`DELETE FROM kin_wakeup_sensitive_reads`;
+      yield* call;
+      assert.deepStrictEqual(
+        yield* sql`SELECT wakeup_id FROM kin_wakeup_sensitive_reads`,
+        [{ wakeup_id: "wake" }],
+        tool,
+      );
+    }
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect("a sensitive client or project labels what points at it; only the owner lowers it", () =>
