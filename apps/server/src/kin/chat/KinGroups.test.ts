@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import {
+  EnvironmentId,
   KinAgentId,
   KinChatId,
   KinEventId,
@@ -18,6 +19,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
+import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ChatWake from "../lead/ChatWake.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -742,5 +744,110 @@ it.effect(
         ),
         ["Invented-owner-note"],
       );
+    }).pipe(Effect.provide(layer)),
+);
+
+// Review of 422a82327b: a tool's result is a read too, so what came back from before a join leaked.
+it.effect(
+  "a shared turn gets nothing back from below the latest join: its card there, a reaction, a retried post",
+  () =>
+    Effect.gen(function* () {
+      const { sql, groups, chats, owner, orgId, tech, priya, sam, say, wake } = yield* seed;
+      const { chatId } = yield* groups.create([owner], {
+        orgId,
+        title: "Launch",
+        agentIds: [tech],
+        personIds: [priya.personId],
+      });
+      const said = yield* say(priya, chatId, "Invented-priya-before-sam");
+      const card = yield* chats
+        .createTaskCard({
+          orgId,
+          chatId,
+          authorAgentId: tech,
+          threadId: ThreadId.make("worker-before-sam"),
+          title: "Invented work",
+          model: "invented-model",
+          remote: { environmentId: EnvironmentId.make("worker-env"), status: "working" },
+        })
+        .pipe(Effect.provide(Layer.mock(OrchestratorV2)({})));
+      // Server-held fields the card picked up before Sam joined, and a reply the lead posted then.
+      yield* sql`UPDATE kin_widgets SET state_json = json_set(state_json,
+          '$.lastError', 'Invented-pre-join-error',
+          '$.pullRequests', json('[{"url":"https://example.com/pr/1","number":1,"state":"open"}]'))
+        WHERE widget_id = ${card.widgetId}`;
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+          author_agent_id, author_owner_person_id, author_thread_id, author_member_id, author_role,
+          kind, body, intent, mentions_json, status, client_message_id, created_at)
+        SELECT 'reply-before-sam', org_id, chat_id, seq + 1, author_kind, author_agent_id,
+          author_owner_person_id, author_thread_id, author_member_id, author_role, 'text',
+          'Invented-pre-join-reply', 'answer', '[]', 'posted', 'send:reply-key', created_at
+        FROM kin_messages WHERE message_id = ${card.messageId}`;
+      yield* sql`UPDATE kin_chats SET last_seq = (SELECT MAX(seq) FROM kin_messages
+        WHERE chat_id = ${chatId}) WHERE chat_id = ${chatId}`;
+      yield* groups.addMember([owner], {
+        chatId,
+        principal: { _tag: "person", personId: sam.personId },
+      });
+      yield* say(sam, chatId, "Invented-sam-hello");
+      const turn = yield* wake(tech);
+      yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = ${turn.wakeupId}`;
+      const [stored] = yield* sql<{ revision: number; state: string }>`SELECT revision,
+        state_json AS state FROM kin_widgets WHERE widget_id = ${card.widgetId}`;
+      for (const closed of [undefined, true])
+        assert.strictEqual(
+          yield* reason(
+            chats.upsertWidget(turn, {
+              chatId,
+              widgetId: card.widgetId,
+              revision: stored!.revision,
+              type: "task",
+              state: card.state,
+              ...(closed === undefined ? {} : { closed }),
+            }),
+          ),
+          "not_found",
+        );
+      assert.strictEqual(
+        yield* reason(
+          chats.react(turn, { chatId, messageId: said.messageId, emoji: "👍", on: true }),
+        ),
+        "not_found",
+      );
+      assert.strictEqual(
+        yield* reason(
+          chats.send(turn, {
+            chatId,
+            body: "Invented-pre-join-reply",
+            mentions: [],
+            clientMessageId: "reply-key",
+            intent: "answer",
+          }),
+        ),
+        "not_found",
+      );
+      const [after] = yield* sql<{ revision: number; state: string }>`SELECT revision,
+        state_json AS state FROM kin_widgets WHERE widget_id = ${card.widgetId}`;
+      assert.deepStrictEqual(after, stored);
+      // Its card from after the join it still updates.
+      const fresh = yield* chats
+        .createTaskCard({
+          orgId,
+          chatId,
+          authorAgentId: tech,
+          threadId: ThreadId.make("worker-after-sam"),
+          title: "Invented later work",
+          model: "invented-model",
+          remote: { environmentId: EnvironmentId.make("worker-env"), status: "working" },
+        })
+        .pipe(Effect.provide(Layer.mock(OrchestratorV2)({})));
+      const updated = yield* chats.upsertWidget(turn, {
+        chatId,
+        widgetId: fresh.widgetId,
+        revision: fresh.revision,
+        type: "task",
+        state: { ...(fresh.state as object), title: "Invented later work, renamed" },
+      });
+      assert.strictEqual(updated.revision, fresh.revision + 1);
     }).pipe(Effect.provide(layer)),
 );

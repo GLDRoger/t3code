@@ -551,7 +551,9 @@ const make = Effect.gen(function* () {
       turn: Lead,
       input: {
         readonly orgId: KinOrgId;
-        readonly chatId: KinChatId;
+        readonly workerId: KinWorkerId;
+        /** The worker's own chat, for a row `workerChat` can't read. */
+        readonly fallback: KinChatId | null;
         readonly agentId: KinAgentId;
         readonly threadId: ThreadId;
         readonly environmentId: EnvironmentId;
@@ -561,17 +563,20 @@ const make = Effect.gen(function* () {
         readonly reopen: boolean;
       },
     ) {
-      // The lead's words on a card are a post: authorised against the chat in the card's write.
-      const card = yield* sql.withTransaction(
+      // The lead's words on a card are a post: authorised against the chat in the card's write,
+      // and routed there too, as a join during the remote call may have moved the worker.
+      yield* sql.withTransaction(
         Effect.gen(function* () {
-          const where = yield* destination(turn, input.chatId).pipe(
+          const chatId = yield* cardChat(input.orgId, input.workerId, input.fallback);
+          if (chatId === null) return;
+          const where = yield* destination(turn, chatId).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
           );
           if (where !== "allowed") return yield* denied(SHARED_REFUSAL);
-          return yield* chat
+          const card = yield* chat
             .createTaskCard({
               orgId: input.orgId,
-              chatId: input.chatId,
+              chatId,
               authorAgentId: input.agentId,
               threadId: input.threadId,
               title: input.title,
@@ -582,15 +587,15 @@ const make = Effect.gen(function* () {
               Effect.provideService(OrchestratorV2, orchestrator),
               Effect.provideService(ServerEnvironment, environment),
             );
+          if (card.closedAt !== null && input.reopen)
+            yield* chat.setTaskCardClosed({
+              orgId: input.orgId,
+              chatId,
+              threadId: input.threadId,
+              closed: false,
+            });
         }),
       );
-      if (card.closedAt !== null && input.reopen)
-        yield* chat.setTaskCardClosed({
-          orgId: input.orgId,
-          chatId: input.chatId,
-          threadId: input.threadId,
-          closed: false,
-        });
     },
     Effect.catchCause((cause) => Effect.logWarning("Kin worker task card unavailable", { cause })),
   );
@@ -801,7 +806,8 @@ const make = Effect.gen(function* () {
     const live = launched.status === null || !endedStatuses.has(launched.status);
     yield* showCard(ctx, {
       orgId: ctx.orgId,
-      chatId: (yield* cardChat(ctx.orgId, workerId, chatId)) ?? chatId,
+      workerId,
+      fallback: chatId,
       agentId: ctx.agentId,
       threadId,
       environmentId,
@@ -910,18 +916,17 @@ const make = Effect.gen(function* () {
       threadId: plan.worker.threadId,
       key: `kin-stop-launch:${input.workerId}:${sent.runId}`,
     });
-    const followUpCard = yield* cardChat(ctx.orgId, input.workerId, plan.worker.chatId);
-    if (followUpCard !== null)
-      yield* showCard(ctx, {
-        orgId: ctx.orgId,
-        chatId: followUpCard,
-        agentId: plan.worker.agentId,
-        threadId: plan.worker.threadId,
-        environmentId,
-        title: plan.worker.title ?? "Worker",
-        model: plan.worker.model.model,
-        reopen: true,
-      });
+    yield* showCard(ctx, {
+      orgId: ctx.orgId,
+      workerId: input.workerId,
+      fallback: plan.worker.chatId,
+      agentId: plan.worker.agentId,
+      threadId: plan.worker.threadId,
+      environmentId,
+      title: plan.worker.title ?? "Worker",
+      model: plan.worker.model.model,
+      reopen: true,
+    });
     yield* tracker.track(ctx.orgId, input.workerId);
     return {
       workerId: input.workerId,

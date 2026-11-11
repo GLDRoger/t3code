@@ -24,6 +24,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import { ApproverKeys } from "../approvals/ApproverKeys.ts";
 import { KinPendingActions } from "../approvals/PendingActions.ts";
+import { memberReads } from "../chat/sharing.ts";
 import { MemoryCache } from "../memory/MemoryCache.ts";
 import { isQuiet, KIN_DEFAULT_QUIET_HOURS } from "../triggers/quietHours.ts";
 import { KinApnsTransport } from "./Apns.ts";
@@ -55,6 +56,8 @@ type Push = {
   readonly title: string;
   readonly body: string;
   readonly chatId: KinChatId | undefined;
+  /** The message, or card's anchor, it tells of: each send checks the recipient still reads it. */
+  readonly source: KinMessageId | undefined;
   /** Message pushes collapse per chat, so a busy chat shows one banner. */
   readonly collapseId?: string;
   readonly data: KinPushData;
@@ -249,6 +252,7 @@ const make = Effect.gen(function* () {
       title: lead?.display_name ?? "Approval needed",
       body: approvalPushText(action.value),
       chatId: undefined,
+      source: undefined,
       data: { kin: 1, orgId, pendingActionId: actionId, deepLink },
       recipients: approvers.map((personId) => ({ personId, silent: quiet })),
     } satisfies Push;
@@ -322,6 +326,7 @@ const make = Effect.gen(function* () {
           : `${chat.name} · ${author}`,
       body: kinPushBody(row.body) || "New message",
       chatId: row.chat_id,
+      source: messageId,
       collapseId: kinPushCollapseId(orgId, row.chat_id),
       data: {
         kin: 1,
@@ -356,8 +361,9 @@ const make = Effect.gen(function* () {
       phase: unknown;
       awaiting_json: string;
       seq: number;
+      message_id: KinMessageId;
     }>`SELECT w.chat_id, w.type, w.revision, json_extract(w.state_json, '$.phase') AS phase,
-        w.awaiting_json, m.seq
+        w.awaiting_json, m.seq, m.message_id
       FROM kin_widgets w JOIN kin_messages m ON m.message_id = w.message_id
       WHERE w.org_id = ${orgId} AND w.widget_id = ${widgetId} AND w.closed_at IS NULL
         AND m.status = 'posted'`;
@@ -383,6 +389,7 @@ const make = Effect.gen(function* () {
       ...kind,
       title: chat.name,
       chatId: row.chat_id,
+      source: row.message_id,
       data: {
         kin: 1,
         orgId,
@@ -397,6 +404,32 @@ const make = Effect.gen(function* () {
     } satisfies Push;
   });
 
+  /**
+   * Whether `personId` may still hear of `messageId`, from the rows as they are now: in its chat,
+   * the message still there (a clear deletes it), and one they may read (`readableBy`).
+   */
+  const stillReads = Effect.fn("KinPushSender.stillReads")(function* (
+    orgId: KinOrgId,
+    personId: KinPersonId,
+    chatId: KinChatId,
+    messageId: KinMessageId,
+  ) {
+    return yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const [member] = yield* sql<{ memberId: string }>`SELECT m.member_id AS "memberId"
+          FROM kin_chat_members m JOIN kin_messages msg ON msg.org_id = m.org_id
+            AND msg.chat_id = m.chat_id AND msg.message_id = ${messageId} AND msg.status = 'posted'
+          JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
+            AND msg.seq > c.cleared_seq
+          WHERE m.org_id = ${orgId} AND m.chat_id = ${chatId} AND m.principal_kind = 'person'
+            AND m.person_id = ${personId} AND m.left_at IS NULL
+          ORDER BY m.member_id LIMIT 1`;
+        if (member === undefined) return false;
+        return yield* memberReads(sql, { orgId, memberId: member.memberId, messageId });
+      }),
+    );
+  });
+
   const sendTo = Effect.fn("KinPushSender.sendTo")(function* (
     orgId: KinOrgId,
     push: Push,
@@ -405,6 +438,13 @@ const make = Effect.gen(function* () {
   ) {
     if (push.chatId !== undefined && (yield* presence.isWatching(device.sessionId, push.chatId)))
       return "suppressed" as const;
+    // A send waits behind others; who may hear of it is decided now. One already sent stays sent.
+    if (
+      push.chatId !== undefined &&
+      (push.source === undefined ||
+        !(yield* stillReads(orgId, device.personId, push.chatId, push.source)))
+    )
+      return "dropped" as const;
     const result = yield* apns.send({
       token: device.token,
       environment: device.apsEnvironment,

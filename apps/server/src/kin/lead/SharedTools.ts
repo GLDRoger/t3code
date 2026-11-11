@@ -61,7 +61,10 @@ const ownerAsked = Effect.fnUntraced(function* (turn: Turn) {
   return rows.length > 0 && rows.every((row) => row.fromOwner === 1);
 });
 
-/** The owner asked, and the worker is this lead's and was asked for in the chat this turn answers. */
+/**
+ * The owner asked, and the worker is this lead's, was asked for in the chat this turn answers,
+ * and was not moved out of it by a join (`onPersonJoined`).
+ */
 const ownerAskedAboutWorkerHere: Condition = Effect.fnUntraced(function* (turn, args) {
   const workerId = field(args, "workerId");
   if (typeof workerId !== "string" || !(yield* ownerAsked(turn))) return false;
@@ -70,7 +73,7 @@ const ownerAskedAboutWorkerHere: Condition = Effect.fnUntraced(function* (turn, 
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql`SELECT 1 FROM kin_workers
     WHERE org_id = ${turn.orgId} AND worker_id = ${workerId} AND agent_id = ${turn.agentId}
-      AND chat_id = ${chat.chatId}
+      AND chat_id = ${chat.chatId} AND moved_at IS NULL
     LIMIT 1`;
   return rows.length > 0;
 });
