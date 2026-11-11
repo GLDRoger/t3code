@@ -1,11 +1,15 @@
+import type { HookCallbackMatcher } from "@anthropic-ai/claude-agent-sdk";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Path from "effect/Path";
-import * as Schema from "effect/Schema";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as ClaudeAdapterV2 from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
-import { resolveClaudeHomePath } from "../../provider/Drivers/ClaudeHome.ts";
+import {
+  type AuthSettings,
+  makeConfiner,
+  sessionEnvironment,
+  withConfinementHook,
+} from "../claudeConfinement.ts";
 
 export const threadPrefix = "kin-dream:";
 export const dreamTools = ["Read", "Edit", "Write", "Glob", "Grep"];
@@ -21,17 +25,6 @@ const keptSettings = new Set([
   "autoCompactWindow",
 ]);
 
-// How Claude reaches its model (a gateway, Bedrock, Vertex). Read from the owner's user settings
-// only, never the dream checkout's project settings.
-const authEnv = /^(ANTHROPIC_|CLAUDE_CODE_USE_|CLOUD_ML_REGION$|AWS_|VERTEX_REGION)/;
-const UserAuthSettings = Schema.fromJsonString(
-  Schema.Struct({
-    apiKeyHelper: Schema.optional(Schema.String),
-    env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  }),
-);
-type AuthSettings = { apiKeyHelper?: string; env?: Record<string, string> };
-
 // Modes that already ask at least as often as acceptEdits; anything wider is narrowed to it.
 const narrowModes = new Set<string>(["default", "plan", "dontAsk", "acceptEdits"]);
 
@@ -42,6 +35,8 @@ const narrowModes = new Set<string>(["default", "plan", "dontAsk", "acceptEdits"
 const isolateClaudeDream = (
   options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions,
   auth: AuthSettings,
+  confinement: HookCallbackMatcher,
+  environment: NodeJS.ProcessEnv,
 ): ClaudeAdapterV2.ClaudeAgentSdkQueryOptions => {
   const {
     mcpServers: _mcpServers,
@@ -68,6 +63,7 @@ const isolateClaudeDream = (
     settings,
     extraArgs,
     permissionMode,
+    env,
     ...rest
   } = options;
   const kept: Record<string, unknown> = {
@@ -85,6 +81,9 @@ const isolateClaudeDream = (
     strictMcpConfig: true,
     tools: dreamTools,
     disallowedTools: blockedTools,
+    // Edit and Write are confined like the reads: the real checkout and nothing outside it.
+    hooks: withConfinementHook(undefined, confinement),
+    env: sessionEnvironment(env ?? environment),
     ...(Object.keys(kept).length === 0 ? {} : { settings: kept }),
     ...(thinking === undefined ? {} : { extraArgs: { "thinking-display": thinking } }),
   };
@@ -108,6 +107,7 @@ export const dreamOptionFields = new Set([
   "cwd",
   "systemPrompt",
   "permissionMode",
+  "hooks",
   "settingSources",
   "strictMcpConfig",
   "tools",
@@ -124,31 +124,19 @@ export const claudeQueryRunner = <E, R>(
     ClaudeAdapterV2.ClaudeAgentSdkQueryRunner,
     Effect.gen(function* () {
       const runner = yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const readAuth = Effect.fn("KinDreamIsolation.readAuth")(function* (
-        env: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions["env"],
-      ) {
-        const home = yield* resolveClaudeHomePath({ homePath: "" }, env ?? process.env).pipe(
-          Effect.provideService(Path.Path, path),
-        );
-        const parsed = yield* fs.readFileString(path.join(home, "settings.json")).pipe(
-          Effect.flatMap(Schema.decodeUnknownEffect(UserAuthSettings)),
-          Effect.orElseSucceed(() => ({}) as AuthSettings),
-        );
-        const authOnly = Object.entries(parsed.env ?? {}).filter(([key]) => authEnv.test(key));
-        const auth: AuthSettings = {
-          ...(parsed.apiKeyHelper === undefined ? {} : { apiKeyHelper: parsed.apiKeyHelper }),
-          ...(authOnly.length === 0 ? {} : { env: Object.fromEntries(authOnly) }),
-        };
-        return auth;
-      });
+      const confiner = yield* makeConfiner();
       return ClaudeAdapterV2.ClaudeAgentSdkQueryRunner.of({
         ...runner,
         open: Effect.fn("KinDreamIsolation.open")(function* (input) {
           if (!input.threadId.startsWith(threadPrefix)) return yield* runner.open(input);
-          const auth = yield* readAuth(input.options.env);
-          return yield* runner.open({ ...input, options: isolateClaudeDream(input.options, auth) });
+          const auth = yield* confiner.ownerAuth(input.options.env);
+          const root = yield* confiner.root(input.options.cwd);
+          const confinement = confiner.hook({ root, tools: dreamTools });
+          const environment = yield* HostProcess.Environment;
+          return yield* runner.open({
+            ...input,
+            options: isolateClaudeDream(input.options, auth, confinement, environment),
+          });
         }),
       });
     }),
