@@ -3,8 +3,11 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import {
   KIN_WORK_GONE,
   KIN_WORK_ITEM_FAILED,
+  KIN_WORK_NEW_COPY,
   KIN_WORK_ONLY_OWNER,
+  KIN_WORK_PRIVATE,
   kinWorkAssignees,
+  kinWorkHostClients,
   kinWorkItemState,
   kinWorkItemView,
   type KinWorkItemView,
@@ -38,6 +41,7 @@ import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
+import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
@@ -48,10 +52,17 @@ import { useOpenWorkspaceDetail } from "../layout/useOpenWorkspaceDetail";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
-import { KinWorkDueRow, KinWorkStatusRow } from "./components/KinWorkTaskMenus";
+import {
+  KinWorkDueRow,
+  KinWorkPlaceRow,
+  KinWorkSideRow,
+  KinWorkStatusRow,
+} from "./components/KinWorkTaskMenus";
 import { kinClient } from "./state/kinClient";
 import {
+  useKinWork,
   useKinWorkChanges,
+  useKinWorkChoices,
   useKinWorkDirectory,
   useKinWorkItemWatch,
   useKinWorkPlace,
@@ -148,6 +159,10 @@ function KinWorkItemBody(props: ItemTarget) {
   const canGive = useAtomValue(kinClient.workAssign.permissionAtom(environmentId));
   const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
   const place = useKinWorkPlace(environmentId);
+  const work = useKinWork(props);
+  // An older server has no clients or projects: the task shows as it always did.
+  const hostClients = kinWorkHostClients(work._tag === "ready" ? work.live.summary : null);
+  const choices = useKinWorkChoices(props, hostClients && canChange);
   const now = new Date(useNowMinuteMs());
   const close = () => navigation.goBack();
 
@@ -355,6 +370,103 @@ function KinWorkItemBody(props: ItemTarget) {
           />
         )}
       </ListSection>
+      {!hostClients ? null : (
+        <ListSection>
+          {act === null ? (
+            view.party === null ? null : (
+              <ListRow
+                icon="person.2"
+                label={KIN_WORK_NEW_COPY.clientLabel}
+                detail={view.party.title}
+                onPress={() =>
+                  navigation.navigate("KinClient", {
+                    environmentId,
+                    orgId,
+                    party: view.party?.key ?? "",
+                  })
+                }
+              />
+            )
+          ) : (
+            <KinWorkPlaceRow
+              icon="person.2"
+              label={KIN_WORK_NEW_COPY.clientLabel}
+              none={KIN_WORK_NEW_COPY.none}
+              held={view.party}
+              choices={choices.clients}
+              disabled={saving}
+              onPick={(party) => act({ type: "place", party })}
+            />
+          )}
+          {act === null || view.party === null ? null : (
+            <KinWorkSideRow
+              side={view.side}
+              disabled={saving}
+              onPick={(side) => act({ type: "place", side })}
+            />
+          )}
+          {act === null ? (
+            view.project === null ? null : (
+              <ListRow
+                icon="folder"
+                label={KIN_WORK_NEW_COPY.projectLabel}
+                detail={view.project.title}
+                onPress={() =>
+                  navigation.navigate("KinProject", {
+                    environmentId,
+                    orgId,
+                    project: view.project?.key ?? "",
+                  })
+                }
+              />
+            )
+          ) : (
+            <KinWorkPlaceRow
+              icon="folder"
+              label={KIN_WORK_NEW_COPY.projectLabel}
+              none={KIN_WORK_NEW_COPY.none}
+              held={view.project}
+              choices={choices.projects}
+              disabled={saving}
+              onPick={(project) => act({ type: "place", project })}
+            />
+          )}
+          {view.party === null ? null : (
+            <ListActionRow
+              label={`Open ${view.party.title}`}
+              onPress={() =>
+                navigation.navigate("KinClient", {
+                  environmentId,
+                  orgId,
+                  party: view.party?.key ?? "",
+                })
+              }
+            />
+          )}
+          {view.project === null ? null : (
+            <ListActionRow
+              label={`Open ${view.project.title}`}
+              onPress={() =>
+                navigation.navigate("KinProject", {
+                  environmentId,
+                  orgId,
+                  project: view.project?.key ?? "",
+                })
+              }
+            />
+          )}
+          {act === null && !view.privacy.private ? null : (
+            <ListToggleRow
+              icon="lock"
+              label={KIN_WORK_PRIVATE}
+              description={view.privacy.note}
+              value={view.privacy.private}
+              disabled={act === null || saving || view.privacy.inherited}
+              onValueChange={(on) => act?.({ type: "private", private: on })}
+            />
+          )}
+        </ListSection>
+      )}
       {view.notes === null ? null : (
         <View className="gap-2 px-2">
           <Text textRole="footnote" className="text-foreground-muted">

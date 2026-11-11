@@ -3,6 +3,7 @@ import type {
   KinRecord,
   KinRecordDetail,
   KinRecordKey,
+  KinRecordSide,
   KinRecordState,
   KinWorkAssignInput,
   KinWorkConfirmInput,
@@ -20,6 +21,7 @@ import {
   kinWorkSettled,
   type KinWorkChangeResult,
   type KinWorkNames,
+  type KinWorkRef,
 } from "./kinWork.ts";
 import type { KinWorkLive } from "./kinWorkStream.ts";
 
@@ -39,7 +41,16 @@ export type KinWorkAction =
   | { readonly type: "confirm" }
   | { readonly type: "decline" }
   | { readonly type: "give"; readonly to: KinWorkPrincipal }
-  | { readonly type: "takeBack" };
+  | { readonly type: "takeBack" }
+  /** Which client and project it belongs to, and whose move it is. Null takes one off. */
+  | {
+      readonly type: "place";
+      readonly party?: KinWorkRef | null;
+      readonly project?: KinWorkRef | null;
+      readonly side?: KinRecordSide;
+    }
+  /** The task's own label; its client or project can still keep it private. */
+  | { readonly type: "private"; readonly private: boolean };
 
 export const KIN_WORK_OFFLINE_CHANGE = "You're offline. Changes need a connection.";
 export const KIN_WORK_EDIT_CHANGED =
@@ -87,6 +98,8 @@ type Patch = Partial<
     | "notes"
     | "late"
     | "working"
+    | "side"
+    | "sensitive"
   >
 >;
 
@@ -214,6 +227,14 @@ function savedText(record: KinRecord, action: KinWorkAction, names: KinWorkNames
       return `Given to ${kinWorkName(action.to, names, "you")}.${told}`;
     case "takeBack":
       return `It's yours again.${told}`;
+    case "place":
+      if (action.party != null) return `Now under ${action.party.title}.`;
+      if (action.project != null) return `Now in ${action.project.title}.`;
+      if (action.side !== undefined)
+        return action.side === "theirs" ? "Marked as theirs to do." : "Marked as ours to do.";
+      return action.party === null ? "Taken off its client." : "Taken out of its project.";
+    case "private":
+      return action.private ? "Kept private." : "No longer private.";
   }
 }
 
@@ -254,6 +275,11 @@ function patchOf(record: KinRecord, action: KinWorkAction, names: KinWorkNames):
       return names.me === null
         ? {}
         : { owner: { _tag: "person", personId: names.me }, working: false };
+    case "place":
+      // The client and project show once the host answers with them; only the side is known now.
+      return action.side === undefined ? {} : { side: action.side };
+    case "private":
+      return { sensitive: action.private };
   }
 }
 
@@ -323,6 +349,17 @@ export function createKinWorkChanges(options: {
         return kinWorkSettled(await options.assign({ ...at, to: action.to }), "give");
       case "takeBack":
         return kinWorkSettled(await options.assign({ ...at, to: null }), "give");
+      case "place":
+        return kinWorkSettled(
+          await options.update({
+            ...at,
+            ...(action.party === undefined ? {} : { party: action.party?.key ?? null }),
+            ...(action.project === undefined ? {} : { project: action.project?.key ?? null }),
+            ...(action.side === undefined ? {} : { side: action.side }),
+          }),
+        );
+      case "private":
+        return kinWorkSettled(await options.update({ ...at, sensitive: action.private }));
     }
   };
 

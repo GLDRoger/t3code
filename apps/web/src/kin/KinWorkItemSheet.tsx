@@ -3,7 +3,9 @@ import {
   KIN_WORK_ASSIGN,
   KIN_WORK_GONE,
   KIN_WORK_ITEM_FAILED,
+  KIN_WORK_NEW_COPY,
   KIN_WORK_NOTES_MAX,
+  KIN_WORK_PRIVATE,
   KIN_WORK_TITLE_MAX,
   kinWorkAssignees,
   kinWorkDayOf,
@@ -13,6 +15,7 @@ import {
   type KinWorkAssignee,
   type KinWorkItemView,
   type KinWorkLinkView,
+  type KinWorkRef,
 } from "@t3tools/client-runtime/kin/kinWork";
 import {
   KIN_WORK_COPY,
@@ -72,9 +75,11 @@ import {
   SheetTitle,
 } from "../components/ui/sheet";
 import { Skeleton } from "../components/ui/skeleton";
+import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { KinAvatar } from "./KinAvatar";
+import { KinWorkSection as Section } from "./KinWorkParts";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
@@ -82,6 +87,7 @@ import {
   useKinWorkItemWatch,
   useKinWorkPlace,
   type KinWorkChangesHandle,
+  type KinWorkChoices,
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./useKinWork";
@@ -101,7 +107,11 @@ export function KinWorkItemSheet(
     readonly itemKey: KinRecordKey;
     readonly directory: KinWorkDirectory;
     readonly changes: KinWorkChangesHandle;
+    /** The clients and projects it can go under; null on a host without them. */
+    readonly choices: KinWorkChoices | null;
     readonly onOpenKey: (key: KinRecordKey) => void;
+    readonly onOpenClient: (key: KinRecordKey) => void;
+    readonly onOpenProject: (key: KinRecordKey) => void;
     readonly onClose: () => void;
   },
 ) {
@@ -192,22 +202,6 @@ export function KinWorkItemSheet(
   );
 }
 
-function Section(props: {
-  readonly title: string;
-  readonly action?: React.ReactNode;
-  readonly children: React.ReactNode;
-}) {
-  return (
-    <section className="flex flex-col gap-2">
-      <div className="flex min-h-6 items-center justify-between gap-2">
-        <h3 className="text-xs font-medium text-muted-foreground">{props.title}</h3>
-        {props.action}
-      </div>
-      {props.children}
-    </section>
-  );
-}
-
 /** What just happened to the task: said quietly when it worked, plainly when it didn't. */
 function KinWorkNoticeLine(props: {
   readonly notice: KinWorkNotice;
@@ -253,7 +247,10 @@ function KinWorkItem(
     readonly onEdit: (patch: Partial<Pick<KinWorkEdit, "title" | "notes">>) => void;
     readonly onCancelEdit: () => void;
     readonly onSaveEdit: () => void;
+    readonly choices: KinWorkChoices | null;
     readonly onOpenKey: (key: KinRecordKey) => void;
+    readonly onOpenClient: (key: KinRecordKey) => void;
+    readonly onOpenProject: (key: KinRecordKey) => void;
     readonly onClose: () => void;
   },
 ) {
@@ -273,6 +270,8 @@ function KinWorkItem(
   const moved = edit === null ? null : kinWorkEditMoved(edit, props.item);
   const titleId = useId();
   const notesId = useId();
+  const privateId = useId();
+  const { choices } = props;
   return (
     <>
       <SheetHeader>
@@ -362,7 +361,98 @@ function KinWorkItem(
                 <DueMenu view={view} now={props.now} saving={saving} onAct={change} />
               )}
             </dd>
+            {choices === null || (change === null && view.party === null) ? null : (
+              <>
+                <dt className="text-muted-foreground">{KIN_WORK_NEW_COPY.clientLabel}</dt>
+                <dd className="flex min-w-0 flex-wrap items-center gap-2 text-foreground">
+                  <PlaceMenu
+                    label={KIN_WORK_NEW_COPY.clientLabel}
+                    value={view.party}
+                    choices={choices.clients}
+                    saving={saving}
+                    onPick={change === null ? null : (party) => change({ type: "place", party })}
+                    onOpen={() => {
+                      if (view.party !== null) props.onOpenClient(view.party.key);
+                    }}
+                  />
+                  {view.party === null ? null : change === null || view.closed ? (
+                    <span className="text-xs text-muted-foreground">
+                      {view.side === "theirs"
+                        ? KIN_WORK_NEW_COPY.sideTheirs
+                        : KIN_WORK_NEW_COPY.sideOurs}
+                    </span>
+                  ) : (
+                    <Menu>
+                      <MenuTrigger
+                        render={
+                          <Button
+                            size="xs"
+                            variant="outline"
+                            disabled={saving}
+                            aria-label={`${KIN_WORK_NEW_COPY.sideLabel}. Change`}
+                          />
+                        }
+                      >
+                        {view.side === "theirs"
+                          ? KIN_WORK_NEW_COPY.sideTheirs
+                          : KIN_WORK_NEW_COPY.sideOurs}
+                        <ChevronDownIcon />
+                      </MenuTrigger>
+                      <MenuPopup align="start">
+                        <MenuItem
+                          disabled={view.side === "ours"}
+                          onClick={() => change({ type: "place", side: "ours" })}
+                        >
+                          {KIN_WORK_NEW_COPY.sideOurs}
+                        </MenuItem>
+                        <MenuItem
+                          disabled={view.side === "theirs"}
+                          onClick={() => change({ type: "place", side: "theirs" })}
+                        >
+                          {KIN_WORK_NEW_COPY.sideTheirs}
+                        </MenuItem>
+                      </MenuPopup>
+                    </Menu>
+                  )}
+                </dd>
+              </>
+            )}
+            {choices === null || (change === null && view.project === null) ? null : (
+              <>
+                <dt className="text-muted-foreground">{KIN_WORK_NEW_COPY.projectLabel}</dt>
+                <dd className="flex min-w-0 items-center gap-2 text-foreground">
+                  <PlaceMenu
+                    label={KIN_WORK_NEW_COPY.projectLabel}
+                    value={view.project}
+                    choices={choices.projects}
+                    saving={saving}
+                    onPick={
+                      change === null ? null : (project) => change({ type: "place", project })
+                    }
+                    onOpen={() => {
+                      if (view.project !== null) props.onOpenProject(view.project.key);
+                    }}
+                  />
+                </dd>
+              </>
+            )}
           </dl>
+          {change === null && !view.privacy.private ? null : (
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <Label htmlFor={privateId}>{KIN_WORK_PRIVATE}</Label>
+                <p className="text-xs text-muted-foreground">{view.privacy.note}</p>
+              </div>
+              <Switch
+                id={privateId}
+                size="sm"
+                checked={view.privacy.private}
+                // Its client or project keeps it private whatever its own label says.
+                disabled={change === null || saving || view.privacy.inherited}
+                onCheckedChange={(checked) => change?.({ type: "private", private: checked })}
+              />
+            </div>
+          )}
           {view.given === null ? null : (
             <p className="text-xs text-muted-foreground">{view.given}</p>
           )}
@@ -516,6 +606,71 @@ function KinWorkItem(
         </Section>
       </div>
     </>
+  );
+}
+
+const PLACE_ROW = "flex min-w-0 flex-1 truncate";
+
+/** The client or project a task is under: pick another, take it off, or open the one it has. */
+function PlaceMenu(props: {
+  readonly label: string;
+  readonly value: KinWorkRef | null;
+  readonly choices: ReadonlyArray<KinWorkRef>;
+  readonly saving: boolean;
+  /** Null where the task can't be changed, which leaves only opening it. */
+  readonly onPick: ((value: KinWorkRef | null) => void) | null;
+  readonly onOpen: () => void;
+}) {
+  const { value, onPick } = props;
+  if (onPick === null) {
+    return value === null ? null : (
+      <Button size="xs" variant="ghost" onClick={props.onOpen}>
+        {value.title}
+      </Button>
+    );
+  }
+  return (
+    <Menu>
+      <MenuTrigger
+        render={
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={props.saving}
+            aria-label={`${props.label}: ${value?.title ?? KIN_WORK_NEW_COPY.none}. Change`}
+          />
+        }
+      >
+        <span className="max-w-40 truncate">{value?.title ?? KIN_WORK_NEW_COPY.none}</span>
+        <ChevronDownIcon />
+      </MenuTrigger>
+      <MenuPopup align="start">
+        {value === null ? null : (
+          <>
+            <MenuItem onClick={props.onOpen}>Open {value.title}</MenuItem>
+            <MenuSeparator />
+          </>
+        )}
+        {props.choices.map((choice) => (
+          <MenuItem
+            key={choice.key}
+            disabled={choice.key === value?.key}
+            onClick={() => onPick(choice)}
+          >
+            <span className={PLACE_ROW}>{choice.title}</span>
+          </MenuItem>
+        ))}
+        {value === null ? null : (
+          <>
+            {props.choices.length === 0 ? null : <MenuSeparator />}
+            <MenuItem onClick={() => onPick(null)}>{KIN_WORK_NEW_COPY.none}</MenuItem>
+          </>
+        )}
+        {value === null && props.choices.length === 0 ? (
+          <MenuItem disabled>Nothing to pick yet</MenuItem>
+        ) : null}
+      </MenuPopup>
+    </Menu>
   );
 }
 

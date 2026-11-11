@@ -1,8 +1,10 @@
 import {
   kinWorkDueChoices,
   kinWorkDueLabel,
+  KIN_WORK_NEW_COPY,
   type KinWorkAssignee,
   type KinWorkItemView,
+  type KinWorkRef,
 } from "@t3tools/client-runtime/kin/kinWork";
 import {
   KIN_WORK_COPY,
@@ -11,6 +13,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import { View } from "react-native";
 
+import type { AppSymbolName } from "../../../components/ui/AppSymbol";
 import { ListRowLayout } from "../../../components/ui/ListRowLayout";
 import { Menu } from "../../../components/ui/Menu";
 
@@ -116,3 +119,93 @@ export function KinWorkDueRow(props: {
 }
 
 const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
+const NONE = "none";
+
+/** The client or the project something sits under: one of the ones there are, or none. */
+export function KinWorkPlaceRow(props: {
+  readonly icon: AppSymbolName;
+  readonly label: string;
+  readonly none: string;
+  readonly held: KinWorkRef | null;
+  readonly choices: ReadonlyArray<KinWorkRef>;
+  readonly disabled: boolean;
+  readonly onPick: (ref: KinWorkRef | null) => void;
+}) {
+  const { held } = props;
+  // The one it already has stays pickable after that one closes.
+  const choices =
+    held === null || props.choices.some((choice) => choice.key === held.key)
+      ? props.choices
+      : [held, ...props.choices];
+  const detail = held?.title ?? props.none;
+  return (
+    <Menu
+      title={props.label}
+      accessibilityRole="button"
+      accessibilityLabel={`${props.label}: ${detail}. Change`}
+      actions={[
+        ...choices.map((choice) => ({
+          id: choice.key,
+          title: choice.title,
+          state: choice.key === held?.key ? ("on" as const) : ("off" as const),
+        })),
+        { id: NONE, title: props.none, state: held === null ? ("on" as const) : ("off" as const) },
+      ]}
+      onPressAction={({ nativeEvent: { event } }) => {
+        if (props.disabled) return;
+        if (event === NONE) return props.onPick(null);
+        const picked = choices.find((choice) => choice.key === event);
+        if (picked !== undefined) props.onPick(picked);
+      }}
+    >
+      <View pointerEvents="none">
+        <ListRowLayout
+          icon={props.icon}
+          label={props.label}
+          detail={detail}
+          disabled={props.disabled}
+        />
+      </View>
+    </Menu>
+  );
+}
+
+const SIDES = [
+  { id: "ours", title: KIN_WORK_NEW_COPY.sideOurs },
+  { id: "theirs", title: KIN_WORK_NEW_COPY.sideTheirs },
+] as const;
+
+/** Whose move it is, for a task under a client: ours to do, or theirs. */
+export function KinWorkSideRow(props: {
+  readonly side: "ours" | "theirs";
+  readonly disabled: boolean;
+  readonly onPick: (side: "ours" | "theirs") => void;
+}) {
+  const detail = SIDES.find((side) => side.id === props.side)?.title ?? "";
+  return (
+    <Menu
+      title={KIN_WORK_NEW_COPY.sideLabel}
+      accessibilityRole="button"
+      accessibilityLabel={`${KIN_WORK_NEW_COPY.sideLabel}: ${detail}. Change`}
+      actions={SIDES.map((side) => ({
+        id: side.id,
+        title: side.title,
+        state: side.id === props.side ? ("on" as const) : ("off" as const),
+      }))}
+      onPressAction={({ nativeEvent: { event } }) => {
+        if (props.disabled) return;
+        if (event === "ours" || event === "theirs") props.onPick(event);
+      }}
+    >
+      <View pointerEvents="none">
+        <ListRowLayout
+          icon="arrow.left.arrow.right"
+          label={KIN_WORK_NEW_COPY.sideLabel}
+          detail={detail}
+          disabled={props.disabled}
+        />
+      </View>
+    </Menu>
+  );
+}

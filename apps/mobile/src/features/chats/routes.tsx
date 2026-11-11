@@ -4,17 +4,24 @@ import { pageRoute, sheetRoute } from "../layout/route-options";
 import { KinApprovalsScreen } from "./approvals/KinApprovalsScreen";
 import { KinChatScreen } from "./KinChatScreen";
 import { KinChatsScreen } from "./KinChatsScreen";
+import { KinClientScreen } from "./KinClientScreen";
 import { KinGroupFormScreen } from "./KinGroupFormScreen";
 import { KinGroupScreen } from "./KinGroupScreen";
 import { KinLeadFormScreen } from "./KinLeadFormScreen";
 import { KinLeadScreen } from "./KinLeadScreen";
 import { KinMemoryScreen } from "./KinMemoryScreen";
+import { KinProjectScreen } from "./KinProjectScreen";
 import { KinInviteScreen } from "./KinInviteScreen";
 import { KinTeamScreen } from "./KinTeamScreen";
 import { KinTeammateScreen } from "./KinTeammateScreen";
 import { KinWaitingScreen } from "./KinWaitingScreen";
 import { KinWorkAssignScreen } from "./KinWorkAssignScreen";
 import { KinWorkEditScreen } from "./KinWorkEditScreen";
+import {
+  KinClientFormScreen,
+  KinContactFormScreen,
+  KinProjectFormScreen,
+} from "./KinWorkFormScreens";
 import { KinWorkItemScreen } from "./KinWorkItemScreen";
 import { KinWorkNewScreen } from "./KinWorkNewScreen";
 import { KinWorkScreen } from "./KinWorkScreen";
@@ -57,6 +64,28 @@ export const KIN_SCREENS = {
   }),
   KinWorkNew: createNativeStackScreen({
     screen: KinWorkNewScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinClient: createNativeStackScreen({
+    screen: KinClientScreen,
+    linking: "kin/:environmentId/:orgId/clients/:party",
+    options: pageRoute({ title: "Client" }),
+  }),
+  KinProject: createNativeStackScreen({
+    screen: KinProjectScreen,
+    linking: "kin/:environmentId/:orgId/projects/:project",
+    options: pageRoute({ title: "Project" }),
+  }),
+  KinClientForm: createNativeStackScreen({
+    screen: KinClientFormScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinContactForm: createNativeStackScreen({
+    screen: KinContactFormScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinProjectForm: createNativeStackScreen({
+    screen: KinProjectFormScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
   KinTeam: createNativeStackScreen({
