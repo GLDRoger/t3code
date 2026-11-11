@@ -1360,3 +1360,182 @@ it.effect.each(["owner", "nightly", "lead"] as const)(
       Effect.scoped,
     ),
 );
+
+// Review 14: an item retired by a path that left its grant (an older build, an L0 lead's shadow
+// branch, a dream branch merged on GitHub) came back team-readable through the owner's Undo.
+it.effect.each(["legacy", "shadow", "github"] as const)(
+  "however an item was retired, nothing it was shared as reaches a shared turn again: %s",
+  (path) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const vcs = yield* Vcs.VcsProcess;
+      const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+      const source = `${root}/seed`;
+      const remote = `${root}/remote.git`;
+      const git = (cwd: string, args: ReadonlyArray<string>) =>
+        vcs
+          .run({ operation: "test.writer", command: "git", cwd, args })
+          .pipe(Effect.map((r) => r.stdout.trim()));
+      const commit = (cwd: string, message: string) =>
+        git(cwd, [
+          "-c",
+          "user.name=Fixture Bot",
+          "-c",
+          "user.email=fixture@example.invalid",
+          "commit",
+          "-m",
+          message,
+        ]);
+      const fields = { id: "known", kind: "claim", title: "Invented known", links: [] };
+      const known = fixtureItem(fields);
+      const retiredText = fixtureItem({ ...fields, invalid_at: "2026-11-08T00:00:00.000Z" });
+      yield* fs.makeDirectory(`${source}/claims`, { recursive: true });
+      yield* fs.writeFileString(`${source}/rules.md`, "Invented rules\n");
+      yield* fs.writeFileString(`${source}/claims/known.md`, known);
+      yield* git(source, ["init", "-b", "main"]);
+      yield* git(source, ["add", "--", "."]);
+      yield* commit(source, "fixture");
+      yield* git(root, ["clone", "--bare", "--", source, remote]);
+      const config = Layer.succeed(MemoryConfig, {
+        baseDirectory: root,
+        directMainPush: true,
+        repositories: [{ orgId, repoUrl: remote, path: "state" }],
+      });
+      const owner = {
+        saidBy: "fixture-owner",
+        trust: "owner" as const,
+        source: "fixture-owner-message",
+      };
+      const level = path === "shadow" ? ("L0" as const) : ("L1" as const);
+      const layer = Writer.layer.pipe(
+        Layer.provideMerge(
+          Memory.layer.pipe(
+            Layer.provide(config),
+            Layer.provide(Layer.succeed(Memory.MemorySyncHooks, { syncItems: () => Effect.void })),
+          ),
+        ),
+        Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
+        Layer.provide(config),
+        Layer.provide(Layer.succeed(Writer.MemoryWriterHooks, { notify: () => Effect.void })),
+        Layer.provide(
+          Layer.succeed(Writer.MemoryWriterAuthority, {
+            resolve: (_org: KinOrgId, wakeupId: string) =>
+              Effect.succeed({
+                orgId,
+                wakeupId,
+                agentId,
+                level,
+                timeZone: "UTC",
+                startedAt: "2026-11-08T00:00:00.000Z",
+                eventIds: [],
+                sources: new Map([["owner", owner]]),
+              }),
+          }),
+        ),
+        Layer.provide(Scan.layer),
+      );
+      yield* Effect.gen(function* () {
+        const memory = yield* Memory.Memory;
+        const writer = yield* Writer.MemoryWriter;
+        const sql = yield* SqlClient.SqlClient;
+        const at = "2026-11-08T00:00:00.000Z";
+        yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Org', ${at})`;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('owner', ${orgId}, 'owner', 'Owner', ${at})`;
+        yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at) VALUES (${agentId}, ${orgId}, 'Lead', 'lead', 'owner', ${at})`;
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES ('owner-chat', ${orgId}, 'team_group', 0, ${at})`;
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, models_json, worker_projects_json, owner_chat_id)
+          VALUES (${agentId}, ${orgId}, 'Lead', ${level}, 0, '{}', '[]', 'owner-chat')`;
+        yield* memory.ensureCheckouts(orgId);
+        yield* memory.prepareWakeup(orgId);
+        const id = KinMemoryItemId.make("known");
+        const before = yield* memory.readItemQuietly(orgId, id);
+        const share = authorise(orgId, id, fingerprint(before), "owner_setting");
+        yield* share;
+        assert(reaches("shared", before, yield* storedLabels(orgId)));
+        const ended = Effect.gen(function* () {
+          const labels = yield* storedLabels(orgId);
+          return !labels.shared.has(id) && !labels.suggested.has(id);
+        });
+
+        if (path === "github") {
+          // The owner merges a dream branch that retires it on GitHub; Kin only syncs.
+          const outside = `${root}/outside`;
+          yield* git(root, ["clone", "--", remote, outside]);
+          yield* git(outside, ["checkout", "-b", "dream/2026-11-09"]);
+          yield* fs.writeFileString(`${outside}/claims/known.md`, retiredText);
+          yield* git(outside, ["add", "--", "."]);
+          yield* commit(outside, "dream: retire known");
+          yield* git(outside, ["checkout", "main"]);
+          yield* git(outside, [
+            "-c",
+            "user.name=Fixture Bot",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "merge",
+            "--no-ff",
+            "-m",
+            "Merge dream/2026-11-09",
+            "dream/2026-11-09",
+          ]);
+          yield* git(outside, ["push", "origin", "main"]);
+          yield* memory.syncCheckout(orgId);
+          yield* writer.reconcileSharing(orgId);
+          assert(yield* ended);
+          const after = yield* memory.readItemQuietly(orgId, id);
+          // Even as its old words, unretired, nothing lets the team read it.
+          assert.isFalse(
+            reaches(
+              "shared",
+              { ...after, head: { ...after.head, invalid_at: null } },
+              yield* storedLabels(orgId),
+            ),
+          );
+          return;
+        }
+
+        // A wake-up retires it: on the default branch (legacy) or the L0 lead's shadow branch.
+        yield* writer.appendJournal(orgId, "wake0", ["Only a note."]);
+        yield* writer.commitWakeup(orgId, "wake0", "completed");
+        const branch = path === "shadow" ? Memory.shadowBranch(agentId) : "main";
+        const { writer: writerPath } = yield* memory.ensureCheckouts(orgId);
+        const base = yield* git(writerPath, ["rev-parse", `refs/heads/${branch}`]);
+        yield* writer.stage(orgId, "wake1", {
+          path: "claims/known.md",
+          sourceEventId: "owner",
+          content: retiredText,
+        });
+        const { commit: written } = yield* writer.commitWakeup(orgId, "wake1", "completed");
+        if (path === "legacy") {
+          // A grant left behind by a build whose retirement never cleared one.
+          yield* share;
+          yield* writer.reconcileSharing(orgId);
+          assert(yield* ended);
+          yield* share;
+        } else assert.isFalse(yield* ended);
+        const undo = {
+          agentId,
+          branch,
+          base,
+          commit: written,
+          itemId: id,
+          path: "claims/known.md",
+        };
+        expect((yield* writer.undoChange(orgId, undo))._tag).toBe("undone");
+        const restored = yield* memory.readItemQuietly(orgId, id, { lead: agentId });
+        expect(restored.head.invalid_at).toBeNull();
+        expect(fingerprint(restored)).toBe(fingerprint(before));
+        assert(yield* ended);
+        assert.isFalse(reaches("shared", restored, yield* storedLabels(orgId)));
+      }).pipe(Effect.provide(layer));
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          gitLayer,
+          NodeServices.layer,
+          Persistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
+          ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_TEAM_MEMORY: "on" })),
+        ),
+      ),
+      Effect.scoped,
+    ),
+);

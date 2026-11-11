@@ -310,10 +310,12 @@ export const retireLabels = Effect.fn("KinSensitivity.retireLabels")(function* (
   itemIds: ReadonlyArray<string>,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  for (const itemId of itemIds)
-    yield* sql`UPDATE kin_memory_labels SET shared_content = NULL, shared_how = NULL,
-        shared_at = NULL, suggested_content = NULL, suggested_at = NULL
-      WHERE org_id = ${orgId} AND item_id = ${itemId}`;
+  if (itemIds.length === 0) return;
+  yield* sql`UPDATE kin_memory_labels SET shared_content = NULL, shared_how = NULL,
+      shared_at = NULL, suggested_content = NULL, suggested_at = NULL
+    WHERE org_id = ${orgId} AND item_id IN ${sql.in([...new Set(itemIds)])}
+      AND (shared_content IS NOT NULL OR shared_how IS NOT NULL OR shared_at IS NOT NULL
+        OR suggested_content IS NOT NULL OR suggested_at IS NOT NULL)`;
 });
 
 /**
