@@ -35,7 +35,7 @@ import * as SecretScan from "../memory/secretScan.ts";
 import { KinIssuedTokens } from "../mcp/KinIssuedTokens.ts";
 import * as KinTriggerInbox from "../triggers/KinTriggerInbox.ts";
 import * as KinTriggerStore from "../triggers/KinTriggerStore.ts";
-import { classify, storedLabels } from "../memory/sensitivity.ts";
+import { classify, storedLabels, suggest } from "../memory/sensitivity.ts";
 import { checkDream, DreamJson } from "./checkDream.ts";
 import { keepLabels } from "./labels.ts";
 import * as DreamSession from "./DreamSession.ts";
@@ -394,7 +394,7 @@ const make = Effect.gen(function* () {
         material: material.entries,
         requireResolutions: true,
       });
-      const { changes, classified } = yield* keepLabels({
+      const { changes, classified, suggested } = yield* keepLabels({
         orgId,
         base: baseText,
         tree: checkout.tree,
@@ -436,8 +436,13 @@ const make = Effect.gen(function* () {
       });
       // A pause during the checks or the push fails the dream, and settling deletes its branch.
       if (yield* paused) return failed([pausedFailure]);
-      // The branch waits for the owner, so who may know each item until then is kept here.
-      yield* classify(orgId, classified).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      // The branch waits for the owner, so who may know each item until then is kept here. What
+      // it would let the team know is only suggested: a reworded item stops reaching the team
+      // when its new words land, until the owner confirms them.
+      yield* Effect.gen(function* () {
+        yield* classify(orgId, classified);
+        for (const [itemId, content] of suggested) yield* suggest(orgId, itemId, content);
+      }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
       return {
         _tag: "succeeded",
         dreamId,

@@ -16,6 +16,7 @@ import {
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -42,6 +43,7 @@ import * as Cache from "../memory/MemoryCache.ts";
 import { MemoryConfig } from "../memory/MemoryConfig.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import * as Scan from "../memory/secretScan.ts";
+import { authorise, fingerprint, storedLabels, visibility } from "../memory/sensitivity.ts";
 import * as TriggerService from "../triggers/KinTriggerService.ts";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import { KinHandoff } from "./Handoff.ts";
@@ -144,6 +146,10 @@ it.live(
       yield* fs.writeFileString(
         `${seed}/claims/private.md`,
         fixtureItem({ id: "private-item", kind: "claim", due: null, sensitive: true }),
+      );
+      yield* fs.writeFileString(
+        `${seed}/claims/spare.md`,
+        fixtureItem({ id: "spare-item", kind: "claim", due: null, links: ["spare"] }),
       );
       yield* fs.makeDirectory(`${seed}/deferrals`);
       for (const id of ["close-me", "cancel-me", "invalidate-me", "foreign-me"]) {
@@ -386,10 +392,18 @@ it.live(
         const memory = yield* Memory.Memory;
         yield* memory.prepareWakeup(orgId, "fixture-wakeup");
         yield* memory.prepareWakeup(other, "other-wakeup");
+        // The owner let the team know `team-item` before this test, so a stored row says so.
+        const teamItem = yield* memory.readItemQuietly(orgId, KinMemoryItemId.make("team-item"));
+        yield* authorise(orgId, "team-item", fingerprint(teamItem), "owner_setting");
         const claims = service
           .search(scope, { kind: "claim" })
           .pipe(Effect.map((items) => items.map((item) => item.id).toSorted()));
-        assert.deepStrictEqual(yield* claims, ["a-item", "private-item", "team-item"]);
+        assert.deepStrictEqual(yield* claims, [
+          "a-item",
+          "private-item",
+          "spare-item",
+          "team-item",
+        ]);
         assert.strictEqual(
           (yield* service.read(scope, { id: KinMemoryItemId.make("b-item") }).pipe(Effect.flip))
             .reason,
@@ -584,16 +598,20 @@ it.live(
             }),
             service.schedule(scope, scheduleInput),
             service.cancel(scope, { itemId: first.itemId, sourceEventId: "fixture-event" }),
-            service.label(scope, {
-              itemId: KinMemoryItemId.make("private-item"),
-              sensitive: false,
-              sourceEventId: "fixture-event",
-            }),
-            service.label(scope, {
-              itemId: KinMemoryItemId.make("team-item"),
-              sensitive: true,
-              sourceEventId: "fixture-event",
-            }),
+            service
+              .label(scope, {
+                itemIds: [KinMemoryItemId.make("private-item")],
+                sensitive: false,
+                sourceEventId: "fixture-event",
+              })
+              .pipe(Effect.asVoid),
+            service
+              .label(scope, {
+                itemIds: [KinMemoryItemId.make("team-item")],
+                sensitive: true,
+                sourceEventId: "fixture-event",
+              })
+              .pipe(Effect.asVoid),
           ])
             assert.strictEqual((yield* refused.pipe(Effect.flip)).message, SHARED_REFUSAL);
         });
@@ -644,7 +662,12 @@ it.live(
           assert.strictEqual((yield* refused.pipe(Effect.flip)).message, SHARED_REFUSAL);
         // Go on as a turn the owner alone reads from the start.
         yield* sql`UPDATE kin_wakeups SET aborted_at = NULL WHERE wakeup_id = 'fixture-wakeup'`;
-        assert.deepStrictEqual(yield* claims, ["a-item", "private-item", "team-item"]);
+        assert.deepStrictEqual(yield* claims, [
+          "a-item",
+          "private-item",
+          "spare-item",
+          "team-item",
+        ]);
         // The server labels money and access sensitive whatever the lead said, and never stores
         // an actual secret.
         const noted = (id: string, body: string) => ({
@@ -657,13 +680,20 @@ it.live(
           noted("vault-claim", "The deploy key is in the vault under invented/deploy"),
         );
         yield* service.write(scope, noted("status-claim", "Invented launch is on track"));
+        // Not the owner's word: written from a routine, "the team can know it" is only a
+        // suggestion the owner is asked about, and the team doesn't know it meanwhile.
+        yield* service.write(scope, {
+          ...noted("routine-claim", "Invented routine finding"),
+          sourceEventId: "routine-event",
+        });
+
         const secret = yield* service
           .write(scope, noted("secret-claim", `The deploy token is ghp_${"a1B2".repeat(9)}`))
           .pipe(Effect.flip);
         assert.include(secret.message, "Save where it is kept instead");
         // Letting the team know something is the owner's call: only their own message does it.
         const share = {
-          itemId: KinMemoryItemId.make("private-item"),
+          itemIds: [KinMemoryItemId.make("private-item")],
           sensitive: false,
           sourceEventId: "routine-event",
         };
@@ -671,10 +701,28 @@ it.live(
           (yield* service.label(scope, share).pipe(Effect.flip)).message,
           "Only the owner's own message",
         );
-        yield* service.label(scope, { ...share, sourceEventId: "fixture-event" });
+        assert.strictEqual(
+          (yield* service
+            .label(scope, {
+              ...share,
+              itemIds: [KinMemoryItemId.make("spare-item"), KinMemoryItemId.make("no-such-item")],
+              sourceEventId: "fixture-event",
+            })
+            .pipe(Effect.flip)).reason,
+          "not_found",
+        );
+        // "Yes, the team can know those": several at once, by the owner's own message.
+        assert.deepStrictEqual(
+          yield* service.label(scope, {
+            ...share,
+            itemIds: [KinMemoryItemId.make("private-item"), KinMemoryItemId.make("spare-item")],
+            sourceEventId: "fixture-event",
+          }),
+          { itemIds: [KinMemoryItemId.make("private-item"), KinMemoryItemId.make("spare-item")] },
+        );
         // Keeping something back needs no such message, and holds before the turn commits.
         yield* service.label(scope, {
-          itemId: KinMemoryItemId.make("team-item"),
+          itemIds: [KinMemoryItemId.make("team-item")],
           sensitive: true,
           sourceEventId: "routine-event",
         });
@@ -914,8 +962,19 @@ it.live(
         yield* sql`UPDATE kin_events SET wakeup_id = 'team-wakeup' WHERE wakeup_id = 'cancel-wakeup'`;
         yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = 'team-wakeup' WHERE event_id = 'member-event'`;
         yield* sql`UPDATE kin_chat_members SET left_at = NULL WHERE member_id = 'fixture-member-membership'`;
-        // The owner shared one item and kept one back in the turn above.
-        assert.deepStrictEqual(yield* claims, ["new-claim", "private-item", "status-claim"]);
+        // The owner shared items and kept one back in the turn above; the routine's suggestion
+        // waits for the owner.
+        assert.deepStrictEqual(yield* claims, [
+          "new-claim",
+          "private-item",
+          "spare-item",
+          "status-claim",
+        ]);
+        const routineClaim = yield* memory.readItemQuietly(
+          orgId,
+          KinMemoryItemId.make("routine-claim"),
+        );
+        assert.strictEqual(visibility(routineClaim, yield* storedLabels(orgId)), "suggested");
         const said = {
           ...input,
           sourceEventId: "member-event",
@@ -941,7 +1000,7 @@ it.live(
           // Only a claim, attributed to the person whose message it cites.
           [{ ...said, item: { ...said.item, kind: "decision" } }, "as a claim"],
           [{ ...said, sourceEventId: "routine-event" }, "the person who said it"],
-          // An owner-turn item it can see is not its to change; one it can't see isn't there.
+          // An owner-turn item it can see is not its to change.
           [
             {
               ...said,
@@ -950,18 +1009,53 @@ it.live(
             },
             "saved from this same chat",
           ],
-          [
-            {
-              ...said,
-              op: "invalidate",
-              item: { ...said.item, id: KinMemoryItemId.make("team-item") },
-            },
-            "Kin record not found.",
-          ],
-          [{ ...said, item: { ...said.item, id: KinMemoryItemId.make("a-item") } }, "Use a new id"],
         ] as const)
           assert.include(yield* refusal(service.write(scope, attempt)), why);
+        // What it can't see, by id or by a link it shares, refuses exactly like a missing item
+        // or anything else not saved from here: no id, title or count of what is there.
+        const ordinary = yield* refusal(
+          service.write(scope, { ...said, item: { ...said.item, sensitive: true } }),
+        );
+        for (const attempt of [
+          {
+            ...said,
+            op: "invalidate",
+            item: { ...said.item, id: KinMemoryItemId.make("team-item") },
+          },
+          {
+            ...said,
+            op: "update",
+            item: { ...said.item, id: KinMemoryItemId.make("no-such-claim") },
+          },
+          { ...said, item: { ...said.item, id: KinMemoryItemId.make("a-item") } },
+          {
+            ...said,
+            item: { ...said.item, id: KinMemoryItemId.make("linked-claim"), links: ["issue #12"] },
+          },
+        ] as const) {
+          const message = yield* refusal(service.write(scope, attempt));
+          assert.strictEqual(message, ordinary);
+          for (const hidden of ["a-item", "team-item", "Invented service maintenance"])
+            assert.notInclude(message, hidden);
+        }
+        // A teammate's messages cause at most so much to be saved a day, counted from stored rows.
+        const now = yield* Clock.currentTimeMillis;
+        for (let index = 0; index < 20; index++)
+          yield* sql`INSERT INTO kin_memory_shared_writes
+              (org_id, wakeup_id, item_id, person_id, bytes, written_at)
+            VALUES (${orgId}, 'earlier-wakeup', ${`earlier-${index}`}, 'fixture-member', 10, ${now})`;
+        const capped = yield* refusal(service.write(scope, said));
+        assert.include(capped, "as much as can be saved from one person's messages today");
+        yield* sql`DELETE FROM kin_memory_shared_writes WHERE item_id != 'earlier-0'`;
+        yield* sql`UPDATE kin_memory_shared_writes SET bytes = 19990`;
+        assert.strictEqual(yield* refusal(service.write(scope, said)), capped);
+        yield* sql`DELETE FROM kin_memory_shared_writes`;
         assert.deepStrictEqual(yield* service.write(scope, said), { itemId: "member-claim" });
+        assert.deepStrictEqual(yield* service.write(scope, said), { itemId: "member-claim" });
+        assert.deepStrictEqual(
+          yield* sql`SELECT item_id, person_id FROM kin_memory_shared_writes WHERE org_id = ${orgId}`,
+          [{ item_id: "member-claim", person_id: "fixture-member" }],
+        );
         yield* service.journal(scope, { saw: ["Invented teammate request"], did: [] });
         assert.isTrue(yield* writerService.staged(orgId, "team-wakeup"));
         const teamCommit = yield* writerService.commitWakeup(orgId, "team-wakeup", "completed");

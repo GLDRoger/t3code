@@ -123,9 +123,9 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("memory_label", {
     ...shared,
     description:
-      'Change who may know a memory item, by itemId, with this turn\'s sourceEventId. sensitive true keeps it between you and the owner: use it when the owner says so ("keep that between us"). sensitive false lets the team know it: only when the owner\'s own message in this turn says so ("that\'s fine to share with the team"), never on your own judgement; anything else is refused.',
+      'Change who may know memory items, by itemIds (one or several), with this turn\'s sourceEventId. sensitive true keeps them between you and the owner: use it when the owner says so ("keep that between us"). sensitive false lets the team know them: only when the owner\'s own message in this turn says so ("that\'s fine to share with the team", "yes, the team can know those"), never on your own judgement; anything else is refused.',
     parameters: Lead.LabelInput,
-    success: Lead.ItemResult,
+    success: Lead.LabelResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_defer", {
     ...shared,

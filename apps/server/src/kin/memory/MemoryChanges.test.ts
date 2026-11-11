@@ -31,6 +31,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as Kin from "../layer.ts";
 import { dormantLeadDependencies } from "../lead/layer.testkit.ts";
 import { KinMemoryChanges, type KinMemoryUndo } from "./MemoryChanges.ts";
+import { authorise, fingerprint, suggest } from "./sensitivity.ts";
 
 const session = {
   sessionId: AuthSessionId.make("owner-session"),
@@ -195,6 +196,7 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
         links: [],
         ...fields,
       });
+    const body = "Invented body.\n";
     let items = [
       head("team", { sensitive: false }),
       head("terms", { sensitive: true }),
@@ -210,7 +212,12 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
           chat_name: "Invented room",
         },
       }),
-    ];
+      // A lead said the team could know these, in turns no owner message started.
+      head("hinted", { sensitive: false }),
+      head("later", { sensitive: false }),
+      // Its file says the team can know it; nothing stored says so.
+      head("claimed", { sensitive: false }),
+    ].map((item) => ({ head: item, body }));
     const relabelled: Array<{ itemId: string; sensitive: boolean; person: string }> = [];
     const memory = Context.get(services, KinMemoryChanges);
     yield* memory.attachWriter({
@@ -219,13 +226,20 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
       relabel: (_org, input) =>
         Effect.sync(() => {
           relabelled.push(input);
-          const next = { ...items.find((item) => item.id === input.itemId)! };
+          const next = { ...items.find((item) => item.head.id === input.itemId)!.head };
           items = items.map((item) =>
-            item.id === input.itemId ? { ...next, sensitive: input.sensitive } : item,
+            item.head.id === input.itemId
+              ? { head: { ...next, sensitive: input.sensitive }, body }
+              : item,
           );
           return { head: { ...next, sensitive: input.sensitive } };
         }),
     });
+    const words = (id: string) => fingerprint(items.find((item) => item.head.id === id)!);
+    // What stored rows say: the owner let the team know `team`, a teammate said `said`.
+    yield* authorise(orgId, "team", words("team"), "owner_setting");
+    yield* authorise(orgId, "said", words("said"), "teammate");
+    yield* suggest(orgId, "hinted", words("hinted"));
     const member = [{ _tag: "person" as const, orgId, personId: KinPersonId.make("priya") }];
     const flip = { orgId, itemId: KinMemoryItemId.make("terms"), onlyOwner: false };
     assert.include(yield* memory.list(member, { orgId }).pipe(Effect.flip), {
@@ -234,6 +248,10 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
     assert.include(yield* memory.setVisibility(member, flip).pipe(Effect.flip), {
       reason: "not_allowed",
     });
+    assert.include(
+      yield* memory.confirmSuggestions(member, { orgId, asOf: 10 }).pipe(Effect.flip),
+      { reason: "not_allowed" },
+    );
     assert.deepStrictEqual(relabelled, []);
 
     const shown = () =>
@@ -241,29 +259,64 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
         .list([owner], { orgId })
         .pipe(
           Effect.map(({ items }) =>
-            Object.fromEntries(items.map((item) => [item.itemId, item.onlyOwner])),
+            Object.fromEntries(items.map((item) => [item.itemId, item.visibility])),
           ),
         );
-    // Unlabelled reads as the owner's alone; what is no longer true isn't listed.
-    assert.deepStrictEqual(yield* shown(), { team: false, terms: true, legacy: true, said: false });
+    // Unlabelled, or labelled only by a file, reads as the owner's alone; what is no longer true
+    // isn't listed.
+    assert.deepStrictEqual(yield* shown(), {
+      team: "team",
+      terms: "only_owner",
+      legacy: "only_owner",
+      said: "team",
+      hinted: "suggested",
+      later: "only_owner",
+      claimed: "only_owner",
+    });
     assert.deepStrictEqual(
       (yield* memory.list([owner], { orgId })).items.find((item) => item.itemId === "said")?.from,
       { name: "Invented person", chatName: "Invented room" },
     );
 
+    // Confirming everything the owner was shown takes nothing suggested after it.
+    const { suggestionsAsOf } = yield* memory.list([owner], { orgId });
+    yield* suggest(orgId, "later", words("later"));
+    const confirmed = yield* memory.confirmSuggestions([owner], { orgId, asOf: suggestionsAsOf });
+    assert.deepStrictEqual(
+      confirmed.items.map((item) => [item.itemId, item.visibility]),
+      [["hinted", "team"]],
+    );
+    assert.strictEqual((yield* shown()).later, "suggested");
+    // By id, only what is still suggested: a file's say-so is not a suggestion.
+    const byId = yield* memory.confirmSuggestions([owner], {
+      orgId,
+      itemIds: [KinMemoryItemId.make("later"), KinMemoryItemId.make("claimed")],
+    });
+    assert.deepStrictEqual(
+      byId.items.map((item) => item.itemId),
+      ["later"],
+    );
+    assert.strictEqual((yield* shown()).claimed, "only_owner");
+
     // "Only you" holds from the tap, even if the file's label lands later.
     const team = { ...flip, itemId: KinMemoryItemId.make("team") };
     const keep = yield* memory.setVisibility([owner], { ...team, onlyOwner: true });
-    assert.isTrue(keep.item.onlyOwner);
+    assert.strictEqual(keep.item.visibility, "only_owner");
     const held = sql`SELECT item_id FROM kin_memory_labels
       WHERE org_id = ${orgId} AND held_at IS NOT NULL`;
     assert.deepStrictEqual(yield* held, [{ item_id: "team" }]);
     const share = yield* memory.setVisibility([owner], team);
-    assert.isFalse(share.item.onlyOwner);
+    assert.strictEqual(share.item.visibility, "team");
     assert.lengthOf(yield* held, 0);
+    // The owner's own choice lets the team know even what no one suggested.
+    const terms = yield* memory.setVisibility([owner], flip);
+    assert.strictEqual(terms.item.visibility, "team");
     assert.deepStrictEqual(relabelled, [
+      { itemId: "hinted", sensitive: false, person: owner.personId },
+      { itemId: "later", sensitive: false, person: owner.personId },
       { itemId: "team", sensitive: true, person: owner.personId },
       { itemId: "team", sensitive: false, person: owner.personId },
+      { itemId: "terms", sensitive: false, person: owner.personId },
     ]);
     assert.include(
       yield* memory

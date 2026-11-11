@@ -3,6 +3,8 @@ import {
   KinChatError,
   KinMemoryChangeCard,
   type KinAgentId,
+  type KinMemoryConfirmSuggestionsInput,
+  type KinMemoryConfirmSuggestionsResult,
   type KinMemoryListInput,
   type KinMemoryListItem,
   type KinMemoryListResult,
@@ -12,7 +14,6 @@ import {
   type KinMemoryUndoResult,
   type KinOrgId,
   type KinWidgetId,
-  type MemoryItemHead,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -29,8 +30,16 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
+import type { MemoryItem } from "./MemoryCache.ts";
 import type { MemoryWriter } from "./MemoryWriter.ts";
-import { hold, reaches, release, storedLabels, type StoredLabels } from "./sensitivity.ts";
+import {
+  authorise,
+  fingerprint,
+  hold,
+  storedLabels,
+  visibility,
+  type StoredLabels,
+} from "./sensitivity.ts";
 
 /** The writer's Undo, attached by the lead runtime that owns the writer. */
 export type KinMemoryUndo = MemoryWriter["Service"]["undoChange"];
@@ -38,16 +47,16 @@ export type KinMemoryUndo = MemoryWriter["Service"]["undoChange"];
 export interface KinMemoryPort {
   readonly undo: KinMemoryUndo;
   readonly relabel: MemoryWriter["Service"]["relabel"];
-  /** Every current item on the default branch. */
+  /** Every current item on the default branch, with its body. */
   readonly items: (
     orgId: KinOrgId,
-  ) => Effect.Effect<ReadonlyArray<MemoryItemHead>, { readonly _tag: string }>;
+  ) => Effect.Effect<ReadonlyArray<MemoryItem>, { readonly _tag: string }>;
 }
 
 /**
  * The owner's own actions on what the leads remember: per-item Undo on the `memory_changes` cards
  * earlier versions posted, and seeing and choosing who may know each item. No MCP tool or agent
- * path reaches them, and only the organization's owner may call the last two.
+ * path reaches them, and only the organization's owner may call the rest.
  */
 export class KinMemoryChanges extends Context.Service<
   KinMemoryChanges,
@@ -62,13 +71,18 @@ export class KinMemoryChanges extends Context.Service<
       input: KinMemoryListInput,
     ) => Effect.Effect<KinMemoryListResult, KinChatError>;
     /**
-     * The owner's choice for one item. "Only you" holds at once; "the team can know" takes effect
-     * when the item's file says so, with who decided and when.
+     * The owner's choice for one item. "Only you" holds at once; "the team can know" is stored as
+     * the owner's authorisation of the item as it reads now, and its file records who and when.
      */
     readonly setVisibility: (
       people: ReadonlyArray<PersonIdentity>,
       input: KinMemorySetVisibilityInput,
     ) => Effect.Effect<KinMemorySetVisibilityResult, KinChatError>;
+    /** The owner confirms suggestions that the team could know items; the owner only. */
+    readonly confirmSuggestions: (
+      people: ReadonlyArray<PersonIdentity>,
+      input: KinMemoryConfirmSuggestionsInput,
+    ) => Effect.Effect<KinMemoryConfirmSuggestionsResult, KinChatError>;
     readonly attachWriter: (port: KinMemoryPort) => Effect.Effect<void, never, Scope.Scope>;
   }
 >()("t3/kin/memory/MemoryChanges/KinMemoryChanges") {}
@@ -91,17 +105,23 @@ const make = Effect.gen(function* () {
   const { owner } = yield* KinIdentity;
   let port: KinMemoryPort | undefined;
   const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
-  /** Shown as turns treat it: held, or never labelled, is the owner's alone. */
-  const listed = (head: MemoryItemHead, labels: StoredLabels): KinMemoryListItem => ({
-    itemId: head.id,
-    kind: head.kind,
-    title: head.title,
-    onlyOwner: !reaches("shared", head, labels),
+  /** Shown as turns treat it: only a stored authorisation of what it says now lets the team know. */
+  const listed = (item: MemoryItem, labels: StoredLabels): KinMemoryListItem => ({
+    itemId: item.head.id,
+    kind: item.head.kind,
+    title: item.head.title,
+    visibility: visibility(item, labels),
     from:
-      head.shared_from === undefined
+      item.head.shared_from === undefined
         ? null
-        : { name: head.shared_from.name, chatName: head.shared_from.chat_name },
+        : { name: item.head.shared_from.name, chatName: item.head.shared_from.chat_name },
   });
+  // Settled reminders and replaced notes are history, not something a lead still uses.
+  const current = (items: ReadonlyArray<MemoryItem>) =>
+    items.filter(
+      ({ head }) =>
+        head.status === "open" && head.invalid_at === null && head.superseded_by === null,
+    );
   const ownerOf = Effect.fn("KinMemoryChanges.ownerOf")(function* (
     people: ReadonlyArray<PersonIdentity>,
     orgId: KinOrgId,
@@ -242,22 +262,27 @@ const make = Effect.gen(function* () {
     undo,
     list: Effect.fn("KinMemoryChanges.list")(function* (people, input) {
       const { port } = yield* ownerOf(people, input.orgId);
-      const items = yield* port.items(input.orgId);
+      const items = current(yield* port.items(input.orgId));
       const labels = yield* storedLabels(input.orgId).pipe(provideSql);
-      // Settled reminders and replaced notes are history, not something a lead still uses.
+      const listedItems = items.map((item) => listed(item, labels));
+      const shown = new Set<string>(
+        listedItems.filter((item) => item.visibility === "suggested").map((item) => item.itemId),
+      );
       return {
-        items: items
-          .filter(
-            (head) =>
-              head.status === "open" && head.invalid_at === null && head.superseded_by === null,
-          )
-          .map((head) => listed(head, labels)),
+        items: listedItems,
+        suggestionsAsOf: Math.max(
+          0,
+          ...[...labels.suggested].flatMap(([id, { rev }]) => (shown.has(id) ? [rev] : [])),
+        ),
       };
     }, failed),
     setVisibility: Effect.fn("KinMemoryChanges.setVisibility")(function* (people, input) {
       const { person, port } = yield* ownerOf(people, input.orgId);
-      const known = (yield* port.items(input.orgId)).filter((head) => head.id === input.itemId);
-      if (known.length !== 1) return yield* notFound;
+      const known = (yield* port.items(input.orgId)).filter(
+        (item) => item.head.id === input.itemId,
+      );
+      const [item] = known;
+      if (item === undefined || known.length !== 1) return yield* notFound;
       // Held first, so "only you" is true from this moment whatever the commit below does.
       if (input.onlyOwner) yield* hold(input.orgId, input.itemId).pipe(provideSql);
       const { head } = yield* port.relabel(input.orgId, {
@@ -265,8 +290,48 @@ const make = Effect.gen(function* () {
         sensitive: input.onlyOwner,
         person: person.personId,
       });
-      if (!input.onlyOwner) yield* release(input.orgId, input.itemId).pipe(provideSql);
-      return { item: listed(head, yield* storedLabels(input.orgId).pipe(provideSql)) };
+      const next = { head, body: item.body };
+      if (!input.onlyOwner)
+        yield* authorise(input.orgId, input.itemId, fingerprint(next), "owner_setting").pipe(
+          provideSql,
+        );
+      return { item: listed(next, yield* storedLabels(input.orgId).pipe(provideSql)) };
+    }, failed),
+    confirmSuggestions: Effect.fn("KinMemoryChanges.confirmSuggestions")(function* (people, input) {
+      const { person, port } = yield* ownerOf(people, input.orgId);
+      const items = current(yield* port.items(input.orgId));
+      const labels = yield* storedLabels(input.orgId).pipe(provideSql);
+      const asked = "itemIds" in input ? new Set<string>(input.itemIds) : undefined;
+      const counts = new Map<string, number>();
+      for (const { head } of items) counts.set(head.id, (counts.get(head.id) ?? 0) + 1);
+      const chosen = items.filter((item) => {
+        const suggestion = labels.suggested.get(item.head.id);
+        return (
+          suggestion !== undefined &&
+          counts.get(item.head.id) === 1 &&
+          visibility(item, labels) === "suggested" &&
+          (asked === undefined
+            ? "asOf" in input && suggestion.rev <= input.asOf
+            : asked.has(item.head.id))
+        );
+      });
+      const confirmed = [];
+      for (const item of chosen) {
+        // The file records who let the team know it; the stored row is what decides it.
+        const { head } = yield* port.relabel(input.orgId, {
+          itemId: item.head.id,
+          sensitive: false,
+          person: person.personId,
+        });
+        const next = { head, body: item.body };
+        // Still suggested above, so this is the content that was suggested.
+        yield* authorise(input.orgId, item.head.id, fingerprint(item), "owner_confirmed").pipe(
+          provideSql,
+        );
+        confirmed.push(next);
+      }
+      const after = yield* storedLabels(input.orgId).pipe(provideSql);
+      return { items: confirmed.map((item) => listed(item, after)) };
     }, failed),
     attachWriter: Effect.fn("KinMemoryChanges.attachWriter")(function* (next) {
       yield* Effect.acquireRelease(
