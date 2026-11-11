@@ -6,10 +6,12 @@ import { useEffect, type ReactNode } from "react";
 import { View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
+import type { AppBarProps } from "../../components/ui/AppBar.types";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
+import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { KinMemoryEntry } from "./KinMemoryScreen";
 import { KinTeamEntry } from "./KinTeamScreen";
 import { KinWorkEntry } from "./KinWorkScreen";
@@ -27,12 +29,13 @@ import {
   type KinInboxScreenState,
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import { kinClient } from "./state/kinClient";
+import { useKinAccessEnded } from "./state/kinChatOnly";
 import { rememberKinListAtom } from "./state/kinLastList";
 import { useKinInbox } from "./state/useKinInbox";
 
+/** The Kin list as a page over coding threads: opening and leaving it is the switch between them. */
 export function KinChatsScreen() {
   const navigation = useNavigation();
-  const { host, state, retry } = useKinInbox();
   const rememberList = useAtomSet(rememberKinListAtom);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- records in device storage which list is open, so the next launch opens to it
   useEffect(() => {
@@ -40,6 +43,50 @@ export function KinChatsScreen() {
     // Leaving the list, by Back or the swipe, is the switch back to coding threads.
     return navigation.addListener("beforeRemove", () => rememberList("threads"));
   }, [navigation, rememberList]);
+  return <KinChatsList onBack={() => navigation.goBack()} />;
+}
+
+/** The Kin list as the whole app, on a phone that only holds a teammate's session. */
+export function KinHomeScreen() {
+  const navigation = useNavigation();
+  const accessEnded = useKinAccessEnded().length > 0;
+  const settings = {
+    accessibilityLabel: "Settings",
+    icon: "gearshape",
+    onPress: () => navigation.navigate("Settings"),
+  } as const;
+  if (accessEnded) {
+    return (
+      <View collapsable={false} className="flex-1 bg-screen">
+        <NativeStackScreenOptions options={{ headerTitle: undefined }} />
+        <AppBar title="Kin" actions={[settings]} />
+        <ScreenContent surface="screen">
+          <ScreenScrollView
+            className="flex-1"
+            contentInsetAdjustmentBehavior="automatic"
+            contentContainerStyle={{ padding: 16, gap: 12 }}
+          >
+            <EmptyState
+              variant="plain"
+              title="You no longer have access"
+              detail="Your team's Kin signed this phone out. Ask them for a new join link to get back in."
+              actionLabel="Join with a new link"
+              onAction={() => navigation.navigate("KinJoin")}
+            />
+          </ScreenScrollView>
+        </ScreenContent>
+      </View>
+    );
+  }
+  return <KinChatsList home actions={[settings]} />;
+}
+
+function KinChatsList({
+  home,
+  ...bar
+}: Pick<AppBarProps, "onBack" | "actions"> & { readonly home?: boolean }) {
+  const navigation = useNavigation();
+  const { host, state, retry } = useKinInbox();
   const orgId =
     host._tag === "host" && host.probe._tag === "ready"
       ? (host.probe.orgs.me[0]?.orgId ?? null)
@@ -48,16 +95,21 @@ export function KinChatsScreen() {
     state._tag === "ready" && orgId !== null ? { environmentId: state.environmentId, orgId } : null;
   return (
     <View collapsable={false} className="flex-1 bg-screen">
+      {/* Home's route carries the coding workspace's brand title; the Kin list draws its own. */}
+      {home ? <NativeStackScreenOptions options={{ headerTitle: undefined }} /> : null}
       {newLeadAt === null ? (
-        <AppBar title="Kin" onBack={() => navigation.goBack()} />
+        <AppBar title="Kin" {...bar} />
       ) : (
-        <KinChatsBar environmentId={newLeadAt.environmentId} orgId={newLeadAt.orgId} />
+        <KinChatsBar environmentId={newLeadAt.environmentId} orgId={newLeadAt.orgId} bar={bar} />
       )}
       <ScreenContent surface="screen">
         <KinChatsView
           state={state}
           directory={kinDirectory(host)}
           onRetry={retry}
+          {...(home
+            ? { emptyDetail: "When someone on your team starts a chat with you, it shows up here." }
+            : {})}
           memory={
             newLeadAt === null ? null : (
               <>
@@ -85,7 +137,11 @@ export function KinChatsScreen() {
 }
 
 /** The list's bar with its "+": a new group or a new lead, for a viewer this host lets make them. */
-function KinChatsBar(props: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId }) {
+function KinChatsBar(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly bar: Pick<AppBarProps, "onBack" | "actions">;
+}) {
   const navigation = useNavigation();
   const canAddLead = useAtomValue(kinClient.leadCreate.permissionAtom(props.environmentId));
   const canAddGroup = useAtomValue(kinClient.groupCreate.permissionAtom(props.environmentId));
@@ -94,7 +150,7 @@ function KinChatsBar(props: { readonly environmentId: EnvironmentId; readonly or
   return (
     <AppBar
       title="Kin"
-      onBack={() => navigation.goBack()}
+      {...props.bar}
       menus={
         canAddLead || canAddGroup || canAddTeammate
           ? [
@@ -148,6 +204,8 @@ export function KinChatsView(props: {
   readonly onRetry: () => void;
   /** The owner's way in to what the leads remember, above the chats. */
   readonly memory?: ReactNode;
+  /** What an empty list says, for a viewer who can't start chats with leads. */
+  readonly emptyDetail?: string;
   readonly onOpenWaiting: () => void;
   readonly onOpenChat: (chatId: KinChatRowView["chatId"]) => void;
 }) {
@@ -172,7 +230,10 @@ export function KinChatsView(props: {
                 </View>
               )}
               {props.memory == null ? null : <View className="-mx-4">{props.memory}</View>}
-              <EmptyState title="No chats yet" detail="Chats with your leads show up here." />
+              <EmptyState
+                title="No chats yet"
+                detail={props.emptyDetail ?? "Chats with your leads show up here."}
+              />
             </>
           )}
         </KinScreenState>

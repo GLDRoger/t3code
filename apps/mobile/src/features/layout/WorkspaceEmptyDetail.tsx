@@ -2,6 +2,7 @@ import { SymbolView } from "../../components/ui/AppSymbol";
 import { Platform, Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
+import { Button } from "../../components/ui/Button";
 import { NewThreadButton } from "../../components/NewThreadButton";
 import { FloatingActionButton } from "../../components/ui/FloatingActionButton";
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -12,6 +13,8 @@ export function WorkspaceEmptyDetail(props: {
   readonly tab?: WorkspaceTab | "settings";
   readonly onStartNewTask?: () => void;
   readonly onAddConnection?: () => void;
+  /** Shown with `onAddConnection`: the other way to start, for someone joining a team. */
+  readonly onJoinKin?: () => void;
 }) {
   const pullRequests = props.tab === "pullRequests";
   const settings = props.tab === "settings";
@@ -28,17 +31,22 @@ export function WorkspaceEmptyDetail(props: {
         {props.onAddConnection ? (
           <View className="w-full max-w-[430px]">
             <EmptyState
-              title="No environments connected"
-              detail="Add an environment to load projects and start coding sessions."
+              title="Get started"
+              detail="Joining a team? Use the link they sent you. Setting up your own? Add an environment to start coding sessions."
               variant="plain"
               action={
-                <FloatingActionButton
-                  label="Add environment"
-                  icon="plus"
-                  variant="extended"
-                  tone="primary"
-                  onPress={props.onAddConnection}
-                />
+                <View className="items-center gap-3">
+                  {props.onJoinKin ? (
+                    <Button tone="primary" label="I have a join link" onPress={props.onJoinKin} />
+                  ) : null}
+                  <FloatingActionButton
+                    label="Add environment"
+                    icon="plus"
+                    variant="extended"
+                    tone={props.onJoinKin ? "secondary" : "primary"}
+                    onPress={props.onAddConnection}
+                  />
+                </View>
               }
             />
           </View>

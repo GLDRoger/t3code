@@ -42,6 +42,7 @@ import {
 } from "./workspace/WorkspaceNativeTabs.ios";
 import { workspaceUsesColumns } from "./workspace/workspace-tabs-state";
 import { isSettingsRoute, settingsOpenIn } from "../settings/settings-navigation";
+import { useKinAppShell } from "../chats/state/kinChatOnly";
 import { workspaceRoutesOf } from "./workspace-overlay-routes";
 import { setNativelyPoppingWorkspaceRoute } from "./workspace/workspace-detail-selection";
 import { useDeviceType, useNativeLayoutMetrics } from "../../native/native-layout-metrics";
@@ -500,6 +501,7 @@ function WorkspaceStackView(props: ViewProps & { readonly nativeColumns: boolean
   const { layout } = useAdaptiveWorkspaceLayout();
   const deviceType = useDeviceType();
   const workspace = useWorkspaceTabs()!;
+  const chatOnly = useKinAppShell() === "chatOnly";
   // Native dismiss commits the route pop after the transition. Restore the dock
   // when the primary screen starts appearing, including interactive back gestures.
   const [primaryVisible, setPrimaryVisible] = useState(false);
@@ -517,7 +519,8 @@ function WorkspaceStackView(props: ViewProps & { readonly nativeColumns: boolean
   }
   // Detail-only histories must stay single-stack: placeholder descriptors cannot own sidebar actions or setOptions.
   const primaryRoute = projection.primary;
-  if (!primaryRoute) return <V5StackView {...props} />;
+  // A teammate's phone has no workspace tabs or columns: Home is the Kin list in a plain stack.
+  if (!primaryRoute || chatOnly) return <V5StackView {...props} />;
   const primaryDescriptor = props.descriptors[primaryRoute.key]!;
   const descriptors = props.descriptors;
   const baseRoute = { key: `${props.state.key}:workspace`, name: "Workspace" };

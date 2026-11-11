@@ -175,7 +175,7 @@ export function kinTeammateNameCheck(
 
 /**
  * The link the owner sends: the invite page on the address this device reaches Kin at. A browser
- * opens it; the phone app takes it pasted where a new connection is added.
+ * opens it; the phone app takes it pasted, scanned, or handed over by that page.
  */
 export function kinInviteLink(httpBaseUrl: string, secret: string): string {
   const url = new URL(KIN_INVITE_LINK_PATH, httpBaseUrl);
@@ -194,7 +194,7 @@ export const KIN_INVITE_LOCAL_ONLY_NOTE =
   "This link uses an address that only works on this device, so it won't open on anyone else's. Open Kin at the address your team can reach, then make the link there.";
 
 export const KIN_INVITE_PHONE_NOTE =
-  "It opens in a browser. In the phone app, they paste it where a new connection is added.";
+  'It opens in a browser, or in the phone app: on its first screen they tap "I have a join link".';
 
 /** What the owner reads beside a link, once: who it lets in, that it works once, and until when. */
 export function kinInviteLinkCopy(invite: {

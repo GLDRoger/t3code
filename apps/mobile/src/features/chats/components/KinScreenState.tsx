@@ -18,6 +18,7 @@ import {
   type KinReconnectStatus,
   type KinStaleNotice,
 } from "@t3tools/client-runtime/kin/kinScreenState";
+import { useKinAppShell } from "../state/kinChatOnly";
 import { useKinHost } from "../state/useKinHost";
 import { useKinReconnect } from "../state/useKinReconnect";
 
@@ -55,6 +56,8 @@ export function KinScreenState(props: {
   readonly children: (ready: KinReadyState) => ReactNode;
 }) {
   const navigation = useNavigation();
+  // A teammate has no computer to pair or environments to open, so each dead end says what they can do.
+  const teammate = useKinAppShell() === "chatOnly";
   const { state } = props;
   switch (state._tag) {
     case "loading":
@@ -72,7 +75,13 @@ export function KinScreenState(props: {
     case "offline":
       return <KinInboxOfflineState />;
     case "noHost":
-      return (
+      return teammate ? (
+        <EmptyState
+          variant="plain"
+          title="Your team's Kin isn't available"
+          detail="Try again in a bit. If it stays this way, ask your team whether something changed."
+        />
+      ) : (
         <EmptyState
           variant="plain"
           title="No server with Kin yet"
@@ -82,7 +91,15 @@ export function KinScreenState(props: {
         />
       );
     case "unauthorized":
-      return (
+      return teammate ? (
+        <EmptyState
+          variant="plain"
+          title="You no longer have access"
+          detail="Ask your team for a new join link to get back in."
+          actionLabel="Join with a new link"
+          onAction={() => navigation.navigate("KinJoin")}
+        />
+      ) : (
         <EmptyState
           variant="plain"
           title="This phone can't read Kin chats"
@@ -90,7 +107,13 @@ export function KinScreenState(props: {
         />
       );
     case "noIdentity":
-      return (
+      return teammate ? (
+        <EmptyState
+          variant="plain"
+          title="You're not on this team yet"
+          detail="Ask your team to add you, then come back."
+        />
+      ) : (
         <EmptyState
           variant="plain"
           title="You're not in Kin on this server yet"
@@ -133,11 +156,16 @@ export function KinOfflineState(props: {
   readonly resource: string;
 }) {
   const { status, reconnect } = useKinReconnect(props.environmentId);
+  const teammate = useKinAppShell() === "chatOnly";
   return (
     <EmptyState
       variant="plain"
       title={status === "failed" ? "Couldn't reconnect to Kin" : "Kin is offline"}
-      detail={`${props.resource} when the Kin environment reconnects.`}
+      detail={
+        teammate
+          ? `${props.resource} when you're back online.`
+          : `${props.resource} when the Kin environment reconnects.`
+      }
       {...(reconnect === null
         ? {}
         : {

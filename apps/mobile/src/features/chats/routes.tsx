@@ -12,6 +12,7 @@ import { KinLeadScreen } from "./KinLeadScreen";
 import { KinMemoryScreen } from "./KinMemoryScreen";
 import { KinProjectScreen } from "./KinProjectScreen";
 import { KinInviteScreen } from "./KinInviteScreen";
+import { KinJoinScreen } from "./KinJoinScreen";
 import { KinTeamScreen } from "./KinTeamScreen";
 import { KinTeammateScreen } from "./KinTeammateScreen";
 import { KinWaitingScreen } from "./KinWaitingScreen";
@@ -100,6 +101,12 @@ export const KIN_SCREENS = {
   // A full sheet, so the keyboard never covers the name being typed.
   KinInvite: createNativeStackScreen({
     screen: KinInviteScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  // A teammate's way in; the link arrives pasted, scanned, or in `kin/join?link=`.
+  KinJoin: createNativeStackScreen({
+    screen: KinJoinScreen,
+    linking: "kin/join",
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
   KinChat: createNativeStackScreen({

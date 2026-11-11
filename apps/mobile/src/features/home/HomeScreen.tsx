@@ -38,6 +38,7 @@ import {
   deriveCenteredContentHorizontalPadding,
 } from "../../lib/layout";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { Button } from "../../components/ui/Button";
 import { FloatingActionButton } from "../../components/ui/FloatingActionButton";
 import type { WorkspaceEnvironment, WorkspaceState } from "../../state/workspaceModel";
 import type { SavedRemoteConnection } from "../../lib/connection";
@@ -109,6 +110,7 @@ interface HomeScreenProps {
   readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
   readonly onProjectChange: (projectKey: string | null) => void;
   readonly onAddConnection: () => void;
+  readonly onJoinKin: () => void;
   readonly onOpenSettings: () => void;
   readonly onStartNewTask: () => void;
   readonly onSelectThread: (thread: EnvironmentThreadShell) => void;
@@ -160,8 +162,9 @@ function deriveEmptyState(props: {
 
   if (!catalogState.hasConnections) {
     return {
-      title: "No environments connected",
-      detail: "Add an environment to load projects and start coding sessions.",
+      title: "Get started",
+      detail:
+        "Joining a team? Use the link they sent you. Setting up your own? Add an environment to start coding sessions.",
       loading: false,
     };
   }
@@ -701,7 +704,16 @@ export function HomeScreen(props: HomeScreenProps) {
                   !props.catalogState.hasReadyEnvironment ? props.onAddConnection : undefined
                 }
                 action={
-                  Platform.OS === "android" && !props.catalogState.hasReadyEnvironment ? (
+                  !props.catalogState.isLoadingConnections && !props.catalogState.hasConnections ? (
+                    <View className="items-center gap-3">
+                      <Button tone="primary" label="I have a join link" onPress={props.onJoinKin} />
+                      <Button
+                        tone="secondary"
+                        label="Add environment"
+                        onPress={props.onAddConnection}
+                      />
+                    </View>
+                  ) : Platform.OS === "android" && !props.catalogState.hasReadyEnvironment ? (
                     <FloatingActionButton
                       label="Add environment"
                       icon="plus"

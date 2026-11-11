@@ -23,6 +23,7 @@ import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { AppText as Text, AppTextInput, type AppTextInputProps } from "../../components/ui/AppText";
 import { FrostedCutout } from "../../components/ui/FrostedCutout";
 import { buildPairingUrl, extractPairingUrlFromQrPayload, parsePairingUrl } from "./pairing";
+import { readKinJoinLink } from "@t3tools/shared/remote";
 import { useRemoteConnections } from "../../state/use-remote-environment-registry";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { hasCloudPublicConfig } from "../cloud/publicConfig";
@@ -131,6 +132,13 @@ function PairingForm({
 
     try {
       const pairingUrl = extractPairingUrlFromQrPayload(data);
+      const joinLink = readKinJoinLink(pairingUrl);
+      if (joinLink !== null) {
+        // A teammate's link has its own screen, which says what joining does before it is spent.
+        setScannerLocked(false);
+        navigation.dispatch(StackActions.replace("KinJoin", { link: joinLink }));
+        return;
+      }
       const { host, code } = parsePairingUrl(pairingUrl);
       setHostInput(host);
       setCodeInput(code);
@@ -150,6 +158,11 @@ function PairingForm({
   };
 
   const handleSubmit = async () => {
+    const joinLink = codeInput.trim() === "" ? readKinJoinLink(hostInput) : null;
+    if (joinLink !== null) {
+      navigation.dispatch(StackActions.replace("KinJoin", { link: joinLink }));
+      return;
+    }
     const pairingUrl = buildPairingUrl(hostInput, codeInput);
     setOwnAttempt(true);
     setSubmitError(null);
@@ -263,7 +276,8 @@ const SCAN_RETICLE_SIZE = 150;
 const SCAN_RETICLE_TOP = 36;
 const SCAN_RETICLE_RADIUS = 28;
 
-function PairingScanCard(props: {
+export function PairingScanCard(props: {
+  readonly caption?: string;
   readonly cameraActive: boolean;
   readonly onScan: (result: { readonly data: string }) => void;
   readonly onScanPress: () => void;
@@ -343,7 +357,7 @@ function PairingScanCard(props: {
           )}
         </View>
         <Text className={cn("text-center text-sm", light ? "text-black/70" : "text-white/80")}>
-          Scan the code from t3 pair or desktop Connections settings
+          {props.caption ?? "Scan the code from t3 pair or desktop Connections settings"}
         </Text>
       </View>
     </Pressable>
