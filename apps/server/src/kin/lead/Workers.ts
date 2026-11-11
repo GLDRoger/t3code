@@ -47,11 +47,17 @@ import * as KinLevels from "./KinLevels.ts";
 import { SHARED_REFUSAL, destination, effectiveAudience, turnChat } from "./Audience.ts";
 import { workerChat } from "./ChatSharing.ts";
 import { KinRecords } from "../work/KinRecords.ts";
-import { attemptBegun, noteSensitivity, workerMayResume } from "../work/workerAttempts.ts";
+import {
+  attemptBegun,
+  noteSensitivity,
+  stopAttempt,
+  workerMayResume,
+} from "../work/workerAttempts.ts";
 import { WORK_NOT_YOURS, workMayStart, workerStarted } from "../work/workerEntries.ts";
 import { sharedTurnMayTouch, toolAdmitted } from "./SharedTools.ts";
 import { isOrgPaused, STOP_REASON } from "./orgState.ts";
 import { resolveLead } from "./LeadMemory.ts";
+import { RETIRED_WORKER_REASON } from "./Retirement.ts";
 import { quote } from "./LeadPrompt.ts";
 import { LOCAL_BUILD_ONLY, makeLocalDelegate } from "./localWorkers.ts";
 import { buildBrief, publishNote, Quoted, reportFormat } from "./workerBrief.ts";
@@ -1043,7 +1049,7 @@ const make = Effect.gen(function* () {
       .pipe(there("The follow-up could not be sent. Retry the same call or tell the owner."));
     // A new started_at marks newer work, so a follower still reporting the last run can't close it.
     const startedAt = yield* Clock.currentTimeMillis;
-    const still = yield* sql.withTransaction(
+    const stop = yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`UPDATE kin_workers SET status = 'queued', ended_at = NULL,
           started_at = ${startedAt}
@@ -1055,19 +1061,44 @@ const make = Effect.gen(function* () {
           agentId: ctx.agentId,
           sourceEventId: input.sourceEventId,
         }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
-        return yield* mayFollowUp;
+        // Retired or withdrawn during the send, which no stop then covered: the attempt begins
+        // stopped here, so nothing of it publishes before the stop reaches its thread. A join's
+        // abort doesn't stop it; its answer moves to the owner's chat (`cardChat`).
+        const [live] = yield* sql`SELECT 1 FROM kin_agents WHERE org_id = ${ctx.orgId}
+          AND agent_id = ${ctx.agentId} AND retired_at IS NULL`;
+        const why =
+          live === undefined
+            ? { tag: "retired", reason: RETIRED_WORKER_REASON }
+            : (yield* mayFollowUp)
+              ? undefined
+              : { tag: "withdrawn", reason: WITHDRAWN_REASON };
+        if (why === undefined) return undefined;
+        const taken = {
+          reason: why.reason,
+          key: `kin-follow-up-${why.tag}:${input.workerId}:${startedAt}`,
+          withdrawn: why.tag === "withdrawn",
+        };
+        yield* stopAttempt({
+          orgId: ctx.orgId,
+          agentId: ctx.agentId,
+          workerId: input.workerId,
+          startedAt,
+          reason: taken.reason,
+          key: taken.key,
+          at: startedAt,
+        }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+        return taken;
       }),
     );
-    // Withdrawn during the send, when no attempt of it was open to stop: stopped here instead.
-    if (!still) {
+    if (stop !== undefined) {
       yield* tracker
         .stop({
           orgId: ctx.orgId,
           agentId: ctx.agentId,
           workerId: input.workerId,
           startedAt,
-          reason: WITHDRAWN_REASON,
-          key: `kin-follow-up-withdrawn:${input.workerId}:${startedAt}`,
+          reason: stop.reason,
+          key: stop.key,
         })
         .pipe(
           Effect.catchTags({
@@ -1077,7 +1108,7 @@ const make = Effect.gen(function* () {
               ),
           }),
         );
-      return yield* denied(WORK_NOT_YOURS);
+      return yield* stop.withdrawn ? denied(WORK_NOT_YOURS) : denied();
     }
     yield* stopIfPaused(ctx.orgId, {
       environmentId,

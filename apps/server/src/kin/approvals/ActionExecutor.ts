@@ -24,6 +24,7 @@ import {
   type PersistenceSqlError,
 } from "../../persistence/Errors.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
+import { RETIRED_ACTION_REASON } from "../lead/Retirement.ts";
 import {
   KinActionHandlers,
   KinExecError,
@@ -288,6 +289,7 @@ export const make = Effect.gen(function* () {
     handler: KinActionHandler,
   ) {
     let writeStartedAt: number | null = null;
+    let retired = false;
     const failed = (error: KinExecError) =>
       finish(action, "failed", {
         error: failureText(error),
@@ -325,8 +327,10 @@ export const make = Effect.gen(function* () {
       const at = yield* Clock.currentTimeMillis;
       const marked = yield* ledger
         .writeStarting({ ...refOf(action), at })
-        .pipe(Effect.orElseSucceed(() => false));
-      if (!marked) return yield* new KinExecError({ reason: "unavailable", detail: "ledger" });
+        .pipe(Effect.orElseSucceed(() => "closed" as const));
+      retired = marked === "retired";
+      if (marked !== "started")
+        return yield* new KinExecError({ reason: "unavailable", detail: "ledger" });
       writeStartedAt = at;
       return yield* handler
         .run(action, { grant, payload: payloadOf(grant), pass })
@@ -341,6 +345,9 @@ export const make = Effect.gen(function* () {
       yield* finish(action, "succeeded", result.success);
       return { _tag: "finished", outcome: "succeeded" } satisfies KinExecuteResult;
     }
+    // The ledger already voided it, with its audit entry.
+    if (retired)
+      return { _tag: "voided", reason: RETIRED_ACTION_REASON } satisfies KinExecuteResult;
     const error = result.failure;
     if (error.reason !== "unknown_outcome") return yield* failed(error);
     const reconciled = yield* reconcileClaimed(action, writeStartedAt);

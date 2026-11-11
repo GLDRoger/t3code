@@ -39,6 +39,7 @@ import {
   toPersistenceSqlError,
 } from "../../persistence/Errors.ts";
 import { revokedBySession } from "../auth/ProofKeySessions.ts";
+import { RETIRED_ACTION_REASON } from "../lead/Retirement.ts";
 import { KinAudit } from "./Audit.ts";
 
 const AWAITING_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -298,10 +299,13 @@ export class KinExecutionLedger extends Context.Service<
     ) => Effect.Effect<boolean, Errors>;
     /** Whether the key that signed a claimed action's grant still passes check 10's key test. */
     readonly signingKeyUsable: (ref: ActionRef) => Effect.Effect<boolean, Errors>;
-    /** Records `at` right before the side effect; false when the claim isn't open to write. */
+    /**
+     * Records `at` right before the side effect. Refused when the claim isn't open to write, and
+     * when the requesting agent was retired: that action is voided in the same transaction.
+     */
     readonly writeStarting: (
       input: ActionRef & { readonly at: number },
-    ) => Effect.Effect<boolean, Errors>;
+    ) => Effect.Effect<"started" | "retired" | "closed", Errors>;
     readonly finish: (
       input: ActionRef & {
         readonly outcome: "succeeded" | "failed" | "interrupted";
@@ -735,13 +739,41 @@ const make = Effect.gen(function* () {
     Effect.mapError(toError("KinExecutionLedger.signingKeyUsable")),
   );
 
+  const requesterRetired = (ref: ActionRef) => sql`EXISTS (SELECT 1 FROM kin_pending_actions a
+    JOIN kin_agents g ON g.org_id = a.org_id AND g.agent_id = a.requested_by_agent_id
+    WHERE a.org_id = ${ref.orgId} AND a.action_id = ${ref.actionId} AND g.retired_at IS NOT NULL)`;
+
   const writeStarting = Effect.fn("KinExecutionLedger.writeStarting")(
     function* (input: ActionRef & { readonly at: number }) {
-      const rows = yield* sql`UPDATE kin_executions SET write_started_at = ${input.at}
-        WHERE org_id = ${input.orgId} AND action_id = ${input.actionId}
-          AND finished_at IS NULL AND write_started_at IS NULL
-        RETURNING action_id`;
-      return rows.length > 0;
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const open = sql`org_id = ${input.orgId} AND action_id = ${input.actionId}
+            AND finished_at IS NULL AND write_started_at IS NULL`;
+          const rows = yield* sql`UPDATE kin_executions SET write_started_at = ${input.at}
+            WHERE ${open} AND NOT ${requesterRetired(input)}
+            RETURNING action_id`;
+          if (rows.length > 0) return "started" as const;
+          // Retired since the claim, and nothing sent: closed as retiring closes an approved one.
+          const [won] = yield* sql<FactsRow>`UPDATE kin_pending_actions
+            SET state = 'voided', state_reason = ${RETIRED_ACTION_REASON}, updated_at = ${input.at}
+            WHERE org_id = ${input.orgId} AND action_id = ${input.actionId} AND state = 'executing'
+              AND ${requesterRetired(input)}
+              AND EXISTS (SELECT 1 FROM kin_executions WHERE ${open})
+            RETURNING action_id, kind, resolved_json`;
+          if (won === undefined) return "closed" as const;
+          yield* sql`UPDATE kin_executions SET finished_at = ${input.at}, outcome = 'failed',
+              error = ${RETIRED_ACTION_REASON}
+            WHERE ${open}`;
+          yield* changed(input);
+          yield* audit.append({
+            orgId: input.orgId,
+            event: "action_voided",
+            ...(yield* auditFacts(won)),
+            result: RETIRED_ACTION_REASON,
+          });
+          return "retired" as const;
+        }),
+      );
     },
     Effect.mapError(toError("KinExecutionLedger.writeStarting")),
   );
