@@ -219,7 +219,7 @@ function KinLeadClearChat(props: {
     <ListSection>
       <ListActionRow
         label={KIN_CLEAR_CHAT_ACTION}
-        icon="trash"
+        icon="bubble.left"
         tone="danger"
         onPress={() =>
           Dialog.confirm({

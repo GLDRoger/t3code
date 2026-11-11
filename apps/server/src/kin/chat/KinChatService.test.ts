@@ -2003,14 +2003,24 @@ describe("KinChatService", () => {
         );
         // The open feed empties at once; a client that was away learns it from its old cursor.
         const reset = yield* Queue.take(feed);
-        assert.deepInclude(reset, { _tag: "reset", cleared: true, lastSeq: held.value.lastSeq });
+        // `clearedSeq` tells clients nothing older is left to page in, since seqs keep counting.
+        assert.deepInclude(reset, {
+          _tag: "reset",
+          cleared: true,
+          lastSeq: held.value.lastSeq,
+          clearedSeq: held.value.lastSeq,
+        });
         if (reset._tag !== "reset") return;
         const resume = (afterChangeSeq: number | undefined) =>
           service
             .subscribe(person, { chatId: chat.chatId, afterSeq: opened.lastSeq, afterChangeSeq })
             .pipe(Stream.take(1), Stream.runHead, Effect.map(Option.getOrThrow));
         assert.deepInclude(yield* resume(opened.lastChangeSeq), { _tag: "reset", cleared: true });
-        assert.deepInclude(yield* resume(reset.lastChangeSeq), { _tag: "backlog", messages: [] });
+        assert.deepInclude(yield* resume(reset.lastChangeSeq), {
+          _tag: "backlog",
+          messages: [],
+          clearedSeq: held.value.lastSeq,
+        });
         // Nothing waits on the owner, and the turn that was answering a deleted message is over:
         // marked aborted, its draft withheld, its message never handed to a later wake-up.
         assert.deepStrictEqual(yield* repo.listOpenWaiting(person), []);

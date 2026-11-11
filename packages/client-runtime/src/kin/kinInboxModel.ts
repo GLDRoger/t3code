@@ -162,6 +162,8 @@ export const KinChatState = Schema.Struct({
   reads: Schema.Record(Schema.String, Schema.Number),
   /** The server reported a gap of more than 200; reload the latest page with history. */
   needsHistoryReload: Schema.Boolean,
+  /** The chat's seq when it was last cleared; nothing older than the next one exists. */
+  clearedSeq: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
   /** The viewer left; the stream has ended. Never cached. */
   left: Schema.Boolean,
   /** The host refused the chat stream for good; it has ended. Never cached. */
@@ -196,6 +198,7 @@ export const emptyKinChat: KinChatState = {
   changeSeq: 0,
   reads: {},
   needsHistoryReload: false,
+  clearedSeq: 0,
   left: false,
   closed: null,
   drafts: [],
@@ -285,7 +288,9 @@ export function applyKinChatEvent(
       const live = applyKinLiveBacklog(state, event, messages, now);
       // The host sends the chat's live reactions in full; a backlog without them keeps ours.
       const reactions = event.reactions ?? state.reactions;
+      const clearedSeq = event.clearedSeq ?? state.clearedSeq;
       if (
+        clearedSeq === state.clearedSeq &&
         reactions === state.reactions &&
         messages === state.messages &&
         widgets === state.widgets &&
@@ -298,7 +303,16 @@ export function applyKinChatEvent(
       ) {
         return state;
       }
-      return { ...state, messages, widgets, contiguousSeq, changeSeq, reactions, ...live };
+      return {
+        ...state,
+        messages,
+        widgets,
+        contiguousSeq,
+        changeSeq,
+        clearedSeq,
+        reactions,
+        ...live,
+      };
     }
     case "reset":
       return {
@@ -308,6 +322,7 @@ export function applyKinChatEvent(
         contiguousSeq: event.lastSeq,
         changeSeq: event.lastChangeSeq ?? 0,
         needsHistoryReload: true,
+        clearedSeq: event.clearedSeq ?? state.clearedSeq,
         // A cleared chat keeps nothing that hung on its messages; a draft's later deltas no
         // longer line up, so its reply shows when it lands.
         ...(event.cleared === true ? { reactions: [], drafts: [] } : {}),
@@ -324,7 +339,19 @@ export function applyKinChatEvent(
     }
     case "widget": {
       const widgets = mergeWidgets(state.widgets, [event.widget]);
-      return widgets === state.widgets ? state : { ...state, widgets };
+      if (widgets === state.widgets) return state;
+      // A host card's notice is sent before its card exists; the host then names the card on
+      // the stored row, as here, so the row shows the card without a reread.
+      const { messageId, widgetId } = event.widget;
+      const bare = (message: KinMessage) =>
+        message.messageId === messageId && message.widgetId === null;
+      return state.messages.some(bare)
+        ? {
+            ...state,
+            widgets,
+            messages: state.messages.map((m) => (bare(m) ? { ...m, widgetId } : m)),
+          }
+        : { ...state, widgets };
     }
     case "member":
       // The host sends a departure only to the one who left; anything else is a change to reread.

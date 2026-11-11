@@ -298,6 +298,8 @@ export class KinChatRepository extends Context.Service<
         readonly reset: boolean;
         /** The reset is a clear made after the caller's cursor: nothing it holds survives. */
         readonly cleared?: boolean;
+        /** The chat's `last_seq` at its last clear; 0 when it never was. */
+        readonly clearedSeq: number;
         readonly lastSeq: number;
         readonly lastChangeSeq: number;
         readonly messages: ReadonlyArray<KinMessage>;
@@ -937,8 +939,10 @@ const make = Effect.gen(function* () {
         const counters = yield* sql<{
           change_seq: number;
           cleared_change_seq: number;
-        }>`SELECT change_seq, cleared_change_seq FROM kin_chats WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
+          clearedSeq: number;
+        }>`SELECT change_seq, cleared_change_seq, cleared_seq AS "clearedSeq" FROM kin_chats WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
         const lastChangeSeq = counters[0]!.change_seq;
+        const clearedSeq = counters[0]!.clearedSeq;
         // Deleted rows can't be replayed as changes: a cursor from before the clear starts over.
         if (
           input.afterChangeSeq !== undefined &&
@@ -947,6 +951,7 @@ const make = Effect.gen(function* () {
           return {
             reset: true,
             cleared: true,
+            clearedSeq,
             lastSeq: chat.lastSeq,
             lastChangeSeq,
             messages: [],
@@ -971,7 +976,14 @@ const make = Effect.gen(function* () {
               ) ORDER BY seq LIMIT 201`,
         })(input);
         if (messages.length > 200)
-          return { reset: true, lastSeq: chat.lastSeq, lastChangeSeq, messages: [], widgets: [] };
+          return {
+            reset: true,
+            clearedSeq,
+            lastSeq: chat.lastSeq,
+            lastChangeSeq,
+            messages: [],
+            widgets: [],
+          };
         const widgets =
           messages.length === 0
             ? []
@@ -985,6 +997,7 @@ const make = Effect.gen(function* () {
           reset: false,
           messages: messages.map((m) => messageForViewer(m, member.principal)),
           widgets,
+          clearedSeq,
           lastSeq: chat.lastSeq,
           lastChangeSeq,
         };
@@ -1697,7 +1710,7 @@ const make = Effect.gen(function* () {
         // `last_seq` keeps counting: members' read and join positions are seqs of this chat.
         const [counters] = yield* sql<{ lastSeq: number; lastChangeSeq: number }>`
           UPDATE kin_chats SET last_message_at = NULL, change_seq = change_seq + 1,
-            cleared_change_seq = change_seq + 1
+            cleared_change_seq = change_seq + 1, cleared_seq = last_seq
           WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}
           RETURNING last_seq AS "lastSeq", change_seq AS "lastChangeSeq"`;
         return {

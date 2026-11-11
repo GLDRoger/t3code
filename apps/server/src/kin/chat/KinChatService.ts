@@ -331,6 +331,8 @@ const make = Effect.gen(function* () {
   // Absent where no attachments directory exists; a send with files is then refused.
   const attachmentStore = yield* Effect.serviceOption(KinAttachmentStore);
   const stop = yield* Effect.serviceOption(KinStop);
+  /** For a stream event; left out of a chat that was never cleared. */
+  const clearedAt = (clearedSeq: number) => (clearedSeq > 0 ? { clearedSeq } : {});
   const sql = yield* SqlClient.SqlClient;
   const transaction = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     sql
@@ -1044,11 +1046,13 @@ const make = Effect.gen(function* () {
                 lastSeq: resumed.lastSeq,
                 lastChangeSeq: resumed.lastChangeSeq,
                 ...(resumed.cleared === true ? { cleared: true } : {}),
+                ...clearedAt(resumed.clearedSeq),
               }
             : {
                 _tag: "backlog",
                 lastSeq: resumed.lastSeq,
                 lastChangeSeq: resumed.lastChangeSeq,
+                ...clearedAt(resumed.clearedSeq),
                 messages: resumed.messages,
                 widgets: resumed.widgets,
                 // The chat's live reactions in full, so a resumed client drops withdrawn ones.
@@ -1074,11 +1078,16 @@ const make = Effect.gen(function* () {
             });
             cursor = { lastSeq: next.lastSeq, lastChangeSeq: next.lastChangeSeq };
             delivered = 0;
+            if (next.cleared === true) {
+              messageChanges.clear();
+              revisions.clear();
+            }
             if (next.reset)
               return {
                 _tag: "reset",
                 ...cursor,
                 ...(next.cleared === true ? { cleared: true } : {}),
+                ...clearedAt(next.clearedSeq),
               } satisfies KinChatStreamEvent;
             // The client already holds rows and widgets at the versions this stream delivered.
             const messages = next.messages.filter(
@@ -1137,6 +1146,7 @@ const make = Effect.gen(function* () {
                       _tag: "reset",
                       ...cursor,
                       cleared: true,
+                      ...clearedAt(event.lastSeq),
                     });
                   }
                   case "member.removed":

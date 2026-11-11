@@ -281,6 +281,7 @@ describe("Kin streams", () => {
             drafts: [],
             presence: [],
             needsHistoryReload: false,
+            clearedSeq: 0,
             left: false,
             closed: null,
           },
@@ -452,6 +453,7 @@ describe("Kin streams", () => {
             reads: {},
             memberChanges: 0,
             needsHistoryReload: false,
+            clearedSeq: 0,
             left: false,
             closed: null,
           },
@@ -556,6 +558,7 @@ describe("Kin streams", () => {
         reads: {},
         memberChanges: 0,
         needsHistoryReload: false,
+        clearedSeq: 0,
         left: false,
         closed: null,
       };

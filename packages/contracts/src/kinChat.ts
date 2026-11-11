@@ -393,6 +393,9 @@ export const KinChatStreamEvent = Schema.Union([
     widgets: Schema.Array(KinWidget),
     lastSeq: NonNegativeInt,
     lastChangeSeq: Schema.optional(NonNegativeInt),
+    // The chat's `lastSeq` when it was last cleared: no message is at or below it. Absent
+    // when it never was.
+    clearedSeq: Schema.optional(NonNegativeInt),
     // Live reactions on the backlog's messages; absent from servers without reactions.
     reactions: Schema.optional(Schema.Array(KinReaction)),
     presence: Schema.optional(Schema.Array(KinPresence)),
@@ -403,6 +406,7 @@ export const KinChatStreamEvent = Schema.Union([
     lastChangeSeq: Schema.optional(NonNegativeInt),
     // The chat was cleared: nothing held from before is kept, drafts and reactions included.
     cleared: Schema.optional(Schema.Boolean),
+    clearedSeq: Schema.optional(NonNegativeInt),
   }),
   Schema.TaggedStruct("message", { message: KinMessage }),
   Schema.TaggedStruct("widget", { widget: KinWidget }),

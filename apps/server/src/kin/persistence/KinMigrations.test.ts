@@ -120,6 +120,7 @@ const undoGroupLead = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`ALTER TABLE kin_chats DROP COLUMN lead_agent_id`;
   yield* sql`ALTER TABLE kin_chats DROP COLUMN cleared_change_seq`;
+  yield* sql`ALTER TABLE kin_chats DROP COLUMN cleared_seq`;
 });
 
 // K028 adds the timing columns after it on a rerun, so this one has to follow them again.

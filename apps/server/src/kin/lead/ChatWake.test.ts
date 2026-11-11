@@ -522,6 +522,7 @@ describe("ChatWake", () => {
       .toSorted();
     assert.deepStrictEqual(readers, [
       "kin/chat/KinChatHub.ts",
+      "kin/chat/approvalCards.ts",
       "kin/lead/ChatWake.ts",
       "kin/push/KinPushDispatch.ts",
     ]);

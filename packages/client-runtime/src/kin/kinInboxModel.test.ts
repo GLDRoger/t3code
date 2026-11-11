@@ -309,6 +309,14 @@ describe("kin chat feed", () => {
     expect(state.widgets.map((w) => w.revision)).toEqual([3]);
   });
 
+  it("shows a card whose notice arrived first, as an approval's does", () => {
+    const notice = message(1, { widgetId: null });
+    let state = applyKinChatEvent(emptyKinChat, backlog([], 0));
+    state = applyKinChatEvent(state, { _tag: "message", message: notice });
+    state = applyKinChatEvent(state, { _tag: "widget", widget: widget("w", 1) });
+    expect(state.messages.map((m) => m.widgetId)).toEqual(["w"]);
+  });
+
   it("asks for a history reload after a reset and clears it once a page lands", () => {
     let state = applyKinChatEvent(emptyKinChat, backlog([message(1)], 1, [widget("w", 1)]));
     state = applyKinChatEvent(state, { _tag: "reset", lastSeq: 400, lastChangeSeq: 412 });
@@ -341,8 +349,18 @@ describe("kin chat feed", () => {
       drafts: held.drafts,
     });
     expect(
-      applyKinChatEvent(held, { _tag: "reset", lastSeq: 1, lastChangeSeq: 3, cleared: true }),
-    ).toMatchObject({ messages: [], reactions: [], drafts: [], changeSeq: 3 });
+      applyKinChatEvent(held, {
+        _tag: "reset",
+        lastSeq: 1,
+        lastChangeSeq: 3,
+        cleared: true,
+        clearedSeq: 1,
+      }),
+    ).toMatchObject({ messages: [], reactions: [], drafts: [], changeSeq: 3, clearedSeq: 1 });
+    // A client that opens the chat later learns it from the backlog.
+    expect(applyKinChatEvent(emptyKinChat, { ...backlog([], 4), clearedSeq: 4 }).clearedSeq).toBe(
+      4,
+    );
   });
 
   it("marks the chat left only for a member event with leftAt", () => {
