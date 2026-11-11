@@ -1275,7 +1275,7 @@ it.effect("quotes a choice tap as the owner's words, not its JSON", () =>
 
 it.effect("a scheduled run quotes the owner's instruction, and refuses a task without it", () =>
   Effect.gen(function* () {
-    yield* seed;
+    yield* leadWithOwner;
     const prompt = yield* KinLeadPrompt;
     const run = (itemId: string) =>
       decodeEvent({
@@ -1289,6 +1289,7 @@ it.effect("a scheduled run quotes the owner's instruction, and refuses a task wi
         subject: { type: "scheduled_task", itemId, runId: `run-${itemId}` },
         lateByMs: 0,
       });
+    yield* stored(input.wakeupId, [run("sch-owner"), run("sch-member")]);
     const owned = yield* prompt.build({ ...input, events: [run("sch-owner")] });
     const quoted = owned.split("> BEGIN QUOTE: owner request (scheduled task)")[1] ?? "";
     expect(owned).toContain("Do the work now with your normal tools");
@@ -1302,24 +1303,24 @@ it.effect("a scheduled run quotes the owner's instruction, and refuses a task wi
 
 it.effect("a due reminder states its facts once and always gets a reply", () =>
   Effect.gen(function* () {
-    yield* seed;
+    yield* leadWithOwner;
     const prompt = yield* KinLeadPrompt;
+    const due = decodeEvent({
+      _tag: "deferral.due",
+      orgId,
+      agentId,
+      eventId: "due-rem",
+      receivedAt: timestamp,
+      provenance: { _tag: "system" },
+      dedupeKey: null,
+      subject: { type: "reminder", itemId: "rem" },
+      lateByMs: 7 * 60_000,
+    });
+    yield* stored(input.wakeupId, [due]);
     const built = yield* prompt.build({
       ...input,
       lane: { chatId, mode: "notice" },
-      events: [
-        decodeEvent({
-          _tag: "deferral.due",
-          orgId,
-          agentId,
-          eventId: "due-rem",
-          receivedAt: timestamp,
-          provenance: { _tag: "system" },
-          dedupeKey: null,
-          subject: { type: "reminder", itemId: "rem" },
-          lateByMs: 7 * 60_000,
-        }),
-      ],
+      events: [due],
     });
     const section = built.split("# Events\n\n")[1] ?? "";
     expect(section).toContain("This reminder is due now.");
@@ -1656,4 +1657,262 @@ it.effect(
         `from 👎 to 👍 (a reaction, not text). It now means go ahead: do it as for a 👍`,
       );
     }).pipe(Effect.provide(layer)),
+);
+
+// Review 14: readers besides `reaches` (due items, routines, watchdogs, owner checks) could put
+// memory into a turn other people read. Every kind of wake-up goes through the one gate.
+const marked = (id: string, fields: Record<string, unknown> = {}) => ({
+  head: decodeHead({
+    ...task(id, "owner").head,
+    title: `Invented zqmark title ${id}`,
+    what: `Invented zqmark what ${id}`,
+    sensitive: false,
+    ...fields,
+  }),
+  body: `Invented zqmark body ${id}.\n`,
+});
+const markedItems = new Map([
+  ["zqmark-rem", marked("zqmark-rem", { every: undefined, on_due: "remind" })],
+  [
+    "zqmark-asked",
+    marked("zqmark-asked", {
+      every: undefined,
+      on_due: "remind",
+      source_event: "asked-wake:event-asked",
+    }),
+  ],
+  ["zqmark-task", marked("zqmark-task")],
+  ["zqmark-def", marked("zqmark-def", { every: undefined, on_due: "start" })],
+  ["zqmark-follow", marked("zqmark-follow", { every: undefined, on_due: "chase" })],
+  ["zqmark-check", marked("zqmark-check", { kind: "claim", path: "claims/zqmark-check.md" })],
+]);
+const markedNotes = [...markedItems.values()].map((item) => item.head);
+const markedMemory = Layer.succeed(
+  Memory.Memory,
+  Memory.Memory.of({
+    withWriterLock: (_org, effect) => effect,
+    anchor: () => Effect.succeed("fixture"),
+    record: () => Effect.void,
+    recover: () => Effect.void,
+    withHistoryRewrite: () => Effect.die("Unused"),
+    withLandingLock: (_org, effect) => effect,
+    landingState: () => Effect.die("Unused"),
+    purgeInFlight: () => Effect.die("Unused"),
+    historyGeneration: () => Effect.die("Unused"),
+    items: () => Effect.die("Unused"),
+    readPromptSnapshot: () =>
+      Effect.succeed({
+        rules: "Invented zqmark rules",
+        index: "Invented zqmark index\n- [journal] Invented zqmark journal (journal/2026/11-08.md)",
+        items: markedNotes,
+        bodies: new Map(markedNotes.map((head) => [head.path, "Invented zqmark note body.\n"])),
+      }),
+    ensureCheckouts: () => Effect.die("Unused"),
+    prepareWakeup: () => Effect.die("Unused"),
+    readIndex: () => Effect.die("Unused"),
+    readRules: () => Effect.die("Unused"),
+    query: () => Effect.succeed([]),
+    readItem: () => Effect.die("Unused"),
+    readItemQuietly: (org, id) => {
+      const found = org === orgId ? markedItems.get(id) : undefined;
+      return found === undefined
+        ? Effect.fail(new Memory.MemoryNotFound({ orgId: org, id }))
+        : Effect.succeed(found);
+    },
+    rebuildIndex: () => Effect.die("Unused"),
+    rebuildCache: () => Effect.die("Unused"),
+    syncCheckout: () => Effect.die("Unused"),
+  }),
+);
+const due = (id: string, subject: Record<string, unknown>) => ({
+  _tag: "deferral.due",
+  orgId,
+  agentId,
+  eventId: id,
+  receivedAt: timestamp,
+  provenance: { _tag: "system" },
+  dedupeKey: null,
+  subject,
+  lateByMs: 0,
+});
+const system = { orgId, agentId, receivedAt: timestamp, provenance: { _tag: "system" } };
+const decodeRawEvent = Schema.decodeUnknownEffect(KinEvent);
+it.effect.each([
+  {
+    kind: "teammate message",
+    event: {
+      ...system,
+      _tag: "chat.message",
+      eventId: "event-teammate-asks",
+      dedupeKey: null,
+      chatId,
+      messageId: "teammate-asks",
+      provenance: { _tag: "human", personId: teammateId, memberId: teammateMember },
+    },
+  },
+  { kind: "reminder", event: due("rem", { type: "reminder", itemId: "zqmark-rem" }) },
+  {
+    kind: "reminder asked in the chat",
+    event: due("asked", { type: "reminder", itemId: "zqmark-asked" }),
+    shows: "Invented remind-me words",
+  },
+  {
+    kind: "scheduled task",
+    event: due("task", { type: "scheduled_task", itemId: "zqmark-task", runId: "run" }),
+  },
+  {
+    kind: "deferral",
+    event: due("def", { type: "deferral", itemId: "zqmark-def", phase: "due" }),
+  },
+  {
+    kind: "follow-up",
+    event: due("follow", { type: "followup", itemId: "zqmark-follow", person: teammateId }),
+  },
+  {
+    kind: "morning brief",
+    event: {
+      ...system,
+      _tag: "routine",
+      eventId: "brief",
+      dedupeKey: null,
+      routine: "morning_brief",
+    },
+  },
+  {
+    kind: "owner check",
+    event: {
+      ...system,
+      _tag: "routine",
+      eventId: "check",
+      dedupeKey: null,
+      routine: "owner_check",
+      ownerCheckItems: [{ itemId: "zqmark-check", reason: "past_review" }],
+    },
+  },
+  {
+    kind: "watchdog",
+    event: {
+      ...system,
+      _tag: "watchdog",
+      eventId: "watch",
+      dedupeKey: "watch",
+      finding: "Invented zqmark finding: mark zqmark-def done.",
+      itemIds: ["zqmark-def"],
+    },
+  },
+  {
+    kind: "GitHub event",
+    event: {
+      ...system,
+      _tag: "github",
+      eventId: "gh",
+      dedupeKey: null,
+      deliveryId: "delivery",
+      eventName: "push",
+      repo: "fixture/repo",
+      summary: "Invented push",
+      scheduledTaskId: "task",
+      webhookDeliveryId: "delivery",
+    },
+  },
+  {
+    kind: "worker report",
+    event: {
+      ...system,
+      _tag: "worker.report",
+      eventId: "report",
+      dedupeKey: null,
+      workerId: "worker",
+      report: {
+        result: "done",
+        summary: "Invented report",
+        evidence: [],
+        openQuestions: [],
+        memorySuggestions: [],
+        misleadingMemory: [{ itemId: "zqmark-check", why: "Invented why" }],
+        parsed: true,
+      },
+    },
+  },
+  {
+    kind: "action resolved",
+    event: {
+      ...system,
+      _tag: "action.resolved",
+      eventId: "resolved",
+      dedupeKey: null,
+      pendingActionId: "action",
+      outcome: "executed",
+    },
+  },
+])(
+  "a turn other people read, with team memory off, holds nothing from memory: $kind",
+  ({ event: raw, shows }) =>
+    Effect.gen(function* () {
+      const repo = yield* leadWithOwner;
+      yield* repo.insertPerson({
+        orgId,
+        personId: teammateId,
+        displayName: "Teammate",
+        handle: "teammate",
+        githubLogin: null,
+        createdAt: timestamp,
+      });
+      yield* repo.addMember({
+        orgId,
+        chatId,
+        memberId: teammateMember,
+        principal: { _tag: "person", personId: teammateId },
+        role: "member",
+        joinedAt: timestamp,
+        leftAt: null,
+        mutedUntil: null,
+      });
+      for (const [messageId, body] of [
+        ["teammate-asks", "Invented teammate question"],
+        ["asked", "Invented remind-me words"],
+      ] as const)
+        yield* repo.insertMessage({
+          orgId,
+          chatId,
+          messageId: KinMessageId.make(messageId),
+          author: { _tag: "human", personId: teammateId, memberId: teammateMember },
+          kind: "text",
+          body,
+          intent: null,
+          mentions: [],
+          replyTo: null,
+          widgetId: null,
+          floorRunId: null,
+          status: "posted",
+          sentBy: null,
+          createdAt: timestamp,
+          editedAt: null,
+          clientMessageId: null,
+        });
+      yield* stored("asked-wake", [event("asked")]);
+      // Even what the owner let the team know stays out while the switch is off.
+      for (const [id, item] of markedItems)
+        yield* authorise(orgId, id, fingerprint(item), "owner_setting");
+      const wakeup = yield* decodeRawEvent(raw);
+      yield* stored(input.wakeupId, [wakeup]);
+      const prompt = yield* KinLeadPrompt;
+      const built = yield* prompt.build({
+        ...input,
+        lane: { chatId, mode: "reply" },
+        events: [wakeup],
+        routineFacts: new Map([[wakeup.eventId, "Invented zqmark routine facts"]]),
+      });
+      expect(built).toContain("Someone besides the owner can read this reply.");
+      expect(built.toLowerCase()).not.toContain("zqmark");
+      if (shows !== undefined) expect(built).toContain(shows);
+    }).pipe(
+      Effect.provide(
+        KinLeadPrompt.layer.pipe(
+          Layer.provideMerge(Layer.merge(repository, markedMemory)),
+          Layer.provideMerge(database),
+          Layer.merge(teamMemory({})),
+        ),
+      ),
+    ),
 );

@@ -305,10 +305,18 @@ const make = Effect.gen(function* () {
    * Retires notes that were never memory and whose moment has passed, on the default branch and
    * without the owner: `spent` matches only obvious to-dos, follow-ups and progress. Left alone:
    * a teammate's words, anything the owner chose who may know, and the kinds the owner reviews.
-   * A failure here never fails the dream.
+   * Runs `reconcileSharing` first; a failure here never fails the dream.
    */
   const retireSpent = Effect.fn("DreamRunner.retireSpent")(
     function* (orgId: KinOrgId, memoryWriter: Writer.MemoryWriter["Service"]) {
+      yield* memoryWriter.reconcileSharing(orgId).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin nightly pass could not reconcile retired memory's sharing", {
+            orgId,
+            cause,
+          }),
+        ),
+      );
       const now = yield* Clock.currentTimeMillis;
       const labels = yield* storedLabels(orgId).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),

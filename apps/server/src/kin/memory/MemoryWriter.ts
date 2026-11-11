@@ -226,6 +226,11 @@ export class MemoryWriter extends Context.Service<
       orgId: KinOrgId,
       input: { readonly itemId: KinMemoryItemId; readonly by: "owner" | "nightly" },
     ) => Effect.Effect<{ readonly retired: boolean }, Failure>;
+    /**
+     * Ends who may know every item the default branch holds retired, whatever retired it: a
+     * GitHub merge, a promoted shadow branch, or a grant older than retirement clearing one.
+     */
+    readonly reconcileSharing: (orgId: KinOrgId) => Effect.Effect<void, Failure>;
   }
 >()("t3/kin/memory/MemoryWriter") {}
 const isRepoSlug = Schema.is(RepoSlug);
@@ -245,6 +250,8 @@ const make = Effect.gen(function* () {
       Effect.provideService(SqlClient.SqlClient, sql),
       Effect.mapError(toPersistenceSqlError("MemoryWriter.endSharing")),
     );
+  // The default-branch head `reconcileSharing` last swept, so an unchanged branch costs one read.
+  const reconciledHeads = new Map<KinOrgId, string>();
   const recovery = yield* MemoryRecoveryHooks;
   // Shadow branches whose last push was refused; the owner hears once until a push lands.
   const unpushedShadows = new Set<string>();
@@ -1379,7 +1386,8 @@ const make = Effect.gen(function* () {
           const { frontMatter } = yield* parseFrontMatter(orgId, input.path, restored);
           if (frontMatter.id !== input.itemId)
             return yield* new MemoryWriteRejected({ reason: "Invalid undo target" });
-          if (onMain && retired(frontMatter)) yield* endSharing(orgId, [input.itemId]);
+          // Whatever retired it on the way, the restored words reach no one until the owner says.
+          yield* endSharing(orgId, [input.itemId]);
           const commit = yield* ownerCommit(orgId, {
             writer,
             repoUrl: repo.repoUrl,
@@ -1491,6 +1499,28 @@ const make = Effect.gen(function* () {
                 : `kin: nightly pass retires spent ${input.itemId}\n`,
           });
           return { retired: true };
+        }),
+      ),
+    ),
+    reconcileSharing: Effect.fn("MemoryWriter.reconcileSharing")((orgId) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const main = config.defaultBranch ?? "main";
+          const { writer } = yield* validate(orgId);
+          const head = yield* branchHead(orgId, writer, main);
+          if (reconciledHeads.get(orgId) === head) return;
+          const ending = [];
+          for (const [path, bytes] of yield* filesAt(orgId, writer, head)) {
+            if (!folders.some((folder) => path.startsWith(`${folder}/`))) continue;
+            const parsed = yield* parseFrontMatter(orgId, path, bytes.toString("utf8")).pipe(
+              Effect.option,
+            );
+            if (Option.isSome(parsed) && retired(parsed.value.frontMatter))
+              ending.push(parsed.value.frontMatter.id);
+          }
+          yield* endSharing(orgId, ending);
+          reconciledHeads.set(orgId, head);
         }),
       ),
     ),
