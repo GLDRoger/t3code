@@ -543,6 +543,92 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
   }).pipe(Effect.provide(layer)),
 );
 
+// Review of cc5b670e33: a later join raises the history floor, so the lead can't repeat to Bob
+// what was said before Bob was there.
+it.effect("a shared prompt carries nothing from before the latest join", () =>
+  Effect.gen(function* () {
+    const repo = yield* leadWithOwner;
+    const bobId = KinPersonId.make("fixture-bob");
+    const bobMember = KinMemberId.make("fixture-bob-member");
+    for (const [id, name] of [
+      [teammateId, "Teammate"],
+      [bobId, "Bob"],
+    ] as const)
+      yield* repo.insertPerson({
+        orgId,
+        personId: id,
+        displayName: name,
+        handle: id,
+        githubLogin: null,
+        createdAt: timestamp,
+      });
+    const join = (id: KinMemberId, person: KinPersonId) =>
+      repo.addMember({
+        orgId,
+        chatId,
+        memberId: id,
+        principal: { _tag: "person", personId: person },
+        role: "member",
+        joinedAt: timestamp,
+        leftAt: null,
+        mutedUntil: null,
+      });
+    let said = 0;
+    const say = (body: string, author: KinPersonId, member: KinMemberId) =>
+      repo.insertMessage({
+        orgId,
+        chatId,
+        messageId: KinMessageId.make(`said-${++said}`),
+        author: { _tag: "human", personId: author, memberId: member },
+        kind: "text",
+        body,
+        intent: null,
+        mentions: [],
+        replyTo: null,
+        widgetId: null,
+        floorRunId: null,
+        status: "posted",
+        sentBy: null,
+        createdAt: timestamp,
+        editedAt: null,
+        clientMessageId: null,
+      });
+    yield* say("Invented-owner-alone-zq", personId, memberId);
+    yield* join(teammateMember, teammateId);
+    yield* say("Invented-before-bob-zq", teammateId, teammateMember);
+    yield* say("Invented-owner-before-bob-zq", personId, memberId);
+    yield* join(bobMember, bobId);
+    yield* say("Invented-after-bob-zq", personId, memberId);
+    const asks = yield* say("Invented bob question", bobId, bobMember);
+    const asked = decodeEvent({
+      _tag: "chat.message",
+      orgId,
+      agentId,
+      chatId,
+      messageId: asks.messageId,
+      eventId: "event-bob-asks",
+      receivedAt: timestamp,
+      dedupeKey: null,
+      provenance: { _tag: "human", personId: bobId, memberId: bobMember },
+    });
+    yield* stored("bob-wake", [asked]);
+    const built = yield* (yield* KinLeadPrompt).build({
+      ...input,
+      wakeupId: KinWakeupId.make("bob-wake"),
+      events: [asked],
+      lane: { chatId, mode: "reply" },
+    });
+    expect(built).toContain("Invented-after-bob-zq");
+    expect(built).toContain("Invented bob question");
+    for (const before of [
+      "Invented-owner-alone-zq",
+      "Invented-before-bob-zq",
+      "Invented-owner-before-bob-zq",
+    ])
+      expect(built).not.toContain(before);
+  }).pipe(Effect.provide(layer)),
+);
+
 // Fifth review of cfb0c8993b: the index and a dream disagreed on a reminder that names a chat
 // but no source event. One rule now: unresolved provenance is left out of both.
 it.effect(

@@ -69,6 +69,7 @@ import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
 import * as Hub from "./KinChatHub.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
+import { effectiveAudience } from "../lead/Audience.ts";
 import { KinStop } from "../lead/KinStop.ts";
 import { isOrgOwner } from "../lead/orgState.ts";
 import * as Repository from "./KinChatRepository.ts";
@@ -433,6 +434,25 @@ const make = Effect.gen(function* () {
       return asked.length > 0;
     },
     Effect.mapError(toPersistenceSqlError("KinChatService.leadMayRead")),
+  );
+  /** Whether the calling lead's running turn is shared (`effectiveAudience`); none found is. */
+  const sharedTurn = Effect.fn("KinChatService.sharedTurn")(
+    function* (agent: AgentIdentity) {
+      const [row] =
+        agent.wakeupId !== undefined
+          ? [{ wakeupId: agent.wakeupId }]
+          : yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId" FROM kin_wakeups
+              WHERE org_id = ${agent.orgId} AND agent_id = ${agent.agentId}
+                AND thread_id = ${agent.threadId} AND status = 'running'
+              ORDER BY wakeup_id`;
+      if (row === undefined) return true;
+      const turn = { orgId: agent.orgId, agentId: agent.agentId, wakeupId: row.wakeupId };
+      return (
+        (yield* effectiveAudience(turn).pipe(Effect.provideService(SqlClient.SqlClient, sql))) ===
+        "shared"
+      );
+    },
+    Effect.mapError(toPersistenceSqlError("KinChatService.sharedTurn")),
   );
   const authorFor = (identity: Identity, member: KinChatMember): KinAuthor =>
     identity._tag === "person"
@@ -1481,6 +1501,8 @@ const make = Effect.gen(function* () {
         afterSeq: request.afterSeq ?? 0,
         limit: request.limit ?? 50,
         viewerMemberId: member.memberId,
+        // Whatever page it asks for, a shared turn sees nothing below the chat's history floor.
+        fromHistoryFloor: identity._tag === "agent" && (yield* sharedTurn(identity)),
       });
     }, transaction),
     history: Effect.fn("KinChatService.history")(
