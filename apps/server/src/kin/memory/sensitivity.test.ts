@@ -19,6 +19,7 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import {
   NEVER_SHARED_FIELDS,
   SHARED_HEAD_FIELDS,
+  SHARING_KINDS,
   SharedItem,
   authorise,
   classify,
@@ -62,7 +63,14 @@ it.effect("only a stored authorisation of the exact words lets the team know an 
       new Map([["nightly", { sensitive: false, content: fingerprint(item("nightly", "x")) }]]),
     );
     yield* suggest(orgId, "hinted", fingerprint(item("hinted", "Invented hint.\n", false)));
+    // Review of 17822434f4: a grant an earlier build's chat stored is not one this build honours.
+    const labelled = item("labelled", "Invented chat grant.\n", false);
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_memory_labels (org_id, item_id, shared_content, shared_how, shared_at)
+      VALUES (${orgId}, 'labelled', ${fingerprint(labelled)}, 'owner_label', 1)`;
     const labels = yield* storedLabels(orgId);
+    assert.isFalse(reaches("shared", labelled, labels));
+    assert.strictEqual(visibility(labelled, labels), "only_owner");
     const team = (candidate: ReturnType<typeof item>) => reaches("shared", candidate, labels);
     assert.isTrue(team(shared));
     assert.isTrue(reaches("owner_only", item("anything", "x"), labels));
@@ -211,4 +219,9 @@ it("only the owner's own write, the Memory screen and a teammate's words let the
     ["kin/memory/MemoryChanges.ts", '"owner_confirmed"'],
     ["kin/memory/MemoryChanges.ts", '"owner_setting"'],
   ]);
+  // Exactly the kinds those calls store are honoured; a new one is a change to this list.
+  assert.sameMembers(
+    [...SHARING_KINDS],
+    sites.flatMap(([, how]) => how!.match(/"\w+"/g)!.map((kind) => JSON.parse(kind) as string)),
+  );
 });
