@@ -151,12 +151,12 @@ export interface StoredLabels {
 }
 
 /**
- * Whether the host lets shared turns read and write team memory: `KIN_TEAM_MEMORY=on`. Anything
- * else, unset or unreadable, is off, and shared turns get no memory at all.
+ * Whether the host lets shared turns read and write team memory: `KIN_TEAM_MEMORY=on`, exactly.
+ * Anything else, padded, unset or unreadable, is off, and shared turns get no memory at all.
  */
 export const teamMemoryOn = Config.String("KIN_TEAM_MEMORY").pipe(
   Config.withDefault("off"),
-  Effect.map((value) => value.trim() === "on"),
+  Effect.map((value) => value === "on"),
   Effect.orElseSucceed(() => false),
 );
 
