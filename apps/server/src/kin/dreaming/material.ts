@@ -20,8 +20,6 @@ export interface MaterialEntry {
   readonly trust: MemoryTrust;
   readonly at: string;
   readonly text: string;
-  /** An item's checked quote, which an item folded from it carries over. */
-  readonly quote?: string;
   /** A reminder or scheduled task: what it says was never a statement, whoever asked for it. */
   readonly reminder?: true;
   /** An item nobody has said who may know: the dream labels it (`DreamRunner`). */
@@ -200,9 +198,6 @@ export const collectMaterial = Effect.fn("DreamMaterial.collect")(
         trust: parsed.value.frontMatter.trust,
         at: parsed.value.frontMatter.recorded_at,
         text,
-        ...(parsed.value.frontMatter.quote === undefined
-          ? {}
-          : { quote: parsed.value.frontMatter.quote }),
         ...(parsed.value.frontMatter.kind === "deferral" ? { reminder: true as const } : {}),
         ...(unlabelled ? { unlabelled: true as const } : {}),
       });

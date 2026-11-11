@@ -12,7 +12,7 @@ import {
 } from "../memory/sensitivity.ts";
 
 /** The item's text with its `sensitive` line set, leaving every other byte as the dream wrote it. */
-const withLabel = (text: string, sensitive: boolean) => {
+export const withLabel = (text: string, sensitive: boolean) => {
   const parts = /^((?:﻿)?---\r?\n)([\s\S]*?)(\r?\n---(?:\r?\n|$)[\s\S]*)$/.exec(text);
   if (parts === null) return text;
   const [, open = "", front = "", rest = ""] = parts;

@@ -1,6 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { ThreadId } from "@t3tools/contracts";
+import { KinChatId, KinOrgId, ThreadId } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -21,6 +21,7 @@ import * as ChatHub from "../chat/KinChatHub.ts";
 import * as Presence from "../reply/KinPresence.ts";
 import * as LevelGate from "./LevelGate.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
+import * as Writer from "../memory/MemoryWriter.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import * as KinLead from "./layer.ts";
 import { event, harness, seed, orgId } from "./WakeupRunner.testkit.ts";
@@ -154,4 +155,43 @@ it.effect("leaves unconfigured Kin silent and inert without building its depende
     );
     assert.deepStrictEqual(entries, []);
   }).pipe(Effect.provide(Layer.mergeAll(harness(), external)), provideDeterministicTestRuntime),
+);
+
+it.effect("a cleared chat and each memory sync sweep deleted messages' quotes", () =>
+  Effect.gen(function* () {
+    const clearedOrg = KinOrgId.make("cleared-org");
+    const cleared = yield* Deferred.make<void>();
+    const synced = yield* Deferred.make<void>();
+    const writer = Layer.mock(Writer.MemoryWriter)({
+      reconcileSharing: () => Effect.void,
+      stripQuotes: (org) => Deferred.succeed(org === clearedOrg ? cleared : synced, undefined),
+    });
+    const hub = Layer.mock(ChatHub.KinChatHub)({
+      subscribeAll: Effect.succeed(
+        Stream.make({
+          type: "chat.cleared" as const,
+          orgId: clearedOrg,
+          chatId: KinChatId.make("cleared-chat"),
+          lastSeq: 1,
+          lastChangeSeq: 1,
+        }),
+      ),
+    });
+    yield* Layer.build(
+      Layer.fresh(KinLead.layerServer).pipe(
+        Layer.provide(Layer.mergeAll(writer, hub)),
+        Layer.provide(external),
+        Layer.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromUnknown({
+              KIN_MEMORY_REPOSITORIES: JSON.stringify([{ orgId, repoUrl: "fixture" }]),
+            }),
+          ),
+        ),
+      ),
+    );
+    yield* Deferred.await(cleared);
+    yield* TestClock.adjust("20 seconds");
+    yield* Deferred.await(synced);
+  }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
 );

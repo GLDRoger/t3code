@@ -30,6 +30,7 @@ import { isOrgPaused } from "../lead/orgState.ts";
 import { isCheckoutPath } from "../memory/checkoutPaths.ts";
 import { spent } from "../memory/keeping.ts";
 import { isOwnerReviewedPath } from "../memory/lint.ts";
+import { readableFiles } from "../memory/quoteAccess.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
@@ -100,10 +101,10 @@ const extractPrompt = (input: { orgId: string; head: string; full: boolean }) =>
 
 Read ${scratch}/material.json. It lists every original since the last good dream${input.full ? ", plus every current item" : ""}. Cite entries by their "ref".
 
-1. Extract durable facts, meaning only what will still matter weeks from now and could not be cheaply found again: lasting facts about the company, clients, people and projects, how the owner wants things done, decisions with their reasons, and promises with their dates. Never make an item of a to-do, a follow-up minutes or hours away, where work stands or what someone is waiting for, anything readable again from a repo, PR or check, or small talk; one item holds one thing. Put them into item files under objectives/, commitments/, deferrals/, decisions/, people/ or claims/, and fold journal/ entries. Merge duplicates and mark replaced items with invalid_at and superseded_by.
+1. Extract durable facts, meaning only what will still matter weeks from now and could not be cheaply found again: lasting facts about the company, clients, people and projects, how the owner wants things done, decisions with their reasons, and promises with their dates. Never make an item of a to-do, a follow-up minutes or hours away, where work stands or what someone is waiting for, anything readable again from a repo, PR or check, or small talk; one item holds one thing. Put them into item files under objectives/, commitments/, deferrals/, decisions/, people/ or claims/, and fold journal/ entries. Merge duplicate items with trust agent or external and mark the replaced ones with invalid_at and superseded_by.
 2. Edit only item files and journal/. Never delete a file. Never edit rules.md or INDEX.md. Do not run git.
-3. A new item, or one whose source changes, takes source = the material ref, and said_by and trust = that entry's saidBy and trust. When that entry is a chat message a person wrote, the item also takes quote = their exact words from it that say it, at most 400 characters. An item whose source is another item keeps that item's quote as it is, or has none if it had none. Never change an item's quote. An item made from a reminder (deferrals/) takes trust agent.
-4. An item with trust owner or member holds what a person stated. Never change its title, body, status, invalid_at or provenance. To merge one, make the merged item with source = that item's material ref and its trust and quote, then set only superseded_by and status: superseded on the old one.
+3. A new item, or one whose source changes, takes source = the material ref, and said_by and trust = that entry's saidBy and trust. When that entry is a chat message a person wrote, the item also takes quote = their exact words from it that say it, at most 400 characters. Never change an item's quote.
+4. An item with trust owner or member holds what a person said: leave it exactly as it is, and never supersede, close or move it. You may write your own item that cites it, as your own conclusion: source = its material ref, trust agent (external if that item's is), and no quote. The same goes for any item you make from another item, a reminder included.
 5. Give every item you create or change, and every material entry marked "unlabelled", a front-matter line "sensitive: true" or "sensitive: false". true is for the owner alone: access (credentials, where they are kept, who holds them, how to get in); money and commercial terms (what a client is charged, what people or suppliers are paid, discounts, margins, bank and billing details); an arrangement with a client or partner the team isn't meant to know, such as a client lending the company their subscription; and anything the owner asked to keep private. false is ordinary company knowledge the team can know, such as project status. When unsure, true. Never change true to false, never remove the line, and an item you merge others into is true if any of them was. Leave shared_by and shared_from alone, and never edit an item that has shared_from.
 6. Write ${scratch}/dream.json:
 {"changes":[{"path":"...","sources":["ref"]}],"merges":[{"into":"id","from":["id"],"sources":["ref"]}],"supersessions":[{"id":"...","invalid_at":"...","superseded_by":"id","sources":["ref"]}],"contradictions":[{"items":["id"],"summary":"...","sources":["ref"]}]}
@@ -193,7 +194,14 @@ const make = Effect.gen(function* () {
               WHERE org_id = ${orgId} AND owner_date = ${ownerDate} AND status <> 'running'
               RETURNING dream_id`;
         if (replaced.length === 0) return undefined;
-        return { dreamId, branch, from, until: now, models: yield* decodeModels(lead.models) };
+        return {
+          dreamId,
+          branch,
+          from,
+          until: now,
+          owner: lead.ownerPersonId,
+          models: yield* decodeModels(lead.models),
+        };
       }),
     );
   });
@@ -369,8 +377,27 @@ const make = Effect.gen(function* () {
     const base = yield* writer.value.dreamBase(orgId);
     yield* sql`UPDATE kin_dream_runs SET base_head = ${base.head}
       WHERE org_id = ${orgId} AND dream_id = ${dreamId} AND status = 'running' RETURNING dream_id`;
-    const files = new Map([...base.files].filter(([file]) => isCheckoutPath(file)));
-    const baseText = new Map([...files].map(([file, bytes]) => [file, bytes.toString("utf8")]));
+    // `stored` is checked against and committed from, never shown: the model reads memory as
+    // the owner may with their own tools, without a quote of a message they can no longer open.
+    const stored = new Map(
+      [...base.files]
+        .filter(([file]) => isCheckoutPath(file))
+        .map(([file, bytes]) => [file, bytes.toString("utf8")]),
+    );
+    const hidden = yield* readableFiles(
+      orgId,
+      claimed.owner,
+      [...stored].map(([file, text]) => ({ path: file, text })),
+    ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    const shown = new Map([...stored].map(([file, text]) => [file, hidden.get(file) ?? text]));
+    const files = new Map(
+      [...base.files]
+        .filter(([file]) => isCheckoutPath(file))
+        .map(([file, bytes]) => {
+          const text = hidden.get(file);
+          return [file, text === undefined ? bytes : Buffer.from(text)];
+        }),
+    );
     const labels = yield* storedLabels(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     const material = yield* collectMaterial({
       orgId,
@@ -378,7 +405,7 @@ const make = Effect.gen(function* () {
       until: claimed.until,
       full,
       timeZone,
-      files: baseText,
+      files: shown,
       classified: new Set(labels.classified.keys()),
     }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     // Current items alone are not new: with no original since the last good night, no model runs,
@@ -437,7 +464,8 @@ const make = Effect.gen(function* () {
       }
       const checked = yield* checkDream({
         orgId,
-        base: baseText,
+        base: shown,
+        stored,
         tree: checkout.tree,
         special: checkout.special,
         dreamJson: checkout.dreamJson,
@@ -446,8 +474,8 @@ const make = Effect.gen(function* () {
       });
       const { changes, classified, suggested } = yield* keepLabels({
         orgId,
-        base: baseText,
-        tree: checkout.tree,
+        base: stored,
+        tree: checked.committed,
         changes: checked.changes,
         merges: checked.dream?.merges ?? [],
         labels,

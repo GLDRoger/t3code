@@ -5,7 +5,7 @@ import { parseDocument } from "yaml";
 
 import { readableBy } from "../chat/sharing.ts";
 import { isItemPath } from "./checkoutPaths.ts";
-import { parseFrontMatter } from "./frontMatter.ts";
+import { FRONT_MATTER_YAML, parseFrontMatter } from "./frontMatter.ts";
 
 // As `LeadMemory.authority` writes the source of an item saved from a chat message.
 const CHAT_SOURCE = /^kin:chat:([^:]+):message:(.+)$/;
@@ -82,19 +82,27 @@ export const withReadableQuotes = Effect.fn("KinMemory.withReadableQuotes")(func
   });
 });
 
-/** The item's text with no `quote` in its front matter, every other byte as it was. */
-const withoutQuote = (text: string) => {
-  const parts = /^((?:\uFEFF)?---\r?\n)([\s\S]*?)(\r?\n---(?:\r?\n|$)[\s\S]*)$/.exec(text);
-  if (parts === null) return text;
+const FRONT = /^((?:\uFEFF)?---\r?\n)([\s\S]*?)(\r?\n---(?:\r?\n|$)[\s\S]*)$/;
+
+/** The item's front matter, parsed as every reader parses it, when it has a `quote` key. */
+const quotedFront = (text: string) => {
+  const parts = FRONT.exec(text);
+  if (parts === null) return undefined;
   const [, open = "", front = "", rest = ""] = parts;
-  const doc = parseDocument(front, { keepSourceTokens: true });
-  if (doc.errors.length > 0 || !doc.has("quote")) return text;
-  doc.delete("quote");
-  return `${open}${doc.toString().replace(/\r?\n$/, "")}${rest}`;
+  // Saves a YAML parse per item per read: any style of quote key holds "quote" or an escape's \.
+  if (!front.includes("quote") && !front.includes("\\")) return undefined;
+  const doc = parseDocument(front, FRONT_MATTER_YAML);
+  if (doc.errors.length > 0 || !doc.has("quote")) return undefined;
+  return { open, doc, rest };
 };
 
-// A quoted key, as a hand edit or a dream may write one, counts too.
-const QUOTE_KEY = /^["']?quote["']?\s*:/m;
+/** The item's text with no `quote` in its front matter, every other field as it was. */
+const withoutQuote = (text: string) => {
+  const quoted = quotedFront(text);
+  if (quoted === undefined) return text;
+  quoted.doc.delete("quote");
+  return `${quoted.open}${quoted.doc.toString().replace(/\r?\n$/, "")}${quoted.rest}`;
+};
 
 /**
  * Memory files as `person` may read them with their own tools: each item keeps its quote only
@@ -108,16 +116,16 @@ export const readableFiles = Effect.fn("KinMemory.readableFiles")(function* (
 ) {
   const quoted = [];
   for (const file of files) {
-    if (!isItemPath(file.path) || !QUOTE_KEY.test(file.text)) continue;
+    if (!isItemPath(file.path) || quotedFront(file.text) === undefined) continue;
     const parsed = yield* parseFrontMatter(orgId, file.path, file.text, false, true).pipe(
       Effect.option,
     );
-    if (parsed._tag === "Some")
-      quoted.push({
-        ...file,
-        source: parsed.value.frontMatter.source,
-        quote: parsed.value.frontMatter.quote,
-      });
+    // One that is not a valid item has no source anyone could open, so its quote never shows.
+    quoted.push({
+      ...file,
+      source: parsed._tag === "Some" ? parsed.value.frontMatter.source : "",
+      quote: parsed._tag === "Some" ? parsed.value.frontMatter.quote : undefined,
+    });
   }
   const shown = yield* withReadableQuotes(orgId, person, quoted);
   const changed = new Map<string, string>();
@@ -130,9 +138,8 @@ export const readableFiles = Effect.fn("KinMemory.readableFiles")(function* (
 });
 
 /**
- * The files whose item quotes a message that no longer exists, each without its quote: cited
- * directly, or carried over from such an item by one made from it. Read from what is stored, so
- * the same sweep strips after a clear and after a crash that interrupted one.
+ * The files whose item quotes a message that no longer exists, each without its quote. Read
+ * from what is stored, so the same sweep strips after a clear and after a crash that cut one short.
  */
 export const deletedQuotes = Effect.fn("KinMemory.deletedQuotes")(function* (
   orgId: KinOrgId,
@@ -141,7 +148,7 @@ export const deletedQuotes = Effect.fn("KinMemory.deletedQuotes")(function* (
   const sql = yield* SqlClient.SqlClient;
   const quoted = new Map<string, { readonly source: string; readonly quote: string }>();
   for (const [path, text] of files) {
-    if (!isItemPath(path) || !QUOTE_KEY.test(text)) continue;
+    if (!isItemPath(path) || quotedFront(text) === undefined) continue;
     const parsed = yield* parseFrontMatter(orgId, path, text, false, true).pipe(Effect.option);
     const quote = parsed._tag === "Some" ? parsed.value.frontMatter.quote : undefined;
     if (parsed._tag === "Some" && quote !== undefined)
@@ -166,16 +173,6 @@ export const deletedQuotes = Effect.fn("KinMemory.deletedQuotes")(function* (
       .filter(([, { source }]) => CHAT_SOURCE.test(source) && !present.has(source))
       .map(([path]) => path),
   );
-  for (let grew = gone.size > 0; grew;) {
-    grew = false;
-    for (const [path, { source, quote }] of quoted) {
-      const from = source.startsWith("memory:") ? source.slice("memory:".length) : undefined;
-      if (gone.has(path) || from === undefined || !gone.has(from)) continue;
-      if (quoted.get(from)?.quote !== quote) continue;
-      gone.add(path);
-      grew = true;
-    }
-  }
   const stripped = new Map<string, string>();
   for (const path of gone) {
     const text = files.get(path)!;

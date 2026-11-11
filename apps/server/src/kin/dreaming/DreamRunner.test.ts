@@ -81,10 +81,11 @@ const dreamJson = (contradictions: ReadonlyArray<object> = []) =>
     contradictions,
   });
 
-/** Run inside the runner: before `deleteDreamBranch`, and after it removes a path. */
+/** Run inside the runner: before `deleteDreamBranch`, after it removes a path, and at the end of a good extract turn. */
 type RunnerHooks = {
   beforeDelete: Effect.Effect<void>;
   removed: (path: string) => Effect.Effect<void>;
+  extracted: (workspaceRoot: string) => Effect.Effect<void>;
 };
 
 const fixture = <A, E>(
@@ -171,7 +172,11 @@ const fixture = <A, E>(
 
     let behavior: Behavior = "good";
     let budgetAllowed = true;
-    const hooks: RunnerHooks = { beforeDelete: Effect.void, removed: () => Effect.void };
+    const hooks: RunnerHooks = {
+      beforeDelete: Effect.void,
+      removed: () => Effect.void,
+      extracted: () => Effect.void,
+    };
     const turns: Array<DreamSession.DreamTurn> = [];
     const turnThreads: Array<string | null> = [];
     const notices: Array<string> = [];
@@ -243,6 +248,7 @@ const fixture = <A, E>(
                 : [],
             ),
           );
+          yield* hooks.extracted(turn.workspaceRoot);
           return { threadId, status: "completed" as const };
         }).pipe(Effect.orDie),
     });
@@ -458,6 +464,49 @@ it.live("a fixture dream pushes dream/<date> with its changes and records dream.
       const fs = yield* FileSystem.FileSystem;
       expect(yield* fs.exists(`${root}/state/dreams/${outcome.dreamId}`)).toBe(false);
     }),
+  ),
+);
+
+const hiddenQuote = "invented words from a message now gone";
+const statedItem = fixtureItem({
+  id: "clm-stated",
+  kind: "claim",
+  source: "kin:chat:owner-chat:message:gone-msg",
+  said_by: "owner",
+  trust: "owner",
+  quote: hiddenQuote,
+});
+
+it.live("a dream never sees a quote the owner can't open, and a stated item keeps it", () =>
+  fixture(
+    ({ git, remote, hooks }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const seen: Array<string> = [];
+        hooks.extracted = (workspace) =>
+          Effect.gen(function* () {
+            const shown = yield* fs.readFileString(`${workspace}/claims/stated.md`);
+            seen.push(shown, yield* fs.readFileString(`${workspace}/.kin-dream/material.json`));
+            // The model labels the item it was shown and returns that copy.
+            yield* fs.writeFileString(
+              `${workspace}/claims/stated.md`,
+              shown.replace("\n---\n", "\nsensitive: true\n---\n"),
+            );
+            const dream = JSON.parse(dreamJson());
+            dream.changes.push({ path: "claims/stated.md", sources: ["memory:claims/stated.md"] });
+            yield* fs.writeFileString(`${workspace}/.kin-dream/dream.json`, JSON.stringify(dream));
+          }).pipe(Effect.orDie);
+        const runner = yield* DreamRunner.DreamRunner;
+        const outcome = yield* runner.run(orgId, { full: false, ownerDate: "2026-11-08" });
+        expect(outcome._tag).toBe("succeeded");
+        if (outcome._tag !== "succeeded") return;
+        expect(seen).toHaveLength(2);
+        for (const text of seen) expect(text).not.toContain(hiddenQuote);
+        expect(
+          yield* git(remote, ["--git-dir", remote, "show", `${outcome.head}:claims/stated.md`]),
+        ).toBe(statedItem.replace("\n---\nInvented", "\nsensitive: true\n---\nInvented").trimEnd());
+      }),
+    { "claims/stated.md": statedItem },
   ),
 );
 
