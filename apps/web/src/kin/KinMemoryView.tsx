@@ -391,7 +391,7 @@ function KinMemoryOrigin(props: {
       type="button"
       aria-expanded={open}
       onClick={props.onToggle}
-      className="flex items-start gap-1.5 rounded-sm pt-0.5 text-start text-xs text-muted-foreground outline-none ring-ring hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset"
+      className="flex cursor-pointer items-start gap-1.5 rounded-sm pt-0.5 text-start text-xs text-muted-foreground outline-none ring-ring hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset"
     >
       <Icon aria-hidden className="mt-0.5 size-3 shrink-0" />
       <span className={open ? undefined : "line-clamp-2"}>

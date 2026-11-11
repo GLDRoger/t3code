@@ -409,10 +409,14 @@ function KinMemoryOrigin(props: {
   const { origin, open } = props;
   const line = (
     <>
-      <View className="h-[18px] justify-center">
+      <View
+        className="h-[18px] justify-center"
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+      >
         <SymbolView
           name={ORIGIN_SYMBOL[origin.kind]}
-          size={12}
+          size={14}
           tintColorClassName="accent-icon-muted"
           type="monochrome"
         />
@@ -436,6 +440,7 @@ function KinMemoryOrigin(props: {
   ) : (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel={`${origin.line} “${origin.quote}”`}
       accessibilityState={{ expanded: open }}
       accessibilityHint={open ? "Shows less" : "Shows the whole quote"}
       onPress={props.onToggle}
