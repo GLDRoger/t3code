@@ -1,5 +1,4 @@
 import {
-  type KinActionId,
   type KinAgentId,
   type KinChatId,
   KinMessageId,
@@ -7,11 +6,12 @@ import {
   KinWakeupId,
   type KinWorkerId,
 } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as SqlError from "effect/sql/SqlError";
 
-import { KinPendingActions } from "../approvals/PendingActions.ts";
+import type { PersistenceDecodeError, PersistenceSqlError } from "../../persistence/Errors.ts";
 import { stopAttempt } from "../work/workerAttempts.ts";
 
 /**
@@ -25,6 +25,20 @@ export const retiredWorkerKey = (workerId: KinWorkerId, retiredAt: string) =>
   `kin-retired:${workerId}:${retiredAt}`;
 /** Why its approval requests closed, on the request and in the audit log. */
 export const RETIRED_ACTION_REASON = "agent_retired";
+
+/**
+ * Closes the approval requests a retired agent raised, in the retirement's transaction. The
+ * approvals module provides it, so no lead module reaches pending actions (GrantVerifier.test).
+ */
+export class KinRetiredActions extends Context.Service<
+  KinRetiredActions,
+  {
+    readonly close: (input: {
+      readonly orgId: KinOrgId;
+      readonly agentId: KinAgentId;
+    }) => Effect.Effect<void, SqlError.SqlError | PersistenceSqlError | PersistenceDecodeError>;
+  }
+>()("t3/kin/lead/Retirement/KinRetiredActions") {}
 
 export const RETIRED_NOTICE_PREFIX = "kin-retired:";
 export const retiredNoticeId = (messageId: KinMessageId) =>
@@ -120,20 +134,7 @@ export const retire = Effect.fn("KinRetirement.retire")(function* (input: {
     WHERE org_id = ${orgId} AND task_id IN (SELECT target_id FROM kin_retirement_holds
       WHERE org_id = ${orgId} AND agent_id = ${agentId} AND kind = 'schedule')`;
   // What it asked the owner to approve closes; an approval can't act for a retired agent.
-  const actions = yield* Effect.serviceOption(KinPendingActions);
-  if (Option.isSome(actions))
-    for (const row of yield* sql<{ actionId: KinActionId; revision: number; state: string }>`
-        SELECT action_id AS "actionId", revision, state FROM kin_pending_actions
-        WHERE org_id = ${orgId} AND requested_by_agent_id = ${agentId}
-          AND state IN ('awaiting_approval', 'approved')
-        ORDER BY action_id`)
-      yield* actions.value.transition({
-        orgId,
-        actionId: row.actionId,
-        revision: row.revision,
-        to: row.state === "approved" ? "voided" : "cancelled",
-        reason: RETIRED_ACTION_REASON,
-      });
+  yield* (yield* KinRetiredActions).close({ orgId, agentId });
   return {
     turns: turns.map((row) => KinWakeupId.make(row.wakeupId)),
     expired: expired.length,

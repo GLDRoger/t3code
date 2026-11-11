@@ -37,8 +37,6 @@ import * as ChatService from "../chat/KinChatService.ts";
 import { KinIdentity, KinIdentityConfig, type PersonIdentity } from "../chat/KinIdentity.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
-import * as Audit from "../approvals/Audit.ts";
-import * as PendingActions from "../approvals/PendingActions.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import * as KinLevels from "./KinLevels.ts";
 import { KinStop } from "./KinStop.ts";
@@ -892,8 +890,6 @@ export const contacts = Effect.fn("KinLeadProvision.contacts")(function* (person
 export const layer = Layer.mergeAll(
   KinIdentity.layer.pipe(Layer.provide(KinIdentityConfig.layer)),
   ChatService.layer,
-  // Retiring closes the approval requests a lead raised, from the host too.
-  PendingActions.layer.pipe(Layer.provide(Audit.layer)),
 ).pipe(
   Layer.provideMerge(Hub.layer),
   Layer.provideMerge(Repository.layer),
@@ -903,7 +899,9 @@ export const layer = Layer.mergeAll(
 /** Settings name each provider instance's driver; the CLI reads this host's file. */
 export const settingsLayer = serverSettingsLayer;
 
+/** The CLI adds `KinRetiredActions` from the approvals module, as the server's layer does. */
 export type Requirements =
   | Layer.Success<typeof layer>
+  | Retirement.KinRetiredActions
   | SqlClient.SqlClient
   | ServerSettingsService;

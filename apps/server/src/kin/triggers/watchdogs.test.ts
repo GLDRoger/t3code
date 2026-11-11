@@ -102,7 +102,7 @@ const seed = Effect.gen(function* () {
   yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Kin', ${timestamp})`;
   yield* sql`INSERT INTO kin_people VALUES ('owner', ${orgId}, 'owner', 'Owner', 'owner-gh', ${timestamp})`;
   yield* sql`INSERT INTO kin_people VALUES ('alice', ${orgId}, 'alice', 'Alice', 'Alice-GH', ${timestamp})`;
-  yield* sql`INSERT INTO kin_agents VALUES ('lead', ${orgId}, 'Lead', 'lead', 'owner', ${timestamp}, NULL)`;
+  yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at, retired_at) VALUES ('lead', ${orgId}, 'Lead', 'lead', 'owner', ${timestamp}, NULL)`;
   for (const chat of ["chat", "team"])
     yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
       VALUES (${chat}, ${orgId}, ${chat === "chat" ? "direct" : "team_group"}, ${chat === "chat" ? "direct" : null}, 0, ${timestamp})`;

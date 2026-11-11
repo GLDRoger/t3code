@@ -85,11 +85,12 @@ const runOnHost = Effect.fn("kin.lead.runOnHost")(
     const logLevel = yield* GlobalFlag.LogLevel;
     const config = yield* resolveCliAuthConfig(flags, logLevel, { quietLogs: flags.json });
     const provision = yield* Effect.promise(() => import("../lead/KinLeadProvision.ts"));
+    const retiredActions = yield* Effect.promise(() => import("../approvals/retiredActions.ts"));
     const isRefusal = Schema.is(provision.KinLeadProvisionError);
     return yield* run(provision).pipe(
       Effect.tapError((error) => (isRefusal(error) ? Console.error(error.message) : Effect.void)),
       Effect.provide(
-        provision.layer.pipe(
+        Layer.merge(provision.layer, retiredActions.hostLayer).pipe(
           Layer.provideMerge(provision.settingsLayer),
           Layer.provideMerge(EnvironmentAuth.layerRuntime),
           Layer.provide(ServerConfig.layer(config)),

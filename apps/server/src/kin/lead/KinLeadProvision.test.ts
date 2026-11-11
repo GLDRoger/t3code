@@ -24,10 +24,11 @@ import * as Repository from "../chat/KinChatRepository.ts";
 import * as ChatService from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinLevels from "./KinLevels.ts";
+import * as RetiredActions from "../approvals/retiredActions.ts";
 import * as Provision from "./KinLeadProvision.ts";
 import { RETIRED_ACTION_REASON, RETIRED_WORKER_REASON } from "./Retirement.ts";
 
-const layer = Provision.layer.pipe(
+const layer = Layer.merge(Provision.layer, RetiredActions.hostLayer).pipe(
   Layer.provideMerge(Sqlite.layerMemory),
   Layer.provideMerge(
     ServerSettings.layerTest({
