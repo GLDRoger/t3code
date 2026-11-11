@@ -8,7 +8,6 @@ import {
   type KinMessageId,
   type KinOrgId,
   type KinPersonId,
-  type KinRecordCategory,
   type KinRecordChangeVia,
   type KinRecordLinkKind,
   type KinRecordRelation,
@@ -33,6 +32,16 @@ import { isSqlError } from "effect/sql/SqlError";
 
 import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
+import {
+  checkFor,
+  encodeFieldValues,
+  type FieldValue,
+  LISTS,
+  type ListName,
+  listOf,
+  parseFields,
+  shownField,
+} from "./lists.ts";
 import {
   byId,
   byKey,
@@ -68,15 +77,25 @@ export type Fields = {
   readonly state?: KinRecordState;
   readonly waitingOn?: KinWorkPrincipal | null;
   readonly owner: KinWorkPrincipal;
-  readonly category?: KinRecordCategory | null;
+  /** A Work category, or a client's kind (`client`, `vendor`). */
+  readonly category?: string | null;
   readonly side?: KinRecordSide;
   readonly dueAt?: number | null;
   readonly dueAllDay?: boolean;
   readonly notes?: string;
   readonly confirmed?: boolean;
+  /** Raised by anyone; lowered only by a person, which the owner-only callers make the owner. */
   readonly sensitive?: boolean;
+  /** Record ids of a client and a project in this org. */
+  readonly partyId?: string | null;
+  readonly projectId?: string | null;
+  readonly repo?: string | null;
+  /** The list's own fields; `null` removes one. */
+  readonly fields?: Readonly<Record<string, FieldValue | null>>;
 };
 export type CreateInput = Fields & {
+  /** Default `work`. */
+  readonly list?: ListName;
   /** A create with a key already stored returns that entry and changes nothing. */
   readonly originKey: string;
   readonly source?: { readonly chatId: KinChatId; readonly messageId: KinMessageId };
@@ -91,6 +110,11 @@ export type LinkInput = {
   readonly label?: string | null;
 };
 export type QueryInput = {
+  /** Default `work`. */
+  readonly list?: ListName;
+  readonly partyId?: string;
+  readonly projectId?: string;
+  readonly repo?: string;
   readonly owner?: KinWorkPrincipal;
   readonly states?: ReadonlyArray<KinRecordState>;
   readonly open?: boolean;
@@ -99,7 +123,7 @@ export type QueryInput = {
   readonly dueAfter?: number;
   readonly text?: string;
   readonly keys?: ReadonlyArray<string>;
-  readonly category?: KinRecordCategory;
+  readonly category?: string;
   readonly side?: KinRecordSide;
   readonly offset?: number;
   readonly limit?: number;
@@ -130,7 +154,8 @@ const encodeFields = Schema.encodeEffect(
     ),
   ),
 );
-const WORK = { registerId: "work", name: "Work", prefix: "W" } as const;
+export type GroupBy = "party" | "project" | "side" | "owner" | "state";
+const CLOSED = ["done", "dropped"] as const;
 const conflict = (key: string, rev: number) =>
   new KinChatError({
     reason: "conflict",
@@ -173,6 +198,19 @@ export class KinRecords extends Context.Service<
       input: QueryInput,
     ) => Effect.Effect<
       { readonly rows: ReadonlyArray<RecordRow>; readonly total: number; readonly seq: number },
+      KinChatError
+    >;
+    /** Counts per group over the same filter as `query`, most first, at most 50 groups. */
+    readonly groups: (
+      orgId: KinOrgId,
+      input: QueryInput,
+      by: GroupBy,
+    ) => Effect.Effect<
+      ReadonlyArray<{
+        readonly group: string | null;
+        readonly count: number;
+        readonly late: number;
+      }>,
       KinChatError
     >;
     readonly get: (
@@ -225,13 +263,18 @@ const make = Effect.gen(function* () {
   const transaction = <A, E extends { readonly _tag: string }, R>(effect: Effect.Effect<A, E, R>) =>
     failed(sql.withTransaction(effect));
 
-  const ensureWork = Effect.fn("KinRecords.ensureWork")(function* (orgId: KinOrgId, now: number) {
+  const ensureRegister = Effect.fn("KinRecords.ensureRegister")(function* (
+    orgId: KinOrgId,
+    list: ListName,
+    now: number,
+  ) {
+    const def = LISTS[list];
     yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
-      VALUES (${orgId}, ${WORK.registerId}, ${WORK.name}, ${WORK.prefix}, 1, ${now})
+      VALUES (${orgId}, ${list}, ${def.name}, ${def.prefix}, 1, ${now})
       ON CONFLICT DO NOTHING`;
     const [register] = yield* sql<{ next: number; prefix: string }>`
       UPDATE kin_registers SET next_number = next_number + 1
-      WHERE org_id = ${orgId} AND register_id = ${WORK.registerId}
+      WHERE org_id = ${orgId} AND register_id = ${list}
       RETURNING next_number - 1 AS next, key_prefix AS prefix`;
     if (register === undefined) return yield* unavailable;
     return `${register.prefix}-${register.next}`;
@@ -271,13 +314,15 @@ const make = Effect.gen(function* () {
   const wakeLead = Effect.fn("KinRecords.wakeLead")(function* (
     orgId: KinOrgId,
     writer: Writer,
-    row: { readonly recordId: string; readonly key: string },
+    row: { readonly recordId: string; readonly key: string; readonly registerId: string },
     to: KinWorkPrincipal,
     assignedBy: KinPersonId | null,
     seq: number,
     now: number,
     reason: "assigned" | "withdrawn" = "assigned",
   ) {
+    // Looking after a client or leading a project is not an instruction to do anything.
+    if (listOf(row.registerId) !== "work") return false;
     if (to._tag !== "agent") return false;
     if (writer.actor._tag === "agent" && writer.actor.agentId === to.agentId) return false;
     if (assignedBy === null) return false;
@@ -350,6 +395,61 @@ const make = Effect.gen(function* () {
     return inserted.length > 0;
   });
 
+  /** A client or project this entry may point at: in this org, in that list. */
+  const target = Effect.fn("KinRecords.target")(function* (
+    orgId: KinOrgId,
+    recordId: string,
+    list: "clients" | "projects",
+  ) {
+    const [row] = yield* sql<{ key: string; partyId: string | null; state: KinRecordState }>`
+      SELECT key, party_id AS "partyId", state FROM kin_records
+      WHERE org_id = ${orgId} AND record_id = ${recordId} AND register_id = ${list}`;
+    if (row === undefined)
+      return yield* new KinChatError({
+        reason: "not_found",
+        message: `No ${LISTS[list].noun} ${recordId.slice(0, 40)} here.`,
+      });
+    return row;
+  });
+
+  /** Which of client and project a list may carry, and that a contact has its client. */
+  const checkRefs = (
+    list: ListName,
+    partyId: string | null,
+    projectId: string | null,
+  ): KinChatError | undefined =>
+    list === "clients" && (partyId !== null || projectId !== null)
+      ? new KinChatError({ reason: "invalid_state", message: "A client has no client or project." })
+      : list === "contacts" && partyId === null
+        ? new KinChatError({ reason: "invalid_state", message: "A contact needs its client." })
+        : list !== "work" && projectId !== null
+          ? new KinChatError({
+              reason: "invalid_state",
+              message: `A ${LISTS[list].noun} has no project.`,
+            })
+          : undefined;
+
+  /** One active client, project, or contact of a client, per name: a second is a mistake. */
+  const sameName = Effect.fn("KinRecords.sameName")(function* (
+    orgId: KinOrgId,
+    list: ListName,
+    title: string,
+    partyId: string | null,
+    except: string | null,
+  ) {
+    if (list === "work") return;
+    const [row] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+      WHERE org_id = ${orgId} AND register_id = ${list} AND state NOT IN ${sql.in(CLOSED)}
+        AND lower(title) = lower(${title}) AND record_id IS NOT ${except}
+        AND (${list} != 'contacts' OR party_id IS ${partyId})
+      ORDER BY key LIMIT 1`;
+    if (row !== undefined)
+      return yield* new KinChatError({
+        reason: "conflict",
+        message: `There is already a ${LISTS[list].noun} named ${title.slice(0, 80)}: ${row.key}.`,
+      });
+  });
+
   const create = Effect.fn("KinRecords.create")(function* (
     orgId: KinOrgId,
     writer: Writer,
@@ -360,9 +460,30 @@ const make = Effect.gen(function* () {
         const recordId = recordIdFor(orgId, input.originKey);
         const existing = yield* byId(orgId, recordId).pipe(provideSql);
         if (existing !== undefined) return { row: existing, created: false };
+        const list = input.list ?? "work";
+        const fields = Object.fromEntries(
+          Object.entries(input.fields ?? {}).filter(
+            (entry): entry is [string, FieldValue] => entry[1] !== null,
+          ),
+        );
+        const invalidFor = checkFor(list, {
+          state: input.state,
+          category: input.category,
+          fields,
+        });
+        if (invalidFor !== undefined) return yield* invalidFor;
+        const projectId = input.projectId ?? null;
+        const project =
+          projectId === null ? undefined : yield* target(orgId, projectId, "projects");
+        // An entry in a client's project is part of that client's record unless it names another.
+        const partyId = input.partyId !== undefined ? input.partyId : (project?.partyId ?? null);
+        const invalidRefs = checkRefs(list, partyId, projectId);
+        if (invalidRefs !== undefined) return yield* invalidRefs;
+        const party = partyId === null ? undefined : yield* target(orgId, partyId, "clients");
+        yield* sameName(orgId, list, input.title, partyId, null);
         yield* ownerExists(orgId, input.owner);
         const now = yield* Clock.currentTimeMillis;
-        const key = yield* ensureWork(orgId, now);
+        const key = yield* ensureRegister(orgId, list, now);
         const state = input.state ?? "open";
         const waitingOn = state === "waiting" ? (input.waitingOn ?? null) : null;
         const givenAway =
@@ -373,8 +494,8 @@ const make = Effect.gen(function* () {
             waiting_on_kind, waiting_on_id, owner_kind, owner_id, side, category, due_at, due_all_day,
             sensitive, confirmed, notes, rev, source_chat_id, source_message_id, created_by_kind,
             created_by_id, assigned_by_person_id, assigned_at, origin_key, created_at, updated_at,
-            closed_at)
-          VALUES (${orgId}, ${recordId}, ${WORK.registerId}, ${key}, ${input.title}, ${state},
+            closed_at, party_id, project_id, repo, fields_json)
+          VALUES (${orgId}, ${recordId}, ${list}, ${key}, ${input.title}, ${state},
             ${waitingOn?._tag ?? null}, ${waitingOn === null ? null : principalId(waitingOn)},
             ${input.owner._tag}, ${principalId(input.owner)}, ${input.side ?? "ours"},
             ${input.category ?? null}, ${input.dueAt ?? null}, ${input.dueAllDay === true ? 1 : 0},
@@ -383,8 +504,9 @@ const make = Effect.gen(function* () {
             ${input.source?.messageId ?? null}, ${writer.actor._tag},
             ${writer.actor._tag === "agent" ? writer.actor.agentId : writer.actor._tag === "person" ? writer.actor.personId : null},
             ${assignedBy}, ${assignedBy === null ? null : now}, ${input.originKey}, ${now}, ${now},
-            ${isClosed(state) ? now : null})`;
-        const fields: Array<FieldChange> = [
+            ${isClosed(state) ? now : null}, ${partyId}, ${projectId}, ${input.repo ?? null},
+            ${yield* encodeFieldValues(fields)})`;
+        const changes: Array<FieldChange> = [
           { field: "title", from: null, to: input.title },
           { field: "state", from: null, to: state },
           { field: "owner", from: null, to: shownPrincipal(input.owner) },
@@ -394,13 +516,24 @@ const make = Effect.gen(function* () {
           ...(waitingOn === null
             ? []
             : [{ field: "waitingOn", from: null, to: shownPrincipal(waitingOn) }]),
+          ...(party === undefined ? [] : [{ field: "party", from: null, to: party.key }]),
+          ...(project === undefined ? [] : [{ field: "project", from: null, to: project.key }]),
+          ...(input.side === "theirs" ? [{ field: "side", from: null, to: "theirs" }] : []),
+          ...(input.repo === undefined || input.repo === null
+            ? []
+            : [{ field: "repo", from: null, to: input.repo }]),
+          ...Object.entries(fields).map(([field, value]) => ({
+            field,
+            from: null,
+            to: shownField(value),
+          })),
         ];
         const seq = yield* logChange(
           orgId,
           writer,
           { recordId, key, rev: 1 },
           "created",
-          fields,
+          changes,
           now,
         );
         if (input.source !== undefined)
@@ -417,7 +550,15 @@ const make = Effect.gen(function* () {
           );
         for (const link of input.links ?? []) yield* insertLink(orgId, recordId, link, now);
         if (givenAway)
-          yield* wakeLead(orgId, writer, { recordId, key }, input.owner, assignedBy, seq, now);
+          yield* wakeLead(
+            orgId,
+            writer,
+            { recordId, key, registerId: list },
+            input.owner,
+            assignedBy,
+            seq,
+            now,
+          );
         const row = yield* byId(orgId, recordId).pipe(provideSql);
         if (row === undefined) return yield* unavailable;
         return { row, created: true };
@@ -438,15 +579,78 @@ const make = Effect.gen(function* () {
         if (row === undefined) return yield* notFound(key);
         const now = yield* Clock.currentTimeMillis;
         const before = toRecord(row, now);
+        const list = listOf(row.registerId);
+        const invalidFor = checkFor(list, {
+          state: patch.state,
+          category: patch.category,
+          fields: patch.fields,
+        });
+        if (invalidFor !== undefined) return yield* invalidFor;
         const changes: Array<FieldChange> = [];
         const sets: Array<Statement.Fragment> = [];
         const set = (column: string, value: string | number | null) =>
           sets.push(sql`${sql(column)} = ${value}`);
+        const projectId = patch.projectId === undefined ? row.projectId : patch.projectId;
+        const project =
+          patch.projectId === undefined || patch.projectId === null
+            ? undefined
+            : yield* target(orgId, patch.projectId, "projects");
+        const partyId =
+          patch.partyId !== undefined
+            ? patch.partyId
+            : row.partyId === null && project !== undefined
+              ? project.partyId
+              : row.partyId;
+        const invalidRefs = checkRefs(list, partyId, projectId);
+        if (invalidRefs !== undefined) return yield* invalidRefs;
+        if (partyId !== row.partyId) {
+          const party = partyId === null ? null : yield* target(orgId, partyId, "clients");
+          changes.push({ field: "party", from: row.partyKey, to: party?.key ?? null });
+          set("party_id", partyId);
+        }
+        if (projectId !== row.projectId) {
+          changes.push({ field: "project", from: row.projectKey, to: project?.key ?? null });
+          set("project_id", projectId);
+        }
+        if (patch.repo !== undefined && patch.repo !== row.repo) {
+          changes.push({ field: "repo", from: row.repo, to: patch.repo });
+          set("repo", patch.repo);
+        }
         if (patch.title !== undefined && patch.title !== row.title) {
           changes.push({ field: "title", from: row.title, to: patch.title });
           set("title", patch.title);
         }
+        if (patch.title !== undefined || partyId !== row.partyId)
+          yield* sameName(orgId, list, patch.title ?? row.title, partyId, row.recordId);
+        const stored = parseFields(row.fieldsJson);
+        const merged: Record<string, FieldValue> = { ...stored };
+        let fieldsChanged = false;
+        for (const [field, value] of Object.entries(patch.fields ?? {})) {
+          const from = shownField(stored[field]);
+          const to = shownField(value);
+          if (from === to) continue;
+          changes.push({ field, from, to });
+          fieldsChanged = true;
+          if (value === null) delete merged[field];
+          else merged[field] = value;
+        }
+        if (fieldsChanged) set("fields_json", yield* encodeFieldValues(merged));
         const state = patch.state ?? row.state;
+        // Closing a client or project would strand what points at it: close or move that first.
+        if (
+          (list === "clients" || list === "projects") &&
+          isClosed(state) &&
+          !isClosed(row.state)
+        ) {
+          const [open] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_records
+            WHERE org_id = ${orgId} AND (party_id = ${row.recordId} OR project_id = ${row.recordId})
+              AND register_id IN ('work', 'projects') AND state NOT IN ${sql.in(CLOSED)}`;
+          if ((open?.count ?? 0) > 0)
+            return yield* new KinChatError({
+              reason: "invalid_state",
+              message: `${row.key} still has ${open!.count} open ${list === "clients" ? "entries or projects" : "entries"} pointing at it. Close or move them first.`,
+            });
+        }
         if (state !== row.state) {
           changes.push({ field: "state", from: row.state, to: state });
           set("state", state);
@@ -538,10 +742,17 @@ const make = Effect.gen(function* () {
           });
           set("confirmed", patch.confirmed ? 1 : 0);
         }
-        // Raise only: lowering a label is the owner's tap, in a later slice.
+        // Anyone may raise a label; only a person lowers one, and only the owner reaches here so.
         if (patch.sensitive === true && row.sensitive === 0) {
           changes.push({ field: "sensitive", from: "false", to: "true" });
           set("sensitive", 1);
+        } else if (
+          patch.sensitive === false &&
+          row.sensitive === 1 &&
+          writer.actor._tag === "person"
+        ) {
+          changes.push({ field: "sensitive", from: "true", to: "false" });
+          set("sensitive", 0);
         }
         // A retry of a change that already landed finds nothing to do: that is success.
         if (sets.length === 0) return row;
@@ -645,46 +856,82 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const filterOf = (orgId: KinOrgId, input: QueryInput, now: number) => {
+    const where = [sql`r.org_id = ${orgId}`, sql`r.register_id = ${input.list ?? "work"}`];
+    if (input.partyId !== undefined) where.push(sql`r.party_id = ${input.partyId}`);
+    if (input.projectId !== undefined) where.push(sql`r.project_id = ${input.projectId}`);
+    if (input.repo !== undefined) where.push(sql`lower(r.repo) = lower(${input.repo})`);
+    if (input.owner !== undefined)
+      where.push(
+        sql`r.owner_kind = ${input.owner._tag} AND r.owner_id = ${principalId(input.owner)}`,
+      );
+    if (input.states !== undefined && input.states.length > 0)
+      where.push(sql`r.state IN ${sql.in(input.states)}`);
+    else if (input.open === true) where.push(sql`r.state NOT IN ('done', 'dropped')`);
+    else if (input.open === false) where.push(sql`r.state IN ('done', 'dropped')`);
+    if (input.late === true)
+      where.push(sql`r.due_at < ${now} AND r.state NOT IN ('done', 'dropped')`);
+    else if (input.late === false)
+      where.push(sql`(r.due_at IS NULL OR r.due_at >= ${now} OR r.state IN ('done', 'dropped'))`);
+    if (input.dueBy !== undefined) where.push(sql`r.due_at <= ${input.dueBy}`);
+    if (input.dueAfter !== undefined) where.push(sql`r.due_at >= ${input.dueAfter}`);
+    if (input.category !== undefined) where.push(sql`r.category = ${input.category}`);
+    if (input.side !== undefined) where.push(sql`r.side = ${input.side}`);
+    if (input.keys !== undefined && input.keys.length > 0)
+      where.push(sql`r.key IN ${sql.in(input.keys)}`);
+    const text = input.text?.trim().toLowerCase();
+    if (text !== undefined && text !== "")
+      where.push(sql`(instr(lower(r.title), ${text}) > 0 OR instr(lower(r.notes), ${text}) > 0)`);
+    return sql.and(where);
+  };
+
   const query = Effect.fn("KinRecords.query")(function* (orgId: KinOrgId, input: QueryInput) {
     return yield* failed(
       Effect.gen(function* () {
         const now = input.at ?? (yield* Clock.currentTimeMillis);
-        const where = [sql`r.org_id = ${orgId}`];
-        if (input.owner !== undefined)
-          where.push(
-            sql`r.owner_kind = ${input.owner._tag} AND r.owner_id = ${principalId(input.owner)}`,
-          );
-        if (input.states !== undefined && input.states.length > 0)
-          where.push(sql`r.state IN ${sql.in(input.states)}`);
-        else if (input.open === true) where.push(sql`r.state NOT IN ('done', 'dropped')`);
-        else if (input.open === false) where.push(sql`r.state IN ('done', 'dropped')`);
-        if (input.late === true)
-          where.push(sql`r.due_at < ${now} AND r.state NOT IN ('done', 'dropped')`);
-        else if (input.late === false)
-          where.push(
-            sql`(r.due_at IS NULL OR r.due_at >= ${now} OR r.state IN ('done', 'dropped'))`,
-          );
-        if (input.dueBy !== undefined) where.push(sql`r.due_at <= ${input.dueBy}`);
-        if (input.dueAfter !== undefined) where.push(sql`r.due_at >= ${input.dueAfter}`);
-        if (input.category !== undefined) where.push(sql`r.category = ${input.category}`);
-        if (input.side !== undefined) where.push(sql`r.side = ${input.side}`);
-        if (input.keys !== undefined && input.keys.length > 0)
-          where.push(sql`r.key IN ${sql.in(input.keys)}`);
-        const text = input.text?.trim().toLowerCase();
-        if (text !== undefined && text !== "")
-          where.push(
-            sql`(instr(lower(r.title), ${text}) > 0 OR instr(lower(r.notes), ${text}) > 0)`,
-          );
-        const filter = sql.and(where);
+        const filter = filterOf(orgId, input, now);
         const [count] = yield* sql<{ total: number }>`SELECT COUNT(*) AS total FROM kin_records r
           WHERE ${filter}`;
         const limit = Math.min(Math.max(input.limit ?? 50, 1), KIN_RECORDS_PAGE_CAP);
+        // Work by what is under way and due; a directory of clients or projects by name.
+        const order =
+          (input.list ?? "work") === "work"
+            ? sql`CASE r.state WHEN 'doing' THEN 0 WHEN 'waiting' THEN 1 WHEN 'open' THEN 2
+                ELSE 3 END, r.due_at IS NULL, r.due_at, r.created_at, r.key`
+            : sql`r.state IN ('done', 'dropped'), lower(r.title), r.key`;
         const rows = yield* sql<RecordRow>`${selectRecords(sql)} WHERE ${filter}
-          ORDER BY CASE r.state WHEN 'doing' THEN 0 WHEN 'waiting' THEN 1 WHEN 'open' THEN 2
-              ELSE 3 END,
-            r.due_at IS NULL, r.due_at, r.created_at, r.key
+          ORDER BY ${order}
           LIMIT ${limit} OFFSET ${Math.max(input.offset ?? 0, 0)}`;
         return { rows, total: count?.total ?? 0, seq: yield* latestSeq(orgId).pipe(provideSql) };
+      }),
+    );
+  });
+
+  const groups = Effect.fn("KinRecords.groups")(function* (
+    orgId: KinOrgId,
+    input: QueryInput,
+    by: GroupBy,
+  ) {
+    return yield* failed(
+      Effect.gen(function* () {
+        const now = input.at ?? (yield* Clock.currentTimeMillis);
+        const column =
+          by === "party"
+            ? sql`r.party_id`
+            : by === "project"
+              ? sql`r.project_id`
+              : by === "side"
+                ? sql`r.side`
+                : by === "state"
+                  ? sql`r.state`
+                  : sql`r.owner_kind || ':' || r.owner_id`;
+        const rows = yield* sql<{ group: string | null; count: number; late: number | null }>`
+          SELECT ${column} AS "group", COUNT(*) AS count,
+            SUM(r.due_at IS NOT NULL AND r.due_at < ${now}
+              AND r.state NOT IN ('done', 'dropped')) AS late
+          FROM kin_records r WHERE ${filterOf(orgId, input, now)}
+          GROUP BY 1 ORDER BY COUNT(*) DESC, 1 LIMIT 50`;
+        return rows.map((row) => ({ group: row.group, count: row.count, late: row.late ?? 0 }));
       }),
     );
   });
@@ -705,6 +952,7 @@ const make = Effect.gen(function* () {
     update,
     link,
     query,
+    groups,
     get: Effect.fn("KinRecords.get")(function* (orgId, key) {
       return yield* failed(byKey(orgId, key).pipe(provideSql));
     }),

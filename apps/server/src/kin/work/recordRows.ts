@@ -30,6 +30,7 @@ export type Actor = KinWorkActor;
 export type RecordRow = {
   readonly orgId: string;
   readonly recordId: string;
+  readonly registerId: string;
   readonly key: string;
   readonly title: string;
   readonly state: KinRecordState;
@@ -38,7 +39,8 @@ export type RecordRow = {
   readonly ownerKind: "person" | "agent";
   readonly ownerId: string;
   readonly side: KinRecordSide;
-  readonly category: KinRecordCategory | null;
+  /** A Work category, or a client's kind. */
+  readonly category: string | null;
   readonly dueAt: number | null;
   readonly dueAllDay: number;
   readonly sensitive: number;
@@ -55,8 +57,18 @@ export type RecordRow = {
   readonly createdAt: number;
   readonly updatedAt: number;
   readonly closedAt: number | null;
+  readonly partyId: string | null;
+  readonly projectId: string | null;
+  readonly repo: string | null;
+  readonly fieldsJson: string;
   readonly working: number;
   readonly pullUrl: string | null;
+  readonly partyKey: string | null;
+  readonly partyTitle: string | null;
+  readonly projectKey: string | null;
+  readonly projectTitle: string | null;
+  /** Its client, its project or its project's client is labelled sensitive. */
+  readonly inheritedSensitive: number;
 };
 
 export const unavailable = new KinChatError({
@@ -81,12 +93,16 @@ export const samePrincipal = (left: Principal | null, right: Principal | null) =
   left === null || right === null
     ? left === right
     : left._tag === right._tag && principalId(left) === principalId(right);
-const actorOf = (kind: string, id: string | null): Actor =>
+export const actorOf = (kind: string, id: string | null): Actor =>
   kind === "system" ? { _tag: "system" } : (principal(kind, id) ?? { _tag: "system" });
 
-/** The columns every read selects, with the two derived ones: a running worker and the last PR. */
+/**
+ * The columns every read selects, with the derived ones: a running worker, the last PR, the client
+ * and project as they are now, and the label they lend it. Joins stay inside the entry's org.
+ */
 export const selectRecords = (sql: SqlClient.SqlClient) => sql`
-  SELECT r.org_id AS "orgId", r.record_id AS "recordId", r.key, r.title, r.state,
+  SELECT r.org_id AS "orgId", r.record_id AS "recordId", r.register_id AS "registerId", r.key,
+    r.title, r.state,
     r.waiting_on_kind AS "waitingOnKind", r.waiting_on_id AS "waitingOnId",
     r.owner_kind AS "ownerKind", r.owner_id AS "ownerId", r.side, r.category,
     r.due_at AS "dueAt", r.due_all_day AS "dueAllDay", r.sensitive, r.confirmed, r.notes, r.rev,
@@ -94,7 +110,13 @@ export const selectRecords = (sql: SqlClient.SqlClient) => sql`
     r.created_by_kind AS "createdByKind", r.created_by_id AS "createdById",
     r.assigned_by_person_id AS "assignedBy", r.assigned_at AS "assignedAt",
     r.origin_key AS "originKey", r.created_at AS "createdAt", r.updated_at AS "updatedAt",
-    r.closed_at AS "closedAt",
+    r.closed_at AS "closedAt", r.party_id AS "partyId", r.project_id AS "projectId", r.repo,
+    r.fields_json AS "fieldsJson",
+    pa.key AS "partyKey", pa.title AS "partyTitle", pj.key AS "projectKey",
+    pj.title AS "projectTitle",
+    (COALESCE(pa.sensitive, 0) = 1 OR COALESCE(pj.sensitive, 0) = 1
+      OR EXISTS (SELECT 1 FROM kin_records pp WHERE pp.org_id = pj.org_id
+        AND pp.record_id = pj.party_id AND pp.sensitive = 1)) AS "inheritedSensitive",
     EXISTS (SELECT 1 FROM kin_record_links l JOIN kin_workers k
         ON k.org_id = l.org_id AND k.worker_id = l.target
       WHERE l.org_id = r.org_id AND l.record_id = r.record_id AND l.kind = 'worker'
@@ -102,7 +124,9 @@ export const selectRecords = (sql: SqlClient.SqlClient) => sql`
     (SELECT l.target FROM kin_record_links l WHERE l.org_id = r.org_id
       AND l.record_id = r.record_id AND l.kind = 'pull_request'
       ORDER BY l.created_at DESC, l.target LIMIT 1) AS "pullUrl"
-  FROM kin_records r`;
+  FROM kin_records r
+  LEFT JOIN kin_records pa ON pa.org_id = r.org_id AND pa.record_id = r.party_id
+  LEFT JOIN kin_records pj ON pj.org_id = r.org_id AND pj.record_id = r.project_id`;
 
 export const byKey = Effect.fn("KinRecords.byKey")(function* (orgId: KinOrgId, key: string) {
   const sql = yield* SqlClient.SqlClient;
@@ -122,8 +146,16 @@ const pullNumber = (url: string) => {
   return found === undefined ? undefined : Number.parseInt(found, 10);
 };
 
+const WORK_CATEGORIES: ReadonlyArray<string> = ["task", "issue", "obligation"];
+const refOf = (recordId: string | null, key: string | null, title: string | null) =>
+  recordId === null || key === null || title === null
+    ? undefined
+    : { recordId: KinRecordId.make(recordId), key, title: title as KinRecord["title"] };
+
 export const toRecord = (row: RecordRow, now: number): KinRecord => {
   const number = row.pullUrl === null ? undefined : pullNumber(row.pullUrl);
+  const party = refOf(row.partyId, row.partyKey, row.partyTitle);
+  const project = refOf(row.projectId, row.projectKey, row.projectTitle);
   return {
     recordId: KinRecordId.make(row.recordId),
     orgId: row.orgId as KinOrgId,
@@ -135,7 +167,10 @@ export const toRecord = (row: RecordRow, now: number): KinRecord => {
       _tag: "agent",
       agentId: KinAgentId.make(row.ownerId),
     },
-    category: row.category,
+    category:
+      row.category !== null && WORK_CATEGORIES.includes(row.category)
+        ? (row.category as KinRecordCategory)
+        : null,
     side: row.side,
     dueAt: row.dueAt === null ? null : iso(row.dueAt),
     dueAllDay: row.dueAllDay === 1,
@@ -148,6 +183,10 @@ export const toRecord = (row: RecordRow, now: number): KinRecord => {
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
     closedAt: row.closedAt === null ? null : iso(row.closedAt),
+    ...(party === undefined ? {} : { party }),
+    ...(project === undefined ? {} : { project }),
+    ...(row.repo === null ? {} : { repo: row.repo }),
+    ...(row.inheritedSensitive === 1 ? { sensitiveInherited: true as const } : {}),
   };
 };
 
@@ -183,7 +222,7 @@ export type FieldChange = {
   readonly to: string | null;
 };
 
-const parseFields = (json: string): ReadonlyArray<FieldChange> => {
+export const parseChanges = (json: string): ReadonlyArray<FieldChange> => {
   try {
     const parsed: unknown = JSON.parse(json);
     return Array.isArray(parsed) ? (parsed as ReadonlyArray<FieldChange>) : [];
@@ -208,7 +247,7 @@ const changesOf = Effect.fn("KinRecords.changesOf")(function* (
     by: actorOf(row.actorKind, row.actorId),
     via: row.via,
     kind: row.kind,
-    fields: parseFields(row.fieldsJson).filter((change) => change.field.trim() !== ""),
+    fields: parseChanges(row.fieldsJson).filter((change) => change.field.trim() !== ""),
   }));
 });
 
@@ -281,7 +320,10 @@ export const toDetail = Effect.fn("KinRecords.toDetail")(function* (
   } satisfies KinRecordDetail;
 });
 
-const recordSeq = Effect.fn("KinRecords.recordSeq")(function* (orgId: KinOrgId, recordId: string) {
+export const recordSeq = Effect.fn("KinRecords.recordSeq")(function* (
+  orgId: KinOrgId,
+  recordId: string,
+) {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{ seq: number | null }>`SELECT MAX(seq) AS seq FROM kin_record_changes
     WHERE org_id = ${orgId} AND record_id = ${recordId}`;
