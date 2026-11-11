@@ -191,7 +191,7 @@ export function kinInviteLinkLocalOnly(httpBaseUrl: string): boolean {
 }
 
 export const KIN_INVITE_LOCAL_ONLY_NOTE =
-  "This link points at this computer, so it won't open on anyone else's device. Open Kin at the address your team can reach, then make the link there.";
+  "This link uses an address that only works on this device, so it won't open on anyone else's. Open Kin at the address your team can reach, then make the link there.";
 
 export const KIN_INVITE_PHONE_NOTE =
   "It opens in a browser. In the phone app, they paste it where a new connection is added.";
