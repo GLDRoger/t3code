@@ -212,9 +212,12 @@ const kinInviteSecret = (url: URL): string =>
     ? url.hash.slice(1).trim()
     : "";
 
-/** Wraps a join link in the `t3code://kin/join` link a phone's browser hands to the app. */
-export const buildKinJoinAppLink = (joinLink: string): string =>
-  `t3code://kin/join?${new URLSearchParams([[KIN_JOIN_APP_LINK_PARAM, joinLink]])}`;
+/**
+ * Wraps a join link in the `<scheme>://kin/join` link a phone's browser hands to the app. The
+ * host names the scheme: the web build it serves is shared with apps that register other ones.
+ */
+export const buildKinJoinAppLink = (scheme: string, joinLink: string): string =>
+  `${scheme}://kin/join?${new URLSearchParams([[KIN_JOIN_APP_LINK_PARAM, joinLink]])}`;
 
 /**
  * The teammate's join link in pasted text, a scanned code or an app link, or null when there is
