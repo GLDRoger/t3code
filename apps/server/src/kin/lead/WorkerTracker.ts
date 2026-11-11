@@ -4,7 +4,6 @@ import {
   KinAgentId,
   KinAuthor,
   KinChatId,
-  KinEventId,
   KinOrgId,
   type KinPersonId,
   KinTaskCardState,
@@ -18,6 +17,7 @@ import {
   ThreadId,
   type WorkerReport,
 } from "@t3tools/contracts";
+import { hashedEventId } from "./eventIds.ts";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -257,7 +257,7 @@ const make = Effect.gen(function* () {
     endedAt: number,
     report: WorkerReport,
   ) {
-    const eventId = KinEventId.make(key);
+    const eventId = hashedEventId(key.slice(0, key.indexOf(":")), key);
     yield* queue
       .enqueue({
         _tag: "worker.report",
@@ -265,7 +265,7 @@ const make = Effect.gen(function* () {
         eventId,
         agentId: worker.agentId,
         receivedAt: DateTime.makeUnsafe(endedAt),
-        dedupeKey: eventId,
+        dedupeKey: key,
         provenance: yield* author(worker),
         workerId: worker.workerId,
         report,
