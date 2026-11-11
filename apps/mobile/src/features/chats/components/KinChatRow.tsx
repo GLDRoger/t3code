@@ -7,6 +7,7 @@ import { SymbolView } from "../../../components/ui/AppSymbol";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { RowPressable } from "../../../components/ui/RowPressable";
 import { cn } from "../../../lib/cn";
+import { KIN_RETIRED_LABEL } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import type { KinChatListRow } from "@t3tools/client-runtime/kin/kinChatListRows";
 import { KinAvatar } from "./KinAvatar";
 
@@ -35,7 +36,8 @@ export function KinChatRow(props: {
             textRole="body"
             numberOfLines={1}
             className={cn(
-              "min-w-0 flex-1 text-foreground",
+              "min-w-0 flex-1",
+              row.retired ? "text-foreground-muted" : "text-foreground",
               unread ? "font-t3-bold" : "font-t3-medium",
             )}
           >
@@ -48,7 +50,16 @@ export function KinChatRow(props: {
           )}
         </View>
         <View className="flex-row items-center gap-2">
-          {row.working ? (
+          {row.retired ? (
+            // A retired agent's chat is kept to read; its last line would look like a live one.
+            <Text
+              textRole="footnote"
+              numberOfLines={1}
+              className="min-w-0 flex-1 text-foreground-muted"
+            >
+              {KIN_RETIRED_LABEL}
+            </Text>
+          ) : row.working ? (
             <Text
               textRole="footnote"
               numberOfLines={1}

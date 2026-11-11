@@ -29,7 +29,7 @@ import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
-import { kinClient } from "./kinClient";
+import { kinClient, refreshKinAgents } from "./kinClient";
 import { kinLeadFormAtom, type KinLeadFormTarget } from "./kinLeadForm";
 
 const closeLeadForm = () => appAtomRegistry.set(kinLeadFormAtom, null);
@@ -102,8 +102,7 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
       return;
     }
     // The list names chats from the directory and the profile reads the lead list.
-    appAtomRegistry.refresh(kinClient.orgs({ environmentId, input: {} }));
-    appAtomRegistry.refresh(kinClient.leads({ environmentId, input: { orgId } }));
+    refreshKinAgents(environmentId, orgId);
     closeLeadForm();
     void navigate({
       to: "/kin/$environmentId/$orgId/$chatId",

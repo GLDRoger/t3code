@@ -13,6 +13,7 @@ import * as Schema from "effect/Schema";
 import type { AsyncResult } from "effect/reactivity";
 
 import type { SupervisorConnectionState } from "../connection/model.ts";
+import { kinRetiredAgentIds } from "./kinAgentRetire.ts";
 import type { KinSynced } from "./kinStreams.ts";
 import type { KinHost } from "./kinHost.ts";
 import { kinTapText } from "./kinTap.ts";
@@ -163,9 +164,15 @@ export function kinSentences(parts: ReadonlyArray<string | null>): string {
 export interface KinDirectory {
   readonly agentNames: ReadonlyMap<string, string>;
   readonly me: ReadonlySet<string>;
+  /** Agents the host marks retired; their names above still resolve. */
+  readonly retiredAgents: ReadonlySet<string>;
 }
 
-const emptyKinDirectory: KinDirectory = { agentNames: new Map(), me: new Set() };
+const emptyKinDirectory: KinDirectory = {
+  agentNames: new Map(),
+  me: new Set(),
+  retiredAgents: new Set(),
+};
 
 export function kinDirectory(host: KinHost): KinDirectory {
   if (host._tag !== "host") return emptyKinDirectory;
@@ -178,6 +185,7 @@ export function kinDirectory(host: KinHost): KinDirectory {
       ),
     ),
     me: new Set(probe.orgs.me.map((me) => me.personId)),
+    retiredAgents: kinRetiredAgentIds(probe.orgs),
   };
 }
 

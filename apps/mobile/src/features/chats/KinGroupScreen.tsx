@@ -95,7 +95,7 @@ function KinGroupBody(props: {
   const navigation = useNavigation();
   const { environmentId, orgId, chatId } = props;
   const host = useKinHostAt(environmentId);
-  const { personId } = kinFeedViewer(
+  const { personId, retiredAgents } = kinFeedViewer(
     host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
     orgId,
   );
@@ -118,6 +118,7 @@ function KinGroupBody(props: {
               orgId={orgId}
               group={group}
               personId={personId}
+              retiredAgents={retiredAgents}
               onChanged={() => appAtomRegistry.refresh(atom)}
             />
           ) : AsyncResult.isInitial(result) ? (
@@ -154,13 +155,18 @@ function KinGroupDetails(props: {
   readonly orgId: KinOrgId;
   readonly group: KinChatMembersResult;
   readonly personId: string | null;
+  /** Agents the host marks retired: still listed here, and never the one that answers. */
+  readonly retiredAgents: ReadonlySet<string> | undefined;
   readonly onChanged: () => void;
 }) {
   const navigation = useNavigation();
   const { environmentId, orgId, group, personId } = props;
   const { chatId } = group.chat;
-  const members = kinGroupMemberViews(group, personId);
+  const members = kinGroupMemberViews(group, personId, props.retiredAgents);
   const leads = members.filter((member) => member.kind === "lead");
+  // Only an agent still at work can be chosen to answer.
+  const answerers = leads.filter((lead) => !lead.retired);
+  const silent = leads.find((lead) => lead.answers && lead.retired) ?? null;
   const owns = group.members.some(
     (member) =>
       member.leftAt === null &&
@@ -336,12 +342,16 @@ function KinGroupDetails(props: {
           </View>
         ) : null}
       </ListSection>
-      {canChange && leads.length > 1 ? (
+      {canChange && (answerers.length > 1 || (silent !== null && answerers.length > 0)) ? (
         <ListSection
           title="Answers when no one is named"
-          footer="Name another agent with @ in a message to ask it instead."
+          footer={
+            silent === null
+              ? "Name another agent with @ in a message to ask it instead."
+              : `${silent.name} is retired, so nobody answers until you choose another agent.`
+          }
         >
-          {leads.map((lead, index) => (
+          {answerers.map((lead, index) => (
             <ListChoiceRow
               key={lead.memberId}
               label={lead.name}

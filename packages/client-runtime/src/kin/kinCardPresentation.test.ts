@@ -370,6 +370,23 @@ describe("reminder and scheduled task cards", () => {
     expect(deleted).toMatchObject({ lines: ["Deleted."], actions: [] });
   });
 
+  it("puts a retired agent's reminder and schedule on hold, with nothing to tap", () => {
+    const held = (card: ReturnType<typeof scheduled>) => {
+      const view = kinCardView(card, "env" as EnvironmentId, () => true, "Finance");
+      return view.kind === "deferral" ? view.deferral : null;
+    };
+    // The schedule stays; "Next run" and "Paused" give way to the one line that is true.
+    const active = held(scheduled({}));
+    expect(active).toMatchObject({ countdown: null, actions: [] });
+    expect(active?.lines.slice(1)).toEqual(["On hold while Finance is retired."]);
+    expect(held(scheduled({ status: "paused", nextRunAt: null }))?.lines.slice(1)).toEqual([
+      "On hold while Finance is retired.",
+    ]);
+    expect(held(reminder({ status: "due" }))).toMatchObject({ countdown: null, actions: [] });
+    // What is already over says so, as before.
+    expect(held(scheduled({ status: "deleted", nextRunAt: null }))?.lines).toEqual(["Deleted."]);
+  });
+
   it("counts down to the next run and says what Kin did after a tap", () => {
     expect(kinDeferralCountdown(3 * 60 * 60_000, 0, "run")).toBe("Next run in 3 h");
     expect(kinCardStatusAfter({ status: "sent" }, "snooze_1h", 2)).toEqual({
