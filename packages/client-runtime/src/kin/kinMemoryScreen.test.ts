@@ -168,6 +168,18 @@ describe("what the owner's leads remember", () => {
     );
   });
 
+  it("never sends a yes for a row that doesn't say which words it showed", async () => {
+    const { version: _version, ...unversioned } = item("a", "suggested");
+    const list = listOf([unversioned]);
+    const host = harness(list);
+    const tapped = host.actions.change(list, KinMemoryItemId.make("a"), "team");
+    host.release(true);
+    await tapped;
+    expect(states(list, host.edits())).toEqual({ a: "suggested" });
+    expect(host.edits().problem).toBe("Couldn't change that. Try again.");
+    expect(host.refreshes()).toBe(1);
+  });
+
   it("says yes to all with the revision the owner saw and rolls back if it fails", async () => {
     const list = listOf([item("a", "suggested"), item("b", "suggested")], 31);
     const host = harness(list);

@@ -113,21 +113,23 @@ it.live(
       const seed = `${root}/seed`;
       const remote = `${root}/fixture.git`;
       yield* fs.makeDirectory(seed);
-      const git = Effect.fn("LeadMemoryTest.git")((cwd: string, args: ReadonlyArray<string>) =>
-        vcs
-          .run({
-            operation: "test.lead",
-            command: "git",
-            cwd,
-            args: cwd.endsWith(".git") ? [`--git-dir=${cwd}`, ...args] : args,
-            allowNonZeroExit: true,
-          })
-          .pipe(
-            Effect.map((r) => {
-              assert.strictEqual(r.exitCode, 0, r.stderr);
-              return r.stdout.trim();
-            }),
-          ),
+      const git = Effect.fn("LeadMemoryTest.git")(
+        (cwd: string, args: ReadonlyArray<string>, env?: NodeJS.ProcessEnv) =>
+          vcs
+            .run({
+              operation: "test.lead",
+              command: "git",
+              cwd,
+              args: cwd.endsWith(".git") ? [`--git-dir=${cwd}`, ...args] : args,
+              allowNonZeroExit: true,
+              ...(env ? { env } : {}),
+            })
+            .pipe(
+              Effect.map((r) => {
+                assert.strictEqual(r.exitCode, 0, r.stderr);
+                return r.stdout.trim();
+              }),
+            ),
       );
       yield* git(seed, ["init", "-b", "main"]);
       yield* fs.writeFileString(`${seed}/rules.md`, "Invented fixture rules\n");
@@ -169,15 +171,21 @@ it.live(
         );
       }
       yield* git(seed, ["add", "--", "."]);
-      yield* git(seed, [
-        "-c",
-        "user.name=Fixture",
-        "-c",
-        "user.email=fixture@example.invalid",
-        "commit",
-        "-m",
-        "fixture",
-      ]);
+      // Saved before the owner's message below, so his word in chat may let the team know them.
+      const before = "2020-01-01T00:00:00Z";
+      yield* git(
+        seed,
+        [
+          "-c",
+          "user.name=Fixture",
+          "-c",
+          "user.email=fixture@example.invalid",
+          "commit",
+          "-m",
+          "fixture",
+        ],
+        { GIT_COMMITTER_DATE: before, GIT_AUTHOR_DATE: before },
+      );
       yield* git(root, ["clone", "--bare", seed, remote]);
       const kin = yield* Kin.KinServer;
       const services = Option.getOrThrow(kin.services);
@@ -424,8 +432,8 @@ it.live(
         assert.isFalse(toolRead.isError);
         assert.include(JSON.stringify(toolRead), "a-item");
         const opened = yield* service.read(scope, { id: KinMemoryItemId.make("a-item") });
-        assert.isTrue(opened.reviewOverdue);
-        assert.isTrue(opened.misleading);
+        assert.isTrue("head" in opened && opened.reviewOverdue);
+        assert.isTrue("head" in opened && opened.misleading);
         assert.lengthOf(
           yield* sql`SELECT 1 FROM kin_memory_reads WHERE org_id = ${orgId} AND item_id = 'a-item'`,
           1,

@@ -19,6 +19,7 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
@@ -140,11 +141,15 @@ export const JournalInput = Schema.Struct({
 export const EndInput = Schema.Struct({ summary: text });
 export const ItemResult = Schema.Struct({ itemId: KinMemoryItemId });
 export const LabelResult = Schema.Struct({ itemIds: Schema.Array(KinMemoryItemId) });
-const readFlags = { reviewOverdue: Schema.Boolean, misleading: Schema.Boolean };
 /** The whole item in a turn only the owner reads; in any other, only its shared projection. */
 export const ReadResult = Schema.Union([
-  Schema.Struct({ head: MemoryItemHead, body: Schema.String, ...readFlags }),
-  Schema.Struct({ item: SharedItem, ...readFlags }),
+  Schema.Struct({
+    head: MemoryItemHead,
+    body: Schema.String,
+    reviewOverdue: Schema.Boolean,
+    misleading: Schema.Boolean,
+  }),
+  Schema.Struct({ item: SharedItem }),
 ]);
 export const SearchResult = Schema.Array(
   Schema.Union([
@@ -170,8 +175,9 @@ const TEAM_OWN_ITEMS =
 const TEAM_SOURCE = "sourceEventId must be the message, in this chat, of the person who said it.";
 const TEAM_CAP_REFUSAL =
   "That is as much as can be saved from one person's messages today, so it was not saved.";
-const TEAM_FILTERS =
-  "From a chat other people read, search memory only by kind, linksTo or reviewOverdue.";
+const TEAM_FILTERS = "From a chat other people read, search memory only by kind or linksTo.";
+const changedSinceOwner = (itemId: string) =>
+  `${itemId} changed after the owner's message, so it was not shared. Tell the owner what it says now and ask again.`;
 const SHARE_NEEDS_OWNER =
   "Only the owner's own message, in a chat only they read, lets the team know something. Ask the owner first.";
 // What a teammate's messages can cause shared turns to save, per person per day.
@@ -453,12 +459,13 @@ const make = Effect.gen(function* () {
       chat_name: row.title ?? (row.kind === "direct" ? "a direct chat" : "a group"),
     };
   });
-  /** The lead's owner, when the cited event is their own stored message in this turn. */
+  /** The lead's owner and when they said it, when the cited event is their own message in this turn. */
   const ownerSaid = Effect.fn("LeadMemory.ownerSaid")(function* (
     ctx: Effect.Success<ReturnType<typeof resolve>>,
     eventId: string,
   ) {
-    const [row] = yield* sql<{ owner: string }>`SELECT a.owner_person_id AS owner
+    const [row] = yield* sql<{ owner: string; at: string }>`SELECT a.owner_person_id AS owner,
+        m.created_at AS at
       FROM kin_events e
       JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
       JOIN kin_messages m ON m.org_id = e.org_id AND m.author_kind = 'human'
@@ -468,7 +475,12 @@ const make = Effect.gen(function* () {
       WHERE e.org_id = ${ctx.orgId} AND e.agent_id = ${ctx.agentId}
         AND e.wakeup_id = ${ctx.wakeupId} AND e.event_id = ${eventId} AND e.tag = 'chat.message'
       ORDER BY e.event_id`;
-    return row === undefined ? undefined : KinPersonId.make(row.owner);
+    return row === undefined
+      ? undefined
+      : {
+          person: KinPersonId.make(row.owner),
+          at: DateTime.toEpochMillis(DateTime.makeUnsafe(row.at)),
+        };
   });
   const checkSource = Effect.fn("LeadMemory.checkSource")(function* (
     ctx: Effect.Success<ReturnType<typeof resolve>>,
@@ -662,7 +674,7 @@ const make = Effect.gen(function* () {
     const from = shared ? yield* speaker(ctx, input.sourceEventId) : undefined;
     if (shared && from === undefined) return yield* invalid(TEAM_SOURCE);
     // Only the owner's own stored message, cited as this write's source, is the owner's say-so.
-    const owner = yield* ownerSaid(ctx, input.sourceEventId);
+    const owner = (yield* ownerSaid(ctx, input.sourceEventId))?.person;
     const capped = shared && owner === undefined ? from?.person : undefined;
     if (input.op === "supersede" && (!input.supersedes || input.supersedes === fields.id))
       return yield* invalid("supersede needs `supersedes` naming another item's id.");
@@ -755,23 +767,29 @@ const make = Effect.gen(function* () {
       `item:${fields.id}`,
       input,
       Effect.gen(function* () {
-        const reserved =
+        // A write that wasn't staged, however it ended, gives its place back.
+        const staged = yield* Effect.acquireUseRelease(
           capped === undefined
-            ? false
-            : yield* reserveShared(ctx, capped, fields.id, Buffer.byteLength(content));
-        const staged = yield* writer
-          .stage(ctx.orgId, ctx.wakeupId, {
-            path,
-            content: text,
-            sourceEventId: input.sourceEventId,
-            ...(input.supersedes === undefined ? {} : { supersedes: input.supersedes }),
-          })
-          .pipe(Effect.result);
+            ? Effect.succeed(false)
+            : reserveShared(ctx, capped, fields.id, Buffer.byteLength(content)),
+          () =>
+            writer.stage(ctx.orgId, ctx.wakeupId, {
+              path,
+              content: text,
+              sourceEventId: input.sourceEventId,
+              ...(input.supersedes === undefined ? {} : { supersedes: input.supersedes }),
+            }),
+          (reserved, exit) =>
+            !reserved || Exit.isSuccess(exit)
+              ? Effect.void
+              : sql`DELETE FROM kin_memory_shared_writes WHERE org_id = ${ctx.orgId}
+                  AND wakeup_id = ${ctx.wakeupId} AND item_id = ${fields.id}`.pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning("Kin shared write reservation not released", cause),
+                  ),
+                ),
+        ).pipe(Effect.result);
         if (staged._tag === "Failure") {
-          // A write that wasn't staged gives its place back.
-          if (reserved)
-            yield* sql`DELETE FROM kin_memory_shared_writes WHERE org_id = ${ctx.orgId}
-              AND wakeup_id = ${ctx.wakeupId} AND item_id = ${fields.id}`.pipe(Effect.ignore);
           return yield* shared
             ? Effect.fail(yield* sharedRefusal(ctx, audience, staged.failure))
             : Effect.fail(staged.failure);
@@ -800,17 +818,15 @@ const make = Effect.gen(function* () {
           input.status !== undefined ||
           input.dueBefore !== undefined ||
           input.dueAfter !== undefined ||
+          input.reviewOverdue !== undefined ||
           input.saidBy !== undefined
         )
           return yield* invalid(TEAM_FILTERS);
-        const now = DateTime.toEpochMillis(yield* DateTime.now);
         // Filtered before the limit and the duplicate flag, so neither counts what is left out.
         const visible = (yield* visibleItems(ctx, audience)).filter(
           ({ head }) =>
             (input.kind === undefined || head.kind === input.kind) &&
-            (input.linksTo === undefined || head.links.includes(input.linksTo)) &&
-            (input.reviewOverdue === undefined ||
-              memoryDateMillis(head.review_by) < now === input.reviewOverdue),
+            (input.linksTo === undefined || head.links.includes(input.linksTo)),
         );
         const counts = new Map<string, number>();
         for (const { head } of visible) counts.set(head.id, (counts.get(head.id) ?? 0) + 1);
@@ -850,12 +866,14 @@ const make = Effect.gen(function* () {
         { lead: ctx.agentId },
         labels === undefined ? undefined : (candidate) => reaches(audience, candidate, labels),
       );
+      // Review dates and invalidation are not in the projection, so a shared turn never gets them.
+      if (shared) return { item: shareable(item) };
       const now = DateTime.toEpochMillis(yield* DateTime.now);
-      const flags = {
+      return {
+        ...item,
         reviewOverdue: item.head.review_by !== null && memoryDateMillis(item.head.review_by) < now,
         misleading: item.head.invalid_at !== null,
       };
-      return shared ? { item: shareable(item), ...flags } : { ...item, ...flags };
     }, Effect.mapError(failure)),
     write: Effect.fn("LeadMemory.write")(function* (scope, input) {
       const { ctx } = yield* turn(scope);
@@ -878,12 +896,24 @@ const make = Effect.gen(function* () {
           const ctx = yield* notes(scope);
           yield* checkSource(ctx, input.sourceEventId);
           // Letting the team know is a disclosure, so only the owner's own words decide it.
-          const owner = input.sensitive ? undefined : yield* ownerSaid(ctx, input.sourceEventId);
-          if (!input.sensitive && owner === undefined) return yield* invalid(SHARE_NEEDS_OWNER);
+          const said = input.sensitive ? undefined : yield* ownerSaid(ctx, input.sourceEventId);
+          if (!input.sensitive && said === undefined) return yield* invalid(SHARE_NEEDS_OWNER);
+          const owner = said?.person;
           const itemIds = [...new Set(input.itemIds)];
-          // Every item is found before any is changed, so a bad id changes none of them.
+          // Every item is found before any is changed, so a bad id changes none of them. The
+          // owner's word covers only what an item said when he gave it, never a later rewording.
           const items = yield* Effect.forEach(itemIds, (itemId) =>
-            memory.readItemQuietly(ctx.orgId, itemId, { lead: ctx.agentId }),
+            said === undefined
+              ? memory.readItemQuietly(ctx.orgId, itemId, { lead: ctx.agentId })
+              : memory
+                  .readItemChangedAt(ctx.orgId, itemId, { lead: ctx.agentId })
+                  .pipe(
+                    Effect.flatMap(({ item, changedAt }) =>
+                      changedAt + 1000 > said.at
+                        ? Effect.fail(invalid(changedSinceOwner(item.head.id)))
+                        : Effect.succeed(item),
+                    ),
+                  ),
           );
           for (const item of items) {
             const { orgId: _org, path, shared_by: _before, ...frontMatter } = item.head;

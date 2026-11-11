@@ -331,12 +331,12 @@ export function createKinMemoryActions(options: {
       run(list, [itemId], to, async () => {
         // The host refuses a yes to words other than the ones the owner was shown.
         const version = list.items.find((item) => item.itemId === itemId)?.version;
-        const result = await options.setVisibility({
-          orgId,
-          itemId,
-          onlyOwner: to === "only_owner",
-          ...(to === "team" && version !== undefined ? { version } : {}),
-        });
+        if (to === "team" && version === undefined) return { failed: undefined };
+        const result = await options.setVisibility(
+          to === "team" && version !== undefined
+            ? { orgId, itemId, onlyOwner: false, version }
+            : { orgId, itemId, onlyOwner: true },
+        );
         return AsyncResult.isSuccess(result)
           ? { answered: [result.value.item] }
           : { failed: squashAtomCommandFailure(result) };
