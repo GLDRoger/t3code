@@ -51,7 +51,7 @@ import { useUiStateStore } from "../uiStateStore";
 import { configureClientTracing } from "../observability/clientTracing";
 import { resolveInitialServerAuthGateState } from "../environments/primary";
 import { GUEST_PAGE_PATH } from "../guestPage";
-import { KIN_INVITE_PAGE_PATH } from "../kinInvitePage";
+import { KIN_INVITE_LINK_PATH } from "@t3tools/shared/remote";
 import { kinListAt } from "../kin/kinListSwitch";
 import { hasHostedPairingRequest, isHostedStaticApp } from "../hostedPairing";
 import { useHostedPromptLinkLanding } from "../components/promptLinks/HostedPromptLinkLanding";
@@ -68,7 +68,7 @@ export const Route = createRootRoute({
     // Guest links open on the owner's tunnel host in a browser with no T3 session, and must
     // not trigger pairing or an environment connection.
     // An invite link is the same: its page signs the teammate in itself.
-    if (location.pathname === GUEST_PAGE_PATH || location.pathname === KIN_INVITE_PAGE_PATH) {
+    if (location.pathname === GUEST_PAGE_PATH || location.pathname === KIN_INVITE_LINK_PATH) {
       return {
         authGateState: {
           status: "guest",
@@ -164,7 +164,7 @@ function RootRouteBranch() {
     authGateState.status === "hosted-static",
   );
 
-  if (pathname === GUEST_PAGE_PATH || pathname === KIN_INVITE_PAGE_PATH) return <Outlet />;
+  if (pathname === GUEST_PAGE_PATH || pathname === KIN_INVITE_LINK_PATH) return <Outlet />;
 
   if (
     pathname === "/pair" ||

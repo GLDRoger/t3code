@@ -7,6 +7,7 @@ import {
   KIN_CHAT_WS_METHODS,
   KinChatError,
   type EnvironmentId,
+  type KinOrgId,
   type KinChatHistoryInput,
   type KinChatHistoryResult,
   type KinChatId,
@@ -222,6 +223,34 @@ const throttledSave = Effect.fnUntraced(function* <A, R>(
     },
   };
 });
+
+/**
+ * Tells `reread` when the direct chats or the viewer's place in them change: being let message
+ * a lead adds its chat, and losing that leaves the chat read-only. The first snapshot is the
+ * starting point and says nothing.
+ */
+export const onKinDirectChatsChange =
+  (reread: (environmentId: EnvironmentId, orgIds: ReadonlyArray<KinOrgId>) => void) =>
+  <E, R>(stream: Stream.Stream<KinSynced<KinInboxState>, E, R>) =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        const environmentId = yield* currentEnvironmentId;
+        let seen: string | null = null;
+        return stream.pipe(
+          Stream.tap((view) =>
+            Effect.sync(() => {
+              const direct = view.value.chats.filter((chat) => chat.kind === "direct");
+              const key = direct
+                .map((chat) => `${chat.chatId}:${chat.members.map((m) => m.role).join(",")}`)
+                .join("|");
+              if (seen !== null && seen !== key)
+                reread(environmentId, [...new Set(direct.map((chat) => chat.orgId))]);
+              seen = key;
+            }),
+          ),
+        );
+      }),
+    );
 
 export function kinInboxStream(input: KinChatsSubscribeInput) {
   return Stream.unwrap(

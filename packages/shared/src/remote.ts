@@ -135,7 +135,12 @@ export interface ResolvedRemotePairingTarget {
   readonly credential: string;
   readonly httpBaseUrl: string;
   readonly wsBaseUrl: string;
+  /** The credential is a Kin teammate's invite, redeemed for a chat-only session. */
+  readonly kinInvite?: true;
 }
+
+/** The page a Kin teammate's invite link names; its fragment is the single-use secret. */
+export const KIN_INVITE_LINK_PATH = "/kin/invite";
 
 export interface HostedPairingRequest {
   readonly host: string;
@@ -232,6 +237,16 @@ export const resolveRemotePairingTarget = (input: {
     }
 
     const credential = getPairingTokenFromUrl(url) ?? "";
+    const inviteSecret = url.pathname === KIN_INVITE_LINK_PATH ? url.hash.slice(1).trim() : "";
+    if (!credential && inviteSecret) {
+      const origin = new URL(url.origin);
+      return {
+        credential: decodeURIComponent(inviteSecret),
+        httpBaseUrl: toHttpBaseUrl(origin),
+        wsBaseUrl: toWsBaseUrl(origin),
+        kinInvite: true,
+      };
+    }
     if (!credential) {
       throw new RemotePairingTokenMissingError({ host: url.host });
     }

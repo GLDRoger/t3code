@@ -21,6 +21,7 @@ import {
   type KinPeopleListInput,
   type KinChatId,
   type KinChatsSubscribeInput,
+  type KinLeadAccessInput,
   type KinLeadsListInput,
   type KinOrgsListInput,
   type KinPushWatchInput,
@@ -39,6 +40,7 @@ import {
   KIN_CHAT_LABEL,
   KIN_INBOX_LABEL,
   kinInboxStream,
+  onKinDirectChatsChange,
   makeKinChatStream,
   retryKinProbe,
   type KinSynced,
@@ -106,6 +108,11 @@ const leadsRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   tag: "kin.leads.list",
 });
 const readLeads = guardedRead(leadsRead);
+const leadAccessRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:lead-access:read",
+  tag: "kin.lead.access.list",
+});
+const readLeadAccess = guardedRead(leadAccessRead);
 const membersRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "kin:chat-members:read",
   tag: KIN_CHAT_WS_METHODS.chatMembers,
@@ -170,6 +177,20 @@ const chatStream = makeKinChatStream((input) =>
   readHistory(input).pipe(Effect.provideService(AtomRegistry.AtomRegistry, appAtomRegistry)),
 );
 
+/** The viewer's own leads, and the leads of others they may message. */
+const leads = createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  label: "kin:leads",
+  execute: Effect.fn("KinClient.leads")(function* (input: KinLeadsListInput) {
+    return yield* readLeads(input);
+  }),
+  staleTimeMs: 15_000,
+  refreshTrigger: sessionGeneration,
+});
+/** Being let message a lead, or losing that, changes what `kin.leads.list` answers. */
+const rereadLeadsOnChange = onKinDirectChatsChange((environmentId, orgIds) => {
+  for (const orgId of orgIds) appAtomRegistry.refresh(leads({ environmentId, input: { orgId } }));
+});
+
 export const kinClient = {
   /** Orgs, their agents, and the viewer's person per org. An empty `me` means no identity. */
   orgs: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
@@ -195,7 +216,8 @@ export const kinClient = {
   /** Chat list plus Waiting on you. Reconnecting replaces it with the host's fresh snapshot. */
   inbox: createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {
     label: KIN_INBOX_LABEL,
-    subscribe: (input: KinChatsSubscribeInput) => withKinCacheStream(kinInboxStream(input)),
+    subscribe: (input: KinChatsSubscribeInput) =>
+      withKinCacheStream(kinInboxStream(input)).pipe(rereadLeadsOnChange),
   }),
   chat: createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {
     label: KIN_CHAT_LABEL,
@@ -227,15 +249,7 @@ export const kinClient = {
     tag: "kin.lead.interrupt",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.wakeupId },
   }),
-  /** The viewer's own leads: who each is, what it is for and what it has in hand. */
-  leads: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
-    label: "kin:leads",
-    execute: Effect.fn("KinClient.leads")(function* (input: KinLeadsListInput) {
-      return yield* readLeads(input);
-    }),
-    staleTimeMs: 15_000,
-    refreshTrigger: sessionGeneration,
-  }),
+  leads,
   leadCreate: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:lead:create",
     tag: "kin.lead.create",
@@ -246,8 +260,27 @@ export const kinClient = {
     tag: "kin.lead.update",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.agentId },
   }),
+  /** Who besides the owner may message one of the owner's leads. */
+  leadAccess: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:lead-access",
+    execute: Effect.fn("KinClient.leadAccess")(function* (input: KinLeadAccessInput) {
+      return yield* readLeadAccess(input);
+    }),
+    staleTimeMs: 15_000,
+    refreshTrigger: sessionGeneration,
+  }),
+  leadAllow: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:lead-access:allow",
+    tag: "kin.lead.access.grant",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.agentId}:${input.personId}` },
+  }),
+  leadDisallow: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:lead-access:disallow",
+    tag: "kin.lead.access.revoke",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.agentId}:${input.personId}` },
+  }),
   chatMembers,
-  /** The people of the org, for choosing who joins a group. */
+  /** The people of the org, for choosing who joins a group or may message a lead. */
   people: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:people",
     execute: Effect.fn("KinClient.people")(function* (input: KinPeopleListInput) {

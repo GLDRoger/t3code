@@ -4,11 +4,11 @@ import {
   KIN_INBOX_LABEL,
   kinInboxStream,
   makeKinChatStream,
+  onKinDirectChatsChange,
   retryKinProbe,
   type KinSynced,
 } from "@t3tools/client-runtime/kin/kinStreams";
-import type { KinChatState, KinInboxState } from "@t3tools/client-runtime/kin/kinInboxModel";
-import { kinDirectChatsKey } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import type { KinChatState } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
   createEnvironmentQueryAtomFamily,
   createEnvironmentRpcCommand,
@@ -146,29 +146,10 @@ const leads = createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
     environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
 });
 
-/**
- * Reads leads again when the direct chats or the viewer's place in them change: being let
- * message a lead adds its chat, and losing that leaves the chat read-only.
- */
-const rereadLeadsOnChange = <E, R>(stream: Stream.Stream<KinSynced<KinInboxState>, E, R>) =>
-  Stream.unwrap(
-    Effect.gen(function* () {
-      const environmentId = yield* currentEnvironmentId;
-      let seen: string | null = null;
-      return stream.pipe(
-        Stream.tap((view) =>
-          Effect.sync(() => {
-            const direct = view.value.chats.filter((chat) => chat.kind === "direct");
-            const key = kinDirectChatsKey(direct);
-            if (seen !== null && seen !== key)
-              for (const orgId of new Set(direct.map((chat) => chat.orgId)))
-                appAtomRegistry.refresh(leads({ environmentId, input: { orgId } }));
-            seen = key;
-          }),
-        ),
-      );
-    }),
-  );
+/** Being let message a lead, or losing that, changes what `kin.leads.list` answers. */
+const rereadLeadsOnChange = onKinDirectChatsChange((environmentId, orgIds) => {
+  for (const orgId of orgIds) appAtomRegistry.refresh(leads({ environmentId, input: { orgId } }));
+});
 
 /** Web's Kin reads and commands. Mobile's twin adds the device cache and push. */
 export const kinClient = {

@@ -256,12 +256,3 @@ export function kinChatReadOnly(
 export function kinChatReadOnlyLine(leadName: string | null): string {
   return `You can read this chat, but you can no longer message ${leadName ?? "this lead"}.`;
 }
-
-/**
- * Changes when a direct chat appears or goes, or a member's role in one changes: the moments
- * the leads a person may message, and whether they still may, need reading again.
- */
-export const kinDirectChatsKey = (chats: ReadonlyArray<KinChatSummary>) =>
-  chats
-    .map((chat) => `${chat.chatId}:${chat.members.map((member) => member.role).join(",")}`)
-    .join("|");
