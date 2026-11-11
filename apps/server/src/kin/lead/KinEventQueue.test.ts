@@ -638,11 +638,13 @@ describe("KinEventQueue", () => {
         yield* queue.enqueue(yield* says("teammate-again", "teammate"));
         yield* queue.enqueue(yield* says("owner-adds", "person-lead-a"));
         // A passed-on request keeps its own origin, and a message no longer stored was cleared.
+        const relayed = yield* says("relayed", "person-lead-a");
+        if (relayed._tag !== "chat.message") return assert.fail("expected a chat message");
         yield* queue.enqueue({
-          ...(yield* says("relayed", "person-lead-a")),
+          ...relayed,
           origin: { agentId: KinAgentId.make("lead-a"), chatId: KinChatId.make("chat-lead-a") },
         });
-        yield* queue.enqueue({ ...(yield* event("unstored", "chat.message")) });
+        yield* queue.enqueue(yield* event("unstored", "chat.message"));
         // The turn already runs at the teammate's level: neither message lowers it.
         assert.deepStrictEqual(ids(yield* queue.steer(turn)), ["owner-adds", "teammate-again"]);
         yield* sql`UPDATE kin_wakeups SET aborted_at = 1 WHERE wakeup_id = 'shared'`;
