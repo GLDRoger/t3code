@@ -1661,12 +1661,25 @@ const retireLead = (ctx: Effect.Success<ReturnType<typeof setup>>, at: number) =
       Effect.asVoid,
     );
 
+/** The owner's restore, as `KinLeadProvision.restore` commits it. */
+const restoreLead = (ctx: Effect.Success<ReturnType<typeof setup>>, at: number) =>
+  ctx.sql
+    .withTransaction(
+      Effect.gen(function* () {
+        yield* ctx.sql`UPDATE kin_agents SET retired_at = NULL WHERE agent_id = ${leadId}`;
+        yield* Retirement.restore({ orgId: ctx.orgId, agentId: leadId, now: at });
+      }),
+    )
+    .pipe(Effect.provideService(SqlClient.SqlClient, ctx.sql), Effect.orDie);
+
 it.effect.each([
-  ["had ended", true],
-  ["was still running", false],
+  ["", "had ended", true],
+  ["", "was still running", false],
+  [" and restored", "had ended", true],
+  [" and restored", "was still running", false],
 ] as const)(
-  "a lead retired while its follow-up is sent, to a worker that %s, leaves the new attempt stopped and unable to publish",
-  ([, ended]) =>
+  "a lead retired%s while its follow-up is sent, to a worker that %s, leaves the new attempt stopped and unable to publish",
+  ([restored, , ended]) =>
     run(({ ctx, remote, workers, tracker }) =>
       Effect.gen(function* () {
         const { workerId } = yield* workers.delegate(scope, delegateInput);
@@ -1677,7 +1690,11 @@ it.effect.each([
         }
         // A later clock, as a real one would be: the follow-up's attempt is a new row.
         yield* TestClock.adjust("2 seconds");
-        remote.hooks.sent = retireLead(ctx, 1_000);
+        // Restored before the send returns: the agent is live again, the turn that sent it isn't.
+        remote.hooks.sent =
+          restored === ""
+            ? retireLead(ctx, 1_000)
+            : retireLead(ctx, 1_000).pipe(Effect.andThen(restoreLead(ctx, 1_500)));
         assert.include(
           yield* Effect.flip(
             workers.followUp(scope, {
@@ -1710,6 +1727,31 @@ it.effect.each([
         assert.deepStrictEqual(yield* write, { _tag: "refused" });
       }),
     ),
+);
+
+it.effect("a join's abort during a follow-up's send leaves the new attempt running", () =>
+  run(({ ctx, remote, workers }) =>
+    Effect.gen(function* () {
+      const { workerId } = yield* workers.delegate(scope, delegateInput);
+      yield* TestClock.adjust("2 seconds");
+      // Aborted as a join aborts a turn: `retired_at` stays null.
+      remote.hooks.sent = ctx.sql`UPDATE kin_wakeups SET aborted_at = 1500,
+          shared_since = 1500 WHERE wakeup_id = 'wake'`.pipe(Effect.orDie, Effect.asVoid);
+      yield* workers.followUp(scope, {
+        workerId,
+        brief: "Also cover the retry path.",
+        sourceEventId: "lead-event",
+      });
+      const attempts = yield* ctx.sql<{ stopReason: string | null }>`SELECT
+          stop_reason AS "stopReason" FROM kin_worker_attempts WHERE worker_id = ${workerId}
+        ORDER BY started_at`;
+      assert.deepStrictEqual(attempts.at(-1), { stopReason: null });
+      assert.deepStrictEqual(
+        yield* ctx.sql`SELECT aborted_at, retired_at FROM kin_wakeups WHERE wakeup_id = 'wake'`,
+        [{ aborted_at: 1500, retired_at: null }],
+      );
+    }),
+  ),
 );
 
 it.effect("a lead retired while its worker launches stops the thread the launch made", () =>
@@ -3842,7 +3884,7 @@ const upgradedFromK058 = (sql: SqlClient.SqlClient) =>
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 59`;
     assert.deepStrictEqual(
       (yield* runKinMigrations()).map(([id]) => id),
-      [59, 60, 61, 62, 63, 64],
+      [59, 60, 61, 62, 63, 64, 65],
     );
   }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
 const attemptRows = (sql: SqlClient.SqlClient, workerId: KinWorkerId) =>

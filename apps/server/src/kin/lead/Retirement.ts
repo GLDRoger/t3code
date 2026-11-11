@@ -79,8 +79,10 @@ export const retire = Effect.fn("KinRetirement.retire")(function* (input: {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, agentId, now } = input;
   // Its turns under way, as a join aborts one: nothing more lands anywhere, memory is discarded.
+  // `retired_at` outlives a restore, so what such a turn sent meanwhile still starts stopped.
   const turns = yield* sql<{ wakeupId: string }>`
-    UPDATE kin_wakeups SET aborted_at = ${now}, shared_since = COALESCE(shared_since, ${now})
+    UPDATE kin_wakeups SET aborted_at = ${now}, retired_at = ${now},
+      shared_since = COALESCE(shared_since, ${now})
     WHERE org_id = ${orgId} AND agent_id = ${agentId} AND status = 'running'
       AND aborted_at IS NULL AND settled_at IS NULL
     RETURNING wakeup_id AS "wakeupId"`;
