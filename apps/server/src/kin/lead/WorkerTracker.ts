@@ -333,16 +333,25 @@ const make = Effect.gen(function* () {
         Effect.provideService(OrchestratorV2, orchestrator),
       );
   });
-  // Cards are best effort: a worker's outcome never waits on its card.
+  /**
+   * Cards are best effort: a worker's outcome never waits on its card. Routed from the row as
+   * stored now, in the card write's transaction: a join during a remote call may have moved it.
+   */
   const card = <A, E>(worker: WorkerRow, effect: (chatId: KinChatId) => Effect.Effect<A, E>) =>
-    worker.chatId === null
-      ? Effect.void
-      : movedCard(worker, worker.chatId).pipe(
-          Effect.andThen(effect(worker.chatId)),
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Kin worker task card unavailable", { cause }),
-          ),
-        );
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const current = yield* workerRow(worker.orgId, worker.workerId);
+          if (current === undefined || current.chatId === null) return;
+          yield* movedCard(current, current.chatId);
+          yield* effect(current.chatId);
+        }),
+      )
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin worker task card unavailable", { cause }),
+        ),
+      );
   /** Records the outcome unless a follow-up started newer work meanwhile; false when it did. */
   const record = Effect.fn("WorkerTracker.record")(function* (
     worker: WorkerRow,
@@ -362,7 +371,10 @@ const make = Effect.gen(function* () {
           WHERE org_id = ${worker.orgId} AND worker_id = ${worker.workerId}
             AND started_at = ${worker.startedAt} RETURNING worker_id`;
         if (updated.length === 0) return false;
-        yield* enqueueReport(worker, input.key, input.endedAt, input.report);
+        // Routed from the row as stored now, never the one read before the wait there.
+        const current = yield* workerRow(worker.orgId, worker.workerId);
+        if (current === undefined) return false;
+        yield* enqueueReport(current, input.key, input.endedAt, input.report);
         return true;
       }),
     );
