@@ -17,6 +17,7 @@ import {
   kinWorkPrincipalKey,
   type KinWorkDraft,
 } from "@t3tools/client-runtime/kin/kinWork";
+import { KIN_CLIENTS } from "@t3tools/client-runtime/kin/kinWorkClients";
 import { EnvironmentId, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -138,7 +139,14 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
-        title={words.title}
+        // The bar is too narrow for the client's name, which the Client row below carries.
+        title={
+          draft.party === null
+            ? words.title
+            : draft.side === "theirs"
+              ? KIN_CLIENTS.theyOwe
+              : KIN_CLIENTS.weOwe
+        }
         onClose={() => navigation.goBack()}
         confirm={{
           label: KIN_WORK_NEW_COPY.submit,
