@@ -5,6 +5,7 @@ import {
   KinMessageId,
   KinOrgId,
   KinWakeupId,
+  type KinWorkerId,
   MessageId,
   ModelSelection,
   ProjectId,
@@ -56,6 +57,8 @@ import * as LeadDelivery from "./LeadDelivery.ts";
 import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
 import { isOrgPaused } from "./orgState.ts";
 import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
+import { RETIRED_WORKER_REASON, retiredWorkerKey } from "./Retirement.ts";
+import { WorkerTracker } from "./WorkerTracker.ts";
 import { setupFailureIn, type SetupFailure } from "../reply/classify.ts";
 
 /** How long one wake-up may run before it is interrupted. */
@@ -142,6 +145,7 @@ const ulid = Effect.gen(function* () {
 const make = Effect.gen(function* () {
   const ownerCheck = yield* Effect.serviceOption(OwnerCheck.OwnerCheck);
   const bridge = yield* Effect.serviceOption(KinReplyBridge);
+  const tracker = yield* Effect.serviceOption(WorkerTracker);
   const endReply = (row: {
     readonly orgId: KinOrgId;
     readonly agentId: KinAgentId;
@@ -232,16 +236,43 @@ const make = Effect.gen(function* () {
       JOIN kin_orgs o ON o.org_id = l.org_id WHERE l.org_id = ${orgId} AND l.agent_id = ${agentId}`;
     return yield* decodeLead(row);
   });
-  const retired = new Set<KinAgentId>();
+  // One pass per retirement; a lead restored and retired again gets another.
+  const retired = new Set<string>();
   const retire = Effect.fn("WakeupRunner.retire")(function* (record: typeof LeadRow.Type) {
-    if (retired.has(record.agentId)) return;
+    if (record.retiredAt === null) return;
+    const pass = `${record.agentId}:${record.retiredAt}`;
+    if (retired.has(pass)) return;
     yield* queue.expireAgent(record.orgId, record.agentId);
+    // Their stops were stored when it was retired (`Retirement.retire`); this sends them.
+    if (Option.isSome(tracker))
+      for (const worker of yield* sql<{ workerId: KinWorkerId; startedAt: number }>`
+          SELECT worker_id AS "workerId", started_at AS "startedAt" FROM kin_workers
+          WHERE org_id = ${record.orgId} AND agent_id = ${record.agentId} AND ended_at IS NULL
+          ORDER BY worker_id`)
+        yield* tracker.value
+          .stop({
+            orgId: record.orgId,
+            agentId: record.agentId,
+            workerId: worker.workerId,
+            startedAt: worker.startedAt,
+            reason: RETIRED_WORKER_REASON,
+            key: retiredWorkerKey(worker.workerId, record.retiredAt),
+          })
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Kin could not stop a retired agent's worker", {
+                orgId: record.orgId,
+                workerId: worker.workerId,
+                cause,
+              }),
+            ),
+          );
     if (record.threadId !== null) {
       const stopped = yield* threads.forceStopThread({ threadId: record.threadId });
       if (stopped.outcome === "releasing") return;
       yield* identity.endAgentThread({ orgId: record.orgId, threadId: record.threadId });
     }
-    retired.add(record.agentId);
+    retired.add(pass);
   });
   const capture = Effect.fn("WakeupRunner.capture")(function* (row: typeof RunningRow.Type) {
     if (row.threadId === null || row.runId === null) return;
@@ -880,6 +911,16 @@ const make = Effect.gen(function* () {
               title: `Kin · ${record.orgName} · ${record.name}`,
             });
             let existingThreadId = current.threadId;
+            // Retiring ended its thread, which can't be registered again: a restored lead
+            // launches a fresh one.
+            if (
+              existingThreadId !== null &&
+              (yield* sql`SELECT 1 FROM kin_agent_threads WHERE org_id = ${orgId}
+                AND thread_id = ${existingThreadId} AND ended_at IS NOT NULL`).length > 0
+            ) {
+              yield* sql`UPDATE kin_leads SET thread_id = NULL WHERE org_id = ${orgId} AND agent_id = ${agentId} AND thread_id = ${existingThreadId}`;
+              existingThreadId = null;
+            }
             if (existingThreadId !== null) {
               const existing = yield* threads
                 .getThreadProjection(existingThreadId)

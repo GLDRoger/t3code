@@ -104,7 +104,7 @@ const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Kin', ${timestamp})`;
   yield* sql`INSERT INTO kin_people VALUES ('owner', ${orgId}, 'owner', 'Owner', NULL, ${timestamp})`;
-  yield* sql`INSERT INTO kin_agents VALUES ('lead', ${orgId}, 'Lead', 'lead', 'owner', ${timestamp}, NULL)`;
+  yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at, retired_at) VALUES ('lead', ${orgId}, 'Lead', 'lead', 'owner', ${timestamp}, NULL)`;
   yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at) VALUES ('chat', ${orgId}, 'direct', 'direct', 0, ${timestamp})`;
   yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id) VALUES ('lead', ${orgId}, 'Lead', 0, '{}', '[]', 'chat')`;
   yield* sql`INSERT INTO orchestration_v2_projection_threads
@@ -404,7 +404,7 @@ describe("KinGithubEvents", () => {
         VALUES (${orgId}, 'worker-wake', 'lead', 'test', 0, 'completed', '[]')`;
         yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id, model_json, provenance_json, status, started_at, repository_key, pull_request_number, pull_request_url)
         VALUES ('worker', ${orgId}, 'lead', 'worker-wake', 'build', 'worker-thread', '{}', '{}', 'done', 0, 'github.com/owner/repo', 888, 'https://github.com/OWNER/REPO/pull/888')`;
-        yield* sql`INSERT INTO kin_agents VALUES ('other-lead', ${orgId}, 'Other', 'lead', 'owner', ${timestamp}, NULL)`;
+        yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at, retired_at) VALUES ('other-lead', ${orgId}, 'Other', 'lead', 'owner', ${timestamp}, NULL)`;
         yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
           VALUES ('other-lead', ${orgId}, 'Other', 0, '{}', '[]', 'chat')`;
         yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids)

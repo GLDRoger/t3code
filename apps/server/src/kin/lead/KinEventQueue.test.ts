@@ -321,6 +321,24 @@ describe("KinEventQueue", () => {
         (yield* queue.readyLeads(orgId)).map((lead) => lead.agentId),
         ["lead-a"],
       );
+
+      // An event queued before a retirement is never claimed after it, even before anything
+      // expires it: the claim waits, and takes it only once the lead is restored.
+      yield* sql`UPDATE kin_agents SET retired_at = NULL WHERE agent_id = 'lead-a2'`;
+      yield* queue.enqueue(yield* event("before", "routine", "a", "lead-a2"));
+      yield* sql`UPDATE kin_agents SET retired_at = '2026-11-07T00:00:00.000Z' WHERE agent_id = 'lead-a2'`;
+      const claim = yield* Effect.scoped(queue.claim(input("after-retire", "a", "lead-a2"))).pipe(
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust("2 minutes");
+      assert.deepStrictEqual(yield* sql`SELECT wakeup_id FROM kin_wakeups ORDER BY wakeup_id`, []);
+      yield* sql`UPDATE kin_agents SET retired_at = NULL WHERE agent_id = 'lead-a2'`;
+      yield* queue.enqueue(yield* event("restored", "routine", "a", "lead-a2"));
+      yield* TestClock.adjust("20 seconds");
+      assert.deepStrictEqual(
+        (yield* Fiber.join(claim)).map((entry) => entry.eventId),
+        ["before", "restored"],
+      );
     }).pipe(Effect.provide(layer)),
   );
 

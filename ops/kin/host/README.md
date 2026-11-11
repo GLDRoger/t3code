@@ -111,7 +111,7 @@ Running it again with the same name and domain changes nothing and prints the ex
 
 - `kin lead list` shows every lead with its level, owner chat and whether it's retired.
 - `kin lead projects <agent id> --worker-project <project id> ...` replaces a live lead's worker projects, keeping its chat and history; pass no `--worker-project` to clear them. Its next tool call sees the change: new and follow-up work in a removed project is refused, but a worker already running there keeps running until it ends or you stop it.
-- `kin lead retire <agent id>` retires one. Its rows and chat stay. Its Kin tool calls are refused at once. A running server expires its queued events and ends its thread once any current wake-up finishes (up to 15 minutes; pause Kin to halt it sooner), or at its next start if it's stopped.
+- `kin lead retire <agent id>` retires one and `kin lead restore <agent id>` brings it back; the owner's last lead can't be retired. Nothing is deleted. Its queued events expire, its workers can no longer publish, its timers and schedules pause and its approval requests close at once; a running server stops its current turn and its workers within a minute, or at its next start if it's stopped.
 
 ## Approve from the phone
 

@@ -22,6 +22,7 @@ import WorkClients from "./migrations/K060_WorkClients.ts";
 import WorkerAttempts from "./migrations/K061_WorkerAttempts.ts";
 import WorkerPublishApproval from "./migrations/K062_WorkerPublishApproval.ts";
 import LegacyWorkerAttempts from "./migrations/K063_LegacyWorkerAttempts.ts";
+import AgentRetirement from "./migrations/K064_AgentRetirement.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -124,6 +125,7 @@ const loader = Migrator.fromRecord({
   "61_WorkerAttempts": WorkerAttempts,
   "62_WorkerPublishApproval": WorkerPublishApproval,
   "63_LegacyWorkerAttempts": LegacyWorkerAttempts,
+  "64_AgentRetirement": AgentRetirement,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

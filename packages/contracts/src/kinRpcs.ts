@@ -10,6 +10,7 @@ import {
   KinLeadCreated,
   KinLeadCreateInput,
   KinLeadProfile,
+  KinLeadRetireInput,
   KinLeadsListInput,
   KinLeadsListResult,
   KinLeadUpdateInput,
@@ -90,6 +91,17 @@ const KinLeadRpcs = [
   }),
   Rpc.make("kin.lead.update", {
     payload: KinLeadUpdateInput,
+    success: KinLeadProfile,
+    error: KinError,
+  }),
+  // Retire keeps everything the agent has said and done; restore brings it back.
+  Rpc.make("kin.lead.retire", {
+    payload: KinLeadRetireInput,
+    success: KinLeadProfile,
+    error: KinError,
+  }),
+  Rpc.make("kin.lead.restore", {
+    payload: KinLeadRetireInput,
     success: KinLeadProfile,
     error: KinError,
   }),
@@ -187,6 +199,9 @@ export const KIN_RPC_SCOPES = {
   "kin.lead.access.revoke": AuthSettingsWriteScope,
   // What a lead is for is an owner setting, as creating it is.
   "kin.lead.update": AuthSettingsWriteScope,
+  // Retiring stops an agent's work and restoring starts it again: owner settings, as create is.
+  "kin.lead.retire": AuthSettingsWriteScope,
+  "kin.lead.restore": AuthSettingsWriteScope,
   // Who is in a group decides who its leads listen to: an owner setting, never a teammate's.
   "kin.groups.create": AuthSettingsWriteScope,
   "kin.groups.addMember": AuthSettingsWriteScope,
@@ -223,6 +238,8 @@ export const KIN_RPC_AGGREGATES = {
   "kin.lead.create": "kin-chat",
   "kin.leads.list": "kin-chat",
   "kin.lead.update": "kin-chat",
+  "kin.lead.retire": "kin-chat",
+  "kin.lead.restore": "kin-chat",
   "kin.lead.access.list": "kin-chat",
   "kin.lead.access.grant": "kin-chat",
   "kin.lead.access.revoke": "kin-chat",
