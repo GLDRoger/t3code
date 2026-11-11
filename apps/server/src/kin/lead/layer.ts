@@ -35,6 +35,8 @@ import * as Cache from "../memory/MemoryCache.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { KinLeadToolkit } from "./mcp/tools.ts";
 import { handlers } from "./mcp/handlers.ts";
+import { KinWorkToolkit } from "../work/mcp/tools.ts";
+import { handlers as workHandlers } from "../work/mcp/handlers.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
@@ -229,7 +231,10 @@ const memoryPullRequests = Layer.unwrap(
   }),
 );
 
-const registration = McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers);
+const registration = Layer.merge(
+  McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers),
+  McpHttpServer.toolkitRegistration(KinWorkToolkit, workHandlers),
+);
 const toolkit = LeadMemory.layer.pipe(
   Layer.provideMerge(Writer.layer),
   Layer.provide(memoryPullRequests),

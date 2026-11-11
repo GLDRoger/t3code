@@ -21,6 +21,7 @@ import {
   KinWidgetId,
 } from "./kinChat.ts";
 import { TimeOfDay, TimeZone } from "./kinTime.ts";
+import { KinRecordId, KinRecordKey, KinRecordState } from "./kinWork.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import { ScheduledTaskWebhookDeliveryId } from "./scheduledTask.ts";
 
@@ -98,13 +99,16 @@ export type KinLeadCreated = typeof KinLeadCreated.Type;
 
 /** Something a lead has in hand, in the owner's terms. Titles are text to show, never markup. */
 export const KinLeadTracking = Schema.Struct({
-  // work: a coding task running now. reminder: it will remind. follow_up: it will start, ask or
+  // work: an open Work entry the lead owns (key and state set), or a coding task running now. reminder: it will remind. follow_up: it will start, ask or
   // chase when due. scheduled: a recurring task.
   kind: Schema.Literals(["work", "reminder", "follow_up", "scheduled"]),
   title: Schema.String.check(Schema.isMaxLength(280)),
   // When it is due; absent for work under way and for scheduled tasks.
   dueAt: Schema.optional(Schema.toEncoded(CanonicalUtcTimestamp)),
   chatId: Schema.NullOr(KinChatId),
+  // Work entries only: the entry's key and state, so a row opens its entry.
+  key: Schema.optional(KinRecordKey),
+  state: Schema.optional(KinRecordState),
 });
 export type KinLeadTracking = typeof KinLeadTracking.Type;
 export const KIN_LEAD_TRACKING_CAP = 20;
@@ -551,6 +555,15 @@ export const KinEvent = Schema.Union([
     // teammate who asked, as on a due deferral.
     chatId: Schema.optional(KinChatId),
     origin: Schema.optional(KinEventOrigin),
+  }),
+  // Code enqueues it when someone else gives this lead an entry. Its provenance is the entry's
+  // stored human assigner, which is the only authority the turn has; the entry's text is data.
+  Schema.TaggedStruct("record.changed", {
+    ...EventBase,
+    recordId: KinRecordId,
+    key: KinRecordKey,
+    seq: NonNegativeInt,
+    reason: Schema.Literals(["assigned"]),
   }),
   Schema.TaggedStruct("action.resolved", {
     ...EventBase,

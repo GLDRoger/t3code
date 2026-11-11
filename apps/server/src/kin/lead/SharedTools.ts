@@ -129,6 +129,11 @@ export const SHARED_TOOLS = {
   kin_github_pr: "refused",
   kin_github_runs: "refused",
   request_action: "refused",
+  // Work is owner-only until the teammate view (slice 2) gives shared turns a filtered one.
+  records_query: "refused",
+  record_get: "refused",
+  record_create: "refused",
+  record_update: "refused",
 } satisfies Record<string, SharedToolPolicy>;
 
 /** Whether `name` may run with these arguments in a turn someone besides the owner reads. */

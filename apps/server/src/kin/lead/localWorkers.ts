@@ -35,6 +35,8 @@ import { publishBranch } from "./workerPublish.ts";
 import type { DelegateInput } from "./Workers.ts";
 import { WorkerTracker } from "./WorkerTracker.ts";
 import { localThreadId } from "./workThread.ts";
+import { KinRecords } from "../work/KinRecords.ts";
+import { workerStarted } from "../work/workerEntries.ts";
 
 type Lead = Effect.Success<ReturnType<typeof resolveLead>>;
 type Config = {
@@ -92,6 +94,7 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
   const chat = yield* KinChatService;
   const budget = yield* KinBudget;
   const tracker = yield* WorkerTracker;
+  const records = yield* KinRecords;
   const environment = yield* ServerEnvironment;
   const orchestrator = yield* OrchestratorV2;
   const launcher = yield* ThreadLaunchService.ThreadLaunchService;
@@ -257,7 +260,19 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
           'queued', NULL, ${startedAt}, NULL, ${input.title}, ${chatId}, ${target.projectId}, NULL,
           NULL, ${target.repositoryKey}, 'private')
           ON CONFLICT (worker_id) DO NOTHING RETURNING worker_id`;
-        if (inserted.length > 0) return;
+        if (inserted.length > 0)
+          return yield* workerStarted({
+            orgId: ctx.orgId,
+            agentId: ctx.agentId,
+            workerId,
+            wakeupId: ctx.wakeupId,
+            title: input.title,
+            event: plan.event,
+            ...(input.entry === undefined ? {} : { entryKey: input.entry }),
+          }).pipe(
+            Effect.provideService(KinRecords, records),
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
         const [stored] = yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId"
           FROM kin_workers WHERE org_id = ${ctx.orgId} AND agent_id = ${ctx.agentId}
             AND worker_id = ${workerId} ORDER BY worker_id`;

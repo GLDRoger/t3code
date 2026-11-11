@@ -22,6 +22,7 @@ import type { KinPushDevices } from "./push/KinPushDevices.ts";
 import type { KinPushPresence } from "./push/KinPushPresence.ts";
 import type { KinPushSender } from "./push/KinPushSender.ts";
 import type { KinPresence } from "./reply/KinPresence.ts";
+import type { KinRecords } from "./work/KinRecords.ts";
 
 export type Services =
   | KinIdentity
@@ -43,7 +44,8 @@ export type Services =
   | KinPushDevices
   | KinPushPresence
   | KinPushSender
-  | KinPresence;
+  | KinPresence
+  | KinRecords;
 
 export class KinServer extends Context.Service<
   KinServer,

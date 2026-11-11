@@ -79,6 +79,7 @@ export * from "./kinTriggers.ts";
 export * from "./kinApprovals.ts";
 export * from "./kinLevels.ts";
 export * from "./kinMemory.ts";
+export * from "./kinWork.ts";
 export * from "./kinPush.ts";
 
 export * from "./kinRpcs.ts";

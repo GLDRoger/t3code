@@ -1,0 +1,67 @@
+import { KinChatError, KinWorkRpcs } from "@t3tools/contracts";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as RpcGroup from "effect/rpc/RpcGroup";
+import * as Stream from "effect/Stream";
+
+import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
+import { KinIdentity } from "../chat/KinIdentity.ts";
+import { KinServer } from "../KinServer.ts";
+import * as Work from "./ownerWork.ts";
+
+const group = RpcGroup.make(...KinWorkRpcs);
+const disabled = new KinChatError({
+  reason: "disabled",
+  message: "Kin is not running on this host.",
+});
+const defect = (cause: unknown) =>
+  Effect.logWarning("Kin RPC defect.", cause).pipe(
+    Effect.andThen(
+      Effect.fail(new KinChatError({ reason: "unavailable", message: "Kin is unavailable." })),
+    ),
+  );
+
+/** Thin transport: resolve the session's people, then one owner-checked Work call. */
+export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
+  session: AuthenticatedSession,
+) {
+  const kin = yield* Effect.serviceOption(KinServer);
+  const call = Effect.fn("KinWork.rpc.call")(function* <A, E, R>(
+    run: (
+      people: Effect.Success<ReturnType<KinIdentity["Service"]["resolve"]>>,
+    ) => Effect.Effect<A, E, R>,
+  ) {
+    if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* disabled;
+    const services = kin.value.services.value;
+    const people = yield* Context.get(services, KinIdentity).resolve(session);
+    return yield* run(people).pipe(Effect.provideContext(services as Context.Context<R>));
+  }, Effect.catchDefect(defect));
+  return group.of({
+    "kin.work.summary": Effect.fn("KinWork.rpc.summary")(function* (input) {
+      return yield* call((people) => Work.summary(people, input));
+    }),
+    "kin.work.list": Effect.fn("KinWork.rpc.list")(function* (input) {
+      return yield* call((people) => Work.list(people, input));
+    }),
+    "kin.work.get": Effect.fn("KinWork.rpc.get")(function* (input) {
+      return yield* call((people) => Work.get(people, input));
+    }),
+    "kin.work.subscribe": (input) =>
+      Stream.unwrap(
+        call((people) => Effect.succeed(Work.subscribe(people, input))).pipe(
+          Effect.map((stream) =>
+            Option.isNone(kin) || Option.isNone(kin.value.services)
+              ? stream
+              : stream.pipe(Stream.provideContext(kin.value.services.value as never)),
+          ),
+        ),
+      ),
+    "kin.work.create": Effect.fn("KinWork.rpc.create")(function* (input) {
+      return yield* call((people) => Work.create(people, input));
+    }),
+    "kin.work.assign": Effect.fn("KinWork.rpc.assign")(function* (input) {
+      return yield* call((people) => Work.assign(people, input));
+    }),
+  });
+});
