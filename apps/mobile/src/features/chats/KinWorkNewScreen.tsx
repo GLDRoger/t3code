@@ -38,6 +38,12 @@ import { useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
 
+/** "Friday, Fri, Nov 13"; "Today" needs no date said after it. */
+function dueChoiceLabel(choice: { readonly label: string; readonly day: string }, now: Date) {
+  const day = kinWorkDueLabel(choice.day, now);
+  return day === choice.label ? day : `${choice.label}, ${day}`;
+}
+
 /** A short form: what, who and when. Anything longer is better said to a lead in chat. */
 export function KinWorkNewScreen({ route }: StaticScreenProps<KinWorkParams>) {
   const navigation = useNavigation();
@@ -187,7 +193,7 @@ function KinWorkNewForm(target: KinWorkTarget) {
                     <Chip
                       key={choice.day}
                       label={choice.label}
-                      accessibilityLabel={`${choice.label}, ${kinWorkDueLabel(choice.day, opened)}`}
+                      accessibilityLabel={dueChoiceLabel(choice, opened)}
                       selected={draft.due === choice.day}
                       disabled={saving}
                       onPress={() => setDraft({ ...draft, due: choice.day })}

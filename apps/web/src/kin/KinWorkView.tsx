@@ -246,17 +246,17 @@ function KinWorkBody(
     list.start();
     return list.dispose;
   }, [list]);
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the list's reader the host's latest change number, so it reads again only when the rows are behind
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the list's reader the host's latest change number, and that the host is back, so it reads again only when the rows are behind
   useEffect(() => {
-    list.changed(live.seq);
-  }, [list, live.seq]);
+    if (!props.stale) list.changed(live.seq);
+  }, [list, live.seq, props.stale]);
 
   const { filter } = listState;
   const overview = kinWorkOverview(live.summary, filter, names);
   const rows = kinWorkShown(filter, listState.records).map((record) =>
     kinWorkRow(record, names, now),
   );
-  const nothing = kinWorkNothing(filter);
+  const nothing = kinWorkNothing(filter, names);
   const footer = kinWorkListFooter(filter, rows.length, listState.total, listState.more);
   return (
     // Hundreds of tasks stay cheap: only the rows in view mount.

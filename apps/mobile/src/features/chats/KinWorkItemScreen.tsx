@@ -168,7 +168,11 @@ function KinWorkItemBody(props: ItemTarget) {
   return (
     <Frame title={view.heading} onClose={close}>
       <View className="gap-3 px-2">
-        <Text textRole="headline" accessibilityRole="header" className="text-foreground">
+        <Text
+          textRole="headline"
+          accessibilityRole="header"
+          className="font-t3-bold text-foreground"
+        >
           {view.title}
         </Text>
         <View className="flex-row flex-wrap items-center gap-2">
@@ -196,8 +200,14 @@ function KinWorkItemBody(props: ItemTarget) {
           label={view.owner.name}
           detail="Has it"
         />
-        {view.due === null ? null : <ListRowLayout icon="clock" label={view.due} detail="Due" />}
-        {canGive ? (
+        {view.due === null ? null : (
+          <ListRowLayout
+            icon="clock"
+            label={view.due.charAt(0).toUpperCase() + view.due.slice(1)}
+            detail="Due"
+          />
+        )}
+        {canGive && view.assignLabel !== null ? (
           <ListActionRow
             label={view.assignLabel}
             onPress={() =>

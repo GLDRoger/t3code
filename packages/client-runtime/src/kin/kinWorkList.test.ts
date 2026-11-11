@@ -194,11 +194,17 @@ describe("createKinWorkList", () => {
     expect(h.state()).toMatchObject({ stale: false, seq: 8 });
   });
 
-  it("says so when the first read fails, and retries on demand", async () => {
+  it("says so when the first read fails, and retries on demand or when the host is heard again", async () => {
     const h = harness();
     h.list.start();
     await h.answer(null);
     expect(h.state().loading).toBe(false);
+    expect(h.state().failed).toBeInstanceOf(KinChatError);
+
+    // Reconnecting announces a number the list never got to read at.
+    h.list.changed(7);
+    expect(h.pending()).toBe(1);
+    await h.answer(null);
     expect(h.state().failed).toBeInstanceOf(KinChatError);
 
     h.list.refresh();

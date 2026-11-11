@@ -234,15 +234,17 @@ function KinWorkItem(
             <AlertDescription>{props.problem}</AlertDescription>
           </Alert>
         )}
-        {props.onGive === null ? null : (
+        {props.onGive === null && view.owner.principal._tag !== "agent" ? null : (
           <div className="flex flex-col items-start gap-2">
             <div className="flex flex-wrap gap-2">
-              <GiveMenu
-                label={view.assignLabel}
-                assignees={assignees}
-                busy={props.busy}
-                onGive={props.onGive}
-              />
+              {props.onGive === null || view.assignLabel === null ? null : (
+                <GiveMenu
+                  label={view.assignLabel}
+                  assignees={assignees}
+                  busy={props.busy}
+                  onGive={props.onGive}
+                />
+              )}
               {view.owner.principal._tag === "agent" ? (
                 <KinWorkLeadChat
                   environmentId={environmentId}
@@ -253,7 +255,9 @@ function KinWorkItem(
                 />
               ) : null}
             </div>
-            <p className="text-xs text-muted-foreground">{KIN_WORK_ASSIGN.leadsHint}</p>
+            {props.onGive === null || view.assignLabel === null ? null : (
+              <p className="text-xs text-muted-foreground">{KIN_WORK_ASSIGN.leadsHint}</p>
+            )}
           </div>
         )}
         {view.notes === null ? null : (

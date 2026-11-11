@@ -457,7 +457,10 @@ export function kinWorkListFooter(
 }
 
 /** Why a filter shows nothing, in the filter's own words, and whether to offer a new task. */
-export function kinWorkNothing(filter: KinWorkFilter): {
+export function kinWorkNothing(
+  filter: KinWorkFilter,
+  names: KinWorkNames,
+): {
   readonly title: string;
   readonly detail: string;
   readonly offerNew: boolean;
@@ -465,44 +468,46 @@ export function kinWorkNothing(filter: KinWorkFilter): {
   const text = filter.text.trim();
   if (text !== "")
     return { title: `Nothing matches “${text}”`, detail: "Try another word.", offerNew: false };
-  const theirs = filter.owner !== null;
-  const whose = theirs ? " for them" : "";
+  const who = filter.owner === null ? null : kinWorkName(filter.owner, names, "you");
+  // "Nothing is late" for everyone; "Nothing is late for Priya" for one person.
+  const title = (words: string) => (who === null ? words : `${words} for ${who}`);
   switch (filter.view) {
     case "open":
       return {
-        title: `Nothing open${whose}`,
-        detail: theirs
-          ? "Give them a task and it shows up here."
-          : "Add a task, or ask a lead in chat to keep track of something. Give one to a lead and it gets on with it.",
+        title: title("Nothing open"),
+        detail:
+          who === null
+            ? "Add a task, or ask a lead in chat to keep track of something. Give one to a lead and it gets on with it."
+            : `Tasks given to ${who} show up here.`,
         offerNew: true,
       };
     case "doing":
       return {
-        title: `Nothing in progress${whose}`,
-        detail: "Nobody has started on anything.",
+        title: title("Nothing in progress"),
+        detail: who === null ? "Nobody has started on anything." : "Nothing has been started.",
         offerNew: false,
       };
     case "waiting":
       return {
-        title: `Nothing is waiting${whose}`,
+        title: title("Nothing is waiting"),
         detail: "No one is blocked on anyone.",
         offerNew: false,
       };
     case "late":
       return {
-        title: `Nothing is late${whose}`,
+        title: title("Nothing is late"),
         detail: "Everything with a date is on time.",
         offerNew: false,
       };
     case "week":
       return {
-        title: `Nothing due this week${whose}`,
+        title: title("Nothing due this week"),
         detail: "The next seven days are clear.",
         offerNew: false,
       };
     case "closed":
       return {
-        title: `Nothing closed yet${whose}`,
+        title: title("Nothing closed yet"),
         detail: "Finished work shows up here.",
         offerNew: false,
       };
@@ -556,7 +561,8 @@ export interface KinWorkItemView {
   readonly history: ReadonlyArray<KinWorkHistoryLine>;
   /** Shown under the history when the host cut it short. */
   readonly historyNote: string | null;
-  readonly assignLabel: string;
+  /** Null once the task is done or dropped: there is nothing left to hand on. */
+  readonly assignLabel: string | null;
 }
 
 const CATEGORY_LABEL = { task: null, issue: "Issue", obligation: "Commitment" } as const;
@@ -749,7 +755,7 @@ export function kinWorkItemView(
       text: changeText(change, names, now),
     })),
     historyNote: item.changes.length >= changesCap ? "Earlier history isn't shown." : null,
-    assignLabel: "Give to someone else",
+    assignLabel: closed(item.state) ? null : "Give to someone else",
   };
 }
 
