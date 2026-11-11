@@ -647,12 +647,21 @@ describe("KinEventQueue", () => {
         yield* queue.enqueue(yield* event("unstored", "chat.message"));
         // The turn already runs at the teammate's level: neither message lowers it.
         assert.deepStrictEqual(ids(yield* queue.steer(turn)), ["owner-adds", "teammate-again"]);
+        // Once the lead called kin_end it has answered; a later message waits for its own turn.
+        yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash)
+          VALUES ('a', 'shared', 'end', 'hash')`;
+        yield* queue.enqueue(yield* says("after-end", "person-lead-a"));
+        assert.deepStrictEqual(yield* queue.steer(turn), []);
+        yield* sql`DELETE FROM kin_lead_tool_calls WHERE wakeup_id = 'shared'`;
         yield* sql`UPDATE kin_wakeups SET aborted_at = 1 WHERE wakeup_id = 'shared'`;
         yield* queue.enqueue(yield* says("after-join", "person-lead-a"));
         assert.deepStrictEqual(yield* queue.steer(turn), []);
         assert.deepStrictEqual(
           yield* sql`SELECT event_id, state FROM kin_events WHERE state = 'queued' ORDER BY event_id`,
-          ["after-join", "relayed", "unstored"].map((id) => ({ event_id: id, state: "queued" })),
+          ["after-end", "after-join", "relayed", "unstored"].map((id) => ({
+            event_id: id,
+            state: "queued",
+          })),
         );
       }).pipe(Effect.provide(layer)),
   );

@@ -541,6 +541,9 @@ const make = Effect.gen(function* () {
             WHERE w.org_id = ${input.orgId} AND w.agent_id = ${input.agentId}
               AND w.wakeup_id = ${input.wakeupId} AND w.status = 'running' AND w.run_id IS NOT NULL
               AND w.aborted_at IS NULL
+              -- A lead that called kin_end has answered: what comes next gets a wake-up of its own.
+              AND NOT EXISTS (SELECT 1 FROM kin_lead_tool_calls t WHERE t.org_id = w.org_id
+                AND t.wakeup_id = w.wakeup_id AND t.call_key = 'end')
           ), lane AS (
             SELECT ${laneOf} AS chat_id FROM wakeup w
             JOIN kin_events e ON e.org_id = w.org_id AND e.agent_id = w.agent_id AND e.wakeup_id = w.wakeup_id
