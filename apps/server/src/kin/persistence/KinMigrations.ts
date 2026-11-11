@@ -15,7 +15,8 @@ import MemorySharing from "./migrations/K053_MemorySharing.ts";
 import SharedProjection from "./migrations/K054_SharedProjection.ts";
 import ChatGrantsLapse from "./migrations/K055_ChatGrantsLapse.ts";
 import SuggestionsByVersion from "./migrations/K056_SuggestionsByVersion.ts";
-import Work from "./migrations/K057_Work.ts";
+import Schedules from "./migrations/K057_Schedules.ts";
+import Work from "./migrations/K058_Work.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -111,7 +112,8 @@ const loader = Migrator.fromRecord({
   "54_SharedProjection": SharedProjection,
   "55_ChatGrantsLapse": ChatGrantsLapse,
   "56_SuggestionsByVersion": SuggestionsByVersion,
-  "57_Work": Work,
+  "57_Schedules": Schedules,
+  "58_Work": Work,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

@@ -246,3 +246,28 @@ it.effect("passes scheduledTaskId to sendToThread for bound tasks", () =>
     }),
   ).pipe(Effect.provide(Sqlite.layerMemory)),
 );
+
+it.effect("names a Kin schedule's task and its time runs from Kin's command id", () =>
+  withScheduledTasks(({ service, launches }) =>
+    Effect.gen(function* () {
+      const { id: _id, ...input } = yield* webhookInput({
+        commandId: "kin:schedule:org-contract:sch-contract",
+        prompt: "Check the invented report",
+        schedule: { type: "fixed_time", timeOfDay: "09:00", weekdays: [1, 5] },
+      });
+      const { task } = yield* service.upsert(input);
+      // The sink and kin_schedules key a schedule by this id; its runs by the command id below.
+      assert.equal(task.id, "scheduled-task:kin:schedule:org-contract:sch-contract");
+      yield* service.runNow({ id: task.id });
+      const launch = yield* Queue.take(launches);
+      assert.match(launch.commandId, new RegExp(`^scheduled-task:${task.id}:\\d+:manual$`));
+      assert.equal(launch.initialMessage?.scheduledTaskId, task.id);
+      assert.equal(launch.initialMessage?.text, "Check the invented report");
+      assert.equal(launch.projectId, "project-contract");
+      const sql = yield* SqlClient.SqlClient;
+      const [row] = yield* sql<{ prompt: string }>`SELECT prompt FROM scheduled_tasks
+        WHERE task_id = ${task.id}`;
+      assert.equal(row?.prompt, "Check the invented report");
+    }),
+  ).pipe(Effect.provide(Sqlite.layerMemory)),
+);

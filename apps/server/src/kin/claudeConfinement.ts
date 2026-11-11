@@ -50,6 +50,35 @@ const callTargets = (tool: string, input: unknown) => {
   return undefined;
 };
 
+/**
+ * Client-side git hooks, from githooks(5). A relative `core.hooksPath` resolves inside a checkout,
+ * so an edited tracked hook there runs the next time this server's git touches it.
+ */
+const gitHooks = new Set([
+  "applypatch-msg",
+  "pre-applypatch",
+  "post-applypatch",
+  "pre-commit",
+  "pre-merge-commit",
+  "prepare-commit-msg",
+  "commit-msg",
+  "post-commit",
+  "pre-rebase",
+  "post-checkout",
+  "post-merge",
+  "pre-push",
+  "reference-transaction",
+  "pre-auto-gc",
+  "post-rewrite",
+  "sendemail-validate",
+  "fsmonitor-watchman",
+  "p4-changelist",
+  "p4-prepare-changelist",
+  "p4-post-changelist",
+  "p4-pre-submit",
+  "post-index-change",
+]);
+
 const safeText = (text: string) =>
   text.length <= pathLimit && !unsafeCharacters.test(text) && !text.includes("://");
 
@@ -139,6 +168,7 @@ export const permits = Effect.fn("KinClaudeConfinement.permits")(function* (
   for (const raw of targets.paths) {
     if (!safeText(raw) || raw.startsWith("~") || /^file:/i.test(raw)) return false;
     if (raw.split("/").includes("..")) return false;
+    if (tool !== "Read" && gitHooks.has(path.basename(raw).toLowerCase())) return false;
     const lexical = path.resolve(root, raw);
     const real = yield* realTarget(lexical);
     if (real === undefined) return false;
