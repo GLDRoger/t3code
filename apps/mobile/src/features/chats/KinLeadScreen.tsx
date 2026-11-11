@@ -20,6 +20,12 @@ import {
   kinLeadModelName,
   kinLeadTrackingDetail,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import {
+  KIN_RETIRE_ACTION,
+  kinAgentGroups,
+  kinRestoreCopy,
+  kinRetireOffer,
+} from "@t3tools/client-runtime/kin/kinAgentRetire";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
 import {
   KIN_CLEAR_CHAT_ACTION,
@@ -53,6 +59,7 @@ import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { KinAvatar } from "./components/KinAvatar";
 import { kinClient } from "./state/kinClient";
+import { kinRetiredWhenNow, useKinAgentRetire } from "./state/useKinAgentRetire";
 import { useKinHostAt } from "./state/useKinHost";
 
 export type KinLeadParams = {
@@ -111,17 +118,27 @@ function KinLeadBody(props: {
 }) {
   const navigation = useNavigation();
   const { environmentId, orgId, agentId } = props;
-  const atom = kinClient.leads({ environmentId, input: { orgId } });
+  // The owner's list keeps their retired agents, so one still has details and a way back.
+  const canRestore = useAtomValue(kinClient.leadRestore.permissionAtom(environmentId));
+  const canRetire = useAtomValue(kinClient.leadRetire.permissionAtom(environmentId));
+  const atom = canRestore
+    ? kinClient.agents({ environmentId, orgId })
+    : kinClient.leads({ environmentId, input: { orgId } });
   const result = useAtomValue(atom);
-  const canEdit = useAtomValue(kinClient.leadUpdate.permissionAtom(environmentId));
+  const retire = useKinAgentRetire(environmentId);
   const providers = useAtomValue(serverEnvironment.providersValueAtom(environmentId));
-  const lead = AsyncResult.isSuccess(result)
-    ? (result.value.leads.find((held) => held.agentId === agentId) ?? null)
-    : null;
+  // What was last read stays up while a change is read again.
+  const held = Option.getOrNull(AsyncResult.value(result));
+  const lead = held?.leads.find((entry) => entry.agentId === agentId) ?? null;
+  const isRetired = lead?.retired !== undefined;
+  // A retired agent takes no changes; it is restored first.
+  const canEdit = useAtomValue(kinClient.leadUpdate.permissionAtom(environmentId)) && !isRetired;
+  const retireOffer =
+    lead === null || held === null
+      ? null
+      : kinRetireOffer(lead, kinAgentGroups(held.leads).active.length);
   const contact =
-    AsyncResult.isSuccess(result) && lead === null
-      ? (result.value.contacts?.find((held) => held.agentId === agentId) ?? null)
-      : null;
+    lead === null ? (held?.contacts?.find((entry) => entry.agentId === agentId) ?? null) : null;
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
@@ -151,7 +168,22 @@ function KinLeadBody(props: {
               <KinLeadProfileView
                 lead={lead}
                 modelName={kinLeadModelName(lead.model, providers)}
-                access={<KinLeadAccess environmentId={environmentId} lead={lead} />}
+                access={
+                  isRetired ? (
+                    canRestore ? (
+                      <ListSection footer={kinRestoreCopy(lead.name).detail}>
+                        <ListActionRow
+                          label="Restore agent"
+                          icon="arrow.uturn.backward"
+                          loading={retire.busy === lead.agentId}
+                          onPress={() => retire.restore(lead)}
+                        />
+                      </ListSection>
+                    ) : null
+                  ) : (
+                    <KinLeadAccess environmentId={environmentId} lead={lead} />
+                  )
+                }
               />
               <KinLeadNotifications
                 environmentId={environmentId}
@@ -164,6 +196,21 @@ function KinLeadBody(props: {
                 chatId={lead.ownerChatId}
                 remembers={lead.name}
               />
+              {!canRetire || isRetired || retireOffer === null ? null : retireOffer.offered ? (
+                <ListSection>
+                  <ListActionRow
+                    label={KIN_RETIRE_ACTION}
+                    icon="archivebox"
+                    tone="danger"
+                    loading={retire.busy === lead.agentId}
+                    onPress={() => retire.retire(lead)}
+                  />
+                </ListSection>
+              ) : (
+                <Text textRole="footnote" className="px-4 text-foreground-muted">
+                  {retireOffer.why}
+                </Text>
+              )}
             </>
           ) : contact !== null ? (
             <>
@@ -180,7 +227,7 @@ function KinLeadBody(props: {
                 remembers={null}
               />
             </>
-          ) : AsyncResult.isInitial(result) ? (
+          ) : held === null && !AsyncResult.isFailure(result) ? (
             <View
               className="items-center py-12"
               accessible
@@ -189,7 +236,7 @@ function KinLeadBody(props: {
             >
               <AppActivityIndicator />
             </View>
-          ) : AsyncResult.isFailure(result) ? (
+          ) : held === null ? (
             <EmptyState
               variant="plain"
               title="Couldn't load this agent"
@@ -470,9 +517,10 @@ export function KinLeadProfileView({
   const charter = lead.charter.trim();
   const area = kinDomainLabel(lead.domain);
   // A lead named after its area would say the same word twice.
+  const retired = lead.retired;
   const detail = kinSentenceParts([
     area.toLowerCase() === lead.name.trim().toLowerCase() ? null : area,
-    lead.working ? "Working now" : null,
+    retired !== undefined ? kinRetiredWhenNow(retired.at) : lead.working ? "Working now" : null,
   ]);
   return (
     <>
@@ -503,11 +551,16 @@ export function KinLeadProfileView({
         </View>
       </ListSection>
       {access}
-      <ListSection title="In hand" footer={`Thinks with ${modelName}.`}>
+      <ListSection
+        title={retired === undefined ? "In hand" : "On hold"}
+        footer={`Thinks with ${modelName}.`}
+      >
         {lead.tracking.length === 0 ? (
           <View className="px-4 py-3">
             <Text textRole="body" className="text-foreground-muted">
-              Nothing right now. Reminders, follow-ups and work it starts show up here.
+              {retired === undefined
+                ? "Nothing right now. Reminders, follow-ups and work it starts show up here."
+                : "Nothing is waiting on it."}
             </Text>
           </View>
         ) : (

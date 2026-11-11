@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 
 import { isCheckoutPath, isItemPath } from "../memory/checkoutPaths.ts";
 import { parseFrontMatter } from "../memory/frontMatter.ts";
+import { QUOTE_MISSING, quoteRefusal } from "../memory/keeping.ts";
 import { kinShapeFailure } from "../memory/lint.ts";
 import type { MaterialEntry } from "./material.ts";
 
@@ -115,13 +116,31 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
       previous.value.frontMatter.trust === fm.trust &&
       previous.value.frontMatter.said_by === fm.said_by &&
       previous.value.frontMatter.source === fm.source;
-    if (kept) continue;
+    if (kept) {
+      if (earlier?.quote !== fm.quote) failures.push(`${path} changes its quote`);
+      continue;
+    }
     const author = material.get(fm.source);
     if (author === undefined) failures.push(`${path} source ${fm.source} is not in the material`);
     else if (author.trust !== fm.trust || author.saidBy !== fm.said_by)
       failures.push(
         `${path} claims ${fm.trust} from ${fm.said_by}; the source was ${author.trust} from ${author.saidBy}`,
       );
+    // As for a lead's write: what a person said holds their words from that message, and an
+    // item folded from another carries that item's quote over, never a new one.
+    if (author !== undefined && fm.kind !== "deferral") {
+      const refusal =
+        author.kind === "item"
+          ? author.quote === fm.quote
+            ? undefined
+            : `must keep the quote of ${fm.source} as it is`
+          : fm.quote !== undefined
+            ? quoteRefusal(fm.quote, author.text)
+            : author.kind === "chat" && author.trust !== "agent"
+              ? QUOTE_MISSING
+              : undefined;
+      if (refusal !== undefined) failures.push(`${path} quote: ${refusal}`);
+    }
   }
 
   if (report !== undefined) {

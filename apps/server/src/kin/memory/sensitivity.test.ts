@@ -159,6 +159,7 @@ it("a shared turn is given a fixed projection, and every head field is accounted
     links: ["Invented link"],
     owner: "Invented private owner note",
     source: "kin:chat:private-chat:message:private-message",
+    quote: "Invented private words from the owner's chat",
     path: "claims/full.md",
     shared_from: {
       person: KinPersonId.make("fixture-teammate"),

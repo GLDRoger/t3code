@@ -8,7 +8,7 @@ import {
 } from "./auth.ts";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinAgentId, KinChatError, KinOrgId, KinWidgetId } from "./kinChat.ts";
-import { KinMemoryItemId, MemoryItemKind } from "./kinLead.ts";
+import { KinMemoryItemId, MemoryItemKind, MemoryTrust } from "./kinLead.ts";
 
 /** The widget `type` of the memory change cards earlier versions posted after a wake-up. */
 export const KIN_MEMORY_CHANGES_CARD = "memory_changes";
@@ -76,6 +76,19 @@ export const KinMemoryListItem = Schema.Struct({
   preview: Schema.optional(Schema.String),
   visibility: KinMemoryVisibility,
   from: Schema.NullOr(Schema.Struct({ name: Schema.String, chatName: Schema.String })),
+  /**
+   * Where it came from. `trust` agent is the lead's own inference. `saidAt` and `quote` are null
+   * when no message is cited or the owner can no longer read it.
+   */
+  provenance: Schema.optional(
+    Schema.Struct({
+      saidBy: Schema.String,
+      trust: MemoryTrust,
+      recordedAt: Schema.String,
+      saidAt: Schema.NullOr(Schema.String),
+      quote: Schema.NullOr(Schema.String),
+    }),
+  ),
   /** Marks the words listed. Pass it back so a choice applies only if the item still reads so. */
   version: Schema.optional(Schema.String),
 });

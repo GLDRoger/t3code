@@ -259,9 +259,18 @@ const leads = createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
   staleTimeMs: 15_000,
   refreshTrigger: sessionGeneration,
 });
+/** The same list with the owner's retired agents after the live ones. Only the owner asks. */
+const withRetired = (orgId: KinOrgId): KinLeadsListInput => ({ orgId, includeRetired: true });
+
+/** Both lead lists are read again: the one pickers use, and the owner's with retired agents. */
+const refreshLeads = (environmentId: EnvironmentId, orgId: KinOrgId) => {
+  appAtomRegistry.refresh(leads({ environmentId, input: { orgId } }));
+  appAtomRegistry.refresh(leads({ environmentId, input: withRetired(orgId) }));
+};
+
 /** Being let message a lead, or losing that, changes what `kin.leads.list` answers. */
 const rereadLeadsOnChange = onKinDirectChatsChange((environmentId, orgIds) => {
-  for (const orgId of orgIds) appAtomRegistry.refresh(leads({ environmentId, input: { orgId } }));
+  for (const orgId of orgIds) refreshLeads(environmentId, orgId);
 });
 
 export const kinClient = {
@@ -331,6 +340,20 @@ export const kinClient = {
   leadUpdate: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:lead:update",
     tag: "kin.lead.update",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.agentId },
+  }),
+  /** The owner's agents with the retired ones last. Read only where `leadRetire` is permitted. */
+  agents: (target: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId }) =>
+    leads({ environmentId: target.environmentId, input: withRetired(target.orgId) }),
+  /** Stops the agent's work and holds its timers; its chats, memory and tasks stay. */
+  leadRetire: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:lead:retire",
+    tag: "kin.lead.retire",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.agentId },
+  }),
+  leadRestore: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:lead:restore",
+    tag: "kin.lead.restore",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.agentId },
   }),
   /** Who besides the owner may message one of the owner's leads. */
@@ -653,3 +676,9 @@ export const kinClient = {
     idleTtlMs: 0,
   }),
 };
+
+/** After an agent is retired, restored or renamed: who is retired, and both lists of agents. */
+export function refreshKinAgents(environmentId: EnvironmentId, orgId: KinOrgId) {
+  appAtomRegistry.refresh(kinClient.orgs({ environmentId, input: {} }));
+  refreshLeads(environmentId, orgId);
+}

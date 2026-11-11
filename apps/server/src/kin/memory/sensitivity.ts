@@ -43,6 +43,7 @@ export const NEVER_SHARED_FIELDS = [
   "source",
   "said_by",
   "trust",
+  "quote",
   "sensitive",
   "shared_by",
 ] as const satisfies ReadonlyArray<keyof MemoryItemHead>;

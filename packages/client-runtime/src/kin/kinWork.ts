@@ -28,6 +28,7 @@ import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
+import { kinRetiredAgentIds } from "./kinAgentRetire.ts";
 import { kinLinkToOpen } from "./kinChatFeed.ts";
 import { formatKinTime, kinAgentAvatar, type KinAvatarView } from "./kinScreenState.ts";
 import type { KinWorkLive } from "./kinWorkStream.ts";
@@ -64,6 +65,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export interface KinWorkNames {
   readonly people: ReadonlyMap<string, string>;
   readonly agents: ReadonlyMap<string, string>;
+  /** Agents the host marks retired: named as before, with nothing running. Absent reads as none. */
+  readonly retired?: ReadonlySet<string>;
   readonly me: KinPersonId | null;
   /** The owner's time zone, where an all-day due date is a calendar day. Null until read. */
   readonly zone: string | null;
@@ -79,6 +82,7 @@ export function kinWorkNames(input: {
   return {
     people: new Map((input.people ?? []).map((person) => [person.personId, person.displayName])),
     agents: new Map((org?.agents ?? []).map((agent) => [agent.agentId, agent.displayName])),
+    retired: kinRetiredAgentIds(input.orgs, input.orgId),
     me: input.orgs?.me.find((me) => me.orgId === input.orgId)?.personId ?? null,
     zone: input.zone,
   };
@@ -98,6 +102,10 @@ export function kinWorkName(who: KinWorkPrincipal, names: KinWorkNames, you = "Y
   if (who._tag === "agent") return names.agents.get(who.agentId) ?? "An agent";
   return isMe(who, names) ? you : (names.people.get(who.personId) ?? "A teammate");
 }
+
+/** The task's holder is an agent its owner retired, so nobody is doing it. */
+const kinWorkRetired = (who: KinWorkPrincipal, names: KinWorkNames): boolean =>
+  who._tag === "agent" && names.retired?.has(who.agentId) === true;
 
 const kinWorkAvatar = (who: KinWorkPrincipal): KinAvatarView =>
   who._tag === "agent"
@@ -459,6 +467,8 @@ export interface KinWorkRowView {
   readonly tick: "done" | "reopen" | null;
   /** A lead has something running on it right now. */
   readonly working: boolean;
+  /** Its holder is a retired agent: the name still shows, with a quiet mark. */
+  readonly ownerRetired: boolean;
   /** The client it is for, or its project with no client; null in a list of only theirs. */
   readonly about: string | null;
   /** "W-12 · Acme · Tech lead · In progress · Due Fri 14 Nov". */
@@ -490,10 +500,11 @@ export function kinWorkRow(
   const status = record.working ? "Working on it now" : statusText(record, names);
   const day = kinWorkClosed(record.state) ? null : kinWorkDueText(record, names, now);
   const due = day === null ? null : `Due ${day}`;
+  const ownerRetired = kinWorkRetired(record.owner, names);
   const parts = [
     record.key,
     about,
-    owner,
+    ownerRetired ? `${owner} (retired)` : owner,
     record.side === "theirs" && !kinWorkClosed(record.state) && within?.sided !== true
       ? "They owe this"
       : null,
@@ -519,6 +530,7 @@ export function kinWorkRow(
           ? "reopen"
           : "done",
     working: record.working,
+    ownerRetired,
     about,
     line: parts.join(" · "),
     accessibilityLabel: [record.title, ...parts.slice(1), record.late ? "Late" : null]
@@ -652,6 +664,8 @@ export interface KinWorkItemView {
     readonly name: string;
     readonly avatar: KinAvatarView;
     readonly lead: boolean;
+    /** A retired agent has it: said quietly beside the name. */
+    readonly retired: boolean;
   };
   /** "Fri 14 Nov"; null with no date. */
   readonly due: string | null;
@@ -973,6 +987,7 @@ export function kinWorkItemView(
       name: ownerName,
       avatar: row.ownerAvatar,
       lead: item.owner._tag === "agent",
+      retired: row.ownerRetired,
     },
     due: kinWorkDueText(item, names, now),
     given,
@@ -1002,9 +1017,13 @@ export function kinWorkItemView(
     takeBack: !isClosed && !isMe(item.owner, names),
     leadNote: !lead
       ? null
-      : isClosed
-        ? `Reopening gives it back to ${ownerName} to do.`
-        : `${ownerName} ${item.working ? "is working on this now" : "has this"}. Marking it done, dropping it or taking it back tells ${ownerName} to stop.`,
+      : row.ownerRetired
+        ? isClosed
+          ? `${ownerName} is retired, so reopening leaves this with nobody working on it. Give it to someone else, or restore ${ownerName}.`
+          : `${ownerName} is retired, so nobody is working on this. Give it to someone else, or restore ${ownerName}.`
+        : isClosed
+          ? `Reopening gives it back to ${ownerName} to do.`
+          : `${ownerName} ${item.working ? "is working on this now" : "has this"}. Marking it done, dropping it or taking it back tells ${ownerName} to stop.`,
     dueDay: kinWorkAllDay(item.dueAt, item.dueAllDay, names),
     waitingOn: item.state === "waiting" ? item.waitingOn : null,
     party: item.party === undefined ? null : { key: item.party.key, title: item.party.title },

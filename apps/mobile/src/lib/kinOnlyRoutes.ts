@@ -10,8 +10,6 @@ export const KIN_ONLY_SHARED_ROUTES = [
   "Settings",
   "SettingsAppearance",
   "SettingsAbout",
-  "SettingsClientStorage",
-  "SettingsDiagnostics",
   "SettingsOpenSourceLicenses",
   "SettingsOpenSourceLicense",
   "SettingsLegal",
@@ -72,21 +70,4 @@ export function kinOnlyLinkState(
  */
 export function isHomeLinkState(state: LinkState | undefined): boolean {
   return state?.routes.length === 1 && state.routes[0]?.name === "Home";
-}
-
-/**
- * The address a coding thread has in the web app of the computer this phone is paired with, or
- * null when that computer has no address a browser can open (a relay or tunnel connection).
- */
-export function kinThreadWebUrl(
-  hostAddress: string | null,
-  thread: { readonly environmentId: string; readonly threadId: string },
-): string | null {
-  if (hostAddress === null || !URL.canParse(hostAddress)) return null;
-  const base = new URL(hostAddress);
-  if (base.protocol !== "http:" && base.protocol !== "https:") return null;
-  return new URL(
-    `/threads/${encodeURIComponent(thread.environmentId)}/${encodeURIComponent(thread.threadId)}`,
-    base,
-  ).toString();
 }
