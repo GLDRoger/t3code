@@ -70,6 +70,8 @@ import {
   FolderPlusIcon,
   MessageSquareDashedIcon,
   LinkIcon,
+  ContactRoundIcon,
+  FolderKanbanIcon,
   ListChecksIcon,
   MessageSquareIcon,
   PaletteIcon,
@@ -1723,6 +1725,40 @@ function OpenCommandPaletteDialog(props: {
         });
       },
     });
+  }
+
+  // A host from before clients and projects answers these with a plain note, not an error.
+  if (kinNewLead !== null && canOpenKinWork) {
+    actionItems.push(
+      {
+        kind: "action",
+        value: "action:kin-clients",
+        searchTerms: ["kin", "clients", "vendors", "crm", "contacts", "owe", "obligations"],
+        title: "Clients: what you owe them and what they owe you",
+        icon: <ContactRoundIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          await navigate({
+            to: "/kin/$environmentId/$orgId/work",
+            params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
+            search: { show: "clients" },
+          });
+        },
+      },
+      {
+        kind: "action",
+        value: "action:kin-projects",
+        searchTerms: ["kin", "projects", "status", "health", "blocked", "at risk", "late"],
+        title: "Projects: how each one is going",
+        icon: <FolderKanbanIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          await navigate({
+            to: "/kin/$environmentId/$orgId/work",
+            params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
+            search: { show: "projects" },
+          });
+        },
+      },
+    );
   }
 
   if (kinNewLead !== null && canOpenKinMemory) {

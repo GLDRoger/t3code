@@ -16,8 +16,11 @@ import {
   kinWorkOverview,
   kinWorkRow,
   kinWorkShown,
+  KIN_WORK_DEFAULT_FILTER,
+  kinWorkHostClients,
   type KinWorkFilter,
   type KinWorkOverview,
+  type KinWorkRef,
   type KinWorkRowView,
 } from "@t3tools/client-runtime/kin/kinWork";
 import {
@@ -27,17 +30,23 @@ import {
   type KinWorkAction,
 } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
+  KIN_CLIENTS,
+  KIN_CLIENTS_OLDER_HOST,
+  KIN_PROJECTS,
+  type KinWorkArea,
+} from "@t3tools/client-runtime/kin/kinWorkClients";
+import {
   KIN_WORK_LIST_INITIAL,
   createKinWorkList,
   type KinWorkListState,
 } from "@t3tools/client-runtime/kin/kinWorkList";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
-import { EnvironmentId, KinOrgId, type KinRecordKey } from "@t3tools/contracts";
+import { EnvironmentId, KinOrgId, KinRecordKey } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 import { useEffect, useState } from "react";
-import { Pressable, ScrollView, View } from "react-native";
+import { ScrollView, View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { AppBar } from "../../components/ui/AppBar";
@@ -45,29 +54,51 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { Chip } from "../../components/ui/Chip";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { Menu } from "../../components/ui/Menu";
 import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
-import { cn } from "../../lib/cn";
 import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { KinListBanner } from "./components/KinListBanner";
-import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
+import { KinWorkAreaSwitch, KinWorkTaskRow, type KinWorkAreas } from "./components/KinWorkPieces";
+import { KinClientsList, KinProjectsList } from "./KinWorkLists";
 import { kinClient } from "./state/kinClient";
 import {
   kinWorkLiveAtom,
   useKinWork,
   useKinWorkChanges,
+  useKinWorkChoices,
   useKinWorkDirectory,
+  type KinWorkChoices,
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./state/useKinWork";
 
-export type KinWorkParams = { readonly environmentId: string; readonly orgId: string };
+export type KinWorkParams = {
+  readonly environmentId: string;
+  readonly orgId: string;
+  /** Which part of Work opens: `clients` or `projects`; tasks otherwise. */
+  readonly show?: string;
+  /** The client the tasks start narrowed to, or a new task starts under. */
+  readonly party?: string;
+  readonly partyName?: string;
+  readonly project?: string;
+  readonly projectName?: string;
+  /** `theirs` when a new task is something the client owes. */
+  readonly side?: string;
+};
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
+const decodeKey = Schema.decodeUnknownOption(KinRecordKey);
+
+/** A client or project named in a link: its handle, and the name to show until it is read. */
+export function kinWorkRefParam(key: string | undefined, title: string | undefined) {
+  const held = Option.getOrNull(decodeKey(key));
+  return held === null ? null : { key: held, title: title ?? held };
+}
 
 /** The way in from the chat list, for the owner only. Its second line says what needs a look. */
 export function KinWorkEntry(target: KinWorkTarget) {
@@ -115,7 +146,19 @@ export function KinWorkScreen({ route }: StaticScreenProps<KinWorkParams>) {
       </KinWorkMessage>
     );
   }
-  return <KinWorkStates environmentId={environmentId} orgId={orgId} />;
+  const start =
+    route.params.show === "clients" || route.params.show === "projects"
+      ? route.params.show
+      : "tasks";
+  return (
+    <KinWorkStates
+      environmentId={environmentId}
+      orgId={orgId}
+      start={start}
+      party={kinWorkRefParam(route.params.party, route.params.partyName)}
+      project={kinWorkRefParam(route.params.project, route.params.projectName)}
+    />
+  );
 }
 
 /** Every state that isn't the list, inside the scroll view that clears the floating bar. */
@@ -137,11 +180,48 @@ function KinWorkMessage(props: { readonly children: React.ReactNode }) {
   );
 }
 
-function KinWorkStates(target: KinWorkTarget) {
+function KinWorkStates(
+  props: KinWorkTarget & {
+    readonly start: KinWorkArea;
+    readonly party: KinWorkRef | null;
+    readonly project: KinWorkRef | null;
+  },
+) {
+  const navigation = useNavigation();
+  const target = { environmentId: props.environmentId, orgId: props.orgId };
   const state = useKinWork(target);
-  const directory = useKinWorkDirectory(target, state._tag === "ready");
+  const ready = state._tag === "ready";
+  const hostClients = kinWorkHostClients(ready ? state.live.summary : null);
+  const directory = useKinWorkDirectory(target, ready);
+  const choices = useKinWorkChoices(target, ready && hostClients);
+  const [area, setArea] = useState(props.start);
   if (state._tag === "ready") {
-    return <KinWorkBody {...target} live={state.live} stale={state.stale} directory={directory} />;
+    const shared = { ...target, live: state.live, stale: state.stale, directory };
+    // An older server has tasks only: no switch, and a link to clients says why.
+    const areas = hostClients ? { area, onArea: setArea } : null;
+    if (area !== "tasks" && !hostClients) {
+      return (
+        <KinWorkMessage>
+          <EmptyState
+            variant="plain"
+            {...KIN_CLIENTS_OLDER_HOST}
+            action={<Button tone="secondary" label="Open tasks" onPress={() => setArea("tasks")} />}
+          />
+        </KinWorkMessage>
+      );
+    }
+    if (area === "clients" && areas !== null) return <KinClientsList {...shared} areas={areas} />;
+    if (area === "projects" && areas !== null) return <KinProjectsList {...shared} areas={areas} />;
+    return (
+      <KinWorkTaskList
+        {...shared}
+        title={KIN_WORK_TITLE}
+        onBack={() => navigation.goBack()}
+        areas={areas}
+        choices={hostClients ? choices : null}
+        initial={{ ...KIN_WORK_DEFAULT_FILTER, party: props.party, project: props.project }}
+      />
+    );
   }
   return (
     <KinWorkMessage>
@@ -176,11 +256,23 @@ function KinWorkStates(target: KinWorkTarget) {
   );
 }
 
-function KinWorkBody(
+/** Tasks, a screenful at a time: all of them, or the ones under one project. */
+export function KinWorkTaskList(
   props: KinWorkTarget & {
     readonly live: KinWorkLive;
     readonly stale: boolean;
     readonly directory: KinWorkDirectory;
+    readonly title: string;
+    readonly onBack: () => void;
+    readonly areas: KinWorkAreas | null;
+    /** What the list can be narrowed to; null on an older server, or inside a project. */
+    readonly choices: KinWorkChoices | null;
+    readonly initial: KinWorkFilter;
+    /** A project's page: its summary heads the list, which stays narrowed to it. */
+    readonly within?: {
+      readonly header: React.ReactNode;
+      readonly bar: Pick<React.ComponentProps<typeof AppBar>, "actions" | "menus">;
+    };
   },
 ) {
   const navigation = useNavigation();
@@ -191,10 +283,14 @@ function KinWorkBody(
   const hostEdits = kinWorkHostEdits(live.summary);
   const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId)) && hostEdits;
   const now = new Date(useNowMinuteMs());
-  const [listState, setListState] = useState<KinWorkListState>(KIN_WORK_LIST_INITIAL);
+  const [listState, setListState] = useState<KinWorkListState>(() => ({
+    ...KIN_WORK_LIST_INITIAL,
+    filter: props.initial,
+  }));
   const [list] = useState(() =>
     createKinWorkList({
       orgId,
+      initial: props.initial,
       read: (input) => kinClient.workList.run(appAtomRegistry, { environmentId, input }),
       onChange: setListState,
       now: Date.now,
@@ -226,7 +322,7 @@ function KinWorkBody(
   const records = kinWorkShown(filter, listState.records, hostEdits).map((record) =>
     kinWorkApplied(record, changed),
   );
-  const rows = records.map((record) => kinWorkRow(record, names, now));
+  const rows = records.map((record) => kinWorkRow(record, names, now, filter));
   const act = (key: KinRecordKey, action: KinWorkAction) => {
     const record = records.find((held) => held.key === key);
     if (record !== undefined) void changes.run(record, action, names);
@@ -234,16 +330,33 @@ function KinWorkBody(
   const notice = kinWorkListNotice(changed, null);
   const nothing = kinWorkNothing(filter, names);
   const footer = kinWorkListFooter(filter, rows.length, listState.total, listState.more, hostEdits);
-  const add = canAdd ? () => navigation.navigate("KinWorkNew", { environmentId, orgId }) : null;
+  const add = canAdd
+    ? () =>
+        navigation.navigate("KinWorkNew", {
+          environmentId,
+          orgId,
+          ...(filter.party === null
+            ? {}
+            : { party: filter.party.key, partyName: filter.party.title }),
+          ...(filter.project === null
+            ? {}
+            : { project: filter.project.key, projectName: filter.project.title }),
+        })
+    : null;
+  const { within } = props;
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
-        title={KIN_WORK_TITLE}
-        onBack={() => navigation.goBack()}
+        title={props.title}
+        onBack={props.onBack}
         refresh={{ accessibilityLabel: "Refresh", onPress: list.refresh }}
-        {...(add === null
-          ? {}
-          : { actions: [{ accessibilityLabel: KIN_WORK_NEW, icon: "plus", onPress: add }] })}
+        actions={[
+          ...(add === null
+            ? []
+            : [{ accessibilityLabel: KIN_WORK_NEW, icon: "plus" as const, onPress: add }]),
+          ...(within?.bar.actions ?? []),
+        ]}
+        {...(within?.bar.menus === undefined ? {} : { menus: within.bar.menus })}
         search={{
           value: filter.text,
           onChangeText: (text) => list.setFilter({ ...filter, text }),
@@ -271,6 +384,8 @@ function KinWorkBody(
           onEndReachedThreshold={0.5}
           ListHeaderComponent={
             <View className="gap-3 pb-1 pt-2">
+              {props.areas === null ? null : <KinWorkAreaSwitch {...props.areas} />}
+              {within?.header}
               {props.stale || listState.stale ? (
                 <View className="px-4">
                   <Notice message={KIN_WORK_STALE} />
@@ -279,6 +394,8 @@ function KinWorkBody(
               <KinWorkFilters
                 overview={overview}
                 filter={filter}
+                everyone={within === undefined}
+                choices={within === undefined ? props.choices : null}
                 onChange={(next) => list.setFilter(next)}
               />
               {notice === null ? null : (
@@ -351,7 +468,7 @@ function KinWorkBody(
             )
           }
           renderItem={({ item: row }) => (
-            <KinWorkRow
+            <KinWorkTaskRow
               row={row}
               saving={changed.pending[row.key] !== undefined}
               onPress={() =>
@@ -370,9 +487,12 @@ function KinWorkBody(
 function KinWorkFilters(props: {
   readonly overview: KinWorkOverview;
   readonly filter: KinWorkFilter;
+  /** Whether who has what is offered, which a project's own list leaves out. */
+  readonly everyone: boolean;
+  readonly choices: KinWorkChoices | null;
   readonly onChange: (filter: KinWorkFilter) => void;
 }) {
-  const { overview, filter } = props;
+  const { overview, filter, choices } = props;
   return (
     <>
       <ScrollView
@@ -391,7 +511,24 @@ function KinWorkFilters(props: {
           />
         ))}
       </ScrollView>
-      {overview.owners.length === 0 ? null : (
+      {choices === null ||
+      (choices.clients.length === 0 && choices.projects.length === 0) ? null : (
+        <View className="flex-row flex-wrap gap-2 px-4">
+          <ScopeChip
+            all={KIN_CLIENTS.all}
+            held={filter.party}
+            choices={choices.clients}
+            onPick={(party) => props.onChange({ ...filter, party })}
+          />
+          <ScopeChip
+            all={KIN_PROJECTS.all}
+            held={filter.project}
+            choices={choices.projects}
+            onPick={(project) => props.onChange({ ...filter, project })}
+          />
+        </View>
+      )}
+      {!props.everyone || overview.owners.length === 0 ? null : (
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -416,77 +553,40 @@ function KinWorkFilters(props: {
   );
 }
 
-const TICK_LABEL = { done: KIN_WORK_COPY.done, reopen: KIN_WORK_COPY.reopen } as const;
+const EVERY = "all";
 
-function KinWorkRow(props: {
-  readonly row: KinWorkRowView;
-  readonly saving: boolean;
-  readonly onPress: () => void;
-  /** Null where this phone or this host can't change a task. */
-  readonly onAct: ((action: KinWorkAction) => void) | null;
+/** Narrows the list to one client or one project, or back to all of them. */
+function ScopeChip(props: {
+  readonly all: string;
+  readonly held: KinWorkRef | null;
+  readonly choices: ReadonlyArray<KinWorkRef>;
+  readonly onPick: (ref: KinWorkRef | null) => void;
 }) {
-  const { row, onAct } = props;
-  const tick = onAct === null ? null : row.tick;
+  const { held } = props;
+  if (props.choices.length === 0 && held === null) return null;
+  const label = held?.title ?? props.all;
   return (
-    <>
-      <View className={cn("flex-row items-start", props.saving && "opacity-60")}>
-        {tick === null || onAct === null ? (
-          <View className="h-12 w-12 items-center justify-center pl-2">
-            <KinWorkStateSymbol state={row.state} />
-          </View>
-        ) : (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`${TICK_LABEL[tick]}: ${row.title}`}
-            disabled={props.saving}
-            onPress={() => onAct({ type: "state", state: tick === "done" ? "done" : "open" })}
-            className="h-12 w-12 items-center justify-center pl-2 active:opacity-60"
-          >
-            <KinWorkStateSymbol state={row.state} />
-          </Pressable>
-        )}
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={row.accessibilityLabel}
-          onPress={props.onPress}
-          className="min-h-16 min-w-0 flex-1 flex-row items-start gap-3 py-3 pr-5 active:opacity-60"
-        >
-          <View className="min-w-0 flex-1 gap-0.5">
-            <Text textRole="body" numberOfLines={2} className="text-foreground">
-              {row.title}
-            </Text>
-            <Text textRole="footnote" numberOfLines={1} className="text-foreground-muted">
-              {row.line}
-            </Text>
-          </View>
-          {row.late ? (
-            <Text textRole="footnote" className="font-t3-medium text-danger-foreground">
-              Late
-            </Text>
-          ) : null}
-        </Pressable>
+    <Menu
+      title={props.all}
+      accessibilityRole="button"
+      accessibilityLabel={`${label}. Change`}
+      actions={[
+        { id: EVERY, title: props.all, state: held === null ? "on" : "off" },
+        ...props.choices.map((choice) => ({
+          id: choice.key,
+          title: choice.title,
+          state: choice.key === held?.key ? ("on" as const) : ("off" as const),
+        })),
+      ]}
+      onPressAction={({ nativeEvent: { event } }) =>
+        props.onPick(
+          event === EVERY ? null : (props.choices.find((choice) => choice.key === event) ?? held),
+        )
+      }
+    >
+      <View pointerEvents="none">
+        <Chip size="small" label={label} selected={held !== null} trailingIcon="chevron.down" />
       </View>
-      {row.suggested && onAct !== null ? (
-        <View className="flex-row gap-2 pb-3 pl-12 pr-5">
-          <Button
-            tone="secondary"
-            size="compact"
-            label={KIN_WORK_COPY.keep}
-            accessibilityLabel={`${KIN_WORK_COPY.keep}: ${row.title}`}
-            disabled={props.saving}
-            onPress={() => onAct({ type: "confirm" })}
-          />
-          <Button
-            tone="text"
-            size="compact"
-            label={KIN_WORK_COPY.decline}
-            accessibilityLabel={`${KIN_WORK_COPY.decline}: ${row.title}`}
-            disabled={props.saving}
-            onPress={() => onAct({ type: "decline" })}
-          />
-        </View>
-      ) : null}
-      <View className="ml-12 h-px bg-border-subtle" />
-    </>
+    </Menu>
   );
 }

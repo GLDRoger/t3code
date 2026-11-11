@@ -3,18 +3,21 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import {
   KIN_WORK_NEW_COPY,
   KIN_WORK_NOTES_MAX,
-  KIN_WORK_NO_DRAFT,
   KIN_WORK_ONLY_OWNER,
   KIN_WORK_TITLE_MAX,
   createKinWorkActions,
   kinWorkAssignees,
   kinWorkDraftCheck,
+  kinWorkDraftFor,
   kinWorkDraftHint,
+  kinWorkDraftWords,
+  kinWorkHostClients,
   kinWorkDueChoices,
   kinWorkDueLabel,
   kinWorkPrincipalKey,
   type KinWorkDraft,
 } from "@t3tools/client-runtime/kin/kinWork";
+import { KIN_CLIENTS } from "@t3tools/client-runtime/kin/kinWorkClients";
 import { EnvironmentId, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -31,9 +34,15 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { uuidv4 } from "../../lib/uuid";
 import { useAtomCommand } from "../../state/use-atom-command";
-import type { KinWorkParams } from "./KinWorkScreen";
+import { KinWorkPlaceRow, KinWorkSideRow } from "./components/KinWorkTaskMenus";
+import { kinWorkRefParam, type KinWorkParams } from "./KinWorkScreen";
 import { kinClient } from "./state/kinClient";
-import { useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
+import {
+  useKinWork,
+  useKinWorkChoices,
+  useKinWorkDirectory,
+  type KinWorkTarget,
+} from "./state/useKinWork";
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
@@ -69,12 +78,23 @@ export function KinWorkNewScreen({ route }: StaticScreenProps<KinWorkParams>) {
       </View>
     );
   }
-  return <KinWorkNewForm environmentId={environmentId} orgId={orgId} />;
+  return (
+    <KinWorkNewForm
+      environmentId={environmentId}
+      orgId={orgId}
+      start={kinWorkDraftFor({
+        party: kinWorkRefParam(route.params.party, route.params.partyName),
+        project: kinWorkRefParam(route.params.project, route.params.projectName),
+        side: route.params.side === "theirs" ? "theirs" : "ours",
+      })}
+    />
+  );
 }
 
-function KinWorkNewForm(target: KinWorkTarget) {
+function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft }) {
   const navigation = useNavigation();
-  const { environmentId, orgId } = target;
+  const { environmentId, orgId } = props;
+  const target = { environmentId, orgId };
   const allowed = useAtomValue(kinClient.workCreate.permissionAtom(environmentId));
   const { orgs, people, names } = useKinWorkDirectory(target, allowed);
   const create = useAtomCommand(kinClient.workCreate, { reportFailure: false });
@@ -90,7 +110,12 @@ function KinWorkNewForm(target: KinWorkTarget) {
   // One id for the form's life: trying again after a dropped answer never adds a second task.
   const [requestId] = useState(uuidv4);
   const [opened] = useState(() => new Date());
-  const [draft, setDraft] = useState<KinWorkDraft>(KIN_WORK_NO_DRAFT);
+  const [draft, setDraft] = useState<KinWorkDraft>(props.start);
+  const work = useKinWork(target);
+  // An older server has no clients or projects to put a task under.
+  const hostClients = kinWorkHostClients(work._tag === "ready" ? work.live.summary : null);
+  const choices = useKinWorkChoices(target, allowed && hostClients);
+  const words = kinWorkDraftWords(draft);
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const assignees = kinWorkAssignees({ orgs, orgId, people, names, current: null });
@@ -114,7 +139,14 @@ function KinWorkNewForm(target: KinWorkTarget) {
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
-        title={KIN_WORK_NEW_COPY.title}
+        // The bar is too narrow for the client's name, which the Client row below carries.
+        title={
+          draft.party === null
+            ? words.title
+            : draft.side === "theirs"
+              ? KIN_CLIENTS.theyOwe
+              : KIN_CLIENTS.weOwe
+        }
         onClose={() => navigation.goBack()}
         confirm={{
           label: KIN_WORK_NEW_COPY.submit,
@@ -138,11 +170,9 @@ function KinWorkNewForm(target: KinWorkTarget) {
               {problem === null ? null : <ErrorBanner message={problem} />}
               <ListSection>
                 <View className="gap-2 px-4 py-3">
-                  <Text className="text-sm text-foreground-muted">
-                    {KIN_WORK_NEW_COPY.titleLabel}
-                  </Text>
+                  <Text className="text-sm text-foreground-muted">{words.titleLabel}</Text>
                   <TextInput
-                    accessibilityLabel={KIN_WORK_NEW_COPY.titleLabel}
+                    accessibilityLabel={words.titleLabel}
                     value={draft.title}
                     editable={!saving}
                     autoFocus
@@ -151,7 +181,7 @@ function KinWorkNewForm(target: KinWorkTarget) {
                     maxLength={KIN_WORK_TITLE_MAX}
                     onChangeText={(title) => setDraft({ ...draft, title })}
                     textAlignVertical="center"
-                    placeholder={KIN_WORK_NEW_COPY.titlePlaceholder}
+                    placeholder={words.titlePlaceholder}
                     placeholderTextColorClassName="accent-placeholder"
                     className="min-h-8 font-sans text-base text-foreground"
                   />
@@ -201,6 +231,35 @@ function KinWorkNewForm(target: KinWorkTarget) {
                   ))}
                 </View>
               </View>
+              {!hostClients ? null : (
+                <ListSection>
+                  <KinWorkPlaceRow
+                    icon="person.2"
+                    label={KIN_WORK_NEW_COPY.clientLabel}
+                    none={KIN_WORK_NEW_COPY.none}
+                    held={draft.party}
+                    choices={choices.clients}
+                    disabled={saving}
+                    onPick={(party) => setDraft({ ...draft, party })}
+                  />
+                  {draft.party === null ? null : (
+                    <KinWorkSideRow
+                      side={draft.side}
+                      disabled={saving}
+                      onPick={(side) => setDraft({ ...draft, side })}
+                    />
+                  )}
+                  <KinWorkPlaceRow
+                    icon="folder"
+                    label={KIN_WORK_NEW_COPY.projectLabel}
+                    none={KIN_WORK_NEW_COPY.none}
+                    held={draft.project}
+                    choices={choices.projects}
+                    disabled={saving}
+                    onPick={(project) => setDraft({ ...draft, project })}
+                  />
+                </ListSection>
+              )}
               <ListSection>
                 <View className="gap-2 px-4 py-3">
                   <Text className="text-sm text-foreground-muted">

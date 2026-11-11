@@ -2,15 +2,16 @@ import {
   KIN_WORK_ASSIGN,
   KIN_WORK_NEW_COPY,
   KIN_WORK_NOTES_MAX,
-  KIN_WORK_NO_DRAFT,
   KIN_WORK_TITLE_MAX,
   createKinWorkActions,
   kinWorkAssignees,
   kinWorkDayOf,
   kinWorkDraftCheck,
   kinWorkDraftHint,
+  kinWorkDraftWords,
   kinWorkPrincipalKey,
   type KinWorkDraft,
+  type KinWorkRef,
 } from "@t3tools/client-runtime/kin/kinWork";
 import type { KinRecordKey } from "@t3tools/contracts";
 import { useId, useState } from "react";
@@ -37,15 +38,59 @@ import {
   SelectValue,
 } from "../components/ui/select";
 import { Textarea } from "../components/ui/textarea";
+import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { randomUUID } from "../lib/utils";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
-import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
+import type { KinWorkChoices, KinWorkDirectory, KinWorkTarget } from "./useKinWork";
+
+const NONE = "none";
+
+/** A client or a project to put the task under, or neither. */
+function PlaceSelect(props: {
+  readonly label: string;
+  readonly value: KinWorkRef | null;
+  readonly choices: ReadonlyArray<KinWorkRef>;
+  readonly onChange: (value: KinWorkRef | null) => void;
+}) {
+  // What the form opened about stays pickable whatever the list of choices holds.
+  const choices =
+    props.value === null || props.choices.some((choice) => choice.key === props.value?.key)
+      ? props.choices
+      : [props.value, ...props.choices];
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label>{props.label}</Label>
+      <Select
+        value={props.value?.key ?? NONE}
+        onValueChange={(value) =>
+          props.onChange(choices.find((choice) => choice.key === value) ?? null)
+        }
+      >
+        <SelectTrigger className="w-full min-w-0" aria-label={props.label}>
+          <SelectValue>{props.value?.title ?? KIN_WORK_NEW_COPY.none}</SelectValue>
+        </SelectTrigger>
+        <SelectPopup alignItemWithTrigger={false}>
+          <SelectItem value={NONE}>{KIN_WORK_NEW_COPY.none}</SelectItem>
+          {choices.map((choice) => (
+            <SelectItem key={choice.key} value={choice.key}>
+              {choice.title}
+            </SelectItem>
+          ))}
+        </SelectPopup>
+      </Select>
+    </div>
+  );
+}
 
 /** A short form: what, who and when. Anything longer is better said to a lead in chat. */
 export function KinWorkNewDialog(
   props: KinWorkTarget & {
     readonly directory: KinWorkDirectory;
+    /** The clients and projects it can go under; null on a host without them. */
+    readonly choices: KinWorkChoices | null;
+    /** Where the form starts: blank, or already about a client or a project. */
+    readonly start: KinWorkDraft;
     readonly onAdded: (key: KinRecordKey) => void;
     readonly onClose: () => void;
   },
@@ -65,7 +110,7 @@ export function KinWorkNewDialog(
   // One id for the form's life: trying again after a dropped answer never adds a second task.
   const [requestId] = useState(randomUUID);
   const [today] = useState(() => kinWorkDayOf(new Date()));
-  const [draft, setDraft] = useState<KinWorkDraft>(KIN_WORK_NO_DRAFT);
+  const [draft, setDraft] = useState<KinWorkDraft>(props.start);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const titleId = useId();
@@ -77,6 +122,8 @@ export function KinWorkNewDialog(
   const ownerKey = draft.owner === null ? mine : kinWorkPrincipalKey(draft.owner);
   const checked = kinWorkDraftCheck(draft);
   const hint = kinWorkDraftHint(draft, names);
+  const words = kinWorkDraftWords(draft);
+  const { choices } = props;
 
   const save = async () => {
     if (busy) return;
@@ -105,17 +152,17 @@ export function KinWorkNewDialog(
           }}
         >
           <DialogHeader>
-            <DialogTitle>{KIN_WORK_NEW_COPY.title}</DialogTitle>
+            <DialogTitle>{words.title}</DialogTitle>
           </DialogHeader>
           <DialogPanel>
             <div className="flex flex-col gap-4">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor={titleId}>{KIN_WORK_NEW_COPY.titleLabel}</Label>
+                <Label htmlFor={titleId}>{words.titleLabel}</Label>
                 <Input
                   id={titleId}
                   value={draft.title}
                   maxLength={KIN_WORK_TITLE_MAX}
-                  placeholder={KIN_WORK_NEW_COPY.titlePlaceholder}
+                  placeholder={words.titlePlaceholder}
                   autoComplete="off"
                   autoFocus
                   onChange={(event) => setDraft({ ...draft, title: event.target.value })}
@@ -184,6 +231,38 @@ export function KinWorkNewDialog(
                 </div>
               </div>
               {hint === null ? null : <p className="text-xs text-muted-foreground">{hint}</p>}
+              {choices === null ? null : (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <PlaceSelect
+                    label={KIN_WORK_NEW_COPY.clientLabel}
+                    value={draft.party}
+                    choices={choices.clients}
+                    onChange={(party) => setDraft({ ...draft, party })}
+                  />
+                  <PlaceSelect
+                    label={KIN_WORK_NEW_COPY.projectLabel}
+                    value={draft.project}
+                    choices={choices.projects}
+                    onChange={(project) => setDraft({ ...draft, project })}
+                  />
+                </div>
+              )}
+              {choices === null || draft.party === null ? null : (
+                <div className="flex flex-col gap-1.5">
+                  <Label>{KIN_WORK_NEW_COPY.sideLabel}</Label>
+                  <ToggleGroup
+                    aria-label={KIN_WORK_NEW_COPY.sideLabel}
+                    value={[draft.side]}
+                    onValueChange={(value) => {
+                      if (value[0] === "ours" || value[0] === "theirs")
+                        setDraft({ ...draft, side: value[0] });
+                    }}
+                  >
+                    <Toggle value="ours">{KIN_WORK_NEW_COPY.sideOurs}</Toggle>
+                    <Toggle value="theirs">{KIN_WORK_NEW_COPY.sideTheirs}</Toggle>
+                  </ToggleGroup>
+                </div>
+              )}
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor={notesId}>{KIN_WORK_NEW_COPY.notesLabel}</Label>
                 <Textarea

@@ -29,6 +29,9 @@ import {
   type KinLeadsListInput,
   type KinOrgsListInput,
   type KinOwnerTimeZoneGetInput,
+  type KinOrgId,
+  type KinPartyPageInput,
+  type KinProjectPageInput,
   type KinWorkGetInput,
   type KinWorkSubscribeInput,
 } from "@t3tools/contracts";
@@ -125,6 +128,30 @@ const workZoneRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   tag: "kin.triggers.getTimeZone",
 });
 const readWorkZone = guardedRead(workZoneRead);
+const workClientsRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:work:clients:read",
+  tag: "kin.work.parties",
+});
+const readWorkClients = guardedRead(workClientsRead);
+const workClientRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:work:client:read",
+  tag: "kin.work.party",
+});
+const readWorkClient = guardedRead(workClientRead);
+const workProjectsRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:work:projects:read",
+  tag: "kin.work.projects",
+});
+const readWorkProjects = guardedRead(workProjectsRead);
+const workProjectRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:work:project:read",
+  tag: "kin.work.project",
+});
+const readWorkProject = guardedRead(workProjectRead);
+const workHistoryRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:work:history:read",
+  tag: "kin.work.history",
+});
 
 /** Work's change number and counts, kept current by the host's own announcements. */
 const workLive = createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {
@@ -423,6 +450,76 @@ export const kinClient = {
     staleTimeMs: 5 * 60_000,
     refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
       environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  /** One page of the clients list, or of the projects list; each list's controller decides when. */
+  workClients: workClientsRead,
+  workProjects: workProjectsRead,
+  /** A page of a client's or project's history. */
+  workHistory: workHistoryRead,
+  /** A client with what is owed each way, its contacts and its projects. */
+  workClient: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:work:client",
+    execute: Effect.fn("KinWebClient.workClient")(function* (input: KinPartyPageInput) {
+      return yield* readWorkClient(input);
+    }),
+    staleTimeMs: 30_000,
+    // Read again on reconnecting; between those, the page's watch reads only when it is behind.
+    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
+      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  /** A project with its health, what is blocked and what changed this week. */
+  workProject: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:work:project",
+    execute: Effect.fn("KinWebClient.workProject")(function* (input: KinProjectPageInput) {
+      return yield* readWorkProject(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
+      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  /** The active clients and open projects a task or a project can be put under, by name. */
+  workChoices: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:work:choices",
+    execute: Effect.fn("KinWebClient.workChoices")(function* (input: { readonly orgId: KinOrgId }) {
+      const [clients, projects] = yield* Effect.all(
+        [
+          readWorkClients({ orgId: input.orgId, limit: 100 }),
+          readWorkProjects({ orgId: input.orgId, limit: 100 }),
+        ],
+        { concurrency: 2 },
+      );
+      return { clients: clients.parties, projects: projects.projects };
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
+      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  workClientCreate: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:client:create",
+    tag: "kin.work.createParty",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+  }),
+  workClientUpdate: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:client:update",
+    tag: "kin.work.updateParty",
+  }),
+  workContactCreate: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:contact:create",
+    tag: "kin.work.createContact",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+  }),
+  workContactUpdate: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:contact:update",
+    tag: "kin.work.updateContact",
+  }),
+  workProjectCreate: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:project:create",
+    tag: "kin.work.createProject",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+  }),
+  workProjectUpdate: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:project:update",
+    tag: "kin.work.updateProject",
   }),
   workCreate: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:work:create",
