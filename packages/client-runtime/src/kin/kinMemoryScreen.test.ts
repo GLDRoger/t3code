@@ -28,6 +28,7 @@ const item = (id: string, visibility: KinMemoryVisibility, title = `Invented ${i
     title,
     visibility,
     from: null,
+    version: `words-of-${id}`,
   }) satisfies KinMemoryListItem;
 const listOf = (items: ReadonlyArray<KinMemoryListItem>, suggestionsAsOf = 7) =>
   ({ items, suggestionsAsOf }) satisfies KinMemoryListResult;
@@ -119,12 +120,14 @@ describe("what the owner's leads remember", () => {
       item("c", "suggested", "Office move"),
     ]);
     const searched = kinMemoryView(list, KIN_MEMORY_NO_EDITS, "launch").confirmAll;
-    expect(searched?.requests).toEqual([{ itemIds: ["a", "b"] }]);
+    expect(searched?.requests).toEqual([
+      { itemIds: ["a", "b"], versions: { a: "words-of-a", b: "words-of-b" } },
+    ]);
     expect(searched?.label).toBe("Let the team know these 2");
     // Keeping one is still on its way to the host: a yes to all must not race it.
     const keeping = kinMemoryStarted(KIN_MEMORY_NO_EDITS, ["c"], "only_owner");
     expect(kinMemoryView(list, keeping, "").confirmAll?.requests).toEqual([
-      { itemIds: ["a", "b"] },
+      { itemIds: ["a", "b"], versions: { a: "words-of-a", b: "words-of-b" } },
     ]);
   });
 
