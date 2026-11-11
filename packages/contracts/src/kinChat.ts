@@ -583,6 +583,8 @@ export class KinChatError extends Schema.TaggedError<KinChatError>()("KinChatErr
     "floor_not_granted",
     "floor_closed",
     "conflict",
+    // The org has no lead yet to copy models from, and the request named none.
+    "no_models",
   ]),
   message: Schema.String,
 }) {}

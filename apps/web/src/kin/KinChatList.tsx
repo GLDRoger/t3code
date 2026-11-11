@@ -27,6 +27,7 @@ import { cn } from "../lib/utils";
 import { KinAvatar } from "./KinAvatar";
 import { ApproveOnPhone } from "./KinCards";
 import { KinMemoryEntry } from "./KinMemoryView";
+import { KinTeamEntry } from "./KinTeamView";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinInbox } from "./useKinHost";
@@ -60,7 +61,9 @@ export function KinChatList() {
   const { host, state, retry } = useKinInbox();
   const nowMs = useNowMinuteMs();
   const { isMobile, setOpenMobile } = useSidebar();
-  const memoryOpen = useMatchRoute()({ to: "/kin/$environmentId/$orgId/memory" }) !== false;
+  const matchRoute = useMatchRoute();
+  const memoryOpen = matchRoute({ to: "/kin/$environmentId/$orgId/memory" }) !== false;
+  const teamOpen = matchRoute({ to: "/kin/$environmentId/$orgId/team" }) !== false;
   if (state._tag === "loading") {
     return (
       <div className="flex flex-col gap-1" role="status" aria-label="Loading chats">
@@ -123,12 +126,20 @@ export function KinChatList() {
         environmentId={state.environmentId}
       />
       {mine === null ? null : (
-        <KinMemoryEntry
-          environmentId={mine.environmentId}
-          orgId={mine.orgId}
-          active={memoryOpen}
-          onOpen={closeSidebar}
-        />
+        <>
+          <KinMemoryEntry
+            environmentId={mine.environmentId}
+            orgId={mine.orgId}
+            active={memoryOpen}
+            onOpen={closeSidebar}
+          />
+          <KinTeamEntry
+            environmentId={mine.environmentId}
+            orgId={mine.orgId}
+            active={teamOpen}
+            onOpen={closeSidebar}
+          />
+        </>
       )}
       {rows.length === 0 ? (
         <Empty size="compact">

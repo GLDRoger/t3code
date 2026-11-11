@@ -191,6 +191,8 @@ export function kinLeadSaveProblem(error: unknown, creating: boolean): string {
       return "This server has as many leads as it allows.";
     case "not_found":
       return "This lead is no longer here.";
+    case "no_models":
+      return "No model is set up for leads on this server yet, so the first lead can't be made from here. On the computer that runs Kin, run its “kin lead create” command with --strong and --cheap to choose the models. Leads you add after that use the same ones.";
     case "unavailable":
     case "disabled":
       return "Leads aren't running on this server right now. Try again in a moment.";

@@ -119,6 +119,7 @@ import {
 } from "./KinComposerAttachments";
 import { kinClient } from "./kinClient";
 import { KinGroupSheet } from "./KinGroupSheet";
+import { kinProfileRequestAtom } from "./kinTeamForm";
 import { KinLeadSheet, type KinLeadAbout } from "./KinLeadSheet";
 import {
   kinApplyMention,
@@ -236,7 +237,14 @@ export function KinChatView(props: {
   // What was last read stays up while a change is read again.
   const group = groupResult === null ? null : Option.getOrNull(AsyncResult.value(groupResult));
   const mentionable = kinMentionCandidates(group?.members ?? null);
-  const [profileOpen, setProfileOpen] = useState(false);
+  const [profileHeld, setProfileHeld] = useState(false);
+  // A teammate's row on the Team page leads here with the lead's details already open.
+  const profileRequested = useAtomValue(kinProfileRequestAtom) === chatId && chatId !== null;
+  const profileOpen = profileHeld || profileRequested;
+  const setProfileOpen = (open: boolean) => {
+    setProfileHeld(open);
+    if (!open && profileRequested) appAtomRegistry.set(kinProfileRequestAtom, null);
+  };
   const nowMs = useNowMinuteMs();
   const muted =
     summary !== undefined &&
