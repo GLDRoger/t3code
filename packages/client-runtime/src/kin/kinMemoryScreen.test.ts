@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Fixtures build ISO times relative to a fixed clock.
 import {
   KinChatError,
   KinMemoryItemId,
@@ -105,6 +106,89 @@ describe("what the owner's leads remember", () => {
     expect(kinMemoryEntrySummary(listOf([item("asked", "suggested")]))).toBe(
       "1 thing is waiting for your yes",
     );
+  });
+
+  it("says where each thing came from, and nothing a host or a message doesn't give", () => {
+    const day = (iso: string, year = false) =>
+      new Intl.DateTimeFormat(undefined, {
+        day: "numeric",
+        month: "short",
+        ...(year ? { year: "numeric" as const } : {}),
+      }).format(new Date(iso));
+    const recordedAt = "2026-11-09T10:00:00.000Z";
+    const saidAt = "2026-11-08T10:00:00.000Z";
+    const told = { recordedAt, saidAt, quote: " Invoices go out on the first. " };
+    const untold = { recordedAt, saidAt: null, quote: null };
+    const heard = { name: "Invented Priya", chatName: "Invented room" };
+    const list = listOf([
+      { ...item("mine", "only_owner"), provenance: { saidBy: "boss", trust: "owner", ...told } },
+      {
+        ...item("theirs", "only_owner"),
+        from: heard,
+        provenance: { saidBy: "priya", trust: "member", ...told },
+      },
+      { ...item("old", "only_owner"), provenance: { saidBy: "boss", trust: "owner", ...untold } },
+      // The message is gone, so its day is too.
+      {
+        ...item("gone", "only_owner"),
+        provenance: { saidBy: "sam", trust: "member", ...untold, saidAt },
+      },
+      {
+        ...item("guess", "only_owner"),
+        provenance: { saidBy: "agent-1", trust: "agent", ...untold },
+      },
+      {
+        ...item("retired", "only_owner"),
+        provenance: { saidBy: "agent-9", trust: "agent", ...untold, recordedAt: "2025-03-02" },
+      },
+      {
+        ...item("outside", "only_owner"),
+        provenance: { saidBy: "external", trust: "external", ...untold },
+      },
+      { ...item("older-host", "only_owner"), from: heard },
+    ]);
+    const names = {
+      people: [{ handle: "priya", displayName: "Priya" }],
+      agents: [{ agentId: "agent-1", name: "Tech lead" }],
+    };
+    const view = (search = "") =>
+      kinMemoryView(list, KIN_MEMORY_NO_EDITS, search, names, new Date("2026-11-11T10:00:00.000Z"));
+    const shown = Object.fromEntries(
+      view().rows.flatMap((row) =>
+        row.type === "item" ? [[row.item.itemId, [row.item.origin, row.item.from]]] : [],
+      ),
+    );
+    const quote = "Invoices go out on the first.";
+    expect(shown).toEqual({
+      mine: [{ kind: "said", line: `You said, ${day(saidAt)}`, quote }, null],
+      theirs: [{ kind: "said", line: `Priya said in Invented room, ${day(saidAt)}`, quote }, null],
+      old: [{ kind: "said", line: `From you, saved ${day(recordedAt)}`, quote: null }, null],
+      gone: [
+        { kind: "said", line: `From a teammate, saved ${day(recordedAt)}`, quote: null },
+        null,
+      ],
+      guess: [
+        { kind: "worked_out", line: `Worked out by Tech lead, ${day(recordedAt)}`, quote: null },
+        null,
+      ],
+      retired: [
+        {
+          kind: "worked_out",
+          line: `Worked out by an agent, ${day("2025-03-02T12:00:00", true)}`,
+          quote: null,
+        },
+        null,
+      ],
+      outside: [
+        { kind: "outside", line: `From outside your chats, saved ${day(recordedAt)}`, quote: null },
+        null,
+      ],
+      "older-host": [null, "Invented Priya said this in Invented room"],
+    });
+    const found = (search: string) =>
+      view(search).rows.flatMap((row) => (row.type === "item" ? [row.item.itemId] : []));
+    expect(found("invoices")).toEqual(["mine", "theirs"]);
+    expect(found("worked out")).toEqual(["guess", "retired"]);
   });
 
   it("names every suggestion on screen with the words shown, and only those", () => {
