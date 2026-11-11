@@ -147,9 +147,18 @@ import {
   kinStaleNotice,
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import {
+  kinHeldCardAgent,
+  kinRetiredChatLine,
+  kinRetiredDirectAgentId,
+  kinRetiredEmptyChat,
+  kinRetiredGroupAnswerer,
+  kinRetiredGroupLine,
+} from "@t3tools/client-runtime/kin/kinAgentRetire";
+import {
   kinChatReadOnly,
   kinChatReadOnlyLine,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import { useKinAgentRetire } from "./state/useKinAgentRetire";
 import { useKinHostAt } from "./state/useKinHost";
 import { useKinReconnect } from "./state/useKinReconnect";
 import {
@@ -215,6 +224,14 @@ const noChatAtom: Atom.Atom<ChatResult> = Atom.make<ChatResult>(null);
 const noInboxAtom: Atom.Atom<InboxResult> = Atom.make<InboxResult>(null);
 type LeadsResult = AsyncResult.AsyncResult<KinLeadsListResult, unknown> | null;
 const noLeadsAtom: Atom.Atom<LeadsResult> = Atom.make<LeadsResult>(null);
+const NO_RETIRED_AGENTS: ReadonlySet<string> = new Set();
+
+/** This direct chat's agent is retired: its history stays, with Restore where the owner may. */
+interface KinRetiredChat {
+  readonly name: string;
+  readonly restoring: boolean;
+  readonly restore: (() => void) | null;
+}
 type MembersResult = AsyncResult.AsyncResult<KinChatMembersResult, unknown> | null;
 const noMembersAtom: Atom.Atom<MembersResult> = Atom.make<MembersResult>(null);
 
@@ -253,11 +270,16 @@ function KinLiveChat(props: {
       : undefined;
   // The owner's own lead in their direct chat: the only one they can stop.
   const ownedAgentId = summary === undefined ? null : kinOwnedLeadAgentId(summary, viewer.personId);
+  const canRestore = useAtomValue(kinClient.leadRestore.permissionAtom(props.environmentId));
+  const retire = useKinAgentRetire(props.environmentId);
   // A direct chat's lead has details to open: the viewer's own, or one they were let message.
+  // The owner's list carries their retired agents too, so a retired one still has details.
   const leads = useAtomValue(
     environmentId === null || summary === undefined || summary.kind !== "direct"
       ? noLeadsAtom
-      : kinClient.leads({ environmentId, input: { orgId: summary.orgId } }),
+      : canRestore
+        ? kinClient.agents({ environmentId, orgId: summary.orgId })
+        : kinClient.leads({ environmentId, input: { orgId: summary.orgId } }),
   );
   // A group's row carries only the viewer's own member; who else is in it is read by name.
   const group = summary !== undefined && summary.kind !== "direct";
@@ -270,10 +292,26 @@ function KinLiveChat(props: {
     groupResult === null
       ? null
       : (Option.getOrNull(AsyncResult.value(groupResult))?.members ?? null);
-  const charter =
+  const ownLead =
     leads !== null && AsyncResult.isSuccess(leads)
-      ? (leads.value.leads.find((lead) => lead.agentId === ownedAgentId)?.charter ?? null)
+      ? (leads.value.leads.find((lead) => lead.agentId === ownedAgentId) ?? null)
       : null;
+  const charter = ownLead?.charter ?? null;
+  // The profile is read after a retire or restore; the directory says it for everyone else.
+  const retiredAgentId =
+    ownLead !== null
+      ? ownLead.retired === undefined
+        ? null
+        : ownLead.agentId
+      : kinRetiredDirectAgentId(summary, viewer.retiredAgents ?? NO_RETIRED_AGENTS);
+  const retiredName =
+    retiredAgentId === null
+      ? null
+      : (ownLead?.name ?? viewer.agentNames.get(retiredAgentId) ?? "This agent");
+  const silentAnswerer = kinRetiredGroupAnswerer(
+    groupResult === null ? null : Option.getOrNull(AsyncResult.value(groupResult)),
+    viewer.retiredAgents,
+  );
   const contact =
     leads !== null && AsyncResult.isSuccess(leads) && ownedAgentId === null
       ? (leads.value.contacts?.find((held) => held.chatId === chatId) ?? null)
@@ -350,7 +388,22 @@ function KinLiveChat(props: {
         state={state}
         viewer={group ? { ...viewer, memberNames: kinMemberNames(groupMembers) } : viewer}
         members={groupMembers ?? summary?.members ?? []}
-        mentionable={group ? kinMentionCandidates(groupMembers) : undefined}
+        mentionable={group ? kinMentionCandidates(groupMembers, viewer.retiredAgents) : undefined}
+        retired={
+          retiredName === null
+            ? null
+            : {
+                name: retiredName,
+                restoring: retire.busy !== null,
+                restore:
+                  ownLead === null || ownLead.retired === undefined || !canRestore
+                    ? null
+                    : () => retire.restore(ownLead),
+              }
+        }
+        groupNotice={
+          silentAnswerer === null ? null : kinRetiredGroupLine(silentAnswerer, canRestore)
+        }
         group={
           environmentId === null || summary === undefined || !group
             ? null
@@ -592,6 +645,8 @@ function KinChatPage(props: {
   readonly about?: string | null;
   /** The viewer may read this chat and no longer write in it. */
   readonly readOnly?: boolean;
+  readonly retired?: KinRetiredChat | null;
+  readonly groupNotice?: string | null;
   /** Opens a group's details; null for any other chat. */
   readonly group?: (() => void) | null;
   /** A group's leads, which the composer offers on `@`. */
@@ -659,6 +714,8 @@ function KinChatPage(props: {
             ownsLead={props.ownsLead ?? false}
             about={props.about ?? null}
             readOnly={props.readOnly ?? false}
+            retired={props.retired ?? null}
+            groupNotice={props.groupNotice ?? null}
             mentionable={props.mentionable}
           />
         ) : (
@@ -824,6 +881,9 @@ function KinChatFeed(props: {
   readonly ownsLead: boolean;
   readonly about: string | null;
   readonly readOnly: boolean;
+  readonly retired: KinRetiredChat | null;
+  /** Said over the composer of a group whose answering agent is retired. */
+  readonly groupNotice: string | null;
   readonly mentionable?: ReadonlyArray<KinMentionCandidate>;
 }) {
   const listRef = useRef<LegendListRef>(null);
@@ -974,7 +1034,8 @@ function KinChatFeed(props: {
   const canLoadEarlier = props.readHistory !== null && earlierPage !== null;
   const latestSeq = latestKinSeq(messages);
   const showIntro = kinIntroVisible({
-    ownsLead: props.ownsLead,
+    // Nobody is there to greet in a retired agent's chat.
+    ownsLead: props.ownsLead && props.retired === null,
     agentName: props.agentName,
     viewerPersonId: props.viewer.personId,
     messages,
@@ -1154,6 +1215,7 @@ function KinChatFeed(props: {
             widget={widget}
             environmentId={props.environmentId}
             viewerPersonId={props.viewer.personId}
+            heldFor={kinHeldCardAgent(message.author, props.viewer, props.retired?.name ?? null)}
             reactions={chips}
             onReact={
               reactable
@@ -1210,7 +1272,22 @@ function KinChatFeed(props: {
     }
   };
 
-  const composer = props.readOnly ? (
+  const composer = props.retired ? (
+    <View className="items-center gap-3 px-6 pt-3" style={{ paddingBottom: composerInset + 12 }}>
+      <AppText textRole="footnote" className="text-center text-foreground-muted">
+        {kinRetiredChatLine(props.retired.name, props.retired.restore !== null)}
+      </AppText>
+      {props.retired.restore === null ? null : (
+        <Button
+          tone="secondary"
+          fullWidth
+          label={props.retired.restoring ? "Restoring…" : "Restore"}
+          disabled={props.retired.restoring}
+          onPress={props.retired.restore}
+        />
+      )}
+    </View>
+  ) : props.readOnly ? (
     <View className="px-6 pt-3" style={{ paddingBottom: composerInset + 12 }}>
       <AppText textRole="footnote" className="text-center text-foreground-muted">
         {kinChatReadOnlyLine(props.agentName)}
@@ -1297,6 +1374,7 @@ function KinChatFeed(props: {
 
   // After a reset the feed is empty until the latest page reloads; that's not an empty chat.
   // Inside the list, so the first send keeps the same tree and the composer keeps the keyboard.
+  const retiredEmpty = props.retired === null ? null : kinRetiredEmptyChat(props.retired.name);
   const empty =
     rows.length === 0 && earlierPage === null && !live.needsHistoryReload ? (
       <View className="p-4">
@@ -1304,12 +1382,18 @@ function KinChatFeed(props: {
           <EmptyState
             variant="plain"
             title={
-              props.agentName === null ? "No messages yet" : `Say hello to ${props.agentName}.`
+              retiredEmpty !== null
+                ? retiredEmpty.title
+                : props.agentName === null
+                  ? "No messages yet"
+                  : `Say hello to ${props.agentName}.`
             }
             detail={
-              props.agentName === null
-                ? "Messages in this chat show up here."
-                : (props.about ?? "It reads every message here.")
+              retiredEmpty !== null
+                ? retiredEmpty.detail
+                : props.agentName === null
+                  ? "Messages in this chat show up here."
+                  : (props.about ?? "It reads every message here.")
             }
           />
         )}
@@ -1424,6 +1508,13 @@ function KinChatFeed(props: {
             </View>
           ) : null}
           {noticeBar}
+          {props.groupNotice === null ? null : (
+            <View className="px-6 pb-2">
+              <AppText textRole="caption" className="text-center text-foreground-muted">
+                {props.groupNotice}
+              </AppText>
+            </View>
+          )}
           {composer}
         </View>
       </KeyboardStickyView>

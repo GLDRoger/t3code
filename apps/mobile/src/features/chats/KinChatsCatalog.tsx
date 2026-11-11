@@ -39,6 +39,7 @@ const directory: KinDirectory = {
     [qa, "QA"],
   ]),
   me: new Set([owner]),
+  retiredAgents: new Set(),
 };
 
 const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();

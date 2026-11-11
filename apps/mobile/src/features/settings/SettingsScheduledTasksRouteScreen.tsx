@@ -1,5 +1,4 @@
 import { KIN_ONLY } from "../../lib/kinOnly";
-import { useOpenKinThread } from "../chats/state/useOpenKinThread";
 import * as Dialog from "../../components/ui/Dialog";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -1443,7 +1442,6 @@ function EnvironmentTasks({
     reportFailure: false,
   });
   const selectDetail = useSelectWorkspaceDetail();
-  const openKinThread = useOpenKinThread();
   const failure = (title: string, result: AtomCommandResult<unknown, unknown>) => {
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
       Dialog.alert(title, String(squashAtomCommandFailure(result)));
@@ -1525,7 +1523,10 @@ function EnvironmentTasks({
             <Menu
               actions={[
                 { id: "edit", title: "Edit" },
-                ...(task.threadId !== null && scheduledTaskThreadMode(task) !== "new_thread"
+                // A Kin-only app has no thread screen to open.
+                ...(!KIN_ONLY &&
+                task.threadId !== null &&
+                scheduledTaskThreadMode(task) !== "new_thread"
                   ? [{ id: "thread", title: "Open thread" }]
                   : []),
                 {
@@ -1547,12 +1548,13 @@ function EnvironmentTasks({
                 if (action === "edit") {
                   onEdit(task);
                 } else if (action === "thread" && task.threadId !== null) {
-                  const thread = {
-                    environmentId: String(environmentId),
-                    threadId: String(task.threadId),
-                  };
-                  if (KIN_ONLY) openKinThread(thread);
-                  else selectDetail({ name: "Thread", params: thread });
+                  selectDetail({
+                    name: "Thread",
+                    params: {
+                      environmentId: String(environmentId),
+                      threadId: String(task.threadId),
+                    },
+                  });
                 } else if (action === "delete") {
                   Dialog.alert("Delete task?", task.title, [
                     { text: "Cancel", style: "cancel" },

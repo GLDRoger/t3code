@@ -15,6 +15,8 @@ import {
   type ThemePreviewColors,
 } from "@t3tools/shared/themePreview";
 
+import { KIN_ONLY } from "./kinOnly";
+
 export const DEFAULT_MOBILE_THEME_ID = MOBILE_DEFAULT_THEME_ID;
 export const MOBILE_THEME_IDS = [...SHARED_MOBILE_THEME_IDS, "material-you"] as const;
 export type MobileThemeId = SharedMobileThemeId | "material-you";
@@ -26,7 +28,8 @@ export const MOBILE_THEME_OPTIONS: ReadonlyArray<{
   readonly id: MobileThemeId;
   readonly label: string;
 }> = [
-  { id: DEFAULT_MOBILE_THEME_ID, label: "T3 Code" },
+  // The app's own look, named for the app it is in.
+  { id: DEFAULT_MOBILE_THEME_ID, label: KIN_ONLY ? "Kin" : "T3 Code" },
   { id: "material-you", label: "Material You" },
   ...BUILT_IN_THEMES.map((theme) => ({ id: theme.id as MobileThemeId, label: theme.label })),
 ];

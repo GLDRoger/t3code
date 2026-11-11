@@ -27,9 +27,8 @@ import { ErrorBanner } from "../../components/ui/ErrorBanner";
 import { ListSection } from "../../components/ui/ListSection";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
-import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { kinClient } from "./state/kinClient";
+import { kinClient, refreshKinAgents } from "./state/kinClient";
 
 export type KinLeadFormParams = {
   readonly environmentId: string;
@@ -184,11 +183,8 @@ function LeadForm(props: {
     setProblem(null);
   };
 
-  const refreshLeads = () => {
-    appAtomRegistry.refresh(kinClient.leads({ environmentId, input: { orgId } }));
-    // Chat titles read lead names from the directory.
-    appAtomRegistry.refresh(kinClient.orgs({ environmentId, input: {} }));
-  };
+  // Chat titles read lead names from the directory.
+  const refreshLeads = () => refreshKinAgents(environmentId, orgId);
 
   const save = async () => {
     if (saving) return;

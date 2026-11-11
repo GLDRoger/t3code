@@ -162,6 +162,8 @@ export function mergeKinFeed(live: KinChatState, earlier: KinChatState): KinChat
 export interface KinFeedViewer {
   readonly personId: KinPersonId | null;
   readonly agentNames: ReadonlyMap<string, string>;
+  /** Agents the host marks retired; absent reads as none. */
+  readonly retiredAgents?: ReadonlySet<string>;
   /** People by member id, in a group whose members are loaded; a role stands in without it. */
   readonly memberNames?: ReadonlyMap<string, string>;
 }
@@ -683,5 +685,8 @@ export function kinFeedViewer(orgs: KinOrgsListResult | null, orgId: string | nu
   return {
     personId: me?.personId ?? null,
     agentNames: new Map(org?.agents.map((agent) => [agent.agentId, agent.displayName]) ?? []),
+    retiredAgents: new Set(
+      org?.agents.flatMap((agent) => (agent.retired ? [agent.agentId] : [])) ?? [],
+    ),
   };
 }

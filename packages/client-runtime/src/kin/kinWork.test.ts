@@ -320,6 +320,25 @@ describe("a task on an older host", () => {
     expect(view.remarks).toEqual([]);
     expect(view.leadNote).toContain("tells Tech lead to stop");
   });
+
+  it("marks a task a retired agent has, and says nobody is working on it", () => {
+    const retired = { ...names, retired: new Set([lead.agentId]) };
+    const view = kinWorkItemView(
+      { ...suggested, confirmed: true, seq: 9 },
+      retired,
+      now,
+      50,
+      place,
+    );
+    expect(view.owner).toMatchObject({ name: "Tech lead", retired: true });
+    expect(view.leadNote).toBe(
+      "Tech lead is retired, so nobody is working on this. Give it to someone else, or restore Tech lead.",
+    );
+    expect(kinWorkRow(record({ owner: lead }), retired, now).line).toBe(
+      "W-1 · Tech lead (retired) · Not started",
+    );
+    expect(kinWorkRow(record({ owner: lead }), names, now).ownerRetired).toBe(false);
+  });
 });
 
 describe("links to other tasks and to a lead's work", () => {
