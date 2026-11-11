@@ -229,6 +229,39 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect(
+  "a fire held by retirement past the lateness limit is skipped on restore, with one notice in its chat",
+  () =>
+    Effect.gen(function* () {
+      yield* setup();
+      const sql = yield* SqlClient.SqlClient;
+      const tasks = yield* ScheduledTasks.KinScheduledTasks;
+      yield* TestClock.setTime(tuesday);
+      yield* (yield* TriggerScheduler.KinTriggerScheduler).runDue();
+      yield* retirement("lead-a", tuesday, true);
+      yield* tasks.drain(orgId);
+      yield* TestClock.adjust("3 hours");
+      yield* retirement("lead-a", tuesday + 3 * 60 * 60_000, false);
+      yield* tasks.drain(orgId);
+      yield* tasks.drain(orgId);
+      assert.lengthOf(yield* runs(), 0);
+      const notices = yield* sql<{ chatId: string; body: string }>`SELECT chat_id AS "chatId", body
+        FROM kin_messages WHERE org_id = ${orgId} AND kind = 'system' AND body LIKE 'Skipped %'
+        ORDER BY seq`;
+      assert.deepStrictEqual(notices, [
+        {
+          chatId: "chat-a",
+          body: 'Skipped "Open PRs digest": it was due too long ago to run now.',
+        },
+      ]);
+      assert.equal((yield* card()).state.lastRun?.status, "skipped");
+      assert.deepStrictEqual(
+        yield* sql`SELECT 1 FROM kin_trigger_inbox WHERE org_id = ${orgId} AND consumed_at IS NULL`,
+        [],
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
 // Native schedules: the task is T3's, its kin_schedules row the authority for each run.
 const scheduleId = KinMemoryItemId.make("sch-native");
 const taskId = KinSchedules.scheduleTaskId(orgId, scheduleId);
