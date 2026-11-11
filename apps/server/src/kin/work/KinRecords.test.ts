@@ -5,6 +5,7 @@ import {
   AuthKinChatScope,
   EnvironmentId,
   KinAgentId,
+  type KinChatError,
   KinOrgId,
   KinPersonId,
   type MemoryItemHead,
@@ -55,6 +56,8 @@ const scopeOf = (agent: string): McpInvocationScope => ({
 
 const identity = Layer.mock(KinIdentity)({
   owner,
+  isAgentThread: () => true,
+  isLeadThread: () => true,
   resolveAgent: (scope) =>
     Effect.succeed({
       _tag: "agent" as const,
@@ -294,13 +297,20 @@ it.effect(
       });
       assert.lengthOf(yield* assignedEvents, 1);
       // A teammate can't create or assign, and can't read Work yet.
-      for (const refused of [
+      const refusals: ReadonlyArray<
+        Effect.Effect<
+          unknown,
+          KinChatError,
+          KinIdentity | KinRecords.KinRecords | SqlClient.SqlClient
+        >
+      > = [
         OwnerWork.assign([mate], { orgId, key: "W-1", to: { _tag: "agent", agentId: lead } }),
         OwnerWork.create([mate], { orgId, title: "Invented", clientRequestId: "mate-1" }),
         OwnerWork.list([mate], { orgId }),
         OwnerWork.get([mate], { orgId, key: "W-1" }),
         OwnerWork.summary([mate], { orgId }),
-      ])
+      ];
+      for (const refused of refusals)
         assert.include(yield* Effect.flip(refused), { reason: "not_allowed" });
     }).pipe(Effect.provide(layer)),
 );
