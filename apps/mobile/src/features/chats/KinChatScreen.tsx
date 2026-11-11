@@ -1,3 +1,6 @@
+import { KIN_ONLY } from "../../lib/kinOnly";
+import { KIN_ONLY_NO_HOST, KIN_ONLY_UNAUTHORIZED, KIN_ONLY_UNPAIRED } from "./kinOnlyCopy";
+import { kinListRoute } from "./state/kinHome";
 import { useAtomValue } from "@effect/atom-react";
 import {
   type LegendListRef,
@@ -692,28 +695,46 @@ function KinChatStateView(props: {
         return (
           <EmptyState
             variant="plain"
-            title="No server with Kin yet"
-            detail="Connect this phone to a T3 Code server that has Kin turned on."
-            actionLabel="Open environments"
-            onAction={() => navigation.navigate("SettingsEnvironments")}
+            {...(KIN_ONLY
+              ? {
+                  ...KIN_ONLY_NO_HOST,
+                  onAction: () => navigation.navigate("SettingsEnvironmentNew"),
+                }
+              : {
+                  title: "No server with Kin yet",
+                  detail: "Connect this phone to a T3 Code server that has Kin turned on.",
+                  actionLabel: "Open environments",
+                  onAction: () => navigation.navigate("SettingsEnvironments"),
+                })}
           />
         );
       case "unpaired":
         return (
           <EmptyState
             variant="plain"
-            title="This phone isn't paired with the server anymore"
-            detail="Pair it again to open this chat."
-            actionLabel="Open environments"
-            onAction={() => navigation.navigate("SettingsEnvironments")}
+            {...(KIN_ONLY
+              ? {
+                  ...KIN_ONLY_UNPAIRED,
+                  onAction: () => navigation.navigate("SettingsEnvironmentNew"),
+                }
+              : {
+                  title: "This phone isn't paired with the server anymore",
+                  detail: "Pair it again to open this chat.",
+                  actionLabel: "Open environments",
+                  onAction: () => navigation.navigate("SettingsEnvironments"),
+                })}
           />
         );
       case "unauthorized":
         return (
           <EmptyState
             variant="plain"
-            title="This phone can't read Kin chats"
-            detail="Pair it again with the computer that runs T3 Code."
+            {...(KIN_ONLY
+              ? KIN_ONLY_UNAUTHORIZED
+              : {
+                  title: "This phone can't read Kin chats",
+                  detail: "Pair it again with the computer that runs T3 Code.",
+                })}
           />
         );
       case "noIdentity":
@@ -745,7 +766,7 @@ function KinChatStateView(props: {
                     : "Kin couldn't open this chat. Go back to your chats and try again."
             }
             actionLabel="Back to chats"
-            onAction={() => navigation.dispatch(StackActions.popTo("KinChats"))}
+            onAction={() => navigation.dispatch(StackActions.popTo(kinListRoute()))}
           />
         );
       case "error":

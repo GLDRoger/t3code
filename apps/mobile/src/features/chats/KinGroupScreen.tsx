@@ -1,3 +1,4 @@
+import { kinListRoute } from "./state/kinHome";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { EnvironmentId, KinChatId, KinOrgId, type KinChatMembersResult } from "@t3tools/contracts";
@@ -268,7 +269,7 @@ function KinGroupDetails(props: {
           deleteGroup({ environmentId, input: { chatId } }),
         ).then((done) => {
           // Back past the group's chat, which no longer exists.
-          if (done) navigation.navigate("KinChats");
+          if (done) navigation.navigate(kinListRoute());
         }),
     });
 

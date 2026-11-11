@@ -39,6 +39,7 @@ import {
   setAgentNotificationPathname,
 } from "./features/agent-awareness/notificationNavigation";
 import {
+  clearAppShortcuts,
   installAppShortcuts,
   recordAppShortcutNavigationState,
 } from "./features/shortcuts/appShortcutsRuntime";
@@ -47,7 +48,14 @@ import {
   installAppearanceRuntime,
   useAppearancePreferences,
 } from "./features/settings/appearance/AppearancePreferencesProvider";
-import { RootStack, rootPathnameFromState, workspaceLocationFromState } from "./Stack";
+import {
+  KIN_ONLY_ROUTES,
+  RootStack,
+  rootPathnameFromState,
+  workspaceLocationFromState,
+} from "./Stack";
+import { KIN_ONLY } from "./lib/kinOnly";
+import { kinOnlyLinkState } from "./lib/kinOnlyRoutes";
 import { appAtomRegistry } from "./state/atom-registry";
 import { subscribeComposerDraftModelReconciliation } from "./state/use-composer-drafts";
 import { environmentThreadShells, threadEnvironment } from "./state/threads";
@@ -112,6 +120,15 @@ const linkingConfig = {
 } as const;
 
 function getAppStateFromPath(path: string, options: Parameters<typeof getStateFromPath>[1]) {
+  if (KIN_ONLY_ROUTES !== null) {
+    // No thread, draft or task links here: whatever isn't a Kin screen opens the chat list.
+    return pipe(
+      kinOnlyLinkState(getStateFromPath(path, options), KIN_ONLY_ROUTES),
+      (state) => restoreSettingsLinkState(state, undefined),
+      withoutPairingTarget,
+      startDevAutoConnect,
+    );
+  }
   return pipe(
     getStateFromPath(path, options),
     (state) => restoreDraftLinkState(state, path),
@@ -134,7 +151,8 @@ const appLinking = {
   ],
   config: { initialRouteName: "Home" },
   filter: (url: string) => shouldHandleAppLink(url, hasCloudPublicConfig()),
-  getInitialURL: async () => (await Linking.getInitialURL()) ?? (await launchWorkspaceURL()),
+  getInitialURL: async () =>
+    (await Linking.getInitialURL()) ?? (KIN_ONLY ? null : await launchWorkspaceURL()),
   getActionFromState: (
     state: Parameters<typeof getActionFromState>[0],
     options: Parameters<typeof getActionFromState>[1],
@@ -163,7 +181,7 @@ const Navigation = createStaticNavigation(RootStack);
 
 function handleNavigationStateChange(state: NavigationState | undefined): void {
   recordWorkspaceSelections(state);
-  presentPendingIncomingShare();
+  if (!KIN_ONLY) presentPendingIncomingShare();
   resolvePendingNewTaskPromptLink(state);
   resolvePendingThreadPromptLink(state);
   if (!state) return;
@@ -195,10 +213,11 @@ const appServiceDisposers = [
   installPermissionUpdateNotice(),
   installThreadOutboxDelivery(),
   installComposerAttachmentUploads(),
-  startIncomingShareInbox(),
+  // Shares and launcher shortcuts both start coding threads, which a Kin-only app doesn't have.
+  ...(KIN_ONLY ? [] : [startIncomingShareInbox()]),
   installKin(linkToAppPath),
   installAgentNotificationNavigation(linkToAppPath),
-  installAppShortcuts(linkToAppPath),
+  ...(KIN_ONLY ? [clearAppShortcuts()] : [installAppShortcuts(linkToAppPath)]),
   installAppUpdateChecks(),
   installShowcaseCapture(rootPathnameFromState),
 ];

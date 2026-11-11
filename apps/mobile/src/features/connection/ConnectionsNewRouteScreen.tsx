@@ -1,3 +1,4 @@
+import { KIN_ONLY } from "../../lib/kinOnly";
 import { ListRow } from "../../components/ui/ListRow";
 import * as Dialog from "../../components/ui/Dialog";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
@@ -182,17 +183,19 @@ function PairingForm({
         navigation.dispatch(StackActions.replace("Home"));
       } else {
         // Added from the Settings list, the new environment shows on Environments.
-        leaveSettingsPage(navigation, workspaceHasColumns(), "SettingsEnvironments");
+        // A Kin-only app has no Environments page to land on.
+        if (KIN_ONLY) navigation.goBack();
+        else leaveSettingsPage(navigation, workspaceHasColumns(), "SettingsEnvironments");
       }
     }
   };
 
   return (
     <SettingsScreen
-      title="Add environment"
+      title={KIN_ONLY ? "Connect to your Kin" : "Add environment"}
       actions={[
         {
-          accessibilityLabel: connecting ? "Connecting" : "Add environment",
+          accessibilityLabel: connecting ? "Connecting" : KIN_ONLY ? "Connect" : "Add environment",
           loading: connecting,
           icon: "checkmark",
           tintColor: headerIconColor,
@@ -217,6 +220,7 @@ function PairingForm({
       >
         <View collapsable={false} className="gap-6.5">
           <PairingScanCard
+            {...(KIN_ONLY ? { caption: "Scan the code the computer running your Kin shows" } : {})}
             cameraActive={cameraPermission?.granted === true && screenFocused && !scanComplete}
             onScan={handleQrScan}
             onScanPress={() => {
@@ -260,11 +264,13 @@ function PairingForm({
               )}
             >
               {pairingConnectionError ??
-                "For machines on your local network or tailnet. The machine keeps its own provider credentials."}
+                (KIN_ONLY
+                  ? "The address and code come from the computer your Kin runs on."
+                  : "For machines on your local network or tailnet. The machine keeps its own provider credentials.")}
             </Text>
           </View>
 
-          {hasCloudPublicConfig() ? <T3ConnectSection /> : null}
+          {hasCloudPublicConfig() && !KIN_ONLY ? <T3ConnectSection /> : null}
         </View>
       </ScrollView>
     </SettingsScreen>

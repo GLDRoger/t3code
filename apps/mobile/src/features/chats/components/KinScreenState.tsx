@@ -1,3 +1,5 @@
+import { KIN_ONLY } from "../../../lib/kinOnly";
+import { KIN_ONLY_NO_HOST, KIN_ONLY_UNAUTHORIZED } from "../kinOnlyCopy";
 import { useNavigation } from "@react-navigation/native";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { ReactNode } from "react";
@@ -84,10 +86,14 @@ export function KinScreenState(props: {
       ) : (
         <EmptyState
           variant="plain"
-          title="No server with Kin yet"
-          detail="Connect this phone to a T3 Code server that has Kin turned on."
-          actionLabel="Open environments"
-          onAction={() => navigation.navigate("SettingsEnvironments")}
+          {...(KIN_ONLY
+            ? { ...KIN_ONLY_NO_HOST, onAction: () => navigation.navigate("SettingsEnvironmentNew") }
+            : {
+                title: "No server with Kin yet",
+                detail: "Connect this phone to a T3 Code server that has Kin turned on.",
+                actionLabel: "Open environments",
+                onAction: () => navigation.navigate("SettingsEnvironments"),
+              })}
         />
       );
     case "unauthorized":
@@ -102,8 +108,12 @@ export function KinScreenState(props: {
       ) : (
         <EmptyState
           variant="plain"
-          title="This phone can't read Kin chats"
-          detail="Pair it again with the computer that runs T3 Code."
+          {...(KIN_ONLY
+            ? KIN_ONLY_UNAUTHORIZED
+            : {
+                title: "This phone can't read Kin chats",
+                detail: "Pair it again with the computer that runs T3 Code.",
+              })}
         />
       );
     case "noIdentity":

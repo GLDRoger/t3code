@@ -4,7 +4,7 @@ import { Pressable, View } from "react-native";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { Chip } from "../../../components/ui/Chip";
 import { cn } from "../../../lib/cn";
-import { useOpenWorkspaceDetail } from "../../layout/useOpenWorkspaceDetail";
+import { useOpenKinThread } from "../state/useOpenKinThread";
 import { PullRequestGlyph } from "../../pull-requests/pullRequestGlyphs";
 import type { KinTaskCardView, KinTaskTone } from "@t3tools/client-runtime/kin/kinCardPresentation";
 
@@ -22,9 +22,9 @@ export const KinTaskCard = memo(function KinTaskCard(props: {
   readonly onOpenLink: (url: string) => void;
 }) {
   const { task } = props;
-  const openDetail = useOpenWorkspaceDetail();
+  const openKinThread = useOpenKinThread();
   const open = task.open;
-  const openThread = open === null ? undefined : () => openDetail({ name: "Thread", params: open });
+  const openThread = open === null ? undefined : () => openKinThread(open);
   const prActions = task.pullRequests.map((pr) => ({ name: pr.url, label: `Open ${pr.label}` }));
 
   return (

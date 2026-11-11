@@ -132,6 +132,17 @@ export function kinAccessEnded(
 
 export type KinHomeTab = "chats" | "work" | "team" | "memory" | "settings";
 
+/** The tabs a Kin home's dock draws. Team and Memory are pages of Settings, not tabs. */
+export type KinDockTab = Extract<KinHomeTab, "chats" | "work" | "settings">;
+
+const isDockTab = (tab: KinHomeTab): tab is KinDockTab =>
+  tab === "chats" || tab === "work" || tab === "settings";
+
+/** Chats, Work and Settings for a session the host lets read Work; Chats and Settings otherwise. */
+export function kinDockTabs(session: SessionGrantInput | null): ReadonlyArray<KinDockTab> {
+  return kinHomeTabs(session).filter(isDockTab);
+}
+
 /**
  * The tabs of a Kin-only home, in order, from what the session has been allowed: a tab whose page
  * the host would refuse is never offered. A teammate's session gets chats and settings.

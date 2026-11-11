@@ -142,6 +142,8 @@ import { deriveLayout } from "./lib/layout";
 import { useNativeLayoutMetrics } from "./native/native-layout-metrics";
 import { isPresentedRoute } from "./native/workspace-stack-projection";
 import { workspaceDetailRouter } from "./features/layout/workspace/workspace-detail-selection";
+import { KIN_ONLY } from "./lib/kinOnly";
+import { kinOnlyRouteNames, kinOnlyScreens } from "./lib/kinOnlyRoutes";
 
 const settingsPage = (title: string) => pageRoute({ title, itemStyle: "standard" });
 
@@ -412,14 +414,20 @@ function RootStackLayout(props: {
         <SettingsEnvironmentFilterProvider open={settingsOpen}>
           <WorkspaceConnectionStatusProvider>
             <AndroidWorkspaceTabsProvider state={props.state}>
-              <AdaptiveWorkspaceLayout
-                pathname={workspaceLocation.pathname}
-                workspaceRouteKey={workspaceLocation.routeKey}
-                workspaceRouteName={workspaceLocation.routeName}
-              >
-                {props.children}
-                <HardwareKeyboardCommandOverlay />
-              </AdaptiveWorkspaceLayout>
+              {KIN_ONLY && Platform.OS === "android" ? (
+                // Android's workspace shell draws the coding rail, sidebar and bottom bar around
+                // every page; without it the pages are a plain stack.
+                props.children
+              ) : (
+                <AdaptiveWorkspaceLayout
+                  pathname={workspaceLocation.pathname}
+                  workspaceRouteKey={workspaceLocation.routeKey}
+                  workspaceRouteName={workspaceLocation.routeName}
+                >
+                  {props.children}
+                  <HardwareKeyboardCommandOverlay />
+                </AdaptiveWorkspaceLayout>
+              )}
             </AndroidWorkspaceTabsProvider>
           </WorkspaceConnectionStatusProvider>
         </SettingsEnvironmentFilterProvider>
@@ -467,6 +475,9 @@ function NotFoundScreen() {
   );
 }
 
+/** The routes a Kin-only build registers; null in a build that also has the coding app. */
+export const KIN_ONLY_ROUTES = KIN_ONLY ? kinOnlyRouteNames(Object.keys(KIN_SCREENS)) : null;
+
 const RootStackConfig = createWorkspaceStackNavigator({
   initialRouteName: "Home",
   UNSTABLE_router: workspaceDetailRouter,
@@ -475,266 +486,274 @@ const RootStackConfig = createWorkspaceStackNavigator({
   screenOptions: {
     headerShown: false,
   },
-  screens: {
-    ...(__DEV__
-      ? {
-          ComponentCatalog: createNativeStackScreen({
-            screen: ComponentCatalogScreen,
-            linking: "dev/components",
-            options: { title: "UI components" },
-          }),
-        }
-      : {}),
-    Home: createNativeStackScreen({
-      screen: AppHomeScreen,
-      linking: "",
-      listeners: {
-        transitionStart: ({ data }) => recordHomeTransitionStart(data.closing),
-        transitionEnd: ({ data }) => recordHomeTransitionEnd(data.closing),
-        focus: recordHomeFocus,
-      },
-      options: {
-        ...pageRoute({ duoMinimize: "never", root: true }),
-        contentStyle: { backgroundColor: "transparent" },
-        ...getCompactBrandHeaderOptions(),
-      },
-    }),
-    PullRequest: createNativeStackScreen({
-      screen: PullRequestRouteScreen,
-      linking: {
-        path: "pull-requests/:environmentId/:projectId/:repository/:number",
-        parse: { number: Number },
-      },
-      options: pageRoute({ duoMinimize: "never" }),
-    }),
-    PullRequestGuideStop: createNativeStackScreen({
-      screen: PullRequestGuideStopScreen,
-      options: pageRoute(),
-    }),
-    PullRequestFile: createNativeStackScreen({
-      screen: PullRequestFileRouteScreen,
-      options: pageRoute(),
-    }),
-    PullRequestFiles: createNativeStackScreen({
-      screen: PullRequestFilesSheet,
-      options: sheetRoute({ detent: 0.6 }),
-    }),
-    PullRequestReviewers: createNativeStackScreen({
-      screen: PullRequestReviewersScreen,
-      options: sheetRoute({ detent: 0.75, itemStyle: "editor", duoMinimize: "never" }),
-    }),
-    PullRequestLabels: createNativeStackScreen({
-      screen: PullRequestLabelsScreen,
-      options: SEARCH_SHEET_ROUTE,
-    }),
-    PullRequestFilterSearch: createNativeStackScreen({
-      screen: PullRequestFilterSearchScreen,
-      options: SEARCH_SHEET_ROUTE,
-    }),
-    PullRequestDiscussion: createNativeStackScreen({
-      screen: PullRequestDiscussionScreen,
-      options: pageRoute(),
-    }),
-    PullRequestInlineComment: createNativeStackScreen({
-      screen: PullRequestInlineCommentScreen,
-      options: sheetRoute({ detent: 0.75, android: "fullScreen" }),
-    }),
-    PullRequestReview: createNativeStackScreen({
-      screen: PullRequestReviewSheet,
-      options: sheetRoute({ detent: 0.75, androidFit: true }),
-    }),
-    PullRequestEdit: createNativeStackScreen({
-      screen: PullRequestEditScreen,
-      options: sheetRoute({ detent: 0.75, androidFit: true }),
-    }),
-    Thread: createNativeStackScreen({
-      screen: ThreadRouteScreen,
-      linking: { path: "threads/:environmentId?/:threadId?", alias: ["new/draft"] },
-      options: pageRoute({ duoMinimize: "onScrollUp" }),
-    }),
-    NewTaskProject: createNativeStackScreen({
-      screen: NewTaskRouteScreen,
-      linking: { path: "new", alias: ["new/project"] },
-      options: pageRoute({ title: "Choose project" }),
-    }),
-    NewTaskEnvironment: createNativeStackScreen({
-      linking: "new/draft/environment",
-      screen: NewTaskEnvironmentPickerRouteScreen,
-      options: pageRoute({ title: "Environment" }),
-    }),
-    NewTaskBranch: createNativeStackScreen({
-      linking: "new/draft/branch",
-      screen: NewTaskBranchPickerRouteScreen,
-      options: pageRoute({ title: "Branch" }),
-    }),
-    AddProject: createNativeStackScreen({
-      linking: "new/add-project",
-      screen: AddProjectSourceRoute,
-
-      options: pageRoute({ title: "Add project" }),
-    }),
-    AddProjectRepository: createNativeStackScreen({
-      linking: "new/add-project/repository",
-      screen: AddProjectRepositoryRoute,
-      options: pageRoute(),
-    }),
-    AddProjectDestination: createNativeStackScreen({
-      linking: "new/add-project/destination",
-      screen: AddProjectDestinationRoute,
-      options: pageRoute(),
-    }),
-    AddProjectLocal: createNativeStackScreen({
-      linking: "new/add-project/local",
-      screen: AddProjectLocalRoute,
-      options: pageRoute(),
-    }),
-    AddProjectNew: createNativeStackScreen({
-      linking: "new/add-project/new",
-      screen: AddProjectNewRoute,
-      options: pageRoute(),
-    }),
-    NewTaskFiles: createNativeStackScreen({
-      linking: "new/draft/files",
-      screen: ThreadFilesTreeScreen,
-      options: pageRoute({ header: "solid" }),
-    }),
-    NewTaskFile: createNativeStackScreen({
-      linking: "new/draft/files/:path*",
-      screen: ThreadFileScreen,
-      options: pageRoute({ header: "solid" }),
-    }),
-    NewTaskAttachment: createNativeStackScreen({
-      screen: AttachmentFileScreen,
-      linking: "new/draft/attachments/:attachmentId",
-      options: pageRoute({ header: "solid" }),
-    }),
-    NewTaskThreadSettings: createNativeStackScreen({
-      screen: NewTaskThreadSettingsRouteScreen,
-      linking: "new/draft/settings",
-      options: THREAD_SETTINGS_ROUTE,
-    }),
-    ThreadTerminal: createNativeStackScreen({
-      screen: ThreadTerminalRouteScreen,
-      linking: `${THREAD_LINKING_PREFIX}/terminal`,
-      options: pageRoute({ header: "solid" }),
-    }),
-    ThreadInspectorFullscreen: createNativeStackScreen({
-      screen: FullscreenThreadRouteScreen,
-      options: modalRoute({ header: "glass", itemStyle: "editor", duoMinimize: "onScrollUp" }),
-    }),
-    ThreadDevicePreview: createNativeStackScreen({
-      screen: DevicePreviewRouteScreen,
-      linking: `${THREAD_LINKING_PREFIX}/devices`,
-      options: immersiveRoute({ hideSystemBars: true }),
-    }),
-    ThreadBrowserPreview: createNativeStackScreen({
-      screen: BrowserPreviewRouteScreen,
-      linking: `${THREAD_LINKING_PREFIX}/browser`,
-      options: { ...modalRoute({ header: "solid" }), gestureEnabled: false },
-    }),
-    ThreadReview: createNativeStackScreen({
-      screen: ReviewSheet,
-      linking: `${THREAD_LINKING_PREFIX}/review`,
-      options: pageRoute(),
-    }),
-    ThreadReviewComment: createNativeStackScreen({
-      screen: ReviewCommentComposerSheet,
-      linking: `${THREAD_LINKING_PREFIX}/review-comment`,
-      options: sheetRoute({ detent: 0.55, android: "fullScreen" }),
-    }),
-    ThreadFiles: createNativeStackScreen({
-      screen: ThreadFilesTreeScreen,
-      linking: `${THREAD_LINKING_PREFIX}/files`,
-      options: pageRoute({ title: "Files" }),
-    }),
-    ThreadFile: createNativeStackScreen({
-      screen: ThreadFileScreen,
-      linking: `${THREAD_LINKING_PREFIX}/files/:path*`,
-      options: pageRoute(),
-    }),
-    ThreadMcpApp: createNativeStackScreen({
-      screen: McpAppFullscreenScreen,
-      linking: `${THREAD_LINKING_PREFIX}/apps/:itemId`,
-      options: { ...modalRoute({ header: "solid" }), gestureEnabled: false },
-    }),
-    ThreadAttachment: createNativeStackScreen({
-      screen: AttachmentFileScreen,
-      linking: `${THREAD_LINKING_PREFIX}/attachments/:attachmentId`,
-      options: pageRoute({ header: "solid" }),
-    }),
-    ThreadSettingsSheet: createNativeStackScreen({
-      screen: ExistingThreadSettingsRouteScreen,
-      options: THREAD_SETTINGS_ROUTE,
-    }),
-    ThreadQueue: createNativeStackScreen({
-      screen: ThreadQueueSheet,
-      options: sheetRoute({ detent: 0.65, androidMaxDetent: 0.95 }),
-    }),
-    ThreadBackgroundWork: createNativeStackScreen({
-      screen: ThreadBackgroundWorkSheet,
-      options: sheetRoute({ detent: 0.5, androidMaxDetent: 0.9 }),
-    }),
-    ThreadAgents: createNativeStackScreen({
-      screen: ThreadAgentsSheet,
-      options: sheetRoute({ detent: 0.5, androidMaxDetent: 0.9 }),
-    }),
-    GitOverview: createNativeStackScreen({
-      screen: GitOverviewSheet,
-      linking: `${THREAD_LINKING_PREFIX}/git`,
-      options: sheetRoute({ detent: 0.55 }),
-    }),
-    ThreadPullRequests: createNativeStackScreen({
-      screen: ThreadPullRequestsSheet,
-      linking: `${THREAD_LINKING_PREFIX}/pull-requests`,
-      options: sheetRoute({ detent: 0.55 }),
-    }),
-    GitCommit: createNativeStackScreen({
-      screen: GitCommitSheet,
-      linking: `${THREAD_LINKING_PREFIX}/git/commit`,
-      options: sheetRoute({ detent: 0.8, androidFit: true }),
-    }),
-    GitBranches: createNativeStackScreen({
-      screen: GitBranchesSheet,
-      linking: `${THREAD_LINKING_PREFIX}/git/branches`,
-      options: sheetRoute({ detent: 0.55, androidFit: true }),
-    }),
-    GitConfirm: createNativeStackScreen({
-      screen: GitConfirmSheet,
-      linking: `${THREAD_LINKING_PREFIX}/git-confirm`,
-      options: sheetRoute({ detent: 0.55, maxDetent: 0.7, androidFit: true }),
-    }),
-    ...SETTINGS_SCREENS,
-    ...KIN_SCREENS,
-    SettingsLegal: createNativeStackScreen({
-      screen: SettingsLegalRouteScreen,
-      linking: "settings/legal",
-      options: modalRoute({ header: "solid", title: "Legal" }),
-    }),
-    ConnectOnboarding: createNativeStackScreen({
-      screen: ConnectOnboardingRouteScreen,
-      linking: "connect-onboarding",
-      options: sheetRoute({
-        title: "Set up T3 Connect",
-        header: "solid",
-        detent: 0.6,
-        androidMaxDetent: 0.95,
+  screens: kinOnlyScreens(
+    {
+      ...(__DEV__
+        ? {
+            ComponentCatalog: createNativeStackScreen({
+              screen: ComponentCatalogScreen,
+              linking: "dev/components",
+              options: { title: "UI components" },
+            }),
+          }
+        : {}),
+      Home: createNativeStackScreen({
+        screen: AppHomeScreen,
+        linking: "",
+        listeners: {
+          transitionStart: ({ data }) => recordHomeTransitionStart(data.closing),
+          transitionEnd: ({ data }) => recordHomeTransitionEnd(data.closing),
+          focus: recordHomeFocus,
+        },
+        options: {
+          ...pageRoute({ duoMinimize: "never", root: true }),
+          contentStyle: { backgroundColor: "transparent" },
+          ...getCompactBrandHeaderOptions(),
+        },
       }),
-    }),
-    Connections: createNativeStackScreen({
-      screen: ConnectionsRouteScreen,
-      linking: "connections",
-      options: sheetRoute({ title: "Environments", detent: 0.55, maxDetent: 0.7, android: "card" }),
-    }),
-    ConnectionsNew: createNativeStackScreen({
-      screen: ConnectionsNewRouteScreen,
-      linking: "connections/new",
-      options: sheetRoute({ title: "Add Environment", detent: 0.55, maxDetent: 0.7 }),
-    }),
-    NotFound: createNativeStackScreen({
-      screen: NotFoundScreen,
-      linking: "*",
-    }),
-  },
+      PullRequest: createNativeStackScreen({
+        screen: PullRequestRouteScreen,
+        linking: {
+          path: "pull-requests/:environmentId/:projectId/:repository/:number",
+          parse: { number: Number },
+        },
+        options: pageRoute({ duoMinimize: "never" }),
+      }),
+      PullRequestGuideStop: createNativeStackScreen({
+        screen: PullRequestGuideStopScreen,
+        options: pageRoute(),
+      }),
+      PullRequestFile: createNativeStackScreen({
+        screen: PullRequestFileRouteScreen,
+        options: pageRoute(),
+      }),
+      PullRequestFiles: createNativeStackScreen({
+        screen: PullRequestFilesSheet,
+        options: sheetRoute({ detent: 0.6 }),
+      }),
+      PullRequestReviewers: createNativeStackScreen({
+        screen: PullRequestReviewersScreen,
+        options: sheetRoute({ detent: 0.75, itemStyle: "editor", duoMinimize: "never" }),
+      }),
+      PullRequestLabels: createNativeStackScreen({
+        screen: PullRequestLabelsScreen,
+        options: SEARCH_SHEET_ROUTE,
+      }),
+      PullRequestFilterSearch: createNativeStackScreen({
+        screen: PullRequestFilterSearchScreen,
+        options: SEARCH_SHEET_ROUTE,
+      }),
+      PullRequestDiscussion: createNativeStackScreen({
+        screen: PullRequestDiscussionScreen,
+        options: pageRoute(),
+      }),
+      PullRequestInlineComment: createNativeStackScreen({
+        screen: PullRequestInlineCommentScreen,
+        options: sheetRoute({ detent: 0.75, android: "fullScreen" }),
+      }),
+      PullRequestReview: createNativeStackScreen({
+        screen: PullRequestReviewSheet,
+        options: sheetRoute({ detent: 0.75, androidFit: true }),
+      }),
+      PullRequestEdit: createNativeStackScreen({
+        screen: PullRequestEditScreen,
+        options: sheetRoute({ detent: 0.75, androidFit: true }),
+      }),
+      Thread: createNativeStackScreen({
+        screen: ThreadRouteScreen,
+        linking: { path: "threads/:environmentId?/:threadId?", alias: ["new/draft"] },
+        options: pageRoute({ duoMinimize: "onScrollUp" }),
+      }),
+      NewTaskProject: createNativeStackScreen({
+        screen: NewTaskRouteScreen,
+        linking: { path: "new", alias: ["new/project"] },
+        options: pageRoute({ title: "Choose project" }),
+      }),
+      NewTaskEnvironment: createNativeStackScreen({
+        linking: "new/draft/environment",
+        screen: NewTaskEnvironmentPickerRouteScreen,
+        options: pageRoute({ title: "Environment" }),
+      }),
+      NewTaskBranch: createNativeStackScreen({
+        linking: "new/draft/branch",
+        screen: NewTaskBranchPickerRouteScreen,
+        options: pageRoute({ title: "Branch" }),
+      }),
+      AddProject: createNativeStackScreen({
+        linking: "new/add-project",
+        screen: AddProjectSourceRoute,
+
+        options: pageRoute({ title: "Add project" }),
+      }),
+      AddProjectRepository: createNativeStackScreen({
+        linking: "new/add-project/repository",
+        screen: AddProjectRepositoryRoute,
+        options: pageRoute(),
+      }),
+      AddProjectDestination: createNativeStackScreen({
+        linking: "new/add-project/destination",
+        screen: AddProjectDestinationRoute,
+        options: pageRoute(),
+      }),
+      AddProjectLocal: createNativeStackScreen({
+        linking: "new/add-project/local",
+        screen: AddProjectLocalRoute,
+        options: pageRoute(),
+      }),
+      AddProjectNew: createNativeStackScreen({
+        linking: "new/add-project/new",
+        screen: AddProjectNewRoute,
+        options: pageRoute(),
+      }),
+      NewTaskFiles: createNativeStackScreen({
+        linking: "new/draft/files",
+        screen: ThreadFilesTreeScreen,
+        options: pageRoute({ header: "solid" }),
+      }),
+      NewTaskFile: createNativeStackScreen({
+        linking: "new/draft/files/:path*",
+        screen: ThreadFileScreen,
+        options: pageRoute({ header: "solid" }),
+      }),
+      NewTaskAttachment: createNativeStackScreen({
+        screen: AttachmentFileScreen,
+        linking: "new/draft/attachments/:attachmentId",
+        options: pageRoute({ header: "solid" }),
+      }),
+      NewTaskThreadSettings: createNativeStackScreen({
+        screen: NewTaskThreadSettingsRouteScreen,
+        linking: "new/draft/settings",
+        options: THREAD_SETTINGS_ROUTE,
+      }),
+      ThreadTerminal: createNativeStackScreen({
+        screen: ThreadTerminalRouteScreen,
+        linking: `${THREAD_LINKING_PREFIX}/terminal`,
+        options: pageRoute({ header: "solid" }),
+      }),
+      ThreadInspectorFullscreen: createNativeStackScreen({
+        screen: FullscreenThreadRouteScreen,
+        options: modalRoute({ header: "glass", itemStyle: "editor", duoMinimize: "onScrollUp" }),
+      }),
+      ThreadDevicePreview: createNativeStackScreen({
+        screen: DevicePreviewRouteScreen,
+        linking: `${THREAD_LINKING_PREFIX}/devices`,
+        options: immersiveRoute({ hideSystemBars: true }),
+      }),
+      ThreadBrowserPreview: createNativeStackScreen({
+        screen: BrowserPreviewRouteScreen,
+        linking: `${THREAD_LINKING_PREFIX}/browser`,
+        options: { ...modalRoute({ header: "solid" }), gestureEnabled: false },
+      }),
+      ThreadReview: createNativeStackScreen({
+        screen: ReviewSheet,
+        linking: `${THREAD_LINKING_PREFIX}/review`,
+        options: pageRoute(),
+      }),
+      ThreadReviewComment: createNativeStackScreen({
+        screen: ReviewCommentComposerSheet,
+        linking: `${THREAD_LINKING_PREFIX}/review-comment`,
+        options: sheetRoute({ detent: 0.55, android: "fullScreen" }),
+      }),
+      ThreadFiles: createNativeStackScreen({
+        screen: ThreadFilesTreeScreen,
+        linking: `${THREAD_LINKING_PREFIX}/files`,
+        options: pageRoute({ title: "Files" }),
+      }),
+      ThreadFile: createNativeStackScreen({
+        screen: ThreadFileScreen,
+        linking: `${THREAD_LINKING_PREFIX}/files/:path*`,
+        options: pageRoute(),
+      }),
+      ThreadMcpApp: createNativeStackScreen({
+        screen: McpAppFullscreenScreen,
+        linking: `${THREAD_LINKING_PREFIX}/apps/:itemId`,
+        options: { ...modalRoute({ header: "solid" }), gestureEnabled: false },
+      }),
+      ThreadAttachment: createNativeStackScreen({
+        screen: AttachmentFileScreen,
+        linking: `${THREAD_LINKING_PREFIX}/attachments/:attachmentId`,
+        options: pageRoute({ header: "solid" }),
+      }),
+      ThreadSettingsSheet: createNativeStackScreen({
+        screen: ExistingThreadSettingsRouteScreen,
+        options: THREAD_SETTINGS_ROUTE,
+      }),
+      ThreadQueue: createNativeStackScreen({
+        screen: ThreadQueueSheet,
+        options: sheetRoute({ detent: 0.65, androidMaxDetent: 0.95 }),
+      }),
+      ThreadBackgroundWork: createNativeStackScreen({
+        screen: ThreadBackgroundWorkSheet,
+        options: sheetRoute({ detent: 0.5, androidMaxDetent: 0.9 }),
+      }),
+      ThreadAgents: createNativeStackScreen({
+        screen: ThreadAgentsSheet,
+        options: sheetRoute({ detent: 0.5, androidMaxDetent: 0.9 }),
+      }),
+      GitOverview: createNativeStackScreen({
+        screen: GitOverviewSheet,
+        linking: `${THREAD_LINKING_PREFIX}/git`,
+        options: sheetRoute({ detent: 0.55 }),
+      }),
+      ThreadPullRequests: createNativeStackScreen({
+        screen: ThreadPullRequestsSheet,
+        linking: `${THREAD_LINKING_PREFIX}/pull-requests`,
+        options: sheetRoute({ detent: 0.55 }),
+      }),
+      GitCommit: createNativeStackScreen({
+        screen: GitCommitSheet,
+        linking: `${THREAD_LINKING_PREFIX}/git/commit`,
+        options: sheetRoute({ detent: 0.8, androidFit: true }),
+      }),
+      GitBranches: createNativeStackScreen({
+        screen: GitBranchesSheet,
+        linking: `${THREAD_LINKING_PREFIX}/git/branches`,
+        options: sheetRoute({ detent: 0.55, androidFit: true }),
+      }),
+      GitConfirm: createNativeStackScreen({
+        screen: GitConfirmSheet,
+        linking: `${THREAD_LINKING_PREFIX}/git-confirm`,
+        options: sheetRoute({ detent: 0.55, maxDetent: 0.7, androidFit: true }),
+      }),
+      ...SETTINGS_SCREENS,
+      ...KIN_SCREENS,
+      SettingsLegal: createNativeStackScreen({
+        screen: SettingsLegalRouteScreen,
+        linking: "settings/legal",
+        options: modalRoute({ header: "solid", title: "Legal" }),
+      }),
+      ConnectOnboarding: createNativeStackScreen({
+        screen: ConnectOnboardingRouteScreen,
+        linking: "connect-onboarding",
+        options: sheetRoute({
+          title: "Set up T3 Connect",
+          header: "solid",
+          detent: 0.6,
+          androidMaxDetent: 0.95,
+        }),
+      }),
+      Connections: createNativeStackScreen({
+        screen: ConnectionsRouteScreen,
+        linking: "connections",
+        options: sheetRoute({
+          title: "Environments",
+          detent: 0.55,
+          maxDetent: 0.7,
+          android: "card",
+        }),
+      }),
+      ConnectionsNew: createNativeStackScreen({
+        screen: ConnectionsNewRouteScreen,
+        linking: "connections/new",
+        options: sheetRoute({ title: "Add Environment", detent: 0.55, maxDetent: 0.7 }),
+      }),
+      NotFound: createNativeStackScreen({
+        screen: NotFoundScreen,
+        linking: "*",
+      }),
+    },
+    KIN_ONLY_ROUTES,
+  ),
 });
 
 function GuardedScreenLayout(props: {

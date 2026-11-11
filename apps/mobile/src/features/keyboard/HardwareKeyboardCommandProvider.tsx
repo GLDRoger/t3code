@@ -1,3 +1,4 @@
+import { KIN_ONLY } from "../../lib/kinOnly";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { Platform } from "react-native";
 import { resolveThreadReferenceCopyTarget } from "@t3tools/client-runtime/thread-reference";
@@ -106,8 +107,11 @@ export function HardwareKeyboardCommandProvider({
   );
   const enabledCommands = useMemo(() => {
     const commands = new Set<HardwareKeyboardCommand>(getRegisteredHardwareKeyboardCommands());
-    commands.add("newTask");
-    commands.add("commandPalette");
+    // New task and the palette's commands are all about coding threads.
+    if (!KIN_ONLY) {
+      commands.add("newTask");
+      commands.add("commandPalette");
+    }
     if (pathname !== "/" && !pathname.startsWith("/threads/")) {
       for (const command of commands) {
         if (command.startsWith("thread.jump.")) commands.delete(command);

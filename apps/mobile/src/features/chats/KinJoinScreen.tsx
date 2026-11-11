@@ -26,7 +26,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { rootNavigationRef } from "../../lib/rootNavigation";
 import { PairingScanCard } from "../connection/ConnectionsNewRouteScreen";
-import { readKinAppShell } from "./state/kinChatOnly";
+import { readKinIsHome } from "./state/kinHome";
 import { joinKin, readKinJoinStanding } from "./state/kinJoin";
 
 export type KinJoinParams = { readonly link?: string };
@@ -57,7 +57,7 @@ function KinJoinForm(props: { readonly openedLink: string }) {
   const target = kinJoinTarget(text);
 
   const openChats = () => {
-    if (readKinAppShell() !== "chatOnly") {
+    if (!readKinIsHome()) {
       navigation.dispatch(StackActions.replace("KinChats"));
       // A first join already restarted Home as the Kin list, and this sheet went with it.
     } else if (rootNavigationRef.canGoBack()) {
