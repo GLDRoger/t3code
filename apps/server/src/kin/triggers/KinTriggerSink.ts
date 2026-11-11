@@ -1,6 +1,7 @@
 import * as KinEnabled from "../KinEnabled.ts";
 import {
   CanonicalUtcTimestamp,
+  type CommandId,
   KinTriggerFireId,
   KinTriggerFired,
   ScheduledTaskWebhookDeliveryId,
@@ -22,6 +23,7 @@ import { configuredGithubMemoryRepo } from "../memory/MemoryConfig.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as KinTriggerStore from "./KinTriggerStore.ts";
+import { KIN_TASK_PREFIX } from "./taskIds.ts";
 
 const Delivery = Schema.Struct({ receivedAt: CanonicalUtcTimestamp });
 const decodeDelivery = Schema.decodeUnknownEffect(Delivery);
@@ -32,6 +34,101 @@ export class KinTriggerSinkRefused extends Schema.TaggedError<KinTriggerSinkRefu
   "KinTriggerSinkRefused",
   { scheduledTaskId: Schema.String, reason: Schema.Literal("no_source") },
 ) {}
+
+/**
+ * A native task is Kin's when its stored id carries Kin's command prefix or a `kin_schedules` row
+ * names it, never by its prompt. A failed lookup counts as Kin's, so it refuses rather than runs.
+ */
+const isKinTask = (sql: SqlClient.SqlClient, taskId: string) =>
+  taskId.startsWith(KIN_TASK_PREFIX)
+    ? Effect.succeed(true)
+    : sql<{ present: number }>`SELECT EXISTS (SELECT 1 FROM sqlite_master
+        WHERE type = 'table' AND name = 'kin_schedules') AS present`.pipe(
+        Effect.flatMap(([row]) =>
+          row?.present === 1
+            ? sql`SELECT 1 FROM kin_schedules WHERE task_id = ${taskId}`.pipe(
+                Effect.map((rows) => rows.length > 0),
+              )
+            : Effect.succeed(false),
+        ),
+        Effect.catchCause(() => Effect.succeed(true)),
+      );
+
+const refusedLaunch = (input: ThreadLaunchService.ThreadLaunchInput, why: string) =>
+  Effect.logWarning(`Kin scheduled task refused: ${why}`).pipe(
+    Effect.annotateLogs({ scheduledTaskId: input.initialMessage?.scheduledTaskId }),
+    Effect.andThen(
+      Effect.fail(
+        new ThreadLaunchService.ThreadLaunchError({
+          operation: "dispatch-message",
+          commandId: input.commandId,
+          projectId: input.projectId,
+          cause: new Error(`Kin scheduled task refused: ${why}`),
+        }),
+      ),
+    ),
+  );
+
+const refusedSend = (
+  input: { readonly commandId: CommandId; readonly scheduledTaskId?: string | undefined },
+  commandType: string,
+  why: string,
+) =>
+  Effect.logWarning(`Kin scheduled task refused: ${why}`).pipe(
+    Effect.annotateLogs({ scheduledTaskId: input.scheduledTaskId }),
+    Effect.andThen(
+      Effect.fail(
+        new OrchestratorCommandRejectedError({
+          commandId: input.commandId,
+          commandType,
+          cause: new Error(`Kin scheduled task refused: ${why}`),
+        }),
+      ),
+    ),
+  );
+
+/** Kin off: ordinary tasks run as always; Kin's own refuse instead of launching a bare thread. */
+const kinOwnedRefused = <E, R, E2, R2>(
+  inner: Layer.Layer<ThreadLaunchService.ThreadLaunchService, E, R>,
+  threads: Layer.Layer<ThreadManagementService.ThreadManagementService, E2, R2>,
+  why: string,
+) =>
+  Layer.mergeAll(
+    Layer.effect(
+      ThreadLaunchService.ThreadLaunchService,
+      Effect.gen(function* () {
+        const service = yield* ThreadLaunchService.ThreadLaunchService;
+        const sql = yield* SqlClient.SqlClient;
+        return ThreadLaunchService.ThreadLaunchService.of({
+          ...service,
+          launch: Effect.fn("KinTriggerSink.offLaunch")(function* (input) {
+            const taskId = input.initialMessage?.scheduledTaskId;
+            if (taskId !== undefined && (yield* isKinTask(sql, taskId)))
+              return yield* refusedLaunch(input, why);
+            return yield* service.launch(input);
+          }),
+        });
+      }),
+    ),
+    Layer.effect(
+      ThreadManagementService.ThreadManagementService,
+      Effect.gen(function* () {
+        const service = yield* ThreadManagementService.ThreadManagementService;
+        const sql = yield* SqlClient.SqlClient;
+        return ThreadManagementService.ThreadManagementService.of({
+          ...service,
+          sendToThread: Effect.fn("KinTriggerSink.offSend")(function* (input) {
+            if (
+              input.scheduledTaskId !== undefined &&
+              (yield* isKinTask(sql, input.scheduledTaskId))
+            )
+              return yield* refusedSend(input, "kin.trigger.disabled", why);
+            return yield* service.sendToThread(input);
+          }),
+        });
+      }),
+    ),
+  ).pipe(Layer.provide(Layer.mergeAll(inner, threads)));
 
 // Shared with the upstream contract test so the tripwire pins exactly what the sink reads.
 // Any agent can re-save a task, so its shape is rechecked per delivery and the secret is
@@ -91,12 +188,16 @@ const make = Effect.gen(function* () {
         if (taskId === undefined) return;
         const source = yield* store.sourceByTaskId(taskId);
         if (source === undefined) {
-          // Kin's task id is deterministic, so a delivery racing remove still refuses to launch.
-          if (taskId.startsWith(KinTriggerStore.KIN_WEBHOOK_TASK_PREFIX))
+          // Kin's task ids are deterministic, so a fire racing a remove still refuses to launch.
+          if (yield* isKinTask(sql, taskId)) {
+            yield* Effect.logWarning("Kin scheduled task refused: no Kin source for it").pipe(
+              Effect.annotateLogs({ scheduledTaskId: taskId }),
+            );
             return yield* new KinTriggerSinkRefused({
               scheduledTaskId: taskId,
               reason: "no_source",
             });
+          }
           return;
         }
         const prefix = `scheduled-task:${taskId}:webhook:`;
@@ -202,6 +303,7 @@ export function wrapTaskDispatch<E, R, E2, R2>(
       Effect.gen(function* () {
         const service = yield* ThreadManagementService.ThreadManagementService;
         const store = yield* KinTriggerStore.KinTriggerStore;
+        const sql = yield* SqlClient.SqlClient;
         return ThreadManagementService.ThreadManagementService.of({
           ...service,
           sendToThread: Effect.fn("KinTriggerSink.sendToThread")(function* (input) {
@@ -221,10 +323,7 @@ export function wrapTaskDispatch<E, R, E2, R2>(
                 ),
               ),
             );
-            if (
-              source === undefined &&
-              !input.scheduledTaskId.startsWith(KinTriggerStore.KIN_WEBHOOK_TASK_PREFIX)
-            )
+            if (source === undefined && !(yield* isKinTask(sql, input.scheduledTaskId)))
               return yield* service.sendToThread(input);
             yield* Effect.logWarning("Kin trigger sources must stay unbound new_thread tasks").pipe(
               Effect.annotateLogs({ scheduledTaskId: input.scheduledTaskId }),
@@ -249,10 +348,13 @@ export function wrapTaskDispatch<E, R, E2, R2>(
           ThreadLaunchService.ThreadLaunchService,
           Effect.gen(function* () {
             const service = yield* ThreadLaunchService.ThreadLaunchService;
+            const sql = yield* SqlClient.SqlClient;
             return ThreadLaunchService.ThreadLaunchService.of({
               ...service,
               launch: Effect.fn("KinTriggerSink.disabledLaunch")(function* (input) {
                 const taskId = input.initialMessage?.scheduledTaskId;
+                if (taskId !== undefined && (yield* isKinTask(sql, taskId)))
+                  return yield* refusedLaunch(input, "Kin is unavailable");
                 if (
                   taskId === undefined ||
                   !input.commandId.startsWith(`scheduled-task:${taskId}:webhook:`)
@@ -278,12 +380,16 @@ export function wrapTaskDispatch<E, R, E2, R2>(
               sendToThread: Effect.fn("KinTriggerSink.disabledSend")(function* (input) {
                 if (input.scheduledTaskId === undefined) return yield* service.sendToThread(input);
                 const webhook =
-                  yield* sql`SELECT 1 FROM scheduled_tasks WHERE task_id = ${input.scheduledTaskId}
+                  (yield* isKinTask(sql, input.scheduledTaskId)) ||
+                  (yield* sql`SELECT 1 FROM scheduled_tasks WHERE task_id = ${input.scheduledTaskId}
                   AND json_extract(schedule_json, '$.type') = 'webhook'`.pipe(
                     Effect.map((rows) => rows.length > 0),
                     Effect.catchCause(() => Effect.succeed(true)),
-                  );
+                  ));
                 if (!webhook) return yield* service.sendToThread(input);
+                yield* Effect.logWarning("Kin scheduled task refused: Kin is unavailable").pipe(
+                  Effect.annotateLogs({ scheduledTaskId: input.scheduledTaskId }),
+                );
                 return yield* new OrchestratorCommandRejectedError({
                   commandId: input.commandId,
                   commandType: "kin.trigger.disabled",
@@ -302,9 +408,13 @@ export function wrapTaskDispatch<E, R, E2, R2>(
       ThreadLaunchService.ThreadLaunchService,
       Effect.gen(function* () {
         const service = yield* ThreadLaunchService.ThreadLaunchService;
+        const sql = yield* SqlClient.SqlClient;
         return ThreadLaunchService.ThreadLaunchService.of({
           ...service,
           launch: Effect.fn("KinTriggerSink.degradedLaunch")(function* (input) {
+            const taskId = input.initialMessage?.scheduledTaskId;
+            if (taskId !== undefined && (yield* isKinTask(sql, taskId)))
+              return yield* refusedLaunch(input, "Kin is unavailable");
             if (
               input.initialMessage?.scheduledTaskId !== undefined &&
               input.commandId.startsWith(
@@ -326,9 +436,15 @@ export function wrapTaskDispatch<E, R, E2, R2>(
       ThreadManagementService.ThreadManagementService,
       Effect.gen(function* () {
         const service = yield* ThreadManagementService.ThreadManagementService;
+        const sql = yield* SqlClient.SqlClient;
         return ThreadManagementService.ThreadManagementService.of({
           ...service,
           sendToThread: Effect.fn("KinTriggerSink.degradedSend")(function* (input) {
+            if (
+              input.scheduledTaskId !== undefined &&
+              (yield* isKinTask(sql, input.scheduledTaskId))
+            )
+              return yield* refusedSend(input, "kin.trigger.unavailable", "Kin is unavailable");
             if (
               input.scheduledTaskId !== undefined &&
               input.commandId.startsWith(`scheduled-task:${input.scheduledTaskId}:webhook:`)
@@ -362,7 +478,7 @@ export function wrapTaskDispatch<E, R, E2, R2>(
                   ),
                 ),
               )
-            : Layer.mergeAll(inner, threads),
+            : kinOwnedRefused(inner, threads, "Kin is off"),
       ),
     ),
   ).pipe(Layer.provide(KinEnabled.layer));

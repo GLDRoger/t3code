@@ -15,6 +15,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
@@ -719,4 +720,105 @@ it.effect("does not relabel a core dispatch layer failure as a Kin startup failu
     );
     assert.strictEqual(result, failure);
   }).pipe(Effect.provide(Sqlite.layerMemory)),
+);
+
+it.effect(
+  "never launches a Kin time task as a bare thread: Kin off, Kin failed, or no Kin row",
+  () =>
+    Effect.gen(function* () {
+      const kinTask = ScheduledTaskId.make("scheduled-task:kin:schedule:org-a:sch-invented");
+      const ordinary = ScheduledTaskId.make("ordinary-task");
+      for (const mode of ["off", "failed", "no_row"] as const) {
+        const launches: ThreadLaunchService.ThreadLaunchInput[] = [];
+        const sends: string[] = [];
+        const logs: unknown[] = [];
+        const inner = Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+          launch: (input) =>
+            Effect.sync(() => {
+              launches.push(input);
+              return {
+                threadId: projection(orgA).thread.id,
+                projection: projection(orgA),
+                resumed: false,
+              };
+            }),
+        });
+        const management = Layer.mock(ThreadManagementService.ThreadManagementService)({
+          getThreadProjection: () => Effect.succeed(projection(orgA)),
+          sendToThread: (input) =>
+            Effect.sync(() => {
+              sends.push(input.scheduledTaskId ?? "unscheduled");
+              return { threadId: projection(orgA).thread.id };
+            }),
+        });
+        yield* Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          // A migration that cannot run fails Kin's layer, not the server.
+          if (mode === "failed") yield* sql`CREATE TABLE kin_orgs (broken TEXT)`;
+          yield* Effect.gen(function* () {
+            const launcher = yield* ThreadLaunchService.ThreadLaunchService;
+            const threads = yield* ThreadManagementService.ThreadManagementService;
+            const fire = (taskId: ScheduledTaskId) => ({
+              commandId: CommandId.make(`scheduled-task:${taskId}:1794009600000:scheduled`),
+              projectId: ProjectId.make("kin:org-a:agent-org-a"),
+              title: "Check the invented report",
+              modelSelection: { instanceId: ProviderInstanceId.make("claude"), model: "test" },
+              runtimeMode: "approval-required" as const,
+              interactionMode: "plan" as const,
+              workspaceStrategy: { type: "root" as const },
+              initialMessage: { scheduledTaskId: taskId, text: "Owner words", attachments: [] },
+              createdBy: "system" as const,
+              creationSource: "server" as const,
+            });
+            const bound = (taskId: ScheduledTaskId) =>
+              threads.sendToThread({
+                projectId: ProjectId.make("project"),
+                commandId: CommandId.make(`scheduled-task:${taskId}:1:scheduled`),
+                threadId: projection(orgA).thread.id,
+                messageId: MessageId.make(`message-${taskId}`),
+                text: "Owner words",
+                attachments: [],
+                scheduledTaskId: taskId,
+                mode: "queue",
+                createdBy: "system",
+                creationSource: "server",
+              });
+            const refused = yield* launcher.launch(fire(kinTask)).pipe(Effect.flip);
+            assert.strictEqual(refused._tag, "ThreadLaunchError", mode);
+            assert.lengthOf(launches, 0, mode);
+            assert.strictEqual(
+              (yield* bound(kinTask).pipe(Effect.flip))._tag,
+              "OrchestratorCommandRejectedError",
+              mode,
+            );
+            assert.deepStrictEqual(sends, [], mode);
+            // The developer's own tasks keep launching and sending as before.
+            yield* launcher.launch(fire(ordinary));
+            yield* bound(ordinary);
+            assert.deepStrictEqual(
+              launches.map((input) => input.initialMessage?.scheduledTaskId),
+              [ordinary],
+              mode,
+            );
+            assert.deepStrictEqual(sends, [ordinary], mode);
+          }).pipe(
+            Effect.provide(
+              KinTriggerSink.wrapTaskDispatch(inner, management).pipe(
+                Layer.provide(
+                  ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: mode !== "off" })),
+                ),
+              ),
+            ),
+          );
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              Sqlite.layerMemory,
+              Logger.layer([Logger.make((entry) => void logs.push(entry.message))]),
+            ),
+          ),
+        );
+        assert.include(JSON.stringify(logs), "Kin scheduled task refused", mode);
+      }
+    }),
 );
