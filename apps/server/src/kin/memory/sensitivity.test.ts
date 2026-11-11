@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off -- node:fs reads sources for the authorise guard.
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
