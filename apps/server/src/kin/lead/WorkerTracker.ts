@@ -434,7 +434,9 @@ const make = Effect.gen(function* () {
     const refused = (reason: string) => ({ refused: `Kin didn't publish ${branch}: ${reason}.` });
     if (Option.isNone(publisher))
       return refused(
-        "this host has no Kin GitHub App, so the commits stay in the worker environment",
+        local === undefined
+          ? "this host has no Kin GitHub App, so the commits stay in the worker environment"
+          : "this host has no Kin GitHub App, so the changes stay in the worker's worktree",
       );
     if (worker.repositoryKey === null || worktreePath === null)
       return refused("the worker has no repository or worktree to publish from");
