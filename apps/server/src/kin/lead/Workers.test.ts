@@ -78,7 +78,7 @@ import { LOCAL_BUILD_ONLY, LOCAL_DIRECT_ONLY } from "./localWorkers.ts";
 import { localThreadId } from "./workThread.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import * as OwnerWork from "../work/ownerWork.ts";
-import { pullRequestMerged } from "../work/workerEntries.ts";
+import { pullRequestMerged, WORK_NOT_YOURS } from "../work/workerEntries.ts";
 import { WITHDRAWN_WORK } from "../work/workPrompt.ts";
 
 const leadThread = ThreadId.make("lead-thread");
@@ -248,7 +248,18 @@ const fakeWorkers = () => {
     sent: Effect.Effect<void>;
     /** Runs once a wait sees the latest run ended, before it answers. */
     ended: Effect.Effect<void>;
-  } = { afterLaunch: Effect.void, launched: Effect.void, sent: Effect.void, ended: Effect.void };
+    /** Runs just before the publisher asks Kin to admit a write. */
+    beforeWrite: (step: Publish.PublishStep) => Effect.Effect<void>;
+    /** Runs once every write is made, before the publisher answers. */
+    afterWrites: Effect.Effect<void>;
+  } = {
+    afterLaunch: Effect.void,
+    launched: Effect.void,
+    sent: Effect.void,
+    ended: Effect.void,
+    beforeWrite: () => Effect.void,
+    afterWrites: Effect.void,
+  };
   const signal = (thread: RemoteThread) => {
     const previous = thread.changed;
     thread.changed = Deferred.makeUnsafe<void>();
@@ -487,17 +498,23 @@ const fakeWorkers = () => {
     calls.filter((call) => call.tool === name).map((call) => call.params);
   /** Kin's own publisher, which pushes from here, never the worker. */
   const published: Array<Record<string, unknown>> = [];
+  /** The writes it made, each only once Kin admitted it. */
+  const writes: Array<Publish.PublishStep> = [];
   const publisher = Publish.KinWorkerPublish.of({
     publish: (input) =>
-      Effect.suspend(() => {
+      Effect.gen(function* () {
         published.push(input);
-        return state.publishRefusal === undefined
-          ? Effect.succeed({
-              url: "https://github.com/acme/app/pull/9",
-              number: 9,
-              sha: "a".repeat(40),
-            })
-          : Effect.fail(new Publish.KinWorkerPublishRefused({ reason: state.publishRefusal }));
+        if (state.publishRefusal !== undefined)
+          return yield* new Publish.KinWorkerPublishRefused({ reason: state.publishRefusal });
+        const steps: ReadonlyArray<Publish.PublishStep> =
+          input.local === undefined ? ["push", "pull_request"] : ["commit", "push", "pull_request"];
+        for (const step of steps) {
+          yield* hooks.beforeWrite(step);
+          yield* input.admit(step);
+          writes.push(step);
+        }
+        yield* hooks.afterWrites;
+        return { url: "https://github.com/acme/app/pull/9", number: 9, sha: "a".repeat(40) };
       }),
   });
   return {
@@ -511,6 +528,7 @@ const fakeWorkers = () => {
     seed,
     tools,
     published,
+    writes,
     publisher,
   };
 };
@@ -584,6 +602,12 @@ const fakeLocal = () => {
   const interrupted: Array<ThreadId> = [];
   /** `fail`: T3 refuses the interrupt; `late`: the run goes on after it, as a turn finishing. */
   const interrupts = { fail: false, late: false };
+  const hooks = {
+    /** Runs as the delegate checks its base, after the row commits and before the launch. */
+    base: Effect.void as Effect.Effect<void>,
+    /** Runs inside the launch, before its thread exists. */
+    launching: Effect.void as Effect.Effect<void>,
+  };
   let changed = Deferred.makeUnsafe<void>();
   const signal = () => {
     const previous = changed;
@@ -597,6 +621,7 @@ const fakeLocal = () => {
       return ThreadLaunchService.ThreadLaunchService.of({
         launch: (input) =>
           Effect.gen(function* () {
+            yield* hooks.launching;
             launches.push(input);
             const threadId = input.threadId!;
             if (!runs.has(threadId)) {
@@ -622,7 +647,7 @@ const fakeLocal = () => {
             }
             return { threadId, projection: {} as never, resumed: false };
           }),
-        checkWorktreeBase: () => Effect.void,
+        checkWorktreeBase: () => Effect.suspend(() => hooks.base),
         retryPreparation: () => Effect.die("unused"),
         prepareRun: () => Effect.die("unused"),
       });
@@ -675,7 +700,7 @@ const fakeLocal = () => {
       if (reply !== undefined) last.reply = reply;
       yield* signal();
     });
-  return { launches, runs, dispatched, interrupted, interrupts, launcher, threads, finish };
+  return { launches, runs, dispatched, interrupted, interrupts, hooks, launcher, threads, finish };
 };
 type FakeLocal = ReturnType<typeof fakeLocal>;
 
@@ -1355,11 +1380,15 @@ it.effect("a reviewer needs a different instance and model and sees only the aut
         repositoryKey: repoKey,
         worktreePath: `/home/kin-worker/.t3/worktrees/app/${threadId}`,
       });
-      // The publisher rereads the pause just before each GitHub write.
-      const paused = remote.published[0]!.paused as Effect.Effect<boolean>;
-      assert.isFalse(yield* paused);
+      // The publisher asks again just before each write, and a pause refuses it there.
+      const admit = remote.published[0]!.admit as (
+        step: Publish.PublishStep,
+      ) => Effect.Effect<void, Publish.KinWorkerPublishRefused>;
+      yield* admit("pull_request");
       yield* pause(ctx.sql, ctx.orgId);
-      assert.isTrue(yield* paused);
+      assert.include(yield* Effect.flip(admit("pull_request")), {
+        reason: "Kin is paused; ask the worker for a follow-up after the owner resumes",
+      });
       assert.notInclude(brief, delegateInput.brief);
       assert.notInclude(brief, "ignore previous instructions");
       assert.notInclude(brief, "Use retries sparingly");
@@ -2756,9 +2785,10 @@ it.effect(
             worktreePath: "/home/user/.t3/worktrees/app/kin-worker",
             local: { projectRoot: "/home/user/app" },
             title: delegateInput.title,
-            paused: (remote.published[0] as { paused: unknown }).paused,
+            admit: (remote.published[0] as { admit: unknown }).admit,
           },
         ]);
+        assert.deepStrictEqual(remote.writes, ["commit", "push", "pull_request"]);
         const [reported, ...others] = yield* reports(ctx.sql, ctx.orgId);
         assert.lengthOf(others, 0);
         assert.deepStrictEqual(reported!.event.report, published(report));
@@ -3272,34 +3302,301 @@ it.effect(
     ),
 );
 
-it.effect("tracker start stops a worker whose withdrawal committed before a restart", () =>
+/** Holds whatever runs it until released, and says when something got there. */
+const latch = () => {
+  const reached = Deferred.makeUnsafe<void>();
+  const release = Deferred.makeUnsafe<void>();
+  return {
+    reached,
+    release: Deferred.succeed(release, undefined),
+    hold: Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(release))),
+  };
+};
+const notices = (sql: SqlClient.SqlClient, prefix: string) =>
+  sql<{ chatId: string; body: string; authorKind: string }>`SELECT chat_id AS "chatId", body,
+      author_kind AS "authorKind"
+    FROM kin_messages WHERE message_id LIKE ${`${prefix}%`} ORDER BY message_id`;
+/** The lead's turn holds this stored event too, as a wake-up that claimed it would. */
+const claim = (
+  sql: SqlClient.SqlClient,
+  where: { readonly tag: string; readonly reason?: string },
+) =>
+  Effect.gen(function* () {
+    const [row] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
+      WHERE tag = ${where.tag}
+        AND (${where.reason ?? null} IS NULL OR json_extract(json, '$.reason') = ${where.reason ?? null})
+      ORDER BY received_at DESC, event_id LIMIT 1`;
+    yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = 'wake'
+      WHERE event_id = ${row!.eventId}`;
+    return row!.eventId;
+  });
+
+it.effect.each([
+  ["the local commit", "commit", []],
+  ["the push", "push", ["commit"]],
+  ["the pull request", "pull_request", ["commit", "push"]],
+  ["recording it", "recorded", ["commit", "push", "pull_request"]],
+] as const)(
+  "a withdrawal that lands while Kin publishes, before %s, writes nothing after it, ends the work stopped, and tells the owner what reached GitHub",
+  ([, step, writes]) =>
+    run(({ ctx, remote, local, workers, tracker }) =>
+      Effect.gen(function* () {
+        yield* goLocal(ctx, remote);
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        const held = latch();
+        if (step === "recorded") remote.hooks.afterWrites = held.hold;
+        else remote.hooks.beforeWrite = (at) => (at === step ? held.hold : Effect.void);
+        yield* local.finish(localThreadId(workerId), "completed", reportReply);
+        yield* Deferred.await(held.reached);
+        const entry = yield* entryOf(ctx);
+        yield* ownerSets(ctx, entry.key, "done");
+        yield* held.release;
+        yield* settled(tracker, ctx.orgId, workerId);
+        assert.deepStrictEqual(remote.writes, [...writes]);
+        assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "interrupted");
+        assert.isNotNull((yield* cards(ctx.sql, ctx.orgId))[0]!.closedAt);
+        const branch = `kin/worker/${workerId}`;
+        assert.deepStrictEqual(
+          (yield* notices(ctx.sql, "kin-stop-published:")).map((notice) => notice.body),
+          step === "pull_request"
+            ? [
+                `Kin stopped the work on ${entry.key}, but it had already pushed ${branch} to acme/app on GitHub. Kin opened no pull request and left the branch as it is; delete it on GitHub if you don't want it.`,
+              ]
+            : step === "recorded"
+              ? [
+                  `Kin stopped the work on ${entry.key}, but it had already published it as https://github.com/acme/app/pull/9 from ${branch}. Kin left both as they are; close the pull request on GitHub if you don't want it.`,
+                ]
+              : [],
+        );
+        assert.lengthOf(yield* notices(ctx.sql, "kin-stop-failed:"), 0);
+      }),
+    ),
+);
+
+it.effect(
+  "a lead's stop of a remote worker that lands between its push and its pull request opens no pull request",
+  () =>
+    run(({ ctx, remote, workers, tracker }) =>
+      Effect.gen(function* () {
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        const threadId = (yield* workerRow(ctx.sql, ctx.orgId, workerId)).threadId;
+        const held = latch();
+        remote.hooks.beforeWrite = (at) => (at === "pull_request" ? held.hold : Effect.void);
+        yield* remote.finish(ThreadId.make(threadId), "completed", reportReply);
+        yield* Deferred.await(held.reached);
+        assert.deepStrictEqual(yield* workers.stop(scope, { workerId }), {
+          workerId,
+          stopped: false,
+        });
+        yield* held.release;
+        yield* settled(tracker, ctx.orgId, workerId);
+        assert.deepStrictEqual(remote.writes, ["push"]);
+        assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "interrupted");
+        assert.deepStrictEqual(yield* notices(ctx.sql, "kin-stop-published:"), [
+          {
+            chatId: ctx.chat.chatId,
+            body: `Kin stopped the work on "${delegateInput.title}", but it had already pushed kin/worker/${workerId} to acme/app on GitHub. Kin opened no pull request and left the branch as it is; delete it on GitHub if you don't want it.`,
+            authorKind: "system",
+          },
+        ]);
+      }),
+    ),
+);
+
+it.effect(
+  "a restart replays a withdrawal on the attempts it covered only, never on work started after a reopen, and only until it settles",
+  () =>
+    run(({ ctx, remote, local, workers, tracker }) =>
+      Effect.gen(function* () {
+        yield* goLocal(ctx, remote);
+        const first = yield* workers.delegate(scope, delegateInput);
+        const entry = yield* entryOf(ctx);
+        // The stop fails, so the first worker stays open and the owner is told once.
+        local.interrupts.fail = true;
+        yield* ownerSets(ctx, entry.key, "done");
+        local.interrupts.fail = false;
+        assert.lengthOf(yield* notices(ctx.sql, "kin-stop-failed:"), 1);
+        // The owner reopens it, and the lead starts a second attempt on it.
+        yield* ownerSets(ctx, entry.key, "doing");
+        const second = yield* workers.delegate(scope, {
+          ...delegateInput,
+          title: "Second try",
+          entry: entry.key,
+        });
+        // Failed and told: a restart doesn't replay it.
+        yield* tracker.start;
+        assert.deepStrictEqual(local.interrupted, []);
+        // As if the process had died before the stop ran.
+        yield* ctx.sql`UPDATE kin_worker_withdrawals SET state = 'pending'`;
+        yield* tracker.start;
+        assert.deepStrictEqual(local.interrupted, [localThreadId(first.workerId)]);
+        yield* settled(tracker, ctx.orgId, first.workerId);
+        assert.strictEqual(
+          (yield* workerRow(ctx.sql, ctx.orgId, first.workerId)).status,
+          "interrupted",
+        );
+        assert.strictEqual(
+          (yield* workerRow(ctx.sql, ctx.orgId, second.workerId)).status,
+          "queued",
+        );
+        // Settled now: the next start stops nothing.
+        yield* tracker.start;
+        assert.deepStrictEqual(local.interrupted, [localThreadId(first.workerId)]);
+        assert.lengthOf(yield* notices(ctx.sql, "kin-stop-failed:"), 1);
+        assert.lengthOf(remote.published, 0);
+      }).pipe(Effect.scoped),
+    ),
+);
+
+it.effect(
+  "a withdrawal between a local worker's row and its launch means no launch, and the row ends stopped",
+  () =>
+    run(({ ctx, remote, local, workers }) =>
+      Effect.gen(function* () {
+        yield* goLocal(ctx, remote);
+        const held = latch();
+        local.hooks.base = held.hold;
+        const delegating = yield* workers
+          .delegate(scope, delegateInput)
+          .pipe(Effect.flip, Effect.forkChild);
+        yield* Deferred.await(held.reached);
+        yield* ownerSets(ctx, (yield* entryOf(ctx)).key, "done");
+        yield* held.release;
+        assert.include(yield* Fiber.join(delegating), {
+          reason: "not_allowed",
+          message: Tracker.STOPPED_BEFORE_START,
+        });
+        assert.lengthOf(local.launches, 0);
+        const [row] = yield* ctx.sql<{ workerId: KinWorkerId; status: string }>`SELECT
+          worker_id AS "workerId", status FROM kin_workers WHERE agent_id = ${leadId}
+          ORDER BY worker_id`;
+        assert.strictEqual(row!.status, "interrupted");
+        const [reported] = yield* reports(ctx.sql, ctx.orgId);
+        assert.strictEqual(
+          reported!.event.report.summary,
+          "Kin stopped this worker before it started.",
+        );
+        assert.lengthOf(yield* notices(ctx.sql, "kin-stop-failed:"), 0);
+      }),
+    ),
+);
+
+it.effect("a withdrawal during a local worker's launch stops the thread it made", () =>
   run(({ ctx, remote, local, workers, tracker }) =>
     Effect.gen(function* () {
       yield* goLocal(ctx, remote);
-      const { workerId } = yield* workers.delegate(scope, delegateInput);
-      const entry = yield* entryOf(ctx);
-      // What the owner's change left behind when the process died before its stop ran.
-      const event = {
-        _tag: "record.changed",
-        orgId: ctx.orgId,
-        agentId: leadId,
-        eventId: "withdrawn-event",
-        receivedAt: "1970-01-01T00:00:00.000Z",
-        dedupeKey: "record-withdrawn:x:7",
-        provenance: { _tag: "system" },
-        recordId: entry.recordId,
-        key: entry.key,
-        seq: 7,
-        reason: "withdrawn",
-      };
-      yield* ctx.sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state)
-        VALUES ('withdrawn-event', ${ctx.orgId}, ${leadId}, 'record.changed', 'P1', ${JSON.stringify(event)}, 0, 0, 'queued')`;
-      yield* tracker.start;
-      yield* settled(tracker, ctx.orgId, workerId);
+      const held = latch();
+      local.hooks.launching = held.hold;
+      const delegating = yield* workers.delegate(scope, delegateInput).pipe(Effect.forkChild);
+      yield* Deferred.await(held.reached);
+      yield* ownerSets(ctx, (yield* entryOf(ctx)).key, "done");
+      assert.lengthOf(local.interrupted, 0);
+      yield* held.release;
+      const { workerId } = yield* Fiber.join(delegating);
       assert.deepStrictEqual(local.interrupted, [localThreadId(workerId)]);
+      yield* settled(tracker, ctx.orgId, workerId);
       assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "interrupted");
       assert.lengthOf(remote.published, 0);
-    }).pipe(Effect.scoped),
+      assert.lengthOf(yield* notices(ctx.sql, "kin-stop-failed:"), 0);
+    }),
+  ),
+);
+
+it.effect(
+  "an owner's withdrawal, a closed entry, or a stopped worker's report never starts local work; an assignment does",
+  () =>
+    run(({ ctx, remote, local, workers, tracker }) =>
+      Effect.gen(function* () {
+        yield* goLocal(ctx, remote);
+        const first = yield* workers.delegate(scope, delegateInput);
+        const entry = yield* entryOf(ctx);
+        yield* ownerSets(ctx, entry.key, "done");
+        yield* settled(tracker, ctx.orgId, first.workerId);
+        const again = { ...delegateInput, title: "Again" };
+        const withdrawn = yield* claim(ctx.sql, { tag: "record.changed", reason: "withdrawn" });
+        assert.include(
+          yield* Effect.flip(workers.delegate(scope, { ...again, sourceEventId: withdrawn })),
+          { reason: "not_allowed", message: LOCAL_DIRECT_ONLY },
+        );
+        assert.include(
+          yield* Effect.flip(workers.delegate(scope, { ...again, entry: entry.key })),
+          { reason: "not_allowed", message: WORK_NOT_YOURS },
+        );
+        const report = yield* claim(ctx.sql, { tag: "worker.report" });
+        assert.include(
+          yield* Effect.flip(workers.delegate(scope, { ...again, sourceEventId: report })),
+          { reason: "not_allowed", message: LOCAL_DIRECT_ONLY },
+        );
+        assert.lengthOf(local.launches, 1);
+        // Given back by the owner, the entry is the lead's to work again.
+        yield* ownerSets(ctx, entry.key, "doing");
+        const assigned = yield* claim(ctx.sql, { tag: "record.changed", reason: "assigned" });
+        yield* workers.delegate(scope, { ...again, sourceEventId: assigned, entry: entry.key });
+        assert.lengthOf(local.launches, 2);
+      }),
+    ),
+);
+
+it.effect(
+  "in the worker environment too, a withdrawal or a withdrawn worker's report starts no work",
+  () =>
+    run(({ ctx, remote, workers, tracker }) =>
+      Effect.gen(function* () {
+        const first = yield* workers.delegate(scope, delegateInput);
+        const entry = yield* entryOf(ctx);
+        yield* ownerSets(ctx, entry.key, "done");
+        yield* settled(tracker, ctx.orgId, first.workerId);
+        const again = { ...delegateInput, title: "Again" };
+        for (const sourceEventId of [
+          yield* claim(ctx.sql, { tag: "record.changed", reason: "withdrawn" }),
+          yield* claim(ctx.sql, { tag: "worker.report" }),
+          "lead-event",
+        ])
+          assert.include(
+            yield* Effect.flip(
+              workers.delegate(scope, {
+                ...again,
+                sourceEventId,
+                ...(sourceEventId === "lead-event" ? { entry: entry.key } : {}),
+              }),
+            ),
+            { reason: "not_allowed", message: WORK_NOT_YOURS },
+          );
+        assert.lengthOf(remote.tools("t3_thread_launch"), 1);
+        // Nor does a follow-up restart the worker the owner's withdrawal stopped.
+        assert.include(
+          yield* Effect.flip(
+            workers.followUp(scope, {
+              workerId: first.workerId,
+              brief: "Carry on.",
+              sourceEventId: "lead-event",
+            }),
+          ),
+          { reason: "not_allowed", message: WORK_NOT_YOURS },
+        );
+        assert.lengthOf(remote.tools("t3_thread_send"), 0);
+      }),
+    ),
+);
+
+it.effect("a stopped attempt leaves its entry doing while another attempt at it still runs", () =>
+  run(({ ctx, remote, local, workers, tracker }) =>
+    Effect.gen(function* () {
+      yield* goLocal(ctx, remote);
+      const first = yield* workers.delegate(scope, delegateInput);
+      const entry = yield* entryOf(ctx);
+      const second = yield* workers.delegate(scope, {
+        ...delegateInput,
+        title: "Second try",
+        entry: entry.key,
+      });
+      yield* local.finish(localThreadId(first.workerId), "failed");
+      yield* settled(tracker, ctx.orgId, first.workerId);
+      assert.strictEqual((yield* entryOf(ctx)).state, "doing");
+      yield* local.finish(localThreadId(second.workerId), "interrupted");
+      yield* settled(tracker, ctx.orgId, second.workerId);
+      assert.strictEqual((yield* entryOf(ctx)).state, "open");
+    }),
   ),
 );
 

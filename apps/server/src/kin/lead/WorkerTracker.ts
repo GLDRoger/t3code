@@ -67,6 +67,9 @@ export const endedStatuses = new Set<OrchestrationV2RunStatus>([
   "rolled_back",
 ]);
 const stoppedStatuses = new Set<OrchestrationV2RunStatus>(["interrupted", "cancelled"]);
+/** What a lead hears when its launch lost to a stop: the row ends stopped and nothing ran. */
+export const STOPPED_BEFORE_START =
+  "This work was stopped before it started, so nothing started. Don't start it again unless the owner asks.";
 
 /** Retry policy for the tracker's start and a follower that lost its link; tests swap it. */
 export const WorkerTrackerRetry = Context.Reference<Schedule.Schedule<unknown, unknown>>(
@@ -158,9 +161,49 @@ const decodeWorker = Schema.decodeUnknownEffect(WorkerRow);
 const isChatError = Schema.is(KinChatError);
 const isMcpFailure = Schema.is(OrchestratorMcpFailure);
 const STOP_FAILED = "The worker could not be stopped. Retry or tell the owner.";
-const WITHDRAWN_REASON = "The owner closed this work or took it back.";
+export const WITHDRAWN_REASON = "The owner closed this work or took it back.";
+const PAUSED_REFUSAL = "Kin is paused; ask the worker for a follow-up after the owner resumes";
+const STOPPED_REFUSAL = "the worker was stopped first";
 const stopFailedNotice = (key: string) =>
   `Kin couldn't stop the work on ${key} after you closed it or took it back, so it may still be running. Open its thread to stop it there.`;
+const leadStopFailedNotice = (title: string) =>
+  `Kin couldn't stop "${title}" when its lead asked, so it may still be running. Open its thread to stop it there.`;
+/** What a stop found already on GitHub; Kin never deletes or rewrites it. */
+const publishedBeforeStopNotice = (
+  what: string,
+  branch: string,
+  wrote: { readonly url: string } | { readonly pushedTo: string },
+) =>
+  "url" in wrote
+    ? `Kin stopped the work on ${what}, but it had already published it as ${wrote.url} from ${branch}. Kin left both as they are; close the pull request on GitHub if you don't want it.`
+    : `Kin stopped the work on ${what}, but it had already pushed ${branch} to ${wrote.pushedTo} on GitHub. Kin opened no pull request and left the branch as it is; delete it on GitHub if you don't want it.`;
+/**
+ * One worker attempt's stop against its launch and its writes. Each side takes its step in one
+ * synchronous check, so whichever comes first is the order: a stop taken first means no launch
+ * and no write starts; a write admitted first finishes, and the stop says what it left.
+ */
+type Fence = {
+  stop?: {
+    readonly reason: string;
+    readonly key: string;
+    /** Tells the owner the stop didn't land; runs at most once. */
+    readonly failed: (cause: unknown) => Effect.Effect<void>;
+  };
+  /** Its launch was admitted and hasn't returned: that launch's end reaches the thread. */
+  launching: boolean;
+  /** The stop reached the thread, or was tried and the owner was told it didn't. */
+  reached: boolean;
+  /** Publish writes admitted, in order. */
+  readonly admitted: Array<Publish.PublishStep>;
+  /** The last admission was refused, so every admitted write had finished. */
+  refused: boolean;
+  /** Its completed run is being recorded as it ended, with what its publish left on GitHub. */
+  closed?: {
+    readonly left: { readonly url: string } | { readonly pushedTo: string } | undefined;
+  };
+};
+const attemptKey = (attempt: { readonly workerId: KinWorkerId; readonly startedAt: number }) =>
+  `${attempt.workerId}:${attempt.startedAt}`;
 const decodeAuthor = Schema.decodeUnknownEffect(KinAuthor);
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeSelection = Schema.decodeUnknownEffect(Schema.fromJsonString(ModelSelection));
@@ -195,7 +238,24 @@ export class WorkerTracker extends Context.Service<
       readonly reason: string;
       /** The stop's command id there and here, so a retry is the same stop. */
       readonly key: string;
+      /** The attempt to stop; a newer one is left alone. Without it, the current attempt. */
+      readonly startedAt?: number;
+      /** Tells the owner when the stop can't land after this returned. */
+      readonly failed?: (cause: unknown) => Effect.Effect<void>;
     }) => Effect.Effect<{ readonly stopped: boolean }, KinChatError | OrchestratorMcpFailure>;
+    /**
+     * Runs a worker's launch unless a stop of that attempt came first; then nothing launches,
+     * the row ends stopped, and this is `None`. A stop during the launch reaches the thread it
+     * made as soon as it returns. `launch` binds the row to the thread before it succeeds.
+     */
+    readonly launch: <A, E>(
+      attempt: {
+        readonly orgId: KinOrgId;
+        readonly workerId: KinWorkerId;
+        readonly startedAt: number;
+      },
+      launch: Effect.Effect<A, E>,
+    ) => Effect.Effect<Option.Option<A>, E | KinChatError | OrchestratorMcpFailure>;
     readonly start: Effect.Effect<void, never, Scope.Scope>;
   }
 >()("t3/kin/lead/WorkerTracker") {}
@@ -219,8 +279,15 @@ const make = Effect.gen(function* () {
   // Followers live as long as this service, so shutting down stops them.
   const followers = yield* Scope.Scope;
   const bootedAt = yield* Clock.currentTimeMillis;
-  // Stopped by Kin or its lead: however its run ends, nothing of it is published.
-  const stopping = new Set<KinWorkerId>();
+  const fences = new Map<string, Fence>();
+  const fenceOf = (attempt: { readonly workerId: KinWorkerId; readonly startedAt: number }) => {
+    const key = attemptKey(attempt);
+    const found = fences.get(key);
+    if (found !== undefined) return found;
+    const made: Fence = { launching: false, reached: false, admitted: [], refused: false };
+    fences.set(key, made);
+    return made;
+  };
 
   const workerRow = Effect.fn("WorkerTracker.workerRow")(function* (
     orgId: KinOrgId,
@@ -433,7 +500,14 @@ const make = Effect.gen(function* () {
           WHERE org_id = ${worker.orgId} AND worker_id = ${worker.workerId}
             AND started_at = ${worker.startedAt} RETURNING worker_id`;
         if (updated.length === 0) return false;
-        yield* sql.afterCommit(Effect.sync(() => void stopping.delete(worker.workerId)));
+        // This attempt's fence stays, so a stop that raced this record still reads what it left.
+        yield* sql.afterCommit(
+          Effect.sync(() => {
+            for (const key of fences.keys())
+              if (key.startsWith(`${worker.workerId}:`) && key !== attemptKey(worker))
+                fences.delete(key);
+          }),
+        );
         // Routed from the row as stored now, never the one read before the wait there.
         const current = yield* workerRow(worker.orgId, worker.workerId);
         if (current === undefined) return false;
@@ -496,8 +570,26 @@ const make = Effect.gen(function* () {
       Effect.provideService(SqlClient.SqlClient, sql),
       Effect.orElseSucceed(() => true),
     );
-    if (yield* paused)
-      return refused("Kin is paused; ask the worker for a follow-up after the owner resumes");
+    if (yield* paused) return refused(PAUSED_REFUSAL);
+    const fence = fenceOf(worker);
+    // Each write is admitted in the same step that reads the stop, so they can't interleave.
+    const admit = Effect.fn("WorkerTracker.admit")(function* (step: Publish.PublishStep) {
+      const reason = (yield* paused)
+        ? PAUSED_REFUSAL
+        : (yield* stopRequested(worker).pipe(Effect.orElseSucceed(() => true)))
+          ? STOPPED_REFUSAL
+          : undefined;
+      const admitted = yield* Effect.sync(() => {
+        if (reason !== undefined || fence.stop !== undefined) {
+          fence.refused = true;
+          return false;
+        }
+        fence.admitted.push(step);
+        return true;
+      });
+      if (!admitted)
+        return yield* new Publish.KinWorkerPublishRefused({ reason: reason ?? STOPPED_REFUSAL });
+    });
     const pull = yield* publisher.value
       .publish({
         workerId: worker.workerId,
@@ -505,7 +597,7 @@ const make = Effect.gen(function* () {
         worktreePath,
         ...(local === undefined ? {} : { local }),
         title: worker.title ?? "Kin worker",
-        paused,
+        admit,
       })
       .pipe(Effect.result);
     if (pull._tag === "Failure") {
@@ -563,9 +655,117 @@ const make = Effect.gen(function* () {
     return false;
   });
 
-  /** A run that finished after Kin stopped its worker counts as stopped, so it isn't published. */
-  const halted = (worker: WorkerRow, status: OrchestrationV2RunStatus): OrchestrationV2RunStatus =>
-    status === "completed" && stopping.has(worker.workerId) ? "interrupted" : status;
+  /** The owner's withdrawal of this attempt, stored with it, so it outlives a restart. */
+  const withdrawalOf = Effect.fn("WorkerTracker.withdrawalOf")(function* (attempt: {
+    readonly orgId: KinOrgId;
+    readonly workerId: KinWorkerId;
+    readonly startedAt: number;
+  }) {
+    const [row] = yield* sql<{
+      agentId: KinAgentId;
+      recordId: string;
+      key: string;
+      seq: number;
+      state: string;
+    }>`
+      SELECT agent_id AS "agentId", record_id AS "recordId", record_key AS key, seq, state
+      FROM kin_worker_withdrawals WHERE org_id = ${attempt.orgId}
+        AND worker_id = ${attempt.workerId} AND started_at = ${attempt.startedAt}
+      ORDER BY seq DESC LIMIT 1`;
+    return row === undefined ? undefined : { orgId: attempt.orgId, ...row };
+  });
+  /** Whether this attempt was stopped: here, or by a withdrawal stored before a restart. */
+  const stopRequested = Effect.fn("WorkerTracker.stopRequested")(function* (worker: WorkerRow) {
+    if (fences.get(attemptKey(worker))?.stop !== undefined) return true;
+    const withdrawal = yield* withdrawalOf(worker);
+    if (withdrawal === undefined) return false;
+    const fence = fenceOf(worker);
+    if (fence.stop === undefined) {
+      fence.stop = {
+        reason: WITHDRAWN_REASON,
+        key: `kin-withdrawn:${worker.workerId}:${withdrawal.seq}:${bootedAt}`,
+        failed: (cause) => stopFailed(withdrawal, cause),
+      };
+      // A stop that failed and was told is not sent again; it still bars publishing.
+      fence.reached ||= withdrawal.state === "failed";
+    }
+    return true;
+  });
+  /**
+   * Sends this attempt's stop to its thread once, when the stop itself couldn't: its launch was
+   * under way, its thread unknown, or the process restarted. A failure tells the owner.
+   */
+  const reach = Effect.fn("WorkerTracker.reach")(function* <E>(
+    worker: WorkerRow,
+    send: (stop: NonNullable<Fence["stop"]>) => Effect.Effect<unknown, E>,
+  ) {
+    const fence = fenceOf(worker);
+    const stop = fence.stop;
+    if (stop === undefined || fence.reached) return;
+    fence.reached = true;
+    yield* send(stop).pipe(Effect.catchCause((cause) => stop.failed(cause)));
+  });
+  /** No thread, and none will start now that the stop came first: the attempt ends stopped. */
+  const stoppedBeforeStart = Effect.fn("WorkerTracker.stoppedBeforeStart")(function* (
+    worker: WorkerRow,
+  ) {
+    const here =
+      worker.environmentId ??
+      (Option.isSome(environment)
+        ? yield* environment.value.getEnvironmentId
+        : EnvironmentId.make("local"));
+    return yield* record(worker, {
+      key: `worker-stopped:${worker.workerId}:${worker.startedAt}`,
+      status: "interrupted",
+      endedAt: yield* Clock.currentTimeMillis,
+      report: blocked(worker, here, "Kin stopped this worker before it started."),
+    });
+  });
+  /** What the publish left on GitHub, from the writes the fence admitted and how it ended. */
+  const leftOnGitHub = (
+    worker: WorkerRow,
+    published: { readonly url: string } | { readonly refused: string } | undefined,
+  ) => {
+    const fence = fences.get(attemptKey(worker));
+    if (fence === undefined || published === undefined) return undefined;
+    if ("url" in published) return { url: published.url };
+    const finished = fence.refused ? fence.admitted : fence.admitted.slice(0, -1);
+    return finished.includes("push")
+      ? { pushedTo: worker.repositoryKey?.replace(/^github\.com\//i, "") ?? "GitHub" }
+      : undefined;
+  };
+  /**
+   * The last look before a completed run is recorded, taken in one step with the stop: a stop
+   * already there makes it stopped, and a stop after it reads what this attempt left.
+   */
+  const closeCompleted = Effect.fn("WorkerTracker.closeCompleted")(function* (
+    worker: WorkerRow,
+    left: ReturnType<typeof leftOnGitHub>,
+  ) {
+    yield* stopRequested(worker).pipe(Effect.orElseSucceed(() => true));
+    const fence = fenceOf(worker);
+    return yield* Effect.sync(() => {
+      if (fence.stop !== undefined) return true;
+      fence.closed = { left };
+      return false;
+    });
+  });
+
+  /**
+   * A completed run's status as recorded: stopped when a stop came while it was read or
+   * published, and then the owner hears what had already reached GitHub.
+   */
+  const stoppedSince = Effect.fn("WorkerTracker.stoppedSince")(function* (
+    worker: WorkerRow,
+    status: OrchestrationV2RunStatus,
+    published: { readonly url: string } | { readonly refused: string } | undefined,
+  ) {
+    if (status !== "completed") return status;
+    const left = leftOnGitHub(worker, published);
+    if (!(yield* closeCompleted(worker, left))) return status;
+    if (left !== undefined) yield* publishedBeforeStop(worker, left);
+    return "interrupted" as const;
+  });
 
   /** One wait on the worker's thread there; true once its latest run is reported. */
   const followOnce = Effect.fn("WorkerTracker.followOnce")(function* (
@@ -580,6 +780,16 @@ const make = Effect.gen(function* () {
     if (worker.environmentId === null) return true;
     const environmentId = worker.environmentId;
     if (!isBound(worker)) return yield* reconcile(worker, environmentId);
+    const stoppedFirst = yield* stopRequested(worker);
+    if (stoppedFirst)
+      yield* reach(worker, (stop) =>
+        WorkerEnvironment.stopThere(env, {
+          environmentId,
+          threadId: worker.threadId,
+          key: stop.key,
+          reason: stop.reason,
+        }),
+      );
     // The worker's own tasks there wake it for its answer, which the report waits for.
     const waited = yield* env.call(environmentId, WorkerEnvironment.tools.wait, {
       threadId: worker.threadId,
@@ -618,6 +828,7 @@ const make = Effect.gen(function* () {
       );
     if (waited.timedOut) return false;
     if (waited.runId === null) {
+      if (yield* stopRequested(worker)) return yield* stoppedBeforeStart(worker);
       const now = yield* Clock.currentTimeMillis;
       return yield* record(worker, {
         key: `worker-abandoned:${worker.workerId}:${worker.startedAt}`,
@@ -630,7 +841,9 @@ const make = Effect.gen(function* () {
     if (waited.status === "idle" || !endedStatuses.has(waited.status)) return false;
     if (read.thread.activeRunId !== null || read.thread.latestRunId !== waited.runId) return false;
     const answer = waited.resultRun ?? { runId: waited.runId, status: waited.status };
-    const status = halted(worker, endedStatuses.has(answer.status) ? answer.status : "failed");
+    const ended = endedStatuses.has(answer.status) ? answer.status : "failed";
+    // A run that finished after Kin stopped its worker counts as stopped, so it isn't published.
+    const status = ended === "completed" && (yield* stopRequested(worker)) ? "interrupted" : ended;
     const reply =
       status === "completed"
         ? yield* WorkerEnvironment.lastReply(env, environmentId, worker.threadId, answer.runId)
@@ -658,7 +871,7 @@ const make = Effect.gen(function* () {
       );
     return yield* record(worker, {
       key: `worker-report:${answer.runId}`,
-      status,
+      status: yield* stoppedSince(worker, status, published),
       endedAt:
         completedAt == null
           ? yield* Clock.currentTimeMillis
@@ -684,10 +897,22 @@ const make = Effect.gen(function* () {
       });
     });
     const shell = yield* orchestrator.getThreadShell(worker.threadId);
-    if (shell === null) return yield* abandoned("The worker's thread never started.");
+    if (shell === null)
+      return yield* (yield* stopRequested(worker))
+        ? stoppedBeforeStart(worker)
+        : abandoned("The worker's thread never started.");
     // The project the row was started in, never one the thread was moved to since.
     if (worker.projectId === null || shell.projectId !== worker.projectId)
       return yield* abandoned("The worker's thread is no longer in its project.");
+    if (yield* stopRequested(worker))
+      yield* reach(worker, (stop) =>
+        threads.interruptThread({
+          projectId: shell.projectId,
+          threadId: worker.threadId,
+          commandId: CommandId.make(stop.key),
+          reason: stop.reason,
+        }),
+      );
     const waited = yield* threads.waitForThread({
       projectId: worker.projectId,
       threadId: worker.threadId,
@@ -700,7 +925,8 @@ const make = Effect.gen(function* () {
     // Someone wrote in the thread since: that newer run's end reports instead.
     if (projection.runs.at(-1)?.id !== waited.run.id) return false;
     const run = waited.run;
-    const status = halted(worker, run.status);
+    const status =
+      run.status === "completed" && (yield* stopRequested(worker)) ? "interrupted" : run.status;
     const reply = projection.messages
       .findLast((message) => message.role === "assistant" && message.runId === run.id)
       ?.text.slice(-MAX_REPLY_CHARS);
@@ -724,7 +950,7 @@ const make = Effect.gen(function* () {
     if (published !== undefined && "url" in published) yield* linkPullRequest(worker, published);
     return yield* record(worker, {
       key: `worker-report:${run.id}`,
-      status,
+      status: yield* stoppedSince(worker, status, published),
       endedAt:
         run.completedAt === null
           ? yield* Clock.currentTimeMillis
@@ -845,6 +1071,85 @@ const make = Effect.gen(function* () {
     return fiber;
   });
 
+  /** An owner-only line from Kin in the owner's own chat with the lead. */
+  const tellOwner = Effect.fn("WorkerTracker.tellOwner")(function* (input: {
+    readonly orgId: KinOrgId;
+    readonly agentId: KinAgentId;
+    readonly messageId: string;
+    readonly body: string;
+  }) {
+    const [lead] = yield* sql<{ chatId: KinChatId }>`SELECT owner_chat_id AS "chatId"
+      FROM kin_leads WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId}
+      ORDER BY agent_id`;
+    if (lead === undefined) return;
+    const message = yield* repo.insertMessage({
+      orgId: input.orgId,
+      chatId: lead.chatId,
+      audience: "owner",
+      messageId: KinMessageId.make(input.messageId),
+      author: { _tag: "system" },
+      kind: "text",
+      body: input.body,
+      intent: null,
+      mentions: [],
+      replyTo: null,
+      widgetId: null,
+      floorRunId: null,
+      status: "posted",
+      sentBy: null,
+      clientMessageId: null,
+      createdAt: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
+      editedAt: null,
+    });
+    yield* hub.publish({ type: "message.posted", orgId: input.orgId, message });
+  });
+
+  /** Tells the owner, in their own chat with the lead, that withdrawn work may still run. */
+  const stopFailed = Effect.fn("WorkerTracker.stopFailed")(
+    function* (withdrawal: Omit<Withdrawal, "workers">, cause: unknown) {
+      yield* Effect.logError("Kin could not stop withdrawn work", { ...withdrawal, cause });
+      yield* tellOwner({
+        orgId: withdrawal.orgId,
+        agentId: withdrawal.agentId,
+        messageId: `kin-stop-failed:${withdrawal.recordId}:${withdrawal.seq}`,
+        body: stopFailedNotice(withdrawal.key),
+      });
+    },
+    Effect.catchCause((cause) => Effect.logError("Kin's stop-failed notice failed", { cause })),
+  );
+  /** The same, for a stop its lead asked for that couldn't land after it was accepted. */
+  const leadStopFailed = Effect.fn("WorkerTracker.leadStopFailed")(
+    function* (worker: WorkerRow, cause: unknown) {
+      yield* Effect.logError("Kin could not stop a worker", { workerId: worker.workerId, cause });
+      yield* tellOwner({
+        orgId: worker.orgId,
+        agentId: worker.agentId,
+        messageId: `kin-stop-failed:${worker.workerId}:${worker.startedAt}`,
+        body: leadStopFailedNotice(worker.title ?? "Worker"),
+      });
+    },
+    Effect.catchCause((cause) => Effect.logError("Kin's stop-failed notice failed", { cause })),
+  );
+  /** What a stop came too late to keep off GitHub, said once to the owner. */
+  const publishedBeforeStop = Effect.fn("WorkerTracker.publishedBeforeStop")(
+    function* (worker: WorkerRow, left: { readonly url: string } | { readonly pushedTo: string }) {
+      const withdrawal = yield* withdrawalOf(worker);
+      yield* tellOwner({
+        orgId: worker.orgId,
+        agentId: worker.agentId,
+        messageId: `kin-stop-published:${worker.workerId}:${worker.startedAt}`,
+        body: publishedBeforeStopNotice(
+          withdrawal?.key ?? `"${worker.title ?? "Worker"}"`,
+          Publish.publishBranch(worker.workerId),
+          left,
+        ),
+      });
+    },
+    Effect.catchCause((cause) =>
+      Effect.logError("Kin's published-before-stop notice failed", { cause }),
+    ),
+  );
+
   const stop: WorkerTracker["Service"]["stop"] = Effect.fn("WorkerTracker.stop")(
     function* (input) {
       // The lead's own worker, scoped as `KinWorkers.worker` reads it; another's is not found.
@@ -854,20 +1159,34 @@ const make = Effect.gen(function* () {
       if (worker === undefined)
         return yield* new KinChatError({ reason: "not_found", message: "Kin record not found." });
       if (endedStatuses.has(worker.status as OrchestrationV2RunStatus)) return { stopped: false };
-      stopping.add(worker.workerId);
+      // A follow-up since started a newer attempt, which this stop never covered.
+      if (input.startedAt !== undefined && input.startedAt !== worker.startedAt)
+        return { stopped: false };
+      const failed = input.failed ?? ((cause: unknown) => leadStopFailed(worker, cause));
+      const fence = fenceOf(worker);
+      const taken = yield* Effect.sync(() => {
+        fence.stop = { reason: input.reason, key: input.key, failed };
+        return { launching: fence.launching, closed: fence.closed };
+      });
+      // Its run had finished and was being recorded: whatever it published stays, and is said.
+      if (taken.closed?.left !== undefined) yield* publishedBeforeStop(worker, taken.closed.left);
+      // Its launch is under way: the launch reaches the thread it makes as soon as it returns.
+      if (taken.launching) return { stopped: true };
       let stopped = false;
       if (isLocal(worker)) {
         // T3's own interrupt, as the owner's Stop on the thread: no process is killed here.
         const shell = yield* orchestrator.getThreadShell(worker.threadId);
-        if (shell !== null)
-          stopped =
-            (yield* threads.interruptThread({
-              projectId: shell.projectId,
-              threadId: worker.threadId,
-              commandId: CommandId.make(input.key),
-              reason: input.reason,
-            })).type === "interrupt_requested";
-      } else if (worker.environmentId !== null && isBound(worker))
+        if (shell === null) return { stopped: yield* stoppedBeforeStart(worker) };
+        fence.reached = true;
+        stopped =
+          (yield* threads.interruptThread({
+            projectId: shell.projectId,
+            threadId: worker.threadId,
+            commandId: CommandId.make(input.key),
+            reason: input.reason,
+          })).type === "interrupt_requested";
+      } else if (worker.environmentId !== null && isBound(worker)) {
+        fence.reached = true;
         stopped =
           (yield* WorkerEnvironment.stopThere(env, {
             environmentId: worker.environmentId,
@@ -875,6 +1194,8 @@ const make = Effect.gen(function* () {
             key: input.key,
             reason: input.reason,
           })).status === "interrupt_requested";
+      }
+      // An unconfirmed launch there: its follower finds the thread and stops it then.
       yield* track(input.orgId, input.workerId);
       return { stopped };
     },
@@ -890,62 +1211,109 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  /** Tells the owner, in their own chat with the lead, that withdrawn work may still run. */
-  const stopFailed = Effect.fn("WorkerTracker.stopFailed")(
-    function* (withdrawal: Withdrawal, cause: unknown) {
-      yield* Effect.logError("Kin could not stop withdrawn work", { ...withdrawal, cause });
-      const [lead] = yield* sql<{ chatId: KinChatId }>`SELECT owner_chat_id AS "chatId"
-        FROM kin_leads WHERE org_id = ${withdrawal.orgId} AND agent_id = ${withdrawal.agentId}
-        ORDER BY agent_id`;
-      if (lead === undefined) return;
-      const message = yield* repo.insertMessage({
-        orgId: withdrawal.orgId,
-        chatId: lead.chatId,
-        audience: "owner",
-        messageId: KinMessageId.make(`kin-stop-failed:${withdrawal.recordId}:${withdrawal.seq}`),
-        author: { _tag: "system" },
-        kind: "text",
-        body: stopFailedNotice(withdrawal.key),
-        intent: null,
-        mentions: [],
-        replyTo: null,
-        widgetId: null,
-        floorRunId: null,
-        status: "posted",
-        sentBy: null,
-        clientMessageId: null,
-        createdAt: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
-        editedAt: null,
-      });
-      yield* hub.publish({ type: "message.posted", orgId: withdrawal.orgId, message });
+  const launch: WorkerTracker["Service"]["launch"] = Effect.fn("WorkerTracker.launch")(function* <
+    A,
+    E,
+  >(
+    attempt: {
+      readonly orgId: KinOrgId;
+      readonly workerId: KinWorkerId;
+      readonly startedAt: number;
     },
-    Effect.catchCause((cause) => Effect.logError("Kin's stop-failed notice failed", { cause })),
-  );
+    run: Effect.Effect<A, E>,
+  ) {
+    const admitted = yield* Effect.gen(function* () {
+      const worker = yield* workerRow(attempt.orgId, attempt.workerId);
+      if (
+        worker === undefined ||
+        worker.startedAt !== attempt.startedAt ||
+        endedStatuses.has(worker.status as OrchestrationV2RunStatus)
+      )
+        return undefined;
+      yield* stopRequested(worker);
+      const fence = fenceOf(worker);
+      const taken = yield* Effect.sync(() => {
+        if (fence.stop !== undefined) return false;
+        fence.launching = true;
+        return true;
+      });
+      if (taken) return { worker, fence };
+      yield* stoppedBeforeStart(worker);
+      return undefined;
+    }).pipe(
+      Effect.tapError((cause) =>
+        Effect.logError("Kin couldn't admit a worker's launch", { cause }),
+      ),
+      Effect.mapError(() => new KinChatError({ reason: "unavailable", message: STOP_FAILED })),
+    );
+    if (admitted === undefined) return Option.none();
+    const { worker, fence } = admitted;
+    const result = yield* run.pipe(
+      Effect.onError(() => Effect.sync(() => void (fence.launching = false))),
+    );
+    const late = yield* Effect.sync(() => {
+      fence.launching = false;
+      return fence.stop;
+    });
+    if (late !== undefined)
+      yield* stop({
+        orgId: worker.orgId,
+        agentId: worker.agentId,
+        workerId: worker.workerId,
+        startedAt: worker.startedAt,
+        reason: late.reason,
+        key: late.key,
+        failed: late.failed,
+      }).pipe(Effect.catchCause((cause) => late.failed(cause)));
+    return Option.some(result);
+  });
 
-  /** After the owner's change commits: every worker of that lead's still open on the entry. */
+  /**
+   * After the owner's change commits: the lead's worker attempts that were open on the entry
+   * when it was made, as stored with it. A stop that fails tells the owner; either way it is
+   * settled, so a restart replays only a withdrawal whose stops never ran.
+   */
   const withdrawn = Effect.fn("WorkerTracker.withdrawn")(function* (withdrawal: Withdrawal) {
-    const rows = yield* sql<{ workerId: KinWorkerId }>`SELECT k.worker_id AS "workerId"
-      FROM kin_record_links l JOIN kin_workers k ON k.org_id = l.org_id AND k.worker_id = l.target
-      WHERE l.org_id = ${withdrawal.orgId} AND l.record_id = ${withdrawal.recordId}
-        AND l.kind = 'worker' AND k.agent_id = ${withdrawal.agentId} AND k.ended_at IS NULL
-      ORDER BY k.worker_id`.pipe(Effect.result);
-    if (rows._tag === "Failure") return yield* stopFailed(withdrawal, rows.failure);
-    const failures = yield* Effect.forEach(rows.success, ({ workerId }) =>
+    const settle = (workerId: KinWorkerId, state: "settled" | "failed") =>
+      sql`UPDATE kin_worker_withdrawals SET state = ${state}
+        WHERE org_id = ${withdrawal.orgId} AND record_id = ${withdrawal.recordId}
+          AND seq = ${withdrawal.seq} AND worker_id = ${workerId} AND state = 'pending'`.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logError("Kin couldn't settle a withdrawal", { cause }),
+        ),
+      );
+    const failures = yield* Effect.forEach(withdrawal.workers, ({ workerId, startedAt }) =>
       stop({
         orgId: withdrawal.orgId,
         agentId: withdrawal.agentId,
         workerId,
+        startedAt,
         reason: WITHDRAWN_REASON,
         key: `kin-withdrawn:${workerId}:${withdrawal.seq}`,
+        failed: (cause) => stopFailed(withdrawal, cause),
       }).pipe(
         Effect.as([]),
-        Effect.catchCause((cause) => Effect.succeed([cause])),
+        Effect.catchCause((cause) => Effect.succeed([{ workerId, cause }])),
       ),
     );
     const failed = failures.flat();
-    if (failed.length > 0) yield* stopFailed(withdrawal, failed);
+    if (failed.length > 0)
+      yield* stopFailed(
+        withdrawal,
+        failed.map((failure) => failure.cause),
+      );
+    for (const { workerId } of withdrawal.workers)
+      yield* settle(
+        workerId,
+        failed.some((failure) => failure.workerId === workerId) ? "failed" : "settled",
+      );
   });
   yield* records.attachWithdrawals(withdrawn);
+  // A withdrawal whose attempt ended or moved on has nothing left to stop.
+  const settleStale = sql`UPDATE kin_worker_withdrawals SET state = 'settled'
+    WHERE state = 'pending' AND NOT EXISTS (SELECT 1 FROM kin_workers k
+      WHERE k.org_id = kin_worker_withdrawals.org_id AND k.worker_id = kin_worker_withdrawals.worker_id
+        AND k.started_at = kin_worker_withdrawals.started_at AND k.ended_at IS NULL)`;
   // A change that committed just before a restart may not have stopped its work yet.
   const withdrawnOpen = sql<{
     orgId: KinOrgId;
@@ -953,16 +1321,34 @@ const make = Effect.gen(function* () {
     recordId: string;
     key: string;
     seq: number;
-  }>`SELECT DISTINCT k.org_id AS "orgId", k.agent_id AS "agentId", l.record_id AS "recordId",
-      r.key, json_extract(e.json, '$.seq') AS seq
-    FROM kin_workers k
-    JOIN kin_record_links l ON l.org_id = k.org_id AND l.kind = 'worker' AND l.target = k.worker_id
-    JOIN kin_records r ON r.org_id = l.org_id AND r.record_id = l.record_id
-    JOIN kin_events e ON e.org_id = k.org_id AND e.agent_id = k.agent_id
-      AND e.tag = 'record.changed' AND json_extract(e.json, '$.reason') = 'withdrawn'
-      AND json_extract(e.json, '$.recordId') = l.record_id AND e.received_at >= k.started_at
-    WHERE k.org_id IN (SELECT org_id FROM kin_leads GROUP BY org_id) AND k.ended_at IS NULL
-    ORDER BY 1, 2, 3, 5`;
+    workerId: KinWorkerId;
+    startedAt: number;
+  }>`SELECT org_id AS "orgId", agent_id AS "agentId", record_id AS "recordId",
+      record_key AS key, seq, worker_id AS "workerId", started_at AS "startedAt"
+    FROM kin_worker_withdrawals
+    WHERE state = 'pending' AND org_id IN (SELECT org_id FROM kin_leads GROUP BY org_id)
+    ORDER BY org_id, agent_id, record_id, seq, worker_id`;
+  const pendingWithdrawals = Effect.gen(function* () {
+    yield* settleStale;
+    const grouped = new Map<
+      string,
+      Withdrawal & { workers: Array<Withdrawal["workers"][number]> }
+    >();
+    for (const row of yield* withdrawnOpen) {
+      const id = `${row.orgId}\u0000${row.recordId}\u0000${row.seq}`;
+      const found = grouped.get(id) ?? {
+        orgId: row.orgId,
+        agentId: row.agentId,
+        recordId: row.recordId,
+        key: row.key,
+        seq: row.seq,
+        workers: [],
+      };
+      found.workers.push({ workerId: row.workerId, startedAt: row.startedAt });
+      grouped.set(id, found);
+    }
+    return [...grouped.values()];
+  });
 
   const strays = new Set<string>();
   const strayDelegation = Effect.fn("WorkerTracker.strayDelegation")(function* (
@@ -1025,14 +1411,15 @@ const make = Effect.gen(function* () {
       Effect.forkScoped,
     );
     yield* failUnplaced.pipe(Effect.retry(retry));
-    for (const row of yield* withdrawnOpen.pipe(Effect.retry(retry))) yield* withdrawn(row);
+    for (const withdrawal of yield* pendingWithdrawals.pipe(Effect.retry(retry)))
+      yield* withdrawn(withdrawal);
     for (const row of yield* openWorkers.pipe(Effect.retry(retry)))
       yield* track(KinOrgId.make(row.orgId), KinWorkerId.make(row.workerId));
   }).pipe(
     Effect.catchCause((cause) => Effect.logError("Kin worker tracker unavailable", { cause })),
   );
 
-  return WorkerTracker.of({ process, track, stop, start });
+  return WorkerTracker.of({ process, track, stop, launch, start });
 });
 
 export const layer = Layer.effect(WorkerTracker, make);
