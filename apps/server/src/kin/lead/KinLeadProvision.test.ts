@@ -388,7 +388,11 @@ describe("KinLeadProvision", () => {
           by: { _tag: "person", personId: teammate } as const,
           orgId: ada.orgId,
         };
-        for (const run of [Provision.retire, Provision.restore]) {
+        type Change = Parameters<typeof Provision.retire>[0];
+        for (const run of [
+          (change: Change) => Provision.retire(change).pipe(Effect.asVoid),
+          (change: Change) => Provision.restore(change).pipe(Effect.asVoid),
+        ]) {
           // Someone else's agent reads as not there; their own waits for members to create.
           assert.strictEqual(
             yield* refusal(run({ ...asTeammate, agentId: growth.agentId })),

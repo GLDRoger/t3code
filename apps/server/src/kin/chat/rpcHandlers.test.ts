@@ -844,7 +844,7 @@ it.effect("creates many leads over RPC for the owner only, through the CLI's cre
     const { person, repo } = yield* seed;
     const clientFor = (
       handlers: Effect.Success<ReturnType<typeof makeKinHandlers>>,
-      scopes: ReadonlyArray<(typeof AuthStandardClientScopes)[number]> = AuthStandardClientScopes,
+      scopes: ReadonlyArray<AuthEnvironmentScope> = AuthStandardClientScopes,
     ) =>
       RpcTest.makeClient(group).pipe(
         Effect.provide(
