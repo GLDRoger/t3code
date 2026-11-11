@@ -335,9 +335,7 @@ const make = Effect.gen(function* () {
     // No memory or GitHub I/O below: the memory lock can wait on this writer.
     return yield* sql.withTransaction(
       Effect.gen(function* () {
-        const pending = yield* sql`SELECT fire_id FROM kin_trigger_inbox WHERE org_id = ${orgId}
-          AND fire_id = ${fire.fireId} AND consumed_at IS NULL ORDER BY fire_id`;
-        if (pending.length === 0) return false;
+        if (!(yield* KinTriggerInbox.fireOpen(sql, orgId, fire.fireId))) return false;
         const reasons = [...gates];
         const current = yield* readRun(orgId, itemId);
         // Moved or handled since the reads above: classify again on the next tick.

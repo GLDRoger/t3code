@@ -25,7 +25,8 @@ import { leadWakeup } from "../lead/LeadDelivery.testkit.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as TriggerScheduler from "./KinTriggerScheduler.ts";
 import * as TriggerService from "./KinTriggerService.ts";
-import { fixture, item, orgId, seed } from "./routines.testkit.ts";
+import * as Retirement from "../lead/Retirement.ts";
+import { addLead, fixture, item, orgId, seed } from "./routines.testkit.ts";
 import * as ScheduledTasks from "./scheduledTasks.ts";
 import * as KinSchedules from "./kinSchedules.ts";
 import { nativeScheduler } from "./kinSchedules.testkit.ts";
@@ -176,6 +177,55 @@ it.effect("Pause stops scheduled runs until Resume", () =>
     yield* tick(Date.parse(resumed.nextRunAt!));
     assert.lengthOf(yield* runs(), 1);
   }).pipe(Effect.provide(layer)),
+);
+
+/** Retiring and restoring an agent as `KinLeadProvision` commits them, after-commit work aside. */
+const retirement = (agentId: string, at: number, retired: boolean) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const agent = KinAgentId.make(agentId);
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const retiredAt = retired ? new Date(at).toISOString() : null;
+        yield* sql`UPDATE kin_agents SET retired_at = ${retiredAt} WHERE agent_id = ${agentId}`;
+        if (retired)
+          yield* Retirement.retire({ orgId, agentId: agent, retiredAt: retiredAt!, now: at });
+        else yield* Retirement.restore({ orgId, agentId: agent, now: at });
+      }),
+    );
+  }).pipe(
+    Effect.provideService(
+      Retirement.KinRetiredActions,
+      Retirement.KinRetiredActions.of({ close: () => Effect.void }),
+    ),
+  );
+
+it.effect(
+  "a fire already waiting when its chat's only agent retires waits for the restore, then runs once there",
+  () =>
+    Effect.gen(function* () {
+      yield* setup();
+      // Another live agent, in a chat of its own: it must not answer the retired one's timer.
+      yield* addLead(orgId, "lead-growth", "growth", "2026-11-09T00:00:00.000Z");
+      const tasks = yield* ScheduledTasks.KinScheduledTasks;
+      yield* TestClock.setTime(tuesday);
+      yield* (yield* TriggerScheduler.KinTriggerScheduler).runDue();
+      yield* retirement("lead-a", tuesday, true);
+      yield* tasks.drain(orgId);
+      yield* tasks.drain(orgId);
+      assert.lengthOf(yield* runs(), 0);
+      assert.isNull((yield* card()).state.lastRun);
+
+      yield* TestClock.adjust("1 minute");
+      yield* retirement("lead-a", tuesday + 60_000, false);
+      yield* tasks.drain(orgId);
+      yield* tasks.drain(orgId);
+      const delivered = yield* runs();
+      assert.lengthOf(delivered, 1);
+      assert.include(delivered[0], { agentId: "lead-a", itemId: "sch-prs" });
+      assert.equal((yield* card()).widget.chatId, "chat-a");
+      assert.equal((yield* card()).state.lastRun?.status, "running");
+    }).pipe(Effect.provide(layer)),
 );
 
 // Native schedules: the task is T3's, its kin_schedules row the authority for each run.

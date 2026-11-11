@@ -572,6 +572,12 @@ const make = Effect.gen(function* () {
     const paused = yield* isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     yield* sql.withTransaction(
       Effect.gen(function* () {
+        // Taken, or held by a retirement, since the drain read it: it stays as it is.
+        if (
+          source.kind === "fire" &&
+          !(yield* KinTriggerInbox.fireOpen(sql, orgId, source.fire.fireId))
+        )
+          return;
         const row = yield* readScheduledTask(sql, orgId, itemId);
         const widget = yield* repo.getWidget({
           orgId,
