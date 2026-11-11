@@ -168,7 +168,10 @@ export interface KinMemoryView {
 
 type KinMemoryConfirmRequest =
   | { readonly asOf: number }
-  | { readonly itemIds: ReadonlyArray<KinMemoryItemId> };
+  | {
+      readonly itemIds: ReadonlyArray<KinMemoryItemId>;
+      readonly versions: Readonly<Record<string, string>>;
+    };
 
 const actionsFor = (item: KinMemoryListItem, state: KinMemoryVisibility) => {
   const share = {
@@ -204,9 +207,17 @@ function confirmRequests(
   const on = new Set<string>(shown);
   if (listed.length === shown.length && listed.every((item) => on.has(item.itemId)))
     return [{ asOf: list.suggestionsAsOf }];
+  const versionOf = new Map(listed.map((item) => [item.itemId, item.version]));
   const requests = [];
-  for (let start = 0; start < shown.length; start += CONFIRM_MAX)
-    requests.push({ itemIds: shown.slice(start, start + CONFIRM_MAX) });
+  for (let start = 0; start < shown.length; start += CONFIRM_MAX) {
+    const itemIds = shown.slice(start, start + CONFIRM_MAX);
+    const versions: Record<string, string> = {};
+    for (const itemId of itemIds) {
+      const version = versionOf.get(itemId);
+      if (version !== undefined) versions[itemId] = version;
+    }
+    requests.push({ itemIds, versions });
+  }
   return requests;
 }
 
@@ -318,10 +329,13 @@ export function createKinMemoryActions(options: {
     /** One item, one way: the team can know it, or the owner keeps it. */
     change: (list: KinMemoryListResult, itemId: KinMemoryItemId, to: "team" | "only_owner") =>
       run(list, [itemId], to, async () => {
+        // The host refuses a yes to words other than the ones the owner was shown.
+        const version = list.items.find((item) => item.itemId === itemId)?.version;
         const result = await options.setVisibility({
           orgId,
           itemId,
           onlyOwner: to === "only_owner",
+          ...(to === "team" && version !== undefined ? { version } : {}),
         });
         return AsyncResult.isSuccess(result)
           ? { answered: [result.value.item] }
