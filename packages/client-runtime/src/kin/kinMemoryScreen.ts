@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import {
   KIN_MEMORY_CONFIRM_MAX,
   KinChatError,
@@ -70,6 +71,84 @@ const SECTIONS: ReadonlyArray<{
   },
 ];
 
+/** The names behind the handles and ids the host says an item came from. */
+export interface KinMemoryNames {
+  readonly people: ReadonlyArray<{ readonly handle: string; readonly displayName: string }>;
+  readonly agents: ReadonlyArray<{ readonly agentId: string; readonly name: string }>;
+}
+const NO_NAMES: KinMemoryNames = { people: [], agents: [] };
+
+/** Where an item came from: a person's words, an agent's own conclusion, or outside the chats. */
+export interface KinMemoryOriginView {
+  readonly kind: "said" | "worked_out" | "outside";
+  /** "You said, 9 Nov" */
+  readonly line: string;
+  /** The person's exact words, when the owner can still open the message. */
+  readonly quote: string | null;
+}
+
+const dayFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
+const dayYearFormat = new Intl.DateTimeFormat(undefined, {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+});
+const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
+/** "9 Nov", with the year once it isn't this one; nothing for a time that doesn't parse. */
+const dayOf = (iso: string, now: Date) => {
+  // A bare date is that calendar day wherever the owner is, not midnight UTC.
+  const [, year, month, day] = DATE_ONLY.exec(iso) ?? [];
+  const at =
+    year === undefined ? new Date(iso) : new Date(Number(year), Number(month) - 1, Number(day));
+  if (Number.isNaN(at.getTime())) return null;
+  return (at.getFullYear() === now.getFullYear() ? dayFormat : dayYearFormat).format(at);
+};
+
+interface NameLookup {
+  readonly people: ReadonlyMap<string, string>;
+  readonly agents: ReadonlyMap<string, string>;
+}
+
+/** Null from a host that doesn't say where items came from: the row reads as it always did. */
+function originOf(
+  item: KinMemoryListItem,
+  names: NameLookup,
+  now: Date,
+): KinMemoryOriginView | null {
+  const from = item.provenance;
+  if (from === undefined) return null;
+  const quote = from.quote?.trim() || null;
+  const said = quote === null || from.saidAt === null ? null : dayOf(from.saidAt, now);
+  const saved = dayOf(from.recordedAt, now);
+  if (from.trust === "agent") {
+    const agent = names.agents.get(from.saidBy) ?? "an agent";
+    const day = said ?? saved;
+    return {
+      kind: "worked_out",
+      line: `Worked out by ${agent}${day === null ? "" : `, ${day}`}`,
+      quote,
+    };
+  }
+  const savedOn = saved === null ? "" : `, saved ${saved}`;
+  if (from.trust === "external")
+    return { kind: "outside", line: `From outside your chats${savedOn}`, quote };
+  const place = item.from === null ? "" : ` in ${item.from.chatName}`;
+  const who =
+    from.trust === "owner"
+      ? null
+      : (names.people.get(from.saidBy) ?? item.from?.name ?? "a teammate");
+  // Without their words on screen, only the day it was saved is known.
+  return {
+    kind: "said",
+    line:
+      quote === null
+        ? `From ${who ?? "you"}${place}${savedOn}`
+        : `${who === null ? "You" : capitalised(who)} said${place}${said === null ? "" : `, ${said}`}`,
+    quote,
+  };
+}
+const capitalised = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
 /** How an item reads after a tap: who may know it, or gone from the list. */
 type KinMemoryItemState = KinMemoryVisibility | "forgotten";
 
@@ -136,8 +215,9 @@ export interface KinMemoryItemView {
   readonly itemId: KinMemoryItemId;
   readonly title: string;
   readonly preview: string | null;
-  /** "Priya said this in Launch room", for something a teammate said. */
+  /** "Priya said this in Launch room", for something a teammate said. Null once `origin` says it. */
   readonly from: string | null;
+  readonly origin: KinMemoryOriginView | null;
   readonly state: KinMemoryVisibility;
   /** A tap on it is on its way to the host. */
   readonly busy: boolean;
@@ -195,8 +275,19 @@ const actionsFor = (item: KinMemoryListItem, state: KinMemoryVisibility) => {
   return state === "suggested" ? [share, keep] : state === "team" ? [keep] : [share];
 };
 
-const matches = (item: KinMemoryListItem, words: ReadonlyArray<string>) => {
-  const text = [item.title, item.preview ?? "", item.from?.name ?? "", item.from?.chatName ?? ""]
+const matches = (
+  item: KinMemoryListItem,
+  origin: KinMemoryOriginView | null,
+  words: ReadonlyArray<string>,
+) => {
+  const text = [
+    item.title,
+    item.preview ?? "",
+    item.from?.name ?? "",
+    item.from?.chatName ?? "",
+    origin?.line ?? "",
+    origin?.quote ?? "",
+  ]
     .join("\n")
     .toLowerCase();
   return words.every((word) => text.includes(word));
@@ -232,13 +323,20 @@ export function kinMemoryView(
   list: KinMemoryListResult,
   edits: KinMemoryEdits,
   search: string,
+  names: KinMemoryNames = NO_NAMES,
+  now: Date = new Date(),
 ): KinMemoryView {
   const words = search.toLowerCase().split(/\s+/).filter(Boolean);
+  const lookup: NameLookup = {
+    people: new Map(names.people.map((person) => [person.handle, person.displayName])),
+    agents: new Map(names.agents.map((agent) => [agent.agentId, agent.name])),
+  };
   const items = list.items.flatMap((item) => {
     const state = shownAs(item, list, edits);
-    return state === "forgotten" ? [] : [{ item, state }];
+    return state === "forgotten" ? [] : [{ item, state, origin: originOf(item, lookup, now) }];
   });
-  const found = words.length === 0 ? items : items.filter(({ item }) => matches(item, words));
+  const found =
+    words.length === 0 ? items : items.filter(({ item, origin }) => matches(item, origin, words));
   const rows: Array<KinMemoryRow> = [];
   for (const section of SECTIONS) {
     const inSection = found.filter(({ state }) => state === section.state);
@@ -249,7 +347,7 @@ export function kinMemoryView(
       ...section,
       count: inSection.length,
     });
-    for (const { item, state } of inSection) {
+    for (const { item, state, origin } of inSection) {
       const preview = (item.preview ?? "").trim();
       rows.push({
         type: "item",
@@ -258,7 +356,11 @@ export function kinMemoryView(
           itemId: item.itemId,
           title: item.title,
           preview: preview === "" || preview === item.title.trim() ? null : preview,
-          from: item.from === null ? null : `${item.from.name} said this in ${item.from.chatName}`,
+          from:
+            item.from === null || origin?.kind === "said"
+              ? null
+              : `${item.from.name} said this in ${item.from.chatName}`,
+          origin,
           state,
           busy: edits.pending.has(item.itemId),
           forget: {
