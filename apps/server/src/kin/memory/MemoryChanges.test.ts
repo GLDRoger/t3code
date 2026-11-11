@@ -322,23 +322,26 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
         .pipe(Effect.map(({ items }) => items.map((item) => item.itemId)));
     // Not confirmable unseen: it binds to the words the owner is first shown.
     assert.deepStrictEqual(yield* confirm(), []);
-    const listed = (yield* memory.list([owner], { orgId })).items.find(
+    const migratedRow = (yield* memory.list([owner], { orgId })).items.find(
       (item) => item.itemId === "migrated",
     );
-    assert.deepStrictEqual([listed?.visibility, listed?.version], ["suggested", words("migrated")]);
+    assert.deepStrictEqual(
+      [migratedRow?.visibility, migratedRow?.version],
+      ["suggested", words("migrated")],
+    );
     // Reworded outside the server since: neither confirmation lets the team know the new words.
     items = items.map((item) =>
       item.head.id === "migrated" ? { ...item, body: "Invented reworded body.\n" } : item,
     );
     assert.deepStrictEqual(yield* confirm(), []);
-    assert.deepStrictEqual(yield* confirm({ migrated: String(listed?.version) }), []);
+    assert.deepStrictEqual(yield* confirm({ migrated: String(migratedRow?.version) }), []);
     assert.include(
       yield* memory
         .setVisibility([owner], {
           orgId,
           itemId: migrated,
           onlyOwner: false,
-          version: listed?.version,
+          version: migratedRow?.version,
         })
         .pipe(Effect.flip),
       { reason: "conflict" },
