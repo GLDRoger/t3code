@@ -22,7 +22,7 @@ import { MemoryConfig } from "./MemoryConfig.ts";
 import * as Writer from "./MemoryWriter.ts";
 import * as Scan from "./secretScan.ts";
 import { journalEntry } from "./journal.ts";
-import { fixtureItem } from "./__fixtures__/items.ts";
+import { FIXTURE_QUOTE, FIXTURE_SAID, fixtureItem } from "./__fixtures__/items.ts";
 import { authorise, fingerprint, reaches, storedLabels, suggest } from "./sensitivity.ts";
 
 const orgId = KinOrgId.make("fixture-org");
@@ -307,6 +307,7 @@ it.live.each([
                           saidBy: "fixture-owner",
                           trust: "owner",
                           source: "fixture-owner-message",
+                          text: FIXTURE_SAID,
                           kind: "owner_check",
                           itemId: scenario === "owner-other-item-keep" ? "other-item" : "def-001",
                           action: scenario === "owner-drop-keep" ? "drop" : "keep",
@@ -316,6 +317,7 @@ it.live.each([
                             saidBy: "fixture-owner",
                             trust: "owner",
                             source: "fixture-owner-message",
+                            text: FIXTURE_SAID,
                             kind: "deferral_card",
                             itemId: "def-001",
                             action: "monday",
@@ -327,6 +329,7 @@ it.live.each([
                               saidBy: "fixture-owner",
                               trust: "owner",
                               source: "fixture-owner-message",
+                              text: FIXTURE_SAID,
                               kind: "deferral_card",
                               itemId:
                                 scenario === "deferral-card-other-item" ? "other-item" : "def-001",
@@ -336,6 +339,7 @@ it.live.each([
                               saidBy: "fixture-owner",
                               trust: "owner",
                               source: "fixture-owner-message",
+                              text: FIXTURE_SAID,
                             },
                   ],
                   [
@@ -344,6 +348,7 @@ it.live.each([
                       saidBy: "fixture-member",
                       trust: "member",
                       source: "fixture-member-message",
+                      text: FIXTURE_SAID,
                     },
                   ],
                 ]),
@@ -371,12 +376,24 @@ it.live.each([
         const one = {
           path: "claims/one.md",
           sourceEventId: "owner",
-          content: fixtureItem({ id: "one", kind: "claim", title: "First claim", links: [] }),
+          content: fixtureItem({
+            quote: FIXTURE_QUOTE,
+            id: "one",
+            kind: "claim",
+            title: "First claim",
+            links: [],
+          }),
         };
         const two = {
           path: "claims/two.md",
           sourceEventId: "owner",
-          content: fixtureItem({ id: "two", kind: "claim", title: "Second claim", links: [] }),
+          content: fixtureItem({
+            quote: FIXTURE_QUOTE,
+            id: "two",
+            kind: "claim",
+            title: "Second claim",
+            links: [],
+          }),
         };
         yield* writer.stage(orgId, "wake1", one);
         // The second lead stages and journals while the first wake-up is still open.
@@ -416,12 +433,24 @@ it.live.each([
         const first = {
           path: scenario === "two-leads-same-id" ? "claims/first.md" : "claims/shared.md",
           sourceEventId: "owner",
-          content: fixtureItem({ id: "shared", kind: "claim", title: "First title", links: [] }),
+          content: fixtureItem({
+            quote: FIXTURE_QUOTE,
+            id: "shared",
+            kind: "claim",
+            title: "First title",
+            links: [],
+          }),
         };
         const second = {
           path: "claims/shared.md",
           sourceEventId: "owner",
-          content: fixtureItem({ id: "shared", kind: "claim", title: "Second title", links: [] }),
+          content: fixtureItem({
+            quote: FIXTURE_QUOTE,
+            id: "shared",
+            kind: "claim",
+            title: "Second title",
+            links: [],
+          }),
         };
         yield* writer.stage(orgId, "wake1", first);
         yield* writer.stage(orgId, "wake2", second);
@@ -444,13 +473,25 @@ it.live.each([
         yield* writer.stage(orgId, "wake1", {
           path: "claims/one.md",
           sourceEventId: "owner",
-          content: fixtureItem({ id: "one", kind: "claim", title: "First claim", links: [] }),
+          content: fixtureItem({
+            quote: FIXTURE_QUOTE,
+            id: "one",
+            kind: "claim",
+            title: "First claim",
+            links: [],
+          }),
         });
         const first = yield* writer.commitWakeup(orgId, "wake1", "completed");
         yield* writer.stage(orgId, "wake2", {
           path: "claims/two.md",
           sourceEventId: "owner",
-          content: fixtureItem({ id: "two", kind: "claim", title: "Second claim", links: [] }),
+          content: fixtureItem({
+            quote: FIXTURE_QUOTE,
+            id: "two",
+            kind: "claim",
+            title: "Second claim",
+            links: [],
+          }),
         });
         const second = yield* writer.commitWakeup(orgId, "wake2", "completed");
         // A restart now recovers wake1 with only its receipts: its commit is in history,
@@ -472,7 +513,13 @@ it.live.each([
         yield* writer.stage(orgId, "wake2", {
           path: "claims/two.md",
           sourceEventId: "owner",
-          content: fixtureItem({ id: "two", kind: "claim", title: "Second claim", links: [] }),
+          content: fixtureItem({
+            quote: FIXTURE_QUOTE,
+            id: "two",
+            kind: "claim",
+            title: "Second claim",
+            links: [],
+          }),
         });
         yield* writer.commitWakeup(orgId, "wake2", "completed");
         // The other lead's commit moved the head; wake1's prompt still reads its own pin.
@@ -516,13 +563,18 @@ it.live.each([
           yield* writer.stage(orgId, "wake1", {
             path: "claims/short.md",
             sourceEventId: "owner",
-            content: fixtureItem({ id: "short", kind: "claim", title: "You prefer short replies" }),
+            content: fixtureItem({
+              quote: FIXTURE_QUOTE,
+              id: "short",
+              kind: "claim",
+              title: "You prefer short replies",
+            }),
           });
         } else {
           yield* writer.stage(orgId, "wake1", {
             path: "claims/existing.md",
             sourceEventId: "owner",
-            content: fixtureItem({ kind: "claim", status: "done" }),
+            content: fixtureItem({ quote: FIXTURE_QUOTE, kind: "claim", status: "done" }),
           });
         }
         const branch = Memory.shadowBranch(agentId);
@@ -550,6 +602,7 @@ it.live.each([
                 sourceEventId: "owner",
                 content: fixtureItem({
                   id: "replacement",
+                  quote: FIXTURE_QUOTE,
                   kind: "claim",
                   recorded_at: "2026-11-08T00:00:00.000Z",
                 }),
@@ -557,7 +610,7 @@ it.live.each([
             : {
                 path: "claims/existing.md",
                 sourceEventId: "owner",
-                content: fixtureItem({ kind: "claim", status: "done" }),
+                content: fixtureItem({ quote: FIXTURE_QUOTE, kind: "claim", status: "done" }),
               };
         yield* writer.stage(orgId, "wake1", change);
         yield* writer.stage(orgId, "wake1", change);
@@ -577,6 +630,12 @@ it.live.each([
         expect(existing).toContain(
           scenario === "supersede-retry" ? "status: superseded" : "status: done",
         );
+        // An item saved before quotes stays as it is: a later write never gives it one.
+        expect(existing).not.toContain("quote:");
+        if (scenario === "supersede-retry")
+          expect(
+            yield* git(paths.writer, ["show", `${committed.commit}:claims/replacement.md`]),
+          ).toContain(`quote: ${FIXTURE_QUOTE}`);
         return;
       }
       if (scenario === "M4-modes") {
@@ -989,6 +1048,21 @@ it.live.each([
           })
           .pipe(Effect.result);
         expect(result._tag).toBe("Failure");
+        if (scenario === "B6-owner-open") {
+          expect(result._tag === "Failure" && result.failure._tag).toBe("MemoryConflict");
+          // What the lead inferred never retires what the owner stated.
+          const retired = yield* writer
+            .stage(orgId, "wake1", {
+              path: "claims/existing.md",
+              content: fixtureItem({
+                kind: "claim",
+                title: "Invented service maintenance",
+                invalid_at: "2026-11-08T00:00:00.000Z",
+              }),
+            })
+            .pipe(Effect.flip);
+          expect(retired._tag).toBe("MemoryConflict");
+        }
         return;
       }
       const marker = `${root}/executed`;
@@ -1058,7 +1132,12 @@ it.live.each([
           yield* writer.stage(orgId, "wake1", {
             path: `claims/${sourceEventId}.md`,
             sourceEventId,
-            content: fixtureItem({ id: sourceEventId, kind: "claim", links: [] }),
+            content: fixtureItem({
+              id: sourceEventId,
+              kind: "claim",
+              links: [],
+              quote: FIXTURE_QUOTE,
+            }),
           });
         }
         yield* fs.writeFileString(`${paths.writer}/rules.md`, "Ambient forged edit");
@@ -1268,6 +1347,7 @@ it.effect.each(["owner", "nightly", "lead"] as const)(
         saidBy: "fixture-owner",
         trust: "owner" as const,
         source: "fixture-owner-message",
+        text: FIXTURE_SAID,
       };
       const layer = Writer.layer.pipe(
         Layer.provideMerge(
@@ -1405,6 +1485,7 @@ it.effect.each(["legacy", "shadow", "github"] as const)(
         saidBy: "fixture-owner",
         trust: "owner" as const,
         source: "fixture-owner-message",
+        text: FIXTURE_SAID,
       };
       const level = path === "shadow" ? ("L0" as const) : ("L1" as const);
       const layer = Writer.layer.pipe(

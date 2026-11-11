@@ -15,6 +15,7 @@ import {
   type KinMemoryUndoInput,
   type KinMemoryUndoResult,
   type KinOrgId,
+  type KinPersonId,
   type KinWidgetId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -32,6 +33,7 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
+import { readableBy } from "../chat/sharing.ts";
 import type { MemoryItem } from "./MemoryCache.ts";
 import type { MemoryWriter } from "./MemoryWriter.ts";
 import {
@@ -111,6 +113,9 @@ const stale = refused("conflict", "This changed again since, so it wasn't undone
 const changed = refused("conflict", "This item changed since it was listed. Look at it again.");
 const isKinChatError = Schema.is(KinChatError);
 const PREVIEW_MAX = 200;
+// As `LeadMemory.authority` writes the source of an item saved from a chat message.
+const CHAT_SOURCE = /^kin:chat:([^:]+):message:(.+)$/;
+type Provenance = NonNullable<KinMemoryListItem["provenance"]>;
 /** The item's own one-line account, else the start of what it says. */
 const previewOf = ({ head, body }: MemoryItem) => {
   const text = (head.what ?? body).replace(/\s+/g, " ").trim();
@@ -125,7 +130,11 @@ const make = Effect.gen(function* () {
   let port: KinMemoryPort | undefined;
   const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
   /** Shown as turns treat it: only a stored authorisation of what it says now lets the team know. */
-  const listed = (item: MemoryItem, labels: StoredLabels): KinMemoryListItem => ({
+  const listed = (
+    item: MemoryItem,
+    labels: StoredLabels,
+    provenance: (item: MemoryItem) => Provenance,
+  ): KinMemoryListItem => ({
     itemId: item.head.id,
     kind: item.head.kind,
     title: item.head.title,
@@ -135,8 +144,53 @@ const make = Effect.gen(function* () {
       item.head.shared_from === undefined
         ? null
         : { name: item.head.shared_from.name, chatName: item.head.shared_from.chat_name },
+    provenance: provenance(item),
     version: fingerprint(item),
   });
+  /**
+   * Who said each item and when, with the words it quotes, only from a message the owner can
+   * open in chat now (`readableBy`): one deleted, or in a chat he left, gives neither.
+   */
+  const provenanceOf = Effect.fn("KinMemoryChanges.provenanceOf")(
+    function* (orgId: KinOrgId, person: KinPersonId, items: ReadonlyArray<MemoryItem>) {
+      const cited = new Map<string, Set<string>>();
+      for (const { head } of items) {
+        const [, chatId, messageId] = CHAT_SOURCE.exec(head.source) ?? [];
+        if (chatId === undefined || messageId === undefined) continue;
+        cited.set(chatId, (cited.get(chatId) ?? new Set()).add(messageId));
+      }
+      const saidAt = new Map<string, string>();
+      if (cited.size > 0) {
+        const members = yield* sql<{ chatId: string; memberId: string }>`SELECT chat_id AS "chatId",
+          member_id AS "memberId" FROM kin_chat_members
+        WHERE org_id = ${orgId} AND principal_kind = 'person' AND person_id = ${person}
+          AND left_at IS NULL AND chat_id IN ${sql.in([...cited.keys()])}
+        ORDER BY chat_id, member_id`;
+        for (const { chatId, memberId } of members) {
+          const rows = yield* sql<{ messageId: string; createdAt: string }>`SELECT
+            message_id AS "messageId", created_at AS "createdAt" FROM kin_messages
+          WHERE kin_messages.org_id = ${orgId} AND kin_messages.chat_id = ${chatId}
+            AND kin_messages.status = 'posted' AND kin_messages.kind = 'text'
+            AND kin_messages.message_id IN ${sql.in([...(cited.get(chatId) ?? [])])}
+            AND ${readableBy(sql, orgId, memberId)}
+          ORDER BY kin_messages.seq`;
+          for (const row of rows)
+            saidAt.set(`kin:chat:${chatId}:message:${row.messageId}`, row.createdAt);
+        }
+      }
+      return ({ head }: MemoryItem): Provenance => {
+        const at = saidAt.get(head.source);
+        return {
+          saidBy: head.said_by,
+          trust: head.trust,
+          recordedAt: head.recorded_at,
+          saidAt: at ?? null,
+          quote: at === undefined ? null : (head.quote ?? null),
+        };
+      };
+    },
+    Effect.mapError(toPersistenceSqlError("KinMemoryChanges.provenance")),
+  );
   // Settled reminders and replaced notes are history, not something a lead still uses.
   const current = (items: ReadonlyArray<MemoryItem>) =>
     items.filter(
@@ -283,13 +337,14 @@ const make = Effect.gen(function* () {
   return KinMemoryChanges.of({
     undo,
     list: Effect.fn("KinMemoryChanges.list")(function* (people, input) {
-      const { port } = yield* ownerOf(people, input.orgId);
+      const { person, port } = yield* ownerOf(people, input.orgId);
       const items = current(yield* port.items(input.orgId));
       const labels = yield* storedLabels(input.orgId).pipe(
         Effect.flatMap((stored) => bindSuggestions(input.orgId, items, stored)),
         provideSql,
       );
-      return { items: items.map((item) => listed(item, labels)) };
+      const provenance = yield* provenanceOf(input.orgId, person.personId, items);
+      return { items: items.map((item) => listed(item, labels, provenance)) };
     }, failed),
     setVisibility: Effect.fn("KinMemoryChanges.setVisibility")(function* (people, input) {
       const { person, port } = yield* ownerOf(people, input.orgId);
@@ -313,7 +368,13 @@ const make = Effect.gen(function* () {
         if (fingerprint(next) !== words) return yield* changed;
         yield* authorise(input.orgId, input.itemId, words, "owner_setting").pipe(provideSql);
       }
-      return { item: listed(next, yield* storedLabels(input.orgId).pipe(provideSql)) };
+      return {
+        item: listed(
+          next,
+          yield* storedLabels(input.orgId).pipe(provideSql),
+          yield* provenanceOf(input.orgId, person.personId, [next]),
+        ),
+      };
     }, failed),
     confirmSuggestions: Effect.fn("KinMemoryChanges.confirmSuggestions")(function* (people, input) {
       const { person, port } = yield* ownerOf(people, input.orgId);
@@ -348,7 +409,8 @@ const make = Effect.gen(function* () {
         confirmed.push(next);
       }
       const after = yield* storedLabels(input.orgId).pipe(provideSql);
-      return { items: confirmed.map((item) => listed(item, after)) };
+      const provenance = yield* provenanceOf(input.orgId, person.personId, confirmed);
+      return { items: confirmed.map((item) => listed(item, after, provenance)) };
     }, failed),
     forget: Effect.fn("KinMemoryChanges.forget")(function* (people, input) {
       const { port } = yield* ownerOf(people, input.orgId);

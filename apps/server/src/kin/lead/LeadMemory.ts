@@ -41,7 +41,7 @@ import * as Memory from "../memory/Memory.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import * as Cache from "../memory/MemoryCache.ts";
 import { MemoryItemError, memoryDateMillis, parseFrontMatter } from "../memory/frontMatter.ts";
-import { writeRefusal } from "../memory/keeping.ts";
+import { QUOTE_MAX, QUOTE_REFUSALS, writeRefusal } from "../memory/keeping.ts";
 import {
   authorise,
   contentOf,
@@ -90,6 +90,7 @@ export const ReadInput = Schema.Struct({ id: KinMemoryItemId });
 const {
   chat: _chat,
   source_event: _sourceEvent,
+  quote: _quote,
   sensitive: _sensitive,
   shared_by: _sharedBy,
   shared_from: _sharedFrom,
@@ -106,6 +107,8 @@ export const WriteInput = Schema.Struct({
     sensitive: Schema.Boolean,
   }),
   sourceEventId: TrimmedNonEmptyString,
+  // Checked against that event's message, never trusted as sent (`MemoryWriter`).
+  quote: Schema.optional(Schema.String.check(Schema.isMaxLength(QUOTE_MAX))),
   supersedes: Schema.optional(KinMemoryItemId),
 });
 export const DeferInput = Schema.Struct({
@@ -300,7 +303,10 @@ export const authority = Layer.effect(
           const events = yield* sql<{
             json: string;
           }>`SELECT json FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND agent_id = ${row.agentId} ORDER BY event_id`;
-          const sources = new Map<string, { saidBy: string; trust: MemoryTrust; source: string }>();
+          const sources = new Map<
+            string,
+            { saidBy: string; trust: MemoryTrust; source: string; text?: string }
+          >();
           for (const record of events) {
             const event = yield* decodeEvent(record.json);
             const who = event.provenance;
@@ -313,7 +319,14 @@ export const authority = Layer.effect(
                 : undefined;
             if (who._tag === "human" && !person)
               return yield* new Writer.MemoryWriteRejected({ reason: "Unknown source person" });
+            const [said] =
+              event._tag === "chat.message"
+                ? yield* sql<{ body: string }>`SELECT body FROM kin_messages
+                    WHERE org_id = ${orgId} AND chat_id = ${event.chatId}
+                      AND message_id = ${event.messageId} AND status = 'posted'`
+                : [];
             sources.set(event.eventId, {
+              ...(said === undefined ? {} : { text: said.body }),
               saidBy: person?.handle ?? (who._tag === "agent" ? who.agentId : "external"),
               trust: person
                 ? person.role === "owner"
@@ -661,7 +674,9 @@ const make = Effect.gen(function* () {
   ) {
     if (
       isRejected(error) &&
-      (error.reason === "Another wake-up owns the writer" || authorityRejections.has(error.reason))
+      (error.reason === "Another wake-up owns the writer" ||
+        authorityRejections.has(error.reason) ||
+        QUOTE_REFUSALS.has(error.reason))
     )
       return failure(error);
     if (isConflict(error)) {
@@ -716,7 +731,9 @@ const make = Effect.gen(function* () {
     yield* checkSource(ctx, input.sourceEventId);
     const { body, sensitive: asked, ...fields } = input.item;
     const content = contentOf({ head: fields, body });
-    if (looksLikeSecret(content)) return yield* invalid(SECRET_REFUSAL);
+    // The quote is judged with the words it backs: it is stored beside them.
+    const judged = input.quote === undefined ? content : `${content}\n${input.quote}`;
+    if (looksLikeSecret(judged)) return yield* invalid(SECRET_REFUSAL);
     // Judged on the words sent alone, so the refusal says nothing about what is stored.
     const notMemory = writeRefusal(input, yield* Clock.currentTimeMillis);
     if (notMemory !== undefined) return yield* invalid(notMemory);
@@ -724,7 +741,7 @@ const make = Effect.gen(function* () {
     if (shared && (fields.kind !== "claim" || input.op === "supersede"))
       return yield* invalid(TEAM_CLAIMS_ONLY);
     // A chat other people read never stores, or says anything about, what is the owner's alone.
-    if (shared && (asked || mustBeSensitive(content))) return yield* invalid(TEAM_REFUSAL);
+    if (shared && (asked || mustBeSensitive(judged))) return yield* invalid(TEAM_REFUSAL);
     const from = shared ? yield* speaker(ctx, input.sourceEventId) : undefined;
     if (shared && from === undefined) return yield* invalid(TEAM_SOURCE);
     // Only the owner's own stored message, cited as this write's source, is the owner's say-so.
@@ -764,7 +781,7 @@ const make = Effect.gen(function* () {
       : stored !== undefined && input.op !== "supersede"
         ? asked || sensitiveBefore(stored)
         : asked ||
-          mustBeSensitive(content) ||
+          mustBeSensitive(judged) ||
           (replaced._tag === "Some" && sensitiveBefore(replaced.value.head));
     if (sensitive && stored !== undefined && !sensitiveBefore(stored))
       yield* hold(ctx.orgId, stored.id).pipe(provideSql);
@@ -812,7 +829,7 @@ const make = Effect.gen(function* () {
             what: current.value.head.what,
             on_due: current.value.head.on_due,
           }
-        : { ...fields, ...labels },
+        : { ...fields, ...labels, ...(input.quote === undefined ? {} : { quote: input.quote }) },
     )}---\n${body}`;
     const written = yield* parseFrontMatter(ctx.orgId, path, text, true);
     const saved = fingerprint({ head: written.frontMatter, body: written.body });
@@ -825,7 +842,7 @@ const make = Effect.gen(function* () {
         const staged = yield* Effect.acquireUseRelease(
           capped === undefined
             ? Effect.succeed(false)
-            : reserveShared(ctx, capped, fields.id, Buffer.byteLength(content)),
+            : reserveShared(ctx, capped, fields.id, Buffer.byteLength(judged)),
           () =>
             writer.stage(ctx.orgId, ctx.wakeupId, {
               path,

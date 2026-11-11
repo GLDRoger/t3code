@@ -432,6 +432,127 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
 
 // Review of 69b673e063: a dream suggested X while X was only on its branch; the owner listed Y
 // alone; the branch merged, and the old listing's yes-to-all let the team know X, never shown.
+it.effect(
+  "the owner's list says who said each item and when, quoting only what he can still read",
+  () =>
+    Effect.gen(function* () {
+      const kin = yield* Kin.KinServer;
+      const services = Option.getOrThrow(kin.services);
+      const repo = yield* Repository.KinChatRepository;
+      const sql = yield* SqlClient.SqlClient;
+      yield* pairSession(session.sessionId);
+      const [owner] = yield* Context.get(services, KinIdentity).resolve(session);
+      assert.isDefined(owner);
+      const { orgId } = owner;
+      yield* repo.insertAgent({
+        orgId,
+        agentId,
+        displayName: "Lead",
+        role: "lead",
+        ownerPersonId: owner.personId,
+        createdAt: "1970-01-01T00:00:00.000Z",
+      });
+      const chats = Context.get(services, KinChatService);
+      const direct = yield* chats.createDirect(owner, { orgId, agentId });
+      const said = yield* chats.send(owner, {
+        chatId: direct.chatId,
+        body: "Invented: the demo client wants every report as a PDF.",
+        clientMessageId: "said",
+      });
+      const removed = yield* chats.send(owner, {
+        chatId: direct.chatId,
+        body: "Invented words the owner later deleted.",
+        clientMessageId: "removed",
+      });
+      yield* sql`UPDATE kin_messages SET body = '', status = 'deleted'
+      WHERE org_id = ${orgId} AND message_id = ${removed.messageId}`;
+      // A room the owner has since left: what was said there is no longer his to open.
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+      VALUES ('left-room', ${orgId}, 'team_group', 1, '2026-11-01T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at, left_at)
+      VALUES ('owner-left', ${orgId}, 'left-room', 'person', ${owner.personId}, 'member',
+        '2026-11-01T00:00:00.000Z', '2026-11-02T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+        author_member_id, author_role, kind, body, mentions_json, status, created_at)
+      VALUES ('left-message', ${orgId}, 'left-room', 1, 'human', ${owner.personId}, 'owner-left',
+        'member', 'text', 'Invented words in a room he left.', '[]', 'posted', '2026-11-01T10:00:00.000Z')`;
+      const chatSource = (chatId: string, messageId: string) =>
+        `kin:chat:${chatId}:message:${messageId}`;
+      const item = (id: string, fields: Partial<MemoryItemHead>) => ({
+        head: decodeHead({
+          id,
+          orgId,
+          path: `claims/${id}.md`,
+          kind: "claim",
+          title: `Invented ${id}`,
+          status: "open",
+          due: null,
+          recorded_at: "2026-11-03T00:00:00.000Z",
+          valid_from: "2026-11-03T00:00:00.000Z",
+          invalid_at: null,
+          superseded_by: null,
+          review_by: null,
+          source: chatSource(direct.chatId, said.messageId),
+          said_by: "fixture-owner",
+          trust: "owner",
+          links: [],
+          ...fields,
+        }),
+        body: "Invented body.\n",
+      });
+      const items = [
+        item("quoted", { quote: "every report as a PDF" }),
+        // Saved before quotes: who and when, and no words.
+        item("old", {}),
+        item("deleted", {
+          source: chatSource(direct.chatId, removed.messageId),
+          quote: "Invented words the owner later deleted",
+        }),
+        item("left", {
+          source: chatSource("left-room", "left-message"),
+          quote: "Invented words in a room he left",
+        }),
+        item("inferred", { source: "wakeup:invented", said_by: agentId, trust: "agent" }),
+      ];
+      const memory = Context.get(services, KinMemoryChanges);
+      yield* memory.attachWriter({
+        undo: () => Effect.die("Unused"),
+        retire: () => Effect.die("Unused"),
+        relabel: () => Effect.die("Unused"),
+        items: () => Effect.succeed(items),
+      });
+      const listed = Object.fromEntries(
+        (yield* memory.list([owner], { orgId })).items.map((entry) => [
+          entry.itemId,
+          entry.provenance,
+        ]),
+      );
+      const stated = {
+        saidBy: "fixture-owner",
+        trust: "owner",
+        recordedAt: "2026-11-03T00:00:00.000Z",
+      };
+      assert.deepStrictEqual(listed, {
+        quoted: { ...stated, saidAt: said.createdAt, quote: "every report as a PDF" },
+        old: { ...stated, saidAt: said.createdAt, quote: null },
+        deleted: { ...stated, saidAt: null, quote: null },
+        left: { ...stated, saidAt: null, quote: null },
+        inferred: {
+          saidBy: agentId,
+          trust: "agent",
+          recordedAt: "2026-11-03T00:00:00.000Z",
+          saidAt: null,
+          quote: null,
+        },
+      });
+      // Only the owner lists memory at all, so no teammate is ever handed these words.
+      const member = [{ _tag: "person" as const, orgId, personId: KinPersonId.make("priya") }];
+      assert.include(yield* memory.list(member, { orgId }).pipe(Effect.flip), {
+        reason: "not_allowed",
+      });
+    }).pipe(Effect.scoped, Effect.provide(root)),
+);
+
 it.effect("a yes takes only the items and words the owner was shown", () =>
   Effect.gen(function* () {
     const kin = yield* Kin.KinServer;

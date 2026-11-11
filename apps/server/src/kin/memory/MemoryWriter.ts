@@ -42,6 +42,7 @@ import {
 } from "./Memory.ts";
 import { parseFrontMatter, MemoryItemError, schemaKeyFailure } from "./frontMatter.ts";
 import { journalEntry, MemoryJournalError, type JournalContext } from "./journal.ts";
+import { QUOTE_MISSING, quoteRefusal } from "./keeping.ts";
 import { isOwnerReviewedPath, kinShapeFailure } from "./lint.ts";
 import { KinSecretScan, KinSecretScanError } from "./secretScan.ts";
 import { retireLabels } from "./sensitivity.ts";
@@ -57,7 +58,13 @@ export interface WakeupContext extends JournalContext {
   readonly stagedReceipts?: boolean;
   readonly sources: ReadonlyMap<
     string,
-    { readonly saidBy: string; readonly trust: MemoryTrust; readonly source: string } & (
+    {
+      readonly saidBy: string;
+      readonly trust: MemoryTrust;
+      readonly source: string;
+      /** A message's own words, which a new item's `quote` must be taken from. */
+      readonly text?: string | undefined;
+    } & (
       | { readonly kind?: undefined }
       | {
           readonly kind: "owner_check";
@@ -879,6 +886,7 @@ const make = Effect.gen(function* () {
             "said_by",
             "source",
             "source_event",
+            "quote",
             "sensitive",
             "shared_by",
           ]);
@@ -939,14 +947,27 @@ const make = Effect.gen(function* () {
       review_by: fm.review_by,
     };
     const existing = items.find((item) => item.id === fm.id);
+    // A new item that says what someone said holds their words from the cited message; an
+    // existing item keeps the quote, like the rest of its provenance, from when it was saved.
+    if (!existing && fm.kind !== "deferral") {
+      const refusal =
+        fm.quote !== undefined
+          ? quoteRefusal(fm.quote, change.sourceEventId === undefined ? undefined : source.text)
+          : fields.trust === "owner" || fields.trust === "member"
+            ? QUOTE_MISSING
+            : undefined;
+      if (refusal !== undefined) return yield* new MemoryWriteRejected({ reason: refusal });
+    }
+    const { quote: _quote, ...unquoted } = fields;
     const text = render(
       existing
         ? {
-            ...fields,
+            ...unquoted,
             trust: existing.trust,
             said_by: existing.said_by,
             source: existing.source,
             source_event: existing.source_event,
+            ...(existing.quote === undefined ? {} : { quote: existing.quote }),
           }
         : fields,
       parsed.body,
