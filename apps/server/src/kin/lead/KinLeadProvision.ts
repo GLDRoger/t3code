@@ -1,5 +1,7 @@
 import {
   KinAgentId,
+  KinRecordKey,
+  KinRecordState,
   KinChatId,
   KinLead,
   KinLeadCharter,
@@ -388,6 +390,8 @@ const TrackedRow = Schema.Struct({
   dueAt: Schema.NullOr(Schema.Number),
   chatId: Schema.NullOr(KinChatId),
   agentId: Schema.NullOr(KinAgentId),
+  key: Schema.NullOr(KinRecordKey),
+  state: Schema.NullOr(KinRecordState),
 });
 const decodeTracked = Schema.decodeUnknownEffect(Schema.Array(TrackedRow));
 
@@ -404,14 +408,24 @@ const tracked = Effect.fn("KinLeadProvision.tracked")(function* (orgId: KinOrgId
       WHERE m.org_id = w.org_id AND m.chat_id = w.chat_id AND m.principal_kind = 'agent'
         AND m.left_at IS NULL
       ORDER BY m.joined_at, m.agent_id LIMIT 1)`;
+  // Its open Work entries, any running worker not yet in Work, then its alarms.
   const rows = yield* sql`
-    SELECT 'work' AS kind, COALESCE(k.title, 'Coding task') AS title, NULL AS "dueAt",
-      k.chat_id AS "chatId", k.agent_id AS "agentId", 0 AS rank, k.started_at AS at
+    SELECT 'work' AS kind, e.title, e.due_at AS "dueAt", e.source_chat_id AS "chatId",
+      e.owner_id AS "agentId",
+      CASE e.state WHEN 'doing' THEN 0 WHEN 'waiting' THEN 0 ELSE 1 END AS rank,
+      COALESCE(e.due_at, e.updated_at) AS at, e.key, e.state
+    FROM kin_records e WHERE e.org_id = ${orgId} AND e.owner_kind = 'agent'
+      AND e.state NOT IN ('done', 'dropped')
+    UNION ALL
+    SELECT 'work', COALESCE(k.title, 'Coding task'), NULL, k.chat_id, k.agent_id, 0, k.started_at,
+      NULL, NULL
     FROM kin_workers k WHERE k.org_id = ${orgId} AND k.ended_at IS NULL
+      AND NOT EXISTS (SELECT 1 FROM kin_record_links l WHERE l.org_id = k.org_id
+        AND l.kind = 'worker' AND l.target = k.worker_id)
     UNION ALL
     SELECT CASE r.on_due WHEN 'remind' THEN 'reminder' ELSE 'follow_up' END,
       COALESCE(json_extract(w.state_json, '$.title'), ''), COALESCE(f.next_run_at, r.due_at),
-      w.chat_id, ${firstLead}, 1, COALESCE(f.next_run_at, r.due_at, r.updated_at)
+      w.chat_id, ${firstLead}, 2, COALESCE(f.next_run_at, r.due_at, r.updated_at), NULL, NULL
     FROM kin_deferral_runs r
     JOIN kin_widgets w ON w.org_id = r.org_id
       AND w.widget_id = 'deferral:' || r.org_id || ':' || r.item_id
@@ -421,7 +435,7 @@ const tracked = Effect.fn("KinLeadProvision.tracked")(function* (orgId: KinOrgId
       OR (r.state IN ('armed', 'heads_up', 'grace', 'snoozed') AND f.next_run_at IS NOT NULL))
     UNION ALL
     SELECT 'scheduled', COALESCE(json_extract(w.state_json, '$.title'), ''), NULL, w.chat_id,
-      ${firstLead}, 2, t.updated_at
+      ${firstLead}, 3, t.updated_at, NULL, NULL
     FROM kin_scheduled_tasks t
     JOIN kin_widgets w ON w.org_id = t.org_id
       AND w.widget_id = 'scheduled:' || t.org_id || ':' || t.item_id
@@ -467,6 +481,8 @@ const profileOf = (
         ? {}
         : { dueAt: DateTime.formatIso(DateTime.makeUnsafe(item.dueAt)) }),
       chatId: item.chatId,
+      ...(item.key === null ? {} : { key: item.key }),
+      ...(item.state === null ? {} : { state: item.state }),
     })),
 });
 

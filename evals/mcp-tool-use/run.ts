@@ -54,6 +54,8 @@ import { instructions as kinLeadInstructions } from "../../apps/server/src/kin/l
 import { leadTools } from "../../apps/server/src/kin/lead/LeadIsolation.ts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
 import { KinChatToolkit } from "../../apps/server/src/kin/mcp/KinChatToolkit.ts";
+import { KinWorkToolkit } from "../../apps/server/src/kin/work/mcp/tools.ts";
+import { WORK_RULE } from "../../apps/server/src/kin/work/workPrompt.ts";
 import { KinApprovalsToolkit } from "../../apps/server/src/kin/approvals/mcp.ts";
 import { AttachmentToolkit } from "../../apps/server/src/mcp/toolkits/attachment/tools.ts";
 import { DeviceToolkit } from "../../apps/server/src/mcp/toolkits/device/tools.ts";
@@ -444,6 +446,7 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   KinChatToolkit,
   KinApprovalsToolkit,
   KinLeadToolkit,
+  KinWorkToolkit,
 ].flatMap((toolkit): ReadonlyArray<Tool.Any> => Object.values(toolkit.tools));
 // McpHttpServer decodes arguments with each tool's JSON codec, which drops undeclared keys.
 const t3InputDecoders = new Map(
@@ -504,10 +507,13 @@ const visibleT3Tools = (options: {
             (name) => tool.name === `${T3_PREFIX}${name}`,
           ) ||
           (options.kinLead === true &&
-            Object.keys(KinLeadToolkit.tools).some((name) => tool.name === `${T3_PREFIX}${name}`))
+            [...Object.keys(KinLeadToolkit.tools), ...Object.keys(KinWorkToolkit.tools)].some(
+              (name) => tool.name === `${T3_PREFIX}${name}`,
+            ))
         : ![
             ...Object.keys(KinChatToolkit.tools),
             ...Object.keys(KinLeadToolkit.tools),
+            ...Object.keys(KinWorkToolkit.tools),
             ...Object.keys(KinApprovalsToolkit.tools),
           ].some((name) => tool.name === `${T3_PREFIX}${name}`)) &&
       (options.links === true || !hiddenWhileLinksOff.has(tool.name)) &&
@@ -1058,10 +1064,12 @@ export const buildMessages = (sample: Sample) => {
     }
     if (turn.text) push(turn.role, text(turn.text));
   }
+  // A lead case writes `{{WORK_RULE}}` where LeadPrompt puts the rule, so it tests the current text.
+  const casePrompt = testCase.prompt.replaceAll("{{WORK_RULE}}", WORK_RULE);
   const userText =
     testCase.promptContext === undefined
-      ? testCase.prompt
-      : projectComposerContextForProvider({ text: testCase.prompt, ...testCase.promptContext });
+      ? casePrompt
+      : projectComposerContextForProvider({ text: casePrompt, ...testCase.promptContext });
   const inline =
     sideChatContext === undefined ? userText : withInlineContext(sideChatContext, userText);
   // Codex has no lead session to carry the instructions, so its prompt opens with them.

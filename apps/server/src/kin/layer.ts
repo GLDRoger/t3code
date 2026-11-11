@@ -17,6 +17,7 @@ import * as ExecutionNotices from "./chat/executionNotices.ts";
 import * as KinPush from "./push/layer.ts";
 import * as LevelControl from "./levels/LevelControl.ts";
 import * as MemoryChanges from "./memory/MemoryChanges.ts";
+import * as KinRecords from "./work/KinRecords.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
 
 import { KinServer, type Services } from "./KinServer.ts";
@@ -55,6 +56,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
               KinPush.layer,
               LevelControl.layer,
               MemoryChanges.layer,
+              KinRecords.layer,
               ApprovalCards.layer,
             ).pipe(Layer.provideMerge(KinApprovals.layer)),
           ),

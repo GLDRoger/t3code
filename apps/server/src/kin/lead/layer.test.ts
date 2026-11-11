@@ -21,12 +21,14 @@ import * as ChatHub from "../chat/KinChatHub.ts";
 import * as Presence from "../reply/KinPresence.ts";
 import * as LevelGate from "./LevelGate.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
+import * as KinRecords from "../work/KinRecords.ts";
 import * as KinLead from "./layer.ts";
 import { event, harness, seed, orgId } from "./WakeupRunner.testkit.ts";
 
 const external = Layer.mergeAll(
   Layer.mock(ChatService.KinChatService)({}),
   Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+  Layer.mock(KinRecords.KinRecords)({}),
   Layer.mock(ChatHub.KinChatHub)({ subscribeAll: Effect.succeed(Stream.never) }),
   Layer.mock(LevelGate.KinLevelGate)({}),
   Layer.mock(Presence.KinPresence)({
