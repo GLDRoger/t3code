@@ -32,7 +32,7 @@ export function WorkspaceEmptyDetail(props: {
           <View className="w-full max-w-[430px]">
             <EmptyState
               title="Get started"
-              detail="Joining a team? Use the link they sent you. Setting up your own? Add an environment to start coding sessions."
+              detail="Joining a team? Use the link they sent you. Running your own Kin? Connect the computer it runs on."
               variant="plain"
               action={
                 <View className="items-center gap-3">
@@ -40,7 +40,7 @@ export function WorkspaceEmptyDetail(props: {
                     <Button tone="primary" label="I have a join link" onPress={props.onJoinKin} />
                   ) : null}
                   <FloatingActionButton
-                    label="Add environment"
+                    label={props.onJoinKin ? "Set up my own Kin" : "Add environment"}
                     icon="plus"
                     variant="extended"
                     tone={props.onJoinKin ? "secondary" : "primary"}

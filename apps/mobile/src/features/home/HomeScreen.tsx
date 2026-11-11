@@ -164,7 +164,7 @@ function deriveEmptyState(props: {
     return {
       title: "Get started",
       detail:
-        "Joining a team? Use the link they sent you. Setting up your own? Add an environment to start coding sessions.",
+        "Joining a team? Use the link they sent you. Running your own Kin? Connect the computer it runs on.",
       loading: false,
     };
   }
@@ -709,7 +709,7 @@ export function HomeScreen(props: HomeScreenProps) {
                       <Button tone="primary" label="I have a join link" onPress={props.onJoinKin} />
                       <Button
                         tone="secondary"
-                        label="Add environment"
+                        label="Set up my own Kin"
                         onPress={props.onAddConnection}
                       />
                     </View>
