@@ -1,6 +1,7 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Supersession fingerprints compare in-process strings synchronously.
 import * as NodeCrypto from "node:crypto";
 import { toPersistenceSqlError, type PersistenceSqlError } from "../../persistence/Errors.ts";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import { readFiles, readCommit, readTree, objectHash, verifyTree } from "./objects.ts";
@@ -1570,32 +1571,44 @@ const make = Effect.gen(function* () {
               COALESCE(SUM(cleared_change_seq), 0) AS mark FROM kin_chats WHERE org_id = ${orgId}`.pipe(
             Effect.mapError(toPersistenceSqlError("MemoryWriter.stripQuotes")),
           );
-          for (const branch of [...(mainWritable ? [main] : []), ...shadows.toSorted()]) {
-            const head = yield* branchHead(orgId, writer, branch);
-            const swept = `${head}\u0000${clears?.mark ?? 0}`;
-            if (unquotedHeads.get(`${orgId}\u0000${branch}`) === swept) continue;
-            const headFiles = yield* filesAt(orgId, writer, head);
-            const stripped = yield* deletedQuotes(
-              orgId,
-              new Map([...headFiles].map(([path, bytes]) => [path, bytes.toString("utf8")])),
-            ).pipe(
-              Effect.provideService(SqlClient.SqlClient, sql),
-              Effect.mapError(toPersistenceSqlError("MemoryWriter.stripQuotes")),
+          // A branch that fails is logged and left unmarked, so the next sweep retries it.
+          for (const branch of [...(mainWritable ? [main] : []), ...shadows.toSorted()])
+            yield* Effect.gen(function* () {
+              const head = yield* branchHead(orgId, writer, branch);
+              const swept = `${head}\u0000${clears?.mark ?? 0}`;
+              if (unquotedHeads.get(`${orgId}\u0000${branch}`) === swept) return;
+              const headFiles = yield* filesAt(orgId, writer, head);
+              const stripped = yield* deletedQuotes(
+                orgId,
+                new Map([...headFiles].map(([path, bytes]) => [path, bytes.toString("utf8")])),
+              ).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.mapError(toPersistenceSqlError("MemoryWriter.stripQuotes")),
+              );
+              if (stripped.size === 0) {
+                unquotedHeads.set(`${orgId}\u0000${branch}`, swept);
+                return;
+              }
+              yield* ownerCommit(orgId, {
+                writer,
+                repoUrl: repo.repoUrl,
+                branch,
+                head,
+                headFiles,
+                files: stripped,
+                message: "kin: drop quotes of deleted messages\n",
+              });
+            }).pipe(
+              Effect.catchCauseIf(
+                (cause) => !Cause.hasInterruptsOnly(cause),
+                (cause) =>
+                  Effect.logWarning("Kin could not drop deleted messages' quotes on a branch", {
+                    orgId,
+                    branch,
+                    cause,
+                  }),
+              ),
             );
-            if (stripped.size === 0) {
-              unquotedHeads.set(`${orgId}\u0000${branch}`, swept);
-              continue;
-            }
-            yield* ownerCommit(orgId, {
-              writer,
-              repoUrl: repo.repoUrl,
-              branch,
-              head,
-              headFiles,
-              files: stripped,
-              message: "kin: drop quotes of deleted messages\n",
-            });
-          }
         }),
       ),
     ),
