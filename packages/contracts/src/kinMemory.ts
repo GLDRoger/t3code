@@ -128,11 +128,21 @@ export const KinMemoryConfirmSuggestionsResult = Schema.Struct({
 });
 export type KinMemoryConfirmSuggestionsResult = typeof KinMemoryConfirmSuggestionsResult.Type;
 
+/**
+ * The owner removes one item from what the leads remember. It is marked no longer true, never
+ * deleted, so its history stays in the memory repo.
+ */
+export const KinMemoryForgetInput = Schema.Struct({ orgId: KinOrgId, itemId: KinMemoryItemId });
+export type KinMemoryForgetInput = typeof KinMemoryForgetInput.Type;
+export const KinMemoryForgetResult = Schema.Struct({ itemId: KinMemoryItemId });
+export type KinMemoryForgetResult = typeof KinMemoryForgetResult.Type;
+
 const KIN_MEMORY_WS_METHODS = {
   undo: "kin.memory.undo",
   list: "kin.memory.list",
   setVisibility: "kin.memory.setVisibility",
   confirmSuggestions: "kin.memory.confirmSuggestions",
+  forget: "kin.memory.forget",
 } as const;
 
 // Owner of the lead only, on the server; the scope gates the client's button.
@@ -157,6 +167,11 @@ export const KinMemoryRpcs = [
     success: KinMemoryConfirmSuggestionsResult,
     error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
   }),
+  Rpc.make(KIN_MEMORY_WS_METHODS.forget, {
+    payload: KinMemoryForgetInput,
+    success: KinMemoryForgetResult,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
 ] as const;
 
 export const KIN_MEMORY_RPC_SCOPES = {
@@ -165,4 +180,5 @@ export const KIN_MEMORY_RPC_SCOPES = {
   [KIN_MEMORY_WS_METHODS.list]: AuthSettingsWriteScope,
   [KIN_MEMORY_WS_METHODS.setVisibility]: AuthSettingsWriteScope,
   [KIN_MEMORY_WS_METHODS.confirmSuggestions]: AuthSettingsWriteScope,
+  [KIN_MEMORY_WS_METHODS.forget]: AuthSettingsWriteScope,
 } as const;

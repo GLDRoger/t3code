@@ -5,6 +5,8 @@ import {
   type KinAgentId,
   type KinMemoryConfirmSuggestionsInput,
   type KinMemoryConfirmSuggestionsResult,
+  type KinMemoryForgetInput,
+  type KinMemoryForgetResult,
   type KinMemoryListInput,
   type KinMemoryListItem,
   type KinMemoryListResult,
@@ -48,6 +50,7 @@ export type KinMemoryUndo = MemoryWriter["Service"]["undoChange"];
 export interface KinMemoryPort {
   readonly undo: KinMemoryUndo;
   readonly relabel: MemoryWriter["Service"]["relabel"];
+  readonly retire: MemoryWriter["Service"]["retire"];
   /** Every current item on the default branch, with its body. */
   readonly items: (
     orgId: KinOrgId,
@@ -84,6 +87,14 @@ export class KinMemoryChanges extends Context.Service<
       people: ReadonlyArray<PersonIdentity>,
       input: KinMemoryConfirmSuggestionsInput,
     ) => Effect.Effect<KinMemoryConfirmSuggestionsResult, KinChatError>;
+    /**
+     * The owner removes one item: marked no longer true, so no lead uses it again, and kept in
+     * history.
+     */
+    readonly forget: (
+      people: ReadonlyArray<PersonIdentity>,
+      input: KinMemoryForgetInput,
+    ) => Effect.Effect<KinMemoryForgetResult, KinChatError>;
     readonly attachWriter: (port: KinMemoryPort) => Effect.Effect<void, never, Scope.Scope>;
   }
 >()("t3/kin/memory/MemoryChanges/KinMemoryChanges") {}
@@ -350,6 +361,15 @@ const make = Effect.gen(function* () {
       }
       const after = yield* storedLabels(input.orgId).pipe(provideSql);
       return { items: confirmed.map((item) => listed(item, after)) };
+    }, failed),
+    forget: Effect.fn("KinMemoryChanges.forget")(function* (people, input) {
+      const { port } = yield* ownerOf(people, input.orgId);
+      const known = (yield* port.items(input.orgId)).filter(
+        (item) => item.head.id === input.itemId,
+      );
+      if (known.length !== 1) return yield* notFound;
+      yield* port.retire(input.orgId, { itemId: input.itemId, by: "owner" });
+      return { itemId: input.itemId };
     }, failed),
     attachWriter: Effect.fn("KinMemoryChanges.attachWriter")(function* (next) {
       yield* Effect.acquireRelease(
