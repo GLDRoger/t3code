@@ -83,6 +83,7 @@ describe("command permissions", () => {
     "kin.memory.list",
     "kin.memory.setVisibility",
     "kin.memory.confirmSuggestions",
+    "kin.memory.forget",
   ] as const)("guards the Kin owner setting %s with the destination settings grant", (method) =>
     Effect.scoped(
       Effect.gen(function* () {

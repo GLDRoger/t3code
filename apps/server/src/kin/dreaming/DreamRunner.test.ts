@@ -29,6 +29,7 @@ import * as MemoryCache from "../memory/MemoryCache.ts";
 import { MemoryConfig } from "../memory/MemoryConfig.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import * as Scan from "../memory/secretScan.ts";
+import { hold } from "../memory/sensitivity.ts";
 import * as Persistence from "../persistence/KinPersistence.ts";
 import * as TriggerInbox from "../triggers/KinTriggerInbox.ts";
 import * as TriggerStore from "../triggers/KinTriggerStore.ts";
@@ -107,6 +108,8 @@ const fixture = <A, E>(
     | FileSystem.FileSystem
     | Scope.Scope
   >,
+  /** More item files on the default branch before the night starts. */
+  seeded: Readonly<Record<string, string>> = {},
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -135,6 +138,12 @@ const fixture = <A, E>(
       fixtureItem({ id: "clm-001", kind: "claim", said_by: "owner" }),
     );
     yield* fs.writeFileString(`${source}/journal/2026/11-07.md`, "\n## 10:00 · wake-up\n");
+    for (const [file, text] of Object.entries(seeded)) {
+      yield* fs.makeDirectory(`${source}/${file.slice(0, file.lastIndexOf("/"))}`, {
+        recursive: true,
+      });
+      yield* fs.writeFileString(`${source}/${file}`, text);
+    }
     // Provider config a repo writer could plant; none of it may reach the dream checkout.
     yield* fs.makeDirectory(`${source}/.claude`);
     yield* fs.writeFileString(
@@ -239,6 +248,7 @@ const fixture = <A, E>(
     const config = Layer.succeed(MemoryConfig, {
       baseDirectory: root,
       repositories: [{ orgId, repoUrl: remote, path: "state" }],
+      directMainPush: true,
     });
     const recovery = Layer.succeed(Memory.MemoryRecoveryHooks, {
       notify: (notice) => Effect.sync(() => void notices.push(notice.reason)),
@@ -773,3 +783,49 @@ it.live("a night with nothing new since the last good one runs no model and post
     }),
   ),
 );
+
+it.live("the night retires spent notes on the default branch and keeps everything else", () => {
+  const note = (id: string, fields: Record<string, unknown>) =>
+    fixtureItem({ id, kind: "claim", said_by: "owner", ...fields });
+  const followUp = "Get back to the owner after the 60-second pause";
+  return fixture(
+    ({ git, remote, root, notices }) =>
+      Effect.gen(function* () {
+        const runner = yield* DreamRunner.DreamRunner;
+        const sql = yield* SqlClient.SqlClient;
+        yield* hold(orgId, "clm-held").pipe(Effect.provideService(SqlClient.SqlClient, sql));
+        const outcome = yield* runner.run(orgId, { full: false, ownerDate: "2026-11-08" });
+        expect(outcome._tag).toBe("succeeded");
+        const onMain = (file: string) => git(root, ["--git-dir", remote, "show", `main:${file}`]);
+        // Marked no longer true, never deleted; the commit says who did it.
+        expect(yield* onMain("claims/followup.md")).toMatch(/invalid_at: "?20\d\d-/);
+        expect(yield* git(root, ["--git-dir", remote, "log", "--format=%s", "main"])).toContain(
+          "kin: nightly pass retires spent clm-followup",
+        );
+        // A lasting fact, a teammate's words, what the owner marked, and a kind the owner reviews.
+        for (const file of [
+          "claims/existing.md",
+          "claims/said.md",
+          "claims/held.md",
+          "decisions/todo.md",
+        ])
+          expect(yield* onMain(file)).toContain("invalid_at: null");
+        // The dream itself starts from memory as the retirement left it.
+        if (outcome._tag === "succeeded")
+          expect(
+            yield* git(root, ["--git-dir", remote, "show", `${outcome.head}:claims/followup.md`]),
+          ).not.toContain("invalid_at: null");
+        expect(notices).toEqual([]);
+      }),
+    {
+      "claims/followup.md": note("clm-followup", { title: followUp }),
+      "claims/said.md": note("clm-said", {
+        title: followUp,
+        trust: "member",
+        shared_from: { person: "priya", chat: "room", name: "Priya", chat_name: "Launch room" },
+      }),
+      "claims/held.md": note("clm-held", { title: followUp }),
+      "decisions/todo.md": note("dec-todo", { kind: "decision", title: followUp }),
+    },
+  );
+});

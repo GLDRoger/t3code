@@ -3,6 +3,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_MEMORY_EMPTY,
+  KIN_MEMORY_FORGET,
   KIN_MEMORY_LOAD_FAILED,
   KIN_MEMORY_NO_EDITS,
   KIN_MEMORY_SEARCH_PLACEHOLDER,
@@ -25,6 +26,7 @@ import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { AppBar } from "../../components/ui/AppBar";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
+import { confirm as confirmDialog } from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ErrorBanner } from "../../components/ui/ErrorBanner";
 import { ScreenContent } from "../../components/ui/ScreenContent";
@@ -115,6 +117,7 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
   const result = useAtomValue(allowed ? listAtom : noMemoryAtom);
   const setVisibility = useAtomCommand(kinClient.memorySetVisibility, { reportFailure: false });
   const confirm = useAtomCommand(kinClient.memoryConfirm, { reportFailure: false });
+  const forget = useAtomCommand(kinClient.memoryForget, { reportFailure: false });
   const [edits, setEdits] = useState(KIN_MEMORY_NO_EDITS);
   const [search, setSearch] = useState("");
   const [actions] = useState(() =>
@@ -122,6 +125,7 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
       orgId,
       setVisibility: (input) => setVisibility({ environmentId, input }),
       confirmSuggestions: (input) => confirm({ environmentId, input }),
+      forget: (input) => forget({ environmentId, input }),
       update: setEdits,
       refresh: () => appAtomRegistry.refresh(listAtom),
     }),
@@ -185,7 +189,7 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
               <AppActivityIndicator />
             </View>
           )
-        ) : list.items.length === 0 ? (
+        ) : view.total === 0 ? (
           <EmptyState variant="plain" {...KIN_MEMORY_EMPTY} />
         ) : view.noMatch !== null ? (
           <EmptyState variant="plain" title={view.noMatch} detail="Try another word." />
@@ -299,6 +303,22 @@ function KinMemoryItem(props: {
             onPress={() => void props.actions.change(props.list, item.itemId, action.to)}
           />
         ))}
+        <Button
+          tone="text"
+          size="compact"
+          label={item.forget.label}
+          accessibilityLabel={item.forget.accessibilityLabel}
+          disabled={item.busy}
+          onPress={() =>
+            confirmDialog({
+              title: KIN_MEMORY_FORGET.title,
+              message: KIN_MEMORY_FORGET.body(item.title),
+              confirmText: KIN_MEMORY_FORGET.action,
+              destructive: true,
+              onConfirm: () => void props.actions.forget(props.list, item.itemId),
+            })
+          }
+        />
       </View>
     </View>
   );

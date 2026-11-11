@@ -707,6 +707,21 @@ it.live(
           .write(scope, noted("secret-claim", `The deploy token is ghp_${"a1B2".repeat(9)}`))
           .pipe(Effect.flip);
         assert.include(secret.message, "Save where it is kept instead");
+        // A follow-up is a reminder, not memory: refused before anything is staged.
+        const followUp = yield* service
+          .write(
+            scope,
+            noted(
+              "pause-claim",
+              "Get back to the owner after the 60-second pause, and recheck GitHub access.",
+            ),
+          )
+          .pipe(Effect.flip);
+        assert.include(followUp.message, "kin_defer");
+        assert.include(
+          yield* service.read(scope, { id: KinMemoryItemId.make("pause-claim") }).pipe(Effect.flip),
+          { reason: "not_found" },
+        );
         // Letting the team know something is the owner's call: only their own message does it.
         const share = {
           itemIds: [KinMemoryItemId.make("private-item")],

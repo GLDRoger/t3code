@@ -411,6 +411,11 @@ export const kinClient = {
     label: "kin:memory:confirm",
     tag: "kin.memory.confirmSuggestions",
   }),
+  memoryForget: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:memory:forget",
+    tag: "kin.memory.forget",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.itemId },
+  }),
   /**
    * One pending action as this viewer may see it. `revision` is the card's own, only a cache key:
    * a redrawn card reads the action again.

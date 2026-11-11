@@ -259,6 +259,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.memory.list": "kin-memory",
   "kin.memory.setVisibility": "kin-memory",
   "kin.memory.confirmSuggestions": "kin-memory",
+  "kin.memory.forget": "kin-memory",
   "kin.push.registerDevice": "kin-push",
   "kin.push.unregisterDevice": "kin-push",
   "kin.push.watch": "kin-push",
