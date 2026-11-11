@@ -11,6 +11,7 @@ import {
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -33,10 +34,10 @@ import { buildBrief } from "./workerBrief.ts";
 import { labelOf, resolveProject, type Checkout, type HostProject } from "./workerProjects.ts";
 import { publishBranch } from "./workerPublish.ts";
 import type { DelegateInput } from "./Workers.ts";
-import { WorkerTracker } from "./WorkerTracker.ts";
+import { STOPPED_BEFORE_START, WorkerTracker } from "./WorkerTracker.ts";
 import { localThreadId } from "./workThread.ts";
 import { KinRecords } from "../work/KinRecords.ts";
-import { workerStarted } from "../work/workerEntries.ts";
+import { WORK_NOT_YOURS, workMayStart, workerStarted } from "../work/workerEntries.ts";
 
 type Lead = Effect.Success<ReturnType<typeof resolveLead>>;
 type Config = {
@@ -116,9 +117,10 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
       )
         return false;
       // Work the owner gave the lead counts as asked in its direct chat: the stored assigner
-      // is the owner, and the turn answers there (`turnChat`).
+      // is the owner, and the turn answers there (`turnChat`). Their taking it back never does.
       const ownerAssigned =
         event._tag === "record.changed" &&
+        event.reason === "assigned" &&
         event.provenance._tag === "human" &&
         event.provenance.personId === owner.personId;
       if (
@@ -246,17 +248,29 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
     const branch = publishBranch(workerId);
     const threadId = localThreadId(workerId);
     const chatId = plan.config.ownerChatId;
-    yield* sql.withTransaction(
+    const startedAt = yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* shared.lead(scope);
+        const config = yield* shared.leadConfig(ctx);
         // The checks again where the row is written: a join may have shared the turn meanwhile.
         if (
           !(yield* toolAdmitted(ctx, "kin_delegate", input).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
           )) ||
-          !(yield* ownersDirectChat(ctx, yield* shared.leadConfig(ctx), plan.event))
+          !(yield* ownersDirectChat(ctx, config, plan.event))
         )
           return yield* denied(LOCAL_DIRECT_ONLY);
+        // Here, not before: the owner may have closed or taken back the work since.
+        if (
+          !(yield* workMayStart({
+            orgId: ctx.orgId,
+            agentId: ctx.agentId,
+            ownerPersonId: config.ownerPersonId,
+            event: plan.event,
+            ...(input.entry === undefined ? {} : { entryKey: input.entry }),
+          }).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
+        )
+          return yield* denied(WORK_NOT_YOURS);
         const startedAt = yield* Clock.currentTimeMillis;
         const inserted = yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id,
           kind, thread_id, review_of, model_json, provenance_json, status, report_json, started_at,
@@ -267,8 +281,8 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
           'queued', NULL, ${startedAt}, NULL, ${input.title}, ${chatId}, ${target.projectId}, NULL,
           NULL, ${target.repositoryKey}, 'private')
           ON CONFLICT (worker_id) DO NOTHING RETURNING worker_id`;
-        if (inserted.length > 0)
-          return yield* workerStarted({
+        if (inserted.length > 0) {
+          yield* workerStarted({
             orgId: ctx.orgId,
             agentId: ctx.agentId,
             workerId,
@@ -280,10 +294,15 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
             Effect.provideService(KinRecords, records),
             Effect.provideService(SqlClient.SqlClient, sql),
           );
-        const [stored] = yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId"
+          return startedAt;
+        }
+        const [stored] = yield* sql<{ wakeupId: string; startedAt: number }>`SELECT
+            wakeup_id AS "wakeupId", started_at AS "startedAt"
           FROM kin_workers WHERE org_id = ${ctx.orgId} AND agent_id = ${ctx.agentId}
             AND worker_id = ${workerId} ORDER BY worker_id`;
-        if (stored?.wakeupId !== ctx.wakeupId) return yield* denied(LOCAL_DIRECT_ONLY);
+        if (stored === undefined || stored.wakeupId !== ctx.wakeupId)
+          return yield* denied(LOCAL_DIRECT_ONLY);
+        return stored.startedAt;
       }),
     );
     const brief = buildBrief({
@@ -305,8 +324,9 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
           Effect.as("origin/HEAD"),
           Effect.orElseSucceed(() => "HEAD"),
         ));
-    // A retry replays the same command, which returns the thread the first launch made.
-    yield* launcher
+    // A retry replays the same command, which returns the thread the first launch made. A stop
+    // that came first means no launch; one during it reaches the thread as it returns.
+    const launch = launcher
       .launch({
         commandId: CommandId.make(`kin-work:${workerId}`),
         threadId,
@@ -338,6 +358,16 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
             : new KinChatError({ reason: "unavailable", message: LAUNCH_FAILED }),
         ),
       );
+    const launched = yield* tracker
+      .launch({ orgId: ctx.orgId, workerId, startedAt }, launch)
+      .pipe(
+        Effect.mapError((error) =>
+          isChatError(error)
+            ? error
+            : new KinChatError({ reason: "unavailable", message: LAUNCH_FAILED }),
+        ),
+      );
+    if (Option.isNone(launched)) return yield* denied(STOPPED_BEFORE_START);
     // Cards are best effort: a launched worker must not fail because its card could not be shown.
     yield* chat
       .createTaskCard({

@@ -14,6 +14,7 @@ import {
   type KinRecordSide,
   type KinRecordState,
   type KinWorkPrincipal,
+  type KinWorkerId,
   KinRecordId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -137,6 +138,8 @@ export type Withdrawal = {
   readonly recordId: string;
   readonly key: string;
   readonly seq: number;
+  /** The lead's worker attempts open on the entry when it was withdrawn: the stop's whole reach. */
+  readonly workers: ReadonlyArray<{ readonly workerId: KinWorkerId; readonly startedAt: number }>;
 };
 
 const isChatError = Schema.is(KinChatError);
@@ -793,12 +796,24 @@ const make = Effect.gen(function* () {
             "withdrawn",
           ))
         ) {
+          // Recorded with the change, so a restart replays this and never a worker started after.
+          const workers = yield* sql<{ workerId: KinWorkerId; startedAt: number }>`
+            INSERT INTO kin_worker_withdrawals (org_id, record_id, seq, worker_id, started_at,
+              agent_id, record_key, state, created_at)
+            SELECT k.org_id, l.record_id, ${seq}, k.worker_id, k.started_at, k.agent_id, ${row.key},
+              'pending', ${now}
+            FROM kin_record_links l JOIN kin_workers k ON k.org_id = l.org_id AND k.worker_id = l.target
+            WHERE l.org_id = ${orgId} AND l.record_id = ${row.recordId} AND l.kind = 'worker'
+              AND k.agent_id = ${withdrawnFrom.agentId} AND k.ended_at IS NULL
+            ORDER BY k.worker_id
+            RETURNING worker_id AS "workerId", started_at AS "startedAt"`;
           const withdrawal = {
             orgId,
             agentId: withdrawnFrom.agentId,
             recordId: row.recordId,
             key: row.key,
             seq,
+            workers,
           };
           yield* sql.afterCommit(
             Effect.suspend(() =>
