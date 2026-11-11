@@ -647,6 +647,18 @@
       "types": "./src/kin/kinDeferralPresentation.ts",
       "default": "./src/kin/kinDeferralPresentation.ts"
     },
+    "./kin/kinWork": {
+      "types": "./src/kin/kinWork.ts",
+      "default": "./src/kin/kinWork.ts"
+    },
+    "./kin/kinWorkList": {
+      "types": "./src/kin/kinWorkList.ts",
+      "default": "./src/kin/kinWorkList.ts"
+    },
+    "./kin/kinWorkStream": {
+      "types": "./src/kin/kinWorkStream.ts",
+      "default": "./src/kin/kinWorkStream.ts"
+    },
     "./kin/kinMemoryScreen": {
       "types": "./src/kin/kinMemoryScreen.ts",
       "default": "./src/kin/kinMemoryScreen.ts"

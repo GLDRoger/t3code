@@ -13,6 +13,10 @@ import { KinInviteScreen } from "./KinInviteScreen";
 import { KinTeamScreen } from "./KinTeamScreen";
 import { KinTeammateScreen } from "./KinTeammateScreen";
 import { KinWaitingScreen } from "./KinWaitingScreen";
+import { KinWorkAssignScreen } from "./KinWorkAssignScreen";
+import { KinWorkItemScreen } from "./KinWorkItemScreen";
+import { KinWorkNewScreen } from "./KinWorkNewScreen";
+import { KinWorkScreen } from "./KinWorkScreen";
 
 /** Kin's root-stack routes, spread into `Stack.tsx`. Kin files must never import `Stack.tsx`. */
 export const KIN_SCREENS = {
@@ -30,6 +34,25 @@ export const KIN_SCREENS = {
     screen: KinMemoryScreen,
     linking: "kin/:environmentId/:orgId/memory",
     options: pageRoute({ title: "Memory" }),
+  }),
+  KinWork: createNativeStackScreen({
+    screen: KinWorkScreen,
+    linking: "kin/:environmentId/:orgId/work",
+    options: pageRoute({ title: "Work" }),
+  }),
+  KinWorkItem: createNativeStackScreen({
+    screen: KinWorkItemScreen,
+    linking: "kin/:environmentId/:orgId/work/:task",
+    options: sheetRoute({ detent: 0.75 }),
+  }),
+  KinWorkAssign: createNativeStackScreen({
+    screen: KinWorkAssignScreen,
+    options: sheetRoute({ detent: 0.75 }),
+  }),
+  // A full sheet, so the keyboard never covers what is being typed.
+  KinWorkNew: createNativeStackScreen({
+    screen: KinWorkNewScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
   KinTeam: createNativeStackScreen({
     screen: KinTeamScreen,

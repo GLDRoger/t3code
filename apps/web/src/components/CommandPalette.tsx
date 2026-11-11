@@ -70,6 +70,7 @@ import {
   FolderPlusIcon,
   MessageSquareDashedIcon,
   LinkIcon,
+  ListChecksIcon,
   MessageSquareIcon,
   PaletteIcon,
   RotateCcwIcon,
@@ -426,6 +427,11 @@ function OpenCommandPaletteDialog(props: {
     kinNewLead === null
       ? noKinLeadPermissionAtom
       : kinClient.memorySetVisibility.permissionAtom(kinNewLead.environmentId),
+  );
+  const canOpenKinWork = useAtomValue(
+    kinNewLead === null
+      ? noKinLeadPermissionAtom
+      : kinClient.workRead.permissionAtom(kinNewLead.environmentId),
   );
   const canManageKinTeam = useAtomValue(
     kinNewLead === null
@@ -1699,6 +1705,22 @@ function OpenCommandPaletteDialog(props: {
         // The form lives on Kin's page, so it opens there.
         await navigate({ href: kinListSwitchHref("threads") });
         openKinLeadForm(kinNewLead);
+      },
+    });
+  }
+
+  if (kinNewLead !== null && canOpenKinWork) {
+    actionItems.push({
+      kind: "action",
+      value: "action:kin-work",
+      searchTerms: ["kin", "work", "tasks", "tracker", "tickets", "assign", "late", "due", "leads"],
+      title: "Work: what's open and who has it",
+      icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await navigate({
+          to: "/kin/$environmentId/$orgId/work",
+          params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
+        });
       },
     });
   }

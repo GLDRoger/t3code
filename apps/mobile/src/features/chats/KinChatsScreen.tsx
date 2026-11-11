@@ -12,6 +12,7 @@ import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { KinMemoryEntry } from "./KinMemoryScreen";
 import { KinTeamEntry } from "./KinTeamScreen";
+import { KinWorkEntry } from "./KinWorkScreen";
 import { KinChatRow, KinChatRowSkeletons } from "./components/KinChatRow";
 import { KinInboxNotice, KinScreenState } from "./components/KinScreenState";
 import { KinWaitingBanner } from "./components/KinWaitingBanner";
@@ -60,6 +61,7 @@ export function KinChatsScreen() {
           memory={
             newLeadAt === null ? null : (
               <>
+                <KinWorkEntry environmentId={newLeadAt.environmentId} orgId={newLeadAt.orgId} />
                 <KinMemoryEntry environmentId={newLeadAt.environmentId} orgId={newLeadAt.orgId} />
                 <KinTeamEntry environmentId={newLeadAt.environmentId} orgId={newLeadAt.orgId} />
               </>
