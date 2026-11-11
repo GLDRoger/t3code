@@ -22,6 +22,7 @@ import {
   type KinChatHistoryInput,
   type KinChatId,
   type KinChatMembersInput,
+  type KinMemoryListInput,
   type KinPeopleListInput,
   type KinLeadAccessInput,
   type KinLeadsListInput,
@@ -89,6 +90,12 @@ const peopleRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   tag: KIN_PEOPLE_WS_METHODS.peopleList,
 });
 const readPeople = guardedRead(peopleRead);
+
+const memoryRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:memory:read",
+  tag: "kin.memory.list",
+});
+const readMemory = guardedRead(memoryRead);
 
 const readOrgs = guardedRead(orgsRead);
 const readLeads = guardedRead(leadsRead);
@@ -301,5 +308,24 @@ export const kinClient = {
       mode: "singleFlight",
       key: ({ input }) => `${input.widgetId}:${input.itemId}`,
     },
+  }),
+  /** What the owner's leads remember, and who may know each thing. */
+  memory: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:memory",
+    execute: Effect.fn("KinWebClient.memory")(function* (input: KinMemoryListInput) {
+      return yield* readMemory(input);
+    }),
+    staleTimeMs: 60_000,
+    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
+      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  memorySetVisibility: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:memory:set-visibility",
+    tag: "kin.memory.setVisibility",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.itemId },
+  }),
+  memoryConfirm: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:memory:confirm",
+    tag: "kin.memory.confirmSuggestions",
   }),
 };

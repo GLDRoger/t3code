@@ -200,7 +200,7 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
     let items = [
       head("team", { sensitive: false }),
       head("terms", { sensitive: true }),
-      head("legacy", {}),
+      head("legacy", { what: "Invented summary." }),
       head("gone", { sensitive: false, invalid_at: "2026-11-02T00:00:00.000Z" }),
       head("said", {
         sensitive: false,
@@ -273,9 +273,16 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
       later: "only_owner",
       claimed: "only_owner",
     });
-    assert.deepStrictEqual(
-      (yield* memory.list([owner], { orgId })).items.find((item) => item.itemId === "said")?.from,
-      { name: "Invented person", chatName: "Invented room" },
+    const listed = (yield* memory.list([owner], { orgId })).items;
+    assert.deepStrictEqual(listed.find((item) => item.itemId === "said")?.from, {
+      name: "Invented person",
+      chatName: "Invented room",
+    });
+    // Each item says what it holds in a line: its own summary, else the start of its words.
+    assert.strictEqual(listed.find((item) => item.itemId === "terms")?.preview, "Invented body.");
+    assert.strictEqual(
+      listed.find((item) => item.itemId === "legacy")?.preview,
+      "Invented summary.",
     );
 
     // Confirming everything the owner was shown takes nothing suggested after it.

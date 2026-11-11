@@ -2,7 +2,7 @@ import { LegendList } from "@legendapp/list/react-native";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import type { EnvironmentId, KinOrgId } from "@t3tools/contracts";
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
 import { View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -10,6 +10,7 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
+import { KinMemoryEntry } from "./KinMemoryScreen";
 import { KinChatRow, KinChatRowSkeletons } from "./components/KinChatRow";
 import { KinInboxNotice, KinScreenState } from "./components/KinScreenState";
 import { KinWaitingBanner } from "./components/KinWaitingBanner";
@@ -55,6 +56,11 @@ export function KinChatsScreen() {
           state={state}
           directory={kinDirectory(host)}
           onRetry={retry}
+          memory={
+            newLeadAt === null ? null : (
+              <KinMemoryEntry environmentId={newLeadAt.environmentId} orgId={newLeadAt.orgId} />
+            )
+          }
           onOpenWaiting={() => navigation.navigate("KinWaiting")}
           onOpenChat={(chatId) => {
             if (state._tag !== "ready") return;
@@ -123,6 +129,8 @@ export function KinChatsView(props: {
   readonly state: KinInboxScreenState;
   readonly directory: KinDirectory;
   readonly onRetry: () => void;
+  /** The owner's way in to what the leads remember, above the chats. */
+  readonly memory?: ReactNode;
   readonly onOpenWaiting: () => void;
   readonly onOpenChat: (chatId: KinChatRowView["chatId"]) => void;
 }) {
@@ -146,6 +154,7 @@ export function KinChatsView(props: {
                   <KinWaitingBanner view={banner} onPress={props.onOpenWaiting} />
                 </View>
               )}
+              {props.memory == null ? null : <View className="-mx-4">{props.memory}</View>}
               <EmptyState title="No chats yet" detail="Chats with your leads show up here." />
             </>
           )}
@@ -175,7 +184,7 @@ export function KinChatsView(props: {
         </>
       )}
       ListHeaderComponent={
-        notice || banner !== null ? (
+        notice || banner !== null || props.memory != null ? (
           <>
             {notice ? (
               <View className="px-4 pb-2 pt-2">
@@ -188,6 +197,7 @@ export function KinChatsView(props: {
                 <View className="ml-5 h-px bg-border-subtle" />
               </>
             )}
+            {props.memory}
           </>
         ) : null
       }

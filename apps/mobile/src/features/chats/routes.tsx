@@ -8,6 +8,7 @@ import { KinGroupFormScreen } from "./KinGroupFormScreen";
 import { KinGroupScreen } from "./KinGroupScreen";
 import { KinLeadFormScreen } from "./KinLeadFormScreen";
 import { KinLeadScreen } from "./KinLeadScreen";
+import { KinMemoryScreen } from "./KinMemoryScreen";
 import { KinWaitingScreen } from "./KinWaitingScreen";
 
 /** Kin's root-stack routes, spread into `Stack.tsx`. Kin files must never import `Stack.tsx`. */
@@ -21,6 +22,11 @@ export const KIN_SCREENS = {
     screen: KinWaitingScreen,
     linking: "kin/waiting",
     options: pageRoute({ title: "Waiting on you" }),
+  }),
+  KinMemory: createNativeStackScreen({
+    screen: KinMemoryScreen,
+    linking: "kin/:environmentId/:orgId/memory",
+    options: pageRoute({ title: "Memory" }),
   }),
   KinChat: createNativeStackScreen({
     screen: KinChatScreen,

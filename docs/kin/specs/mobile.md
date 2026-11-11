@@ -71,6 +71,7 @@ All Kin code lives in `apps/mobile/src/features/chats/`. It reaches upstream thr
 | ------------- | ---------------------------------------------------- | ------------------------------------------ | ------------------------------------------------- |
 | `KinChats`    | `kin`                                                | `pageRoute({ title: "Kin" })`              | Chat list                                         |
 | `KinWaiting`  | `kin/waiting`                                        | `pageRoute({ title: "Waiting on you" })`   | Waiting on you                                    |
+| `KinMemory`   | `kin/:environmentId/:orgId/memory`                   | `pageRoute({ title: "Memory" })`           | What the leads remember, owner only               |
 | `KinChat`     | `kin/:environmentId/:orgId/chats/:chatId`            | `pageRoute({ duoMinimize: "onScrollUp" })` | Direct chat                                       |
 | `KinApproval` | `kin/:environmentId/:orgId/actions/:pendingActionId` | `sheetRoute({ detent: 0.75 })`             | Approval detail (also opened from a notification) |
 
