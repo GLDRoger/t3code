@@ -6,10 +6,13 @@ import {
   KinChatId,
   KinMessageId,
   KinPersonId,
+  KinPartyKind,
   KinRecordCategory,
   KinRecordKey,
   KinRecordSide,
   KinRecordState,
+  KinRepoName,
+  KinWorkListName,
   type KinOrgId,
   type KinWorkPrincipal,
   TrimmedNonEmptyString,
@@ -23,7 +26,9 @@ import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { SHARED_REFUSAL, turnChat } from "../lead/Audience.ts";
 import { resolveLead } from "../lead/LeadMemory.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
-import { KinRecords, type Patch, type Writer } from "./KinRecords.ts";
+import { partyPage, projectDetail } from "./crm.ts";
+import { type GroupBy, KinRecords, type Patch, type Writer } from "./KinRecords.ts";
+import { fieldList, fieldText, LISTS, type ListName, listOf, parseFields } from "./lists.ts";
 import { endOfDay, iso, notFound, ownerZone, type RecordRow, toRecord } from "./recordRows.ts";
 
 /** The lead tools' inputs, results and the one call each makes. Model-facing text lives in `mcp/tools.ts`. */
@@ -44,8 +49,28 @@ const Due = Schema.NullOr(
 });
 const Title = TrimmedNonEmptyString.check(Schema.isMaxLength(280));
 const Notes = Schema.String.check(Schema.isMaxLength(4_000));
+const List = KinWorkListName.annotate({
+  description: "work (default), clients, contacts or projects.",
+});
+const Client = TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
+  description: "A client or vendor: its key (C-3) or exact name.",
+});
+const Project = TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
+  description: "A project: its key (P-2) or exact name.",
+});
+const Detail = TrimmedNonEmptyString.check(Schema.isMaxLength(200));
+const Terms = TrimmedNonEmptyString.check(Schema.isMaxLength(4_000));
+const Repos = Schema.Array(KinRepoName).check(Schema.isMaxLength(20));
 
 export const QueryInput = Schema.Struct({
+  list: Schema.optional(List),
+  client: Schema.optional(Client),
+  project: Schema.optional(Project),
+  side: Schema.optional(KinRecordSide),
+  repo: Schema.optional(KinRepoName),
+  groupBy: Schema.optional(
+    Schema.Literals(["client", "project", "side", "owner", "state"]),
+  ).annotate({ description: "Also count the matches per group." }),
   owner: Schema.optional(Who),
   states: Schema.optional(Schema.Array(KinRecordState)),
   open: Schema.optional(Schema.Boolean).annotate({ description: "Neither done nor dropped." }),
@@ -68,12 +93,29 @@ const Row = Schema.Struct({
   suggested: Schema.optional(Schema.Literal(true)),
   working: Schema.optional(Schema.Literal(true)),
   pullRequest: Schema.optional(Schema.String),
+  list: Schema.optional(KinWorkListName),
+  client: Schema.optional(Schema.String),
+  project: Schema.optional(Schema.String),
+  side: Schema.optional(Schema.Literal("theirs")),
+  kind: Schema.optional(KinPartyKind),
+  repo: Schema.optional(Schema.String),
+  role: Schema.optional(Schema.String),
+  email: Schema.optional(Schema.String),
+  phone: Schema.optional(Schema.String),
+  terms: Schema.optional(Schema.String),
+  repos: Schema.optional(Schema.Array(Schema.String)),
+  sensitive: Schema.optional(Schema.Literal(true)),
   rev: Schema.Number,
 });
 export const QueryResult = Schema.Struct({
   asOf: Schema.String,
   total: Schema.Number,
   records: Schema.Array(Row),
+  groups: Schema.optional(
+    Schema.Array(
+      Schema.Struct({ group: Schema.String, count: Schema.Number, late: Schema.Number }),
+    ),
+  ),
 });
 export const GetInput = Schema.Struct({ key: KinRecordKey });
 export const GetResult = Schema.Struct({
@@ -86,8 +128,38 @@ export const GetResult = Schema.Struct({
   history: Schema.Array(
     Schema.Struct({ at: Schema.String, by: Schema.String, change: Schema.String }),
   ),
+  /** A client's: what each side owes, open, its contacts and its projects. */
+  owed: Schema.optional(
+    Schema.Struct({
+      weOwe: Schema.Number,
+      theyOwe: Schema.Number,
+      late: Schema.Number,
+      overdue: Schema.Number,
+    }),
+  ),
+  contacts: Schema.optional(Schema.Array(Schema.Struct({ ...Row.fields }))),
+  projects: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        key: Schema.String,
+        title: Schema.String,
+        health: Schema.NullOr(Schema.String),
+      }),
+    ),
+  ),
+  /** A project's, computed now. */
+  status: Schema.optional(
+    Schema.Struct({
+      health: Schema.NullOr(Schema.String),
+      open: Schema.Number,
+      late: Schema.Number,
+      waitingOverAWeek: Schema.Number,
+      targetPassed: Schema.Boolean,
+    }),
+  ),
 });
 const CreateRow = Schema.Struct({
+  list: Schema.optional(List),
   title: Title,
   owner: Schema.optional(Who),
   state: Schema.optional(KinRecordState),
@@ -96,6 +168,16 @@ const CreateRow = Schema.Struct({
   notes: Schema.optional(Notes),
   category: Schema.optional(KinRecordCategory),
   side: Schema.optional(KinRecordSide),
+  client: Schema.optional(Client),
+  project: Schema.optional(Project),
+  repo: Schema.optional(KinRepoName),
+  kind: Schema.optional(KinPartyKind),
+  role: Schema.optional(Detail),
+  email: Schema.optional(Detail),
+  phone: Schema.optional(Detail),
+  terms: Schema.optional(Terms),
+  repos: Schema.optional(Repos),
+  sensitive: Schema.optional(Schema.Literal(true)),
   suggested: Schema.optional(Schema.Boolean),
 });
 export const CreateInput = Schema.Struct({
@@ -118,6 +200,16 @@ export const UpdateInput = Schema.Struct({
   notes: Schema.optional(Notes),
   category: Schema.optional(KinRecordCategory),
   side: Schema.optional(KinRecordSide),
+  client: Schema.optional(Schema.NullOr(Client)),
+  project: Schema.optional(Schema.NullOr(Project)),
+  repo: Schema.optional(Schema.NullOr(KinRepoName)),
+  kind: Schema.optional(KinPartyKind),
+  role: Schema.optional(Schema.NullOr(Detail)),
+  email: Schema.optional(Schema.NullOr(Detail)),
+  phone: Schema.optional(Schema.NullOr(Detail)),
+  terms: Schema.optional(Schema.NullOr(Terms)),
+  repos: Schema.optional(Repos),
+  sensitive: Schema.optional(Schema.Literal(true)),
   confirmed: Schema.optional(Schema.Boolean),
   expectedRev: Schema.optional(Schema.Int),
 });
@@ -218,7 +310,15 @@ const rowFor = (
 ) => {
   const record = toRecord(row, now);
   const waitingOn = name(record.waitingOn);
+  const list = listOf(row.registerId);
+  const fields = parseFields(row.fieldsJson);
+  const text = (key: string) => {
+    const value = fieldText(fields, key);
+    return value === null ? {} : { [key]: value };
+  };
+  const repos = fieldList(fields, "repos");
   return {
+    ...(list === "work" ? {} : { list }),
     key: record.key,
     title: record.title,
     state: record.state,
@@ -231,9 +331,71 @@ const rowFor = (
     ...(record.confirmed ? {} : { suggested: true as const }),
     ...(record.working ? { working: true as const } : {}),
     ...(record.pullRequest === null ? {} : { pullRequest: record.pullRequest.url }),
+    ...(record.party === undefined
+      ? {}
+      : { client: `${record.party.title} (${record.party.key})` }),
+    ...(record.project === undefined
+      ? {}
+      : { project: `${record.project.title} (${record.project.key})` }),
+    ...(row.side === "theirs" && list === "work" ? { side: "theirs" as const } : {}),
+    ...(list === "clients" ? { kind: row.category === "vendor" ? "vendor" : "client" } : {}),
+    ...(row.repo === null ? {} : { repo: row.repo }),
+    ...text("role"),
+    ...text("email"),
+    ...text("phone"),
+    ...text("terms"),
+    ...(repos.length === 0 ? {} : { repos: [...repos] }),
+    ...(record.sensitive || record.sensitiveInherited === true ? { sensitive: true as const } : {}),
     rev: record.rev,
-  };
+  } as typeof Row.Type;
 };
+
+/** A client or project the lead named by key or exact name, among the active ones. */
+const resolveRef = Effect.fn("KinWorkTools.resolveRef")(function* (
+  lead: Lead,
+  text: string,
+  list: "clients" | "projects",
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ recordId: string; key: string }>`SELECT record_id AS "recordId", key
+    FROM kin_records WHERE org_id = ${lead.orgId} AND register_id = ${list}
+      AND (key = ${text.toUpperCase()} OR (lower(title) = lower(${text})
+        AND state NOT IN ('done', 'dropped')))
+    ORDER BY key = ${text.toUpperCase()} DESC, key LIMIT 3`;
+  const noun = LISTS[list].noun;
+  if (rows.length === 0)
+    return yield* new KinChatError({
+      reason: "not_found",
+      message: `No ${noun} ${text.slice(0, 60)}. Find it with records_query list ${list}, or create it first.`,
+    });
+  if (rows.length > 1 && rows[0]!.key !== text.toUpperCase())
+    return yield* invalid(
+      `Several ${list} are named ${text.slice(0, 60)}: ${rows.map((row) => row.key).join(", ")}. Use the key.`,
+    );
+  return rows[0]!.recordId;
+});
+const refOrNull = Effect.fn("KinWorkTools.refOrNull")(function* (
+  lead: Lead,
+  text: string | null | undefined,
+  list: "clients" | "projects",
+) {
+  if (text === undefined || text === null) return text;
+  return yield* resolveRef(lead, text, list);
+});
+
+/** The list's own fields a row or an update names; `null` clears one. */
+const fieldsFrom = (row: {
+  readonly role?: string | null | undefined;
+  readonly email?: string | null | undefined;
+  readonly phone?: string | null | undefined;
+  readonly terms?: string | null | undefined;
+  readonly repos?: ReadonlyArray<string> | undefined;
+}) =>
+  Object.fromEntries(
+    (["role", "email", "phone", "terms", "repos"] as const).flatMap((key) =>
+      row[key] === undefined ? [] : [[key, row[key]]],
+    ),
+  ) as Record<string, string | ReadonlyArray<string> | null>;
 
 /** Refused, as the gate does, if the turn became one others read since the call was admitted. */
 const admitted = Effect.fn("KinWorkTools.admitted")(function* (
@@ -270,7 +432,16 @@ export const query = Effect.fn("KinWorkTools.query")(function* (
   const dueBy = input.dueBefore === undefined ? undefined : Date.parse(input.dueBefore);
   if (dueBy !== undefined && !Number.isFinite(dueBy))
     return yield* invalid("dueBefore is not a time.");
-  const page = yield* records.query(lead.orgId, {
+  const partyId =
+    input.client === undefined ? undefined : yield* resolveRef(lead, input.client, "clients");
+  const projectId =
+    input.project === undefined ? undefined : yield* resolveRef(lead, input.project, "projects");
+  const filter = {
+    ...(input.list === undefined ? {} : { list: input.list }),
+    ...(partyId === undefined ? {} : { partyId }),
+    ...(projectId === undefined ? {} : { projectId }),
+    ...(input.side === undefined ? {} : { side: input.side }),
+    ...(input.repo === undefined ? {} : { repo: input.repo }),
     ...(owner === undefined ? {} : { owner }),
     ...(input.states === undefined ? {} : { states: input.states }),
     ...(input.open === undefined ? {} : { open: input.open }),
@@ -278,15 +449,60 @@ export const query = Effect.fn("KinWorkTools.query")(function* (
     ...(dueBy === undefined ? {} : { dueBy }),
     ...(input.text === undefined ? {} : { text: input.text }),
     ...(input.keys === undefined ? {} : { keys: input.keys }),
-    limit: input.limit ?? 20,
-  });
+  };
+  const page = yield* records.query(lead.orgId, { ...filter, limit: input.limit ?? 20 });
   const now = yield* Clock.currentTimeMillis;
   const name = yield* namer(lead);
+  const groups =
+    input.groupBy === undefined ? undefined : yield* groupsFor(lead, name, filter, input.groupBy);
   return {
     asOf: iso(now),
     total: page.total,
     records: page.rows.map((row) => rowFor(name, row, now)),
+    ...(groups === undefined ? {} : { groups }),
   };
+});
+
+const GROUP_BY: Record<NonNullable<typeof QueryInput.Type.groupBy>, GroupBy> = {
+  client: "party",
+  project: "project",
+  side: "side",
+  owner: "owner",
+  state: "state",
+};
+const groupsFor = Effect.fn("KinWorkTools.groups")(function* (
+  lead: Lead,
+  name: (who: KinWorkPrincipal | null) => string | undefined,
+  filter: Parameters<KinRecords["Service"]["groups"]>[1],
+  by: NonNullable<typeof QueryInput.Type.groupBy>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const records = yield* KinRecords;
+  const rows = yield* records.groups(lead.orgId, filter, GROUP_BY[by]);
+  const ids = rows.flatMap((row) => (row.group === null ? [] : [row.group]));
+  const titles =
+    (by === "client" || by === "project") && ids.length > 0
+      ? new Map(
+          (yield* sql<{ id: string; label: string }>`SELECT record_id AS id,
+              title || ' (' || key || ')' AS label
+            FROM kin_records WHERE org_id = ${lead.orgId} AND record_id IN ${sql.in(ids)}
+            ORDER BY record_id`).map((row) => [row.id, row.label]),
+        )
+      : new Map<string, string>();
+  const label = (group: string | null) => {
+    if (group === null) return "none";
+    if (by === "client" || by === "project") return titles.get(group) ?? "none";
+    if (by !== "owner") return group;
+    const [kind, ...id] = group.split(":");
+    const who: KinWorkPrincipal | null =
+      kind === "agent"
+        ? { _tag: "agent", agentId: KinAgentId.make(id.join(":")) }
+        : kind === "person"
+          ? { _tag: "person", personId: KinPersonId.make(id.join(":")) }
+          : null;
+    return name(who) ?? "someone";
+  };
+  return rows.map((row) => ({ group: label(row.group), count: row.count, late: row.late }));
 });
 
 export const get = Effect.fn("KinWorkTools.get")(function* (
@@ -303,8 +519,42 @@ export const get = Effect.fn("KinWorkTools.get")(function* (
   const actor = (by: (typeof detail.changes)[number]["by"]) =>
     by._tag === "system" ? "Kin" : (name(by) ?? "someone");
   const assignedBy = name(detail.assignedBy);
+  const list = listOf(row.registerId);
+  const page = list === "clients" ? yield* partyPage(row, now, 0) : undefined;
+  const project = list === "projects" ? yield* projectDetail(row, now) : undefined;
   return {
     ...rowFor(name, row, now),
+    ...(page === undefined
+      ? {}
+      : {
+          owed: {
+            weOwe: page.party.weOwe,
+            theyOwe: page.party.theyOwe,
+            late: page.party.late,
+            overdue: page.party.overdue,
+          },
+          contacts: (yield* records.query(lead.orgId, {
+            list: "contacts",
+            partyId: row.recordId,
+            limit: 50,
+          })).rows.map((contact) => rowFor(name, contact, now)),
+          projects: page.projects.map((one) => ({
+            key: one.key,
+            title: one.name,
+            health: one.health,
+          })),
+        }),
+    ...(project === undefined
+      ? {}
+      : {
+          status: {
+            health: project.health,
+            open: project.open,
+            late: project.late,
+            waitingOverAWeek: project.healthBecause.waitingOverAWeek,
+            targetPassed: project.healthBecause.targetPassed,
+          },
+        }),
     notes: detail.notes,
     ...(assignedBy === undefined ? {} : { assignedBy }),
     links: detail.links.map((link) => ({
@@ -334,21 +584,47 @@ export const create = Effect.fn("KinWorkTools.create")(function* (
   const writer = yield* writerFor(lead);
   const results = [];
   for (const row of input.records) {
-    const owner = yield* resolveWho(lead, row.owner ?? "me");
+    const list: ListName = row.list ?? "work";
+    // A client or contact is the owner's to look after unless told otherwise.
+    const owner = yield* resolveWho(
+      lead,
+      row.owner ?? (list === "clients" || list === "contacts" ? "owner" : "me"),
+    );
     const waitingOn =
       row.waitingOn === undefined ? undefined : yield* resolveWho(lead, row.waitingOn);
     const due = row.due === undefined ? {} : yield* dueOf(lead.orgId, row.due);
+    // Rows earlier in this call are already stored, so a contact can name the client just made.
+    const partyId = yield* refOrNull(lead, row.client, "clients");
+    const projectId = yield* refOrNull(lead, row.project, "projects");
+    // Setting up a client twice finds the one that is there instead of making another.
+    const existing =
+      list === "work" ? undefined : yield* sameNamed(lead, list, row.title, partyId ?? null);
+    if (existing !== undefined) {
+      results.push({ key: existing.key, title: existing.title, created: false });
+      continue;
+    }
     // The same row from the same event is the same entry: a retry, or a repeat in one call.
-    const originKey = `lead:${lead.agentId}:${input.sourceEventId}:${retryKey(titleKey(row.title))}`;
+    const rowKey =
+      list === "work"
+        ? titleKey(row.title) + (partyId === undefined || partyId === null ? "" : `|${partyId}`)
+        : `${list}|${partyId ?? ""}|${titleKey(row.title)}`;
+    const originKey = `lead:${lead.agentId}:${input.sourceEventId}:${retryKey(rowKey)}`;
+    const fields = fieldsFrom(row);
     const { row: stored, created } = yield* records.create(lead.orgId, writer, {
+      list,
       originKey,
       title: row.title,
       owner,
+      ...(partyId === undefined ? {} : { partyId }),
+      ...(projectId === undefined ? {} : { projectId }),
+      ...(row.repo === undefined ? {} : { repo: row.repo }),
+      ...(row.sensitive === undefined ? {} : { sensitive: true }),
+      ...(Object.keys(fields).length === 0 ? {} : { fields }),
       ...(row.state === undefined ? {} : { state: row.state }),
       ...(waitingOn === undefined ? {} : { waitingOn }),
       ...due,
       ...(row.notes === undefined ? {} : { notes: row.notes }),
-      ...(row.category === undefined ? {} : { category: row.category }),
+      ...categoryOf(list, row),
       ...(row.side === undefined ? {} : { side: row.side }),
       // What the owner asked for is confirmed; what a lead inferred waits for the owner.
       confirmed: row.suggested !== true && writer.askedBy !== null,
@@ -357,6 +633,29 @@ export const create = Effect.fn("KinWorkTools.create")(function* (
     results.push({ key: stored.key, title: stored.title, created });
   }
   return { records: results };
+});
+
+/** A client's kind or a Work entry's category; a client with neither is a client. */
+const categoryOf = (
+  list: ListName,
+  row: { readonly kind?: string | undefined; readonly category?: string | undefined },
+) => {
+  const category = row.kind ?? row.category ?? (list === "clients" ? "client" : undefined);
+  return category === undefined ? {} : { category };
+};
+
+const sameNamed = Effect.fn("KinWorkTools.sameNamed")(function* (
+  lead: Lead,
+  list: ListName,
+  title: string,
+  partyId: string | null,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ key: string; title: string }>`SELECT key, title FROM kin_records
+    WHERE org_id = ${lead.orgId} AND register_id = ${list} AND state NOT IN ('done', 'dropped')
+      AND lower(title) = lower(${title}) AND (${list} != 'contacts' OR party_id IS ${partyId})
+    ORDER BY key LIMIT 1`;
+  return row;
 });
 
 export const update = Effect.fn("KinWorkTools.update")(function* (
@@ -380,10 +679,22 @@ export const update = Effect.fn("KinWorkTools.update")(function* (
     ...(input.category === undefined ? {} : { category: input.category }),
     ...(input.side === undefined ? {} : { side: input.side }),
     ...(input.confirmed === undefined ? {} : { confirmed: input.confirmed }),
+    ...(input.kind === undefined ? {} : { category: input.kind }),
+    ...(input.repo === undefined ? {} : { repo: input.repo }),
+    ...(input.sensitive === undefined ? {} : { sensitive: true }),
+  };
+  const partyId = yield* refOrNull(lead, input.client, "clients");
+  const projectId = yield* refOrNull(lead, input.project, "projects");
+  const fields = fieldsFrom(input);
+  const full: Patch = {
+    ...patch,
+    ...(partyId === undefined ? {} : { partyId }),
+    ...(projectId === undefined ? {} : { projectId }),
+    ...(Object.keys(fields).length === 0 ? {} : { fields }),
   };
   const before = yield* records.get(lead.orgId, input.key);
   if (before === undefined) return yield* notFound(input.key);
-  const after = yield* records.update(lead.orgId, writer, input.key, patch, input.expectedRev);
+  const after = yield* records.update(lead.orgId, writer, input.key, full, input.expectedRev);
   const changed =
     after.rev === before.rev
       ? []

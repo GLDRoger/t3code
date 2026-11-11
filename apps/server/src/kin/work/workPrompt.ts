@@ -85,8 +85,8 @@ export const buildWorkSection = Effect.fn("KinWorkPrompt.build")(function* (inpu
   }>`SELECT COUNT(*) AS open, SUM(state = 'doing') AS doing, SUM(state = 'waiting') AS waiting,
       SUM(due_at IS NOT NULL AND due_at < ${now}) AS late,
       SUM(due_at IS NOT NULL AND due_at >= ${now} AND due_at < ${now + WEEK_MS}) AS "dueThisWeek"
-    FROM kin_records WHERE org_id = ${orgId} AND owner_kind = 'agent' AND owner_id = ${agentId}
-      AND state NOT IN ('done', 'dropped')`;
+    FROM kin_records WHERE org_id = ${orgId} AND register_id = 'work' AND owner_kind = 'agent'
+      AND owner_id = ${agentId} AND state NOT IN ('done', 'dropped')`;
   const changes = yield* sql<{
     seq: number;
     key: string;
@@ -100,7 +100,7 @@ export const buildWorkSection = Effect.fn("KinWorkPrompt.build")(function* (inpu
   }>`SELECT c.seq, r.key, r.title, r.state, r.due_at AS "dueAt", r.due_all_day AS "dueAllDay",
       c.kind, c.actor_kind AS "actorKind", c.fields_json AS "fieldsJson"
     FROM kin_record_changes c JOIN kin_records r ON r.org_id = c.org_id AND r.record_id = c.record_id
-    WHERE c.org_id = ${orgId} AND c.seq > ${since}
+    WHERE c.org_id = ${orgId} AND c.seq > ${since} AND r.register_id = 'work'
       AND r.owner_kind = 'agent' AND r.owner_id = ${agentId}
       AND NOT (c.actor_kind = 'agent' AND c.actor_id IS ${agentId})
     ORDER BY c.seq`;

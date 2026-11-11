@@ -73,7 +73,7 @@ export const attemptBegun = Effect.fn("KinWorkerAttempts.attemptBegun")(function
     ON CONFLICT (org_id, worker_id, started_at) DO NOTHING`;
 });
 
-/** The row for an attempt started before K060, or one written by a path that names no event. */
+/** The row for an attempt started before K061, or one written by a path that names no event. */
 const ensure = (sql: SqlClient.SqlClient, attempt: Attempt) =>
   sql`INSERT INTO kin_worker_attempts (org_id, worker_id, started_at, agent_id)
     SELECT org_id, worker_id, started_at, agent_id FROM kin_workers

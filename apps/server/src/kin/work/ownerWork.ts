@@ -18,7 +18,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { summaryGroups } from "./crm.ts";
 import { KinRecords, type Patch, type Writer } from "./KinRecords.ts";
+import { LISTS, type ListName, listOf } from "./lists.ts";
 import {
   endOfDay,
   isClosed,
@@ -41,7 +43,7 @@ const ownerOnly = new KinChatError({
 });
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
-const theOwner = Effect.fn("KinWork.owner")(function* (
+export const theOwner = Effect.fn("KinWork.owner")(function* (
   people: ReadonlyArray<PersonIdentity>,
   orgId: KinOrgId,
 ) {
@@ -75,6 +77,31 @@ const parseCursor = (cursor: string | undefined) => {
       });
 };
 
+/** A key the owner named, in the list it must be in. */
+export const inList = Effect.fn("KinWork.inList")(function* (
+  orgId: KinOrgId,
+  key: string,
+  list: ListName,
+) {
+  const records = yield* KinRecords;
+  const row = yield* records.get(orgId, key);
+  if (row === undefined || listOf(row.registerId) !== list)
+    return yield* new KinChatError({
+      reason: "not_found",
+      message: `No ${LISTS[list].noun} ${key.slice(0, 40)} in Work.`,
+    });
+  return row;
+});
+const refId = Effect.fn("KinWork.refId")(function* (
+  orgId: KinOrgId,
+  key: string | null | undefined,
+  list: "clients" | "projects",
+) {
+  if (key === undefined) return undefined;
+  if (key === null) return null;
+  return (yield* inList(orgId, key, list)).recordId;
+});
+
 export const list = Effect.fn("KinWork.list")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinWorkListInput,
@@ -82,6 +109,8 @@ export const list = Effect.fn("KinWork.list")(function* (
   yield* theOwner(people, input.orgId);
   const records = yield* KinRecords;
   const cursor = yield* parseCursor(input.cursor);
+  const partyId = yield* refId(input.orgId, input.party, "clients");
+  const projectId = yield* refId(input.orgId, input.project, "projects");
   const at = cursor.at ?? (yield* Clock.currentTimeMillis);
   const limit = input.limit ?? 50;
   const page = yield* records.query(input.orgId, {
@@ -95,6 +124,9 @@ export const list = Effect.fn("KinWork.list")(function* (
       : { dueAfter: yield* millis(input.dueAfter, "dueAfter") }),
     ...(input.category === undefined ? {} : { category: input.category }),
     ...(input.side === undefined ? {} : { side: input.side }),
+    ...(partyId === undefined || partyId === null ? {} : { partyId }),
+    ...(projectId === undefined || projectId === null ? {} : { projectId }),
+    ...(input.repo === undefined ? {} : { repo: input.repo }),
     ...(input.text === undefined ? {} : { text: input.text }),
     offset: cursor.offset,
     limit,
@@ -121,6 +153,7 @@ const found = Effect.fn("KinWork.found")(function* (
   return row;
 });
 
+export { found };
 export const get = Effect.fn("KinWork.get")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinWorkGetInput,
@@ -140,7 +173,7 @@ export const summary = Effect.fn("KinWork.summary")(function* (
   const records = yield* KinRecords;
   const now = yield* Clock.currentTimeMillis;
   const [closed] = yield* sql<{ closed: number }>`SELECT COUNT(*) AS closed FROM kin_records
-    WHERE org_id = ${input.orgId} AND state IN ('done', 'dropped')`.pipe(
+    WHERE org_id = ${input.orgId} AND register_id = 'work' AND state IN ('done', 'dropped')`.pipe(
     Effect.mapError(() => unavailable),
   );
   const rows = yield* sql<{ ownerKind: string; ownerId: string } & Counts>`
@@ -148,7 +181,8 @@ export const summary = Effect.fn("KinWork.summary")(function* (
       SUM(state = 'doing') AS doing, SUM(state = 'waiting') AS waiting,
       SUM(due_at IS NOT NULL AND due_at < ${now}) AS late,
       SUM(due_at IS NOT NULL AND due_at >= ${now} AND due_at < ${now + WEEK_MS}) AS "dueThisWeek"
-    FROM kin_records WHERE org_id = ${input.orgId} AND state NOT IN ('done', 'dropped')
+    FROM kin_records WHERE org_id = ${input.orgId} AND register_id = 'work'
+      AND state NOT IN ('done', 'dropped')
     GROUP BY owner_kind, owner_id ORDER BY COUNT(*) DESC, owner_kind, owner_id`.pipe(
     Effect.mapError(() => unavailable),
   );
@@ -178,10 +212,13 @@ export const summary = Effect.fn("KinWork.summary")(function* (
     }),
     zero,
   );
+  const groups = yield* summaryGroups(input.orgId, now).pipe(Effect.mapError(() => unavailable));
   return {
     ...total,
     closed: closed?.closed ?? 0,
     owners,
+    parties: groups.parties,
+    projects: groups.projects,
     seq: yield* records.seq(input.orgId),
     asOf: iso(now),
   } satisfies KinWorkSummary;
@@ -211,6 +248,8 @@ export const create = Effect.fn("KinWork.create")(function* (
   const dueAt =
     input.dueAt === undefined ? null : yield* dueMillis(input.orgId, input.dueAt, input.dueAllDay);
   const owner: KinWorkPrincipal = input.owner ?? { _tag: "person", personId: person.personId };
+  const partyId = yield* refId(input.orgId, input.party, "clients");
+  const projectId = yield* refId(input.orgId, input.project, "projects");
   const { row } = yield* records.create(input.orgId, ownerWriter(person), {
     originKey: `owner:${input.clientRequestId}`,
     title: input.title,
@@ -219,6 +258,10 @@ export const create = Effect.fn("KinWork.create")(function* (
     dueAllDay: input.dueAllDay === true,
     ...(input.notes === undefined ? {} : { notes: input.notes }),
     ...(input.category === undefined ? {} : { category: input.category }),
+    ...(partyId === undefined ? {} : { partyId }),
+    ...(projectId === undefined ? {} : { projectId }),
+    ...(input.side === undefined ? {} : { side: input.side }),
+    ...(input.repo === undefined ? {} : { repo: input.repo }),
   });
   return yield* records.detail(row, KIN_RECORD_CHANGES_CAP);
 });
@@ -229,6 +272,7 @@ export const assign = Effect.fn("KinWork.assign")(function* (
   input: KinWorkAssignInput,
 ) {
   const person = yield* theOwner(people, input.orgId);
+  yield* inList(input.orgId, input.key, "work");
   const to: KinWorkPrincipal = input.to ?? { _tag: "person", personId: person.personId };
   return yield* change(person, input.orgId, input.key, { owner: to }, input.rev);
 });
@@ -249,6 +293,9 @@ export const update = Effect.fn("KinWork.update")(function* (
             dueAt: yield* dueMillis(input.orgId, input.dueAt, input.dueAllDay),
             dueAllDay: input.dueAllDay === true,
           };
+  yield* inList(input.orgId, input.key, "work");
+  const partyId = yield* refId(input.orgId, input.party, "clients");
+  const projectId = yield* refId(input.orgId, input.project, "projects");
   return yield* change(
     person,
     input.orgId,
@@ -259,6 +306,11 @@ export const update = Effect.fn("KinWork.update")(function* (
       ...(input.state === undefined ? {} : { state: input.state }),
       ...(input.waitingOn === undefined ? {} : { waitingOn: input.waitingOn }),
       ...(input.category === undefined ? {} : { category: input.category }),
+      ...(partyId === undefined ? {} : { partyId }),
+      ...(projectId === undefined ? {} : { projectId }),
+      ...(input.side === undefined ? {} : { side: input.side }),
+      ...(input.repo === undefined ? {} : { repo: input.repo }),
+      ...(input.sensitive === undefined ? {} : { sensitive: input.sensitive }),
       ...due,
     },
     input.rev,
@@ -301,7 +353,7 @@ const change = Effect.fn("KinWork.change")(function* (
   return yield* records.detail(row, KIN_RECORD_CHANGES_CAP);
 });
 
-const dueMillis = Effect.fn("KinWork.dueMillis")(function* (
+export const dueMillis = Effect.fn("KinWork.dueMillis")(function* (
   orgId: KinOrgId,
   dueAt: string,
   allDay: boolean | undefined,
@@ -311,7 +363,7 @@ const dueMillis = Effect.fn("KinWork.dueMillis")(function* (
     : yield* millis(dueAt, "dueAt");
 });
 
-const ownerWriter = (person: PersonIdentity): Writer => ({
+export const ownerWriter = (person: PersonIdentity): Writer => ({
   actor: { _tag: "person", personId: person.personId },
   via: "owner",
   askedBy: person.personId,
