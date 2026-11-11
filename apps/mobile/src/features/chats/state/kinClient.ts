@@ -291,6 +291,12 @@ export const kinClient = {
     tag: KIN_CHAT_WS_METHODS.chatsMute,
     concurrency: { mode: "singleFlight", key: ({ input }) => input.chatId },
   }),
+  /** Empties this chat for everyone in it, for good; one in flight per chat. */
+  clear: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:clear",
+    tag: KIN_CHAT_WS_METHODS.chatsClear,
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.chatId },
+  }),
   markRead: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:mark-read",
     tag: KIN_CHAT_WS_METHODS.messagesMarkRead,

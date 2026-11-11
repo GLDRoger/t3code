@@ -34,6 +34,13 @@ type ChatEvent =
   | { readonly type: "widget.updated"; readonly widget: KinWidget }
   | { readonly type: "waiting.updated"; readonly item: KinWaitingItem }
   | { readonly type: "member.removed"; readonly member: KinChatMember }
+  // Everything said in the chat was deleted; the cursors are the chat's after the clear.
+  | {
+      readonly type: "chat.cleared";
+      readonly chatId: KinChatId;
+      readonly lastSeq: number;
+      readonly lastChangeSeq: number;
+    }
   // A change to an active member's row, such as a mute; every member of the chat sees it.
   | { readonly type: "member.updated"; readonly chatId: KinChatId; readonly member: KinChatMember }
   | {

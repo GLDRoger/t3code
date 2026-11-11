@@ -40,6 +40,7 @@ import {
   type KinMessage,
   type KinMessagesMarkReadInput,
   type KinChatsMuteInput,
+  type KinChatsClearInput,
   type KinPersonId,
   type KinOrgId,
   type KinReaction,
@@ -67,7 +68,9 @@ import { undoDeferral } from "../triggers/KinTriggerService.ts";
 import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
 import * as Hub from "./KinChatHub.ts";
-import { KinPresence } from "../reply/KinPresence.ts";
+import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
+import { KinStop } from "../lead/KinStop.ts";
+import { isOrgOwner } from "../lead/orgState.ts";
 import * as Repository from "./KinChatRepository.ts";
 import { KinAttachmentStore } from "./KinAttachmentStore.ts";
 import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
@@ -132,6 +135,15 @@ export class KinChatService extends Context.Service<
       identity: PersonCaller,
       input: KinChatsMuteInput,
     ) => Effect.Effect<KinChatMember, ServiceError>;
+    /**
+     * Empties a chat for everyone in it, for good; memory, members and settings stay. The
+     * organisation's owner clears a group; a direct chat with a lead is cleared by the one
+     * person in it. A lead's turn answering a deleted message stops without a reply.
+     */
+    readonly clear: (
+      identity: PersonCaller,
+      input: KinChatsClearInput,
+    ) => Effect.Effect<void, ServiceError>;
     readonly leaveChat: (
       identity: PersonIdentity,
       input: { readonly chatId: KinChatId; readonly memberId: KinMemberId },
@@ -318,6 +330,9 @@ const make = Effect.gen(function* () {
   const presence = yield* Effect.serviceOption(KinPresence);
   // Absent where no attachments directory exists; a send with files is then refused.
   const attachmentStore = yield* Effect.serviceOption(KinAttachmentStore);
+  const stop = yield* Effect.serviceOption(KinStop);
+  /** For a stream event; left out of a chat that was never cleared. */
+  const clearedAt = (clearedSeq: number) => (clearedSeq > 0 ? { clearedSeq } : {});
   const sql = yield* SqlClient.SqlClient;
   const transaction = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     sql
@@ -934,6 +949,73 @@ const make = Effect.gen(function* () {
       });
       return updated;
     }, transaction),
+    clear: Effect.fn("KinChatService.clear")(function* (caller, input) {
+      const identity = yield* personFor(caller, input);
+      const member = yield* memberFor(identity, input.chatId);
+      const chat = yield* requireRecord(repo.getChat(member));
+      if (chat.archivedAt !== null) return yield* notFound;
+      const people = (yield* repo.listMembers(chat)).filter(
+        (row) => row.leftAt === null && row.principal._tag === "person",
+      );
+      // Read from stored rows: a direct chat is its one person's, a group the organisation
+      // owner's. Being in a chat with others is never enough.
+      const allowed =
+        chat.kind === "direct"
+          ? people.length === 1
+          : member.role === "owner" &&
+            (yield* isOrgOwner(identity.orgId, identity.personId).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.mapError(toPersistenceSqlError("KinChatService.clear")),
+            ));
+      if (!allowed)
+        return yield* new KinChatError({
+          reason: "not_allowed",
+          message: "Only the owner can clear this chat.",
+        });
+      const clearedAtMs = yield* Clock.currentTimeMillis;
+      const cleared = yield* repo.clearChat({
+        orgId: chat.orgId,
+        chatId: chat.chatId,
+        clearedAt: DateTime.formatIso(DateTime.makeUnsafe(clearedAtMs)),
+        clearedAtMs,
+      });
+      for (const item of cleared.waiting)
+        yield* hub.publish({ type: "waiting.updated", orgId: chat.orgId, item });
+      yield* hub.publish({
+        type: "chat.cleared",
+        orgId: chat.orgId,
+        chatId: chat.chatId,
+        lastSeq: cleared.lastSeq,
+        lastChangeSeq: cleared.lastChangeSeq,
+      });
+      // Nothing below can undo the clear, so none of it may fail it.
+      yield* sql.afterCommit(
+        Effect.gen(function* () {
+          for (const card of cleared.taskCards) {
+            const task = yield* TaskCard.decodeTaskCardEffect(card.state).pipe(Effect.option);
+            if (Option.isSome(task) && task.value.threadId !== null)
+              yield* cards.untrack(task.value.threadId, card.widgetId);
+          }
+          if (Option.isSome(stop))
+            yield* stop.value.abortTurns(chat.orgId, cleared.abortedWakeupIds);
+          if (Option.isSome(presence))
+            for (const agentId of cleared.agentIds)
+              yield* syncQueued(presence.value, chat.orgId, agentId).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              );
+          if (Option.isSome(attachmentStore))
+            yield* attachmentStore.value.remove(cleared.attachmentIds);
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin clear chat follow-up failed", {
+              orgId: chat.orgId,
+              chatId: chat.chatId,
+              cause,
+            }),
+          ),
+        ),
+      );
+    }, transaction),
     leaveChat: Effect.fn("KinChatService.leaveChat")(function* (identity, input) {
       const caller = yield* memberFor(identity, input.chatId);
       if (caller.role !== "owner") return yield* notAllowed;
@@ -959,11 +1041,18 @@ const make = Effect.gen(function* () {
             afterChangeSeq: input.afterChangeSeq,
           });
           const backlog: KinChatStreamEvent = resumed.reset
-            ? { _tag: "reset", lastSeq: resumed.lastSeq, lastChangeSeq: resumed.lastChangeSeq }
+            ? {
+                _tag: "reset",
+                lastSeq: resumed.lastSeq,
+                lastChangeSeq: resumed.lastChangeSeq,
+                ...(resumed.cleared === true ? { cleared: true } : {}),
+                ...clearedAt(resumed.clearedSeq),
+              }
             : {
                 _tag: "backlog",
                 lastSeq: resumed.lastSeq,
                 lastChangeSeq: resumed.lastChangeSeq,
+                ...clearedAt(resumed.clearedSeq),
                 messages: resumed.messages,
                 widgets: resumed.widgets,
                 // The chat's live reactions in full, so a resumed client drops withdrawn ones.
@@ -989,7 +1078,17 @@ const make = Effect.gen(function* () {
             });
             cursor = { lastSeq: next.lastSeq, lastChangeSeq: next.lastChangeSeq };
             delivered = 0;
-            if (next.reset) return { _tag: "reset", ...cursor } satisfies KinChatStreamEvent;
+            if (next.cleared === true) {
+              messageChanges.clear();
+              revisions.clear();
+            }
+            if (next.reset)
+              return {
+                _tag: "reset",
+                ...cursor,
+                ...(next.cleared === true ? { cleared: true } : {}),
+                ...clearedAt(next.clearedSeq),
+              } satisfies KinChatStreamEvent;
             // The client already holds rows and widgets at the versions this stream delivered.
             const messages = next.messages.filter(
               (m) => (m.changeSeq ?? m.seq) !== messageChanges.get(m.messageId),
@@ -1030,6 +1129,24 @@ const make = Effect.gen(function* () {
                     return Option.some<KinChatStreamEvent>({
                       _tag: "widget",
                       widget: event.widget,
+                    });
+                  }
+                  case "chat.cleared": {
+                    // One already behind this stream's start was answered by its first event.
+                    if (
+                      event.chatId !== input.chatId ||
+                      event.lastChangeSeq <= cursor.lastChangeSeq
+                    )
+                      return Option.none();
+                    cursor = { lastSeq: event.lastSeq, lastChangeSeq: event.lastChangeSeq };
+                    delivered = 0;
+                    messageChanges.clear();
+                    revisions.clear();
+                    return Option.some<KinChatStreamEvent>({
+                      _tag: "reset",
+                      ...cursor,
+                      cleared: true,
+                      ...clearedAt(event.lastSeq),
                     });
                   }
                   case "member.removed":
