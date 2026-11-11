@@ -85,6 +85,10 @@ const decodeDream = Schema.decodeUnknownEffect(Schema.fromJsonString(DreamJson))
 const encodeDream = Schema.encodeEffect(Schema.fromJsonString(DreamJson));
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
+const FAILED_NIGHTS_NOTICE = 3;
+const stuckNotice =
+  "I haven't been able to tidy my notes for three nights in a row. Nothing is lost, and I'll keep trying each night. If it doesn't clear up, let whoever looks after Kin for you know.";
+const emptyDream: DreamJson = { changes: [], merges: [], supersessions: [], contradictions: [] };
 const zoned = (ms: number, timeZone: string) => DateTime.makeZonedUnsafe(ms, { timeZone });
 
 const extractPrompt = (input: { orgId: string; head: string; full: boolean }) =>
@@ -215,21 +219,19 @@ const make = Effect.gen(function* () {
       failure = ${failure}, ended_at = ${now}
       WHERE org_id = ${orgId} AND dream_id = ${dreamId} AND status = 'running' RETURNING dream_id`;
     if (outcome._tag !== "failed") return;
-    const leaked = yield* scanner
-      .scan({
-        orgId,
-        files: [{ path: "dream-failure", content: new TextEncoder().encode(failure) }],
-      })
-      .pipe(
-        Effect.orElseSucceed(() => [{ path: "dream-failure", ruleId: "unavailable", line: 0 }]),
-      );
-    yield* notices.notify({
+    // A failed night retries itself with the same material, so the owner hears only of a streak.
+    yield* Effect.logWarning("Kin dream failed; the next one retries its material", {
       orgId,
-      branch,
-      reason: `Last night's dream failed and merged nothing; the next dream retries the same material.\n${
-        leaked.length > 0 ? "Details withheld: they did not pass the secret scan." : failure
-      }`,
+      dreamId,
+      failure,
     });
+    const recent = yield* sql<{ status: string }>`SELECT status FROM kin_dream_runs
+      WHERE org_id = ${orgId} AND status IN ('failed', 'succeeded')
+      ORDER BY owner_date DESC LIMIT ${FAILED_NIGHTS_NOTICE + 1}`;
+    const streak = recent.findIndex((row) => row.status !== "failed");
+    // Exactly the third failed night in a row: a longer streak was already told.
+    if ((streak === -1 ? recent.length : streak) === FAILED_NIGHTS_NOTICE)
+      yield* notices.notify({ orgId, branch, reason: stuckNotice, needsOwner: true });
   });
 
   const prepareCheckout = Effect.fn("DreamRunner.prepareCheckout")(function* (
@@ -324,6 +326,17 @@ const make = Effect.gen(function* () {
       timeZone,
       files: baseText,
     }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    // Current items alone are not new: with no original since the last good night, no model runs.
+    if (!material.entries.some((entry) => entry.kind !== "item")) {
+      yield* Effect.logInfo("Kin dream skipped: nothing new", { orgId, dreamId });
+      return {
+        _tag: "succeeded",
+        dreamId,
+        branch,
+        head: base.head,
+        dream: emptyDream,
+      } satisfies DreamOutcome;
+    }
     const root = yield* prepareCheckout(orgId, dreamId, files, material);
     return yield* Effect.gen(function* () {
       const turn = Effect.fn("DreamRunner.turn")(function* (

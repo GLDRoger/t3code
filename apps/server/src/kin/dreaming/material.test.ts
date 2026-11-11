@@ -179,3 +179,54 @@ it.effect("leaves out what a teammate could read or steer: their chats and share
     );
   }).pipe(Effect.provide(layer)),
 );
+
+it.effect(
+  "a night takes only what was said since the last good one, so a quiet lead adds nothing",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES (${orgId}, 'Org', ${at})`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES ('owner', ${orgId}, 'owner', 'Owner', ${at})`;
+      const leads = ["lead-chief", "lead-tech", "lead-growth"];
+      for (const lead of leads) {
+        yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+        VALUES (${lead}, ${orgId}, ${lead}, 'lead', 'owner', ${at})`;
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+        VALUES (${`dm-${lead}`}, ${orgId}, 'team_group', 0, ${at})`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES (${`owner-${lead}`}, ${orgId}, ${`dm-${lead}`}, 'person', 'owner', 'owner', ${at})`;
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+        VALUES (${lead}, ${orgId}, ${lead}, 0, '{}', '[]', ${`dm-${lead}`})`;
+      }
+      const lastGood = Date.parse("2026-11-10T03:00:00.000Z");
+      for (const [id, lead, createdAt] of [
+        ["m-old", "lead-growth", "2026-11-09T15:00:00.000Z"],
+        ["m-new", "lead-tech", "2026-11-10T09:00:00.000Z"],
+      ] as const)
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+          author_member_id, author_role, kind, body, mentions_json, status, created_at)
+        VALUES (${id}, ${orgId}, ${`dm-${lead}`}, 1, 'human', 'owner', ${`owner-${lead}`}, 'owner',
+          'text', 'Invented note', '[]', 'posted', ${createdAt})`;
+      const entry = (wakeup: string, agent: string) =>
+        `\n## 09:00 · wake-up ${wakeup} · ${agent} · L2\n\nOutcome: completed\nEvents: e\n\n- Invented.\n`;
+      const material = yield* collectMaterial({
+        orgId,
+        from: lastGood,
+        until: Date.parse("2026-11-10T12:00:00.000Z"),
+        full: false,
+        timeZone: "UTC",
+        files: new Map([
+          ["journal/2026/11-09.md", entry("w-old", "lead-growth")],
+          ["journal/2026/11-10.md", entry("w-new", "lead-tech")],
+        ]),
+      });
+      assert.deepStrictEqual(
+        material.entries.map(({ ref, saidBy }) => ({ ref, saidBy })),
+        [
+          { ref: "memory:journal/2026/11-10.md", saidBy: "lead-tech" },
+          { ref: "kin:chat:dm-lead-tech:message:m-new", saidBy: "owner" },
+        ],
+      );
+    }).pipe(Effect.provide(layer)),
+);

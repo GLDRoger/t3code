@@ -262,6 +262,7 @@ const make = Effect.gen(function* () {
         orgId,
         branch,
         reason: `Memory changes on paths you review wait in ${opened.success.url}. Kin pushed \`${opened.success.commit}\`; if the PR's head differs, close it`,
+        needsOwner: true,
       });
       yield* git(orgId, writer, ["update-ref", "-d", ref, sha]);
     }
@@ -421,6 +422,7 @@ const make = Effect.gen(function* () {
         reason: pull.closed
           ? `Kin closed ${pull.url}, the memory PR for paths you review: ${pull.reason}`
           : `Kin could not close ${pull.url}, the memory PR for paths you review, and it is still open. Close it without merging: ${pull.reason}`,
+        ...(pull.closed ? {} : { needsOwner: true as const }),
       });
     }
   });
