@@ -29,6 +29,7 @@ import * as KinRecords from "./KinRecords.ts";
 import * as LeadWork from "./leadWork.ts";
 import * as Clients from "./ownerClients.ts";
 import * as OwnerWork from "./ownerWork.ts";
+import { effectivelySensitive } from "./recordRows.ts";
 import { buildWorkSection } from "./workPrompt.ts";
 
 // Invented org, people, clients and work only; nothing here reads a real database.
@@ -576,6 +577,11 @@ it.effect("a sensitive client or project labels what points at it; only the owne
     yield* seed;
     yield* setup("ask-event");
     yield* LeadWork.update(scope, { key: "C-1", sourceEventId: "ask-event", sensitive: true });
+    yield* LeadWork.update(scope, {
+      key: "C-1",
+      sourceEventId: "ask-event",
+      terms: "Invented fee",
+    });
     const listed = yield* OwnerWork.list([owner], { orgId, party: "C-1" });
     assert.isTrue(listed.records.every((record) => record.sensitiveInherited === true));
     assert.isTrue(listed.records.every((record) => !record.sensitive));
@@ -585,6 +591,51 @@ it.effect("a sensitive client or project labels what points at it; only the owne
     assert.isTrue(page.projects.every((project) => project.sensitiveInherited));
     // The project's own entries inherit through the project too, and the lead reads them so.
     assert.include(yield* LeadWork.get(scope, { key: "W-6" }), { sensitive: true });
+    // Every lead result says what is sensitive, as the owner's do: the entry and its fields.
+    const client = yield* LeadWork.get(scope, { key: "C-1" });
+    assert.deepInclude(client, { sensitive: true, sensitiveFields: ["terms"] });
+    assert.include(
+      client.history.find((change) => change.change.startsWith("terms")),
+      {
+        sensitive: true,
+      },
+    );
+    assert.isTrue(
+      client.contacts!.every(
+        (row) => row.sensitive === true && row.sensitiveFields?.join() === "email,phone",
+      ),
+    );
+    assert.deepStrictEqual(
+      client.projects!.map((row) => row.sensitive),
+      [true],
+    );
+    const contacts = yield* LeadWork.query(scope, { list: "contacts", groupBy: "client" });
+    assert.isTrue(contacts.records.every((row) => row.sensitive && row.sensitiveFields?.length));
+    assert.deepStrictEqual(contacts.groups, [
+      { group: "Invented Acme (C-1)", count: 2, late: 0, sensitive: true },
+    ]);
+    const byOwner = yield* LeadWork.query(scope, { groupBy: "owner" });
+    assert.isTrue(byOwner.groups!.every((group) => group.sensitive === undefined));
+    const made = yield* LeadWork.create(scope, {
+      sourceEventId: "again-event",
+      records: [
+        { list: "contacts", title: "Invented Mira", client: "C-1" },
+        { title: "Invented kickoff", client: "C-1" },
+        { title: "Invented unrelated chore" },
+      ],
+    });
+    assert.deepStrictEqual(
+      made.records.map((row) => [row.created, row.sensitive, row.sensitiveFields]),
+      [
+        [false, true, ["email", "phone"]],
+        [true, true, undefined],
+        [true, undefined, undefined],
+      ],
+    );
+    assert.include(
+      yield* LeadWork.update(scope, { key: "W-2", sourceEventId: "ask-event", notes: "x" }),
+      { sensitive: true },
+    );
     const lowered = yield* Clients.updateParty([owner], {
       orgId,
       key: "C-1",
@@ -594,6 +645,78 @@ it.effect("a sensitive client or project labels what points at it; only the owne
     assert.isFalse(lowered.sensitive);
     const after = yield* OwnerWork.get([owner], { orgId, key: "W-1" });
     assert.notProperty(after, "sensitiveInherited");
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("no lead write makes anything less sensitive; the owner's own may", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* setup("ask-event");
+    const records = yield* KinRecords.KinRecords;
+    const sensitive = (key: string) =>
+      records
+        .get(orgId, key)
+        .pipe(Effect.flatMap((row) => effectivelySensitive(orgId, row!.recordId)));
+    const ownLabel = (key: string) =>
+      records.get(orgId, key).pipe(Effect.map((row) => row!.sensitive));
+    const update = (input: Omit<typeof LeadWork.UpdateInput.Type, "sourceEventId">) =>
+      LeadWork.update(scope, { ...input, sourceEventId: "ask-event" });
+    yield* update({ key: "C-1", sensitive: true });
+    // W-6 is sensitive through its project's client; unlinking both keeps it so, as Kin's change.
+    assert.isTrue(yield* sensitive("W-6"));
+    const unlinked = yield* update({ key: "W-6", client: null, project: null });
+    assert.deepInclude(unlinked, { changed: ["party", "project", "sensitive"], sensitive: true });
+    const w6 = yield* LeadWork.get(scope, { key: "W-6" });
+    assert.notProperty(w6, "client");
+    assert.deepInclude(w6.history[0], { by: "Kin", change: "sensitive: true" });
+    assert.isTrue(yield* sensitive("W-6"));
+    // A project moved to another client, or off any, labels the project: its entries stay sensitive.
+    yield* LeadWork.create(scope, {
+      sourceEventId: "again-event",
+      records: [
+        { list: "clients", title: "Invented Beta" },
+        { list: "projects", title: "Invented app" },
+        { list: "projects", title: "Invented api" },
+        { title: "Invented app login", project: "Invented app" },
+        { title: "Invented api keys", project: "Invented api" },
+      ],
+    });
+    yield* update({ key: "P-2", client: "C-1" });
+    yield* update({ key: "P-3", client: "C-1" });
+    assert.isTrue(yield* sensitive("W-7"));
+    assert.strictEqual(yield* ownLabel("P-2"), 0);
+    yield* update({ key: "P-2", client: "Invented Beta" });
+    yield* update({ key: "P-3", client: null });
+    for (const key of ["P-2", "P-3"]) assert.strictEqual(yield* ownLabel(key), 1);
+    for (const key of ["W-7", "W-8"]) {
+      assert.isTrue(yield* sensitive(key));
+      assert.strictEqual(yield* ownLabel(key), 0);
+    }
+    // A contact moved to another client, renames and closes keep it too; a repeat changes nothing.
+    yield* update({ key: "CT-2", client: "Invented Beta" });
+    assert.isTrue(yield* sensitive("CT-2"));
+    yield* update({ key: "C-1", title: "Invented Acme Ltd" });
+    yield* update({ key: "W-7", title: "Invented app sign-in", state: "done" });
+    const again = yield* LeadWork.create(scope, {
+      sourceEventId: "again-event",
+      records: [{ list: "clients", title: "invented acme ltd" }],
+    });
+    assert.deepStrictEqual(again.records, [
+      {
+        key: "C-1",
+        title: "Invented Acme Ltd",
+        created: false,
+        sensitive: true,
+        sensitiveFields: ["terms"],
+      },
+    ]);
+    for (const key of ["C-1", "W-7", "P-2"]) assert.isTrue(yield* sensitive(key));
+    // The owner moving an entry off the client lowers it, as before: only they may.
+    const w1 = yield* OwnerWork.get([owner], { orgId, key: "W-1" });
+    yield* OwnerWork.update([owner], { orgId, key: "W-1", rev: w1.rev, party: null });
+    assert.isFalse(yield* sensitive("W-1"));
+    assert.strictEqual(yield* ownLabel("W-1"), 0);
+    assert.isUndefined(yield* effectivelySensitive(orgId, "rec_missing"));
   }).pipe(Effect.provide(layer)),
 );
 
