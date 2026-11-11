@@ -215,6 +215,15 @@ export class MemoryWriter extends Context.Service<
         readonly person: KinPersonId;
       },
     ) => Effect.Effect<{ readonly head: MemoryItemHead }, Failure>;
+    /**
+     * Marks one default-branch item no longer true, outside a wake-up: the owner forgot it, or
+     * the nightly pass found it spent. The file and its history stay; `retired` is false when
+     * it was already so.
+     */
+    readonly retire: (
+      orgId: KinOrgId,
+      input: { readonly itemId: KinMemoryItemId; readonly by: "owner" | "nightly" },
+    ) => Effect.Effect<{ readonly retired: boolean }, Failure>;
   }
 >()("t3/kin/memory/MemoryWriter") {}
 const isRepoSlug = Schema.is(RepoSlug);
@@ -1406,6 +1415,55 @@ const make = Effect.gen(function* () {
             message: `kin: owner ${input.sensitive ? "keeps" : "shares"} ${input.itemId}\n`,
           });
           return { head: labelled };
+        }),
+      ),
+    ),
+    retire: Effect.fn("MemoryWriter.retire")((orgId, input) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const main = config.defaultBranch ?? "main";
+          const { writer } = yield* validate(orgId);
+          yield* refuseDuringPurge(orgId);
+          const repo = yield* repoFor(orgId);
+          // The nightly pass tells the owner nothing: it tries again the next night.
+          if (mainWrites === "refused")
+            return yield* input.by === "owner"
+              ? refuseMainWrite(orgId)
+              : new MemorySyncConflict({
+                  orgId,
+                  operation: "push",
+                  reason: "Memory writes to the default branch are refused",
+                });
+          if (mainWrites === "pull_request") yield* refuseOffGitHub(orgId);
+          const item = yield* memory.readItemQuietly(orgId, input.itemId);
+          const head = yield* branchHead(orgId, writer, main);
+          const headFiles = yield* filesAt(orgId, writer, head);
+          const current = headFiles.get(item.head.path);
+          if (current === undefined) return yield* new MemoryNotFound({ orgId, id: input.itemId });
+          const { frontMatter, body } = yield* parseFrontMatter(
+            orgId,
+            item.head.path,
+            current.toString("utf8"),
+          );
+          if (frontMatter.id !== input.itemId)
+            return yield* new MemoryNotFound({ orgId, id: input.itemId });
+          if (frontMatter.invalid_at !== null) return { retired: false };
+          const invalidAt = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+          yield* ownerCommit(orgId, {
+            writer,
+            repoUrl: repo.repoUrl,
+            branch: main,
+            head,
+            headFiles,
+            path: item.head.path,
+            content: render({ ...frontMatter, invalid_at: invalidAt }, body),
+            message:
+              input.by === "owner"
+                ? `kin: owner forgets ${input.itemId}\n`
+                : `kin: nightly pass retires spent ${input.itemId}\n`,
+          });
+          return { retired: true };
         }),
       ),
     ),
