@@ -243,7 +243,13 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
     yield* authorise(orgId, "said", words("said"), "teammate");
     yield* suggest(orgId, "hinted", words("hinted"));
     const member = [{ _tag: "person" as const, orgId, personId: KinPersonId.make("priya") }];
-    const flip = { orgId, itemId: KinMemoryItemId.make("terms"), onlyOwner: false };
+    const letKnow = (id: string) => ({
+      orgId,
+      itemId: KinMemoryItemId.make(id),
+      onlyOwner: false as const,
+      version: words(id),
+    });
+    const flip = letKnow("terms");
     assert.include(yield* memory.list(member, { orgId }).pipe(Effect.flip), {
       reason: "not_allowed",
     });
@@ -297,10 +303,19 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
       [["hinted", "team"]],
     );
     assert.strictEqual((yield* shown()).later, "suggested");
+    // Review of e1460657a0: a yes by id without the listed version confirmed whatever it said.
+    const unseen = yield* memory.confirmSuggestions([owner], {
+      orgId,
+      itemIds: [KinMemoryItemId.make("later")],
+      versions: {},
+    });
+    assert.deepStrictEqual(unseen.items, []);
+    assert.strictEqual((yield* shown()).later, "suggested");
     // By id, only what is still suggested: a file's say-so is not a suggestion.
     const byId = yield* memory.confirmSuggestions([owner], {
       orgId,
       itemIds: [KinMemoryItemId.make("later"), KinMemoryItemId.make("claimed")],
+      versions: { later: words("later"), claimed: words("claimed") },
     });
     assert.deepStrictEqual(
       byId.items.map((item) => item.itemId),
@@ -312,13 +327,9 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
     yield* sql`INSERT INTO kin_memory_labels (org_id, item_id, suggested_rev)
       VALUES (${orgId}, 'migrated', 1)`;
     const migrated = KinMemoryItemId.make("migrated");
-    const confirm = (versions?: Record<string, string>) =>
+    const confirm = (versions: Record<string, string> = {}) =>
       memory
-        .confirmSuggestions([owner], {
-          orgId,
-          itemIds: [migrated],
-          ...(versions === undefined ? {} : { versions }),
-        })
+        .confirmSuggestions([owner], { orgId, itemIds: [migrated], versions })
         .pipe(Effect.map(({ items }) => items.map((item) => item.itemId)));
     // Not confirmable unseen: it binds to the words the owner is first shown.
     assert.deepStrictEqual(yield* confirm(), []);
@@ -341,7 +352,7 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
           orgId,
           itemId: migrated,
           onlyOwner: false,
-          version: migratedRow?.version,
+          version: String(migratedRow?.version),
         })
         .pipe(Effect.flip),
       { reason: "conflict" },
@@ -354,13 +365,16 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
     );
 
     // "Only you" holds from the tap, even if the file's label lands later.
-    const team = { ...flip, itemId: KinMemoryItemId.make("team") };
-    const keep = yield* memory.setVisibility([owner], { ...team, onlyOwner: true });
+    const keep = yield* memory.setVisibility([owner], {
+      orgId,
+      itemId: KinMemoryItemId.make("team"),
+      onlyOwner: true,
+    });
     assert.strictEqual(keep.item.visibility, "only_owner");
     const held = sql`SELECT item_id FROM kin_memory_labels
       WHERE org_id = ${orgId} AND held_at IS NOT NULL`;
     assert.deepStrictEqual(yield* held, [{ item_id: "team" }]);
-    const share = yield* memory.setVisibility([owner], team);
+    const share = yield* memory.setVisibility([owner], letKnow("team"));
     assert.strictEqual(share.item.visibility, "team");
     assert.lengthOf(yield* held, 0);
     // The owner's own choice lets the team know even what no one suggested.

@@ -87,13 +87,22 @@ export const KinMemoryListResult = Schema.Struct({
 });
 export type KinMemoryListResult = typeof KinMemoryListResult.Type;
 
-export const KinMemorySetVisibilityInput = Schema.Struct({
-  orgId: KinOrgId,
-  itemId: KinMemoryItemId,
-  onlyOwner: Schema.Boolean,
-  /** The listed `version`: letting the team know is refused if the item reads otherwise now. */
-  version: Schema.optional(Schema.String),
-});
+/** Keeping an item to the owner needs nothing more; letting the team know needs the words shown. */
+export const KinMemorySetVisibilityInput = Schema.Union([
+  Schema.Struct({
+    orgId: KinOrgId,
+    itemId: KinMemoryItemId,
+    onlyOwner: Schema.Literal(true),
+    version: Schema.optional(Schema.String),
+  }),
+  Schema.Struct({
+    orgId: KinOrgId,
+    itemId: KinMemoryItemId,
+    onlyOwner: Schema.Literal(false),
+    /** The listed `version`: refused, and nothing changes, if the item reads otherwise now. */
+    version: Schema.String,
+  }),
+]);
 export type KinMemorySetVisibilityInput = typeof KinMemorySetVisibilityInput.Type;
 export const KinMemorySetVisibilityResult = Schema.Struct({ item: KinMemoryListItem });
 export type KinMemorySetVisibilityResult = typeof KinMemorySetVisibilityResult.Type;
@@ -101,14 +110,14 @@ export type KinMemorySetVisibilityResult = typeof KinMemorySetVisibilityResult.T
 /**
  * The owner lets the team know suggested items: the listed ones, or every suggestion up to the
  * `suggestionsAsOf` revision they were shown, so one that came in later is never confirmed unseen.
- * Only items still suggested are confirmed, as they read when suggested and, with `versions`
- * (item id to listed `version`), as they were listed.
+ * Only items still suggested are confirmed; listed ones only as their `versions` entry (id to
+ * listed `version`) says, else they stay suggested.
  */
 export const KinMemoryConfirmSuggestionsInput = Schema.Union([
   Schema.Struct({
     orgId: KinOrgId,
     itemIds: Schema.Array(KinMemoryItemId).check(Schema.isMinLength(1), Schema.isMaxLength(500)),
-    versions: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+    versions: Schema.Record(Schema.String, Schema.String),
   }),
   Schema.Struct({ orgId: KinOrgId, asOf: NonNegativeInt }),
 ]);

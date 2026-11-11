@@ -67,6 +67,8 @@ interface Labelled extends Pick<Projected, "kind" | "title" | "links"> {
   readonly what?: string | undefined;
   readonly shared_from?: Projected["shared_from"] | undefined;
   readonly sensitive?: boolean | undefined;
+  readonly invalid_at?: string | null | undefined;
+  readonly superseded_by?: string | null | undefined;
 }
 /** An item as a turn would read it: its head and body. */
 export interface Shown {
@@ -159,11 +161,15 @@ const teamCanKnow = (item: Shown, labels: StoredLabels) =>
 
 /**
  * The one check for whether a memory item may reach a turn: an owner-only turn sees everything,
- * any other only what a stored authorisation lets the team know. What the team may know is company
- * knowledge, not chat history: every shared turn reads it, whatever chat it came from or joined.
+ * any other only what a stored authorisation lets the team know, and only while it still holds.
+ * What the team may know is company knowledge, not chat history: every shared turn reads it,
+ * whatever chat it came from or joined.
  */
 export const reaches = (audience: TurnAudience, item: Shown, labels: StoredLabels) =>
-  audience === "owner_only" || teamCanKnow(item, labels);
+  audience === "owner_only" ||
+  (teamCanKnow(item, labels) &&
+    (item.head.invalid_at ?? null) === null &&
+    (item.head.superseded_by ?? null) === null);
 
 export type Visibility = "only_owner" | "team" | "suggested";
 /** What the owner sees: the team knows it, it was suggested for the team, or it is theirs alone. */

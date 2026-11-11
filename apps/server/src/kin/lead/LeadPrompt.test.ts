@@ -200,6 +200,7 @@ const memory = Layer.succeed(
         ? Effect.fail(new Memory.MemoryNotFound({ orgId: org, id }))
         : Effect.succeed(found);
     },
+    readItemChangedAt: () => Effect.die("Unused"),
     rebuildIndex: () => Effect.die("Unused"),
     rebuildCache: () => Effect.die("Unused"),
     syncCheckout: () => Effect.die("Unused"),

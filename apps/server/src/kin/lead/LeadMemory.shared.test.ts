@@ -5,6 +5,7 @@ import { assert, it } from "@effect/vitest";
 import {
   EnvironmentId,
   KinAgentId,
+  KinChatId,
   KinMemoryItemId,
   KinOrgId,
   KinPersonId,
@@ -14,6 +15,7 @@ import {
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -25,7 +27,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as Memory from "../memory/Memory.ts";
 import type { MemoryItem } from "../memory/MemoryCache.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
-import { authorise, fingerprint } from "../memory/sensitivity.ts";
+import { SharedHead, SharedItem, authorise, fingerprint } from "../memory/sensitivity.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Lead from "./LeadMemory.ts";
 
@@ -73,7 +75,9 @@ const state: {
   /** Runs once, right after the next load of items with their bodies. */
   afterLoad: (() => void) | undefined;
   stage: (wakeupId: string) => Effect.Effect<void>;
-} = { items: [], afterLoad: undefined, stage: () => Effect.void };
+  /** When every item's file last changed, by commit time. */
+  changedAt: number;
+} = { items: [], afterLoad: undefined, stage: () => Effect.void, changedAt: 0 };
 const loaded = () => {
   const items = state.items;
   const after = state.afterLoad;
@@ -93,6 +97,8 @@ const memory = Layer.mock(Memory.Memory)({
   query: () => Effect.sync(() => state.items.map((item) => ({ ...item.head, duplicate: false }))),
   readItem: (_org, id, _view, admit) => pick(id, admit),
   readItemQuietly: (_org, id) => pick(id),
+  readItemChangedAt: (_org, id) =>
+    pick(id).pipe(Effect.map((item) => ({ item, changedAt: state.changedAt }))),
 });
 const identity = Layer.mock(KinIdentity)({
   owner: { _tag: "person", orgId, personId: ownerId },
@@ -125,6 +131,7 @@ const setup = Effect.gen(function* () {
   state.items = [];
   state.afterLoad = undefined;
   state.stage = () => Effect.void;
+  state.changedAt = 0;
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES (${orgId}, 'Fixture', ${at})`;
   yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES
@@ -158,6 +165,26 @@ const setup = Effect.gen(function* () {
       VALUES (${`event-${lead}`}, ${orgId}, ${lead}, ${event._tag}, 'P0',
         ${JSON.stringify({ ...event, orgId, agentId: lead, eventId: `event-${lead}`, receivedAt: at, dedupeKey: null })},
         0, 0, 'claimed', ${`wake-${lead}`})`;
+    // Lead o's turn also carries a message of the owner's own, in his direct chat.
+    if (!shared) {
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
+        VALUES ('owner-said', ${orgId}, ${lead}, 'chat.message', 'P0',
+          ${JSON.stringify({
+            _tag: "chat.message",
+            chatId: "owner-chat",
+            messageId: "owner-message",
+            provenance: { _tag: "human", personId: ownerId, memberId: "owner-in-direct" },
+            orgId,
+            agentId: lead,
+            eventId: "owner-said",
+            receivedAt: at,
+            dedupeKey: null,
+          })}, 0, 0, 'claimed', ${`wake-${lead}`})`;
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+          author_member_id, author_role, kind, body, mentions_json, status, created_at)
+        VALUES ('owner-message', ${orgId}, 'owner-chat', 1, 'human', ${ownerId},
+          'owner-in-direct', 'owner', 'text', 'Invented: the team can know it', '[]', 'posted', ${at})`;
+    }
     if (shared)
       yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
           author_member_id, author_role, kind, body, mentions_json, status, created_at)
@@ -176,6 +203,34 @@ const teamNote: MemoryItem = {
 };
 const authorised = (item: MemoryItem) =>
   authorise(orgId, item.head.id, fingerprint(item), "owner_setting");
+const write = (lead: string, id: string) =>
+  decodeWrite({
+    op: "create",
+    sourceEventId: `event-${lead}`,
+    item: {
+      id,
+      kind: "claim",
+      title: `Invented ${id}`,
+      body: "Invented: the launch moved a week",
+      status: "open",
+      due: null,
+      recorded_at: at,
+      valid_from: at,
+      invalid_at: null,
+      superseded_by: null,
+      source: "forged",
+      said_by: "forged",
+      trust: "owner",
+      links: [],
+      sensitive: false,
+    },
+  }).pipe(Effect.flatMap((input) => Lead.LeadMemory.use((lm) => lm.write(scopeOf(lead), input))));
+const teammateWrites = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const [used] = yield* sql<{ writes: number }>`SELECT COUNT(*) AS writes
+    FROM kin_memory_shared_writes WHERE org_id = ${orgId} AND person_id = 'fixture-member'`;
+  return used?.writes;
+});
 
 // Review of 9de4e8d197: a dream's private words in `owner`, which the fingerprint skipped,
 // reached a shared memory_read along with the item's path and source.
@@ -195,8 +250,6 @@ it.effect("a shared read returns only the item's shared projection", () =>
         links: [],
         body,
       },
-      reviewOverdue: false,
-      misleading: false,
     });
     for (const hidden of ["private", "claims/team-note.md", "fixture-owner"])
       assert.notInclude(JSON.stringify(read), hidden);
@@ -210,6 +263,69 @@ it.effect("a shared read returns only the item's shared projection", () =>
         duplicate: false,
       },
     ]);
+  }).pipe(Effect.provide(layer)),
+);
+
+// Review of e1460657a0: shared reads also returned flags derived from `review_by` and
+// `invalid_at`, and shared search filtered on review dates; neither is in the projection.
+it.effect("a shared result holds exactly the projection's keys, nothing derived", () =>
+  Effect.gen(function* () {
+    yield* setup;
+    const full: MemoryItem = {
+      head: head("full-note", {
+        what: "Invented what",
+        links: ["Invented link"],
+        review_by: "1969-01-01",
+        shared_from: {
+          person: KinPersonId.make("fixture-member"),
+          chat: KinChatId.make("group-chat"),
+          name: "Member",
+          chat_name: "Invented room",
+        },
+      }),
+      body,
+    };
+    state.items = [full];
+    yield* authorised(full);
+    const service = yield* Lead.LeadMemory;
+    const read = yield* service.read(scopeOf(leads.a), { id: KinMemoryItemId.make("full-note") });
+    assert.sameMembers(Object.keys(read), ["item"]);
+    assert.sameMembers(
+      Object.keys("item" in read ? read.item : {}),
+      Object.keys(SharedItem.fields),
+    );
+    const found = yield* service.search(scopeOf(leads.a), {});
+    assert.sameMembers(Object.keys(found[0] ?? {}), [
+      ...Object.keys(SharedHead.fields),
+      "duplicate",
+    ]);
+    const filtered = yield* service
+      .search(scopeOf(leads.a), { reviewOverdue: true })
+      .pipe(Effect.flip);
+    assert.include(filtered.message, "only by kind or linksTo");
+    // The owner's own turns keep them.
+    const owners = yield* service.read(scopeOf(leads.o), { id: KinMemoryItemId.make("full-note") });
+    assert.isTrue("head" in owners && owners.reviewOverdue);
+  }).pipe(Effect.provide(layer)),
+);
+
+// Review of e1460657a0: an item an owner's turn invalidated stayed team-readable, old words and all.
+it.effect("what is no longer true or was replaced reaches no shared turn", () =>
+  Effect.gen(function* () {
+    yield* setup;
+    const stale = [
+      { head: head("invalid-note", { invalid_at: at }), body },
+      { head: head("replaced-note", { superseded_by: KinMemoryItemId.make("newer-note") }), body },
+    ];
+    state.items = stale;
+    for (const item of stale) yield* authorised(item);
+    const service = yield* Lead.LeadMemory;
+    assert.deepStrictEqual(yield* service.search(scopeOf(leads.a), {}), []);
+    for (const { head } of stale) {
+      const read = yield* service.read(scopeOf(leads.a), { id: head.id }).pipe(Effect.flip);
+      assert.strictEqual(read.reason, "not_found");
+      assert.isTrue("head" in (yield* service.read(scopeOf(leads.o), { id: head.id })));
+    }
   }).pipe(Effect.provide(layer)),
 );
 
@@ -273,30 +389,6 @@ it.effect("two leads can't both take a teammate's last write of the day", () =>
     for (let index = 0; index < 19; index++)
       yield* sql`INSERT INTO kin_memory_shared_writes (org_id, wakeup_id, item_id, person_id, bytes, written_at)
         VALUES (${orgId}, 'earlier-wakeup', ${`earlier-${index}`}, 'fixture-member', 10, 0)`;
-    const write = (lead: string, id: string) =>
-      decodeWrite({
-        op: "create",
-        sourceEventId: `event-${lead}`,
-        item: {
-          id,
-          kind: "claim",
-          title: `Invented ${id}`,
-          body: "Invented: the launch moved a week",
-          status: "open",
-          due: null,
-          recorded_at: at,
-          valid_from: at,
-          invalid_at: null,
-          superseded_by: null,
-          source: "forged",
-          said_by: "forged",
-          trust: "owner",
-          links: [],
-          sensitive: false,
-        },
-      }).pipe(
-        Effect.flatMap((input) => Lead.LeadMemory.use((lm) => lm.write(scopeOf(lead), input))),
-      );
     const staging = yield* Deferred.make<void>();
     const release = yield* Deferred.make<void>();
     state.stage = (wakeupId) =>
@@ -310,8 +402,50 @@ it.effect("two leads can't both take a teammate's last write of the day", () =>
     yield* Deferred.succeed(release, undefined);
     assert.deepStrictEqual(yield* Fiber.join(first), { itemId: "a-claim" });
     assert.include(second.message, "as much as can be saved from one person's messages today");
-    const [used] = yield* sql<{ writes: number }>`SELECT COUNT(*) AS writes
-      FROM kin_memory_shared_writes WHERE org_id = ${orgId} AND person_id = 'fixture-member'`;
-    assert.strictEqual(used?.writes, 20);
+    assert.strictEqual(yield* teammateWrites, 20);
+  }).pipe(Effect.provide(layer)),
+);
+
+// Review of e1460657a0: the owner's "the team can know it" in chat covered whatever the item said
+// when the tool ran, including a rewording another lead or the nightly pass made after his message.
+it.effect("the owner's word in chat covers only what the item said when he gave it", () =>
+  Effect.gen(function* () {
+    yield* setup;
+    const sql = yield* SqlClient.SqlClient;
+    const note: MemoryItem = { head: head("owner-note", { sensitive: true }), body };
+    state.items = [note];
+    const share = {
+      itemIds: [KinMemoryItemId.make("owner-note")],
+      sensitive: false,
+      sourceEventId: "owner-said",
+    };
+    const service = yield* Lead.LeadMemory;
+    state.changedAt = Date.parse(at) + 5_000;
+    const later = yield* service.label(scopeOf(leads.o), share).pipe(Effect.flip);
+    assert.include(later.message, "changed after the owner's message");
+    const authorisedRows = sql`SELECT item_id FROM kin_memory_labels
+      WHERE org_id = ${orgId} AND shared_content IS NOT NULL`;
+    assert.deepStrictEqual(yield* authorisedRows, []);
+    state.changedAt = Date.parse(at) - 60_000;
+    assert.deepStrictEqual(yield* service.label(scopeOf(leads.o), share), {
+      itemIds: [KinMemoryItemId.make("owner-note")],
+    });
+    assert.deepStrictEqual(yield* authorisedRows, [{ item_id: "owner-note" }]);
+  }).pipe(Effect.provide(layer)),
+);
+
+// Review of e1460657a0: only a typed staging failure gave the place back.
+it.effect("a stage that crashes or is cancelled gives the teammate's place back", () =>
+  Effect.gen(function* () {
+    yield* setup;
+    state.stage = () => Effect.die("Invented crash");
+    assert.isTrue(Exit.hasDies(yield* Effect.exit(write(leads.a, "a-claim"))));
+    assert.strictEqual(yield* teammateWrites, 0);
+    const staging = yield* Deferred.make<void>();
+    state.stage = () => Deferred.succeed(staging, undefined).pipe(Effect.andThen(Effect.never));
+    const cancelled = yield* Effect.forkChild(write(leads.b, "b-claim"));
+    yield* Deferred.await(staging);
+    yield* Fiber.interrupt(cancelled);
+    assert.strictEqual(yield* teammateWrites, 0);
   }).pipe(Effect.provide(layer)),
 );

@@ -298,8 +298,7 @@ const make = Effect.gen(function* () {
       if (item === undefined || known.length !== 1) return yield* notFound;
       // The team is let know only these words, and only if they are the listed version.
       const words = fingerprint(item);
-      if (!input.onlyOwner && input.version !== undefined && input.version !== words)
-        return yield* changed;
+      if (!input.onlyOwner && input.version !== words) return yield* changed;
       // Held first, so "only you" is true from this moment whatever the commit below does.
       if (input.onlyOwner) yield* hold(input.orgId, input.itemId).pipe(provideSql);
       const { head } = yield* port.relabel(input.orgId, {
@@ -319,7 +318,8 @@ const make = Effect.gen(function* () {
       const items = current(yield* port.items(input.orgId));
       const labels = yield* storedLabels(input.orgId).pipe(provideSql);
       const asked = "itemIds" in input ? new Set<string>(input.itemIds) : undefined;
-      const versions = "itemIds" in input ? input.versions : undefined;
+      // A listed item is confirmed only as the version listed; one sent without it stays suggested.
+      const listedAs = "itemIds" in input ? new Map(Object.entries(input.versions)) : undefined;
       const counts = new Map<string, number>();
       for (const { head } of items) counts.set(head.id, (counts.get(head.id) ?? 0) + 1);
       const chosen = items.filter((item) => {
@@ -328,11 +328,9 @@ const make = Effect.gen(function* () {
           suggestion !== undefined &&
           counts.get(item.head.id) === 1 &&
           visibility(item, labels) === "suggested" &&
-          (versions?.[item.head.id] === undefined ||
-            versions[item.head.id] === fingerprint(item)) &&
-          (asked === undefined
+          (asked === undefined || listedAs === undefined
             ? "asOf" in input && suggestion.rev <= input.asOf
-            : asked.has(item.head.id))
+            : asked.has(item.head.id) && listedAs.get(item.head.id) === fingerprint(item))
         );
       });
       const confirmed = [];
