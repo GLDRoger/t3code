@@ -43,6 +43,9 @@ Root runs only scripts from a **root-owned clone**, `/root/kin-ops`. A clone `ki
 
 Owner overrides such as `T3CODE_LAN=true` go in `~/.t3/service.env`, which the unit reads and the backup copies. The unit reads it before `kin-server.env`, so it can't change `PATH`, the build or the Node version.
 
+Team memory is off unless `~/.t3/service.env` sets `KIN_TEAM_MEMORY=on` (any other value is off): until then a chat other people read gets no memory at all, while your own chats, the Memory page and its suggestions work as before.
+Leave it off until the sharing machinery has passed an independent review; choose on the Memory page what the team may know first, then set it and restart kin-server.
+
 ## Memory repo access
 
 Memory git ignores the system and global git config, so the host's credential helpers and `GIT_SSH_COMMAND` don't reach it. Give it a credential through `~/.t3/service.env`. The whole server and its agents see these variables, but only memory git turns them into `GIT_SSH_COMMAND` or a credential helper. Without one, cloning a private memory repo fails and every wake-up fails with it.

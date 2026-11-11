@@ -30,6 +30,7 @@ import { confirm as confirmDialog } from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ErrorBanner } from "../../components/ui/ErrorBanner";
 import { ScreenContent } from "../../components/ui/ScreenContent";
+import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -98,11 +99,17 @@ export function KinMemoryScreen({ route }: StaticScreenProps<KinMemoryParams>) {
       <View collapsable={false} className="flex-1 bg-screen">
         <AppBar title={KIN_MEMORY_TITLE} onBack={() => navigation.goBack()} />
         <ScreenContent surface="screen">
-          <EmptyState
-            variant="plain"
-            title="This link doesn't open anything"
-            detail="Open Memory from your Kin chats."
-          />
+          <ScreenScrollView
+            className="flex-1"
+            contentInsetAdjustmentBehavior="automatic"
+            contentContainerStyle={{ padding: 16 }}
+          >
+            <EmptyState
+              variant="plain"
+              title="This link doesn't open anything"
+              detail="Open Memory from your Kin chats."
+            />
+          </ScreenScrollView>
         </ScreenContent>
       </View>
     );
@@ -133,6 +140,41 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
   // What was last read stays up while it is read again.
   const list = Option.getOrNull(AsyncResult.value(result));
   const view = list === null ? null : kinMemoryView(list, edits, search);
+  const message = !allowed ? (
+    <EmptyState
+      variant="plain"
+      title="Only the owner can open this"
+      detail="What the leads remember is shown to the person who runs this workspace."
+    />
+  ) : list === null || view === null ? (
+    AsyncResult.isFailure(result) ? (
+      <EmptyState
+        variant="plain"
+        title={KIN_MEMORY_LOAD_FAILED}
+        detail="Check your connection to the server and try again."
+        action={
+          <Button
+            tone="secondary"
+            label="Try again"
+            onPress={() => appAtomRegistry.refresh(listAtom)}
+          />
+        }
+      />
+    ) : (
+      <View
+        className="items-center py-12"
+        accessible
+        accessibilityRole="progressbar"
+        accessibilityLabel="Loading what your leads remember"
+      >
+        <AppActivityIndicator />
+      </View>
+    )
+  ) : view.total === 0 ? (
+    <EmptyState variant="plain" {...KIN_MEMORY_EMPTY} />
+  ) : view.noMatch !== null ? (
+    <EmptyState variant="plain" title={view.noMatch} detail="Try another word." />
+  ) : null;
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
@@ -159,40 +201,16 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
           : {})}
       />
       <ScreenContent surface="screen">
-        {!allowed ? (
-          <EmptyState
-            variant="plain"
-            title="Only the owner can open this"
-            detail="What the leads remember is shown to the person who runs this workspace."
-          />
-        ) : list === null || view === null ? (
-          AsyncResult.isFailure(result) ? (
-            <EmptyState
-              variant="plain"
-              title={KIN_MEMORY_LOAD_FAILED}
-              detail="Check your connection to the server and try again."
-              action={
-                <Button
-                  tone="secondary"
-                  label="Try again"
-                  onPress={() => appAtomRegistry.refresh(listAtom)}
-                />
-              }
-            />
-          ) : (
-            <View
-              className="items-center py-12"
-              accessible
-              accessibilityRole="progressbar"
-              accessibilityLabel="Loading what your leads remember"
-            >
-              <AppActivityIndicator />
-            </View>
-          )
-        ) : view.total === 0 ? (
-          <EmptyState variant="plain" {...KIN_MEMORY_EMPTY} />
-        ) : view.noMatch !== null ? (
-          <EmptyState variant="plain" title={view.noMatch} detail="Try another word." />
+        {message !== null || list === null || view === null ? (
+          <ScreenScrollView
+            className="flex-1"
+            contentInsetAdjustmentBehavior="automatic"
+            keyboardDismissMode="on-drag"
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
+          >
+            {message}
+          </ScreenScrollView>
         ) : (
           <LegendList
             renderScrollComponent={NativeScrollView}
