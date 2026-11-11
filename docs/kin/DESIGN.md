@@ -56,16 +56,16 @@ Non-goals:
 
 **Layers:**
 
-1. **Items:** one small Markdown file per objective, commitment, deferral, decision, person or claim. YAML front matter records `status`, `due`, `recorded_at`, `valid_from`, `invalid_at`, `superseded_by`, `review_by`, `source`, `said_by`, `trust` and `links`. When a fact stops being true it gets `invalid_at` and is never deleted, which gives us Graphiti-style "true from when to when" without a graph database.
+1. **Items:** one small Markdown file per deferral, decision, person or claim (older memory also holds objectives and commitments, which now live in Work, section 13). YAML front matter records `status`, `due`, `recorded_at`, `valid_from`, `invalid_at`, `superseded_by`, `review_by`, `source`, `said_by`, `trust` and `links`. When a fact stops being true it gets `invalid_at` and is never deleted, which gives us Graphiti-style "true from when to when" without a graph database.
 2. **`INDEX.md`:** a generated summary of at most 200 lines, loaded at every wake-up, the same pattern as Claude Code's `MEMORY.md`. The lead opens individual items when it needs them.
 3. **Journal:** `journal/YYYY/MM-DD.md`, what the lead saw and did. Nightly dreaming (below) folds it into the items.
-4. **Search:** the agents' own file tools, plus a cache of front matter in the Kin server for structured questions ("deferrals due this week", "commitments past their date"). The schedulers in section 6 read from the cache. It can be rebuilt from git at any time.
+4. **Search:** the agents' own file tools, plus a cache of front matter in the Kin server for structured questions ("deferrals due this week", "decisions due for review"). The schedulers in section 6 read from the cache. It can be rebuilt from git at any time.
 
 **Writing:**
 
 - Only the lead writes. Workers suggest items in their reports, and the lead decides what to keep.
 - Every item records who said it and how far it can be trusted. A member's statement is stored as `trust: member` or as a claim, never as a rule. Only the owner changes `rules.md`.
-- Code tasks stay in GitHub Issues and Projects; everything else (client obligations, marketing deadlines) is a commitment or objective in memory (section 13). Every status claim links to evidence: a PR, issue, commit, CI run, or the message or document it came from.
+- What someone owes someone is not memory. Coding tasks, client obligations and deadlines are entries in Work (section 13), which Kin holds as the source of truth; a GitHub issue or PR is linked to its entry, not the other way round. Every status claim links to evidence: a PR, issue, commit, CI run, or the message or document it came from.
 
 **No separate index service.** Search is the agents' own file tools (`rg`, glob, read) over the memory repo. Claude Code and Codex already do this well, and each organization holds hundreds to a few thousand small files, which `rg` searches in milliseconds. Structured questions ("deferrals due this week") come from a small in-process cache of front matter in the Kin server, rebuilt from the files when they change. Separating organizations needs only separate repos.
 
@@ -74,7 +74,7 @@ We considered GBrain (MIT, the same Markdown-first design, with vector search an
 **Staying fresh.** Plain files go stale. These rules stop that:
 
 1. **Every item has `review_by`,** set by its kind: people 90 days, objectives at each milestone, commitments and deferrals at their due date, decisions never (only superseded). Overdue items are flagged in search results and in `INDEX.md`.
-2. **Items are checked against reality.** Anything linked to GitHub is rechecked automatically: an issue closing marks its commitment done, and a merged PR closes its deferral. The `interval` watchdog does this, not the model.
+2. **Items are checked against reality.** Anything linked to GitHub is rechecked automatically: a merged PR marks its Work entry done (section 13) and closes its deferral. Code does this, not the model.
 3. **Contradictions are caught when written.** A new item that conflicts with an existing one either supersedes it (same source, newer) or becomes a question for the owner.
 4. **Misleading items are flagged.** Worker reports include a "misleading memory" line. A flagged item drops in ranking until someone fixes it.
 5. **Unused items fade.** Items no lead has read in 8 weeks leave `INDEX.md`, but stay in git and in search.
@@ -352,13 +352,7 @@ None of these are planned. They're written down so they shape today's choices wi
 - Use proven parts instead of building them: an LLM proxy with virtual keys and per-key budgets, and an open-source secrets manager for storage. Check the current options before choosing.
 - The Kin host becomes the most valuable target in the organization. That means encrypted backups, tokens reachable only over the tailnet or T3 Connect, and a plan for when the machine dies.
 
-**Tracking work, not just code.** GitHub Issues only fits tech work. Client obligations, marketing deadlines and finance tasks need somewhere too, and Kin already has it: **commitments, objectives and deferrals in memory are a tracker.** Each one has an owner, a due date, a status, a source and links. So the tracker is a view over memory items, not a new store:
-
-- A board and list view in the app, filtered by team, person, client or due date, with items shown as cards.
-- People change items directly from their cards (assign, reschedule, mark done). The server writes the change with the person as `said_by` and their trust level, so the "only the lead writes" rule becomes "only Kin's writer writes": the lead, or code acting on a person's tap.
-- Code work keeps its GitHub issue. The commitment links to it, and the watchdog keeps the two in step (section 4, rule 2), so engineers stay in GitHub and everyone else stays in Kin.
-- What makes it different from Linear: every item has a lead chasing it. An overdue client deliverable gets a nudge to its owner, then a flag to the owner of the organization, without anyone running a stand-up.
-- If memory files ever get too slow for a big team's board, the front matter cache (section 4) can grow into a proper index. The files stay the source of truth.
+**Work.** Everything someone owes someone (tasks, bugs, client obligations, deadlines) is an entry in Kin's own database, not a memory file or a GitHub issue. An entry has a key such as `W-12`, a title, one of five states (open, doing, waiting, done, dropped), an owner who is a person or a lead, an optional due date, links (the message it came from, workers, pull requests, other entries) and a change log of who changed what and through which path. State moves by code wherever it can: starting a worker makes or moves its entry, and the worker's pull request merging marks it done with no lead turn. Leads read and change entries with the `records_*` tools, and their prompt carries a Work section with only what others changed since they last spoke, which is what stops stale status being repeated. Assigning an entry to a lead wakes it only when its owner did the assigning, as stored, never as said in text. The owner sees it all on the Work screen and on each lead's profile. Clients, projects, amounts and other lists come later on the same engine, in `apps/server/src/kin/work/`.
 
 **Team chat.** Not a Slack replacement. Kin's chats stay deliberately small: a cleaner interface, fewer features, and agents as real members that track promises, follow up and fold their own noise away. A Slack bridge can come later, so a team can try Kin without moving.
 
