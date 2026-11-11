@@ -19,6 +19,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -247,7 +248,13 @@ export const make = Effect.gen(function* () {
     ),
   );
 
-  return { changes, sync, startup };
+  // A clear takes the cards with the chat; an action still waiting on the owner gets its card back.
+  const cleared = (yield* hub.subscribeAll).pipe(
+    Stream.filter((event) => event.type === "chat.cleared"),
+    Stream.runForEach((event) => reconcileOrg(event.orgId)),
+  );
+
+  return { changes, sync, startup, cleared };
 });
 
 export const layer = Layer.effectDiscard(
@@ -258,6 +265,7 @@ export const layer = Layer.effectDiscard(
       Effect.forever,
       Effect.forkScoped,
     );
+    yield* cards.cleared.pipe(Effect.forkScoped);
     yield* cards.startup().pipe(Effect.forkScoped);
   }),
 );

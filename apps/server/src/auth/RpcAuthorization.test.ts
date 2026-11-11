@@ -484,6 +484,8 @@ it("a chat-only grant cannot satisfy any non-chat method's declared permission",
     "kin.chat.history",
     "kin.chat.members",
     "kin.chat.subscribe",
+    // Reaches the chat service, which lets a teammate clear only their own chat with a lead.
+    "kin.chats.clear",
     "kin.chats.createDirect",
     "kin.chats.mute",
     "kin.chats.subscribe",

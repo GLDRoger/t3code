@@ -226,6 +226,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.chats.subscribe": "kin-chat",
   "kin.chats.createDirect": "kin-chat",
   "kin.chats.mute": "kin-chat",
+  "kin.chats.clear": "kin-chat",
   "kin.chat.members": "kin-chat",
   "kin.groups.create": "kin-chat",
   "kin.groups.addMember": "kin-chat",

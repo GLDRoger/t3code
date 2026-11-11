@@ -35,6 +35,7 @@ import {
   type KinReactionEmoji,
   KinTaskCardState,
   KinWaitingId,
+  KinWakeupId,
   KinWidgetId,
   ProviderInstanceId,
   ThreadId,
@@ -143,6 +144,27 @@ const presenceLayer = Layer.provideMerge(
   Service.layer,
   Layer.provideMerge(Presence.layer, dependencies),
 ).pipe(Layer.provideMerge(environment));
+const clearLayer = Layer.provideMerge(
+  Service.layer,
+  Layer.provideMerge(
+    AttachmentStore.layer.pipe(
+      Layer.provideMerge(DocumentText.layer),
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-kin-clear-" })),
+      Layer.provideMerge(NodeServices.layer),
+    ),
+    Layer.provideMerge(Presence.layer, dependencies),
+  ),
+).pipe(Layer.provideMerge(environment));
+/** Row counts of every Kin table, to show what an operation touched and what it left alone. */
+const kinRowCounts = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const tables = yield* sql<{ name: string }>`SELECT name FROM sqlite_master
+    WHERE type = 'table' AND name LIKE 'kin_%' ORDER BY name`;
+  const counts: Record<string, number> = {};
+  for (const { name } of tables)
+    counts[name] = (yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM ${sql(name)}`)[0]!.n;
+  return counts;
+});
 const identityLayer = Identity.KinIdentity.layer.pipe(
   Layer.provide(
     Layer.succeed(Identity.KinIdentityConfig, {
@@ -1909,5 +1931,281 @@ describe("KinChatService", () => {
       yield* presence.clear(person.orgId, chat.chatId, agentId);
       assert.strictEqual(yield* working, false);
     }).pipe(Effect.provide(presenceLayer)),
+  );
+  it.effect(
+    "clears a chat for good: messages, cards, reactions and files go; the chat, its members, memory and seq stay",
+    () =>
+      Effect.gen(function* () {
+        const { repo, service, person, agent, chat } = yield* seed();
+        const sql = yield* SqlClient.SqlClient;
+        const presence = yield* Presence.KinPresence;
+        const [turn] = yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId"
+          FROM kin_wakeups WHERE org_id = ${person.orgId} AND status = 'running'`;
+        const photo = yield* service.send(person, {
+          chatId: chat.chatId,
+          body: "The launch code is tangerine",
+          clientMessageId: "photo",
+          attachments: [yield* uploadPhoto("whiteboard.png")],
+          uploader: TEST_UPLOAD_OWNER,
+        });
+        const answer = yield* service.send(agent, {
+          chatId: chat.chatId,
+          clientMessageId: "lead-answer",
+          body: "Noted. Shall I ship it?",
+          intent: "question",
+        });
+        yield* service.react(person, { messageId: answer.messageId, emoji: "👍", on: true });
+        const card = yield* service.createTaskCard({
+          orgId: person.orgId,
+          chatId: chat.chatId,
+          authorAgentId: agent.agentId,
+          threadId: state.threadId!,
+          title: state.title,
+          model: state.model,
+        });
+        yield* service.notice({
+          orgId: person.orgId,
+          chatId: chat.chatId,
+          messageId: KinMessageId.make("needs-owner"),
+          body: "A run failed",
+          waitingFor: person.personId,
+        });
+        yield* service.markRead(person, { chatId: chat.chatId, seq: answer.seq });
+        const muted = yield* service.mute(person, { chatId: chat.chatId, muted: true });
+        // What a clear must leave alone: what the lead remembers and what it is due to do.
+        yield* sql`INSERT INTO kin_memory_heads (org_id, branch, head) VALUES (${person.orgId}, 'main', 'head')`;
+        yield* sql`INSERT INTO kin_scheduled_tasks (org_id, item_id, chat_id, state, paused, recorded_at, updated_at)
+          VALUES (${person.orgId}, 'weekly-digest', ${chat.chatId}, 'active', 0, ${timestamp}, 0)`;
+        // The lead is mid-reply to the owner's first message, its draft already on screen.
+        yield* presence.draft(person.orgId, chat.chatId, {
+          draftId: "draft",
+          agentId,
+          wakeupId: KinWakeupId.make(turn!.wakeupId),
+          text: "Half a reply",
+        });
+        assert.lengthOf((yield* presence.snapshot(person.orgId, chat.chatId)).drafts, 1);
+        const before = yield* kinRowCounts;
+        const held = yield* repo.getChat(chat);
+        assert.isTrue(Option.isSome(held));
+        if (Option.isNone(held)) return;
+        const feed = yield* Stream.toQueue(service.subscribe(person, { chatId: chat.chatId }), {
+          capacity: "unbounded",
+        });
+        const opened = yield* Queue.take(feed);
+        assert.strictEqual(opened._tag, "backlog");
+        if (opened._tag !== "backlog") return;
+        const list = yield* Stream.toQueue(service.subscribeChats([person], {}), {
+          capacity: "unbounded",
+        });
+        assert.strictEqual((yield* Queue.take(list))._tag, "snapshot");
+
+        yield* service.clear(person, { chatId: chat.chatId });
+
+        const after = yield* kinRowCounts;
+        assert.deepStrictEqual(
+          Object.keys(before).filter((table) => before[table] !== after[table]),
+          [
+            "kin_floor_grants",
+            "kin_floor_runs",
+            "kin_message_attachments",
+            "kin_messages",
+            "kin_reaction_wakes",
+            "kin_reactions",
+            "kin_widgets",
+          ],
+        );
+        for (const table of ["kin_messages", "kin_widgets", "kin_reactions"])
+          assert.strictEqual(after[table], 0, table);
+        assert.deepStrictEqual(yield* storedFiles, []);
+        assert.isFalse(yield* service.attachmentReadable(person, photo.attachments![0]!.id));
+        // The chat is as empty as a new one, and still the same chat.
+        const cleared = yield* repo.getChat(chat);
+        assert.deepInclude(Option.getOrThrow(cleared), {
+          lastSeq: held.value.lastSeq,
+          lastMessageAt: null,
+        });
+        assert.deepStrictEqual(
+          yield* service.history(person, {
+            chatId: chat.chatId,
+            beforeSeq: held.value.lastSeq + 1,
+            limit: 50,
+          }),
+          { messages: [], widgets: [], hasMore: false, reactions: [] },
+        );
+        // The list hears each closed waiting item (the lead's question, the notice), then the row.
+        for (const _ of [1, 2]) {
+          const closed = yield* Queue.take(list);
+          assert.strictEqual(closed._tag, "waiting");
+          if (closed._tag !== "waiting") return;
+          assert.deepInclude(closed.item, { messageId: null, widgetId: null });
+          assert.isNotNull(closed.item.resolvedAt);
+        }
+        const row = yield* Queue.take(list);
+        assert.strictEqual(row._tag, "chat");
+        if (row._tag !== "chat") return;
+        assert.deepInclude(row.chat, { lastMessage: null, unread: 0 });
+        assert.strictEqual(
+          row.chat.members.find((member) => member.principal._tag === "person")?.mutedUntil,
+          muted.mutedUntil,
+        );
+        // The open feed empties at once; a client that was away learns it from its old cursor.
+        const reset = yield* Queue.take(feed);
+        // `clearedSeq` tells clients nothing older is left to page in, since seqs keep counting.
+        assert.deepInclude(reset, {
+          _tag: "reset",
+          cleared: true,
+          lastSeq: held.value.lastSeq,
+          clearedSeq: held.value.lastSeq,
+        });
+        if (reset._tag !== "reset") return;
+        const resume = (afterChangeSeq: number | undefined) =>
+          service
+            .subscribe(person, { chatId: chat.chatId, afterSeq: opened.lastSeq, afterChangeSeq })
+            .pipe(Stream.take(1), Stream.runHead, Effect.map(Option.getOrThrow));
+        assert.deepInclude(yield* resume(opened.lastChangeSeq), { _tag: "reset", cleared: true });
+        assert.deepInclude(yield* resume(reset.lastChangeSeq), {
+          _tag: "backlog",
+          messages: [],
+          clearedSeq: held.value.lastSeq,
+        });
+        // Nothing waits on the owner, and the turn that was answering a deleted message is over:
+        // marked aborted, its draft withheld, its message never handed to a later wake-up.
+        assert.deepStrictEqual(yield* repo.listOpenWaiting(person), []);
+        assert.deepStrictEqual(
+          yield* sql`SELECT w.aborted_at IS NOT NULL AS aborted, e.state FROM kin_wakeups w
+            JOIN kin_events e ON e.org_id = w.org_id AND e.wakeup_id = w.wakeup_id
+            WHERE w.org_id = ${person.orgId} AND w.wakeup_id = ${turn!.wakeupId}`,
+          [{ aborted: 1, state: "expired" }],
+        );
+        assert.deepStrictEqual((yield* presence.snapshot(person.orgId, chat.chatId)).drafts, []);
+        // Seqs keep counting, and a worker still running gets its card back when it next reports.
+        const next = yield* service.send(person, {
+          chatId: chat.chatId,
+          body: "Fresh start",
+          clientMessageId: "fresh",
+        });
+        assert.strictEqual(next.seq, held.value.lastSeq + 1);
+        const again = yield* service.createTaskCard({
+          orgId: person.orgId,
+          chatId: chat.chatId,
+          authorAgentId: agent.agentId,
+          threadId: state.threadId!,
+          title: state.title,
+          model: state.model,
+        });
+        assert.strictEqual(again.widgetId, card.widgetId);
+        assert.notStrictEqual(again.messageId, card.messageId);
+      }).pipe(Effect.provide(clearLayer)),
+  );
+
+  it.effect(
+    "lets the owner clear a group and their own chat with a lead, and a teammate only their own chat with a lead",
+    () =>
+      Effect.gen(function* () {
+        const { repo, service, person, chat } = yield* seed();
+        const sql = yield* SqlClient.SqlClient;
+        const teammate = (id: string) =>
+          Effect.gen(function* () {
+            const identity = { ...person, personId: decodeKinPersonId(id) };
+            yield* repo.insertPerson({
+              ...identity,
+              handle: id,
+              displayName: id,
+              githubLogin: null,
+              createdAt: timestamp,
+            });
+            return identity;
+          });
+        const join = (
+          chatId: KinChatId,
+          principal:
+            | { _tag: "person"; personId: KinPersonId }
+            | { _tag: "agent"; agentId: KinAgentId },
+          role: "owner" | "member" | "guest",
+        ) =>
+          repo.addMember({
+            orgId: person.orgId,
+            chatId,
+            memberId: decodeKinMemberId(
+              `${chatId}:${principal._tag === "person" ? principal.personId : principal.agentId}`,
+            ),
+            principal,
+            role,
+            joinedAt: timestamp,
+            leftAt: null,
+            mutedUntil: null,
+          });
+        // A teammate's own chat with the owner's lead: the teammate and the lead, nobody else.
+        const directWith = Effect.fn("test.directWith")(function* (identity: typeof person) {
+          const direct = yield* repo.createChat({
+            orgId: person.orgId,
+            chatId: decodeKinChatId(`direct-${identity.personId}`),
+            kind: "direct",
+            directKey: `${identity.personId}:${agentId}`,
+            title: null,
+            teamId: null,
+            lastMessageAt: null,
+            createdAt: timestamp,
+            archivedAt: null,
+          });
+          yield* join(direct.chatId, { _tag: "person", personId: identity.personId }, "member");
+          yield* join(direct.chatId, { _tag: "agent", agentId }, "member");
+          return direct;
+        });
+        const suraj = yield* teammate("suraj");
+        const mira = yield* teammate("mira");
+        const surajs = yield* directWith(suraj);
+        const miras = yield* directWith(mira);
+        const group = yield* repo.createChat({
+          orgId: person.orgId,
+          chatId: decodeKinChatId("group"),
+          kind: "team_group",
+          directKey: null,
+          title: "Launch",
+          teamId: null,
+          lastMessageAt: null,
+          createdAt: timestamp,
+          archivedAt: null,
+        });
+        yield* join(group.chatId, { _tag: "person", personId: person.personId }, "owner");
+        yield* join(group.chatId, { _tag: "agent", agentId }, "member");
+        yield* join(group.chatId, { _tag: "person", personId: suraj.personId }, "member");
+        const say = (who: typeof person, chatId: KinChatId) =>
+          service.send(who, { chatId, body: "Junk", clientMessageId: `${who.personId}:${chatId}` });
+        yield* say(suraj, surajs.chatId);
+        yield* say(mira, miras.chatId);
+        yield* say(suraj, group.chatId);
+        yield* sql`INSERT INTO kin_memory_heads (org_id, branch, head) VALUES (${person.orgId}, 'main', 'head')`;
+        const messages = () =>
+          sql<{ chatId: string; n: number }>`SELECT chat_id AS "chatId", COUNT(*) AS n
+            FROM kin_messages WHERE org_id = ${person.orgId} GROUP BY chat_id ORDER BY chat_id`;
+        const full = yield* messages();
+        const refused = [
+          // Being in a group is not owning it.
+          [suraj, group.chatId, "not_allowed"],
+          // A chat the caller is not in does not exist for them, whoever they are.
+          [suraj, chat.chatId, "not_found"],
+          [suraj, miras.chatId, "not_found"],
+          [person, surajs.chatId, "not_found"],
+        ] as const;
+        for (const [who, chatId, reason] of refused)
+          assert.include(yield* service.clear([who], { chatId }).pipe(Effect.flip), { reason });
+        assert.deepStrictEqual(yield* messages(), full);
+
+        // Their own conversation stays theirs to clear after they may no longer write in it.
+        yield* sql`UPDATE kin_chat_members SET role = 'guest'
+          WHERE chat_id = ${surajs.chatId} AND person_id = ${suraj.personId}`;
+        const before = yield* kinRowCounts;
+        yield* service.clear([suraj], { chatId: surajs.chatId });
+        const after = yield* kinRowCounts;
+        assert.deepStrictEqual(
+          Object.keys(before).filter((table) => before[table] !== after[table]),
+          ["kin_floor_grants", "kin_floor_runs", "kin_messages"],
+        );
+        assert.strictEqual(after.kin_memory_heads, 1);
+        yield* service.clear([person], { chatId: group.chatId });
+        yield* service.clear([person], { chatId: chat.chatId });
+        assert.deepStrictEqual(yield* messages(), [{ chatId: miras.chatId, n: 1 }]);
+      }).pipe(Effect.provide(layer)),
   );
 });

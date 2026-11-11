@@ -300,6 +300,8 @@ K008 stores floor runs, grants and notice accounting. K009 created `kin_judge_lo
 
 **Seq allocation:** in one `sql.withTransaction`: `UPDATE kin_chats SET last_seq = last_seq + 1, last_message_at = ? WHERE chat_id = ? AND org_id = ? RETURNING last_seq`, then insert the message with that seq. Look up an existing `(chat_id, author_member_id, client_message_id)` inside the transaction before allocating a seq. Store sends as `send:<clientMessageId>` and widget actions as `act:<clientActionId>` so the namespaces cannot collide. History returns the newest page before `beforeSeq` in ascending seq order, with `hasMore` from one extra row. Message and widget ids are server-generated; widget revisions start at 1 and are server-owned. Publish to the in-process hub only after commit.
 
+**Clear:** `kin.chats.clear` deletes a chat's messages, cards, reactions, attachments and everything keyed to them in one transaction, and keeps the chat, its members and all memory. The service decides who may: the one person of a direct chat, or the organisation's owner in a group. `last_seq` keeps counting, because read and join positions are seqs; `cleared_seq` records it at the clear, and stream events carry it as `clearedSeq` so clients know nothing older exists. A cursor below `cleared_change_seq` resumes with a `reset` marked `cleared`. A turn answering a deleted message is aborted and its queued events expire: a reply to a message that no longer exists has no audience to resolve.
+
 ### RPC surface
 
 Method names live in `KIN_CHAT_WS_METHODS` in `kinChat.ts`. `kinChat.ts` must not import `rpc.ts`, since `rpc.ts` imports it.
@@ -315,6 +317,7 @@ Method names live in `KIN_CHAT_WS_METHODS` in `kinChat.ts`. `kinChat.ts` must no
 | `kin.messages.markRead`                              | `{ chatId, seq }`                                          | `{}`                                            | 1     | `orchestration:read`    |
 | `kin.widgets.act`                                    | `{ widgetId, revision, actionId, value?, clientActionId }` | `KinMessage`                                    | 1     | `orchestration:operate` |
 | `kin.messages.react`                                 | `{ messageId, emoji, on }`                                 | `KinReaction`                                   | 1     | `orchestration:operate` |
+| `kin.chats.clear`                                    | `{ chatId }`                                               | `{}`                                            | 1     | `kin:chat`              |
 | `kin.widgets.setPinned`                              | `{ widgetId, pinned }`                                     | `KinWidget`                                     | 2     | `orchestration:operate` |
 | `kin.chats.createGroup`                              | `{ orgId, kind, title, teamId?, members }`                 | `KinChat`                                       | 2     | `orchestration:operate` |
 | `kin.members.add` / `.remove` / `.setRole` / `.mute` | `{ chatId, ... }`                                          | `KinChatMember`                                 | 2     | `orchestration:operate` |

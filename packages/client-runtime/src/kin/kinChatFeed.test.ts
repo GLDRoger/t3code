@@ -67,7 +67,7 @@ describe("paging", () => {
     const pageSizes: number[] = [];
     for (;;) {
       const merged = mergeKinFeed(live, earlier);
-      const request = kinEarlierPage(KIN_FIXTURE_CHAT_ID, merged.messages, exhausted);
+      const request = kinEarlierPage(KIN_FIXTURE_CHAT_ID, merged.messages, exhausted, 0);
       if (request === null) break;
       expect(request.beforeSeq).toBe(merged.messages[0]!.seq);
       const page = readKinFixtureHistory(all, request);
@@ -80,8 +80,13 @@ describe("paging", () => {
   });
 
   it("stops when the server says there is nothing older, even above seq 1", () => {
-    expect(kinEarlierPage(KIN_FIXTURE_CHAT_ID, all.slice(10), true)).toBeNull();
-    expect(kinEarlierPage(KIN_FIXTURE_CHAT_ID, [], false)).toBeNull();
+    expect(kinEarlierPage(KIN_FIXTURE_CHAT_ID, all.slice(10), true, 0)).toBeNull();
+    expect(kinEarlierPage(KIN_FIXTURE_CHAT_ID, [], false, 0)).toBeNull();
+    // Seqs keep counting through a clear, so the first message after one is the oldest there is.
+    expect(kinEarlierPage(KIN_FIXTURE_CHAT_ID, all.slice(10), false, 10)).toBeNull();
+    expect(kinEarlierPage(KIN_FIXTURE_CHAT_ID, all.slice(11), false, 10)?.beforeSeq).toBe(
+      all[11]!.seq,
+    );
   });
 
   it("prefers the stream's copy of a message an earlier page also holds", () => {
@@ -95,7 +100,7 @@ describe("paging", () => {
     const live = feed(all.slice(-KIN_HISTORY_PAGE_SIZE));
     const page = readKinFixtureHistory(
       all,
-      kinEarlierPage(KIN_FIXTURE_CHAT_ID, live.messages, false)!,
+      kinEarlierPage(KIN_FIXTURE_CHAT_ID, live.messages, false, 0)!,
     );
     const paging = {
       ...initialKinPaging,
@@ -112,7 +117,7 @@ describe("paging", () => {
     // The reloaded latest page starts past where the earlier pages were read.
     const reloaded = feed(all.slice(-10));
     expect(kinActivePaging(paging, reloaded)).toBe(initialKinPaging);
-    expect(kinEarlierPage(KIN_FIXTURE_CHAT_ID, reloaded.messages, false)?.beforeSeq).toBe(491);
+    expect(kinEarlierPage(KIN_FIXTURE_CHAT_ID, reloaded.messages, false, 0)?.beforeSeq).toBe(491);
   });
 });
 

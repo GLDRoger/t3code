@@ -6,6 +6,7 @@ import ReactionWakes from "./migrations/K042_ReactionWakes.ts";
 import WakeupAudience from "./migrations/K043_WakeupAudience.ts";
 import WakeupSharedSince from "./migrations/K044_WakeupSharedSince.ts";
 import WakeupAudienceAbort from "./migrations/K045_WakeupAudienceAbort.ts";
+import ChatCleared from "./migrations/K046_ChatCleared.ts";
 import LeadAccess from "./migrations/K047_LeadAccess.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
@@ -93,6 +94,7 @@ const loader = Migrator.fromRecord({
   "43_WakeupAudience": WakeupAudience,
   "44_WakeupSharedSince": WakeupSharedSince,
   "45_WakeupAudienceAbort": WakeupAudienceAbort,
+  "46_ChatCleared": ChatCleared,
   "47_LeadAccess": LeadAccess,
 });
 

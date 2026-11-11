@@ -357,6 +357,8 @@ export function makeKinChatStream<E, R>(readHistory: KinReadHistory<E, R>) {
         };
 
         const onEvent = Effect.fnUntraced(function* (event: KinChatStreamEvent) {
+          // A cleared chat's cached messages go too, even though the feed is empty for now.
+          if (event._tag === "reset" && event.cleared === true) savedMessages = false;
           const views = [...step(applyKinChatEvent(state, event))];
           if (state.left) {
             yield* forget;

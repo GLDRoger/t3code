@@ -1,3 +1,4 @@
+import { kinOwnsDirectChat } from "@t3tools/client-runtime/kin/kinClearChat";
 import { useAtomValue } from "@effect/atom-react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import {
@@ -297,6 +298,10 @@ export function KinChatView(props: {
           chatId={chatId}
           personId={viewer.personId}
           muted={muted}
+          ownsChat={
+            summary !== undefined &&
+            kinOwnsDirectChat(summary.kind, summary.members, viewer.personId)
+          }
         />
       )}
       {state._tag === "ready" ? (
@@ -611,7 +616,7 @@ function KinChatFeed(props: {
   const followsEnd = kinFollowsEnd(follow);
   const unseen = followsEnd ? 0 : kinUnseenCount(messages, follow.seenSeq, props.viewer.personId);
   const loading = paging.request !== null;
-  const earlierPage = kinEarlierPage(props.chatId, messages, paging.exhausted);
+  const earlierPage = kinEarlierPage(props.chatId, messages, paging.exhausted, live.clearedSeq);
   const canLoadEarlier = props.connected && earlierPage !== null;
   const latestSeq = latestKinSeq(messages);
   const showIntro = kinIntroVisible({
