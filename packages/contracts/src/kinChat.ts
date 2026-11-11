@@ -401,6 +401,8 @@ export const KinChatStreamEvent = Schema.Union([
   Schema.TaggedStruct("reset", {
     lastSeq: NonNegativeInt,
     lastChangeSeq: Schema.optional(NonNegativeInt),
+    // The chat was cleared: nothing held from before is kept, drafts and reactions included.
+    cleared: Schema.optional(Schema.Boolean),
   }),
   Schema.TaggedStruct("message", { message: KinMessage }),
   Schema.TaggedStruct("widget", { widget: KinWidget }),
@@ -532,6 +534,14 @@ export const KinMessagesMarkReadResult = Schema.Struct({});
 export const KinChatsMuteInput = Schema.Struct({ chatId: KinChatId, muted: Schema.Boolean });
 export type KinChatsMuteInput = typeof KinChatsMuteInput.Type;
 export type KinMessagesMarkReadResult = typeof KinMessagesMarkReadResult.Type;
+/**
+ * Empties a chat for everyone in it, for good: its messages, cards, reactions and files. The chat,
+ * its members and what its leads remember stay. A group's owner, or the one person in a direct
+ * chat with a lead, may.
+ */
+export const KinChatsClearInput = Schema.Struct({ chatId: KinChatId });
+export type KinChatsClearInput = typeof KinChatsClearInput.Type;
+export const KinChatsClearResult = Schema.Struct({});
 export const KinWidgetsActInput = Schema.Struct({
   widgetId: KinWidgetId,
   revision: PositiveInt,
@@ -578,6 +588,7 @@ export const KIN_CHAT_WS_METHODS = {
   chatsSubscribe: "kin.chats.subscribe",
   chatsCreateDirect: "kin.chats.createDirect",
   chatsMute: "kin.chats.mute",
+  chatsClear: "kin.chats.clear",
   chatMembers: "kin.chat.members",
   chatSubscribe: "kin.chat.subscribe",
   chatHistory: "kin.chat.history",
@@ -607,6 +618,11 @@ export const KinChatRpcs = [
   Rpc.make(KIN_CHAT_WS_METHODS.chatsMute, {
     payload: KinChatsMuteInput,
     success: KinChatMember,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(KIN_CHAT_WS_METHODS.chatsClear, {
+    payload: KinChatsClearInput,
+    success: KinChatsClearResult,
     error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
   }),
   Rpc.make(KIN_CHAT_WS_METHODS.chatMembers, {
@@ -654,6 +670,9 @@ export const KIN_CHAT_RPC_SCOPES = {
   [KIN_CHAT_WS_METHODS.chatsCreateDirect]: AuthKinChatScope,
   // Only quiets the caller's own pushes, like marking a chat read.
   [KIN_CHAT_WS_METHODS.chatsMute]: AuthKinChatScope,
+  // A teammate clears their own direct chat with a lead, so chat access reaches the method; the
+  // chat service decides per chat, and refuses a group to anyone but the owner.
+  [KIN_CHAT_WS_METHODS.chatsClear]: AuthKinChatScope,
   // Names of the people and leads in a chat the caller is in.
   [KIN_CHAT_WS_METHODS.chatMembers]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.chatSubscribe]: AuthKinChatScope,

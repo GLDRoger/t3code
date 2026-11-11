@@ -193,6 +193,14 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
         Effect.mapError(mapError),
         Effect.catchDefect(defect),
       ),
+    "kin.chats.clear": (input) =>
+      viewer.pipe(
+        Effect.flatMap(({ chat, people }) => chat.clear(people, input)),
+        Effect.as({}),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
     "kin.chat.members": (input) => group((groups, people) => groups.members(people, input)),
     "kin.groups.create": (input) => group((groups, people) => groups.create(people, input)),
     "kin.groups.addMember": (input) => group((groups, people) => groups.addMember(people, input)),

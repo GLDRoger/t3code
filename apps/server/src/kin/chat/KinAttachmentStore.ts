@@ -5,7 +5,11 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 
 import { forgetPendingAttachment, type PendingUploadOwner } from "../../assets/AttachmentUpload.ts";
-import { KIN_ATTACHMENT_ID_PREFIX } from "../../attachmentStore.ts";
+import {
+  isKinAttachmentId,
+  KIN_ATTACHMENT_ID_PREFIX,
+  resolveAttachmentPathById,
+} from "../../attachmentStore.ts";
 import * as ServerConfig from "../../config.ts";
 import * as AttachmentClaims from "../../orchestration-v2/AttachmentClaims.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
@@ -37,6 +41,8 @@ export class KinAttachmentStore extends Context.Service<
     readonly release: (claimed: ClaimedKinAttachments) => Effect.Effect<void>;
     /** Drops the pending uploads a written message no longer needs. */
     readonly discardPending: (attachments: ReadonlyArray<KinAttachment>) => Effect.Effect<void>;
+    /** Deletes Kin's stored files by id, for good; one already gone is not an error. */
+    readonly remove: (attachmentIds: ReadonlyArray<string>) => Effect.Effect<void>;
   }
 >()("t3/kin/chat/KinAttachmentStore") {}
 
@@ -48,6 +54,7 @@ export const layer = Layer.effect(
       Context.make(FileSystem.FileSystem, yield* FileSystem.FileSystem),
       Context.make(DocumentText.DocumentText, yield* DocumentText.DocumentText),
     );
+    const { attachmentsDir } = Context.get(context, ServerConfig.ServerConfig);
     return KinAttachmentStore.of({
       claim: Effect.fn("KinAttachmentStore.claim")(function* (attachments, owner) {
         // Only this caller's fresh uploads: a stored id from another chat is never re-attached.
@@ -83,6 +90,15 @@ export const layer = Layer.effect(
         Effect.forEach(attachments, (attachment) => forgetPendingAttachment(attachment.id), {
           discard: true,
         }).pipe(Effect.provideContext(context)),
+      ),
+      remove: Effect.fn("KinAttachmentStore.remove")((attachmentIds) =>
+        AttachmentClaims.releaseClaimedAttachments(
+          attachmentIds.flatMap((attachmentId) => {
+            if (!isKinAttachmentId(attachmentId)) return [];
+            const path = resolveAttachmentPathById({ attachmentsDir, attachmentId });
+            return path === null ? [] : [path];
+          }),
+        ).pipe(Effect.provideContext(context)),
       ),
     });
   }),
