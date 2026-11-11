@@ -46,6 +46,7 @@ import {
   sensitiveNow,
   toRecord,
 } from "./recordRows.ts";
+import { sensitiveShown, showsSensitive } from "./workerAttempts.ts";
 
 /** The lead tools' inputs, results and the one call each makes. Model-facing text lives in `mcp/tools.ts`. */
 
@@ -464,6 +465,13 @@ const writerFor = Effect.fn("KinWorkTools.writer")(function* (lead: Lead) {
   } satisfies Writer;
 });
 
+/** A result that shows the lead a sensitive entry marks its wake-up, so work it starts is gated. */
+const shown = Effect.fn("KinWorkTools.shown")(function* <A>(lead: Lead, result: A) {
+  if (showsSensitive(result))
+    yield* sensitiveShown({ orgId: lead.orgId, wakeupId: lead.wakeupId });
+  return result;
+});
+
 const retryKey = (value: string) =>
   NodeCrypto.createHash("sha256").update(value).digest("hex").slice(0, 32);
 const titleKey = (title: string) => title.trim().replace(/\s+/g, " ").toLowerCase();
@@ -501,12 +509,12 @@ export const query = Effect.fn("KinWorkTools.query")(function* (
   const name = yield* namer(lead);
   const groups =
     input.groupBy === undefined ? undefined : yield* groupsFor(lead, name, filter, input.groupBy);
-  return {
+  return yield* shown(lead, {
     asOf: iso(now),
     total: page.total,
     records: page.rows.map((row) => rowFor(name, row, now)),
     ...(groups === undefined ? {} : { groups }),
-  };
+  });
 });
 
 const GROUP_BY: Record<NonNullable<typeof QueryInput.Type.groupBy>, GroupBy> = {
@@ -575,7 +583,7 @@ export const get = Effect.fn("KinWorkTools.get")(function* (
   const list = listOf(row.registerId);
   const page = list === "clients" ? yield* partyPage(row, now, 0) : undefined;
   const project = list === "projects" ? yield* projectDetail(row, now) : undefined;
-  return {
+  return yield* shown(lead, {
     ...rowFor(name, row, now),
     ...(page === undefined
       ? {}
@@ -628,7 +636,7 @@ export const get = Effect.fn("KinWorkTools.get")(function* (
         ? { sensitive: true as const }
         : {}),
     })),
-  };
+  });
 });
 
 export const create = Effect.fn("KinWorkTools.create")(function* (

@@ -47,7 +47,7 @@ import * as KinLevels from "./KinLevels.ts";
 import { SHARED_REFUSAL, destination, effectiveAudience, turnChat } from "./Audience.ts";
 import { workerChat } from "./ChatSharing.ts";
 import { KinRecords } from "../work/KinRecords.ts";
-import { attemptBegun, workerMayResume } from "../work/workerAttempts.ts";
+import { attemptBegun, noteSensitivity, workerMayResume } from "../work/workerAttempts.ts";
 import { WORK_NOT_YOURS, workMayStart, workerStarted } from "../work/workerEntries.ts";
 import { sharedTurnMayTouch, toolAdmitted } from "./SharedTools.ts";
 import { isOrgPaused, STOP_REASON } from "./orgState.ts";
@@ -817,6 +817,11 @@ const make = Effect.gen(function* () {
           }).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
             Effect.provideService(KinRecords, records),
+          );
+        // The entry it now serves may be sensitive; that sticks to the attempt.
+        if (inserted.length > 0)
+          yield* noteSensitivity({ orgId: ctx.orgId, workerId, startedAt }).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
           );
         if (inserted.length === 0) {
           const stored = yield* worker(ctx, workerId);

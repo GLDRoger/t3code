@@ -11,7 +11,7 @@ import { ServerConfig } from "../../config.ts";
 import { VcsProcess } from "../../vcs/VcsProcess.ts";
 import { gitHubAnswer, repoPath } from "../github/githubRest.ts";
 import { KinGitHubApp } from "../github/KinGitHubApp.ts";
-import type { Found, PublishOutcome, PublishStep } from "../work/workerAttempts.ts";
+import type { Found, PublishOutcome, PublishStep, Visibility } from "../work/workerAttempts.ts";
 
 /** The only branch a worker's work is published to, there and on GitHub. */
 export const publishBranch = (workerId: KinWorkerId) => `kin/worker/${workerId}`;
@@ -40,6 +40,8 @@ export class KinWorkerPublishRefused extends Schema.TaggedError<KinWorkerPublish
     reason: Schema.String,
     /** GitHub's branch has commits the worker's doesn't; Kin never force-pushes over them. */
     diverged: Schema.optional(Schema.Boolean),
+    /** Nothing reaches GitHub until the owner publishes it, or because they chose not to. */
+    held: Schema.optional(Schema.Literals(["owner", "declined"])),
   },
 ) {}
 
@@ -47,6 +49,22 @@ export class KinWorkerPublishRefused extends Schema.TaggedError<KinWorkerPublish
 export type { PublishStep, PublishOutcome, Found } from "../work/workerAttempts.ts";
 /** A write about to start, with the commit it writes when it reaches GitHub. */
 export type PublishIntent = { readonly step: PublishStep; readonly sha: string | null };
+/** What a publish would put on GitHub, read from Kin's own git and GitHub, before any write. */
+export type PublishReview = {
+  readonly sha: string;
+  readonly visibility: Visibility;
+  readonly files: ReadonlyArray<ChangedFile>;
+  /** Changed files past the ones listed. */
+  readonly moreFiles: number;
+};
+export type ChangedFile = {
+  readonly path: string;
+  readonly added: number | null;
+  readonly removed: number | null;
+};
+export type { Visibility } from "../work/workerAttempts.ts";
+/** The most changed files a review lists; the rest are counted. */
+const MAX_REVIEW_FILES = 50;
 
 export interface PublishedPullRequest {
   readonly url: string;
@@ -75,6 +93,8 @@ export class KinWorkerPublish extends Context.Service<
       readonly local?: { readonly projectRoot: string };
       readonly title: string;
       readonly progress: {
+        /** Once, before anything reaches GitHub: what this publish would write, and where. */
+        readonly review: (review: PublishReview) => Effect.Effect<void, KinWorkerPublishRefused>;
         /**
          * Just before each write, recorded durably: a refusal ends the publish there, so no write
          * starts after the owner's pause or a stop of the worker.
@@ -123,6 +143,27 @@ const parseRawChanges = (out: string) => {
 const COMMITTER = ["-c", "user.name=Kin", "-c", "user.email=kin@users.noreply.github.com"];
 /** The most a worker's fetch may add to Kin's disk; the transfer cap only bounds the wire. */
 const MAX_INCOMING_BYTES = 1024 * 1024 * 1024;
+
+/** GitHub's word on who can read the repository; anything else is unknown, which is gated. */
+const visibilityOf = (about: unknown): Visibility => {
+  if (typeof about !== "object" || about === null) return "unknown";
+  const flag: unknown = Reflect.get(about, "private");
+  const named: unknown = Reflect.get(about, "visibility");
+  if (flag === false || named === "public") return "public";
+  return flag === true && (named === undefined || named === "private") ? "private" : "unknown";
+};
+/** `git diff --numstat -z --no-renames`: added, removed and path per file; `-` for a binary one. */
+const parseNumstat = (out: string): ReadonlyArray<ChangedFile> | undefined => {
+  const files: Array<ChangedFile> = [];
+  for (const field of out.split("\0")) {
+    if (field === "") continue;
+    const match = /^(-|\d+)\t(-|\d+)\t(.+)$/s.exec(field);
+    if (match === null) return undefined;
+    const count = (value: string) => (value === "-" ? null : Number(value));
+    files.push({ path: match[3]!, added: count(match[1]!), removed: count(match[2]!) });
+  }
+  return files;
+};
 
 const isRepoSlug = Schema.is(RepoSlug);
 const decodePull = Schema.decodeUnknownOption(
@@ -419,6 +460,21 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
         return yield* refuse(
           `${branch} adds or changes a symbolic link, which Kin never publishes`,
         );
+
+      // What the owner would publish, from Kin's own copy: the worker's words never count here.
+      const numstat = yield* git(
+        cache,
+        ["diff", "--numstat", "-z", "--no-renames", `refs/kin/base...${head}`],
+        { raw: true },
+      ).pipe(Effect.mapError(failed("count the branch's changes")));
+      const files = parseNumstat(numstat);
+      if (files === undefined) return yield* refuse("git counted the branch's changes unreadably");
+      yield* input.progress.review({
+        sha: head,
+        visibility: visibilityOf(about.status === 200 ? about.body : undefined),
+        files: files.slice(0, MAX_REVIEW_FILES),
+        moreFiles: Math.max(0, files.length - MAX_REVIEW_FILES),
+      });
 
       // Kin never force-pushes: a branch there with commits this one lacks stays as it is.
       const url = transport.github(repo);

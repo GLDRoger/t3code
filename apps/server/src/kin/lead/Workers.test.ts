@@ -232,6 +232,9 @@ const fakeWorkers = () => {
     lostReplies: number;
     /** Kin's publisher refuses the branch with this reason. */
     publishRefusal?: string;
+    /** What GitHub says of the repository, and the worker's branch head Kin would publish. */
+    visibility: Publish.Visibility;
+    headSha: string;
     /** The next cursor `t3_project_list` answers for a cursor; null ends the list. */
     nextCursor: (cursor: number) => number | null;
     /** Where an assistant reply's next chunk starts after `offset`; null ends it. */
@@ -241,6 +244,8 @@ const fakeWorkers = () => {
     eagerWait: false,
     units: [],
     lostReplies: 0,
+    visibility: "private",
+    headSha: "a".repeat(40),
     nextCursor: () => null,
     nextTextOffset: () => null,
   };
@@ -513,7 +518,6 @@ const fakeWorkers = () => {
     unreachable: boolean;
     diverged: boolean;
   } = { branch: null, pull: null, unreachable: false, diverged: false };
-  const sha = "a".repeat(40);
   const pr = { url: "https://github.com/acme/app/pull/9", number: 9 };
   const publisher = Publish.KinWorkerPublish.of({
     publish: (input) =>
@@ -521,6 +525,7 @@ const fakeWorkers = () => {
         published.push(input);
         if (state.publishRefusal !== undefined)
           return yield* new Publish.KinWorkerPublishRefused({ reason: state.publishRefusal });
+        const sha = state.headSha;
         const write = Effect.fn("FakePublish.write")(function* (
           step: Publish.PublishStep,
           land: () => void,
@@ -535,6 +540,12 @@ const fakeWorkers = () => {
           yield* write("commit", () => {});
           yield* input.progress.done({ step: "commit", sha });
         }
+        yield* input.progress.review({
+          sha,
+          visibility: state.visibility,
+          files: [{ path: "src/flaky.test.ts", added: 3, removed: 1 }],
+          moreFiles: 0,
+        });
         if (github.diverged)
           return yield* new Publish.KinWorkerPublishRefused({
             reason: "the branch on GitHub has commits the worker's branch doesn't",

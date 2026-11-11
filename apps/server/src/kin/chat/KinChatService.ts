@@ -14,6 +14,7 @@ import {
   KinOwnerCheckCard,
   KinDeferralCard,
   KIN_MEMORY_CHANGES_CARD,
+  KIN_WORKER_PUBLISH_CARD,
   KinMessagesReactInput,
   KinMessagesSendInput,
   KinWidgetsActInput,
@@ -67,6 +68,7 @@ import * as ChoiceCard from "../widgets/choiceCard.ts";
 import { undoDeferral } from "../triggers/KinTriggerService.ts";
 import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
+import * as PublishCard from "../widgets/workerPublishCard.ts";
 import * as Hub from "./KinChatHub.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import { effectiveAudience } from "../lead/Audience.ts";
@@ -638,7 +640,11 @@ const make = Effect.gen(function* () {
             request.value,
           ).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(cardTapError))
         : null;
-    const tap = choice ?? reminder ?? scheduled;
+    const publishTap =
+      widget.type === KIN_WORKER_PUBLISH_CARD
+        ? yield* PublishCard.describePublishTap(widget, request.actionId, request.value)
+        : null;
+    const tap = choice ?? reminder ?? scheduled ?? publishTap;
     const body = yield* encodeAction({
       widgetId: request.widgetId,
       revision: request.revision,
@@ -646,7 +652,7 @@ const make = Effect.gen(function* () {
       ...(request.value === undefined ? {} : { value: request.value }),
       ...(tap === null ? {} : { text: tap.text }),
       // The server finished this tap itself, so it doesn't wake the lead.
-      ...((reminder ?? scheduled)?.wake === false ? { handled: true } : {}),
+      ...((reminder ?? scheduled ?? publishTap)?.wake === false ? { handled: true } : {}),
     }).pipe(Effect.mapError(() => invalidState));
     const previous = yield* repo.findClientMessage({
       ...member,
@@ -701,9 +707,15 @@ const make = Effect.gen(function* () {
         hub.publish({ type: "widget.updated", orgId: identity.orgId, widget: closed }),
       );
     }
-    if (reminder !== null || scheduled !== null) {
+    if (reminder !== null || scheduled !== null || publishTap !== null) {
       const nowMs = yield* Clock.currentTimeMillis;
       let applied: { readonly state: unknown; readonly closed: boolean } | null = null;
+      // The owner's decision binds to the commit and title the card shows; the follower publishes.
+      if (publishTap !== null)
+        applied = yield* PublishCard.applyPublishTap(widget, publishTap, identity.personId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError(cardTapError),
+        );
       if (reminder !== null) {
         const state = yield* ReminderCard.applyReminderTap(widget, reminder, nowMs).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
@@ -719,8 +731,10 @@ const make = Effect.gen(function* () {
         const at = yield* now;
         const updated = yield* repo.updateWidget({
           ...widget,
-          audience: "chat",
+          // A publish card quotes the lead's title, so only the owner's chat may hold it.
+          audience: publishTap === null ? "chat" : "owner",
           state: applied.state,
+          ...(publishTap === null ? {} : { awaiting: [] }),
           expectedRevision: widget.revision,
           closedAt: applied.closed ? at : widget.closedAt,
           updatedAt: at,
@@ -1915,7 +1929,9 @@ const make = Effect.gen(function* () {
       }
       // Reminders and scheduled tasks act for the owner, so only the owner taps them.
       if (
-        (widget.type === "reminder" || widget.type === "scheduled_task") &&
+        (widget.type === "reminder" ||
+          widget.type === "scheduled_task" ||
+          widget.type === KIN_WORKER_PUBLISH_CARD) &&
         member.role !== "owner"
       )
         return yield* notAllowed;

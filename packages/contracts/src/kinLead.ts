@@ -392,6 +392,46 @@ export type KinScheduledTaskCardAction = (typeof KIN_SCHEDULED_TASK_CARD_ACTIONS
 export const kinScheduledTaskWidgetId = (orgId: string, itemId: string) =>
   `scheduled:${orgId}:${itemId}`;
 
+/**
+ * Kin's card asking the owner to publish a finished worker's commit: drawn by the server from its
+ * own git, never from model text except `pullRequestTitle`, which clients show quoted. `text` is
+ * a fixed line, the first plain field older clients fall back to.
+ */
+export const KIN_WORKER_PUBLISH_CARD = "worker_publish";
+export const KinWorkerPublishCard = Schema.Struct({
+  text: Schema.String,
+  workerId: KinWorkerId,
+  /** The commit this card publishes; a tap carries it, and only it publishes. */
+  sha: Schema.String,
+  repository: Schema.String,
+  why: Schema.Array(Schema.Literals(["public_repository", "visibility_unknown", "sensitive_work"])),
+  branch: Schema.String,
+  /** The lead's title for the pull request: untrusted. */
+  pullRequestTitle: Schema.String,
+  files: Schema.Array(
+    Schema.Struct({
+      path: Schema.String,
+      // Null for a binary file.
+      added: Schema.NullOr(Schema.Number),
+      removed: Schema.NullOr(Schema.Number),
+    }),
+  ),
+  moreFiles: Schema.Number,
+  status: Schema.Literals([
+    "waiting",
+    "publishing",
+    "published",
+    "declined",
+    "replaced",
+    "stopped",
+    "failed",
+  ]),
+  pullRequestUrl: Schema.optional(Schema.String),
+});
+export type KinWorkerPublishCard = typeof KinWorkerPublishCard.Type;
+export const KIN_WORKER_PUBLISH_CARD_ACTIONS = ["publish", "dont_publish"] as const;
+export type KinWorkerPublishCardAction = (typeof KIN_WORKER_PUBLISH_CARD_ACTIONS)[number];
+
 const EventBase = {
   orgId: KinOrgId,
   eventId: KinEventId,

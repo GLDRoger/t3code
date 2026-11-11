@@ -31,6 +31,7 @@ import { historyFloor } from "../chat/sharing.ts";
 import { SILENT_REPLY } from "../reply/classify.ts";
 import { effectiveAudience, recordAudience, turnAudience, type TurnAudience } from "./Audience.ts";
 import { buildWorkSection, WITHDRAWN_WORK, WORK_RULE } from "../work/workPrompt.ts";
+import { entriesShown } from "../work/workerAttempts.ts";
 import { askedWhereOthersRead } from "../triggers/deferralOrigin.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { groupRules } from "./instructions.ts";
@@ -830,6 +831,20 @@ export class KinLeadPrompt extends Context.Service<
                 ),
               )
             : undefined;
+        yield* entriesShown({
+          orgId,
+          wakeupId: input.wakeupId,
+          // A sensitive entry the prompt shows makes the work this turn starts sensitive.
+          recordIds: input.events.flatMap((event) =>
+            event._tag === "record.changed" ? [event.recordId] : [],
+          ),
+          keys: work?.changed.map((entry) => entry.key) ?? [],
+        }).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.catch((cause) =>
+            Effect.logWarning("Kin couldn't record the Work a prompt shows", cause),
+          ),
+        );
         const zone = yield* cache.readOwnerTimeZone(orgId);
         const timeZone = zone._tag === "zone" ? zone.zone : undefined;
         const lines = snapshot === undefined ? 0 : indexLines(snapshot.index);
