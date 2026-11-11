@@ -89,7 +89,9 @@ import * as PublishCard from "../widgets/workerPublishCard.ts";
 import * as OwnerWork from "../work/ownerWork.ts";
 import { pullRequestMerged, WORK_NOT_YOURS } from "../work/workerEntries.ts";
 import { WITHDRAWN_WORK } from "../work/workPrompt.ts";
+import * as Attempts from "../work/workerAttempts.ts";
 import { eventWithdrawn } from "../work/workerAttempts.ts";
+import * as Retirement from "./Retirement.ts";
 import { runKinMigrations } from "../persistence/KinMigrations.ts";
 
 const leadThread = ThreadId.make("lead-thread");
@@ -1637,6 +1639,101 @@ it.effect(
         assert.deepStrictEqual(remote.state.units, ["stop", "stop"]);
       }),
     ),
+);
+
+/** The lead's retirement as `KinLeadProvision.retire` commits it, its after-commit sends aside. */
+const retireLead = (ctx: Effect.Success<ReturnType<typeof setup>>, at: number) =>
+  ctx.sql
+    .withTransaction(
+      Effect.gen(function* () {
+        const retiredAt = new Date(at).toISOString();
+        yield* ctx.sql`UPDATE kin_agents SET retired_at = ${retiredAt} WHERE agent_id = ${leadId}`;
+        yield* Retirement.retire({ orgId: ctx.orgId, agentId: leadId, retiredAt, now: at });
+      }),
+    )
+    .pipe(
+      Effect.provideService(SqlClient.SqlClient, ctx.sql),
+      Effect.provideService(
+        Retirement.KinRetiredActions,
+        Retirement.KinRetiredActions.of({ close: () => Effect.void }),
+      ),
+      Effect.orDie,
+      Effect.asVoid,
+    );
+
+it.effect.each([
+  ["had ended", true],
+  ["was still running", false],
+] as const)(
+  "a lead retired while its follow-up is sent, to a worker that %s, leaves the new attempt stopped and unable to publish",
+  ([, ended]) =>
+    run(({ ctx, remote, workers, tracker }) =>
+      Effect.gen(function* () {
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        const threadId = ThreadId.make((yield* workerRow(ctx.sql, ctx.orgId, workerId)).threadId);
+        if (ended) {
+          yield* remote.finish(threadId, "completed", reportReply);
+          yield* settled(tracker, ctx.orgId, workerId);
+        }
+        // A later clock, as a real one would be: the follow-up's attempt is a new row.
+        yield* TestClock.adjust("2 seconds");
+        remote.hooks.sent = retireLead(ctx, 1_000);
+        assert.include(
+          yield* Effect.flip(
+            workers.followUp(scope, {
+              workerId,
+              brief: "Also cover the retry path.",
+              sourceEventId: "lead-event",
+            }),
+          ),
+          { reason: "not_allowed" },
+        );
+        const attempts = yield* ctx.sql<{
+          startedAt: number;
+          stopReason: string | null;
+          stopKey: string | null;
+        }>`SELECT started_at AS "startedAt", stop_reason AS "stopReason", stop_key AS "stopKey"
+          FROM kin_worker_attempts WHERE worker_id = ${workerId} ORDER BY started_at`;
+        const latest = attempts.at(-1)!;
+        assert.lengthOf(attempts, 2);
+        assert.strictEqual(latest.stopReason, Retirement.RETIRED_WORKER_REASON);
+        // The stop reached the thread the follow-up ran on.
+        assert.include(
+          remote.tools("t3_thread_interrupt").map((params) => params.clientRequestId),
+          latest.stopKey,
+        );
+        const write = Attempts.beginWrite(
+          { orgId: ctx.orgId, workerId, startedAt: latest.startedAt },
+          { step: "commit", sha: null },
+          delegateInput.title,
+        ).pipe(Effect.provideService(SqlClient.SqlClient, ctx.sql));
+        assert.deepStrictEqual(yield* write, { _tag: "refused" });
+      }),
+    ),
+);
+
+it.effect("a lead retired while its worker launches stops the thread the launch made", () =>
+  run(({ ctx, remote, workers }) =>
+    Effect.gen(function* () {
+      // The row is written before the launch, so the retirement finds the attempt open.
+      remote.hooks.launched = retireLead(ctx, 1_000);
+      const { workerId } = yield* workers.delegate(scope, delegateInput);
+      const [attempt] = yield* ctx.sql<{ startedAt: number; stopKey: string | null }>`SELECT
+          started_at AS "startedAt", stop_key AS "stopKey" FROM kin_worker_attempts
+        WHERE worker_id = ${workerId} AND stop_reason = ${Retirement.RETIRED_WORKER_REASON}
+        ORDER BY started_at`;
+      assert.include(
+        remote.tools("t3_thread_interrupt").map((params) => params.clientRequestId),
+        attempt!.stopKey,
+      );
+      const write = Attempts.beginWrite(
+        { orgId: ctx.orgId, workerId, startedAt: attempt!.startedAt },
+        { step: "commit", sha: null },
+        delegateInput.title,
+      ).pipe(Effect.provideService(SqlClient.SqlClient, ctx.sql));
+      assert.deepStrictEqual(yield* write, { _tag: "refused" });
+    }),
+  ),
 );
 
 it.effect(
