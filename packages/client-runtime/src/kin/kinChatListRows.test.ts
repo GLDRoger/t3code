@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinChatListRows } from "./kinChatListRows.ts";
+import { kinChatListRowLabel, kinChatListRows } from "./kinChatListRows.ts";
 import type { KinInboxRow, KinInboxView } from "./kinInboxModel.ts";
 import type { KinDirectory } from "./kinScreenState.ts";
 
@@ -88,6 +88,10 @@ describe("kinChatListRows", () => {
     ]);
     // Nobody is there to greet, and its last words stay readable.
     expect(rows.map((item) => item.preview).slice(2)).toEqual(["Invoices sent.", "Retired"]);
+    // Heard once either way.
+    expect(
+      rows.slice(2).map((item) => kinChatListRowLabel(item, () => "9:30").match(/Retired/g)),
+    ).toEqual([["Retired"], ["Retired"]]);
   });
 
   it.each([

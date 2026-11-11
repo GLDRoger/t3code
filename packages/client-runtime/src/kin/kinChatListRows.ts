@@ -84,7 +84,7 @@ export function kinChatListRowLabel(row: KinChatListRow, time: (date: Date) => s
   const label = kinChatRowLabel({ ...row.view, author: row.author, preview: row.preview }, time);
   return [
     label,
-    row.retired ? "Retired." : null,
+    row.retired && row.preview !== KIN_RETIRED_LABEL ? "Retired." : null,
     row.working ? "Working." : null,
     row.needsYou ? "Needs you." : null,
   ]

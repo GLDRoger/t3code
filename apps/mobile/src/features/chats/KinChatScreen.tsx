@@ -1280,6 +1280,7 @@ function KinChatFeed(props: {
       {props.retired.restore === null ? null : (
         <Button
           tone="secondary"
+          fullWidth
           label={props.retired.restoring ? "Restoring…" : "Restore"}
           disabled={props.retired.restoring}
           onPress={props.retired.restore}
