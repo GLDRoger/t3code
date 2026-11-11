@@ -20,8 +20,10 @@ import type { AtomCommandResult } from "../state/runtime.ts";
 import {
   KIN_WORK_CHANGED,
   KIN_WORK_DEFAULT_FILTER,
+  KIN_WORK_NO_DRAFT,
   createKinWorkActions,
   kinWorkDraftCheck,
+  kinWorkHostClients,
   kinWorkHostEdits,
   kinWorkItemView,
   kinWorkListFooter,
@@ -96,16 +98,32 @@ describe("kinWorkListQuery", () => {
     ["week", { open: true, dueBy: "2026-11-18T08:00:00.000Z", late: false }],
     ["closed", { open: false }],
   ] as const)("asks the host for the %s view", (view, expected) => {
-    expect(kinWorkListQuery(orgId, { view, owner: null, text: "" }, now.getTime(), true)).toEqual({
-      orgId,
-      ...expected,
-    });
+    expect(
+      kinWorkListQuery(orgId, { ...KIN_WORK_DEFAULT_FILTER, view }, now.getTime(), true),
+    ).toEqual({ orgId, ...expected });
   });
 
   it("adds whose it is and the words searched for, trimmed", () => {
     expect(
-      kinWorkListQuery(orgId, { view: "open", owner: lead, text: "  quote " }, now.getTime(), true),
+      kinWorkListQuery(
+        orgId,
+        { ...KIN_WORK_DEFAULT_FILTER, owner: lead, text: "  quote " },
+        now.getTime(),
+        true,
+      ),
     ).toEqual({ orgId, open: true, owner: lead, text: "quote" });
+    expect(
+      kinWorkListQuery(
+        orgId,
+        {
+          ...KIN_WORK_DEFAULT_FILTER,
+          party: { key: "C-1", title: "Invented Foods" },
+          project: { key: "P-2", title: "Invented relaunch" },
+        },
+        now.getTime(),
+        true,
+      ),
+    ).toEqual({ orgId, open: true, party: "C-1", project: "P-2" });
   });
 
   it("hides what is late from due this week only for a host that can't leave it out itself", () => {
@@ -243,7 +261,7 @@ describe("kinWorkItemView", () => {
             by: lead,
             via: "lead",
             kind: "updated",
-            fields: [{ field: "sensitive", from: "false", to: "true" }],
+            fields: [{ field: "dueAllDay", from: "false", to: "true" }],
           },
           { seq: 1, at, by: me, via: "owner", kind: "created", fields: [] },
         ],
@@ -380,17 +398,48 @@ describe("kinWorkRow", () => {
     expect(kinWorkRow(due, names, now).due).toContain("20");
     expect(kinWorkRow(due, far, now).due).toContain("21");
   });
+
+  it("names the client, except in a list of only theirs, and nothing on an older host", () => {
+    const party = {
+      recordId: KinRecordId.make("rec-c"),
+      key: "C-1",
+      title: "Invented Foods",
+    } as const;
+    const owed = record({ party, side: "theirs" });
+    expect(kinWorkRow(owed, names, now).line).toBe(
+      "W-1 · Invented Foods · You · They owe this · Not started",
+    );
+    expect(kinWorkRow(owed, names, now, { party: party, project: null }).about).toBeNull();
+    // A host from before clients sends none of it: the row and the ways in show nothing new.
+    expect(kinWorkRow(record(), names, now).line).toBe("W-1 · You · Not started");
+    expect(kinWorkHostClients(null)).toBe(false);
+  });
 });
 
 describe("kinWorkDraftCheck", () => {
   it("sends a picked day as an all-day date and leaves out what was left blank", () => {
     expect(
-      kinWorkDraftCheck({ title: "  Send the quote ", owner: lead, due: "2026-11-14", notes: " " }),
+      kinWorkDraftCheck({
+        ...KIN_WORK_NO_DRAFT,
+        title: "  Send the quote ",
+        owner: lead,
+        due: "2026-11-14",
+        notes: " ",
+      }),
     ).toEqual({
       ok: true,
       input: { title: "Send the quote", owner: lead, dueAt: "2026-11-14", dueAllDay: true },
     });
-    expect(kinWorkDraftCheck({ title: " ", owner: null, due: null, notes: "" }).ok).toBe(false);
+    expect(kinWorkDraftCheck({ ...KIN_WORK_NO_DRAFT, title: " " }).ok).toBe(false);
+    // What a client owes is theirs to do; with no client, whose move it is means nothing.
+    const party = { key: "C-1" as const, title: "Invented Foods" };
+    expect(
+      kinWorkDraftCheck({ ...KIN_WORK_NO_DRAFT, title: "Sign", party, side: "theirs" }),
+    ).toEqual({ ok: true, input: { title: "Sign", party: "C-1", side: "theirs" } });
+    expect(kinWorkDraftCheck({ ...KIN_WORK_NO_DRAFT, title: "Sign", side: "theirs" })).toEqual({
+      ok: true,
+      input: { title: "Sign" },
+    });
   });
 });
 

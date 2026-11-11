@@ -659,6 +659,14 @@
       "types": "./src/kin/kinWorkList.ts",
       "default": "./src/kin/kinWorkList.ts"
     },
+    "./kin/kinWorkClients": {
+      "types": "./src/kin/kinWorkClients.ts",
+      "default": "./src/kin/kinWorkClients.ts"
+    },
+    "./kin/kinWorkForms": {
+      "types": "./src/kin/kinWorkForms.ts",
+      "default": "./src/kin/kinWorkForms.ts"
+    },
     "./kin/kinWorkStream": {
       "types": "./src/kin/kinWorkStream.ts",
       "default": "./src/kin/kinWorkStream.ts"

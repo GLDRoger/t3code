@@ -1,75 +1,55 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
+  KIN_WORK_DEFAULT_FILTER,
   KIN_WORK_LOAD_FAILED,
   KIN_WORK_NEW,
+  KIN_WORK_NO_DRAFT,
   KIN_WORK_OFFLINE,
   KIN_WORK_ONLY_OWNER,
-  KIN_WORK_SEARCH_PLACEHOLDER,
-  KIN_WORK_STALE,
   KIN_WORK_TITLE,
   kinWorkEntrySummary,
+  kinWorkHostClients,
   kinWorkHostEdits,
-  kinWorkListFooter,
-  kinWorkNothing,
-  kinWorkOverview,
-  kinWorkRow,
-  kinWorkShown,
+  type KinWorkDraft,
   type KinWorkFilter,
-  type KinWorkOverview,
-  type KinWorkRowView,
 } from "@t3tools/client-runtime/kin/kinWork";
 import {
-  KIN_WORK_COPY,
-  kinWorkApplied,
-  kinWorkListNotice,
-  type KinWorkAction,
-  type KinWorkNotice,
-} from "@t3tools/client-runtime/kin/kinWorkChanges";
-import {
-  KIN_WORK_LIST_INITIAL,
-  createKinWorkList,
-  type KinWorkListState,
-} from "@t3tools/client-runtime/kin/kinWorkList";
-import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
+  KIN_CLIENTS,
+  KIN_CLIENTS_OLDER_HOST,
+  KIN_PROJECTS,
+  KIN_WORK_AREAS,
+  type KinWorkArea,
+} from "@t3tools/client-runtime/kin/kinWorkClients";
 import type { KinRecordKey } from "@t3tools/contracts";
-import { LegendList } from "@legendapp/list/react";
 import { Link } from "@tanstack/react-router";
-import * as Option from "effect/Option";
-import { AsyncResult } from "effect/reactivity";
-import { ArrowLeftIcon, ListChecksIcon, PlusIcon, XIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ArrowLeftIcon, ListChecksIcon, PlusIcon } from "lucide-react";
+import { useState } from "react";
 
-import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../components/WorkspaceBreadcrumb";
-import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
-import { Alert, AlertAction, AlertDescription } from "../components/ui/alert";
-import { Badge } from "../components/ui/badge";
-import { Button } from "../components/ui/button";
 import {
-  Empty,
-  EmptyContent,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyTitle,
-} from "../components/ui/empty";
-import { Input } from "../components/ui/input";
-import { Skeleton } from "../components/ui/skeleton";
+  WorkspaceBreadcrumb,
+  WorkspaceBreadcrumbItem,
+  WorkspaceBreadcrumbSeparator,
+} from "../components/WorkspaceBreadcrumb";
+import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
+import { Alert, AlertDescription } from "../components/ui/alert";
+import { Button } from "../components/ui/button";
 import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { isElectron } from "../env";
-import { cn } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
-import { KinAvatar } from "./KinAvatar";
+import { KinWorkClientPage, KinWorkClientsList } from "./KinWorkClients";
+import { KinClientDialog, KinProjectDialog } from "./KinWorkForms";
 import { KinWorkItemSheet } from "./KinWorkItemSheet";
 import { KinWorkNewDialog } from "./KinWorkNewDialog";
-import { KinWorkStateIcon } from "./KinWorkStateIcon";
+import { KinWorkNotice, KinWorkRowSkeletons } from "./KinWorkParts";
+import { KinWorkProjectPage, KinWorkProjectsList } from "./KinWorkProjects";
+import { KinWorkTaskList } from "./KinWorkTasks";
 import { kinClient } from "./kinClient";
-import { useNowMinuteMs } from "./useKinClock";
 import {
   kinWorkLiveAtom,
   useKinWork,
   useKinWorkChanges,
+  useKinWorkChoices,
   useKinWorkDirectory,
-  type KinWorkChangesHandle,
-  type KinWorkDirectory,
   type KinWorkTarget,
 } from "./useKinWork";
 
@@ -105,51 +85,137 @@ export function KinWorkEntry(
   );
 }
 
-/** Everything someone owes someone: what is open, who has it, and the way to hand it on. */
+/** Which part of Work is on screen: one of its three lists, or one client or project. */
+export type KinWorkWhere =
+  | { readonly area: KinWorkArea }
+  | { readonly party: KinRecordKey }
+  | { readonly project: KinRecordKey };
+
+const AREA_TITLE: Record<KinWorkArea, string> = {
+  tasks: KIN_WORK_TITLE,
+  clients: KIN_CLIENTS.title,
+  projects: KIN_PROJECTS.title,
+};
+
+type Adding =
+  | { readonly type: "task"; readonly draft: KinWorkDraft }
+  | { readonly type: "client" }
+  | { readonly type: "project" }
+  | null;
+
+/**
+ * Everything someone owes someone: tasks and who has them, the clients they are owed to, and the
+ * projects they belong to.
+ */
 export function KinWorkView({
+  where,
+  onGo,
   openKey,
   onOpenKey: setOpenKey,
   ...props
 }: KinWorkTarget & {
+  readonly where: KinWorkWhere;
+  readonly onGo: (where: KinWorkWhere) => void;
   readonly openKey: KinRecordKey | null;
   readonly onOpenKey: (key: KinRecordKey | null) => void;
 }) {
+  const { environmentId } = props;
   const state = useKinWork(props);
-  const canAdd = useAtomValue(kinClient.workCreate.permissionAtom(props.environmentId));
-  const directory = useKinWorkDirectory(props, state._tag === "ready");
+  const canAdd = useAtomValue(kinClient.workCreate.permissionAtom(environmentId));
+  const canAddClient = useAtomValue(kinClient.workClientCreate.permissionAtom(environmentId));
+  const canAddProject = useAtomValue(kinClient.workProjectCreate.permissionAtom(environmentId));
+  const canChangeTasks = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
+  const ready = state._tag === "ready";
+  const summary = ready ? state.live.summary : null;
+  const hostClients = kinWorkHostClients(summary);
+  const directory = useKinWorkDirectory(props, ready);
+  const choices = useKinWorkChoices(props, ready && hostClients);
   const changes = useKinWorkChanges(props);
-  const [adding, setAdding] = useState(false);
-  const add = state._tag === "ready" && canAdd ? () => setAdding(true) : null;
+  const [adding, setAdding] = useState<Adding>(null);
+  // Where the task list starts when it is opened from a client: narrowed to that client.
+  const [narrowed, setNarrowed] = useState<KinWorkFilter>(KIN_WORK_DEFAULT_FILTER);
+
+  const area: KinWorkArea =
+    "area" in where ? where.area : "party" in where ? "clients" : "projects";
+  const onPage = !("area" in where);
+  const addTask =
+    ready && canAdd ? (draft: KinWorkDraft) => setAdding({ type: "task", draft }) : null;
+  const add =
+    !ready || onPage
+      ? null
+      : area === "tasks"
+        ? addTask === null
+          ? null
+          : { label: KIN_WORK_NEW, run: () => addTask(KIN_WORK_NO_DRAFT) }
+        : !hostClients
+          ? null
+          : area === "clients"
+            ? canAddClient
+              ? { label: KIN_CLIENTS.add, run: () => setAdding({ type: "client" }) }
+              : null
+            : canAddProject
+              ? { label: KIN_PROJECTS.add, run: () => setAdding({ type: "project" }) }
+              : null;
+  const openClient = (key: KinRecordKey) => onGo({ party: key });
+  const openProject = (key: KinRecordKey) => onGo({ project: key });
   return (
     <>
       <WorkspacePageHeader electron={isElectron}>
-        <Button
-          size="icon-sm"
-          variant="ghost"
-          aria-label="Back to chats"
-          className="md:hidden"
-          render={<Link to="/kin" />}
-        >
-          <ArrowLeftIcon />
-        </Button>
+        {onPage ? (
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            aria-label={`Back to ${AREA_TITLE[area]}`}
+            className="md:hidden"
+            onClick={() => onGo({ area })}
+          >
+            <ArrowLeftIcon />
+          </Button>
+        ) : (
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            aria-label="Back to chats"
+            className="md:hidden"
+            render={<Link to="/kin" />}
+          >
+            <ArrowLeftIcon />
+          </Button>
+        )}
         <WorkspaceBreadcrumb ariaLabel={KIN_WORK_TITLE}>
-          <WorkspaceBreadcrumbItem current>
-            <h1 className="truncate">{KIN_WORK_TITLE}</h1>
-          </WorkspaceBreadcrumbItem>
+          {onPage ? (
+            <>
+              <WorkspaceBreadcrumbItem>
+                <Button size="xs" variant="ghost" onClick={() => onGo({ area: "tasks" })}>
+                  {KIN_WORK_TITLE}
+                </Button>
+              </WorkspaceBreadcrumbItem>
+              <WorkspaceBreadcrumbSeparator />
+              <WorkspaceBreadcrumbItem>
+                <Button size="xs" variant="ghost" onClick={() => onGo({ area })}>
+                  {AREA_TITLE[area]}
+                </Button>
+              </WorkspaceBreadcrumbItem>
+            </>
+          ) : (
+            <WorkspaceBreadcrumbItem current>
+              <h1 className="truncate">{KIN_WORK_TITLE}</h1>
+            </WorkspaceBreadcrumbItem>
+          )}
         </WorkspaceBreadcrumb>
         {add === null ? null : (
           <div className="ms-auto">
-            <Button size="sm" onClick={add}>
+            <Button size="sm" onClick={add.run}>
               <PlusIcon />
-              {KIN_WORK_NEW}
+              {add.label}
             </Button>
           </div>
         )}
       </WorkspacePageHeader>
       {state._tag === "refused" ? (
-        <Notice {...KIN_WORK_ONLY_OWNER} />
+        <KinWorkNotice {...KIN_WORK_ONLY_OWNER} />
       ) : state._tag === "offline" ? (
-        <Notice {...KIN_WORK_OFFLINE} />
+        <KinWorkNotice {...KIN_WORK_OFFLINE} />
       ) : state._tag === "failed" ? (
         <div className="mx-auto flex w-full max-w-3xl flex-col items-start gap-3 p-4">
           <Alert variant="error">
@@ -165,21 +231,109 @@ export function KinWorkView({
         </div>
       ) : state._tag === "loading" ? (
         <div className="mx-auto w-full max-w-3xl p-4" role="status" aria-label="Loading Work">
-          <RowSkeletons />
+          <KinWorkRowSkeletons />
         </div>
       ) : (
-        <KinWorkBody
-          {...props}
-          live={state.live}
-          stale={state.stale}
-          directory={directory}
-          changes={changes}
-          openKey={openKey}
-          onOpen={setOpenKey}
-          onAdd={add}
-        />
+        <>
+          {hostClients && !onPage ? (
+            <div className="mx-auto w-full max-w-3xl px-4 pt-3">
+              <ToggleGroup
+                aria-label={KIN_WORK_TITLE}
+                value={[area]}
+                onValueChange={(value) => {
+                  const next = KIN_WORK_AREAS.find((held) => held.id === value[0]);
+                  if (next !== undefined) onGo({ area: next.id });
+                }}
+              >
+                {KIN_WORK_AREAS.map((held) => (
+                  <Toggle key={held.id} value={held.id}>
+                    {held.label}
+                  </Toggle>
+                ))}
+              </ToggleGroup>
+            </div>
+          ) : null}
+          {area !== "tasks" && !hostClients ? (
+            <KinWorkNotice
+              {...KIN_CLIENTS_OLDER_HOST}
+              action={
+                <Button size="sm" variant="outline" onClick={() => onGo({ area: "tasks" })}>
+                  Open tasks
+                </Button>
+              }
+            />
+          ) : "party" in where ? (
+            <KinWorkClientPage
+              // A fresh page per client, so one client's dialogs never show on another.
+              key={where.party}
+              {...props}
+              clientKey={where.party}
+              directory={directory}
+              changes={changes}
+              choices={choices}
+              canChangeTasks={canChangeTasks && kinWorkHostEdits(summary)}
+              onOpenTask={setOpenKey}
+              onOpenClient={openClient}
+              onOpenProject={openProject}
+              onSeeAll={(party) => {
+                setNarrowed({ ...KIN_WORK_DEFAULT_FILTER, party });
+                onGo({ area: "tasks" });
+              }}
+              onAddTask={addTask}
+            />
+          ) : "project" in where ? (
+            <KinWorkProjectPage
+              key={where.project}
+              {...props}
+              projectKey={where.project}
+              live={state.live}
+              stale={state.stale}
+              directory={directory}
+              changes={changes}
+              choices={choices}
+              openKey={openKey}
+              onOpenTask={setOpenKey}
+              onOpenClient={openClient}
+              onOpenProject={openProject}
+              onAddTask={addTask}
+            />
+          ) : area === "clients" ? (
+            <KinWorkClientsList
+              {...props}
+              live={state.live}
+              stale={state.stale}
+              directory={directory}
+              onOpen={openClient}
+              onAdd={add?.run ?? null}
+            />
+          ) : area === "projects" ? (
+            <KinWorkProjectsList
+              {...props}
+              live={state.live}
+              stale={state.stale}
+              directory={directory}
+              onOpen={openProject}
+              onAdd={add?.run ?? null}
+            />
+          ) : (
+            <KinWorkTaskList
+              // Opened from a client, the list starts over narrowed to that client.
+              key={narrowed.party?.key ?? "all"}
+              {...props}
+              live={state.live}
+              stale={state.stale}
+              directory={directory}
+              changes={changes}
+              openKey={openKey}
+              onOpen={setOpenKey}
+              onAdd={add?.run ?? null}
+              initial={narrowed}
+              choices={hostClients ? choices : null}
+            />
+          )}
+        </>
       )}
-      {openKey === null || state._tag !== "ready" ? null : (
+      {openKey === null || !ready ? null : (
         <KinWorkItemSheet
           // A fresh sheet per task, so one task's hand-over never shows on another.
           key={openKey}
@@ -187,382 +341,57 @@ export function KinWorkView({
           itemKey={openKey}
           directory={directory}
           changes={changes}
+          choices={hostClients ? choices : null}
           onOpenKey={setOpenKey}
+          onOpenClient={openClient}
+          onOpenProject={openProject}
           onClose={() => setOpenKey(null)}
         />
       )}
-      {adding ? (
+      {adding?.type === "task" ? (
         <KinWorkNewDialog
           {...props}
           directory={directory}
+          choices={hostClients ? choices : null}
+          start={adding.draft}
           onAdded={(key) => {
-            setAdding(false);
-            setOpenKey(key);
+            setAdding(null);
+            // Added from a client or project, it shows up there: the page stays put.
+            if (!onPage) setOpenKey(key);
           }}
-          onClose={() => setAdding(false)}
+          onClose={() => setAdding(null)}
+        />
+      ) : adding?.type === "client" ? (
+        <KinClientDialog
+          {...props}
+          editing={null}
+          onSaved={(key) => {
+            setAdding(null);
+            openClient(key);
+          }}
+          onOpenExisting={(key) => {
+            setAdding(null);
+            openClient(key);
+          }}
+          onClose={() => setAdding(null)}
+        />
+      ) : adding?.type === "project" ? (
+        <KinProjectDialog
+          {...props}
+          editing={null}
+          party={null}
+          choices={choices}
+          onSaved={(key) => {
+            setAdding(null);
+            openProject(key);
+          }}
+          onOpenExisting={(key) => {
+            setAdding(null);
+            openProject(key);
+          }}
+          onClose={() => setAdding(null)}
         />
       ) : null}
     </>
-  );
-}
-
-function Notice(props: { readonly title: string; readonly detail: string }) {
-  return (
-    <Empty size="compact">
-      <EmptyHeader>
-        <EmptyTitle>{props.title}</EmptyTitle>
-        <EmptyDescription>{props.detail}</EmptyDescription>
-      </EmptyHeader>
-    </Empty>
-  );
-}
-
-function RowSkeletons() {
-  return (
-    <div className="flex flex-col gap-4 py-2">
-      {[0, 1, 2, 3].map((index) => (
-        <div key={index} className="flex items-start gap-3 px-2">
-          <Skeleton className="size-4" />
-          <div className="flex flex-1 flex-col gap-1.5">
-            <Skeleton className="h-3.5 w-3/5" />
-            <Skeleton className="h-3 w-2/5" />
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function KinWorkBody(
-  props: KinWorkTarget & {
-    readonly live: KinWorkLive;
-    readonly stale: boolean;
-    readonly directory: KinWorkDirectory;
-    readonly changes: KinWorkChangesHandle;
-    readonly openKey: KinRecordKey | null;
-    readonly onOpen: (key: KinRecordKey) => void;
-    readonly onAdd: (() => void) | null;
-  },
-) {
-  const { environmentId, orgId, live } = props;
-  const { names } = props.directory;
-  const { state: changed, changes } = props.changes;
-  const hostEdits = kinWorkHostEdits(live.summary);
-  const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId)) && hostEdits;
-  const now = new Date(useNowMinuteMs());
-  const [listState, setListState] = useState<KinWorkListState>(KIN_WORK_LIST_INITIAL);
-  const [list] = useState(() =>
-    createKinWorkList({
-      orgId,
-      read: (input) => kinClient.workList.run(appAtomRegistry, { environmentId, input }),
-      onChange: setListState,
-      now: Date.now,
-      // The first counts are in before the list exists, and say which filters the host has.
-      hostFilters: () =>
-        kinWorkHostEdits(
-          appAtomRegistry
-            .get(kinWorkLiveAtom({ environmentId, orgId }))
-            .pipe(AsyncResult.value, Option.getOrNull)?.summary ?? null,
-        ),
-      schedule: (run, ms) => {
-        const timer = setTimeout(run, ms);
-        return () => clearTimeout(timer);
-      },
-    }),
-  );
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- starts the list's reads from the host when the page shows, and abandons what is in flight when it leaves
-  useEffect(() => {
-    list.start();
-    return list.dispose;
-  }, [list]);
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the list's reader the host's latest change number, and that the host is back, so it reads again only when the rows are behind
-  useEffect(() => {
-    if (!props.stale) list.changed(live.seq);
-  }, [list, live.seq, props.stale]);
-
-  const { filter } = listState;
-  const overview = kinWorkOverview(live.summary, filter, names);
-  const records = kinWorkShown(filter, listState.records, hostEdits).map((record) =>
-    kinWorkApplied(record, changed),
-  );
-  const rows = records.map((record) => kinWorkRow(record, names, now));
-  const act = (key: KinRecordKey, action: KinWorkAction) => {
-    const record = records.find((held) => held.key === key);
-    if (record !== undefined) void changes.run(record, action, names);
-  };
-  const notice = kinWorkListNotice(changed, props.openKey);
-  const nothing = kinWorkNothing(filter, names);
-  const footer = kinWorkListFooter(filter, rows.length, listState.total, listState.more, hostEdits);
-  return (
-    // Hundreds of tasks stay cheap: only the rows in view mount.
-    <LegendList<KinWorkRowView>
-      data={rows}
-      keyExtractor={(row) => row.key}
-      extraData={[listState, changed]}
-      recycleItems
-      onEndReached={() => void list.loadMore()}
-      onEndReachedThreshold={0.5}
-      ListHeaderComponent={
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 pt-2 pb-1">
-          {props.stale || listState.stale ? (
-            <p role="status" className="text-xs text-muted-foreground">
-              {KIN_WORK_STALE}
-            </p>
-          ) : null}
-          <KinWorkFilters
-            overview={overview}
-            filter={filter}
-            onChange={(next) => list.setFilter(next)}
-          />
-          {notice === null ? null : (
-            <KinWorkListNotice
-              notice={notice}
-              onUndo={() =>
-                void changes.undo(
-                  names,
-                  records.find((held) => held.key === notice.key),
-                )
-              }
-              onDismiss={changes.dismiss}
-            />
-          )}
-        </div>
-      }
-      ListEmptyComponent={
-        <div className="mx-auto w-full max-w-3xl px-4">
-          {listState.loading ? (
-            <div role="status" aria-label="Loading tasks">
-              <RowSkeletons />
-            </div>
-          ) : listState.failed !== null ? (
-            <div className="flex flex-col items-start gap-3 py-4">
-              <Alert variant="error">
-                <AlertDescription>{KIN_WORK_LOAD_FAILED}. Check your connection.</AlertDescription>
-              </Alert>
-              <Button size="sm" variant="outline" onClick={list.refresh}>
-                Retry
-              </Button>
-            </div>
-          ) : (
-            <Empty size="compact">
-              <EmptyHeader>
-                <EmptyTitle>{nothing.title}</EmptyTitle>
-                <EmptyDescription>{nothing.detail}</EmptyDescription>
-              </EmptyHeader>
-              {nothing.offerNew && props.onAdd !== null ? (
-                <EmptyContent>
-                  <Button onClick={props.onAdd}>
-                    <PlusIcon />
-                    {KIN_WORK_NEW}
-                  </Button>
-                </EmptyContent>
-              ) : null}
-            </Empty>
-          )}
-        </div>
-      }
-      ListFooterComponent={
-        footer === null ? null : (
-          <div className="mx-auto flex w-full max-w-3xl items-center gap-3 px-6 py-3">
-            <p className="text-xs text-muted-foreground" role="status">
-              {listState.moreFailed ? "Couldn't load more." : footer}
-            </p>
-            <Button
-              size="xs"
-              variant="outline"
-              disabled={listState.loadingMore}
-              aria-busy={listState.loadingMore}
-              onClick={() => void list.loadMore()}
-            >
-              {listState.moreFailed ? "Try again" : "Show more"}
-            </Button>
-          </div>
-        )
-      }
-      renderItem={({ item: row }) => (
-        <div className="mx-auto w-full max-w-3xl border-b border-border/60 px-4">
-          <KinWorkRow
-            row={row}
-            saving={changed.pending[row.key] !== undefined}
-            onOpen={() => props.onOpen(row.key)}
-            onAct={canChange ? (action) => act(row.key, action) : null}
-          />
-        </div>
-      )}
-      estimatedItemSize={60}
-      drawDistance={640}
-      className={cn(
-        "min-h-0 flex-1 overscroll-contain pb-6",
-        // Rows stay up while they are read again; dimming says they may be about to change.
-        listState.refreshing && "opacity-70",
-      )}
-    />
-  );
-}
-
-/** The overview and the filters in one: every count narrows the list to what it counts. */
-function KinWorkFilters(props: {
-  readonly overview: KinWorkOverview;
-  readonly filter: KinWorkFilter;
-  readonly onChange: (filter: KinWorkFilter) => void;
-}) {
-  const { overview, filter } = props;
-  return (
-    <>
-      <div className="-mx-1 overflow-x-auto px-1 py-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        <ToggleGroup
-          variant="pill"
-          size="sm"
-          aria-label="Show"
-          value={[filter.view]}
-          onValueChange={(value) => {
-            const view = overview.chips.find((chip) => chip.id === value[0]);
-            if (view !== undefined) props.onChange({ ...filter, view: view.id });
-          }}
-        >
-          {overview.chips.map((chip) => (
-            <Toggle key={chip.id} value={chip.id} aria-label={chip.accessibilityLabel}>
-              {chip.label}
-              {chip.count === null ? null : (
-                <span className="text-muted-foreground tabular-nums">{chip.count}</span>
-              )}
-            </Toggle>
-          ))}
-        </ToggleGroup>
-      </div>
-      {overview.owners.length === 0 ? null : (
-        <ul aria-label="People and leads" className="grid gap-1 sm:grid-cols-2">
-          {overview.owners.map((owner) => (
-            <li key={owner.key}>
-              <button
-                type="button"
-                aria-pressed={owner.selected}
-                aria-label={`${owner.name}. ${owner.line}`}
-                onClick={() =>
-                  props.onChange({ ...filter, owner: owner.selected ? null : owner.owner })
-                }
-                className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset aria-pressed:bg-accent"
-              >
-                <KinAvatar avatar={owner.avatar} size="sm" />
-                <span className="min-w-0 flex-1 truncate text-sm text-foreground">
-                  {owner.name}
-                </span>
-                <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-                  {owner.line}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      <Input
-        type="search"
-        aria-label={KIN_WORK_SEARCH_PLACEHOLDER}
-        placeholder={KIN_WORK_SEARCH_PLACEHOLDER}
-        value={filter.text}
-        onChange={(event) => props.onChange({ ...filter, text: event.currentTarget.value })}
-      />
-    </>
-  );
-}
-
-/** What the last change did, with the way back, said once above the rows. */
-function KinWorkListNotice(props: {
-  readonly notice: KinWorkNotice;
-  readonly onUndo: () => void;
-  readonly onDismiss: () => void;
-}) {
-  const { notice } = props;
-  return (
-    <Alert
-      variant={notice.kind === "saved" ? "success" : notice.kind === "failed" ? "error" : "warning"}
-    >
-      <AlertDescription>
-        {notice.key}: {notice.text}
-      </AlertDescription>
-      <AlertAction>
-        {notice.undo === null ? null : (
-          <Button size="xs" variant="outline" onClick={props.onUndo}>
-            {KIN_WORK_COPY.undo}
-          </Button>
-        )}
-        <Button size="icon-xs" variant="ghost" aria-label="Dismiss" onClick={props.onDismiss}>
-          <XIcon />
-        </Button>
-      </AlertAction>
-    </Alert>
-  );
-}
-
-const TICK_LABEL = { done: KIN_WORK_COPY.done, reopen: KIN_WORK_COPY.reopen } as const;
-
-function KinWorkRow(props: {
-  readonly row: KinWorkRowView;
-  readonly saving: boolean;
-  readonly onOpen: () => void;
-  /** Null where this browser or this host can't change a task. */
-  readonly onAct: ((action: KinWorkAction) => void) | null;
-}) {
-  const { row, onAct } = props;
-  const tick = onAct === null ? null : row.tick;
-  return (
-    <div className="flex items-start gap-1 py-1" aria-busy={props.saving}>
-      {tick === null || onAct === null ? (
-        <span className="mt-1.5 flex size-7 shrink-0 items-center justify-center sm:size-6">
-          <KinWorkStateIcon state={row.state} />
-        </span>
-      ) : (
-        <span className="pt-1.5">
-          <Button
-            size="icon-xs"
-            variant="ghost"
-            disabled={props.saving}
-            aria-label={`${TICK_LABEL[tick]}: ${row.title}`}
-            title={TICK_LABEL[tick]}
-            onClick={() => onAct({ type: "state", state: tick === "done" ? "done" : "open" })}
-          >
-            <KinWorkStateIcon state={row.state} />
-          </Button>
-        </span>
-      )}
-      <button
-        type="button"
-        aria-label={row.accessibilityLabel}
-        onClick={props.onOpen}
-        className="flex min-w-0 flex-1 items-start gap-3 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
-      >
-        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <span className="line-clamp-2 text-sm text-foreground">{row.title}</span>
-          <span className="truncate text-xs text-muted-foreground">{row.line}</span>
-        </span>
-        {row.late ? (
-          <Badge size="sm" variant="error">
-            Late
-          </Badge>
-        ) : null}
-      </button>
-      {row.suggested && onAct !== null ? (
-        <span className="flex shrink-0 items-center gap-1 pt-1.5">
-          <Button
-            size="xs"
-            variant="ghost"
-            disabled={props.saving}
-            aria-label={`${KIN_WORK_COPY.decline}: ${row.title}`}
-            onClick={() => onAct({ type: "decline" })}
-          >
-            {KIN_WORK_COPY.decline}
-          </Button>
-          <Button
-            size="xs"
-            variant="outline"
-            disabled={props.saving}
-            aria-label={`${KIN_WORK_COPY.keep}: ${row.title}`}
-            onClick={() => onAct({ type: "confirm" })}
-          >
-            {KIN_WORK_COPY.keep}
-          </Button>
-        </span>
-      ) : null}
-    </div>
   );
 }

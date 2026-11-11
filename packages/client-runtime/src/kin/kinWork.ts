@@ -13,6 +13,7 @@ import {
   type KinRecordDetail,
   type KinRecordKey,
   type KinRecordLink,
+  type KinRecordSide,
   type KinRecordState,
   type KinWorkActor,
   type KinWorkAssignInput,
@@ -107,14 +108,31 @@ const kinWorkAvatar = (who: KinWorkPrincipal): KinAvatarView =>
 
 export type KinWorkViewId = "open" | "doing" | "waiting" | "late" | "week" | "closed";
 
-/** What the list shows: one view, optionally one person's or lead's, optionally matching words. */
+/** A client or project by its handle and its name, as a filter or a form holds it. */
+export interface KinWorkRef {
+  readonly key: KinRecordKey;
+  readonly title: string;
+}
+
+/**
+ * What the list shows: one view, optionally one person's or lead's, one client's or one
+ * project's, optionally matching words.
+ */
 export interface KinWorkFilter {
   readonly view: KinWorkViewId;
   readonly owner: KinWorkPrincipal | null;
   readonly text: string;
+  readonly party: KinWorkRef | null;
+  readonly project: KinWorkRef | null;
 }
 
-export const KIN_WORK_DEFAULT_FILTER: KinWorkFilter = { view: "open", owner: null, text: "" };
+export const KIN_WORK_DEFAULT_FILTER: KinWorkFilter = {
+  view: "open",
+  owner: null,
+  text: "",
+  party: null,
+  project: null,
+};
 
 const VIEWS: ReadonlyArray<{ readonly id: KinWorkViewId; readonly label: string }> = [
   { id: "open", label: "Open" },
@@ -128,6 +146,8 @@ const VIEWS: ReadonlyArray<{ readonly id: KinWorkViewId; readonly label: string 
 export const kinWorkSameFilter = (a: KinWorkFilter, b: KinWorkFilter) =>
   a.view === b.view &&
   a.text.trim() === b.text.trim() &&
+  (a.party?.key ?? null) === (b.party?.key ?? null) &&
+  (a.project?.key ?? null) === (b.project?.key ?? null) &&
   (a.owner === null ? b.owner === null : kinWorkSamePrincipal(a.owner, b.owner));
 
 /**
@@ -136,6 +156,10 @@ export const kinWorkSameFilter = (a: KinWorkFilter, b: KinWorkFilter) =>
  */
 export const kinWorkHostEdits = (summary: KinWorkSummary | null): boolean =>
   summary?.closed !== undefined;
+
+/** This host keeps clients and projects. An older one sends neither, so nothing offers them. */
+export const kinWorkHostClients = (summary: KinWorkSummary | null): boolean =>
+  summary?.parties !== undefined;
 
 /**
  * The host's query for a filter. "Due this week" is asked as of `nowMs`, like the host's count;
@@ -166,6 +190,8 @@ export function kinWorkListQuery(
     orgId,
     ...view,
     ...(filter.owner === null ? {} : { owner: filter.owner }),
+    ...(filter.party === null ? {} : { party: filter.party.key }),
+    ...(filter.project === null ? {} : { project: filter.project.key }),
     ...(text === "" ? {} : { text }),
   };
 }
@@ -243,8 +269,9 @@ export function kinWorkOverview(
   names: KinWorkNames,
 ): KinWorkOverview {
   const { owner } = filter;
+  // The host counts by owner, not by client or project, so a narrowed list shows no counts.
   const counts: Counts | null =
-    summary === null
+    summary === null || filter.party !== null || filter.project !== null
       ? null
       : owner === null
         ? summary
@@ -298,14 +325,15 @@ export type KinWorkScreenState =
       readonly stale: boolean;
     };
 
-const isKinChatError = Schema.is(KinChatError);
-const isAuthorizationError = Schema.is(EnvironmentAuthorizationError);
+export const isKinChatError = Schema.is(KinChatError);
+export const isKinWorkAuthorizationError = Schema.is(EnvironmentAuthorizationError);
+const isAuthorizationError = isKinWorkAuthorizationError;
 
 /** The host said this viewer may not read Work. */
 export const kinWorkRefused = (error: unknown): boolean =>
   isAuthorizationError(error) || (isKinChatError(error) && error.reason === "not_allowed");
 
-const failuresOf = (cause: Cause.Cause<unknown>) =>
+export const kinWorkFailuresOf = (cause: Cause.Cause<unknown>) =>
   cause.reasons.filter(Cause.isFailReason).map((reason) => reason.error);
 
 export function kinWorkScreenState(input: {
@@ -316,7 +344,7 @@ export function kinWorkScreenState(input: {
 }): KinWorkScreenState {
   if (!input.allowed) return { _tag: "refused" };
   const { live } = input;
-  if (AsyncResult.isFailure(live) && failuresOf(live.cause).some(kinWorkRefused))
+  if (AsyncResult.isFailure(live) && kinWorkFailuresOf(live.cause).some(kinWorkRefused))
     return { _tag: "refused" };
   const held = Option.getOrNull(AsyncResult.value(live));
   if (held === null || held.summary === null) {
@@ -392,7 +420,7 @@ function dayInZone(date: Date, zone: string | null): Date {
   return new Date(part("year"), part("month") - 1, part("day"));
 }
 
-const dueText = (
+export const kinWorkDueText = (
   record: Pick<KinRecord, "dueAt" | "dueAllDay">,
   names: KinWorkNames,
   now: Date,
@@ -431,21 +459,41 @@ export interface KinWorkRowView {
   readonly tick: "done" | "reopen" | null;
   /** A lead has something running on it right now. */
   readonly working: boolean;
-  /** "W-12 · Tech lead · In progress · Due Fri 14 Nov". */
+  /** The client it is for, or its project with no client; null in a list of only theirs. */
+  readonly about: string | null;
+  /** "W-12 · Acme · Tech lead · In progress · Due Fri 14 Nov". */
   readonly line: string;
   readonly accessibilityLabel: string;
 }
 
 export const kinWorkClosed = (state: KinRecordState) => state === "done" || state === "dropped";
 
-export function kinWorkRow(record: KinRecord, names: KinWorkNames, now: Date): KinWorkRowView {
+export function kinWorkRow(
+  record: KinRecord,
+  names: KinWorkNames,
+  now: Date,
+  /** What the list around the row already says, which the row needn't repeat. */
+  within?: Pick<KinWorkFilter, "party" | "project"> & { readonly sided?: true },
+): KinWorkRowView {
   const owner = kinWorkName(record.owner, names);
+  const about =
+    record.party !== undefined && record.party.key !== within?.party?.key
+      ? record.party.title
+      : record.project !== undefined &&
+          record.project.key !== within?.project?.key &&
+          record.party === undefined
+        ? record.project.title
+        : null;
   const status = record.working ? "Working on it now" : statusText(record, names);
-  const day = kinWorkClosed(record.state) ? null : dueText(record, names, now);
+  const day = kinWorkClosed(record.state) ? null : kinWorkDueText(record, names, now);
   const due = day === null ? null : `Due ${day}`;
   const parts = [
     record.key,
+    about,
     owner,
+    record.side === "theirs" && !kinWorkClosed(record.state) && within?.sided !== true
+      ? "They owe this"
+      : null,
     status,
     due,
     record.pullRequest === null ? null : `PR #${record.pullRequest.number}`,
@@ -468,6 +516,7 @@ export function kinWorkRow(record: KinRecord, names: KinWorkNames, now: Date): K
           ? "reopen"
           : "done",
     working: record.working,
+    about,
     line: parts.join(" · "),
     accessibilityLabel: [record.title, ...parts.slice(1), record.late ? "Late" : null]
       .filter((part) => part !== null)
@@ -502,8 +551,10 @@ export function kinWorkNothing(
   const text = filter.text.trim();
   if (text !== "")
     return { title: `Nothing matches “${text}”`, detail: "Try another word.", offerNew: false };
-  const who = filter.owner === null ? null : kinWorkName(filter.owner, names, "you");
-  // "Nothing is late" for everyone; "Nothing is late for Priya" for one person.
+  const person = filter.owner === null ? null : kinWorkName(filter.owner, names, "you");
+  const scope = filter.project?.title ?? filter.party?.title ?? null;
+  const who = person === null ? scope : scope === null ? person : `${person} on ${scope}`;
+  // "Nothing is late" for everyone; "Nothing is late for Priya", "for Acme", "for Priya on Acme".
   const title = (words: string) => (who === null ? words : `${words} for ${who}`);
   switch (filter.view) {
     case "open":
@@ -512,7 +563,9 @@ export function kinWorkNothing(
         detail:
           who === null
             ? "Add a task, or ask a lead in chat to keep track of something. Give one to a lead and it gets on with it."
-            : `Tasks given to ${who} show up here.`,
+            : person === null
+              ? `Add a task for ${who}, or ask a lead to.`
+              : `Tasks given to ${person} show up here.`,
         offerNew: true,
       };
     case "doing":
@@ -622,11 +675,45 @@ export interface KinWorkItemView {
   /** Its all-day due date as `YYYY-MM-DD`; null with no date or a timed one. */
   readonly dueDay: string | null;
   readonly waitingOn: KinWorkPrincipal | null;
+  /** The client or vendor it is for, and its project; null with none. */
+  readonly party: KinWorkRef | null;
+  readonly project: KinWorkRef | null;
+  /** Who has to do it. Only worth showing with a client. */
+  readonly side: KinRecordSide;
+  /** Whether it is kept to the owner, and whether that is its own label to change. */
+  readonly privacy: KinWorkPrivacy;
+}
+
+/** How private something is, and what to say about it beside the label. */
+export interface KinWorkPrivacy {
+  readonly private: boolean;
+  /** Its client or project makes it private, so its own label changes nothing. */
+  readonly inherited: boolean;
+  readonly note: string;
+}
+
+export const KIN_WORK_PRIVATE = "Private";
+
+export function kinWorkPrivacy(input: {
+  readonly sensitive: boolean;
+  readonly inherited: boolean;
+  /** What makes it private when it is not its own label: "its client", "Acme". */
+  readonly because: string;
+}): KinWorkPrivacy {
+  return {
+    private: input.sensitive || input.inherited,
+    inherited: input.inherited,
+    note: input.inherited
+      ? `Private because ${input.because} is.`
+      : input.sensitive
+        ? "Only you see this."
+        : "Your team will be able to see this.",
+  };
 }
 
 const CATEGORY_LABEL = { task: null, issue: "Issue", obligation: "Commitment" } as const;
 
-const actorName = (actor: KinWorkActor, names: KinWorkNames) =>
+const kinWorkActorName = (actor: KinWorkActor, names: KinWorkNames) =>
   actor._tag === "system" ? "Kin" : kinWorkName(actor, names);
 
 const principalFromText = (text: string | null): KinWorkPrincipal | null => {
@@ -650,12 +737,29 @@ const dayFromText = (text: string | null, now: Date, zone: string | null) => {
   return Number.isNaN(date.getTime()) ? null : kinWorkDay(dayInZone(date, zone), now);
 };
 
-/** One change in words. Bookkeeping fields (labels, kinds) stay out of it. */
-function changeText(change: KinRecordChange, names: KinWorkNames, now: Date): string {
-  const who = actorName(change.by, names);
+const ADDED = {
+  work: "added this",
+  clients: "added this client",
+  contacts: "added this contact",
+  projects: "started this project",
+} as const;
+
+/**
+ * One change in words. `list` says what changed: a task, or a client, contact or project, whose
+ * closing and dates read differently.
+ */
+export function kinWorkChangeText(
+  change: KinRecordChange,
+  names: KinWorkNames,
+  now: Date,
+  list: keyof typeof ADDED = "work",
+): string {
+  const who = kinWorkActorName(change.by, names);
   const field = (name: string) => change.fields.find((held) => held.field === name);
   if (change.kind === "created") {
-    return change.via === "import" ? "Brought over from your leads' notes" : `${who} added this`;
+    return change.via === "import"
+      ? "Brought over from your leads' notes"
+      : `${who} ${ADDED[list]}`;
   }
   if (change.kind === "linked") {
     const link = change.fields[0];
@@ -681,6 +785,9 @@ function changeText(change: KinRecordChange, names: KinWorkNames, now: Date): st
     state !== "dropped";
   if (reopened) clauses.push("reopened it");
   else if (state === "doing") clauses.push("started on it");
+  // A client or a contact has no work to finish: it is closed.
+  else if ((state === "done" || state === "dropped") && (list === "clients" || list === "contacts"))
+    clauses.push("closed it");
   else if (state === "done") clauses.push("finished it");
   else if (state === "dropped") clauses.push("dropped it");
   else if (state === "open") clauses.push("put it back to not started");
@@ -693,11 +800,37 @@ function changeText(change: KinRecordChange, names: KinWorkNames, now: Date): st
   const due = field("due");
   if (due !== undefined) {
     const day = dayFromText(due.to, now, names.zone);
-    clauses.push(day === null ? "took the date off" : `set it due ${day}`);
+    clauses.push(
+      day === null
+        ? "took the date off"
+        : list === "projects"
+          ? `set the target to ${day}`
+          : `set it due ${day}`,
+    );
   }
   if (field("title") !== undefined) clauses.push("renamed it");
   if (field("notes") !== undefined) clauses.push("changed the notes");
   if (field("confirmed")?.to === "true") clauses.push("kept it");
+  if (field("terms") !== undefined) clauses.push("changed the terms");
+  if (["role", "email", "phone"].some((name) => field(name) !== undefined))
+    clauses.push("changed their details");
+  if (field("repos") !== undefined) clauses.push("changed its repos");
+  const side = field("side")?.to;
+  if (side === "theirs") clauses.push("marked it as theirs to do");
+  else if (side === "ours") clauses.push("marked it as ours to do");
+  const party = field("party");
+  if (party !== undefined)
+    clauses.push(party.to === null ? "took it off its client" : "put it under a client");
+  const project = field("project");
+  if (project !== undefined)
+    clauses.push(project.to === null ? "took it out of its project" : "put it in a project");
+  const sensitive = field("sensitive")?.to;
+  if (sensitive === "true") clauses.push("made it private");
+  else if (sensitive === "false") clauses.push("made it not private");
+  // Clients keep their kind in the category field.
+  const kind = list === "clients" ? field("category")?.to : undefined;
+  if (kind === "vendor") clauses.push("marked them a vendor");
+  else if (kind === "client") clauses.push("marked them a client");
   return `${who} ${clauses.length === 0 ? "updated it" : clauses.join(", ")}`;
 }
 
@@ -824,7 +957,6 @@ export function kinWorkItemView(
   const isClosed = kinWorkClosed(item.state);
   const suggested = !item.confirmed && !isClosed;
   const lead = item.owner._tag === "agent";
-  const due = item.dueAt === null ? null : new Date(item.dueAt);
   return {
     key: item.key,
     rev: item.rev,
@@ -839,29 +971,30 @@ export function kinWorkItemView(
       avatar: row.ownerAvatar,
       lead: item.owner._tag === "agent",
     },
-    due: dueText(item, names, now),
+    due: kinWorkDueText(item, names, now),
     given,
     remarks: [
       // A host that can't take the answer here still takes it in chat.
       suggested && !editable
         ? "A lead picked this up on its own. Tell it in chat whether to keep it."
         : null,
-      item.side === "theirs" ? "The other side owes this. The owner is whoever chases it." : null,
-      item.sensitive ? "Private: kept to you." : null,
+      item.side === "theirs"
+        ? `${item.party?.title ?? "The other side"} owes this. Whoever has it chases it.`
+        : null,
     ].filter((part) => part !== null),
     notes: notes === "" ? null : notes,
     links: [...links.values()],
     history: item.changes.map((change) => ({
       key: String(change.seq),
       when: formatKinTime(new Date(change.at), now),
-      text: changeText(change, names, now),
+      text: kinWorkChangeText(change, names, now),
     })),
     historyNote: item.changes.length >= changesCap ? "Earlier history isn't shown." : null,
     assignLabel: isClosed ? null : "Give to someone else",
     editable,
     closed: isClosed,
     suggestion: suggested
-      ? `${item.createdBy._tag === "agent" ? actorName(item.createdBy, names) : "A lead"} suggested this task.`
+      ? `${item.createdBy._tag === "agent" ? kinWorkActorName(item.createdBy, names) : "A lead"} suggested this task.`
       : null,
     takeBack: !isClosed && !isMe(item.owner, names),
     leadNote: !lead
@@ -869,12 +1002,26 @@ export function kinWorkItemView(
       : isClosed
         ? `Reopening gives it back to ${ownerName} to do.`
         : `${ownerName} ${item.working ? "is working on this now" : "has this"}. Marking it done, dropping it or taking it back tells ${ownerName} to stop.`,
-    dueDay:
-      due === null || !item.dueAllDay || Number.isNaN(due.getTime())
-        ? null
-        : kinWorkDayOf(dayInZone(due, names.zone)),
+    dueDay: kinWorkAllDay(item.dueAt, item.dueAllDay, names),
     waitingOn: item.state === "waiting" ? item.waitingOn : null,
+    party: item.party === undefined ? null : { key: item.party.key, title: item.party.title },
+    project:
+      item.project === undefined ? null : { key: item.project.key, title: item.project.title },
+    side: item.side,
+    privacy: kinWorkPrivacy({
+      sensitive: item.sensitive,
+      inherited: item.sensitiveInherited === true,
+      because: "its client or project",
+    }),
   };
+}
+
+/** An all-day date as `YYYY-MM-DD` where the owner is; null with no date or a timed one. */
+export function kinWorkAllDay(at: string | null, allDay: boolean, names: KinWorkNames) {
+  const date = at === null ? null : new Date(at);
+  return date === null || !allDay || Number.isNaN(date.getTime())
+    ? null
+    : kinWorkDayOf(dayInZone(date, names.zone));
 }
 
 /** What a screen showing one task shows. */
@@ -896,7 +1043,9 @@ export function kinWorkItemState(
   const item = given !== null && (read === null || given.rev >= read.rev) ? given : read;
   if (
     AsyncResult.isFailure(result) &&
-    failuresOf(result.cause).some((error) => isKinChatError(error) && error.reason === "not_found")
+    kinWorkFailuresOf(result.cause).some(
+      (error) => isKinChatError(error) && error.reason === "not_found",
+    )
   )
     return { _tag: "gone" };
   if (item !== null) return { _tag: "ready", item };
@@ -962,9 +1111,51 @@ export interface KinWorkDraft {
   /** A calendar day, `YYYY-MM-DD`; null for no date. */
   readonly due: string | null;
   readonly notes: string;
+  readonly party: KinWorkRef | null;
+  readonly project: KinWorkRef | null;
+  /** `theirs` when the client owes it and the owner is whoever chases. */
+  readonly side: KinRecordSide;
 }
 
-export const KIN_WORK_NO_DRAFT: KinWorkDraft = { title: "", owner: null, due: null, notes: "" };
+export const KIN_WORK_NO_DRAFT: KinWorkDraft = {
+  title: "",
+  owner: null,
+  due: null,
+  notes: "",
+  party: null,
+  project: null,
+  side: "ours",
+};
+
+/** A form opened from a client or a project starts out about it. */
+export const kinWorkDraftFor = (
+  about: Partial<Pick<KinWorkDraft, "party" | "project" | "side">>,
+): KinWorkDraft => ({ ...KIN_WORK_NO_DRAFT, ...about });
+
+/** The form's name and its first field, which say whose move it is when a client is set. */
+export function kinWorkDraftWords(draft: Pick<KinWorkDraft, "party" | "side">): {
+  readonly title: string;
+  readonly titleLabel: string;
+  readonly titlePlaceholder: string;
+} {
+  if (draft.party === null)
+    return {
+      title: KIN_WORK_NEW,
+      titleLabel: KIN_WORK_NEW_COPY.titleLabel,
+      titlePlaceholder: KIN_WORK_NEW_COPY.titlePlaceholder,
+    };
+  return draft.side === "theirs"
+    ? {
+        title: `What ${draft.party.title} owes you`,
+        titleLabel: "What they owe",
+        titlePlaceholder: "Send the signed contract",
+      }
+    : {
+        title: `What you owe ${draft.party.title}`,
+        titleLabel: "What you owe them",
+        titlePlaceholder: "Send the monthly report",
+      };
+}
 
 export const KIN_WORK_NEW_COPY = {
   title: KIN_WORK_NEW,
@@ -976,6 +1167,12 @@ export const KIN_WORK_NEW_COPY = {
   notesLabel: "Notes",
   notesPlaceholder: "Anything they need to know. Long briefs are better said in chat.",
   submit: "Add task",
+  clientLabel: "Client",
+  projectLabel: "Project",
+  none: "None",
+  sideLabel: "Who owes it",
+  sideOurs: "We owe it",
+  sideTheirs: "They owe it",
 };
 
 /** What happens next, said before the owner commits to it. */
@@ -1040,6 +1237,10 @@ export function kinWorkDraftCheck(draft: KinWorkDraft): KinWorkDraftCheck {
       ...(draft.owner === null ? {} : { owner: draft.owner }),
       ...(draft.due === null ? {} : { dueAt: draft.due, dueAllDay: true }),
       ...(notes === "" ? {} : { notes }),
+      ...(draft.party === null ? {} : { party: draft.party.key }),
+      ...(draft.project === null ? {} : { project: draft.project.key }),
+      // Whose move it is only means something between us and a client.
+      ...(draft.side === "theirs" && draft.party !== null ? { side: "theirs" as const } : {}),
     },
   };
 }
