@@ -426,3 +426,63 @@ it.live("refuses a local publish from anywhere but one of the project's own work
     assert.lengthOf(requests, 0);
   }).pipe(Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer)), Effect.scoped),
 );
+
+it.live(
+  "records each write as it lands, skips a push GitHub already holds, and reads back what is there",
+  () =>
+    Effect.gen(function* () {
+      const { publish, inspect, outcomes, admitted, head } = yield* fixture({
+        "src/fix.ts": "export {};\n",
+      });
+      assert.deepStrictEqual(yield* inspect, { branchSha: null, pullRequest: null });
+      yield* publish();
+      const pull = { url: "https://github.com/acme/app/pull/7", number: 7 };
+      assert.deepStrictEqual(admitted, ["push", "pull_request"]);
+      assert.deepStrictEqual(outcomes, [
+        { step: "push", sha: head },
+        { step: "pull_request", ...pull },
+      ]);
+      assert.deepStrictEqual(yield* inspect, { branchSha: head, pullRequest: pull });
+      // Already on GitHub: nothing is written again, and what is there is recorded.
+      yield* publish();
+      assert.deepStrictEqual(admitted, ["push", "pull_request"]);
+      assert.deepStrictEqual(outcomes.slice(2), [
+        { step: "push", sha: head },
+        { step: "pull_request", ...pull },
+      ]);
+    }).pipe(Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer)), Effect.scoped),
+);
+
+it.live(
+  "pushes new commits on top of Kin's branch, and never over commits GitHub has that the worker lacks",
+  () =>
+    Effect.gen(function* () {
+      const { publish, remoteBranch, root, worker, origin, git, admitted } = yield* fixture({
+        "src/fix.ts": "export {};\n",
+      });
+      const fs = yield* FileSystem.FileSystem;
+      yield* publish();
+      // The worker carries on: a fast-forward is pushed.
+      yield* fs.writeFileString(`${worker}/src/more.ts`, "export {};\n");
+      yield* git(worker, "add", "src/more.ts");
+      yield* git(worker, "commit", "--quiet", "-m", "more");
+      const ahead = yield* git(worker, "rev-parse", "HEAD");
+      yield* publish();
+      assert.strictEqual(yield* remoteBranch, ahead);
+      // Someone else adds a commit to Kin's branch on GitHub.
+      const branch = Publish.publishBranch(workerId);
+      yield* git(root, "clone", "--quiet", "--branch", branch, origin, `${root}/other`);
+      yield* fs.writeFileString(`${root}/other/theirs.ts`, "export {};\n");
+      yield* git(`${root}/other`, "add", "theirs.ts");
+      yield* git(`${root}/other`, "commit", "--quiet", "-m", "theirs");
+      yield* git(`${root}/other`, "push", "--quiet", "origin", branch);
+      const theirs = yield* git(`${root}/other`, "rev-parse", "HEAD");
+      const pushes = admitted.filter((step) => step === "push").length;
+      assert.include(yield* Effect.flip(publish()), {
+        reason: `${branch} on GitHub has commits the worker's branch doesn't, and Kin never force-pushes`,
+        diverged: true,
+      });
+      assert.strictEqual(yield* remoteBranch, theirs);
+      assert.strictEqual(admitted.filter((step) => step === "push").length, pushes);
+    }).pipe(Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer)), Effect.scoped),
+);

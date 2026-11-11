@@ -3434,6 +3434,15 @@ it.effect.each([
               : [],
         );
         assert.lengthOf(yield* notices(ctx.sql, "kin-stop-failed:"), 0);
+        // The lead hears what reached GitHub as the row shows it.
+        const [reported] = yield* reports(ctx.sql, ctx.orgId);
+        if (step === "push" || step === "pull_request")
+          assert.include(
+            reported!.event.report.openQuestions,
+            step === "push"
+              ? `Kin didn't publish ${branch}: the worker was stopped first.`
+              : `Kin pushed ${branch} but opened no pull request: the worker was stopped first.`,
+          );
       }),
     ),
 );
@@ -3684,4 +3693,338 @@ it.effect("the owner closing a lead's entry stops its worker in the worker envir
       assert.lengthOf(remote.published, 0);
     }),
   ),
+);
+
+/** Another event in the turn's wake-up, as a second delivery to the same turn would add. */
+const sameWakeup = (
+  ctx: Effect.Success<ReturnType<typeof setup>>,
+  eventId: string,
+  event: Record<string, unknown>,
+) =>
+  Effect.gen(function* () {
+    const [lead] = yield* ctx.sql<{ json: string }>`SELECT json FROM kin_events
+      WHERE event_id = 'lead-event'`;
+    const json = { ...JSON.parse(lead!.json), eventId, ...event };
+    yield* ctx.sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+        received_at, queued_at, state, wakeup_id)
+      VALUES (${eventId}, ${ctx.orgId}, ${leadId}, ${json._tag}, 'P0', ${JSON.stringify(json)}, 1,
+        1, 'claimed', 'wake')`;
+    return json as { readonly messageId: string };
+  });
+
+it.effect.each([
+  ["on this server", true],
+  ["in the worker environment", false],
+] as const)(
+  "work the owner withdrew is never started again %s from the owner's message that asked for it",
+  ([, onHost]) =>
+    run(({ ctx, remote, local, workers, tracker }) =>
+      Effect.gen(function* () {
+        if (onHost) yield* goLocal(ctx, remote);
+        const launches = () =>
+          onHost ? local.launches.length : remote.tools("t3_thread_launch").length;
+        const first = yield* workers.delegate(scope, delegateInput);
+        yield* ownerSets(ctx, (yield* entryOf(ctx)).key, "done");
+        yield* settled(tracker, ctx.orgId, first.workerId);
+        // The same turn asks again from the same message, under another title and no entry.
+        assert.include(
+          yield* Effect.flip(workers.delegate(scope, { ...delegateInput, title: "Again" })),
+          { reason: "not_allowed", message: WORK_NOT_YOURS },
+        );
+        // A reaction on that same message in the wake-up is the same instruction.
+        const { messageId } = yield* sameWakeup(ctx, "reaction-event", {
+          _tag: "chat.reaction",
+          emoji: "👍",
+        });
+        assert.include(
+          yield* Effect.flip(
+            workers.delegate(scope, {
+              ...delegateInput,
+              title: "Once more",
+              sourceEventId: "reaction-event",
+            }),
+          ),
+          { reason: "not_allowed", message: WORK_NOT_YOURS },
+        );
+        assert.strictEqual(launches(), 1);
+        assert.isString(messageId);
+        // A fresh message from the owner is a fresh instruction.
+        const fresh = yield* Context.get(ctx.services, KinChatService).send(ctx.person, {
+          chatId: ctx.chat.chatId,
+          body: "Actually, do it after all",
+          clientMessageId: "fresh",
+        });
+        yield* sameWakeup(ctx, "fresh-event", { messageId: fresh.messageId });
+        yield* workers.delegate(scope, {
+          ...delegateInput,
+          title: "Fresh ask",
+          sourceEventId: "fresh-event",
+        });
+        assert.strictEqual(launches(), 2);
+      }),
+    ),
+);
+
+it.effect.each([
+  ["the owner closes it", "closed"],
+  ["its pull request merges", "merged"],
+] as const)("a finished remote worker whose entry is done takes no follow-up when %s", ([, how]) =>
+  run(({ ctx, remote, workers, tracker }) =>
+    Effect.gen(function* () {
+      const { workerId } = yield* workers.delegate(scope, delegateInput);
+      const threadId = (yield* workerRow(ctx.sql, ctx.orgId, workerId)).threadId;
+      yield* remote.finish(ThreadId.make(threadId), "completed", reportReply);
+      yield* settled(tracker, ctx.orgId, workerId);
+      assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "completed");
+      if (how === "closed") yield* ownerSets(ctx, (yield* entryOf(ctx)).key, "done");
+      else
+        yield* pullRequestMerged({ orgId: ctx.orgId, repo: "acme/app", number: 9 }).pipe(
+          Effect.provideService(KinRecords, Context.get(ctx.services, KinRecords)),
+        );
+      assert.strictEqual((yield* entryOf(ctx)).state, "done");
+      assert.include(
+        yield* Effect.flip(
+          workers.followUp(scope, { workerId, brief: "Carry on.", sourceEventId: "lead-event" }),
+        ),
+        { reason: "not_allowed", message: WORK_NOT_YOURS },
+      );
+      assert.lengthOf(remote.tools("t3_thread_send"), 0);
+      assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "completed");
+    }),
+  ),
+);
+
+it.effect(
+  "a lead's stop holds across a restart: the run that completes after it publishes nothing",
+  () =>
+    run(({ ctx, remote, local, workers, restart }) =>
+      Effect.gen(function* () {
+        yield* goLocal(ctx, remote);
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        // T3 accepts the interrupt, but the turn finishes anyway.
+        local.interrupts.late = true;
+        yield* workers.stop(scope, { workerId });
+        const next = yield* restart;
+        yield* local.finish(localThreadId(workerId), "completed", reportReply);
+        yield* settled(next.tracker, ctx.orgId, workerId);
+        assert.deepStrictEqual(remote.writes, []);
+        assert.lengthOf(remote.published, 0);
+        assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "interrupted");
+      }),
+    ),
+);
+
+const sha = "a".repeat(40);
+const pr9 = "https://github.com/acme/app/pull/9";
+const restartPoints = [
+  ["before the commit", "commit", "before", []],
+  ["after the commit", "push", "before", ["commit"]],
+  ["after the push", "pull_request", "before", ["commit", "push"]],
+  [
+    "while opening the PR, its answer lost",
+    "pull_request",
+    "landed",
+    ["commit", "push", "pull_request"],
+  ],
+  ["after the PR", "pull_request", "after", ["commit", "push", "pull_request"]],
+] as const;
+
+it.effect.each(restartPoints)(
+  "a restart %s publishes the rest once when nothing stopped the work",
+  ([, step, where]) =>
+    run(({ ctx, remote, local, workers, restart }) =>
+      Effect.gen(function* () {
+        yield* goLocal(ctx, remote);
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        const held = latch();
+        if (where === "after") remote.hooks.afterWrites = held.hold;
+        else if (where === "landed")
+          remote.hooks.landed = (at) => (at === step ? held.hold : Effect.void);
+        else remote.hooks.beforeWrite = (at) => (at === step ? held.hold : Effect.void);
+        yield* local.finish(localThreadId(workerId), "completed", reportReply);
+        yield* Deferred.await(held.reached);
+        remote.hooks.afterWrites = Effect.void;
+        remote.hooks.landed = () => Effect.void;
+        remote.hooks.beforeWrite = () => Effect.void;
+        const { tracker } = yield* restart;
+        yield* settled(tracker, ctx.orgId, workerId);
+        assert.deepStrictEqual(remote.github, {
+          branch: sha,
+          pull: { url: pr9, number: 9 },
+          unreachable: false,
+          diverged: false,
+        });
+        assert.strictEqual(remote.writes.filter((write) => write === "push").length, 1);
+        assert.strictEqual(remote.writes.filter((write) => write === "pull_request").length, 1);
+        assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "completed");
+        const [reported, ...others] = yield* reports(ctx.sql, ctx.orgId);
+        assert.lengthOf(others, 0);
+        assert.deepInclude(reported!.event.report.evidence, {
+          kind: "pr",
+          ref: pr9,
+          note: "Kin opened this from the worker's branch",
+        });
+        assert.lengthOf(yield* notices(ctx.sql, "kin-stop-"), 0);
+      }),
+    ),
+);
+
+it.effect.each(restartPoints)(
+  "a withdrawal, then a restart %s, writes nothing more and tells the owner once what is on GitHub",
+  ([, step, where, before]) =>
+    run(({ ctx, remote, local, workers, restart }) =>
+      Effect.gen(function* () {
+        yield* goLocal(ctx, remote);
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        const held = latch();
+        if (where === "after") remote.hooks.afterWrites = held.hold;
+        else if (where === "landed")
+          remote.hooks.landed = (at) => (at === step ? held.hold : Effect.void);
+        else remote.hooks.beforeWrite = (at) => (at === step ? held.hold : Effect.void);
+        yield* local.finish(localThreadId(workerId), "completed", reportReply);
+        yield* Deferred.await(held.reached);
+        const entry = yield* entryOf(ctx);
+        yield* ownerSets(ctx, entry.key, "done");
+        // The process dies before the publish goes on or anyone is told.
+        assert.lengthOf(yield* notices(ctx.sql, "kin-stop-"), 0);
+        const { tracker } = yield* restart;
+        yield* settled(tracker, ctx.orgId, workerId);
+        assert.deepStrictEqual(remote.writes, [...before]);
+        assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "interrupted");
+        const branch = `kin/worker/${workerId}`;
+        const told =
+          step === "pull_request" && where === "before"
+            ? [
+                `Kin stopped the work on ${entry.key}, but it had already pushed ${branch} to acme/app on GitHub. Kin opened no pull request and left the branch as it is; delete it on GitHub if you don't want it.`,
+              ]
+            : step === "pull_request"
+              ? [
+                  `Kin stopped the work on ${entry.key}, but it had already published it as ${pr9} from ${branch}. Kin left both as they are; close the pull request on GitHub if you don't want it.`,
+                ]
+              : [];
+        const said = Effect.map(notices(ctx.sql, "kin-stop-"), (rows) =>
+          rows.map((row) => row.body),
+        );
+        assert.deepStrictEqual(yield* said, told);
+        // Said once: another restart neither repeats it nor writes anything.
+        const again = yield* restart;
+        yield* settled(again.tracker, ctx.orgId, workerId);
+        assert.deepStrictEqual(yield* said, told);
+        assert.deepStrictEqual(remote.writes, [...before]);
+      }),
+    ),
+);
+
+it.effect.each([
+  ["stopped while it was being opened", true],
+  ["not stopped", false],
+] as const)(
+  "a pull request opened but its answer lost counts as opened when the work was %s",
+  ([, stopped]) =>
+    run(({ ctx, remote, workers, tracker }) =>
+      Effect.gen(function* () {
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        const threadId = (yield* workerRow(ctx.sql, ctx.orgId, workerId)).threadId;
+        const held = latch();
+        remote.hooks.landed = (at) =>
+          at === "pull_request"
+            ? held.hold.pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new Publish.KinWorkerPublishRefused({ reason: "could not reach GitHub" }),
+                  ),
+                ),
+              )
+            : Effect.void;
+        yield* remote.finish(ThreadId.make(threadId), "completed", reportReply);
+        yield* Deferred.await(held.reached);
+        const entry = yield* entryOf(ctx);
+        if (stopped) yield* ownerSets(ctx, entry.key, "done");
+        yield* held.release;
+        yield* settled(tracker, ctx.orgId, workerId);
+        assert.strictEqual(
+          (yield* workerRow(ctx.sql, ctx.orgId, workerId)).status,
+          stopped ? "interrupted" : "completed",
+        );
+        const [reported] = yield* reports(ctx.sql, ctx.orgId);
+        assert.deepInclude(reported!.event.report.evidence, {
+          kind: "pr",
+          ref: pr9,
+          note: "Kin opened this from the worker's branch",
+        });
+        assert.deepStrictEqual(
+          (yield* notices(ctx.sql, "kin-stop-")).map((row) => row.body),
+          stopped
+            ? [
+                `Kin stopped the work on ${entry.key}, but it had already published it as ${pr9} from kin/worker/${workerId}. Kin left both as they are; close the pull request on GitHub if you don't want it.`,
+              ]
+            : [],
+        );
+      }),
+    ),
+);
+
+it.effect(
+  "when GitHub can't be reached to check, the owner hears Kin couldn't check, then what it found once it could",
+  () =>
+    run(({ ctx, remote, local, workers, restart }) =>
+      Effect.gen(function* () {
+        yield* goLocal(ctx, remote);
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        const held = latch();
+        remote.hooks.landed = (at) => (at === "pull_request" ? held.hold : Effect.void);
+        yield* local.finish(localThreadId(workerId), "completed", reportReply);
+        yield* Deferred.await(held.reached);
+        const entry = yield* entryOf(ctx);
+        yield* ownerSets(ctx, entry.key, "done");
+        remote.github.unreachable = true;
+        const first = yield* restart;
+        yield* settled(first.tracker, ctx.orgId, workerId);
+        const branch = `kin/worker/${workerId}`;
+        const unchecked = `Kin stopped the work on ${entry.key} while it was publishing, so it may have pushed ${branch} to acme/app or opened a pull request from it. Kin couldn't reach GitHub to check; it keeps checking and tells you what it finds.`;
+        const said = Effect.map(notices(ctx.sql, "kin-stop-"), (rows) =>
+          rows.map((row) => row.body),
+        );
+        assert.deepStrictEqual(yield* said, [unchecked]);
+        assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "interrupted");
+        // Still unreachable: the owner isn't told again.
+        yield* restart;
+        assert.deepStrictEqual(yield* said, [unchecked]);
+        remote.github.unreachable = false;
+        yield* restart;
+        const published = `Kin stopped the work on ${entry.key}, but it had already published it as ${pr9} from ${branch}. Kin left both as they are; close the pull request on GitHub if you don't want it.`;
+        assert.sameMembers(yield* said, [unchecked, published]);
+        yield* restart;
+        assert.lengthOf(yield* said, 2);
+        assert.deepStrictEqual(remote.writes, ["commit", "push", "pull_request"]);
+      }),
+    ),
+);
+
+it.effect(
+  "a branch on GitHub with commits the worker's lacks is left as it is, and the owner is told once",
+  () =>
+    run(({ ctx, remote, workers, tracker }) =>
+      Effect.gen(function* () {
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        const threadId = (yield* workerRow(ctx.sql, ctx.orgId, workerId)).threadId;
+        remote.github.diverged = true;
+        yield* remote.finish(ThreadId.make(threadId), "completed", reportReply);
+        yield* settled(tracker, ctx.orgId, workerId);
+        assert.deepStrictEqual(remote.writes, []);
+        assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "completed");
+        const [reported] = yield* reports(ctx.sql, ctx.orgId);
+        assert.include(
+          reported!.event.report.openQuestions.at(-1),
+          "the branch on GitHub has commits the worker's branch doesn't",
+        );
+        assert.deepStrictEqual(yield* notices(ctx.sql, "kin-publish-diverged:"), [
+          {
+            chatId: ctx.chat.chatId,
+            body: `Kin didn't push "${delegateInput.title}": kin/worker/${workerId} on acme/app has commits the worker's branch doesn't, and Kin never force-pushes. Kin left the branch on GitHub as it is.`,
+            authorKind: "system",
+          },
+        ]);
+      }),
+    ),
 );

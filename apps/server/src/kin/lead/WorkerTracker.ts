@@ -220,8 +220,9 @@ export class WorkerTracker extends Context.Service<
      */
     readonly track: (orgId: KinOrgId, workerId: KinWorkerId) => Effect.Effect<Fiber.Fiber<void>>;
     /**
-     * Stops one of this lead's workers: its run is interrupted, and its follower records the end
-     * as a finished worker's, with nothing published. One already ended is a quiet success.
+     * Stops one of this lead's workers: the stop is stored on the attempt first, so nothing of it
+     * publishes after this, in this process or the next; then its run is interrupted. One
+     * already ended is a quiet success.
      */
     readonly stop: (input: {
       readonly orgId: KinOrgId;
@@ -232,13 +233,11 @@ export class WorkerTracker extends Context.Service<
       readonly key: string;
       /** The attempt to stop; a newer one is left alone. Without it, the current attempt. */
       readonly startedAt?: number;
-      /** Tells the owner when the stop can't land after this returned. */
-      readonly failed?: (cause: unknown) => Effect.Effect<void>;
     }) => Effect.Effect<{ readonly stopped: boolean }, KinChatError | OrchestratorMcpFailure>;
     /**
-     * Runs a worker's launch unless a stop of that attempt came first; then nothing launches,
-     * the row ends stopped, and this is `None`. A stop during the launch reaches the thread it
-     * made as soon as it returns. `launch` binds the row to the thread before it succeeds.
+     * Runs a worker's launch unless a stored stop of that attempt came first; then nothing
+     * launches, the row ends stopped, and this is `None`. A stop stored during the launch reaches
+     * the thread it made as soon as it returns. `launch` binds the row to the thread first.
      */
     readonly launch: <A, E>(
       attempt: {
@@ -637,6 +636,15 @@ const make = Effect.gen(function* () {
         messageId: `kin-publish-diverged:${worker.workerId}:${worker.startedAt}`,
         body: divergedNotice(worker.title ?? "Worker", branch, repoName(worker)),
       });
+    // What the lead hears reached GitHub is what the row shows, never what the failure implies.
+    if (row?.pushedSha != null)
+      return {
+        refused: `Kin pushed ${branch} but opened no pull request: ${pull.failure.reason}.`,
+      };
+    if (row?.intent === "push" || row?.intent === "pull_request")
+      return {
+        refused: `Kin may have pushed ${branch} and couldn't check GitHub: ${pull.failure.reason}.`,
+      };
     return refused(pull.failure.reason);
   });
 
