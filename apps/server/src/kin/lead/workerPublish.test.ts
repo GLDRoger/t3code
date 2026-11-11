@@ -68,6 +68,11 @@ const fixture = Effect.fn("WorkerPublishTest.fixture")(function* (
   }
   for (const change of options.changes ?? []) {
     if (options.local === true) {
+      // A local worker only edits files; a link here is one a setup script left behind.
+      if (change.kind === "symlink") {
+        yield* fs.symlink(change.target, `${tree}/${change.path}`);
+        continue;
+      }
       if (change.kind !== "file") return yield* Effect.die("a local worker only edits files");
       yield* fs.makeDirectory(`${tree}/${change.path}`.replace(/\/[^/]+$/, ""), {
         recursive: true,
@@ -234,6 +239,29 @@ it.live.each(githubDirChanges)("refuses a branch that changes .github through %s
     assert.strictEqual(yield* remoteBranch, "");
     assert.deepStrictEqual(yield* scratch, []);
     assert.isFalse(requests.some((request) => request.method === "POST"));
+  }).pipe(Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer)), Effect.scoped),
+);
+
+const linkChanges: ReadonlyArray<readonly [string, Change]> = [
+  ["a link to an outside directory", { kind: "symlink", path: "docs", target: "/etc" }],
+  ["a link to an outside file", { kind: "symlink", path: "passwd", target: "/etc/passwd" }],
+  ["a ../.. link", { kind: "symlink", path: "up", target: "../.." }],
+  ["a link inside the repository", { kind: "symlink", path: "lib", target: "src" }],
+];
+
+it.live.each(linkChanges)("refuses a branch that adds %s", ([, change]) =>
+  Effect.gen(function* () {
+    for (const local of [false, true]) {
+      const { publish, remoteBranch, requests } = yield* fixture(
+        { "src/fix.ts": "export {};\n" },
+        { changes: [change], local },
+      );
+      assert.include(yield* Effect.flip(publish()), {
+        reason: "kin/worker/wk-1 adds or changes a symbolic link, which Kin never publishes",
+      });
+      assert.strictEqual(yield* remoteBranch, "");
+      assert.isFalse(requests.some((request) => request.method === "POST"));
+    }
   }).pipe(Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer)), Effect.scoped),
 );
 
