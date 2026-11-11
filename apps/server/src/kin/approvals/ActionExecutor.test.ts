@@ -4,6 +4,7 @@ import * as NodePath from "node:path";
 
 import { assert, describe, it } from "@effect/vitest";
 import {
+  KinAgentId,
   KinEventId,
   KinOrgId,
   type KinActionTarget,
@@ -55,6 +56,8 @@ import * as ApprovalsLayer from "./layer.ts";
 import { makeDeleteBranchHandler } from "./handlers/deleteBranch.ts";
 import { makeMergePullRequestHandler } from "./handlers/mergePullRequest.ts";
 import * as PendingActions from "./PendingActions.ts";
+import * as RetiredActions from "./retiredActions.ts";
+import { KinRetiredActions, RETIRED_ACTION_REASON } from "../lead/Retirement.ts";
 
 const NOW = Date.parse("2026-11-08T00:00:00Z");
 const DAY = 24 * 60 * 60 * 1000;
@@ -507,7 +510,10 @@ const claim = <Ref extends PendingActions.ActionRef>(ref: Ref, wrote: boolean) =
     );
     assert.isTrue(yield* ledger.claim({ ...ref, revision: 0, grantId: found!.grant.id }));
     if (wrote)
-      assert.isTrue(yield* ledger.writeStarting({ ...ref, at: yield* Clock.currentTimeMillis }));
+      assert.strictEqual(
+        yield* ledger.writeStarting({ ...ref, at: yield* Clock.currentTimeMillis }),
+        "started",
+      );
     return ref;
   });
 
@@ -900,6 +906,56 @@ describe("KinActionExecutor", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect(
+    "an agent retired after the claim, while its checks run, never has its action sent",
+    () => {
+      const { requests, checks, notices, layer } = harness();
+      return Effect.gen(function* () {
+        const { sql } = yield* seed;
+        const executor = yield* ActionExecutor.KinActionExecutor;
+        yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+          VALUES ('lead', 'org_01', 'Lead', 'lead', ${owner}, '2026-11-07T00:00:00.000Z')`;
+        const ref = yield* approvedMerge("webhook-1");
+        const reached = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        // Check 1 runs before the claim, check 2 right after it: held there while it retires.
+        checks.during = (count) =>
+          count === 2
+            ? Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(release)))
+            : Effect.void;
+        const running = yield* executor.execute(ref).pipe(Effect.forkChild);
+        yield* Deferred.await(reached);
+        assert.deepInclude(yield* stateOf(ref), { state: "executing" });
+        // Retiring closes what it can; an action already claimed is left to the executor.
+        yield* sql`UPDATE kin_agents SET retired_at = '2026-11-08T00:00:00.000Z'
+          WHERE agent_id = 'lead'`;
+        yield* Effect.gen(function* () {
+          yield* (yield* KinRetiredActions).close({ orgId, agentId: KinAgentId.make("lead") });
+        }).pipe(Effect.provide(RetiredActions.layer));
+        assert.deepInclude(yield* stateOf(ref), { state: "executing" });
+        yield* Deferred.succeed(release, undefined);
+        assert.deepStrictEqual(yield* Fiber.join(running), {
+          _tag: "voided",
+          reason: RETIRED_ACTION_REASON,
+        });
+        assert.deepStrictEqual(writes(requests), []);
+        assert.deepStrictEqual(yield* stateOf(ref), {
+          state: "voided",
+          reason: RETIRED_ACTION_REASON,
+        });
+        assert.deepInclude((yield* auditEntries).at(-1), {
+          event: "action_voided",
+          actionId: ref.actionId,
+          result: RETIRED_ACTION_REASON,
+        });
+        assert.deepInclude((yield* executions)[0], { action_id: ref.actionId, outcome: "failed" });
+        // Nothing is left `executing` for a restart to reconcile, and the owner hears nothing new.
+        assert.deepStrictEqual(yield* executor.pickup, { approved: [], orphaned: [] });
+        assert.deepStrictEqual(notices, []);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
   it.effect("holds an approved action while the credential check fails, audited once", () => {
     const { requests, checks, layer } = harness();
     return Effect.gen(function* () {
@@ -1104,9 +1160,12 @@ describe("KinActionExecutor", () => {
       const ref = yield* claimedThenCrashed("restart-late-write", false);
       yield* TestClock.adjust("100 seconds");
       const ledger = yield* PendingActions.KinExecutionLedger;
-      assert.isTrue(yield* ledger.writeStarting({ ...ref, at: yield* Clock.currentTimeMillis }));
+      assert.strictEqual(
+        yield* ledger.writeStarting({ ...ref, at: yield* Clock.currentTimeMillis }),
+        "started",
+      );
       // Written once: a second mark can't move the window.
-      assert.isFalse(yield* ledger.writeStarting({ ...ref, at: NOW }));
+      assert.strictEqual(yield* ledger.writeStarting({ ...ref, at: NOW }), "closed");
       yield* TestClock.adjust("30 seconds");
       assert.deepStrictEqual(yield* executor.reconcile(ref), { _tag: "unknown" });
       yield* TestClock.adjust("90 seconds");
