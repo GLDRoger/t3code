@@ -16,6 +16,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { nextScheduledRunAt } from "../../scheduledTasks/Schedule.ts";
+import { type KinSchedule, readNativeTask, readSchedule } from "../triggers/kinSchedules.ts";
 
 export const scheduledTaskTriggerId = (itemId: string) => KinTriggerId.make(`schedule:${itemId}`);
 
@@ -67,11 +68,14 @@ export const describeScheduledTaskTap = Effect.fn("KinScheduledTasks.describeTap
     widget.widgetId !== kinScheduledTaskWidgetId(widget.orgId, card.itemId)
   )
     return yield* invalid("Unknown card action.");
+  const sql = yield* SqlClient.SqlClient;
+  // A native schedule's Delete is the server's to finish; the old kind asks its lead to cancel it.
+  const native = (yield* readSchedule(sql, widget.orgId, card.itemId)) !== undefined;
   return {
     card,
     action: actionId,
     text: `Tapped "${LABELS[actionId]}" on the scheduled task "${card.title}"`,
-    wake: actionId === "edit" || actionId === "delete",
+    wake: actionId === "edit" || (actionId === "delete" && !native),
   };
 });
 
@@ -88,6 +92,8 @@ export const applyScheduledTaskTap = Effect.fn("KinScheduledTasks.applyTap")(fun
   const orgId = widget.orgId;
   const { card, action } = tap;
   if (action === "edit") return null;
+  const schedule = yield* readSchedule(sql, orgId, card.itemId);
+  if (schedule !== undefined) return yield* applyNativeTap(sql, schedule, card, action, now);
   const row = yield* readScheduledTask(sql, orgId, card.itemId);
   if (row === undefined || row.state !== "active")
     return yield* invalid("This scheduled task was deleted.");
@@ -135,6 +141,57 @@ export const applyScheduledTaskTap = Effect.fn("KinScheduledTasks.applyTap")(fun
         state: KinScheduledTaskCard;
         closed: boolean;
       };
+    }
+  }
+});
+
+/** A native schedule's tap is recorded here; the next tick applies it to the native task. */
+const applyNativeTap = Effect.fn("KinScheduledTasks.applyNativeTap")(function* (
+  sql: SqlClient.SqlClient,
+  schedule: KinSchedule,
+  card: KinScheduledTaskCard,
+  action: Exclude<KinScheduledTaskCardAction, "edit">,
+  now: number,
+) {
+  const task = yield* readNativeTask(sql, schedule.taskId);
+  if (task === undefined || schedule.deletedAt !== null)
+    return yield* invalid("This scheduled task was deleted.");
+  const enabled =
+    schedule.pendingEnabled === null ? task.enabled === 1 : schedule.pendingEnabled === 1;
+  const where = sql`task_id = ${schedule.taskId}`;
+  switch (action) {
+    case "run_now": {
+      if (schedule.runNowAt !== null || card.lastRun?.status === "running")
+        return yield* invalid("It's already running.");
+      yield* sql`UPDATE kin_schedules SET run_now_at = ${now}, updated_at = ${now} WHERE ${where}`;
+      return {
+        state: { ...card, lastRun: { at: iso(now), status: "running" } },
+        closed: false,
+      } satisfies { state: KinScheduledTaskCard; closed: boolean };
+    }
+    case "pause": {
+      if (!enabled) return yield* invalid("It's already paused.");
+      yield* sql`UPDATE kin_schedules SET pending_enabled = 0, updated_at = ${now} WHERE ${where}`;
+      return {
+        state: { ...card, status: "paused", nextRunAt: null },
+        closed: false,
+      } satisfies { state: KinScheduledTaskCard; closed: boolean };
+    }
+    case "resume": {
+      if (enabled) return yield* invalid("It's already running on schedule.");
+      yield* sql`UPDATE kin_schedules SET pending_enabled = 1, updated_at = ${now} WHERE ${where}`;
+      const next = nextRun(card.every, now, card.timeZone);
+      return {
+        state: { ...card, status: "active", nextRunAt: next === null ? null : iso(next) },
+        closed: false,
+      } satisfies { state: KinScheduledTaskCard; closed: boolean };
+    }
+    case "delete": {
+      yield* sql`UPDATE kin_schedules SET deleted_at = ${now}, updated_at = ${now} WHERE ${where}`;
+      return {
+        state: { ...card, status: "deleted", nextRunAt: null },
+        closed: true,
+      } satisfies { state: KinScheduledTaskCard; closed: boolean };
     }
   }
 });

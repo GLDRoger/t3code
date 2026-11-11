@@ -137,7 +137,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_schedule", {
     ...shared,
     description:
-      "Set up a recurring task: at each run you get its instruction, do the work and post the results. Only when the owner's own message in this turn asked for it; anything else is refused. Supply what (the instruction, in the owner's terms), at (HH:MM owner time), days (0 Sunday to 6 Saturday), chatId and that message's sourceEventId. To change an existing task, pass it as replaces: it is cancelled and only the new one runs. Identical retries return the same item. For a single time, use kin_defer.",
+      "Set up a recurring task: at each run you get its instruction, do the work and post the results. Only when the owner's own message in this turn asked for it; anything else is refused. Supply what (the instruction, in the owner's terms), at (HH:MM on the host clock it runs on: owner time, unless the Owner time line names a different host clock, then convert to that), days (0 Sunday to 6 Saturday, on that clock), chatId and that message's sourceEventId. A run the host misses by more than 10 minutes, such as while it is off, is skipped, not made up later. To change an existing task, pass it as replaces: only the new version runs. Identical retries return the same item. For a single time, use kin_defer.",
     parameters: Lead.ScheduleInput,
     success: Lead.ItemResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

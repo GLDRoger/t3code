@@ -502,6 +502,12 @@ it("a chat-only grant cannot satisfy any non-chat method's declared permission",
     "kin.push.watch",
     "kin.widgets.act",
   ]);
+  // Kin schedules live in T3's scheduled tasks: a teammate's session reaches none of them.
+  const scheduledTasks = Object.entries(RPC_REQUIRED_SCOPES).filter(([method]) =>
+    method.startsWith("scheduledTasks."),
+  );
+  expect(scheduledTasks.length).toBeGreaterThanOrEqual(5);
+  for (const [, permission] of scheduledTasks) expect(permission).not.toBe("kin:chat");
   expect(RPC_REQUIRED_SCOPES["kin.people.revokeInvite"]).toBe("access:write");
   expect(RPC_REQUIRED_SCOPES["kin.people.listInvites"]).toBe("access:read");
 });

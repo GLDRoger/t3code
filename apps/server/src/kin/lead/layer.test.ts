@@ -14,6 +14,7 @@ import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import * as ServerConfig from "../../config.ts";
 import * as EffectWorker from "../../orchestration-v2/EffectWorker.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
+import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import { provideDeterministicTestRuntime } from "../../orchestration-v2/testkit/DeterministicRuntime.ts";
 import * as ChatService from "../chat/KinChatService.ts";
 import * as ChatHub from "../chat/KinChatHub.ts";
@@ -26,6 +27,7 @@ import { event, harness, seed, orgId } from "./WakeupRunner.testkit.ts";
 
 const external = Layer.mergeAll(
   Layer.mock(ChatService.KinChatService)({}),
+  Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
   Layer.mock(KinRecords.KinRecords)({}),
   Layer.mock(ChatHub.KinChatHub)({ subscribeAll: Effect.succeed(Stream.never) }),
   Layer.mock(LevelGate.KinLevelGate)({}),
