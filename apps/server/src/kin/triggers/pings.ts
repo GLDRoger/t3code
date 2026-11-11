@@ -16,6 +16,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
@@ -23,6 +24,7 @@ import { PersistenceSqlError, toPersistenceSqlError } from "../../persistence/Er
 import * as Chat from "../chat/KinChatService.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as Cache from "../memory/MemoryCache.ts";
+import { reaches, storedLabels } from "../memory/sensitivity.ts";
 import { isQuiet, KIN_DEFAULT_QUIET_HOURS } from "./quietHours.ts";
 
 const text = Schema.String.check(
@@ -213,9 +215,14 @@ const make = Effect.gen(function* () {
         const defaultHours = decodeJsonQuiet(settings[0]?.quiet_hours_json);
         const hours = defaultHours._tag === "Some" ? defaultHours.value : KIN_DEFAULT_QUIET_HOURS;
         const people = yield* memory.query(orgId, { kind: "person", excludeInvalid: true });
+        // A chase quotes its item, so it goes where anyone else reads only if the team may know it.
+        const labels = yield* Effect.cached(
+          storedLabels(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.option),
+        );
         const candidates: Array<{
           row: Row;
           request: Request;
+          withheld: boolean;
           closed: boolean;
           handle: string;
           quiet: boolean;
@@ -235,9 +242,19 @@ const make = Effect.gen(function* () {
               (p) => !p.duplicate && p.path === `people/${person[0]?.handle}.md`,
             );
             const personalHours = decodeQuiet(profile?.quiet_hours);
+            const [audience] = yield* sql<{ shared: number }>`SELECT (c.shared_at IS NOT NULL
+                OR EXISTS (SELECT 1 FROM kin_chat_members m WHERE m.org_id = c.org_id
+                  AND m.chat_id = c.chat_id AND m.principal_kind = 'person' AND m.left_at IS NULL
+                  AND m.person_id IS NOT ${r.owner})) AS shared
+              FROM kin_chats c WHERE c.org_id = ${orgId} AND c.chat_id = ${r.chatId} ORDER BY c.chat_id`;
+            const stored = item === null || audience?.shared === 0 ? undefined : yield* labels;
             return {
               row,
               request: r,
+              withheld:
+                item !== null &&
+                stored !== undefined &&
+                (Option.isNone(stored) || !reaches("shared", item, stored.value)),
               closed: item === null || item.head.status !== "open" || item.head.invalid_at !== null,
               handle: person[0]?.handle ?? "member",
               quiet: isQuiet(
@@ -289,6 +306,14 @@ const make = Effect.gen(function* () {
 
               if (closed || replies.length > 0) {
                 yield* stop(r, now, closed);
+                continue;
+              }
+              if (candidate.withheld) {
+                yield* stop(r, now, false, "closed");
+                yield* Effect.logInfo("Kin ping withheld: the team may not know its item", {
+                  orgId,
+                  itemId: r.itemId,
+                });
                 continue;
               }
               const valid = yield* checkOwner(r).pipe(Effect.andThen(validate(r)), Effect.result);
