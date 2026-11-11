@@ -145,7 +145,8 @@ export const retire = Effect.fn("KinRetirement.retire")(function* (input: {
 
 /**
  * In the restore's transaction: the timers and schedules retiring paused run again (a due one
- * fires late, once). Stopped workers, expired events and closed requests stay as they are.
+ * fires late, once; a scheduled run more than two hours late is skipped instead).
+ * Stopped workers, expired events and closed requests stay as they are.
  */
 export const restore = Effect.fn("KinRetirement.restore")(function* (input: {
   readonly orgId: KinOrgId;

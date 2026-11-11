@@ -639,7 +639,7 @@ const make = Effect.gen(function* () {
         if (lead === undefined) return yield* skip("there is no agent to run it.");
         if (!admitted) return yield* skip("today's budget is used up.");
         if (source.kind === "fire" && now - dueAt > SCHEDULED_RUN_LATE_MS)
-          return yield* skip("Kin was offline when it was due.");
+          return yield* skip("it was due too long ago to run now.");
         const dedupeKey = `scheduled:${runId}`;
         const eventId = KinEventId.make(`scheduled_${hex(`${orgId.length}:${orgId}${dedupeKey}`)}`);
         const event = yield* decodeEvent({
