@@ -580,10 +580,7 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
     yield* setup("ask-event");
     yield* LeadWork.update(scope, { key: "C-1", sourceEventId: "ask-event", sensitive: true });
     // One row per tool the lead has: a tool added without one fails to typecheck and here.
-    const calls: Record<
-      keyof typeof KinWorkToolkit.tools,
-      Effect.Effect<unknown, unknown, Services>
-    > = {
+    const calls = {
       records_query: LeadWork.query(scope, { keys: ["W-2"] }),
       record_get: LeadWork.get(scope, { key: "W-2" }),
       // Setting up a client that exists returns it, and shows it, sensitive.
@@ -596,7 +593,7 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
         sourceEventId: "ask-event",
         notes: "Invented note",
       }),
-    };
+    } satisfies Record<keyof typeof KinWorkToolkit.tools, unknown>;
     assert.deepStrictEqual(
       Object.keys(calls).toSorted(),
       Object.keys(KinWorkToolkit.tools).toSorted(),
