@@ -1381,6 +1381,7 @@ describe("WakeupRunner", () => {
               ),
               Stream.take(1),
               Stream.runDrain,
+              Effect.orDie,
               Effect.forkChild,
             );
             yield* Deferred.succeed(holdRunning, undefined);
