@@ -23,6 +23,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
 import type * as Statement from "effect/sql/Statement";
 import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
@@ -105,6 +106,15 @@ export type QueryInput = {
   readonly at?: number;
 };
 
+/** An entry the owner closed or took from a lead while it held it open, after that commits. */
+export type Withdrawal = {
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+  readonly recordId: string;
+  readonly key: string;
+  readonly seq: number;
+};
+
 const isChatError = Schema.is(KinChatError);
 const encodeFields = Schema.encodeEffect(
   Schema.fromJsonString(
@@ -179,6 +189,10 @@ export class KinRecords extends Context.Service<
     readonly changes: (
       orgId: KinOrgId,
     ) => Stream.Stream<{ readonly seq: number; readonly key?: string }, KinChatError>;
+    /** The lead runtime stops a withdrawn entry's workers; the WS side has no thread services. */
+    readonly attachWithdrawals: (
+      onWithdrawn: (withdrawal: Withdrawal) => Effect.Effect<void>,
+    ) => Effect.Effect<void, never, Scope.Scope>;
   }
 >()("t3/kin/work/KinRecords") {}
 
@@ -191,6 +205,7 @@ const make = Effect.gen(function* () {
     readonly key: string;
   }>();
   const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
+  let onWithdrawn: ((withdrawal: Withdrawal) => Effect.Effect<void>) | undefined;
 
   const failed = <A, E extends { readonly _tag: string }, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
@@ -260,9 +275,9 @@ const make = Effect.gen(function* () {
     now: number,
     reason: "assigned" | "withdrawn" = "assigned",
   ) {
-    if (to._tag !== "agent") return;
-    if (writer.actor._tag === "agent" && writer.actor.agentId === to.agentId) return;
-    if (assignedBy === null) return;
+    if (to._tag !== "agent") return false;
+    if (writer.actor._tag === "agent" && writer.actor.agentId === to.agentId) return false;
+    if (assignedBy === null) return false;
     const [lead] = yield* sql<{ memberId: string; ownerPersonId: string }>`
       SELECT m.member_id AS "memberId", a.owner_person_id AS "ownerPersonId"
       FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
@@ -271,9 +286,9 @@ const make = Effect.gen(function* () {
       WHERE l.org_id = ${orgId} AND l.agent_id = ${to.agentId} AND a.retired_at IS NULL
       ORDER BY m.member_id LIMIT 1`;
     // Only the lead's owner is an assigner this slice wakes for; a teammate's waits for slice 2.
-    if (lead === undefined || lead.ownerPersonId !== assignedBy) return;
+    if (lead === undefined || lead.ownerPersonId !== assignedBy) return false;
     const key = `record-${reason}:${row.recordId}:${seq}`;
-    yield* queue
+    return yield* queue
       .enqueue({
         _tag: "record.changed",
         orgId,
@@ -292,9 +307,10 @@ const make = Effect.gen(function* () {
         reason,
       })
       .pipe(
+        Effect.as(true),
         Effect.catchTags({
-          KinEventQueueRetiredAgent: () => Effect.void,
-          KinEventQueueUnknownAgent: () => Effect.void,
+          KinEventQueueRetiredAgent: () => Effect.succeed(false),
+          KinEventQueueUnknownAgent: () => Effect.succeed(false),
         }),
       );
   });
@@ -551,8 +567,11 @@ const make = Effect.gen(function* () {
           !isClosed(row.state) && (isClosed(state) || reassigned !== undefined)
             ? before.owner
             : undefined;
-        if (withdrawnFrom !== undefined && writer.actor._tag === "person")
-          yield* wakeLead(
+        // Told only when the person is the lead's owner; then Kin, not the lead, stops its work.
+        if (
+          withdrawnFrom?._tag === "agent" &&
+          writer.actor._tag === "person" &&
+          (yield* wakeLead(
             orgId,
             writer,
             row,
@@ -561,7 +580,23 @@ const make = Effect.gen(function* () {
             seq,
             now,
             "withdrawn",
+          ))
+        ) {
+          const withdrawal = {
+            orgId,
+            agentId: withdrawnFrom.agentId,
+            recordId: row.recordId,
+            key: row.key,
+            seq,
+          };
+          yield* sql.afterCommit(
+            Effect.suspend(() =>
+              onWithdrawn === undefined
+                ? Effect.logError("Kin has no lead runtime to stop withdrawn work", withdrawal)
+                : onWithdrawn(withdrawal),
+            ),
           );
+        }
         const updated = yield* byId(orgId, row.recordId).pipe(provideSql);
         if (updated === undefined) return yield* unavailable;
         return updated;
@@ -640,6 +675,17 @@ const make = Effect.gen(function* () {
   });
 
   return KinRecords.of({
+    attachWithdrawals: Effect.fn("KinRecords.attachWithdrawals")(function* (next) {
+      yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          onWithdrawn = next;
+        }),
+        () =>
+          Effect.sync(() => {
+            if (onWithdrawn === next) onWithdrawn = undefined;
+          }),
+      );
+    }),
     create,
     update,
     link,

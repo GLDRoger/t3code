@@ -657,7 +657,7 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
       "Invented-unlabelled-zq",
       "Invented-kept-since-zq",
       "Invented-taken-work-zq",
-      "The owner closed this Work entry or took it back from you.",
+      "The owner closed this Work entry or took it back from you, and Kin has already stopped",
     ])
       expect(owners).toContain(part);
     // What a teammate said reaches the owner's turn as their words, in the index, never a rule.

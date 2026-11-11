@@ -166,4 +166,4 @@ export const WORK_RULE =
   "Where work stands comes only from this section and the records tools, never from memory or earlier messages. `changed` lists only what others changed since you last spoke in this chat. Anything not in it you have already reported or nothing happened to it: don't bring it up again unless asked.";
 
 /** The event line for an open entry the owner closed or took back while this lead held it. */
-export const WITHDRAWN_WORK = `The owner closed this Work entry or took it back from you. Stop any work on it now (kin_worker_stop a worker you started for it) and leave the entry as it is. If nothing of yours was under way, write exactly ${SILENT_REPLY}; otherwise say in one line what you stopped.`;
+export const WITHDRAWN_WORK = `The owner closed this Work entry or took it back from you, and Kin has already stopped any worker of yours that was running on it, so there is nothing to stop or restart. Leave the entry as it is. Reply only if the owner needs to know something about it, in one line; otherwise write exactly ${SILENT_REPLY}.`;

@@ -63,6 +63,7 @@ import {
   type HostProject,
 } from "./workerProjects.ts";
 import { publishBranch } from "./workerPublish.ts";
+import { localThreadId } from "./workThread.ts";
 import { endedStatuses, launchRequestId, unboundThreadId, WorkerTracker } from "./WorkerTracker.ts";
 
 const text = (max: number) => Schema.String.check(Schema.isMaxLength(max));
@@ -992,8 +993,6 @@ const make = Effect.gen(function* () {
     scope: McpInvocationScope,
     input: typeof StopInput.Type,
   ) {
-    // The owner stops a worker on this server from its thread, as any other.
-    if (Option.isNone(env.environmentId)) return yield* denied(LOCAL_BUILD_ONLY);
     const ctx = yield* lead(scope);
     const record = yield* sql.withTransaction(
       Effect.gen(function* () {
@@ -1007,9 +1006,31 @@ const make = Effect.gen(function* () {
             "owner_only"
         )
           return yield* missing();
+        // The gate's check again: a join may have shared the turn since.
+        if (
+          !(yield* toolAdmitted(ctx, "kin_worker_stop", input).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          ))
+        )
+          return yield* denied(SHARED_REFUSAL);
         return { ...stored, chatId: answersIn };
       }),
     );
+    const key = `kin-worker-stop:${input.workerId}:${ctx.wakeupId}:${record.startedAt}`;
+    const reason = input.reason ?? "Stopped by the Kin lead.";
+    // A worker on this server: T3 interrupts its thread and its follower records the end.
+    if (record.environmentId === null && record.threadId === localThreadId(input.workerId))
+      return {
+        workerId: input.workerId,
+        stopped: (yield* tracker.stop({
+          orgId: ctx.orgId,
+          agentId: ctx.agentId,
+          workerId: input.workerId,
+          reason,
+          key,
+        })).stopped,
+      };
+    if (Option.isNone(env.environmentId)) return yield* denied(LOCAL_BUILD_ONLY);
     if (record.environmentId === null || !bound(record))
       return { workerId: input.workerId, stopped: false };
     const environmentId = record.environmentId;
@@ -1017,8 +1038,8 @@ const make = Effect.gen(function* () {
     const stopped = yield* WorkerEnvironment.stopThere(env, {
       environmentId,
       threadId: record.threadId,
-      key: `kin-worker-stop:${input.workerId}:${ctx.wakeupId}:${record.startedAt}`,
-      reason: input.reason ?? "Stopped by the Kin lead.",
+      key,
+      reason,
     }).pipe(there("The worker could not be stopped. Retry or tell the owner."));
     if (record.chatId !== null)
       yield* chat
