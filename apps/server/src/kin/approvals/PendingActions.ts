@@ -270,6 +270,14 @@ export class KinPendingActions extends Context.Service<
       ReadonlyArray<KinActionWithGrant & { readonly writeStartedAt: number | null }>,
       Errors
     >;
+    /**
+     * Voids the claimed actions of a retired agent whose write hasn't started, as `writeStarting`
+     * does; one already sending is left to reconciliation.
+     */
+    readonly voidRetiredClaims: (input: {
+      readonly orgId: KinOrgId;
+      readonly agentId: KinAgentId;
+    }) => Effect.Effect<void, Errors>;
     /** Every action `approve` moves to `approved`, published after its transaction commits. */
     readonly approvals: Effect.Effect<PubSub.Subscription<ActionRef>, never, Scope.Scope>;
     /** Every action this instance creates, refreshes, decides or sweeps, after its commit. */
@@ -743,35 +751,61 @@ const make = Effect.gen(function* () {
     JOIN kin_agents g ON g.org_id = a.org_id AND g.agent_id = a.requested_by_agent_id
     WHERE a.org_id = ${ref.orgId} AND a.action_id = ${ref.actionId} AND g.retired_at IS NOT NULL)`;
 
+  const unstarted = (ref: ActionRef) => sql`org_id = ${ref.orgId} AND action_id = ${ref.actionId}
+    AND finished_at IS NULL AND write_started_at IS NULL`;
+
+  // A claimed action of a retired agent with nothing sent: closed as retiring closes an approved one.
+  const voidRetiredClaim = Effect.fnUntraced(function* (ref: ActionRef, at: number) {
+    const [won] = yield* sql<FactsRow>`UPDATE kin_pending_actions
+      SET state = 'voided', state_reason = ${RETIRED_ACTION_REASON}, updated_at = ${at}
+      WHERE org_id = ${ref.orgId} AND action_id = ${ref.actionId} AND state = 'executing'
+        AND ${requesterRetired(ref)}
+        AND EXISTS (SELECT 1 FROM kin_executions WHERE ${unstarted(ref)})
+      RETURNING action_id, kind, resolved_json`;
+    if (won === undefined) return false;
+    yield* sql`UPDATE kin_executions SET finished_at = ${at}, outcome = 'failed',
+        error = ${RETIRED_ACTION_REASON}
+      WHERE ${unstarted(ref)}`;
+    yield* changed(ref);
+    yield* audit.append({
+      orgId: ref.orgId,
+      event: "action_voided",
+      ...(yield* auditFacts(won)),
+      result: RETIRED_ACTION_REASON,
+    });
+    return true;
+  });
+
+  const voidRetiredClaims = Effect.fn("KinPendingActions.voidRetiredClaims")(
+    function* (input: { readonly orgId: KinOrgId; readonly agentId: KinAgentId }) {
+      const at = yield* Clock.currentTimeMillis;
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const claimed = yield* sql<{ action_id: KinActionId }>`SELECT a.action_id
+            FROM kin_pending_actions a JOIN kin_executions e
+              ON e.org_id = a.org_id AND e.action_id = a.action_id
+            WHERE a.org_id = ${input.orgId} AND a.requested_by_agent_id = ${input.agentId}
+              AND a.state = 'executing' AND e.finished_at IS NULL AND e.write_started_at IS NULL
+            ORDER BY a.action_id`;
+          for (const row of claimed)
+            yield* voidRetiredClaim({ orgId: input.orgId, actionId: row.action_id }, at);
+        }),
+      );
+    },
+    Effect.mapError(toError("KinPendingActions.voidRetiredClaims")),
+  );
+
   const writeStarting = Effect.fn("KinExecutionLedger.writeStarting")(
     function* (input: ActionRef & { readonly at: number }) {
       return yield* sql.withTransaction(
         Effect.gen(function* () {
-          const open = sql`org_id = ${input.orgId} AND action_id = ${input.actionId}
-            AND finished_at IS NULL AND write_started_at IS NULL`;
           const rows = yield* sql`UPDATE kin_executions SET write_started_at = ${input.at}
-            WHERE ${open} AND NOT ${requesterRetired(input)}
+            WHERE ${unstarted(input)} AND NOT ${requesterRetired(input)}
             RETURNING action_id`;
           if (rows.length > 0) return "started" as const;
-          // Retired since the claim, and nothing sent: closed as retiring closes an approved one.
-          const [won] = yield* sql<FactsRow>`UPDATE kin_pending_actions
-            SET state = 'voided', state_reason = ${RETIRED_ACTION_REASON}, updated_at = ${input.at}
-            WHERE org_id = ${input.orgId} AND action_id = ${input.actionId} AND state = 'executing'
-              AND ${requesterRetired(input)}
-              AND EXISTS (SELECT 1 FROM kin_executions WHERE ${open})
-            RETURNING action_id, kind, resolved_json`;
-          if (won === undefined) return "closed" as const;
-          yield* sql`UPDATE kin_executions SET finished_at = ${input.at}, outcome = 'failed',
-              error = ${RETIRED_ACTION_REASON}
-            WHERE ${open}`;
-          yield* changed(input);
-          yield* audit.append({
-            orgId: input.orgId,
-            event: "action_voided",
-            ...(yield* auditFacts(won)),
-            result: RETIRED_ACTION_REASON,
-          });
-          return "retired" as const;
+          return (yield* voidRetiredClaim(input, input.at))
+            ? ("retired" as const)
+            : ("closed" as const);
         }),
       );
     },
@@ -894,6 +928,7 @@ const make = Effect.gen(function* () {
       heldGrant,
       approvedWithGrant,
       executingWithGrant,
+      voidRetiredClaims,
       approvals: PubSub.subscribe(approvedHub),
       changes: PubSub.subscribe(changedHub),
       sweep,

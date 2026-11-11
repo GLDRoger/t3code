@@ -48,7 +48,8 @@ import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { useNowMinuteMs } from "../../lib/clock";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { appAtomRegistry } from "../../state/atom-registry";
-import { useOpenKinThread } from "./state/useOpenKinThread";
+import { KIN_ONLY } from "../../lib/kinOnly";
+import { useOpenWorkspaceDetail } from "../layout/useOpenWorkspaceDetail";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
@@ -149,7 +150,7 @@ function KinWorkItemGate(props: ItemTarget) {
 
 function KinWorkItemBody(props: ItemTarget) {
   const navigation = useNavigation();
-  const openThread = useOpenKinThread();
+  const openDetail = useOpenWorkspaceDetail();
   const { environmentId, orgId, itemKey } = props;
   const itemAtom = kinClient.workItem({ environmentId, input: { orgId, key: itemKey } });
   const { state: changed, changes } = useKinWorkChanges(props);
@@ -317,7 +318,7 @@ function KinWorkItemBody(props: ItemTarget) {
         <ListRowLayout
           leading={<KinAvatar avatar={view.owner.avatar} size="mini" />}
           label={view.owner.name}
-          detail="Has it"
+          detail={view.owner.retired ? "Has it · Retired" : "Has it"}
         />
         {act === null || view.closed ? null : (
           <KinWorkStatusRow
@@ -486,7 +487,7 @@ function KinWorkItemBody(props: ItemTarget) {
               onOpen={() => openLink(link)}
               onOpenThread={(thread) => {
                 navigation.goBack();
-                openThread(thread);
+                openDetail({ name: "Thread", params: thread });
               }}
             />
           ))}
@@ -538,8 +539,8 @@ function KinWorkLink(props: {
       ) : (
         <ListRow {...content} onPress={props.onOpen} />
       )}
-      {/* A lead's work opens its thread the way its task card does. */}
-      {thread === null ? null : (
+      {/* A lead's work opens its thread the way its task card does; a Kin-only app has no threads. */}
+      {thread === null || KIN_ONLY ? null : (
         <ListActionRow
           label={KIN_WORK_COPY.openThread}
           onPress={() => props.onOpenThread(thread)}
@@ -557,7 +558,13 @@ function KinWorkLeadChat(
   },
 ) {
   const { environmentId, orgId } = props;
-  const result = useAtomValue(kinClient.leads({ environmentId, input: { orgId } }));
+  // The owner's list keeps a retired agent, whose chat is where it is restored.
+  const canRestore = useAtomValue(kinClient.leadRestore.permissionAtom(environmentId));
+  const result = useAtomValue(
+    canRestore
+      ? kinClient.agents({ environmentId, orgId })
+      : kinClient.leads({ environmentId, input: { orgId } }),
+  );
   const lead = Option.getOrNull(AsyncResult.value(result))?.leads.find(
     (held) => held.agentId === props.agentId,
   );

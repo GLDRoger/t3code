@@ -123,6 +123,8 @@ export function KinMessageBubble(props: {
   /** The environment hosting the chat. */
   readonly environmentId: EnvironmentId;
   readonly viewerPersonId: KinPersonId | null;
+  /** The card's agent by name when it is retired. */
+  readonly heldFor?: string | null;
   readonly reactions: ReadonlyArray<KinReactionChip>;
   /** Toggles the viewer's reaction; null where they can't react, such as a privileged card. */
   readonly onReact: ((emoji: KinReactionEmoji) => void) | null;
@@ -257,6 +259,7 @@ export function KinMessageBubble(props: {
             environmentId={props.environmentId}
             viewerPersonId={props.viewerPersonId}
             onOpenLink={props.onLinkPress}
+            heldFor={props.heldFor ?? null}
           />
         </View>
       ) : null}

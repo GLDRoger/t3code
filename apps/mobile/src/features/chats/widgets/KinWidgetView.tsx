@@ -23,6 +23,8 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
   readonly environmentId: EnvironmentId;
   readonly viewerPersonId: KinPersonId | null;
   readonly onOpenLink: (url: string) => void;
+  /** The card's agent by name when it is retired, so its reminders and schedules read as on hold. */
+  readonly heldFor?: string | null;
 }) {
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
   // Before the catalog loads, assume the environment is known; the thread screen handles the rest.
@@ -30,6 +32,7 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
     props.widget,
     props.environmentId,
     (environmentId) => !catalog.isReady || catalog.entries.has(environmentId),
+    props.heldFor ?? null,
   );
   switch (view.kind) {
     case "task":

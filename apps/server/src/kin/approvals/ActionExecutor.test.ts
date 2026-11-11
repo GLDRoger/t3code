@@ -907,7 +907,7 @@ describe("KinActionExecutor", () => {
   });
 
   it.effect(
-    "an agent retired after the claim, while its checks run, never has its action sent",
+    "an agent retired after the claim, while its checks run, never has its action sent, even once restored",
     () => {
       const { requests, checks, notices, layer } = harness();
       return Effect.gen(function* () {
@@ -926,13 +926,18 @@ describe("KinActionExecutor", () => {
         const running = yield* executor.execute(ref).pipe(Effect.forkChild);
         yield* Deferred.await(reached);
         assert.deepInclude(yield* stateOf(ref), { state: "executing" });
-        // Retiring closes what it can; an action already claimed is left to the executor.
+        // Claimed but not yet sending: retiring voids it there and then.
         yield* sql`UPDATE kin_agents SET retired_at = '2026-11-08T00:00:00.000Z'
           WHERE agent_id = 'lead'`;
         yield* Effect.gen(function* () {
           yield* (yield* KinRetiredActions).close({ orgId, agentId: KinAgentId.make("lead") });
         }).pipe(Effect.provide(RetiredActions.layer));
-        assert.deepInclude(yield* stateOf(ref), { state: "executing" });
+        assert.deepStrictEqual(yield* stateOf(ref), {
+          state: "voided",
+          reason: RETIRED_ACTION_REASON,
+        });
+        // A restore before the executor reaches the write doesn't bring the signed action back.
+        yield* sql`UPDATE kin_agents SET retired_at = NULL WHERE agent_id = 'lead'`;
         yield* Deferred.succeed(release, undefined);
         assert.deepStrictEqual(yield* Fiber.join(running), {
           _tag: "voided",
@@ -943,11 +948,10 @@ describe("KinActionExecutor", () => {
           state: "voided",
           reason: RETIRED_ACTION_REASON,
         });
-        assert.deepInclude((yield* auditEntries).at(-1), {
-          event: "action_voided",
-          actionId: ref.actionId,
-          result: RETIRED_ACTION_REASON,
-        });
+        const voided = (yield* auditEntries).filter((entry) => entry.event === "action_voided");
+        assert.lengthOf(voided, 1);
+        assert.deepInclude(voided[0], { actionId: ref.actionId, result: RETIRED_ACTION_REASON });
+        assert.deepInclude((yield* auditEntries).at(-1), { event: "action_voided" });
         assert.deepInclude((yield* executions)[0], { action_id: ref.actionId, outcome: "failed" });
         // Nothing is left `executing` for a restart to reconcile, and the owner hears nothing new.
         assert.deepStrictEqual(yield* executor.pickup, { approved: [], orphaned: [] });

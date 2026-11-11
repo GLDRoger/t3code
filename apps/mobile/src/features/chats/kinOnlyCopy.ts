@@ -16,9 +16,3 @@ export const KIN_ONLY_UNAUTHORIZED = {
   title: "This phone can't read your chats",
   detail: "Connect it again from the computer that runs your Kin.",
 } as const;
-
-export const KIN_THREAD_ELSEWHERE = {
-  title: "This opens in T3 Code",
-  detail:
-    "Coding threads aren't part of this app. Open this one in the T3 Code app, or in your Kin on the web.",
-} as const;

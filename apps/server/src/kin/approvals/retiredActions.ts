@@ -7,7 +7,10 @@ import { KinRetiredActions, RETIRED_ACTION_REASON } from "../lead/Retirement.ts"
 import * as Audit from "./Audit.ts";
 import * as PendingActions from "./PendingActions.ts";
 
-/** A waiting request is cancelled and an approved one not yet run is voided, both audited. */
+/**
+ * A waiting request is cancelled, and an approved one, or a claimed one whose write hasn't started,
+ * is voided, all audited. One already sending is left to reconciliation.
+ */
 export const layer = Layer.effect(
   KinRetiredActions,
   Effect.gen(function* () {
@@ -27,6 +30,7 @@ export const layer = Layer.effect(
             to: row.state === "approved" ? "voided" : "cancelled",
             reason: RETIRED_ACTION_REASON,
           });
+        yield* actions.voidRetiredClaims({ orgId, agentId });
       }),
     };
   }),

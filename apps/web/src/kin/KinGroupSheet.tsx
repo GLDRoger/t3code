@@ -69,12 +69,17 @@ export function KinGroupSheet(props: {
   readonly orgId: KinOrgId;
   readonly personId: string | null;
   readonly muted: boolean;
+  /** Agents the host marks retired: still listed here, and never the one that answers. */
+  readonly retiredAgents: ReadonlySet<string>;
 }) {
   const { group, environmentId, orgId, personId } = props;
   const { chatId } = group.chat;
   const navigate = useNavigate();
-  const members = kinGroupMemberViews(group, personId);
+  const members = kinGroupMemberViews(group, personId, props.retiredAgents);
   const leads = members.filter((member) => member.kind === "lead");
+  // Only an agent still at work can be chosen to answer.
+  const answerers = leads.filter((lead) => !lead.retired);
+  const silent = leads.find((lead) => lead.answers && lead.retired) ?? null;
   const owns = group.members.some(
     (member) =>
       member.leftAt === null &&
@@ -220,10 +225,15 @@ export function KinGroupSheet(props: {
               </Button>
             ) : null}
           </Section>
-          {canChange && leads.length > 1 ? (
+          {canChange && (answerers.length > 1 || (silent !== null && answerers.length > 0)) ? (
             <Section title="Answers when no one is named">
+              {silent === null ? null : (
+                <p className="text-xs text-muted-foreground">
+                  {silent.name} is retired, so nobody answers until you choose another agent.
+                </p>
+              )}
               <RadioGroup
-                value={leads.find((lead) => lead.answers)?.memberId ?? ""}
+                value={answerers.find((lead) => lead.answers)?.memberId ?? ""}
                 disabled={busy}
                 onValueChange={(memberId) => {
                   const lead = leads.find((held) => held.memberId === memberId);
@@ -234,7 +244,7 @@ export function KinGroupSheet(props: {
                   );
                 }}
               >
-                {leads.map((lead) => (
+                {answerers.map((lead) => (
                   <label key={lead.memberId} className="flex cursor-pointer items-center gap-3">
                     <Radio value={lead.memberId} />
                     <KinAvatar avatar={lead.avatar} size="sm" />

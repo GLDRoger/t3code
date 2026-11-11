@@ -1061,11 +1061,13 @@ const make = Effect.gen(function* () {
           agentId: ctx.agentId,
           sourceEventId: input.sourceEventId,
         }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
-        // Retired or withdrawn during the send, which no stop then covered: the attempt begins
-        // stopped here, so nothing of it publishes before the stop reaches its thread. A join's
-        // abort doesn't stop it; its answer moves to the owner's chat (`cardChat`).
-        const [live] = yield* sql`SELECT 1 FROM kin_agents WHERE org_id = ${ctx.orgId}
-          AND agent_id = ${ctx.agentId} AND retired_at IS NULL`;
+        // Retired (even if restored since) or withdrawn during the send, which no stop then
+        // covered: the attempt begins stopped here, so nothing of it publishes before the stop
+        // reaches its thread. A join's abort doesn't stop it; its answer moves to `cardChat`.
+        const [live] = yield* sql`SELECT 1 FROM kin_agents a WHERE a.org_id = ${ctx.orgId}
+          AND a.agent_id = ${ctx.agentId} AND a.retired_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM kin_wakeups w WHERE w.org_id = a.org_id
+            AND w.wakeup_id = ${ctx.wakeupId} AND w.retired_at IS NOT NULL)`;
         const why =
           live === undefined
             ? { tag: "retired", reason: RETIRED_WORKER_REASON }

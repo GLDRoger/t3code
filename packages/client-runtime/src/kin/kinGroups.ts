@@ -9,7 +9,10 @@ import {
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
+import { KIN_RETIRED_LABEL } from "./kinAgentRetire.ts";
 import { kinAgentAvatar, type KinAvatarView } from "./kinScreenState.ts";
+
+const NO_AGENTS: ReadonlySet<string> = new Set();
 
 export const KIN_GROUP_NAME_MAX = KIN_GROUP_TITLE_MAX_LENGTH;
 
@@ -61,6 +64,8 @@ export interface KinGroupMemberView {
   readonly principal: KinPrincipal;
   /** The lead that answers a message naming no one. */
   readonly answers: boolean;
+  /** An agent its owner retired: still listed, and it answers nothing. */
+  readonly retired: boolean;
 }
 
 const avatarOf = (principal: KinPrincipal): KinAvatarView =>
@@ -82,6 +87,7 @@ export const kinAuthorAvatar = (
 export function kinGroupMemberViews(
   group: KinChatMembersResult,
   me: string | null,
+  retiredAgents: ReadonlySet<string> = NO_AGENTS,
 ): ReadonlyArray<KinGroupMemberView> {
   const rank = (member: GroupMember) =>
     member.principal._tag !== "agent"
@@ -101,20 +107,24 @@ export function kinGroupMemberViews(
         const { principal } = member;
         const answers = principal._tag === "agent" && principal.agentId === group.chat.leadAgentId;
         const you = principal._tag === "person" && principal.personId === me;
+        const retired = principal._tag === "agent" && retiredAgents.has(principal.agentId);
         return {
           memberId: member.memberId,
           name: member.displayName,
           kind: principal._tag === "agent" ? "lead" : member.role === "owner" ? "owner" : "person",
-          detail: answers
-            ? "Answers when no one is named"
-            : you
-              ? "You"
-              : member.role === "owner"
-                ? "Owner"
-                : null,
+          detail: retired
+            ? KIN_RETIRED_LABEL
+            : answers
+              ? "Answers when no one is named"
+              : you
+                ? "You"
+                : member.role === "owner"
+                  ? "Owner"
+                  : null,
           avatar: avatarOf(principal),
           principal,
           answers,
+          retired,
         };
       })
   );
@@ -141,12 +151,15 @@ export interface KinMentionCandidate {
   readonly name: string;
 }
 
-/** The leads a message in this group can name. */
+/** The leads a message in this group can name: the ones still at work. */
 export function kinMentionCandidates(
   members: ReadonlyArray<GroupMember> | null,
+  retiredAgents: ReadonlySet<string> = NO_AGENTS,
 ): ReadonlyArray<KinMentionCandidate> {
   return (members ?? []).flatMap((member) =>
-    member.leftAt === null && member.principal._tag === "agent"
+    member.leftAt === null &&
+    member.principal._tag === "agent" &&
+    !retiredAgents.has(member.principal.agentId)
       ? [{ memberId: member.memberId, agentId: member.principal.agentId, name: member.displayName }]
       : [],
   );
