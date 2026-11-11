@@ -95,6 +95,9 @@ const memory = Layer.mock(Memory.Memory)({
   readItemQuietly: (_org, id) => pick(id),
 });
 const identity = Layer.mock(KinIdentity)({
+  owner: { _tag: "person", orgId, personId: ownerId },
+  isAgentThread: () => true,
+  isLeadThread: () => true,
   resolveAgent: (scope) =>
     Effect.succeed({
       _tag: "agent" as const,
@@ -185,7 +188,13 @@ it.effect("a shared read returns only the item's shared projection", () =>
       id: KinMemoryItemId.make("team-note"),
     });
     assert.deepStrictEqual(read, {
-      item: { id: "team-note", kind: "claim", title: "Invented team-note", links: [], body },
+      item: {
+        id: KinMemoryItemId.make("team-note"),
+        kind: "claim",
+        title: "Invented team-note",
+        links: [],
+        body,
+      },
       reviewOverdue: false,
       misleading: false,
     });
@@ -193,7 +202,13 @@ it.effect("a shared read returns only the item's shared projection", () =>
       assert.notInclude(JSON.stringify(read), hidden);
     const found = yield* (yield* Lead.LeadMemory).search(scopeOf(leads.a), {});
     assert.deepStrictEqual(found, [
-      { id: "team-note", kind: "claim", title: "Invented team-note", links: [], duplicate: false },
+      {
+        id: KinMemoryItemId.make("team-note"),
+        kind: "claim",
+        title: "Invented team-note",
+        links: [],
+        duplicate: false,
+      },
     ]);
   }).pipe(Effect.provide(layer)),
 );

@@ -1,5 +1,11 @@
 import { assert, it } from "@effect/vitest";
-import { KinChatId, KinOrgId, KinPersonId, MemoryItemHead } from "@t3tools/contracts";
+import {
+  KinChatId,
+  KinOrgId,
+  KinPersonId,
+  MemoryItemHead,
+  type MemoryItemKind,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -28,7 +34,7 @@ const orgId = KinOrgId.make("fixture-org");
 const item = (id: string, body: string, sensitive?: boolean) => ({
   head: {
     id,
-    kind: "claim" as const,
+    kind: "claim" as MemoryItemKind,
     title: `Invented ${id}`,
     links: [],
     ...(sensitive === undefined ? {} : { sensitive }),
@@ -127,9 +133,10 @@ it("a shared turn is given a fixed projection, and every head field is accounted
   for (const hidden of ["private", "claims/full.md", "fixture-teammate", "fixture-chat"])
     assert.notInclude(JSON.stringify(projected), hidden);
   // What it is not given is not what an authorisation covers.
+  const reworded = { ...head, owner: "Invented other" };
   assert.strictEqual(
     fingerprint({ head, body: "Invented body.\n" }),
-    fingerprint({ head: { ...head, owner: "Invented other" }, body: "Invented body.\n" }),
+    fingerprint({ head: reworded, body: "Invented body.\n" }),
   );
 });
 
