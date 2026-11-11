@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_MEMORY_EMPTY,
+  KIN_MEMORY_FORGET,
   KIN_MEMORY_LOAD_FAILED,
   KIN_MEMORY_NO_EDITS,
   KIN_MEMORY_SEARCH_PLACEHOLDER,
@@ -10,6 +11,7 @@ import {
   kinMemoryView,
   type KinMemoryActions,
   type KinMemoryConfirmAll,
+  type KinMemoryItemView,
   type KinMemoryRow,
 } from "@t3tools/client-runtime/kin/kinMemoryScreen";
 import type { EnvironmentId, KinMemoryListResult, KinOrgId } from "@t3tools/contracts";
@@ -23,6 +25,15 @@ import { useState } from "react";
 import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../components/WorkspaceBreadcrumb";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { Alert, AlertDescription } from "../components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "../components/ui/alert-dialog";
 import { Button } from "../components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import { Input } from "../components/ui/input";
@@ -119,6 +130,8 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
   const result = useAtomValue(listAtom);
   const setVisibility = useAtomCommand(kinClient.memorySetVisibility, { reportFailure: false });
   const confirm = useAtomCommand(kinClient.memoryConfirm, { reportFailure: false });
+  const forget = useAtomCommand(kinClient.memoryForget, { reportFailure: false });
+  const [forgetting, setForgetting] = useState<KinMemoryItemView | null>(null);
   const [edits, setEdits] = useState(KIN_MEMORY_NO_EDITS);
   const [search, setSearch] = useState("");
   const [actions] = useState(() =>
@@ -126,6 +139,7 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
       orgId,
       setVisibility: (input) => setVisibility({ environmentId, input }),
       confirmSuggestions: (input) => confirm({ environmentId, input }),
+      forget: (input) => forget({ environmentId, input }),
       update: setEdits,
       refresh: () => appAtomRegistry.refresh(listAtom),
     }),
@@ -157,7 +171,8 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
       </div>
     );
   }
-  if (list.items.length === 0) {
+  const view = kinMemoryView(list, edits, search);
+  if (view.total === 0) {
     return (
       <Empty size="compact">
         <EmptyHeader>
@@ -167,60 +182,88 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
       </Empty>
     );
   }
-  const view = kinMemoryView(list, edits, search);
   return (
-    // The leads of a busy company remember hundreds of things; only the rows in view mount.
-    <LegendList<KinMemoryRow>
-      data={view.rows}
-      keyExtractor={(row) => row.key}
-      getItemType={(row) => row.type}
-      extraData={view.confirmAll}
-      recycleItems
-      ListHeaderComponent={
-        view.searchable || edits.problem !== null ? (
-          <div className="mx-auto flex w-full max-w-3xl flex-col gap-2 px-4 pt-2">
-            {view.searchable ? (
-              <Input
-                type="search"
-                aria-label={KIN_MEMORY_SEARCH_PLACEHOLDER}
-                placeholder={KIN_MEMORY_SEARCH_PLACEHOLDER}
-                value={search}
-                onChange={(event) => setSearch(event.currentTarget.value)}
+    <>
+      {/* The leads of a busy company remember hundreds of things; only the rows in view mount. */}
+      <LegendList<KinMemoryRow>
+        data={view.rows}
+        keyExtractor={(row) => row.key}
+        getItemType={(row) => row.type}
+        extraData={view.confirmAll}
+        recycleItems
+        ListHeaderComponent={
+          view.searchable || edits.problem !== null ? (
+            <div className="mx-auto flex w-full max-w-3xl flex-col gap-2 px-4 pt-2">
+              {view.searchable ? (
+                <Input
+                  type="search"
+                  aria-label={KIN_MEMORY_SEARCH_PLACEHOLDER}
+                  placeholder={KIN_MEMORY_SEARCH_PLACEHOLDER}
+                  value={search}
+                  onChange={(event) => setSearch(event.currentTarget.value)}
+                />
+              ) : null}
+              {edits.problem === null ? null : (
+                <Alert variant="error">
+                  <AlertDescription>{edits.problem}</AlertDescription>
+                </Alert>
+              )}
+            </div>
+          ) : null
+        }
+        ListEmptyComponent={
+          <p
+            role="status"
+            className="mx-auto w-full max-w-3xl px-4 py-6 text-sm text-muted-foreground"
+          >
+            {view.noMatch}
+          </p>
+        }
+        renderItem={({ item: row }) => (
+          <div className="mx-auto w-full max-w-3xl px-4">
+            {row.type === "section" ? (
+              <KinMemorySection
+                row={row}
+                confirmAll={row.state === "suggested" ? view.confirmAll : null}
+                onConfirmAll={(all) => void actions.confirmAll(list, all)}
               />
-            ) : null}
-            {edits.problem === null ? null : (
-              <Alert variant="error">
-                <AlertDescription>{edits.problem}</AlertDescription>
-              </Alert>
+            ) : (
+              <KinMemoryItem row={row} list={list} actions={actions} onForget={setForgetting} />
             )}
           </div>
-        ) : null
-      }
-      ListEmptyComponent={
-        <p
-          role="status"
-          className="mx-auto w-full max-w-3xl px-4 py-6 text-sm text-muted-foreground"
-        >
-          {view.noMatch}
-        </p>
-      }
-      renderItem={({ item: row }) => (
-        <div className="mx-auto w-full max-w-3xl px-4">
-          {row.type === "section" ? (
-            <KinMemorySection
-              row={row}
-              confirmAll={row.state === "suggested" ? view.confirmAll : null}
-              onConfirmAll={(all) => void actions.confirmAll(list, all)}
-            />
-          ) : (
-            <KinMemoryItem row={row} list={list} actions={actions} />
-          )}
-        </div>
-      )}
-      estimatedItemSize={64}
-      drawDistance={640}
-      className="min-h-0 flex-1 overscroll-contain pb-6"
-    />
+        )}
+        estimatedItemSize={64}
+        drawDistance={640}
+        className="min-h-0 flex-1 overscroll-contain pb-6"
+      />
+      <AlertDialog
+        open={forgetting !== null}
+        onOpenChange={(open) => {
+          if (!open) setForgetting(null);
+        }}
+      >
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{KIN_MEMORY_FORGET.title}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {forgetting === null ? null : KIN_MEMORY_FORGET.body(forgetting.title)}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (forgetting !== null) void actions.forget(list, forgetting.itemId);
+                setForgetting(null);
+              }}
+            >
+              {KIN_MEMORY_FORGET.action}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+    </>
   );
 }
 
@@ -251,6 +294,7 @@ function KinMemoryItem(props: {
   readonly row: Extract<KinMemoryRow, { readonly type: "item" }>;
   readonly list: KinMemoryListResult;
   readonly actions: KinMemoryActions;
+  readonly onForget: (item: KinMemoryItemView) => void;
 }) {
   const { item } = props.row;
   return (
@@ -277,6 +321,15 @@ function KinMemoryItem(props: {
             {action.label}
           </Button>
         ))}
+        <Button
+          size="xs"
+          variant="ghost-destructive"
+          disabled={item.busy}
+          aria-label={item.forget.accessibilityLabel}
+          onClick={() => props.onForget(item)}
+        >
+          {item.forget.label}
+        </Button>
       </div>
     </div>
   );
