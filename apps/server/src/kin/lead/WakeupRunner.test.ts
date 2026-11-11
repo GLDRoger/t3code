@@ -1757,6 +1757,7 @@ describe("WakeupRunner", () => {
           yield* identity.resolveAgent(caller!);
           yield* sql`UPDATE kin_agents SET retired_at = '2026-11-08T00:00:00.000Z' WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
           let stops = 0;
+          let again = false;
           const retiringRunner = yield* WakeupRunner.WakeupRunner.pipe(
             Effect.provide(Layer.fresh(WakeupRunner.layer)),
             Effect.provideService(ThreadManagement.ThreadManagementService, {
@@ -1764,7 +1765,7 @@ describe("WakeupRunner", () => {
               forceStopThread: Effect.fn("test.forceStopThread")(function* (input) {
                 stops++;
                 const result = yield* threads.forceStopThread(input);
-                assert.strictEqual(result.outcome, stops === 1 ? outcome : "released");
+                if (!again) assert.strictEqual(result.outcome, stops === 1 ? outcome : "released");
                 return result;
               }),
             }),
@@ -1823,6 +1824,27 @@ describe("WakeupRunner", () => {
             0,
           );
           assert.strictEqual((yield* sql`SELECT 1 FROM kin_wakeups`).length, 1);
+          if (outcome === "releasing") return;
+          // Restored, its next turn starts a fresh thread, since the ended one can't be
+          // registered again, and the same runner retires it again on a second retirement.
+          yield* sql`UPDATE kin_agents SET retired_at = NULL WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+          yield* queue.enqueue(event("restored"));
+          yield* TestClock.adjust("20 seconds");
+          yield* retiringRunner.runOnce(orgId, agentId);
+          const [fresh] = yield* sql<{ thread_id: string }>`SELECT thread_id FROM kin_leads`;
+          assert.notStrictEqual(fresh?.thread_id, threadId);
+          assert.deepStrictEqual(
+            yield* sql`SELECT state FROM kin_events WHERE event_id = 'restored'`,
+            [{ state: "done" }],
+          );
+          again = true;
+          yield* sql`UPDATE kin_agents SET retired_at = '2026-11-09T00:00:00.000Z' WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+          yield* retiringRunner.runOnce(orgId, agentId);
+          assert.strictEqual(
+            (yield* sql`SELECT 1 FROM kin_agent_threads WHERE ended_at IS NULL AND org_id = ${orgId}`)
+              .length,
+            0,
+          );
         }).pipe(
           Effect.provide(
             harness({

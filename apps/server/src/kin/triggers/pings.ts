@@ -27,6 +27,7 @@ import * as Cache from "../memory/MemoryCache.ts";
 import { chatShared } from "../chat/sharing.ts";
 import { reaches, storedLabels } from "../memory/sensitivity.ts";
 import { isQuiet, KIN_DEFAULT_QUIET_HOURS } from "./quietHours.ts";
+import { retiredOwnerChat } from "../lead/Retirement.ts";
 
 const text = Schema.String.check(
   Schema.isTrimmed(),
@@ -302,6 +303,8 @@ const make = Effect.gen(function* () {
                 yield* stop(r, now, closed);
                 continue;
               }
+              // Its agent was retired: held, not stopped, so restoring it brings the chase back.
+              if ((yield* retiredOwnerChat(sql, orgId, r.ownerChatId)).length > 0) continue;
               const valid = yield* checkOwner(r).pipe(Effect.andThen(validate(r)), Effect.result);
               if (valid._tag === "Failure") {
                 if (valid.failure._tag === "KinChatError") yield* stop(r, now, false, "closed");

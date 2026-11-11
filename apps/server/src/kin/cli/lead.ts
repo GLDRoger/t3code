@@ -85,11 +85,12 @@ const runOnHost = Effect.fn("kin.lead.runOnHost")(
     const logLevel = yield* GlobalFlag.LogLevel;
     const config = yield* resolveCliAuthConfig(flags, logLevel, { quietLogs: flags.json });
     const provision = yield* Effect.promise(() => import("../lead/KinLeadProvision.ts"));
+    const retiredActions = yield* Effect.promise(() => import("../approvals/retiredActions.ts"));
     const isRefusal = Schema.is(provision.KinLeadProvisionError);
     return yield* run(provision).pipe(
       Effect.tapError((error) => (isRefusal(error) ? Console.error(error.message) : Effect.void)),
       Effect.provide(
-        provision.layer.pipe(
+        Layer.merge(provision.layer, retiredActions.hostLayer).pipe(
           Layer.provideMerge(provision.settingsLayer),
           Layer.provideMerge(EnvironmentAuth.layerRuntime),
           Layer.provide(ServerConfig.layer(config)),
@@ -236,26 +237,53 @@ const listCommand = Command.make("list", { ...authLocationFlags, json: jsonFlag 
   ),
 );
 
+const agentIdArgument = Argument.String("agent-id").pipe(
+  Argument.withSchema(KinAgentId),
+  Argument.withDescription("The agent's id, from `kin lead list`."),
+);
+
 const retireCommand = Command.make("retire", {
   ...authLocationFlags,
-  agentId: Argument.String("agent-id").pipe(
-    Argument.withSchema(KinAgentId),
-    Argument.withDescription("The agent's id, from `kin lead list`."),
-  ),
+  agentId: agentIdArgument,
   json: jsonFlag,
 }).pipe(
   Command.withDescription(
-    "Retire an agent. Its rows stay; the server expires its queued events and ends its thread.",
+    "Retire an agent. Nothing is deleted and `kin lead restore` brings it back; its turns, workers, timers and approval requests stop now.",
   ),
   Command.withHandler((flags) =>
     runOnHost(flags, (provision) =>
       Effect.gen(function* () {
-        const result = yield* provision.retire(flags.agentId);
-        if (flags.json) return yield* Console.log(encodeJson(result));
+        const result = yield* provision.retireOnHost(flags.agentId);
+        if (flags.json)
+          return yield* Console.log(encodeJson({ _tag: result._tag, lead: result.lead }));
         yield* Console.log(
           result._tag === "retired"
-            ? `Retired ${result.lead.name} (${result.lead.agentId}). Its tool calls stop now; a running server ends its thread after the current wake-up (up to 15 minutes; pause Kin to halt it now), a stopped one when it next starts.`
+            ? `Retired ${result.lead.name} (${result.lead.agentId}). Nothing more of it runs; a running server stops its turn and its workers within a minute, a stopped one when it next starts.`
             : `${result.lead.name} (${result.lead.agentId}) was already retired at ${result.lead.retiredAt}.`,
+        );
+      }),
+    ),
+  ),
+);
+
+const restoreCommand = Command.make("restore", {
+  ...authLocationFlags,
+  agentId: agentIdArgument,
+  json: jsonFlag,
+}).pipe(
+  Command.withDescription(
+    "Bring a retired agent back, with its chats, timers and schedules. Stopped workers stay stopped.",
+  ),
+  Command.withHandler((flags) =>
+    runOnHost(flags, (provision) =>
+      Effect.gen(function* () {
+        const result = yield* provision.restoreOnHost(flags.agentId);
+        if (flags.json)
+          return yield* Console.log(encodeJson({ _tag: result._tag, lead: result.lead }));
+        yield* Console.log(
+          result._tag === "restored"
+            ? `Restored ${result.lead.name} (${result.lead.agentId}).`
+            : `${result.lead.name} (${result.lead.agentId}) isn't retired.`,
         );
       }),
     ),
@@ -323,6 +351,7 @@ export const kinCommand = Command.make("kin").pipe(
         createCommand,
         listCommand,
         retireCommand,
+        restoreCommand,
         projectsCommand,
         charterCommand,
       ]),
