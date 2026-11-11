@@ -13,6 +13,7 @@ import {
   ThreadId,
   type MemoryItemHead,
 } from "@t3tools/contracts";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -27,8 +28,9 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as Memory from "../memory/Memory.ts";
 import type { MemoryItem } from "../memory/MemoryCache.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
-import { SharedHead, SharedItem, authorise, fingerprint } from "../memory/sensitivity.ts";
+import { SharedHead, SharedItem, authorise, fingerprint, reaching } from "../memory/sensitivity.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { SHARED_REFUSAL } from "./Audience.ts";
 import * as Lead from "./LeadMemory.ts";
 
 // Shared turns against a memory whose snapshots the test controls, so an interleaving is exact.
@@ -113,14 +115,17 @@ const writer = Layer.mock(Writer.MemoryWriter)({
   stage: (_org, wakeupId) => Effect.suspend(() => state.stage(wakeupId)),
 });
 const decodeWrite = Schema.decodeUnknownEffect(Lead.WriteInput);
-const layer = Lead.layer.pipe(
-  Layer.provide(memory),
-  Layer.provide(identity),
-  Layer.provide(writer),
-  Layer.provide(Layer.mock(Writer.MemoryWriterAuthority)({})),
-  Layer.provide(NodeCrypto.layer),
-  Layer.provideMerge(Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory)),
-);
+const withTeamMemory = (env: Record<string, string>) =>
+  Lead.layer.pipe(
+    Layer.provide(memory),
+    Layer.provide(identity),
+    Layer.provide(writer),
+    Layer.provide(Layer.mock(Writer.MemoryWriterAuthority)({})),
+    Layer.provide(NodeCrypto.layer),
+    Layer.provideMerge(Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory)),
+    Layer.merge(ConfigProvider.layer(ConfigProvider.fromUnknown(env))),
+  );
+const layer = withTeamMemory({ KIN_TEAM_MEMORY: "on" });
 
 /** Leads a and b answer a teammate in a group; lead o answers a routine in its owner's chat. */
 const setup = Effect.gen(function* () {
@@ -259,6 +264,33 @@ it.effect("a shared read returns only the item's shared projection", () =>
       },
     ]);
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect("with team memory off, a shared turn reads nothing and saves nothing", () =>
+  Effect.gen(function* () {
+    yield* setup;
+    state.items = [teamNote];
+    yield* authorised(teamNote);
+    let staged = 0;
+    state.stage = () =>
+      Effect.sync(() => {
+        staged += 1;
+      });
+    const service = yield* Lead.LeadMemory;
+    assert.deepStrictEqual(yield* reaching(orgId, "shared", [teamNote]), []);
+    assert.deepStrictEqual(yield* service.search(scopeOf(leads.a), {}), []);
+    const read = yield* service.read(scopeOf(leads.a), { id: teamNote.head.id }).pipe(Effect.flip);
+    assert.strictEqual(read.reason, "not_found");
+    const refused = yield* write(leads.a, "new-claim").pipe(Effect.flip);
+    assert.strictEqual(refused.message, SHARED_REFUSAL);
+    const journal = yield* service
+      .journal(scopeOf(leads.a), { saw: ["Invented sight"], did: [] })
+      .pipe(Effect.flip);
+    assert.strictEqual(journal.message, SHARED_REFUSAL);
+    assert.deepStrictEqual([staged, yield* teammateWrites], [0, 0]);
+    // The owner's own turns are as before.
+    assert.isTrue("head" in (yield* service.read(scopeOf(leads.o), { id: teamNote.head.id })));
+  }).pipe(Effect.provide(withTeamMemory({}))),
 );
 
 // Review of e1460657a0: shared reads also returned flags derived from `review_by` and
@@ -411,10 +443,6 @@ it.effect(
       const sql = yield* SqlClient.SqlClient;
       const note: MemoryItem = { head: head("owner-note", { sensitive: true }), body };
       state.items = [note];
-      const before = yield* sql<{
-        revision: number;
-      }>`SELECT revision FROM kin_memory_label_revisions
-      WHERE org_id = ${orgId}`;
       assert.deepStrictEqual(
         yield* (yield* Lead.LeadMemory).label(scopeOf(leads.o), {
           itemIds: [KinMemoryItemId.make("owner-note")],
@@ -424,14 +452,15 @@ it.effect(
         { itemIds: [KinMemoryItemId.make("owner-note")], note: Lead.AWAITING_OWNER },
       );
       assert.deepStrictEqual(
-        yield* sql`SELECT item_id, shared_content, suggested_content, suggested_rev
+        yield* sql`SELECT item_id, shared_content, suggested_content,
+          suggested_at IS NOT NULL AS suggested
         FROM kin_memory_labels WHERE org_id = ${orgId}`,
         [
           {
             item_id: "owner-note",
             shared_content: null,
             suggested_content: fingerprint(note),
-            suggested_rev: (before[0]?.revision ?? 0) + 1,
+            suggested: 1,
           },
         ],
       );

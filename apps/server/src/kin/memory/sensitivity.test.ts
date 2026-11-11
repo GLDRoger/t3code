@@ -10,6 +10,7 @@ import {
   MemoryItemHead,
   type MemoryItemKind,
 } from "@t3tools/contracts";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -28,13 +29,19 @@ import {
   looksLikeSecret,
   mustBeSensitive,
   reaches,
+  reaching,
   shareable,
   storedLabels,
   suggest,
   visibility,
 } from "./sensitivity.ts";
 
-const layer = Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory);
+const withTeamMemory = (env: Record<string, string>) =>
+  Layer.merge(
+    Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory),
+    ConfigProvider.layer(ConfigProvider.fromUnknown(env)),
+  );
+const layer = withTeamMemory({ KIN_TEAM_MEMORY: "on" });
 const orgId = KinOrgId.make("fixture-org");
 const item = (id: string, body: string, sensitive?: boolean) => ({
   head: {
@@ -119,6 +126,25 @@ it.effect("only a stored authorisation of the exact words lets the team know an 
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect.each([
+  {},
+  { KIN_TEAM_MEMORY: "" },
+  { KIN_TEAM_MEMORY: "true" },
+  { KIN_TEAM_MEMORY: "ON" },
+])("team memory is off unless the host sets KIN_TEAM_MEMORY=on: %j", (env) =>
+  Effect.gen(function* () {
+    yield* org;
+    const shared = item("shared", "Invented status.\n", false);
+    yield* authorise(orgId, "shared", fingerprint(shared), "owner_setting");
+    const labels = yield* storedLabels(orgId);
+    assert.isFalse(reaches("shared", shared, labels));
+    assert.deepStrictEqual(yield* reaching(orgId, "shared", [shared]), []);
+    // The owner's turns and Memory page are as before, so he can prepare what the team may know.
+    assert.isTrue(reaches("owner_only", shared, labels));
+    assert.strictEqual(visibility(shared, labels), "team");
+  }).pipe(Effect.provide(withTeamMemory(env))),
+);
+
 // Review of 9de4e8d197: a dream's private words in a field the fingerprint skipped reached a
 // shared memory_read. Every head field is either given to shared turns or never is.
 it("a shared turn is given a fixed projection, and every head field is accounted for", () => {
@@ -152,7 +178,7 @@ it("a shared turn is given a fixed projection, and every head field is accounted
   );
 });
 
-it.effect("each new suggestion comes at a later revision, and an owner's word ends it", () =>
+it.effect("a suggestion is of the latest words, and an owner's word ends it", () =>
   Effect.gen(function* () {
     yield* org;
     const first = item("first", "Invented one.\n", false);
@@ -161,18 +187,35 @@ it.effect("each new suggestion comes at a later revision, and an owner's word en
     yield* suggest(orgId, "first", fingerprint(first));
     yield* suggest(orgId, "second", fingerprint(second));
     const before = yield* storedLabels(orgId);
-    assert.strictEqual(before.suggested.get("first")?.rev, 1);
-    assert.strictEqual(before.suggested.get("second")?.rev, 2);
+    assert.strictEqual(before.suggested.get("first"), fingerprint(first));
+    assert.strictEqual(before.suggested.get("second"), fingerprint(second));
     yield* authorise(orgId, "first", fingerprint(first), "owner_confirmed");
     yield* authorise(orgId, "second", fingerprint(second), "owner_confirmed");
-    // All confirmed: the next one still comes after anything the owner was shown.
-    yield* suggest(orgId, "first", fingerprint({ ...first, body: "Invented reworded.\n" }));
+    const reworded = fingerprint({ ...first, body: "Invented reworded.\n" });
+    yield* suggest(orgId, "first", reworded);
     const after = yield* storedLabels(orgId);
-    assert.deepStrictEqual([...after.suggested.keys()], ["first"]);
-    assert.strictEqual(after.suggested.get("first")?.rev, 3);
+    assert.deepStrictEqual([...after.suggested], [["first", reworded]]);
     // What the team already knows needs no suggestion.
     yield* suggest(orgId, "second", fingerprint(second));
     assert.isFalse((yield* storedLabels(orgId)).suggested.has("second"));
+  }).pipe(Effect.provide(layer)),
+);
+
+// Review of 69b673e063: a grant of a kind no longer honoured still kept the owner from being asked.
+it.effect("a grant this build doesn't honour never stands in for asking the owner", () =>
+  Effect.gen(function* () {
+    yield* org;
+    const sql = yield* SqlClient.SqlClient;
+    const legacy = item("legacy", "Invented legacy grant.\n", false);
+    const unkinded = item("unkinded", "Invented grant of no kind.\n", false);
+    yield* sql`INSERT INTO kin_memory_labels (org_id, item_id, shared_content, shared_how, shared_at)
+      VALUES (${orgId}, 'legacy', ${fingerprint(legacy)}, 'owner_label', 1),
+        (${orgId}, 'unkinded', ${fingerprint(unkinded)}, NULL, 1)`;
+    yield* suggest(orgId, "legacy", fingerprint(legacy));
+    yield* suggest(orgId, "unkinded", fingerprint(unkinded));
+    const labels = yield* storedLabels(orgId);
+    assert.strictEqual(visibility(legacy, labels), "suggested");
+    assert.strictEqual(visibility(unkinded, labels), "suggested");
   }).pipe(Effect.provide(layer)),
 );
 

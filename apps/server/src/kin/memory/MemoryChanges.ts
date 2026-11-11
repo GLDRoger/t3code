@@ -288,17 +288,7 @@ const make = Effect.gen(function* () {
         Effect.flatMap((stored) => bindSuggestions(input.orgId, items, stored)),
         provideSql,
       );
-      const listedItems = items.map((item) => listed(item, labels));
-      const shown = new Set<string>(
-        listedItems.filter((item) => item.visibility === "suggested").map((item) => item.itemId),
-      );
-      return {
-        items: listedItems,
-        suggestionsAsOf: Math.max(
-          0,
-          ...[...labels.suggested].flatMap(([id, { rev }]) => (shown.has(id) ? [rev] : [])),
-        ),
-      };
+      return { items: items.map((item) => listed(item, labels)) };
     }, failed),
     setVisibility: Effect.fn("KinMemoryChanges.setVisibility")(function* (people, input) {
       const { person, port } = yield* ownerOf(people, input.orgId);
@@ -328,22 +318,19 @@ const make = Effect.gen(function* () {
       const { person, port } = yield* ownerOf(people, input.orgId);
       const items = current(yield* port.items(input.orgId));
       const labels = yield* storedLabels(input.orgId).pipe(provideSql);
-      const asked = "itemIds" in input ? new Set<string>(input.itemIds) : undefined;
-      // A listed item is confirmed only as the version listed; one sent without it stays suggested.
-      const listedAs = "itemIds" in input ? new Map(Object.entries(input.versions)) : undefined;
+      const asked = new Set<string>(input.itemIds);
+      // Confirmed only as the version listed; one sent without it stays suggested.
+      const listedAs = new Map(Object.entries(input.versions));
       const counts = new Map<string, number>();
       for (const { head } of items) counts.set(head.id, (counts.get(head.id) ?? 0) + 1);
-      const chosen = items.filter((item) => {
-        const suggestion = labels.suggested.get(item.head.id);
-        return (
-          suggestion !== undefined &&
+      // Still suggested as these very words (`visibility`), and they are the words listed.
+      const chosen = items.filter(
+        (item) =>
+          asked.has(item.head.id) &&
           counts.get(item.head.id) === 1 &&
           visibility(item, labels) === "suggested" &&
-          (asked === undefined || listedAs === undefined
-            ? "asOf" in input && suggestion.rev <= input.asOf
-            : asked.has(item.head.id) && listedAs.get(item.head.id) === fingerprint(item))
-        );
-      });
+          listedAs.get(item.head.id) === fingerprint(item),
+      );
       const confirmed = [];
       for (const item of chosen) {
         // The file records who let the team know it; the stored row is what decides it.

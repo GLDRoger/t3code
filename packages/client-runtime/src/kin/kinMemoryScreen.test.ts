@@ -30,8 +30,8 @@ const item = (id: string, visibility: KinMemoryVisibility, title = `Invented ${i
     from: null,
     version: `words-of-${id}`,
   }) satisfies KinMemoryListItem;
-const listOf = (items: ReadonlyArray<KinMemoryListItem>, suggestionsAsOf = 7) =>
-  ({ items, suggestionsAsOf }) satisfies KinMemoryListResult;
+const listOf = (items: ReadonlyArray<KinMemoryListItem>) =>
+  ({ items }) satisfies KinMemoryListResult;
 const states = (list: KinMemoryListResult, edits: KinMemoryEdits, search = "") =>
   Object.fromEntries(
     kinMemoryView(list, edits, search).rows.flatMap((row) =>
@@ -107,14 +107,11 @@ describe("what the owner's leads remember", () => {
     );
   });
 
-  it("confirms everything shown as of the list the owner saw", () => {
-    const list = listOf([item("a", "suggested"), item("b", "suggested"), item("c", "team")], 12);
-    expect(kinMemoryView(list, KIN_MEMORY_NO_EDITS, "").confirmAll?.requests).toEqual([
-      { asOf: 12 },
+  it("names every suggestion on screen with the words shown, and only those", () => {
+    const all = listOf([item("a", "suggested"), item("b", "suggested"), item("c", "team")]);
+    expect(kinMemoryView(all, KIN_MEMORY_NO_EDITS, "").confirmAll?.requests).toEqual([
+      { itemIds: ["a", "b"], versions: { a: "words-of-a", b: "words-of-b" } },
     ]);
-  });
-
-  it("names the items instead when a search or a kept suggestion narrows what is on screen", () => {
     const list = listOf([
       item("a", "suggested", "Launch date"),
       item("b", "suggested", "Launch venue"),
@@ -137,9 +134,7 @@ describe("what the owner's leads remember", () => {
     const list = listOf([...many, item("kept", "suggested")]);
     const edits = kinMemoryStarted(KIN_MEMORY_NO_EDITS, ["kept"], "only_owner");
     expect(
-      kinMemoryView(list, edits, "").confirmAll?.requests.map((request) =>
-        "itemIds" in request ? request.itemIds.length : request,
-      ),
+      kinMemoryView(list, edits, "").confirmAll?.requests.map((request) => request.itemIds.length),
     ).toEqual([500, 1]);
   });
 
@@ -199,8 +194,8 @@ describe("what the owner's leads remember", () => {
     expect(host.refreshes()).toBe(1);
   });
 
-  it("says yes to all with the revision the owner saw and rolls back if it fails", async () => {
-    const list = listOf([item("a", "suggested"), item("b", "suggested")], 31);
+  it("says yes to all with the words the owner saw and rolls back if it fails", async () => {
+    const list = listOf([item("a", "suggested"), item("b", "suggested")]);
     const host = harness(list);
     const all = host.view().confirmAll;
     if (all === null) throw new Error("Expected suggestions to confirm.");
@@ -213,9 +208,10 @@ describe("what the owner's leads remember", () => {
     const done = host.actions.confirmAll(list, all);
     host.release(true);
     await done;
+    const shown = { itemIds: ["a", "b"], versions: { a: "words-of-a", b: "words-of-b" } };
     expect(host.confirmed).toEqual([
-      { orgId, asOf: 31 },
-      { orgId, asOf: 31 },
+      { orgId, ...shown },
+      { orgId, ...shown },
     ]);
     expect(states(list, host.edits())).toEqual({ a: "team", b: "team" });
   });

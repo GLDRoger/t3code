@@ -79,6 +79,21 @@ const touchesGitHubDir = (path: string) => {
   const lower = path.toLowerCase();
   return lower === GITHUB_DIR || lower.startsWith(`${GITHUB_DIR}/`);
 };
+const SYMLINK_MODE = "120000";
+const rawMeta = /^:\d{6} (\d{6}) [0-9a-f]+ [0-9a-f]+ [A-Z]\d*$/;
+/** `git log --raw -z --no-renames`: a meta field, then its path; `undefined` if it isn't that. */
+const parseRawChanges = (out: string) => {
+  const fields = out.split("\0");
+  if (fields.at(-1) === "") fields.pop();
+  if (fields.length % 2 !== 0) return undefined;
+  const changes: Array<{ readonly mode: string; readonly path: string }> = [];
+  for (let index = 0; index < fields.length; index += 2) {
+    const mode = rawMeta.exec(fields[index]!.trim())?.[1];
+    if (mode === undefined) return undefined;
+    changes.push({ mode, path: fields[index + 1]! });
+  }
+  return changes;
+};
 /** Who the commit Kin makes for a worker on this server is by. */
 const COMMITTER = ["-c", "user.name=Kin", "-c", "user.email=kin@users.noreply.github.com"];
 /** The most a worker's fetch may add to Kin's disk; the transfer cap only bounds the wire. */
@@ -313,13 +328,29 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
       if (ahead === "0") return yield* refuse(`${branch} has no commits past ${base}`);
       // Every commit, merges against each parent, raw NUL-separated paths. The App also lacks
       // the `workflows` permission, so GitHub refuses a push that changes workflows anyway.
-      const paths = yield* git(
+      const history = yield* git(
         cache,
-        ["log", "--format=", "--name-only", "--no-renames", "--diff-merges=separate", "-z", range],
+        [
+          "log",
+          "--format=",
+          "--raw",
+          "--no-abbrev",
+          "--no-renames",
+          "--diff-merges=separate",
+          "-z",
+          range,
+        ],
         { raw: true },
       ).pipe(Effect.mapError(failed("list the branch's changes")));
-      if (paths.split("\0").some(touchesGitHubDir))
+      const changes = parseRawChanges(history);
+      if (changes === undefined) return yield* refuse("git listed the branch's changes unreadably");
+      if (changes.some((change) => touchesGitHubDir(change.path)))
         return yield* refuse(`${branch} changes ${GITHUB_DIR}/, which Kin never publishes`);
+      // A link's target is only a string to git; where it leads depends on the checkout.
+      if (changes.some((change) => change.mode === SYMLINK_MODE))
+        return yield* refuse(
+          `${branch} adds or changes a symbolic link, which Kin never publishes`,
+        );
 
       const stopIfPaused = Effect.gen(function* () {
         if (yield* input.paused)

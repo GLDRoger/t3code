@@ -311,7 +311,7 @@ it.effect(
         OwnerWork.summary([mate], { orgId }),
       ];
       for (const refused of refusals)
-        assert.include(yield* Effect.flip(refused), { reason: "not_allowed" });
+        assert.include(yield* refused.pipe(Effect.asVoid, Effect.flip), { reason: "not_allowed" });
     }).pipe(Effect.provide(layer)),
 );
 

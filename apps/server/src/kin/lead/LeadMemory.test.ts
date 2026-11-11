@@ -1133,9 +1133,11 @@ it.live(
       }).pipe(Effect.provide(toolkit));
     }).pipe(
       Effect.provide(
-        Layer.merge(runtime, Vcs.layer).pipe(
-          Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
-        ),
+        Layer.mergeAll(
+          runtime,
+          Vcs.layer,
+          ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_TEAM_MEMORY: "on" })),
+        ).pipe(Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
       ),
       Effect.scoped,
     ),
