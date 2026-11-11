@@ -96,13 +96,18 @@ export const readableBy = (
       AND anchor.seq < ${from})))`;
 };
 
-/** Whether `memberId` may read `messageId`, by `readableBy`. */
+/** Whether `memberId` may read `messageId`, by `readableBy`; `floorOf` as there. */
 export const memberReads = Effect.fn("KinChatSharing.memberReads")(function* (
   sql: SqlClient.SqlClient,
-  input: { readonly orgId: string; readonly memberId: string; readonly messageId: string },
+  input: {
+    readonly orgId: string;
+    readonly memberId: string;
+    readonly messageId: string;
+    readonly floorOf?: string | undefined;
+  },
 ) {
   const rows = yield* sql`SELECT 1 FROM kin_messages WHERE kin_messages.org_id = ${input.orgId}
     AND kin_messages.message_id = ${input.messageId}
-    AND ${readableBy(sql, input.orgId, input.memberId)} LIMIT 1`;
+    AND ${readableBy(sql, input.orgId, input.memberId, input.floorOf)} LIMIT 1`;
   return rows.length > 0;
 });

@@ -472,10 +472,20 @@ const make = Effect.gen(function* () {
       return yield* notAllowed;
   });
   /** Whether the member may read the message: nothing from before they joined. */
-  const readable = (member: KinChatMember, messageId: string) =>
-    memberReads(sql, { orgId: member.orgId, memberId: member.memberId, messageId }).pipe(
+  const readable = (member: KinChatMember, messageId: string, floorOf?: string) =>
+    memberReads(sql, { orgId: member.orgId, memberId: member.memberId, messageId, floorOf }).pipe(
       Effect.mapError(toPersistenceSqlError("KinChatService.readable")),
     );
+  /** `readable`, and for a shared turn nothing below the chat's history floor, as `read` gives it. */
+  const callerReads = Effect.fn("KinChatService.callerReads")(function* (
+    identity: Identity,
+    member: KinChatMember,
+    messageId: string,
+  ) {
+    const floorOf =
+      identity._tag === "agent" && (yield* sharedTurn(identity)) ? member.chatId : undefined;
+    return yield* readable(member, messageId, floorOf);
+  });
   const resolve = Effect.fn("KinChatService.resolve")(function* (
     item: KinWaitingItem,
     resolution: string,
@@ -841,6 +851,11 @@ const make = Effect.gen(function* () {
       kind: "send",
       clientId: request.clientMessageId,
     });
+    if (
+      Option.isSome(existing) &&
+      !(yield* callerReads(identity, member, existing.value.messageId))
+    )
+      return yield* notFound;
     const chat = yield* requireRecord(repo.getChat(member));
     if (identity._tag === "agent" && Option.isNone(existing)) {
       const used = yield* repo.wakeupPosts({
@@ -984,7 +999,7 @@ const make = Effect.gen(function* () {
                 AND x.revoked_at IS NULL)
               OR EXISTS (SELECT 1 FROM kin_chat_members p JOIN kin_chat_members m
                 ON m.org_id = p.org_id AND m.chat_id = p.chat_id AND m.principal_kind = 'agent'
-                  AND m.agent_id = a.agent_id
+                  AND m.agent_id = a.agent_id AND m.left_at IS NULL
                 WHERE p.org_id = a.org_id AND p.principal_kind = 'person'
                   AND p.person_id = ${identity.personId} AND p.left_at IS NULL))`.pipe(
             Effect.map((rows) => new Set(rows.map((row) => row.agentId))),
@@ -1770,6 +1785,8 @@ const make = Effect.gen(function* () {
           );
           if (anchor.author._tag !== "agent" || anchor.author.memberId !== member.memberId)
             return yield* notAllowed;
+          // Its server-held fields come back to the caller, so a shared turn reads it first.
+          if (!(yield* callerReads(identity, member, existing.messageId))) return yield* notFound;
         }
         if (
           existing.type !== input.type ||
@@ -1901,8 +1918,7 @@ const make = Effect.gen(function* () {
       // Membership of the message's own chat: a non-member, or another org's caller, gets not_found.
       const member = yield* memberFor(identity, message.chatId);
       yield* canWrite(identity, member);
-      if (identity._tag === "person" && !(yield* readable(member, message.messageId)))
-        return yield* notFound;
+      if (!(yield* callerReads(identity, member, message.messageId))) return yield* notFound;
       if (message.status !== "posted") return yield* notAllowed;
       const widget =
         message.widgetId === null

@@ -118,7 +118,11 @@ const seed = Effect.gen(function* () {
   yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id) VALUES (${agentId}, ${person.orgId}, 'Lead', 0, '{}', '[]', ${chat.chatId})`;
   const leadThread = ThreadId.make("lead-thread");
   const run = yield* startWakeupRun(leadThread, "updater-wakeup");
-  yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids) VALUES ('updater-wakeup', ${person.orgId}, ${agentId}, ${leadThread}, ${run.id}, 'test', 0, 'running', '[]')`;
+  yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids, audience) VALUES ('updater-wakeup', ${person.orgId}, ${agentId}, ${leadThread}, ${run.id}, 'test', 0, 'running', '[]', 'owner_only')`;
+  // A routine woke the lead: it answers the owner alone, in their direct chat.
+  yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
+    VALUES ('updater-event', ${person.orgId}, ${agentId}, 'routine', 'P2',
+      '{"routine":"morning_brief"}', 0, 0, 'claimed', 'updater-wakeup')`;
   const agent = yield* identity.resolveAgent({
     environmentId: TaskCard.decodeTaskCard(state).environmentId,
     issuedAt: 0,

@@ -631,6 +631,9 @@ describe("KinChatService", () => {
         VALUES ('suraj-in-group', ${person.orgId}, 'shared-group', 'person', ${memberId}, NULL, 'member', ${timestamp}),
           ('lead-in-group', ${person.orgId}, 'shared-group', 'agent', NULL, ${agentId}, 'member', ${timestamp})`;
       assert.deepStrictEqual(yield* seen, [agentId, ownAgent]);
+      // Once the lead leaves that group, sharing it no longer shows the lead.
+      yield* sql`UPDATE kin_chat_members SET left_at = ${timestamp} WHERE member_id = 'lead-in-group'`;
+      assert.deepStrictEqual(yield* seen, [ownAgent]);
       assert.include(
         yield* service
           .history(members, { chatId: chat.chatId, beforeSeq: 100, limit: 50 })

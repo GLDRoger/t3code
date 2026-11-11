@@ -2174,6 +2174,120 @@ it.effect(
     ),
 );
 
+/**
+ * Work a shared turn gave out in the group, finished and its report answered, then the owner's
+ * next word there in the same wake-up: what a follow-up asked in the group would answer.
+ */
+const finishedSharedWork = Effect.fn("WorkersTest.finishedSharedWork")(function* (
+  ctx: Effect.Success<ReturnType<typeof setup>>,
+  remote: FakeWorkers,
+  tracker: Tracker.WorkerTracker["Service"],
+  workers: Workers.KinWorkers["Service"],
+) {
+  const sql = ctx.sql;
+  yield* group(sql, ctx.orgId, "team", "owner");
+  yield* addTeammate(ctx, "team");
+  yield* askedIn(sql, "team");
+  yield* sql`UPDATE kin_wakeups SET aborted_at = NULL, shared_since = NULL, started_at = 1
+    WHERE wakeup_id = 'wake'`;
+  const turn = { orgId: ctx.orgId, agentId: leadId, wakeupId: "wake" };
+  yield* recordAudience(turn, yield* turnAudience(turn));
+  const started = yield* workers.delegate(scope, teamDelegate);
+  const { threadId } = yield* workerRow(sql, ctx.orgId, started.workerId);
+  yield* remote.finish(ThreadId.make(threadId), "completed", reportReply);
+  yield* settled(tracker, ctx.orgId, started.workerId);
+  const [reported] = yield* reports(sql, ctx.orgId);
+  assert.strictEqual(reported!.event.chatId, "team");
+  yield* sql`UPDATE kin_events SET state = 'done' WHERE tag = 'worker.report'`;
+  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+    VALUES ('bob', ${ctx.orgId}, 'bob', 'Bob', '1970-01-01T00:00:00.000Z')`;
+  const addBob = Context.get(ctx.services, KinGroups)
+    .addMember([ctx.person], {
+      chatId: KinChatId.make("team"),
+      principal: { _tag: "person", personId: KinPersonId.make("bob") },
+    })
+    .pipe(Effect.orDie);
+  return { started, threadId: ThreadId.make(threadId), addBob };
+});
+/** The owner asks again in the group, in a turn begun after every join so far. */
+const askAgain = Effect.fn("WorkersTest.askAgain")(function* (sql: SqlClient.SqlClient) {
+  yield* askFrom(sql, "again-event", "team");
+  yield* sql`UPDATE kin_wakeups SET aborted_at = NULL, shared_since = NULL, started_at = 2
+    WHERE wakeup_id = 'wake'`;
+});
+
+// Review of 422a82327b: a finished worker's thread holds what was said before the join.
+it.effect(
+  "after a join, a finished shared worker of the group is the owner's: a follow-up asked there is refused",
+  () =>
+    run(({ ctx, remote, tracker, workers }) =>
+      Effect.gen(function* () {
+        const sql = ctx.sql;
+        const { started, addBob } = yield* finishedSharedWork(ctx, remote, tracker, workers);
+        yield* addBob;
+        yield* askAgain(sql);
+        const followUp = {
+          workerId: started.workerId,
+          brief: "Go on.",
+          sourceEventId: "again-event",
+        };
+        const turn = { orgId: ctx.orgId, agentId: leadId, wakeupId: "wake" };
+        assert.isFalse(yield* sharedToolAllowed(turn, "kin_follow_up", followUp));
+        assert.isFalse(
+          yield* sharedToolAllowed(turn, "kin_worker_stop", { workerId: started.workerId }),
+        );
+        assert.include(yield* Effect.flip(workers.followUp(scope, followUp)), {
+          reason: "not_allowed",
+          message: SHARED_REFUSAL,
+        });
+        assert.lengthOf(remote.tools("t3_thread_send"), 0);
+        assert.deepStrictEqual(yield* chatCards(sql, "team"), [
+          { title: "Moved to your private chat with Lead", closedAt: "1970-01-01T00:00:00.000Z" },
+        ]);
+      }),
+    ),
+);
+
+it.effect(
+  "a follow-up asked in the group whose send a join outlasts reports to the owner's chat, never the group",
+  () =>
+    run(({ ctx, remote, tracker, workers }) =>
+      Effect.gen(function* () {
+        const sql = ctx.sql;
+        const { started, threadId, addBob } = yield* finishedSharedWork(
+          ctx,
+          remote,
+          tracker,
+          workers,
+        );
+        yield* askAgain(sql);
+        const joined = yield* Deferred.make<void>();
+        remote.hooks.sent = Effect.suspend(() => {
+          remote.hooks.sent = Effect.void;
+          return addBob.pipe(Effect.andThen(Deferred.succeed(joined, undefined)));
+        }).pipe(Effect.asVoid);
+        yield* workers.followUp(scope, {
+          workerId: started.workerId,
+          brief: "Go on.",
+          sourceEventId: "again-event",
+        });
+        yield* Deferred.await(joined);
+        yield* remote.finish(threadId, "completed", reportReply);
+        yield* settled(tracker, ctx.orgId, started.workerId);
+        // The first report was answered; this one is the follow-up's.
+        const [last, ...more] = yield* sql<{ json: string }>`SELECT json FROM kin_events
+          WHERE tag = 'worker.report' AND state <> 'done'`;
+        assert.lengthOf(more, 0);
+        assert.notProperty(JSON.parse(last!.json), "chatId");
+        assert.notProperty(JSON.parse(last!.json), "origin");
+        assert.deepStrictEqual(yield* chatCards(sql, "team"), [
+          { title: "Moved to your private chat with Lead", closedAt: "1970-01-01T00:00:00.000Z" },
+        ]);
+        assert.lengthOf(yield* chatCards(sql, ctx.chat.chatId), 1);
+      }),
+    ),
+);
+
 // The gate refuses an aborted turn first; dispatch checks again inside its own write.
 it.effect("an aborted turn starts no work and follows nothing up, past the gate too", () =>
   run(({ ctx, remote, workers }) =>

@@ -19,6 +19,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import type { SqlError } from "effect/sql/SqlError";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -740,6 +741,96 @@ describe("KinPushSender", () => {
       assert.strictEqual(started.length, 6);
     }).pipe(Effect.provide(build(apns)));
   });
+
+  // Review of 422a82327b: a send waits behind slow ones, and who may hear of it changes meanwhile.
+  it.effect(
+    "drops a waiting send to someone removed, re-added after the message, or whose chat was cleared",
+    () => {
+      // Each round, the first four sends hold every slot until released.
+      let round = {
+        parked: 0,
+        full: Deferred.makeUnsafe<void>(),
+        release: Deferred.makeUnsafe<void>(),
+      };
+      const apns = makeApns("ready", () =>
+        Effect.gen(function* () {
+          const current = round;
+          if (current.parked >= 4) return;
+          current.parked += 1;
+          if (current.parked === 4) yield* Deferred.succeed(current.full, undefined);
+          yield* Deferred.await(current.release);
+        }),
+      );
+      return Effect.gen(function* () {
+        const { sql, devices, sender } = yield* seed;
+        // Two more owner devices fill the four slots; Yan and Zed sort after the owner.
+        for (const fill of ["d", "e"])
+          yield* devices.register(caller("sess-owner-phone", owner), {
+            orgId,
+            token: token(fill),
+            platform: "ios",
+            apsEnvironment: "production",
+          });
+        for (const [person, memberId, fill] of [
+          [KinPersonId.make("h_yan"), "m_yan", "7"],
+          [KinPersonId.make("h_zed"), "m_zed", "8"],
+        ] as const) {
+          yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+            VALUES (${person}, 'org_01', ${memberId}, ${memberId}, ${T})`;
+          yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+              person_id, role, joined_at)
+            VALUES (${memberId}, 'org_01', 'chat_team', 'person', ${person}, 'member', ${T})`;
+          yield* devices.register(caller("sess-member", person), {
+            orgId,
+            token: token(fill),
+            platform: "ios",
+            apsEnvironment: "production",
+          });
+        }
+        const ownerDevices = [ownerPhone, ownerTablet, token("d"), token("e")];
+        /** Sends Priya's message, changes the rows while the owner's sends hold the slots. */
+        const parkedSend = (change: (messageId: KinMessageId) => Effect.Effect<void, SqlError>) =>
+          Effect.gen(function* () {
+            round = { parked: 0, full: Deferred.makeUnsafe(), release: Deferred.makeUnsafe() };
+            apns.sent.length = 0;
+            const messageId = yield* postMessage(
+              sql,
+              { personId: member, memberId: "m_priya" },
+              "posted",
+              { mentions: ["m_owner", "m_yan", "m_zed"] },
+            );
+            const sending = yield* sender.notify({ _tag: "message", orgId, messageId });
+            yield* Deferred.await(round.full);
+            yield* change(messageId);
+            yield* Deferred.succeed(round.release, undefined);
+            yield* Fiber.join(sending);
+            return apns.sent.map((push) => push.token);
+          });
+        // Zed is removed, and Yan removed and added back after the message.
+        assert.sameMembers(
+          yield* parkedSend(() =>
+            Effect.gen(function* () {
+              yield* sql`UPDATE kin_chat_members SET left_at = ${T} WHERE member_id = 'm_zed'`;
+              yield* sql`UPDATE kin_chat_members SET joined_seq = 99 WHERE member_id = 'm_yan'`;
+            }),
+          ),
+          ownerDevices,
+        );
+        yield* sql`UPDATE kin_chat_members SET left_at = NULL, joined_seq = 0
+          WHERE member_id IN ('m_yan', 'm_zed')`;
+        // A clear deletes the chat's messages before the waiting sends reach them.
+        assert.sameMembers(
+          yield* parkedSend((messageId) =>
+            Effect.gen(function* () {
+              yield* sql`DELETE FROM kin_messages WHERE message_id = ${messageId}`;
+              yield* sql`UPDATE kin_chats SET cleared_seq = 99 WHERE chat_id = 'chat_team'`;
+            }),
+          ),
+          ownerDevices,
+        );
+      }).pipe(Effect.provide(build(apns)));
+    },
+  );
 
   it.effect("sends nothing without an APNs key", () => {
     const apns = makeApns("unconfigured");

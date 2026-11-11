@@ -19,8 +19,8 @@ const movedCardTitle = (lead: string) => `Moved to your private chat with ${lead
 
 /**
  * In every join's transaction, after `recordJoin`: aborts private turns, and all there once the
- * floor rose (`historyFloor`); expires waiting events below it; moves private work, and work begun
- * below a risen floor, with its waiting reports, to the owner chat. Returns what runs after commit.
+ * floor rose (`historyFloor`); expires waiting events below it; moves private work, and all work
+ * there once the floor rose, with its waiting reports, to the owner chat. Returns what runs after commit.
  */
 export const onPersonJoined = Effect.fn("KinChatSharing.onPersonJoined")(function* (input: {
   readonly orgId: KinOrgId;
@@ -44,14 +44,12 @@ export const onPersonJoined = Effect.fn("KinChatSharing.onPersonJoined")(functio
         AND m.message_id = json_extract(e.json, '$.messageId') AND m.seq < ${chat.floor})
     RETURNING agent_id AS "agentId"`;
   const now = yield* Clock.currentTimeMillis;
-  // Work still running, or whose report waits, was asked below the raised floor.
+  // Every worker here now began below a raised floor, and its thread holds what was said then,
+  // finished or not: a follow-up would resume it.
   const moved = yield* sql<{ workerId: string; agentId: KinAgentId; threadId: string }>`
     UPDATE kin_workers AS k SET moved_at = ${now}
     WHERE k.org_id = ${input.orgId} AND k.chat_id = ${input.chatId} AND k.moved_at IS NULL
-      AND (k.context = 'private' OR (${floorRaised ? 1 : 0} = 1 AND (k.ended_at IS NULL
-        OR EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = k.org_id
-          AND e.tag = 'worker.report' AND json_extract(e.json, '$.workerId') = k.worker_id
-          AND ${pending}))))
+      AND (k.context = 'private' OR ${floorRaised ? 1 : 0} = 1)
     RETURNING worker_id AS "workerId", agent_id AS "agentId", thread_id AS "threadId"`;
   yield* sql`UPDATE kin_events AS e SET json = json_remove(e.json, '$.chatId', '$.origin')
     WHERE e.org_id = ${input.orgId} AND e.tag = 'worker.report'
