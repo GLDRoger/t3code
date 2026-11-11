@@ -26,7 +26,9 @@ export function setupFailureIn(
     projection.runs.filter((run) => run.ordinal >= root.ordinal).map((run) => run.id),
   );
   for (const item of projection.turnItems) {
-    if (item.type !== "error" || item.runId === null || !runs.has(item.runId)) continue;
+    // A retry the provider recovered from leaves its error item `completed`: it ended nothing.
+    if (item.type !== "error" || item.status !== "failed") continue;
+    if (item.runId === null || !runs.has(item.runId)) continue;
     const found = setupFailure(item.failure);
     if (found !== null) return found;
   }
