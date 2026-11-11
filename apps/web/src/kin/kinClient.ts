@@ -328,4 +328,9 @@ export const kinClient = {
     label: "kin:memory:confirm",
     tag: "kin.memory.confirmSuggestions",
   }),
+  memoryForget: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:memory:forget",
+    tag: "kin.memory.forget",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.itemId },
+  }),
 };

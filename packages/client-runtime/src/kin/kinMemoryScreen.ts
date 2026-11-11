@@ -2,6 +2,8 @@ import {
   KinChatError,
   type KinMemoryConfirmSuggestionsInput,
   type KinMemoryConfirmSuggestionsResult,
+  type KinMemoryForgetInput,
+  type KinMemoryForgetResult,
   type KinMemoryItemId,
   type KinMemoryListItem,
   type KinMemoryListResult,
@@ -33,6 +35,13 @@ const problemOf = (cause: unknown) =>
       : cause.reason === "not_allowed"
         ? cause.message
         : KIN_MEMORY_CHANGE_FAILED;
+/** Forgetting is asked once more first: the page has no way to bring an item back. */
+export const KIN_MEMORY_FORGET = {
+  action: "Forget",
+  title: "Forget this?",
+  body: (title: string) =>
+    `Your leads will stop using “${title}”. You can't bring it back from here.`,
+};
 const SHARE = "Let the team know";
 const KEEP = "Keep to myself";
 /** The host takes at most this many items in one confirmation. */
@@ -62,12 +71,15 @@ const SECTIONS: ReadonlyArray<{
   },
 ];
 
+/** How an item reads after a tap: who may know it, or gone from the list. */
+type KinMemoryItemState = KinMemoryVisibility | "forgotten";
+
 /** The owner's taps over the list they were made on, until the host's own list says the same. */
 export interface KinMemoryEdits {
   /** Taps the host hasn't answered yet: how each item reads meanwhile. */
-  readonly pending: ReadonlyMap<string, KinMemoryVisibility>;
+  readonly pending: ReadonlyMap<string, KinMemoryItemState>;
   /** The host's answers, kept only while `settledOver` is still the list on screen. */
-  readonly settled: ReadonlyMap<string, KinMemoryVisibility>;
+  readonly settled: ReadonlyMap<string, KinMemoryItemState>;
   readonly settledOver: KinMemoryListResult | null;
   /** The last tap that didn't go through, in words for the owner. */
   readonly problem: string | null;
@@ -89,7 +101,7 @@ const without = <V>(map: ReadonlyMap<string, V>, ids: ReadonlyArray<string>) => 
 export function kinMemoryStarted(
   edits: KinMemoryEdits,
   itemIds: ReadonlyArray<string>,
-  to: KinMemoryVisibility,
+  to: KinMemoryItemState,
 ): KinMemoryEdits {
   const pending = new Map(edits.pending);
   for (const id of itemIds) pending.set(id, to);
@@ -101,7 +113,7 @@ function kinMemorySettled(
   edits: KinMemoryEdits,
   list: KinMemoryListResult,
   itemIds: ReadonlyArray<string>,
-  answered: ReadonlyArray<Pick<KinMemoryListItem, "itemId" | "visibility">>,
+  answered: ReadonlyArray<{ readonly itemId: string; readonly visibility: KinMemoryItemState }>,
 ): KinMemoryEdits {
   const settled = new Map(edits.settledOver === list ? edits.settled : []);
   for (const item of answered) settled.set(item.itemId, item.visibility);
@@ -130,6 +142,7 @@ export interface KinMemoryItemView {
   readonly state: KinMemoryVisibility;
   /** A tap on it is on its way to the host. */
   readonly busy: boolean;
+  readonly forget: { readonly label: string; readonly accessibilityLabel: string };
   /** What a tap can make of it, the yes first. */
   readonly actions: ReadonlyArray<{
     readonly to: "team" | "only_owner";
@@ -158,6 +171,7 @@ export interface KinMemoryConfirmAll {
 export interface KinMemoryView {
   /** Section headings and items in one flat list, so a long memory can be virtualised. */
   readonly rows: ReadonlyArray<KinMemoryRow>;
+  /** Items still remembered: one being forgotten is already gone. */
   readonly total: number;
   readonly searchable: boolean;
   /** Set when a search leaves nothing: "Nothing matches “pricing”." */
@@ -227,7 +241,10 @@ export function kinMemoryView(
   search: string,
 ): KinMemoryView {
   const words = search.toLowerCase().split(/\s+/).filter(Boolean);
-  const items = list.items.map((item) => ({ item, state: shownAs(item, list, edits) }));
+  const items = list.items.flatMap((item) => {
+    const state = shownAs(item, list, edits);
+    return state === "forgotten" ? [] : [{ item, state }];
+  });
   const found = words.length === 0 ? items : items.filter(({ item }) => matches(item, words));
   const rows: Array<KinMemoryRow> = [];
   for (const section of SECTIONS) {
@@ -251,6 +268,10 @@ export function kinMemoryView(
           from: item.from === null ? null : `${item.from.name} said this in ${item.from.chatName}`,
           state,
           busy: edits.pending.has(item.itemId),
+          forget: {
+            label: KIN_MEMORY_FORGET.action,
+            accessibilityLabel: `${KIN_MEMORY_FORGET.action}: ${item.title}`,
+          },
           actions: actionsFor(item, state),
         },
       });
@@ -262,8 +283,8 @@ export function kinMemoryView(
     .map(({ item }) => item.itemId);
   return {
     rows,
-    total: list.items.length,
-    searchable: list.items.length >= SEARCH_FROM,
+    total: items.length,
+    searchable: items.length >= SEARCH_FROM,
     noMatch: rows.length === 0 && words.length > 0 ? `Nothing matches “${search.trim()}”.` : null,
     // One suggestion has its own yes beside it.
     confirmAll:
@@ -301,6 +322,7 @@ export function createKinMemoryActions(options: {
   readonly confirmSuggestions: (
     input: KinMemoryConfirmSuggestionsInput,
   ) => Sent<KinMemoryConfirmSuggestionsResult>;
+  readonly forget: (input: KinMemoryForgetInput) => Sent<KinMemoryForgetResult>;
   readonly update: (change: (edits: KinMemoryEdits) => KinMemoryEdits) => void;
   readonly refresh: () => void;
 }) {
@@ -309,9 +331,15 @@ export function createKinMemoryActions(options: {
   const run = async (
     list: KinMemoryListResult,
     itemIds: ReadonlyArray<KinMemoryItemId>,
-    to: "team" | "only_owner",
+    to: KinMemoryItemState,
     send: () => Promise<
-      { readonly answered: ReadonlyArray<KinMemoryListItem> } | { readonly failed: unknown }
+      | {
+          readonly answered: ReadonlyArray<{
+            readonly itemId: string;
+            readonly visibility: KinMemoryItemState;
+          }>;
+        }
+      | { readonly failed: unknown }
     >,
   ) => {
     inFlight += 1;
@@ -351,6 +379,14 @@ export function createKinMemoryActions(options: {
           answered.push(...result.value.items);
         }
         return { answered };
+      }),
+    /** Gone from the list at once; back, with the reason, if the host refuses. */
+    forget: (list: KinMemoryListResult, itemId: KinMemoryItemId) =>
+      run(list, [itemId], "forgotten", async () => {
+        const result = await options.forget({ orgId, itemId });
+        return AsyncResult.isSuccess(result)
+          ? { answered: [{ itemId: result.value.itemId, visibility: "forgotten" as const }] }
+          : { failed: squashAtomCommandFailure(result) };
       }),
     dismissProblem: () => update((edits) => ({ ...edits, problem: null })),
   };

@@ -41,6 +41,7 @@ import * as Memory from "../memory/Memory.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import * as Cache from "../memory/MemoryCache.ts";
 import { MemoryItemError, memoryDateMillis, parseFrontMatter } from "../memory/frontMatter.ts";
+import { writeRefusal } from "../memory/keeping.ts";
 import {
   authorise,
   contentOf,
@@ -664,6 +665,9 @@ const make = Effect.gen(function* () {
     const { body, sensitive: asked, ...fields } = input.item;
     const content = contentOf({ head: fields, body });
     if (looksLikeSecret(content)) return yield* invalid(SECRET_REFUSAL);
+    // Judged on the words sent alone, so the refusal says nothing about what is stored.
+    const notMemory = writeRefusal(input, yield* Clock.currentTimeMillis);
+    if (notMemory !== undefined) return yield* invalid(notMemory);
     const shared = audience !== "owner_only";
     if (shared && (fields.kind !== "claim" || input.op === "supersede"))
       return yield* invalid(TEAM_CLAIMS_ONLY);

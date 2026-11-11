@@ -69,6 +69,7 @@ function harness(list: KinMemoryListResult) {
         items: ("itemIds" in input ? input.itemIds : ["a", "b"]).map((id) => item(id, "team")),
       }));
     },
+    forget: (input) => answer(() => ({ itemId: input.itemId })),
     update: (change) => {
       edits = change(edits);
     },
@@ -166,6 +167,24 @@ describe("what the owner's leads remember", () => {
     expect(states(listOf([item("a", "suggested"), item("b", "only_owner")]), host.edits())).toEqual(
       { a: "suggested", b: "only_owner" },
     );
+  });
+
+  it("drops a forgotten item at once and puts it back when the host refuses", async () => {
+    const list = listOf([item("a", "only_owner"), item("b", "team")]);
+    const host = harness(list);
+    const refused = host.actions.forget(list, KinMemoryItemId.make("a"));
+    expect(states(list, host.edits())).toEqual({ b: "team" });
+    expect(host.view().total).toBe(1);
+    host.release(false);
+    await refused;
+    expect(states(list, host.edits())).toEqual({ a: "only_owner", b: "team" });
+    expect(host.edits().problem).toBe("Couldn't change that. Try again.");
+
+    const forgotten = host.actions.forget(list, KinMemoryItemId.make("a"));
+    host.release(true);
+    await forgotten;
+    // Gone until the host's next list, which no longer holds it.
+    expect(states(list, host.edits())).toEqual({ b: "team" });
   });
 
   it("never sends a yes for a row that doesn't say which words it showed", async () => {

@@ -14,6 +14,7 @@ import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import { KinIdentity } from "../../chat/KinIdentity.ts";
 import * as RepoReads from "../../github/KinRepoReads.ts";
+import { MEMORY_RULE } from "../../memory/keeping.ts";
 import * as ChoiceCard from "../../widgets/choiceCard.ts";
 import * as Handoff from "../Handoff.ts";
 import { KinLevelGate } from "../LevelGate.ts";
@@ -115,8 +116,7 @@ export const KinLeadToolkit = Toolkit.make(
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("memory_write", {
     ...shared,
-    description:
-      "Stage a memory create, update, supersession or invalidation; it is saved when the turn ends. sourceEventId must be one of this turn's events; the server sets provenance. Set sensitive on every item: true for anything only the owner should know, which is access (credentials, where they are kept, who holds them, how to get in), money and commercial terms (what a client is charged, what people or suppliers are paid, discounts, margins, bank and billing details), an arrangement with a client or partner the team isn't meant to know (a client lending the company their subscription for a while), and anything the owner says to keep between you; false for ordinary company knowledge such as project status. When unsure, true. Never save an actual password, key or token: save where it is kept. In a chat other people read you can save only what someone there said, as a claim with sensitive false. Never delete or write rules. Retry an item only with exactly the same payload: a changed retry, or an update to an item created in this same turn, is refused. Not for reminders or scheduled tasks: create them with kin_defer or kin_schedule, move them with replaces, and close them with kin_cancel.",
+    description: `Stage a memory create, update, supersession or invalidation; it is saved when the turn ends. ${MEMORY_RULE} A write that is plainly a to-do, a follow-up, progress or several things at once is refused. sourceEventId must be one of this turn's events; the server sets provenance. Set sensitive on every item: true for anything only the owner should know, which is access (credentials, where they are kept, who holds them, how to get in), money and commercial terms (what a client is charged, what people or suppliers are paid, discounts, margins, bank and billing details), an arrangement with a client or partner the team isn't meant to know (a client lending the company their subscription for a while), and anything the owner says to keep between you; false for ordinary company knowledge such as project status. When unsure, true. Never save an actual password, key or token: save where it is kept. In a chat other people read you can save only what someone there said, as a claim with sensitive false. Never delete or write rules. Retry an item only with exactly the same payload: a changed retry, or an update to an item created in this same turn, is refused. Not for reminders or scheduled tasks: create them with kin_defer or kin_schedule, move them with replaces, and close them with kin_cancel.`,
     parameters: Lead.WriteInput,
     success: Lead.ItemResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
