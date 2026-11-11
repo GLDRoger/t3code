@@ -3,6 +3,7 @@ import {
   KinDeferralCard,
   type KinReminderCardAction,
   type KinScheduledTaskCardAction,
+  type KinWorkerPublishCardAction,
   type KinWidget,
   type KinWidgetsActInput,
 } from "@t3tools/contracts";
@@ -27,7 +28,8 @@ export type KinDeferralActionId =
   | "monday"
   | "cancel"
   | KinReminderCardAction
-  | KinScheduledTaskCardAction;
+  | KinScheduledTaskCardAction
+  | KinWorkerPublishCardAction;
 export type KinDeferralPhase =
   | "confirmed"
   | "heads_up"
@@ -156,6 +158,18 @@ export const KIN_DEFERRAL_ACTIONS: Record<KinDeferralActionId, KinDeferralAction
     id: "delete",
     label: "Delete",
     accessibilityLabel: "Delete this scheduled task",
+    tone: "secondary",
+  },
+  publish: {
+    id: "publish",
+    label: "Publish",
+    accessibilityLabel: "Publish these changes to GitHub",
+    tone: "secondary",
+  },
+  dont_publish: {
+    id: "dont_publish",
+    label: "Don't publish",
+    accessibilityLabel: "Don't publish these changes",
     tone: "secondary",
   },
 };
@@ -464,6 +478,8 @@ const SERVER_DONE: Partial<Record<KinDeferralActionId, string>> = {
   pause: "Paused.",
   resume: "Resumed.",
   delete: "Deleted.",
+  publish: "Publishing.",
+  dont_publish: "Kin won't publish it.",
 };
 
 /**

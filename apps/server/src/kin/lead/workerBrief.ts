@@ -89,3 +89,10 @@ export const parseReport = (reply: string) => {
     return undefined;
   }
 };
+
+/** The lead's line while Kin holds a finished worker's commit for the owner. */
+export const WAITING_FOR_OWNER =
+  "Kin is holding this work until the owner publishes it: nothing was pushed and no pull request exists yet. Tell the owner it is waiting for them to publish it from Kin's card. Don't say it was published, and don't ask them to approve it in chat: only their tap on that card publishes it.";
+/** The lead's line once the owner chose not to publish. */
+export const OWNER_DECLINED =
+  "The owner chose not to publish this work: Kin pushed nothing and opened no pull request, and the changes stay on the host. Don't publish, push or restart it unless the owner asks.";

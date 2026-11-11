@@ -395,6 +395,23 @@ describe("KinPushSender", () => {
       });
       assert.isUndefined(apns.sent[0]?.collapseId);
 
+      // Kin's publish card rings with fixed words only, never the lead's title or the files.
+      apns.sent.length = 0;
+      const held = yield* postWidget(
+        sql,
+        "worker_publish",
+        { pullRequestTitle: "Invented client terms", files: [{ path: "acme-terms.md" }] },
+        [member],
+      );
+      yield* notify({ _tag: "widget", orgId, widgetId: held });
+      assert.lengthOf(apns.sent, 1);
+      assert.deepStrictEqual(apns.sent[0]?.payload.aps.alert, {
+        title: "Payments team",
+        body: "A card is waiting on you",
+      });
+      assert.notInclude(JSON.stringify(apns.sent), "Invented client terms");
+      assert.notInclude(JSON.stringify(apns.sent), "acme-terms");
+
       // A card that waits on someone rings as a card, not again as its message.
       const card = yield* postWidget(sql, "task", { status: "needs_decision" }, [member]);
       const [{ messageId: carded }] = (yield* sql<{ messageId: KinMessageId }>`

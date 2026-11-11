@@ -55,7 +55,7 @@ import { KinEventQueue } from "./KinEventQueue.ts";
 import { KinLeadRegistry } from "./KinLeadRegistry.ts";
 import * as KinLevels from "./KinLevels.ts";
 import { isOrgPaused, STOP_REASON } from "./orgState.ts";
-import { parseReport } from "./workerBrief.ts";
+import { OWNER_DECLINED, parseReport, WAITING_FOR_OWNER } from "./workerBrief.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
 import * as Publish from "./workerPublish.ts";
 import { localThreadId, workThreadPrefix } from "./workThread.ts";
@@ -130,12 +130,6 @@ type Publication =
   /** Held for the owner's tap on Kin's card; nothing reached GitHub. */
   | { readonly held: "owner"; readonly sha: string }
   | { readonly held: "declined" };
-/** The lead's line while Kin holds a finished worker's commit for the owner. */
-export const WAITING_FOR_OWNER =
-  "Kin is holding this work until the owner publishes it: nothing was pushed and no pull request exists yet. Tell the owner it is waiting for them to publish it from Kin's card. Don't say it was published, and don't ask them to approve it in chat: only their tap on that card publishes it.";
-/** The lead's line once the owner chose not to publish. */
-export const OWNER_DECLINED =
-  "The owner chose not to publish this work: Kin pushed nothing and opened no pull request, and the changes stay on the host. Don't publish, push or restart it unless the owner asks.";
 /** Kin's PR replaces any the worker claims; a refusal becomes an open question for the lead. */
 const withPublication = (report: WorkerReport, published: Publication | undefined): WorkerReport =>
   published === undefined
@@ -651,48 +645,50 @@ const make = Effect.gen(function* () {
     const fail = (reason: string) => new Publish.KinWorkerPublishRefused({ reason });
     const held = (as: "owner" | "declined") =>
       new Publish.KinWorkerPublishRefused({ reason: HELD_REFUSAL, held: as });
+    // The hold commits with its card; only then does the publish stop, refused.
     const begin = (intent: Publish.PublishIntent) =>
       sql
         .withTransaction(
           Effect.gen(function* () {
             if (yield* paused) return yield* fail(PAUSED_REFUSAL);
             const admission = yield* inSql(Attempts.beginWrite(key, intent, title));
-            switch (admission._tag) {
-              case "admitted":
-                return;
-              case "refused":
-                return yield* fail(STOPPED_REFUSAL);
-              case "declined":
-                return yield* held("declined");
-              case "held":
-                // Its own savepoint: a card Kin can't write leaves the hold, never a publish.
-                yield* sql
-                  .withTransaction(
-                    PublishCard.writePublishCard({
-                      attempt: key,
-                      row: admission.row,
-                      reasons: admission.reasons,
-                      previousCardId: admission.previousCardId,
-                      repository: repoName(worker),
-                      branch,
-                    }).pipe(
-                      Effect.provideService(SqlClient.SqlClient, sql),
-                      Effect.provideService(KinChatRepository, repo),
-                      Effect.provideService(KinChatHub, hub),
-                    ),
-                  )
-                  .pipe(
-                    Effect.catchCause((cause) =>
-                      Effect.logError("Kin couldn't show the owner a publish card", { cause }),
-                    ),
-                  );
-                return yield* held("owner");
-            }
+            if (admission._tag === "held")
+              // Its own savepoint: a card Kin can't write leaves the hold, never a publish.
+              yield* sql
+                .withTransaction(
+                  PublishCard.writePublishCard({
+                    attempt: key,
+                    row: admission.row,
+                    reasons: admission.reasons,
+                    previousCardId: admission.previousCardId,
+                    repository: repoName(worker),
+                    branch,
+                  }).pipe(
+                    Effect.provideService(SqlClient.SqlClient, sql),
+                    Effect.provideService(KinChatRepository, repo),
+                    Effect.provideService(KinChatHub, hub),
+                  ),
+                )
+                .pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.logError("Kin couldn't show the owner a publish card", { cause }),
+                  ),
+                );
+            return admission._tag;
           }),
         )
         .pipe(
           Effect.mapError((error) =>
             isRefused(error) ? error : fail("Kin couldn't record what it was about to write"),
+          ),
+          Effect.flatMap((admitted) =>
+            admitted === "admitted"
+              ? Effect.void
+              : Effect.fail(
+                  admitted === "refused"
+                    ? fail(STOPPED_REFUSAL)
+                    : held(admitted === "held" ? "owner" : "declined"),
+                ),
           ),
         );
     const review = (facts: Publish.PublishReview) =>
