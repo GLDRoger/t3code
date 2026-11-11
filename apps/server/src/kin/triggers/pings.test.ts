@@ -278,6 +278,28 @@ describe("KinPings", () => {
     }),
   );
 
+  it.effect("holds a retired agent's chase, never stopping it, and resumes it on restore", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const pings = yield* Pings.KinPings;
+      const sql = yield* SqlClient.SqlClient;
+      yield* TestClock.setTime(Date.parse("2026-11-01T15:00:00Z"));
+      yield* pings.put(request);
+      yield* sql`UPDATE kin_agents SET retired_at = '2026-11-01T14:00:00.000Z' WHERE agent_id = 'lead'`;
+      yield* pings.sweep(orgId);
+      const sent = sql`SELECT message_id FROM kin_messages WHERE org_id = ${orgId}
+        AND author_kind = 'system' ORDER BY seq`;
+      assert.lengthOf(yield* sent, 0);
+      assert.deepStrictEqual(
+        yield* sql`SELECT stopped_at FROM kin_ping_items WHERE org_id = ${orgId} ORDER BY item_id`,
+        [{ stopped_at: null }],
+      );
+      yield* sql`UPDATE kin_agents SET retired_at = NULL WHERE agent_id = 'lead'`;
+      yield* pings.sweep(orgId);
+      assert.lengthOf(yield* sent, 1);
+    }).pipe(Effect.provide(layer())),
+  );
+
   it.effect("answers only the recipient and only a reply to a multi-item ping", () =>
     Effect.gen(function* () {
       yield* seed;

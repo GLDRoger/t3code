@@ -10,6 +10,7 @@ import {
   kinAccessEnded,
   kinAppShell,
   kinChatOnlyEnvironments,
+  kinDockTabs,
   kinHomeTabs,
   kinJoinFailureMessage,
   kinJoinOffersApp,
@@ -120,6 +121,12 @@ describe("the app's shell", () => {
       kinHomeTabs({ authenticated: true, permissions: ["kin:chat", "orchestration:read"] }),
     ).toEqual(["chats", "work", "settings"]);
     expect(kinHomeTabs(null)).toEqual(["chats", "settings"]);
+  });
+
+  it("docks Chats, Work and Settings for the owner, and no Work for a teammate", () => {
+    expect(kinDockTabs(owner)).toEqual(["chats", "work", "settings"]);
+    expect(kinDockTabs(teammate)).toEqual(["chats", "settings"]);
+    expect(kinDockTabs(null)).toEqual(["chats", "settings"]);
   });
 
   it("is only Kin when every saved environment is a teammate's", () => {

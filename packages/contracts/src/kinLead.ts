@@ -130,9 +130,20 @@ export const KinLeadProfile = Schema.Struct({
   working: Schema.Boolean,
   // Soonest first after work under way, at most KIN_LEAD_TRACKING_CAP.
   tracking: Schema.Array(KinLeadTracking),
+  // Present only for a retired one: when, and who retired it (null for the host's command).
+  retired: Schema.optional(
+    Schema.Struct({
+      at: Schema.toEncoded(CanonicalUtcTimestamp),
+      byPersonId: Schema.NullOr(KinPersonId),
+    }),
+  ),
 });
 export type KinLeadProfile = typeof KinLeadProfile.Type;
-export const KinLeadsListInput = Schema.Struct({ orgId: KinOrgId });
+// includeRetired: the owner's retired ones too, after the live ones. Teammates never get them.
+export const KinLeadsListInput = Schema.Struct({
+  orgId: KinOrgId,
+  includeRetired: Schema.optional(Schema.Boolean),
+});
 export type KinLeadsListInput = typeof KinLeadsListInput.Type;
 /**
  * Someone else's lead the viewer may message: who it is and what its owner says it does. Nothing
@@ -164,6 +175,9 @@ export const KinLeadUpdateInput = Schema.Struct({
   intro: Schema.optional(KinLeadIntro),
 });
 export type KinLeadUpdateInput = typeof KinLeadUpdateInput.Type;
+/** Retire or restore one agent. Both are idempotent and answer with its profile. */
+export const KinLeadRetireInput = Schema.Struct({ orgId: KinOrgId, agentId: KinAgentId });
+export type KinLeadRetireInput = typeof KinLeadRetireInput.Type;
 
 /** Who besides its owner may message a lead. Only the lead's owner reads or changes it. */
 export const KinLeadAccessInput = Schema.Struct({ orgId: KinOrgId, agentId: KinAgentId });

@@ -1,3 +1,5 @@
+import { KIN_ONLY } from "../../lib/kinOnly";
+import { useOpenKinThread } from "../chats/state/useOpenKinThread";
 import * as Dialog from "../../components/ui/Dialog";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -417,15 +419,21 @@ export function SettingsScheduledTasksRouteScreen() {
   return (
     <SettingsScreen
       title="Scheduled tasks"
-      actions={[
-        {
-          accessibilityLabel: "New task",
-          icon: "plus",
-          disabled: visibleEnvironments.length === 0,
-          onPress: newTask,
-        },
-      ]}
-      menus={[environmentMenu]}
+      // In a Kin-only app schedules are made by asking an agent, and there are no projects to
+      // filter by; what exists can still be paused, run, edited and deleted here.
+      actions={
+        KIN_ONLY
+          ? undefined
+          : [
+              {
+                accessibilityLabel: "New task",
+                icon: "plus",
+                disabled: visibleEnvironments.length === 0,
+                onPress: newTask,
+              },
+            ]
+      }
+      menus={KIN_ONLY ? undefined : [environmentMenu]}
     >
       <ScrollView
         keyboardShouldPersistTaps="handled"
@@ -1435,6 +1443,7 @@ function EnvironmentTasks({
     reportFailure: false,
   });
   const selectDetail = useSelectWorkspaceDetail();
+  const openKinThread = useOpenKinThread();
   const failure = (title: string, result: AtomCommandResult<unknown, unknown>) => {
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
       Dialog.alert(title, String(squashAtomCommandFailure(result)));
@@ -1538,13 +1547,12 @@ function EnvironmentTasks({
                 if (action === "edit") {
                   onEdit(task);
                 } else if (action === "thread" && task.threadId !== null) {
-                  selectDetail({
-                    name: "Thread",
-                    params: {
-                      environmentId: String(environmentId),
-                      threadId: String(task.threadId),
-                    },
-                  });
+                  const thread = {
+                    environmentId: String(environmentId),
+                    threadId: String(task.threadId),
+                  };
+                  if (KIN_ONLY) openKinThread(thread);
+                  else selectDetail({ name: "Thread", params: thread });
                 } else if (action === "delete") {
                   Dialog.alert("Delete task?", task.title, [
                     { text: "Cancel", style: "cancel" },

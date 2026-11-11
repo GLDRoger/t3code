@@ -6,8 +6,8 @@ import {
   installKinAccessEnded,
   installKinChatOnlyMemory,
   installKinShellReset,
-  readKinAppShell,
 } from "./state/kinChatOnly";
+import { readKinIsHome } from "./state/kinHome";
 import { installKinStartList } from "./state/kinLastList";
 import { startKinOutbox } from "./state/kinOutboxDelivery";
 
@@ -33,12 +33,12 @@ export function installKin(navigate: (href: string) => void): () => void {
     installKinShellReset(resetToHome),
     installKinAccessEnded(() => {
       // Only a teammate's phone: with coding environments too, Home is not about this team.
-      if (readKinAppShell() === "chatOnly") resetToHome();
+      if (readKinIsHome()) resetToHome();
     }),
     installKinStartList(
       () => navigate("/kin"),
-      // On a teammate's phone Home is already the Kin list.
-      () => !navigated && readKinAppShell() !== "chatOnly",
+      // Where Kin is home, Home is already the Kin list.
+      () => !navigated && !readKinIsHome(),
     ),
   ];
   return () => {

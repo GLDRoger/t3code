@@ -81,6 +81,8 @@ describe("command permissions", () => {
     "kin.triggers.setTimeZone",
     "kin.lead.create",
     "kin.lead.update",
+    "kin.lead.retire",
+    "kin.lead.restore",
     "kin.memory.list",
     "kin.memory.setVisibility",
     "kin.memory.confirmSuggestions",

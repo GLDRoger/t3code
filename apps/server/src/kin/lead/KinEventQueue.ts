@@ -401,6 +401,8 @@ const make = Effect.gen(function* () {
         MIN(CASE WHEN not_before > ${now} THEN not_before END) AS deferred_at
       FROM kin_events
       WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND state = 'queued'
+        AND EXISTS (SELECT 1 FROM kin_agents a WHERE a.org_id = kin_events.org_id
+          AND a.agent_id = kin_events.agent_id AND a.retired_at IS NULL)
     `;
     const readyAt =
       window?.first_at != null && window.last_at !== null
@@ -472,6 +474,9 @@ const make = Effect.gen(function* () {
                 WITH eligible AS (
                   SELECT e.event_id, e.priority, e.received_at, ${laneOf} AS lane
                   FROM kin_events e JOIN kin_leads l ON l.org_id = e.org_id AND l.agent_id = e.agent_id
+                  -- Queued before a retirement, it never runs after it.
+                  JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
+                    AND a.retired_at IS NULL
                   WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId} AND e.state = 'queued'
                     AND (e.not_before IS NULL OR e.not_before <= ${now})
                 )
@@ -541,6 +546,8 @@ const make = Effect.gen(function* () {
             WHERE w.org_id = ${input.orgId} AND w.agent_id = ${input.agentId}
               AND w.wakeup_id = ${input.wakeupId} AND w.status = 'running' AND w.run_id IS NOT NULL
               AND w.aborted_at IS NULL
+              AND EXISTS (SELECT 1 FROM kin_agents a WHERE a.org_id = w.org_id
+                AND a.agent_id = w.agent_id AND a.retired_at IS NULL)
               -- A lead that called kin_end has answered: what comes next gets a wake-up of its own.
               AND NOT EXISTS (SELECT 1 FROM kin_lead_tool_calls t WHERE t.org_id = w.org_id
                 AND t.wakeup_id = w.wakeup_id AND t.call_key = 'end')

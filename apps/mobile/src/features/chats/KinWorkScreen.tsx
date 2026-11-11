@@ -1,3 +1,4 @@
+import { kinTabBar, useKinTab } from "./components/KinTab";
 import { LegendList } from "@legendapp/list/react-native";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -164,20 +165,30 @@ export function KinWorkScreen({ route }: StaticScreenProps<KinWorkParams>) {
 /** Every state that isn't the list, inside the scroll view that clears the floating bar. */
 function KinWorkMessage(props: { readonly children: React.ReactNode }) {
   const navigation = useNavigation();
+  const tab = useKinTab();
   return (
     <View collapsable={false} className="flex-1 bg-screen">
-      <AppBar title={KIN_WORK_TITLE} onBack={() => navigation.goBack()} />
+      <AppBar title={KIN_WORK_TITLE} {...(tab ? {} : { onBack: () => navigation.goBack() })} />
       <ScreenContent surface="screen">
         <ScreenScrollView
           className="flex-1"
           contentInsetAdjustmentBehavior="automatic"
-          contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
+          contentContainerStyle={{
+            padding: 16,
+            paddingBottom: 32 + (tab?.bottomClearance ?? 0),
+            gap: 20,
+          }}
         >
           {props.children}
         </ScreenScrollView>
       </ScreenContent>
     </View>
   );
+}
+
+/** Work as a tab of the Kin home, inside a `KinTabContext`: the same lists, with no way back. */
+export function KinWorkTab(props: KinWorkTarget) {
+  return <KinWorkStates {...props} start="tasks" party={null} project={null} />;
 }
 
 function KinWorkStates(
@@ -344,11 +355,13 @@ export function KinWorkTaskList(
         })
     : null;
   const { within } = props;
+  // A project's own page is always a pushed page, even when it was opened from the Work tab.
+  const tab = useKinTab();
+  const docked = within === undefined ? tab : null;
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
         title={props.title}
-        onBack={props.onBack}
         refresh={{ accessibilityLabel: "Refresh", onPress: list.refresh }}
         actions={[
           ...(add === null
@@ -357,13 +370,16 @@ export function KinWorkTaskList(
           ...(within?.bar.actions ?? []),
         ]}
         {...(within?.bar.menus === undefined ? {} : { menus: within.bar.menus })}
-        search={{
-          value: filter.text,
-          onChangeText: (text) => list.setFilter({ ...filter, text }),
-          placeholder: KIN_WORK_SEARCH_PLACEHOLDER,
-          closeAccessibilityLabel: "Close search",
-          clearAccessibilityLabel: "Clear search",
-        }}
+        {...kinTabBar(docked, {
+          onBack: props.onBack,
+          search: {
+            value: filter.text,
+            onChangeText: (text) => list.setFilter({ ...filter, text }),
+            placeholder: KIN_WORK_SEARCH_PLACEHOLDER,
+            closeAccessibilityLabel: "Close search",
+            clearAccessibilityLabel: "Clear search",
+          },
+        })}
       />
       <ScreenContent surface="screen">
         {/* Hundreds of tasks stay cheap: only the rows in view mount. */}
@@ -373,8 +389,10 @@ export function KinWorkTaskList(
           contentInsetAdjustmentBehavior="automatic"
           keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled"
-          // The search field floats over the foot of the list.
-          contentContainerStyle={{ paddingBottom: 96 }}
+          // The search field, or the tab dock, floats over the foot of the list.
+          contentContainerStyle={{
+            paddingBottom: docked === null ? 96 : 24 + docked.bottomClearance,
+          }}
           data={rows}
           keyExtractor={(row) => row.key}
           extraData={[listState, changed]}

@@ -29,6 +29,7 @@ import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { speakerOrder } from "../floor/KinFloor.ts";
 import { KinPresence, queueLabel, syncQueued } from "../reply/KinPresence.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
+import { RETIRED_NOTICE_PREFIX, retiredAgentNotice, retiredNoticeId } from "./Retirement.ts";
 import * as LeadAccess from "./LeadAccess.ts";
 
 const decodeTap = Schema.decodeUnknownEffect(
@@ -139,6 +140,47 @@ const make = Effect.gen(function* () {
     return false;
   });
 
+  /**
+   * A person writes to a retired agent in their direct chat with it: Kin's fixed line, never a
+   * turn. Only its name, which they already see. In a group it simply doesn't answer.
+   */
+  const retiredNotice = Effect.fn("KinChatWake.retiredNotice")(function* (message: KinMessage) {
+    const [agent] = yield* sql<{ name: string }>`SELECT a.display_name AS name
+      FROM kin_chats c
+      JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
+        AND m.principal_kind = 'agent' AND m.left_at IS NULL
+      JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = m.agent_id
+        AND a.role = 'lead' AND a.retired_at IS NOT NULL
+      WHERE c.org_id = ${message.orgId} AND c.chat_id = ${message.chatId} AND c.kind = 'direct'
+      ORDER BY a.agent_id LIMIT 1`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinChatWake.retiredNotice")),
+    );
+    if (agent === undefined) return;
+    const messageId = retiredNoticeId(message.messageId);
+    if (Option.isSome(yield* repo.getMessage({ orgId: message.orgId, messageId }))) return;
+    const notice = yield* repo.insertMessage({
+      orgId: message.orgId,
+      chatId: message.chatId,
+      // Fixed words naming only the agent, in the chat the person wrote in.
+      audience: "chat",
+      messageId,
+      author: { _tag: "system" },
+      kind: "system",
+      body: retiredAgentNotice(agent.name),
+      intent: null,
+      mentions: [],
+      replyTo: null,
+      widgetId: null,
+      floorRunId: null,
+      status: "posted",
+      sentBy: null,
+      clientMessageId: null,
+      createdAt: DateTime.formatIso(yield* DateTime.now),
+      editedAt: null,
+    });
+    yield* hub.publish({ type: "message.posted", orgId: message.orgId, message: notice });
+  });
+
   const enqueue = (event: KinEvent) =>
     queue.enqueue(event).pipe(
       Effect.map((result) => !result.duplicate),
@@ -178,7 +220,7 @@ const make = Effect.gen(function* () {
         message.mentions.some((memberId) => memberId === lead.memberId),
       );
       const targets = mentioned.length > 0 ? mentioned : leads.slice(0, 1);
-      if (targets.length === 0) return;
+      if (targets.length === 0) return yield* retiredNotice(message);
       const tap =
         message.kind === "widget_action"
           ? yield* decodeTap(message.body).pipe(Effect.option)
@@ -322,6 +364,9 @@ const make = Effect.gen(function* () {
             JOIN kin_chat_members x ON x.org_id = m.org_id AND x.chat_id = m.chat_id
               AND x.member_id = j.value AND x.principal_kind = 'agent' AND x.left_at IS NULL)))
         AND m.created_at > ${since}
+        -- Written while it was retired: Kin already answered, and a restored agent doesn't.
+        AND NOT EXISTS (SELECT 1 FROM kin_messages n WHERE n.org_id = m.org_id
+          AND n.message_id = ${RETIRED_NOTICE_PREFIX} || m.message_id)
         AND m.seq > COALESCE((SELECT MAX(x.seq) FROM kin_messages x
           WHERE x.org_id = m.org_id AND x.chat_id = m.chat_id AND x.author_kind = 'agent'
             AND x.author_agent_id = l.agent_id), 0)

@@ -11,6 +11,7 @@ import * as Option from "effect/Option";
 import * as KinChat from "./chat/layer.ts";
 import * as KinAttachmentStore from "./chat/KinAttachmentStore.ts";
 import * as KinApprovals from "./approvals/layer.ts";
+import * as RetiredActions from "./approvals/retiredActions.ts";
 import * as KeySeal from "./approvals/KeySeal.ts";
 import * as ApprovalCards from "./chat/approvalCards.ts";
 import * as ExecutionNotices from "./chat/executionNotices.ts";
@@ -58,6 +59,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
               MemoryChanges.layer,
               KinRecords.layer,
               ApprovalCards.layer,
+              RetiredActions.layer,
             ).pipe(Layer.provideMerge(KinApprovals.layer)),
           ),
         ),
