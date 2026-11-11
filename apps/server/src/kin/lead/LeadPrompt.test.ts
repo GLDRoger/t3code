@@ -403,7 +403,8 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
   Effect.gen(function* () {
     const repo = yield* leadWithOwner;
     const sql = yield* SqlClient.SqlClient;
-    yield* sql`UPDATE kin_leads SET domain = 'invented-domain-zq', charter = 'Invented-charter-zq'`;
+    yield* sql`UPDATE kin_leads SET domain = 'invented-domain-zq', charter = 'Invented-charter-zq',
+      public_intro = 'Invented-intro-zq'`;
     yield* repo.insertPerson({
       orgId,
       personId: teammateId,
@@ -502,6 +503,7 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
     const shared = yield* build("shared-wake");
     for (const kept of [
       'Lead name: "Fixture lead"',
+      'Intro: "Invented-intro-zq"',
       "Invented teammate question",
       "Owner time:",
       "your notes and GitHub are off here",
@@ -530,7 +532,13 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
       events: [routineEvent],
       budgetContext: "5% of today left",
     });
-    for (const part of ["invented-domain-zq", "Invented-charter-zq", "Invented index", "Budget:"])
+    for (const part of [
+      "invented-domain-zq",
+      "Invented-charter-zq",
+      "Invented index",
+      "Budget:",
+      "Invented-intro-zq",
+    ])
       expect(owners).toContain(part);
   }).pipe(Effect.provide(layer)),
 );

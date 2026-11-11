@@ -609,6 +609,13 @@ export class KinLeadPrompt extends Context.Service<
               ),
             )
           : [];
+        // What the owner chose to tell teammates about this lead, so any turn may carry it.
+        const [intro] = yield* sql<{ text: string }>`SELECT public_intro AS text FROM kin_leads
+          WHERE org_id = ${orgId} AND agent_id = ${agentId} ORDER BY agent_id`.pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Kin lead intro unavailable", cause).pipe(Effect.as([])),
+          ),
+        );
         const recent =
           lane === undefined
             ? []
@@ -627,6 +634,9 @@ export class KinLeadPrompt extends Context.Service<
         // Every part is the owner's unless marked `shared`; a shared prompt keeps only those.
         const header: ReadonlyArray<Part> = [
           sharedPart(`Lead name: ${encoded(leadName, true)}`),
+          ...(intro === undefined || intro.text.trim() === ""
+            ? []
+            : [sharedPart(`Intro: ${encoded(intro.text.trim(), true)}`)]),
           ...(charter === undefined
             ? []
             : [

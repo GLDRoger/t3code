@@ -989,6 +989,11 @@ describe("Kin migrations", () => {
         yield* member("leads", "leads-owner", "person", "owner", null);
         yield* member("leads", "leads-lead", "agent", "lead", null);
         yield* member("leads", "leads-lead-2", "agent", "lead-2", null);
+        // A teammate's own chat with the owner's lead (K050): theirs from the start.
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+          VALUES ('mate-dm', 'org', 'direct', 'teammate:lead', 0, ${timestamp})`;
+        yield* member("mate-dm", "mate-dm-teammate", "person", "teammate", null);
+        yield* member("mate-dm", "mate-dm-lead", "agent", "lead", null);
         for (const chat of ["left", "leads"]) {
           for (const [seq, day] of [
             [1, 1],
@@ -1026,11 +1031,15 @@ describe("Kin migrations", () => {
           [
             { chat_id: "leads", shared: 0, shared_from_seq: null },
             { chat_id: "left", shared: 1, shared_from_seq: 3 },
+            { chat_id: "mate-dm", shared: 1, shared_from_seq: 1 },
           ],
         );
         assert.deepStrictEqual(
           yield* sql`SELECT member_id, joined_seq FROM kin_chat_members WHERE joined_seq <> 0 ORDER BY member_id`,
-          [{ member_id: "left-teammate", joined_seq: 3 }],
+          [
+            { member_id: "left-teammate", joined_seq: 3 },
+            { member_id: "mate-dm-teammate", joined_seq: 1 },
+          ],
         );
         assert.deepStrictEqual(
           yield* sql`SELECT worker_id, context, moved_at IS NOT NULL AS moved FROM kin_workers ORDER BY worker_id`,

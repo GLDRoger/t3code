@@ -536,6 +536,15 @@ describe("KinChatService", () => {
       yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
         VALUES (${person.orgId}, ${agentId}, ${mateId}, ${person.personId}, 0)`;
       const theirs = yield* service.createDirect(mate, lead);
+      // Someone besides the owner reads it from the start, so it is shared from its first seq.
+      assert.deepStrictEqual(
+        yield* sql`SELECT chat_id, shared_at IS NOT NULL AS shared, shared_from_seq FROM kin_chats
+          WHERE chat_id IN (${theirs.chatId}, ${chat.chatId}) ORDER BY chat_id = ${chat.chatId}`,
+        [
+          { chat_id: theirs.chatId, shared: 1, shared_from_seq: 1 },
+          { chat_id: chat.chatId, shared: 0, shared_from_seq: null },
+        ],
+      );
       const said = yield* service.send(mate, {
         chatId: theirs.chatId,
         body: "Between us",
