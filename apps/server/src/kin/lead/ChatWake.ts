@@ -113,6 +113,8 @@ const make = Effect.gen(function* () {
     const notice = yield* repo.insertMessage({
       orgId: message.orgId,
       chatId: message.chatId,
+      // Fixed words, about the asker, said where they asked.
+      audience: "chat",
       messageId,
       author: { _tag: "system" },
       kind: "system",

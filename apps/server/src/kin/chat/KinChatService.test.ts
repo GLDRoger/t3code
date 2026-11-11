@@ -759,6 +759,7 @@ describe("KinChatService", () => {
           [postedForPerson],
         );
         const widget = yield* service.createTaskCard({
+          audience: "chat",
           orgId: person.orgId,
           chatId: chat.chatId,
           authorAgentId: agent.agentId,
@@ -1046,12 +1047,14 @@ describe("KinChatService", () => {
 
         // Approval and other privileged cards refuse; so do non-members and unknown emoji.
         const notice = yield* service.notice({
+          audience: "chat",
           orgId: person.orgId,
           chatId: chat.chatId,
           messageId: KinMessageId.make("approval-anchor"),
           body: "Approve the merge?",
         });
         yield* repo.insertWidget({
+          audience: "chat",
           ...card,
           widgetId: KinWidgetId.make("approval-card"),
           messageId: notice.message.messageId,
@@ -1149,6 +1152,7 @@ describe("KinChatService", () => {
     Effect.gen(function* () {
       const { repo, service, person, agent, chat } = yield* seed();
       const widget = yield* service.createTaskCard({
+        audience: "chat",
         orgId: person.orgId,
         chatId: chat.chatId,
         authorAgentId: agent.agentId,
@@ -1334,13 +1338,18 @@ describe("KinChatService", () => {
         { chatId: KinChatId.make("missing") },
         { authorAgentId: KinAgentId.make("missing") },
       ])
-        assert.include(yield* service.createTaskCard({ ...input, ...patch }).pipe(Effect.flip), {
-          reason: "not_found",
-        });
-      const widget = yield* service.createTaskCard(input);
-      assert.deepStrictEqual(yield* service.createTaskCard(input), widget);
+        assert.include(
+          yield* service.createTaskCard({ audience: "chat", ...input, ...patch }).pipe(Effect.flip),
+          {
+            reason: "not_found",
+          },
+        );
+      const widget = yield* service.createTaskCard({ ...input, audience: "chat" });
+      assert.deepStrictEqual(yield* service.createTaskCard({ ...input, audience: "chat" }), widget);
       assert.include(
-        yield* service.createTaskCard({ ...input, title: "Changed" }).pipe(Effect.flip),
+        yield* service
+          .createTaskCard({ audience: "chat", ...input, title: "Changed" })
+          .pipe(Effect.flip),
         { reason: "not_allowed" },
       );
       assert.strictEqual(
@@ -1461,7 +1470,7 @@ describe("KinChatService", () => {
         closed: true,
       });
       assert.isNotNull(closed.closedAt);
-      assert.deepStrictEqual(yield* service.createTaskCard(input), closed);
+      assert.deepStrictEqual(yield* service.createTaskCard({ ...input, audience: "chat" }), closed);
       const reopened = yield* service.upsertWidget(agent, {
         chatId: chat.chatId,
         widgetId: widget.widgetId,
@@ -1471,7 +1480,10 @@ describe("KinChatService", () => {
         closed: false,
       });
       assert.isNull(reopened.closedAt);
-      assert.deepStrictEqual(yield* service.createTaskCard(input), reopened);
+      assert.deepStrictEqual(
+        yield* service.createTaskCard({ ...input, audience: "chat" }),
+        reopened,
+      );
       assert.include(
         yield* service
           .upsertWidget(agent, {
@@ -1488,7 +1500,8 @@ describe("KinChatService", () => {
       const serverThread = ThreadId.make("server-only");
       yield* startWakeupRun(serverThread, "server-only");
       assert.strictEqual(
-        (yield* service.createTaskCard({ ...input, threadId: serverThread })).revision,
+        (yield* service.createTaskCard({ audience: "chat", ...input, threadId: serverThread }))
+          .revision,
         1,
       );
     }).pipe(Effect.provide(layer)),
@@ -1540,6 +1553,7 @@ describe("KinChatService", () => {
         assert.include(read, { type: "read.updated", seq: 2 });
         assert.isTrue(Option.isNone(yield* Queue.poll(events)));
         const approvalWidget = yield* service.createTaskCard({
+          audience: "chat",
           orgId: person.orgId,
           chatId: chat.chatId,
           authorAgentId: agent.agentId,
@@ -1592,6 +1606,7 @@ describe("KinChatService", () => {
         const secondaryThread = ThreadId.make("secondary");
         yield* startWakeupRun(secondaryThread, "secondary");
         const secondaryAnchor = yield* service.createTaskCard({
+          audience: "chat",
           orgId: person.orgId,
           chatId: chat.chatId,
           authorAgentId: agent.agentId,
@@ -1600,6 +1615,7 @@ describe("KinChatService", () => {
           model: state.model,
         });
         yield* repo.insertWidget({
+          audience: "chat",
           ...secondaryAnchor,
           widgetId: KinWidgetId.make("secondary-approval"),
           type: "approval",
@@ -1690,6 +1706,7 @@ describe("KinChatService", () => {
         intent: "evidence",
       });
       const widget = yield* service.createTaskCard({
+        audience: "chat",
         orgId: person.orgId,
         chatId: other.chatId,
         authorAgentId: agent.agentId,
@@ -1903,6 +1920,7 @@ describe("KinChatService", () => {
           clientMessageId: "hello",
         });
         const notice = yield* service.notice({
+          audience: "chat",
           orgId: person.orgId,
           chatId: chat.chatId,
           messageId: KinMessageId.make("retired-notice"),
@@ -1912,12 +1930,14 @@ describe("KinChatService", () => {
         WHERE message_id = ${notice.message.messageId}`;
         // Kin's own notes from earlier versions: a plain row, and a card about a memory change.
         yield* service.notice({
+          audience: "chat",
           orgId: person.orgId,
           chatId: chat.chatId,
           messageId: KinMessageId.make("old-note"),
           body: "Forgot: the old office address",
         });
         const saved = yield* service.notice({
+          audience: "chat",
           orgId: person.orgId,
           chatId: chat.chatId,
           messageId: KinMessageId.make("old-card"),
@@ -1925,6 +1945,7 @@ describe("KinChatService", () => {
         });
         const repo = yield* Repository.KinChatRepository;
         yield* repo.insertWidget({
+          audience: "chat",
           orgId: person.orgId,
           chatId: chat.chatId,
           widgetId: KinWidgetId.make("memory-changes:lead:1"),
@@ -2018,6 +2039,7 @@ describe("KinChatService", () => {
         });
         yield* service.react(person, { messageId: answer.messageId, emoji: "👍", on: true });
         const card = yield* service.createTaskCard({
+          audience: "chat",
           orgId: person.orgId,
           chatId: chat.chatId,
           authorAgentId: agent.agentId,
@@ -2026,6 +2048,7 @@ describe("KinChatService", () => {
           model: state.model,
         });
         yield* service.notice({
+          audience: "chat",
           orgId: person.orgId,
           chatId: chat.chatId,
           messageId: KinMessageId.make("needs-owner"),
@@ -2148,6 +2171,7 @@ describe("KinChatService", () => {
         });
         assert.strictEqual(next.seq, held.value.lastSeq + 1);
         const again = yield* service.createTaskCard({
+          audience: "chat",
           orgId: person.orgId,
           chatId: chat.chatId,
           authorAgentId: agent.agentId,

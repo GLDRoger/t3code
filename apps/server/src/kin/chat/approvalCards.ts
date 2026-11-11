@@ -103,6 +103,7 @@ export const make = Effect.gen(function* () {
       orgId: action.orgId,
       chatId: KinChatId.make(owner.chatId),
       messageId: KinMessageId.make(widgetId),
+      audience: "owner",
       body: noticeBody(action),
     });
     const widget: KinWidget = {
@@ -121,7 +122,7 @@ export const make = Effect.gen(function* () {
       closedAt: null,
       updatedAt,
     };
-    yield* repo.insertWidget(widget);
+    yield* repo.insertWidget({ ...widget, audience: "owner" });
     const item = {
       waitingId: yield* decodeWaitingId(SecureRandom.uuidV4Unsafe()),
       orgId: action.orgId,
@@ -167,6 +168,7 @@ export const make = Effect.gen(function* () {
     const now = iso(yield* Clock.currentTimeMillis);
     const widget = yield* repo.updateWidget({
       ...current,
+      audience: "owner",
       state,
       awaiting: settled ? [] : current.awaiting,
       closedAt: settled ? (current.closedAt ?? now) : null,

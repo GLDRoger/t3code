@@ -220,6 +220,8 @@ const make = Effect.gen(function* () {
       const at = iso(now);
       const widget = yield* repo.updateWidget({
         ...existing.value,
+        // Closing writes no words.
+        audience: "chat",
         expectedRevision: existing.value.revision,
         closedAt: at,
         updatedAt: at,

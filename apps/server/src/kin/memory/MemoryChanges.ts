@@ -209,6 +209,7 @@ const make = Effect.gen(function* () {
         };
         const widget = yield* repo.updateWidget({
           ...current.value,
+          audience: "owner",
           state: yield* encodeCard(next),
           expectedRevision: current.value.revision,
           updatedAt: yield* now,

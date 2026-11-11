@@ -247,6 +247,7 @@ const deferralCard: Setup = Effect.gen(function* () {
   const repo = yield* Repository.KinChatRepository;
   const widgetId = KinWidgetId.make(deferralWidgetId(orgId, "def-standup"));
   const { message } = yield* chat.notice({
+    audience: "chat",
     orgId,
     chatId: KinChatId.make("owner-chat"),
     messageId: KinMessageId.make(widgetId),
@@ -268,7 +269,7 @@ const deferralCard: Setup = Effect.gen(function* () {
     closedAt: null,
     updatedAt: timestamp,
   };
-  yield* repo.insertWidget(widget);
+  yield* repo.insertWidget({ ...widget, audience: "chat" });
 }).pipe(Effect.orDie);
 
 it.effect(
