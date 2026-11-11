@@ -68,11 +68,16 @@ export type KinLeadDomain = typeof KinLeadDomain.Type;
 export const KinLeadCharter = Schema.String.check(Schema.isMaxLength(1_000));
 export type KinLeadCharter = typeof KinLeadCharter.Type;
 
+/** What teammates see about a lead: a line or two the owner writes, shown to people it may talk to. */
+export const KinLeadIntro = Schema.String.check(Schema.isMaxLength(200));
+export type KinLeadIntro = typeof KinLeadIntro.Type;
+
 export const KinLeadCreateInput = Schema.Struct({
   orgId: KinOrgId,
   name: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
   domain: KinLeadDomain,
   charter: KinLeadCharter,
+  intro: Schema.optional(KinLeadIntro),
   // Omitted: the models of the org's first live lead.
   models: Schema.optional(Schema.Struct({ strong: ModelSelection, cheap: ModelSelection })),
   workerProjects: Schema.optional(Schema.Array(ProjectId)),
@@ -111,6 +116,8 @@ export const KinLeadProfile = Schema.Struct({
   name: TrimmedNonEmptyString,
   domain: KinLeadDomain,
   charter: KinLeadCharter,
+  // Absent from a host that predates it; empty when the owner wrote none.
+  intro: Schema.optional(KinLeadIntro),
   // The model it thinks with, as the provider names it.
   model: TrimmedNonEmptyString,
   // The owner's direct chat with it.
@@ -123,7 +130,23 @@ export const KinLeadProfile = Schema.Struct({
 export type KinLeadProfile = typeof KinLeadProfile.Type;
 export const KinLeadsListInput = Schema.Struct({ orgId: KinOrgId });
 export type KinLeadsListInput = typeof KinLeadsListInput.Type;
-export const KinLeadsListResult = Schema.Struct({ leads: Schema.Array(KinLeadProfile) });
+/**
+ * Someone else's lead the viewer may message: who it is and what its owner says it does. Nothing
+ * of its domain, charter, model or work.
+ */
+export const KinLeadContact = Schema.Struct({
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+  name: TrimmedNonEmptyString,
+  intro: KinLeadIntro,
+  // The viewer's own direct chat with it.
+  chatId: KinChatId,
+});
+export type KinLeadContact = typeof KinLeadContact.Type;
+export const KinLeadsListResult = Schema.Struct({
+  leads: Schema.Array(KinLeadProfile),
+  contacts: Schema.optional(Schema.Array(KinLeadContact)),
+});
 export type KinLeadsListResult = typeof KinLeadsListResult.Type;
 /** Omitted fields stay as they are. */
 export const KinLeadUpdateInput = Schema.Struct({
@@ -132,8 +155,29 @@ export const KinLeadUpdateInput = Schema.Struct({
   name: Schema.optional(KinLeadCreateInput.fields.name),
   domain: Schema.optional(KinLeadDomain),
   charter: Schema.optional(KinLeadCharter),
+  intro: Schema.optional(KinLeadIntro),
 });
 export type KinLeadUpdateInput = typeof KinLeadUpdateInput.Type;
+
+/** Who besides its owner may message a lead. Only the lead's owner reads or changes it. */
+export const KinLeadAccessInput = Schema.Struct({ orgId: KinOrgId, agentId: KinAgentId });
+export type KinLeadAccessInput = typeof KinLeadAccessInput.Type;
+export const KinLeadAccessChangeInput = Schema.Struct({
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+  personId: KinPersonId,
+});
+export type KinLeadAccessChangeInput = typeof KinLeadAccessChangeInput.Type;
+export const KinLeadAccessResult = Schema.Struct({
+  people: Schema.Array(
+    Schema.Struct({
+      personId: KinPersonId,
+      displayName: TrimmedNonEmptyString,
+      since: Schema.toEncoded(CanonicalUtcTimestamp),
+    }),
+  ),
+});
+export type KinLeadAccessResult = typeof KinLeadAccessResult.Type;
 
 export const MemoryItemKind = Schema.Literals([
   "objective",

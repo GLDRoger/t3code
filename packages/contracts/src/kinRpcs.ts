@@ -4,6 +4,9 @@ import {
   KinBudget,
   KinBudgetGetInput,
   KinBudgetSetInput,
+  KinLeadAccessChangeInput,
+  KinLeadAccessInput,
+  KinLeadAccessResult,
   KinLeadCreated,
   KinLeadCreateInput,
   KinLeadProfile,
@@ -60,10 +63,25 @@ const KinOrgRpcs = [
     error: KinError,
   }),
 ] as const;
-// Owner-only: interrupt stops one wake-up, never the org; kin.org.pause is the stop switch.
-// create adds a lead at L0 with its direct chat to its creator, as `kin lead create` does.
-// list shows a person their own live leads; update changes one's name, domain and charter.
+// Owner-only, but for list: a person's own live leads and the leads of others they may message.
+// interrupt stops one wake-up, never the org; create adds a lead at L0 with its creator's chat.
+// access is who else may message a lead.
 const KinLeadRpcs = [
+  Rpc.make("kin.lead.access.list", {
+    payload: KinLeadAccessInput,
+    success: KinLeadAccessResult,
+    error: KinError,
+  }),
+  Rpc.make("kin.lead.access.grant", {
+    payload: KinLeadAccessChangeInput,
+    success: KinLeadAccessResult,
+    error: KinError,
+  }),
+  Rpc.make("kin.lead.access.revoke", {
+    payload: KinLeadAccessChangeInput,
+    success: KinLeadAccessResult,
+    error: KinError,
+  }),
   Rpc.make("kin.leads.list", {
     payload: KinLeadsListInput,
     success: KinLeadsListResult,
@@ -158,8 +176,12 @@ export const KIN_RPC_SCOPES = {
   "kin.lead.interrupt": AuthOrchestrationOperateScope,
   // A new lead is an owner setting, like the budget, and spends from the same budget.
   "kin.lead.create": AuthSettingsWriteScope,
-  // Part of the chat list: a person sees their own leads, so a teammate's list is empty.
+  // Part of the chat list: a person sees their own leads and the ones they may message.
   "kin.leads.list": AuthKinChatScope,
+  // Who may message a lead decides who spends its owner's budget: an owner setting.
+  "kin.lead.access.list": AuthSettingsWriteScope,
+  "kin.lead.access.grant": AuthSettingsWriteScope,
+  "kin.lead.access.revoke": AuthSettingsWriteScope,
   // What a lead is for is an owner setting, as creating it is.
   "kin.lead.update": AuthSettingsWriteScope,
   // Who is in a group decides who its leads listen to: an owner setting, never a teammate's.
@@ -197,6 +219,9 @@ export const KIN_RPC_AGGREGATES = {
   "kin.lead.create": "kin-chat",
   "kin.leads.list": "kin-chat",
   "kin.lead.update": "kin-chat",
+  "kin.lead.access.list": "kin-chat",
+  "kin.lead.access.grant": "kin-chat",
+  "kin.lead.access.revoke": "kin-chat",
   "kin.orgs.list": "kin-chat",
   "kin.chats.subscribe": "kin-chat",
   "kin.chats.createDirect": "kin-chat",

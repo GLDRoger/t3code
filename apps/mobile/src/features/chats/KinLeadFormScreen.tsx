@@ -5,6 +5,7 @@ import {
   KIN_LEAD_CHARTER_MAX,
   KIN_LEAD_NAME_MAX,
   kinLeadChanges,
+  KIN_LEAD_INTRO_MAX,
   kinLeadDraftCheck,
   kinLeadDraftOf,
   kinLeadSaveProblem,
@@ -41,7 +42,7 @@ const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
 const decodeAgentId = Schema.decodeUnknownOption(KinAgentId);
 
-const NEW_LEAD: KinLeadDraft = { name: "", area: "", charter: "" };
+const NEW_LEAD: KinLeadDraft = { name: "", area: "", charter: "", intro: "" };
 
 /** Makes a lead, or changes one's name, area and what it is for. */
 export function KinLeadFormScreen({ route }: StaticScreenProps<KinLeadFormParams>) {
@@ -153,7 +154,10 @@ function LeadForm(props: {
     (creating ? kinClient.leadCreate : kinClient.leadUpdate).permissionAtom(environmentId),
   );
   const dirty =
-    draft.name !== initial.name || draft.area !== initial.area || draft.charter !== initial.charter;
+    draft.name !== initial.name ||
+    draft.area !== initial.area ||
+    draft.charter !== initial.charter ||
+    draft.intro !== initial.intro;
 
   usePreventRemove(dirty || saving, ({ data }) => {
     if (saved.current) {
@@ -193,7 +197,7 @@ function LeadForm(props: {
       setProblem({ field: checked.field, text: checked.problem });
       return;
     }
-    const { name, domain, charter } = checked;
+    const { name, domain, charter, intro } = checked;
     if (lead !== null) {
       const changes = kinLeadChanges(lead, checked);
       if (changes === null) {
@@ -223,7 +227,10 @@ function LeadForm(props: {
       return;
     }
     setSaving(true);
-    const result = await create({ environmentId, input: { orgId, name, domain, charter } });
+    const result = await create({
+      environmentId,
+      input: { orgId, name, domain, charter, ...(intro === "" ? undefined : { intro }) },
+    });
     setSaving(false);
     if (!AsyncResult.isSuccess(result)) {
       setProblem({
@@ -315,6 +322,26 @@ function LeadForm(props: {
               ? `It reads this before every reply. ${left} characters left.`
               : "It reads this before every reply. Say what it owns and what it must never do on its own."
           }
+        />
+      </View>
+      <View className="gap-2">
+        <ListSection title="What teammates see">
+          <TextInput
+            multiline
+            accessibilityLabel="What teammates see"
+            value={draft.intro}
+            editable={allowed && !saving}
+            maxLength={KIN_LEAD_INTRO_MAX}
+            onChangeText={(intro) => set({ intro })}
+            placeholder="Handles billing questions and invoices."
+            placeholderTextColorClassName="accent-placeholder"
+            textAlignVertical="top"
+            className="min-h-20 px-4 py-3 font-sans text-base leading-normal text-foreground"
+          />
+        </ListSection>
+        <Note
+          problem={problem?.field === "intro" ? problem.text : null}
+          hint="Optional. People you let message this lead see this and nothing above."
         />
       </View>
     </FormFrame>

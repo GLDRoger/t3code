@@ -75,6 +75,7 @@ import * as Repository from "./KinChatRepository.ts";
 import { KinAttachmentStore } from "./KinAttachmentStore.ts";
 import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
 import * as Reactions from "./reactions.ts";
+import * as LeadAccess from "../lead/LeadAccess.ts";
 
 type Identity = PersonIdentity | AgentIdentity;
 type Viewers = ReadonlyArray<PersonIdentity>;
@@ -408,6 +409,30 @@ const make = Effect.gen(function* () {
     }
     return member;
   });
+  /**
+   * Another person's direct chat with a lead is between the two of them: the lead reads it only
+   * on a turn that person's message there woke, never on its owner's. Stored rows decide.
+   */
+  const leadMayRead = Effect.fn("KinChatService.leadMayRead")(
+    function* (agent: AgentIdentity, chatId: KinChatId) {
+      const rows = yield* sql`SELECT 1 FROM kin_chats c
+        WHERE c.org_id = ${agent.orgId} AND c.chat_id = ${chatId} AND c.kind = 'direct'
+          AND c.direct_key <> ${LeadAccess.directKey(agent.ownerPersonId, agent.agentId)}
+        LIMIT 1`;
+      if (rows.length === 0) return true;
+      const asked = yield* sql`SELECT 1 FROM kin_events e
+        JOIN kin_wakeups w ON w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id
+          AND w.agent_id = e.agent_id AND w.status = 'running'
+        WHERE e.org_id = ${agent.orgId} AND e.agent_id = ${agent.agentId}
+          AND (w.wakeup_id = ${agent.wakeupId ?? null}
+            OR (${agent.wakeupId ?? null} IS NULL AND w.thread_id = ${agent.threadId}))
+          AND e.tag IN ('chat.message', 'widget.action')
+          AND json_extract(e.json, '$.chatId') = ${chatId}
+        LIMIT 1`;
+      return asked.length > 0;
+    },
+    Effect.mapError(toPersistenceSqlError("KinChatService.leadMayRead")),
+  );
   const authorFor = (identity: Identity, member: KinChatMember): KinAuthor =>
     identity._tag === "person"
       ? { _tag: "human", personId: identity.personId, memberId: member.memberId }
@@ -1303,22 +1328,59 @@ const make = Effect.gen(function* () {
       if (identity.orgId !== input.orgId) return yield* notFound;
       const person = yield* requireRecord(repo.getPerson(identity));
       const agent = yield* requireRecord(repo.getAgent(input));
-      if (agent.ownerPersonId !== person.personId || agent.retiredAt !== null)
+      if (agent.retiredAt !== null) return yield* notAllowed;
+      const own = agent.ownerPersonId === person.personId;
+      // Someone else's lead: only while its owner lets this person message it.
+      if (
+        !own &&
+        !(yield* LeadAccess.allowed({ ...input, personId: person.personId }).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError(toPersistenceSqlError("KinChatService.createDirect")),
+        ))
+      )
         return yield* notAllowed;
       const chatId = yield* decodeChatId(SecureRandom.uuidV4Unsafe()).pipe(Effect.orDie);
       const chat = yield* repo.createChat({
         orgId: identity.orgId,
         chatId,
         kind: "direct",
-        directKey: `${person.personId}:${agent.agentId}`,
+        directKey: LeadAccess.directKey(person.personId, agent.agentId),
         title: null,
         teamId: null,
         lastMessageAt: null,
         createdAt: yield* now,
         archivedAt: null,
       });
+      // The chat's owner role carries the lead's owner's rights, so a teammate is a member.
+      const role = own ? "owner" : "member";
       if (chat.chatId !== chatId) {
-        yield* memberFor(identity, chat.chatId);
+        if (own) {
+          yield* memberFor(identity, chat.chatId);
+          return chat;
+        }
+        // Allowed again after being taken out: the same chat, open for writing once more.
+        const mine = (yield* repo.listMembers(chat)).find(
+          (member) =>
+            member.principal._tag === "person" && member.principal.personId === person.personId,
+        );
+        if (mine === undefined) return yield* notFound;
+        if (mine.leftAt === null && mine.role === "member") return chat;
+        const back =
+          mine.leftAt === null
+            ? yield* requireRecord(repo.setRole({ ...mine, role: "member" }))
+            : yield* repo.addMember({
+                ...mine,
+                role: "member",
+                joinedAt: yield* now,
+                leftAt: null,
+                mutedUntil: null,
+              });
+        yield* hub.publish({
+          type: "member.updated",
+          orgId: chat.orgId,
+          chatId: chat.chatId,
+          member: back,
+        });
         return chat;
       }
       for (const principal of [
@@ -1330,7 +1392,7 @@ const make = Effect.gen(function* () {
           chatId: chat.chatId,
           memberId: yield* decodeMemberId(SecureRandom.uuidV4Unsafe()).pipe(Effect.orDie),
           principal,
-          role: principal._tag === "person" ? "owner" : "member",
+          role: principal._tag === "person" ? role : "member",
           joinedAt: chat.createdAt,
           leftAt: null,
           mutedUntil: null,
@@ -1402,6 +1464,8 @@ const make = Effect.gen(function* () {
     read: Effect.fn("KinChatService.read")(function* (identity, input) {
       const request = yield* decodeRead(input).pipe(Effect.mapError(() => invalidState));
       const member = yield* memberFor(identity, request.chatId);
+      if (identity._tag === "agent" && !(yield* leadMayRead(identity, request.chatId)))
+        return yield* notFound;
       return yield* repo.messagesAfter({
         orgId: identity.orgId,
         chatId: request.chatId,

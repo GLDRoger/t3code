@@ -4,6 +4,9 @@ import {
   KinLead,
   KinLeadCharter,
   KinLeadDomain,
+  KinLeadIntro,
+  type KinLeadAccessResult,
+  type KinLeadContact,
   type KinLeadProfile,
   KIN_LEAD_TRACKING_CAP,
   KinLeadTracking,
@@ -17,6 +20,7 @@ import * as DateTime from "effect/DateTime";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Runtime from "effect/Runtime";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -30,12 +34,15 @@ import * as Repository from "../chat/KinChatRepository.ts";
 import * as ChatService from "../chat/KinChatService.ts";
 import { KinIdentity, KinIdentityConfig, type PersonIdentity } from "../chat/KinIdentity.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import * as KinLevels from "./KinLevels.ts";
+import * as LeadAccess from "./LeadAccess.ts";
 import { nonClaudeLeadModel } from "./leadModels.ts";
 
 // `create` has two callers: the host's `kin lead` CLI and the owner's `kin.lead.create` RPC.
-// `profiles` and `update` back `kin.leads.list` and `kin.lead.update`. The rest is CLI only. No
-// MCP tool or agent reaches any of it.
+// `profiles`, `contacts` and `update` back `kin.leads.list` and `kin.lead.update`; `access`,
+// `allow` and `disallow` back `kin.lead.access.*`. The rest is CLI only. No MCP tool or agent
+// reaches any of it.
 
 export class KinLeadProvisionError extends Schema.TaggedError<KinLeadProvisionError>()(
   "KinLeadProvisionError",
@@ -67,6 +74,7 @@ export const LeadSummary = Schema.Struct({
   name: Schema.String,
   domain: KinLeadDomain,
   charter: KinLeadCharter,
+  intro: KinLeadIntro,
   level: KinLead.fields.level,
   ownerPersonId: KinPersonId,
   createdByPersonId: Schema.NullOr(KinPersonId),
@@ -85,6 +93,7 @@ export interface CreateLeadInput {
   readonly name: typeof TrimmedNonEmptyString.Type;
   readonly domain: KinLeadDomain;
   readonly charter: KinLeadCharter;
+  readonly intro?: KinLeadIntro | undefined;
   /** Omitted: the models of the org's first live lead. */
   readonly models?: { readonly strong: ModelSelection; readonly cheap: ModelSelection } | undefined;
   readonly workerProjects: ReadonlyArray<ProjectId>;
@@ -112,7 +121,7 @@ const leadsIn = Effect.fn("KinLeadProvision.leadsIn")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql`SELECT l.org_id AS "orgId", l.agent_id AS "agentId", l.name, l.domain,
-      l.charter, l.level, a.owner_person_id AS "ownerPersonId",
+      l.charter, l.public_intro AS intro, l.level, a.owner_person_id AS "ownerPersonId",
       l.created_by_person_id AS "createdByPersonId", l.owner_chat_id AS "ownerChatId",
       l.models_json AS models, l.worker_projects_json AS "workerProjects", a.retired_at AS "retiredAt"
     FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
@@ -233,6 +242,12 @@ export const create = Effect.fn("KinLeadProvision.create")(function* (input: Cre
         createdByPersonId: person.personId,
       });
       if (!inserted) return yield* refuse("conflict", `Lead ${agentId} could not be recorded.`);
+      const intro = input.intro?.trim() ?? "";
+      if (intro !== "")
+        yield* sql`UPDATE kin_leads SET public_intro = ${intro}
+          WHERE org_id = ${orgId} AND agent_id = ${agentId}`.pipe(
+          Effect.mapError(toPersistenceSqlError("KinLeadProvision.create")),
+        );
       const [lead] = yield* leadsIn(orgId, { liveOnly: true, agentId });
       if (lead === undefined)
         return yield* refuse("conflict", `Lead ${agentId} could not be recorded.`);
@@ -300,10 +315,12 @@ interface LeadChange {
   readonly name?: typeof TrimmedNonEmptyString.Type | undefined;
   readonly domain?: KinLeadDomain | undefined;
   readonly charter?: KinLeadCharter | undefined;
+  /** What teammates see about it. The prompt doesn't read it yet. */
+  readonly intro?: KinLeadIntro | undefined;
 }
 
 /**
- * Changes a live lead's name, domain or charter inside the caller's transaction. With `ownedBy`,
+ * Changes a live lead's name, domain, charter or intro inside the caller's transaction. With `ownedBy`,
  * a lead that person doesn't own reads as not found. The prompt reads all three per wake-up.
  */
 const change = Effect.fn("KinLeadProvision.change")(function* (
@@ -323,6 +340,7 @@ const change = Effect.fn("KinLeadProvision.change")(function* (
     name: fields.name ?? lead.name,
     domain: fields.domain ?? lead.domain,
     charter: fields.charter ?? lead.charter,
+    intro: fields.intro?.trim() ?? lead.intro,
   };
   // `create` treats a live lead with the same owner, name and domain as the same lead.
   const twin = live.find(
@@ -339,7 +357,7 @@ const change = Effect.fn("KinLeadProvision.change")(function* (
       `Another lead is already called ${next.name} in ${next.domain}.`,
     );
   const changed = yield* sql`UPDATE kin_leads SET name = ${next.name}, domain = ${next.domain},
-      charter = ${next.charter}
+      charter = ${next.charter}, public_intro = ${next.intro}
     WHERE org_id = ${orgId} AND agent_id = ${agentId} RETURNING agent_id`;
   if (changed.length === 0)
     return yield* refuse("conflict", `Lead ${agentId} changed while updating.`);
@@ -428,6 +446,7 @@ const profileOf = (
   name: lead.name as KinLeadProfile["name"],
   domain: lead.domain,
   charter: lead.charter,
+  intro: lead.intro,
   model: lead.models.strong.model,
   ownerChatId: lead.ownerChatId,
   working: working.has(lead.agentId),
@@ -494,6 +513,188 @@ export const update = Effect.fn("KinLeadProvision.update")(function* (input: {
       );
     }),
   );
+});
+
+/** The caller as the org's owner and the live lead of theirs being shared; anything else is refused. */
+const ownedLead = Effect.fn("KinLeadProvision.ownedLead")(function* (input: {
+  readonly editor: LeadCreator;
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+}) {
+  const person: PersonIdentity = yield* creatorFor(input.editor);
+  yield* mayCreate(person);
+  const missing = refuse("not_found", `Org ${input.orgId} has no lead ${input.agentId}.`);
+  if (person.orgId !== input.orgId) return yield* missing;
+  const [lead] = yield* leadsIn(person.orgId, { liveOnly: true, agentId: input.agentId });
+  if (lead === undefined || lead.ownerPersonId !== person.personId) return yield* missing;
+  return { person, lead };
+});
+
+const accessRows = Effect.fn("KinLeadProvision.accessRows")(function* (lead: LeadSummary) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ personId: KinPersonId; displayName: string; since: number }>`
+    SELECT x.person_id AS "personId", p.display_name AS "displayName", x.granted_at AS since
+    FROM kin_lead_access x
+    JOIN kin_people p ON p.org_id = x.org_id AND p.person_id = x.person_id
+    WHERE x.org_id = ${lead.orgId} AND x.agent_id = ${lead.agentId} AND x.revoked_at IS NULL
+    ORDER BY x.granted_at, x.person_id`.pipe(
+    Effect.mapError(toPersistenceSqlError("KinLeadProvision.accessRows")),
+  );
+  return {
+    people: rows.map((row) => ({
+      personId: row.personId,
+      displayName: row.displayName as KinLeadAccessResult["people"][number]["displayName"],
+      since: DateTime.formatIso(DateTime.makeUnsafe(row.since)),
+    })),
+  } satisfies KinLeadAccessResult;
+});
+
+/** Who besides the owner may message one of the owner's leads. Owner only, like `update`. */
+export const access = Effect.fn("KinLeadProvision.access")(function* (
+  input: Parameters<typeof ownedLead>[0],
+) {
+  const { lead } = yield* ownedLead(input);
+  return yield* accessRows(lead);
+});
+
+/**
+ * The owner lets a person message one of their leads. That person gets their own direct chat
+ * with it, which the owner is not in; allowing them again reopens the chat they had.
+ */
+export const allow = Effect.fn("KinLeadProvision.allow")(function* (
+  input: Parameters<typeof ownedLead>[0] & { readonly personId: KinPersonId },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const chats = yield* ChatService.KinChatService;
+  return yield* transaction(
+    sql,
+    "KinLeadProvision.allow",
+    Effect.gen(function* () {
+      const { person, lead } = yield* ownedLead(input);
+      // The owner already talks to it; everyone else must be a person of this org.
+      const known = yield* sql`SELECT 1 FROM kin_people
+        WHERE org_id = ${lead.orgId} AND person_id = ${input.personId} LIMIT 1`.pipe(
+        Effect.mapError(toPersistenceSqlError("KinLeadProvision.allow")),
+      );
+      if (known.length === 0 || input.personId === person.personId)
+        return yield* refuse("not_found", `Org ${lead.orgId} has no such person to allow.`);
+      const now = DateTime.toEpochMillis(yield* DateTime.now);
+      yield* sql`INSERT INTO kin_lead_access
+          (org_id, agent_id, person_id, granted_by, granted_at, revoked_at)
+        VALUES (${lead.orgId}, ${lead.agentId}, ${input.personId}, ${person.personId}, ${now}, NULL)
+        ON CONFLICT (org_id, agent_id, person_id) DO UPDATE SET
+          granted_by = excluded.granted_by, granted_at = excluded.granted_at, revoked_at = NULL
+        WHERE kin_lead_access.revoked_at IS NOT NULL`.pipe(
+        Effect.mapError(toPersistenceSqlError("KinLeadProvision.allow")),
+      );
+      yield* chats.createDirect(
+        { _tag: "person", orgId: lead.orgId, personId: input.personId },
+        { orgId: lead.orgId, agentId: lead.agentId },
+      );
+      return yield* accessRows(lead);
+    }),
+  );
+});
+
+/**
+ * The owner stops a person messaging one of their leads. Nothing they send wakes it from here
+ * on and what was still waiting is dropped; a reply already under way still lands. Their chat
+ * stays theirs to read but not to write in, and one they never wrote in leaves their list.
+ */
+export const disallow = Effect.fn("KinLeadProvision.disallow")(function* (
+  input: Parameters<typeof ownedLead>[0] & { readonly personId: KinPersonId },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const repo = yield* Repository.KinChatRepository;
+  const hub = yield* Hub.KinChatHub;
+  const presence = yield* Effect.serviceOption(KinPresence);
+  return yield* transaction(
+    sql,
+    "KinLeadProvision.disallow",
+    Effect.gen(function* () {
+      const { lead } = yield* ownedLead(input);
+      const now = yield* DateTime.now;
+      const ended =
+        yield* sql`UPDATE kin_lead_access SET revoked_at = ${DateTime.toEpochMillis(now)}
+        WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}
+          AND person_id = ${input.personId} AND revoked_at IS NULL
+        RETURNING person_id`.pipe(
+          Effect.mapError(toPersistenceSqlError("KinLeadProvision.disallow")),
+        );
+      if (ended.length === 0) return yield* accessRows(lead);
+      const [chat] = yield* sql<{ chatId: KinChatId; lastSeq: number }>`
+        SELECT chat_id AS "chatId", last_seq AS "lastSeq" FROM kin_chats
+        WHERE org_id = ${lead.orgId} AND kind = 'direct'
+          AND direct_key = ${LeadAccess.directKey(input.personId, lead.agentId)}
+        ORDER BY chat_id`.pipe(Effect.mapError(toPersistenceSqlError("KinLeadProvision.disallow")));
+      if (chat === undefined) return yield* accessRows(lead);
+      const dropped = yield* LeadAccess.dropQueued(lead, chat.chatId).pipe(
+        Effect.mapError(toPersistenceSqlError("KinLeadProvision.disallow")),
+      );
+      if (dropped > 0 && Option.isSome(presence))
+        yield* sql.afterCommit(
+          syncQueued(presence.value, lead.orgId, lead.agentId).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          ),
+        );
+      const member = yield* repo.activeMember({
+        orgId: lead.orgId,
+        chatId: chat.chatId,
+        principal: { _tag: "person", personId: input.personId },
+      });
+      if (Option.isNone(member)) return yield* accessRows(lead);
+      if (chat.lastSeq === 0) {
+        for (const item of yield* repo.leaveChat({
+          ...member.value,
+          leftAt: DateTime.formatIso(now),
+        }))
+          yield* hub.publish({ type: "waiting.updated", orgId: lead.orgId, item });
+        const gone = yield* repo.getMember(member.value);
+        if (Option.isSome(gone))
+          yield* hub.publish({ type: "member.removed", orgId: lead.orgId, member: gone.value });
+      } else {
+        // Guests read and never write: the chat service refuses their sends, taps and reactions.
+        const guest = yield* repo.setRole({ ...member.value, role: "guest" });
+        if (Option.isSome(guest))
+          yield* hub.publish({
+            type: "member.updated",
+            orgId: lead.orgId,
+            chatId: chat.chatId,
+            member: guest.value,
+          });
+      }
+      return yield* accessRows(lead);
+    }),
+  );
+});
+
+/**
+ * The leads of other people this person may message, oldest first: name, what the owner lets
+ * teammates read about it, and the person's own chat with it. Nothing else of the lead.
+ */
+export const contacts = Effect.fn("KinLeadProvision.contacts")(function* (person: PersonIdentity) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<KinLeadContact>`
+    SELECT l.org_id AS "orgId", l.agent_id AS "agentId", l.name, l.public_intro AS intro,
+      c.chat_id AS "chatId"
+    FROM kin_lead_access x
+    JOIN kin_leads l ON l.org_id = x.org_id AND l.agent_id = x.agent_id
+    JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+      AND a.role = 'lead' AND a.retired_at IS NULL AND a.owner_person_id <> x.person_id
+    JOIN kin_chats c ON c.org_id = x.org_id AND c.kind = 'direct'
+      AND c.direct_key = x.person_id || ':' || x.agent_id
+    WHERE x.org_id = ${person.orgId} AND x.person_id = ${person.personId}
+      AND x.revoked_at IS NULL
+    ORDER BY x.granted_at, l.agent_id`.pipe(
+    Effect.mapError(toPersistenceSqlError("KinLeadProvision.contacts")),
+  );
+  return rows.map(({ orgId, agentId, name, intro, chatId }) => ({
+    orgId,
+    agentId,
+    name,
+    intro,
+    chatId,
+  }));
 });
 
 /** What the CLI provides on top of the server's SQLite and environment layers. */

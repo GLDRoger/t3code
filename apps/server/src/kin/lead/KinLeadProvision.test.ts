@@ -4,6 +4,7 @@ import {
   AuthSessionId,
   AuthStandardClientScopes,
   KinAgentId,
+  type KinChatId,
   KinOrgId,
   KinPersonId,
   ProjectId,
@@ -20,6 +21,7 @@ import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
+import * as ChatService from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinLevels from "./KinLevels.ts";
 import * as Provision from "./KinLeadProvision.ts";
@@ -347,6 +349,7 @@ describe("KinLeadProvision", () => {
           name: "Ada",
           domain: "engineering",
           charter: "",
+          intro: "",
           model: "claude-opus-4-6",
           ownerChatId: tech.ownerChatId,
           working: false,
@@ -505,5 +508,173 @@ describe("KinLeadProvision", () => {
       yield* Provision.retire(growth.agentId);
       assert.strictEqual(yield* refusal(edit({ name: "X" }, growth.agentId)), "retired");
     }).pipe(Effect.provide(paired)),
+  );
+  it.effect(
+    "lets only the owner choose who may message a lead, in a chat that is that person's own",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const repo = yield* Repository.KinChatRepository;
+        const chats = yield* ChatService.KinChatService;
+        const finance = (yield* Provision.create({
+          ...input(owner, []),
+          name: "Finance",
+          domain: "finance",
+          charter: "Private: chase the Acme invoice.",
+        })).lead;
+        const tech = (yield* Provision.create(input(owner, []))).lead;
+        for (const name of ["Priya", "Sam"])
+          yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+            VALUES (${name.toLowerCase()}, ${finance.orgId}, ${name.toLowerCase()}, ${name}, '2026-11-09T00:00:00.000Z')`;
+        const priyaId = KinPersonId.make("priya");
+        const priya = { _tag: "person", orgId: finance.orgId, personId: priyaId } as const;
+        const on = { editor: owner, orgId: finance.orgId, agentId: finance.agentId };
+        const her = { ...on, personId: priyaId };
+        const member = (chatId: KinChatId) =>
+          repo
+            .listMembers({ orgId: finance.orgId, chatId })
+            .pipe(
+              Effect.map((members) =>
+                members.find(
+                  ({ principal }) => principal._tag === "person" && principal.personId === priyaId,
+                ),
+              ),
+            );
+
+        // Nobody but the owner, until the owner says so.
+        assert.deepStrictEqual(yield* Provision.access(on), { people: [] });
+        assert.deepStrictEqual(yield* Provision.contacts(priya), []);
+        assert.include(yield* chats.createDirect(priya, finance).pipe(Effect.flip), {
+          reason: "not_allowed",
+        });
+
+        assert.deepStrictEqual(
+          (yield* Provision.allow(her)).people.map(({ personId, displayName }) => ({
+            personId,
+            displayName,
+          })),
+          [{ personId: priyaId, displayName: "Priya" }],
+        );
+        const [contact] = yield* Provision.contacts(priya);
+        assert.isDefined(contact);
+        // What a teammate is told about the lead: never its charter, domain, model or work.
+        assert.deepStrictEqual(contact, {
+          orgId: finance.orgId,
+          agentId: finance.agentId,
+          name: "Finance",
+          intro: "",
+          chatId: contact.chatId,
+        });
+        // Her own chat with it: the owner is not in it, and she doesn't hold the owner's role.
+        assert.notStrictEqual(contact.chatId, finance.ownerChatId);
+        assert.sameDeepMembers(
+          (yield* repo.listMembers({ orgId: finance.orgId, chatId: contact.chatId })).map(
+            ({ principal, role, leftAt }) => ({ principal, role, leftAt }),
+          ),
+          [
+            {
+              principal: { _tag: "agent", agentId: finance.agentId },
+              role: "member",
+              leftAt: null,
+            },
+            { principal: { _tag: "person", personId: priyaId }, role: "member", leftAt: null },
+          ],
+        );
+        // The lead may talk there and no more; in a chat nobody placed it in, it stays silent.
+        assert.strictEqual(
+          yield* KinLevels.effectiveLevel({ ...finance, chatId: contact.chatId }),
+          "L1",
+        );
+        // Allowing her twice, or her asking to start the chat, gives the same chat.
+        const before = yield* counts;
+        yield* Provision.allow(her);
+        assert.strictEqual((yield* chats.createDirect(priya, finance)).chatId, contact.chatId);
+        assert.deepStrictEqual(yield* counts, before);
+        // Access to one lead is access to that lead only.
+        assert.include(yield* chats.createDirect(priya, tech).pipe(Effect.flip), {
+          reason: "not_allowed",
+        });
+
+        yield* Provision.update({ ...on, fields: { intro: " Handles invoices. " } });
+        assert.strictEqual((yield* Provision.contacts(priya))[0]?.intro, "Handles invoices.");
+        assert.strictEqual(
+          (yield* Provision.profiles((yield* KinIdentity).owner)).find(
+            (lead) => lead.agentId === finance.agentId,
+          )?.intro,
+          "Handles invoices.",
+        );
+
+        // Only the owner, and only for a live lead of theirs and a person of the org.
+        const teammate = { _tag: "person", personId: priyaId } as const;
+        const sam = KinPersonId.make("sam");
+        assert.strictEqual(
+          yield* refusal(Provision.access({ ...on, editor: teammate })),
+          "not_owner",
+        );
+        for (const editor of [teammate, session(AuthStandardClientScopes.slice(1))]) {
+          assert.strictEqual(
+            yield* refusal(Provision.allow({ ...her, editor, personId: sam })),
+            "not_owner",
+          );
+          assert.strictEqual(yield* refusal(Provision.disallow({ ...her, editor })), "not_owner");
+        }
+        for (const target of [
+          { ...her, agentId: KinAgentId.make("lead-nowhere") },
+          { ...her, orgId: KinOrgId.make("org-b") },
+          { ...her, personId: KinPersonId.make("nobody") },
+          { ...her, personId: finance.ownerPersonId },
+        ])
+          assert.strictEqual(yield* refusal(Provision.allow(target)), "not_found");
+        // A lead someone else owns is not the owner's to share.
+        yield* sql`UPDATE kin_agents SET owner_person_id = 'sam' WHERE agent_id = ${tech.agentId}`;
+        assert.strictEqual(
+          yield* refusal(Provision.access({ ...on, agentId: tech.agentId })),
+          "not_found",
+        );
+        assert.strictEqual(
+          yield* refusal(Provision.allow({ ...her, agentId: tech.agentId })),
+          "not_found",
+        );
+
+        // Taken away before she wrote anything: the chat leaves her list.
+        assert.deepStrictEqual(yield* Provision.disallow(her), { people: [] });
+        assert.deepStrictEqual(yield* Provision.contacts(priya), []);
+        assert.isNotNull((yield* member(contact.chatId))?.leftAt);
+        assert.include(yield* chats.createDirect(priya, finance).pipe(Effect.flip), {
+          reason: "not_allowed",
+        });
+        // Allowed again: the same chat, hers to write in.
+        yield* Provision.allow(her);
+        assert.strictEqual((yield* Provision.contacts(priya))[0]?.chatId, contact.chatId);
+        assert.include(yield* member(contact.chatId), { role: "member", leftAt: null });
+
+        const say = (id: string) =>
+          chats.send(priya, {
+            chatId: contact.chatId,
+            clientMessageId: id as never,
+            body: "Is the invoice out?",
+          });
+        yield* say("one");
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, dedupe_key, received_at, queued_at)
+          VALUES ('waiting', ${finance.orgId}, ${finance.agentId}, 'chat.message', 'P1',
+            ${JSON.stringify({ chatId: contact.chatId })}, 'waiting', 0, 0)`;
+        // Taken away after she wrote: what waited is dropped, and the chat is hers to read only.
+        yield* Provision.disallow(her);
+        assert.deepStrictEqual(
+          yield* sql`SELECT state FROM kin_events WHERE event_id = 'waiting'`,
+          [{ state: "expired" }],
+        );
+        assert.include(yield* member(contact.chatId), { role: "guest", leftAt: null });
+        assert.include(yield* say("two").pipe(Effect.flip), { reason: "not_allowed" });
+        assert.lengthOf(
+          (yield* chats.history(priya, { chatId: contact.chatId, beforeSeq: 100, limit: 10 }))
+            .messages,
+          1,
+        );
+        assert.deepStrictEqual(yield* Provision.contacts(priya), []);
+        yield* Provision.allow(her);
+        assert.include(yield* member(contact.chatId), { role: "member", leftAt: null });
+        yield* say("three");
+      }).pipe(Effect.provide(paired)),
   );
 });

@@ -122,6 +122,8 @@ export const KinInviteAcceptResult = Schema.Struct({
 });
 export type KinInviteAcceptResult = typeof KinInviteAcceptResult.Type;
 export const KIN_INVITE_ACCEPT_ROUTE = "/kin/invites/accept";
+/** The same accept for a browser: under `/api` so the web app reaches it, answered with a cookie. */
+export const KIN_INVITE_BROWSER_ACCEPT_ROUTE = "/api/kin/invites/accept";
 
 export const KIN_PEOPLE_WS_METHODS = {
   peopleListInvites: "kin.people.listInvites",

@@ -545,5 +545,5 @@ Run with `cd apps/server && vp test run src/kin` and `cd packages/contracts && v
 - Who owns member sign-in (DESIGN gap 8: invites, accounts, devices, GitHub handles)? CHAT-11 needs it. Proposal: a small `kin-identity` addition to this spec in phase 2.
 - Should members see generated widgets in phase 2, and through what bridge?
 - Should a member's `kin:chat`-only device open task threads read-only? That needs a narrow thread-read path, or a guest share per thread.
-- Mobile connects and subscribes to many upstream streams at start (server config, shell). A `kin:chat`-only session will be refused on those; the mobile spec needs a "chat-only" connection mode.
+- A `kin:chat`-only session connects with a config snapshot built from constants (`auth/chatOnlyConfig.ts`): clients need one to count as connected, and this one carries nothing of the host. Web gives such a session Kin's list and chats only. Mobile signs in from an invite link and its Kin screens work, but it still shows the coding tabs, empty; hiding them is open.
 - Retention and export (10a) for messages: phase 5. Until then nothing is deleted except by the owner.

@@ -7,6 +7,8 @@ import {
   type AuthEnvironmentScope,
   type AuthWebSocketTicketResult,
   type AuthWebSocketTicketUse,
+  KIN_INVITE_ACCEPT_ROUTE,
+  KinInviteAcceptResult,
 } from "@t3tools/contracts";
 import { encodeOAuthScope } from "@t3tools/shared/oauthScope";
 import { hashTelemetryId } from "@t3tools/shared/telemetryId";
@@ -14,6 +16,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { environmentEndpointUrl } from "../environment/endpoint.ts";
 import * as ClientCapabilities from "../platform/capabilities.ts";
 import {
@@ -168,6 +171,30 @@ export const bootstrapRemoteBearerSession = Effect.fn(
     }),
   );
 });
+
+/** Redeems a Kin teammate's invite for a session that reaches Kin chats and nothing else. */
+export const acceptRemoteKinInvite = Effect.fn("clientRuntime.authorization.acceptRemoteKinInvite")(
+  function* (input: {
+    readonly httpBaseUrl: string;
+    readonly secret: string;
+    readonly label?: string;
+    readonly timeoutMs?: number;
+  }) {
+    const requestUrl = environmentEndpointUrl(input.httpBaseUrl, KIN_INVITE_ACCEPT_ROUTE);
+    return yield* executeEnvironmentHttpRequest(
+      requestUrl,
+      input.timeoutMs ?? DEFAULT_REMOTE_REQUEST_TIMEOUT_MS,
+      HttpClientRequest.post(requestUrl).pipe(
+        HttpClientRequest.bodyJsonUnsafe({
+          secret: input.secret,
+          ...(input.label ? { label: input.label.slice(0, 80) } : {}),
+        }),
+        (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk).execute,
+        Effect.flatMap(HttpClientResponse.schemaBodyJson(KinInviteAcceptResult)),
+      ),
+    );
+  },
+);
 
 export const fetchRemoteSessionState = Effect.fn(
   "clientRuntime.authorization.fetchRemoteSessionState",

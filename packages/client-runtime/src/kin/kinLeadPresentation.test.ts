@@ -35,39 +35,59 @@ describe("lead domains", () => {
 });
 
 describe("lead draft", () => {
-  const profile = { name: "Growth", domain: "growth", charter: "Grow signups." };
+  const profile = { name: "Growth", domain: "growth", charter: "Grow signups.", intro: "" };
 
   it("names the first field to fix", () => {
-    expect(kinLeadDraftCheck({ name: " ", area: "growth", charter: "" })).toMatchObject({
+    expect(kinLeadDraftCheck({ name: " ", area: "growth", charter: "", intro: "" })).toMatchObject({
       ok: false,
       field: "name",
     });
-    expect(kinLeadDraftCheck({ name: "Growth", area: "42", charter: "" })).toMatchObject({
-      ok: false,
-      field: "area",
-    });
+    expect(kinLeadDraftCheck({ name: "Growth", area: "42", charter: "", intro: "" })).toMatchObject(
+      {
+        ok: false,
+        field: "area",
+      },
+    );
     expect(
-      kinLeadDraftCheck({ name: "Growth", area: "growth", charter: "x".repeat(1_001) }),
+      kinLeadDraftCheck({
+        name: "Growth",
+        area: "growth",
+        charter: "x".repeat(1_001),
+        intro: "",
+      }),
     ).toMatchObject({ ok: false, field: "charter" });
+    expect(
+      kinLeadDraftCheck({ name: "Growth", area: "growth", charter: "", intro: "x".repeat(201) }),
+    ).toMatchObject({ ok: false, field: "intro" });
   });
 
   it("takes a blank area from the name", () => {
-    expect(kinLeadDraftCheck({ name: "Hiring lead", area: " ", charter: "" })).toMatchObject({
+    expect(
+      kinLeadDraftCheck({ name: "Hiring lead", area: " ", charter: "", intro: "" }),
+    ).toMatchObject({
       ok: true,
       domain: "hiring-lead",
     });
-    expect(kinLeadDraftCheck({ name: "招聘", area: "", charter: "" })).toMatchObject({
+    expect(kinLeadDraftCheck({ name: "招聘", area: "", charter: "", intro: "" })).toMatchObject({
       ok: false,
       field: "area",
     });
   });
 
   it("trims what it sends", () => {
-    expect(kinLeadDraftCheck({ name: " Growth ", area: "Growth", charter: " Grow. " })).toEqual({
+    expect(
+      kinLeadDraftCheck({
+        name: " Growth ",
+        area: "Growth",
+        charter: " Grow. ",
+        intro: " Asks about growth. ",
+      }),
+    ).toEqual({
       ok: true,
       name: "Growth",
       domain: "growth",
       charter: "Grow.",
+      intro: "Asks about growth.",
     });
   });
 
@@ -78,6 +98,12 @@ describe("lead draft", () => {
     const edited = kinLeadDraftCheck({ ...kinLeadDraftOf(profile), charter: "Grow revenue." });
     if (!edited.ok) throw new Error("expected a valid draft");
     expect(kinLeadChanges(profile, edited)).toEqual({ charter: "Grow revenue." });
+    // A host that predates the teammate intro sends none: unset reads as empty, not as a change.
+    const { intro: _intro, ...older } = profile;
+    expect(kinLeadChanges(older, same)).toBeNull();
+    const introduced = kinLeadDraftCheck({ ...kinLeadDraftOf(older), intro: "Asks about growth." });
+    if (!introduced.ok) throw new Error("expected a valid draft");
+    expect(kinLeadChanges(older, introduced)).toEqual({ intro: "Asks about growth." });
   });
 });
 
