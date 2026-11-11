@@ -2338,11 +2338,13 @@ it.effect.each([
           model_json, provenance_json, status, started_at, ended_at)
         VALUES ('wk-open', 'org', 'lead', 'w', 'build', 't-1', '{}', '{}', 'running', 5, NULL),
           ('wk-ended', 'org', 'lead', 'w', 'build', 't-2', '{}', '{}', 'completed', 5, 6),
-          ('wk-tracked', 'org', 'lead', 'w', 'build', 't-3', '{}', '{}', 'running', 7, NULL)`;
+          ('wk-tracked', 'org', 'lead', 'w', 'build', 't-3', '{}', '{}', 'running', 7, NULL),
+          ('wk-lazy', 'org', 'lead', 'w', 'build', 't-4', '{}', '{}', 'running', 8, NULL)`;
+      // At K062 a row could already exist for an old worker, made lazily and naming no event.
       if (from === 63)
         yield* sql`INSERT INTO kin_worker_attempts (org_id, worker_id, started_at, agent_id,
             source_event_id)
-          VALUES ('org', 'wk-tracked', 7, 'lead', 'ask')`;
+          VALUES ('org', 'wk-tracked', 7, 'lead', 'ask'), ('org', 'wk-lazy', 8, 'lead', NULL)`;
       const applied = (yield* runKinMigrations()).map(([id]) => id);
       assert.deepStrictEqual(applied.at(-1), 63);
       const rows = () =>
@@ -2350,6 +2352,7 @@ it.effect.each([
           FROM kin_worker_attempts ORDER BY worker_id`;
       const open = { withdrawn_at: null, stopped_at: null };
       const expected = [
+        { worker_id: "wk-lazy", started_at: 8, source_event_id: null, legacy: 1, ...open },
         { worker_id: "wk-open", started_at: 5, source_event_id: null, legacy: 1, ...open },
         from === 63
           ? { worker_id: "wk-tracked", started_at: 7, source_event_id: "ask", legacy: 0, ...open }
@@ -2360,6 +2363,7 @@ it.effect.each([
         yield* sql`SELECT worker_id, ended_at FROM kin_workers ORDER BY worker_id`,
         [
           { worker_id: "wk-ended", ended_at: 6 },
+          { worker_id: "wk-lazy", ended_at: null },
           { worker_id: "wk-open", ended_at: null },
           { worker_id: "wk-tracked", ended_at: null },
         ],
