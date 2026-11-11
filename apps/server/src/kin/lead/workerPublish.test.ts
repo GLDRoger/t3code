@@ -181,7 +181,8 @@ const fixture = Effect.fn("WorkerPublishTest.fixture")(function* (
       ...(options.local === true ? { local: { projectRoot: worker } } : {}),
       title: "Fix",
       progress: {
-        review: (review) => Effect.sync(() => void reviews.push({ ...review, before: admitted.length })),
+        review: (review) =>
+          Effect.sync(() => void reviews.push({ ...review, before: admitted.length })),
         begin: (intent) =>
           intent.step === options.refuseAt
             ? Effect.fail(new Publish.KinWorkerPublishRefused({ reason: "refused" }))
@@ -355,27 +356,29 @@ it.live.each([
   ["public", { private: false, visibility: "public" }],
   ["unknown", {}],
   ["unknown", { private: true, visibility: "internal" }],
-] as const)("reviews a %s repository and the files Kin's own git counts, before any write", ([visibility, about]) =>
-  Effect.gen(function* () {
-    const { publish, reviews, head } = yield* fixture(
-      { "src/fix.ts": "export {};\nexport const a = 1;\n", "docs/notes.md": "one\n" },
-      { about },
-    );
-    yield* publish();
-    assert.deepStrictEqual(reviews, [
-      {
-        sha: head,
-        visibility,
-        files: [
-          { path: "docs/notes.md", added: 1, removed: 0 },
-          { path: "src/fix.ts", added: 2, removed: 0 },
-        ],
-        moreFiles: 0,
-        // Before Kin admitted any write to GitHub.
-        before: 0,
-      },
-    ]);
-  }).pipe(Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer)), Effect.scoped),
+] as const)(
+  "reviews a %s repository and the files Kin's own git counts, before any write",
+  ([visibility, about]) =>
+    Effect.gen(function* () {
+      const { publish, reviews, head } = yield* fixture(
+        { "src/fix.ts": "export {};\nexport const a = 1;\n", "docs/notes.md": "one\n" },
+        { about },
+      );
+      yield* publish();
+      assert.deepStrictEqual(reviews, [
+        {
+          sha: head,
+          visibility,
+          files: [
+            { path: "docs/notes.md", added: 1, removed: 0 },
+            { path: "src/fix.ts", added: 2, removed: 0 },
+          ],
+          moreFiles: 0,
+          // Before Kin admitted any write to GitHub.
+          before: 0,
+        },
+      ]);
+    }).pipe(Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer)), Effect.scoped),
 );
 
 it.live(

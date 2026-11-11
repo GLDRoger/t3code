@@ -1780,6 +1780,8 @@ const make = Effect.gen(function* () {
       if (
         input.type === "owner_check" ||
         input.type === "deferral" ||
+        // Only Kin's publish gate writes one, from its own git and GitHub.
+        input.type === KIN_WORKER_PUBLISH_CARD ||
         // Only kin_ask posts one, and only a tap answers it.
         input.type === "choice" ||
         (input.type === "task" && input.widgetId === undefined)

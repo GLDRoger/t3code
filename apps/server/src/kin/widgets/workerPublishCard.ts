@@ -152,7 +152,11 @@ export const writePublishCard = Effect.fn("KinWorkerPublishCard.write")(function
     }),
   );
   yield* sql.afterCommit(
-    hub.publish({ type: "widget.updated", orgId: attempt.orgId, widget: { ...widget, revision: 1 } }),
+    hub.publish({
+      type: "widget.updated",
+      orgId: attempt.orgId,
+      widget: { ...widget, revision: 1 },
+    }),
   );
 });
 

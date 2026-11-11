@@ -467,8 +467,7 @@ const writerFor = Effect.fn("KinWorkTools.writer")(function* (lead: Lead) {
 
 /** A result that shows the lead a sensitive entry marks its wake-up, so work it starts is gated. */
 const shown = Effect.fn("KinWorkTools.shown")(function* <A>(lead: Lead, result: A) {
-  if (showsSensitive(result))
-    yield* sensitiveShown({ orgId: lead.orgId, wakeupId: lead.wakeupId });
+  if (showsSensitive(result)) yield* sensitiveShown({ orgId: lead.orgId, wakeupId: lead.wakeupId });
   return result;
 });
 

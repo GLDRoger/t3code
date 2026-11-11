@@ -56,10 +56,7 @@ import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
 import { KinChatToolkit } from "../../apps/server/src/kin/mcp/KinChatToolkit.ts";
 import { KinWorkToolkit } from "../../apps/server/src/kin/work/mcp/tools.ts";
 import { WITHDRAWN_WORK, WORK_RULE } from "../../apps/server/src/kin/work/workPrompt.ts";
-import {
-  OWNER_DECLINED,
-  WAITING_FOR_OWNER,
-} from "../../apps/server/src/kin/lead/workerBrief.ts";
+import { OWNER_DECLINED, WAITING_FOR_OWNER } from "../../apps/server/src/kin/lead/workerBrief.ts";
 import { KinApprovalsToolkit } from "../../apps/server/src/kin/approvals/mcp.ts";
 import { AttachmentToolkit } from "../../apps/server/src/mcp/toolkits/attachment/tools.ts";
 import { DeviceToolkit } from "../../apps/server/src/mcp/toolkits/device/tools.ts";

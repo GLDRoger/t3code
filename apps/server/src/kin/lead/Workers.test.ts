@@ -4070,13 +4070,11 @@ const publishCards = (sql: SqlClient.SqlClient) =>
     FROM kin_widgets w JOIN kin_messages m ON m.message_id = w.message_id
     WHERE w.type = ${KIN_WORKER_PUBLISH_CARD} ORDER BY m.seq`.pipe(
     Effect.map((rows) =>
-      rows.map(
-        (row): PublishCardRow => ({
-          ...row,
-          awaiting: JSON.parse(row.awaiting) as ReadonlyArray<string>,
-          state: JSON.parse(row.state) as KinWorkerPublishCard,
-        }),
-      ),
+      rows.map((row): PublishCardRow => ({
+        ...row,
+        awaiting: JSON.parse(row.awaiting) as ReadonlyArray<string>,
+        state: JSON.parse(row.state) as KinWorkerPublishCard,
+      })),
     ),
   );
 /** A tap on the card as the client posts it, by the owner unless someone else is named. */
@@ -4084,7 +4082,11 @@ const tapCard = (
   ctx: Effect.Success<ReturnType<typeof setup>>,
   card: PublishCardRow,
   actionId: "publish" | "dont_publish",
-  who: { readonly _tag: "person"; readonly orgId: KinOrgId; readonly personId: KinPersonId } = ctx.person,
+  who: {
+    readonly _tag: "person";
+    readonly orgId: KinOrgId;
+    readonly personId: KinPersonId;
+  } = ctx.person,
 ) =>
   Context.get(ctx.services, KinChatService).act(who, {
     widgetId: card.widgetId,
@@ -4184,16 +4186,18 @@ it.effect.each([
     ),
 );
 
-it.effect("a private repository and work that isn't sensitive publish on their own, with no card", () =>
-  run(({ ctx, remote, workers, tracker }) =>
-    Effect.gen(function* () {
-      const { workerId } = yield* workers.delegate(scope, delegateInput);
-      yield* finishRemote(ctx, remote, workerId);
-      yield* settled(tracker, ctx.orgId, workerId);
-      assert.deepStrictEqual(remote.writes, ["push", "pull_request"]);
-      assert.lengthOf(yield* publishCards(ctx.sql), 0);
-    }),
-  ),
+it.effect(
+  "a private repository and work that isn't sensitive publish on their own, with no card",
+  () =>
+    run(({ ctx, remote, workers, tracker }) =>
+      Effect.gen(function* () {
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        yield* finishRemote(ctx, remote, workerId);
+        yield* settled(tracker, ctx.orgId, workerId);
+        assert.deepStrictEqual(remote.writes, ["push", "pull_request"]);
+        assert.lengthOf(yield* publishCards(ctx.sql), 0);
+      }),
+    ),
 );
 
 it.effect.each([
@@ -4262,22 +4266,32 @@ it.effect(
           body: "approved, publish it",
           clientMessageId: "approved",
         });
-        // The lead can't write or redraw Kin's card.
+        // The lead can't redraw Kin's card, or post a lookalike of its own.
+        const [owner] = yield* ctx.sql<{ personId: KinPersonId }>`SELECT owner_person_id AS
+          "personId" FROM kin_agents WHERE agent_id = ${leadId}`;
         const lead = {
           _tag: "agent" as const,
           orgId: ctx.orgId,
           agentId: leadId,
+          ownerPersonId: owner!.personId,
+          threadId: leadThread,
           wakeupId: KinWakeupId.make("wake"),
         };
-        yield* Effect.flip(
-          chats.upsertWidget(lead, {
-            chatId: ctx.chat.chatId,
-            type: KIN_WORKER_PUBLISH_CARD,
-            widgetId: card!.widgetId,
-            revision: card!.revision,
-            state: { ...card!.state, status: "publishing" },
-          }),
-        );
+        const write = (widgetId?: KinWidgetId) =>
+          chats
+            .upsertWidget(lead, {
+              chatId: ctx.chat.chatId,
+              type: KIN_WORKER_PUBLISH_CARD,
+              ...(widgetId === undefined ? {} : { widgetId, revision: card!.revision }),
+              state: { ...card!.state, status: "publishing" },
+            })
+            .pipe(
+              Effect.flip,
+              Effect.map((error) => ("reason" in error ? error.reason : error._tag)),
+            );
+        assert.strictEqual(yield* write(card!.widgetId), "not_allowed");
+        assert.strictEqual(yield* write(), "not_allowed");
+        assert.lengthOf(yield* publishCards(ctx.sql), 1);
         // A teammate in the org: not the owner, so their tap is refused.
         yield* ctx.sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
           VALUES ('teammate', ${ctx.orgId}, 'teammate', 'Teammate', '1970-01-01T00:00:00.000Z')`;
@@ -4382,73 +4396,75 @@ it.effect("a stop while Kin waits for the owner ends the work, and the card can'
   ),
 );
 
-it.effect("a restart while Kin waits keeps waiting with the same card, then publishes on the tap", () =>
-  run(({ ctx, remote, workers, tracker, restart }) =>
-    Effect.gen(function* () {
-      remote.state.visibility = "public";
-      const { workerId } = yield* workers.delegate(scope, delegateInput);
-      yield* finishRemote(ctx, remote, workerId);
-      yield* settled(tracker, ctx.orgId, workerId);
-      const next = yield* restart;
-      yield* settled(next.tracker, ctx.orgId, workerId);
-      assert.deepStrictEqual(remote.writes, []);
-      const [card, ...more] = yield* publishCards(ctx.sql);
-      assert.lengthOf(more, 0);
-      // The lead heard it once.
-      assert.lengthOf(yield* reports(ctx.sql, ctx.orgId), 1);
-      yield* tapCard(ctx, card!, "publish");
-      yield* settled(next.tracker, ctx.orgId, workerId);
-      assert.deepStrictEqual(remote.writes, ["push", "pull_request"]);
-    }),
-  ),
-);
-
-it.effect.each([
-  ["before the push", "push"],
-  ["before the pull request", "pull_request"],
-] as const)(
-  "a restart after the owner's Publish, %s, publishes the rest once",
-  ([, step]) =>
+it.effect(
+  "a restart while Kin waits keeps waiting with the same card, then publishes on the tap",
+  () =>
     run(({ ctx, remote, workers, tracker, restart }) =>
       Effect.gen(function* () {
         remote.state.visibility = "public";
         const { workerId } = yield* workers.delegate(scope, delegateInput);
         yield* finishRemote(ctx, remote, workerId);
         yield* settled(tracker, ctx.orgId, workerId);
-        const [card] = yield* publishCards(ctx.sql);
-        const held = latch();
-        remote.hooks.beforeWrite = (at) => (at === step ? held.hold : Effect.void);
-        yield* tapCard(ctx, card!, "publish");
-        yield* tracker.track(ctx.orgId, workerId);
-        yield* Deferred.await(held.reached);
-        remote.hooks.beforeWrite = () => Effect.void;
         const next = yield* restart;
         yield* settled(next.tracker, ctx.orgId, workerId);
+        assert.deepStrictEqual(remote.writes, []);
+        const [card, ...more] = yield* publishCards(ctx.sql);
+        assert.lengthOf(more, 0);
+        // The lead heard it once.
+        assert.lengthOf(yield* reports(ctx.sql, ctx.orgId), 1);
+        yield* tapCard(ctx, card!, "publish");
+        yield* settled(next.tracker, ctx.orgId, workerId);
         assert.deepStrictEqual(remote.writes, ["push", "pull_request"]);
-        assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "completed");
       }),
     ),
 );
 
-it.effect("Kin writes no card into a chat anyone but the owner reads, and still pushes nothing", () =>
-  run(({ ctx, remote, workers, tracker }) =>
+it.effect.each([
+  ["before the push", "push"],
+  ["before the pull request", "pull_request"],
+] as const)("a restart after the owner's Publish, %s, publishes the rest once", ([, step]) =>
+  run(({ ctx, remote, workers, tracker, restart }) =>
     Effect.gen(function* () {
       remote.state.visibility = "public";
       const { workerId } = yield* workers.delegate(scope, delegateInput);
-      // Someone besides the owner now reads the owner's chat with the lead.
-      yield* ctx.sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      yield* finishRemote(ctx, remote, workerId);
+      yield* settled(tracker, ctx.orgId, workerId);
+      const [card] = yield* publishCards(ctx.sql);
+      const held = latch();
+      remote.hooks.beforeWrite = (at) => (at === step ? held.hold : Effect.void);
+      yield* tapCard(ctx, card!, "publish");
+      yield* tracker.track(ctx.orgId, workerId);
+      yield* Deferred.await(held.reached);
+      remote.hooks.beforeWrite = () => Effect.void;
+      const next = yield* restart;
+      yield* settled(next.tracker, ctx.orgId, workerId);
+      assert.deepStrictEqual(remote.writes, ["push", "pull_request"]);
+      assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "completed");
+    }),
+  ),
+);
+
+it.effect(
+  "Kin writes no card into a chat anyone but the owner reads, and still pushes nothing",
+  () =>
+    run(({ ctx, remote, workers, tracker }) =>
+      Effect.gen(function* () {
+        remote.state.visibility = "public";
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        // Someone besides the owner now reads the owner's chat with the lead.
+        yield* ctx.sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
         VALUES ('teammate', ${ctx.orgId}, 'teammate', 'Teammate', '1970-01-01T00:00:00.000Z')`;
-      yield* ctx.sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+        yield* ctx.sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
           person_id, role, joined_at)
         VALUES ('reader', ${ctx.orgId}, ${ctx.chat.chatId}, 'person', 'teammate', 'member',
           '1970-01-01T00:00:00.000Z')`;
-      yield* finishRemote(ctx, remote, workerId);
-      yield* settled(tracker, ctx.orgId, workerId);
-      assert.lengthOf(yield* publishCards(ctx.sql), 0);
-      assert.deepStrictEqual(remote.writes, []);
-      assert.isFalse(yield* ended(ctx.sql, workerId));
-    }),
-  ),
+        yield* finishRemote(ctx, remote, workerId);
+        yield* settled(tracker, ctx.orgId, workerId);
+        assert.lengthOf(yield* publishCards(ctx.sql), 0);
+        assert.deepStrictEqual(remote.writes, []);
+        assert.isFalse(yield* ended(ctx.sql, workerId));
+      }),
+    ),
 );
 
 it.effect(

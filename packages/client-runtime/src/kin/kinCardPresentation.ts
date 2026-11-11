@@ -374,7 +374,7 @@ const fileLine = (file: KinWorkerPublishCard["files"][number]) =>
  * Kin's card asking the owner to publish a worker's commit. Every fact is Kin's own except the
  * pull request title, which the lead wrote and is shown quoted.
  */
-export function kinWorkerPublishCardView(widget: KinWidget): KinDeferralCardView | null {
+function kinWorkerPublishCardView(widget: KinWidget): KinDeferralCardView | null {
   const decoded = decodeWorkerPublish(widget.state);
   if (Option.isNone(decoded)) return null;
   const card = decoded.value;

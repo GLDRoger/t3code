@@ -405,10 +405,9 @@ describe("KinPushSender", () => {
       );
       yield* notify({ _tag: "widget", orgId, widgetId: held });
       assert.lengthOf(apns.sent, 1);
-      assert.deepStrictEqual(apns.sent[0]?.payload.aps.alert, {
-        title: "Payments team",
-        body: "A card is waiting on you",
-      });
+      assert.deepStrictEqual(alerts(apns.sent), [
+        { title: "Payments team", body: "A card is waiting on you" },
+      ]);
       assert.notInclude(JSON.stringify(apns.sent), "Invented client terms");
       assert.notInclude(JSON.stringify(apns.sent), "acme-terms");
 
