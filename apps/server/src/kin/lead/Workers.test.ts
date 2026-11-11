@@ -2019,6 +2019,38 @@ it.effect(
 );
 
 it.effect(
+  "private work whose group a teammate joins while Kin waits on it there reports to the owner's chat",
+  () =>
+    run(({ ctx, remote, tracker, workers }) =>
+      Effect.gen(function* () {
+        const sql = ctx.sql;
+        yield* group(sql, ctx.orgId, "team", "owner");
+        yield* askedIn(sql, "team");
+        const turn = { orgId: ctx.orgId, agentId: leadId, wakeupId: "wake" };
+        yield* recordAudience(turn, yield* turnAudience(turn));
+        const started = yield* workers.delegate(scope, delegateInput);
+        const { threadId } = yield* workerRow(sql, ctx.orgId, started.workerId);
+        yield* remote.finish(ThreadId.make(threadId), "completed", reportReply);
+        // The follower read the worker's row; the join commits while it waits there.
+        const joined = yield* Deferred.make<void>();
+        remote.hooks.ended = Effect.suspend(() => {
+          remote.hooks.ended = Effect.void;
+          return addTeammate(ctx, "team").pipe(Effect.andThen(Deferred.succeed(joined, undefined)));
+        }).pipe(Effect.asVoid);
+        yield* settled(tracker, ctx.orgId, started.workerId);
+        yield* Deferred.await(joined);
+        const [reported] = yield* reports(sql, ctx.orgId);
+        assert.isUndefined(reported!.event.chatId);
+        assert.isUndefined(reported!.event.origin);
+        assert.deepStrictEqual(yield* sinceShared(sql, "team"), []);
+        assert.deepStrictEqual(yield* chatCards(sql, "team"), [
+          { title: "Moved to your private chat with Lead", closedAt: "1970-01-01T00:00:00.000Z" },
+        ]);
+      }),
+    ),
+);
+
+it.effect(
   "a follow-up a private turn sends stays private, though a teammate joins before it is sent",
   () =>
     run(({ ctx, remote, tracker, workers }) =>
@@ -2096,6 +2128,42 @@ it.effect(
           (yield* answering(sql, ctx.orgId, "later-event", "later-wake")).audience,
           "shared",
         );
+      }),
+    ),
+);
+
+// Review of cc5b670e33: work asked before a later join carries what was said then.
+it.effect(
+  "work asked in a shared group before someone else joins reports to the owner's chat",
+  () =>
+    run(({ ctx, remote, tracker, workers }) =>
+      Effect.gen(function* () {
+        const sql = ctx.sql;
+        yield* group(sql, ctx.orgId, "team", "owner");
+        yield* addTeammate(ctx, "team");
+        yield* askedIn(sql, "team");
+        yield* sql`UPDATE kin_wakeups SET aborted_at = NULL, shared_since = NULL, started_at = 1
+          WHERE wakeup_id = 'wake'`;
+        const turn = { orgId: ctx.orgId, agentId: leadId, wakeupId: "wake" };
+        yield* recordAudience(turn, yield* turnAudience(turn));
+        const started = yield* workers.delegate(scope, teamDelegate);
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('bob', ${ctx.orgId}, 'bob', 'Bob', '1970-01-01T00:00:00.000Z')`;
+        yield* Context.get(ctx.services, KinGroups)
+          .addMember([ctx.person], {
+            chatId: KinChatId.make("team"),
+            principal: { _tag: "person", personId: KinPersonId.make("bob") },
+          })
+          .pipe(Effect.orDie);
+        const { threadId } = yield* workerRow(sql, ctx.orgId, started.workerId);
+        yield* remote.finish(ThreadId.make(threadId), "completed", reportReply);
+        yield* settled(tracker, ctx.orgId, started.workerId);
+        const [reported] = yield* reports(sql, ctx.orgId);
+        assert.isUndefined(reported!.event.chatId);
+        assert.isUndefined(reported!.event.origin);
+        assert.deepStrictEqual(yield* chatCards(sql, "team"), [
+          { title: "Moved to your private chat with Lead", closedAt: "1970-01-01T00:00:00.000Z" },
+        ]);
       }),
     ),
 );
