@@ -7,6 +7,7 @@ import {
   KinMemoryItemId,
   KinOrgId,
   KinPersonId,
+  KinRecordKey,
   KinWorkerId,
   ModelSelection,
   type OrchestratorMcpFailure,
@@ -45,6 +46,8 @@ import { KinBudget } from "./KinBudget.ts";
 import * as KinLevels from "./KinLevels.ts";
 import { SHARED_REFUSAL, destination, effectiveAudience, turnChat } from "./Audience.ts";
 import { workerChat } from "./ChatSharing.ts";
+import { KinRecords } from "../work/KinRecords.ts";
+import { workerStarted } from "../work/workerEntries.ts";
 import { sharedTurnMayTouch, toolAdmitted } from "./SharedTools.ts";
 import { isOrgPaused, STOP_REASON } from "./orgState.ts";
 import { resolveLead } from "./LeadMemory.ts";
@@ -82,6 +85,10 @@ export const DelegateInput = Schema.Struct({
   model: Schema.optional(WorkerModel),
   memoryItemIds: Schema.optional(Schema.Array(KinMemoryItemId).check(Schema.isMaxLength(20))),
   reviewOf: Schema.optional(KinWorkerId),
+  entry: Schema.optional(KinRecordKey).annotate({
+    description:
+      "The Work entry this works on, such as W-12. Without one, Kin tracks the worker as a new entry of yours.",
+  }),
   sourceEventId: TrimmedNonEmptyString,
 });
 export const FollowUpInput = Schema.Struct({
@@ -240,6 +247,7 @@ const make = Effect.gen(function* () {
   );
   const env = yield* WorkerEnvironment.KinWorkerEnvironment;
   const tracker = yield* WorkerTracker;
+  const records = yield* KinRecords;
   const environment = yield* ServerEnvironment;
   const orchestrator = yield* OrchestratorV2;
   const digest = yield* Digest.Digest;
@@ -767,6 +775,20 @@ const make = Effect.gen(function* () {
           NULL, ${startedAt}, NULL, ${input.title}, ${chatId}, ${target.hostProjectId}, ${environmentId},
           ${projectId}, ${repositoryKey}, ${context})
           ON CONFLICT (worker_id) DO NOTHING RETURNING worker_id`;
+        if (inserted.length > 0)
+          yield* workerStarted({
+            orgId: ctx.orgId,
+            agentId: ctx.agentId,
+            workerId,
+            wakeupId: ctx.wakeupId,
+            title: input.title,
+            reviewOf: input.reviewOf ?? null,
+            event: plan.event,
+            ...(input.entry === undefined ? {} : { entryKey: input.entry }),
+          }).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.provideService(KinRecords, records),
+          );
         if (inserted.length === 0) {
           const stored = yield* worker(ctx, workerId);
           if (stored.wakeupId !== ctx.wakeupId) return yield* denied();

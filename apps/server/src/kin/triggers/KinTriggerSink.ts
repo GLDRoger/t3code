@@ -23,6 +23,7 @@ import { configuredGithubMemoryRepo } from "../memory/MemoryConfig.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as KinTriggerStore from "./KinTriggerStore.ts";
+import * as KinSchedules from "./kinSchedules.ts";
 import { KIN_TASK_PREFIX } from "./taskIds.ts";
 
 const Delivery = Schema.Struct({ receivedAt: CanonicalUtcTimestamp });
@@ -32,7 +33,7 @@ const decodeDeliveryId = Schema.decodeEffect(ScheduledTaskWebhookDeliveryId);
 
 export class KinTriggerSinkRefused extends Schema.TaggedError<KinTriggerSinkRefused>()(
   "KinTriggerSinkRefused",
-  { scheduledTaskId: Schema.String, reason: Schema.Literal("no_source") },
+  { scheduledTaskId: Schema.String, reason: Schema.Literals(["no_source", "not_kin_shape"]) },
 ) {}
 
 /**
@@ -184,11 +185,69 @@ const make = Effect.gen(function* () {
   const inbox = yield* KinTriggerInbox.KinTriggerInbox;
   const threads = yield* ThreadManagementService.ThreadManagementService;
 
+  const refuse = (taskId: string, reason: "no_source" | "not_kin_shape") =>
+    Effect.logWarning(`Kin scheduled task refused: ${reason}`).pipe(
+      Effect.annotateLogs({ scheduledTaskId: taskId }),
+      Effect.andThen(Effect.fail(new KinTriggerSinkRefused({ scheduledTaskId: taskId, reason }))),
+    );
+  /** A time run of a Kin schedule: one inbox row, authorised by its kin_schedules row. */
+  const receiveSchedule = Effect.fn("KinTriggerSink.receiveSchedule")(function* (
+    input: ThreadLaunchService.ThreadLaunchInput,
+    taskId: string,
+  ) {
+    const schedule = yield* KinSchedules.readScheduleByTask(sql, taskId).pipe(
+      Effect.mapError(toPersistenceSqlError("KinTriggerSink.receiveSchedule")),
+    );
+    if (schedule === undefined || schedule.deletedAt !== null)
+      return yield* refuse(taskId, "no_source");
+    const task = yield* KinSchedules.readNativeTask(sql, taskId).pipe(
+      Effect.mapError(toPersistenceSqlError("KinTriggerSink.receiveSchedule")),
+    );
+    const run = /^(\d+):(scheduled|manual)$/.exec(
+      input.commandId.slice(`scheduled-task:${taskId}:`.length),
+    );
+    // Anyone with the Scheduled tasks screen can re-save it, so its shape is checked per run.
+    if (
+      task === undefined ||
+      run === null ||
+      !input.commandId.startsWith(`scheduled-task:${taskId}:`) ||
+      task.threadId !== null ||
+      (task.threadMode ?? "new_thread") !== "new_thread" ||
+      task.projectId !== input.projectId ||
+      task.projectId !== `kin:${schedule.orgId}:${schedule.agentId}` ||
+      !["fixed_time", "interval", "once"].includes(task.scheduleType ?? "")
+    )
+      return yield* refuse(taskId, "not_kin_shape");
+    const projection = yield* threads.getThreadProjection(schedule.inboxThreadId);
+    if (projection.thread.projectId !== input.projectId || projection.thread.deletedAt !== null)
+      return yield* refuse(taskId, "not_kin_shape");
+    const now = yield* Clock.currentTimeMillis;
+    const startedAt = Number(run[1]);
+    yield* inbox.put(
+      yield* decodeFire({
+        fireId: KinTriggerFireId.make(`ns:${taskId}:${run[1]}:${run[2]}`),
+        orgId: schedule.orgId,
+        dueAt: DateTime.formatIso(DateTime.makeUnsafe(startedAt)),
+        firedAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
+        lateByMs: Math.max(0, now - startedAt),
+        payload: {
+          kind: "time",
+          triggerId: `native:${schedule.scheduleId}`,
+          subject: { type: "scheduled_task", itemId: schedule.scheduleId },
+        },
+      }),
+      now,
+    );
+    return { threadId: schedule.inboxThreadId, projection, resumed: false };
+  });
+
   return KinTriggerSink.of({
     receive: Effect.fn("KinTriggerSink.receive")(
       function* (input) {
         const taskId = input.initialMessage?.scheduledTaskId;
         if (taskId === undefined) return;
+        if (taskId.startsWith(KinSchedules.KIN_SCHEDULE_TASK_PREFIX))
+          return yield* receiveSchedule(input, taskId);
         const source = yield* store.sourceByTaskId(taskId);
         if (source === undefined) {
           // Kin's task ids are deterministic, so a fire racing a remove still refuses to launch.

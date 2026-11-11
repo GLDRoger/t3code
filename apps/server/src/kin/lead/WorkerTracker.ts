@@ -54,6 +54,8 @@ import { parseReport } from "./workerBrief.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
 import * as Publish from "./workerPublish.ts";
 import { localThreadId, workThreadPrefix } from "./workThread.ts";
+import { KinRecords } from "../work/KinRecords.ts";
+import { workerEnded } from "../work/workerEntries.ts";
 
 export const endedStatuses = new Set<OrchestrationV2RunStatus>([
   "completed",
@@ -184,6 +186,7 @@ const make = Effect.gen(function* () {
   const events = yield* OrchestrationEventStore;
   const threads = yield* ThreadManagement.ThreadManagementService;
   const queue = yield* KinEventQueue;
+  const records = yield* KinRecords;
   const chat = yield* KinChatService;
   const registry = yield* KinLeadRegistry;
   const env = yield* WorkerEnvironment.KinWorkerEnvironment;
@@ -412,6 +415,23 @@ const make = Effect.gen(function* () {
         const current = yield* workerRow(worker.orgId, worker.workerId);
         if (current === undefined) return false;
         yield* enqueueReport(current, input.key, input.endedAt, input.report);
+        // Its Work entry moves with it; a failure there never loses the report.
+        yield* workerEnded({
+          orgId: current.orgId,
+          workerId: current.workerId,
+          kind: current.kind,
+          status: input.status,
+          pullRequest:
+            current.pullRequestUrl === null || current.pullRequestNumber === null
+              ? null
+              : { url: current.pullRequestUrl, number: current.pullRequestNumber },
+        }).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.provideService(KinRecords, records),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin couldn't move a worker's Work entry", { cause }),
+          ),
+        );
         return true;
       }),
     );

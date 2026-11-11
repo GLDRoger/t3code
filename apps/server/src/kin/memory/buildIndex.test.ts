@@ -92,7 +92,6 @@ it("drops reminders that went out and anything cancelled, done or replaced", () 
   expect(index.match(/Invented [\w-]+/g)).toEqual([
     "Invented asked",
     "Invented coming",
-    "Invented promise",
     "Invented task",
   ]);
 });

@@ -19,6 +19,7 @@ import {
   PersistenceSqlError,
   toPersistenceSqlError,
 } from "../../persistence/Errors.ts";
+import { scheduleTaskId } from "./kinSchedules.ts";
 
 const encodeFire = Schema.encodeEffect(Schema.fromJsonString(KinTriggerFired));
 const decodeMillis = Schema.decodeEffect(NonNegativeInt);
@@ -168,6 +169,27 @@ const make = Effect.gen(function* () {
                   reason: "unknown_source",
                 });
               }
+              return yield* insert;
+            }
+            // A native schedule's run, which only the sink writes, for a schedule Kin has a row for.
+            if (
+              event.payload.kind === "time" &&
+              event.payload.subject.type === "scheduled_task" &&
+              event.payload.triggerId === `native:${event.payload.subject.itemId}`
+            ) {
+              const taskId = scheduleTaskId(event.orgId, event.payload.subject.itemId);
+              if (!event.fireId.startsWith(`ns:${taskId}:`))
+                return yield* new KinTriggerInboxConflict({
+                  orgId: event.orgId,
+                  reason: "invalid_fire_id",
+                });
+              const schedule = yield* sql`SELECT 1 FROM kin_schedules
+                WHERE org_id = ${event.orgId} AND task_id = ${taskId}`;
+              if (schedule.length === 0)
+                return yield* new KinTriggerInboxConflict({
+                  orgId: event.orgId,
+                  reason: "unknown_source",
+                });
               return yield* insert;
             }
             if (event.payload.kind !== "github") {

@@ -57,6 +57,7 @@ import * as ServerSettings from "../../serverSettings.ts";
 import * as KinIssuedTokens from "../mcp/KinIssuedTokens.ts";
 import * as KinLead from "./layer.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
+import * as KinRecords from "../work/KinRecords.ts";
 import * as KinStop from "./KinStop.ts";
 import { SHARED_THREAD_PREFIX, abortPrivateTurns } from "./Audience.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
@@ -65,6 +66,7 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
+import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as DateTime from "effect/DateTime";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
@@ -2051,6 +2053,7 @@ describe("WakeupRunner", () => {
         Layer.provide(
           Layer.mergeAll(
             Layer.mock(ChatService.KinChatService)({}),
+            Layer.mock(KinRecords.KinRecords)({}),
             Layer.mock(ChatHub.KinChatHub)({}),
             Layer.mock(LevelGate.KinLevelGate)({}),
             Layer.mock(Presence.KinPresence)({
@@ -2062,6 +2065,7 @@ describe("WakeupRunner", () => {
             Layer.mock(KinEventQueue.KinEventQueue)({}),
             Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
             Layer.mock(ThreadManagement.ThreadManagementService)({}),
+            Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
             Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
             Layer.mock(ProjectService.ProjectService)({}),
             Layer.mock(ServerSettings.ServerSettingsService)({}),

@@ -51,6 +51,7 @@ import { recordAudience, turnAudience } from "./Audience.ts";
 import { KinLeadPrompt, KinLeadPromptError, type KinLeadPromptInput } from "./LeadPrompt.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
+import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as ProjectEnrichmentService from "../../project/ProjectEnrichmentService.ts";
 import * as ProjectFaviconResolver from "../../project/ProjectFaviconResolver.ts";
@@ -496,6 +497,8 @@ function parts(options: HarnessOptions) {
     Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
     Layer.mock(TerminalManager.TerminalManager)({ close: () => Effect.void }),
     Layer.mock(GitWorkflow.GitWorkflowService)({}),
+    // Native schedules are exercised in triggers/scheduledTasks.test.ts.
+    Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
     Layer.mock(TextGeneration.TextGeneration)({}),
     Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
       runForThread: () => Effect.succeed({ status: "no-script" }),

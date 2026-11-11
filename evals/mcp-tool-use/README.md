@@ -38,6 +38,8 @@ Check that the case builds with `--dry-run --case <id>`. Then run it on the text
 
 The lead voice cases grade the reply text with `textMust` and `textMustNot`: a length cap such as `[\\s\\S]{160,}`, Kin's internal words, and requests that the owner reconfigure Kin. Each has a control beside it (`kin-lead-notice-failing-check-reaches-owner`, `kin-lead-asked-for-a-list-gives-the-list`) so a fix that makes leads terse or silent everywhere fails too.
 
+The `kin-lead-work-*` cases check the Work tools (`record_create`, `records_query`, `record_update`), which lead cases also see: one entry per "track this" with its due date, status from Work rather than memory, no repeat of status already reported, an existing entry updated rather than duplicated, and a one- or two-line reply after bookkeeping, with `kin-lead-work-list-control` as the control. Write `{{WORK_RULE}}` where `LeadPrompt` puts the Work rule; the runner fills in the current text.
+
 ## Device manager cases
 
 `cases/device-manager.ndjson` ports nine mechanisms from the [device-routing investigation described in #25661](https://github.com/pingdotgg/t3code/pull/25661) and adds seven cases from t3dotgg’s 2026-10-26 fleet device investigation. All prompts, files, hosts and prior turns are authored Acme data; the fleet cases cite finding ids without carrying source transcripts or identifiers.
