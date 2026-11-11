@@ -41,6 +41,7 @@ const tableNames = [
   "kin_lead_tool_calls",
   "kin_leads",
   "kin_memory_heads",
+  "kin_memory_labels",
   "kin_memory_reads",
   "kin_memory_review_pulls",
   "kin_message_attachments",
@@ -209,6 +210,7 @@ describe("Kin migrations", () => {
           { migration_id: 47, name: "SilentMessages" },
           { migration_id: 50, name: "LeadAccess" },
           { migration_id: 51, name: "ChatSharing" },
+          { migration_id: 52, name: "MemoryLabels" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -313,6 +315,7 @@ describe("Kin migrations", () => {
           { migration_id: 47, name: "SilentMessages" },
           { migration_id: 50, name: "LeadAccess" },
           { migration_id: 51, name: "ChatSharing" },
+          { migration_id: 52, name: "MemoryLabels" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -442,6 +445,7 @@ describe("Kin migrations", () => {
         [47, "SilentMessages"],
         [50, "LeadAccess"],
         [51, "ChatSharing"],
+        [52, "MemoryLabels"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -587,6 +591,7 @@ describe("Kin migrations", () => {
         [47, "SilentMessages"],
         [50, "LeadAccess"],
         [51, "ChatSharing"],
+        [52, "MemoryLabels"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
@@ -659,6 +664,7 @@ describe("Kin migrations", () => {
         { migration_id: 47, name: "SilentMessages" },
         { migration_id: 50, name: "LeadAccess" },
         { migration_id: 51, name: "ChatSharing" },
+        { migration_id: 52, name: "MemoryLabels" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);
@@ -735,6 +741,7 @@ describe("Kin migrations", () => {
         [47, "SilentMessages"],
         [50, "LeadAccess"],
         [51, "ChatSharing"],
+        [52, "MemoryLabels"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT session_id, via FROM kin_auth_paired_sessions ORDER BY session_id`,
@@ -787,6 +794,7 @@ describe("Kin migrations", () => {
         [47, "SilentMessages"],
         [50, "LeadAccess"],
         [51, "ChatSharing"],
+        [52, "MemoryLabels"],
       ]);
       const columns = yield* sql<{ name: string }>`
         SELECT name FROM pragma_table_info('kin_workers')`;
@@ -848,8 +856,9 @@ describe("Kin migrations", () => {
           [47, "SilentMessages"],
           [50, "LeadAccess"],
           [51, "ChatSharing"],
+          [52, "MemoryLabels"],
         ]);
-        assert.deepStrictEqual((yield* kinHistory).slice(-16), [
+        assert.deepStrictEqual((yield* kinHistory).slice(-17), [
           { migration_id: 32, name: "WorkerEnvironment" },
           { migration_id: 33, name: "ApproverKeyConfirmations" },
           { migration_id: 34, name: "PerLeadWakeups" },
@@ -866,6 +875,7 @@ describe("Kin migrations", () => {
           { migration_id: 47, name: "SilentMessages" },
           { migration_id: 50, name: "LeadAccess" },
           { migration_id: 51, name: "ChatSharing" },
+          { migration_id: 52, name: "MemoryLabels" },
         ]);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_lead_deliveries`, [delivery]);
         assert.deepStrictEqual(
@@ -935,6 +945,7 @@ describe("Kin migrations", () => {
         [47, "SilentMessages"],
         [50, "LeadAccess"],
         [51, "ChatSharing"],
+        [52, "MemoryLabels"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT message_id, status FROM kin_messages ORDER BY seq`, [
         { message_id: "promotion:lead:L1", status: "dismissed" },
@@ -1025,7 +1036,10 @@ describe("Kin migrations", () => {
             ${JSON.stringify({ _tag: "human", personId: asker, memberId: "m" })}, 'running', 0, ${chat})`;
         yield* undoChatSharing;
         yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 51`;
-        assert.deepStrictEqual(yield* runKinMigrations(), [[51, "ChatSharing"]]);
+        assert.deepStrictEqual(yield* runKinMigrations(), [
+          [51, "ChatSharing"],
+          [52, "MemoryLabels"],
+        ]);
         assert.deepStrictEqual(
           yield* sql`SELECT chat_id, shared_at IS NOT NULL AS shared, shared_from_seq FROM kin_chats ORDER BY chat_id`,
           [
@@ -1093,6 +1107,7 @@ describe("Kin migrations", () => {
         [47, "SilentMessages"],
         [50, "LeadAccess"],
         [51, "ChatSharing"],
+        [52, "MemoryLabels"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT name FROM sqlite_master WHERE type = 'index' AND name GLOB 'idx_kin_wakeups_running*' ORDER BY name`,
@@ -1128,7 +1143,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 51");
+      assert.include(String(exit), "below the latest applied migration 52");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

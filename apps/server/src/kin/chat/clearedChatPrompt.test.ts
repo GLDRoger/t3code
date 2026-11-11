@@ -41,7 +41,11 @@ const memory = Layer.succeed(
     purgeInFlight: () => Effect.die("Unused"),
     historyGeneration: () => Effect.die("Unused"),
     readPromptSnapshot: () =>
-      Effect.succeed({ rules: "Invented rules", index: "- [fact] Launch day is Friday" }),
+      Effect.succeed({
+        rules: "Invented rules",
+        index: "- [fact] Launch day is Friday",
+        items: [],
+      }),
     ensureCheckouts: () => Effect.die("Unused"),
     prepareWakeup: () => Effect.die("Unused"),
     readIndex: () => Effect.die("Unused"),

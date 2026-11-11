@@ -101,6 +101,15 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
       before === undefined
         ? undefined
         : yield* parseFrontMatter(input.orgId, path, before).pipe(Effect.option);
+    const earlier = previous?._tag === "Some" ? previous.value.frontMatter : undefined;
+    // What a teammate's chat left stays theirs as written, and only the owner clears an item.
+    if (earlier?.shared_from !== undefined || fm.shared_from !== undefined)
+      failures.push(`${path} came from a chat other people read and is not a dream's to change`);
+    if (
+      earlier?.shared_by?.person !== fm.shared_by?.person ||
+      earlier?.shared_by?.at !== fm.shared_by?.at
+    )
+      failures.push(`${path} changes who let the team know it`);
     const kept =
       previous?._tag === "Some" &&
       previous.value.frontMatter.trust === fm.trust &&

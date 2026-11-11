@@ -5,11 +5,13 @@ import {
   AuthStandardClientScopes,
   KIN_MEMORY_CHANGES_CARD,
   KinAgentId,
+  KinChatId,
   KinMemoryChangeCard,
   KinMemoryItemId,
   KinMessageId,
   KinPersonId,
   KinWidgetId,
+  MemoryItemHead,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
@@ -50,6 +52,7 @@ const root = Kin.layer.pipe(
 );
 const decodeCard = Schema.decodeUnknownSync(KinMemoryChangeCard);
 const encodeCard = Schema.encodeSync(KinMemoryChangeCard);
+const decodeHead = Schema.decodeUnknownSync(MemoryItemHead);
 
 it.effect("only the owner can undo an item on an earlier memory change card", () =>
   Effect.gen(function* () {
@@ -126,14 +129,17 @@ it.effect("only the owner can undo an item on an earlier memory change card", ()
 
     const memory = Context.get(services, KinMemoryChanges);
     const undone: Array<Parameters<KinMemoryUndo>[1]> = [];
-    yield* memory.attachWriter((_org, input) =>
-      Effect.sync(() => {
-        undone.push(input);
-        return input.itemId === "short"
-          ? { _tag: "undone" as const, commit: "c".repeat(40) }
-          : { _tag: "stale" as const };
-      }),
-    );
+    yield* memory.attachWriter({
+      undo: (_org, input) =>
+        Effect.sync(() => {
+          undone.push(input);
+          return input.itemId === "short"
+            ? { _tag: "undone" as const, commit: "c".repeat(40) }
+            : { _tag: "stale" as const };
+        }),
+      relabel: () => Effect.die("Unused"),
+      items: () => Effect.succeed([]),
+    });
     const member = [{ _tag: "person" as const, orgId, personId: KinPersonId.make("priya") }];
     const input = { orgId, widgetId, itemId: KinMemoryItemId.make("short") };
     assert.include(yield* memory.undo(member, input).pipe(Effect.flip), {
@@ -156,6 +162,114 @@ it.effect("only the owner can undo an item on an earlier memory change card", ()
     assert.deepStrictEqual(
       decodeCard(marked.state).items.map(({ undo }) => undo),
       ["undone", "stale"],
+    );
+  }).pipe(Effect.scoped, Effect.provide(root)),
+);
+
+it.effect("only the owner sees what the leads remember and chooses who may know it", () =>
+  Effect.gen(function* () {
+    const kin = yield* Kin.KinServer;
+    const services = Option.getOrThrow(kin.services);
+    const sql = yield* SqlClient.SqlClient;
+    yield* pairSession(session.sessionId);
+    const [owner] = yield* Context.get(services, KinIdentity).resolve(session);
+    assert.isDefined(owner);
+    const { orgId } = owner;
+    const head = (id: string, fields: Partial<MemoryItemHead>) =>
+      decodeHead({
+        id,
+        orgId,
+        path: `claims/${id}.md`,
+        kind: "claim",
+        title: `Invented ${id}`,
+        status: "open",
+        due: null,
+        recorded_at: "2026-11-01T00:00:00.000Z",
+        valid_from: "2026-11-01T00:00:00.000Z",
+        invalid_at: null,
+        superseded_by: null,
+        review_by: null,
+        source: "fixture",
+        said_by: "fixture",
+        trust: "owner",
+        links: [],
+        ...fields,
+      });
+    let items = [
+      head("team", { sensitive: false }),
+      head("terms", { sensitive: true }),
+      head("legacy", {}),
+      head("gone", { sensitive: false, invalid_at: "2026-11-02T00:00:00.000Z" }),
+      head("said", {
+        sensitive: false,
+        trust: "member",
+        shared_from: {
+          person: KinPersonId.make("priya"),
+          chat: KinChatId.make("invented-room"),
+          name: "Invented person",
+          chat_name: "Invented room",
+        },
+      }),
+    ];
+    const relabelled: Array<{ itemId: string; sensitive: boolean; person: string }> = [];
+    const memory = Context.get(services, KinMemoryChanges);
+    yield* memory.attachWriter({
+      undo: () => Effect.die("Unused"),
+      items: () => Effect.succeed(items),
+      relabel: (_org, input) =>
+        Effect.sync(() => {
+          relabelled.push(input);
+          const next = { ...items.find((item) => item.id === input.itemId)! };
+          items = items.map((item) =>
+            item.id === input.itemId ? { ...next, sensitive: input.sensitive } : item,
+          );
+          return { head: { ...next, sensitive: input.sensitive } };
+        }),
+    });
+    const member = [{ _tag: "person" as const, orgId, personId: KinPersonId.make("priya") }];
+    const flip = { orgId, itemId: KinMemoryItemId.make("terms"), onlyOwner: false };
+    assert.include(yield* memory.list(member, { orgId }).pipe(Effect.flip), {
+      reason: "not_allowed",
+    });
+    assert.include(yield* memory.setVisibility(member, flip).pipe(Effect.flip), {
+      reason: "not_allowed",
+    });
+    assert.deepStrictEqual(relabelled, []);
+
+    const shown = () =>
+      memory
+        .list([owner], { orgId })
+        .pipe(
+          Effect.map(({ items }) =>
+            Object.fromEntries(items.map((item) => [item.itemId, item.onlyOwner])),
+          ),
+        );
+    // Unlabelled reads as the owner's alone; what is no longer true isn't listed.
+    assert.deepStrictEqual(yield* shown(), { team: false, terms: true, legacy: true, said: false });
+    assert.deepStrictEqual(
+      (yield* memory.list([owner], { orgId })).items.find((item) => item.itemId === "said")?.from,
+      { name: "Invented person", chatName: "Invented room" },
+    );
+
+    // "Only you" holds from the tap, even if the file's label lands later.
+    const team = { ...flip, itemId: KinMemoryItemId.make("team") };
+    const keep = yield* memory.setVisibility([owner], { ...team, onlyOwner: true });
+    assert.isTrue(keep.item.onlyOwner);
+    const held = sql`SELECT item_id FROM kin_memory_labels
+      WHERE org_id = ${orgId} AND held_at IS NOT NULL`;
+    assert.deepStrictEqual(yield* held, [{ item_id: "team" }]);
+    const share = yield* memory.setVisibility([owner], team);
+    assert.isFalse(share.item.onlyOwner);
+    assert.lengthOf(yield* held, 0);
+    assert.deepStrictEqual(relabelled, [
+      { itemId: "team", sensitive: true, person: owner.personId },
+      { itemId: "team", sensitive: false, person: owner.personId },
+    ]);
+    assert.include(
+      yield* memory
+        .setVisibility([owner], { ...flip, itemId: KinMemoryItemId.make("missing") })
+        .pipe(Effect.flip),
+      { reason: "not_found" },
     );
   }).pipe(Effect.scoped, Effect.provide(root)),
 );

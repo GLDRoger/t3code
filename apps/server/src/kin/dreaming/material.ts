@@ -20,6 +20,8 @@ export interface MaterialEntry {
   readonly trust: MemoryTrust;
   readonly at: string;
   readonly text: string;
+  /** An item nobody has said who may know: the dream labels it (`DreamRunner`). */
+  readonly unlabelled?: true;
 }
 
 const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(KinEvent));
@@ -60,7 +62,9 @@ const journalEntries = (text: string) => {
 
 /**
  * Originals in `(from, until]`: journal files, chat messages, worker reports and GitHub events.
- * Briefs, summaries and earlier dream output are never material. `full` adds every item.
+ * Briefs, summaries and earlier dream output are never material. `full` adds every item, and
+ * every night adds the items still unlabelled. What a chat other people read left in memory is
+ * never material: it stays that person's claim, and no dream folds it into the owner's notes.
  */
 export const collectMaterial = Effect.fn("DreamMaterial.collect")(
   function* (input: {
@@ -70,6 +74,8 @@ export const collectMaterial = Effect.fn("DreamMaterial.collect")(
     readonly full: boolean;
     readonly timeZone: string;
     readonly files: ReadonlyMap<string, string>;
+    /** Items the nightly pass has already labelled (`kin_memory_labels`). */
+    readonly classified?: ReadonlySet<string>;
   }) {
     const sql = yield* SqlClient.SqlClient;
     const { orgId, from, until } = input;
@@ -172,22 +178,27 @@ export const collectMaterial = Effect.fn("DreamMaterial.collect")(
             : yield* encodeJson(event.report),
       });
     }
-    if (input.full)
-      for (const [path, text] of [...input.files].toSorted(([a], [b]) => (a < b ? -1 : 1))) {
-        if (!itemFolders.some((folder) => path.startsWith(`${folder}/`))) continue;
-        const parsed = yield* parseFrontMatter(orgId, path, text).pipe(Effect.option);
-        if (parsed._tag === "None") continue;
-        // The owner's index leaves these out (`LeadPrompt`); so does a dream.
-        if (yield* askedWhereOthersRead(sql, orgId, parsed.value.frontMatter)) continue;
-        entries.push({
-          ref: `memory:${path}`,
-          kind: "item",
-          saidBy: parsed.value.frontMatter.said_by,
-          trust: parsed.value.frontMatter.trust,
-          at: parsed.value.frontMatter.recorded_at,
-          text,
-        });
-      }
+    for (const [path, text] of [...input.files].toSorted(([a], [b]) => (a < b ? -1 : 1))) {
+      if (!itemFolders.some((folder) => path.startsWith(`${folder}/`))) continue;
+      const parsed = yield* parseFrontMatter(orgId, path, text).pipe(Effect.option);
+      if (parsed._tag === "None") continue;
+      const unlabelled =
+        parsed.value.frontMatter.sensitive === undefined &&
+        input.classified?.has(parsed.value.frontMatter.id) !== true;
+      if (parsed.value.frontMatter.shared_from !== undefined || !(input.full || unlabelled))
+        continue;
+      // The owner's index leaves these out (`LeadPrompt`); so does a dream.
+      if (yield* askedWhereOthersRead(sql, orgId, parsed.value.frontMatter)) continue;
+      entries.push({
+        ref: `memory:${path}`,
+        kind: "item",
+        saidBy: parsed.value.frontMatter.said_by,
+        trust: parsed.value.frontMatter.trust,
+        at: parsed.value.frontMatter.recorded_at,
+        text,
+        ...(unlabelled ? { unlabelled: true as const } : {}),
+      });
+    }
     return { from: from === 0 ? null : iso(from), until: iso(until), entries };
   },
   Effect.mapError((cause) =>

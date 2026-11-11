@@ -12,6 +12,8 @@ import {
   RepoSlug,
   type KinAgentId,
   type KinMemoryItemId,
+  type KinPersonId,
+  type MemoryItemHead,
   type KinOrgId,
   type MemoryTrust,
 } from "@t3tools/contracts";
@@ -136,6 +138,11 @@ export interface MemoryChange {
   readonly content: string;
   readonly sourceEventId?: string;
   readonly supersedes?: string;
+  /**
+   * Only who may know the item changes (`LeadMemory.label`), so who asked doesn't have to outrank
+   * who first said it. `share` is the owner letting the team know it; nothing else unmarks one.
+   */
+  readonly label?: "keep" | "share";
 }
 type Failure =
   | PersistenceSqlError
@@ -165,6 +172,8 @@ export class MemoryWriter extends Context.Service<
       wakeupId: string,
       lines: ReadonlyArray<string>,
     ) => Effect.Effect<void, Failure>;
+    /** Whether the wake-up has staged an item or a journal line that a commit would save. */
+    readonly staged: (orgId: KinOrgId, wakeupId: string) => Effect.Effect<boolean, Failure>;
     readonly discard: (orgId: KinOrgId, wakeupId: string) => Effect.Effect<void, Failure>;
     readonly commitWakeup: (
       orgId: KinOrgId,
@@ -194,6 +203,18 @@ export class MemoryWriter extends Context.Service<
       orgId: KinOrgId,
       input: MemoryUndo,
     ) => Effect.Effect<MemoryUndoResult, Failure>;
+    /**
+     * The owner's own choice of who may know an item, outside any wake-up: one commit on the
+     * default branch that sets its label and, when the team may now know it, who decided and when.
+     */
+    readonly relabel: (
+      orgId: KinOrgId,
+      input: {
+        readonly itemId: KinMemoryItemId;
+        readonly sensitive: boolean;
+        readonly person: KinPersonId;
+      },
+    ) => Effect.Effect<{ readonly head: MemoryItemHead }, Failure>;
   }
 >()("t3/kin/memory/MemoryWriter") {}
 const isRepoSlug = Schema.is(RepoSlug);
@@ -622,6 +643,70 @@ const make = Effect.gen(function* () {
     yield* recovery.notify({ orgId, branch: config.defaultBranch ?? "main", reason });
     return yield* new MemorySyncConflict({ orgId, operation: "push", reason });
   });
+  /** One item changed by the owner outside a wake-up, committed and landed as a wake-up's is. */
+  const ownerCommit = Effect.fn("MemoryWriter.ownerCommit")(function* (
+    orgId: KinOrgId,
+    input: {
+      readonly writer: string;
+      readonly repoUrl: string;
+      readonly branch: string;
+      readonly head: string;
+      readonly headFiles: ReadonlyMap<string, Buffer>;
+      readonly path: string;
+      readonly content: string;
+      readonly message: string;
+    },
+  ) {
+    const { writer, branch, head, headFiles } = input;
+    const onMain = branch === (config.defaultBranch ?? "main");
+    const changes = new Map([[input.path, Buffer.from(input.content)]]);
+    const regular = yield* regularPaths(orgId, writer, head);
+    const combined = new Map(
+      [...headFiles, ...changes]
+        .filter(([path]) => regular.has(path) || changes.has(path))
+        .map(([path, bytes]) => [path, bytes.toString("utf8")]),
+    );
+    changes.set("INDEX.md", Buffer.from(yield* indexFor(orgId, combined)));
+    const findings = yield* scanner.scan({
+      orgId,
+      files: [...changes].map(([path, content]) => ({ path, content })),
+    });
+    if (findings.length) return yield* new MemorySecretBlocked({ orgId, findings });
+    const commit = yield* writeCommit(orgId, writer, head, headFiles, changes, input.message);
+    if (onMain && mainWrites === "pull_request") {
+      yield* git(orgId, writer, ["update-ref", `refs/heads/${branch}`, commit, head]);
+      yield* memory.record(orgId, branch, head, commit);
+      yield* lander.signal(orgId);
+    } else {
+      // Push first, so a rejected push leaves the local branch where it was.
+      yield* git(orgId, writer, [
+        "push",
+        "--",
+        input.repoUrl,
+        `${commit}:refs/heads/${branch}`,
+      ]).pipe(
+        Effect.mapError(
+          () =>
+            new MemorySyncConflict({
+              orgId,
+              operation: "push",
+              reason: "Push rejected; retry or reconcile remote",
+            }),
+        ),
+      );
+      yield* git(orgId, writer, ["update-ref", `refs/heads/${branch}`, commit, head]);
+      yield* memory.record(orgId, branch, head, commit);
+    }
+    yield* memory.rebuildCache(orgId).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("Could not refresh memory cache after an owner change", {
+          orgId,
+          errorTag: error._tag,
+        }),
+      ),
+    );
+    return commit;
+  });
   const stageChange = Effect.fn("MemoryWriter.stageChange")(function* (
     orgId: KinOrgId,
     wakeupId: string,
@@ -700,6 +785,16 @@ const make = Effect.gen(function* () {
       else items[index] = head;
       bodies.set(file, staged.body);
     }
+    const labelled = items.find((item) => item.id === fm.id);
+    if (
+      labelled !== undefined &&
+      labelled.sensitive !== false &&
+      fm.sensitive === false &&
+      change.label !== "share"
+    )
+      return yield* new MemoryWriteRejected({
+        reason: "Only the owner lets the team know an item",
+      });
     const superseded =
       change.supersedes === undefined
         ? undefined
@@ -737,7 +832,7 @@ const make = Effect.gen(function* () {
         const rank = (trust: string) => ["external", "agent", "member", "owner"].indexOf(trust);
         if (
           item.id === fm.id &&
-          (rank(source.trust) < rank(item.trust) ||
+          ((change.label === undefined && rank(source.trust) < rank(item.trust)) ||
             (fm.status !== item.status &&
               !(item.status === "open" && ["done", "cancelled"].includes(fm.status))))
         )
@@ -756,6 +851,8 @@ const make = Effect.gen(function* () {
             "said_by",
             "source",
             "source_event",
+            "sensitive",
+            "shared_by",
           ]);
           if (
             source.kind === "owner_check" &&
@@ -863,6 +960,15 @@ const make = Effect.gen(function* () {
             if ((yield* ownCommit(orgId, writer, head, ctx)) !== undefined) return;
           }
           state.lines.push(...lines);
+        }),
+      ),
+    ),
+    staged: Effect.fn("MemoryWriter.staged")((orgId, wakeupId) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const { state } = yield* session(orgId, wakeupId);
+          return state.files.size + state.lines.length > 0;
         }),
       ),
     ),
@@ -1240,47 +1346,66 @@ const make = Effect.gen(function* () {
           const { frontMatter } = yield* parseFrontMatter(orgId, input.path, restored);
           if (frontMatter.id !== input.itemId)
             return yield* new MemoryWriteRejected({ reason: "Invalid undo target" });
-          const changes = new Map([[input.path, Buffer.from(restored)]]);
-          const regular = yield* regularPaths(orgId, writer, head);
-          const combined = new Map(
-            [...headFiles, ...changes]
-              .filter(([path]) => regular.has(path) || changes.has(path))
-              .map(([path, bytes]) => [path, bytes.toString("utf8")]),
-          );
-          changes.set("INDEX.md", Buffer.from(yield* indexFor(orgId, combined)));
-          const findings = yield* scanner.scan({
-            orgId,
-            files: [...changes].map(([path, content]) => ({ path, content })),
+          const commit = yield* ownerCommit(orgId, {
+            writer,
+            repoUrl: repo.repoUrl,
+            branch: input.branch,
+            head,
+            headFiles,
+            path: input.path,
+            content: restored,
+            message: `kin(${input.agentId}): owner undo ${input.itemId}\n\nKin-Undo: ${input.commit}\n`,
           });
-          if (findings.length) return yield* new MemorySecretBlocked({ orgId, findings });
-          const message = `kin(${input.agentId}): owner undo ${input.itemId}\n\nKin-Undo: ${input.commit}\n`;
-          const commit = yield* writeCommit(orgId, writer, head, headFiles, changes, message);
-          const conflict = (reason: string) =>
-            new MemorySyncConflict({ orgId, operation: "push", reason });
-          if (onMain && mainWrites === "pull_request") {
-            yield* git(orgId, writer, ["update-ref", `refs/heads/${input.branch}`, commit, head]);
-            yield* memory.record(orgId, input.branch, head, commit);
-            yield* lander.signal(orgId);
-          } else {
-            // Push first, so a rejected push leaves the local branch where it was.
-            yield* git(orgId, writer, [
-              "push",
-              "--",
-              repo.repoUrl,
-              `${commit}:refs/heads/${input.branch}`,
-            ]).pipe(Effect.mapError(() => conflict("Push rejected; retry or reconcile remote")));
-            yield* git(orgId, writer, ["update-ref", `refs/heads/${input.branch}`, commit, head]);
-            yield* memory.record(orgId, input.branch, head, commit);
-          }
-          yield* memory.rebuildCache(orgId).pipe(
-            Effect.catch((error) =>
-              Effect.logWarning("Could not refresh memory cache after undo", {
-                orgId,
-                errorTag: error._tag,
-              }),
-            ),
-          );
           return { _tag: "undone", commit } as const;
+        }),
+      ),
+    ),
+    relabel: Effect.fn("MemoryWriter.relabel")((orgId, input) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const main = config.defaultBranch ?? "main";
+          const { writer } = yield* validate(orgId);
+          yield* refuseDuringPurge(orgId);
+          const repo = yield* repoFor(orgId);
+          if (mainWrites === "refused") return yield* refuseMainWrite(orgId);
+          if (mainWrites === "pull_request") yield* refuseOffGitHub(orgId);
+          const item = yield* memory.readItemQuietly(orgId, input.itemId);
+          const head = yield* branchHead(orgId, writer, main);
+          const headFiles = yield* filesAt(orgId, writer, head);
+          const current = headFiles.get(item.head.path);
+          if (current === undefined) return yield* new MemoryNotFound({ orgId, id: input.itemId });
+          const { frontMatter, body } = yield* parseFrontMatter(
+            orgId,
+            item.head.path,
+            current.toString("utf8"),
+          );
+          if (frontMatter.id !== input.itemId)
+            return yield* new MemoryNotFound({ orgId, id: input.itemId });
+          const { shared_by: _before, ...kept } = frontMatter;
+          const next = input.sensitive
+            ? { ...kept, sensitive: true }
+            : {
+                ...kept,
+                sensitive: false,
+                shared_by: {
+                  person: input.person,
+                  at: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
+                },
+              };
+          const labelled = { ...next, orgId, path: item.head.path };
+          if (frontMatter.sensitive === input.sensitive) return { head: labelled };
+          yield* ownerCommit(orgId, {
+            writer,
+            repoUrl: repo.repoUrl,
+            branch: main,
+            head,
+            headFiles,
+            path: item.head.path,
+            content: render(next, body),
+            message: `kin: owner ${input.sensitive ? "keeps" : "shares"} ${input.itemId}\n`,
+          });
+          return { head: labelled };
         }),
       ),
     ),

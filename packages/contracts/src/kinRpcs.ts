@@ -255,6 +255,8 @@ export const KIN_RPC_AGGREGATES = {
   "kin.levels.lower": "kin-levels",
   "kin.levels.raise": "kin-levels",
   "kin.memory.undo": "kin-memory",
+  "kin.memory.list": "kin-memory",
+  "kin.memory.setVisibility": "kin-memory",
   "kin.push.registerDevice": "kin-push",
   "kin.push.unregisterDevice": "kin-push",
   "kin.push.watch": "kin-push",

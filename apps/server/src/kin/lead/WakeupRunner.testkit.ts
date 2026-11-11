@@ -568,7 +568,7 @@ function parts(options: HarnessOptions) {
             read: "/private/tmp",
           })),
       ensureCheckouts: () => Effect.succeed({ writer: "/private/tmp", read: "/private/tmp" }),
-      readPromptSnapshot: () => Effect.succeed({ rules: "rules", index: "index" }),
+      readPromptSnapshot: () => Effect.succeed({ rules: "rules", index: "index", items: [] }),
     }),
   );
   const stack = Layer.mergeAll(

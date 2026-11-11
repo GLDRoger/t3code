@@ -257,7 +257,15 @@ export class Memory extends Context.Service<
       orgId: KinOrgId,
       expectedHead: string,
       view?: LeadView,
-    ) => Effect.Effect<{ readonly rules: string; readonly index: string }, MemoryFailure>;
+    ) => Effect.Effect<
+      {
+        readonly rules: string;
+        readonly index: string;
+        /** Every item at that head, for a prompt that may carry only some of them. */
+        readonly items: ReadonlyArray<MemoryItemHead>;
+      },
+      MemoryFailure
+    >;
     readonly readIndex: (orgId: KinOrgId) => Effect.Effect<string, MemoryFailure>;
     readonly readRules: (orgId: KinOrgId) => Effect.Effect<string, MemoryFailure>;
     readonly readItem: (
@@ -2060,7 +2068,7 @@ const make = Effect.gen(function* () {
               operation: "promptSnapshot",
               reason: "Missing committed prompt rules",
             });
-          return { rules, index };
+          return { rules, index, items: snapshot.items.map((item) => item.head) };
         }),
       ),
     ),
