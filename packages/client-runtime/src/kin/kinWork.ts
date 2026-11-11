@@ -95,7 +95,7 @@ const isMe = (who: KinWorkPrincipal, names: KinWorkNames) =>
 
 /** "You", a name, or a plain stand-in for someone the directory no longer lists. */
 export function kinWorkName(who: KinWorkPrincipal, names: KinWorkNames, you = "You"): string {
-  if (who._tag === "agent") return names.agents.get(who.agentId) ?? "A lead";
+  if (who._tag === "agent") return names.agents.get(who.agentId) ?? "An agent";
   return isMe(who, names) ? you : (names.people.get(who.personId) ?? "A teammate");
 }
 
@@ -301,7 +301,7 @@ export function kinWorkOverview(
 
 /** The second line of the way in: what most needs a look. */
 export function kinWorkEntrySummary(summary: KinWorkSummary | null): string {
-  if (summary === null) return "What you and your leads are working on";
+  if (summary === null) return "What you and your agents are working on";
   if (summary.open === 0) return "Nothing open";
   const parts = [
     summary.late > 0 ? `${summary.late} late` : null,
@@ -565,9 +565,9 @@ export function kinWorkNothing(
         title: title("Nothing open"),
         detail:
           who === null
-            ? "Add a task, or ask a lead in chat to keep track of something. Give one to a lead and it gets on with it."
+            ? "Add a task, or ask an agent in chat to keep track of something. Give one to an agent and it gets on with it."
             : person === null
-              ? `Add a task for ${who}, or ask a lead to.`
+              ? `Add a task for ${who}, or ask an agent to.`
               : `Tasks given to ${person} show up here.`,
         offerNew: true,
       };
@@ -761,7 +761,7 @@ export function kinWorkChangeText(
   const field = (name: string) => change.fields.find((held) => held.field === name);
   if (change.kind === "created") {
     return change.via === "import"
-      ? "Brought over from your leads' notes"
+      ? "Brought over from your agents' notes"
       : `${who} ${ADDED[list]}`;
   }
   if (change.kind === "linked") {
@@ -867,7 +867,7 @@ function linkView(
       return {
         key,
         kind: "worker",
-        label: link.label ?? "Work a lead started",
+        label: link.label ?? "Work an agent started",
         detail:
           (run?.running ?? working)
             ? "Running now"
@@ -907,7 +907,7 @@ function linkView(
       return {
         key,
         kind: "note",
-        label: "From what your leads remember",
+        label: "From what your agents remember",
         detail: null,
         open: null,
         thread: null,
@@ -979,7 +979,7 @@ export function kinWorkItemView(
     remarks: [
       // A host that can't take the answer here still takes it in chat.
       suggested && !editable
-        ? "A lead picked this up on its own. Tell it in chat whether to keep it."
+        ? "An agent picked this up on its own. Tell it in chat whether to keep it."
         : null,
       item.side === "theirs"
         ? `${item.party?.title ?? "The other side"} owes this. Whoever has it chases it.`
@@ -997,7 +997,7 @@ export function kinWorkItemView(
     editable,
     closed: isClosed,
     suggestion: suggested
-      ? `${item.createdBy._tag === "agent" ? kinWorkActorName(item.createdBy, names) : "A lead"} suggested this task.`
+      ? `${item.createdBy._tag === "agent" ? kinWorkActorName(item.createdBy, names) : "An agent"} suggested this task.`
       : null,
     takeBack: !isClosed && !isMe(item.owner, names),
     leadNote: !lead
@@ -1068,8 +1068,8 @@ export interface KinWorkAssignee {
 
 export const KIN_WORK_ASSIGN = {
   title: "Give this to",
-  leads: "Leads",
-  leadsHint: "A lead starts on it right away and tells you in your chat with it when it's done.",
+  leads: "Agents",
+  leadsHint: "An agent starts on it right away and tells you in your chat with it when it's done.",
   people: "People",
 };
 

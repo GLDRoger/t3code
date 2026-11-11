@@ -44,7 +44,7 @@ function PermittedNewLeadButton(props: { readonly target: KinLeadFormTarget }) {
   if (!canAddLead && !canAddGroup && !canAddTeammate) return null;
   return (
     <Menu>
-      <MenuTrigger render={<SidebarHeaderIconButton label="New group, lead or teammate" />}>
+      <MenuTrigger render={<SidebarHeaderIconButton label="New group, agent or teammate" />}>
         <PlusIcon />
       </MenuTrigger>
       <MenuPopup align="end">
@@ -61,7 +61,7 @@ function PermittedNewLeadButton(props: { readonly target: KinLeadFormTarget }) {
         {canAddLead ? (
           <MenuItem onClick={() => openKinLeadForm(props.target)}>
             <SparklesIcon />
-            New lead
+            New agent
           </MenuItem>
         ) : null}
         {canAddTeammate ? (

@@ -409,7 +409,7 @@ describe("worker publish card", () => {
       "The repository is public: anyone can read what Kin pushes.",
       "This work involves something marked sensitive in Work.",
       "Branch kin/worker/wk-1, commit aaaaaaa.",
-      'Pull request title, from your lead (unchecked): "Fix the flaky test"',
+      'Pull request title, from your agent (unchecked): "Fix the flaky test"',
       "src/flaky.test.ts +3 −1",
       "logo.png (binary)",
       "and 2 more files.",

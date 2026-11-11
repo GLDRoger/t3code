@@ -222,7 +222,7 @@ export function kinClientsNothing(filter: KinClientsFilter): {
   return {
     title: "No clients yet",
     detail:
-      "Add a client or vendor to keep track of what you owe them and what they owe you. Or paste a contract into a chat with a lead and ask it to set the client up.",
+      "Add a client or vendor to keep track of what you owe them and what they owe you. Or paste a contract into a chat with an agent and ask it to set the client up.",
     offerNew: true,
   };
 }
@@ -455,7 +455,7 @@ export function kinProjectsNothing(filter: KinProjectsFilter): {
   return {
     title: "No projects yet",
     detail:
-      "Add a project to see at a glance how it's going, what's blocked and what's due next. Or ask a lead to break a piece of work into tasks.",
+      "Add a project to see at a glance how it's going, what's blocked and what's due next. Or ask an agent to break a piece of work into tasks.",
     offerNew: true,
   };
 }

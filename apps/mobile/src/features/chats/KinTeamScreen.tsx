@@ -155,7 +155,7 @@ function KinTeamBody(target: KinTeamTarget) {
           ) : (
             <>
               {team.edits.problem === null ? null : <ErrorBanner message={team.edits.problem} />}
-              <ListSection footer="Teammates chat with you and with the leads and groups you add them to. They can't see your code or settings.">
+              <ListSection footer="Teammates chat with you and with the agents and groups you add them to. They can't see your code or settings.">
                 {rows.map((row, index) => (
                   <View
                     key={row.key}

@@ -153,7 +153,7 @@ export function KinChatList() {
         <Empty size="compact">
           <EmptyHeader>
             <EmptyTitle>No chats yet</EmptyTitle>
-            <EmptyDescription>Chats with your leads show up here.</EmptyDescription>
+            <EmptyDescription>Chats with your agents show up here.</EmptyDescription>
           </EmptyHeader>
         </Empty>
       ) : (

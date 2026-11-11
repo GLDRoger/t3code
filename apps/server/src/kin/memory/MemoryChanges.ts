@@ -104,7 +104,7 @@ const encodeCard = Schema.encodeEffect(KinMemoryChangeCard);
 const refused = (reason: KinChatError["reason"], message: string) =>
   new KinChatError({ reason, message });
 const notFound = refused("not_found", "Kin record not found.");
-const notAllowed = refused("not_allowed", "Only the lead's owner can undo its memory changes.");
+const notAllowed = refused("not_allowed", "Only the agent's owner can undo its memory changes.");
 const ownerOnly = refused("not_allowed", "Only the owner can see or change this.");
 const unavailable = refused("unavailable", "Kin memory is unavailable. Try again.");
 const stale = refused("conflict", "This changed again since, so it wasn't undone.");

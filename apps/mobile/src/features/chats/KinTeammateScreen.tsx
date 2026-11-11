@@ -190,8 +190,8 @@ function KinTeammateDetails(props: {
       {shown === null ? null : <ErrorBanner message={shown} />}
       {teammate.personId === null ? (
         <ListSection
-          title="Leads"
-          footer={`Once ${teammate.name} joins, open a lead's details to let them message it.`}
+          title="Agents"
+          footer={`Once ${teammate.name} joins, open an agent's details to let them message it.`}
         >
           <View className="px-4 py-3">
             <Text textRole="body" className="text-foreground-muted">
@@ -254,20 +254,20 @@ function KinTeammateLeads(props: {
   const leads = Option.getOrNull(AsyncResult.value(result))?.leads ?? null;
   return (
     <ListSection
-      title="Leads"
+      title="Agents"
       footer={
         leads === null || leads.length === 0
           ? undefined
-          : `Open a lead to change whether ${props.name} can message it.`
+          : `Open an agent to change whether ${props.name} can message it.`
       }
     >
       {leads === null || leads.length === 0 ? (
         <View className="px-4 py-3">
           <Text textRole="body" className="text-foreground-muted">
             {leads !== null
-              ? "You have no leads yet."
+              ? "You have no agents yet."
               : AsyncResult.isFailure(result)
-                ? "Couldn't load your leads."
+                ? "Couldn't load your agents."
                 : "Loading…"}
           </Text>
         </View>

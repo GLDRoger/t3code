@@ -236,7 +236,7 @@ function KinOwnLead(props: {
               appAtomRegistry.set(kinLeadFormAtom, { environmentId, orgId: lead.orgId, lead });
             }}
           >
-            Edit lead
+            Edit agent
           </Button>
         ) : null}
       </Section>
@@ -349,7 +349,7 @@ function KinLeadAccess(props: {
       {allowed === null || allowed.length === 0 ? null : (
         <p className="text-xs text-muted-foreground">
           {(lead.intro ?? "").trim() === ""
-            ? "They see its name only. Add what teammates see in Edit lead."
+            ? "They see its name only. Add what teammates see in Edit agent."
             : `They see its name and this: ${(lead.intro ?? "").trim()}`}
         </p>
       )}

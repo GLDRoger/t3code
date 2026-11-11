@@ -1130,7 +1130,7 @@ const make = Effect.gen(function* () {
       }),
     );
     const key = `kin-worker-stop:${input.workerId}:${ctx.wakeupId}:${record.startedAt}`;
-    const reason = input.reason ?? "Stopped by the Kin lead.";
+    const reason = input.reason ?? "Stopped by the Kin agent.";
     // A worker on this server: T3 interrupts its thread and its follower records the end.
     if (record.environmentId === null && record.threadId === localThreadId(input.workerId))
       return {

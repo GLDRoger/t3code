@@ -401,10 +401,10 @@ function KinTeammateSheet(props: {
           </div>
         </SheetHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
-          <Section title="Leads">
+          <Section title="Agents">
             {teammate.personId === null ? (
               <p className="text-sm text-muted-foreground">
-                Once {teammate.name} joins, open a lead's details to let them message it.
+                Once {teammate.name} joins, open an agent's details to let them message it.
               </p>
             ) : (
               <KinTeammateLeads
@@ -503,12 +503,12 @@ function KinTeammateLeads(props: {
   if (leads === null) {
     return (
       <p className="text-sm text-muted-foreground">
-        {AsyncResult.isFailure(result) ? "Couldn't load your leads." : "Loading…"}
+        {AsyncResult.isFailure(result) ? "Couldn't load your agents." : "Loading…"}
       </p>
     );
   }
   if (leads.length === 0) {
-    return <p className="text-sm text-muted-foreground">You have no leads yet.</p>;
+    return <p className="text-sm text-muted-foreground">You have no agents yet.</p>;
   }
   return (
     <>
@@ -520,7 +520,7 @@ function KinTeammateLeads(props: {
         ))}
       </ul>
       <p className="text-xs text-muted-foreground">
-        Open a lead to change whether {props.name} can message it.
+        Open an agent to change whether {props.name} can message it.
       </p>
     </>
   );

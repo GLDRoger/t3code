@@ -59,11 +59,11 @@ export function KinLeadFormScreen({ route }: StaticScreenProps<KinLeadFormParams
     (route.params.agentId !== undefined && !agentId)
   ) {
     return (
-      <FormFrame title="Lead" onClose={() => navigation.goBack()}>
+      <FormFrame title="Agent" onClose={() => navigation.goBack()}>
         <EmptyState
           variant="plain"
-          title="This link doesn't name a lead"
-          detail="Open a lead from its chat."
+          title="This link doesn't name an agent"
+          detail="Open an agent from its chat."
         />
       </FormFrame>
     );
@@ -115,7 +115,7 @@ function EditLead(props: {
     return <LeadForm environmentId={props.environmentId} orgId={props.orgId} lead={lead} />;
   }
   return (
-    <FormFrame title="Edit lead" onClose={() => navigation.goBack()}>
+    <FormFrame title="Edit agent" onClose={() => navigation.goBack()}>
       {AsyncResult.isInitial(result) ? (
         <View className="items-center py-12">
           <AppActivityIndicator />
@@ -123,8 +123,8 @@ function EditLead(props: {
       ) : (
         <EmptyState
           variant="plain"
-          title="Couldn't load this lead"
-          detail="Close this and open the lead again."
+          title="Couldn't load this agent"
+          detail="Close this and open the agent again."
         />
       )}
     </FormFrame>
@@ -166,7 +166,7 @@ function LeadForm(props: {
     }
     if (saving) return;
     Dialog.alert(
-      creating ? "Discard this lead?" : "Discard changes?",
+      creating ? "Discard this agent?" : "Discard changes?",
       "What you typed will be lost.",
       [
         { text: "Keep editing", style: "cancel" },
@@ -255,7 +255,7 @@ function LeadForm(props: {
   const left = KIN_LEAD_CHARTER_MAX - draft.charter.length;
   return (
     <FormFrame
-      title={creating ? "New lead" : "Edit lead"}
+      title={creating ? "New agent" : "Edit agent"}
       onClose={() => navigation.goBack()}
       confirm={{
         label: creating ? "Create" : "Save",
@@ -268,8 +268,8 @@ function LeadForm(props: {
       {allowed ? null : (
         <Text textRole="footnote" className="px-2 text-foreground-muted">
           {creating
-            ? "This phone isn't allowed to add leads on this server."
-            : "This phone isn't allowed to change leads on this server."}
+            ? "This phone isn't allowed to add agents on this server."
+            : "This phone isn't allowed to change agents on this server."}
         </Text>
       )}
       <View className="gap-2">
@@ -341,7 +341,7 @@ function LeadForm(props: {
         </ListSection>
         <Note
           problem={problem?.field === "intro" ? problem.text : null}
-          hint="Optional. People you let message this lead see this and nothing above."
+          hint="Optional. People you let message this agent see this and nothing above."
         />
       </View>
     </FormFrame>

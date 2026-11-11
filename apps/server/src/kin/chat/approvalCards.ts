@@ -53,7 +53,7 @@ const noticeBody = (action: KinPendingAction) => {
     case "pull_request":
       return `Approval needed: merge ${action.target.repo} #${action.target.number}.`;
     case "level":
-      return "Approval needed: change what a lead may do.";
+      return "Approval needed: change what an agent may do.";
     default:
       return "Approval needed.";
   }

@@ -297,7 +297,7 @@ export function KinChatsCatalog() {
           onOpenChat={(chatId) => setNote(`Opens chat ${chatId}`)}
         />
       </View>
-      <AppText className="text-lg font-t3-semibold">Kin lead details</AppText>
+      <AppText className="text-lg font-t3-semibold">Kin agent details</AppText>
       <View className="gap-5 rounded-[24px] border border-border bg-screen p-4">
         <KinLeadProfileView lead={LEAD_FIXTURE} modelName="Claude Opus 4.6" />
       </View>

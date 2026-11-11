@@ -187,7 +187,7 @@ const mayCreate = Effect.fn("KinLeadProvision.mayCreate")(function* (person: Per
   if (person.orgId === owner.orgId && person.personId === owner.personId) return;
   return yield* refuse(
     "not_owner",
-    `Person ${person.personId} isn't the owner of Kin org ${owner.orgId}. Only the owner can create leads.`,
+    `Person ${person.personId} isn't the owner of Kin org ${owner.orgId}. Only the owner can create agents.`,
   );
 });
 
@@ -197,7 +197,7 @@ const defaultModels = Effect.fn("KinLeadProvision.defaultModels")(function* (org
   if (first === undefined)
     return yield* refuse(
       "no_models",
-      "This org has no lead to copy models from. Pass --strong and --cheap.",
+      "This org has no agent to copy models from. Pass --strong and --cheap.",
     );
   return first.models;
 });
@@ -252,7 +252,7 @@ export const create = Effect.fn("KinLeadProvision.create")(function* (input: Cre
         charter: input.charter,
         createdByPersonId: person.personId,
       });
-      if (!inserted) return yield* refuse("conflict", `Lead ${agentId} could not be recorded.`);
+      if (!inserted) return yield* refuse("conflict", `Agent ${agentId} could not be recorded.`);
       const intro = input.intro?.trim() ?? "";
       if (intro !== "")
         yield* sql`UPDATE kin_leads SET public_intro = ${intro}
@@ -261,7 +261,7 @@ export const create = Effect.fn("KinLeadProvision.create")(function* (input: Cre
         );
       const [lead] = yield* leadsIn(orgId, { liveOnly: true, agentId });
       if (lead === undefined)
-        return yield* refuse("conflict", `Lead ${agentId} could not be recorded.`);
+        return yield* refuse("conflict", `Agent ${agentId} could not be recorded.`);
       return { _tag: "created" as const, lead };
     }),
   );
@@ -285,15 +285,15 @@ export const setWorkerProjects = Effect.fn("KinLeadProvision.setWorkerProjects")
     Effect.gen(function* () {
       const [lead] = yield* leadsIn(orgId, { liveOnly: false, agentId });
       if (lead === undefined)
-        return yield* refuse("not_found", `Org ${orgId} has no lead ${agentId}.`);
+        return yield* refuse("not_found", `Org ${orgId} has no agent ${agentId}.`);
       if (lead.retiredAt !== null)
-        return yield* refuse("retired", `Lead ${agentId} was retired at ${lead.retiredAt}.`);
+        return yield* refuse("retired", `Agent ${agentId} was retired at ${lead.retiredAt}.`);
       const projects = yield* knownProjects(workerProjects);
       const json = yield* encodeProjects(projects).pipe(Effect.orDie);
       const changed = yield* sql`UPDATE kin_leads SET worker_projects_json = ${json}
           WHERE org_id = ${orgId} AND agent_id = ${agentId} RETURNING agent_id`;
       if (changed.length === 0)
-        return yield* refuse("conflict", `Lead ${agentId} changed while updating.`);
+        return yield* refuse("conflict", `Agent ${agentId} changed while updating.`);
       return { _tag: "updated" as const, lead: { ...lead, workerProjects: projects } };
     }),
   );
@@ -321,9 +321,9 @@ const change = Effect.fn("KinLeadProvision.change")(function* (
   const live = yield* leadsIn(orgId, { liveOnly: false });
   const lead = live.find((entry) => entry.agentId === agentId);
   if (lead === undefined || (ownedBy !== undefined && lead.ownerPersonId !== ownedBy))
-    return yield* refuse("not_found", `Org ${orgId} has no lead ${agentId}.`);
+    return yield* refuse("not_found", `Org ${orgId} has no agent ${agentId}.`);
   if (lead.retiredAt !== null)
-    return yield* refuse("retired", `Lead ${agentId} was retired at ${lead.retiredAt}.`);
+    return yield* refuse("retired", `Agent ${agentId} was retired at ${lead.retiredAt}.`);
   const next = {
     name: fields.name ?? lead.name,
     domain: fields.domain ?? lead.domain,
@@ -342,13 +342,13 @@ const change = Effect.fn("KinLeadProvision.change")(function* (
   if (twin !== undefined)
     return yield* refuse(
       "conflict",
-      `Another lead is already called ${next.name} in ${next.domain}.`,
+      `Another agent is already called ${next.name} in ${next.domain}.`,
     );
   const changed = yield* sql`UPDATE kin_leads SET name = ${next.name}, domain = ${next.domain},
       charter = ${next.charter}, public_intro = ${next.intro}
     WHERE org_id = ${orgId} AND agent_id = ${agentId} RETURNING agent_id`;
   if (changed.length === 0)
-    return yield* refuse("conflict", `Lead ${agentId} changed while updating.`);
+    return yield* refuse("conflict", `Agent ${agentId} changed while updating.`);
   // Chats show the agent's name, so both rows carry it.
   yield* sql`UPDATE kin_agents SET display_name = ${next.name}
     WHERE org_id = ${orgId} AND agent_id = ${agentId} AND role = 'lead' RETURNING agent_id`;
@@ -522,7 +522,7 @@ export const update = Effect.fn("KinLeadProvision.update")(function* (input: {
   const person: PersonIdentity = yield* creatorFor(input.editor);
   yield* mayCreate(person);
   if (person.orgId !== input.orgId)
-    return yield* refuse("not_found", `Org ${input.orgId} has no lead ${input.agentId}.`);
+    return yield* refuse("not_found", `Org ${input.orgId} has no agent ${input.agentId}.`);
   return yield* transaction(
     sql,
     "KinLeadProvision.update",
@@ -559,7 +559,7 @@ const retirable = Effect.fn("KinLeadProvision.retirable")(function* (input: {
   readonly agentId: KinAgentId;
 }) {
   const { owner } = yield* KinIdentity;
-  const missing = refuse("not_found", `Org ${input.orgId} has no lead ${input.agentId}.`);
+  const missing = refuse("not_found", `Org ${input.orgId} has no agent ${input.agentId}.`);
   const person: PersonIdentity | undefined =
     input.by._tag === "host" ? undefined : yield* creatorFor(input.by);
   const orgId = person?.orgId ?? owner.orgId;
@@ -612,7 +612,7 @@ export const retire = Effect.fn("KinLeadProvision.retire")(function* (input: {
             AND retired_at IS NULL
           RETURNING agent_id`;
       if (changed.length === 0)
-        return yield* refuse("conflict", `Lead ${lead.agentId} changed while retiring.`);
+        return yield* refuse("conflict", `Agent ${lead.agentId} changed while retiring.`);
       const stopped = yield* Retirement.retire({
         orgId: lead.orgId,
         agentId: lead.agentId,
@@ -667,7 +667,7 @@ export const restore = Effect.fn("KinLeadProvision.restore")(function* (input: {
       if (twin !== undefined)
         return yield* refuse(
           "conflict",
-          `Another lead is already called ${lead.name} in ${lead.domain}.`,
+          `Another agent is already called ${lead.name} in ${lead.domain}.`,
         );
       const changed = yield* sql`UPDATE kin_agents
           SET retired_at = NULL, retired_by_person_id = NULL
@@ -675,7 +675,7 @@ export const restore = Effect.fn("KinLeadProvision.restore")(function* (input: {
             AND retired_at IS NOT NULL
           RETURNING agent_id`;
       if (changed.length === 0)
-        return yield* refuse("conflict", `Lead ${lead.agentId} changed while restoring.`);
+        return yield* refuse("conflict", `Agent ${lead.agentId} changed while restoring.`);
       yield* Retirement.restore({
         orgId: lead.orgId,
         agentId: lead.agentId,
@@ -709,7 +709,7 @@ const ownedLead = Effect.fn("KinLeadProvision.ownedLead")(function* (input: {
 }) {
   const person: PersonIdentity = yield* creatorFor(input.editor);
   yield* mayCreate(person);
-  const missing = refuse("not_found", `Org ${input.orgId} has no lead ${input.agentId}.`);
+  const missing = refuse("not_found", `Org ${input.orgId} has no agent ${input.agentId}.`);
   if (person.orgId !== input.orgId) return yield* missing;
   const [lead] = yield* leadsIn(person.orgId, { liveOnly: true, agentId: input.agentId });
   if (lead === undefined || lead.ownerPersonId !== person.personId) return yield* missing;
