@@ -916,7 +916,7 @@ function KinChatFeed(props: {
   const followsEnd = kinFollowsEnd(follow);
   const unseen = followsEnd ? 0 : kinUnseenCount(messages, follow.seenSeq, props.viewer.personId);
   const loading = paging.request !== null;
-  const earlierPage = kinEarlierPage(props.chatId, messages, paging.exhausted);
+  const earlierPage = kinEarlierPage(props.chatId, messages, paging.exhausted, live.clearedSeq);
   const canLoadEarlier = props.readHistory !== null && earlierPage !== null;
   const latestSeq = latestKinSeq(messages);
   const showIntro = kinIntroVisible({

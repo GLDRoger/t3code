@@ -559,6 +559,10 @@
       "types": "./src/kin/kinAttachments.ts",
       "default": "./src/kin/kinAttachments.ts"
     },
+    "./kin/kinClearChat": {
+      "types": "./src/kin/kinClearChat.ts",
+      "default": "./src/kin/kinClearChat.ts"
+    },
     "./kin/kinGroups": {
       "types": "./src/kin/kinGroups.ts",
       "default": "./src/kin/kinGroups.ts"

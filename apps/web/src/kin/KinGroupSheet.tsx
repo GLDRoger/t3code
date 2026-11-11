@@ -1,5 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
+  KIN_CLEAR_CHAT_ACTION,
+  KIN_CLEAR_CHAT_TITLE,
+  kinClearChatBody,
+} from "@t3tools/client-runtime/kin/kinClearChat";
+import {
   KIN_GROUP_NAME_MAX,
   kinGroupCountLabel,
   kinGroupMemberViews,
@@ -52,6 +57,7 @@ function Section(props: { readonly title: string; readonly children: React.React
 
 type Confirm =
   | { readonly kind: "remove"; readonly member: KinGroupMemberView }
+  | { readonly kind: "clear" }
   | { readonly kind: "delete" };
 
 /** A group beside its chat: who is in it and which lead answers. Its owner changes both here. */
@@ -84,6 +90,8 @@ export function KinGroupSheet(props: {
   const setLead = useAtomCommand(kinClient.groupSetLead, { reportFailure: false });
   const removeMember = useAtomCommand(kinClient.groupRemoveMember, { reportFailure: false });
   const deleteGroup = useAtomCommand(kinClient.groupDelete, { reportFailure: false });
+  const canClear = useAtomValue(kinClient.clear.permissionAtom(environmentId)) && owns;
+  const clear = useAtomCommand(kinClient.clear, { reportFailure: false });
   const title = group.chat.title ?? "Group";
   const [name, setName] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -130,6 +138,14 @@ export function KinGroupSheet(props: {
       await change(`remove ${pending.member.name}`, () =>
         removeMember({ environmentId, input: { chatId, memberId: pending.member.memberId } }),
       );
+      return;
+    }
+    if (pending.kind === "clear") {
+      const done = await change("clear this chat", () =>
+        clear({ environmentId, input: { chatId } }),
+      );
+      // Nothing to announce: the chat behind the sheet is empty.
+      if (done) props.onOpenChange(false);
       return;
     }
     const done = await change("delete this group", () =>
@@ -292,6 +308,17 @@ export function KinGroupSheet(props: {
                   </div>
                 </form>
               )}
+              {canClear ? (
+                <Button
+                  size="sm"
+                  variant="destructive-outline"
+                  className="self-start"
+                  disabled={busy}
+                  onClick={() => setConfirm({ kind: "clear" })}
+                >
+                  {KIN_CLEAR_CHAT_ACTION}
+                </Button>
+              ) : null}
               <Button
                 size="sm"
                 variant="destructive-outline"
@@ -314,20 +341,30 @@ export function KinGroupSheet(props: {
         <AlertDialogPopup>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              {confirm?.kind === "remove" ? `Remove ${confirm.member.name}?` : `Delete ${title}?`}
+              {confirm?.kind === "remove"
+                ? `Remove ${confirm.member.name}?`
+                : confirm?.kind === "clear"
+                  ? KIN_CLEAR_CHAT_TITLE
+                  : `Delete ${title}?`}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {confirm?.kind === "remove"
                 ? confirm.member.kind === "lead"
                   ? `${confirm.member.name} stops answering here. You can add it back any time.`
                   : `${confirm.member.name} stops seeing this group and its files. You can add them back any time.`
-                : "The group closes for everyone in it. This can't be undone."}
+                : confirm?.kind === "clear"
+                  ? kinClearChatBody("group")
+                  : "The group closes for everyone in it. This can't be undone."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
             <Button variant="destructive" onClick={() => void confirmed()}>
-              {confirm?.kind === "remove" ? "Remove" : "Delete group"}
+              {confirm?.kind === "remove"
+                ? "Remove"
+                : confirm?.kind === "clear"
+                  ? KIN_CLEAR_CHAT_ACTION
+                  : "Delete group"}
             </Button>
           </AlertDialogFooter>
         </AlertDialogPopup>

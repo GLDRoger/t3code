@@ -323,6 +323,8 @@ const samples = {
     { chatId: "chat-1", muted: true },
     { chatId: "chat-1", muted: false },
   ],
+  KinChatsClearInput: [{ chatId: "chat-1" }],
+  KinChatsClearResult: [{}],
   KinAgentMessageBody: ["Hello"],
   KinAttachment: [
     { type: "image", id: "kin-chat-1", name: "kite.png", mimeType: "image/png", sizeBytes: 12 },

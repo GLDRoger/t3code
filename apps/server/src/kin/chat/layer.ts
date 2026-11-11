@@ -16,7 +16,12 @@ import { KinIdentity, KinIdentityConfig } from "./KinIdentity.ts";
 const stop = Stop.layer.pipe(Layer.provide(Presence.layer), Layer.provideMerge(Queue.layer));
 
 export const layer = Layer.mergeAll(
-  LevelGate.layer.pipe(Layer.provideMerge(Service.layer), Layer.provideMerge(Presence.layer)),
+  // A clear stops the turns answering what it deleted, through the same fan-out as a join.
+  LevelGate.layer.pipe(
+    Layer.provideMerge(Service.layer),
+    Layer.provide(stop),
+    Layer.provideMerge(Presence.layer),
+  ),
   Layer.mergeAll(Budget.layer.pipe(Layer.provide(Cache.layer)), OwnerTimeZone.layer).pipe(
     Layer.provideMerge(stop),
   ),
