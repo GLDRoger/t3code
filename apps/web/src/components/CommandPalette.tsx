@@ -59,6 +59,7 @@ import {
   ChartNoAxesColumnIcon,
   MessagesSquareIcon,
   BrainIcon,
+  UsersIcon,
   UserRoundPlusIcon,
   CheckIcon,
   ChevronRightIcon,
@@ -425,6 +426,11 @@ function OpenCommandPaletteDialog(props: {
     kinNewLead === null
       ? noKinLeadPermissionAtom
       : kinClient.memorySetVisibility.permissionAtom(kinNewLead.environmentId),
+  );
+  const canManageKinTeam = useAtomValue(
+    kinNewLead === null
+      ? noKinLeadPermissionAtom
+      : kinClient.inviteCreate.permissionAtom(kinNewLead.environmentId),
   );
   const { openChildSearch, setOpen } = props;
   // Keyed by palette session: the intent and restored search only seed this
@@ -1707,6 +1713,22 @@ function OpenCommandPaletteDialog(props: {
       run: async () => {
         await navigate({
           to: "/kin/$environmentId/$orgId/memory",
+          params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
+        });
+      },
+    });
+  }
+
+  if (kinNewLead !== null && canManageKinTeam) {
+    actionItems.push({
+      kind: "action",
+      value: "action:kin-team",
+      searchTerms: ["kin", "team", "people", "teammate", "invite", "add", "person", "link"],
+      title: "Team: add or invite a teammate",
+      icon: <UsersIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await navigate({
+          to: "/kin/$environmentId/$orgId/team",
           params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
         });
       },

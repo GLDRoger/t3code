@@ -28,7 +28,7 @@ const leadRefusal = Schema.is(LeadProvision.KinLeadProvisionError);
 const leadReasons = {
   not_owner: "not_allowed",
   unknown_project: "invalid_state",
-  no_models: "invalid_state",
+  no_models: "no_models",
   not_claude: "invalid_state",
   not_found: "not_found",
   retired: "not_found",

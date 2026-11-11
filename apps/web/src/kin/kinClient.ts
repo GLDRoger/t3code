@@ -90,6 +90,11 @@ const peopleRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   tag: KIN_PEOPLE_WS_METHODS.peopleList,
 });
 const readPeople = guardedRead(peopleRead);
+const invitesRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:invites:read",
+  tag: KIN_PEOPLE_WS_METHODS.peopleListInvites,
+});
+const readInvites = guardedRead(invitesRead);
 
 const memoryRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "kin:memory:read",
@@ -213,6 +218,31 @@ export const kinClient = {
     staleTimeMs: 30_000,
     refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
       environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  /** The invite links nobody has opened yet. The owner's Team page reads them. */
+  invites: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:invites",
+    execute: Effect.fn("KinWebClient.invites")(function* (input: KinPeopleListInput) {
+      return yield* readInvites(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
+      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  /** Makes a teammate's link. The answer carries the secret once; nothing here keeps it. */
+  inviteCreate: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:invite:create",
+    tag: KIN_PEOPLE_WS_METHODS.peopleCreateInvite,
+  }),
+  inviteCancel: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:invite:cancel",
+    tag: KIN_PEOPLE_WS_METHODS.peopleRevokeInvite,
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.inviteId },
+  }),
+  personRemoveAccess: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:person:remove-access",
+    tag: KIN_PEOPLE_WS_METHODS.peopleRemoveAccess,
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.personId },
   }),
   groupCreate: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:group:create",

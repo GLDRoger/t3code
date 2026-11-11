@@ -313,7 +313,7 @@ function GroupForm(props: {
               {people.length === 0 ? null : (
                 <ListSection
                   title="People"
-                  footer="People in a group read everything in it, and can ask its leads to talk things through. Only you can have a lead start work."
+                  footer="Someone added later sees only what is said after they join, not earlier messages. People in a group can ask its leads to talk things through. Only you can have a lead start work."
                 >
                   {people.map((person, index) => (
                     <SelectionRow
@@ -340,7 +340,7 @@ function GroupForm(props: {
                   title={creating ? "No one to add yet" : "Everyone is already here"}
                   detail={
                     creating
-                      ? "Make a lead or invite a person first. You can still make the group and add them later."
+                      ? "Make a lead, or add a teammate from Team in your chat list. You can still make the group and add them later."
                       : "Every lead and person you could add is in this group."
                   }
                 />

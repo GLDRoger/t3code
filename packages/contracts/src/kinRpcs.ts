@@ -208,6 +208,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.people.createInvite": "kin-people",
   "kin.people.listDevices": "kin-people",
   "kin.people.revokeDevice": "kin-people",
+  "kin.people.removeAccess": "kin-people",
   "kin.people.setGithubLogin": "kin-people",
 
   "kin.budget.get": "kin-budget",
