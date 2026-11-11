@@ -1754,6 +1754,42 @@ it.effect("a join's abort during a follow-up's send leaves the new attempt runni
   ),
 );
 
+it.effect(
+  "a turn a join aborted, then its lead retired and restored during the send, leaves the new attempt stopped",
+  () =>
+    run(({ ctx, remote, workers }) =>
+      Effect.gen(function* () {
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        yield* TestClock.adjust("2 seconds");
+        // The join's abort comes first, so the retirement finds no running turn to abort.
+        remote.hooks.sent = ctx.sql`UPDATE kin_wakeups SET aborted_at = 900,
+            shared_since = 900 WHERE wakeup_id = 'wake'`.pipe(
+          Effect.orDie,
+          Effect.andThen(retireLead(ctx, 1_000)),
+          Effect.andThen(restoreLead(ctx, 1_500)),
+        );
+        assert.include(
+          yield* Effect.flip(
+            workers.followUp(scope, {
+              workerId,
+              brief: "Also cover the retry path.",
+              sourceEventId: "lead-event",
+            }),
+          ),
+          { reason: "not_allowed" },
+        );
+        const attempts = yield* ctx.sql<{ stopReason: string | null }>`SELECT
+            stop_reason AS "stopReason" FROM kin_worker_attempts WHERE worker_id = ${workerId}
+          ORDER BY started_at`;
+        assert.deepStrictEqual(attempts.at(-1), { stopReason: Retirement.RETIRED_WORKER_REASON });
+        assert.deepStrictEqual(
+          yield* ctx.sql`SELECT aborted_at, retired_at FROM kin_wakeups WHERE wakeup_id = 'wake'`,
+          [{ aborted_at: 900, retired_at: 1000 }],
+        );
+      }),
+    ),
+);
+
 it.effect("a lead retired while its worker launches stops the thread the launch made", () =>
   run(({ ctx, remote, workers }) =>
     Effect.gen(function* () {
