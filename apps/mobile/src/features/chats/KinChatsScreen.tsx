@@ -11,6 +11,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { KinMemoryEntry } from "./KinMemoryScreen";
+import { KinTeamEntry } from "./KinTeamScreen";
 import { KinChatRow, KinChatRowSkeletons } from "./components/KinChatRow";
 import { KinInboxNotice, KinScreenState } from "./components/KinScreenState";
 import { KinWaitingBanner } from "./components/KinWaitingBanner";
@@ -58,7 +59,10 @@ export function KinChatsScreen() {
           onRetry={retry}
           memory={
             newLeadAt === null ? null : (
-              <KinMemoryEntry environmentId={newLeadAt.environmentId} orgId={newLeadAt.orgId} />
+              <>
+                <KinMemoryEntry environmentId={newLeadAt.environmentId} orgId={newLeadAt.orgId} />
+                <KinTeamEntry environmentId={newLeadAt.environmentId} orgId={newLeadAt.orgId} />
+              </>
             )
           }
           onOpenWaiting={() => navigation.navigate("KinWaiting")}
@@ -83,13 +87,14 @@ function KinChatsBar(props: { readonly environmentId: EnvironmentId; readonly or
   const navigation = useNavigation();
   const canAddLead = useAtomValue(kinClient.leadCreate.permissionAtom(props.environmentId));
   const canAddGroup = useAtomValue(kinClient.groupCreate.permissionAtom(props.environmentId));
+  const canAddTeammate = useAtomValue(kinClient.inviteCreate.permissionAtom(props.environmentId));
   const target = { environmentId: props.environmentId, orgId: props.orgId };
   return (
     <AppBar
       title="Kin"
       onBack={() => navigation.goBack()}
       menus={
-        canAddLead || canAddGroup
+        canAddLead || canAddGroup || canAddTeammate
           ? [
               {
                 title: "New",
@@ -112,6 +117,16 @@ function KinChatsBar(props: { readonly environmentId: EnvironmentId; readonly or
                           title: "New lead",
                           icon: "sparkles",
                           onPress: () => navigation.navigate("KinLeadForm", target),
+                        },
+                      ]
+                    : []),
+                  ...(canAddTeammate
+                    ? [
+                        {
+                          id: "teammate",
+                          title: "Add teammate",
+                          icon: "person.badge.plus",
+                          onPress: () => navigation.navigate("KinInvite", target),
                         },
                       ]
                     : []),

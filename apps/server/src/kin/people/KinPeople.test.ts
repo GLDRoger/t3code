@@ -342,3 +342,66 @@ it.effect("only the owner can list and revoke pending invites; revoked secrets a
     );
   }).pipe(Effect.provide(layer)),
 );
+
+it.effect(
+  "removing access signs every device out, cancels unused links and keeps the person; only the owner may",
+  () =>
+    Effect.gen(function* () {
+      const service = yield* People.KinPeople;
+      const identity = yield* KinIdentity;
+      const sessions = yield* SessionStore;
+      const orgId = identity.owner.orgId;
+      yield* pairSession(ownerSession.sessionId);
+      const first = yield* service.accept({
+        secret: (yield* service.createInvite(ownerSession, { orgId, displayName: "Mira" })).secret,
+      });
+      const personId = first.person.personId;
+      const link = () =>
+        service.createInvite(ownerSession, { orgId, displayName: "Mira", personId });
+      const second = yield* service.accept({ secret: (yield* link()).secret });
+      const unused = yield* link();
+      const other = yield* service.accept({
+        secret: (yield* service.createInvite(ownerSession, { orgId, displayName: "Tomas" })).secret,
+      });
+      const joined = () =>
+        service.list(ownerSession, orgId).pipe(Effect.map((list) => [...list.joined].sort()));
+      assert.deepEqual(yield* joined(), [personId, other.person.personId].sort());
+
+      const member = yield* sessions.verify(first.accessToken);
+      assert.propertyVal(
+        yield* service.removeAccess(member, { orgId, personId }).pipe(Effect.flip),
+        "reason",
+        "not_allowed",
+      );
+      assert.propertyVal(
+        yield* service
+          .removeAccess(ownerSession, { orgId, personId: identity.owner.personId })
+          .pipe(Effect.flip),
+        "reason",
+        "not_allowed",
+      );
+
+      assert.isTrue((yield* service.removeAccess(ownerSession, { orgId, personId })).revoked);
+      for (const device of [first, second])
+        assert.equal(
+          (yield* sessions.verify(device.accessToken).pipe(Effect.result))._tag,
+          "Failure",
+        );
+      assert.deepEqual(yield* identity.resolve(member), []);
+      assert.propertyVal(
+        yield* service.accept({ secret: unused.secret }).pipe(Effect.flip),
+        "reason",
+        "not_found",
+      );
+      assert.deepEqual(yield* joined(), [other.person.personId]);
+      const list = yield* service.list(ownerSession, orgId);
+      assert.include(
+        list.people.map((held) => held.personId),
+        personId,
+      );
+      // The way back: a new link returns the same person.
+      const back = yield* service.accept({ secret: (yield* link()).secret });
+      assert.equal(back.person.personId, personId);
+      assert.deepEqual(yield* joined(), [personId, other.person.personId].sort());
+    }).pipe(Effect.provide(layer)),
+);

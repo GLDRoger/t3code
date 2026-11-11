@@ -17,6 +17,7 @@ import {
   type KinPeopleListDevicesInput,
   type KinPeopleListDevicesResult,
   type KinPeopleRevokeDeviceInput,
+  type KinPeopleRemoveAccessInput,
   type KinPeopleSetGithubLoginInput,
   type AuthSessionId,
 } from "@t3tools/contracts";
@@ -67,7 +68,10 @@ export class KinPeople extends Context.Service<
     readonly list: (
       session: AuthenticatedSession,
       orgId: KinOrgId,
-    ) => Effect.Effect<{ people: ReadonlyArray<KinPerson> }, Failure>;
+    ) => Effect.Effect<
+      { people: ReadonlyArray<KinPerson>; joined: ReadonlyArray<KinPersonId> },
+      Failure
+    >;
     readonly listDevices: (
       session: AuthenticatedSession,
       input: KinPeopleListDevicesInput,
@@ -75,6 +79,10 @@ export class KinPeople extends Context.Service<
     readonly revokeDevice: (
       session: AuthenticatedSession,
       input: KinPeopleRevokeDeviceInput,
+    ) => Effect.Effect<{ revoked: boolean }, Failure>;
+    readonly removeAccess: (
+      session: AuthenticatedSession,
+      input: KinPeopleRemoveAccessInput,
     ) => Effect.Effect<{ revoked: boolean }, Failure>;
     readonly setGithubLogin: (
       session: AuthenticatedSession,
@@ -236,7 +244,16 @@ export const make = Effect.gen(function* () {
       github_login AS "githubLogin", created_at AS "createdAt" FROM kin_people WHERE org_id = ${orgId} ORDER BY handle, person_id`.pipe(
         Effect.mapError(toPersistenceSqlError("KinPeople.list")),
       );
-    return { people: rows.map(decodePerson) };
+    const now = DateTime.formatIso(yield* DateTime.now);
+    const joined = yield* sql<{
+      personId: KinPersonId;
+    }>`SELECT DISTINCT b.person_id AS "personId" FROM kin_session_bindings b
+      JOIN auth_sessions a ON a.session_id = b.session_id
+      WHERE b.org_id = ${orgId} AND b.revoked_at IS NULL AND a.revoked_at IS NULL
+      AND a.expires_at > ${now} ORDER BY b.person_id`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinPeople.joined")),
+    );
+    return { people: rows.map(decodePerson), joined: joined.map((row) => row.personId) };
   });
   const listInvites = Effect.fn("KinPeople.listInvites")(function* (
     session: AuthenticatedSession,
@@ -332,6 +349,40 @@ export const make = Effect.gen(function* () {
       )
       .pipe(Effect.mapError(sqlError("KinPeople.revokeDevice")));
   });
+  const removeAccess = Effect.fn("KinPeople.removeAccess")(function* (
+    session: AuthenticatedSession,
+    input: KinPeopleRemoveAccessInput,
+  ) {
+    yield* owner(session, input.orgId);
+    if (input.personId === identity.owner.personId) return yield* denied;
+    const now = (yield* DateTime.now).epochMilliseconds;
+    return yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          yield* person(input.orgId, input.personId);
+          // An unused link would let them straight back in.
+          yield* sql`UPDATE kin_people_invites SET revoked_at = ${now}
+        WHERE org_id = ${input.orgId} AND person_id = ${input.personId} AND consumed_at IS NULL
+        AND revoked_at IS NULL`.pipe(
+            Effect.mapError(toPersistenceSqlError("KinPeople.removeAccessInvites")),
+          );
+          const rows = yield* sql<{
+            session_id: AuthSessionId;
+          }>`UPDATE kin_session_bindings SET revoked_at = ${now}
+        WHERE org_id = ${input.orgId} AND person_id = ${input.personId} AND revoked_at IS NULL
+        RETURNING session_id`.pipe(
+            Effect.mapError(toPersistenceSqlError("KinPeople.removeAccess")),
+          );
+          yield* Effect.forEach(rows, (row) =>
+            sessions
+              .revoke(row.session_id)
+              .pipe(Effect.mapError(toPersistenceSqlError("KinPeople.revokeSession"))),
+          );
+          return { revoked: true };
+        }),
+      )
+      .pipe(Effect.mapError(sqlError("KinPeople.removeAccess")));
+  });
   const setGithubLogin = Effect.fn("KinPeople.setGithubLogin")(function* (
     session: AuthenticatedSession,
     input: KinPeopleSetGithubLoginInput,
@@ -380,6 +431,7 @@ export const make = Effect.gen(function* () {
     list,
     listDevices,
     revokeDevice,
+    removeAccess,
     setGithubLogin,
   });
 });

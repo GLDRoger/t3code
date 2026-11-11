@@ -195,8 +195,8 @@ function KinGroupDialog(props: { readonly target: KinGroupFormTarget }) {
             <DialogTitle>{creating ? "New group" : "Add to group"}</DialogTitle>
             <DialogDescription>
               {creating
-                ? "A chat with any mix of your leads and people. Everyone in it reads every message."
-                : "They read the whole chat from the moment they join."}
+                ? "A chat with any mix of your leads and people. Everyone reads what is said while they are in it."
+                : "They see only what is said after they join, not earlier messages."}
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>

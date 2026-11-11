@@ -146,6 +146,8 @@ describe("command permissions", () => {
     [KIN_PEOPLE_WS_METHODS.peopleCreateInvite, AuthAccessWriteScope],
     [KIN_PEOPLE_WS_METHODS.peopleRevokeDevice, AuthAccessWriteScope],
     [KIN_PEOPLE_WS_METHODS.peopleRevokeInvite, AuthAccessWriteScope],
+    // Signing a teammate out everywhere is the owner's, like handing access out.
+    [KIN_PEOPLE_WS_METHODS.peopleRemoveAccess, AuthAccessWriteScope],
     [KIN_PEOPLE_WS_METHODS.peopleSetGithubLogin, AuthKinChatScope],
     [KIN_LEVEL_WS_METHODS.get, AuthOrchestrationReadScope],
     [KIN_LEVEL_WS_METHODS.lower, AuthSettingsWriteScope],

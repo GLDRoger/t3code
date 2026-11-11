@@ -78,10 +78,17 @@ export interface Shown {
 
 /**
  * Who let the team know an item, from stored rows: the owner's own message that wrote it, his
- * setting or confirmation on the Memory screen, or a teammate's own words. Older rows may say
- * `owner_label`, which chat no longer grants.
+ * setting or confirmation on the Memory screen, or a teammate's own words. Only these kinds are
+ * honoured; a row of any other, such as the retired `owner_label`, authorises nothing.
  */
-export type Sharing = "owner_message" | "owner_setting" | "owner_confirmed" | "teammate";
+export const SHARING_KINDS = [
+  "owner_message",
+  "owner_setting",
+  "owner_confirmed",
+  "teammate",
+] as const;
+export type Sharing = (typeof SHARING_KINDS)[number];
+const honoured: ReadonlySet<string> = new Set(SHARING_KINDS);
 
 /** The one projection every shared-turn surface returns, built from the fixed field list above. */
 export const shareable = ({ head, body }: Shown): SharedItem => ({
@@ -236,7 +243,7 @@ export const storedLabels = Effect.fn("KinSensitivity.storedLabels")(function* (
     held: new Set(rows.filter((row) => row.heldAt !== null).map((row) => row.itemId)),
     shared: new Map(
       rows.flatMap((row) =>
-        row.sharedContent === null || row.sharedHow === null
+        row.sharedContent === null || row.sharedHow === null || !honoured.has(row.sharedHow)
           ? []
           : [[row.itemId, row.sharedContent] as const],
       ),
@@ -305,17 +312,23 @@ export const suggest = Effect.fn("KinSensitivity.suggest")(function* (
   content: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const [current] = yield* sql<{ shared: string | null; suggested: string | null }>`
-    SELECT shared_content AS shared, suggested_content AS suggested FROM kin_memory_labels
-    WHERE org_id = ${orgId} AND item_id = ${itemId} ORDER BY item_id`;
-  if (current?.shared === content || current?.suggested === content) return;
-  yield* sql`INSERT INTO kin_memory_label_revisions (org_id, revision) VALUES (${orgId}, 1)
-    ON CONFLICT (org_id) DO UPDATE SET revision = revision + 1`;
-  yield* sql`INSERT INTO kin_memory_labels (org_id, item_id, suggested_content, suggested_rev)
-    VALUES (${orgId}, ${itemId}, ${content},
-      (SELECT revision FROM kin_memory_label_revisions WHERE org_id = ${orgId}))
-    ON CONFLICT (org_id, item_id) DO UPDATE SET
-      suggested_content = excluded.suggested_content, suggested_rev = excluded.suggested_rev`;
+  // One BEGIN IMMEDIATE transaction, so revisions are stored in the order they commit and no
+  // suggestion lands at or below a revision a listing already reported.
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const [current] = yield* sql<{ shared: string | null; suggested: string | null }>`
+        SELECT shared_content AS shared, suggested_content AS suggested FROM kin_memory_labels
+        WHERE org_id = ${orgId} AND item_id = ${itemId} ORDER BY item_id`;
+      if (current?.shared === content || current?.suggested === content) return;
+      yield* sql`INSERT INTO kin_memory_label_revisions (org_id, revision) VALUES (${orgId}, 1)
+        ON CONFLICT (org_id) DO UPDATE SET revision = revision + 1`;
+      yield* sql`INSERT INTO kin_memory_labels (org_id, item_id, suggested_content, suggested_rev)
+        VALUES (${orgId}, ${itemId}, ${content},
+          (SELECT revision FROM kin_memory_label_revisions WHERE org_id = ${orgId}))
+        ON CONFLICT (org_id, item_id) DO UPDATE SET
+          suggested_content = excluded.suggested_content, suggested_rev = excluded.suggested_rev`;
+    }),
+  );
 });
 
 /**

@@ -539,6 +539,13 @@ const make = Effect.gen(function* () {
       readonly clientId: { readonly kind: "send" | "act"; readonly id: string } | null;
     },
   ) {
+    // A reply the caller names must be one it may read; a hidden one reads as missing.
+    if (
+      input.kind === "text" &&
+      input.replyTo !== null &&
+      !(yield* callerReads(identity, member, input.replyTo))
+    )
+      return yield* notFound;
     const messageId = yield* decodeMessageId(SecureRandom.uuidV4Unsafe()).pipe(Effect.orDie);
     const message = yield* repo.insertMessage({
       orgId: identity.orgId,
