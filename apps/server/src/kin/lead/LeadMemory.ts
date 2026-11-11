@@ -599,6 +599,8 @@ const make = Effect.gen(function* () {
     sourceEventId: string,
   ) {
     yield* checkSource(ctx, sourceEventId);
+    if (schedule.deletedAt !== null)
+      return yield* invalid(`${schedule.scheduleId} is already cancelled.`);
     // Checked again here: a join may have aborted the turn since `notes`.
     if ((yield* effectiveAudience(ctx).pipe(provideSql)) !== "owner_only")
       return yield* invalid(SHARED_REFUSAL);

@@ -198,7 +198,8 @@ const make = Effect.gen(function* () {
     const schedule = yield* KinSchedules.readScheduleByTask(sql, taskId).pipe(
       Effect.mapError(toPersistenceSqlError("KinTriggerSink.receiveSchedule")),
     );
-    if (schedule === undefined) return yield* refuse(taskId, "no_source");
+    if (schedule === undefined || schedule.deletedAt !== null)
+      return yield* refuse(taskId, "no_source");
     const task = yield* KinSchedules.readNativeTask(sql, taskId).pipe(
       Effect.mapError(toPersistenceSqlError("KinTriggerSink.receiveSchedule")),
     );

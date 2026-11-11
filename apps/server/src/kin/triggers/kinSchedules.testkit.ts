@@ -45,11 +45,10 @@ export const recordingSchedules = (saves: KinSchedules.SaveInput[], cancels: str
   );
 
 /** The lead's own project, as WakeupRunner names it. */
-export const leadProjectId = (orgId: string, agentId: string) =>
-  ProjectId.make(`kin:${orgId}:${agentId}`);
+const leadProjectId = (orgId: string, agentId: string) => ProjectId.make(`kin:${orgId}:${agentId}`);
 
 /** An archived thread in the lead's project, standing in for its scheduled-runs inbox. */
-export const leadInbox = (orgId: string, agentId: string) => {
+const leadInbox = (orgId: string, agentId: string) => {
   const view = projection(orgId as never);
   return {
     ...view,

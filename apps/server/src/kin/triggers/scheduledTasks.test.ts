@@ -214,7 +214,11 @@ const nativeSetup = Effect.fn("test.nativeSetup")(function* (chatId = "chat-a") 
 });
 
 const save = Effect.fn("test.nativeSave")(function* (
-  overrides: { readonly chatId?: string; readonly prompt?: string; readonly existing?: boolean } = {},
+  overrides: {
+    readonly chatId?: string;
+    readonly prompt?: string;
+    readonly existing?: boolean;
+  } = {},
 ) {
   yield* (yield* KinSchedules.KinSchedules).save({
     orgId,
@@ -242,7 +246,10 @@ const nativeRuns = Effect.fn("test.nativeRuns")(function* () {
 const nativeCard = Effect.fn("test.nativeCard")(function* () {
   const repo = yield* Repository.KinChatRepository;
   const widget = Option.getOrThrow(
-    yield* repo.getWidget({ orgId, widgetId: ScheduledTasks.scheduledTaskWidgetId(orgId, scheduleId) }),
+    yield* repo.getWidget({
+      orgId,
+      widgetId: ScheduledTasks.scheduledTaskWidgetId(orgId, scheduleId),
+    }),
   );
   return { widget, state: decodeCard(widget.state) };
 });
@@ -258,50 +265,57 @@ const bareThreads = (recorded: ReturnType<typeof harness>["recorded"]) =>
   recorded.launches.filter((launch) => launch.initialMessage !== undefined).length +
   recorded.sends.length;
 
-it.effect("a native schedule is one task and one row, wakes its lead once, and cancels cleanly", () => {
-  const { recorded, workers, layer } = harness();
-  return Effect.gen(function* () {
-    yield* nativeSetup();
-    const sql = yield* SqlClient.SqlClient;
-    const tasks = yield* ScheduledTaskService.ScheduledTaskService;
-    const [native] = (yield* tasks.list()).tasks;
-    assert.deepInclude(native, {
-      id: taskId,
-      prompt,
-      projectId: "kin:a:lead-a",
-      threadId: null,
-      runtimeMode: "approval-required",
-      interactionMode: "plan",
-      schedule: { type: "fixed_time", timeOfDay: "09:00", weekdays: [1, 2, 3, 4, 5] },
-    });
-    assert.lengthOf((yield* tasks.list()).tasks, 1);
-    assert.lengthOf(yield* sql`SELECT 1 FROM kin_schedules`, 1);
-    yield* (yield* ScheduledTasks.KinScheduledTasks).drain(orgId);
-    assert.equal((yield* nativeCard()).widget.chatId, "chat-a");
+it.effect(
+  "a native schedule is one task and one row, wakes its lead once, and cancels cleanly",
+  () => {
+    const { recorded, workers, layer } = harness();
+    return Effect.gen(function* () {
+      yield* nativeSetup();
+      const sql = yield* SqlClient.SqlClient;
+      const tasks = yield* ScheduledTaskService.ScheduledTaskService;
+      const [native] = (yield* tasks.list()).tasks;
+      assert.include(native, {
+        id: taskId,
+        prompt,
+        projectId: ProjectId.make("kin:a:lead-a"),
+        threadId: null,
+        runtimeMode: "approval-required",
+        interactionMode: "plan",
+      });
+      assert.deepEqual(native?.schedule, {
+        type: "fixed_time",
+        timeOfDay: "09:00",
+        weekdays: [1, 2, 3, 4, 5],
+      });
+      assert.lengthOf((yield* tasks.list()).tasks, 1);
+      assert.lengthOf(yield* sql`SELECT 1 FROM kin_schedules`, 1);
+      yield* (yield* ScheduledTasks.KinScheduledTasks).drain(orgId);
+      assert.equal((yield* nativeCard()).widget.chatId, "chat-a");
 
-    // Its time comes on T3's clock: Kin's lead wakes, owner-only in the owner's chat, no thread.
-    yield* TestClock.setTime(Date.parse(native!.nextRunAt!));
-    yield* workers.get("scheduled-tasks")!;
-    yield* (yield* ScheduledTasks.KinScheduledTasks).drain(orgId);
-    yield* (yield* ScheduledTasks.KinScheduledTasks).drain(orgId);
-    const [run] = yield* nativeRuns();
-    assert.lengthOf(yield* nativeRuns(), 1);
-    assert.deepInclude(run, { agentId: "lead-a", origin: null });
-    assert.equal(bareThreads(recorded), 0);
-    assert.equal((yield* nativeCard()).state.lastRun?.status, "running");
+      // Its time comes on T3's clock: Kin's lead wakes, owner-only in the owner's chat, no thread.
+      yield* TestClock.setTime(Date.parse(native!.nextRunAt!));
+      yield* workers.get("scheduled-tasks")!;
+      yield* (yield* ScheduledTasks.KinScheduledTasks).drain(orgId);
+      yield* (yield* ScheduledTasks.KinScheduledTasks).drain(orgId);
+      const [run] = yield* nativeRuns();
+      assert.lengthOf(yield* nativeRuns(), 1);
+      assert.deepInclude(run, { agentId: "lead-a", origin: null });
+      assert.equal(bareThreads(recorded), 0);
+      assert.equal((yield* nativeCard()).state.lastRun?.status, "running");
 
-    // Nothing worth saying: the lead ends silently and the card says so.
-    yield* leadWakeup({ orgId, eventId: run!.eventId, chatId: "chat-a" });
-    yield* (yield* LeadDelivery.KinLeadDelivery).settle(orgId);
-    assert.include((yield* nativeCard()).state.lastRun, { status: "skipped" });
+      // Nothing worth saying: the lead ends silently and the card says so.
+      yield* leadWakeup({ orgId, eventId: run!.eventId, chatId: "chat-a" });
+      yield* (yield* LeadDelivery.KinLeadDelivery).settle(orgId);
+      assert.include((yield* nativeCard()).state.lastRun, { status: "skipped" });
 
-    yield* (yield* KinSchedules.KinSchedules).cancel(orgId, scheduleId);
-    assert.lengthOf((yield* tasks.list()).tasks, 0);
-    assert.lengthOf(yield* sql`SELECT 1 FROM kin_schedules`, 0);
-    yield* (yield* ScheduledTasks.KinScheduledTasks).drain(orgId);
-    assert.isNotNull((yield* nativeCard()).widget.closedAt);
-  }).pipe(Effect.provide(layer));
-});
+      yield* (yield* KinSchedules.KinSchedules).cancel(orgId, scheduleId);
+      assert.lengthOf((yield* tasks.list()).tasks, 0);
+      yield* (yield* ScheduledTasks.KinScheduledTasks).drain(orgId);
+      assert.lengthOf(yield* sql`SELECT 1 FROM kin_schedules`, 0);
+      assert.isNotNull((yield* nativeCard()).widget.closedAt);
+    }).pipe(Effect.provide(layer));
+  },
+);
 
 it.effect("a failed save leaves no task that can launch, and an orphaned task is refused", () => {
   const { recorded, layer } = harness();
@@ -360,21 +374,24 @@ it.effect("a native run skips while Kin is paused, as Kin's own schedules did", 
   }).pipe(Effect.provide(layer));
 });
 
-it.effect("a schedule set up privately in a group reports to the owner's chat once it is shared", () => {
-  const { layer } = harness();
-  return Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* TestClock.setTime(start);
-    yield* nativeSetupInGroup();
-    yield* runNow();
-    assert.include((yield* nativeRuns())[0]?.origin ?? "", "group-a");
-    assert.equal((yield* nativeCard()).widget.chatId, "group-a");
-    // Someone joined since: the private schedule speaks in the owner's chat, owner-only.
-    yield* sql`UPDATE kin_chats SET shared_at = 1 WHERE chat_id = 'group-a'`;
-    yield* runNow();
-    assert.isNull((yield* nativeRuns())[1]?.origin ?? null);
-  }).pipe(Effect.provide(layer));
-});
+it.effect(
+  "a schedule set up privately in a group reports to the owner's chat once it is shared",
+  () => {
+    const { layer } = harness();
+    return Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* TestClock.setTime(start);
+      yield* nativeSetupInGroup();
+      yield* runNow();
+      assert.include((yield* nativeRuns())[0]?.origin ?? "", "group-a");
+      assert.equal((yield* nativeCard()).widget.chatId, "group-a");
+      // Someone joined since: the private schedule speaks in the owner's chat, owner-only.
+      yield* sql`UPDATE kin_chats SET shared_at = 1 WHERE chat_id = 'group-a'`;
+      yield* runNow();
+      assert.isNull((yield* nativeRuns())[1]?.origin ?? null);
+    }).pipe(Effect.provide(layer));
+  },
+);
 
 const nativeSetupInGroup = Effect.fn("test.nativeSetupInGroup")(function* () {
   yield* seed();

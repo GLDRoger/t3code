@@ -14,6 +14,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
@@ -133,7 +134,7 @@ export class KinSchedules extends Context.Service<
   {
     /** Saves the native task, then the row that authorises its runs. */
     readonly save: (input: SaveInput) => Effect.Effect<void, KinChatError>;
-    /** Deletes the native task, then its row; a row left alone fires nothing. */
+    /** Deletes the native task, then marks its row deleted; a row left alone fires nothing. */
     readonly cancel: (orgId: KinOrgId, scheduleId: string) => Effect.Effect<void, KinChatError>;
     /** Applies this org's card taps (Run now, Pause, Resume, Delete) to the native tasks. */
     readonly applyTaps: (orgId: KinOrgId) => Effect.Effect<void, KinChatError>;
@@ -245,7 +246,10 @@ const make = Effect.gen(function* () {
   const cancel = Effect.fn("KinSchedules.cancel")(function* (orgId: KinOrgId, scheduleId: string) {
     const taskId = scheduleTaskId(orgId, scheduleId);
     yield* tasks.delete({ id: taskId }).pipe(Effect.catch(failed("It could not be cancelled.")));
-    yield* sql`DELETE FROM kin_schedules WHERE task_id = ${taskId}`.pipe(Effect.mapError(sqlError));
+    const now = yield* Clock.currentTimeMillis;
+    // A tombstone until the next tick closes the card and removes it.
+    yield* sql`UPDATE kin_schedules SET deleted_at = COALESCE(deleted_at, ${now}),
+      updated_at = ${now} WHERE task_id = ${taskId}`.pipe(Effect.mapError(sqlError));
   }, Effect.mapError(asChatError));
 
   const applyTaps = Effect.fn("KinSchedules.applyTaps")(function* (orgId: KinOrgId) {
@@ -258,7 +262,7 @@ const make = Effect.gen(function* () {
           ),
         );
       if (row.deletedAt !== null) {
-        yield* cancel(orgId, row.scheduleId).pipe(logged("delete"));
+        yield* tasks.delete({ id: row.taskId }).pipe(logged("delete"));
         continue;
       }
       if (row.pendingEnabled !== null) {
@@ -284,8 +288,9 @@ const make = Effect.gen(function* () {
   return KinSchedules.of({ save, cancel, applyTaps });
 });
 
+const isChatError = Schema.is(KinChatError);
 function asChatError(cause: unknown) {
-  return Schema.is(KinChatError)(cause)
+  return isChatError(cause)
     ? cause
     : new KinChatError({ reason: "invalid_state", message: "The schedule could not be changed." });
 }

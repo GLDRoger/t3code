@@ -472,8 +472,8 @@ const make = Effect.gen(function* () {
       );
     const now = yield* Clock.currentTimeMillis;
     for (const row of yield* KinSchedules.listSchedules(sql, orgId)) {
-      if (row.deletedAt !== null) continue;
-      const task = yield* KinSchedules.readNativeTask(sql, row.taskId);
+      const task =
+        row.deletedAt === null ? yield* KinSchedules.readNativeTask(sql, row.taskId) : undefined;
       const widgetId = scheduledTaskWidgetId(orgId, row.scheduleId);
       const widget = yield* repo.getWidget({ orgId, widgetId });
       const card = Option.isSome(widget)
