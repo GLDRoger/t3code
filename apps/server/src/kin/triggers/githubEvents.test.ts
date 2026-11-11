@@ -272,6 +272,54 @@ describe("KinGithubEvents", () => {
     ),
   );
 
+  it.effect(
+    "a merged PR closes the Work entries of the worker that opened it; an unmerged one doesn't",
+    () =>
+      run(({ deliver, drain }) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const records = yield* KinRecords.KinRecords;
+          yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids)
+          VALUES (${orgId}, 'worker-wake', 'lead', 'test', 0, 'completed', '[]')`;
+          for (const [worker, number] of [
+            ["merged-worker", 212],
+            ["closed-worker", 213],
+          ] as const)
+            yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id, model_json, provenance_json, status, started_at, repository_key, pull_request_number, pull_request_url)
+            VALUES (${worker}, ${orgId}, 'lead', 'worker-wake', 'build', ${`${worker}-thread`}, '{}', '{}', 'completed', 0, 'github.com/owner/repo', ${number}, ${`https://github.com/owner/repo/pull/${number}`})`;
+          const entry = (worker: string) =>
+            records.create(
+              orgId,
+              { actor: { _tag: "agent", agentId: KinAgentId.make("lead") }, via: "worker" },
+              {
+                originKey: `worker:${worker}`,
+                title: `Invented change by ${worker}`,
+                state: "doing",
+                owner: { _tag: "agent", agentId: KinAgentId.make("lead") },
+                links: [{ kind: "worker", target: worker, relation: "attempt" }],
+              },
+            );
+          const merged = (yield* entry("merged-worker")).row;
+          const closed = (yield* entry("closed-worker")).row;
+          yield* deliver("gh-merged", pullRequest());
+          yield* deliver("gh-closed", {
+            ...pullRequest({ merged: false }),
+            pull_request: { number: 213, merged: false, head: { sha: "def456" } },
+          });
+          yield* drain;
+          assert.include(yield* records.get(orgId, merged.key), { state: "done" });
+          assert.include(yield* records.get(orgId, closed.key), { state: "doing" });
+          const [change] = (yield* records.detail((yield* records.get(orgId, merged.key))!))
+            .changes;
+          assert.deepInclude(change, {
+            by: { _tag: "system" },
+            via: "github",
+            fields: [{ field: "state", from: "doing", to: "done" }],
+          });
+        }),
+      ),
+  );
+
   it.effect("drops untracked traffic, keeps tracked items and mentions, and batches notices", () =>
     run(({ deliver, drain }) =>
       Effect.gen(function* () {
