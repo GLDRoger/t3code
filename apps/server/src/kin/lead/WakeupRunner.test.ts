@@ -1392,6 +1392,69 @@ describe("WakeupRunner", () => {
     }).pipe(provideDeterministicTestRuntime),
   );
 
+  it.effect("settles a turn that fails at start while a burst steers in, then answers anew", () =>
+    Effect.gen(function* () {
+      const fixture = {
+        entered: yield* Deferred.make<void>(),
+        hold: yield* Deferred.make<void>(),
+        steering: yield* Deferred.make<void>(),
+        failed: true,
+      };
+      const ended: Array<string> = [];
+      const outcomes: Array<string> = [];
+      const bridge = Layer.mock(KinReplyBridge)({
+        lane: () =>
+          Effect.succeedSome({
+            chatId: KinChatId.make("owner-chat"),
+            mode: "reply" as const,
+            leadName: "Lead",
+          }),
+        preparing: () => Effect.void,
+        begin: () => Effect.void,
+        complete: () => Effect.void,
+        steered: () => Effect.void,
+        end: (input) => Effect.sync(() => void ended.push(input.wakeupId)),
+        failed: (input) => Effect.sync(() => void outcomes.push(input.outcome)),
+      });
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const sql = yield* SqlClient.SqlClient;
+        yield* queue.enqueue(laneMessage("m00"));
+        const fiber = yield* run();
+        yield* Deferred.await(fixture.entered);
+        for (let n = 1; n <= 10; n++)
+          yield* queue.enqueue(laneMessage(`m${String(n).padStart(2, "0")}`));
+        yield* Deferred.await(fixture.steering);
+        yield* Deferred.succeed(fixture.hold, undefined);
+        yield* Fiber.join(fiber);
+        const [first] = yield* sql<{ wakeupId: string; threadId: string; status: string }>`
+          SELECT wakeup_id AS "wakeupId", thread_id AS "threadId", status FROM kin_wakeups`;
+        assert.strictEqual(first!.status, "failed");
+        assert.deepStrictEqual([...new Set(ended)], [first!.wakeupId]);
+        assert.deepStrictEqual(outcomes, ["retrying"]);
+        const projection = yield* threads.getThreadProjection(ThreadId.make(first!.threadId));
+        assert.isFalse(projection.runs.some((entry) => entry.status === "queued"));
+        assert.deepStrictEqual(yield* sql`SELECT DISTINCT state FROM kin_events ORDER BY state`, [
+          { state: "queued" },
+        ]);
+
+        fixture.failed = false;
+        yield* TestClock.adjust("15 seconds");
+        yield* Fiber.join(yield* run());
+        assert.deepStrictEqual(
+          yield* sql`SELECT status FROM kin_wakeups ORDER BY started_at, wakeup_id`,
+          [{ status: "failed" }, { status: "completed" }],
+        );
+        assert.deepStrictEqual(yield* sql`SELECT DISTINCT state FROM kin_events`, [
+          { state: "done" },
+        ]);
+        assert.lengthOf(new Set(ended), 2);
+      }).pipe(Effect.scoped, Effect.provide(harness(fixture).pipe(Layer.provide(bridge))));
+    }).pipe(provideDeterministicTestRuntime),
+  );
+
   it.effect("defers claims while an interrupted run's provider turn is unfinished", () =>
     Effect.gen(function* () {
       yield* seed;

@@ -409,7 +409,9 @@ const make = Effect.gen(function* () {
                       (run) =>
                         run.ordinal > after &&
                         isSteerRun(wakeupId, run) &&
-                        (run.status === "queued" || ThreadManagementService.isActiveRun(run)),
+                        // A provider failure holds the queue: a held run never starts by itself.
+                        ((run.status === "queued" && run.queueHeld !== true) ||
+                          ThreadManagementService.isActiveRun(run)),
                     )
                     .toSorted((a, b) => a.ordinal - b.ordinal)[0];
             if (adopted === undefined) steering.open = false;
@@ -420,6 +422,23 @@ const make = Effect.gen(function* () {
         current = next.id;
       }
       yield* Fiber.interrupt(steerer);
+      // Its steers still queued would start with no wake-up to own them, or hold the lead's
+      // queue for good; they go, and their messages return with the rest of its events.
+      for (const leftover of (yield* threads.getThreadProjection(threadId)).runs) {
+        if (leftover.status !== "queued" || !isSteerRun(wakeupId, leftover)) continue;
+        yield* threads
+          .dispatch({
+            type: "queued-run.cancel",
+            commandId: CommandId.make(`kin-steer-cancel:${wakeupId}:${leftover.id}`),
+            threadId,
+            runId: leftover.id,
+          })
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Kin could not cancel a queued steer", { orgId, wakeupId, cause }),
+            ),
+          );
+      }
       const status = result.timedOut
         ? "timed_out"
         : result.run?.status === "completed"
