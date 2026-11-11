@@ -131,6 +131,8 @@ it.effect.each([
   { KIN_TEAM_MEMORY: "" },
   { KIN_TEAM_MEMORY: "true" },
   { KIN_TEAM_MEMORY: "ON" },
+  { KIN_TEAM_MEMORY: " on " },
+  { KIN_TEAM_MEMORY: "on\n" },
 ])("team memory is off unless the host sets KIN_TEAM_MEMORY=on: %j", (env) =>
   Effect.gen(function* () {
     yield* org;
