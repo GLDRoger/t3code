@@ -4,7 +4,7 @@ import { memoryDateMillis } from "./frontMatter.ts";
 
 /** What memory is for, written once: `memory_write` carries it and the nightly pass extracts by it. */
 export const MEMORY_RULE =
-  'Save only what will still matter weeks from now and that you could not cheaply find out again: a lasting fact about the company, a client, a person or a project; how the owner wants things done; a decision with its reason; a promise made to or by someone, with its date as due. One item holds one thing, in a few sentences: two facts are two items. Everything else stays out of memory. Something to do later today, or a follow-up minutes or hours away ("get back to them after the pause", "recheck access"), is a reminder: kin_defer. So is a promise due in under a day. A promise further out is an item, plus a reminder only if you must act on the day. Where work stands right now, progress, and what you are waiting for are not memory: the work and its report already hold them, and kin_journal takes what nothing else records. Anything you can read again where it lives (a repo, a PR, a check, whether you have access) is saved nowhere, and neither is small talk or a one-off request.';
+  'Save only what will still matter weeks from now and that you could not cheaply find out again: a lasting fact about the company, a client, a person or a project; how the owner wants things done; a decision with its reason; a promise made to or by someone, with its date as due. One item holds one thing, in a few sentences: two facts are two items. What someone said keeps their exact words as its quote. Everything else stays out of memory. Something to do later today, or a follow-up minutes or hours away ("get back to them after the pause", "recheck access"), is a reminder: kin_defer. So is a promise due in under a day. A promise further out is an item, plus a reminder only if you must act on the day. Where work stands right now, progress, and what you are waiting for are not memory: the work and its report already hold them, and kin_journal takes what nothing else records. Anything you can read again where it lives (a repo, a PR, a check, whether you have access) is saved nowhere, and neither is small talk or a one-off request.';
 
 /** One item holds one thing; a body past this is several. */
 export const BODY_MAX = 2000;
@@ -104,3 +104,49 @@ export const spent = (
   const age = now - memoryDateMillis(head.recorded_at);
   return age > (what === "soon" ? SOON_SPENT_MS : SPENT_MS);
 };
+
+/** Most characters a memory item's `quote` holds. */
+export const QUOTE_MAX = 400;
+/** Fewer folded characters than this prove nothing, unless they are the whole message. */
+const QUOTE_MIN = 12;
+const QUOTE_TOO_LONG = `a quote is at most ${QUOTE_MAX} characters; quote only the words that say it`;
+const QUOTE_NO_WORDS =
+  "that event has no words to quote; cite the person's own message that says it";
+const QUOTE_NOT_SAID = "that quote isn't in the message; quote it exactly or don't save it";
+const QUOTE_TOO_SHORT =
+  "that quote is too short to show where this came from; quote the words that say it";
+export const QUOTE_MISSING = `this says what someone said, so pass quote: their exact words from that message that say it, at most ${QUOTE_MAX} characters; quote it exactly or don't save it`;
+
+/** Case, Unicode forms, curly quotes and runs of whitespace never decide whether words match. */
+const fold = (text: string) =>
+  text
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[‘’‚‛′`´]/g, "'")
+    .replace(/[“”„‟″«»]/g, '"')
+    .replace(/\s+/g, " ")
+    .trim();
+const bare = (text: string) => text.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+
+/**
+ * Why `quote` does not show the cited message said it, as a clause the lead can act on;
+ * undefined when it is that message's own words. `said` is the message, undefined for an
+ * event with no words, such as a tap.
+ */
+export const quoteRefusal = (quote: string, said: string | undefined): string | undefined => {
+  if (quote.length > QUOTE_MAX) return QUOTE_TOO_LONG;
+  if (said === undefined) return QUOTE_NO_WORDS;
+  const words = fold(quote);
+  const message = fold(said);
+  if (words === "" || !message.includes(words)) return QUOTE_NOT_SAID;
+  if (words.length < QUOTE_MIN && bare(words) !== bare(message)) return QUOTE_TOO_SHORT;
+  return undefined;
+};
+/** The writer's quote refusals: about the cited message only, never about what is stored. */
+export const QUOTE_REFUSALS: ReadonlySet<string> = new Set([
+  QUOTE_TOO_LONG,
+  QUOTE_NO_WORDS,
+  QUOTE_NOT_SAID,
+  QUOTE_TOO_SHORT,
+  QUOTE_MISSING,
+]);

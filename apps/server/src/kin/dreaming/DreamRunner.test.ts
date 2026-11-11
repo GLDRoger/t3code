@@ -66,6 +66,7 @@ const newClaim = (body = "Invented report ships Friday.\n") =>
     source: ownerRef,
     said_by: "owner",
     trust: "owner",
+    quote: "ship the invented report on Friday",
     recorded_at: "2026-11-07T10:00:00.000Z",
     valid_from: "2026-11-07T10:00:00.000Z",
   }).replace("Invented fixture body.\n", body);

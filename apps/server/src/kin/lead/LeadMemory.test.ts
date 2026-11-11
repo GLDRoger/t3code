@@ -209,7 +209,7 @@ it.live(
       yield* identity.registerAgentThread({ orgId, agentId, threadId });
       const message = yield* chats.send(person!, {
         chatId: chat.chatId,
-        body: "Invented request",
+        body: "Invented request: the demo client wants  every report as a PDF.",
         clientMessageId: "fixture",
       });
       const run = yield* startWakeupRun(threadId, "fixture-wakeup");
@@ -528,8 +528,22 @@ it.live(
             .pipe(Effect.flip)).message,
           "Use kin_defer to write deferrals.",
         );
-        assert.deepStrictEqual(yield* service.write(scope, input), { itemId: "new-claim" });
-        assert.deepStrictEqual(yield* service.write(scope, input), { itemId: "new-claim" });
+        // What the owner said is kept only with their words from the cited message of this turn.
+        const refusedQuote = (write: typeof input) =>
+          service.write(scope, write).pipe(
+            Effect.flip,
+            Effect.map((error) => error.message),
+          );
+        assert.include(yield* refusedQuote(input), "pass quote");
+        for (const [quote, sourceEventId, refusal] of [
+          ["The demo client prefers PDF reports", "fixture-event", "isn't in the message"],
+          ["Invented teammate note", "fixture-event", "isn't in the message"],
+          ["Invented teammate note", "member-event", "Kin record not found."],
+        ] as const)
+          assert.include(yield* refusedQuote({ ...input, quote, sourceEventId }), refusal);
+        const quoted = { ...input, quote: "The demo client wants every report as a PDF" };
+        assert.deepStrictEqual(yield* service.write(scope, quoted), { itemId: "new-claim" });
+        assert.deepStrictEqual(yield* service.write(scope, quoted), { itemId: "new-claim" });
         assert.strictEqual(
           (yield* service
             .write(scope, { ...input, item: { ...input.item, body: "Different" } })
@@ -560,6 +574,7 @@ it.live(
         assert.deepStrictEqual(
           yield* service.write(scope, {
             sourceEventId: input.sourceEventId,
+            quote: quoted.quote,
             item: { body, ...fields },
             op: input.op,
           }),
@@ -692,7 +707,7 @@ it.live(
         // The server labels money and access sensitive whatever the lead said, and never stores
         // an actual secret.
         const noted = (id: string, body: string) => ({
-          ...input,
+          ...quoted,
           item: { ...input.item, id: KinMemoryItemId.make(id), title: `Invented ${id}`, body },
         });
         yield* service.write(scope, noted("amount-claim", "Invented retainer is $4,000 a month"));
@@ -705,6 +720,7 @@ it.live(
         // suggestion the owner is asked about, and the team doesn't know it meanwhile.
         yield* service.write(scope, {
           ...noted("routine-claim", "Invented routine finding"),
+          quote: undefined,
           sourceEventId: "routine-event",
         });
 
@@ -839,6 +855,10 @@ it.live(
         assert.include(content, "trust: owner");
         assert.include(content, `chat: ${chat.chatId}`);
         assert.include(content, "source_event: fixture-event");
+        assert.include(
+          yield* git(remote, ["show", `${committed.commit}:claims/new-claim.md`]),
+          "quote: The demo client wants every report as a PDF",
+        );
         // A schedule is a native task with its Kin row now, not a memory item.
         assert.notInclude(files, `deferrals/${scheduled.itemId}.md`);
         assert.deepInclude(nativeSaves[0], {
@@ -873,7 +893,12 @@ it.live(
         yield* sql`UPDATE kin_events SET wakeup_id = 'restart-wakeup' WHERE wakeup_id = 'fixture-wakeup'`;
         yield* writerService.stage(orgId, "restart-wakeup", {
           path: "claims/lost-claim.md",
-          content: fixtureItem({ id: "lost-claim", kind: "claim", due: null }),
+          content: fixtureItem({
+            id: "lost-claim",
+            kind: "claim",
+            due: null,
+            quote: "every report as a PDF",
+          }),
           sourceEventId: "fixture-event",
         });
         yield* writerService.appendJournal(orgId, "restart-wakeup", ["Summary: Lost summary"]);
@@ -1041,6 +1066,7 @@ it.live(
         const said = {
           ...input,
           sourceEventId: "member-event",
+          quote: "Invented teammate note",
           item: {
             ...input.item,
             id: KinMemoryItemId.make("member-claim"),
