@@ -15,11 +15,14 @@ import {
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as Statement from "effect/sql/Statement";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Audit from "../approvals/Audit.ts";
@@ -487,5 +490,122 @@ it.effect("a suggestion first bound after a listing stays out of that listing's 
     );
     const after = yield* memory.list([owner], { orgId });
     assert.strictEqual(after.items.find((each) => each.itemId === "x")?.visibility, "suggested");
+  }).pipe(Effect.scoped, Effect.provide(root)),
+);
+
+/** `sql`, running `before` ahead of each statement it returns an effect for, and `entering` ahead of a transaction. */
+const gatedSql = (
+  sql: SqlClient.SqlClient,
+  hooks: {
+    readonly before?: (text: string) => Effect.Effect<void> | undefined;
+    readonly entering?: Effect.Effect<void>;
+  },
+) =>
+  new Proxy(sql, {
+    apply: (target, self, args: Parameters<SqlClient.SqlClient>) => {
+      const [strings] = args;
+      const gate =
+        Array.isArray(strings) && "raw" in strings ? hooks.before?.(strings.join("?")) : undefined;
+      const statement: unknown = Reflect.apply(target, self, args);
+      // Only template calls are gated, and those return a statement.
+      return gate === undefined
+        ? statement
+        : Effect.andThen(gate, statement as Statement.Statement<unknown>);
+    },
+    get: (target, key) =>
+      key === "withTransaction" && hooks.entering !== undefined
+        ? <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+            Effect.andThen(hooks.entering!, target.withTransaction(effect))
+        : Reflect.get(target, key, target),
+  });
+
+// Review of 17822434f4: a suggestion that took its revision before a listing but stored it after
+// came in at the listing's revision, so that listing's yes let the team know it unseen.
+it.effect("a suggestion stored after a listing stays out of that listing's yes", () =>
+  Effect.gen(function* () {
+    const kin = yield* Kin.KinServer;
+    const services = Option.getOrThrow(kin.services);
+    const sql = yield* SqlClient.SqlClient;
+    yield* pairSession(session.sessionId);
+    const [owner] = yield* Context.get(services, KinIdentity).resolve(session);
+    assert.isDefined(owner);
+    const { orgId } = owner;
+    const item = (id: string) => ({
+      head: decodeHead({
+        id,
+        orgId,
+        path: `claims/${id}.md`,
+        kind: "claim",
+        title: `Invented ${id}`,
+        status: "open",
+        due: null,
+        recorded_at: "2026-11-01T00:00:00.000Z",
+        valid_from: "2026-11-01T00:00:00.000Z",
+        invalid_at: null,
+        superseded_by: null,
+        review_by: null,
+        source: "fixture",
+        said_by: "fixture",
+        trust: "owner",
+        links: [],
+        sensitive: false,
+      }),
+      body: "Invented body.\n",
+    });
+    const items = [item("a"), item("b")];
+    const memory = Context.get(services, KinMemoryChanges);
+    yield* memory.attachWriter({
+      undo: () => Effect.die("Unused"),
+      retire: () => Effect.die("Unused"),
+      items: () => Effect.succeed(items),
+      relabel: (_org, input) =>
+        Effect.succeed({ head: items.find((each) => each.head.id === input.itemId)!.head }),
+    });
+    const paused = yield* Deferred.make<void>();
+    const resume = yield* Deferred.make<void>();
+    const waits = yield* Deferred.make<void>();
+    let gated = false;
+    // A pauses just before it stores its suggestion.
+    const sqlA = gatedSql(sql, {
+      before: (text) => {
+        if (gated || !text.includes("INSERT INTO kin_memory_labels")) return undefined;
+        gated = true;
+        return Deferred.succeed(paused, undefined).pipe(Effect.andThen(Deferred.await(resume)));
+      },
+    });
+    const a = yield* suggest(orgId, "a", fingerprint(items[0]!)).pipe(
+      Effect.provideService(SqlClient.SqlClient, sqlA),
+      Effect.forkChild,
+    );
+    yield* Deferred.await(paused);
+    // B suggests and the owner lists while A is paused, unless B must wait for A to finish.
+    const listing = yield* suggest(orgId, "b", fingerprint(items[1]!)).pipe(
+      Effect.provideService(
+        SqlClient.SqlClient,
+        gatedSql(sql, { entering: Deferred.succeed(waits, undefined).pipe(Effect.asVoid) }),
+      ),
+      Effect.andThen(memory.list([owner], { orgId })),
+      Effect.forkChild,
+    );
+    yield* Effect.raceFirst(Fiber.await(listing).pipe(Effect.asVoid), Deferred.await(waits));
+    yield* Deferred.succeed(resume, undefined);
+    yield* Fiber.join(a);
+    const listed = yield* Fiber.join(listing);
+    const shown: Array<string> = listed.items
+      .filter((each) => each.visibility === "suggested")
+      .map((each) => each.itemId);
+    const confirmed = yield* memory.confirmSuggestions([owner], {
+      orgId,
+      asOf: listed.suggestionsAsOf,
+    });
+    // Only what the listing showed is confirmed; anything it didn't show is still waiting.
+    assert.includeMembers(
+      shown,
+      confirmed.items.map((each) => each.itemId),
+    );
+    const after = yield* memory.list([owner], { orgId });
+    for (const id of ["a", "b"])
+      if (!shown.includes(id))
+        assert.strictEqual(after.items.find((each) => each.itemId === id)?.visibility, "suggested");
   }).pipe(Effect.scoped, Effect.provide(root)),
 );

@@ -608,6 +608,20 @@ it.effect(
         yield* reason(chats.react(priya, { messageId: before.messageId, emoji: "👀", on: true })),
         "not_found",
       );
+      // Review of 17822434f4: a reply to it reads exactly as a reply to a message that isn't there.
+      for (const replyTo of [before.messageId, KinMessageId.make("invented-missing")])
+        assert.strictEqual(
+          yield* reason(
+            chats.send(priya, {
+              chatId,
+              body: "Invented reply",
+              mentions: [],
+              clientMessageId: `reply-${replyTo}`,
+              replyTo,
+            }),
+          ),
+          "not_found",
+        );
 
       // Something new on the old message reaches the owner only; what is said now reaches her.
       yield* chats.react(owner, { messageId: before.messageId, emoji: "🎉", on: true });
@@ -826,6 +840,21 @@ it.effect(
         ),
         "not_found",
       );
+      // Review of 17822434f4: nor can it tell a message from before the join from a missing one.
+      for (const replyTo of [said.messageId, KinMessageId.make("invented-missing")])
+        assert.strictEqual(
+          yield* reason(
+            chats.send(turn, {
+              chatId,
+              body: "Invented-reply",
+              mentions: [],
+              clientMessageId: `reply-${replyTo}`,
+              intent: "answer",
+              replyTo,
+            }),
+          ),
+          "not_found",
+        );
       const [after] = yield* sql<{ revision: number; state: string }>`SELECT revision,
         state_json AS state FROM kin_widgets WHERE widget_id = ${card.widgetId}`;
       assert.deepStrictEqual(after, stored);
