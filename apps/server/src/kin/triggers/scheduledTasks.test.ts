@@ -10,6 +10,7 @@ import {
   type MemoryItemHead,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -186,7 +187,7 @@ const retirement = (agentId: string, at: number, retired: boolean) =>
     const agent = KinAgentId.make(agentId);
     yield* sql.withTransaction(
       Effect.gen(function* () {
-        const retiredAt = retired ? new Date(at).toISOString() : null;
+        const retiredAt = retired ? DateTime.formatIso(DateTime.makeUnsafe(at)) : null;
         yield* sql`UPDATE kin_agents SET retired_at = ${retiredAt} WHERE agent_id = ${agentId}`;
         if (retired)
           yield* Retirement.retire({ orgId, agentId: agent, retiredAt: retiredAt!, now: at });

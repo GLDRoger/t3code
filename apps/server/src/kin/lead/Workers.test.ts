@@ -1646,7 +1646,7 @@ const retireLead = (ctx: Effect.Success<ReturnType<typeof setup>>, at: number) =
   ctx.sql
     .withTransaction(
       Effect.gen(function* () {
-        const retiredAt = new Date(at).toISOString();
+        const retiredAt = DateTime.formatIso(DateTime.makeUnsafe(at));
         yield* ctx.sql`UPDATE kin_agents SET retired_at = ${retiredAt} WHERE agent_id = ${leadId}`;
         yield* Retirement.retire({ orgId: ctx.orgId, agentId: leadId, retiredAt, now: at });
       }),
