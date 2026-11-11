@@ -40,7 +40,7 @@ import {
   scheduleOf,
   scheduledTaskTriggerId,
 } from "../widgets/scheduledTaskCard.ts";
-import { deferralOrigin } from "./deferralOrigin.ts";
+import { cardChatFor, firingOrigin } from "./deferralOrigin.ts";
 import { hex } from "./deferrals.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 
@@ -180,10 +180,13 @@ export const syncScheduledTasks = Effect.fn("KinScheduledTasks.sync")(function* 
         // Delete holds until the lead cancels the item, or the owner changes it.
         if (row?.state === "deleted" && row.recordedAt === item.recorded_at) return;
         let chatId: KinChatId | null = null;
+        // Once its chat was shared, a scheduled task speaks in its lead's owner chat instead.
         if (item.chat !== undefined) {
-          const [own] = yield* sql`SELECT 1 FROM kin_chats
-            WHERE org_id = ${orgId} AND chat_id = ${item.chat} ORDER BY chat_id`;
-          if (own !== undefined) chatId = KinChatId.make(item.chat);
+          const lead = yield* liveLead(sql, orgId, {
+            chatId: item.chat,
+            prefer: CHIEF_OF_STAFF_DOMAIN,
+          });
+          chatId = yield* cardChatFor(sql, orgId, item.chat, lead?.ownerChatId ?? null);
         }
         if (chatId === null)
           chatId =
@@ -341,7 +344,7 @@ const make = Effect.gen(function* () {
         ? undefined
         : yield* liveLead(sql, orgId, { chatId: item.chat, prefer: CHIEF_OF_STAFF_DOMAIN });
     // Run at no more than the chat the owner set it up from.
-    const origin = lead === undefined ? undefined : yield* deferralOrigin(sql, orgId, item, lead);
+    const origin = lead === undefined ? undefined : yield* firingOrigin(sql, orgId, item, lead);
     const admitted =
       lead === undefined
         ? false
@@ -395,7 +398,10 @@ const make = Effect.gen(function* () {
             : Effect.void;
         const skip = Effect.fn("KinScheduledTasks.skip")(function* (why: string) {
           yield* settleCard({ at, status: "skipped", note: why });
-          const chatId = row.chatId ?? lead?.ownerChatId;
+          const chatId =
+            row.chatId === null
+              ? lead?.ownerChatId
+              : yield* cardChatFor(sql, orgId, row.chatId, lead?.ownerChatId ?? null);
           if (chatId !== undefined && chatId !== null)
             yield* notice(
               orgId,

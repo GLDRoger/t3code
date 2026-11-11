@@ -22,6 +22,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { messageForViewer } from "./messageView.ts";
+import { memberReads } from "./sharing.ts";
 import * as Repository from "./KinChatRepository.ts";
 import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
 import * as PubSub from "effect/PubSub";
@@ -180,6 +181,27 @@ const make = Effect.gen(function* () {
             });
             if (Option.isNone(memberOption)) return false;
             const member = memberOption.value;
+            // A person reads nothing from before they joined: no message, card, tap or reaction.
+            const about =
+              event.type === "message.posted"
+                ? event.message.messageId
+                : event.type === "widget.updated"
+                  ? event.widget.messageId
+                  : event.type === "reaction.updated"
+                    ? event.reaction.messageId
+                    : event.type === "waiting.updated"
+                      ? event.item.messageId
+                      : null;
+            if (
+              identity._tag === "person" &&
+              about !== null &&
+              !(yield* memberReads(sql, {
+                orgId: identity.orgId,
+                memberId: member.memberId,
+                messageId: about,
+              }).pipe(Effect.orElseSucceed(() => false)))
+            )
+              return false;
             const messageId =
               event.type === "widget.updated"
                 ? event.widget.messageId

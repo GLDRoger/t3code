@@ -15,10 +15,9 @@ export type TurnAudience = "owner_only" | "shared";
 export const CHAT_ANSWER_TAGS = ["chat.message", "widget.action", "chat.reaction", "worker.report"];
 
 /**
- * `owner_only` when everyone who can read the reply is the lead's owner: every person still in
- * the chat it answers (its owner chat when no chat event woke it) and in every chat a due
- * deferral, passed-on request or reported work came from, every stored author of the messages
- * and taps it answers, and every reacting person. Read from stored rows only, never model text.
+ * `owner_only` when only the owner can read the reply: every chat it answers or was asked from was
+ * never shared (`shared_at`) and has no one else in it, every stored author and reactor is the
+ * owner, and every reported worker is private. From stored rows only, never model text.
  */
 export const turnAudience = Effect.fn("KinAudience.turnAudience")(
   function* (input: {
@@ -44,8 +43,11 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
       messageChatId: string | null;
       authorKind: string | null;
       authorPersonId: string | null;
+      workerContext: string | null;
     }>`
       SELECT e.tag, json_extract(e.json, '$.chatId') AS "chatId",
+        (SELECT k.context FROM kin_workers k WHERE k.org_id = e.org_id AND e.tag = 'worker.report'
+          AND k.worker_id = json_extract(e.json, '$.workerId')) AS "workerContext",
         json_extract(e.json, '$.origin.chatId') AS "originChatId",
         json_extract(e.json, '$.origin.personId') AS "originPersonId",
         json_extract(e.json, '$.provenance._tag') AS provenance,
@@ -79,17 +81,22 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
         answersChat = true;
         chats.add(event.chatId);
       }
+      // Shared work never reports into a private turn, whichever chat it now answers in.
+      if (event.tag === "worker.report" && event.workerContext !== "private")
+        return "shared" as const;
       if (event.originPersonId !== null) return "shared" as const;
       if (event.originChatId !== null) chats.add(event.originChatId);
     }
     if (!answersChat) chats.add(lead.ownerChatId);
-    const rows = yield* sql<{ others: number }>`
+    const rows = yield* sql<{ others: number; sharedAt: number | null }>`
       SELECT (SELECT COUNT(*) FROM kin_chat_members m
           WHERE m.org_id = c.org_id AND m.chat_id = c.chat_id AND m.principal_kind = 'person'
-            AND m.left_at IS NULL AND m.person_id IS NOT ${lead.owner}) AS others
+            AND m.left_at IS NULL AND m.person_id IS NOT ${lead.owner}) AS others,
+        c.shared_at AS "sharedAt"
       FROM kin_chats c WHERE c.org_id = ${input.orgId} AND c.chat_id IN ${sql.in([...chats])}
       ORDER BY c.chat_id`;
-    return rows.length === chats.size && rows.every((row) => row.others === 0)
+    return rows.length === chats.size &&
+      rows.every((row) => row.others === 0 && row.sharedAt === null)
       ? ("owner_only" as const)
       : ("shared" as const);
   },
@@ -191,20 +198,24 @@ export const askedIn = Effect.fn("KinAudience.askedIn")(function* (turn: Turn, c
   return rows.length > 0;
 });
 
-/** Every human now in the chat is the lead's owner; none is, in a chat that isn't this org's. */
+/**
+ * The chat was never shared and every human now in it is the lead's owner; none is, in a chat
+ * that isn't this org's. A chat someone else could once read stays out of owner-only reach.
+ */
 export const ownerOnlyChat = Effect.fn("KinAudience.ownerOnlyChat")(function* (
   turn: Pick<Turn, "orgId" | "agentId">,
   chatId: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ others: number }>`
+  const rows = yield* sql<{ others: number; sharedAt: number | null }>`
     SELECT (SELECT COUNT(*) FROM kin_chat_members m
         WHERE m.org_id = c.org_id AND m.chat_id = c.chat_id AND m.principal_kind = 'person'
-          AND m.left_at IS NULL AND m.person_id IS NOT a.owner_person_id) AS others
+          AND m.left_at IS NULL AND m.person_id IS NOT a.owner_person_id) AS others,
+      c.shared_at AS "sharedAt"
     FROM kin_chats c JOIN kin_agents a ON a.org_id = c.org_id AND a.agent_id = ${turn.agentId}
     WHERE c.org_id = ${turn.orgId} AND c.chat_id = ${chatId}
     ORDER BY c.chat_id`;
-  return rows.every((row) => row.others === 0);
+  return rows.every((row) => row.others === 0 && row.sharedAt === null);
 });
 
 /**
@@ -219,10 +230,9 @@ export const aborted = Effect.fn("KinAudience.aborted")(function* (turn: Turn) {
 });
 
 /**
- * Run in the transaction that makes `personId` an active member of `chatId`. Every running turn
- * whose prompt may carry the owner's context and that answers there, or was asked from there, is
- * marked aborted, unless that person is its lead's owner or its reply already settled. A turn
- * built shared from the start is left alone. Returns the turns the caller must stop after commit.
+ * In the join's transaction: aborts every running turn answering or asked from `chatId` that is
+ * private or was built before the chat was shared, unless `personId` is its lead's owner or its
+ * reply settled. Returns the turns the caller must stop after commit.
  */
 export const abortPrivateTurns = Effect.fn("KinAudience.abortPrivateTurns")(function* (input: {
   readonly orgId: KinOrgId;
@@ -234,7 +244,9 @@ export const abortPrivateTurns = Effect.fn("KinAudience.abortPrivateTurns")(func
   return yield* sql<{ agentId: KinAgentId; wakeupId: string }>`
     UPDATE kin_wakeups AS w SET aborted_at = ${now}, shared_since = COALESCE(shared_since, ${now})
     WHERE w.org_id = ${input.orgId} AND w.status = 'running' AND w.aborted_at IS NULL
-      AND w.settled_at IS NULL AND w.audience IS NOT 'shared'
+      AND w.settled_at IS NULL
+      AND (w.audience IS NOT 'shared' OR EXISTS (SELECT 1 FROM kin_chats c
+        WHERE c.org_id = w.org_id AND c.chat_id = ${input.chatId} AND w.started_at <= c.shared_at))
       AND EXISTS (SELECT 1 FROM kin_agents a WHERE a.org_id = w.org_id
         AND a.agent_id = w.agent_id AND a.owner_person_id IS NOT ${input.personId})
       AND (EXISTS (SELECT 1 FROM kin_events e

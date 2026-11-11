@@ -162,6 +162,18 @@ it.effect("leaves out what a teammate could read or steer: their chats and share
         chatId: "team",
         messageId: "m3",
       })}, 0, 0, 'done')`;
+    yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state)
+      VALUES ('e-dm', ${orgId}, 'lead', 'chat.message', 'P0', ${JSON.stringify({
+        _tag: "chat.message",
+        orgId,
+        agentId: "lead",
+        eventId: "e-dm",
+        receivedAt: at,
+        dedupeKey: null,
+        provenance: { _tag: "human", personId: "owner", memberId: "dm-owner" },
+        chatId: "dm",
+        messageId: "m1",
+      })}, 0, 0, 'done')`;
     const full = yield* collectMaterial({
       orgId,
       from: 0,
@@ -169,8 +181,14 @@ it.effect("leaves out what a teammate could read or steer: their chats and share
       full: true,
       timeZone: "UTC",
       files: new Map([
-        ["deferrals/def-owner.md", fixtureItem({ id: "def-owner", chat: "dm" })],
+        [
+          "deferrals/def-owner.md",
+          fixtureItem({ id: "def-owner", chat: "dm", source_event: "e-dm" }),
+        ],
         ["deferrals/def-team.md", fixtureItem({ id: "def-team", source_event: "e-team" })],
+        // Fifth review of cfb0c8993b: a chat but no source event read as the owner's here and
+        // as asked elsewhere in the index. Unresolved provenance is left out of both.
+        ["deferrals/def-legacy.md", fixtureItem({ id: "def-legacy", chat: "dm" })],
       ]),
     });
     assert.deepStrictEqual(

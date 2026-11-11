@@ -398,11 +398,8 @@ export class KinLeadPrompt extends Context.Service<
       });
       // Reminders and scheduled tasks asked for where someone besides the owner reads, by stored
       // origin: kept out of the owner's index, as their text came from that chat.
+      // The same rule a dream's material keeps (`askedWhereOthersRead`).
       const sharedOrigins = Effect.fnUntraced(function* (orgId: KinOrgId, agentId: KinAgentId) {
-        const [lead] = yield* sql<{ ownerChatId: KinChatId }>`
-          SELECT owner_chat_id AS "ownerChatId" FROM kin_leads
-          WHERE org_id = ${orgId} AND agent_id = ${agentId} ORDER BY agent_id`;
-        if (lead === undefined) return new Set<string>();
         const items = yield* memory.query(
           orgId,
           { kind: "deferral", status: "open", excludeInvalid: true },
@@ -410,8 +407,7 @@ export class KinLeadPrompt extends Context.Service<
         );
         const paths = new Set<string>();
         for (const item of items)
-          if (yield* askedWhereOthersRead(sql, orgId, item, { agentId, ...lead }))
-            paths.add(item.path);
+          if (yield* askedWhereOthersRead(sql, orgId, item)) paths.add(item.path);
         return paths;
       });
       const build = Effect.fn("KinLeadPrompt.build")(function* (input: KinLeadPromptInput) {
@@ -462,6 +458,14 @@ export class KinLeadPrompt extends Context.Service<
           });
           const found = yield* chat.getChat({ orgId, chatId });
           if (Option.isNone(member) || Option.isNone(found) || found.value.lastSeq === 0) return [];
+          // A shared turn reads only what was written after the chat was shared: before that it
+          // was the owner's alone, and a chat never shared has nothing a shared turn may read.
+          const [shared] = ownerOnly
+            ? [{ from: 0 }]
+            : yield* sql<{ from: number | null }>`SELECT shared_from_seq AS "from" FROM kin_chats
+                WHERE org_id = ${orgId} AND chat_id = ${chatId} ORDER BY chat_id`;
+          const from = shared?.from ?? null;
+          if (from === null) return [];
           const page = yield* chat.history({
             orgId,
             chatId,
@@ -472,6 +476,7 @@ export class KinLeadPrompt extends Context.Service<
           // System rows are Kin's own bookkeeping; they taught leads to recite it.
           const messages = page.messages.filter(
             (message) =>
+              message.seq >= from &&
               message.status === "posted" &&
               message.author._tag !== "system" &&
               (message.body.trim() !== "" || (message.attachments?.length ?? 0) > 0) &&
@@ -604,6 +609,13 @@ export class KinLeadPrompt extends Context.Service<
               ),
             )
           : [];
+        // What the owner chose to tell teammates about this lead, so any turn may carry it.
+        const [intro] = yield* sql<{ text: string }>`SELECT public_intro AS text FROM kin_leads
+          WHERE org_id = ${orgId} AND agent_id = ${agentId} ORDER BY agent_id`.pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Kin lead intro unavailable", cause).pipe(Effect.as([])),
+          ),
+        );
         const recent =
           lane === undefined
             ? []
@@ -622,6 +634,9 @@ export class KinLeadPrompt extends Context.Service<
         // Every part is the owner's unless marked `shared`; a shared prompt keeps only those.
         const header: ReadonlyArray<Part> = [
           sharedPart(`Lead name: ${encoded(leadName, true)}`),
+          ...(intro === undefined || intro.text.trim() === ""
+            ? []
+            : [sharedPart(`Intro: ${encoded(intro.text.trim(), true)}`)]),
           ...(charter === undefined
             ? []
             : [

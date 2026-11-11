@@ -9,6 +9,7 @@ import WakeupAudienceAbort from "./migrations/K045_WakeupAudienceAbort.ts";
 import ChatCleared from "./migrations/K046_ChatCleared.ts";
 import SilentMessages from "./migrations/K047_SilentMessages.ts";
 import LeadAccess from "./migrations/K050_LeadAccess.ts";
+import ChatSharing from "./migrations/K051_ChatSharing.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -98,6 +99,7 @@ const loader = Migrator.fromRecord({
   "46_ChatCleared": ChatCleared,
   "47_SilentMessages": SilentMessages,
   "50_LeadAccess": LeadAccess,
+  "51_ChatSharing": ChatSharing,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

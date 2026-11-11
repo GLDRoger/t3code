@@ -44,6 +44,7 @@ import { KinGithubRepoScope } from "../triggers/githubEvents.ts";
 import { KinBudget } from "./KinBudget.ts";
 import * as KinLevels from "./KinLevels.ts";
 import { SHARED_REFUSAL, destination, effectiveAudience, turnChat } from "./Audience.ts";
+import { workerChat } from "./ChatSharing.ts";
 import { toolAdmitted } from "./SharedTools.ts";
 import { isOrgPaused, STOP_REASON } from "./orgState.ts";
 import { resolveLead } from "./LeadMemory.ts";
@@ -527,6 +528,21 @@ const make = Effect.gen(function* () {
       ),
     );
   });
+  /** The chat a worker answers in now (`workerChat`), or `fallback` for a row it can't read. */
+  const cardChat = Effect.fn("KinWorkers.cardChat")(function* (
+    orgId: KinOrgId,
+    workerId: KinWorkerId,
+    fallback: KinChatId | null,
+  ) {
+    const route = yield* workerChat({ orgId, workerId }).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+    return route === undefined
+      ? fallback
+      : route.chatId === null
+        ? null
+        : KinChatId.make(route.chatId);
+  });
   const threadLink = (environmentId: EnvironmentId, threadId: ThreadId) =>
     formatThreadLink({ environmentId, threadId });
   // Cards are best effort: a launched worker must not fail because its card could not be shown.
@@ -681,6 +697,14 @@ const make = Effect.gen(function* () {
           return yield* denied(SHARED_REFUSAL);
         if (input.reviewOf !== undefined && !sameRepository(yield* worker(ctx, input.reviewOf)))
           return yield* denied(REVIEW_ELSEWHERE);
+        // Who the work is for, decided here before anything is sent: an owner-only turn's work
+        // stays private wherever its chat goes, and only private work carries the owner's notes.
+        const context =
+          (yield* effectiveAudience(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql))) ===
+          "owner_only"
+            ? "private"
+            : "shared";
+        if (items.length > 0 && context !== "private") return yield* denied(SHARED_REFUSAL);
         // What was checked before the calls there still holds as the row is written.
         const config = yield* leadConfig(ctx);
         if (!(yield* open(ctx, plan.chats))) return yield* denied(NOT_OPEN);
@@ -695,18 +719,20 @@ const make = Effect.gen(function* () {
         // The environment is written now, so a launch whose reply is lost can be found there.
         const inserted = yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id,
           kind, thread_id, review_of, model_json, provenance_json, status, report_json, started_at,
-          ended_at, title, chat_id, project_id, environment_id, remote_project_id, repository_key)
+          ended_at, title, chat_id, project_id, environment_id, remote_project_id, repository_key,
+          context)
           VALUES (${workerId}, ${ctx.orgId}, ${ctx.agentId}, ${ctx.wakeupId}, ${input.kind},
           ${unboundThreadId(workerId)}, ${input.reviewOf ?? null},
           ${yield* encodeJson(modelSelection)}, ${yield* encodeJson(plan.event.provenance)}, 'queued',
           NULL, ${startedAt}, NULL, ${input.title}, ${chatId}, ${target.hostProjectId}, ${environmentId},
-          ${projectId}, ${repositoryKey})
+          ${projectId}, ${repositoryKey}, ${context})
           ON CONFLICT (worker_id) DO NOTHING RETURNING worker_id`;
         if (inserted.length === 0) {
           const stored = yield* worker(ctx, workerId);
           if (stored.wakeupId !== ctx.wakeupId) return yield* denied();
           yield* sql`UPDATE kin_workers SET status = 'queued', started_at = ${startedAt}, ended_at = NULL,
               remote_project_id = ${projectId}, repository_key = ${repositoryKey},
+              context = CASE WHEN context = 'private' THEN 'private' ELSE ${context} END,
               environment_id = CASE WHEN thread_id = ${unboundThreadId(workerId)}
                 THEN ${environmentId} ELSE environment_id END
             WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId} AND status = 'failed'`;
@@ -775,7 +801,7 @@ const make = Effect.gen(function* () {
     const live = launched.status === null || !endedStatuses.has(launched.status);
     yield* showCard(ctx, {
       orgId: ctx.orgId,
-      chatId,
+      chatId: (yield* cardChat(ctx.orgId, workerId, chatId)) ?? chatId,
       agentId: ctx.agentId,
       threadId,
       environmentId,
@@ -829,22 +855,35 @@ const make = Effect.gen(function* () {
     if (plan.worker.environmentId === null || !bound(plan.worker))
       return yield* denied("That worker never started. Start a new one with kin_delegate.");
     const environmentId = plan.worker.environmentId;
-    const workerChat = plan.worker.chatId;
+    const workerChatId = plan.worker.chatId;
     // Last before the send: the gate's check again, and what a follow-up brings back lands in
     // the worker's chat, so the turn must be one that may write there.
     yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* lead(scope);
+        const audience = yield* effectiveAudience(ctx).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        );
+        const [stored] = yield* sql<{ context: string | null }>`SELECT context FROM kin_workers
+          WHERE org_id = ${ctx.orgId} AND worker_id = ${input.workerId} ORDER BY worker_id`;
+        // Where its answer lands now: its chat, or the owner's once private work's chat was shared.
+        const answersIn = yield* cardChat(ctx.orgId, input.workerId, workerChatId);
         if (
           !(yield* toolAdmitted(ctx, "kin_follow_up", input).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
           )) ||
-          (workerChat !== null &&
-            (yield* destination(ctx, workerChat).pipe(
+          // Private work takes briefs only from owner-only turns.
+          (audience !== "owner_only" && stored?.context === "private") ||
+          (answersIn !== null &&
+            (yield* destination(ctx, answersIn).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
             )) !== "allowed")
         )
           return yield* denied(SHARED_REFUSAL);
+        // Before the send: an owner-only turn's brief makes the work private, for good.
+        if (audience === "owner_only")
+          yield* sql`UPDATE kin_workers SET context = 'private'
+            WHERE org_id = ${ctx.orgId} AND worker_id = ${input.workerId}`;
       }),
     );
     const requestKey = (yield* hash({ wakeupId: ctx.wakeupId, input })).slice(0, 32);
@@ -871,10 +910,11 @@ const make = Effect.gen(function* () {
       threadId: plan.worker.threadId,
       key: `kin-stop-launch:${input.workerId}:${sent.runId}`,
     });
-    if (plan.worker.chatId !== null)
+    const followUpCard = yield* cardChat(ctx.orgId, input.workerId, plan.worker.chatId);
+    if (followUpCard !== null)
       yield* showCard(ctx, {
         orgId: ctx.orgId,
-        chatId: plan.worker.chatId,
+        chatId: followUpCard,
         agentId: plan.worker.agentId,
         threadId: plan.worker.threadId,
         environmentId,
@@ -897,15 +937,16 @@ const make = Effect.gen(function* () {
     const record = yield* sql.withTransaction(
       Effect.gen(function* () {
         const stored = yield* worker(ctx, input.workerId);
-        // Its own lead stops it, from an owner-only turn or from the chat that asked for it.
+        // Its own lead stops it, from an owner-only turn or from the chat it answers in.
         const here = yield* turnChat(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+        const answersIn = yield* cardChat(ctx.orgId, input.workerId, stored.chatId);
         if (
-          stored.chatId !== here?.chatId &&
+          answersIn !== here?.chatId &&
           (yield* effectiveAudience(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql))) !==
             "owner_only"
         )
           return yield* missing();
-        return stored;
+        return { ...stored, chatId: answersIn };
       }),
     );
     if (record.environmentId === null || !bound(record))

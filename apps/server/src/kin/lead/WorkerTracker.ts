@@ -38,7 +38,11 @@ import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/OrchestrationEventStore.ts";
+import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
+import { KinChatHub } from "../chat/KinChatHub.ts";
+import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
+import { freezeMovedCard, workerChat } from "./ChatSharing.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import { remoteTaskCardState } from "../widgets/taskCard.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
@@ -113,7 +117,10 @@ const WorkerRow = Schema.Struct({
   pullRequestUrl: Schema.NullOr(Schema.String),
   pullRequestNumber: Schema.NullOr(Schema.Number),
 });
-type WorkerRow = typeof WorkerRow.Type;
+type WorkerRow = typeof WorkerRow.Type & {
+  /** Set once its chat was shared after private work began: `chatId` is then the owner chat. */
+  readonly moved: { readonly from: string | null; readonly leadName: string } | undefined;
+};
 const decodeWorker = Schema.decodeUnknownEffect(WorkerRow);
 const decodeAuthor = Schema.decodeUnknownEffect(KinAuthor);
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
@@ -153,6 +160,9 @@ const make = Effect.gen(function* () {
   const env = yield* WorkerEnvironment.KinWorkerEnvironment;
   const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
   const publisher = yield* Effect.serviceOption(Publish.KinWorkerPublish);
+  const repo = yield* KinChatRepository;
+  const hub = yield* KinChatHub;
+  const environment = yield* Effect.serviceOption(ServerEnvironment);
   // Followers live as long as this service, so shutting down stops them.
   const followers = yield* Scope.Scope;
   const bootedAt = yield* Clock.currentTimeMillis;
@@ -168,7 +178,19 @@ const make = Effect.gen(function* () {
       model_json AS model, kind, pull_request_url AS "pullRequestUrl",
       pull_request_number AS "pullRequestNumber"
       FROM kin_workers WHERE org_id = ${orgId} AND worker_id = ${workerId} ORDER BY worker_id`;
-    return raw === undefined ? undefined : yield* decodeWorker(raw);
+    if (raw === undefined) return undefined;
+    const worker = yield* decodeWorker(raw);
+    // Private work whose chat was shared since answers in its lead's owner chat (`workerChat`).
+    const route = yield* workerChat({ orgId, workerId }).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+    return route?.moved === undefined
+      ? { ...worker, moved: undefined }
+      : {
+          ...worker,
+          chatId: route.chatId === null ? null : KinChatId.make(route.chatId),
+          moved: route.moved,
+        };
   });
 
   const author = Effect.fn("WorkerTracker.author")(function* (worker: WorkerRow) {
@@ -193,6 +215,8 @@ const make = Effect.gen(function* () {
    * asked, naming the teammate who asked, as `deferralOrigin` does for a reminder.
    */
   const askedFor = Effect.fn("WorkerTracker.askedFor")(function* (worker: WorkerRow) {
+    // Moved private work answers the owner alone, in their chat, as if asked there.
+    if (worker.moved !== undefined) return {};
     const [row] = yield* sql<{
       wakeupId: string;
       ownerChatId: KinChatId;
@@ -268,11 +292,53 @@ const make = Effect.gen(function* () {
       misleadingMemory: [],
       parsed: false,
     }) satisfies WorkerReport;
+  /**
+   * A moved worker's card: frozen where it was, and one in the owner chat it answers in now,
+   * made the first time something there needs it.
+   */
+  const movedCard = Effect.fn("WorkerTracker.movedCard")(function* (
+    worker: WorkerRow,
+    chatId: KinChatId,
+  ) {
+    const moved = worker.moved;
+    if (moved === undefined) return;
+    if (moved.from !== null)
+      yield* sql
+        .withTransaction(
+          freezeMovedCard({
+            orgId: worker.orgId,
+            chatId: moved.from,
+            threadId: worker.threadId,
+            leadName: moved.leadName,
+          }),
+        )
+        .pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.provideService(KinChatRepository, repo),
+          Effect.provideService(KinChatHub, hub),
+        );
+    if (Option.isNone(environment) || worker.environmentId === null || !isBound(worker)) return;
+    yield* chat
+      .createTaskCard({
+        orgId: worker.orgId,
+        chatId,
+        authorAgentId: worker.agentId,
+        threadId: worker.threadId,
+        title: worker.title ?? "Worker",
+        model: (yield* decodeSelection(worker.model)).model,
+        remote: { environmentId: worker.environmentId, status: "working" },
+      })
+      .pipe(
+        Effect.provideService(ServerEnvironment, environment.value),
+        Effect.provideService(OrchestratorV2, orchestrator),
+      );
+  });
   // Cards are best effort: a worker's outcome never waits on its card.
   const card = <A, E>(worker: WorkerRow, effect: (chatId: KinChatId) => Effect.Effect<A, E>) =>
     worker.chatId === null
       ? Effect.void
-      : effect(worker.chatId).pipe(
+      : movedCard(worker, worker.chatId).pipe(
+          Effect.andThen(effect(worker.chatId)),
           Effect.catchCause((cause) =>
             Effect.logWarning("Kin worker task card unavailable", { cause }),
           ),

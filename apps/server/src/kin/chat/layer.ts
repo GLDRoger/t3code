@@ -25,7 +25,7 @@ export const layer = Layer.mergeAll(
   Layer.mergeAll(Budget.layer.pipe(Layer.provide(Cache.layer)), OwnerTimeZone.layer).pipe(
     Layer.provideMerge(stop),
   ),
-  // A join stops the turns it aborts (`KinGroups.abortTurns`) through the stop switch's fan-out.
+  // A join stops the turns it aborts (`KinGroups.shareWith`) through the stop switch's fan-out.
   Groups.layer.pipe(
     Layer.provide(Presence.layer),
     Layer.provide(stop),

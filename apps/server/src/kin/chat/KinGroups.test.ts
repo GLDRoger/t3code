@@ -462,13 +462,13 @@ it.effect(
       );
       assert.strictEqual(yield* reason(say(priya, chatId, "Still here?")), "not_found");
       assert.strictEqual(yield* reason(groups.members([priya], { chatId })), "not_found");
-      // Back in, she reads it again under the member she was.
+      // Back in under the member she was, she reads from her return on: the file came before.
       const back = yield* groups.addMember([owner], {
         chatId,
         principal: { _tag: "person", personId: priya.personId },
       });
       assert.strictEqual(back.memberId, member("Priya"));
-      assert.isTrue(yield* chats.attachmentReadable([priya], "kin-chat-plan"));
+      assert.isFalse(yield* chats.attachmentReadable([priya], "kin-chat-plan"));
 
       // A lead taken out no longer hears the group: what was queued for it never runs, and the
       // group keeps a lead.
@@ -549,5 +549,92 @@ it.effect(
         (yield* reactions).map((row) => row.wakeupId),
         [tagging.wakeupId, stopping.wakeupId],
       );
+    }).pipe(Effect.provide(layer)),
+);
+
+// Fifth review of cfb0c8993b: everything said in a group before someone joined was the owner's
+// alone, and every read path a member has must keep it from them.
+it.effect(
+  "someone added to a group reads nothing from before they joined, live or stored; the owner reads it all",
+  () =>
+    Effect.gen(function* () {
+      const { sql, groups, chats, owner, orgId, tech, priya, say } = yield* seed;
+      const { chatId } = yield* groups.create([owner], {
+        orgId,
+        title: "Launch",
+        agentIds: [tech],
+        personIds: [],
+      });
+      const before = yield* say(owner, chatId, "Invented private plan");
+      yield* sql`INSERT INTO kin_message_attachments (attachment_id, org_id, chat_id, message_id)
+        VALUES ('kin-chat-before', ${orgId}, ${chatId}, ${before.messageId})`;
+      yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class, type,
+          revision, state_json, awaiting_json, updated_at)
+        VALUES ('card-before', ${orgId}, ${chatId}, ${before.messageId}, 'native', 'task', 1, '{}',
+          '[]', '1970-01-01T00:00:00.000Z')`;
+      yield* chats.react(owner, { messageId: before.messageId, emoji: "👍", on: true });
+
+      yield* groups.addMember([owner], {
+        chatId,
+        principal: { _tag: "person", personId: priya.personId },
+      });
+      // A moment after joining: the list row, the backlog and every page show nothing earlier.
+      const list = yield* chats.subscribeChats([priya], {}).pipe(Stream.take(1), Stream.runCollect);
+      const row =
+        list[0]?._tag === "snapshot" ? list[0].chats.find((c) => c.chatId === chatId) : undefined;
+      assert.isNull(row?.lastMessage ?? null);
+      assert.strictEqual(row?.unread, 0);
+      const live = yield* Stream.toQueue(
+        chats.subscribe([priya], { chatId, afterSeq: 0, afterChangeSeq: 0 }),
+        {
+          capacity: "unbounded",
+        },
+      );
+      const backlog = yield* Queue.take(live);
+      assert.isTrue(backlog._tag === "backlog");
+      if (backlog._tag === "backlog") {
+        assert.deepStrictEqual(backlog.messages, []);
+        assert.deepStrictEqual(backlog.widgets, []);
+        assert.deepStrictEqual(backlog.reactions, []);
+      }
+      const page = yield* chats.history([priya], { chatId, beforeSeq: 100, limit: 50 });
+      assert.deepStrictEqual(page.messages, []);
+      assert.deepStrictEqual(page.widgets, []);
+      assert.deepStrictEqual(page.reactions, []);
+      assert.isFalse(yield* chats.attachmentReadable([priya], "kin-chat-before"));
+      assert.strictEqual(
+        yield* reason(chats.react(priya, { messageId: before.messageId, emoji: "👀", on: true })),
+        "not_found",
+      );
+
+      // Something new on the old message reaches the owner only; what is said now reaches her.
+      yield* chats.react(owner, { messageId: before.messageId, emoji: "🎉", on: true });
+      const after = yield* say(owner, chatId, "Welcome, Priya");
+      yield* sql`INSERT INTO kin_message_attachments (attachment_id, org_id, chat_id, message_id)
+        VALUES ('kin-chat-after', ${orgId}, ${chatId}, ${after.messageId})`;
+      const next = yield* Queue.take(live);
+      assert.isTrue(next._tag === "message" && next.message.messageId === after.messageId);
+      assert.deepStrictEqual(
+        (yield* chats.history([priya], { chatId, beforeSeq: 100, limit: 50 })).messages.map(
+          (message) => message.messageId,
+        ),
+        [after.messageId],
+      );
+      assert.isTrue(yield* chats.attachmentReadable([priya], "kin-chat-after"));
+      const ownerPage = yield* chats.history([owner], { chatId, beforeSeq: 100, limit: 50 });
+      assert.deepStrictEqual(
+        ownerPage.messages.map((message) => message.messageId),
+        [before.messageId, after.messageId],
+      );
+      assert.lengthOf(ownerPage.widgets, 1);
+      assert.deepStrictEqual(
+        (ownerPage.reactions ?? []).map((reaction) => reaction.emoji),
+        ["🎉"],
+      );
+      assert.isTrue(yield* chats.attachmentReadable([owner], "kin-chat-before"));
+      // The group was shared from her join, and stays so.
+      const [chat] = yield* sql<{ sharedFromSeq: number | null }>`SELECT shared_from_seq AS
+        "sharedFromSeq" FROM kin_chats WHERE chat_id = ${chatId}`;
+      assert.strictEqual(chat?.sharedFromSeq, after.seq);
     }).pipe(Effect.provide(layer)),
 );

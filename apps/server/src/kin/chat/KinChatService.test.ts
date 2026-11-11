@@ -478,6 +478,39 @@ describe("KinChatService", () => {
 
       yield* sql`UPDATE kin_chat_members SET left_at = ${timestamp} WHERE chat_id = ${own.chatId} AND person_id = ${memberId}`;
       assert.strictEqual(yield* read(memberSession, membersFile), "refused");
+
+      // Added to a group later, they get its files from their join on, never one from before.
+      const group = KinChatId.make("files-group");
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at)
+        VALUES (${group}, ${person.orgId}, 'team_group', 'Files', 0, ${timestamp})`;
+      const joinGroup = (id: string, personId: KinPersonId, role: "owner" | "member") =>
+        repo.addMember({
+          orgId: person.orgId,
+          chatId: group,
+          memberId: KinMemberId.make(id),
+          principal: { _tag: "person", personId },
+          role,
+          joinedAt: timestamp,
+          leftAt: null,
+          mutedUntil: null,
+        });
+      yield* joinGroup("files-owner", person.personId, "owner");
+      const groupFile = (name: string) =>
+        Effect.gen(function* () {
+          const sent = yield* service.send(person, {
+            ...send,
+            clientMessageId: name,
+            chatId: group,
+            attachments: [yield* uploadPhoto(name)],
+          });
+          return sent.attachments![0]!.id;
+        });
+      const before = yield* groupFile("before.png");
+      yield* joinGroup("files-suraj", memberId, "member");
+      const after = yield* groupFile("after.png");
+      assert.strictEqual(yield* read(memberSession, before), "refused");
+      assert.strictEqual(yield* read(memberSession, after), "served");
+      assert.strictEqual(yield* read(session, before), "served");
     }).pipe(Effect.provide(attachmentLayer)),
   );
 
@@ -503,6 +536,15 @@ describe("KinChatService", () => {
       yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
         VALUES (${person.orgId}, ${agentId}, ${mateId}, ${person.personId}, 0)`;
       const theirs = yield* service.createDirect(mate, lead);
+      // Someone besides the owner reads it from the start, so it is shared from its first seq.
+      assert.deepStrictEqual(
+        yield* sql`SELECT chat_id, shared_at IS NOT NULL AS shared, shared_from_seq FROM kin_chats
+          WHERE chat_id IN (${theirs.chatId}, ${chat.chatId}) ORDER BY chat_id = ${chat.chatId}`,
+        [
+          { chat_id: theirs.chatId, shared: 1, shared_from_seq: 1 },
+          { chat_id: chat.chatId, shared: 0, shared_from_seq: null },
+        ],
+      );
       const said = yield* service.send(mate, {
         chatId: theirs.chatId,
         body: "Between us",
@@ -798,8 +840,9 @@ describe("KinChatService", () => {
           leftAt: null,
           mutedUntil: null,
         });
+        // Joined after the card was posted: it is not theirs to read, let alone answer.
         assert.include(yield* service.act(outsider, tap("member")).pipe(Effect.flip), {
-          reason: "not_allowed",
+          reason: "not_found",
         });
         assert.include(
           yield* service.act(person, { ...tap("bad"), value: "option-9" }).pipe(Effect.flip),

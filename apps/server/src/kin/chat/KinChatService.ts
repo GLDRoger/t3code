@@ -76,6 +76,7 @@ import { KinAttachmentStore } from "./KinAttachmentStore.ts";
 import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
 import * as Reactions from "./reactions.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
+import { memberReads } from "./sharing.ts";
 
 type Identity = PersonIdentity | AgentIdentity;
 type Viewers = ReadonlyArray<PersonIdentity>;
@@ -450,6 +451,11 @@ const make = Effect.gen(function* () {
     if (!mayWrite(member, identity._tag === "agent", yield* Clock.currentTimeMillis))
       return yield* notAllowed;
   });
+  /** Whether the member may read the message: nothing from before they joined. */
+  const readable = (member: KinChatMember, messageId: string) =>
+    memberReads(sql, { orgId: member.orgId, memberId: member.memberId, messageId }).pipe(
+      Effect.mapError(toPersistenceSqlError("KinChatService.readable")),
+    );
   const resolve = Effect.fn("KinChatService.resolve")(function* (
     item: KinWaitingItem,
     resolution: string,
@@ -1084,6 +1090,7 @@ const make = Effect.gen(function* () {
                 reactions: yield* Reactions.liveReactions({
                   orgId: identity.orgId,
                   chatId: input.chatId,
+                  viewerMemberId: member.memberId,
                 }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
                 ...(Option.isSome(presence)
                   ? yield* presence.value.snapshot(identity.orgId, input.chatId)
@@ -1409,12 +1416,14 @@ const make = Effect.gen(function* () {
           "_tag" in caller ? caller : caller.find((viewer) => viewer.orgId === owner.value.orgId);
         if (identity === undefined || identity.orgId !== owner.value.orgId) return false;
         const members = yield* repo.listMembers(owner.value);
-        return members.some(
+        const member = members.find(
           (member) =>
             member.leftAt === null &&
             member.principal._tag === "person" &&
             member.principal.personId === identity.personId,
         );
+        // A file on a message from before they joined is not theirs to fetch.
+        return member !== undefined && (yield* readable(member, owner.value.messageId));
       },
     ),
     send: Effect.fn("KinChatService.send")(function* (caller, input) {
@@ -1795,6 +1804,7 @@ const make = Effect.gen(function* () {
       );
       const member = yield* memberFor(identity, widget.chatId);
       yield* canWrite(identity, member);
+      if (!(yield* readable(member, widget.messageId))) return yield* notFound;
       if (widget.type === "approval")
         return yield* new KinChatError({
           reason: "use_approvals",
@@ -1851,6 +1861,8 @@ const make = Effect.gen(function* () {
       // Membership of the message's own chat: a non-member, or another org's caller, gets not_found.
       const member = yield* memberFor(identity, message.chatId);
       yield* canWrite(identity, member);
+      if (identity._tag === "person" && !(yield* readable(member, message.messageId)))
+        return yield* notFound;
       if (message.status !== "posted") return yield* notAllowed;
       const widget =
         message.widgetId === null

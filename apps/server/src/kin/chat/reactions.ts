@@ -16,6 +16,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlSchema from "effect/sql/SqlSchema";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { readableBy } from "./sharing.ts";
 
 /** A first owner reaction wakes the lead at most this often per chat; a changed answer skips it. */
 const KIN_REACTION_COOLDOWN_MS = 30_000;
@@ -201,6 +202,8 @@ export const liveReactions = Effect.fn("KinReactions.live")(
     readonly orgId: KinOrgId;
     readonly chatId: KinChatId;
     readonly messageIds?: ReadonlyArray<KinMessageId>;
+    /** Only reactions on messages this member may read (`readableBy`). */
+    readonly viewerMemberId?: string;
   }) {
     const sql = yield* SqlClient.SqlClient;
     if (input.messageIds !== undefined && input.messageIds.length === 0) return [];
@@ -210,6 +213,7 @@ export const liveReactions = Effect.fn("KinReactions.live")(
       execute: () => sql`SELECT ${sql.literal(columns)} FROM kin_reactions
         WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND removed_at IS NULL
           ${input.messageIds === undefined ? sql`` : sql`AND message_id IN ${sql.in(input.messageIds)}`}
+          ${input.viewerMemberId === undefined ? sql`` : sql`AND message_id IN (SELECT kin_messages.message_id FROM kin_messages WHERE kin_messages.org_id = ${input.orgId} AND kin_messages.chat_id = ${input.chatId} AND ${readableBy(sql, input.orgId, input.viewerMemberId)})`}
         ORDER BY created_at DESC, message_id, member_id, emoji LIMIT ${BACKLOG_REACTIONS}`,
     })(input);
     return rows.map(toReaction);
