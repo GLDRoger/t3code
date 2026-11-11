@@ -529,7 +529,7 @@ it.effect(
       );
       const stated = {
         saidBy: "fixture-owner",
-        trust: "owner",
+        trust: "owner" as const,
         recordedAt: "2026-11-03T00:00:00.000Z",
       };
       assert.deepStrictEqual(listed, {
@@ -539,7 +539,7 @@ it.effect(
         left: { ...stated, saidAt: null, quote: null },
         inferred: {
           saidBy: agentId,
-          trust: "agent",
+          trust: "agent" as const,
           recordedAt: "2026-11-03T00:00:00.000Z",
           saidAt: null,
           quote: null,
