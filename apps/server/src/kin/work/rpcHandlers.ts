@@ -49,13 +49,12 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
     }),
     "kin.work.subscribe": (input) =>
       Stream.unwrap(
-        call((people) => Effect.succeed(Work.subscribe(people, input))).pipe(
-          Effect.map((stream) =>
-            Option.isNone(kin) || Option.isNone(kin.value.services)
-              ? stream
-              : stream.pipe(Stream.provideContext(kin.value.services.value as never)),
-          ),
-        ),
+        Effect.gen(function* () {
+          if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* disabled;
+          const services = kin.value.services.value;
+          const people = yield* Context.get(services, KinIdentity).resolve(session);
+          return Work.subscribe(people, input).pipe(Stream.provideContext(services));
+        }),
       ),
     "kin.work.create": Effect.fn("KinWork.rpc.create")(function* (input) {
       return yield* call((people) => Work.create(people, input));

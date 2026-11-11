@@ -28,6 +28,7 @@ import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import * as KinRecords from "../work/KinRecords.ts";
 import * as GithubEvents from "./githubEvents.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import { relevant } from "./githubInterest.ts";
@@ -121,7 +122,7 @@ function services(memoryDown: Ref.Ref<boolean>, ticks: Map<string, Effect.Effect
     KinTriggerStore.layer,
     KinTriggerInbox.layer,
     KinTriggerSink.layer,
-    KinEventQueue.layer,
+    KinRecords.layer.pipe(Layer.provideMerge(KinEventQueue.layer)),
     Layer.succeed(Scheduler.Scheduler, {
       register: Effect.fn("KinGithubEventsTest.register")(function* <E, R>(
         name: string,

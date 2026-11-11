@@ -115,11 +115,18 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
         (config.createdBy !== null && config.createdBy !== owner.personId)
       )
         return false;
+      // Work the owner gave the lead counts as asked in its direct chat: the stored assigner
+      // is the owner, and the turn answers there (`turnChat`).
+      const ownerAssigned =
+        event._tag === "record.changed" &&
+        event.provenance._tag === "human" &&
+        event.provenance.personId === owner.personId;
       if (
-        (event._tag !== "chat.message" &&
+        !ownerAssigned &&
+        ((event._tag !== "chat.message" &&
           event._tag !== "widget.action" &&
           event._tag !== "chat.reaction") ||
-        event.chatId !== config.ownerChatId
+          event.chatId !== config.ownerChatId)
       )
         return false;
       if ((yield* effectiveAudience(ctx)) !== "owner_only") return false;

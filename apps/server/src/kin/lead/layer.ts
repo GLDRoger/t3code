@@ -37,6 +37,7 @@ import { KinLeadToolkit } from "./mcp/tools.ts";
 import { handlers } from "./mcp/handlers.ts";
 import { KinWorkToolkit } from "../work/mcp/tools.ts";
 import { handlers as workHandlers } from "../work/mcp/handlers.ts";
+import { importWork } from "../work/importWork.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
@@ -311,8 +312,36 @@ const tracker = Layer.effectDiscard(
     yield* tracker.start.pipe(forkParked);
   }),
 );
+// Once per item, at every start: what leads tracked before Work existed becomes entries.
+const workImport = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const memory = yield* Memory.Memory;
+    const { repositories } = yield* MemoryConfig.MemoryConfig;
+    yield* Effect.forEach(
+      repositories,
+      ({ orgId }) =>
+        Effect.gen(function* () {
+          const items = yield* memory.items(orgId, "triggers");
+          const imported = yield* importWork(
+            orgId,
+            items.map((item) => item.head),
+          );
+          if (imported.workers + imported.memory > 0)
+            yield* Effect.logInfo("Kin brought earlier tracking into Work", { orgId, ...imported });
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin Work import failed; the next start tries again", {
+              orgId,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        ),
+      { discard: true },
+    ).pipe(forkParked);
+  }),
+);
 const production = withServices(
-  Layer.mergeAll(runner, ChatWake.layer, registration, tracker).pipe(
+  Layer.mergeAll(runner, ChatWake.layer, registration, tracker, workImport).pipe(
     Layer.provideMerge(workers),
     Layer.provideMerge(Handoff.layer),
     Layer.provideMerge(toolkit),
