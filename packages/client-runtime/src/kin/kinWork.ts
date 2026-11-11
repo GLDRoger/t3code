@@ -643,10 +643,11 @@ const principalFromText = (text: string | null): KinWorkPrincipal | null => {
       : null;
 };
 
-const dayFromText = (text: string | null, now: Date) => {
+/** A due time from the history, as the day it is where the owner is, like the due date itself. */
+const dayFromText = (text: string | null, now: Date, zone: string | null) => {
   if (text === null) return null;
   const date = new Date(text);
-  return Number.isNaN(date.getTime()) ? null : kinWorkDay(date, now);
+  return Number.isNaN(date.getTime()) ? null : kinWorkDay(dayInZone(date, zone), now);
 };
 
 /** One change in words. Bookkeeping fields (labels, kinds) stay out of it. */
@@ -691,7 +692,7 @@ function changeText(change: KinRecordChange, names: KinWorkNames, now: Date): st
     );
   const due = field("due");
   if (due !== undefined) {
-    const day = dayFromText(due.to, now);
+    const day = dayFromText(due.to, now, names.zone);
     clauses.push(day === null ? "took the date off" : `set it due ${day}`);
   }
   if (field("title") !== undefined) clauses.push("renamed it");

@@ -131,9 +131,37 @@ const editOf = (item: KinRecordDetail): KinWorkEdit => ({
   from: { title: item.title, notes: item.notes },
 });
 
+/**
+ * What the task says now where that differs from what the owner started typing over, so a form
+ * can show someone else's change beside the owner's own words. Null where nothing moved.
+ */
+export const kinWorkEditMoved = (
+  edit: KinWorkEdit,
+  item: Pick<KinRecordDetail, "title" | "notes">,
+): { readonly title: string | null; readonly notes: string | null } => ({
+  title: item.title === edit.from.title ? null : item.title,
+  notes: item.notes === edit.from.notes ? null : item.notes.trim() || "No notes.",
+});
+
 /** Where the changes start: nothing done, and a form already typing over `editing` if given. */
 export const kinWorkChangesStart = (editing?: KinRecordDetail): KinWorkChangesState =>
   editing === undefined ? KIN_WORK_NO_CHANGES : { ...KIN_WORK_NO_CHANGES, edit: editOf(editing) };
+
+/**
+ * What a list says above its rows: a change that failed, or one with a way back. A change that
+ * simply worked shows in the row itself, and the task's own sheet says the rest while it is open.
+ */
+export const kinWorkListNotice = (
+  state: KinWorkChangesState,
+  openKey: KinRecordKey | null,
+): KinWorkNotice | null => {
+  const { notice } = state;
+  return notice !== null &&
+    notice.key !== openKey &&
+    (notice.kind !== "saved" || notice.undo !== null)
+    ? notice
+    : null;
+};
 
 /** A task as the owner should see it now: the host's newest word, then what is being saved. */
 export function kinWorkApplied<R extends KinRecord>(record: R, state: KinWorkChangesState): R {
@@ -345,10 +373,20 @@ export function createKinWorkChanges(options: {
   return {
     getState: () => state,
     run,
-    /** Takes back the change a notice offers to undo, against the task as it is now. */
-    undo: (record: KinRecord, names: KinWorkNames) => {
-      const undo = state.notice?.key === record.key ? state.notice.undo : null;
-      return undo === null ? Promise.resolve(false) : run(record, undo, names);
+    /**
+     * Takes back the change the notice offers to undo, against the host's answer to it, or
+     * `latest` when the screen holds a newer copy. Works after a list has dropped the task.
+     */
+    undo: (names: KinWorkNames, latest?: KinRecord) => {
+      const { notice } = state;
+      const answer = notice === null ? undefined : state.answers[notice.key];
+      if (notice === null || notice.undo === null || answer === undefined)
+        return Promise.resolve(false);
+      const record =
+        latest !== undefined && latest.key === notice.key && latest.rev > answer.rev
+          ? latest
+          : answer;
+      return run(record, notice.undo, names);
     },
     dismiss: () => set({ notice: null }),
     startEdit: (item: KinRecordDetail) => set({ edit: editOf(item), notice: null }),

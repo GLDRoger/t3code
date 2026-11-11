@@ -294,7 +294,7 @@ function KinWorkItemBody(props: ItemTarget) {
         <KinWorkNoticeLine
           notice={notice}
           saving={saving}
-          onUndo={() => void changes.undo(item, names)}
+          onUndo={() => void changes.undo(names, item)}
           onDismiss={changes.dismiss}
         />
       )}

@@ -21,6 +21,7 @@ import {
 import {
   KIN_WORK_COPY,
   kinWorkApplied,
+  kinWorkListNotice,
   type KinWorkAction,
   type KinWorkNotice,
 } from "@t3tools/client-runtime/kin/kinWorkChanges";
@@ -30,7 +31,7 @@ import {
   type KinWorkListState,
 } from "@t3tools/client-runtime/kin/kinWorkList";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
-import type { KinRecord, KinRecordKey } from "@t3tools/contracts";
+import type { KinRecordKey } from "@t3tools/contracts";
 import { LegendList } from "@legendapp/list/react";
 import { Link } from "@tanstack/react-router";
 import * as Option from "effect/Option";
@@ -173,6 +174,7 @@ export function KinWorkView({
           stale={state.stale}
           directory={directory}
           changes={changes}
+          openKey={openKey}
           onOpen={setOpenKey}
           onAdd={add}
         />
@@ -237,6 +239,7 @@ function KinWorkBody(
     readonly stale: boolean;
     readonly directory: KinWorkDirectory;
     readonly changes: KinWorkChangesHandle;
+    readonly openKey: KinRecordKey | null;
     readonly onOpen: (key: KinRecordKey) => void;
     readonly onAdd: (() => void) | null;
   },
@@ -287,6 +290,7 @@ function KinWorkBody(
     const record = records.find((held) => held.key === key);
     if (record !== undefined) void changes.run(record, action, names);
   };
+  const notice = kinWorkListNotice(changed, props.openKey);
   const nothing = kinWorkNothing(filter, names);
   const footer = kinWorkListFooter(filter, rows.length, listState.total, listState.more, hostEdits);
   return (
@@ -310,11 +314,15 @@ function KinWorkBody(
             filter={filter}
             onChange={(next) => list.setFilter(next)}
           />
-          {changed.notice === null ? null : (
+          {notice === null ? null : (
             <KinWorkListNotice
-              notice={changed.notice}
-              record={records.find((held) => held.key === changed.notice?.key) ?? null}
-              onUndo={(record) => void changes.undo(record, names)}
+              notice={notice}
+              onUndo={() =>
+                void changes.undo(
+                  names,
+                  records.find((held) => held.key === notice.key),
+                )
+              }
               onDismiss={changes.dismiss}
             />
           )}
@@ -461,12 +469,10 @@ function KinWorkFilters(props: {
 /** What the last change did, with the way back, said once above the rows. */
 function KinWorkListNotice(props: {
   readonly notice: KinWorkNotice;
-  /** The task as listed now; null once the list has moved on without it. */
-  readonly record: KinRecord | null;
-  readonly onUndo: (record: KinRecord) => void;
+  readonly onUndo: () => void;
   readonly onDismiss: () => void;
 }) {
-  const { notice, record } = props;
+  const { notice } = props;
   return (
     <Alert
       variant={notice.kind === "saved" ? "success" : notice.kind === "failed" ? "error" : "warning"}
@@ -475,8 +481,8 @@ function KinWorkListNotice(props: {
         {notice.key}: {notice.text}
       </AlertDescription>
       <AlertAction>
-        {notice.undo === null || record === null ? null : (
-          <Button size="xs" variant="outline" onClick={() => props.onUndo(record)}>
+        {notice.undo === null ? null : (
+          <Button size="xs" variant="outline" onClick={props.onUndo}>
             {KIN_WORK_COPY.undo}
           </Button>
         )}
@@ -502,7 +508,7 @@ function KinWorkRow(props: {
   return (
     <div className="flex items-start gap-1 py-1" aria-busy={props.saving}>
       {tick === null || onAct === null ? (
-        <span className="flex size-7 shrink-0 items-center justify-center pt-1.5">
+        <span className="mt-1.5 flex size-7 shrink-0 items-center justify-center sm:size-6">
           <KinWorkStateIcon state={row.state} />
         </span>
       ) : (

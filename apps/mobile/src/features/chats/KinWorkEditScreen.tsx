@@ -9,7 +9,7 @@ import {
   KIN_WORK_TITLE_MAX,
   kinWorkItemState,
 } from "@t3tools/client-runtime/kin/kinWork";
-import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
+import { KIN_WORK_COPY, kinWorkEditMoved } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import { EnvironmentId, KinOrgId, KinRecordKey, type KinRecordDetail } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -139,6 +139,7 @@ function KinWorkEditForm(props: ItemTarget & { readonly item: KinRecordDetail })
   const { state: changed, changes } = useKinWorkChanges(props, item);
   useKinWorkItemWatch(props, itemKey, item.seq);
   const { edit } = changed;
+  const moved = edit === null ? null : kinWorkEditMoved(edit, item);
   const saving = changed.pending[itemKey] !== undefined;
   const notice = changed.notice?.key === itemKey ? changed.notice : null;
 
@@ -162,11 +163,6 @@ function KinWorkEditForm(props: ItemTarget & { readonly item: KinRecordDetail })
       {notice === null ? null : (
         <Notice message={notice.text} tone={notice.kind === "failed" ? "danger" : "default"} />
       )}
-      {notice?.kind !== "conflict" ? null : (
-        <Text textRole="footnote" className="px-2 text-foreground-muted">
-          It now says: {item.title}
-        </Text>
-      )}
       <ListSection>
         <View className="gap-2 px-4 py-3">
           <Text className="text-sm text-foreground-muted">Title</Text>
@@ -186,6 +182,11 @@ function KinWorkEditForm(props: ItemTarget & { readonly item: KinRecordDetail })
           />
         </View>
       </ListSection>
+      {moved?.title == null ? null : (
+        <Text textRole="footnote" className="px-2 text-foreground-muted">
+          It now says: {moved.title}
+        </Text>
+      )}
       <ListSection>
         <View className="gap-2 px-4 py-3">
           <Text className="text-sm text-foreground-muted">{KIN_WORK_NEW_COPY.notesLabel}</Text>
@@ -203,6 +204,11 @@ function KinWorkEditForm(props: ItemTarget & { readonly item: KinRecordDetail })
           />
         </View>
       </ListSection>
+      {moved?.notes == null ? null : (
+        <Text textRole="footnote" className="px-2 text-foreground-muted">
+          They now say: {moved.notes}
+        </Text>
+      )}
     </Frame>
   );
 }

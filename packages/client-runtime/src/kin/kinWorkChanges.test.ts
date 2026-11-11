@@ -18,6 +18,8 @@ import {
   createKinWorkChanges,
   createKinWorkItemWatch,
   kinWorkApplied,
+  kinWorkEditMoved,
+  kinWorkListNotice,
 } from "./kinWorkChanges.ts";
 import { KIN_WORK_NOTHING_NAMED, kinWorkNote } from "./kinWorkStream.ts";
 
@@ -65,6 +67,10 @@ const refused = (reason: KinChatError["reason"]): AtomCommandResult<KinRecordDet
   AsyncResult.failure(
     Cause.fail(new KinChatError({ reason, message: "W-1 is at revision 9 now." })),
   );
+
+const never = (): never => {
+  throw new Error("Expected an edit in progress.");
+};
 
 /** A host whose answers the test releases one at a time. */
 function harness() {
@@ -116,9 +122,12 @@ describe("createKinWorkChanges", () => {
       text: "Marked done. Tech lead was told to stop.",
       undo: { type: "state", state: "doing" },
     });
+    // A list says it above its rows, unless the task's own sheet is open to say it.
+    expect(kinWorkListNotice(h.state(), null)).not.toBeNull();
+    expect(kinWorkListNotice(h.state(), "W-1")).toBeNull();
 
-    // Undo goes against the task as it is now, and reopening hands it back to the lead.
-    const undone = h.changes.undo(kinWorkApplied(held, h.state()), names);
+    // Undo goes against the host's answer, so it works once a list has dropped the task.
+    const undone = h.changes.undo(names);
     expect(h.sent[1]).toEqual(["update", { orgId, key: "W-1", rev: 4, state: "doing" }]);
     h.answer(AsyncResult.success(task({ owner: lead, rev: 5, seq: 7 })));
     await undone;
@@ -151,9 +160,13 @@ describe("createKinWorkChanges", () => {
     expect(h.reread).toEqual(["W-1"]);
     expect(h.state().notice).toMatchObject({ kind: "conflict", text: KIN_WORK_EDIT_CHANGED });
     expect(h.state().edit).toMatchObject({ title: "Send the invented quote to Acme" });
+    const latest = task({ rev: 9, notes: "Invented notes, changed by a lead" });
+    expect(kinWorkEditMoved(h.state().edit ?? never(), latest)).toEqual({
+      title: null,
+      notes: "Invented notes, changed by a lead",
+    });
 
     // The latest arrives with a lead's notes; saving again sends the title alone, at that revision.
-    const latest = task({ rev: 9, notes: "Invented notes, changed by a lead" });
     const second = h.changes.saveEdit(latest, names);
     expect(h.sent[1]).toEqual([
       "update",

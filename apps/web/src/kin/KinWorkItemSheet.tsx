@@ -18,6 +18,7 @@ import {
   KIN_WORK_COPY,
   KIN_WORK_STATE_CHOICES,
   kinWorkApplied,
+  kinWorkEditMoved,
   type KinWorkAction,
   type KinWorkEdit,
   type KinWorkNotice,
@@ -143,7 +144,7 @@ export function KinWorkItemSheet(
             canChange={canChange}
             canGive={canGive}
             onAct={(action) => void changes.run(state.item, action, names)}
-            onUndo={() => void changes.undo(state.item, names)}
+            onUndo={() => void changes.undo(names, state.item)}
             onStartEdit={() => changes.startEdit(state.item)}
             onEdit={changes.setEdit}
             onCancelEdit={changes.cancelEdit}
@@ -269,6 +270,7 @@ function KinWorkItem(
     current: view.owner.principal,
   });
   const waitingOn = kinWorkAssignees({ orgs, orgId, people, names, current: view.waitingOn });
+  const moved = edit === null ? null : kinWorkEditMoved(edit, props.item);
   const titleId = useId();
   const notesId = useId();
   return (
@@ -343,7 +345,7 @@ function KinWorkItem(
           {change === null || view.leadNote === null ? null : (
             <p className="text-xs text-muted-foreground">{view.leadNote}</p>
           )}
-          {props.notice === null ? null : (
+          {props.notice === null || edit !== null ? null : (
             <KinWorkNoticeLine notice={props.notice} saving={saving} onUndo={props.onUndo} />
           )}
           <dl className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-2 text-sm">
@@ -424,6 +426,9 @@ function KinWorkItem(
                 autoFocus
                 onChange={(event) => props.onEdit({ title: event.target.value })}
               />
+              {moved?.title == null ? null : (
+                <p className="text-xs text-muted-foreground">It now says: {moved.title}</p>
+              )}
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor={notesId}>Notes</Label>
@@ -434,7 +439,15 @@ function KinWorkItem(
                 maxLength={KIN_WORK_NOTES_MAX}
                 onChange={(event) => props.onEdit({ notes: event.target.value })}
               />
+              {moved?.notes == null ? null : (
+                <p className="whitespace-pre-wrap text-xs text-muted-foreground">
+                  They now say: {moved.notes}
+                </p>
+              )}
             </div>
+            {props.notice === null ? null : (
+              <KinWorkNoticeLine notice={props.notice} saving={saving} onUndo={props.onUndo} />
+            )}
             <div className="flex justify-end gap-2">
               <Button
                 type="button"

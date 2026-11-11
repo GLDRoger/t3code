@@ -23,6 +23,7 @@ import {
 import {
   KIN_WORK_COPY,
   kinWorkApplied,
+  kinWorkListNotice,
   type KinWorkAction,
 } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
@@ -230,8 +231,7 @@ function KinWorkBody(
     const record = records.find((held) => held.key === key);
     if (record !== undefined) void changes.run(record, action, names);
   };
-  const { notice } = changed;
-  const noticed = notice === null ? undefined : records.find((held) => held.key === notice.key);
+  const notice = kinWorkListNotice(changed, null);
   const nothing = kinWorkNothing(filter, names);
   const footer = kinWorkListFooter(filter, rows.length, listState.total, listState.more, hostEdits);
   const add = canAdd ? () => navigation.navigate("KinWorkNew", { environmentId, orgId }) : null;
@@ -286,12 +286,16 @@ function KinWorkBody(
                   <Notice
                     message={`${notice.key}: ${notice.text}`}
                     tone={notice.kind === "failed" ? "danger" : "default"}
-                    {...(notice.undo === null || noticed === undefined
+                    {...(notice.undo === null
                       ? { onDismiss: changes.dismiss }
                       : {
                           action: {
                             label: KIN_WORK_COPY.undo,
-                            onPress: () => void changes.undo(noticed, names),
+                            onPress: () =>
+                              void changes.undo(
+                                names,
+                                records.find((held) => held.key === notice.key),
+                              ),
                           },
                         })}
                   />
