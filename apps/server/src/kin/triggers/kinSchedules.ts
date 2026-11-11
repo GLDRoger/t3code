@@ -187,7 +187,7 @@ const make = Effect.gen(function* () {
       WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId}`.pipe(
       Effect.mapError(sqlError),
     );
-    if (lead === undefined) return yield* invalid("There is no lead to run it.");
+    if (lead === undefined) return yield* invalid("There is no agent to run it.");
     const models = yield* decodeModels(lead.models).pipe(
       Effect.catch(failed("The schedule could not be saved.")),
     );

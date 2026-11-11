@@ -325,7 +325,7 @@ function KinWorkFilters(props: {
         </ToggleGroup>
       </div>
       {overview.owners.length === 0 || !props.everyone ? null : (
-        <ul aria-label="People and leads" className="grid gap-1 sm:grid-cols-2">
+        <ul aria-label="People and agents" className="grid gap-1 sm:grid-cols-2">
           {overview.owners.map((owner) => (
             <li key={owner.key}>
               <button

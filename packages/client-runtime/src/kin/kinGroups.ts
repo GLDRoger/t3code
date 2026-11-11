@@ -39,7 +39,7 @@ export function kinGroupProblem(error: unknown, doing: string): string {
     case "not_allowed":
       return `Only the group's owner can ${doing}.`;
     case "not_found":
-      return "That group, lead or person is no longer here.";
+      return "That group, agent or person is no longer here.";
     case "limit":
       return "This group is full.";
     case "unavailable":

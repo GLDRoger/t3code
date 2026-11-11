@@ -337,7 +337,7 @@ describe("createKinCardActions", () => {
       status: "failed",
       notice: {
         kind: "error",
-        text: "Kin didn't take that answer. Tell your lead in the chat instead.",
+        text: "Kin didn't take that answer. Tell your agent in the chat instead.",
       },
     });
     const lost = setup(dropped);

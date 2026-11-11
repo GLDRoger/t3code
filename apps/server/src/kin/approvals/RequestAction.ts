@@ -89,7 +89,7 @@ export const layerPullRequestFacts = Layer.effect(
     // One refusal for "not this lead's repo" and "no such PR", so private repos can't be probed.
     const notFound = new KinApprovalError({
       reason: "not_found",
-      message: "No such pull request in this lead's worker projects.",
+      message: "No such pull request in this agent's worker projects.",
     });
     // Public GitHub reads through any project, so the lead's worker projects are the allowlist.
     const project = Effect.fn("KinPullRequestFacts.project")(function* (
@@ -98,7 +98,7 @@ export const layerPullRequestFacts = Layer.effect(
     ) {
       const shells = yield* projects
         .listShells({ projectIds })
-        .pipe(Effect.mapError(() => unavailable("This lead's worker projects can't be read.")));
+        .pipe(Effect.mapError(() => unavailable("This agent's worker projects can't be read.")));
       const match = shells
         .filter((shell) => projectIds.includes(shell.id))
         .map((shell) => ({
@@ -324,7 +324,7 @@ const make = Effect.gen(function* () {
   ) {
     const [lead] = yield* leadOf(agent);
     if (lead === undefined)
-      return yield* refuse("not_a_lead", "Only a Kin lead can request actions.");
+      return yield* refuse("not_a_lead", "Only a Kin agent can request actions.");
     const origin = yield* provenanceFor(agent, input.sourceEventId);
     if (origin === undefined)
       return yield* refuse(
@@ -351,7 +351,7 @@ const make = Effect.gen(function* () {
     const level = yield* KinLevels.effectiveLevel(agent).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
       Effect.catchTags({
-        KinLevelRefused: () => refuse("not_a_lead", "Only a Kin lead can request actions."),
+        KinLevelRefused: () => refuse("not_a_lead", "Only a Kin agent can request actions."),
       }),
     );
     return { lead, origin, level };
@@ -363,7 +363,7 @@ const make = Effect.gen(function* () {
       if (input.kind === "set_level")
         return yield* refuse(
           "unsupported_kind",
-          "Leads can never ask to change their own permissions; only the owner changes them.",
+          "Agents can never ask to change their own permissions; only the owner changes them.",
         );
       const { lead, level } = yield* authorize(agent, input);
       if (!REQUESTABLE_KINDS.has(input.kind))
@@ -392,7 +392,7 @@ const make = Effect.gen(function* () {
           if (current.lead.worker_projects_json !== lead.worker_projects_json)
             return yield* refuse(
               "invalid_state",
-              "This lead's worker projects changed while GitHub answered. Try again.",
+              "This agent's worker projects changed while GitHub answered. Try again.",
             );
           if (!KinLevels.atLeast(level, PRIVILEGED_LEVEL))
             return yield* refuse("invalid_state", NOT_OPEN);

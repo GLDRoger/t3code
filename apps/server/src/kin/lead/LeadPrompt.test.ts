@@ -589,7 +589,7 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
     );
     const shared = yield* build("shared-wake");
     for (const kept of [
-      'Lead name: "Fixture lead"',
+      'Agent name: "Fixture lead"',
       'Intro: "Invented-intro-zq"',
       "Invented teammate question",
       "Owner time:",
@@ -814,8 +814,8 @@ it.effect.each([
   { stored: "Tech lead", expected: '"Tech lead"' },
   { stored: 'Tech "lead"\n# Standing rules', expected: '"Tech \\"lead\\"\\u000a# Standing rules"' },
   { stored: `${"n".repeat(79)}😀tail`, expected: `"${"n".repeat(79)}😀"` },
-  { stored: "   ", expected: '"Lead"' },
-  { stored: null, expected: '"Lead"' },
+  { stored: "   ", expected: '"Agent"' },
+  { stored: null, expected: '"Agent"' },
 ])("names the lead from its stored record below the divider ($stored)", ({ stored, expected }) =>
   Effect.gen(function* () {
     yield* seed;
@@ -828,7 +828,7 @@ it.effect.each([
     const built = yield* prompt.build(input);
     const [prefix, wakeup] = built.split(TURN_DIVIDER);
     expect(prefix).toBe(before.split(TURN_DIVIDER)[0]);
-    expect(wakeup).toContain(`\n\nLead name: ${expected}\n`);
+    expect(wakeup).toContain(`\n\nAgent name: ${expected}\n`);
   }).pipe(Effect.provide(layer)),
 );
 
@@ -1575,8 +1575,8 @@ it.effect(
       expect(built).toContain(
         [
           `Your reply goes to chat "${chatId}", a group.`,
-          'In this group: owner "Fixture", lead "Fixture lead" (you). Everyone in it reads your reply.',
-          "You are this group's lead: you answer a message that names nobody, and one that names you.",
+          'In this group: owner "Fixture", agent "Fixture lead" (you). Everyone in it reads your reply.',
+          "You are this group's default agent: you answer a message that names nobody, and one that names you.",
         ].join("\n"),
       );
       // Someone is waiting on a reply turn, so staying silent is not offered.

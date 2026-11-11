@@ -21,7 +21,7 @@ The caller doesn't choose the approval text. `ios/KinGrant.swift` and `android/.
 | ----------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `merge_pull_request`    | Merge GLDRoger/t3code #212 (a1b2c3d4e5f60718293a4b5c6d7e8f9012345678) into "main" by squashing, then delete its branch |
 | `delete_branch`         | Delete branch "kin/fix-212" (a1b2c3d4e5f60718293a4b5c6d7e8f9012345678) in GLDRoger/t3code                              |
-| `set_level`             | Set lead "tech-lead" to L2 in chat "chat_7" (or "in all chats")                                                        |
+| `set_level`             | Set agent "tech-lead" to L2 in chat "chat_7" (or "in all chats")                                                       |
 | `change_rules`          | Change rules to "rules.md" (sha256 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08)                   |
 | `memory_purge`          | Purge memory using "purge/item-4.json" (sha256 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08)       |
 | `register_approver_key` | Add approver key NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs (Secure Enclave, attested)                                |

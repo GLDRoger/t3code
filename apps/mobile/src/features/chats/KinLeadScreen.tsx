@@ -84,7 +84,7 @@ export function KinLeadScreen({ route }: StaticScreenProps<KinLeadParams>) {
   if (environmentId === null || orgId === null) {
     return (
       <View collapsable={false} className="flex-1 bg-screen">
-        <AppBar title="Lead details" onClose={() => navigation.goBack()} />
+        <AppBar title="Agent details" onClose={() => navigation.goBack()} />
         <ScreenContent surface="screen">
           <ScreenScrollView
             className="flex-1"
@@ -93,8 +93,8 @@ export function KinLeadScreen({ route }: StaticScreenProps<KinLeadParams>) {
           >
             <EmptyState
               variant="plain"
-              title="This link doesn't name a lead"
-              detail="Open a lead from its chat."
+              title="This link doesn't name an agent"
+              detail="Open an agent from its chat."
             />
           </ScreenScrollView>
         </ScreenContent>
@@ -125,7 +125,7 @@ function KinLeadBody(props: {
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
-        title="Lead details"
+        title="Agent details"
         onClose={() => navigation.goBack()}
         actions={
           lead === null || !canEdit
@@ -185,14 +185,14 @@ function KinLeadBody(props: {
               className="items-center py-12"
               accessible
               accessibilityRole="progressbar"
-              accessibilityLabel="Loading lead"
+              accessibilityLabel="Loading agent"
             >
               <AppActivityIndicator />
             </View>
           ) : AsyncResult.isFailure(result) ? (
             <EmptyState
               variant="plain"
-              title="Couldn't load this lead"
+              title="Couldn't load this agent"
               detail="Check your connection to the server and try again."
               action={
                 <Button
@@ -205,8 +205,8 @@ function KinLeadBody(props: {
           ) : (
             <EmptyState
               variant="plain"
-              title="Not one of your leads"
-              detail="Only the person who set up a lead can see its details."
+              title="Not one of your agents"
+              detail="Only the person who set up an agent can see its details."
             />
           )}
         </ScreenScrollView>
@@ -382,7 +382,7 @@ function KinLeadAccess(props: {
       : allowed === null || allowed.length === 0
         ? undefined
         : intro === ""
-          ? "They see its name only. Add what teammates see when you edit this lead."
+          ? "They see its name only. Add what teammates see when you edit this agent."
           : `They see its name and this: ${intro}`;
   return (
     <ListSection title="Who can message" footer={footer}>

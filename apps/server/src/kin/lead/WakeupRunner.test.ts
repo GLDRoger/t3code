@@ -575,7 +575,7 @@ describe("WakeupRunner", () => {
                 discard: () => Effect.void,
                 appendJournal: (_org, _wakeup, lines) =>
                   Effect.sync(() =>
-                    assert.deepStrictEqual(lines, ["Lead ended without calling kin_end."]),
+                    assert.deepStrictEqual(lines, ["Agent ended without calling kin_end."]),
                   ),
                 commitWakeup: Effect.fn("test.commitWakeup")(function* (org, wakeupId, outcome) {
                   assert.strictEqual(org, orgId);
@@ -676,7 +676,7 @@ describe("WakeupRunner", () => {
       yield* (yield* KinEventQueue.KinEventQueue).enqueue(event("codex-lead"));
       const exit = yield* Fiber.await(yield* run());
       assert.strictEqual(exit._tag, "Failure");
-      assert.include(String(exit), "Kin leads run only on Claude");
+      assert.include(String(exit), "Kin agents run only on Claude");
       assert.deepStrictEqual(
         yield* sql`SELECT status, thread_id FROM kin_wakeups WHERE org_id = ${orgId}`,
         [{ status: "failed", thread_id: null }],

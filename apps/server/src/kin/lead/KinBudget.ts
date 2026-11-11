@@ -193,7 +193,7 @@ const make = Effect.gen(function* () {
         messageId: KinMessageId.make(`kin-budget:${orgId}:${day}`),
         author: { _tag: "system" },
         kind: "text",
-        body: `Today's Kin lead budget is exhausted for all your leads. Only urgent owner messages will run, on the cheap model.${used} Raise the limits in settings to resume other work.`,
+        body: `Today's Kin agent budget is exhausted for all your agents. Only urgent owner messages will run, on the cheap model.${used} Raise the limits in settings to resume other work.`,
         intent: null,
         mentions: [],
         replyTo: null,

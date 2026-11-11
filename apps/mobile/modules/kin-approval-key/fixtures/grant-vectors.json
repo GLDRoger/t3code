@@ -185,13 +185,13 @@
       "name": "set a level in one chat",
       "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
       "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"a2luLWRldmljZS1qdGkxNg\",\"kind\":\"set_level\",\"nonce\":\"a2luLXNlcnZlci1ub25jZS1vZi0zMi1ieXRlcy1iNjQ\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"level\",\"agentId\":\"tech-lead\",\"chatId\":\"chat_7\",\"level\":\"L2\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
-      "prompt": "Set lead \"tech-lead\" to L2 in chat \"chat_7\""
+      "prompt": "Set agent \"tech-lead\" to L2 in chat \"chat_7\""
     },
     {
       "name": "set a level everywhere",
       "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
       "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"a2luLWRldmljZS1qdGkxNg\",\"kind\":\"set_level\",\"nonce\":\"a2luLXNlcnZlci1ub25jZS1vZi0zMi1ieXRlcy1iNjQ\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"level\",\"agentId\":\"tech-lead\",\"level\":\"L0\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
-      "prompt": "Set lead \"tech-lead\" to L0 in all chats"
+      "prompt": "Set agent \"tech-lead\" to L0 in all chats"
     },
     {
       "name": "change rules",

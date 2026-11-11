@@ -43,7 +43,7 @@ export const LeadsResult = Schema.Struct({
 });
 export const HandOffInput = Schema.Struct({
   to: TrimmedNonEmptyString.check(Schema.isMaxLength(80)).annotate({
-    description: "The lead to pass it to, by name or domain, as kin_leads lists them.",
+    description: "The agent to pass it to, by name or domain, as kin_leads lists them.",
   }),
   request: TrimmedNonEmptyString.check(Schema.isMaxLength(2_000)).annotate({
     description:
@@ -254,7 +254,7 @@ const make = Effect.gen(function* () {
         // One hop: what was passed on is answered where it landed, so two leads can't trade it.
         if (event._tag === "chat.message" && event.origin !== undefined)
           return yield* refuse(
-            "This was already passed on to you by another lead, so it stops with you. Answer it, or say in one line what you can't do.",
+            "This was already passed on to you by another agent, so it stops with you. Answer it, or say in one line what you can't do.",
           );
         // Only the owner's own words in this lead's own chat with them: the owner could have
         // written to the other lead directly, so passing it on reaches nothing new.
@@ -269,17 +269,17 @@ const make = Effect.gen(function* () {
                 ORDER BY m.message_id`;
         if (asked === undefined || event._tag !== "chat.message")
           return yield* refuse(
-            "A request can be passed on only when the owner wrote it to you in your own chat with them. Say in one line which lead owns it instead.",
+            "A request can be passed on only when the owner wrote it to you in your own chat with them. Say in one line which agent owns it instead.",
           );
         // What the lead adds was written with all of this wake-up in view, so it carries only
         // when the owner alone set it off.
         if (!(yield* wakeEvents(ctx)).every((entry) => fromOwnerAlone(entry, self)))
           return yield* refuse(
-            "Something from outside your own chat with the owner came in with this, so it can't be passed on now. Say in one line which lead owns it instead.",
+            "Something from outside your own chat with the owner came in with this, so it can't be passed on now. Say in one line which agent owns it instead.",
           );
         const others = all.filter((entry) => entry.agentId !== ctx.agentId);
         if (others.length === 0)
-          return yield* refuse("There is no other lead to pass this to. Answer it yourself.");
+          return yield* refuse("There is no other agent to pass this to. Answer it yourself.");
         const wanted = fold(input.to);
         const byName = others.filter((entry) => fold(entry.name) === wanted);
         const matches =
@@ -287,7 +287,7 @@ const make = Effect.gen(function* () {
         if (matches.length !== 1)
           return yield* new KinChatError({
             reason: matches.length === 0 ? "not_found" : "invalid_state",
-            message: `${matches.length === 0 ? "No lead here answers to that name or domain" : "Several leads answer to that"}. The leads are: ${describe(others)}. ${NOTHING} Call again with one of those names.`,
+            message: `${matches.length === 0 ? "No agent here answers to that name or domain" : "Several agents answer to that"}. The agents are: ${describe(others)}. ${NOTHING} Call again with one of those names.`,
           });
         const [target] = matches;
         /** Where this owner message already went: there again is the same hand-off, else refused. */
@@ -300,7 +300,7 @@ const make = Effect.gen(function* () {
             return { to: target!.name, passed: true as const };
           const went = all.find((entry) => entry.agentId === record.toAgentId)?.name;
           return yield* refuse(
-            `This was already passed on${went === undefined ? "" : ` to ${went}`}, and a request goes to one lead only. Tell the owner where it went instead.`,
+            `This was already passed on${went === undefined ? "" : ` to ${went}`}, and a request goes to one agent only. Tell the owner where it went instead.`,
           );
         });
         const before = yield* already();
@@ -318,8 +318,8 @@ const make = Effect.gen(function* () {
         if (body.length > messageBodyLimit)
           return yield* refuse(
             [head, quoted].join("\n").length > messageBodyLimit
-              ? "The owner's message is too long for another lead to be shown whole, and Kin won't pass on part of it. Say in one line which lead owns it, so the owner can send it there."
-              : "With what you add, this is too long for another lead to be shown whole. Add less and call again.",
+              ? "The owner's message is too long for another agent to be shown whole, and Kin won't pass on part of it. Say in one line which agent owns it, so the owner can send it there."
+              : "With what you add, this is too long for another agent to be shown whole. Add less and call again.",
           );
         // One hand-off per owner message, whatever words, lead name or wake-up a retry uses. The
         // row is claimed before anything is posted, so a second destination never gets it.

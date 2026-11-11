@@ -47,7 +47,7 @@ const decodeModel = Schema.decodeUnknownEffect(ModelSelection);
 const modelFlag = (name: "strong" | "cheap") =>
   Flag.String(name).pipe(
     Flag.withDescription(
-      `The lead's ${name} model as <provider instance id>:<model>, on a Claude instance, for example \`claudeAgent:claude-sonnet-4-6\`. Omit both to copy the org's first lead's models.`,
+      `The agent's ${name} model as <provider instance id>:<model>, on a Claude instance, for example \`claudeAgent:claude-sonnet-4-6\`. Omit both to copy the org's first agent's models.`,
     ),
     Flag.optional,
   );
@@ -143,20 +143,20 @@ const creatorFrom = Effect.fn("kin.lead.creatorFrom")(function* (flags: {
 const domainFlag = Flag.String("domain").pipe(
   Flag.withSchema(KinLeadDomain),
   Flag.withDescription(
-    "The lead's domain as a lowercase slug, for example engineering, growth, finance or chief-of-staff.",
+    "The agent's domain as a lowercase slug, for example engineering, growth, finance or chief-of-staff.",
   ),
 );
 const charterFlag = Flag.String("charter").pipe(
   Flag.withSchema(KinLeadCharter),
   Flag.withDescription(
-    "What the lead is for, in up to 1000 characters. Added to its every wake-up.",
+    "What the agent is for, in up to 1000 characters. Added to its every wake-up.",
   ),
 );
 
 const workerProjectsFlag = Flag.String("worker-project").pipe(
   Flag.withSchema(ProjectId),
   Flag.withDescription(
-    "A project the lead is held to in chats its owner didn't put it in. Repeat for more. The owner's own chats with it reach every repository in the worker environment.",
+    "A project the agent is held to in chats its owner didn't put it in. Repeat for more. The owner's own chats with it reach every repository in the worker environment.",
   ),
   Flag.atLeast(0),
 );
@@ -166,7 +166,7 @@ const createCommand = Command.make("create", {
   session: Flag.String("session").pipe(
     Flag.withSchema(AuthSessionId),
     Flag.withDescription(
-      "A paired client's session id (`auth session list`). Its person creates and owns the lead.",
+      "A paired client's session id (`auth session list`). Its person creates and owns the agent.",
     ),
     Flag.optional,
   ),
@@ -177,7 +177,7 @@ const createCommand = Command.make("create", {
   ),
   name: Flag.String("name").pipe(
     Flag.withSchema(TrimmedNonEmptyString),
-    Flag.withDescription("The lead's display name."),
+    Flag.withDescription("The agent's display name."),
   ),
   domain: domainFlag.pipe(Flag.withDefault("engineering")),
   charter: charterFlag.pipe(Flag.withDefault("")),
@@ -187,7 +187,7 @@ const createCommand = Command.make("create", {
   json: jsonFlag,
 }).pipe(
   Command.withDescription(
-    "Create a lead with a direct chat to its owner, where it posts, starts workers and opens draft PRs; merges still need the owner's signed approval. An org can have many; a re-run with the same name and domain reports the existing lead.",
+    "Create an agent with a direct chat to its owner, where it posts, starts workers and opens draft PRs; merges still need the owner's signed approval. An org can have many; a re-run with the same name and domain reports the existing agent.",
   ),
   Command.withHandler((flags) =>
     runOnHost(flags, (provision) =>
@@ -215,8 +215,8 @@ const createCommand = Command.make("create", {
         if (flags.json) return yield* Console.log(encodeJson(result));
         yield* Console.log(
           result._tag === "created"
-            ? `Created lead:\n${describe(result.lead)}\nPhones that are already open show its chat after they reconnect.`
-            : `This lead already exists; nothing changed:\n${describe(result.lead)}`,
+            ? `Created agent:\n${describe(result.lead)}\nPhones that are already open show its chat after they reconnect.`
+            : `This agent already exists; nothing changed:\n${describe(result.lead)}`,
         );
       }),
     ),
@@ -224,13 +224,13 @@ const createCommand = Command.make("create", {
 );
 
 const listCommand = Command.make("list", { ...authLocationFlags, json: jsonFlag }).pipe(
-  Command.withDescription("List this host's leads, live and retired."),
+  Command.withDescription("List this host's agents, live and retired."),
   Command.withHandler((flags) =>
     runOnHost(flags, (provision) =>
       Effect.gen(function* () {
         const leads = yield* provision.list();
         if (flags.json) return yield* Console.log(encodeJson(leads));
-        yield* Console.log(leads.length === 0 ? "No leads." : leads.map(describe).join("\n\n"));
+        yield* Console.log(leads.length === 0 ? "No agents." : leads.map(describe).join("\n\n"));
       }),
     ),
   ),
@@ -240,12 +240,12 @@ const retireCommand = Command.make("retire", {
   ...authLocationFlags,
   agentId: Argument.String("agent-id").pipe(
     Argument.withSchema(KinAgentId),
-    Argument.withDescription("The lead's agent id, from `kin lead list`."),
+    Argument.withDescription("The agent's id, from `kin lead list`."),
   ),
   json: jsonFlag,
 }).pipe(
   Command.withDescription(
-    "Retire a lead. Its rows stay; the server expires its queued events and ends its thread.",
+    "Retire an agent. Its rows stay; the server expires its queued events and ends its thread.",
   ),
   Command.withHandler((flags) =>
     runOnHost(flags, (provision) =>
@@ -266,13 +266,13 @@ const projectsCommand = Command.make("projects", {
   ...authLocationFlags,
   agentId: Argument.String("agent-id").pipe(
     Argument.withSchema(KinAgentId),
-    Argument.withDescription("The lead's agent id, from `kin lead list`."),
+    Argument.withDescription("The agent's id, from `kin lead list`."),
   ),
   workerProjects: workerProjectsFlag,
   json: jsonFlag,
 }).pipe(
   Command.withDescription(
-    "Replace the projects a live lead is held to in chats its owner didn't put it in. Pass none to clear them. Applies to its next tool call.",
+    "Replace the projects a live agent is held to in chats its owner didn't put it in. Pass none to clear them. Applies to its next tool call.",
   ),
   Command.withHandler((flags) =>
     runOnHost(flags, (provision) =>
@@ -289,14 +289,14 @@ const charterCommand = Command.make("charter", {
   ...authLocationFlags,
   agentId: Argument.String("agent-id").pipe(
     Argument.withSchema(KinAgentId),
-    Argument.withDescription("The lead's agent id, from `kin lead list`."),
+    Argument.withDescription("The agent's id, from `kin lead list`."),
   ),
   domain: domainFlag.pipe(Flag.optional),
   charter: charterFlag.pipe(Flag.optional),
   json: jsonFlag,
 }).pipe(
   Command.withDescription(
-    "Change a live lead's domain or charter. Only the owner, on the host, can. Applies at its next wake-up.",
+    "Change a live agent's domain or charter. Only the owner, on the host, can. Applies at its next wake-up.",
   ),
   Command.withHandler((flags) =>
     runOnHost(flags, (provision) =>
@@ -317,7 +317,7 @@ export const kinCommand = Command.make("kin").pipe(
   Command.withSubcommands([
     Command.make("lead").pipe(
       Command.withDescription(
-        "Create, list and retire this host's Kin leads, and set their worker projects and charters.",
+        "Create, list and retire this host's Kin agents, and set their worker projects and charters.",
       ),
       Command.withSubcommands([
         createCommand,

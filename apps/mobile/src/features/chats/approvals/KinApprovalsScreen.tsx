@@ -169,7 +169,7 @@ function ApprovalsBody(props: { readonly environmentId: EnvironmentId; readonly 
       return section(
         "Approve from this phone",
         [
-          "Kin asks before it merges a pull request or changes what a lead may do. You approve with Face ID, and the phone signs exactly what the card shows.",
+          "Kin asks before it merges a pull request or changes what an agent may do. You approve with Face ID, and the phone signs exactly what the card shows.",
           "The key stays in this phone's secure hardware and never leaves it.",
         ],
         <>

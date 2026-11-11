@@ -123,7 +123,7 @@ export const buildWorkSection = Effect.fn("KinWorkPrompt.build")(function* (inpu
         ? "Kin"
         : change.actorKind === "person"
           ? "a person"
-          : "another lead";
+          : "another agent";
     const fields = Option.getOrElse(decodeFields(change.fieldsJson), () => []);
     entry.lines.push(
       change.kind === "created"

@@ -13,8 +13,8 @@ import * as Schema from "effect/Schema";
 import { kinSentences } from "./kinScreenState.ts";
 
 export const KIN_STALE_CARD_TEXT = "This card changed. Check it again.";
-export const KIN_SENT_CARD_TEXT = "Sent. Your lead will update this card.";
-export const KIN_CHANGE_SENT_TEXT = "Sent. Your lead will ask what to change.";
+export const KIN_SENT_CARD_TEXT = "Sent. Your agent will update this card.";
+export const KIN_CHANGE_SENT_TEXT = "Sent. Your agent will ask what to change.";
 export const KIN_SEND_FAILED_TEXT = "Couldn't send that. Try again.";
 const KIN_UNDONE_TEXT = "Undone. Kin won't act on this.";
 export const KIN_UNDO_TOO_LATE_TEXT = "Too late to undo: Kin already acted on this.";
@@ -79,7 +79,7 @@ export const KIN_DEFERRAL_ACTIONS: Record<KinDeferralActionId, KinDeferralAction
   change: {
     id: "change",
     label: "Change",
-    accessibilityLabel: "Change this with your lead",
+    accessibilityLabel: "Change this with your agent",
     tone: "secondary",
   },
   remind: {
@@ -151,7 +151,7 @@ export const KIN_DEFERRAL_ACTIONS: Record<KinDeferralActionId, KinDeferralAction
   edit: {
     id: "edit",
     label: "Edit",
-    accessibilityLabel: "Edit this scheduled task with your lead",
+    accessibilityLabel: "Edit this scheduled task with your agent",
     tone: "secondary",
   },
   delete: {
@@ -383,7 +383,7 @@ export function kinActionFailureNotice(
     case "not_allowed":
       return {
         kind: "error",
-        text: "Kin didn't take that answer. Tell your lead in the chat instead.",
+        text: "Kin didn't take that answer. Tell your agent in the chat instead.",
       };
     case "invalid_state":
       return { kind: "error", text: "This card can't take that answer any more." };
@@ -394,9 +394,9 @@ export function kinActionFailureNotice(
 
 /** Why the host may refuse [Start now] (TRIG-8's `Deferrals.act`), in the owner's words. */
 export const KIN_START_NOW_REFUSALS = {
-  stopped: "Starts are paused for now. Ask your lead in the chat.",
+  stopped: "Starts are paused for now. Ask your agent in the chat.",
   workers_blocked: "Kin can't start new work right now. Try again soon.",
-  below_l2: "Your lead can't start work from here. Ask it in the chat.",
+  below_l2: "Your agent can't start work from here. Ask it in the chat.",
 } as const satisfies Record<string, string>;
 
 export function kinStartNowRefusalNotice(

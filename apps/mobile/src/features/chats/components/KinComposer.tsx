@@ -302,7 +302,7 @@ export function KinComposer(props: {
       {mention === null || showsDictation ? null : (
         <View
           accessibilityRole="menu"
-          accessibilityLabel="Leads you can ask"
+          accessibilityLabel="Agents you can ask"
           className="flex-row flex-wrap gap-2 px-1 pb-1"
         >
           {mention.matches.map((lead) => (

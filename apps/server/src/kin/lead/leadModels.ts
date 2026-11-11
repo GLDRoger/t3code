@@ -12,7 +12,7 @@ export const nonClaudeLeadModel = (
     const { instanceId } = models[role];
     const driver = instances[instanceId]?.driver;
     if (driver !== "claudeAgent")
-      return `Kin leads run only on Claude, and the ${role} model's instance ${instanceId} is ${driver === undefined ? "not a configured provider" : `a ${driver} instance`}. Workers may still use any provider.`;
+      return `Kin agents run only on Claude, and the ${role} model's instance ${instanceId} is ${driver === undefined ? "not a configured provider" : `a ${driver} instance`}. Workers may still use any provider.`;
   }
   return undefined;
 };

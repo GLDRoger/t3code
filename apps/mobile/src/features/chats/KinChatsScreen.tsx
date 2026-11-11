@@ -140,7 +140,7 @@ function KinChatsBar(props: {
                     ? [
                         {
                           id: "lead",
-                          title: "New lead",
+                          title: "New agent",
                           icon: "sparkles",
                           onPress: () => navigation.navigate("KinLeadForm", target),
                         },
@@ -206,7 +206,7 @@ export function KinChatsView(props: {
               {props.memory == null ? null : <View className="-mx-4">{props.memory}</View>}
               <EmptyState
                 title="No chats yet"
-                detail={props.emptyDetail ?? "Chats with your leads show up here."}
+                detail={props.emptyDetail ?? "Chats with your agents show up here."}
               />
             </>
           )}

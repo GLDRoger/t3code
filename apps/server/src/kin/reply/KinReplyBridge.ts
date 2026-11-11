@@ -70,7 +70,7 @@ const STALL_MS = 120_000;
 /** A streaming segment this old becomes a visible draft even while still short. */
 const DRAFT_AFTER_MS = 1_000;
 const RESCUE_TIMEOUT_MS = 120_000;
-const OVERFLOW_SUFFIX = "\n\n…more in the lead's thread";
+const OVERFLOW_SUFFIX = "\n\n…more in the agent's thread";
 
 /**
  * Where a wake-up's text goes. One wake-up answers one chat: the chat of its highest-priority
@@ -263,7 +263,7 @@ export const laneFor = Effect.fn("KinReplyBridge.lane")(
     return Option.some<Lane>({
       chatId: KinChatId.make(chatId),
       mode: first !== undefined && first.asked === 1 ? "reply" : "notice",
-      leadName: lead?.name ?? "Lead",
+      leadName: lead?.name ?? "Agent",
     });
   },
   Effect.catchCause((cause) =>

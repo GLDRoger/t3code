@@ -66,7 +66,7 @@ export type KinLeadDraftCheck =
 /** The draft as the host takes it, or the first thing to fix. */
 export function kinLeadDraftCheck(draft: KinLeadDraft): KinLeadDraftCheck {
   const name = draft.name.trim();
-  if (name === "") return { ok: false, field: "name", problem: "Give the lead a name." };
+  if (name === "") return { ok: false, field: "name", problem: "Give the agent a name." };
   if (name.length > KIN_LEAD_NAME_MAX) {
     return {
       ok: false,
@@ -183,22 +183,22 @@ export function kinLeadSaveProblem(error: unknown, creating: boolean): string {
   switch (reason) {
     case "not_allowed":
       return creating
-        ? "This device isn't allowed to add leads on this server."
-        : "Only the person who set up this lead can change it.";
+        ? "This device isn't allowed to add agents on this server."
+        : "Only the person who set up this agent can change it.";
     case "conflict":
-      return "You already have a lead with this name and area.";
+      return "You already have an agent with this name and area.";
     case "limit":
-      return "This server has as many leads as it allows.";
+      return "This server has as many agents as it allows.";
     case "not_found":
-      return "This lead is no longer here.";
+      return "This agent is no longer here.";
     case "no_models":
-      return "No model is set up for leads on this server yet, so the first lead can't be made from here. On the computer that runs Kin, run its “kin lead create” command with --strong and --cheap to choose the models. Leads you add after that use the same ones.";
+      return "No model is set up for agents on this server yet, so the first agent can't be made from here. On the computer that runs Kin, run its “kin lead create” command with --strong and --cheap to choose the models. Agents you add after that use the same ones.";
     case "unavailable":
     case "disabled":
-      return "Leads aren't running on this server right now. Try again in a moment.";
+      return "Agents aren't running on this server right now. Try again in a moment.";
     default:
       return creating
-        ? "Couldn't create the lead. Check your connection and try again."
+        ? "Couldn't create the agent. Check your connection and try again."
         : "Couldn't save your changes. Check your connection and try again.";
   }
 }
@@ -218,8 +218,8 @@ export function kinLeadAccessCandidates(
 /** Told to a teammate in their chat with a lead's details: the owner can read that chat. */
 export function kinLeadOwnerSeesLine(ownerName: string | undefined): string {
   return ownerName === undefined
-    ? "Whoever runs this workspace can see chats with leads."
-    : `${ownerName} runs this workspace and can see chats with leads.`;
+    ? "Whoever runs this workspace can see chats with agents."
+    : `${ownerName} runs this workspace and can see chats with agents.`;
 }
 
 /** Said once after the owner changes who can message a lead. */
@@ -235,9 +235,9 @@ export function kinLeadAccessProblem(error: unknown): string {
     typeof error === "object" && error !== null && "reason" in error ? error.reason : null;
   switch (reason) {
     case "not_allowed":
-      return "Only the person who set up this lead can choose who messages it.";
+      return "Only the person who set up this agent can choose who messages it.";
     case "not_found":
-      return "That person or this lead is no longer here.";
+      return "That person or this agent is no longer here.";
     default:
       return "Couldn't change that. Check your connection and try again.";
   }
@@ -263,5 +263,5 @@ export function kinChatReadOnly(
 
 /** The one line where the composer was, in a chat the viewer can only read. */
 export function kinChatReadOnlyLine(leadName: string | null): string {
-  return `You can read this chat, but you can no longer message ${leadName ?? "this lead"}.`;
+  return `You can read this chat, but you can no longer message ${leadName ?? "this agent"}.`;
 }

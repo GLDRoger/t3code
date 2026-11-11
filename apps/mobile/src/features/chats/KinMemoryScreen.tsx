@@ -81,7 +81,7 @@ export function KinMemoryEntryRow(props: {
         summary={props.summary}
         symbol="brain"
         accessibilityLabel={`${KIN_MEMORY_TITLE}. ${props.summary}`}
-        accessibilityHint="Opens what your leads remember"
+        accessibilityHint="Opens what your agents remember"
         onPress={props.onPress}
       />
       <View className="ml-5 h-px bg-border-subtle" />
@@ -144,7 +144,7 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
     <EmptyState
       variant="plain"
       title="Only the owner can open this"
-      detail="What the leads remember is shown to the person who runs this workspace."
+      detail="What the agents remember is shown to the person who runs this workspace."
     />
   ) : list === null || view === null ? (
     AsyncResult.isFailure(result) ? (
@@ -165,7 +165,7 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
         className="items-center py-12"
         accessible
         accessibilityRole="progressbar"
-        accessibilityLabel="Loading what your leads remember"
+        accessibilityLabel="Loading what your agents remember"
       >
         <AppActivityIndicator />
       </View>
