@@ -1,4 +1,5 @@
 import { MemoryItemHead } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -98,8 +99,8 @@ describe("spent", () => {
       title,
       status: "open",
       due: null,
-      recorded_at: new Date(NOW - age).toISOString(),
-      valid_from: new Date(NOW - age).toISOString(),
+      recorded_at: DateTime.formatIso(DateTime.makeUnsafe(NOW - age)),
+      valid_from: DateTime.formatIso(DateTime.makeUnsafe(NOW - age)),
       invalid_at: null,
       superseded_by: null,
       review_by: null,

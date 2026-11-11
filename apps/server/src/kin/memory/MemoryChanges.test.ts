@@ -452,6 +452,7 @@ it.effect("a suggestion first bound after a listing stays out of that listing's 
     const memory = Context.get(services, KinMemoryChanges);
     yield* memory.attachWriter({
       undo: () => Effect.die("Unused"),
+      retire: () => Effect.die("Unused"),
       items: () => Effect.succeed(items),
       relabel: (_org, input) =>
         Effect.sync(() => {
