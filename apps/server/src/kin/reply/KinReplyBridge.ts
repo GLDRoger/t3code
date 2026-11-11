@@ -36,7 +36,7 @@ import {
   KIN_WAKEUP_MESSAGE_LIMIT,
 } from "../chat/KinChatService.ts";
 import { KinIdentity, rescueMessageId, type AgentIdentity } from "../chat/KinIdentity.ts";
-import { AUDIENCE_MOVED, CHAT_ANSWER_TAGS, aborted } from "../lead/Audience.ts";
+import { AUDIENCE_MOVED, CHAT_ANSWER_TAGS, aborted, ownerOnlyChat } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import {
@@ -47,9 +47,11 @@ import {
   isToolItem,
   NOTE_MAX_CHARS,
   PHASE_LABELS,
+  setupFailureIn,
   stripTrailingSilenceMarker,
   toolLabel,
   type SegmentNext,
+  type SetupFailure,
 } from "./classify.ts";
 import { KinPresence, syncQueued } from "./KinPresence.ts";
 
@@ -75,9 +77,12 @@ export type Lane = {
   readonly leadName: string;
 };
 
-export type FailedOutcome = "partway" | "retrying" | "gave_up";
+export type FailedOutcome = "partway" | "retrying" | "gave_up" | SetupFailure;
 // Plain words with the lead's name: the inbox shows this as the chat's latest line.
-const failedNotices: Record<FailedOutcome, { prefix: string; body: (lead: string) => string }> = {
+const failedNotices: Record<
+  Exclude<FailedOutcome, SetupFailure>,
+  { prefix: string; body: (lead: string) => string }
+> = {
   partway: { prefix: "kin-partway", body: (lead) => `${lead} stopped partway.` },
   retrying: {
     prefix: "kin-retrying",
@@ -88,6 +93,13 @@ const failedNotices: Record<FailedOutcome, { prefix: string; body: (lead: string
     body: (lead) => `${lead} couldn't start. It won't try again on its own.`,
   },
 };
+/** Only the owner can fix the account, so only the owner's own chat hears how. */
+const setupNotice = (lead: string, failure: SetupFailure, ownerOnly: boolean) =>
+  !ownerOnly
+    ? `${lead} is unavailable right now.`
+    : failure === "signin"
+      ? `${lead} couldn't start: its model account needs signing in again on the server.`
+      : `${lead} couldn't start: its model account can't use its model. Check the account on the server.`;
 
 type Outcome = "posted" | "note" | "silent" | "empty" | "withheld" | "overflow" | "dropped";
 type Segment = {
@@ -593,6 +605,17 @@ const make = Effect.gen(function* () {
     const projection = yield* threads.getThreadProjection(wake.threadId);
     const root = projection.runs.find((run) => run.id === rootRunId);
     if (root === undefined) return;
+    // What a run that could not sign in "said" is the provider's, never the lead's.
+    if (setupFailureIn(projection, rootRunId) !== null) {
+      wake.notes.length = 0;
+      for (const segment of wake.segments.values()) {
+        if (segment.outcome !== null) continue;
+        segment.outcome = "dropped";
+        if (segment.drafting)
+          yield* presence.endDraft(wake.orgId, wake.lane.chatId, segment.id, null);
+      }
+      return;
+    }
     const runs = new Set(
       projection.runs.filter((run) => run.ordinal >= root.ordinal).map((run) => run.id),
     );
@@ -787,6 +810,8 @@ const make = Effect.gen(function* () {
       readonly lane: Lane;
       readonly outcome: FailedOutcome;
     }) {
+      if (input.outcome === "signin" || input.outcome === "access")
+        return yield* setupFailed({ ...input, outcome: input.outcome });
       const notice = failedNotices[input.outcome];
       yield* chat.notice({
         messageId: KinMessageId.make(`${notice.prefix}:${input.wakeupId}`),
@@ -797,6 +822,35 @@ const make = Effect.gen(function* () {
     },
     Effect.catchCause((cause) => Effect.logWarning("Kin failure notice failed", { cause })),
   );
+
+  // Once per burst: a line this lead already left in the chat, with nobody writing since, stands.
+  const setupFailed = Effect.fn("KinReplyBridge.setupFailed")(function* (input: {
+    readonly orgId: KinOrgId;
+    readonly wakeupId: KinWakeupId;
+    readonly lane: Lane;
+    readonly outcome: SetupFailure;
+  }) {
+    const { orgId, wakeupId, lane } = input;
+    const [wakeup] = yield* sql<{ agentId: KinAgentId }>`SELECT agent_id AS "agentId"
+      FROM kin_wakeups WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} ORDER BY wakeup_id`;
+    if (wakeup === undefined) return;
+    const standing = yield* sql`SELECT 1 FROM kin_messages n
+      JOIN kin_wakeups w ON w.org_id = n.org_id AND n.message_id = 'kin-setup:' || w.wakeup_id
+      WHERE n.org_id = ${orgId} AND n.chat_id = ${lane.chatId} AND w.agent_id = ${wakeup.agentId}
+        AND NOT EXISTS (SELECT 1 FROM kin_messages h WHERE h.org_id = n.org_id
+          AND h.chat_id = n.chat_id AND h.author_kind = 'human' AND h.seq > n.seq)
+      LIMIT 1`;
+    if (standing.length > 0) return;
+    const ownerOnly = yield* ownerOnlyChat({ orgId, agentId: wakeup.agentId }, lane.chatId).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+    yield* chat.notice({
+      messageId: KinMessageId.make(`kin-setup:${wakeupId}`),
+      orgId,
+      chatId: lane.chatId,
+      body: setupNotice(lane.leadName, input.outcome, ownerOnly),
+    });
+  });
 
   const end = Effect.fn("KinReplyBridge.end")(function* (input: {
     readonly orgId: KinOrgId;

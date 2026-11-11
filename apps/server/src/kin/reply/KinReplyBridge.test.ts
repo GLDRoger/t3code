@@ -145,6 +145,22 @@ const tool = (
   toolName: name,
   input: {},
 });
+const failure = (
+  id: string,
+  ordinal: number,
+  code: string,
+  runId: RunId,
+): OrchestrationV2TurnItem => ({
+  ...base(id, ordinal, runId),
+  status: "failed",
+  type: "error",
+  failure: {
+    class: "provider_error",
+    message: "Claude could not authenticate.",
+    code,
+    retryable: null,
+  },
+});
 const itemEvent = (item: OrchestrationV2TurnItem): OrchestrationV2DomainEvent => ({
   id: EventId.make(`event:${item.id}`),
   threadId,
@@ -289,6 +305,7 @@ const setup = Effect.fn("test.setup")(function* (input: {
     message,
     complete,
     posted,
+    projectId,
   };
 });
 
@@ -708,6 +725,64 @@ it.effect(
       yield* chats.react(owner, { messageId: reply!.messageId, emoji: "❤️", on: true });
       assert.deepStrictEqual(lines(), []);
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("keeps a run that couldn't sign in out of the chat, and says so once per burst", () =>
+  Effect.gen(function* () {
+    const { fake, runId, bridge, owner, wakeupId, posted, chats, chatId, projectId } = yield* setup(
+      { ask: "Is CI green?" },
+    );
+    fake.items = [
+      text("a", 1, "Not logged in · Please run /login", runId),
+      failure("e", 2, "authentication_failed", runId),
+    ];
+    yield* bridge.complete({
+      orgId: owner.orgId,
+      wakeupId,
+      projectId,
+      rootRunId: runId,
+      rescueUntil: null,
+    });
+    const lane = { chatId, mode: "reply" as const, leadName: "Ada" };
+    const fail = (id: KinWakeupId) =>
+      bridge.failed({ orgId: owner.orgId, wakeupId: id, lane, outcome: "signin" });
+    const retry = () =>
+      startAgentWakeup({ orgId: owner.orgId, agentId, threadId }).pipe(
+        Effect.map((id) => KinWakeupId.make(id)),
+      );
+    yield* fail(wakeupId);
+    yield* fail(yield* retry());
+    const line = "Ada couldn't start: its model account needs signing in again on the server.";
+    assert.deepStrictEqual(
+      (yield* posted).map((row) => [row.body, row.authorKind]),
+      [[line, "system"]],
+    );
+    yield* chats.send(owner, { chatId, body: "Still there?", clientMessageId: "again" });
+    yield* fail(yield* retry());
+    assert.deepStrictEqual(
+      (yield* posted).map((row) => row.body),
+      [line, line],
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("tells a shared chat only that the lead is unavailable when its account fails", () =>
+  Effect.gen(function* () {
+    const { bridge, owner, wakeupId, posted, chatId } = yield* setup({
+      ask: "Who owns launch?",
+      lane: "shared-group",
+    });
+    yield* bridge.failed({
+      orgId: owner.orgId,
+      wakeupId,
+      lane: { chatId, mode: "reply", leadName: "Ada" },
+      outcome: "access",
+    });
+    assert.deepStrictEqual(
+      (yield* posted).map((row) => row.body),
+      ["Ada is unavailable right now."],
+    );
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect("posts nothing for an L0 lead's reply in a chat its owner didn't place it in", () =>

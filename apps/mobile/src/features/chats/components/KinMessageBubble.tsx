@@ -78,10 +78,12 @@ function KinAttachments(props: {
   readonly attachments: ReadonlyArray<KinAttachment>;
   readonly environmentId: EnvironmentId;
   readonly onPressPreview: (source: FilePreviewSource) => void;
+  readonly unposted?: boolean;
 }) {
   return (
     <View className="w-[280px] max-w-full">
       <MessageAttachmentList
+        {...(props.unposted === true ? { unposted: true } : {})}
         attachments={props.attachments}
         environmentId={props.environmentId}
         onPressPreview={props.onPressPreview}
@@ -380,6 +382,7 @@ export function KinPendingBubble(props: {
             attachments={attachments}
             environmentId={props.environmentId}
             onPressPreview={props.onPressPreview}
+            unposted
           />
         </View>
       ) : null}

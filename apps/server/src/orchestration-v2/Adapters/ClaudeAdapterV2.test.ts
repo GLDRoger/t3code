@@ -6780,6 +6780,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       assert.include(terminal.failure.message, configDir);
       assert.include(terminal.failure.message, JSON.stringify(cwd));
       assert.notInclude(terminal.failure.message, "repeated API errors");
+      assert.equal(terminal.failure.code, "authentication_failed");
     }).pipe(
       Effect.provide(
         Layer.mergeAll(
