@@ -76,6 +76,8 @@ import * as Workers from "./Workers.ts";
 import * as Tracker from "./WorkerTracker.ts";
 import { LOCAL_BUILD_ONLY, LOCAL_DIRECT_ONLY } from "./localWorkers.ts";
 import { localThreadId } from "./workThread.ts";
+import { KinRecords } from "../work/KinRecords.ts";
+import { pullRequestMerged } from "../work/workerEntries.ts";
 
 const leadThread = ThreadId.make("lead-thread");
 const leadId = KinAgentId.make("lead");
@@ -2755,6 +2757,63 @@ it.effect(
           },
         ]);
         assert.lengthOf(remote.calls, 0);
+      }),
+    ),
+);
+
+it.effect(
+  "a worker started from chat is a Work entry, and its PR's merge closes it with no lead turn",
+  () =>
+    run(({ ctx, remote, local, workers, tracker }) =>
+      Effect.gen(function* () {
+        yield* goLocal(ctx, remote);
+        const records = Context.get(ctx.services, KinRecords);
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        // A retry of the same call is the same worker and the same entry.
+        yield* workers.delegate(scope, delegateInput);
+        const { rows } = yield* records.query(ctx.orgId, {});
+        assert.lengthOf(rows, 1);
+        assert.include(rows[0], {
+          title: delegateInput.title,
+          state: "doing",
+          ownerKind: "agent",
+          ownerId: leadId,
+          working: 1,
+        });
+        assert.isNotNull(rows[0]!.sourceMessageId);
+        yield* local.finish(localThreadId(workerId), "completed", reportReply);
+        yield* settled(tracker, ctx.orgId, workerId);
+        // Built work stays under way until its PR merges.
+        const reported = yield* records.get(ctx.orgId, rows[0]!.key);
+        assert.include(reported, {
+          state: "doing",
+          working: 0,
+          pullUrl: "https://github.com/acme/app/pull/9",
+        });
+        const turns = yield* ctx.sql`SELECT wakeup_id FROM kin_wakeups ORDER BY wakeup_id`;
+        assert.strictEqual(
+          yield* pullRequestMerged({ orgId: ctx.orgId, repo: "Acme/App", number: 9 }).pipe(
+            Effect.provideService(KinRecords, records),
+          ),
+          1,
+        );
+        const merged = yield* records.get(ctx.orgId, rows[0]!.key);
+        assert.include(merged, { state: "done" });
+        assert.isNotNull(merged!.closedAt);
+        // Code closed it: no turn ran and nothing was queued to wake one.
+        assert.deepStrictEqual(
+          yield* ctx.sql`SELECT wakeup_id FROM kin_wakeups ORDER BY wakeup_id`,
+          turns,
+        );
+        assert.lengthOf(yield* ctx.sql`SELECT 1 FROM kin_events WHERE tag = 'record.changed'`, 0);
+        // The worker's entry is what its lead's profile has in hand while it runs, then not.
+        assert.lengthOf(
+          (yield* records.query(ctx.orgId, {
+            open: true,
+            owner: { _tag: "agent", agentId: leadId },
+          })).rows,
+          0,
+        );
       }),
     ),
 );

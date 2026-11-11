@@ -11,6 +11,7 @@ import { makeKinMemoryHandlers } from "./memory/rpcHandlers.ts";
 import { KinServer } from "./KinServer.ts";
 import { makeKinPushHandlers } from "./push/rpcHandlers.ts";
 import { makeKinWebhookHandlers } from "./triggers/webhookRpcHandlers.ts";
+import { makeKinWorkHandlers } from "./work/rpcHandlers.ts";
 
 const group = RpcGroup.make(...KinRpcs);
 
@@ -27,6 +28,7 @@ export const makeKinHandlers = Effect.fn("makeKinHandlers")(function* (
     )),
     ...(yield* makeKinLevelHandlers(session)),
     ...(yield* makeKinMemoryHandlers(session)),
+    ...(yield* makeKinWorkHandlers(session)),
     ...(yield* makeKinPushHandlers(session)),
     ...(yield* makeKinWebhookHandlers(session)),
   });

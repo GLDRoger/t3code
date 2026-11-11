@@ -57,6 +57,7 @@ import * as ServerSettings from "../../serverSettings.ts";
 import * as KinIssuedTokens from "../mcp/KinIssuedTokens.ts";
 import * as KinLead from "./layer.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
+import * as KinRecords from "../work/KinRecords.ts";
 import * as KinStop from "./KinStop.ts";
 import { SHARED_THREAD_PREFIX, abortPrivateTurns } from "./Audience.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
@@ -2051,6 +2052,7 @@ describe("WakeupRunner", () => {
         Layer.provide(
           Layer.mergeAll(
             Layer.mock(ChatService.KinChatService)({}),
+            Layer.mock(KinRecords.KinRecords)({}),
             Layer.mock(ChatHub.KinChatHub)({}),
             Layer.mock(LevelGate.KinLevelGate)({}),
             Layer.mock(Presence.KinPresence)({

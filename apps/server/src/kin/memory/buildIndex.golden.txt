@@ -7,12 +7,6 @@ As of 2026-11-08T04:00:00.000Z
 - [deferral] Invented soon (deferrals/soon.md)
 - [deferral] Invented future-ask (deferrals/future-ask.md)
 
-## Open objectives
-- [objective] Invented objective (objectives/objective.md)
-
-## Open commitments
-- [commitment] Invented commitment (commitments/commitment.md) ⚠ review
-
 ## Overdue
 - [claim] Invented overdue (claims/overdue.md) ⚠ review
 
