@@ -20,6 +20,8 @@ export interface MaterialEntry {
   readonly trust: MemoryTrust;
   readonly at: string;
   readonly text: string;
+  /** An item's checked quote, which an item folded from it carries over. */
+  readonly quote?: string;
   /** An item nobody has said who may know: the dream labels it (`DreamRunner`). */
   readonly unlabelled?: true;
 }
@@ -196,6 +198,9 @@ export const collectMaterial = Effect.fn("DreamMaterial.collect")(
         trust: parsed.value.frontMatter.trust,
         at: parsed.value.frontMatter.recorded_at,
         text,
+        ...(parsed.value.frontMatter.quote === undefined
+          ? {}
+          : { quote: parsed.value.frontMatter.quote }),
         ...(unlabelled ? { unlabelled: true as const } : {}),
       });
     }

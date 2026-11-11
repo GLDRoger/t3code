@@ -3,7 +3,7 @@ import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import { BODY_MAX, notMemory, spent, writeRefusal } from "./keeping.ts";
+import { BODY_MAX, QUOTE_MAX, notMemory, quoteRefusal, spent, writeRefusal } from "./keeping.ts";
 
 const NOW = Date.parse("2026-11-11T10:00:00.000Z");
 const DAY = 24 * 60 * 60 * 1000;
@@ -126,5 +126,35 @@ describe("spent", () => {
     expect(spent(stored(followUp, 2 * DAY, { kind: "deferral" }), NOW)).toBe(false);
     expect(spent(stored(followUp, 2 * DAY, { status: "done" }), NOW)).toBe(false);
     expect(spent(stored(followUp, 2 * DAY, { invalid_at: "2026-11-10" }), NOW)).toBe(false);
+  });
+});
+
+describe("quoteRefusal", () => {
+  const said = "Hi Kin!  From now on,\nAcme’s invoices go to “billing@acme.example”, not Dana.";
+
+  it.each([
+    ["exact", "invoices go to “billing@acme.example”, not Dana"],
+    ["folded case, spaces and quotes", 'ACME\'S INVOICES   go to "billing@acme.example"'],
+    ["folded Unicode forms", "From now on, Acme’s invoices"],
+    ["the whole of a short message", "OK"],
+  ] as const)("keeps %s", (_, quote) => {
+    expect(quoteRefusal(quote, quote === "OK" ? "ok." : said)).toBeUndefined();
+  });
+
+  it("refuses a paraphrase, a quote from another message, and no message at all", () => {
+    expect(quoteRefusal("Acme wants invoices sent to billing", said)).toMatch(
+      /isn't in the message/,
+    );
+    expect(quoteRefusal("Dana signs for Acme", "Dana signs for Globex")).toMatch(
+      /isn't in the message/,
+    );
+    expect(quoteRefusal("Acme’s invoices", undefined)).toMatch(/no words to quote/);
+  });
+
+  it("refuses a quote too short to show anything, or too long", () => {
+    expect(quoteRefusal("Acme", said)).toMatch(/too short/);
+    expect(quoteRefusal("x".repeat(QUOTE_MAX + 1), "x".repeat(QUOTE_MAX + 1))).toMatch(
+      /at most 400/,
+    );
   });
 });

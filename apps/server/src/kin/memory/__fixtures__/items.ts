@@ -1,3 +1,7 @@
+/** What an invented owner says in fixtures, and the words items saved from it quote. */
+export const FIXTURE_SAID = "Please keep this: invented fixture body, for the record.";
+export const FIXTURE_QUOTE = "invented fixture body";
+
 export const fixtureItem = (overrides: Record<string, unknown> = {}) => {
   const fields = {
     id: "def-001",
@@ -19,6 +23,7 @@ export const fixtureItem = (overrides: Record<string, unknown> = {}) => {
     ...overrides,
   };
   return `---\n${Object.entries(fields)
+    .filter(([, value]) => value !== undefined)
     .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
     .join("\n")}\n---\nInvented fixture body.\n`;
 };

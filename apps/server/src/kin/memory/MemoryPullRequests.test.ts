@@ -17,7 +17,7 @@ import * as Vcs from "../../vcs/VcsProcess.ts";
 import { KinGitHubApp } from "../github/KinGitHubApp.ts";
 import { fakeGitHub, type FakeAnswer, type RecordedRequest } from "../github/testFakes.ts";
 import * as Persistence from "../persistence/KinPersistence.ts";
-import { fixtureItem } from "./__fixtures__/items.ts";
+import { FIXTURE_QUOTE, FIXTURE_SAID, fixtureItem } from "./__fixtures__/items.ts";
 import * as Memory from "./Memory.ts";
 import { githubRepoOf, MemoryConfig } from "./MemoryConfig.ts";
 import * as Lander from "./MemoryLander.ts";
@@ -466,7 +466,12 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
           sources: new Map([
             [
               "owner",
-              { saidBy: "fixture-owner", trust: "owner" as const, source: "fixture-owner-message" },
+              {
+                saidBy: "fixture-owner",
+                trust: "owner" as const,
+                source: "fixture-owner-message",
+                text: FIXTURE_SAID,
+              },
             ],
           ]),
         }),
@@ -501,7 +506,13 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
     });
     const claim = (id: string) => ({
       path: `claims/${id}.md`,
-      content: fixtureItem({ id, kind: "claim", title: `Claim ${id}`, links: [] }),
+      content: fixtureItem({
+        id,
+        kind: "claim",
+        title: `Claim ${id}`,
+        links: [],
+        quote: FIXTURE_QUOTE,
+      }),
       sourceEventId: "owner",
     });
 
@@ -541,7 +552,12 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
       if (ownerPath)
         yield* writer.stage(orgId, "wake1", {
           path: "decisions/dec-001.md",
-          content: fixtureItem({ id: "dec-001", kind: "decision", review_by: null }),
+          content: fixtureItem({
+            id: "dec-001",
+            kind: "decision",
+            review_by: null,
+            quote: FIXTURE_QUOTE,
+          }),
           sourceEventId: "owner",
         });
 

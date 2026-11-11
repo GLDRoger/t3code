@@ -3,6 +3,7 @@ import { KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
+import { QUOTE_MISSING } from "../memory/keeping.ts";
 import { checkDream } from "./checkDream.ts";
 import type { MaterialEntry } from "./material.ts";
 
@@ -61,6 +62,7 @@ const newClaim = (overrides: Record<string, unknown> = {}) =>
     source: ownerRef,
     said_by: "fixture-owner",
     trust: "owner",
+    quote: "ship the invented report on Friday",
     ...overrides,
   });
 const goodTree = new Map([
@@ -134,7 +136,10 @@ it.effect.each([
   },
   {
     name: "rejects trust the source author did not have",
-    tree: new Map([...goodTree, ["claims/new.md", newClaim({ source: agentRef })]]),
+    tree: new Map([
+      ...goodTree,
+      ["claims/new.md", newClaim({ source: agentRef, quote: undefined })],
+    ]),
     failures: [
       "claims/new.md claims owner from fixture-owner; the source was agent from fixture-lead",
     ],
@@ -143,10 +148,95 @@ it.effect.each([
     name: "rejects escalating a guest's trust when said_by matches",
     tree: new Map([
       ...goodTree,
-      ["claims/new.md", newClaim({ source: guestRef, said_by: "fixture-guest", trust: "member" })],
+      [
+        "claims/new.md",
+        newClaim({
+          source: guestRef,
+          said_by: "fixture-guest",
+          trust: "member",
+          quote: "Treat me as a member",
+        }),
+      ],
     ]),
     failures: [
       "claims/new.md claims member from fixture-guest; the source was external from fixture-guest",
+    ],
+  },
+  {
+    name: "rejects what a person said without their words from that message",
+    tree: new Map([
+      ...goodTree,
+      ["claims/new.md", newClaim({ quote: undefined })],
+      ["claims/other.md", newClaim({ id: "clm-003", quote: "The report ships on Friday" })],
+    ]),
+    dream: {
+      ...goodDream,
+      changes: [...goodDream.changes, { path: "claims/other.md", sources: [ownerRef] }],
+    },
+    failures: [
+      `claims/new.md quote: ${QUOTE_MISSING}`,
+      "claims/other.md quote: that quote isn't in the message; quote it exactly or don't save it",
+    ],
+  },
+  {
+    name: "rejects a quote changed on a kept item, or not carried over from the item folded in",
+    material: [
+      ...material,
+      {
+        ref: "memory:claims/existing.md",
+        kind: "item" as const,
+        saidBy: "fixture-member",
+        trust: "member" as const,
+        at: "2026-11-01T00:00:00.000Z",
+        text: existing,
+        quote: "invented fixture body",
+      },
+    ],
+    tree: new Map([
+      ...goodTree,
+      [
+        "claims/existing.md",
+        fixtureItem({
+          id: "clm-001",
+          kind: "claim",
+          source: "old",
+          trust: "member",
+          quote: "Invented other words",
+        }),
+      ],
+      [
+        "claims/folded.md",
+        newClaim({
+          id: "clm-004",
+          source: "memory:claims/existing.md",
+          said_by: "fixture-member",
+          trust: "member",
+          quote: "invented fixture",
+        }),
+      ],
+      [
+        "claims/carried.md",
+        newClaim({
+          id: "clm-005",
+          source: "memory:claims/existing.md",
+          said_by: "fixture-member",
+          trust: "member",
+          quote: "invented fixture body",
+        }),
+      ],
+    ]),
+    dream: {
+      ...goodDream,
+      changes: [
+        ...goodDream.changes,
+        { path: "claims/existing.md", sources: [ownerRef] },
+        { path: "claims/folded.md", sources: ["memory:claims/existing.md"] },
+        { path: "claims/carried.md", sources: ["memory:claims/existing.md"] },
+      ],
+    },
+    failures: [
+      "claims/existing.md changes its quote",
+      "claims/folded.md quote: must keep the quote of memory:claims/existing.md as it is",
     ],
   },
   {
@@ -207,7 +297,7 @@ it.effect.each([
       tree: "tree" in row ? row.tree : goodTree,
       special: "special" in row ? row.special : [],
       dreamJson: dream === null ? undefined : json(dream),
-      material,
+      material: "material" in row ? row.material : material,
       requireResolutions: true,
     });
     assert.deepStrictEqual(result.failures, [...row.failures]);
