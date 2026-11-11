@@ -1037,6 +1037,7 @@ it.effect(
           name,
           domain,
           charter: `Private to the owner: ${name}.`,
+          intro: `${name} questions.`,
           models: { strong: claude, cheap: claude },
         });
       const finance = yield* make("Finance", "finance");
@@ -1079,6 +1080,11 @@ it.effect(
         reason: "not_allowed",
       });
 
+      assert.strictEqual(
+        (yield* owner["kin.leads.list"](org)).leads.find((held) => held.agentId === finance.agentId)
+          ?.intro,
+        "Finance questions.",
+      );
       yield* owner["kin.lead.update"]({ ...lead, intro: "Handles invoices." });
       assert.deepStrictEqual(
         (yield* owner["kin.lead.access.grant"]({ ...lead, personId: priyaId })).people.map(

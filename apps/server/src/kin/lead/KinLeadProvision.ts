@@ -93,6 +93,7 @@ export interface CreateLeadInput {
   readonly name: typeof TrimmedNonEmptyString.Type;
   readonly domain: KinLeadDomain;
   readonly charter: KinLeadCharter;
+  readonly intro?: KinLeadIntro | undefined;
   /** Omitted: the models of the org's first live lead. */
   readonly models?: { readonly strong: ModelSelection; readonly cheap: ModelSelection } | undefined;
   readonly workerProjects: ReadonlyArray<ProjectId>;
@@ -241,6 +242,12 @@ export const create = Effect.fn("KinLeadProvision.create")(function* (input: Cre
         createdByPersonId: person.personId,
       });
       if (!inserted) return yield* refuse("conflict", `Lead ${agentId} could not be recorded.`);
+      const intro = input.intro?.trim() ?? "";
+      if (intro !== "")
+        yield* sql`UPDATE kin_leads SET public_intro = ${intro}
+          WHERE org_id = ${orgId} AND agent_id = ${agentId}`.pipe(
+          Effect.mapError(toPersistenceSqlError("KinLeadProvision.create")),
+        );
       const [lead] = yield* leadsIn(orgId, { liveOnly: true, agentId });
       if (lead === undefined)
         return yield* refuse("conflict", `Lead ${agentId} could not be recorded.`);

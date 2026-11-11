@@ -410,9 +410,12 @@ function SidebarControl({ showSidebar }: { readonly showSidebar: boolean }) {
 export function AppSidebarLayout({
   children,
   showSidebar = true,
+  chatOnly = false,
 }: {
   children: ReactNode;
   showSidebar?: boolean;
+  /** A teammate's session: Kin's list is the only one, and no thread is ever loaded. */
+  chatOnly?: boolean;
 }) {
   const sidebarArea = workspaceAreaProps("sidebar", 0, "Threads");
   const [sidebarRouteReveal] = useState<SidebarRouteReveal>(() => ({
@@ -485,16 +488,18 @@ export function AppSidebarLayout({
               style={windowControlsInsetStyle}
             >
               {/* Threads stay mounted under Kin's list, so switching back keeps their scroll and search. */}
-              <div className={kinListOpen ? "hidden" : "contents"}>
-                <ThreadSidebar routeReveal={sidebarRouteReveal} />
-              </div>
-              {kinListOpen ? <KinSidebar /> : null}
+              {chatOnly ? null : (
+                <div className={kinListOpen ? "hidden" : "contents"}>
+                  <ThreadSidebar routeReveal={sidebarRouteReveal} />
+                </div>
+              )}
+              {kinListOpen || chatOnly ? <KinSidebar /> : null}
               <SidebarRail onDoubleClick={resetSidebarWidth} />
             </Sidebar>
           </>
         ) : null}
         {children}
-        <BackgroundThreadAnnouncer />
+        {chatOnly ? null : <BackgroundThreadAnnouncer />}
         <SidebarControl showSidebar={showSidebar} />
         {isElectron ? <HistorySwipeNavigation /> : null}
       </SidebarProvider>

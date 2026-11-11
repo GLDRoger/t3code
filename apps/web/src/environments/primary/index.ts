@@ -9,6 +9,7 @@ export {
   type ServerClientSessionRecord,
   type ServerPairingLinkRecord,
   __resetServerAuthBootstrapForTests,
+  isChatOnlySession,
 } from "./auth";
 
 export {

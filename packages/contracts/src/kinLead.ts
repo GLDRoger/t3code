@@ -77,6 +77,7 @@ export const KinLeadCreateInput = Schema.Struct({
   name: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
   domain: KinLeadDomain,
   charter: KinLeadCharter,
+  intro: Schema.optional(KinLeadIntro),
   // Omitted: the models of the org's first live lead.
   models: Schema.optional(Schema.Struct({ strong: ModelSelection, cheap: ModelSelection })),
   workerProjects: Schema.optional(Schema.Array(ProjectId)),

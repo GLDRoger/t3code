@@ -22,6 +22,7 @@ import * as Schema from "effect/Schema";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import { rpcInitialItems } from "./rpcInitialItems.ts";
+import { chatOnlyServerConfig, isChatOnly } from "./auth/chatOnlyConfig.ts";
 import { subscribeChatGptHandoff } from "./provider/CodexChatGptHandoff.ts";
 import {
   AcpRegistryOperationError,
@@ -3322,6 +3323,16 @@ export const layerWsRpc = (
         [WS_METHODS.subscribeServerConfig]: (input) =>
           Stream.unwrap(
             Effect.gen(function* () {
+              if (isChatOnly(currentSession.scopes)) {
+                const config = chatOnlyServerConfig(
+                  yield* serverEnvironment.getDescriptor,
+                  yield* serverAuth.getDescriptor(),
+                );
+                return Stream.concat(
+                  rpcInitialItems([{ version: 1 as const, type: "snapshot" as const, config }]),
+                  Stream.never,
+                );
+              }
               const usageLimitsCommand = input.usageLimitsCommand === true;
               const workspaceSnapshotsOnDemand = input.workspaceSnapshotsOnDemand === true;
               // Only providers that can scan a cwd answer the client's on-demand catalog fetch.

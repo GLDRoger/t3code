@@ -258,6 +258,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
               name: input.name,
               domain: input.domain,
               charter: input.charter,
+              intro: input.intro,
               models: input.models,
               workerProjects: input.workerProjects ?? [],
             }).pipe(
