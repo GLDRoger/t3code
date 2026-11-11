@@ -57,6 +57,9 @@ const start = Effect.gen(function* () {
             if (TaskCard.taskCardEquivalent({ ...next, updatedAt: state.updatedAt }, state)) return;
             const updated = yield* repo.updateWidget({
               ...widget,
+              // Open cards only, read in this transaction: a join freezes and closes, in its own,
+              // every card whose work it moved (`freezeMovedCard`).
+              audience: "chat",
               expectedRevision: widget.revision,
               state: next,
               updatedAt,

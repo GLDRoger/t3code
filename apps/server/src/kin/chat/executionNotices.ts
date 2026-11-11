@@ -76,6 +76,7 @@ export const layer = Layer.effect(
         orgId: action.orgId,
         chatId: KinChatId.make(lead.chatId),
         messageId: KinMessageId.make(`kin-exec:${action.id}`),
+        audience: "owner",
         body,
       });
     });

@@ -234,6 +234,7 @@ it.effect("does not revise or publish an unchanged shell", () =>
     yield* Effect.gen(function* () {
       const { service, person, chat, repo } = yield* seed;
       const widget = yield* service.createTaskCard({
+        audience: "chat",
         orgId: person.orgId,
         chatId: chat.chatId,
         authorAgentId: agentIdForCards,
@@ -295,6 +296,7 @@ it.effect.each(["completed", "missing"] as const)(
           { reason: "not_allowed" },
         );
         const widget = yield* service.createTaskCard({
+          audience: "chat",
           orgId: person.orgId,
           chatId: chat.chatId,
           authorAgentId: agentIdForCards,
@@ -570,6 +572,7 @@ it.effect("streams a real delegated child state change through kin.chat.subscrib
       );
       const child = task.childThreadId!;
       const widget = yield* service.createTaskCard({
+        audience: "chat",
         orgId: person.orgId,
         chatId: chat.chatId,
         authorAgentId: agent.agentId,
@@ -619,6 +622,7 @@ it.effect("refreshes during continuous events and resumes when a closed card reo
     yield* Effect.gen(function* () {
       const { service, person, chat, repo } = yield* seed;
       const widget = yield* service.createTaskCard({
+        audience: "chat",
         orgId: person.orgId,
         chatId: chat.chatId,
         authorAgentId: agentIdForCards,
@@ -720,6 +724,7 @@ it.effect("builds without awaiting shell reads and skips malformed stored cards"
     yield* Effect.gen(function* () {
       const { service, repo, person, chat } = yield* seed;
       const bad = yield* service.createTaskCard({
+        audience: "chat",
         orgId: person.orgId,
         chatId: chat.chatId,
         authorAgentId: agentIdForCards,
@@ -728,6 +733,7 @@ it.effect("builds without awaiting shell reads and skips malformed stored cards"
         model: state.model,
       });
       const malformed = yield* repo.updateWidget({
+        audience: "chat",
         ...bad,
         expectedRevision: bad.revision,
         state: {},
@@ -745,6 +751,7 @@ it.effect("builds without awaiting shell reads and skips malformed stored cards"
         { reason: "invalid_state" },
       );
       const good = yield* service.createTaskCard({
+        audience: "chat",
         orgId: person.orgId,
         chatId: chat.chatId,
         authorAgentId: agentIdForCards,
@@ -792,6 +799,7 @@ it.effect("reconnects the domain stream after a failure", () =>
     yield* Effect.gen(function* () {
       const { service, person, chat } = yield* seed;
       yield* service.createTaskCard({
+        audience: "chat",
         orgId: person.orgId,
         chatId: chat.chatId,
         authorAgentId: agentIdForCards,
@@ -828,6 +836,7 @@ it.effect("removes a stale index entry whose row closed before tracking", () =>
     yield* Effect.gen(function* () {
       const { service, person, chat, repo } = yield* seed;
       const widget = yield* service.createTaskCard({
+        audience: "chat",
         orgId: person.orgId,
         chatId: chat.chatId,
         authorAgentId: agentIdForCards,

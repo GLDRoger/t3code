@@ -1216,6 +1216,7 @@ it.effect(
         reason: "limit",
       });
       yield* chatService.notice({
+        audience: "chat",
         orgId: person.orgId,
         chatId: chat.chatId,
         messageId: KinMessageId.make("server-notice"),

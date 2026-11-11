@@ -137,6 +137,7 @@ const make = Effect.gen(function* () {
         orgId: turn.orgId,
         chatId: KinChatId.make(row.ownerChatId),
         messageId: KinMessageId.make(`kin-private-destination:${turn.wakeupId}`),
+        audience: "owner",
         body: `${row.name} couldn't post in ${row.title ?? "a group"}: other people are in it.`,
       });
     },

@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   KinChatId,
+  KinMemberId,
   KinMemoryItemId,
   KinMessageId,
   KinOrgId,
@@ -11,7 +12,9 @@ import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
 import { unified } from "unified";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -37,6 +40,9 @@ const person = Schema.decodeSync(KinPersonId)("person");
 const owner = Schema.decodeSync(KinPersonId)("owner");
 const chatId = Schema.decodeSync(KinChatId)("chat");
 const ownerChatId = Schema.decodeSync(KinChatId)("owner-chat");
+const group = Schema.decodeSync(KinChatId)("private-group");
+const later = Schema.decodeSync(KinMemoryItemId)("later");
+const teammate = Schema.decodeSync(KinMemberId)("teammate");
 const request = {
   orgId,
   person,
@@ -74,6 +80,7 @@ function layer(
   hubLayer = Hub.layer,
   // Whether the owner let the team know every item read: a chase quotes one where others read.
   teamKnows = true,
+  teamMemory: "on" | "off" = "on",
 ) {
   const dependencies = Chat.layer.pipe(
     Layer.provideMerge(hubLayer),
@@ -126,7 +133,9 @@ function layer(
         }),
       ).pipe(Layer.provide(dependencies)),
     ),
-    Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_TEAM_MEMORY: "on" }))),
+    Layer.provideMerge(
+      ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_TEAM_MEMORY: teamMemory })),
+    ),
   );
 }
 const seed = Effect.gen(function* () {
@@ -202,6 +211,71 @@ describe("KinPings", () => {
         FROM kin_ping_items WHERE org_id = ${orgId} AND item_id = 'item'`;
       assert.isNotNull(row?.stopped ?? null);
     }).pipe(Effect.provide(layer(undefined, undefined, undefined, false))),
+  );
+
+  // Review 15: a chase read its chat as owner-only, a teammate joined, and it posted there anyway.
+  it.effect.each([
+    { teamMemory: "off", teamKnows: true },
+    { teamMemory: "on", teamKnows: false },
+  ] as const)("decides who reads a chase where it posts it: team memory $teamMemory", (scenario) =>
+    Effect.gen(function* () {
+      const admitted = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const armed = yield* Ref.make(false);
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const pings = yield* Pings.KinPings;
+        const repo = yield* Repo.KinChatRepository;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at) VALUES (${group}, ${orgId}, 'team_group', 'Private', 0, '2026-01-01T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at) VALUES ('group-owner', ${orgId}, ${group}, 'person', ${owner}, 'owner', '2026-01-01T00:00:00.000Z')`;
+        yield* TestClock.setTime(Date.parse("2026-11-01T15:00:00Z"));
+        const chase = { ...request, person: owner, chatId: group, nextStep: "Private next step" };
+        yield* pings.put(chase);
+        yield* pings.put({ ...chase, itemId: later });
+        // Held on the second item's read, after the first was admitted.
+        yield* Ref.set(armed, true);
+        const sweep = yield* pings.sweep(orgId).pipe(Effect.forkChild);
+        yield* Deferred.await(admitted);
+        yield* repo.addMember({
+          orgId,
+          chatId: group,
+          memberId: teammate,
+          principal: { _tag: "person", personId: person },
+          role: "member",
+          joinedAt: "2026-11-01T15:00:00.000Z",
+          leftAt: null,
+          mutedUntil: null,
+        });
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(sweep);
+        assert.lengthOf(
+          yield* sql`SELECT message_id FROM kin_messages WHERE org_id = ${orgId} AND chat_id = ${group} ORDER BY seq`,
+          0,
+        );
+        assert.lengthOf(
+          yield* sql`SELECT item_id FROM kin_ping_items WHERE org_id = ${orgId} AND stopped_at IS NULL ORDER BY item_id`,
+          0,
+        );
+      }).pipe(
+        Effect.provide(
+          layer(
+            undefined,
+            (id) =>
+              Effect.gen(function* () {
+                if (id === later && (yield* Ref.get(armed))) {
+                  yield* Deferred.succeed(admitted, undefined);
+                  yield* Deferred.await(release);
+                }
+                return head;
+              }),
+            undefined,
+            scenario.teamKnows,
+            scenario.teamMemory,
+          ),
+        ),
+      );
+    }),
   );
 
   it.effect("answers only the recipient and only a reply to a multi-item ping", () =>
@@ -464,10 +538,17 @@ describe("KinPings", () => {
         chatId,
         body: "System activity is not an answer",
       };
-      const notice = yield* chat.notice(noticeRequest);
-      assert.deepStrictEqual(yield* chat.notice(noticeRequest), notice);
+      // The chat's one person owns no lead: the owner's words are refused there.
+      assert.isTrue(
+        Repo.isPrivateWriteRefused(
+          yield* Effect.flip(chat.notice({ ...noticeRequest, audience: "owner" })),
+        ),
+      );
+      const notice = yield* chat.notice({ ...noticeRequest, audience: "chat" });
+      assert.deepStrictEqual(yield* chat.notice({ ...noticeRequest, audience: "chat" }), notice);
       assert.strictEqual(
-        (yield* Effect.flip(chat.notice({ ...noticeRequest, body: "Changed" })))._tag,
+        (yield* Effect.flip(chat.notice({ ...noticeRequest, audience: "chat", body: "Changed" })))
+          ._tag,
         "KinChatError",
       );
       yield* TestClock.setTime(Date.parse("2026-11-02T15:00:00Z"));

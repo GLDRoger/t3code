@@ -776,6 +776,7 @@ it.effect(
       const said = yield* say(priya, chatId, "Invented-priya-before-sam");
       const card = yield* chats
         .createTaskCard({
+          audience: "chat",
           orgId,
           chatId,
           authorAgentId: tech,
@@ -861,6 +862,7 @@ it.effect(
       // Its card from after the join it still updates.
       const fresh = yield* chats
         .createTaskCard({
+          audience: "chat",
           orgId,
           chatId,
           authorAgentId: tech,

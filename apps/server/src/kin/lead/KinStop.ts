@@ -208,6 +208,8 @@ const make = Effect.gen(function* () {
       chat.insertMessage({
         orgId,
         chatId: KinChatId.make(row.chatId),
+        // Fixed words; the switch never waits on who reads its notice.
+        audience: "chat",
         messageId: KinMessageId.make(`kin-${kind}:${now}:${row.chatId}`),
         author: { _tag: "system" },
         kind: "text",

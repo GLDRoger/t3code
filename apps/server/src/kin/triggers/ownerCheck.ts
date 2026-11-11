@@ -254,6 +254,7 @@ const make = Effect.gen(function* () {
                   orgId,
                   chatId,
                   messageId: KinMessageId.make(widgetId),
+                  audience: "owner",
                   body: "Memory to review",
                 });
                 const now = DateTime.formatIso(yield* DateTime.now);
@@ -280,7 +281,7 @@ const make = Effect.gen(function* () {
                   closedAt: null,
                   updatedAt: now,
                 };
-                yield* repo.insertWidget(widget);
+                yield* repo.insertWidget({ ...widget, audience: "owner" });
                 yield* sql.afterCommit(hub.publish({ type: "widget.updated", orgId, widget }));
                 return selections;
               }),
@@ -339,6 +340,7 @@ const make = Effect.gen(function* () {
               Effect.gen(function* () {
                 const widget = yield* repo.updateWidget({
                   ...verified.widget,
+                  audience: "owner",
                   expectedRevision: verified.widget.revision,
                   state: { items },
                   awaiting: items.every((item) => item.handled !== undefined)
