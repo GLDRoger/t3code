@@ -61,26 +61,42 @@ const ownerAsked = Effect.fnUntraced(function* (turn: Turn) {
 });
 
 /**
- * The owner asked, and the worker is this lead's, was asked for in the chat this turn answers,
- * and was not moved out of it by a join (`onPersonJoined`).
+ * Whether a turn others read may touch this worker: this lead's shared work, asked for in the
+ * chat the turn answers, and not moved out of it by a join (`onPersonJoined`).
  */
-const ownerAskedAboutWorkerHere: Condition = Effect.fnUntraced(function* (turn, args) {
-  const workerId = field(args, "workerId");
-  if (typeof workerId !== "string" || !(yield* ownerAsked(turn))) return false;
+export const sharedTurnMayTouch = Effect.fn("KinSharedTools.mayTouchWorker")(function* (
+  turn: Turn,
+  workerId: unknown,
+) {
+  if (typeof workerId !== "string") return false;
   const chat = yield* turnChat(turn);
   if (chat === undefined) return false;
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql`SELECT 1 FROM kin_workers
     WHERE org_id = ${turn.orgId} AND worker_id = ${workerId} AND agent_id = ${turn.agentId}
-      AND chat_id = ${chat.chatId} AND moved_at IS NULL
+      AND chat_id = ${chat.chatId} AND moved_at IS NULL AND context = 'shared'
     LIMIT 1`;
   return rows.length > 0;
 });
 
-/** The owner may start work from a team chat, but no note of theirs goes with it. */
+const ownerAskedAboutWorkerHere: Condition = Effect.fnUntraced(function* (turn, args) {
+  return (yield* ownerAsked(turn)) && (yield* sharedTurnMayTouch(turn, field(args, "workerId")));
+});
+
+/**
+ * The owner may start work from a team chat, but no note of theirs goes with it, and it builds on
+ * or reviews only work the turn may touch.
+ */
 const ownerDelegates: Condition = Effect.fnUntraced(function* (turn, args) {
   const memory = field(args, "memoryItemIds");
   if (memory !== undefined && !(Array.isArray(memory) && memory.length === 0)) return false;
+  const reviewOf = field(args, "reviewOf");
+  if (reviewOf !== undefined && !(yield* sharedTurnMayTouch(turn, reviewOf))) return false;
+  const baseRef = field(args, "baseRef");
+  // A worker's branch (`publishBranch`) carries its work as a review's refs do.
+  const branchOf =
+    typeof baseRef === "string" ? /kin\/worker\/([^/\s~^:]+)/i.exec(baseRef)?.[1] : undefined;
+  if (branchOf !== undefined && !(yield* sharedTurnMayTouch(turn, branchOf))) return false;
   return yield* ownerAsked(turn);
 });
 

@@ -1,3 +1,7 @@
+// @effect-diagnostics nodeBuiltinImport:off -- node:fs reads sources for the authorise guard.
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+
 import { assert, it } from "@effect/vitest";
 import {
   KinChatId,
@@ -180,4 +184,31 @@ it.each([
 ] as const)("the backstop reads %s as sensitive: %s", (text, sensitive) => {
   assert.strictEqual(mustBeSensitive(text), sensitive);
   assert.isFalse(looksLikeSecret(text));
+});
+
+// Review of 8c8ee76d04: chat could let the team know words the owner never saw.
+it("only the owner's own write, the Memory screen and a teammate's words let the team know", () => {
+  const root = NodePath.resolve(import.meta.dirname, "../..");
+  const sites = (NodeFS.readdirSync(root, { recursive: true }) as Array<string>)
+    .filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts"))
+    .flatMap((file) =>
+      [
+        ...NodeFS.readFileSync(NodePath.join(root, file), "utf8").matchAll(
+          /\bauthorise\(([^;]*?)\)\.pipe/g,
+        ),
+      ].map((call) => [
+        file.split(NodePath.sep).join("/"),
+        call[1]!
+          .replaceAll(/\s+/g, " ")
+          .replace(/,?\s*$/, "")
+          .split(", ")
+          .at(-1),
+      ]),
+    )
+    .toSorted();
+  assert.deepStrictEqual(sites, [
+    ["kin/lead/LeadMemory.ts", 'owner !== undefined ? "owner_message" : "teammate"'],
+    ["kin/memory/MemoryChanges.ts", '"owner_confirmed"'],
+    ["kin/memory/MemoryChanges.ts", '"owner_setting"'],
+  ]);
 });

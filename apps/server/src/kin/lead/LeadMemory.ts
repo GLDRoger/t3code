@@ -141,7 +141,10 @@ export const JournalInput = Schema.Struct({
 });
 export const EndInput = Schema.Struct({ summary: text });
 export const ItemResult = Schema.Struct({ itemId: KinMemoryItemId });
-export const LabelResult = Schema.Struct({ itemIds: Schema.Array(KinMemoryItemId) });
+export const LabelResult = Schema.Struct({
+  itemIds: Schema.Array(KinMemoryItemId),
+  note: Schema.optional(Schema.String),
+});
 /** The whole item in a turn only the owner reads; in any other, only its shared projection. */
 export const ReadResult = Schema.Union([
   Schema.Struct({
@@ -177,8 +180,9 @@ const TEAM_SOURCE = "sourceEventId must be the message, in this chat, of the per
 const TEAM_CAP_REFUSAL =
   "That is as much as can be saved from one person's messages today, so it was not saved.";
 const TEAM_FILTERS = "From a chat other people read, search memory only by kind or linksTo.";
-const changedSinceOwner = (itemId: string) =>
-  `${itemId} changed after the owner's message, so it was not shared. Tell the owner what it says now and ask again.`;
+/** What `memory_label` with sensitive false returns, for the lead to pass on as it is. */
+export const AWAITING_OWNER =
+  "Not shared yet: these wait for your yes in Memory, then the team can know them.";
 const SHARE_NEEDS_OWNER =
   "Only the owner's own message, in a chat only they read, lets the team know something. Ask the owner first.";
 // What a teammate's messages can cause shared turns to save, per person per day.
@@ -460,13 +464,12 @@ const make = Effect.gen(function* () {
       chat_name: row.title ?? (row.kind === "direct" ? "a direct chat" : "a group"),
     };
   });
-  /** The lead's owner and when they said it, when the cited event is their own message in this turn. */
+  /** The lead's owner, when the cited event is their own message in this turn. */
   const ownerSaid = Effect.fn("LeadMemory.ownerSaid")(function* (
     ctx: Effect.Success<ReturnType<typeof resolve>>,
     eventId: string,
   ) {
-    const [row] = yield* sql<{ owner: string; at: string }>`SELECT a.owner_person_id AS owner,
-        m.created_at AS at
+    const [row] = yield* sql<{ owner: string }>`SELECT a.owner_person_id AS owner
       FROM kin_events e
       JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
       JOIN kin_messages m ON m.org_id = e.org_id AND m.author_kind = 'human'
@@ -476,12 +479,7 @@ const make = Effect.gen(function* () {
       WHERE e.org_id = ${ctx.orgId} AND e.agent_id = ${ctx.agentId}
         AND e.wakeup_id = ${ctx.wakeupId} AND e.event_id = ${eventId} AND e.tag = 'chat.message'
       ORDER BY e.event_id`;
-    return row === undefined
-      ? undefined
-      : {
-          person: KinPersonId.make(row.owner),
-          at: DateTime.toEpochMillis(DateTime.makeUnsafe(row.at)),
-        };
+    return row === undefined ? undefined : { person: KinPersonId.make(row.owner) };
   });
   const checkSource = Effect.fn("LeadMemory.checkSource")(function* (
     ctx: Effect.Success<ReturnType<typeof resolve>>,
@@ -904,20 +902,9 @@ const make = Effect.gen(function* () {
           if (!input.sensitive && said === undefined) return yield* invalid(SHARE_NEEDS_OWNER);
           const owner = said?.person;
           const itemIds = [...new Set(input.itemIds)];
-          // Every item is found before any is changed, so a bad id changes none of them. The
-          // owner's word covers only what an item said when he gave it, never a later rewording.
+          // Every item is found before any is changed, so a bad id changes none of them.
           const items = yield* Effect.forEach(itemIds, (itemId) =>
-            said === undefined
-              ? memory.readItemQuietly(ctx.orgId, itemId, { lead: ctx.agentId })
-              : memory
-                  .readItemChangedAt(ctx.orgId, itemId, { lead: ctx.agentId })
-                  .pipe(
-                    Effect.flatMap(({ item, changedAt }) =>
-                      changedAt + 1000 > said.at
-                        ? Effect.fail(invalid(changedSinceOwner(item.head.id)))
-                        : Effect.succeed(item),
-                    ),
-                  ),
+            memory.readItemQuietly(ctx.orgId, itemId, { lead: ctx.agentId }),
           );
           for (const item of items) {
             const { orgId: _org, path, shared_by: _before, ...frontMatter } = item.head;
@@ -949,15 +936,14 @@ const make = Effect.gen(function* () {
                   sourceEventId: input.sourceEventId,
                   label: owner === undefined ? "keep" : "share",
                 });
-                // The owner's authorisation of the item as it reads now; a later rewording ends it.
+                // Chat can't show which words he meant, so his yes in Memory, on the version
+                // shown there, is what lets the team know them.
                 if (owner !== undefined)
-                  yield* authorise(ctx.orgId, item.head.id, fingerprint(item), "owner_label").pipe(
-                    provideSql,
-                  );
+                  yield* suggest(ctx.orgId, item.head.id, fingerprint(item)).pipe(provideSql);
               }),
             );
           }
-          return { itemIds };
+          return input.sensitive ? { itemIds } : { itemIds, note: AWAITING_OWNER };
         }),
       );
     }, Effect.mapError(failure)),

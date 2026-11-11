@@ -703,28 +703,22 @@ const fixtureRepository = Effect.fn("Test.fixtureRepository")(function* () {
   const root = yield* fs.realPath(temporary);
   const source = `${root}/source`;
   yield* fs.copy(`${import.meta.dirname}/__fixtures__/memory`, source);
-  const git = Effect.fn("Test.realGit")(
-    (cwd: string, args: ReadonlyArray<string>, env?: NodeJS.ProcessEnv) =>
-      vcs
-        .run({ operation: "test.memory", command: "git", cwd, args, ...(env ? { env } : {}) })
-        .pipe(Effect.map((r) => r.stdout.trim())),
+  const git = Effect.fn("Test.realGit")((cwd: string, args: ReadonlyArray<string>) =>
+    vcs
+      .run({ operation: "test.memory", command: "git", cwd, args })
+      .pipe(Effect.map((r) => r.stdout.trim())),
   );
-  /** Committed at `date` when given, else now. */
-  const commit = Effect.fn("Test.commit")(function* (cwd: string, date?: string) {
+  const commit = Effect.fn("Test.commit")(function* (cwd: string) {
     yield* git(cwd, ["add", "."]);
-    yield* git(
-      cwd,
-      [
-        "-c",
-        "user.name=Fixture",
-        "-c",
-        "user.email=fixture@example.invalid",
-        "commit",
-        "-m",
-        "Invented fixture",
-      ],
-      date === undefined ? undefined : { GIT_COMMITTER_DATE: date, GIT_AUTHOR_DATE: date },
-    );
+    yield* git(cwd, [
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "commit",
+      "-m",
+      "Invented fixture",
+    ]);
     return yield* git(cwd, ["rev-parse", "HEAD"]);
   });
   yield* git(source, ["init", "--initial-branch=main"]);
@@ -790,35 +784,6 @@ it.live(
       Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer, databaseLayer)),
       Effect.scoped,
     ),
-);
-
-// Review of e1460657a0: an owner's word in chat let the team know a rewording made after it.
-it.live("tells when an item's own file last changed, by commit time", () =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const { root, source, commit } = yield* fixtureRepository();
-    const reworded = `${source}/commitments/com-001.md`;
-    const text = yield* fs.readFileString(reworded);
-    yield* fs.writeFileString(
-      reworded,
-      text.replace("Invented fixture body.", "Invented rewording."),
-    );
-    yield* commit(source, "2030-01-01T00:00:00Z");
-    yield* fs.writeFileString(`${source}/rules.md`, "Invented later rules\n");
-    yield* commit(source, "2031-01-01T00:00:00Z");
-    yield* Effect.gen(function* () {
-      const memory = yield* Memory.Memory;
-      yield* memory.prepareWakeup(orgA);
-      const rewordedAt = yield* memory.readItemChangedAt(orgA, KinMemoryItemId.make("com-001"));
-      expect(rewordedAt.item.body).toContain("Invented rewording.");
-      expect(rewordedAt.changedAt).toBe(Date.parse("2030-01-01T00:00:00Z"));
-      const untouched = yield* memory.readItemChangedAt(orgA, itemId);
-      expect(untouched.changedAt).toBeLessThan(Date.parse("2030-01-01T00:00:00Z"));
-    }).pipe(Effect.provide(memoryLayer(`${root}/state`, source)));
-  }).pipe(
-    Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer, databaseLayer)),
-    Effect.scoped,
-  ),
 );
 
 it.live("gives each lead its own read checkout, swapped in whole on prepare", () =>

@@ -415,3 +415,76 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
     );
   }).pipe(Effect.scoped, Effect.provide(root)),
 );
+
+// Review of 8c8ee76d04: a suggestion bound after a listing kept its old revision, inside its yes.
+it.effect("a suggestion first bound after a listing stays out of that listing's yes", () =>
+  Effect.gen(function* () {
+    const kin = yield* Kin.KinServer;
+    const services = Option.getOrThrow(kin.services);
+    const sql = yield* SqlClient.SqlClient;
+    yield* pairSession(session.sessionId);
+    const [owner] = yield* Context.get(services, KinIdentity).resolve(session);
+    assert.isDefined(owner);
+    const { orgId } = owner;
+    const item = (id: string) => ({
+      head: decodeHead({
+        id,
+        orgId,
+        path: `claims/${id}.md`,
+        kind: "claim",
+        title: `Invented ${id}`,
+        status: "open",
+        due: null,
+        recorded_at: "2026-11-01T00:00:00.000Z",
+        valid_from: "2026-11-01T00:00:00.000Z",
+        invalid_at: null,
+        superseded_by: null,
+        review_by: null,
+        source: "fixture",
+        said_by: "fixture",
+        trust: "owner",
+        links: [],
+        sensitive: false,
+      }),
+      body: "Invented body.\n",
+    });
+    let items = [item("seen")];
+    const memory = Context.get(services, KinMemoryChanges);
+    yield* memory.attachWriter({
+      undo: () => Effect.die("Unused"),
+      items: () => Effect.succeed(items),
+      relabel: (_org, input) =>
+        Effect.sync(() => {
+          items = items.map((each) =>
+            each.head.id === input.itemId
+              ? { ...each, head: { ...each.head, sensitive: input.sensitive } }
+              : each,
+          );
+          return { head: items.find((each) => each.head.id === input.itemId)!.head };
+        }),
+    });
+    // An earlier version's suggestion of X, with no words; X's file isn't on this host yet.
+    yield* sql`INSERT INTO kin_memory_labels (org_id, item_id, suggested_rev) VALUES (${orgId}, 'x', 1)`;
+    yield* sql`INSERT INTO kin_memory_label_revisions (org_id, revision) VALUES (${orgId}, 9)
+      ON CONFLICT (org_id) DO UPDATE SET revision = 9`;
+    yield* suggest(orgId, "seen", fingerprint(items[0]!));
+    // Listing A shows only `seen`.
+    const a = yield* memory.list([owner], { orgId });
+    assert.strictEqual(a.suggestionsAsOf, 10);
+    assert.deepStrictEqual(
+      a.items.map((each) => each.itemId),
+      ["seen"],
+    );
+    // X arrives, and another listing binds it to its words.
+    items = [...items, item("x")];
+    const b = yield* memory.list([owner], { orgId });
+    assert.strictEqual(b.items.find((each) => each.itemId === "x")?.visibility, "suggested");
+    const confirmed = yield* memory.confirmSuggestions([owner], { orgId, asOf: a.suggestionsAsOf });
+    assert.deepStrictEqual(
+      confirmed.items.map((each) => each.itemId),
+      ["seen"],
+    );
+    const after = yield* memory.list([owner], { orgId });
+    assert.strictEqual(after.items.find((each) => each.itemId === "x")?.visibility, "suggested");
+  }).pipe(Effect.scoped, Effect.provide(root)),
+);

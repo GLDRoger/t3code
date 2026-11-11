@@ -742,14 +742,28 @@ it.live(
             .pipe(Effect.flip)).reason,
           "not_found",
         );
-        // "Yes, the team can know those": several at once, by the owner's own message.
+        // "Yes, the team can know those": several at once, by the owner's own message, each
+        // waiting for his yes in Memory.
         assert.deepStrictEqual(
           yield* service.label(scope, {
             ...share,
             itemIds: [KinMemoryItemId.make("private-item"), KinMemoryItemId.make("spare-item")],
             sourceEventId: "fixture-event",
           }),
-          { itemIds: [KinMemoryItemId.make("private-item"), KinMemoryItemId.make("spare-item")] },
+          {
+            itemIds: [KinMemoryItemId.make("private-item"), KinMemoryItemId.make("spare-item")],
+            note: Lead.AWAITING_OWNER,
+          },
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT item_id, shared_content IS NULL AS unshared,
+              suggested_content IS NOT NULL AS suggested
+            FROM kin_memory_labels WHERE org_id = ${orgId}
+              AND item_id IN ('private-item', 'spare-item') ORDER BY item_id`,
+          [
+            { item_id: "private-item", unshared: 1, suggested: 1 },
+            { item_id: "spare-item", unshared: 1, suggested: 1 },
+          ],
         );
         // Keeping something back needs no such message, and holds before the turn commits.
         yield* service.label(scope, {
@@ -993,19 +1007,17 @@ it.live(
         yield* sql`UPDATE kin_events SET wakeup_id = 'team-wakeup' WHERE wakeup_id = 'cancel-wakeup'`;
         yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = 'team-wakeup' WHERE event_id = 'member-event'`;
         yield* sql`UPDATE kin_chat_members SET left_at = NULL WHERE member_id = 'fixture-member-membership'`;
-        // The owner shared items and kept one back in the turn above; the routine's suggestion
-        // waits for the owner.
-        assert.deepStrictEqual(yield* claims, [
-          "new-claim",
-          "private-item",
-          "spare-item",
-          "status-claim",
-        ]);
-        const routineClaim = yield* memory.readItemQuietly(
-          orgId,
-          KinMemoryItemId.make("routine-claim"),
-        );
-        assert.strictEqual(visibility(routineClaim, yield* storedLabels(orgId)), "suggested");
+        // The owner kept one back in the turn above; what he said the team could know in chat,
+        // and the routine's suggestion, wait for his yes in Memory.
+        assert.deepStrictEqual(yield* claims, ["new-claim", "status-claim"]);
+        for (const id of ["routine-claim", "private-item", "spare-item"])
+          assert.strictEqual(
+            visibility(
+              yield* memory.readItemQuietly(orgId, KinMemoryItemId.make(id)),
+              yield* storedLabels(orgId),
+            ),
+            "suggested",
+          );
         const said = {
           ...input,
           sourceEventId: "member-event",
