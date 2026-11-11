@@ -71,6 +71,8 @@ import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as EffectWorker from "../../orchestration-v2/EffectWorker.ts";
 import { provideDeterministicTestRuntime } from "../../orchestration-v2/testkit/DeterministicRuntime.ts";
 import { harness, seed, orgId, agentId, event } from "./WakeupRunner.testkit.ts";
+import { ProviderAdapterSteerRunError } from "@t3tools/provider-core/server/ProviderAdapter";
+import { ProviderDriverKind, ProviderThreadId } from "@t3tools/contracts";
 
 const decodeEvent = Schema.decodeSync(KinEvent);
 const decodeUsage = Schema.decodeEffect(
@@ -1307,7 +1309,7 @@ describe("WakeupRunner", () => {
         const queue = yield* KinEventQueue.KinEventQueue;
         const threads = yield* ThreadManagement.ThreadManagementService;
         const sql = yield* SqlClient.SqlClient;
-        yield* queue.enqueue(laneMessage("ask"));
+        yield* queue.enqueue(yield* ownerSays("ask"));
         const running = yield* threads.streamDomainEvents.pipe(
           Stream.filter(
             (event) => event.type === "provider-turn.updated" && event.payload.status === "running",
@@ -1318,18 +1320,30 @@ describe("WakeupRunner", () => {
         );
         const fiber = yield* run();
         yield* Fiber.join(running);
-        yield* queue.enqueue(laneMessage("again"));
+        yield* queue.enqueue(yield* ownerSays("again"));
         const steered = yield* Queue.take(providerSteers);
         yield* Deferred.succeed(holdRunning, undefined);
         yield* Fiber.join(fiber);
-        const [wakeup, ...others] = yield* sql<{ wakeupId: string; runId: string; status: string }>`
-          SELECT wakeup_id AS "wakeupId", run_id AS "runId", status FROM kin_wakeups ORDER BY wakeup_id`;
+        const [wakeup, ...others] = yield* sql<{
+          wakeupId: string;
+          runId: string;
+          threadId: string;
+          status: string;
+        }>`
+          SELECT wakeup_id AS "wakeupId", run_id AS "runId", thread_id AS "threadId", status
+          FROM kin_wakeups ORDER BY wakeup_id`;
         assert.lengthOf(others, 0);
         assert.strictEqual(wakeup!.status, "completed");
         assert.deepStrictEqual(steered, {
           runId: wakeup!.runId,
           messageId: KinIdentity.steerMessageId(KinWakeupId.make(wakeup!.wakeupId), 1),
         });
+        // One turn answered both: the steer started no run of its own.
+        const runs = (yield* threads.getThreadProjection(ThreadId.make(wakeup!.threadId))).runs;
+        assert.deepStrictEqual(
+          runs.map((entry) => entry.id),
+          [wakeup!.runId],
+        );
         assert.deepStrictEqual(
           yield* sql`SELECT event_id, state, wakeup_id FROM kin_events ORDER BY event_id`,
           ["again", "ask"].map((id) => ({
@@ -1338,8 +1352,144 @@ describe("WakeupRunner", () => {
             wakeup_id: wakeup!.wakeupId,
           })),
         );
+        // Answered, so no later wake-up is owed it.
+        assert.deepStrictEqual(yield* queue.readyLeads(orgId), []);
       }).pipe(Effect.scoped, Effect.provide(harness({ holdRunning, providerSteers })));
     }).pipe(provideDeterministicTestRuntime),
+  );
+
+  it.effect("answers a steer the provider rejects once, in a run the same wake-up adopts", () =>
+    Effect.gen(function* () {
+      const holdRunning = yield* Deferred.make<void>();
+      let onSteer: (input: {
+        readonly providerTurnId: string;
+      }) => Effect.Effect<void, ProviderAdapterSteerRunError> = () => Effect.void;
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const sql = yield* SqlClient.SqlClient;
+        // The turn ends as the steer reaches the provider, which then refuses it.
+        onSteer = (input) =>
+          Effect.gen(function* () {
+            const ended = yield* threads.streamDomainEvents.pipe(
+              Stream.filter(
+                (event) =>
+                  event.type === "provider-turn.updated" &&
+                  event.payload.id === input.providerTurnId &&
+                  event.payload.completedAt !== null,
+              ),
+              Stream.take(1),
+              Stream.runDrain,
+              Effect.forkChild,
+            );
+            yield* Deferred.succeed(holdRunning, undefined);
+            yield* Fiber.join(ended);
+            return yield* new ProviderAdapterSteerRunError({
+              driver: ProviderDriverKind.make("claudeAgent"),
+              providerThreadId: ProviderThreadId.make("native-1"),
+              providerTurnId: ProviderTurnId.make(input.providerTurnId),
+            });
+          });
+        yield* queue.enqueue(yield* ownerSays("ask"));
+        const running = yield* threads.streamDomainEvents.pipe(
+          Stream.filter(
+            (event) => event.type === "provider-turn.updated" && event.payload.status === "running",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+        const fiber = yield* run();
+        yield* Fiber.join(running);
+        yield* queue.enqueue(yield* ownerSays("again"));
+        yield* Fiber.join(fiber);
+        const [wakeup, ...others] = yield* sql<{
+          wakeupId: string;
+          threadId: string;
+          status: string;
+        }>`SELECT wakeup_id AS "wakeupId", thread_id AS "threadId", status FROM kin_wakeups`;
+        assert.lengthOf(others, 0);
+        assert.strictEqual(wakeup!.status, "completed");
+        const wakeupId = KinWakeupId.make(wakeup!.wakeupId);
+        const runs = (yield* threads.getThreadProjection(ThreadId.make(wakeup!.threadId))).runs;
+        assert.deepStrictEqual(
+          runs.map((entry) => [entry.userMessageId, entry.status]),
+          [
+            [KinIdentity.wakeupMessageId(wakeupId), "completed"],
+            [KinIdentity.steerMessageId(wakeupId, 1), "completed"],
+          ],
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT event_id, state, wakeup_id FROM kin_events ORDER BY event_id`,
+          ["again", "ask"].map((id) => ({ event_id: id, state: "done", wakeup_id: wakeupId })),
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(harness({ holdRunning, onSteer: (input) => onSteer(input) })),
+      );
+    }).pipe(provideDeterministicTestRuntime),
+  );
+
+  it.effect(
+    "answers a message whose steer never reached the thread in exactly one later wake-up",
+    () =>
+      Effect.gen(function* () {
+        const holdRunning = yield* Deferred.make<void>();
+        const steering = yield* Deferred.make<void>();
+        const fixture = { holdRunning, steering, steerFails: true };
+        yield* Effect.gen(function* () {
+          yield* seed;
+          const queue = yield* KinEventQueue.KinEventQueue;
+          const threads = yield* ThreadManagement.ThreadManagementService;
+          const sql = yield* SqlClient.SqlClient;
+          yield* queue.enqueue(yield* ownerSays("ask"));
+          const running = yield* threads.streamDomainEvents.pipe(
+            Stream.filter(
+              (event) =>
+                event.type === "provider-turn.updated" && event.payload.status === "running",
+            ),
+            Stream.take(1),
+            Stream.runDrain,
+            Effect.forkScoped,
+          );
+          const fiber = yield* run();
+          yield* Fiber.join(running);
+          yield* queue.enqueue(yield* ownerSays("again"));
+          yield* Deferred.await(steering);
+          yield* Deferred.succeed(holdRunning, undefined);
+          yield* Fiber.join(fiber);
+          const [first] = yield* sql<{ wakeupId: string; threadId: string }>`
+          SELECT wakeup_id AS "wakeupId", thread_id AS "threadId" FROM kin_wakeups`;
+          assert.deepStrictEqual(
+            yield* sql`SELECT event_id, state FROM kin_events ORDER BY event_id`,
+            [
+              { event_id: "again", state: "queued" },
+              { event_id: "ask", state: "done" },
+            ],
+          );
+          yield* Fiber.join(yield* run());
+          const wakeups = yield* sql<{ wakeupId: string; status: string }>`
+          SELECT wakeup_id AS "wakeupId", status FROM kin_wakeups ORDER BY started_at, wakeup_id`;
+          assert.deepStrictEqual(
+            wakeups.map((entry) => entry.status),
+            ["completed", "completed"],
+          );
+          assert.deepStrictEqual(
+            yield* sql`SELECT event_id, wakeup_id FROM kin_events WHERE state = 'done' ORDER BY event_id`,
+            [
+              { event_id: "again", wakeup_id: wakeups[1]!.wakeupId },
+              { event_id: "ask", wakeup_id: first!.wakeupId },
+            ],
+          );
+          const runs = (yield* threads.getThreadProjection(ThreadId.make(first!.threadId))).runs;
+          assert.isFalse(
+            runs.some((entry) => entry.userMessageId.startsWith("kin-steer-msg:")),
+            "no steer reached the thread",
+          );
+          assert.deepStrictEqual(yield* queue.readyLeads(orgId), []);
+        }).pipe(Effect.scoped, Effect.provide(harness(fixture)));
+      }).pipe(provideDeterministicTestRuntime),
   );
 
   it.effect("adopts a steer that lands after the turn, and lets its Kin tool calls through", () =>
@@ -1365,11 +1515,11 @@ describe("WakeupRunner", () => {
               onSuccess: () => calls.push("allowed"),
             }),
           );
-        yield* queue.enqueue(laneMessage("ask"));
+        yield* queue.enqueue(yield* ownerSays("ask"));
         const fiber = yield* run();
         yield* Deferred.await(entered);
         // The turn has not started streaming, so the steer cannot join it.
-        yield* queue.enqueue(laneMessage("again"));
+        yield* queue.enqueue(yield* ownerSays("again"));
         yield* Deferred.await(steering);
         yield* Deferred.succeed(hold, undefined);
         yield* Fiber.join(fiber);
@@ -1436,11 +1586,11 @@ describe("WakeupRunner", () => {
         const queue = yield* KinEventQueue.KinEventQueue;
         const threads = yield* ThreadManagement.ThreadManagementService;
         const sql = yield* SqlClient.SqlClient;
-        yield* queue.enqueue(laneMessage("m00"));
+        yield* queue.enqueue(yield* ownerSays("m00"));
         const fiber = yield* run();
         yield* Deferred.await(fixture.entered);
         for (let n = 1; n <= 10; n++)
-          yield* queue.enqueue(laneMessage(`m${String(n).padStart(2, "0")}`));
+          yield* queue.enqueue(yield* ownerSays(`m${String(n).padStart(2, "0")}`));
         yield* Deferred.await(fixture.steering);
         yield* Deferred.succeed(fixture.hold, undefined);
         yield* Fiber.join(fiber);

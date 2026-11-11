@@ -85,6 +85,13 @@ const LANE_OF = `CASE WHEN e.tag IN ('chat.message', 'widget.action', 'chat.reac
     || ':' || COALESCE(json_extract(e.json, '$.origin.personId'), '')
   ELSE l.owner_chat_id END`;
 
+/** Who asked by event `e`, from the stored message row or the reaction the server wrote. */
+const STORED_AUTHOR = `LEFT JOIN kin_messages m ON m.org_id = e.org_id
+  AND e.tag IN ('chat.message', 'widget.action') AND m.message_id = json_extract(e.json, '$.messageId')
+  AND m.chat_id = json_extract(e.json, '$.chatId') AND m.author_kind = 'human'`;
+const AUTHOR_OF = `COALESCE(m.author_person_id,
+  CASE WHEN e.tag = 'chat.reaction' THEN json_extract(e.json, '$.provenance.personId') END)`;
+
 /** An owner message waits only for the rest of its burst, and never longer than the cap. */
 const OWNER_BURST_MS = 300;
 const OWNER_WINDOW_MS = 2_000;
@@ -219,6 +226,8 @@ const LATER_RETRY_MS = 60_000;
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const laneOf = sql.literal(LANE_OF);
+  const storedAuthor = sql.literal(STORED_AUTHOR);
+  const authorOf = sql.literal(AUTHOR_OF);
   const organizations = new Map<KinOrgId, { changed: Deferred.Deferred<void> }>();
   // One running wake-up per lead: the in-process gate is keyed like the claim index.
   const gates = new Map<string, Semaphore.Semaphore>();
@@ -517,7 +526,10 @@ const make = Effect.gen(function* () {
       return yield* sql.withTransaction(
         Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis;
-          // The lane is the claimed events' (one per wake-up); human messages in it join.
+          // The lane is the claimed events' (one per wake-up); human messages in it join. Authors
+          // come from stored rows, as `KinLevels.askers` reads them: the owner's always join, and
+          // anyone else's only once someone besides the owner asked this turn, so it already runs
+          // at their level. Passed-on requests and messages no longer stored never join.
           const rows = yield* sql<{
             json: string;
             priority: "P0" | "P1" | "P2" | "P3";
@@ -534,15 +546,28 @@ const make = Effect.gen(function* () {
             JOIN kin_events e ON e.org_id = w.org_id AND e.agent_id = w.agent_id AND e.wakeup_id = w.wakeup_id
             JOIN kin_leads l ON l.org_id = e.org_id AND l.agent_id = e.agent_id
             ORDER BY e.priority, e.received_at, e.event_id LIMIT 1
+          ), owner AS (
+            SELECT owner_person_id AS person_id FROM kin_agents
+            WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId}
+          ), others_asked AS (
+            SELECT 1 FROM kin_events e ${storedAuthor}
+            WHERE e.org_id = ${input.orgId} AND e.wakeup_id = ${input.wakeupId}
+              AND e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
+              AND ${authorOf} <> (SELECT person_id FROM owner)
+            LIMIT 1
           )
           UPDATE kin_events SET state = 'claimed', wakeup_id = ${input.wakeupId}, budget_deferred = 0
           WHERE org_id = ${input.orgId} AND event_id IN (
             SELECT e.event_id FROM kin_events e JOIN wakeup w ON w.org_id = e.org_id AND w.agent_id = e.agent_id
+            ${storedAuthor}
             WHERE e.org_id = ${input.orgId} AND e.state = 'queued'
               AND e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
               AND json_extract(e.json, '$.provenance._tag') = 'human'
               AND json_extract(e.json, '$.chatId') = (SELECT chat_id FROM lane)
+              AND json_extract(e.json, '$.origin') IS NULL
               AND (e.not_before IS NULL OR e.not_before <= ${now})
+              AND (${authorOf} = (SELECT person_id FROM owner)
+                OR (${authorOf} IS NOT NULL AND EXISTS (SELECT 1 FROM others_asked)))
             ORDER BY e.priority, e.received_at, e.event_id LIMIT 50
           ) RETURNING json, priority, received_at, event_id`;
           if (rows.length === 0) return [];
