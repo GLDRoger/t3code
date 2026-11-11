@@ -22,6 +22,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as Statement from "effect/sql/Statement";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Audit from "../approvals/Audit.ts";
@@ -481,11 +482,14 @@ const gatedSql = (
 ) =>
   new Proxy(sql, {
     apply: (target, self, args: Parameters<SqlClient.SqlClient>) => {
-      const statement = Reflect.apply(target, self, args);
       const [strings] = args;
       const gate =
         Array.isArray(strings) && "raw" in strings ? hooks.before?.(strings.join("?")) : undefined;
-      return gate === undefined ? statement : Effect.andThen(gate, statement);
+      const statement: unknown = Reflect.apply(target, self, args);
+      // Only template calls are gated, and those return a statement.
+      return gate === undefined
+        ? statement
+        : Effect.andThen(gate, statement as Statement.Statement<unknown>);
     },
     get: (target, key) =>
       key === "withTransaction" && hooks.entering !== undefined
@@ -565,7 +569,7 @@ it.effect("a suggestion stored after a listing stays out of that listing's yes",
     yield* Deferred.succeed(resume, undefined);
     yield* Fiber.join(a);
     const listed = yield* Fiber.join(listing);
-    const shown = listed.items
+    const shown: Array<string> = listed.items
       .filter((each) => each.visibility === "suggested")
       .map((each) => each.itemId);
     const confirmed = yield* memory.confirmSuggestions([owner], {
