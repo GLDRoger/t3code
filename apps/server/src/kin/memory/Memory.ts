@@ -263,6 +263,8 @@ export class Memory extends Context.Service<
         readonly index: string;
         /** Every item at that head, for a prompt that may carry only some of them. */
         readonly items: ReadonlyArray<MemoryItemHead>;
+        /** Each of those items' bodies, by path. */
+        readonly bodies: ReadonlyMap<string, string>;
       },
       MemoryFailure
     >;
@@ -278,6 +280,11 @@ export class Memory extends Context.Service<
       id: KinMemoryItemId,
       view?: MemoryView,
     ) => Effect.Effect<MemoryCache.MemoryItem, MemoryFailure | MemoryNotFound | MemoryDuplicateId>;
+    /** Every current item with its body, without recording a read. */
+    readonly items: (
+      orgId: KinOrgId,
+      view?: MemoryView,
+    ) => Effect.Effect<ReadonlyArray<MemoryCache.MemoryItem>, MemoryFailure>;
     readonly query: (
       orgId: KinOrgId,
       query: MemoryQuery,
@@ -2068,12 +2075,20 @@ const make = Effect.gen(function* () {
               operation: "promptSnapshot",
               reason: "Missing committed prompt rules",
             });
-          return { rules, index, items: snapshot.items.map((item) => item.head) };
+          return {
+            rules,
+            index,
+            items: snapshot.items.map((item) => item.head),
+            bodies: new Map(snapshot.items.map((item) => [item.head.path, item.body])),
+          };
         }),
       ),
     ),
     readIndex: Effect.fn("Memory.readIndex")((orgId) => locked(orgId, readFile(orgId, "INDEX.md"))),
     readRules: Effect.fn("Memory.readRules")((orgId) => locked(orgId, readFile(orgId, "rules.md"))),
+    items: Effect.fn("Memory.items")((orgId, view) =>
+      locked(orgId, load(orgId, false, view).pipe(Effect.map((snapshot) => snapshot.items))),
+    ),
     query: Effect.fn("Memory.queryLocked")((orgId, q, view) =>
       locked(orgId, query(orgId, q, view)),
     ),

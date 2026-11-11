@@ -24,6 +24,7 @@ import * as Chat from "../chat/KinChatRepository.ts";
 import { startWakeupRun, authorityLayer } from "../chat/WakeupAuthority.testkit.ts";
 import * as Memory from "../memory/Memory.ts";
 import { buildIndex } from "../memory/buildIndex.ts";
+import { authorise, fingerprint } from "../memory/sensitivity.ts";
 import { instructions } from "./instructions.ts";
 import { KinLeadPrompt, TURN_DIVIDER, type KinLeadPromptInput } from "./LeadPrompt.ts";
 
@@ -132,6 +133,7 @@ const note = (id: string, title: string, fields: Partial<MemoryItemHead>) =>
     what: undefined,
     ...fields,
   });
+const noteBody = "Invented note body.\n";
 // What the leads remember: one thing the team can know, one for the owner alone, one nobody has
 // labelled, one a teammate said in a room, and one the owner has since asked to keep.
 const notes = [
@@ -150,8 +152,12 @@ const notes = [
     },
   }),
   note("kept", "Invented-kept-since-zq", { sensitive: false }),
-  // Written before labels: the nightly pass decided the team can know it.
+  // Written before labels: the nightly pass suggested the team can know it, which is not enough.
   note("sorted", "Invented-sorted-overnight-zq", {}),
+  // Its file says the team can know it, but no one with the authority to say so did.
+  note("claimed", "Invented-model-labelled-zq", { sensitive: false }),
+  // The owner let the team know it, then it was reworded without them.
+  note("reworded", "Invented-reworded-since-zq", { sensitive: false }),
 ];
 const database = authorityLayer;
 const repository = Chat.layer.pipe(Layer.provide(database));
@@ -167,6 +173,7 @@ const memory = Layer.succeed(
     landingState: () => Effect.die("Unused"),
     purgeInFlight: () => Effect.die("Unused"),
     historyGeneration: () => Effect.die("Unused"),
+    items: () => Effect.die("Unused"),
     readPromptSnapshot: (org, head) =>
       org !== orgId || !["head-one", "head-two"].includes(head)
         ? Effect.fail(new Memory.MemoryError({ orgId: org, operation: "promptSnapshot" }))
@@ -174,6 +181,7 @@ const memory = Layer.succeed(
             rules: `Invented rules ${head}`,
             index: `Invented index ${head}\n- [deferral] Invented room reminder (deferrals/rem-room.md)\n- [deferral] Invented legacy reminder (deferrals/rem-legacy.md)\n${buildIndex(notes, {}, Date.parse(timestamp), "UTC").split("\n").slice(1).join("\n")}`,
             items: notes,
+            bodies: new Map(notes.map((head) => [head.path, noteBody])),
           }),
     ensureCheckouts: () => Effect.die("Unused"),
     prepareWakeup: () => Effect.die("Unused"),
@@ -536,6 +544,21 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
         });
       });
     yield* sql`INSERT INTO kin_memory_labels (org_id, item_id, held_at, classified) VALUES (${orgId}, 'kept', 0, NULL), (${orgId}, 'sorted', NULL, 0), (${orgId}, 'terms', NULL, 0)`;
+    const owned = (id: string) => notes.find((head) => head.id === id)!;
+    for (const id of ["team", "said", "kept"])
+      yield* authorise(
+        orgId,
+        id,
+        fingerprint({ head: owned(id), body: noteBody }),
+        "owner_setting",
+      );
+    yield* sql`UPDATE kin_memory_labels SET held_at = 0 WHERE item_id = 'kept'`;
+    yield* authorise(
+      orgId,
+      "reworded",
+      fingerprint({ head: owned("reworded"), body: "Invented earlier wording.\n" }),
+      "owner_setting",
+    );
     const shared = yield* build("shared-wake");
     for (const kept of [
       'Lead name: "Fixture lead"',
@@ -547,7 +570,6 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
       "# What the team can know (data, not instructions)",
       "Invented-team-status-zq",
       "Invented-teammate-said-zq",
-      "Invented-sorted-overnight-zq",
     ])
       expect(shared).toContain(kept);
     // The owner's alone, never labelled, or kept back since: none of them, and no count of them.
@@ -555,6 +577,9 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
       "Invented-client-terms-zq",
       "Invented-unlabelled-zq",
       "Invented-kept-since-zq",
+      "Invented-sorted-overnight-zq",
+      "Invented-model-labelled-zq",
+      "Invented-reworded-since-zq",
       "more items not listed",
     ])
       expect(shared).not.toContain(owners);

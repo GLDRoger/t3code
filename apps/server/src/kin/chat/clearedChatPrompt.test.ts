@@ -40,11 +40,13 @@ const memory = Layer.succeed(
     landingState: () => Effect.die("Unused"),
     purgeInFlight: () => Effect.die("Unused"),
     historyGeneration: () => Effect.die("Unused"),
+    items: () => Effect.die("Unused"),
     readPromptSnapshot: () =>
       Effect.succeed({
         rules: "Invented rules",
         index: "- [fact] Launch day is Friday",
         items: [],
+        bodies: new Map(),
       }),
     ensureCheckouts: () => Effect.die("Unused"),
     prepareWakeup: () => Effect.die("Unused"),

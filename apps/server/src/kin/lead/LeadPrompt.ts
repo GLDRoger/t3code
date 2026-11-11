@@ -600,12 +600,17 @@ export class KinLeadPrompt extends Context.Service<
           ? ""
           : yield* Effect.gen(function* () {
               const read = yield* memory.readPromptSnapshot(orgId, memoryHead, { lead: agentId });
-              const items = yield* reaching(orgId, audience, read.items).pipe(
-                Effect.provideService(SqlClient.SqlClient, sql),
-              );
+              const items = yield* reaching(
+                orgId,
+                audience,
+                read.items.flatMap((head) => {
+                  const body = read.bodies.get(head.path);
+                  return body === undefined ? [] : [{ head, body }];
+                }),
+              ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
               if (items.length === 0) return "";
               return buildIndex(
-                items,
+                items.map((item) => item.head),
                 yield* cache.lastReads(orgId),
                 yield* Clock.currentTimeMillis,
                 yield* cache.ownerTimeZone(orgId),

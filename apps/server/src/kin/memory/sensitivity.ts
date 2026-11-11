@@ -1,4 +1,7 @@
-import type { KinOrgId, MemoryItemHead } from "@t3tools/contracts";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- `reaches` compares content fingerprints synchronously.
+import * as NodeCrypto from "node:crypto";
+
+import type { KinOrgId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -6,47 +9,129 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { TurnAudience } from "../lead/Audience.ts";
 import { entropy, secretExceptions, secretRules } from "./secretScan.ts";
 
-type Labelled = { readonly id: string; readonly sensitive?: MemoryItemHead["sensitive"] };
+interface Labelled {
+  readonly id: string;
+  readonly sensitive?: boolean | undefined;
+  readonly title: string;
+  readonly what?: string | undefined;
+  readonly links: ReadonlyArray<string>;
+}
+/** An item as a turn would read it: its head and body. */
+export interface Shown {
+  readonly head: Labelled;
+  readonly body: string;
+}
 
-/** What the database says about who may know an item, beside the item's own file. */
+/** Who let the team know an item, from stored rows: the owner three ways, or a teammate's own words. */
+export type Sharing =
+  | "owner_message"
+  | "owner_label"
+  | "owner_setting"
+  | "owner_confirmed"
+  | "teammate";
+
+/** The words an item gives a lead: what an authorisation covers, and what a backstop reads. */
+export const contentOf = (head: Labelled, body: string) =>
+  [head.title, head.what ?? "", body, ...head.links].join("\n");
+/** Any change to those words, by anyone, ends the authorisation that covered the old ones. */
+export const fingerprint = (item: Shown) =>
+  NodeCrypto.createHash("sha256").update(contentOf(item.head, item.body)).digest("hex");
+
+/** What the database says about who may know an item. The item's own file never decides it. */
 export interface StoredLabels {
-  /** Marked sensitive since, whatever the file says (`hold`). */
+  /** Marked sensitive since, whatever else is recorded (`hold`). */
   readonly held: ReadonlySet<string>;
-  /** The nightly pass's label for an item whose file has none (`classify`). */
+  /** The content an owner authorisation, or a teammate's own message, let the team know. */
+  readonly shared: ReadonlyMap<string, string>;
+  /** The nightly pass's one look at an item its file had no label for (`classify`). */
   readonly classified: ReadonlyMap<string, boolean>;
+  /**
+   * Open suggestions that the team could know an item, for the owner to confirm: the content
+   * suggested (null when only an earlier version recorded none) and the revision it came in at.
+   */
+  readonly suggested: ReadonlyMap<
+    string,
+    { readonly content: string | null; readonly rev: number }
+  >;
 }
 
 /**
- * Whether an item is for the owner alone: held, else what its file says, else what the nightly
- * pass decided, and an item nobody has labelled at all is sensitive.
+ * What the item's labels say, for keeping a label on a rewrite: held, else its file, else the
+ * nightly pass, and unlabelled is sensitive. Never enough on its own to let the team know it.
  */
-export const isSensitive = (item: Labelled, labels: StoredLabels) =>
-  labels.held.has(item.id) || (item.sensitive ?? labels.classified.get(item.id) ?? true);
+export const isSensitive = (
+  item: Pick<Labelled, "id" | "sensitive">,
+  labels: Pick<StoredLabels, "held" | "classified">,
+) => labels.held.has(item.id) || (item.sensitive ?? labels.classified.get(item.id) ?? true);
+
+/** The team may know it: a stored authorisation of exactly this content, not held, not marked. */
+const teamCanKnow = (item: Shown, labels: StoredLabels) =>
+  !labels.held.has(item.head.id) &&
+  item.head.sensitive !== true &&
+  labels.shared.get(item.head.id) === fingerprint(item);
 
 /**
- * The one check for whether a memory item may reach a turn. A turn only the owner reads sees
- * everything; any other turn sees only what is not sensitive.
+ * The one check for whether a memory item may reach a turn: an owner-only turn sees everything,
+ * any other only what a stored authorisation lets the team know. What the team may know is company
+ * knowledge, not chat history: every shared turn reads it, whatever chat it came from or joined.
  */
-export const reaches = (audience: TurnAudience, item: Labelled, labels: StoredLabels) =>
-  audience === "owner_only" || !isSensitive(item, labels);
+export const reaches = (audience: TurnAudience, item: Shown, labels: StoredLabels) =>
+  audience === "owner_only" || teamCanKnow(item, labels);
+
+export type Visibility = "only_owner" | "team" | "suggested";
+/** What the owner sees: the team knows it, it was suggested for the team, or it is theirs alone. */
+export const visibility = (item: Shown, labels: StoredLabels): Visibility => {
+  if (teamCanKnow(item, labels)) return "team";
+  const suggestion = labels.suggested.get(item.head.id);
+  return suggestion !== undefined &&
+    !labels.held.has(item.head.id) &&
+    item.head.sensitive !== true &&
+    (suggestion.content === null || suggestion.content === fingerprint(item))
+    ? "suggested"
+    : "only_owner";
+};
 
 export const storedLabels = Effect.fn("KinSensitivity.storedLabels")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ itemId: string; heldAt: number | null; classified: number | null }>`
-    SELECT item_id AS "itemId", held_at AS "heldAt", classified FROM kin_memory_labels
-    WHERE org_id = ${orgId} ORDER BY item_id`;
+  const rows = yield* sql<{
+    itemId: string;
+    heldAt: number | null;
+    classified: number | null;
+    sharedContent: string | null;
+    sharedHow: string | null;
+    suggestedContent: string | null;
+    suggestedRev: number | null;
+  }>`
+    SELECT item_id AS "itemId", held_at AS "heldAt", classified,
+      shared_content AS "sharedContent", shared_how AS "sharedHow",
+      suggested_content AS "suggestedContent", suggested_rev AS "suggestedRev"
+    FROM kin_memory_labels WHERE org_id = ${orgId} ORDER BY item_id`;
   return {
     held: new Set(rows.filter((row) => row.heldAt !== null).map((row) => row.itemId)),
+    shared: new Map(
+      rows.flatMap((row) =>
+        row.sharedContent === null || row.sharedHow === null
+          ? []
+          : [[row.itemId, row.sharedContent] as const],
+      ),
+    ),
     classified: new Map(
       rows.flatMap((row) =>
         row.classified === null ? [] : [[row.itemId, row.classified === 1] as const],
+      ),
+    ),
+    suggested: new Map(
+      rows.flatMap((row) =>
+        row.suggestedRev === null
+          ? []
+          : [[row.itemId, { content: row.suggestedContent, rev: row.suggestedRev }] as const],
       ),
     ),
   } satisfies StoredLabels;
 });
 
 /** The items of `items` that may reach a turn read by `audience`, by `reaches`. */
-export const reaching = Effect.fn("KinSensitivity.reaching")(function* <A extends Labelled>(
+export const reaching = Effect.fn("KinSensitivity.reaching")(function* <A extends Shown>(
   orgId: KinOrgId,
   audience: TurnAudience,
   items: ReadonlyArray<A>,
@@ -65,27 +150,66 @@ export const hold = Effect.fn("KinSensitivity.hold")(function* (orgId: KinOrgId,
     ON CONFLICT (org_id, item_id) DO UPDATE SET held_at = COALESCE(held_at, excluded.held_at)`;
 });
 
-/** The owner let the team know it: from here its file decides. */
-export const release = Effect.fn("KinSensitivity.release")(function* (
+/**
+ * The team may know `content` of the item, from here until anyone changes it. Callers settle
+ * `how` from stored rows: the owner's own message, tool, setting or confirmation, or a teammate's
+ * own message in a shared turn. Ends any hold and any open suggestion.
+ */
+export const authorise = Effect.fn("KinSensitivity.authorise")(function* (
   orgId: KinOrgId,
   itemId: string,
+  content: string,
+  how: Sharing,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  yield* sql`UPDATE kin_memory_labels SET held_at = NULL
-    WHERE org_id = ${orgId} AND item_id = ${itemId}`;
+  const now = yield* Clock.currentTimeMillis;
+  yield* sql`INSERT INTO kin_memory_labels (org_id, item_id, shared_content, shared_how, shared_at)
+    VALUES (${orgId}, ${itemId}, ${content}, ${how}, ${now})
+    ON CONFLICT (org_id, item_id) DO UPDATE SET held_at = NULL,
+      shared_content = excluded.shared_content, shared_how = excluded.shared_how,
+      shared_at = excluded.shared_at, suggested_content = NULL, suggested_rev = NULL`;
 });
 
-/** Records the nightly pass's labels, once per item: a later pass never changes one. */
-export const classify = Effect.fn("KinSensitivity.classify")(function* (
+/**
+ * Something other than the owner said the team could know `content`: the owner is asked, and
+ * until they confirm it stays theirs alone. Nothing to ask when the team already knows it.
+ */
+export const suggest = Effect.fn("KinSensitivity.suggest")(function* (
   orgId: KinOrgId,
-  labels: ReadonlyMap<string, boolean>,
+  itemId: string,
+  content: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  for (const [itemId, sensitive] of labels)
-    yield* sql`INSERT INTO kin_memory_labels (org_id, item_id, classified)
+  const [current] = yield* sql<{ shared: string | null; suggested: string | null }>`
+    SELECT shared_content AS shared, suggested_content AS suggested FROM kin_memory_labels
+    WHERE org_id = ${orgId} AND item_id = ${itemId} ORDER BY item_id`;
+  if (current?.shared === content || current?.suggested === content) return;
+  yield* sql`INSERT INTO kin_memory_label_revisions (org_id, revision) VALUES (${orgId}, 1)
+    ON CONFLICT (org_id) DO UPDATE SET revision = revision + 1`;
+  yield* sql`INSERT INTO kin_memory_labels (org_id, item_id, suggested_content, suggested_rev)
+    VALUES (${orgId}, ${itemId}, ${content},
+      (SELECT revision FROM kin_memory_label_revisions WHERE org_id = ${orgId}))
+    ON CONFLICT (org_id, item_id) DO UPDATE SET
+      suggested_content = excluded.suggested_content, suggested_rev = excluded.suggested_rev`;
+});
+
+/**
+ * Records the nightly pass's look at items no file labelled, once per item: a later pass never
+ * changes one. "The team can know it" is only ever a suggestion, of the content it read.
+ */
+export const classify = Effect.fn("KinSensitivity.classify")(function* (
+  orgId: KinOrgId,
+  labels: ReadonlyMap<string, { readonly sensitive: boolean; readonly content: string }>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  for (const [itemId, { sensitive, content }] of labels) {
+    const inserted = yield* sql`INSERT INTO kin_memory_labels (org_id, item_id, classified)
       VALUES (${orgId}, ${itemId}, ${sensitive ? 1 : 0})
-      ON CONFLICT (org_id, item_id) DO UPDATE
-        SET classified = COALESCE(classified, excluded.classified)`;
+      ON CONFLICT (org_id, item_id) DO UPDATE SET classified = excluded.classified
+        WHERE kin_memory_labels.classified IS NULL
+      RETURNING item_id`;
+    if (inserted.length > 0 && !sensitive) yield* suggest(orgId, itemId, content);
+  }
 });
 
 const withoutLinks = (text: string) => text.replace(/\bhttps?:\/\/\S+/gi, " ");
@@ -118,10 +242,19 @@ export const looksLikeSecret = (text: string) => {
   );
 };
 
+const CURRENCY_CODES = "inr|usd|cad|aud|nzd|sgd|hkd|eur|gbp|chf|jpy|cny|aed|sar|qar|zar";
+const MONEY_WORDS = `rupees?|dollars?|euros?|pounds?|dirhams?|bucks|lakhs?|lacs?|crores?|${CURRENCY_CODES}`;
+const NUMBER_WORDS =
+  "one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion|lakhs?|lacs?|crores?";
+// A key's known prefix, then its characters with spaces or separators put between them.
+const KEY_PREFIX =
+  /\b(?:sk|pk|rk|ghp|gho|ghu|ghs|ghr|glpat|xox[abprs]|whsec)\s*[-_]\s*(?:[A-Za-z0-9]+\s*[-_]\s*)?[A-Za-z0-9](?:[\s._-]{0,3}[A-Za-z0-9]){5,}/i;
 const SENSITIVE_PATTERNS = [
-  // Money: a currency sign or code beside a number, or a number with a money word.
-  /(?:[$€£¥₹]|\b(?:rs\.?|inr|usd|eur|gbp|aed|sgd)\s?)\d/i,
-  /\b\d[\d,.]*\s?(?:lakhs?|lacs?|crores?|rupees|dollars|euros|pounds|usd|inr|eur|gbp|aed|sgd)\b/i,
+  // Money: a currency sign or code beside a number, or a number with a money word, in digits or words.
+  new RegExp(`(?:[$€£¥₹]|\\b(?:rs|${CURRENCY_CODES})\\.?)\\s?\\d`, "i"),
+  new RegExp(`\\b\\d[\\d,.]*\\s?(?:k\\s)?(?:${MONEY_WORDS})\\b`, "i"),
+  new RegExp(`\\b(?:(?:${NUMBER_WORDS})[\\s-]+(?:and[\\s-]+)?)+(?:${MONEY_WORDS})\\b`, "i"),
+  new RegExp(`(?:[$€£¥₹]|\\b(?:rs|${CURRENCY_CODES})\\.?)\\s?(?:${NUMBER_WORDS})\\b`, "i"),
   // Bank details: IBAN and IFSC shapes, an account number, or any long run of digits.
   /\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b/,
   /\b[A-Z]{4}0[A-Z0-9]{6}\b/,
@@ -131,11 +264,16 @@ const SENSITIVE_PATTERNS = [
   /\b(?:passwords?|passcodes?|passphrases?|credentials?|log-?ins?|tokens?)\b/i,
   /\b(?:api|deploy|ssh|private|signing|encryption|access|secret|service|licen[cs]e)[\s_-]?keys?\b/i,
   /\b(?:vault|keychain|1password|bitwarden|lastpass|secrets? manager)\b/i,
+  // Key shapes, also with their characters spaced or split apart.
+  KEY_PREFIX,
+  /\b(?:AKIA|ASIA)(?:[\s-]?[A-Z0-9]){16}\b/,
+  /\bAIza(?:[\s-]?[0-9A-Za-z_]){30,}/,
 ];
 
 /**
  * Text the server labels sensitive whatever the lead said: amounts, bank details, and anything
- * about credentials or where they are kept. It only ever makes an item more sensitive.
+ * about credentials or where they are kept. It only ever makes an item more sensitive, and is a
+ * net under the rule that only a stored authorisation lets the team know anything.
  */
 export const mustBeSensitive = (text: string) =>
   SENSITIVE_PATTERNS.some((pattern) => pattern.test(text)) ||

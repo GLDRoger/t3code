@@ -69,12 +69,14 @@ vi.mock("../memory/Memory.ts", async (importOriginal) => {
                 read: "/private/tmp",
               };
             }),
+          items: () => Effect.die("Unused"),
           readPromptSnapshot: (_orgId, head) =>
             prepared && head === "fixture-head"
               ? Effect.succeed({
                   rules: "Fixture standing rules",
                   index: "Fixture memory index",
                   items: [],
+                  bodies: new Map(),
                 })
               : Effect.die("Prompt and runner must share pinned memory"),
           readIndex: () => Effect.die("unused"),

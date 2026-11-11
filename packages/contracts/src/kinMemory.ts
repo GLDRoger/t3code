@@ -60,17 +60,27 @@ export type KinMemoryUndoResult = typeof KinMemoryUndoResult.Type;
 
 export const KinMemoryListInput = Schema.Struct({ orgId: KinOrgId });
 export type KinMemoryListInput = typeof KinMemoryListInput.Type;
+/**
+ * Who may know an item. `team` only by the owner's own authorisation (or a teammate's own words,
+ * saved as theirs); `suggested` is a lead's or the nightly pass's suggestion that the team could
+ * know it, which reads as `only_owner` everywhere until the owner confirms it.
+ */
+export const KinMemoryVisibility = Schema.Literals(["only_owner", "team", "suggested"]);
+export type KinMemoryVisibility = typeof KinMemoryVisibility.Type;
 /** One thing the leads remember, for the owner: who may know it, and who said it if a teammate did. */
 export const KinMemoryListItem = Schema.Struct({
   itemId: KinMemoryItemId,
   kind: MemoryItemKind,
   title: Schema.String,
-  /** True when only the owner's own chats with a lead use it; false when the team can know it. */
-  onlyOwner: Schema.Boolean,
+  visibility: KinMemoryVisibility,
   from: Schema.NullOr(Schema.Struct({ name: Schema.String, chatName: Schema.String })),
 });
 export type KinMemoryListItem = typeof KinMemoryListItem.Type;
-export const KinMemoryListResult = Schema.Struct({ items: Schema.Array(KinMemoryListItem) });
+export const KinMemoryListResult = Schema.Struct({
+  items: Schema.Array(KinMemoryListItem),
+  /** The revision of the newest suggestion listed; pass it to `confirmSuggestions` as `asOf`. */
+  suggestionsAsOf: NonNegativeInt,
+});
 export type KinMemoryListResult = typeof KinMemoryListResult.Type;
 
 export const KinMemorySetVisibilityInput = Schema.Struct({
@@ -82,10 +92,30 @@ export type KinMemorySetVisibilityInput = typeof KinMemorySetVisibilityInput.Typ
 export const KinMemorySetVisibilityResult = Schema.Struct({ item: KinMemoryListItem });
 export type KinMemorySetVisibilityResult = typeof KinMemorySetVisibilityResult.Type;
 
+/**
+ * The owner lets the team know suggested items: the listed ones, or every suggestion up to the
+ * `suggestionsAsOf` revision they were shown, so one that came in later is never confirmed unseen.
+ * Only items still suggested are confirmed, as they read when suggested.
+ */
+export const KinMemoryConfirmSuggestionsInput = Schema.Union([
+  Schema.Struct({
+    orgId: KinOrgId,
+    itemIds: Schema.Array(KinMemoryItemId).check(Schema.isMinLength(1), Schema.isMaxLength(500)),
+  }),
+  Schema.Struct({ orgId: KinOrgId, asOf: NonNegativeInt }),
+]);
+export type KinMemoryConfirmSuggestionsInput = typeof KinMemoryConfirmSuggestionsInput.Type;
+/** The items the team may now know. */
+export const KinMemoryConfirmSuggestionsResult = Schema.Struct({
+  items: Schema.Array(KinMemoryListItem),
+});
+export type KinMemoryConfirmSuggestionsResult = typeof KinMemoryConfirmSuggestionsResult.Type;
+
 const KIN_MEMORY_WS_METHODS = {
   undo: "kin.memory.undo",
   list: "kin.memory.list",
   setVisibility: "kin.memory.setVisibility",
+  confirmSuggestions: "kin.memory.confirmSuggestions",
 } as const;
 
 // Owner of the lead only, on the server; the scope gates the client's button.
@@ -105,6 +135,11 @@ export const KinMemoryRpcs = [
     success: KinMemorySetVisibilityResult,
     error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
   }),
+  Rpc.make(KIN_MEMORY_WS_METHODS.confirmSuggestions, {
+    payload: KinMemoryConfirmSuggestionsInput,
+    success: KinMemoryConfirmSuggestionsResult,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
 ] as const;
 
 export const KIN_MEMORY_RPC_SCOPES = {
@@ -112,4 +147,5 @@ export const KIN_MEMORY_RPC_SCOPES = {
   // What the leads remember is the owner's, and who may know it is an owner setting.
   [KIN_MEMORY_WS_METHODS.list]: AuthSettingsWriteScope,
   [KIN_MEMORY_WS_METHODS.setVisibility]: AuthSettingsWriteScope,
+  [KIN_MEMORY_WS_METHODS.confirmSuggestions]: AuthSettingsWriteScope,
 } as const;

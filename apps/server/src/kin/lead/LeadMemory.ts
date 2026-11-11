@@ -39,16 +39,18 @@ import * as KinLevels from "./KinLevels.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import * as Cache from "../memory/MemoryCache.ts";
-import { MemoryItemError, memoryDateMillis } from "../memory/frontMatter.ts";
+import { MemoryItemError, memoryDateMillis, parseFrontMatter } from "../memory/frontMatter.ts";
 import {
+  authorise,
+  contentOf,
+  fingerprint,
   hold,
   isSensitive,
   looksLikeSecret,
   mustBeSensitive,
   reaches,
-  reaching,
-  release,
   storedLabels,
+  suggest,
 } from "../memory/sensitivity.ts";
 import { deferralOrigin } from "../triggers/deferralOrigin.ts";
 import { cancelDeferralRun } from "../triggers/KinTriggerService.ts";
@@ -123,7 +125,7 @@ export const CancelInput = Schema.Struct({
   sourceEventId: TrimmedNonEmptyString,
 });
 export const LabelInput = Schema.Struct({
-  itemId: KinMemoryItemId,
+  itemIds: Schema.Array(KinMemoryItemId).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
   sensitive: Schema.Boolean,
   sourceEventId: TrimmedNonEmptyString,
 });
@@ -134,6 +136,7 @@ export const JournalInput = Schema.Struct({
 });
 export const EndInput = Schema.Struct({ summary: text });
 export const ItemResult = Schema.Struct({ itemId: KinMemoryItemId });
+export const LabelResult = Schema.Struct({ itemIds: Schema.Array(KinMemoryItemId) });
 export const ReadResult = Schema.Struct({
   head: MemoryItemHead,
   body: Schema.String,
@@ -151,16 +154,22 @@ const invalid = (message: string) => new KinChatError({ reason: "not_allowed", m
 const missing = () => new KinChatError({ reason: "not_found", message: "Kin record not found." });
 const SECRET_REFUSAL =
   "That holds an actual password, key or token, which is never saved. Save where it is kept instead.";
-const OWNER_ALONE_REFUSAL =
-  "That reads as something for the owner alone, so it was not saved from this chat.";
+// The one refusal for anything a shared turn may not save, so it never tells what it can't see.
+const TEAM_REFUSAL =
+  "That can't be saved from this chat: it may be for the owner alone, or clash with something already saved. Leave it, or save a different claim under a new id.";
 const TEAM_CLAIMS_ONLY =
   "From a chat other people read, save what someone said as a claim (kind claim), with create, update or invalidate.";
 const TEAM_OWN_ITEMS =
   "From a chat other people read you can change only what was saved from this same chat.";
 const TEAM_SOURCE = "sourceEventId must be the message, in this chat, of the person who said it.";
-const TEAM_ID_TAKEN = "That id can't be used from this chat. Use a new id.";
+const TEAM_CAP_REFUSAL =
+  "That is as much as can be saved from one person's messages today, so it was not saved.";
 const SHARE_NEEDS_OWNER =
   "Only the owner's own message, in a chat only they read, lets the team know something. Ask the owner first.";
+// What a teammate's messages can cause shared turns to save, per person per day.
+const SHARED_WRITES_PER_DAY = 20;
+const SHARED_BYTES_PER_DAY = 20_000;
+const DAY_MS = 24 * 60 * 60 * 1000;
 const busy = () =>
   new KinChatError({
     reason: "unavailable",
@@ -179,6 +188,7 @@ const authorityRejections = new Set([
 ]);
 const isChatError = Schema.is(KinChatError);
 const isNotFound = Schema.is(Memory.MemoryNotFound);
+const isDuplicate = Schema.is(Memory.MemoryDuplicateId);
 const isConflict = Schema.is(Writer.MemoryConflict);
 const isRejected = Schema.is(Writer.MemoryWriteRejected);
 const isItemError = Schema.is(MemoryItemError);
@@ -239,7 +249,7 @@ export class LeadMemory extends Context.Service<
     readonly label: (
       scope: McpInvocationScope,
       input: typeof LabelInput.Type,
-    ) => Effect.Effect<typeof ItemResult.Type, KinChatError>;
+    ) => Effect.Effect<typeof LabelResult.Type, KinChatError>;
     readonly journal: (
       scope: McpInvocationScope,
       input: typeof JournalInput.Type,
@@ -466,14 +476,11 @@ const make = Effect.gen(function* () {
         ? "kin_end was already called with a different summary in this wake-up."
         : `Memory item ${key.slice("item:".length)} was already written differently in this wake-up. Repeat the same call, or use a new id.`,
     );
-  const receipt = Effect.fn("LeadMemory.receipt")(function* (
+  const receipt = Effect.fn("LeadMemory.receipt")(function* <E>(
     ctx: Effect.Success<ReturnType<typeof resolve>>,
     key: string,
     request: unknown,
-    operation: Effect.Effect<
-      void,
-      Effect.Error<ReturnType<Writer.MemoryWriter["Service"]["stage"]>>
-    >,
+    operation: Effect.Effect<void, E>,
   ) {
     const digest = yield* hash(request);
     const [prior] = yield* sql<{
@@ -563,6 +570,63 @@ const make = Effect.gen(function* () {
       }),
     );
   });
+  /** The heads of `heads` a turn read by `audience` may see, with their bodies from the lead's view. */
+  const visibleTo = Effect.fn("LeadMemory.visibleTo")(function* <
+    A extends Effect.Success<ReturnType<typeof memory.query>>[number],
+  >(
+    ctx: Effect.Success<ReturnType<typeof resolve>>,
+    audience: TurnAudience,
+    heads: ReadonlyArray<A>,
+  ) {
+    if (audience === "owner_only") return heads;
+    const labels = yield* storedLabels(ctx.orgId).pipe(provideSql);
+    const bodies = new Map(
+      (yield* memory.items(ctx.orgId, { lead: ctx.agentId })).map((item) => [
+        item.head.path,
+        item.body,
+      ]),
+    );
+    return heads.filter((head) => {
+      const body = bodies.get(head.path);
+      return body !== undefined && reaches(audience, { head, body }, labels);
+    });
+  });
+  /**
+   * A shared turn's write the writer refused: one fixed refusal, unless it names an item this
+   * turn can see. Never an id, title or count of one it can't.
+   */
+  const sharedRefusal = Effect.fn("LeadMemory.sharedRefusal")(function* (
+    ctx: Effect.Success<ReturnType<typeof resolve>>,
+    audience: TurnAudience,
+    error: unknown,
+  ) {
+    if (
+      isRejected(error) &&
+      (error.reason === "Another wake-up owns the writer" || authorityRejections.has(error.reason))
+    )
+      return failure(error);
+    if (isConflict(error)) {
+      const seen = yield* memory.query(ctx.orgId, {}, { lead: ctx.agentId });
+      const visible = yield* visibleTo(ctx, audience, seen);
+      if (visible.some((item) => item.id === error.existingId)) return failure(error);
+    }
+    if (isConflict(error) || isRejected(error) || isNotFound(error) || isDuplicate(error))
+      return invalid(TEAM_REFUSAL);
+    return failure(error);
+  });
+  /** What someone else's messages caused shared turns to save today, from stored rows. */
+  const sharedToday = Effect.fn("LeadMemory.sharedToday")(function* (
+    ctx: Effect.Success<ReturnType<typeof resolve>>,
+    person: KinPersonId,
+    itemId: string,
+  ) {
+    const now = yield* Clock.currentTimeMillis;
+    const [used] = yield* sql<{ writes: number; bytes: number }>`
+      SELECT COUNT(*) AS writes, COALESCE(SUM(bytes), 0) AS bytes FROM kin_memory_shared_writes
+      WHERE org_id = ${ctx.orgId} AND person_id = ${person} AND written_at > ${now - DAY_MS}
+        AND NOT (wakeup_id = ${ctx.wakeupId} AND item_id = ${itemId})`;
+    return { now, writes: used?.writes ?? 0, bytes: used?.bytes ?? 0 };
+  });
   const stage = Effect.fn("LeadMemory.stage")(function* (
     ctx: Effect.Success<ReturnType<typeof resolve>>,
     audience: TurnAudience,
@@ -575,15 +639,27 @@ const make = Effect.gen(function* () {
       });
     yield* checkSource(ctx, input.sourceEventId);
     const { body, sensitive: asked, ...fields } = input.item;
-    const content = [fields.title, fields.what ?? "", body, ...fields.links].join("\n");
+    const content = contentOf(fields, body);
     if (looksLikeSecret(content)) return yield* invalid(SECRET_REFUSAL);
     const shared = audience !== "owner_only";
     if (shared && (fields.kind !== "claim" || input.op === "supersede"))
       return yield* invalid(TEAM_CLAIMS_ONLY);
     // A chat other people read never stores, or says anything about, what is the owner's alone.
-    if (shared && (asked || mustBeSensitive(content))) return yield* invalid(OWNER_ALONE_REFUSAL);
+    if (shared && (asked || mustBeSensitive(content))) return yield* invalid(TEAM_REFUSAL);
     const from = shared ? yield* speaker(ctx, input.sourceEventId) : undefined;
     if (shared && from === undefined) return yield* invalid(TEAM_SOURCE);
+    // Only the owner's own stored message, cited as this write's source, is the owner's say-so.
+    const owner = yield* ownerSaid(ctx, input.sourceEventId);
+    const used =
+      shared && owner === undefined && from !== undefined
+        ? yield* sharedToday(ctx, from.person, fields.id)
+        : undefined;
+    const words = Buffer.byteLength(content);
+    if (
+      used !== undefined &&
+      (used.writes >= SHARED_WRITES_PER_DAY || used.bytes + words > SHARED_BYTES_PER_DAY)
+    )
+      return yield* invalid(TEAM_CAP_REFUSAL);
     if (input.op === "supersede" && (!input.supersedes || input.supersedes === fields.id))
       return yield* invalid("supersede needs `supersedes` naming another item's id.");
     if (input.op !== "supersede" && input.supersedes !== undefined)
@@ -593,14 +669,14 @@ const make = Effect.gen(function* () {
       .pipe(Effect.asSome, Effect.catchTags({ MemoryNotFound: () => Effect.succeedNone }));
     const known = yield* storedLabels(ctx.orgId).pipe(provideSql);
     if (shared && current._tag === "Some") {
-      // What this turn can't see reads as absent; what an owner's turn wrote is not its to change.
-      if (!reaches(audience, current.value.head, known))
-        return yield* input.op === "create" ? invalid(TEAM_ID_TAKEN) : missing();
+      // What this turn can't see refuses like any other refused write; what an owner's turn
+      // wrote is not its to change.
+      if (!reaches(audience, current.value, known)) return yield* invalid(TEAM_REFUSAL);
       if (current.value.head.shared_from?.chat !== from?.chat)
         return yield* invalid(TEAM_OWN_ITEMS);
     }
     if (input.op === "update" || input.op === "invalidate") {
-      if (current._tag === "None") return yield* missing();
+      if (current._tag === "None") return yield* shared ? invalid(TEAM_REFUSAL) : missing();
     }
     const replaced =
       input.op === "supersede" && input.supersedes !== undefined
@@ -655,26 +731,57 @@ const make = Effect.gen(function* () {
     if (input.op === "invalidate" && fields.invalid_at === null)
       return yield* invalid("invalidate needs `invalid_at`.");
     const folder = fields.kind === "person" ? "people" : `${fields.kind}s`;
+    const path = current._tag === "Some" ? current.value.head.path : `${folder}/${fields.id}.md`;
+    const text = `---\n${stringify(
+      current._tag === "Some" && fields.kind === "deferral"
+        ? {
+            ...fields,
+            ...labels,
+            chat: current.value.head.chat,
+            source_event: current.value.head.source_event,
+            what: current.value.head.what,
+            on_due: current.value.head.on_due,
+          }
+        : { ...fields, ...labels },
+    )}---\n${body}`;
+    const written = yield* parseFrontMatter(ctx.orgId, path, text, true);
+    const saved = fingerprint({ head: written.frontMatter, body: written.body });
     yield* receipt(
       ctx,
       `item:${fields.id}`,
       input,
-      writer.stage(ctx.orgId, ctx.wakeupId, {
-        path: current._tag === "Some" ? current.value.head.path : `${folder}/${fields.id}.md`,
-        content: `---\n${stringify(
-          current._tag === "Some" && fields.kind === "deferral"
-            ? {
-                ...fields,
-                ...labels,
-                chat: current.value.head.chat,
-                source_event: current.value.head.source_event,
-                what: current.value.head.what,
-                on_due: current.value.head.on_due,
-              }
-            : { ...fields, ...labels },
-        )}---\n${body}`,
-        sourceEventId: input.sourceEventId,
-        ...(input.supersedes === undefined ? {} : { supersedes: input.supersedes }),
+      Effect.gen(function* () {
+        const staging = writer.stage(ctx.orgId, ctx.wakeupId, {
+          path,
+          content: text,
+          sourceEventId: input.sourceEventId,
+          ...(input.supersedes === undefined ? {} : { supersedes: input.supersedes }),
+        });
+        yield* shared
+          ? staging.pipe(
+              Effect.catch((error) =>
+                sharedRefusal(ctx, audience, error).pipe(
+                  Effect.flatMap((refusal) => Effect.fail(refusal)),
+                ),
+              ),
+            )
+          : staging;
+        // Who may know what was just written, from stored rows alone: the owner's own message
+        // or a teammate's own words let the team know it; anything else only suggests it.
+        if (sensitive) return;
+        if (shared || owner !== undefined)
+          yield* authorise(
+            ctx.orgId,
+            fields.id,
+            saved,
+            owner !== undefined ? "owner_message" : "teammate",
+          ).pipe(provideSql);
+        else yield* suggest(ctx.orgId, fields.id, saved).pipe(provideSql);
+        if (used !== undefined && from !== undefined)
+          yield* sql`INSERT INTO kin_memory_shared_writes
+              (org_id, wakeup_id, item_id, person_id, bytes, written_at)
+            VALUES (${ctx.orgId}, ${ctx.wakeupId}, ${fields.id}, ${from.person}, ${words}, ${used.now})
+            ON CONFLICT (org_id, wakeup_id, item_id) DO NOTHING`;
       }),
     );
     return { itemId: fields.id };
@@ -696,7 +803,7 @@ const make = Effect.gen(function* () {
         { lead: ctx.agentId },
       );
       // Filtered before the limit and the duplicate flag, so neither counts what is left out.
-      const visible = yield* reaching(ctx.orgId, audience, found).pipe(provideSql);
+      const visible = yield* visibleTo(ctx, audience, found);
       const counts = new Map<string, number>();
       for (const item of visible) counts.set(item.id, (counts.get(item.id) ?? 0) + 1);
       return visible
@@ -708,7 +815,7 @@ const make = Effect.gen(function* () {
       if (audience !== "owner_only") {
         // Looked at before the read is recorded: an item this turn can't see reads as not found.
         const found = yield* memory.query(ctx.orgId, {}, { lead: ctx.agentId });
-        const visible = yield* reaching(ctx.orgId, audience, found).pipe(provideSql);
+        const visible = yield* visibleTo(ctx, audience, found);
         if (visible.filter((item) => item.id === input.id).length !== 1) return yield* missing();
       }
       const item = yield* memory.readItem(ctx.orgId, input.id, { lead: ctx.agentId });
@@ -739,39 +846,53 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const ctx = yield* notes(scope);
           yield* checkSource(ctx, input.sourceEventId);
-          const item = yield* memory.readItemQuietly(ctx.orgId, input.itemId, {
-            lead: ctx.agentId,
-          });
           // Letting the team know is a disclosure, so only the owner's own words decide it.
           const owner = input.sensitive ? undefined : yield* ownerSaid(ctx, input.sourceEventId);
           if (!input.sensitive && owner === undefined) return yield* invalid(SHARE_NEEDS_OWNER);
-          const { orgId: _org, path, shared_by: _before, ...frontMatter } = item.head;
-          // Sensitive at once, ahead of the commit; shareable only once the file itself says so.
-          if (input.sensitive) yield* hold(ctx.orgId, input.itemId).pipe(provideSql);
-          yield* receipt(
-            ctx,
-            `item:${input.itemId}`,
-            input,
-            writer.stage(ctx.orgId, ctx.wakeupId, {
-              path,
-              content: `---\n${stringify({
-                ...frontMatter,
-                sensitive: input.sensitive,
-                ...(owner === undefined
-                  ? {}
-                  : {
-                      shared_by: {
-                        person: owner,
-                        at: DateTime.formatIso(DateTime.makeUnsafe(ctx.startedAt)),
-                      },
-                    }),
-              })}---\n${item.body}`,
-              sourceEventId: input.sourceEventId,
-              label: owner === undefined ? "keep" : "share",
-            }),
+          const itemIds = [...new Set(input.itemIds)];
+          // Every item is found before any is changed, so a bad id changes none of them.
+          const items = yield* Effect.forEach(itemIds, (itemId) =>
+            memory.readItemQuietly(ctx.orgId, itemId, { lead: ctx.agentId }),
           );
-          if (!input.sensitive) yield* release(ctx.orgId, input.itemId).pipe(provideSql);
-          return { itemId: input.itemId };
+          for (const item of items) {
+            const { orgId: _org, path, shared_by: _before, ...frontMatter } = item.head;
+            // Sensitive at once, ahead of the commit.
+            if (input.sensitive) yield* hold(ctx.orgId, item.head.id).pipe(provideSql);
+            yield* receipt(
+              ctx,
+              `item:${item.head.id}`,
+              {
+                itemId: item.head.id,
+                sensitive: input.sensitive,
+                sourceEventId: input.sourceEventId,
+              },
+              Effect.gen(function* () {
+                yield* writer.stage(ctx.orgId, ctx.wakeupId, {
+                  path,
+                  content: `---\n${stringify({
+                    ...frontMatter,
+                    sensitive: input.sensitive,
+                    ...(owner === undefined
+                      ? {}
+                      : {
+                          shared_by: {
+                            person: owner,
+                            at: DateTime.formatIso(DateTime.makeUnsafe(ctx.startedAt)),
+                          },
+                        }),
+                  })}---\n${item.body}`,
+                  sourceEventId: input.sourceEventId,
+                  label: owner === undefined ? "keep" : "share",
+                });
+                // The owner's authorisation of the item as it reads now; a later rewording ends it.
+                if (owner !== undefined)
+                  yield* authorise(ctx.orgId, item.head.id, fingerprint(item), "owner_label").pipe(
+                    provideSql,
+                  );
+              }),
+            );
+          }
+          return { itemIds };
         }),
       );
     }, Effect.mapError(failure)),
