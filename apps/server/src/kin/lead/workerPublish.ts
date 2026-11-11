@@ -1,4 +1,4 @@
-import { type KinWorkerId, RepoSlug } from "@t3tools/contracts";
+import { type KinWorkerId, RepoSlug, T3_PROJECT_FILE_NAME } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -79,6 +79,9 @@ const touchesGitHubDir = (path: string) => {
   const lower = path.toLowerCase();
   return lower === GITHUB_DIR || lower.startsWith(`${GITHUB_DIR}/`);
 };
+// Its scripts run with a shell on every machine that opens a worktree of the project.
+const touchesProjectFile = (path: string) =>
+  path.split("/").at(-1)?.toLowerCase() === T3_PROJECT_FILE_NAME;
 const SYMLINK_MODE = "120000";
 const rawMeta = /^:\d{6} (\d{6}) [0-9a-f]+ [0-9a-f]+ [A-Z]\d*$/;
 /** `git log --raw -z --no-renames`: a meta field, then its path; `undefined` if it isn't that. */
@@ -346,6 +349,10 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
       if (changes === undefined) return yield* refuse("git listed the branch's changes unreadably");
       if (changes.some((change) => touchesGitHubDir(change.path)))
         return yield* refuse(`${branch} changes ${GITHUB_DIR}/, which Kin never publishes`);
+      if (changes.some((change) => touchesProjectFile(change.path)))
+        return yield* refuse(
+          `${branch} changes ${T3_PROJECT_FILE_NAME}, whose scripts T3 Code runs, which Kin never publishes`,
+        );
       // A link's target is only a string to git; where it leads depends on the checkout.
       if (changes.some((change) => change.mode === SYMLINK_MODE))
         return yield* refuse(

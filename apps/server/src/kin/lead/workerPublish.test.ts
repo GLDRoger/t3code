@@ -265,6 +265,29 @@ it.live.each(linkChanges)("refuses a branch that adds %s", ([, change]) =>
   }).pipe(Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer)), Effect.scoped),
 );
 
+const projectFileChanges: ReadonlyArray<readonly [string, Change]> = [
+  ["t3.json", { kind: "file", path: "t3.json", text: '{"scripts":[]}\n' }],
+  ["a case variant", { kind: "file", path: "T3.JSON", text: '{"scripts":[]}\n' }],
+  ["a nested project's", { kind: "file", path: "apps/web/t3.json", text: '{"scripts":[]}\n' }],
+];
+
+it.live.each(projectFileChanges)("refuses a branch that changes %s", ([, change]) =>
+  Effect.gen(function* () {
+    for (const local of [false, true]) {
+      const { publish, remoteBranch, requests } = yield* fixture(
+        { "src/fix.ts": "export {};\n" },
+        { changes: [change], local },
+      );
+      assert.include(yield* Effect.flip(publish()), {
+        reason:
+          "kin/worker/wk-1 changes t3.json, whose scripts T3 Code runs, which Kin never publishes",
+      });
+      assert.strictEqual(yield* remoteBranch, "");
+      assert.isFalse(requests.some((request) => request.method === "POST"));
+    }
+  }).pipe(Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer)), Effect.scoped),
+);
+
 it.live("refuses a fetch above the disk ceiling and leaves no scratch repository behind", () =>
   Effect.gen(function* () {
     const { publish, remoteBranch, scratch } = yield* fixture(
