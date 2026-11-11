@@ -270,10 +270,15 @@ export class Memory extends Context.Service<
     >;
     readonly readIndex: (orgId: KinOrgId) => Effect.Effect<string, MemoryFailure>;
     readonly readRules: (orgId: KinOrgId) => Effect.Effect<string, MemoryFailure>;
+    /**
+     * With `admit`, only the items it admits exist: they are judged and returned from one
+     * snapshot, so what was checked is what is returned, and what it hides changes nothing.
+     */
     readonly readItem: (
       orgId: KinOrgId,
       id: KinMemoryItemId,
       view?: MemoryView,
+      admit?: (item: MemoryCache.MemoryItem) => boolean,
     ) => Effect.Effect<MemoryCache.MemoryItem, MemoryFailure | MemoryNotFound | MemoryDuplicateId>;
     readonly readItemQuietly: (
       orgId: KinOrgId,
@@ -1090,9 +1095,10 @@ const make = Effect.gen(function* () {
     id: KinMemoryItemId,
     recordRead: boolean,
     view?: MemoryView,
+    admit?: (item: MemoryCache.MemoryItem) => boolean,
   ) {
     const { items } = yield* load(orgId, false, view);
-    const matches = items.filter((item) => item.head.id === id);
+    const matches = items.filter((item) => item.head.id === id && (admit?.(item) ?? true));
     const item = matches[0];
     if (!item) return yield* new MemoryNotFound({ orgId, id });
     if (matches.length > 1) return yield* new MemoryDuplicateId({ orgId, id });
@@ -2092,8 +2098,8 @@ const make = Effect.gen(function* () {
     query: Effect.fn("Memory.queryLocked")((orgId, q, view) =>
       locked(orgId, query(orgId, q, view)),
     ),
-    readItem: Effect.fn("Memory.readItemLocked")((orgId, id, view) =>
-      locked(orgId, readItem(orgId, id, true, view)),
+    readItem: Effect.fn("Memory.readItemLocked")((orgId, id, view, admit) =>
+      locked(orgId, readItem(orgId, id, true, view, admit)),
     ),
     readItemQuietly: Effect.fn("Memory.readItemQuietly")((orgId, id, view) =>
       locked(orgId, readItem(orgId, id, false, view)),

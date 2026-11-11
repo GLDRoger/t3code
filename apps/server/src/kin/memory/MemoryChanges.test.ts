@@ -217,6 +217,8 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
       head("later", { sensitive: false }),
       // Its file says the team can know it; nothing stored says so.
       head("claimed", { sensitive: false }),
+      // Suggested by an earlier version, which recorded no words.
+      head("migrated", { sensitive: false }),
     ].map((item) => ({ head: item, body }));
     const relabelled: Array<{ itemId: string; sensitive: boolean; person: string }> = [];
     const memory = Context.get(services, KinMemoryChanges);
@@ -272,6 +274,7 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
       hinted: "suggested",
       later: "only_owner",
       claimed: "only_owner",
+      migrated: "only_owner",
     });
     assert.deepStrictEqual(
       (yield* memory.list([owner], { orgId })).items.find((item) => item.itemId === "said")?.from,
@@ -297,6 +300,48 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
       ["later"],
     );
     assert.strictEqual((yield* shown()).claimed, "only_owner");
+
+    // Review of 9de4e8d197: a suggestion with no words confirmed whatever the item said by then.
+    yield* sql`INSERT INTO kin_memory_labels (org_id, item_id, suggested_rev)
+      VALUES (${orgId}, 'migrated', 1)`;
+    const migrated = KinMemoryItemId.make("migrated");
+    const confirm = (versions?: Record<string, string>) =>
+      memory
+        .confirmSuggestions([owner], {
+          orgId,
+          itemIds: [migrated],
+          ...(versions === undefined ? {} : { versions }),
+        })
+        .pipe(Effect.map(({ items }) => items.map((item) => item.itemId)));
+    // Not confirmable unseen: it binds to the words the owner is first shown.
+    assert.deepStrictEqual(yield* confirm(), []);
+    const listed = (yield* memory.list([owner], { orgId })).items.find(
+      (item) => item.itemId === "migrated",
+    );
+    assert.deepStrictEqual([listed?.visibility, listed?.version], ["suggested", words("migrated")]);
+    // Reworded outside the server since: neither confirmation lets the team know the new words.
+    items = items.map((item) =>
+      item.head.id === "migrated" ? { ...item, body: "Invented reworded body.\n" } : item,
+    );
+    assert.deepStrictEqual(yield* confirm(), []);
+    assert.deepStrictEqual(yield* confirm({ migrated: String(listed?.version) }), []);
+    assert.include(
+      yield* memory
+        .setVisibility([owner], {
+          orgId,
+          itemId: migrated,
+          onlyOwner: false,
+          version: listed?.version,
+        })
+        .pipe(Effect.flip),
+      { reason: "conflict" },
+    );
+    assert.strictEqual((yield* shown()).migrated, "only_owner");
+    assert.lengthOf(
+      yield* sql`SELECT 1 FROM kin_memory_labels WHERE org_id = ${orgId} AND item_id = 'migrated'
+        AND suggested_rev IS NOT NULL AND shared_content IS NULL`,
+      1,
+    );
 
     // "Only you" holds from the tap, even if the file's label lands later.
     const team = { ...flip, itemId: KinMemoryItemId.make("team") };

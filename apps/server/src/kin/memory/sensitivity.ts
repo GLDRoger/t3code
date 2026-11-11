@@ -1,20 +1,72 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- `reaches` compares content fingerprints synchronously.
 import * as NodeCrypto from "node:crypto";
 
-import type { KinOrgId } from "@t3tools/contracts";
+import {
+  KinMemoryItemId,
+  MemoryItemKind,
+  type KinOrgId,
+  type MemoryItemHead,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { TurnAudience } from "../lead/Audience.ts";
 import { entropy, secretExceptions, secretRules } from "./secretScan.ts";
 
-interface Labelled {
+/** What a shared turn may receive of an item's head: these fields, as they are, and no others. */
+export const SHARED_HEAD_FIELDS = ["id", "kind", "title", "what", "links", "shared_from"] as const;
+/**
+ * Head fields a shared turn never receives: dates, provenance, ids, routing and free-form extras.
+ * Every head field is on one of the two lists, so a new field is never shared by accident.
+ */
+export const NEVER_SHARED_FIELDS = [
+  "orgId",
+  "path",
+  "status",
+  "due",
+  "chat",
+  "source_event",
+  "on_due",
+  "on",
+  "every",
+  "owner",
+  "tz",
+  "quiet_hours",
+  "recorded_at",
+  "valid_from",
+  "invalid_at",
+  "superseded_by",
+  "review_by",
+  "source",
+  "said_by",
+  "trust",
+  "sensitive",
+  "shared_by",
+] as const satisfies ReadonlyArray<keyof MemoryItemHead>;
+
+/** A teammate's attribution, by the names kept when it was said; never their person or chat id. */
+const SharedFrom = Schema.Struct({ name: Schema.String, chat_name: Schema.String });
+/** What a shared search returns of an item: its projection without the body. */
+export const SharedHead = Schema.Struct({
+  id: KinMemoryItemId,
+  kind: MemoryItemKind,
+  title: Schema.String,
+  what: Schema.optional(Schema.String),
+  links: Schema.Array(Schema.String),
+  from: Schema.optional(SharedFrom),
+});
+/** Everything a shared turn may receive of an item, and exactly what an authorisation covers. */
+export const SharedItem = Schema.Struct({ ...SharedHead.fields, body: Schema.String });
+export type SharedItem = typeof SharedItem.Type;
+
+type Projected = Pick<MemoryItemHead, (typeof SHARED_HEAD_FIELDS)[number]>;
+interface Labelled extends Pick<Projected, "kind" | "title" | "links"> {
   readonly id: string;
-  readonly sensitive?: boolean | undefined;
-  readonly title: string;
   readonly what?: string | undefined;
-  readonly links: ReadonlyArray<string>;
+  readonly shared_from?: Projected["shared_from"] | undefined;
+  readonly sensitive?: boolean | undefined;
 }
 /** An item as a turn would read it: its head and body. */
 export interface Shown {
@@ -30,12 +82,47 @@ export type Sharing =
   | "owner_confirmed"
   | "teammate";
 
-/** The words an item gives a lead: what an authorisation covers, and what a backstop reads. */
-export const contentOf = (head: Labelled, body: string) =>
-  [head.title, head.what ?? "", body, ...head.links].join("\n");
-/** Any change to those words, by anyone, ends the authorisation that covered the old ones. */
-export const fingerprint = (item: Shown) =>
-  NodeCrypto.createHash("sha256").update(contentOf(item.head, item.body)).digest("hex");
+/** The one projection every shared-turn surface returns, built from the fixed field list above. */
+export const shareable = ({ head, body }: Shown): SharedItem => ({
+  id: KinMemoryItemId.make(head.id),
+  kind: head.kind,
+  title: head.title,
+  ...(head.what === undefined ? {} : { what: head.what }),
+  links: [...head.links],
+  ...(head.shared_from === undefined
+    ? {}
+    : { from: { name: head.shared_from.name, chat_name: head.shared_from.chat_name } }),
+  body,
+});
+/** The projection's words as plain text, for the backstops that look for secrets and money. */
+export const contentOf = (item: Shown) => {
+  const shared = shareable(item);
+  return [
+    shared.title,
+    shared.what ?? "",
+    shared.body,
+    ...shared.links,
+    ...(shared.from === undefined ? [] : [shared.from.name, shared.from.chat_name]),
+  ].join("\n");
+};
+/**
+ * Over a canonical encoding of the projection, so the words authorised are the words returned.
+ * Any change to them, by anyone, ends the authorisation that covered the old ones.
+ */
+export const fingerprint = (item: Shown) => {
+  const shared = shareable(item);
+  const canonical = JSON.stringify([
+    "kin-shared-v2",
+    shared.id,
+    shared.kind,
+    shared.title,
+    shared.what ?? null,
+    shared.links,
+    shared.from === undefined ? null : [shared.from.name, shared.from.chat_name],
+    shared.body,
+  ]);
+  return NodeCrypto.createHash("sha256").update(canonical).digest("hex");
+};
 
 /** What the database says about who may know an item. The item's own file never decides it. */
 export interface StoredLabels {
@@ -86,10 +173,35 @@ export const visibility = (item: Shown, labels: StoredLabels): Visibility => {
   return suggestion !== undefined &&
     !labels.held.has(item.head.id) &&
     item.head.sensitive !== true &&
-    (suggestion.content === null || suggestion.content === fingerprint(item))
+    suggestion.content === fingerprint(item)
     ? "suggested"
     : "only_owner";
 };
+
+/**
+ * Binds each suggestion that recorded no content (an earlier version's) to the words `items`
+ * hold now, the first time the owner is shown them; it is suggested, and confirmable, only as
+ * those words from then on. Returns the labels as stored after.
+ */
+export const bindSuggestions = Effect.fn("KinSensitivity.bindSuggestions")(function* (
+  orgId: KinOrgId,
+  items: ReadonlyArray<Shown>,
+  labels: StoredLabels,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const counts = new Map<string, number>();
+  for (const { head } of items) counts.set(head.id, (counts.get(head.id) ?? 0) + 1);
+  let bound = false;
+  for (const item of items) {
+    const suggestion = labels.suggested.get(item.head.id);
+    if (suggestion?.content !== null || counts.get(item.head.id) !== 1) continue;
+    yield* sql`UPDATE kin_memory_labels SET suggested_content = ${fingerprint(item)}
+      WHERE org_id = ${orgId} AND item_id = ${item.head.id}
+        AND suggested_content IS NULL AND suggested_rev = ${suggestion.rev}`;
+    bound = true;
+  }
+  return bound ? yield* storedLabels(orgId) : labels;
+});
 
 export const storedLabels = Effect.fn("KinSensitivity.storedLabels")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;

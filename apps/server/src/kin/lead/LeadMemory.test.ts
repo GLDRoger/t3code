@@ -96,6 +96,11 @@ const runtime = Kin.layer.pipe(
   Layer.provideMerge(authorityLayer),
 );
 const decodeWrite = Schema.decodeUnknownEffect(Lead.WriteInput);
+/** A read from a turn only the owner reads: the whole item. */
+const whole = (read: typeof Lead.ReadResult.Type) => {
+  if (!("head" in read)) throw new Error("Expected the whole item");
+  return read;
+};
 const decodeDefer = Schema.decodeUnknownEffect(Lead.DeferInput);
 
 it.live(
@@ -429,7 +434,9 @@ it.live(
           yield* sql`SELECT 1 FROM kin_memory_reads WHERE org_id = ${orgId} AND item_id = 'b-item'`,
           0,
         );
-        const closable = yield* service.read(scope, { id: KinMemoryItemId.make("close-me") });
+        const closable = whole(
+          yield* service.read(scope, { id: KinMemoryItemId.make("close-me") }),
+        );
         const closeInput = yield* decodeWrite({
           op: "update",
           sourceEventId: "fixture-event",
@@ -455,7 +462,7 @@ it.live(
           ["cancel-me", "update", "cancelled", null],
           ["invalidate-me", "invalidate", "open", "2026-11-08T00:00:00.000Z"],
         ] as const) {
-          const item = yield* service.read(scope, { id: KinMemoryItemId.make(id) });
+          const item = whole(yield* service.read(scope, { id: KinMemoryItemId.make(id) }));
           yield* service.write(
             scope,
             yield* decodeWrite({
@@ -627,10 +634,11 @@ it.live(
                 .reason,
               "not_found",
             );
-          assert.strictEqual(
-            (yield* service.read(scope, { id: KinMemoryItemId.make("team-item") })).head.id,
-            "team-item",
-          );
+          // Only its shared projection: no path, provenance or other front matter.
+          const teamRead = yield* service.read(scope, { id: KinMemoryItemId.make("team-item") });
+          assert.isFalse("head" in teamRead);
+          assert.strictEqual("item" in teamRead ? teamRead.item.id : undefined, "team-item");
+          assert.notInclude(JSON.stringify(teamRead), "claims/team.md");
         });
         yield* teamReads;
         const sharedRead = yield* server
@@ -872,7 +880,7 @@ it.live(
             .pipe(Effect.map((items) => items.map((item) => item.id)));
         assert.include(yield* openDeferrals("open"), reminder.itemId);
         assert.strictEqual(
-          (yield* service.read(scope, { id: reminder.itemId })).head.title,
+          whole(yield* service.read(scope, { id: reminder.itemId })).head.title,
           "Invented stretch",
         );
         const armed = () =>
