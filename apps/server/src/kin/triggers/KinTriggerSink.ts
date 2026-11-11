@@ -38,13 +38,16 @@ export class KinTriggerSinkRefused extends Schema.TaggedError<KinTriggerSinkRefu
 
 /**
  * A native task is Kin's when its stored id carries Kin's command prefix or a `kin_schedules` row
- * names it, never by its prompt. A failed lookup counts as Kin's, so it refuses rather than runs.
+ * names it, never by its prompt. Kin only writes prefixed ids, so a failed row lookup falls back
+ * to the prefix and the developer's own tasks keep running.
  */
 const isKinTask = (sql: SqlClient.SqlClient, taskId: string) =>
   taskId.startsWith(KIN_TASK_PREFIX)
     ? Effect.succeed(true)
-    : sql<{ present: number }>`SELECT EXISTS (SELECT 1 FROM sqlite_master
-        WHERE type = 'table' AND name = 'kin_schedules') AS present`.pipe(
+    : Effect.suspend(
+        () => sql<{ present: number }>`SELECT EXISTS (SELECT 1 FROM sqlite_master
+          WHERE type = 'table' AND name = 'kin_schedules') AS present`,
+      ).pipe(
         Effect.flatMap(([row]) =>
           row?.present === 1
             ? sql`SELECT 1 FROM kin_schedules WHERE task_id = ${taskId}`.pipe(
@@ -52,7 +55,7 @@ const isKinTask = (sql: SqlClient.SqlClient, taskId: string) =>
               )
             : Effect.succeed(false),
         ),
-        Effect.catchCause(() => Effect.succeed(true)),
+        Effect.catchCause(() => Effect.succeed(false)),
       );
 
 const refusedLaunch = (input: ThreadLaunchService.ThreadLaunchInput, why: string) =>

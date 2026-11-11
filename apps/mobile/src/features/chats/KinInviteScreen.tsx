@@ -37,11 +37,17 @@ export function KinInviteScreen({ route }: StaticScreenProps<KinInviteParams>) {
       <View collapsable={false} className="flex-1 bg-screen">
         <AppBar title={KIN_TEAM_ADD_COPY.title} onClose={() => navigation.goBack()} />
         <ScreenContent surface="screen">
-          <EmptyState
-            variant="plain"
-            title="This link doesn't open anything"
-            detail="Add a teammate from Team in your Kin chats."
-          />
+          <ScreenScrollView
+            className="flex-1"
+            contentInsetAdjustmentBehavior="automatic"
+            contentContainerStyle={{ padding: 16 }}
+          >
+            <EmptyState
+              variant="plain"
+              title="This link doesn't open anything"
+              detail="Add a teammate from Team in your Kin chats."
+            />
+          </ScreenScrollView>
         </ScreenContent>
       </View>
     );

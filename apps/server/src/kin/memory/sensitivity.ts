@@ -8,6 +8,7 @@ import {
   type MemoryItemHead,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -142,13 +143,22 @@ export interface StoredLabels {
   readonly classified: ReadonlyMap<string, boolean>;
   /**
    * Open suggestions that the team could know an item, for the owner to confirm: the content
-   * suggested (null when only an earlier version recorded none) and the revision it came in at.
+   * suggested, null when only an earlier version recorded none.
    */
-  readonly suggested: ReadonlyMap<
-    string,
-    { readonly content: string | null; readonly rev: number }
-  >;
+  readonly suggested: ReadonlyMap<string, string | null>;
+  /** `KIN_TEAM_MEMORY` is on: without it no shared turn reads anything (`reaches`). */
+  readonly teamMemory: boolean;
 }
+
+/**
+ * Whether the host lets shared turns read and write team memory: `KIN_TEAM_MEMORY=on`. Anything
+ * else, unset or unreadable, is off, and shared turns get no memory at all.
+ */
+export const teamMemoryOn = Config.String("KIN_TEAM_MEMORY").pipe(
+  Config.withDefault("off"),
+  Effect.map((value) => value.trim() === "on"),
+  Effect.orElseSucceed(() => false),
+);
 
 /**
  * What the item's labels say, for keeping a label on a rewrite: held, else its file, else the
@@ -167,13 +177,13 @@ const teamCanKnow = (item: Shown, labels: StoredLabels) =>
 
 /**
  * The one check for whether a memory item may reach a turn: an owner-only turn sees everything,
- * any other only what a stored authorisation lets the team know, and only while it still holds.
- * What the team may know is company knowledge, not chat history: every shared turn reads it,
- * whatever chat it came from or joined.
+ * any other nothing unless team memory is on (`teamMemoryOn`), then only what a stored
+ * authorisation lets the team know while it holds, whatever chat it came from or joined.
  */
 export const reaches = (audience: TurnAudience, item: Shown, labels: StoredLabels) =>
   audience === "owner_only" ||
-  (teamCanKnow(item, labels) &&
+  (labels.teamMemory &&
+    teamCanKnow(item, labels) &&
     (item.head.invalid_at ?? null) === null &&
     (item.head.superseded_by ?? null) === null);
 
@@ -185,16 +195,15 @@ export const visibility = (item: Shown, labels: StoredLabels): Visibility => {
   return suggestion !== undefined &&
     !labels.held.has(item.head.id) &&
     item.head.sensitive !== true &&
-    suggestion.content === fingerprint(item)
+    suggestion === fingerprint(item)
     ? "suggested"
     : "only_owner";
 };
 
 /**
  * Binds each suggestion that recorded no content (an earlier version's) to the words `items`
- * hold now, the first time the owner is shown them, at a fresh revision so no earlier listing's
- * yes takes it; it is suggested, and confirmable, only as those words from then on. Returns the
- * labels as stored after.
+ * hold now, the first time the owner is shown them; it is suggested, and confirmable, only as
+ * those words from then on. Returns the labels as stored after.
  */
 export const bindSuggestions = Effect.fn("KinSensitivity.bindSuggestions")(function* (
   orgId: KinOrgId,
@@ -206,19 +215,10 @@ export const bindSuggestions = Effect.fn("KinSensitivity.bindSuggestions")(funct
   for (const { head } of items) counts.set(head.id, (counts.get(head.id) ?? 0) + 1);
   let bound = false;
   for (const item of items) {
-    const suggestion = labels.suggested.get(item.head.id);
-    if (suggestion?.content !== null || counts.get(item.head.id) !== 1) continue;
-    yield* sql.withTransaction(
-      Effect.gen(function* () {
-        yield* sql`INSERT INTO kin_memory_label_revisions (org_id, revision) VALUES (${orgId}, 1)
-          ON CONFLICT (org_id) DO UPDATE SET revision = revision + 1`;
-        yield* sql`UPDATE kin_memory_labels SET suggested_content = ${fingerprint(item)},
-            suggested_rev = (SELECT revision FROM kin_memory_label_revisions
-              WHERE org_id = ${orgId})
-          WHERE org_id = ${orgId} AND item_id = ${item.head.id}
-            AND suggested_content IS NULL AND suggested_rev = ${suggestion.rev}`;
-      }),
-    );
+    if (labels.suggested.get(item.head.id) !== null || counts.get(item.head.id) !== 1) continue;
+    yield* sql`UPDATE kin_memory_labels SET suggested_content = ${fingerprint(item)}
+      WHERE org_id = ${orgId} AND item_id = ${item.head.id}
+        AND suggested_content IS NULL AND suggested_at IS NOT NULL`;
     bound = true;
   }
   return bound ? yield* storedLabels(orgId) : labels;
@@ -233,11 +233,11 @@ export const storedLabels = Effect.fn("KinSensitivity.storedLabels")(function* (
     sharedContent: string | null;
     sharedHow: string | null;
     suggestedContent: string | null;
-    suggestedRev: number | null;
+    suggestedAt: number | null;
   }>`
     SELECT item_id AS "itemId", held_at AS "heldAt", classified,
       shared_content AS "sharedContent", shared_how AS "sharedHow",
-      suggested_content AS "suggestedContent", suggested_rev AS "suggestedRev"
+      suggested_content AS "suggestedContent", suggested_at AS "suggestedAt"
     FROM kin_memory_labels WHERE org_id = ${orgId} ORDER BY item_id`;
   return {
     held: new Set(rows.filter((row) => row.heldAt !== null).map((row) => row.itemId)),
@@ -255,11 +255,10 @@ export const storedLabels = Effect.fn("KinSensitivity.storedLabels")(function* (
     ),
     suggested: new Map(
       rows.flatMap((row) =>
-        row.suggestedRev === null
-          ? []
-          : [[row.itemId, { content: row.suggestedContent, rev: row.suggestedRev }] as const],
+        row.suggestedAt === null ? [] : [[row.itemId, row.suggestedContent] as const],
       ),
     ),
+    teamMemory: yield* teamMemoryOn,
   } satisfies StoredLabels;
 });
 
@@ -299,7 +298,22 @@ export const authorise = Effect.fn("KinSensitivity.authorise")(function* (
     VALUES (${orgId}, ${itemId}, ${content}, ${how}, ${now})
     ON CONFLICT (org_id, item_id) DO UPDATE SET held_at = NULL,
       shared_content = excluded.shared_content, shared_how = excluded.shared_how,
-      shared_at = excluded.shared_at, suggested_content = NULL, suggested_rev = NULL`;
+      shared_at = excluded.shared_at, suggested_content = NULL, suggested_at = NULL`;
+});
+
+/**
+ * The item is no longer true: whatever let the team know it, and any open suggestion, ends with
+ * it, so no later write or re-creation of the id is team-readable without a new owner decision.
+ */
+export const retireLabels = Effect.fn("KinSensitivity.retireLabels")(function* (
+  orgId: KinOrgId,
+  itemIds: ReadonlyArray<string>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  for (const itemId of itemIds)
+    yield* sql`UPDATE kin_memory_labels SET shared_content = NULL, shared_how = NULL,
+        shared_at = NULL, suggested_content = NULL, suggested_at = NULL
+      WHERE org_id = ${orgId} AND item_id = ${itemId}`;
 });
 
 /**
@@ -312,21 +326,24 @@ export const suggest = Effect.fn("KinSensitivity.suggest")(function* (
   content: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  // One BEGIN IMMEDIATE transaction, so revisions are stored in the order they commit and no
-  // suggestion lands at or below a revision a listing already reported.
+  const now = yield* Clock.currentTimeMillis;
   yield* sql.withTransaction(
     Effect.gen(function* () {
-      const [current] = yield* sql<{ shared: string | null; suggested: string | null }>`
-        SELECT shared_content AS shared, suggested_content AS suggested FROM kin_memory_labels
-        WHERE org_id = ${orgId} AND item_id = ${itemId} ORDER BY item_id`;
-      if (current?.shared === content || current?.suggested === content) return;
-      yield* sql`INSERT INTO kin_memory_label_revisions (org_id, revision) VALUES (${orgId}, 1)
-        ON CONFLICT (org_id) DO UPDATE SET revision = revision + 1`;
-      yield* sql`INSERT INTO kin_memory_labels (org_id, item_id, suggested_content, suggested_rev)
-        VALUES (${orgId}, ${itemId}, ${content},
-          (SELECT revision FROM kin_memory_label_revisions WHERE org_id = ${orgId}))
+      const [current] = yield* sql<{
+        shared: string | null;
+        how: string | null;
+        suggested: string | null;
+      }>`
+        SELECT shared_content AS shared, shared_how AS how, suggested_content AS suggested
+        FROM kin_memory_labels WHERE org_id = ${orgId} AND item_id = ${itemId} ORDER BY item_id`;
+      // Only a grant that is honoured makes asking pointless; any other is as good as none.
+      const granted =
+        current?.shared === content && current.how !== null && honoured.has(current.how);
+      if (granted || current?.suggested === content) return;
+      yield* sql`INSERT INTO kin_memory_labels (org_id, item_id, suggested_content, suggested_at)
+        VALUES (${orgId}, ${itemId}, ${content}, ${now})
         ON CONFLICT (org_id, item_id) DO UPDATE SET
-          suggested_content = excluded.suggested_content, suggested_rev = excluded.suggested_rev`;
+          suggested_content = excluded.suggested_content, suggested_at = excluded.suggested_at`;
     }),
   );
 });
