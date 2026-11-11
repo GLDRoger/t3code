@@ -80,11 +80,7 @@ export const KinMemoryListItem = Schema.Struct({
   version: Schema.optional(Schema.String),
 });
 export type KinMemoryListItem = typeof KinMemoryListItem.Type;
-export const KinMemoryListResult = Schema.Struct({
-  items: Schema.Array(KinMemoryListItem),
-  /** The revision of the newest suggestion listed; pass it to `confirmSuggestions` as `asOf`. */
-  suggestionsAsOf: NonNegativeInt,
-});
+export const KinMemoryListResult = Schema.Struct({ items: Schema.Array(KinMemoryListItem) });
 export type KinMemoryListResult = typeof KinMemoryListResult.Type;
 
 /** Keeping an item to the owner needs nothing more; letting the team know needs the words shown. */
@@ -107,20 +103,21 @@ export type KinMemorySetVisibilityInput = typeof KinMemorySetVisibilityInput.Typ
 export const KinMemorySetVisibilityResult = Schema.Struct({ item: KinMemoryListItem });
 export type KinMemorySetVisibilityResult = typeof KinMemorySetVisibilityResult.Type;
 
+/** Most items one `confirmSuggestions` call names; a longer list is sent in chunks. */
+export const KIN_MEMORY_CONFIRM_MAX = 500;
 /**
- * The owner lets the team know suggested items: the listed ones, or every suggestion up to the
- * `suggestionsAsOf` revision they were shown, so one that came in later is never confirmed unseen.
- * Only items still suggested are confirmed; listed ones only as their `versions` entry (id to
- * listed `version`) says, else they stay suggested.
+ * The owner lets the team know the suggested items they were shown, each only as its `versions`
+ * entry (id to listed `version`) says. An item no longer suggested, or reading otherwise now,
+ * stays as it is.
  */
-export const KinMemoryConfirmSuggestionsInput = Schema.Union([
-  Schema.Struct({
-    orgId: KinOrgId,
-    itemIds: Schema.Array(KinMemoryItemId).check(Schema.isMinLength(1), Schema.isMaxLength(500)),
-    versions: Schema.Record(Schema.String, Schema.String),
-  }),
-  Schema.Struct({ orgId: KinOrgId, asOf: NonNegativeInt }),
-]);
+export const KinMemoryConfirmSuggestionsInput = Schema.Struct({
+  orgId: KinOrgId,
+  itemIds: Schema.Array(KinMemoryItemId).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(KIN_MEMORY_CONFIRM_MAX),
+  ),
+  versions: Schema.Record(Schema.String, Schema.String),
+});
 export type KinMemoryConfirmSuggestionsInput = typeof KinMemoryConfirmSuggestionsInput.Type;
 /** The items the team may now know. */
 export const KinMemoryConfirmSuggestionsResult = Schema.Struct({

@@ -15,14 +15,11 @@ import {
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
-import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
-import type * as Statement from "effect/sql/Statement";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Audit from "../approvals/Audit.ts";
@@ -267,7 +264,13 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
       reason: "not_allowed",
     });
     assert.include(
-      yield* memory.confirmSuggestions(member, { orgId, asOf: 10 }).pipe(Effect.flip),
+      yield* memory
+        .confirmSuggestions(member, {
+          orgId,
+          itemIds: [KinMemoryItemId.make("hinted")],
+          versions: { hinted: words("hinted") },
+        })
+        .pipe(Effect.flip),
       { reason: "not_allowed" },
     );
     const forgotten = { orgId, itemId: KinMemoryItemId.make("later") };
@@ -318,9 +321,15 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
     );
 
     // Confirming everything the owner was shown takes nothing suggested after it.
-    const { suggestionsAsOf } = yield* memory.list([owner], { orgId });
+    const waiting = (yield* memory.list([owner], { orgId })).items.filter(
+      (item) => item.visibility === "suggested",
+    );
     yield* suggest(orgId, "later", words("later"));
-    const confirmed = yield* memory.confirmSuggestions([owner], { orgId, asOf: suggestionsAsOf });
+    const confirmed = yield* memory.confirmSuggestions([owner], {
+      orgId,
+      itemIds: waiting.map((item) => item.itemId),
+      versions: Object.fromEntries(waiting.map((item) => [item.itemId, String(item.version)])),
+    });
     assert.deepStrictEqual(
       confirmed.items.map((item) => [item.itemId, item.visibility]),
       [["hinted", "team"]],
@@ -347,7 +356,7 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
     assert.strictEqual((yield* shown()).claimed, "only_owner");
 
     // Review of 9de4e8d197: a suggestion with no words confirmed whatever the item said by then.
-    yield* sql`INSERT INTO kin_memory_labels (org_id, item_id, suggested_rev)
+    yield* sql`INSERT INTO kin_memory_labels (org_id, item_id, suggested_at)
       VALUES (${orgId}, 'migrated', 1)`;
     const migrated = KinMemoryItemId.make("migrated");
     const confirm = (versions: Record<string, string> = {}) =>
@@ -383,7 +392,7 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
     assert.strictEqual((yield* shown()).migrated, "only_owner");
     assert.lengthOf(
       yield* sql`SELECT 1 FROM kin_memory_labels WHERE org_id = ${orgId} AND item_id = 'migrated'
-        AND suggested_rev IS NOT NULL AND shared_content IS NULL`,
+        AND suggested_at IS NOT NULL AND shared_content IS NULL`,
       1,
     );
 
@@ -419,12 +428,12 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
   }).pipe(Effect.scoped, Effect.provide(root)),
 );
 
-// Review of 8c8ee76d04: a suggestion bound after a listing kept its old revision, inside its yes.
-it.effect("a suggestion first bound after a listing stays out of that listing's yes", () =>
+// Review of 69b673e063: a dream suggested X while X was only on its branch; the owner listed Y
+// alone; the branch merged, and the old listing's yes-to-all let the team know X, never shown.
+it.effect("a yes takes only the items and words the owner was shown", () =>
   Effect.gen(function* () {
     const kin = yield* Kin.KinServer;
     const services = Option.getOrThrow(kin.services);
-    const sql = yield* SqlClient.SqlClient;
     yield* pairSession(session.sessionId);
     const [owner] = yield* Context.get(services, KinIdentity).resolve(session);
     assert.isDefined(owner);
@@ -451,108 +460,8 @@ it.effect("a suggestion first bound after a listing stays out of that listing's 
       }),
       body: "Invented body.\n",
     });
-    let items = [item("seen")];
-    const memory = Context.get(services, KinMemoryChanges);
-    yield* memory.attachWriter({
-      undo: () => Effect.die("Unused"),
-      retire: () => Effect.die("Unused"),
-      items: () => Effect.succeed(items),
-      relabel: (_org, input) =>
-        Effect.sync(() => {
-          items = items.map((each) =>
-            each.head.id === input.itemId
-              ? { ...each, head: { ...each.head, sensitive: input.sensitive } }
-              : each,
-          );
-          return { head: items.find((each) => each.head.id === input.itemId)!.head };
-        }),
-    });
-    // An earlier version's suggestion of X, with no words; X's file isn't on this host yet.
-    yield* sql`INSERT INTO kin_memory_labels (org_id, item_id, suggested_rev) VALUES (${orgId}, 'x', 1)`;
-    yield* sql`INSERT INTO kin_memory_label_revisions (org_id, revision) VALUES (${orgId}, 9)
-      ON CONFLICT (org_id) DO UPDATE SET revision = 9`;
-    yield* suggest(orgId, "seen", fingerprint(items[0]!));
-    // Listing A shows only `seen`.
-    const a = yield* memory.list([owner], { orgId });
-    assert.strictEqual(a.suggestionsAsOf, 10);
-    assert.deepStrictEqual(
-      a.items.map((each) => each.itemId),
-      ["seen"],
-    );
-    // X arrives, and another listing binds it to its words.
-    items = [...items, item("x")];
-    const b = yield* memory.list([owner], { orgId });
-    assert.strictEqual(b.items.find((each) => each.itemId === "x")?.visibility, "suggested");
-    const confirmed = yield* memory.confirmSuggestions([owner], { orgId, asOf: a.suggestionsAsOf });
-    assert.deepStrictEqual(
-      confirmed.items.map((each) => each.itemId),
-      ["seen"],
-    );
-    const after = yield* memory.list([owner], { orgId });
-    assert.strictEqual(after.items.find((each) => each.itemId === "x")?.visibility, "suggested");
-  }).pipe(Effect.scoped, Effect.provide(root)),
-);
-
-/** `sql`, running `before` ahead of each statement it returns an effect for, and `entering` ahead of a transaction. */
-const gatedSql = (
-  sql: SqlClient.SqlClient,
-  hooks: {
-    readonly before?: (text: string) => Effect.Effect<void> | undefined;
-    readonly entering?: Effect.Effect<void>;
-  },
-) =>
-  new Proxy(sql, {
-    apply: (target, self, args: Parameters<SqlClient.SqlClient>) => {
-      const [strings] = args;
-      const gate =
-        Array.isArray(strings) && "raw" in strings ? hooks.before?.(strings.join("?")) : undefined;
-      const statement: unknown = Reflect.apply(target, self, args);
-      // Only template calls are gated, and those return a statement.
-      return gate === undefined
-        ? statement
-        : Effect.andThen(gate, statement as Statement.Statement<unknown>);
-    },
-    get: (target, key) =>
-      key === "withTransaction" && hooks.entering !== undefined
-        ? <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-            Effect.andThen(hooks.entering!, target.withTransaction(effect))
-        : Reflect.get(target, key, target),
-  });
-
-// Review of 17822434f4: a suggestion that took its revision before a listing but stored it after
-// came in at the listing's revision, so that listing's yes let the team know it unseen.
-it.effect("a suggestion stored after a listing stays out of that listing's yes", () =>
-  Effect.gen(function* () {
-    const kin = yield* Kin.KinServer;
-    const services = Option.getOrThrow(kin.services);
-    const sql = yield* SqlClient.SqlClient;
-    yield* pairSession(session.sessionId);
-    const [owner] = yield* Context.get(services, KinIdentity).resolve(session);
-    assert.isDefined(owner);
-    const { orgId } = owner;
-    const item = (id: string) => ({
-      head: decodeHead({
-        id,
-        orgId,
-        path: `claims/${id}.md`,
-        kind: "claim",
-        title: `Invented ${id}`,
-        status: "open",
-        due: null,
-        recorded_at: "2026-11-01T00:00:00.000Z",
-        valid_from: "2026-11-01T00:00:00.000Z",
-        invalid_at: null,
-        superseded_by: null,
-        review_by: null,
-        source: "fixture",
-        said_by: "fixture",
-        trust: "owner",
-        links: [],
-        sensitive: false,
-      }),
-      body: "Invented body.\n",
-    });
-    const items = [item("a"), item("b")];
+    // X is on the dream's review branch only; Y is on the default branch.
+    let items = [item("y")];
     const memory = Context.get(services, KinMemoryChanges);
     yield* memory.attachWriter({
       undo: () => Effect.die("Unused"),
@@ -561,51 +470,29 @@ it.effect("a suggestion stored after a listing stays out of that listing's yes",
       relabel: (_org, input) =>
         Effect.succeed({ head: items.find((each) => each.head.id === input.itemId)!.head }),
     });
-    const paused = yield* Deferred.make<void>();
-    const resume = yield* Deferred.make<void>();
-    const waits = yield* Deferred.make<void>();
-    let gated = false;
-    // A pauses just before it stores its suggestion.
-    const sqlA = gatedSql(sql, {
-      before: (text) => {
-        if (gated || !text.includes("INSERT INTO kin_memory_labels")) return undefined;
-        gated = true;
-        return Deferred.succeed(paused, undefined).pipe(Effect.andThen(Deferred.await(resume)));
-      },
-    });
-    const a = yield* suggest(orgId, "a", fingerprint(items[0]!)).pipe(
-      Effect.provideService(SqlClient.SqlClient, sqlA),
-      Effect.forkChild,
+    yield* suggest(orgId, "x", fingerprint(item("x")));
+    yield* suggest(orgId, "y", fingerprint(item("y")));
+    const listing = yield* memory.list([owner], { orgId });
+    assert.deepStrictEqual(
+      listing.items.map((each) => [each.itemId, each.visibility]),
+      [["y", "suggested"]],
     );
-    yield* Deferred.await(paused);
-    // B suggests and the owner lists while A is paused, unless B must wait for A to finish.
-    const listing = yield* suggest(orgId, "b", fingerprint(items[1]!)).pipe(
-      Effect.provideService(
-        SqlClient.SqlClient,
-        gatedSql(sql, { entering: Deferred.succeed(waits, undefined).pipe(Effect.asVoid) }),
-      ),
-      Effect.andThen(memory.list([owner], { orgId })),
-      Effect.forkChild,
-    );
-    yield* Effect.raceFirst(Fiber.await(listing).pipe(Effect.asVoid), Deferred.await(waits));
-    yield* Deferred.succeed(resume, undefined);
-    yield* Fiber.join(a);
-    const listed = yield* Fiber.join(listing);
-    const shown: Array<string> = listed.items
-      .filter((each) => each.visibility === "suggested")
-      .map((each) => each.itemId);
+    // The branch merges: X is current, and suggested as these very words.
+    items = [...items, item("x")];
+    const shown = listing.items.filter((each) => each.visibility === "suggested");
     const confirmed = yield* memory.confirmSuggestions([owner], {
       orgId,
-      asOf: listed.suggestionsAsOf,
+      itemIds: shown.map((each) => each.itemId),
+      versions: Object.fromEntries(shown.map((each) => [each.itemId, String(each.version)])),
     });
-    // Only what the listing showed is confirmed; anything it didn't show is still waiting.
-    assert.includeMembers(
-      shown,
+    assert.deepStrictEqual(
       confirmed.items.map((each) => each.itemId),
+      ["y"],
     );
     const after = yield* memory.list([owner], { orgId });
-    for (const id of ["a", "b"])
-      if (!shown.includes(id))
-        assert.strictEqual(after.items.find((each) => each.itemId === id)?.visibility, "suggested");
+    assert.deepStrictEqual(
+      Object.fromEntries(after.items.map((each) => [each.itemId, each.visibility])),
+      { y: "team", x: "suggested" },
+    );
   }).pipe(Effect.scoped, Effect.provide(root)),
 );

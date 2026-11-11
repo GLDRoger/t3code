@@ -1,4 +1,5 @@
 import {
+  KIN_MEMORY_CONFIRM_MAX,
   KinChatError,
   type KinMemoryConfirmSuggestionsInput,
   type KinMemoryConfirmSuggestionsResult,
@@ -44,8 +45,6 @@ export const KIN_MEMORY_FORGET = {
 };
 const SHARE = "Let the team know";
 const KEEP = "Keep to myself";
-/** The host takes at most this many items in one confirmation. */
-const CONFIRM_MAX = 500;
 /** A list this short is skimmed faster than it is searched. */
 const SEARCH_FROM = 9;
 
@@ -180,12 +179,7 @@ export interface KinMemoryView {
   readonly confirmAll: KinMemoryConfirmAll | null;
 }
 
-type KinMemoryConfirmRequest =
-  | { readonly asOf: number }
-  | {
-      readonly itemIds: ReadonlyArray<KinMemoryItemId>;
-      readonly versions: Readonly<Record<string, string>>;
-    };
+type KinMemoryConfirmRequest = Omit<KinMemoryConfirmSuggestionsInput, "orgId">;
 
 const actionsFor = (item: KinMemoryListItem, state: KinMemoryVisibility) => {
   const share = {
@@ -209,22 +203,21 @@ const matches = (item: KinMemoryListItem, words: ReadonlyArray<string>) => {
 };
 
 /**
- * Yes to the suggestions on screen. `asOf` is the revision of the list the owner is looking at, so
- * one that arrived since is never confirmed unseen; it is used only when every suggestion that
- * list holds is on screen. A search, or a suggestion the owner is keeping, names the items instead.
+ * Yes to the suggestions on screen: each named with the version the owner was shown, so the host
+ * confirms only those words, and nothing that arrived since.
  */
 function confirmRequests(
   list: KinMemoryListResult,
   shown: ReadonlyArray<KinMemoryItemId>,
 ): ReadonlyArray<KinMemoryConfirmRequest> {
-  const listed = list.items.filter((item) => item.visibility === "suggested");
-  const on = new Set<string>(shown);
-  if (listed.length === shown.length && listed.every((item) => on.has(item.itemId)))
-    return [{ asOf: list.suggestionsAsOf }];
-  const versionOf = new Map(listed.map((item) => [item.itemId, item.version]));
+  const versionOf = new Map(
+    list.items
+      .filter((item) => item.visibility === "suggested")
+      .map((item) => [item.itemId, item.version]),
+  );
   const requests = [];
-  for (let start = 0; start < shown.length; start += CONFIRM_MAX) {
-    const itemIds = shown.slice(start, start + CONFIRM_MAX);
+  for (let start = 0; start < shown.length; start += KIN_MEMORY_CONFIRM_MAX) {
+    const itemIds = shown.slice(start, start + KIN_MEMORY_CONFIRM_MAX);
     const versions: Record<string, string> = {};
     for (const itemId of itemIds) {
       const version = versionOf.get(itemId);

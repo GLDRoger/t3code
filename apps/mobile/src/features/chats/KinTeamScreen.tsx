@@ -67,11 +67,17 @@ export function KinTeamScreen({ route }: StaticScreenProps<KinTeamParams>) {
       <View collapsable={false} className="flex-1 bg-screen">
         <AppBar title={KIN_TEAM_TITLE} onBack={() => navigation.goBack()} />
         <ScreenContent surface="screen">
-          <EmptyState
-            variant="plain"
-            title="This link doesn't open anything"
-            detail="Open Team from your Kin chats."
-          />
+          <ScreenScrollView
+            className="flex-1"
+            contentInsetAdjustmentBehavior="automatic"
+            contentContainerStyle={{ padding: 16 }}
+          >
+            <EmptyState
+              variant="plain"
+              title="This link doesn't open anything"
+              detail="Open Team from your Kin chats."
+            />
+          </ScreenScrollView>
         </ScreenContent>
       </View>
     );
@@ -108,61 +114,68 @@ function KinTeamBody(target: KinTeamTarget) {
           : {})}
       />
       <ScreenContent surface="screen">
-        {!team.allowed ? (
-          <EmptyState variant="plain" {...KIN_TEAM_ONLY_OWNER} />
-        ) : list === null ? (
-          team.failed ? (
+        <ScreenScrollView
+          className="flex-1"
+          contentInsetAdjustmentBehavior="automatic"
+          contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
+        >
+          {!team.allowed ? (
+            <EmptyState variant="plain" {...KIN_TEAM_ONLY_OWNER} />
+          ) : list === null ? (
+            team.failed ? (
+              <EmptyState
+                variant="plain"
+                title={KIN_TEAM_LOAD_FAILED}
+                detail="Check your connection to the server and try again."
+                action={<Button tone="secondary" label="Try again" onPress={team.refresh} />}
+              />
+            ) : (
+              <View
+                className="items-center py-12"
+                accessible
+                accessibilityRole="progressbar"
+                accessibilityLabel="Loading your team"
+              >
+                <AppActivityIndicator />
+              </View>
+            )
+          ) : rows.every((row) => row.state === "you") ? (
             <EmptyState
               variant="plain"
-              title={KIN_TEAM_LOAD_FAILED}
-              detail="Check your connection to the server and try again."
-              action={<Button tone="secondary" label="Try again" onPress={team.refresh} />}
+              {...KIN_TEAM_EMPTY}
+              action={
+                <Button
+                  tone="primary"
+                  icon="person.badge.plus"
+                  label={KIN_TEAM_ADD}
+                  onPress={add}
+                />
+              }
             />
           ) : (
-            <View
-              className="items-center py-12"
-              accessible
-              accessibilityRole="progressbar"
-              accessibilityLabel="Loading your team"
-            >
-              <AppActivityIndicator />
-            </View>
-          )
-        ) : rows.every((row) => row.state === "you") ? (
-          <EmptyState
-            variant="plain"
-            {...KIN_TEAM_EMPTY}
-            action={
-              <Button tone="primary" icon="person.badge.plus" label={KIN_TEAM_ADD} onPress={add} />
-            }
-          />
-        ) : (
-          <ScreenScrollView
-            className="flex-1"
-            contentInsetAdjustmentBehavior="automatic"
-            contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
-          >
-            {team.edits.problem === null ? null : <ErrorBanner message={team.edits.problem} />}
-            <ListSection footer="Teammates chat with you and with the leads and groups you add them to. They can't see your code or settings.">
-              {rows.map((row, index) => (
-                <View
-                  key={row.key}
-                  className={index === 0 ? undefined : "border-t border-border-subtle"}
-                >
-                  <KinTeamRow
-                    row={row}
-                    onPress={() =>
-                      navigation.navigate("KinTeammate", { ...target, teammate: row.key })
-                    }
-                  />
+            <>
+              {team.edits.problem === null ? null : <ErrorBanner message={team.edits.problem} />}
+              <ListSection footer="Teammates chat with you and with the leads and groups you add them to. They can't see your code or settings.">
+                {rows.map((row, index) => (
+                  <View
+                    key={row.key}
+                    className={index === 0 ? undefined : "border-t border-border-subtle"}
+                  >
+                    <KinTeamRow
+                      row={row}
+                      onPress={() =>
+                        navigation.navigate("KinTeammate", { ...target, teammate: row.key })
+                      }
+                    />
+                  </View>
+                ))}
+                <View className="border-t border-border-subtle">
+                  <ListActionRow label={KIN_TEAM_ADD} icon="plus" onPress={add} />
                 </View>
-              ))}
-              <View className="border-t border-border-subtle">
-                <ListActionRow label={KIN_TEAM_ADD} icon="plus" onPress={add} />
-              </View>
-            </ListSection>
-          </ScreenScrollView>
-        )}
+              </ListSection>
+            </>
+          )}
+        </ScreenScrollView>
       </ScreenContent>
     </View>
   );
