@@ -564,6 +564,8 @@ describe("KinLeadProvision", () => {
           name: "Finance",
           intro: "",
           chatId: contact.chatId,
+          // The owner runs the machine and can read this chat; the teammate is told so.
+          ownerName: "Owner",
         });
         // Her own chat with it: the owner is not in it, and she doesn't hold the owner's role.
         assert.notStrictEqual(contact.chatId, finance.ownerChatId);

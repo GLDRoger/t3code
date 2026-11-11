@@ -30,8 +30,9 @@ export const allowed = Effect.fn("KinLeadAccess.allowed")(function* (pair: Pair)
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * The lead turns this person's direct messages have asked for in the last 24 hours, across every
- * lead they may message: messages answered in one turn count once, dropped ones not at all.
+ * The lead turns this person's messages and taps have asked for in the last 24 hours, in every
+ * chat and of every lead they do not own: messages answered in one turn count once, dropped ones
+ * not at all.
  * `oldestAt` is when the earliest of them was sent, so the window is known to move on.
  */
 export const recentTurns = Effect.fn("KinLeadAccess.recentTurns")(function* (input: {
@@ -45,8 +46,6 @@ export const recentTurns = Effect.fn("KinLeadAccess.recentTurns")(function* (inp
       MIN(e.received_at) AS "oldestAt"
     FROM kin_events e
     JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
-    JOIN kin_chats c ON c.org_id = e.org_id AND c.chat_id = json_extract(e.json, '$.chatId')
-      AND c.kind = 'direct'
     WHERE e.org_id = ${input.orgId} AND e.tag IN ('chat.message', 'widget.action')
       AND e.state <> 'expired' AND e.received_at > ${input.now - DAY_MS}
       AND json_extract(e.json, '$.provenance.personId') = ${input.personId}

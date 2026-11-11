@@ -691,9 +691,19 @@ function firstHeaderValue(value: string | undefined): string | undefined {
   return first && first.length > 0 ? first : undefined;
 }
 
+/** Origins besides this server's own host whose browser cookies it accepts. */
+export const trustedBrowserOrigins = (
+  config: Pick<ServerConfig.ServerConfig["Service"], "devUrl" | "devAllowedOrigins">,
+): ReadonlySet<string> =>
+  new Set<string>([
+    ...(config.devUrl ? [config.devUrl.origin] : []),
+    ...DESKTOP_RENDERER_ORIGINS,
+    ...config.devAllowedOrigins,
+  ]);
+
 // Missing Origin allows same-origin reads and non-browser clients; otherwise require
 // same-origin Sec-Fetch-Site, this server's host (including X-Forwarded-Host), or a trusted app origin.
-function isBrowserOriginAllowed(
+export function isBrowserOriginAllowed(
   request: HttpServerRequest.HttpServerRequest,
   trustedOrigins: ReadonlySet<string>,
 ): boolean {
@@ -772,11 +782,7 @@ export const make = Effect.gen(function* () {
   };
 
   // Cookies span ports; reject cookie-authenticated requests and sockets from other same-site origins.
-  const trustedBrowserOrigins = new Set<string>([
-    ...(config.devUrl ? [config.devUrl.origin] : []),
-    ...DESKTOP_RENDERER_ORIGINS,
-    ...config.devAllowedOrigins,
-  ]);
+  const browserOrigins = trustedBrowserOrigins(config);
 
   const authenticateRequest = (
     request: HttpServerRequest.HttpServerRequest,
@@ -788,7 +794,7 @@ export const make = Effect.gen(function* () {
     }
     if (
       isBrowserCookieCredential(credential.source) &&
-      !isBrowserOriginAllowed(request, trustedBrowserOrigins)
+      !isBrowserOriginAllowed(request, browserOrigins)
     ) {
       return Effect.fail(
         new ServerAuthInvalidCredentialError({

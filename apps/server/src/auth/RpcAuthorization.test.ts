@@ -496,6 +496,10 @@ it("a chat-only grant cannot satisfy any non-chat method's declared permission",
     "kin.orgs.list",
     "kin.people.list",
     "kin.people.setGithubLogin",
+    // Bound to the caller's own person and session; pushes only for chats they are in.
+    "kin.push.registerDevice",
+    "kin.push.unregisterDevice",
+    "kin.push.watch",
     "kin.widgets.act",
   ]);
   expect(RPC_REQUIRED_SCOPES["kin.people.revokeInvite"]).toBe("access:write");

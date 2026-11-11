@@ -213,6 +213,13 @@ export function kinLeadAccessCandidates(
     .sort((a, b) => a.displayName.localeCompare(b.displayName));
 }
 
+/** Told to a teammate in their chat with a lead's details: the owner can read that chat. */
+export function kinLeadOwnerSeesLine(ownerName: string | undefined): string {
+  return ownerName === undefined
+    ? "Whoever runs this workspace can see chats with leads."
+    : `${ownerName} runs this workspace and can see chats with leads.`;
+}
+
 /** Said once after the owner changes who can message a lead. */
 export function kinLeadAccessChanged(person: string, lead: string, allowed: boolean): string {
   return allowed
