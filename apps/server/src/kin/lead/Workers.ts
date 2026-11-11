@@ -47,6 +47,7 @@ import * as KinLevels from "./KinLevels.ts";
 import { SHARED_REFUSAL, destination, effectiveAudience, turnChat } from "./Audience.ts";
 import { workerChat } from "./ChatSharing.ts";
 import { KinRecords } from "../work/KinRecords.ts";
+import { attemptBegun, workerMayResume } from "../work/workerAttempts.ts";
 import { WORK_NOT_YOURS, workMayStart, workerStarted } from "../work/workerEntries.ts";
 import { sharedTurnMayTouch, toolAdmitted } from "./SharedTools.ts";
 import { isOrgPaused, STOP_REASON } from "./orgState.ts";
@@ -777,6 +778,7 @@ const make = Effect.gen(function* () {
             orgId: ctx.orgId,
             agentId: ctx.agentId,
             ownerPersonId: config.ownerPersonId,
+            wakeupId: ctx.wakeupId,
             event: plan.event,
             ...(input.entry === undefined ? {} : { entryKey: input.entry }),
           }).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
@@ -795,6 +797,14 @@ const make = Effect.gen(function* () {
           ${projectId}, ${repositoryKey}, ${context})
           ON CONFLICT (worker_id) DO NOTHING RETURNING worker_id`;
         if (inserted.length > 0)
+          yield* attemptBegun({
+            orgId: ctx.orgId,
+            workerId,
+            startedAt,
+            agentId: ctx.agentId,
+            sourceEventId: input.sourceEventId,
+          }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+        if (inserted.length > 0)
           yield* workerStarted({
             orgId: ctx.orgId,
             agentId: ctx.agentId,
@@ -811,6 +821,13 @@ const make = Effect.gen(function* () {
         if (inserted.length === 0) {
           const stored = yield* worker(ctx, workerId);
           if (stored.wakeupId !== ctx.wakeupId) return yield* denied();
+          // A retry restarts the same worker, which the owner may have withdrawn since.
+          if (
+            !(yield* workerMayResume({ orgId: ctx.orgId, agentId: ctx.agentId, workerId }).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            ))
+          )
+            return yield* denied(WORK_NOT_YOURS);
           const retried =
             yield* sql`UPDATE kin_workers SET status = 'queued', started_at = ${startedAt}, ended_at = NULL,
               remote_project_id = ${projectId}, repository_key = ${repositoryKey},
@@ -819,7 +836,15 @@ const make = Effect.gen(function* () {
                 THEN ${environmentId} ELSE environment_id END
             WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId} AND status = 'failed'
             RETURNING worker_id`;
-          return retried.length > 0 ? startedAt : stored.startedAt;
+          if (retried.length === 0) return stored.startedAt;
+          yield* attemptBegun({
+            orgId: ctx.orgId,
+            workerId,
+            startedAt,
+            agentId: ctx.agentId,
+            sourceEventId: input.sourceEventId,
+          }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+          return startedAt;
         }
         return startedAt;
       }),
@@ -965,6 +990,7 @@ const make = Effect.gen(function* () {
       orgId: ctx.orgId,
       agentId: ctx.agentId,
       ownerPersonId: plan.config.ownerPersonId,
+      wakeupId: ctx.wakeupId,
       event: plan.event,
       followsUp: input.workerId,
     }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
@@ -1017,6 +1043,13 @@ const make = Effect.gen(function* () {
         yield* sql`UPDATE kin_workers SET status = 'queued', ended_at = NULL,
           started_at = ${startedAt}
           WHERE org_id = ${ctx.orgId} AND worker_id = ${input.workerId}`;
+        yield* attemptBegun({
+          orgId: ctx.orgId,
+          workerId: input.workerId,
+          startedAt,
+          agentId: ctx.agentId,
+          sourceEventId: input.sourceEventId,
+        }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
         return yield* mayFollowUp;
       }),
     );

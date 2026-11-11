@@ -37,6 +37,7 @@ import type { DelegateInput } from "./Workers.ts";
 import { STOPPED_BEFORE_START, WorkerTracker } from "./WorkerTracker.ts";
 import { localThreadId } from "./workThread.ts";
 import { KinRecords } from "../work/KinRecords.ts";
+import { attemptBegun } from "../work/workerAttempts.ts";
 import { WORK_NOT_YOURS, workMayStart, workerStarted } from "../work/workerEntries.ts";
 
 type Lead = Effect.Success<ReturnType<typeof resolveLead>>;
@@ -266,6 +267,7 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
             orgId: ctx.orgId,
             agentId: ctx.agentId,
             ownerPersonId: config.ownerPersonId,
+            wakeupId: ctx.wakeupId,
             event: plan.event,
             ...(input.entry === undefined ? {} : { entryKey: input.entry }),
           }).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
@@ -282,6 +284,13 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
           NULL, ${target.repositoryKey}, 'private')
           ON CONFLICT (worker_id) DO NOTHING RETURNING worker_id`;
         if (inserted.length > 0) {
+          yield* attemptBegun({
+            orgId: ctx.orgId,
+            workerId,
+            startedAt,
+            agentId: ctx.agentId,
+            sourceEventId: input.sourceEventId,
+          }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
           yield* workerStarted({
             orgId: ctx.orgId,
             agentId: ctx.agentId,

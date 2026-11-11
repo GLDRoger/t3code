@@ -32,6 +32,7 @@ import { isSqlError } from "effect/sql/SqlError";
 
 import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
+import { withdrawAttempts } from "./workerAttempts.ts";
 import {
   checkFor,
   encodeFieldValues,
@@ -796,17 +797,16 @@ const make = Effect.gen(function* () {
             "withdrawn",
           ))
         ) {
-          // Recorded with the change, so a restart replays this and never a worker started after.
-          const workers = yield* sql<{ workerId: KinWorkerId; startedAt: number }>`
-            INSERT INTO kin_worker_withdrawals (org_id, record_id, seq, worker_id, started_at,
-              agent_id, record_key, state, created_at)
-            SELECT k.org_id, l.record_id, ${seq}, k.worker_id, k.started_at, k.agent_id, ${row.key},
-              'pending', ${now}
-            FROM kin_record_links l JOIN kin_workers k ON k.org_id = l.org_id AND k.worker_id = l.target
-            WHERE l.org_id = ${orgId} AND l.record_id = ${row.recordId} AND l.kind = 'worker'
-              AND k.agent_id = ${withdrawnFrom.agentId} AND k.ended_at IS NULL
-            ORDER BY k.worker_id
-            RETURNING worker_id AS "workerId", started_at AS "startedAt"`;
+          // The stop is recorded with the change, before anything is interrupted, so it holds
+          // against publishing and outlives a restart; it never reaches work started after.
+          const workers = yield* withdrawAttempts({
+            orgId,
+            agentId: withdrawnFrom.agentId,
+            recordId: row.recordId,
+            key: row.key,
+            seq,
+            at: now,
+          }).pipe(provideSql);
           const withdrawal = {
             orgId,
             agentId: withdrawnFrom.agentId,

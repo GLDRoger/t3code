@@ -11,6 +11,7 @@ import { ServerConfig } from "../../config.ts";
 import { VcsProcess } from "../../vcs/VcsProcess.ts";
 import { gitHubAnswer, repoPath } from "../github/githubRest.ts";
 import { KinGitHubApp } from "../github/KinGitHubApp.ts";
+import type { Found, PublishOutcome, PublishStep } from "../work/workerAttempts.ts";
 
 /** The only branch a worker's work is published to, there and on GitHub. */
 export const publishBranch = (workerId: KinWorkerId) => `kin/worker/${workerId}`;
@@ -35,11 +36,17 @@ const hostTransport: KinWorkerPublishTransport = {
 export class KinWorkerPublishRefused extends Schema.TaggedError<KinWorkerPublishRefused>()(
   "KinWorkerPublishRefused",
   // Fixed text only: never a token, and never words from the worker environment.
-  { reason: Schema.String },
+  {
+    reason: Schema.String,
+    /** GitHub's branch has commits the worker's doesn't; Kin never force-pushes over them. */
+    diverged: Schema.optional(Schema.Boolean),
+  },
 ) {}
 
 /** Each write a publish makes, in order; the two after `commit` reach GitHub. */
-export type PublishStep = "commit" | "push" | "pull_request";
+export type { PublishStep, PublishOutcome, Found } from "../work/workerAttempts.ts";
+/** A write about to start, with the commit it writes when it reaches GitHub. */
+export type PublishIntent = { readonly step: PublishStep; readonly sha: string | null };
 
 export interface PublishedPullRequest {
   readonly url: string;
@@ -67,12 +74,21 @@ export class KinWorkerPublish extends Context.Service<
        */
       readonly local?: { readonly projectRoot: string };
       readonly title: string;
-      /**
-       * Asked just before each write; a refusal ends the publish there, so no write starts after
-       * the owner's pause or a stop of the worker.
-       */
-      readonly admit: (step: PublishStep) => Effect.Effect<void, KinWorkerPublishRefused>;
+      readonly progress: {
+        /**
+         * Just before each write, recorded durably: a refusal ends the publish there, so no write
+         * starts after the owner's pause or a stop of the worker.
+         */
+        readonly begin: (intent: PublishIntent) => Effect.Effect<void, KinWorkerPublishRefused>;
+        /** What a write left, or what Kin found already there, as soon as it is known. */
+        readonly done: (outcome: PublishOutcome) => Effect.Effect<void, KinWorkerPublishRefused>;
+      };
     }) => Effect.Effect<PublishedPullRequest, KinWorkerPublishRefused>;
+    /** The worker's branch on GitHub and the open PR from it, for a write whose answer was lost. */
+    readonly inspect: (input: {
+      readonly workerId: KinWorkerId;
+      readonly repositoryKey: string;
+    }) => Effect.Effect<Found, KinWorkerPublishRefused>;
   }
 >()("t3/kin/lead/workerPublish/KinWorkerPublish") {}
 
@@ -199,7 +215,7 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
     worktreePath: string,
     local: { readonly projectRoot: string },
     branch: string,
-    admit: Effect.Effect<void, KinWorkerPublishRefused>,
+    progress: Parameters<KinWorkerPublish["Service"]["publish"]>[0]["progress"],
   ) {
     const failed = (step: string) => () => refuse(`git couldn't ${step}`);
     const outside = refuse("the worktree isn't one of the project's own");
@@ -228,7 +244,7 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
     }).pipe(Effect.mapError(failed("read the worktree's changes")));
     if (changes.length === 0) return;
     // Admitted whole: once staging starts, the commit finishes, so a stop never leaves half of one.
-    yield* admit;
+    yield* progress.begin({ step: "commit", sha: null });
     yield* git(worktree, ["add", "--all"], { worktree: true }).pipe(
       Effect.mapError(failed("stage the worker's changes")),
     );
@@ -239,13 +255,83 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
         worktree: true,
       },
     ).pipe(Effect.mapError(failed("commit the worker's changes")));
+    const sha = yield* git(worktree, ["rev-parse", "--verify", "HEAD"], { worktree: true }).pipe(
+      Effect.mapError(failed("read the worker's commit")),
+    );
+    yield* progress.done({ step: "commit", sha });
   });
+
+  /** A server token for the repository and a REST call with it; nothing else holds the token. */
+  const connect = Effect.fn("KinWorkerPublish.connect")(function* (repositoryKey: string) {
+    const match = /^github\.com\/([^/]+\/[^/]+)$/i.exec(repositoryKey);
+    const repo = match?.[1];
+    if (repo === undefined || !isRepoSlug(repo))
+      return yield* refuse("the worker project isn't a GitHub repository");
+    // Contents write stays here: `holder: "server"` is fixed, never taken from any input.
+    const minted = yield* app
+      .installationToken({
+        repo,
+        permissions: { contents: "write", pull_requests: "write" },
+        holder: "server",
+      })
+      .pipe(Effect.mapError((error) => refuse(`the Kin GitHub App gave no token (${error._tag})`)));
+    const token = minted.token;
+    const auth = {
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
+      GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${Redacted.value(token)}`).toString("base64")}`,
+    };
+    const call = (operation: string, method: "GET" | "POST", path: string, body?: unknown) =>
+      gitHubAnswer({
+        client,
+        operation,
+        method,
+        path: `${repoPath(repo)}${path}`,
+        token,
+        timeout: "30 seconds",
+        ...(body === undefined ? {} : { body }),
+      }).pipe(Effect.mapError(() => refuse(`could not reach GitHub for ${operation}`)));
+    const openPull = Effect.fn("KinWorkerPublish.openPull")(function* (branch: string) {
+      const owner = repo.split("/")[0]!;
+      const listed = yield* call(
+        "pulls.list",
+        "GET",
+        `/pulls?state=open&head=${encodeURIComponent(`${owner}:${branch}`)}&per_page=1`,
+      );
+      if (listed.status !== 200 || !Array.isArray(listed.body))
+        return yield* refuse(`GitHub didn't list the open PRs (HTTP ${listed.status})`);
+      const found = decodePull(listed.body[0]);
+      return found._tag === "Some"
+        ? { url: found.value.html_url, number: found.value.number }
+        : null;
+    });
+    return { repo, auth, call, openPull };
+  });
+
+  /** A fresh bare repository for one publish or check only, removed when it ends however it ends. */
+  const scratch = Effect.gen(function* () {
+    const failed = () => refuse("git couldn't make Kin's scratch repository");
+    yield* fs.makeDirectory(scratchRoot, { recursive: true }).pipe(Effect.mapError(failed));
+    const cache = yield* fs
+      .makeTempDirectoryScoped({ directory: scratchRoot, prefix: "publish-" })
+      .pipe(Effect.mapError(failed));
+    yield* git(cache, ["init", "--bare", "--quiet", cache]).pipe(Effect.mapError(failed));
+    return cache;
+  });
+
+  /** The commit Kin's branch is at on GitHub, or undefined when there is no such branch. */
+  const remoteHead = (cache: string, url: string, auth: NodeJS.ProcessEnv, branch: string) =>
+    git(cache, ["ls-remote", "--heads", "--", url, `refs/heads/${branch}`], { env: auth }).pipe(
+      Effect.mapError(() => refuse(`could not reach GitHub to read ${branch}`)),
+      Effect.map((out) => {
+        const sha = out.split("\n").find((line) => line.endsWith(`\trefs/heads/${branch}`));
+        return sha === undefined ? undefined : sha.slice(0, sha.indexOf("\t"));
+      }),
+    );
 
   const publish: KinWorkerPublish["Service"]["publish"] = Effect.fn("KinWorkerPublish.publish")(
     function* (input) {
-      const match = /^github\.com\/([^/]+\/[^/]+)$/i.exec(input.repositoryKey);
-      const repo = match?.[1];
-      if (repo === undefined || !isRepoSlug(repo))
+      if (!/^github\.com\/([^/]+\/[^/]+)$/i.test(input.repositoryKey))
         return yield* refuse("the worker project isn't a GitHub repository");
       if (!safePath.test(input.worktreePath) || input.worktreePath.split("/").includes(".."))
         return yield* refuse("the worker environment reported an unusable worktree path");
@@ -253,34 +339,8 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
       const incoming = `refs/kin/incoming/${input.workerId}`;
       const failed = (step: string) => () => refuse(`git couldn't ${step}`);
       if (input.local !== undefined)
-        yield* commitLocal(input.worktreePath, input.local, branch, input.admit("commit"));
-
-      // Contents write stays here: `holder: "server"` is fixed, never taken from any input.
-      const minted = yield* app
-        .installationToken({
-          repo,
-          permissions: { contents: "write", pull_requests: "write" },
-          holder: "server",
-        })
-        .pipe(
-          Effect.mapError((error) => refuse(`the Kin GitHub App gave no token (${error._tag})`)),
-        );
-      const token = minted.token;
-      const auth = {
-        GIT_CONFIG_COUNT: "1",
-        GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
-        GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${Redacted.value(token)}`).toString("base64")}`,
-      };
-      const call = (operation: string, method: "GET" | "POST", path: string, body?: unknown) =>
-        gitHubAnswer({
-          client,
-          operation,
-          method,
-          path: `${repoPath(repo)}${path}`,
-          token,
-          timeout: "30 seconds",
-          ...(body === undefined ? {} : { body }),
-        }).pipe(Effect.mapError(() => refuse(`could not reach GitHub for ${operation}`)));
+        yield* commitLocal(input.worktreePath, input.local, branch, input.progress);
+      const { repo, auth, call, openPull } = yield* connect(input.repositoryKey);
 
       const about = yield* call("repos.get", "GET", "");
       const base =
@@ -290,16 +350,7 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
       if (typeof base !== "string" || !safeRef.test(base))
         return yield* refuse("GitHub didn't name the repository's default branch");
 
-      // A fresh bare repository for this publish only, removed when it ends however it ends.
-      yield* fs
-        .makeDirectory(scratchRoot, { recursive: true })
-        .pipe(Effect.mapError(failed("make Kin's scratch repository")));
-      const cache = yield* fs
-        .makeTempDirectoryScoped({ directory: scratchRoot, prefix: "publish-" })
-        .pipe(Effect.mapError(failed("make Kin's scratch repository")));
-      yield* git(cache, ["init", "--bare", "--quiet", cache]).pipe(
-        Effect.mapError(failed("make Kin's scratch repository")),
-      );
+      const cache = yield* scratch;
       yield* git(
         cache,
         [
@@ -369,34 +420,49 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
           `${branch} adds or changes a symbolic link, which Kin never publishes`,
         );
 
-      yield* input.admit("push");
-      // Kin's branch for this worker only, so a follow-up's rewrite replaces it.
-      yield* git(
-        cache,
-        [
-          "push",
-          "--quiet",
-          "--no-verify",
-          "--",
-          transport.github(repo),
-          `+${head}:refs/heads/${branch}`,
-        ],
-        { env: auth },
-      ).pipe(Effect.mapError(failed(`push ${branch} to GitHub`)));
+      // Kin never force-pushes: a branch there with commits this one lacks stays as it is.
+      const url = transport.github(repo);
+      const there = yield* remoteHead(cache, url, auth, branch);
+      if (there !== head) {
+        if (there !== undefined) {
+          yield* git(
+            cache,
+            [
+              "fetch",
+              "--quiet",
+              "--no-tags",
+              "--",
+              url,
+              `+refs/heads/${branch}:refs/kin/published`,
+            ],
+            { env: auth },
+          ).pipe(Effect.mapError(failed(`fetch ${branch} from GitHub`)));
+          const missing = yield* git(cache, [
+            "rev-list",
+            "--count",
+            `${head}..refs/kin/published`,
+          ]).pipe(Effect.mapError(failed("compare the branch with GitHub's")));
+          if (missing !== "0")
+            return yield* new KinWorkerPublishRefused({
+              reason: `${branch} on GitHub has commits the worker's branch doesn't, and Kin never force-pushes`,
+              diverged: true,
+            });
+        }
+        yield* input.progress.begin({ step: "push", sha: head });
+        yield* git(
+          cache,
+          ["push", "--quiet", "--no-verify", "--", url, `${head}:refs/heads/${branch}`],
+          { env: auth },
+        ).pipe(Effect.mapError(failed(`push ${branch} to GitHub`)));
+      }
+      yield* input.progress.done({ step: "push", sha: head });
 
-      const owner = repo.split("/")[0]!;
-      const listed = yield* call(
-        "pulls.list",
-        "GET",
-        `/pulls?state=open&head=${encodeURIComponent(`${owner}:${branch}`)}&per_page=1`,
-      );
-      const existing =
-        listed.status === 200 && Array.isArray(listed.body)
-          ? decodePull(listed.body[0])
-          : undefined;
-      if (existing !== undefined && existing._tag === "Some")
-        return { url: existing.value.html_url, number: existing.value.number, sha: head };
-      yield* input.admit("pull_request");
+      const existing = yield* openPull(branch);
+      if (existing !== null) {
+        yield* input.progress.done({ step: "pull_request", ...existing });
+        return { ...existing, sha: head };
+      }
+      yield* input.progress.begin({ step: "pull_request", sha: head });
       const opened = yield* call("pulls.create", "POST", "/pulls", {
         title: input.title,
         head: branch,
@@ -407,12 +473,25 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
       const pull = opened.status === 201 ? decodePull(opened.body) : undefined;
       if (pull === undefined || pull._tag === "None")
         return yield* refuse(`GitHub didn't open the draft PR (HTTP ${opened.status})`);
-      return { url: pull.value.html_url, number: pull.value.number, sha: head };
+      const created = { url: pull.value.html_url, number: pull.value.number };
+      yield* input.progress.done({ step: "pull_request", ...created });
+      return { ...created, sha: head };
     },
     Effect.scoped,
   );
 
-  return KinWorkerPublish.of({ publish });
+  const inspect: KinWorkerPublish["Service"]["inspect"] = Effect.fn("KinWorkerPublish.inspect")(
+    function* (input) {
+      const branch = publishBranch(input.workerId);
+      const { repo, auth, openPull } = yield* connect(input.repositoryKey);
+      const cache = yield* scratch;
+      const branchSha = (yield* remoteHead(cache, transport.github(repo), auth, branch)) ?? null;
+      return { branchSha, pullRequest: yield* openPull(branch) };
+    },
+    Effect.scoped,
+  );
+
+  return KinWorkerPublish.of({ publish, inspect });
 });
 
 export const layer = Layer.effect(KinWorkerPublish, make(hostTransport));

@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRecords, type Writer } from "./KinRecords.ts";
+import { eventWithdrawn, workerMayResume, workerWithdrawn } from "./workerAttempts.ts";
 
 /**
  * Work entries moved by code from worker and pull request events, never by a model: a worker is an
@@ -52,18 +53,20 @@ export const WORK_NOT_YOURS =
   "That Work entry is closed or isn't yours now, so nothing started. Don't start work on it unless the owner gives it to you again.";
 
 /**
- * In the worker row's transaction, before it is written: whether the turn's event and the named
- * entry still let this lead start work. A record event counts only when it gave the lead the
- * entry, and only while the owner's assignment of that open entry stands; a report counts only
- * from a worker no withdrawal stopped; a named entry must be open and this lead's.
+ * In the worker row's transaction: whether the turn's event and named entry still let this lead
+ * start work. An event whose work the owner withdrew authorises nothing again; a record event only
+ * while the owner's assignment of that open entry stands; a report only from a worker the owner
+ * never withdrew; a named entry must be open and this lead's.
  */
 export const workMayStart = Effect.fn("KinWorkEntries.workMayStart")(function* (input: {
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
   readonly ownerPersonId: string;
+  /** The turn's wake-up, which the event belongs to. */
+  readonly wakeupId: string;
   readonly event: KinEvent;
   readonly entryKey?: string;
-  /** A follow-up of this worker: no withdrawal stopped it, and its entries are still this lead's. */
+  /** A follow-up or restart of this worker, which `workerMayResume` must allow. */
   readonly followsUp?: KinWorkerId;
 }) {
   const sql = yield* SqlClient.SqlClient;
@@ -73,29 +76,23 @@ export const workMayStart = Effect.fn("KinWorkEntries.workMayStart")(function* (
     row.state !== "dropped" &&
     row.ownerKind === "agent" &&
     row.ownerId === input.agentId;
+  if (yield* eventWithdrawn(input)) return false;
   if (input.event._tag === "record.changed") {
     if (input.event.reason !== "assigned") return false;
     const [row] = yield* sql<EntryRow>`${entryColumns(sql)}
       WHERE org_id = ${input.orgId} AND record_id = ${input.event.recordId} ORDER BY record_id`;
     if (!held(row) || row?.assignedBy !== input.ownerPersonId) return false;
   }
-  if (input.event._tag === "worker.report") {
-    const withdrawn = yield* sql`SELECT 1 FROM kin_worker_withdrawals
-      WHERE org_id = ${input.orgId} AND worker_id = ${input.event.workerId}
-      ORDER BY seq LIMIT 1`;
-    if (withdrawn.length > 0) return false;
-  }
-  if (input.followsUp !== undefined) {
-    const withdrawn = yield* sql`SELECT 1 FROM kin_worker_withdrawals
-      WHERE org_id = ${input.orgId} AND worker_id = ${input.followsUp} ORDER BY seq LIMIT 1`;
-    if (withdrawn.length > 0) return false;
-    const elsewhere = yield* sql`SELECT 1 FROM kin_record_links l
-      JOIN kin_records r ON r.org_id = l.org_id AND r.record_id = l.record_id
-      WHERE l.org_id = ${input.orgId} AND l.kind = 'worker' AND l.target = ${input.followsUp}
-        AND NOT (r.owner_kind = 'agent' AND r.owner_id = ${input.agentId})
-      ORDER BY r.record_id LIMIT 1`;
-    if (elsewhere.length > 0) return false;
-  }
+  if (
+    input.event._tag === "worker.report" &&
+    (yield* workerWithdrawn({ orgId: input.orgId, workerId: input.event.workerId }))
+  )
+    return false;
+  if (
+    input.followsUp !== undefined &&
+    !(yield* workerMayResume({ ...input, workerId: input.followsUp }))
+  )
+    return false;
   if (input.entryKey !== undefined) {
     const [row] = yield* sql<EntryRow>`${entryColumns(sql)}
       WHERE org_id = ${input.orgId} AND key = ${input.entryKey} ORDER BY record_id`;
