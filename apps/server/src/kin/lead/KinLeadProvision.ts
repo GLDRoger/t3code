@@ -443,7 +443,8 @@ const tracked = Effect.fn("KinLeadProvision.tracked")(function* (orgId: KinOrgId
       AND f.trigger_id = 'schedule:' || t.item_id AND f.enabled = 1 AND f.next_run_at IS NOT NULL
     WHERE t.org_id = ${orgId} AND t.state = 'active' AND t.paused = 0
     UNION ALL
-    SELECT 'scheduled', n.title, NULL, COALESCE(w.chat_id, s.chat_id), s.agent_id, 2, s.updated_at
+    SELECT 'scheduled', n.title, NULL, COALESCE(w.chat_id, s.chat_id), s.agent_id, 3, s.updated_at,
+      NULL, NULL
     FROM kin_schedules s
     JOIN scheduled_tasks n ON n.task_id = s.task_id AND n.enabled = 1
     LEFT JOIN kin_widgets w ON w.org_id = s.org_id
