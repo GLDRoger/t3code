@@ -7,6 +7,7 @@ import {
   KinInviteId,
   KinPerson,
   KinPersonId,
+  KinWakeupId,
   type KinOrgId,
   type KinPeopleCreateInviteInput,
   type KinPeopleCreateInviteResult,
@@ -26,12 +27,18 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { SessionStore } from "../../auth/SessionStore.ts";
 import { toPersistenceSqlError, PersistenceSqlError } from "../../persistence/Errors.ts";
+import { KinChatHub } from "../chat/KinChatHub.ts";
+import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { onPersonRemoved } from "../lead/ChatSharing.ts";
+import { KinStop } from "../lead/KinStop.ts";
+import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 
 const isKinError = Schema.is(KinChatError);
 const isSqlError = Schema.is(PersistenceSqlError);
@@ -95,6 +102,10 @@ export const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const identity = yield* KinIdentity;
   const sessions = yield* SessionStore;
+  const repo = yield* KinChatRepository;
+  const hub = yield* KinChatHub;
+  const presence = yield* Effect.serviceOption(KinPresence);
+  const stop = yield* Effect.serviceOption(KinStop);
   const owner = Effect.fn("KinPeople.requireOwner")(function* (
     session: AuthenticatedSession,
     orgId: KinOrgId,
@@ -349,6 +360,11 @@ export const make = Effect.gen(function* () {
       )
       .pipe(Effect.mapError(sqlError("KinPeople.revokeDevice")));
   });
+  /**
+   * Takes the person out of the org for good: links, sessions, every chat and lead they could
+   * reach, their pushes, and every turn or event that answers them. A person let back in later
+   * starts as a new joiner in whatever they are added to again.
+   */
   const removeAccess = Effect.fn("KinPeople.removeAccess")(function* (
     session: AuthenticatedSession,
     input: KinPeopleRemoveAccessInput,
@@ -356,6 +372,7 @@ export const make = Effect.gen(function* () {
     yield* owner(session, input.orgId);
     if (input.personId === identity.owner.personId) return yield* denied;
     const now = (yield* DateTime.now).epochMilliseconds;
+    const leftAt = DateTime.formatIso(DateTime.makeUnsafe(now));
     return yield* sql
       .withTransaction(
         Effect.gen(function* () {
@@ -378,6 +395,50 @@ export const make = Effect.gen(function* () {
               .revoke(row.session_id)
               .pipe(Effect.mapError(toPersistenceSqlError("KinPeople.revokeSession"))),
           );
+          yield* sql`DELETE FROM kin_push_devices
+        WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`.pipe(
+            Effect.mapError(toPersistenceSqlError("KinPeople.removeAccessPush")),
+          );
+          yield* sql`UPDATE kin_lead_access SET revoked_at = ${now}
+        WHERE org_id = ${input.orgId} AND person_id = ${input.personId} AND revoked_at IS NULL`.pipe(
+            Effect.mapError(toPersistenceSqlError("KinPeople.removeAccessLeads")),
+          );
+          // Before leaving: their own chats with leads are found through their membership.
+          const stopped = yield* onPersonRemoved(input).pipe(
+            Effect.mapError(toPersistenceSqlError("KinPeople.removeAccessTurns")),
+          );
+          for (const member of yield* repo.listMembersByPerson(input)) {
+            if (member.leftAt !== null) continue;
+            for (const item of yield* repo.leaveChat({ ...member, leftAt }))
+              yield* hub.publish({ type: "waiting.updated", orgId: input.orgId, item });
+            const gone = yield* repo.getMember(member);
+            if (Option.isSome(gone))
+              yield* hub.publish({
+                type: "member.removed",
+                orgId: input.orgId,
+                member: gone.value,
+              });
+          }
+          if (stopped.expired.length > 0 && Option.isSome(presence)) {
+            const line = presence.value;
+            yield* sql.afterCommit(
+              Effect.forEach(
+                new Set(stopped.expired.map((row) => row.agentId)),
+                (agentId) =>
+                  syncQueued(line, input.orgId, agentId).pipe(
+                    Effect.provideService(SqlClient.SqlClient, sql),
+                  ),
+                { discard: true },
+              ),
+            );
+          }
+          if (stopped.turns.length > 0 && Option.isSome(stop))
+            yield* sql.afterCommit(
+              stop.value.abortTurns(
+                input.orgId,
+                stopped.turns.map((turn) => KinWakeupId.make(turn.wakeupId)),
+              ),
+            );
           return { revoked: true };
         }),
       )
