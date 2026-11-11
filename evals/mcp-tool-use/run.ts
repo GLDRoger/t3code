@@ -55,7 +55,7 @@ import { leadTools } from "../../apps/server/src/kin/lead/LeadIsolation.ts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
 import { KinChatToolkit } from "../../apps/server/src/kin/mcp/KinChatToolkit.ts";
 import { KinWorkToolkit } from "../../apps/server/src/kin/work/mcp/tools.ts";
-import { WORK_RULE } from "../../apps/server/src/kin/work/workPrompt.ts";
+import { WITHDRAWN_WORK, WORK_RULE } from "../../apps/server/src/kin/work/workPrompt.ts";
 import { KinApprovalsToolkit } from "../../apps/server/src/kin/approvals/mcp.ts";
 import { AttachmentToolkit } from "../../apps/server/src/mcp/toolkits/attachment/tools.ts";
 import { DeviceToolkit } from "../../apps/server/src/mcp/toolkits/device/tools.ts";
@@ -1064,8 +1064,11 @@ export const buildMessages = (sample: Sample) => {
     }
     if (turn.text) push(turn.role, text(turn.text));
   }
-  // A lead case writes `{{WORK_RULE}}` where LeadPrompt puts the rule, so it tests the current text.
-  const casePrompt = testCase.prompt.replaceAll("{{WORK_RULE}}", WORK_RULE);
+  // A lead case writes `{{WORK_RULE}}` and `{{WITHDRAWN_WORK}}` where LeadPrompt puts them, so it
+  // tests the current text.
+  const casePrompt = testCase.prompt
+    .replaceAll("{{WORK_RULE}}", WORK_RULE)
+    .replaceAll("{{WITHDRAWN_WORK}}", WITHDRAWN_WORK);
   const userText =
     testCase.promptContext === undefined
       ? casePrompt

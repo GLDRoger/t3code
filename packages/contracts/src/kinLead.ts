@@ -556,14 +556,15 @@ export const KinEvent = Schema.Union([
     chatId: Schema.optional(KinChatId),
     origin: Schema.optional(KinEventOrigin),
   }),
-  // Code enqueues it when someone else gives this lead an entry. Its provenance is the entry's
-  // stored human assigner, which is the only authority the turn has; the entry's text is data.
+  // Code enqueues it when someone else gives this lead an entry (`assigned`), or when its owner
+  // closes or takes back an open one it holds (`withdrawn`). Its provenance is that human, the
+  // only authority the turn has; the entry's text is data.
   Schema.TaggedStruct("record.changed", {
     ...EventBase,
     recordId: KinRecordId,
     key: KinRecordKey,
     seq: NonNegativeInt,
-    reason: Schema.Literals(["assigned"]),
+    reason: Schema.Literals(["assigned", "withdrawn"]),
   }),
   Schema.TaggedStruct("action.resolved", {
     ...EventBase,

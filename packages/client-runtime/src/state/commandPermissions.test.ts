@@ -24,6 +24,7 @@ import {
   KIN_CHAT_WS_METHODS,
   KIN_LEVEL_WS_METHODS,
   KIN_PUSH_WS_METHODS,
+  KIN_WORK_WS_METHODS,
   ORCHESTRATION_V2_WS_METHODS,
   ScheduledTaskId,
   WS_METHODS,
@@ -161,6 +162,12 @@ describe("command permissions", () => {
     [KIN_APPROVAL_WS_METHODS.registerKey, AuthAccessWriteScope],
     [KIN_APPROVAL_WS_METHODS.listKeys, AuthAccessWriteScope],
     [KIN_APPROVAL_WS_METHODS.revokeKey, AuthAccessWriteScope],
+    // Changing Work can wake a lead on the owner's budget, as giving it work does.
+    [KIN_WORK_WS_METHODS.get, AuthOrchestrationReadScope],
+    [KIN_WORK_WS_METHODS.assign, AuthOrchestrationOperateScope],
+    [KIN_WORK_WS_METHODS.update, AuthOrchestrationOperateScope],
+    [KIN_WORK_WS_METHODS.confirm, AuthOrchestrationOperateScope],
+    [KIN_WORK_WS_METHODS.decline, AuthOrchestrationOperateScope],
   ] as const)("guards %s with the destination %s grant", ([method, scope]) =>
     Effect.scoped(
       Effect.gen(function* () {

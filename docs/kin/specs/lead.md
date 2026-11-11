@@ -161,13 +161,13 @@ export const KinEvent = Schema.Union([
     workerId: KinWorkerId,
     report: WorkerReport,
   }),
-  // Only for an entry its owner assigned to this lead (Work, below).
+  // Only for an entry its owner gave this lead, or closed or took back from it (Work, below).
   Schema.TaggedStruct("record.changed", {
     ...EventBase,
     recordId: KinRecordId,
     key: KinRecordKey,
     seq: NonNegativeInt,
-    reason: Schema.Literals(["assigned"]),
+    reason: Schema.Literals(["assigned", "withdrawn"]),
   }),
   Schema.TaggedStruct("action.resolved", {
     ...EventBase,
@@ -194,18 +194,18 @@ export const KinEvent = Schema.Union([
 
 Events carry references, not bodies. The lead reads the message or payload through its tools, so the queue never holds large or secret text. `scheduledTaskId` and `webhookDeliveryId` identify the stored payload for `ScheduledTaskService.getWebhookDelivery`. `deliveryId` is GitHub’s `x-github-delivery` header; the inbox consumer uses `deliveryId` as the event’s `dedupeKey` for `github` events and `KinTriggerFired.fireId` for other kinds. The `deferral.due.subject` union directly mirrors the triggers spec’s deferral (including `phase`), reminder and followup subjects, plus `scheduled_task` (`itemId`, `runId`) for a scheduled run; `lateByMs` is a non-negative integer.
 
-| Source                                   | Event             | Producer                                                  |
-| ---------------------------------------- | ----------------- | --------------------------------------------------------- |
-| A person posts in a chat the lead is in  | `chat.message`    | this spec (`ChatWake`), for the lead the floor would pick |
-| A tap on a widget                        | `widget.action`   | this spec (`ChatWake`)                                    |
-| GitHub webhook                           | `github`          | triggers spec                                             |
-| `once` trigger on a deferral             | `deferral.due`    | triggers spec                                             |
-| `fixed_time` routine                     | `routine`         | triggers spec (content below)                             |
-| `interval` watchdog                      | `watchdog`        | triggers spec                                             |
-| Worker run ends                          | `worker.report`   | this spec (`WorkerTracker`)                               |
-| The owner assigns a Work entry to a lead | `record.changed`  | this spec (`KinRecords`)                                  |
-| Executor finishes or a grant expires     | `action.resolved` | approvals spec                                            |
-| Stop switch turned off                   | `resume`          | this spec                                                 |
+| Source                                                                         | Event             | Producer                                                  |
+| ------------------------------------------------------------------------------ | ----------------- | --------------------------------------------------------- |
+| A person posts in a chat the lead is in                                        | `chat.message`    | this spec (`ChatWake`), for the lead the floor would pick |
+| A tap on a widget                                                              | `widget.action`   | this spec (`ChatWake`)                                    |
+| GitHub webhook                                                                 | `github`          | triggers spec                                             |
+| `once` trigger on a deferral                                                   | `deferral.due`    | triggers spec                                             |
+| `fixed_time` routine                                                           | `routine`         | triggers spec (content below)                             |
+| `interval` watchdog                                                            | `watchdog`        | triggers spec                                             |
+| Worker run ends                                                                | `worker.report`   | this spec (`WorkerTracker`)                               |
+| The owner gives a lead a Work entry, or closes or takes back one it holds open | `record.changed`  | this spec (`KinRecords`)                                  |
+| Executor finishes or a grant expires                                           | `action.resolved` | approvals spec                                            |
+| Stop switch turned off                                                         | `resume`          | this spec                                                 |
 
 `ChatWake` subscribes to every organization on `KinChatHub` and wakes mentioned leads, else the chat's first lead, as the floor manager does. It covers direct chats only, since a lead can't reply in a group until CHAT-11. Agent and system posts never wake a lead. Event ids derive from the message and lead, so a replay collapses. Posts made while the server was down never reach the hub, so on startup it re-enqueues, per organization, human posts from the last 24 hours that came after the lead's last post in that chat. `subscribeAll` is server-only: a source guard in `ChatWake.test.ts` keeps it out of tools and transports.
 
@@ -299,7 +299,7 @@ Each wake-up's message, most stable first:
 4. Recent chat is only the conversation the turn is in: at most 8 messages on a reply turn and 4 on a notice, cut at a six-hour gap, one quoted line each (`owner 19:31: "…"`) in the owner's time zone. System rows and empty messages are left out, and the lead's own older messages are clipped to their opening and end, so it does not re-read and repeat its earlier status.
 5. Each event is one labelled quote of compact JSON holding what a tool call or the reply needs: the event id, the message or item id, and the text. Routing fields the server already acted on (organization, lead, dedupe key, provenance, delivery ids) are left out. Message bodies are loaded by organization and message id from the chat repository. Owner labels require both stored `author._tag: human` and `authorRole: owner`, never event provenance or body text. Only posted messages reach the prompt; suggested guest messages remain hidden until the owner sends them. Human non-owner text uses role-labelled quotes; agent and system labels never start with a role word ("agent message (untrusted)" and "system message"). GitHub summaries and other event data are quoted. JSON encoding escapes angle brackets, ampersands and every Unicode Cc, Cf, Zl and Zp character as `\uXXXX` (surrogate pairs where needed), so source text cannot close a block or forge a label. Each quoted event/message text field is capped at 2,000 UTF-16 characters, except message bodies at 8,000; a visible `…[truncated N chars]` marker inside the JSON string reports removed characters. The complete encoded events section is capped at 60,000 characters, including framing and an `N earlier events omitted` line; drop oldest events first. Raw webhook bodies remain references for tool reads.
 
-6. On an owner-only turn, a Work section quoted as data: counts of the lead's open, doing, waiting, late and due-this-week entries, and `changed`, the entries of its whose changes by anyone but itself came after its cursor for this chat (at most 15, each with its last four changes). Building the prompt sets a pending cursor at the newest change; it settles only once the lead posts a reply in that chat after it, so a silent or failed turn moves nothing and an item it already reported does not come back to be repeated. With nothing open and nothing changed the section is left out. A `record.changed` event quotes the entry's key, title, notes and due date as data and owes a reply.
+6. On an owner-only turn, a Work section quoted as data: counts of the lead's open, doing, waiting, late and due-this-week entries, and `changed`, the entries of its whose changes by anyone but itself came after its cursor for this chat (at most 15, each with its last four changes). Building the prompt sets a pending cursor at the newest change; it settles only once the lead posts a reply in that chat after it, so a silent or failed turn moves nothing and an item it already reported does not come back to be repeated. With nothing open and nothing changed the section is left out. A `record.changed` event quotes the entry's key, title, notes and due date as data; an `assigned` one owes a reply, a `withdrawn` one only a line about what the lead stopped. A shared turn quotes no `record.changed` event at all.
 
 No wake-up timestamps or ids go above the divider (dates and item ids already in memory remain there). A test asserts that two prompts built for the same organization and memory commit share everything above it while the snapshot index is unchanged. Cache hits are measured with `cachedInputTokens` on the turn's `tokenUsage`.
 
@@ -366,7 +366,7 @@ The Work engine (`kin/work/`) holds what someone owes someone; `DESIGN.md` secti
 
 Code moves entries wherever it can, with no lead turn. `kin_delegate` makes or moves an entry in the worker row's transaction; a review links to the entries of the work it reviews. A worker's end links its PR; a failed or stopped run reopens the entry, finished research is done, and built work stays doing until its PR merges, when the GitHub webhook marks every linked entry done.
 
-**Assigned work.** When an entry's owner becomes a lead, `KinRecords` enqueues `record.changed` only when the stored assigner is that lead's owner and the change wasn't the lead's own; anyone else's assignment is recorded and wakes nothing. The event carries the owner as its provenance, so the turn is owner-only and its reply goes to the lead's direct chat with the owner. The queue's dedupe key is per entry and change, so repeated assignments coalesce.
+**Assigned work.** When an entry's owner becomes a lead, `KinRecords` enqueues `record.changed` only when the stored assigner is that lead's owner and the change wasn't the lead's own; anyone else's assignment is recorded and wakes nothing. The event carries the owner as its provenance, so the turn is owner-only and its reply goes to the lead's direct chat with the owner. The queue's dedupe key is per entry and change, so repeated assignments coalesce. The same holds when the owner reopens a lead's closed entry, which gives it to the lead again with the owner as assigner. When the owner closes, drops or takes back an open entry a lead holds, the lead gets a `withdrawn` event under the same rules: it stops any worker it started for the entry and stays silent if nothing was under way. Kin's own close on a merge, and the lead's own changes, wake nothing.
 
 At start the server imports, once per item and keyed by where it came from, every running worker with no entry and every open commitment and objective in memory. Memory is not written; `INDEX.md` stops listing those two kinds. A lead's profile "In hand" reads its open entries, then running workers with no entry, deferrals and schedules.
 
