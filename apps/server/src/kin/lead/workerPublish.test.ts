@@ -31,6 +31,8 @@ const fixture = Effect.fn("WorkerPublishTest.fixture")(function* (
     readonly refuseAt?: Publish.PublishStep;
     /** A worker on this server: a worktree of the clone, its edits left uncommitted. */
     readonly local?: boolean;
+    /** What GitHub says of the repository besides its default branch. */
+    readonly about?: Record<string, unknown>;
   } = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
@@ -119,7 +121,10 @@ const fixture = Effect.fn("WorkerPublishTest.fixture")(function* (
   const github = fakeGitHub((request) => {
     requests.push(request);
     if (request.method === "GET" && request.path === "/repos/acme/app")
-      return { status: 200, body: { default_branch: "main" } };
+      return {
+        status: 200,
+        body: { default_branch: "main", ...(options.about ?? { private: true }) },
+      };
     if (request.method === "GET" && request.path.startsWith("/repos/acme/app/pulls?"))
       return {
         status: 200,
@@ -167,6 +172,7 @@ const fixture = Effect.fn("WorkerPublishTest.fixture")(function* (
   );
   const admitted: Array<Publish.PublishStep> = [];
   const outcomes: Array<Publish.PublishOutcome> = [];
+  const reviews: Array<Publish.PublishReview & { readonly before: number }> = [];
   const publish = (worktreePath = tree) =>
     service.publish({
       workerId,
@@ -175,6 +181,8 @@ const fixture = Effect.fn("WorkerPublishTest.fixture")(function* (
       ...(options.local === true ? { local: { projectRoot: worker } } : {}),
       title: "Fix",
       progress: {
+        review: (review) =>
+          Effect.sync(() => void reviews.push({ ...review, before: admitted.length })),
         begin: (intent) =>
           intent.step === options.refuseAt
             ? Effect.fail(new Publish.KinWorkerPublishRefused({ reason: "refused" }))
@@ -189,6 +197,7 @@ const fixture = Effect.fn("WorkerPublishTest.fixture")(function* (
     publish,
     inspect,
     outcomes,
+    reviews,
     origin,
     admitted,
     head,
@@ -340,6 +349,36 @@ it.live("asks before each write and stops at a refusal before the push, or befor
     yield* all.publish();
     assert.deepStrictEqual(all.admitted, ["push", "pull_request"]);
   }).pipe(Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer)), Effect.scoped),
+);
+
+it.live.each([
+  ["private", { private: true, visibility: "private" }],
+  ["public", { private: false, visibility: "public" }],
+  ["unknown", {}],
+  ["unknown", { private: true, visibility: "internal" }],
+] as const)(
+  "reviews a %s repository and the files Kin's own git counts, before any write",
+  ([visibility, about]) =>
+    Effect.gen(function* () {
+      const { publish, reviews, head } = yield* fixture(
+        { "src/fix.ts": "export {};\nexport const a = 1;\n", "docs/notes.md": "one\n" },
+        { about },
+      );
+      yield* publish();
+      assert.deepStrictEqual(reviews, [
+        {
+          sha: head,
+          visibility,
+          files: [
+            { path: "docs/notes.md", added: 1, removed: 0 },
+            { path: "src/fix.ts", added: 2, removed: 0 },
+          ],
+          moreFiles: 0,
+          // Before Kin admitted any write to GitHub.
+          before: 0,
+        },
+      ]);
+    }).pipe(Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer)), Effect.scoped),
 );
 
 it.live(

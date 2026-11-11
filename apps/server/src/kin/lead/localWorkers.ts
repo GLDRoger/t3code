@@ -37,7 +37,7 @@ import type { DelegateInput } from "./Workers.ts";
 import { STOPPED_BEFORE_START, WorkerTracker } from "./WorkerTracker.ts";
 import { localThreadId } from "./workThread.ts";
 import { KinRecords } from "../work/KinRecords.ts";
-import { attemptBegun } from "../work/workerAttempts.ts";
+import { attemptBegun, noteSensitivity } from "../work/workerAttempts.ts";
 import { WORK_NOT_YOURS, workMayStart, workerStarted } from "../work/workerEntries.ts";
 
 type Lead = Effect.Success<ReturnType<typeof resolveLead>>;
@@ -301,6 +301,10 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
             ...(input.entry === undefined ? {} : { entryKey: input.entry }),
           }).pipe(
             Effect.provideService(KinRecords, records),
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
+          // The entry it now serves may be sensitive; that sticks to the attempt.
+          yield* noteSensitivity({ orgId: ctx.orgId, workerId, startedAt }).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
           );
           return startedAt;

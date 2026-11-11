@@ -526,6 +526,7 @@ describe("ChatWake", () => {
       "kin/chat/KinChatHub.ts",
       "kin/chat/approvalCards.ts",
       "kin/lead/ChatWake.ts",
+      "kin/lead/WorkerTracker.ts",
       "kin/push/KinPushDispatch.ts",
     ]);
   });

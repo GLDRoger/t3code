@@ -17,6 +17,9 @@ import {
   KinPersonId,
   KinWakeupId,
   KinWorkerId,
+  KinWidgetId,
+  KIN_WORKER_PUBLISH_CARD,
+  type KinWorkerPublishCard,
   NodeId,
   OrchestratorMcpFailure,
   ProjectId,
@@ -73,13 +76,15 @@ import { laneFor } from "../reply/KinReplyBridge.ts";
 import { sharedToolAllowed } from "./SharedTools.ts";
 import { KinLevelGate } from "./LevelGate.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
-import { localPublishNote } from "./workerBrief.ts";
+import { localPublishNote, OWNER_DECLINED, WAITING_FOR_OWNER } from "./workerBrief.ts";
 import * as Publish from "./workerPublish.ts";
 import * as Workers from "./Workers.ts";
 import * as Tracker from "./WorkerTracker.ts";
 import { LOCAL_BUILD_ONLY, LOCAL_DIRECT_ONLY } from "./localWorkers.ts";
 import { localThreadId } from "./workThread.ts";
 import { KinRecords } from "../work/KinRecords.ts";
+import * as LeadWork from "../work/leadWork.ts";
+import * as PublishCard from "../widgets/workerPublishCard.ts";
 import * as OwnerWork from "../work/ownerWork.ts";
 import { pullRequestMerged, WORK_NOT_YOURS } from "../work/workerEntries.ts";
 import { WITHDRAWN_WORK } from "../work/workPrompt.ts";
@@ -232,6 +237,9 @@ const fakeWorkers = () => {
     lostReplies: number;
     /** Kin's publisher refuses the branch with this reason. */
     publishRefusal?: string;
+    /** What GitHub says of the repository, and the worker's branch head Kin would publish. */
+    visibility: Publish.Visibility;
+    headSha: string;
     /** The next cursor `t3_project_list` answers for a cursor; null ends the list. */
     nextCursor: (cursor: number) => number | null;
     /** Where an assistant reply's next chunk starts after `offset`; null ends it. */
@@ -241,6 +249,8 @@ const fakeWorkers = () => {
     eagerWait: false,
     units: [],
     lostReplies: 0,
+    visibility: "private",
+    headSha: "a".repeat(40),
     nextCursor: () => null,
     nextTextOffset: () => null,
   };
@@ -513,7 +523,6 @@ const fakeWorkers = () => {
     unreachable: boolean;
     diverged: boolean;
   } = { branch: null, pull: null, unreachable: false, diverged: false };
-  const sha = "a".repeat(40);
   const pr = { url: "https://github.com/acme/app/pull/9", number: 9 };
   const publisher = Publish.KinWorkerPublish.of({
     publish: (input) =>
@@ -521,6 +530,7 @@ const fakeWorkers = () => {
         published.push(input);
         if (state.publishRefusal !== undefined)
           return yield* new Publish.KinWorkerPublishRefused({ reason: state.publishRefusal });
+        const sha = state.headSha;
         const write = Effect.fn("FakePublish.write")(function* (
           step: Publish.PublishStep,
           land: () => void,
@@ -535,6 +545,12 @@ const fakeWorkers = () => {
           yield* write("commit", () => {});
           yield* input.progress.done({ step: "commit", sha });
         }
+        yield* input.progress.review({
+          sha,
+          visibility: state.visibility,
+          files: [{ path: "src/flaky.test.ts", added: 3, removed: 1 }],
+          moreFiles: 0,
+        });
         if (github.diverged)
           return yield* new Publish.KinWorkerPublishRefused({
             reason: "the branch on GitHub has commits the worker's branch doesn't",
@@ -4025,6 +4041,456 @@ it.effect(
             authorKind: "system",
           },
         ]);
+      }),
+    ),
+);
+
+// The owner's say over publication: a public or unreadable repository, or sensitive work, waits
+// for the owner's tap on Kin's card; anything else publishes on its own.
+type PublishCardRow = {
+  readonly widgetId: KinWidgetId;
+  readonly chatId: string;
+  readonly closedAt: string | null;
+  readonly revision: number;
+  readonly awaiting: ReadonlyArray<string>;
+  readonly body: string;
+  readonly state: KinWorkerPublishCard;
+};
+const publishCards = (sql: SqlClient.SqlClient) =>
+  sql<{
+    widgetId: KinWidgetId;
+    chatId: string;
+    closedAt: string | null;
+    revision: number;
+    awaiting: string;
+    body: string;
+    state: string;
+  }>`SELECT w.widget_id AS "widgetId", w.chat_id AS "chatId", w.closed_at AS "closedAt",
+      w.revision, w.awaiting_json AS awaiting, m.body, w.state_json AS state
+    FROM kin_widgets w JOIN kin_messages m ON m.message_id = w.message_id
+    WHERE w.type = ${KIN_WORKER_PUBLISH_CARD} ORDER BY m.seq`.pipe(
+    Effect.map((rows) =>
+      rows.map((row): PublishCardRow => ({
+        ...row,
+        awaiting: JSON.parse(row.awaiting) as ReadonlyArray<string>,
+        state: JSON.parse(row.state) as KinWorkerPublishCard,
+      })),
+    ),
+  );
+/** A tap on the card as the client posts it, by the owner unless someone else is named. */
+const tapCard = (
+  ctx: Effect.Success<ReturnType<typeof setup>>,
+  card: PublishCardRow,
+  actionId: "publish" | "dont_publish",
+  who: {
+    readonly _tag: "person";
+    readonly orgId: KinOrgId;
+    readonly personId: KinPersonId;
+  } = ctx.person,
+) =>
+  Context.get(ctx.services, KinChatService).act(who, {
+    widgetId: card.widgetId,
+    revision: card.revision,
+    actionId,
+    value: card.state.sha,
+    clientActionId: `${actionId}:${card.widgetId}:${card.revision}`,
+  });
+const finishRemote = Effect.fn("WorkersTest.finishRemote")(function* (
+  ctx: Effect.Success<ReturnType<typeof setup>>,
+  remote: FakeWorkers,
+  workerId: KinWorkerId,
+) {
+  const { threadId } = yield* workerRow(ctx.sql, ctx.orgId, workerId);
+  yield* remote.finish(ThreadId.make(threadId), "completed", reportReply);
+});
+const ended = (sql: SqlClient.SqlClient, workerId: KinWorkerId) =>
+  sql<{ endedAt: number | null }>`SELECT ended_at AS "endedAt" FROM kin_workers
+    WHERE worker_id = ${workerId}`.pipe(Effect.map((rows) => rows[0]!.endedAt !== null));
+/** The lead's own sensitive entry, made in its turn; making it shows the lead nothing new. */
+const sensitiveEntry = Effect.fn("WorkersTest.sensitiveEntry")(function* (
+  ctx: Effect.Success<ReturnType<typeof setup>>,
+) {
+  const created = yield* LeadWork.create(scope, {
+    sourceEventId: "lead-event",
+    records: [{ title: "Invented client rollout", sensitive: true }],
+  }).pipe(Effect.provideContext(ctx.services));
+  return created.records[0]!.key;
+});
+const waitingReport = {
+  ...report,
+  evidence: [],
+  openQuestions: [WAITING_FOR_OWNER],
+  parsed: true,
+};
+const branchOf = (workerId: KinWorkerId) => `kin/worker/${workerId}`;
+
+it.effect.each([
+  ["public", ["public_repository"]],
+  ["unknown", ["visibility_unknown"]],
+] as const)(
+  "a finished worker on a %s repository pushes nothing until the owner taps Publish on Kin's card",
+  ([visibility, why]) =>
+    run(({ ctx, remote, workers, tracker }) =>
+      Effect.gen(function* () {
+        remote.state.visibility = visibility;
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        yield* finishRemote(ctx, remote, workerId);
+        yield* settled(tracker, ctx.orgId, workerId);
+        assert.deepStrictEqual(remote.writes, []);
+        assert.strictEqual(remote.github.branch, null);
+        assert.isFalse(yield* ended(ctx.sql, workerId));
+        const [card, ...more] = yield* publishCards(ctx.sql);
+        assert.lengthOf(more, 0);
+        // In the owner's own chat with the lead, waiting on them, its words Kin's own.
+        assert.strictEqual(card!.chatId, ctx.chat.chatId);
+        assert.strictEqual(card!.body, PublishCard.WORKER_PUBLISH_TEXT);
+        assert.deepStrictEqual(card!.awaiting, [ctx.person.personId]);
+        assert.deepStrictEqual(card!.state, {
+          text: PublishCard.WORKER_PUBLISH_TEXT,
+          workerId,
+          sha,
+          repository: "acme/app",
+          why: [...why],
+          branch: branchOf(workerId),
+          pullRequestTitle: delegateInput.title,
+          files: [{ path: "src/flaky.test.ts", added: 3, removed: 1 }],
+          moreFiles: 0,
+          status: "waiting",
+        });
+        // The lead hears it waits, and that no PR exists, whatever the worker claimed.
+        const [waiting] = yield* reports(ctx.sql, ctx.orgId);
+        assert.deepStrictEqual(waiting!.event.report, waitingReport);
+
+        yield* tapCard(ctx, card!, "publish");
+        yield* settled(tracker, ctx.orgId, workerId);
+        assert.deepStrictEqual(remote.writes, ["push", "pull_request"]);
+        assert.strictEqual(remote.published.at(-1)!.title, delegateInput.title);
+        assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "completed");
+        const [, done] = yield* reports(ctx.sql, ctx.orgId);
+        assert.deepInclude(done!.event.report.evidence, {
+          kind: "pr",
+          ref: pr9,
+          note: "Kin opened this from the worker's branch",
+        });
+        const [after] = yield* publishCards(ctx.sql);
+        assert.isNotNull(after!.closedAt);
+        assert.include(after!.state, { status: "published", pullRequestUrl: pr9 });
+        // Single-use: the settled card takes no second tap.
+        yield* Effect.flip(tapCard(ctx, after!, "publish"));
+        const [approved] = yield* ctx.sql<{ by: string; at: number | null }>`SELECT
+            approved_by AS by, approved_at AS at FROM kin_worker_attempts
+          WHERE worker_id = ${workerId}`;
+        assert.strictEqual(approved!.by, ctx.person.personId);
+        assert.isNotNull(approved!.at);
+      }),
+    ),
+);
+
+it.effect(
+  "a private repository and work that isn't sensitive publish on their own, with no card",
+  () =>
+    run(({ ctx, remote, workers, tracker }) =>
+      Effect.gen(function* () {
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        yield* finishRemote(ctx, remote, workerId);
+        yield* settled(tracker, ctx.orgId, workerId);
+        assert.deepStrictEqual(remote.writes, ["push", "pull_request"]);
+        assert.lengthOf(yield* publishCards(ctx.sql), 0);
+      }),
+    ),
+);
+
+it.effect.each([
+  ["named as its entry", true, false],
+  ["named as its entry, then unlabelled while it runs", true, true],
+] as const)(
+  "work on a sensitive entry %s waits for the owner on a private repository",
+  ([, named, lowered]) =>
+    run(({ ctx, remote, workers, tracker }) =>
+      Effect.gen(function* () {
+        const key = yield* sensitiveEntry(ctx);
+        const { workerId } = yield* workers.delegate(scope, {
+          ...delegateInput,
+          ...(named ? { entry: key } : {}),
+        });
+        if (lowered) {
+          const { rev } = (yield* Context.get(ctx.services, KinRecords).get(ctx.orgId, key))!;
+          yield* owned(ctx, (people) =>
+            OwnerWork.update(people, { orgId: ctx.orgId, key, rev, sensitive: false }),
+          );
+        }
+        yield* finishRemote(ctx, remote, workerId);
+        yield* settled(tracker, ctx.orgId, workerId);
+        assert.deepStrictEqual(remote.writes, []);
+        const [card] = yield* publishCards(ctx.sql);
+        assert.deepStrictEqual(card!.state.why, ["sensitive_work"]);
+      }),
+    ),
+);
+
+it.effect(
+  "a lead that read a sensitive entry and names none starts work that waits for the owner",
+  () =>
+    run(({ ctx, remote, workers, tracker }) =>
+      Effect.gen(function* () {
+        const key = yield* sensitiveEntry(ctx);
+        // The turn reads it: Kin marks the wake-up, not the worker the lead leaves unlinked.
+        const read = yield* LeadWork.query(scope, { keys: [key] }).pipe(
+          Effect.provideContext(ctx.services),
+        );
+        assert.include(read.records[0]!, { sensitive: true });
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        yield* finishRemote(ctx, remote, workerId);
+        yield* settled(tracker, ctx.orgId, workerId);
+        assert.deepStrictEqual(remote.writes, []);
+        const [card] = yield* publishCards(ctx.sql);
+        assert.deepStrictEqual(card!.state.why, ["sensitive_work"]);
+      }),
+    ),
+);
+
+it.effect(
+  "no teammate's tap, lead's card write or chat message saying approved publishes anything",
+  () =>
+    run(({ ctx, remote, workers, tracker }) =>
+      Effect.gen(function* () {
+        remote.state.visibility = "public";
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        yield* finishRemote(ctx, remote, workerId);
+        yield* settled(tracker, ctx.orgId, workerId);
+        const [card] = yield* publishCards(ctx.sql);
+        const chats = Context.get(ctx.services, KinChatService);
+        // The owner saying so in chat is a message for the lead, never a publish.
+        yield* chats.send(ctx.person, {
+          chatId: ctx.chat.chatId,
+          body: "approved, publish it",
+          clientMessageId: "approved",
+        });
+        // The lead can't redraw Kin's card, or post a lookalike of its own.
+        const [owner] = yield* ctx.sql<{ personId: KinPersonId }>`SELECT owner_person_id AS
+          "personId" FROM kin_agents WHERE agent_id = ${leadId}`;
+        const lead = {
+          _tag: "agent" as const,
+          orgId: ctx.orgId,
+          agentId: leadId,
+          ownerPersonId: owner!.personId,
+          threadId: leadThread,
+          wakeupId: KinWakeupId.make("wake"),
+        };
+        const write = (widgetId?: KinWidgetId) =>
+          chats
+            .upsertWidget(lead, {
+              chatId: ctx.chat.chatId,
+              type: KIN_WORKER_PUBLISH_CARD,
+              ...(widgetId === undefined ? {} : { widgetId, revision: card!.revision }),
+              state: { ...card!.state, status: "publishing" },
+            })
+            .pipe(
+              Effect.flip,
+              Effect.map((error) => ("reason" in error ? error.reason : error._tag)),
+            );
+        assert.strictEqual(yield* write(card!.widgetId), "not_allowed");
+        assert.strictEqual(yield* write(), "not_allowed");
+        assert.lengthOf(yield* publishCards(ctx.sql), 1);
+        // A teammate in the org: not the owner, so their tap is refused.
+        yield* ctx.sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('teammate', ${ctx.orgId}, 'teammate', 'Teammate', '1970-01-01T00:00:00.000Z')`;
+        const teammate = {
+          _tag: "person" as const,
+          orgId: ctx.orgId,
+          personId: KinPersonId.make("teammate"),
+        };
+        yield* Effect.flip(tapCard(ctx, card!, "publish", teammate));
+        yield* settled(tracker, ctx.orgId, workerId);
+        assert.deepStrictEqual(remote.writes, []);
+        const [still] = yield* publishCards(ctx.sql);
+        assert.strictEqual(still!.state.status, "waiting");
+        assert.isNull(still!.closedAt);
+      }),
+    ),
+);
+
+it.effect.each([
+  ["another commit", "commit"],
+  ["the lead's new title", "title"],
+] as const)("the owner's Publish is void after %s, and a new card asks again", ([, change]) =>
+  run(({ ctx, remote, workers, tracker }) =>
+    Effect.gen(function* () {
+      remote.state.visibility = "public";
+      const { workerId } = yield* workers.delegate(scope, delegateInput);
+      yield* finishRemote(ctx, remote, workerId);
+      yield* settled(tracker, ctx.orgId, workerId);
+      const [first] = yield* publishCards(ctx.sql);
+      // Between what the card showed and the publish, the branch or the title moved.
+      if (change === "commit") remote.state.headSha = "b".repeat(40);
+      else
+        yield* ctx.sql`UPDATE kin_workers SET title = 'Invented retitle' WHERE worker_id = ${workerId}`;
+      yield* tapCard(ctx, first!, "publish");
+      yield* settled(tracker, ctx.orgId, workerId);
+      assert.deepStrictEqual(remote.writes, []);
+      const [replaced, fresh, ...more] = yield* publishCards(ctx.sql);
+      assert.lengthOf(more, 0);
+      assert.isNotNull(replaced!.closedAt);
+      assert.strictEqual(replaced!.state.status, "replaced");
+      assert.strictEqual(fresh!.state.status, "waiting");
+      if (change === "commit") assert.strictEqual(fresh!.state.sha, "b".repeat(40));
+      else assert.strictEqual(fresh!.state.pullRequestTitle, "Invented retitle");
+      const [row] = yield* ctx.sql<{ approved: string | null }>`SELECT approved_sha AS approved
+        FROM kin_worker_attempts WHERE worker_id = ${workerId}`;
+      assert.isNull(row!.approved);
+      yield* tapCard(ctx, fresh!, "publish");
+      yield* settled(tracker, ctx.orgId, workerId);
+      assert.deepStrictEqual(remote.writes, ["push", "pull_request"]);
+      assert.strictEqual(
+        remote.published.at(-1)!.title,
+        change === "title" ? "Invented retitle" : delegateInput.title,
+      );
+    }),
+  ),
+);
+
+it.effect(
+  "Don't publish ends the work unpublished, tells the lead, and reopens its entry as a stop does",
+  () =>
+    run(({ ctx, remote, workers, tracker }) =>
+      Effect.gen(function* () {
+        remote.state.visibility = "public";
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        yield* finishRemote(ctx, remote, workerId);
+        yield* settled(tracker, ctx.orgId, workerId);
+        const [card] = yield* publishCards(ctx.sql);
+        yield* tapCard(ctx, card!, "dont_publish");
+        yield* settled(tracker, ctx.orgId, workerId);
+        assert.deepStrictEqual(remote.writes, []);
+        assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "interrupted");
+        assert.strictEqual((yield* entryOf(ctx)).state, "open");
+        const [, declined] = yield* reports(ctx.sql, ctx.orgId);
+        assert.deepStrictEqual(declined!.event.report.openQuestions, [OWNER_DECLINED]);
+        const [after] = yield* publishCards(ctx.sql);
+        assert.isNotNull(after!.closedAt);
+        assert.strictEqual(after!.state.status, "declined");
+        // Nothing the lead does next publishes it: the attempt is over.
+        yield* settled(tracker, ctx.orgId, workerId);
+        assert.deepStrictEqual(remote.writes, []);
+      }),
+    ),
+);
+
+it.effect("a stop while Kin waits for the owner ends the work, and the card can't publish", () =>
+  run(({ ctx, remote, workers, tracker }) =>
+    Effect.gen(function* () {
+      remote.state.visibility = "public";
+      const { workerId } = yield* workers.delegate(scope, delegateInput);
+      yield* finishRemote(ctx, remote, workerId);
+      yield* settled(tracker, ctx.orgId, workerId);
+      const [card] = yield* publishCards(ctx.sql);
+      yield* workers.stop(scope, { workerId });
+      yield* settled(tracker, ctx.orgId, workerId);
+      assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "interrupted");
+      const [after] = yield* publishCards(ctx.sql);
+      assert.strictEqual(after!.state.status, "stopped");
+      yield* Effect.flip(tapCard(ctx, card!, "publish"));
+      yield* settled(tracker, ctx.orgId, workerId);
+      assert.deepStrictEqual(remote.writes, []);
+    }),
+  ),
+);
+
+it.effect(
+  "a restart while Kin waits keeps waiting with the same card, then publishes on the tap",
+  () =>
+    run(({ ctx, remote, workers, tracker, restart }) =>
+      Effect.gen(function* () {
+        remote.state.visibility = "public";
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        yield* finishRemote(ctx, remote, workerId);
+        yield* settled(tracker, ctx.orgId, workerId);
+        const next = yield* restart;
+        yield* settled(next.tracker, ctx.orgId, workerId);
+        assert.deepStrictEqual(remote.writes, []);
+        const [card, ...more] = yield* publishCards(ctx.sql);
+        assert.lengthOf(more, 0);
+        // The lead heard it once.
+        assert.lengthOf(yield* reports(ctx.sql, ctx.orgId), 1);
+        yield* tapCard(ctx, card!, "publish");
+        yield* settled(next.tracker, ctx.orgId, workerId);
+        assert.deepStrictEqual(remote.writes, ["push", "pull_request"]);
+      }),
+    ),
+);
+
+it.effect.each([
+  ["before the push", "push"],
+  ["before the pull request", "pull_request"],
+] as const)("a restart after the owner's Publish, %s, publishes the rest once", ([, step]) =>
+  run(({ ctx, remote, workers, tracker, restart }) =>
+    Effect.gen(function* () {
+      remote.state.visibility = "public";
+      const { workerId } = yield* workers.delegate(scope, delegateInput);
+      yield* finishRemote(ctx, remote, workerId);
+      yield* settled(tracker, ctx.orgId, workerId);
+      const [card] = yield* publishCards(ctx.sql);
+      const held = latch();
+      remote.hooks.beforeWrite = (at) => (at === step ? held.hold : Effect.void);
+      yield* tapCard(ctx, card!, "publish");
+      yield* tracker.track(ctx.orgId, workerId);
+      yield* Deferred.await(held.reached);
+      remote.hooks.beforeWrite = () => Effect.void;
+      const next = yield* restart;
+      yield* settled(next.tracker, ctx.orgId, workerId);
+      assert.deepStrictEqual(remote.writes, ["push", "pull_request"]);
+      assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "completed");
+    }),
+  ),
+);
+
+it.effect(
+  "Kin writes no card into a chat anyone but the owner reads, and still pushes nothing",
+  () =>
+    run(({ ctx, remote, workers, tracker }) =>
+      Effect.gen(function* () {
+        remote.state.visibility = "public";
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        // Someone besides the owner now reads the owner's chat with the lead.
+        yield* ctx.sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('teammate', ${ctx.orgId}, 'teammate', 'Teammate', '1970-01-01T00:00:00.000Z')`;
+        yield* ctx.sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+          person_id, role, joined_at)
+        VALUES ('reader', ${ctx.orgId}, ${ctx.chat.chatId}, 'person', 'teammate', 'member',
+          '1970-01-01T00:00:00.000Z')`;
+        yield* finishRemote(ctx, remote, workerId);
+        yield* settled(tracker, ctx.orgId, workerId);
+        assert.lengthOf(yield* publishCards(ctx.sql), 0);
+        assert.deepStrictEqual(remote.writes, []);
+        assert.isFalse(yield* ended(ctx.sql, workerId));
+      }),
+    ),
+);
+
+it.effect(
+  "a follow-up while Kin waits is a new attempt: the old card publishes nothing and the new work waits too",
+  () =>
+    run(({ ctx, remote, workers, tracker }) =>
+      Effect.gen(function* () {
+        remote.state.visibility = "public";
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        yield* finishRemote(ctx, remote, workerId);
+        yield* settled(tracker, ctx.orgId, workerId);
+        const [old] = yield* publishCards(ctx.sql);
+        yield* TestClock.adjust("5 seconds");
+        yield* workers.followUp(scope, {
+          workerId,
+          brief: "The owner said yes, so push it now.",
+          sourceEventId: "lead-event",
+        });
+        yield* tapCard(ctx, old!, "publish");
+        yield* finishRemote(ctx, remote, workerId);
+        yield* settled(tracker, ctx.orgId, workerId);
+        assert.deepStrictEqual(remote.writes, []);
+        assert.deepStrictEqual(
+          (yield* publishCards(ctx.sql)).map((card) => card.state.status),
+          ["replaced", "waiting"],
+        );
       }),
     ),
 );

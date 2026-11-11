@@ -1,6 +1,9 @@
 import type { KinAgentId, KinEvent, KinOrgId, KinWorkerId } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
+
+import { sensitiveNow } from "./recordRows.ts";
 
 /**
  * A worker attempt's durable state (`kin_worker_attempts`): its stop, each publish write's intent
@@ -36,7 +39,27 @@ export type AttemptRow = {
   /** A reconciliation couldn't reach GitHub, and the owner was told Kin couldn't check. */
   readonly uncheckedAt: number | null;
   readonly noticedAt: number | null;
+  /** GitHub's visibility of the repository as Kin last read it, for `reviewedSha`. */
+  readonly visibility: Visibility | null;
+  readonly reviewedSha: string | null;
+  readonly filesJson: string | null;
+  /** Sticky: the repository was ever public or unreadable, or the work ever sensitive. */
+  readonly publicAt: number | null;
+  readonly sensitiveAt: number | null;
+  /** The commit and title held for the owner, and the card that asks them. */
+  readonly readyAt: number | null;
+  readonly readySha: string | null;
+  readonly readyTitle: string | null;
+  readonly readyCardId: string | null;
+  /** The owner's tap, bound to one commit and one title of this attempt. */
+  readonly approvedSha: string | null;
+  readonly approvedTitle: string | null;
+  readonly approvedBy: string | null;
+  readonly approvedAt: number | null;
+  readonly declinedBy: string | null;
+  readonly declinedAt: number | null;
 };
+export type Visibility = "public" | "private" | "unknown";
 export type Stop = AttemptRow & {
   readonly stoppedAt: number;
   readonly stopKey: string;
@@ -50,7 +73,12 @@ const selectAttempt = (sql: SqlClient.SqlClient) => sql`SELECT agent_id AS "agen
     stop_key AS "stopKey", stop_label AS "stopLabel", stop_state AS "stopState", intent,
     intent_sha AS "intentSha", committed_sha AS "committedSha", pushed_sha AS "pushedSha",
     pull_request_number AS "pullRequestNumber", pull_request_url AS "pullRequestUrl",
-    unchecked_at AS "uncheckedAt", noticed_at AS "noticedAt"
+    unchecked_at AS "uncheckedAt", noticed_at AS "noticedAt", visibility,
+    reviewed_sha AS "reviewedSha", files_json AS "filesJson", public_at AS "publicAt",
+    sensitive_at AS "sensitiveAt", ready_at AS "readyAt", ready_sha AS "readySha",
+    ready_title AS "readyTitle", ready_card_id AS "readyCardId", approved_sha AS "approvedSha",
+    approved_title AS "approvedTitle", approved_by AS "approvedBy", approved_at AS "approvedAt",
+    declined_by AS "declinedBy", declined_at AS "declinedAt"
   FROM kin_worker_attempts`;
 
 export const attemptOf = Effect.fn("KinWorkerAttempts.attemptOf")(function* (attempt: Attempt) {
@@ -71,6 +99,8 @@ export const attemptBegun = Effect.fn("KinWorkerAttempts.attemptBegun")(function
     VALUES (${attempt.orgId}, ${attempt.workerId}, ${attempt.startedAt}, ${attempt.agentId},
       ${attempt.sourceEventId})
     ON CONFLICT (org_id, worker_id, started_at) DO NOTHING`;
+  // The wake-up that starts it, or an entry a retry or follow-up already serves, may be sensitive.
+  yield* noteSensitivity(attempt);
 });
 
 /** The row for an attempt started before K061, or one written by a path that names no event. */
@@ -157,26 +187,197 @@ export const withdrawAttempts = Effect.fn("KinWorkerAttempts.withdrawAttempts")(
 });
 
 /**
- * One transaction before a publish write: refused when the attempt is stopped or no longer the
- * worker's open one, otherwise the write's intent is recorded. "stopped" and "admitted" are then
- * strictly ordered by the database, whichever process asks.
+ * In a write's transaction: whether the attempt's work is sensitive now, through an entry it is an
+ * attempt at, or a wake-up that started or followed it up having been shown a sensitive entry.
+ * Once true it stays true on the row, so detaching or relabelling mid-run changes nothing.
+ */
+export const noteSensitivity = Effect.fn("KinWorkerAttempts.noteSensitivity")(function* (
+  attempt: Attempt,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const at = yield* Clock.currentTimeMillis;
+  yield* sql`UPDATE kin_worker_attempts SET sensitive_at = ${at}
+    WHERE org_id = ${attempt.orgId} AND worker_id = ${attempt.workerId}
+      AND started_at = ${attempt.startedAt} AND sensitive_at IS NULL AND (
+        EXISTS (SELECT 1 FROM kin_record_links l
+          JOIN kin_records r ON r.org_id = l.org_id AND r.record_id = l.record_id
+          WHERE l.org_id = ${attempt.orgId} AND l.kind = 'worker' AND l.target = ${attempt.workerId}
+            AND ${sensitiveNow(sql)})
+        OR EXISTS (SELECT 1 FROM kin_workers k
+          JOIN kin_wakeup_sensitive_reads w ON w.org_id = k.org_id AND w.wakeup_id = k.wakeup_id
+          WHERE k.org_id = ${attempt.orgId} AND k.worker_id = ${attempt.workerId})
+        OR EXISTS (SELECT 1 FROM kin_events e
+          JOIN kin_wakeup_sensitive_reads w ON w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id
+          WHERE e.org_id = ${attempt.orgId} AND e.event_id = kin_worker_attempts.source_event_id))`;
+});
+
+/**
+ * What the publisher found before any write reaches GitHub: the repository's visibility then and
+ * the commit and files it would publish. Public or unreadable sticks for the attempt.
+ */
+export const recordReview = Effect.fn("KinWorkerAttempts.recordReview")(function* (
+  attempt: Attempt,
+  review: { readonly sha: string; readonly visibility: Visibility; readonly filesJson: string },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const at = yield* Clock.currentTimeMillis;
+  yield* ensure(sql, attempt);
+  yield* sql`UPDATE kin_worker_attempts SET visibility = ${review.visibility},
+      reviewed_sha = ${review.sha}, files_json = ${review.filesJson},
+      public_at = CASE WHEN ${review.visibility} = 'private' THEN public_at
+        ELSE COALESCE(public_at, ${at}) END
+    WHERE org_id = ${attempt.orgId} AND worker_id = ${attempt.workerId}
+      AND started_at = ${attempt.startedAt}`;
+});
+
+export type GateReason = "public_repository" | "visibility_unknown" | "sensitive_work";
+/** Why the owner must publish this commit, or none when it publishes on its own. */
+const gateReasons = (row: AttemptRow, sha: string): ReadonlyArray<GateReason> => {
+  const reasons: Array<GateReason> = [];
+  // Read for another commit, or never read: unknown, which counts as public.
+  const seen = row.reviewedSha === sha ? row.visibility : null;
+  if (seen === "public") reasons.push("public_repository");
+  else if (seen !== "private") reasons.push("visibility_unknown");
+  else if (row.publicAt !== null) reasons.push("public_repository");
+  if (row.sensitiveAt !== null) reasons.push("sensitive_work");
+  return reasons;
+};
+
+export type WriteAdmission =
+  | { readonly _tag: "admitted" }
+  | { readonly _tag: "refused" }
+  | { readonly _tag: "declined" }
+  /** Held for the owner; `previousCardId` is a card this commit or title replaces. */
+  | {
+      readonly _tag: "held";
+      readonly row: AttemptRow;
+      readonly reasons: ReadonlyArray<GateReason>;
+      readonly previousCardId: string | null;
+    };
+
+/**
+ * One transaction before a publish write, ordered by the database against a stop: refused when the
+ * attempt is stopped or not the worker's open one. A gated push or PR also needs the owner's
+ * approval of exactly this commit and title; otherwise the attempt is held and other approvals void.
  */
 export const beginWrite = Effect.fn("KinWorkerAttempts.beginWrite")(function* (
   attempt: Attempt,
   intent: { readonly step: PublishStep; readonly sha: string | null },
+  /** The pull request's title as this publish would write it. */
+  title: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const [worker] = yield* sql<{ startedAt: number; endedAt: number | null }>`SELECT
       started_at AS "startedAt", ended_at AS "endedAt" FROM kin_workers
     WHERE org_id = ${attempt.orgId} AND worker_id = ${attempt.workerId} ORDER BY worker_id`;
+  const refused = { _tag: "refused" } as const;
   if (worker === undefined || worker.endedAt !== null || worker.startedAt !== attempt.startedAt)
-    return false;
+    return refused;
   yield* ensure(sql, attempt);
-  const begun = yield* sql`UPDATE kin_worker_attempts SET intent = ${intent.step},
-      intent_sha = ${intent.sha}
+  yield* noteSensitivity(attempt);
+  const row = yield* attemptOf(attempt);
+  if (row === undefined || row.stoppedAt !== null) return refused;
+  if (intent.step !== "commit") {
+    if (intent.sha === null) return refused;
+    const reasons = gateReasons(row, intent.sha);
+    if (reasons.length > 0) {
+      if (row.declinedAt !== null) return { _tag: "declined" } as const;
+      if (row.approvedSha !== intent.sha || row.approvedTitle !== title) {
+        const same = row.readySha === intent.sha && row.readyTitle === title;
+        const at = yield* Clock.currentTimeMillis;
+        yield* sql`UPDATE kin_worker_attempts SET ready_sha = ${intent.sha},
+            ready_title = ${title}, ready_at = ${same ? row.readyAt : at},
+            approved_sha = NULL, approved_title = NULL, approved_by = NULL, approved_at = NULL
+          WHERE org_id = ${attempt.orgId} AND worker_id = ${attempt.workerId}
+            AND started_at = ${attempt.startedAt}`;
+        const held = yield* attemptOf(attempt);
+        return {
+          _tag: "held",
+          row: held!,
+          reasons,
+          previousCardId: same ? null : row.readyCardId,
+        } as const;
+      }
+    }
+  }
+  yield* sql`UPDATE kin_worker_attempts SET intent = ${intent.step}, intent_sha = ${intent.sha}
     WHERE org_id = ${attempt.orgId} AND worker_id = ${attempt.workerId}
-      AND started_at = ${attempt.startedAt} AND stopped_at IS NULL RETURNING worker_id`;
-  return begun.length > 0;
+      AND started_at = ${attempt.startedAt}`;
+  return { _tag: "admitted" } as const;
+});
+
+/** In the card write's transaction: the card that now asks the owner about this attempt. */
+export const readyCard = Effect.fn("KinWorkerAttempts.readyCard")(function* (
+  attempt: Attempt,
+  cardId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_worker_attempts SET ready_card_id = ${cardId}
+    WHERE org_id = ${attempt.orgId} AND worker_id = ${attempt.workerId}
+      AND started_at = ${attempt.startedAt}`;
+});
+
+/** The attempt a publish card asks about, found by the card's id. */
+export const attemptOfCard = Effect.fn("KinWorkerAttempts.attemptOfCard")(function* (
+  orgId: KinOrgId,
+  cardId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [found] = yield* sql<Attempt>`SELECT org_id AS "orgId", worker_id AS "workerId",
+      started_at AS "startedAt" FROM kin_worker_attempts
+    WHERE org_id = ${orgId} AND ready_card_id = ${cardId} ORDER BY worker_id`;
+  return found;
+});
+
+export type Decision =
+  | { readonly _tag: "decided" }
+  /** The card no longer describes what Kin holds: another commit, title or attempt since. */
+  | { readonly _tag: "stale" }
+  | { readonly _tag: "stopped" };
+
+/**
+ * In the owner's tap's transaction: their decision on exactly the commit and title the card shows,
+ * while the attempt still holds them, is open, and nothing was decided. Publish is single-use: it
+ * names one commit and one title, and anything else voids it.
+ */
+export const decide = Effect.fn("KinWorkerAttempts.decide")(function* (
+  attempt: Attempt,
+  input: {
+    readonly cardId: string;
+    readonly sha: string;
+    readonly title: string;
+    readonly publish: boolean;
+    readonly personId: string;
+  },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [worker] = yield* sql<{ startedAt: number; endedAt: number | null }>`SELECT
+      started_at AS "startedAt", ended_at AS "endedAt" FROM kin_workers
+    WHERE org_id = ${attempt.orgId} AND worker_id = ${attempt.workerId} ORDER BY worker_id`;
+  const row = yield* attemptOf(attempt);
+  if (row === undefined) return { _tag: "stale" } as Decision;
+  if (row.stoppedAt !== null) return { _tag: "stopped" } as Decision;
+  if (
+    worker === undefined ||
+    worker.endedAt !== null ||
+    worker.startedAt !== attempt.startedAt ||
+    row.readyCardId !== input.cardId ||
+    row.readySha !== input.sha ||
+    row.readyTitle !== input.title ||
+    row.approvedAt !== null ||
+    row.declinedAt !== null
+  )
+    return { _tag: "stale" } as Decision;
+  const at = yield* Clock.currentTimeMillis;
+  const where = sql`WHERE org_id = ${attempt.orgId} AND worker_id = ${attempt.workerId}
+    AND started_at = ${attempt.startedAt} AND stopped_at IS NULL`;
+  yield* input.publish
+    ? sql`UPDATE kin_worker_attempts SET approved_sha = ${input.sha},
+        approved_title = ${input.title}, approved_by = ${input.personId}, approved_at = ${at}
+        ${where}`
+    : sql`UPDATE kin_worker_attempts SET declined_by = ${input.personId}, declined_at = ${at}
+        ${where}`;
+  return { _tag: "decided" } as Decision;
 });
 
 export type PublishOutcome =
@@ -351,3 +552,43 @@ export const workerMayResume = Effect.fn("KinWorkerAttempts.workerMayResume")(fu
     LIMIT 1`;
   return closed.length === 0;
 });
+
+/**
+ * The lead's wake-up was shown a sensitive Work entry: any worker it starts or follows up counts as
+ * sensitive work, named entry or not (`noteSensitivity`).
+ */
+export const sensitiveShown = Effect.fn("KinWorkerAttempts.sensitiveShown")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly wakeupId: string;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const at = yield* Clock.currentTimeMillis;
+  yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
+    VALUES (${input.orgId}, ${input.wakeupId}, ${at}) ON CONFLICT (org_id, wakeup_id) DO NOTHING`;
+});
+
+/** The same for a prompt that shows these entries, when any of them is sensitive now. */
+export const entriesShown = Effect.fn("KinWorkerAttempts.entriesShown")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly wakeupId: string;
+  readonly recordIds: ReadonlyArray<string>;
+  readonly keys: ReadonlyArray<string>;
+}) {
+  if (input.recordIds.length === 0 && input.keys.length === 0) return;
+  const sql = yield* SqlClient.SqlClient;
+  const named = [
+    ...(input.recordIds.length === 0 ? [] : [sql`r.record_id IN ${sql.in(input.recordIds)}`]),
+    ...(input.keys.length === 0 ? [] : [sql`r.key IN ${sql.in(input.keys)}`]),
+  ];
+  const found = yield* sql`SELECT 1 FROM kin_records r
+    WHERE r.org_id = ${input.orgId} AND ${sql.or(named)} AND ${sensitiveNow(sql)} LIMIT 1`;
+  if (found.length > 0) yield* sensitiveShown(input);
+});
+
+/** Whether a tool result carries an entry marked sensitive anywhere in it. */
+export const showsSensitive = (value: unknown): boolean =>
+  Array.isArray(value)
+    ? value.some(showsSensitive)
+    : typeof value === "object" && value !== null
+      ? Reflect.get(value, "sensitive") === true || Object.values(value).some(showsSensitive)
+      : false;

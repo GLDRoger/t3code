@@ -1,6 +1,8 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import {
   KIN_MEMORY_CHANGES_CARD,
+  KIN_WORKER_PUBLISH_CARD,
+  KinWorkerPublishCard,
   KinReminderCard,
   KinRoutineCard,
   KinScheduledTaskCard,
@@ -76,6 +78,7 @@ const decodeTaskState = Schema.decodeUnknownOption(KinTaskCardState);
 const decodeRoutine = Schema.decodeUnknownOption(KinRoutineCard);
 const decodeReminder = Schema.decodeUnknownOption(KinReminderCard);
 const decodeScheduledTask = Schema.decodeUnknownOption(KinScheduledTaskCard);
+const decodeWorkerPublish = Schema.decodeUnknownOption(KinWorkerPublishCard);
 
 // Agents write widget state, so every string is clamped and shown as plain text.
 const clamp = (text: string, max: number) => {
@@ -348,6 +351,71 @@ export function kinScheduledTaskCardView(
   };
 }
 
+const PUBLISH_WHY: Record<KinWorkerPublishCard["why"][number], string> = {
+  public_repository: "The repository is public: anyone can read what Kin pushes.",
+  visibility_unknown: "Kin couldn't confirm the repository is private, so it treats it as public.",
+  sensitive_work: "This work involves something marked sensitive in Work.",
+};
+const PUBLISH_END: Record<
+  Exclude<KinWorkerPublishCard["status"], "waiting" | "publishing" | "published">,
+  string
+> = {
+  declined: "Not published. The changes stay on the host.",
+  replaced: "This card is out of date: a newer one asks about the latest changes.",
+  stopped: "The work was stopped, so nothing was published.",
+  failed: "Kin couldn't publish it. Your lead says why.",
+};
+const fileLine = (file: KinWorkerPublishCard["files"][number]) =>
+  `${clamp(file.path, 200)} ${
+    file.added === null || file.removed === null ? "(binary)" : `+${file.added} −${file.removed}`
+  }`;
+
+/**
+ * Kin's card asking the owner to publish a worker's commit. Every fact is Kin's own except the
+ * pull request title, which the lead wrote and is shown quoted.
+ */
+function kinWorkerPublishCardView(widget: KinWidget): KinDeferralCardView | null {
+  const decoded = decodeWorkerPublish(widget.state);
+  if (Option.isNone(decoded)) return null;
+  const card = decoded.value;
+  const repository = clamp(card.repository, 200) || "GitHub";
+  const open = widget.closedAt === null && card.status === "waiting";
+  const lines = open
+    ? [
+        ...card.why.map((why) => PUBLISH_WHY[why]),
+        `Branch ${clamp(card.branch, 200)}, commit ${card.sha.slice(0, 7)}.`,
+        `Pull request title, from your lead (unchecked): "${clamp(card.pullRequestTitle, 200)}"`,
+        ...card.files.map(fileLine),
+        ...(card.moreFiles > 0
+          ? [`and ${card.moreFiles} more file${card.moreFiles === 1 ? "" : "s"}.`]
+          : []),
+      ]
+    : card.status === "publishing"
+      ? ["Publishing."]
+      : card.status === "published"
+        ? [
+            card.pullRequestUrl === undefined
+              ? "Published."
+              : `Published as ${clamp(card.pullRequestUrl, 280)}.`,
+          ]
+        : card.status === "waiting"
+          ? ["Closed."]
+          : [PUBLISH_END[card.status]];
+  const title = `Publish to ${repository}?`;
+  return {
+    widgetId: widget.widgetId,
+    revision: widget.revision,
+    itemId: card.sha,
+    phase: open ? "asked" : "closed",
+    eyebrow: open ? "Needs your decision" : "Worker changes",
+    title,
+    lines,
+    countdown: null,
+    actions: open ? [KIN_DEFERRAL_ACTIONS.publish, KIN_DEFERRAL_ACTIONS.dont_publish] : [],
+    accessibilityLabel: kinSentences([title, ...lines]),
+  };
+}
+
 const BOOKKEEPING_TEXT = /^(?:(?:Remembered|Forgot|Updated|Replaced|Memory): |Deferred to )/;
 
 /**
@@ -449,6 +517,10 @@ export function kinCardView(
     case "approval": {
       const approval = kinApprovalWidgetView(widget);
       return approval === null ? unknown(widget) : { kind: "approval", approval };
+    }
+    case KIN_WORKER_PUBLISH_CARD: {
+      const deferral = kinWorkerPublishCardView(widget);
+      return deferral === null ? unknown(widget) : { kind: "deferral", deferral };
     }
     case KIN_MEMORY_CHANGES_CARD: {
       const changes = kinMemoryChangesView(widget);

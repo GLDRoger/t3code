@@ -1,5 +1,7 @@
 import {
   CommandId,
+  KIN_WORKER_PUBLISH_CARD,
+  KinWorkerPublishCard,
   EnvironmentId,
   KinAgentId,
   KinAuthor,
@@ -48,11 +50,12 @@ import { KinChatService } from "../chat/KinChatService.ts";
 import { freezeMovedCard, workerChat } from "./ChatSharing.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import { remoteTaskCardState } from "../widgets/taskCard.ts";
+import * as PublishCard from "../widgets/workerPublishCard.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { KinLeadRegistry } from "./KinLeadRegistry.ts";
 import * as KinLevels from "./KinLevels.ts";
 import { isOrgPaused, STOP_REASON } from "./orgState.ts";
-import { parseReport } from "./workerBrief.ts";
+import { OWNER_DECLINED, parseReport, WAITING_FOR_OWNER } from "./workerBrief.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
 import * as Publish from "./workerPublish.ts";
 import { localThreadId, workThreadPrefix } from "./workThread.ts";
@@ -120,11 +123,15 @@ const withPublished = (
           ...state.pullRequests.filter((pull) => pull.url !== worker.pullRequestUrl),
         ],
       };
+/** What a publish came to, as the follower reports it. */
+type Publication =
+  | { readonly url: string; readonly number: number }
+  | { readonly refused: string }
+  /** Held for the owner's tap on Kin's card; nothing reached GitHub. */
+  | { readonly held: "owner"; readonly sha: string }
+  | { readonly held: "declined" };
 /** Kin's PR replaces any the worker claims; a refusal becomes an open question for the lead. */
-const withPublication = (
-  report: WorkerReport,
-  published: { readonly url: string } | { readonly refused: string } | undefined,
-): WorkerReport =>
+const withPublication = (report: WorkerReport, published: Publication | undefined): WorkerReport =>
   published === undefined
     ? report
     : "url" in published
@@ -135,7 +142,17 @@ const withPublication = (
             ...report.evidence.filter((item) => item.kind !== "pr"),
           ],
         }
-      : { ...report, openQuestions: [...report.openQuestions, published.refused] };
+      : "held" in published
+        ? {
+            // No PR exists, whatever the worker claims.
+            ...report,
+            evidence: report.evidence.filter((item) => item.kind !== "pr"),
+            openQuestions: [
+              ...report.openQuestions,
+              published.held === "owner" ? WAITING_FOR_OWNER : OWNER_DECLINED,
+            ],
+          }
+        : { ...report, openQuestions: [...report.openQuestions, published.refused] };
 const WorkerRow = Schema.Struct({
   orgId: KinOrgId,
   workerId: KinWorkerId,
@@ -165,6 +182,7 @@ const isMcpFailure = Schema.is(OrchestratorMcpFailure);
 const STOP_FAILED = "The worker could not be stopped. Retry or tell the owner.";
 const PAUSED_REFUSAL = "Kin is paused; ask the worker for a follow-up after the owner resumes";
 const STOPPED_REFUSAL = "the worker was stopped first";
+const HELD_REFUSAL = "the owner publishes this from Kin's card";
 const stopFailedNotice = (key: string) =>
   `Kin couldn't stop the work on ${key} after you closed it or took it back, so it may still be running. Open its thread to stop it there.`;
 const leadStopFailedNotice = (title: string) =>
@@ -197,6 +215,7 @@ const attemptOf = (worker: {
 });
 const isRefused = Schema.is(Publish.KinWorkerPublishRefused);
 const decodeAuthor = Schema.decodeUnknownEffect(KinAuthor);
+const decodePublishCard = Schema.decodeUnknownOption(KinWorkerPublishCard);
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeSelection = Schema.decodeUnknownEffect(Schema.fromJsonString(ModelSelection));
 /** The launch's request id there: a retry with it returns the thread the first one started. */
@@ -525,6 +544,7 @@ const make = Effect.gen(function* () {
     );
     // Whether or not this run's row was still the attempt's, a stopped attempt owes the owner this.
     if (yield* stopRequested(worker)) yield* settleSoon(attemptOf(worker));
+    if (recorded !== undefined) yield* endPublishCard(attemptOf(worker));
     if (recorded === undefined) return false;
     if (stoppedStatuses.has(recorded))
       yield* card(worker, (chatId, audience) =>
@@ -538,6 +558,39 @@ const make = Effect.gen(function* () {
       );
     return true;
   });
+
+  /** An ended attempt's publish card says how it ended, from its row. Best effort. */
+  const endPublishCard = (key: Attempts.Attempt) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const row = yield* inSql(Attempts.attemptOf(key));
+          if (row?.readyCardId == null) return;
+          const status =
+            row.pullRequestUrl !== null
+              ? "published"
+              : row.stoppedAt !== null
+                ? "stopped"
+                : row.declinedAt !== null
+                  ? "declined"
+                  : "failed";
+          yield* PublishCard.settlePublishCard(
+            key.orgId,
+            row.readyCardId,
+            status,
+            row.pullRequestUrl ?? undefined,
+          ).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.provideService(KinChatRepository, repo),
+            Effect.provideService(KinChatHub, hub),
+          );
+        }),
+      )
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't settle a worker's publish card", { cause }),
+        ),
+      );
 
   /**
    * Settles a write an earlier publish began and never heard back from, against GitHub: what it
@@ -588,21 +641,66 @@ const make = Effect.gen(function* () {
     );
     if (yield* paused) return refused(PAUSED_REFUSAL);
     const key = attemptOf(worker);
+    const title = worker.title ?? "Kin worker";
     const fail = (reason: string) => new Publish.KinWorkerPublishRefused({ reason });
+    const held = (as: "owner" | "declined") =>
+      new Publish.KinWorkerPublishRefused({ reason: HELD_REFUSAL, held: as });
+    // The hold commits with its card; only then does the publish stop, refused.
     const begin = (intent: Publish.PublishIntent) =>
       sql
         .withTransaction(
           Effect.gen(function* () {
             if (yield* paused) return yield* fail(PAUSED_REFUSAL);
-            if (!(yield* inSql(Attempts.beginWrite(key, intent))))
-              return yield* fail(STOPPED_REFUSAL);
+            const admission = yield* inSql(Attempts.beginWrite(key, intent, title));
+            if (admission._tag === "held")
+              // Its own savepoint: a card Kin can't write leaves the hold, never a publish.
+              yield* sql
+                .withTransaction(
+                  PublishCard.writePublishCard({
+                    attempt: key,
+                    row: admission.row,
+                    reasons: admission.reasons,
+                    previousCardId: admission.previousCardId,
+                    repository: repoName(worker),
+                    branch,
+                  }).pipe(
+                    Effect.provideService(SqlClient.SqlClient, sql),
+                    Effect.provideService(KinChatRepository, repo),
+                    Effect.provideService(KinChatHub, hub),
+                  ),
+                )
+                .pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.logError("Kin couldn't show the owner a publish card", { cause }),
+                  ),
+                );
+            return admission._tag;
           }),
         )
         .pipe(
           Effect.mapError((error) =>
             isRefused(error) ? error : fail("Kin couldn't record what it was about to write"),
           ),
+          Effect.flatMap((admitted) =>
+            admitted === "admitted"
+              ? Effect.void
+              : Effect.fail(
+                  admitted === "refused"
+                    ? fail(STOPPED_REFUSAL)
+                    : held(admitted === "held" ? "owner" : "declined"),
+                ),
+          ),
         );
+    const review = (facts: Publish.PublishReview) =>
+      inSql(
+        sql.withTransaction(
+          Attempts.recordReview(key, {
+            sha: facts.sha,
+            visibility: facts.visibility,
+            filesJson: JSON.stringify({ files: facts.files, moreFiles: facts.moreFiles }),
+          }),
+        ),
+      ).pipe(Effect.mapError(() => fail("Kin couldn't record what it was about to publish")));
     const done = (outcome: Publish.PublishOutcome) =>
       inSql(sql.withTransaction(Attempts.recordOutcome(key, outcome))).pipe(
         Effect.mapError(() => fail("Kin couldn't record what it wrote")),
@@ -617,11 +715,16 @@ const make = Effect.gen(function* () {
         repositoryKey: worker.repositoryKey,
         worktreePath,
         ...(local === undefined ? {} : { local }),
-        title: worker.title ?? "Kin worker",
-        progress: { begin, done },
+        title,
+        progress: { review, begin, done },
       })
       .pipe(Effect.result);
     if (pull._tag === "Success") return { url: pull.success.url, number: pull.success.number };
+    if (pull.failure.held === "declined") return { held: "declined" } as const;
+    if (pull.failure.held === "owner") {
+      const row = yield* inSql(Attempts.attemptOf(key));
+      if (row?.readySha != null) return { held: "owner", sha: row.readySha } as const;
+    }
     yield* Effect.logWarning("Kin didn't publish a worker's branch", {
       workerId: worker.workerId,
       reason: pull.failure.reason,
@@ -852,7 +955,7 @@ const make = Effect.gen(function* () {
     const report =
       (reply === undefined ? undefined : parseReport(reply)) ??
       blocked(worker, environmentId, `Worker ended ${status} without a report.`);
-    const published =
+    const published: Publication | undefined =
       status === "completed" && worker.kind === "build"
         ? yield* publish(worker, read.thread.worktreePath)
         : undefined;
@@ -869,14 +972,58 @@ const make = Effect.gen(function* () {
           }),
         }),
       );
-    return yield* record(worker, {
-      key: `worker-report:${answer.runId}`,
+    return yield* settleRun(worker, {
+      runId: answer.runId,
       status,
       endedAt:
         completedAt == null
           ? yield* Clock.currentTimeMillis
           : DateTime.toEpochMillis(DateTime.makeUnsafe(completedAt)),
-      report: withPublication(report, published),
+      report,
+      published,
+    });
+  });
+
+  /**
+   * A finished run's outcome: recorded and reported, unless Kin holds its commit for the owner.
+   * Then the lead hears that now and the attempt stays open; the owner's tap or a stop ends it.
+   */
+  const settleRun = Effect.fn("WorkerTracker.settleRun")(function* (
+    worker: WorkerRow,
+    input: {
+      readonly runId: string;
+      readonly status: OrchestrationV2RunStatus;
+      readonly endedAt: number;
+      readonly report: WorkerReport;
+      readonly published: Publication | undefined;
+    },
+  ) {
+    const report = withPublication(input.report, input.published);
+    if (input.published !== undefined && "held" in input.published) {
+      if (input.published.held === "owner") {
+        const key = `worker-held:${input.runId}:${input.published.sha}`;
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const current = yield* workerRow(worker.orgId, worker.workerId);
+            if (current === undefined || current.startedAt !== worker.startedAt) return;
+            yield* enqueueReport(current, key, input.endedAt, report);
+          }),
+        );
+        return true;
+      }
+      // Not published, by the owner's choice: the attempt ends as an interrupted one does.
+      return yield* record(worker, {
+        key: `worker-report:${input.runId}`,
+        status: "interrupted",
+        endedAt: input.endedAt,
+        report,
+      });
+    }
+    return yield* record(worker, {
+      key: `worker-report:${input.runId}`,
+      status: input.status,
+      endedAt: input.endedAt,
+      report,
     });
   });
 
@@ -929,7 +1076,7 @@ const make = Effect.gen(function* () {
       status === "completed" && worker.kind === "build"
         ? Option.getOrUndefined(yield* projects.getById(worker.projectId))
         : undefined;
-    const published =
+    const published: Publication | undefined =
       status !== "completed" || worker.kind !== "build"
         ? undefined
         : project === undefined
@@ -940,14 +1087,15 @@ const make = Effect.gen(function* () {
               projectRoot: project.workspaceRoot,
             });
     if (published !== undefined && "url" in published) yield* linkPullRequest(worker, published);
-    return yield* record(worker, {
-      key: `worker-report:${run.id}`,
+    return yield* settleRun(worker, {
+      runId: run.id,
       status,
       endedAt:
         run.completedAt === null
           ? yield* Clock.currentTimeMillis
           : DateTime.toEpochMillis(run.completedAt),
-      report: withPublication(report, published),
+      report,
+      published,
     });
   });
 
@@ -1290,6 +1438,19 @@ const make = Effect.gen(function* () {
     }
   });
   yield* records.attachWithdrawals(withdrawn);
+
+  // The owner's tap on a publish card: the attempt's follower publishes, or ends it unpublished.
+  // The decision is on the attempt's row, so a restart's followers find it even if this missed it.
+  const decisions = yield* hub.subscribeAll.pipe(Effect.provideService(Scope.Scope, followers));
+  yield* Stream.runForEach(decisions, (event) => {
+    if (event.type !== "widget.updated" || event.widget.type !== KIN_WORKER_PUBLISH_CARD)
+      return Effect.void;
+    const card = decodePublishCard(event.widget.state);
+    return Option.isSome(card) &&
+      (card.value.status === "publishing" || card.value.status === "declined")
+      ? track(event.orgId, card.value.workerId).pipe(Effect.asVoid)
+      : Effect.void;
+  }).pipe(Effect.ignoreCause({ log: true }), Effect.forkIn(followers));
 
   const strays = new Set<string>();
   const strayDelegation = Effect.fn("WorkerTracker.strayDelegation")(function* (

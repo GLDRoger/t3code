@@ -381,6 +381,58 @@ describe("reminder and scheduled task cards", () => {
   });
 });
 
+describe("worker publish card", () => {
+  const text = "Kin is holding a worker's changes until you choose to publish them.";
+  const state = {
+    text,
+    workerId: "wk-1",
+    sha: "a".repeat(40),
+    repository: "acme/app",
+    why: ["public_repository", "sensitive_work"],
+    branch: "kin/worker/wk-1",
+    pullRequestTitle: "Fix the flaky test",
+    files: [
+      { path: "src/flaky.test.ts", added: 3, removed: 1 },
+      { path: "logo.png", added: null, removed: null },
+    ],
+    moreFiles: 2,
+    status: "waiting",
+  };
+  const card = (overrides: Record<string, unknown> = {}, closedAt: string | null = null) =>
+    widget({ type: "worker_publish", state: { ...state, ...overrides }, closedAt });
+
+  it("asks once, quoting the lead's title, and posts the commit it shows", () => {
+    const view = kinCardView(card(), HOST, known());
+    if (view.kind !== "deferral") throw new Error(`expected a deferral view, got ${view.kind}`);
+    expect(view.deferral).toMatchObject({ title: "Publish to acme/app?", itemId: "a".repeat(40) });
+    expect(view.deferral.lines).toEqual([
+      "The repository is public: anyone can read what Kin pushes.",
+      "This work involves something marked sensitive in Work.",
+      "Branch kin/worker/wk-1, commit aaaaaaa.",
+      'Pull request title, from your lead (unchecked): "Fix the flaky test"',
+      "src/flaky.test.ts +3 −1",
+      "logo.png (binary)",
+      "and 2 more files.",
+    ]);
+    expect(view.deferral.actions.map((action) => action.id)).toEqual(["publish", "dont_publish"]);
+    for (const [status, line] of [
+      ["publishing", "Publishing."],
+      ["declined", "Not published. The changes stay on the host."],
+      ["stopped", "The work was stopped, so nothing was published."],
+    ] as const) {
+      const settled = kinCardView(card({ status }), HOST, known());
+      expect(settled).toMatchObject({ deferral: { lines: [line], actions: [] } });
+    }
+  });
+
+  it("reads as its fixed line on a build that doesn't know the card", () => {
+    expect(kinCardView(widget({ type: "worker_publish_next", state }), HOST, known())).toEqual({
+      kind: "unknown",
+      text,
+    });
+  });
+});
+
 describe("digest cards", () => {
   const row = (overrides: Record<string, unknown> = {}) => ({
     section: "overdue",
