@@ -745,10 +745,14 @@ it.effect(
         });
         const management = Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadProjection: () => Effect.succeed(projection(orgA)),
+          // Reaching the inner send is what passing through means here.
           sendToThread: (input) =>
-            Effect.sync(() => {
+            Effect.gen(function* () {
               sends.push(input.scheduledTaskId ?? "unscheduled");
-              return { threadId: projection(orgA).thread.id };
+              return yield* new OrchestratorCommandRejectedError({
+                commandId: input.commandId,
+                commandType: "test.inner_send",
+              });
             }),
         });
         yield* Effect.gen(function* () {
@@ -786,15 +790,15 @@ it.effect(
             const refused = yield* launcher.launch(fire(kinTask)).pipe(Effect.flip);
             assert.strictEqual(refused._tag, "ThreadLaunchError", mode);
             assert.lengthOf(launches, 0, mode);
-            assert.strictEqual(
-              (yield* bound(kinTask).pipe(Effect.flip))._tag,
-              "OrchestratorCommandRejectedError",
-              mode,
-            );
+            assert.notInclude(yield* bound(kinTask).pipe(Effect.flip), {
+              commandType: "test.inner_send",
+            });
             assert.deepStrictEqual(sends, [], mode);
             // The developer's own tasks keep launching and sending as before.
             yield* launcher.launch(fire(ordinary));
-            yield* bound(ordinary);
+            assert.include(yield* bound(ordinary).pipe(Effect.flip), {
+              commandType: "test.inner_send",
+            });
             assert.deepStrictEqual(
               launches.map((input) => input.initialMessage?.scheduledTaskId),
               [ordinary],
