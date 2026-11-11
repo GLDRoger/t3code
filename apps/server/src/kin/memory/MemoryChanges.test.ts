@@ -556,6 +556,7 @@ it.effect("a suggestion stored after a listing stays out of that listing's yes",
     const memory = Context.get(services, KinMemoryChanges);
     yield* memory.attachWriter({
       undo: () => Effect.die("Unused"),
+      retire: () => Effect.die("Unused"),
       items: () => Effect.succeed(items),
       relabel: (_org, input) =>
         Effect.succeed({ head: items.find((each) => each.head.id === input.itemId)!.head }),
