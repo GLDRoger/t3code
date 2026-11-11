@@ -33,6 +33,7 @@ const leadReasons = {
   not_found: "not_found",
   retired: "not_found",
   conflict: "conflict",
+  last_agent: "invalid_state",
 } as const satisfies Record<LeadProvision.KinLeadProvisionError["reason"], KinChatError["reason"]>;
 const toLeadError = (error: unknown) =>
   leadRefusal(error)
@@ -301,7 +302,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
             // An org the session's person isn't in has no leads to show them.
             if (person === undefined) return { leads: [], contacts: [] };
             return yield* Effect.all({
-              leads: LeadProvision.profiles(person),
+              leads: LeadProvision.profiles(person, { includeRetired: input.includeRetired }),
               contacts: LeadProvision.contacts(person),
             }).pipe(Effect.provideContext(kin.value.services.value));
           }),
@@ -322,6 +323,40 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
               agentId,
               fields,
             }).pipe(Effect.provideContext(kin.value.services.value));
+          }),
+        ),
+        Effect.mapError(toLeadError),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.lead.retire": (input) =>
+      services.pipe(
+        Effect.flatMap(() =>
+          Effect.gen(function* () {
+            if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+            const result = yield* LeadProvision.retire({
+              ...input,
+              by: { _tag: "session", session },
+            }).pipe(Effect.provideContext(kin.value.services.value));
+            return result.profile;
+          }),
+        ),
+        Effect.mapError(toLeadError),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.lead.restore": (input) =>
+      services.pipe(
+        Effect.flatMap(() =>
+          Effect.gen(function* () {
+            if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+            const result = yield* LeadProvision.restore({
+              ...input,
+              by: { _tag: "session", session },
+            }).pipe(Effect.provideContext(kin.value.services.value));
+            return result.profile;
           }),
         ),
         Effect.mapError(toLeadError),

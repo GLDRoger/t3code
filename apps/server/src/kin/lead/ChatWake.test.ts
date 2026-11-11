@@ -27,6 +27,7 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Presence from "../reply/KinPresence.ts";
 import * as ChatWake from "./ChatWake.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
+import { retiredAgentNotice, retiredNoticeId } from "./Retirement.ts";
 
 const decodeMessage = Schema.decodeUnknownSync(KinMessage);
 const decodeEventJson = Schema.decodeEffect(Schema.fromJsonString(KinEvent));
@@ -361,6 +362,8 @@ describe("ChatWake", () => {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`UPDATE kin_agents SET retired_at = ${createdAt} WHERE agent_id = 'lead-b'`;
       yield* storeMessage(message("b", "missed-by-retired"));
+      // Messages stored here pick their own seq; Kin's notices take the chat's next.
+      yield* sql`UPDATE kin_chats SET last_seq = 10 WHERE chat_id = 'chat-b'`;
       const { attempts, settle } = yield* start();
       yield* post("a", "reply", { agent: true });
       // The bridge itself skips retired leads; the queue's own refusal is a second line.
@@ -371,6 +374,24 @@ describe("ChatWake", () => {
       assert.deepStrictEqual(keys((yield* storedEvents()).map(({ event }) => event)), [
         "chat-message:wake:lead-a",
       ]);
+      // Writing to it got Kin's fixed line, once per message, and no turn.
+      yield* storeMessage(message("b", "while-retired", { seq: 3 }));
+      yield* post("b", "while-retired", { seq: 3 });
+      yield* post("b", "while-retired", { seq: 3 });
+      yield* settle;
+      const notices = sql`SELECT message_id, chat_id, kind, body FROM kin_messages
+        WHERE org_id = 'b' AND author_kind = 'system' ORDER BY message_id`;
+      const line = { chat_id: "chat-b", kind: "system", body: retiredAgentNotice("Lead") };
+      assert.deepStrictEqual(yield* notices, [
+        { message_id: retiredNoticeId(KinMessageId.make("to-retired")), ...line },
+        { message_id: retiredNoticeId(KinMessageId.make("while-retired")), ...line },
+      ]);
+      assert.deepStrictEqual(keys(attempts), ["chat-message:wake:lead-a"]);
+      // Restored, catch-up takes up what it missed while down, never what Kin already answered.
+      yield* sql`UPDATE kin_agents SET retired_at = NULL WHERE agent_id = 'lead-b'`;
+      const restarted = yield* start();
+      yield* restarted.settle;
+      assert.deepStrictEqual(keys(restarted.attempts), ["chat-message:missed-by-retired:lead-b"]);
     }).pipe(Effect.provide(services)),
   );
 

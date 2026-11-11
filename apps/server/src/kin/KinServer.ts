@@ -12,6 +12,7 @@ import type * as SqlClient from "effect/sql/SqlClient";
 import { KinEventQueue } from "./lead/KinEventQueue.ts";
 import { ApproverKeys } from "./approvals/ApproverKeys.ts";
 import { GrantVerifier } from "./approvals/GrantVerifier.ts";
+import type { KinPendingActions } from "./approvals/PendingActions.ts";
 import { KinStop } from "./lead/KinStop.ts";
 import type { KinLevelGate } from "./lead/LevelGate.ts";
 import type { KinLevelControl } from "./levels/LevelControl.ts";
@@ -41,6 +42,7 @@ export type Services =
   | KinGithubWebhookLock
   | ApproverKeys
   | GrantVerifier
+  | KinPendingActions
   | KinPushDevices
   | KinPushPresence
   | KinPushSender

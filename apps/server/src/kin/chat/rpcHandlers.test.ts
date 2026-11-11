@@ -975,6 +975,45 @@ it.effect("creates many leads over RPC for the owner only, through the CLI's cre
       yield* sql`SELECT domain FROM kin_leads WHERE org_id = ${person.orgId} ORDER BY domain`,
       [{ domain: "growth" }, { domain: "social-media" }],
     );
+
+    // Retiring and restoring are the owner's: a member reads the agent as not there, and a
+    // session without the settings grant (a chat-only one included) never reaches the service.
+    const target = { ...org, agentId: social.agentId };
+    assert.include(yield* member["kin.lead.retire"](target).pipe(Effect.flip), {
+      reason: "not_found",
+    });
+    const chatOnly = yield* clientFor(handlers, [AuthKinChatScope]);
+    for (const caller of [operator, chatOnly])
+      for (const method of ["kin.lead.retire", "kin.lead.restore"] as const)
+        assert.strictEqual(
+          (yield* caller[method](target).pipe(Effect.flip))._tag,
+          "EnvironmentAuthorizationError",
+        );
+    const retired = yield* client["kin.lead.retire"](target);
+    assert.strictEqual(retired.retired?.byPersonId, person.personId);
+    assert.deepStrictEqual(
+      (yield* client["kin.leads.list"](org)).leads.map((lead) => lead.agentId),
+      [growth.agentId],
+    );
+    assert.deepStrictEqual(
+      (yield* client["kin.leads.list"]({ ...org, includeRetired: true })).leads.map((lead) => [
+        lead.agentId,
+        lead.retired !== undefined,
+      ]),
+      [
+        [growth.agentId, false],
+        [social.agentId, true],
+      ],
+    );
+    // The owner's last agent stays.
+    assert.include(
+      yield* client["kin.lead.retire"]({ ...org, agentId: growth.agentId }).pipe(Effect.flip),
+      { reason: "invalid_state" },
+    );
+    assert.include(yield* member["kin.lead.restore"](target).pipe(Effect.flip), {
+      reason: "not_found",
+    });
+    assert.isUndefined((yield* client["kin.lead.restore"](target)).retired);
   }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 

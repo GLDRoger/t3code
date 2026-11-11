@@ -37,12 +37,17 @@ import * as ChatService from "../chat/KinChatService.ts";
 import { KinIdentity, KinIdentityConfig, type PersonIdentity } from "../chat/KinIdentity.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
+import * as Audit from "../approvals/Audit.ts";
+import * as PendingActions from "../approvals/PendingActions.ts";
+import { KinEventQueue } from "./KinEventQueue.ts";
 import * as KinLevels from "./KinLevels.ts";
+import { KinStop } from "./KinStop.ts";
+import * as Retirement from "./Retirement.ts";
 import * as LeadAccess from "./LeadAccess.ts";
 import { nonClaudeLeadModel } from "./leadModels.ts";
 
-// `create` has two callers: the host's `kin lead` CLI and the owner's `kin.lead.create` RPC.
-// `profiles`, `contacts` and `update` back `kin.leads.list` and `kin.lead.update`; `access`,
+// `create`, `retire` and `restore` have two callers: the host's `kin lead` CLI and the owner's
+// RPCs. `profiles`, `contacts` and `update` back `kin.leads.list` and `kin.lead.update`; `access`,
 // `allow` and `disallow` back `kin.lead.access.*`. The rest is CLI only. No MCP tool or agent
 // reaches any of it.
 
@@ -57,6 +62,8 @@ export class KinLeadProvisionError extends Schema.TaggedError<KinLeadProvisionEr
       "retired",
       "conflict",
       "not_claude",
+      // The owner would be left with no agent to talk to.
+      "last_agent",
     ]),
     message: Schema.String,
   },
@@ -69,6 +76,8 @@ export class KinLeadProvisionError extends Schema.TaggedError<KinLeadProvisionEr
 export type LeadCreator =
   | { readonly _tag: "session"; readonly session: AuthenticatedSession }
   | { readonly _tag: "person"; readonly personId: KinPersonId };
+/** Who retires or restores one: a person, or the host's own command, which acts as its owner. */
+export type LeadActor = LeadCreator | { readonly _tag: "host" };
 
 export const LeadSummary = Schema.Struct({
   orgId: KinOrgId,
@@ -84,6 +93,7 @@ export const LeadSummary = Schema.Struct({
   models: Schema.fromJsonString(KinLead.fields.models),
   workerProjects: Schema.fromJsonString(KinLead.fields.workerProjects),
   retiredAt: Schema.NullOr(Schema.String),
+  retiredByPersonId: Schema.NullOr(KinPersonId),
 });
 export type LeadSummary = typeof LeadSummary.Type;
 const decodeLeads = Schema.decodeUnknownEffect(Schema.Array(LeadSummary));
@@ -125,7 +135,8 @@ const leadsIn = Effect.fn("KinLeadProvision.leadsIn")(function* (
   const rows = yield* sql`SELECT l.org_id AS "orgId", l.agent_id AS "agentId", l.name, l.domain,
       l.charter, l.public_intro AS intro, l.level, a.owner_person_id AS "ownerPersonId",
       l.created_by_person_id AS "createdByPersonId", l.owner_chat_id AS "ownerChatId",
-      l.models_json AS models, l.worker_projects_json AS "workerProjects", a.retired_at AS "retiredAt"
+      l.models_json AS models, l.worker_projects_json AS "workerProjects", a.retired_at AS "retiredAt",
+      a.retired_by_person_id AS "retiredByPersonId"
     FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
     WHERE l.org_id = ${orgId} AND a.role = 'lead'
       ${options.liveOnly ? sql`AND a.retired_at IS NULL` : sql``}
@@ -261,29 +272,6 @@ export const create = Effect.fn("KinLeadProvision.create")(function* (input: Cre
 export const list = Effect.fn("KinLeadProvision.list")(function* () {
   const identity = yield* KinIdentity;
   return yield* leadsIn(identity.owner.orgId, { liveOnly: false });
-});
-
-/** Marks the lead retired. The server's wake-up runner then expires its queue and ends its thread. */
-export const retire = Effect.fn("KinLeadProvision.retire")(function* (agentId: KinAgentId) {
-  const sql = yield* SqlClient.SqlClient;
-  const { orgId } = (yield* KinIdentity).owner;
-  return yield* transaction(
-    sql,
-    "KinLeadProvision.retire",
-    Effect.gen(function* () {
-      const [lead] = yield* leadsIn(orgId, { liveOnly: false, agentId });
-      if (lead === undefined)
-        return yield* refuse("not_found", `Org ${orgId} has no lead ${agentId}.`);
-      if (lead.retiredAt !== null) return { _tag: "already_retired" as const, lead };
-      const retiredAt = DateTime.formatIso(yield* DateTime.now);
-      const changed = yield* sql`UPDATE kin_agents SET retired_at = ${retiredAt}
-          WHERE org_id = ${orgId} AND agent_id = ${agentId} AND role = 'lead' AND retired_at IS NULL
-          RETURNING agent_id`;
-      if (changed.length === 0)
-        return yield* refuse("conflict", `Lead ${agentId} changed while retiring.`);
-      return { _tag: "retired" as const, lead: { ...lead, retiredAt } };
-    }),
-  );
 });
 
 /** Replaces a live lead's worker projects. Readers query the row per call, so it applies at once. */
@@ -485,17 +473,33 @@ const profileOf = (
       ...(item.key === null ? {} : { key: item.key }),
       ...(item.state === null ? {} : { state: item.state }),
     })),
+  ...(lead.retiredAt === null
+    ? {}
+    : {
+        retired: {
+          at: DateTime.formatIso(DateTime.makeUnsafe(lead.retiredAt)),
+          byPersonId: lead.retiredByPersonId,
+        },
+      }),
 });
 
 /**
- * The person's own live leads, oldest first. Someone with none, such as a teammate, gets none.
- * Plain reads, outside a transaction, so a client's list never holds the writer's lock.
+ * The person's own live leads, oldest first, then with `includeRetired` their retired ones.
+ * Someone with none, such as a teammate, gets none. Plain reads, outside a transaction, so a
+ * client's list never holds the writer's lock.
  */
-export const profiles = Effect.fn("KinLeadProvision.profiles")(function* (person: PersonIdentity) {
+export const profiles = Effect.fn("KinLeadProvision.profiles")(function* (
+  person: PersonIdentity,
+  options: { readonly includeRetired?: boolean | undefined } = {},
+) {
   const sql = yield* SqlClient.SqlClient;
-  const leads = (yield* leadsIn(person.orgId, { liveOnly: true })).filter(
+  const own = (yield* leadsIn(person.orgId, { liveOnly: options.includeRetired !== true })).filter(
     (lead) => lead.ownerPersonId === person.personId,
   );
+  const leads = [
+    ...own.filter((lead) => lead.retiredAt === null),
+    ...own.filter((lead) => lead.retiredAt !== null),
+  ];
   if (leads.length === 0) return [];
   const running = yield* sql<{ agentId: string }>`SELECT agent_id AS "agentId" FROM kin_wakeups
     WHERE org_id = ${person.orgId} AND status = 'running' ORDER BY agent_id`.pipe(
@@ -525,18 +529,178 @@ export const update = Effect.fn("KinLeadProvision.update")(function* (input: {
     sql,
     "KinLeadProvision.update",
     Effect.gen(function* () {
-      const lead = yield* change(person.orgId, input.agentId, input.fields, person.personId);
-      const running = yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${lead.orgId}
-        AND agent_id = ${lead.agentId} AND status = 'running' ORDER BY wakeup_id`.pipe(
-        Effect.mapError(toPersistenceSqlError("KinLeadProvision.update")),
-      );
-      return profileOf(
-        lead,
-        new Set(running.length > 0 ? [lead.agentId] : []),
-        yield* tracked(lead.orgId),
+      return yield* profileIn(
+        yield* change(person.orgId, input.agentId, input.fields, person.personId),
       );
     }),
   );
+});
+
+/** One lead's profile, read inside the caller's transaction. */
+const profileIn = Effect.fn("KinLeadProvision.profileIn")(function* (lead: LeadSummary) {
+  const sql = yield* SqlClient.SqlClient;
+  const running = yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${lead.orgId}
+    AND agent_id = ${lead.agentId} AND status = 'running' ORDER BY wakeup_id`.pipe(
+    Effect.mapError(toPersistenceSqlError("KinLeadProvision.profileIn")),
+  );
+  return profileOf(
+    lead,
+    new Set(running.length > 0 ? [lead.agentId] : []),
+    yield* tracked(lead.orgId),
+  );
+});
+
+/**
+ * The lead a person may retire or restore, by the authority that may make it: the org's owner,
+ * any of the org's; its creator, their own once members may create (`mayCreate`); anyone else's
+ * reads as not found. The host's command acts as the owner. Inside the caller's transaction.
+ */
+const retirable = Effect.fn("KinLeadProvision.retirable")(function* (input: {
+  readonly by: LeadActor;
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+}) {
+  const { owner } = yield* KinIdentity;
+  const missing = refuse("not_found", `Org ${input.orgId} has no lead ${input.agentId}.`);
+  const person: PersonIdentity | undefined =
+    input.by._tag === "host" ? undefined : yield* creatorFor(input.by);
+  const orgId = person?.orgId ?? owner.orgId;
+  if (orgId !== input.orgId) return yield* missing;
+  const [lead] = yield* leadsIn(orgId, { liveOnly: false, agentId: input.agentId });
+  if (lead === undefined) return yield* missing;
+  if (person !== undefined && person.personId !== owner.personId) {
+    if (lead.ownerPersonId !== person.personId) return yield* missing;
+    yield* mayCreate(person);
+  }
+  return { lead, by: person?.personId ?? null };
+});
+
+/**
+ * Retires a lead. It is not deleted: its chats, history, memory and Work stay, and `restore`
+ * brings it back. In one transaction: no turn of it runs again, what it has in flight stops or
+ * waits (`Retirement.retire`), and after commit its running turns are stopped. The owner keeps
+ * at least one live lead of their own, so there is always someone to talk to.
+ */
+export const retire = Effect.fn("KinLeadProvision.retire")(function* (input: {
+  readonly by: LeadActor;
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const stop = yield* Effect.serviceOption(KinStop);
+  const queue = yield* Effect.serviceOption(KinEventQueue);
+  const presence = yield* Effect.serviceOption(KinPresence);
+  return yield* transaction(
+    sql,
+    "KinLeadProvision.retire",
+    Effect.gen(function* () {
+      const { lead, by } = yield* retirable(input);
+      if (lead.retiredAt !== null)
+        return { _tag: "already_retired" as const, lead, profile: yield* profileIn(lead) };
+      const { owner } = yield* KinIdentity;
+      const others = (yield* leadsIn(lead.orgId, { liveOnly: true })).filter(
+        (entry) => entry.agentId !== lead.agentId && entry.ownerPersonId === owner.personId,
+      );
+      if (lead.ownerPersonId === owner.personId && others.length === 0)
+        return yield* refuse(
+          "last_agent",
+          `${lead.name} is your only agent. Create another before retiring it.`,
+        );
+      const now = yield* DateTime.now;
+      const retiredAt = DateTime.formatIso(now);
+      const changed = yield* sql`UPDATE kin_agents
+          SET retired_at = ${retiredAt}, retired_by_person_id = ${by}
+          WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId} AND role = 'lead'
+            AND retired_at IS NULL
+          RETURNING agent_id`;
+      if (changed.length === 0)
+        return yield* refuse("conflict", `Lead ${lead.agentId} changed while retiring.`);
+      const stopped = yield* Retirement.retire({
+        orgId: lead.orgId,
+        agentId: lead.agentId,
+        retiredAt,
+        now: DateTime.toEpochMillis(now),
+      });
+      const after = Effect.gen(function* () {
+        if (Option.isSome(stop) && stopped.turns.length > 0)
+          yield* stop.value.abortTurns(lead.orgId, stopped.turns);
+        // Wakes the runner, which ends its thread and sends its workers' stored stops.
+        if (Option.isSome(queue))
+          yield* queue.value
+            .expireAgent(lead.orgId, lead.agentId)
+            .pipe(Effect.catchCause((cause) => Effect.logWarning("Kin retire wake failed", cause)));
+        if (Option.isSome(presence))
+          yield* syncQueued(presence.value, lead.orgId, lead.agentId).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.catchCause((cause) => Effect.logWarning("Kin retire line failed", cause)),
+          );
+      });
+      yield* sql.afterCommit(after);
+      const retired = { ...lead, retiredAt, retiredByPersonId: by };
+      return { _tag: "retired" as const, lead: retired, profile: yield* profileIn(retired) };
+    }),
+  );
+});
+
+/**
+ * Brings a retired lead back as it was: its chats, level, access and Work, and the timers and
+ * schedules retiring paused. Its next turn starts a fresh thread. Workers it had stay stopped
+ * and events that expired stay expired. Refused while another live lead has its name and domain.
+ */
+export const restore = Effect.fn("KinLeadProvision.restore")(function* (input: {
+  readonly by: LeadActor;
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* transaction(
+    sql,
+    "KinLeadProvision.restore",
+    Effect.gen(function* () {
+      const { lead } = yield* retirable(input);
+      if (lead.retiredAt === null)
+        return { _tag: "already_live" as const, lead, profile: yield* profileIn(lead) };
+      const twin = (yield* leadsIn(lead.orgId, { liveOnly: true })).find(
+        (entry) =>
+          entry.ownerPersonId === lead.ownerPersonId &&
+          entry.name === lead.name &&
+          entry.domain === lead.domain,
+      );
+      if (twin !== undefined)
+        return yield* refuse(
+          "conflict",
+          `Another lead is already called ${lead.name} in ${lead.domain}.`,
+        );
+      const changed = yield* sql`UPDATE kin_agents
+          SET retired_at = NULL, retired_by_person_id = NULL
+          WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId} AND role = 'lead'
+            AND retired_at IS NOT NULL
+          RETURNING agent_id`;
+      if (changed.length === 0)
+        return yield* refuse("conflict", `Lead ${lead.agentId} changed while restoring.`);
+      yield* Retirement.restore({
+        orgId: lead.orgId,
+        agentId: lead.agentId,
+        now: DateTime.toEpochMillis(yield* DateTime.now),
+      });
+      const restored = { ...lead, retiredAt: null, retiredByPersonId: null };
+      return { _tag: "restored" as const, lead: restored, profile: yield* profileIn(restored) };
+    }),
+  );
+});
+
+/** The host's `kin lead retire` and `restore`: the same methods, acting as the host's owner. */
+export const retireOnHost = Effect.fn("KinLeadProvision.retireOnHost")(function* (
+  agentId: KinAgentId,
+) {
+  const { owner } = yield* KinIdentity;
+  return yield* retire({ by: { _tag: "host" }, orgId: owner.orgId, agentId });
+});
+export const restoreOnHost = Effect.fn("KinLeadProvision.restoreOnHost")(function* (
+  agentId: KinAgentId,
+) {
+  const { owner } = yield* KinIdentity;
+  return yield* restore({ by: { _tag: "host" }, orgId: owner.orgId, agentId });
 });
 
 /** The caller as the org's owner and the live lead of theirs being shared; anything else is refused. */
@@ -728,6 +892,8 @@ export const contacts = Effect.fn("KinLeadProvision.contacts")(function* (person
 export const layer = Layer.mergeAll(
   KinIdentity.layer.pipe(Layer.provide(KinIdentityConfig.layer)),
   ChatService.layer,
+  // Retiring closes the approval requests a lead raised, from the host too.
+  PendingActions.layer.pipe(Layer.provide(Audit.layer)),
 ).pipe(
   Layer.provideMerge(Hub.layer),
   Layer.provideMerge(Repository.layer),
