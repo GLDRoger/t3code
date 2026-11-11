@@ -294,6 +294,7 @@ export class KinLeadPrompt extends Context.Service<
           SELECT message_id AS "messageId", author_person_id AS "personId", body
           FROM kin_messages WHERE org_id = ${retry.orgId} AND chat_id = ${retry.chatId}
             AND seq < ${retry.seq} AND author_kind <> 'system' AND status = 'posted'
+            AND seq >= COALESCE(${historyFloor(sql, retry.orgId, retry.chatId)}, 0)
           ORDER BY seq DESC LIMIT 1`.pipe(
           Effect.mapError(
             (cause) =>

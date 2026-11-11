@@ -1089,6 +1089,29 @@ it.effect("hands the turn the files on its messages and only names an older mess
     yield* say("moved-on", "Never mind, thanks");
     expect(yield* prompt.attachments({ orgId, events: [event("retried")] })).toEqual([board]);
     expect(yield* prompt.attachments({ orgId, events: [event("moved-on")] })).toEqual([]);
+    // A retry never reaches below the history floor: the file came before the teammate joined.
+    const sketch = attachment("sketch-before-join.png");
+    yield* say("before-join", "And this board?", [sketch]);
+    yield* repo.insertPerson({
+      orgId,
+      personId: teammateId,
+      displayName: "Teammate",
+      handle: "teammate",
+      githubLogin: null,
+      createdAt: timestamp,
+    });
+    yield* repo.addMember({
+      orgId,
+      chatId,
+      memberId: teammateMember,
+      principal: { _tag: "person", personId: teammateId },
+      role: "member",
+      joinedAt: timestamp,
+      leftAt: null,
+      mutedUntil: null,
+    });
+    yield* say("after-join", "And this board?");
+    expect(yield* prompt.attachments({ orgId, events: [event("after-join")] })).toEqual([]);
   }).pipe(Effect.provide(layer)),
 );
 
