@@ -371,6 +371,8 @@ export class KinChatRepository extends Context.Service<
         readonly afterSeq: typeof NonNegativeInt.Type;
         readonly limit: number;
         readonly viewerMemberId?: KinMemberId;
+        /** A shared turn's read: nothing below the chat's history floor (`historyFloor`). */
+        readonly fromHistoryFloor?: boolean;
       },
     ) => Effect.Effect<ReadonlyArray<KinMessage>, RepositoryError>;
     readonly insertWidget: (
@@ -1552,7 +1554,7 @@ const make = Effect.gen(function* () {
             () => sql`SELECT ${sql.literal(messageColumns)} FROM kin_messages WHERE org_id = ${input.orgId}
  AND chat_id = ${input.chatId} AND seq > ${request.afterSeq}
  AND (${input.viewerMemberId ?? null} IS NULL OR status NOT IN ('suggested', 'dismissed') OR author_member_id = ${input.viewerMemberId ?? null} OR EXISTS (SELECT 1 FROM kin_chat_members WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND member_id = ${input.viewerMemberId ?? null} AND role = 'owner'))
- AND ${readableBy(sql, input.orgId, input.viewerMemberId)} ORDER BY seq LIMIT ${request.limit}`,
+ AND ${readableBy(sql, input.orgId, input.viewerMemberId, input.fromHistoryFloor === true ? input.chatId : undefined)} ORDER BY seq LIMIT ${request.limit}`,
         })(input).pipe(
           NodeSqliteClient.readOnly,
           Effect.map((messages) => messages.map((m) => messageForViewer(m, viewer?.principal))),

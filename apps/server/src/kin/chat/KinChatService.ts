@@ -69,6 +69,7 @@ import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
 import * as Hub from "./KinChatHub.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
+import { effectiveAudience } from "../lead/Audience.ts";
 import { KinStop } from "../lead/KinStop.ts";
 import { isOrgOwner } from "../lead/orgState.ts";
 import * as Repository from "./KinChatRepository.ts";
@@ -411,8 +412,8 @@ const make = Effect.gen(function* () {
     return member;
   });
   /**
-   * Another person's direct chat with a lead is between the two of them: the lead reads it only
-   * on a turn that person's message there woke, never on its owner's. Stored rows decide.
+   * Another person's direct chat with a lead: the lead reads it only on a turn that person's
+   * message there woke, never on its owner's. Stored rows decide.
    */
   const leadMayRead = Effect.fn("KinChatService.leadMayRead")(
     function* (agent: AgentIdentity, chatId: KinChatId) {
@@ -433,6 +434,25 @@ const make = Effect.gen(function* () {
       return asked.length > 0;
     },
     Effect.mapError(toPersistenceSqlError("KinChatService.leadMayRead")),
+  );
+  /** Whether the calling lead's running turn is shared (`effectiveAudience`); none found is. */
+  const sharedTurn = Effect.fn("KinChatService.sharedTurn")(
+    function* (agent: AgentIdentity) {
+      const [row] =
+        agent.wakeupId !== undefined
+          ? [{ wakeupId: agent.wakeupId }]
+          : yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId" FROM kin_wakeups
+              WHERE org_id = ${agent.orgId} AND agent_id = ${agent.agentId}
+                AND thread_id = ${agent.threadId} AND status = 'running'
+              ORDER BY wakeup_id`;
+      if (row === undefined) return true;
+      const turn = { orgId: agent.orgId, agentId: agent.agentId, wakeupId: row.wakeupId };
+      return (
+        (yield* effectiveAudience(turn).pipe(Effect.provideService(SqlClient.SqlClient, sql))) ===
+        "shared"
+      );
+    },
+    Effect.mapError(toPersistenceSqlError("KinChatService.sharedTurn")),
   );
   const authorFor = (identity: Identity, member: KinChatMember): KinAuthor =>
     identity._tag === "person"
@@ -954,13 +974,31 @@ const make = Effect.gen(function* () {
         Effect.fn("KinChatService.org")(function* (identity) {
           const org = yield* requireRecord(repo.getOrg(identity));
           const agents = yield* repo.listAgents(identity);
+          // Only the agents this person owns (the owner owns every one), may message, or shares
+          // a chat with: a teammate does not learn the rest exist.
+          const visible = yield* sql<{ agentId: string }>`SELECT a.agent_id AS "agentId"
+            FROM kin_agents a WHERE a.org_id = ${identity.orgId} AND (
+              a.owner_person_id = ${identity.personId}
+              OR EXISTS (SELECT 1 FROM kin_lead_access x WHERE x.org_id = a.org_id
+                AND x.agent_id = a.agent_id AND x.person_id = ${identity.personId}
+                AND x.revoked_at IS NULL)
+              OR EXISTS (SELECT 1 FROM kin_chat_members p JOIN kin_chat_members m
+                ON m.org_id = p.org_id AND m.chat_id = p.chat_id AND m.principal_kind = 'agent'
+                  AND m.agent_id = a.agent_id
+                WHERE p.org_id = a.org_id AND p.principal_kind = 'person'
+                  AND p.person_id = ${identity.personId} AND p.left_at IS NULL))`.pipe(
+            Effect.map((rows) => new Set(rows.map((row) => row.agentId))),
+            Effect.mapError(toPersistenceSqlError("KinChatService.org")),
+          );
           return {
             ...org,
-            agents: agents.map(({ agentId, displayName, retiredAt }) => ({
-              agentId,
-              displayName,
-              retired: retiredAt !== null,
-            })),
+            agents: agents
+              .filter(({ agentId }) => visible.has(agentId))
+              .map(({ agentId, displayName, retiredAt }) => ({
+                agentId,
+                displayName,
+                retired: retiredAt !== null,
+              })),
           };
         }),
       );
@@ -1481,6 +1519,8 @@ const make = Effect.gen(function* () {
         afterSeq: request.afterSeq ?? 0,
         limit: request.limit ?? 50,
         viewerMemberId: member.memberId,
+        // Whatever page it asks for, a shared turn sees nothing below the chat's history floor.
+        fromHistoryFloor: identity._tag === "agent" && (yield* sharedTurn(identity)),
       });
     }, transaction),
     history: Effect.fn("KinChatService.history")(

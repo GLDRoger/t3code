@@ -175,8 +175,11 @@ const turnEvent = (id: string): OrchestrationV2DomainEvent => ({
 const setup = Effect.fn("test.setup")(function* (input: {
   readonly level?: "L0" | "L1";
   readonly ask?: string;
-  /** `own-group`: a group the owner owns, with no one else in it yet. */
-  readonly lane?: "direct" | "group" | "own-group";
+  /**
+   * `own-group`: a group the owner owns, with no one else in it yet; `shared-group`: the same,
+   * shared with `mate` before the ask, and the wake-up a shared turn begun after.
+   */
+  readonly lane?: "direct" | "group" | "own-group" | "shared-group";
   readonly reaction?: "👍";
   readonly changedFrom?: "👎";
 }) {
@@ -208,12 +211,16 @@ const setup = Effect.fn("test.setup")(function* (input: {
     yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at) VALUES ('group-owner', ${owner.orgId}, 'group', 'person', ${owner.personId}, 'member', '1970-01-01T00:00:00.000Z')`;
     yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at) VALUES ('group-lead', ${owner.orgId}, 'group', 'agent', ${agentId}, 'member', '1970-01-01T00:00:00.000Z')`;
   }
-  if (input.lane === "own-group") {
+  if (input.lane === "own-group" || input.lane === "shared-group") {
     chatId = KinChatId.make("group");
     yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at) VALUES ('group', ${owner.orgId}, 'team_group', 'Launch', 0, '1970-01-01T00:00:00.000Z')`;
     yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('mate', ${owner.orgId}, 'mate', 'Mate', '1970-01-01T00:00:00.000Z')`;
     yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at) VALUES ('group-owner', ${owner.orgId}, 'group', 'person', ${owner.personId}, 'owner', '1970-01-01T00:00:00.000Z')`;
     yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at) VALUES ('group-lead', ${owner.orgId}, 'group', 'agent', ${agentId}, 'member', '1970-01-01T00:00:00.000Z')`;
+  }
+  if (input.lane === "shared-group") {
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at, joined_seq) VALUES ('group-mate', ${owner.orgId}, 'group', 'person', 'mate', 'member', '1970-01-01T00:00:00.000Z', 1)`;
+    yield* sql`UPDATE kin_chats SET shared_at = -1, shared_from_seq = 1 WHERE chat_id = 'group'`;
   }
   const message =
     input.ask === undefined
@@ -583,6 +590,73 @@ it.effect("a teammate joining mid-draft sees none of it, and the draft ends unse
       ],
     );
     assert.isFalse((yield* Fiber.join(toMate)).some((event) => event.type === "draft.updated"));
+  }).pipe(Effect.provide(layer)),
+);
+
+// Review of cc5b670e33: a shared turn read the group from its latest join; a later one aborts it.
+it.effect("someone joining a shared group mid-draft sees none of it, and the turn is aborted", () =>
+  Effect.gen(function* () {
+    const { fake, runId, owner, services, chatId, wakeupId, sql } = yield* setup({
+      lane: "shared-group",
+      ask: "Plan the launch",
+    });
+    yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = ${wakeupId}`;
+    const hub = Context.get(services, KinChatHub);
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('pat', ${owner.orgId}, 'pat', 'Pat', '1970-01-01T00:00:00.000Z')`;
+    const pat = { _tag: "person", orgId: owner.orgId, personId: KinPersonId.make("pat") } as const;
+    const toPat = yield* (yield* hub.subscribeForViewer(pat)).pipe(
+      Stream.takeUntil(
+        (event) => event.type === "message.posted" && event.message.body === "Sentinel",
+      ),
+      Stream.runCollect,
+      Effect.forkScoped,
+    );
+    const firstDraft = yield* (yield* hub.subscribeAll).pipe(
+      Stream.filter((event) => event.type === "draft.updated" && event.draft.text !== ""),
+      Stream.take(1),
+      Stream.runCollect,
+      Effect.forkScoped,
+    );
+    const labelled = yield* (yield* hub.subscribeAll).pipe(
+      Stream.filter(
+        (event) =>
+          event.type === "presence.updated" && event.presence?.label === "Setting a reminder",
+      ),
+      Stream.take(1),
+      Stream.runCollect,
+      Effect.forkScoped,
+    );
+    const streaming = (body: string) =>
+      itemEvent({
+        ...text("a", 1, "", runId),
+        text: body,
+        streaming: true,
+      } as OrchestrationV2TurnItem);
+    yield* TestClock.adjust("1 second");
+    const plan = `Invented launch plan: ${"step after step, ".repeat(10)}`;
+    yield* Queue.offer(fake.live, streaming(plan));
+    yield* Fiber.join(firstDraft);
+    yield* Context.get(services, KinGroups).addMember([owner], {
+      chatId,
+      principal: { _tag: "person", personId: pat.personId },
+    });
+    assert.lengthOf(
+      yield* sql`SELECT 1 FROM kin_wakeups WHERE wakeup_id = ${wakeupId} AND aborted_at IS NOT NULL`,
+      1,
+    );
+    yield* TestClock.adjust("1 second");
+    yield* Queue.offer(fake.live, streaming(`${plan}and what was said before Pat came`));
+    yield* Queue.offer(
+      fake.live,
+      itemEvent({ ...tool("t", 2, "mcp__kin__kin_defer", runId), status: "running" }),
+    );
+    yield* Fiber.join(labelled);
+    yield* Context.get(services, KinChatService).send(owner, {
+      chatId,
+      body: "Sentinel",
+      clientMessageId: "sentinel",
+    });
+    assert.isFalse((yield* Fiber.join(toPat)).some((event) => event.type === "draft.updated"));
   }).pipe(Effect.provide(layer)),
 );
 

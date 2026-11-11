@@ -141,6 +141,8 @@ export const KinLeadContact = Schema.Struct({
   intro: KinLeadIntro,
   // The viewer's own direct chat with it.
   chatId: KinChatId,
+  // Who runs the workspace and so can see the chat. Older hosts leave it out.
+  ownerName: Schema.optional(TrimmedNonEmptyString),
 });
 export type KinLeadContact = typeof KinLeadContact.Type;
 export const KinLeadsListResult = Schema.Struct({

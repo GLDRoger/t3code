@@ -313,6 +313,7 @@ describe("KinStop", () => {
       }>`SELECT json, priority FROM kin_events WHERE org_id = ${orgId} AND tag = 'resume' ORDER BY event_id`;
       assert.lengthOf(resumes, 1);
       assert.strictEqual(resumes[0]!.priority, "P0");
+      assert.match(JSON.parse(resumes[0]!.json).eventId, /^resume-[a-f0-9]{32}$/);
       assert.isTrue(paused.paused);
       assert.include(JSON.parse(resumes[0]!.json), {
         _tag: "resume",

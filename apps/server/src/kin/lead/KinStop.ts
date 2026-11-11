@@ -41,6 +41,7 @@ import * as Chat from "../chat/KinChatRepository.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import type * as Routines from "../triggers/routines.ts";
 import * as Queue from "./KinEventQueue.ts";
+import { hashedEventId } from "./eventIds.ts";
 import { isOrgOwner, isOrgPaused, STOP_REASON } from "./orgState.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
 
@@ -317,7 +318,8 @@ const make = Effect.gen(function* () {
                 a.receivedAt - b.receivedAt ||
                 (a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0),
             );
-          const eventId = `resume:${cleared.pausedAt}:${lead.agentId}`;
+          const dedupeKey = `resume:${cleared.pausedAt}:${lead.agentId}`;
+          const eventId = hashedEventId("resume", dedupeKey);
           yield* queue.enqueue(
             yield* decodeEvent({
               _tag: "resume",
@@ -325,7 +327,7 @@ const make = Effect.gen(function* () {
               agentId: lead.agentId,
               eventId,
               receivedAt: iso(now),
-              dedupeKey: eventId,
+              dedupeKey,
               provenance: { _tag: "system" },
               pausedAt: iso(cleared.pausedAt),
               expired: {

@@ -26,6 +26,7 @@ import { buildIndex } from "../memory/buildIndex.ts";
 import { reaching } from "../memory/sensitivity.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
 import { liveReactions, reactionAnswer } from "../chat/reactions.ts";
+import { historyFloor } from "../chat/sharing.ts";
 
 import { SILENT_REPLY } from "../reply/classify.ts";
 import { effectiveAudience, recordAudience, turnAudience, type TurnAudience } from "./Audience.ts";
@@ -295,6 +296,7 @@ export class KinLeadPrompt extends Context.Service<
           SELECT message_id AS "messageId", author_person_id AS "personId", body
           FROM kin_messages WHERE org_id = ${retry.orgId} AND chat_id = ${retry.chatId}
             AND seq < ${retry.seq} AND author_kind <> 'system' AND status = 'posted'
+            AND seq >= COALESCE(${historyFloor(sql, retry.orgId, retry.chatId)}, 0)
           ORDER BY seq DESC LIMIT 1`.pipe(
           Effect.mapError(
             (cause) =>
@@ -461,12 +463,12 @@ export class KinLeadPrompt extends Context.Service<
           });
           const found = yield* chat.getChat({ orgId, chatId });
           if (Option.isNone(member) || Option.isNone(found) || found.value.lastSeq === 0) return [];
-          // A shared turn reads only what was written after the chat was shared: before that it
-          // was the owner's alone, and a chat never shared has nothing a shared turn may read.
+          // A shared turn reads nothing below the chat's history floor, the latest join there.
           const [shared] = ownerOnly
             ? [{ from: 0 }]
-            : yield* sql<{ from: number | null }>`SELECT shared_from_seq AS "from" FROM kin_chats
-                WHERE org_id = ${orgId} AND chat_id = ${chatId} ORDER BY chat_id`;
+            : yield* sql<{
+                from: number | null;
+              }>`SELECT ${historyFloor(sql, orgId, chatId)} AS "from"`;
           const from = shared?.from ?? null;
           if (from === null) return [];
           const page = yield* chat.history({

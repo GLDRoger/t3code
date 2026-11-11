@@ -2,7 +2,7 @@ import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 
 import {
-  AuthOrchestrationReadScope,
+  AuthKinChatScope,
   EnvironmentAuthorizationError,
   type AuthEnvironmentScope,
 } from "./auth.ts";
@@ -122,11 +122,12 @@ export const KinPushRpcs = [
   }),
 ] as const;
 
-// A device only receives what its session can already read, so reading is the gate.
+// Chat access is the gate: a device is bound to its caller's person and session, and gets
+// pushes only for chats that person is in, from when they joined.
 export const KIN_PUSH_RPC_SCOPES = {
-  [KIN_PUSH_WS_METHODS.registerDevice]: AuthOrchestrationReadScope,
-  [KIN_PUSH_WS_METHODS.unregisterDevice]: AuthOrchestrationReadScope,
-  [KIN_PUSH_WS_METHODS.watch]: AuthOrchestrationReadScope,
+  [KIN_PUSH_WS_METHODS.registerDevice]: AuthKinChatScope,
+  [KIN_PUSH_WS_METHODS.unregisterDevice]: AuthKinChatScope,
+  [KIN_PUSH_WS_METHODS.watch]: AuthKinChatScope,
 } as const satisfies Record<
   (typeof KIN_PUSH_WS_METHODS)[keyof typeof KIN_PUSH_WS_METHODS],
   AuthEnvironmentScope

@@ -638,3 +638,109 @@ it.effect(
       assert.strictEqual(chat?.sharedFromSeq, after.seq);
     }).pipe(Effect.provide(layer)),
 );
+
+// Review of cc5b670e33: a person reads a group only from their join, and so does whatever the
+// lead reads for them. Every join raises the floor for a shared turn; earlier talk stays out.
+it.effect(
+  "a shared turn reads nothing below the latest join, however it pages, and a later join stops a running one",
+  () =>
+    Effect.gen(function* () {
+      const { sql, groups, chats, queue, owner, orgId, tech, priya, sam, say, events, wake } =
+        yield* seed;
+      const { chatId } = yield* groups.create([owner], {
+        orgId,
+        title: "Launch",
+        agentIds: [tech],
+        personIds: [priya.personId],
+      });
+      const seen = (turn: Identity.AgentIdentity) =>
+        chats
+          .read(turn, { chatId, afterSeq: 0, limit: 100 })
+          .pipe(Effect.map((messages) => messages.map((message) => message.body)));
+      yield* say(priya, chatId, "Invented-priya-plan");
+      const card = yield* say(owner, chatId, "Invented-owner-card");
+      yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class, type,
+          revision, state_json, awaiting_json, updated_at)
+        VALUES ('card-before-sam', ${orgId}, ${chatId}, ${card.messageId}, 'native', 'choice', 1,
+          '{}', '[]', ${at})`;
+      // A turn Priya woke runs, built from what she could read; still queued, the owner's next.
+      const running = yield* wake(tech);
+      yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = ${running.wakeupId}`;
+      assert.deepStrictEqual(yield* seen(running), ["Invented-priya-plan", "Invented-owner-card"]);
+      const waiting = yield* say(owner, chatId, "Invented-owner-aside");
+
+      yield* groups.addMember([owner], {
+        chatId,
+        principal: { _tag: "person", personId: sam.personId },
+      });
+      const [stopped] = yield* sql<{ aborted: number | null }>`SELECT aborted_at AS aborted
+        FROM kin_wakeups WHERE wakeup_id = ${running.wakeupId}`;
+      assert.isNotNull(stopped?.aborted ?? null);
+      assert.deepStrictEqual(
+        (yield* events)
+          .filter((row) => row.messageId === waiting.messageId)
+          .map((row) => row.state),
+        ["expired"],
+      );
+      yield* queue.finish({ orgId, wakeupId: running.wakeupId, status: "completed" });
+      // Said after Sam joined, and a tap there on the card from before: only the first is his.
+      const after = yield* say(sam, chatId, "Invented-sam-question");
+      const tap = yield* say(priya, chatId, "Invented-tap-on-old-card");
+      yield* sql`UPDATE kin_messages SET widget_id = 'card-before-sam'
+        WHERE message_id = ${tap.messageId}`;
+      const turn = yield* wake(tech);
+      yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = ${turn.wakeupId}`;
+      assert.deepStrictEqual(yield* seen(turn), ["Invented-sam-question"]);
+      assert.deepStrictEqual(
+        (yield* chats.read(turn, { chatId, afterSeq: after.seq - 1, limit: 1 })).map(
+          (message) => message.messageId,
+        ),
+        [after.messageId],
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "someone removed and added back is a new join: the lead reads them nothing from before it",
+  () =>
+    Effect.gen(function* () {
+      const { sql, groups, chats, queue, owner, orgId, tech, priya, sam, say, wake } = yield* seed;
+      const { chatId } = yield* groups.create([owner], {
+        orgId,
+        title: "Launch",
+        agentIds: [tech],
+        personIds: [priya.personId, sam.personId],
+      });
+      yield* say(priya, chatId, "Invented-before-leaving");
+      const { members } = yield* groups.members([owner], { chatId });
+      const priyaMember = members.find((member) => member.displayName === "Priya")!.memberId;
+      yield* groups.removeMember([owner], { chatId, memberId: priyaMember });
+      yield* say(sam, chatId, "Invented-while-priya-was-out");
+      yield* groups.addMember([owner], {
+        chatId,
+        principal: { _tag: "person", personId: priya.personId },
+      });
+      yield* say(priya, chatId, "Invented-priya-is-back");
+      const turn = yield* wake(tech);
+      yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = ${turn.wakeupId}`;
+      assert.deepStrictEqual(
+        (yield* chats.read(turn, { chatId, afterSeq: 0, limit: 100 })).map(
+          (message) => message.body,
+        ),
+        ["Invented-priya-is-back"],
+      );
+      yield* queue.finish({ orgId, wakeupId: turn.wakeupId, status: "completed" });
+      // An owner-only turn's read is unchanged: in the owner's direct chat it reads from the start.
+      const [direct] = yield* sql<{ chatId: KinChatId }>`SELECT owner_chat_id AS "chatId"
+        FROM kin_leads WHERE agent_id = ${tech}`;
+      yield* say(owner, direct!.chatId, "Invented-owner-note");
+      const own = yield* wake(tech);
+      yield* sql`UPDATE kin_wakeups SET audience = 'owner_only' WHERE wakeup_id = ${own.wakeupId}`;
+      assert.deepStrictEqual(
+        (yield* chats.read(own, { chatId: direct!.chatId, afterSeq: 0, limit: 100 })).map(
+          (message) => message.body,
+        ),
+        ["Invented-owner-note"],
+      );
+    }).pipe(Effect.provide(layer)),
+);

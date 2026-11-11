@@ -977,7 +977,7 @@ it.effect("creates many leads over RPC for the owner only, through the CLI's cre
 );
 
 it.effect(
-  "a teammate's chat-only session messages only the leads the owner allowed, in a chat the owner can't read",
+  "a teammate's chat-only session messages only the leads the owner allowed, in a chat outside the owner's list",
   () =>
     Effect.gen(function* () {
       const { person, repo, direct } = yield* seed;
@@ -1094,9 +1094,18 @@ it.effect(
       );
       const chat = yield* priya["kin.chats.createDirect"](lead);
       // All she is told about it: no charter, domain, model or work, and none of the owner's leads.
+      // She is told whose workspace it is, since that person can see the chat.
       assert.deepStrictEqual(yield* priya["kin.leads.list"](org), {
         leads: [],
-        contacts: [{ ...lead, name: "Finance", intro: "Handles invoices.", chatId: chat.chatId }],
+        contacts: [
+          {
+            ...lead,
+            name: "Finance",
+            intro: "Handles invoices.",
+            chatId: chat.chatId,
+            ownerName: "Owner",
+          },
+        ],
       });
       assert.strictEqual((yield* priya["kin.chats.createDirect"](lead)).chatId, chat.chatId);
       yield* send(priya, chat.chatId, "hers-1");
@@ -1124,7 +1133,7 @@ it.effect(
         reason: "not_allowed",
       });
       assert.include(yield* page(sam, chat.chatId).pipe(Effect.flip), { reason: "not_found" });
-      // Nor is it the owner's: they see that she may message the lead, never what she said.
+      // Nor is it in the owner's Kin chats, though the owner can still see it on the machine.
       assert.include(yield* page(owner, chat.chatId).pipe(Effect.flip), { reason: "not_found" });
       assert.include(yield* send(owner, chat.chatId, "owner-in").pipe(Effect.flip), {
         reason: "not_found",

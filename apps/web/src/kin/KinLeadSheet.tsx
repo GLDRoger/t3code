@@ -9,6 +9,7 @@ import {
   kinDomainLabel,
   kinLeadAccessCandidates,
   kinLeadAccessChanged,
+  kinLeadOwnerSeesLine,
   kinLeadAccessProblem,
   kinLeadModelName,
   kinLeadTrackingDetail,
@@ -140,6 +141,9 @@ export function KinLeadSheet(props: {
                 {about.contact.intro.trim() === ""
                   ? `Message ${about.contact.name} here like a colleague.`
                   : about.contact.intro}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {kinLeadOwnerSeesLine(about.contact.ownerName)}
               </p>
             </Section>
           )}

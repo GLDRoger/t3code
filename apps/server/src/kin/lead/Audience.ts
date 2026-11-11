@@ -231,13 +231,15 @@ export const aborted = Effect.fn("KinAudience.aborted")(function* (turn: Turn) {
 
 /**
  * In the join's transaction: aborts every running turn answering or asked from `chatId` that is
- * private or was built before the chat was shared, unless `personId` is its lead's owner or its
- * reply settled. Returns the turns the caller must stop after commit.
+ * private or was built before the chat was shared, or any such turn once `floorRaised` (it read
+ * below the new history floor), unless `personId` is its lead's owner or its reply settled.
+ * Returns the turns the caller must stop after commit.
  */
 export const abortPrivateTurns = Effect.fn("KinAudience.abortPrivateTurns")(function* (input: {
   readonly orgId: KinOrgId;
   readonly chatId: string;
   readonly personId: string;
+  readonly floorRaised: boolean;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const now = yield* Clock.currentTimeMillis;
@@ -245,7 +247,7 @@ export const abortPrivateTurns = Effect.fn("KinAudience.abortPrivateTurns")(func
     UPDATE kin_wakeups AS w SET aborted_at = ${now}, shared_since = COALESCE(shared_since, ${now})
     WHERE w.org_id = ${input.orgId} AND w.status = 'running' AND w.aborted_at IS NULL
       AND w.settled_at IS NULL
-      AND (w.audience IS NOT 'shared' OR EXISTS (SELECT 1 FROM kin_chats c
+      AND (${input.floorRaised ? 1 : 0} = 1 OR w.audience IS NOT 'shared' OR EXISTS (SELECT 1 FROM kin_chats c
         WHERE c.org_id = w.org_id AND c.chat_id = ${input.chatId} AND w.started_at <= c.shared_at))
       AND EXISTS (SELECT 1 FROM kin_agents a WHERE a.org_id = w.org_id
         AND a.agent_id = w.agent_id AND a.owner_person_id IS NOT ${input.personId})

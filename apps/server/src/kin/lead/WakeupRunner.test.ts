@@ -361,6 +361,7 @@ describe("WakeupRunner", () => {
                 orgId,
                 chatId: KinChatId.make("owner-chat"),
                 personId: KinPersonId.make("teammate"),
+                floorRaised: true,
               });
             }),
           )
