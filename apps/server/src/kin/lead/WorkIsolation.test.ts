@@ -198,9 +198,8 @@ it.effect("a work session's file tools reach its worktree's real files and nothi
       ["Edit", { file_path: "README.md", old_string: "# App", new_string: "# Acme" }],
       ["Write", { file_path: "src/new.ts", content: "export {};\n" }],
       ["Write", { file_path: ".github/workflows/ci.yml", content: "on: push\n" }],
-      ["Grep", { pattern: "App" }],
       ["Grep", { pattern: "App", path: "src", glob: "*.ts" }],
-      ["Glob", { pattern: "**/*.md" }],
+      ["Glob", { pattern: "**/*.ts", path: "src" }],
     ] as const)
       assert.isTrue(yield* allows(tool, input), `${tool} ${JSON.stringify(input)}`);
 
@@ -230,6 +229,9 @@ it.effect("a work session's file tools reach its worktree's real files and nothi
       assert.isFalse(yield* allows("Glob", { pattern: "*", path }), `Glob ${path}`);
     }
     for (const [tool, input] of [
+      // The worktree's root holds links out, so a search over it is refused.
+      ["Grep", { pattern: "App" }],
+      ["Glob", { pattern: "**/*.md" }],
       ["Glob", { pattern: "../*" }],
       ["Glob", { pattern: "/etc/*" }],
       ["Glob", { pattern: ".git/**" }],
@@ -245,4 +247,60 @@ it.effect("a work session's file tools reach its worktree's real files and nothi
     ] as const)
       assert.isFalse(yield* allows(tool, input), `${tool} ${JSON.stringify(input)}`);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "a work session's Grep and Glob refuse a tree holding a link out, even one made after start",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const base = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+      const tree = `${base}/worktrees/app`;
+      yield* fs.makeDirectory(`${tree}/src`, { recursive: true });
+      yield* fs.makeDirectory(`${tree}/docs/nested`, { recursive: true });
+      yield* fs.makeDirectory(`${base}/outside`, { recursive: true });
+      yield* fs.writeFileString(`${tree}/src/real.txt`, "marker\n");
+      yield* fs.writeFileString(`${base}/outside/secret.txt`, "marker\n");
+      yield* fs.symlink("src", `${tree}/inlink`);
+      const work = yield* opened("kin-work:wk-fixture", { cwd: tree });
+      const allows = (tool: string, input: unknown) =>
+        Effect.promise(() => hookAllows(work, tool, input));
+      const searches = (path?: string) =>
+        [
+          ["Grep", { pattern: "marker", ...(path === undefined ? {} : { path }) }],
+          ["Glob", { pattern: "**/*", ...(path === undefined ? {} : { path }) }],
+        ] as const;
+
+      // A link that stays inside works like the directory it names.
+      for (const [tool, input] of [...searches(), ...searches("inlink"), ...searches("src")])
+        assert.isTrue(yield* allows(tool, input), `${tool} ${JSON.stringify(input)}`);
+      assert.isTrue(yield* allows("Read", { file_path: "inlink/real.txt" }));
+      assert.isTrue(yield* allows("Write", { file_path: "inlink/new.txt", content: "x" }));
+
+      for (const [link, target, through] of [
+        ["dirlink", `${base}/outside`, "dirlink/secret.txt"],
+        ["filelink.txt", `${base}/outside/secret.txt`, "filelink.txt"],
+        ["uplink", "../../..", "uplink"],
+        ["dangling", `${base}/outside/missing`, "dangling"],
+      ] as const) {
+        // Made after the session started, as a setup script still running could.
+        yield* fs.symlink(target, `${tree}/docs/nested/${link}`);
+        for (const [tool, input] of [...searches(), ...searches("docs"), ...searches(".")])
+          assert.isFalse(yield* allows(tool, input), `${link}: ${tool} ${JSON.stringify(input)}`);
+        for (const [tool, input] of searches("src"))
+          assert.isTrue(yield* allows(tool, input), `${link}: ${tool} ${JSON.stringify(input)}`);
+        const named = `docs/nested/${through}`;
+        assert.isFalse(yield* allows("Read", { file_path: named }), `${link}: Read`);
+        assert.isFalse(
+          yield* allows("Write", { file_path: named, content: "x" }),
+          `${link}: Write`,
+        );
+        assert.isFalse(
+          yield* allows("Edit", { file_path: named, old_string: "marker", new_string: "x" }),
+          `${link}: Edit`,
+        );
+        yield* fs.remove(`${tree}/docs/nested/${link}`);
+        assert.isTrue(yield* allows("Grep", { pattern: "marker" }), `${link} removed`);
+      }
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
