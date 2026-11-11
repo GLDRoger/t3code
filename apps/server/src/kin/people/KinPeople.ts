@@ -405,6 +405,7 @@ export const make = Effect.gen(function* () {
           );
           // Before leaving: their own chats with leads are found through their membership.
           const stopped = yield* onPersonRemoved(input).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
             Effect.mapError(toPersistenceSqlError("KinPeople.removeAccessTurns")),
           );
           for (const member of yield* repo.listMembersByPerson(input)) {
