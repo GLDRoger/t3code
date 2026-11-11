@@ -48,7 +48,7 @@ import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinIssuedTokens from "../mcp/KinIssuedTokens.ts";
 import { recordAudience, turnAudience } from "./Audience.ts";
-import { KinLeadPrompt, type KinLeadPromptInput } from "./LeadPrompt.ts";
+import { KinLeadPrompt, KinLeadPromptError, type KinLeadPromptInput } from "./LeadPrompt.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
@@ -156,6 +156,13 @@ type HarnessOptions = {
   readonly holdRunning?: Deferred.Deferred<void>;
   /** Messages the provider received as steers into a running turn. */
   readonly providerSteers?: Queue.Queue<{ readonly runId: string; readonly messageId: string }>;
+  /** Runs as the provider takes a steer; failing it fails the steer, as a rejecting provider would. */
+  readonly onSteer?: (input: {
+    readonly runId: string;
+    readonly providerTurnId: string;
+  }) => Effect.Effect<void, ProviderAdapter.ProviderAdapterV2Error>;
+  /** Building steer text fails, so no steer reaches the thread. */
+  readonly steerFails?: boolean;
   /** Completes when the runner builds steer text, under the lock its send holds. */
   readonly steering?: Deferred.Deferred<void>;
   /** Every prompt the runner builds, in order. */
@@ -366,12 +373,19 @@ function parts(options: HarnessOptions) {
           }),
           compactThread: (input) => runtime.startTurn(input),
           steerTurn: (input) =>
-            options.providerSteers === undefined
-              ? Effect.void
-              : Queue.offer(options.providerSteers, {
-                  runId: input.runId,
-                  messageId: input.message.messageId,
-                }).pipe(Effect.asVoid),
+            (
+              options.onSteer?.({ runId: input.runId, providerTurnId: input.providerTurnId }) ??
+              Effect.void
+            ).pipe(
+              Effect.andThen(
+                options.providerSteers === undefined
+                  ? Effect.void
+                  : Queue.offer(options.providerSteers, {
+                      runId: input.runId,
+                      messageId: input.message.messageId,
+                    }).pipe(Effect.asVoid),
+              ),
+            ),
           interruptTurn: Effect.fn("test.interruptTurn")(function* ({ providerTurnId }) {
             const turn = open.get(providerTurnId);
             if (turn === undefined) return;
@@ -555,10 +569,22 @@ function parts(options: HarnessOptions) {
               options.prompts?.push(input);
               return "Wake up";
             }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie),
-          steer: () =>
-            options.steering === undefined
-              ? Effect.succeed("Steered")
-              : Deferred.succeed(options.steering, undefined).pipe(Effect.as("Steered")),
+          steer: (input) =>
+            (options.steering === undefined
+              ? Effect.void
+              : Deferred.succeed(options.steering, undefined).pipe(Effect.asVoid)
+            ).pipe(
+              Effect.andThen(
+                options.steerFails
+                  ? Effect.fail(
+                      new KinLeadPromptError({
+                        orgId: input.orgId,
+                        reason: "Fixture steer failure",
+                      }),
+                    )
+                  : Effect.succeed("Steered"),
+              ),
+            ),
           attachments: () => Effect.succeed(options.attachments ?? []),
         });
       }),

@@ -35,7 +35,12 @@ import {
   KIN_WAKEUP_CHAR_LIMIT,
   KIN_WAKEUP_MESSAGE_LIMIT,
 } from "../chat/KinChatService.ts";
-import { KinIdentity, rescueMessageId, type AgentIdentity } from "../chat/KinIdentity.ts";
+import {
+  KinIdentity,
+  isSteerMessage,
+  rescueMessageId,
+  type AgentIdentity,
+} from "../chat/KinIdentity.ts";
 import { AUDIENCE_MOVED, CHAT_ANSWER_TAGS, aborted, ownerOnlyChat } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
@@ -476,6 +481,16 @@ const make = Effect.gen(function* () {
   // A lead that replied and then called kin_end is done: text after it would answer twice.
   const afterReply = (wake: Wake, segment: Segment) =>
     wake.replied && wake.endedAt !== null && segment.ordinal > wake.endedAt;
+  // A message steered in after kin_end asks something new: the text answering it is a reply.
+  const reopen = (wake: Wake, item: OrchestrationV2TurnItem) => {
+    if (
+      item.type === "user_message" &&
+      wake.endedAt !== null &&
+      item.ordinal > wake.endedAt &&
+      isSteerMessage(wake.wakeupId, item.messageId)
+    )
+      wake.endedAt = null;
+  };
   const nextAfter = (wake: Wake, ordinal: number): SegmentNext | null => {
     const tool = Math.min(...wake.tools.filter((tool) => tool > ordinal));
     if (tool === Infinity) return null;
@@ -510,6 +525,7 @@ const make = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     wake.lastOutputAt = now;
     wake.latest = Math.max(wake.latest, item.ordinal);
+    reopen(wake, item);
     if (item.type === "assistant_message") {
       const segment = segmentFor(wake, item.id, item.ordinal, now);
       for (const earlier of pendingBefore(wake, item.ordinal)) yield* decide(wake, earlier, "text");
@@ -624,6 +640,7 @@ const make = Effect.gen(function* () {
       .toSorted((a, b) => a.ordinal - b.ordinal);
     const now = yield* Clock.currentTimeMillis;
     for (const [index, item] of items.entries()) {
+      reopen(wake, item);
       if (isEndCall(item)) wake.endedAt = Math.min(wake.endedAt ?? item.ordinal, item.ordinal);
       if (item.type !== "assistant_message" || item.streaming) continue;
       const segment = segmentFor(wake, item.id, item.ordinal, now);

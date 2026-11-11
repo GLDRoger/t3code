@@ -305,9 +305,13 @@ const make = Effect.gen(function* () {
           events = events.filter((event) => event.priority !== priority);
         }
         if (events.length === 0) return;
-        // An owner-only turn takes no message that would let someone else read its reply: those
-        // wait for the next wake-up, and this one stops taking more.
-        if (yield* audienceChanged({ orgId, agentId, wakeupId }).pipe(provideSql)) {
+        // An owner-only turn takes no message that would let someone else read its reply, and a
+        // turn a join or clear aborted after the claim takes none: those wait for the next
+        // wake-up, and this one stops taking more.
+        if (
+          (yield* isAborted(row)) ||
+          (yield* audienceChanged({ orgId, agentId, wakeupId }).pipe(provideSql))
+        ) {
           steering.open = false;
           yield* queue.release({
             orgId,

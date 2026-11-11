@@ -37,7 +37,7 @@ import * as ThreadManagement from "../../orchestration-v2/ThreadManagementServic
 import { KinChatHub, type KinChatHubEvent } from "../chat/KinChatHub.ts";
 import { KinGroups } from "../chat/KinGroups.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
-import { KinIdentity } from "../chat/KinIdentity.ts";
+import { KinIdentity, steerMessageId } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startAgentWakeup } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
@@ -435,6 +435,22 @@ const thought = (id: string, ordinal: number, runId: RunId): OrchestrationV2Turn
   text: "Thinking",
   streaming: false,
 });
+/** The owner's message the runner steered into the running turn. */
+const steered = (
+  id: string,
+  ordinal: number,
+  wakeupId: KinWakeupId,
+  runId: RunId,
+): OrchestrationV2TurnItem => ({
+  ...base(id, ordinal, runId),
+  type: "user_message",
+  createdBy: "system",
+  creationSource: "server",
+  messageId: MessageId.make(steerMessageId(wakeupId, 1)),
+  inputIntent: "steer",
+  text: "Sorry, I meant pears.",
+  attachments: [],
+});
 const githubAnswer =
   "GitHub access works now: GLDRoger/t3code has one open PR (#87, the live status change), its checks are green and it waits on one review. The last Actions run on kin passed. I cancelled the old reminder to retry GitHub, since you no longer need it. Tell me if you want me to watch #87.";
 const secondAnswer = `GitHub works now. I can read GLDRoger/t3code myself: ${"one open PR, green checks, ".repeat(20)}`;
@@ -475,10 +491,22 @@ it.effect.each([
     ],
     expected: ["CI is green on main."],
   },
+  {
+    name: "a message steered in after kin_end gets its own answer, once",
+    items: (runId: RunId, wakeupId: KinWakeupId) => [
+      text("a", 1, "Apples, red and round.", runId),
+      tool("end", 2, "mcp__kin__kin_end", runId),
+      steered("s", 3, wakeupId, runId),
+      text("b", 4, "Pears, gold and sweet.", runId),
+      tool("end-again", 5, "mcp__kin__kin_end", runId),
+      text("c", 6, secondAnswer, runId),
+    ],
+    expected: ["Apples, red and round.", "Pears, gold and sweet."],
+  },
 ])("a lead replies once: nothing posts after a reply and kin_end ($name)", ({ items, expected }) =>
   Effect.gen(function* () {
-    const { fake, runId, complete, posted } = yield* setup({ ask: "Try now" });
-    fake.items = items(runId);
+    const { fake, runId, complete, posted, wakeupId } = yield* setup({ ask: "Try now" });
+    fake.items = items(runId, wakeupId);
     yield* complete;
     assert.deepStrictEqual(
       (yield* posted).map((row) => row.body),
