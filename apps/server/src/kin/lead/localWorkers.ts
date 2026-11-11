@@ -50,7 +50,7 @@ type Input = typeof DelegateInput.Type;
 const STILL =
   "Nothing started. Say so once, in one line, and don't ask the owner to change your setup. You can still read repos, pull requests and CI yourself, or answer from memory.";
 /** What a lead hears for anything the local path doesn't do yet. */
-export const LOCAL_BUILD_ONLY = `On this host, workers do build tasks only, started from your direct chat with the owner: no review, research, follow-up or stop from you yet. ${STILL}`;
+export const LOCAL_BUILD_ONLY = `On this host, workers do build tasks only, started from your direct chat with the owner: no review, research or follow-up from you yet. ${STILL}`;
 export const LOCAL_DIRECT_ONLY = `On this host, work starts only from your direct chat with the owner, when only the owner is in the turn. If this came from somewhere else, say you'll pick it up there with the owner. ${STILL}`;
 const NOT_CLAUDE = `Workers on this host run on Claude only, which has the file wall they need. ${STILL}`;
 const LAUNCH_FAILED = `The worker couldn't start on this host. Retry the same call or tell the owner. ${STILL}`;

@@ -77,7 +77,9 @@ import * as Tracker from "./WorkerTracker.ts";
 import { LOCAL_BUILD_ONLY, LOCAL_DIRECT_ONLY } from "./localWorkers.ts";
 import { localThreadId } from "./workThread.ts";
 import { KinRecords } from "../work/KinRecords.ts";
+import * as OwnerWork from "../work/ownerWork.ts";
 import { pullRequestMerged } from "../work/workerEntries.ts";
+import { WITHDRAWN_WORK } from "../work/workPrompt.ts";
 
 const leadThread = ThreadId.make("lead-thread");
 const leadId = KinAgentId.make("lead");
@@ -580,6 +582,8 @@ const fakeLocal = () => {
   const runs = new Map<ThreadId, Array<LocalRun>>();
   const dispatched: Array<unknown> = [];
   const interrupted: Array<ThreadId> = [];
+  /** `fail`: T3 refuses the interrupt; `late`: the run goes on after it, as a turn finishing. */
+  const interrupts = { fail: false, late: false };
   let changed = Deferred.makeUnsafe<void>();
   const signal = () => {
     const previous = changed;
@@ -646,6 +650,22 @@ const fakeLocal = () => {
         ),
       } as never),
     dispatch: (command: unknown) => Effect.sync(() => void dispatched.push(command) as never),
+    interruptThread: (input: ThreadManagement.ThreadManagementInterruptInput) =>
+      Effect.gen(function* () {
+        const last = runs.get(input.threadId)?.at(-1);
+        if (interrupts.fail)
+          return yield* new ThreadManagement.ThreadManagementRunNotFoundError({
+            threadId: input.threadId,
+            runId: last?.id ?? RunId.make("none"),
+          });
+        if (last === undefined || terminal(last.status)) return { type: "no_active_run" } as const;
+        interrupted.push(input.threadId);
+        if (!interrupts.late) {
+          last.status = "interrupted";
+          yield* signal();
+        }
+        return { type: "interrupt_requested", run: last, dispatch: {} } as never;
+      }),
   };
   /** Ends the thread's latest run here, as the worker's last turn or the owner's stop would. */
   const finish = (threadId: ThreadId, status: OrchestrationV2RunStatus, reply?: string) =>
@@ -655,7 +675,7 @@ const fakeLocal = () => {
       if (reply !== undefined) last.reply = reply;
       yield* signal();
     });
-  return { launches, runs, dispatched, interrupted, launcher, threads, finish };
+  return { launches, runs, dispatched, interrupted, interrupts, launcher, threads, finish };
 };
 type FakeLocal = ReturnType<typeof fakeLocal>;
 
@@ -686,6 +706,7 @@ const run = <A, E>(
       waitForThread: local.threads.waitForThread,
       getThreadProjection: local.threads.getThreadProjection,
       dispatch: local.threads.dispatch as never,
+      interruptThread: local.threads.interruptThread,
     });
     return yield* Effect.gen(function* () {
       return yield* test({
@@ -2936,7 +2957,7 @@ it.effect.each([
 );
 
 it.effect(
-  "the local path takes build work only, picks Claude only, and refuses follow-ups and stops from a lead",
+  "the local path takes build work only, picks Claude only, and refuses follow-ups from a lead",
   () =>
     run(({ ctx, remote, local, workers }) =>
       Effect.gen(function* () {
@@ -2965,12 +2986,337 @@ it.effect(
           ),
           { reason: "not_allowed", message: LOCAL_BUILD_ONLY },
         );
+        // Another org's worker, even one that ended, is not this lead's to stop.
         assert.include(
           yield* Effect.flip(workers.stop(scope, { workerId: KinWorkerId.make("other-worker") })),
-          { reason: "not_allowed", message: LOCAL_BUILD_ONLY },
+          { reason: "not_found" },
         );
         assert.lengthOf(local.launches, 0);
         assert.lengthOf(remote.calls, 0);
       }),
     ),
+);
+
+/** A second lead of the same owner, with its own direct chat with them. */
+const second = KinAgentId.make("second");
+const addSecondLead = Effect.fn("WorkersTest.addSecondLead")(function* (
+  ctx: Effect.Success<ReturnType<typeof setup>>,
+) {
+  yield* ctx.sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+    VALUES (${second}, ${ctx.orgId}, 'Second', 'lead', ${ctx.person.personId}, '1970-01-01T00:00:00.000Z')`;
+  const chat = yield* Context.get(ctx.services, KinChatService).createDirect(ctx.person, {
+    orgId: ctx.orgId,
+    agentId: second,
+  });
+  yield* ctx.sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, models_json,
+      worker_projects_json, owner_chat_id)
+    VALUES (${second}, ${ctx.orgId}, 'Second', 'L2', 0, ${JSON.stringify({ strong: claude, cheap: claude })},
+      '[]', ${chat.chatId})`;
+});
+const recordWakes = (sql: SqlClient.SqlClient) =>
+  sql<{ agentId: string; reason: string }>`SELECT agent_id AS "agentId",
+      json_extract(json, '$.reason') AS reason
+    FROM kin_events WHERE tag = 'record.changed' ORDER BY received_at, event_id`.pipe(
+    // One change's events share a time, so their order says nothing.
+    Effect.map((rows) => rows.map((row) => `${row.agentId} ${row.reason}`).toSorted()),
+  );
+/** The owner's own Work calls, from their session's people, as the RPC handlers make them. */
+const owned = <A, E>(
+  ctx: Effect.Success<ReturnType<typeof setup>>,
+  call: (
+    people: ReadonlyArray<typeof ctx.person>,
+  ) => Effect.Effect<A, E, KinRecords | KinIdentity | SqlClient.SqlClient>,
+) => call([ctx.person]).pipe(Effect.provideContext(ctx.services));
+/** The owner sets an entry's state on the revision they see now, as their client does. */
+const ownerSets = Effect.fn("WorkersTest.ownerSets")(function* (
+  ctx: Effect.Success<ReturnType<typeof setup>>,
+  key: string,
+  state: "done" | "dropped" | "doing",
+) {
+  const { rev } = (yield* Context.get(ctx.services, KinRecords).get(ctx.orgId, key))!;
+  return yield* owned(ctx, (people) =>
+    OwnerWork.update(people, { orgId: ctx.orgId, key, rev, state }),
+  );
+});
+/** The one entry a delegated worker is an attempt at. */
+const entryOf = Effect.fn("WorkersTest.entryOf")(function* (
+  ctx: Effect.Success<ReturnType<typeof setup>>,
+) {
+  const { rows } = yield* Context.get(ctx.services, KinRecords).query(ctx.orgId, {});
+  assert.lengthOf(rows, 1);
+  return rows[0]!;
+});
+
+it.effect(
+  "a lead stops its own local worker through T3's interrupt: it ends stopped, its card closes, nothing is published, and again is a quiet success",
+  () =>
+    run(({ ctx, remote, local, workers, tracker }) =>
+      Effect.gen(function* () {
+        yield* goLocal(ctx, remote);
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        const threadId = localThreadId(workerId);
+        assert.deepStrictEqual(yield* workers.stop(scope, { workerId }), {
+          workerId,
+          stopped: true,
+        });
+        assert.deepStrictEqual(local.interrupted, [threadId]);
+        yield* settled(tracker, ctx.orgId, workerId);
+        assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "interrupted");
+        assert.isNotNull((yield* cards(ctx.sql, ctx.orgId))[0]!.closedAt);
+        assert.lengthOf(remote.published, 0);
+        assert.lengthOf(local.dispatched, 0);
+        assert.lengthOf(remote.calls, 0);
+        // Its entry is open again for the lead, and the lead hears how the run ended, once.
+        assert.include(yield* entryOf(ctx), { state: "open", working: 0 });
+        assert.lengthOf(yield* reports(ctx.sql, ctx.orgId), 1);
+        assert.deepStrictEqual(yield* workers.stop(scope, { workerId }), {
+          workerId,
+          stopped: false,
+        });
+        assert.lengthOf(local.interrupted, 1);
+      }),
+    ),
+);
+
+it.effect(
+  "a run that completes after Kin stopped its worker is recorded stopped and not published",
+  () =>
+    run(({ ctx, remote, local, workers, tracker }) =>
+      Effect.gen(function* () {
+        yield* goLocal(ctx, remote);
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        local.interrupts.late = true;
+        assert.isTrue((yield* workers.stop(scope, { workerId })).stopped);
+        yield* local.finish(localThreadId(workerId), "completed", reportReply);
+        yield* settled(tracker, ctx.orgId, workerId);
+        assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "interrupted");
+        assert.lengthOf(remote.published, 0);
+        assert.lengthOf(local.dispatched, 0);
+      }),
+    ),
+);
+
+it.effect(
+  "a lead can't stop another lead's local worker by naming it, nor its own private work from a shared turn",
+  () =>
+    run(({ ctx, remote, local, workers, tracker }) =>
+      Effect.gen(function* () {
+        yield* goLocal(ctx, remote);
+        yield* addSecondLead(ctx);
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        yield* ctx.sql`UPDATE kin_workers SET agent_id = ${second} WHERE worker_id = ${workerId}`;
+        assert.include(yield* Effect.flip(workers.stop(scope, { workerId })), {
+          reason: "not_found",
+        });
+        assert.include(
+          yield* Effect.flip(
+            tracker.stop({ orgId: ctx.orgId, agentId: leadId, workerId, reason: "x", key: "k" }),
+          ),
+          { reason: "not_found" },
+        );
+        yield* ctx.sql`UPDATE kin_workers SET agent_id = ${leadId} WHERE worker_id = ${workerId}`;
+        // Owner-private work: a turn someone else reads may not stop it, past the gate too.
+        yield* ctx.sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake'`;
+        assert.isFalse(
+          yield* sharedToolAllowed(
+            { orgId: ctx.orgId, agentId: leadId, wakeupId: "wake" },
+            "kin_worker_stop",
+            { workerId },
+          ),
+        );
+        assert.include(yield* Effect.flip(workers.stop(scope, { workerId })), {
+          reason: "not_allowed",
+          message: SHARED_REFUSAL,
+        });
+        assert.lengthOf(local.interrupted, 0);
+        assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "queued");
+      }),
+    ),
+);
+
+const withdrawals = [
+  [
+    "closing",
+    (ctx: Effect.Success<ReturnType<typeof setup>>, key: string) => ownerSets(ctx, key, "done"),
+  ],
+  [
+    "dropping",
+    (ctx: Effect.Success<ReturnType<typeof setup>>, key: string) => ownerSets(ctx, key, "dropped"),
+  ],
+  [
+    "declining",
+    (ctx: Effect.Success<ReturnType<typeof setup>>, key: string) =>
+      Effect.gen(function* () {
+        yield* ctx.sql`UPDATE kin_records SET confirmed = 0 WHERE key = ${key}`;
+        const { rev } = (yield* Context.get(ctx.services, KinRecords).get(ctx.orgId, key))!;
+        return yield* owned(ctx, (people) =>
+          OwnerWork.decline(people, { orgId: ctx.orgId, key, rev }),
+        );
+      }),
+  ],
+  [
+    "taking back",
+    (ctx: Effect.Success<ReturnType<typeof setup>>, key: string) =>
+      owned(ctx, (people) => OwnerWork.assign(people, { orgId: ctx.orgId, key, to: null })),
+  ],
+  [
+    "giving to another lead",
+    (ctx: Effect.Success<ReturnType<typeof setup>>, key: string) =>
+      owned(ctx, (people) =>
+        OwnerWork.assign(people, { orgId: ctx.orgId, key, to: { _tag: "agent", agentId: second } }),
+      ),
+  ],
+] as const;
+
+it.effect.each(withdrawals)(
+  "the owner %s a lead's entry stops its local worker in code, and the lead is told it was stopped",
+  ([name, withdraw]) =>
+    run(({ ctx, remote, local, workers, tracker }) =>
+      Effect.gen(function* () {
+        yield* goLocal(ctx, remote);
+        yield* addSecondLead(ctx);
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        const threadId = localThreadId(workerId);
+        yield* withdraw(ctx, (yield* entryOf(ctx)).key);
+        // Stopped after the change committed, before any lead turn ran.
+        assert.deepStrictEqual(local.interrupted, [threadId]);
+        yield* settled(tracker, ctx.orgId, workerId);
+        assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "interrupted");
+        assert.isNotNull((yield* cards(ctx.sql, ctx.orgId))[0]!.closedAt);
+        assert.lengthOf(remote.published, 0);
+        assert.lengthOf(local.dispatched, 0);
+        assert.deepStrictEqual(
+          yield* recordWakes(ctx.sql),
+          name === "giving to another lead"
+            ? ["lead withdrawn", "second assigned"]
+            : ["lead withdrawn"],
+        );
+        assert.include(WITHDRAWN_WORK, "Kin has already stopped any worker of yours");
+        assert.notInclude(WITHDRAWN_WORK, "kin_worker_stop");
+      }),
+    ),
+);
+
+it.effect("a teammate's change stops nothing, and the owner's reopen restarts nothing", () =>
+  run(({ ctx, remote, local, workers, tracker }) =>
+    Effect.gen(function* () {
+      yield* goLocal(ctx, remote);
+      const records = Context.get(ctx.services, KinRecords);
+      const { workerId } = yield* workers.delegate(scope, delegateInput);
+      const entry = yield* entryOf(ctx);
+      yield* ctx.sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('teammate', ${ctx.orgId}, 'teammate', 'Teammate', '1970-01-01T00:00:00.000Z')`;
+      const teammate = { ...ctx.person, personId: KinPersonId.make("teammate") };
+      assert.include(
+        yield* Effect.flip(
+          OwnerWork.update([teammate], {
+            orgId: ctx.orgId,
+            key: entry.key,
+            rev: entry.rev,
+            state: "done",
+          }).pipe(Effect.provideContext(ctx.services)),
+        ),
+        { reason: "not_allowed" },
+      );
+      // Even a change written as a teammate's, past the owner check, is not the lead's owner's.
+      yield* records.update(
+        ctx.orgId,
+        {
+          actor: { _tag: "person", personId: teammate.personId },
+          via: "owner",
+          askedBy: teammate.personId,
+        },
+        entry.key,
+        { state: "done" },
+      );
+      assert.lengthOf(local.interrupted, 0);
+      assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "queued");
+      yield* records.update(ctx.orgId, { actor: { _tag: "system" }, via: "worker" }, entry.key, {
+        state: "doing",
+      });
+      yield* ownerSets(ctx, entry.key, "done");
+      yield* settled(tracker, ctx.orgId, workerId);
+      assert.lengthOf(local.interrupted, 1);
+      yield* ownerSets(ctx, entry.key, "doing");
+      assert.lengthOf(local.launches, 1);
+      assert.lengthOf(local.interrupted, 1);
+      assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "interrupted");
+      assert.deepStrictEqual(yield* recordWakes(ctx.sql), ["lead assigned", "lead withdrawn"]);
+    }),
+  ),
+);
+
+it.effect(
+  "a withdrawal whose stop fails still commits, and the owner is told in their chat with the lead",
+  () =>
+    run(({ ctx, remote, local, workers }) =>
+      Effect.gen(function* () {
+        yield* goLocal(ctx, remote);
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        const entry = yield* entryOf(ctx);
+        local.interrupts.fail = true;
+        const closed = yield* ownerSets(ctx, entry.key, "done");
+        assert.strictEqual(closed.state, "done");
+        assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "queued");
+        const notices = yield* ctx.sql<{ chatId: string; body: string; authorKind: string }>`
+          SELECT chat_id AS "chatId", body, author_kind AS "authorKind" FROM kin_messages
+          WHERE message_id LIKE 'kin-stop-failed:%' ORDER BY message_id`;
+        assert.deepStrictEqual(notices, [
+          {
+            chatId: ctx.chat.chatId,
+            body: `Kin couldn't stop the work on ${entry.key} after you closed it or took it back, so it may still be running. Open its thread to stop it there.`,
+            authorKind: "system",
+          },
+        ]);
+      }),
+    ),
+);
+
+it.effect("tracker start stops a worker whose withdrawal committed before a restart", () =>
+  run(({ ctx, remote, local, workers, tracker }) =>
+    Effect.gen(function* () {
+      yield* goLocal(ctx, remote);
+      const { workerId } = yield* workers.delegate(scope, delegateInput);
+      const entry = yield* entryOf(ctx);
+      // What the owner's change left behind when the process died before its stop ran.
+      const event = {
+        _tag: "record.changed",
+        orgId: ctx.orgId,
+        agentId: leadId,
+        eventId: "withdrawn-event",
+        receivedAt: "1970-01-01T00:00:00.000Z",
+        dedupeKey: "record-withdrawn:x:7",
+        provenance: { _tag: "system" },
+        recordId: entry.recordId,
+        key: entry.key,
+        seq: 7,
+        reason: "withdrawn",
+      };
+      yield* ctx.sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state)
+        VALUES ('withdrawn-event', ${ctx.orgId}, ${leadId}, 'record.changed', 'P1', ${JSON.stringify(event)}, 0, 0, 'queued')`;
+      yield* tracker.start;
+      yield* settled(tracker, ctx.orgId, workerId);
+      assert.deepStrictEqual(local.interrupted, [localThreadId(workerId)]);
+      assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "interrupted");
+      assert.lengthOf(remote.published, 0);
+    }).pipe(Effect.scoped),
+  ),
+);
+
+it.effect("the owner closing a lead's entry stops its worker in the worker environment too", () =>
+  run(({ ctx, remote, workers, tracker }) =>
+    Effect.gen(function* () {
+      const { workerId } = yield* workers.delegate(scope, delegateInput);
+      const threadId = (yield* workerRow(ctx.sql, ctx.orgId, workerId)).threadId;
+      const entry = yield* entryOf(ctx);
+      yield* ownerSets(ctx, entry.key, "done");
+      const [stop, ...more] = remote.tools("t3_thread_interrupt");
+      assert.lengthOf(more, 0);
+      assert.deepInclude(stop, { threadId, stop: true });
+      assert.match(String(stop!.clientRequestId), /^kin-withdrawn:/);
+      yield* settled(tracker, ctx.orgId, workerId);
+      assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "interrupted");
+      assert.lengthOf(remote.published, 0);
+    }),
+  ),
 );
