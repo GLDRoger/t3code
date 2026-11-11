@@ -13,17 +13,25 @@ import {
   kinMemoryView,
   type KinMemoryActions,
   type KinMemoryConfirmAll,
+  type KinMemoryOriginView,
   type KinMemoryRow,
 } from "@t3tools/client-runtime/kin/kinMemoryScreen";
-import { EnvironmentId, KinOrgId, type KinMemoryListResult } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  KinOrgId,
+  type KinLeadsListResult,
+  type KinMemoryListResult,
+  type KinPeopleListResult,
+} from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useState } from "react";
-import { View } from "react-native";
+import { Pressable, View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { AppBar } from "../../components/ui/AppBar";
+import { SymbolView, type AppSymbolName } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { confirm as confirmDialog } from "../../components/ui/Dialog";
@@ -50,6 +58,12 @@ const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
 type MemoryResult = AsyncResult.AsyncResult<KinMemoryListResult, unknown>;
 // Read only by a session that may change this; others ask the host nothing.
 const noMemoryAtom: Atom.Atom<MemoryResult> = Atom.make(AsyncResult.initial());
+const noPeopleAtom: Atom.Atom<AsyncResult.AsyncResult<KinPeopleListResult, unknown>> = Atom.make(
+  AsyncResult.initial(),
+);
+const noAgentsAtom: Atom.Atom<AsyncResult.AsyncResult<KinLeadsListResult, unknown>> = Atom.make(
+  AsyncResult.initial(),
+);
 
 /** The way in from the chat list, for the owner only. Its second line says how much waits. */
 export function KinMemoryEntry({ environmentId, orgId }: KinMemoryTarget) {
@@ -127,6 +141,17 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
   const forget = useAtomCommand(kinClient.memoryForget, { reportFailure: false });
   const [edits, setEdits] = useState(KIN_MEMORY_NO_EDITS);
   const [search, setSearch] = useState("");
+  // Whose words and which agent an item names; until these arrive a row says "a teammate" or "an agent".
+  const people = useAtomValue(
+    allowed ? kinClient.people({ environmentId, input: { orgId } }) : noPeopleAtom,
+  );
+  const agents = useAtomValue(
+    allowed
+      ? kinClient.leads({ environmentId, input: { orgId, includeRetired: true } })
+      : noAgentsAtom,
+  );
+  // Quotes read in full, kept here because the list recycles its rows.
+  const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
   const [actions] = useState(() =>
     createKinMemoryActions({
       orgId,
@@ -139,7 +164,13 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
   );
   // What was last read stays up while it is read again.
   const list = Option.getOrNull(AsyncResult.value(result));
-  const view = list === null ? null : kinMemoryView(list, edits, search);
+  const view =
+    list === null
+      ? null
+      : kinMemoryView(list, edits, search, {
+          people: Option.getOrNull(AsyncResult.value(people))?.people ?? [],
+          agents: Option.getOrNull(AsyncResult.value(agents))?.leads ?? [],
+        });
   const message = !allowed ? (
     <EmptyState
       variant="plain"
@@ -223,7 +254,7 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
             data={view.rows}
             keyExtractor={(row) => row.key}
             getItemType={(row) => row.type}
-            extraData={view.confirmAll}
+            extraData={[view.confirmAll, opened]}
             estimatedItemSize={96}
             recycleItems
             ListHeaderComponent={
@@ -241,7 +272,19 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
                   onConfirmAll={(all) => void actions.confirmAll(list, all)}
                 />
               ) : (
-                <KinMemoryItem row={row} list={list} actions={actions} />
+                <KinMemoryItem
+                  row={row}
+                  list={list}
+                  actions={actions}
+                  quoteOpen={opened.has(row.item.itemId)}
+                  onToggleQuote={() =>
+                    setOpened((current) => {
+                      const next = new Set(current);
+                      if (!next.delete(row.item.itemId)) next.add(row.item.itemId);
+                      return next;
+                    })
+                  }
+                />
               )
             }
           />
@@ -290,6 +333,8 @@ function KinMemoryItem(props: {
   readonly row: Extract<KinMemoryRow, { readonly type: "item" }>;
   readonly list: KinMemoryListResult;
   readonly actions: KinMemoryActions;
+  readonly quoteOpen: boolean;
+  readonly onToggleQuote: () => void;
 }) {
   const { item } = props.row;
   return (
@@ -307,6 +352,13 @@ function KinMemoryItem(props: {
           <Text textRole="footnote" className="text-foreground-muted">
             {item.from}
           </Text>
+        )}
+        {item.origin === null ? null : (
+          <KinMemoryOrigin
+            origin={item.origin}
+            open={props.quoteOpen}
+            onToggle={props.onToggleQuote}
+          />
         )}
       </View>
       <View className="flex-row flex-wrap gap-2">
@@ -339,5 +391,57 @@ function KinMemoryItem(props: {
         />
       </View>
     </View>
+  );
+}
+
+const ORIGIN_SYMBOL: Record<KinMemoryOriginView["kind"], AppSymbolName> = {
+  said: "bubble.left",
+  worked_out: "sparkles",
+  outside: "globe",
+};
+
+/** One quiet line: who said it or which agent worked it out, when, and the words if any. */
+function KinMemoryOrigin(props: {
+  readonly origin: KinMemoryOriginView;
+  readonly open: boolean;
+  readonly onToggle: () => void;
+}) {
+  const { origin, open } = props;
+  const line = (
+    <>
+      <View className="h-[18px] justify-center">
+        <SymbolView
+          name={ORIGIN_SYMBOL[origin.kind]}
+          size={12}
+          tintColorClassName="accent-icon-muted"
+          type="monochrome"
+        />
+      </View>
+      <Text
+        textRole="footnote"
+        numberOfLines={open ? undefined : 2}
+        className="min-w-0 flex-1 text-foreground-muted"
+      >
+        {origin.line}
+        {origin.quote === null ? null : (
+          <Text textRole="footnote" className="text-foreground">
+            {` “${origin.quote}”`}
+          </Text>
+        )}
+      </Text>
+    </>
+  );
+  return origin.quote === null ? (
+    <View className="flex-row items-start gap-1.5">{line}</View>
+  ) : (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ expanded: open }}
+      accessibilityHint={open ? "Shows less" : "Shows the whole quote"}
+      onPress={props.onToggle}
+      className="flex-row items-start gap-1.5 active:opacity-60"
+    >
+      {line}
+    </Pressable>
   );
 }

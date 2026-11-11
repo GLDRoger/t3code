@@ -12,6 +12,7 @@ import {
   type KinMemoryActions,
   type KinMemoryConfirmAll,
   type KinMemoryItemView,
+  type KinMemoryOriginView,
   type KinMemoryRow,
 } from "@t3tools/client-runtime/kin/kinMemoryScreen";
 import type { EnvironmentId, KinMemoryListResult, KinOrgId } from "@t3tools/contracts";
@@ -19,7 +20,7 @@ import { LegendList } from "@legendapp/list/react";
 import { Link } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { ArrowLeftIcon, BrainIcon } from "lucide-react";
+import { ArrowLeftIcon, BrainIcon, GlobeIcon, MessageSquareIcon, SparklesIcon } from "lucide-react";
 import { useState } from "react";
 
 import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../components/WorkspaceBreadcrumb";
@@ -134,6 +135,13 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
   const [forgetting, setForgetting] = useState<KinMemoryItemView | null>(null);
   const [edits, setEdits] = useState(KIN_MEMORY_NO_EDITS);
   const [search, setSearch] = useState("");
+  // Whose words and which agent an item names; until these arrive a row says "a teammate" or "an agent".
+  const people = useAtomValue(kinClient.people({ environmentId, input: { orgId } }));
+  const agents = useAtomValue(
+    kinClient.leads({ environmentId, input: { orgId, includeRetired: true } }),
+  );
+  // Quotes read in full, kept here because the list recycles its rows.
+  const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
   const [actions] = useState(() =>
     createKinMemoryActions({
       orgId,
@@ -171,7 +179,10 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
       </div>
     );
   }
-  const view = kinMemoryView(list, edits, search);
+  const view = kinMemoryView(list, edits, search, {
+    people: Option.getOrNull(AsyncResult.value(people))?.people ?? [],
+    agents: Option.getOrNull(AsyncResult.value(agents))?.leads ?? [],
+  });
   if (view.total === 0) {
     return (
       <Empty size="compact">
@@ -189,7 +200,7 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
         data={view.rows}
         keyExtractor={(row) => row.key}
         getItemType={(row) => row.type}
-        extraData={view.confirmAll}
+        extraData={[view.confirmAll, opened]}
         recycleItems
         ListHeaderComponent={
           view.searchable || edits.problem !== null ? (
@@ -228,7 +239,20 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
                 onConfirmAll={(all) => void actions.confirmAll(list, all)}
               />
             ) : (
-              <KinMemoryItem row={row} list={list} actions={actions} onForget={setForgetting} />
+              <KinMemoryItem
+                row={row}
+                list={list}
+                actions={actions}
+                onForget={setForgetting}
+                quoteOpen={opened.has(row.item.itemId)}
+                onToggleQuote={() =>
+                  setOpened((current) => {
+                    const next = new Set(current);
+                    if (!next.delete(row.item.itemId)) next.add(row.item.itemId);
+                    return next;
+                  })
+                }
+              />
             )}
           </div>
         )}
@@ -295,6 +319,8 @@ function KinMemoryItem(props: {
   readonly list: KinMemoryListResult;
   readonly actions: KinMemoryActions;
   readonly onForget: (item: KinMemoryItemView) => void;
+  readonly quoteOpen: boolean;
+  readonly onToggleQuote: () => void;
 }) {
   const { item } = props.row;
   return (
@@ -306,6 +332,13 @@ function KinMemoryItem(props: {
         )}
         {item.from === null ? null : (
           <span className="text-xs text-muted-foreground">{item.from}</span>
+        )}
+        {item.origin === null ? null : (
+          <KinMemoryOrigin
+            origin={item.origin}
+            open={props.quoteOpen}
+            onToggle={props.onToggleQuote}
+          />
         )}
       </div>
       <div className="flex shrink-0 flex-wrap gap-1.5">
@@ -332,5 +365,38 @@ function KinMemoryItem(props: {
         </Button>
       </div>
     </div>
+  );
+}
+
+const ORIGIN_ICON = { said: MessageSquareIcon, worked_out: SparklesIcon, outside: GlobeIcon };
+
+/** One quiet line: who said it or which agent worked it out, when, and the words if any. */
+function KinMemoryOrigin(props: {
+  readonly origin: KinMemoryOriginView;
+  readonly open: boolean;
+  readonly onToggle: () => void;
+}) {
+  const { origin, open } = props;
+  const Icon = ORIGIN_ICON[origin.kind];
+  if (origin.quote === null) {
+    return (
+      <span className="flex items-start gap-1.5 pt-0.5 text-xs text-muted-foreground">
+        <Icon aria-hidden className="mt-0.5 size-3 shrink-0" />
+        {origin.line}
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      aria-expanded={open}
+      onClick={props.onToggle}
+      className="flex items-start gap-1.5 rounded-sm pt-0.5 text-start text-xs text-muted-foreground outline-none ring-ring hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset"
+    >
+      <Icon aria-hidden className="mt-0.5 size-3 shrink-0" />
+      <span className={open ? undefined : "line-clamp-2"}>
+        {origin.line} <span className="text-foreground/80">“{origin.quote}”</span>
+      </span>
+    </button>
   );
 }
