@@ -465,21 +465,28 @@ const writerFor = Effect.fn("KinWorkTools.writer")(function* (lead: Lead) {
   } satisfies Writer;
 });
 
-/** A result that shows the lead a sensitive entry marks its wake-up, so work it starts is gated. */
-const shown = Effect.fn("KinWorkTools.shown")(function* <A>(lead: Lead, result: A) {
-  if (showsSensitive(result)) yield* sensitiveShown({ orgId: lead.orgId, wakeupId: lead.wakeupId });
-  return result;
-});
+/**
+ * Every lead-facing Work tool is one of these: a result that shows the lead a sensitive entry,
+ * whatever the tool, marks its wake-up, so work it then starts unlinked is gated. Its span names
+ * the call, so the bodies are untraced.
+ */
+const leadTool = <I, A, E, R>(
+  name: string,
+  body: (lead: Lead, input: I) => Effect.Effect<A, E, R>,
+) =>
+  Effect.fn(name)(function* (scope: McpInvocationScope, input: I) {
+    const lead = yield* resolveLead(scope);
+    const result = yield* body(lead, input);
+    if (showsSensitive(result))
+      yield* sensitiveShown({ orgId: lead.orgId, wakeupId: lead.wakeupId });
+    return result;
+  });
 
 const retryKey = (value: string) =>
   NodeCrypto.createHash("sha256").update(value).digest("hex").slice(0, 32);
 const titleKey = (title: string) => title.trim().replace(/\s+/g, " ").toLowerCase();
 
-export const query = Effect.fn("KinWorkTools.query")(function* (
-  scope: McpInvocationScope,
-  input: typeof QueryInput.Type,
-) {
-  const lead = yield* resolveLead(scope);
+const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInput.Type) {
   const records = yield* KinRecords;
   const owner = input.owner === undefined ? undefined : yield* resolveWho(lead, input.owner);
   const dueBy = input.dueBefore === undefined ? undefined : Date.parse(input.dueBefore);
@@ -508,13 +515,14 @@ export const query = Effect.fn("KinWorkTools.query")(function* (
   const name = yield* namer(lead);
   const groups =
     input.groupBy === undefined ? undefined : yield* groupsFor(lead, name, filter, input.groupBy);
-  return yield* shown(lead, {
+  return {
     asOf: iso(now),
     total: page.total,
     records: page.rows.map((row) => rowFor(name, row, now)),
     ...(groups === undefined ? {} : { groups }),
-  });
+  };
 });
+export const query = leadTool("KinWorkTools.query", runQuery);
 
 const GROUP_BY: Record<NonNullable<typeof QueryInput.Type.groupBy>, GroupBy> = {
   client: "party",
@@ -565,11 +573,7 @@ const groupsFor = Effect.fn("KinWorkTools.groups")(function* (
   }));
 });
 
-export const get = Effect.fn("KinWorkTools.get")(function* (
-  scope: McpInvocationScope,
-  input: typeof GetInput.Type,
-) {
-  const lead = yield* resolveLead(scope);
+const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.Type) {
   const records = yield* KinRecords;
   const row = yield* records.get(lead.orgId, input.key);
   if (row === undefined) return yield* notFound(input.key);
@@ -582,7 +586,7 @@ export const get = Effect.fn("KinWorkTools.get")(function* (
   const list = listOf(row.registerId);
   const page = list === "clients" ? yield* partyPage(row, now, 0) : undefined;
   const project = list === "projects" ? yield* projectDetail(row, now) : undefined;
-  return yield* shown(lead, {
+  return {
     ...rowFor(name, row, now),
     ...(page === undefined
       ? {}
@@ -635,14 +639,11 @@ export const get = Effect.fn("KinWorkTools.get")(function* (
         ? { sensitive: true as const }
         : {}),
     })),
-  });
+  };
 });
+export const get = leadTool("KinWorkTools.get", runGet);
 
-export const create = Effect.fn("KinWorkTools.create")(function* (
-  scope: McpInvocationScope,
-  input: typeof CreateInput.Type,
-) {
-  const lead = yield* resolveLead(scope);
+const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateInput.Type) {
   yield* admitted(lead, "record_create", input);
   const records = yield* KinRecords;
   const source = yield* sourceOf(lead, input.sourceEventId);
@@ -705,6 +706,7 @@ export const create = Effect.fn("KinWorkTools.create")(function* (
   }
   return { records: results };
 });
+export const create = leadTool("KinWorkTools.create", runCreate);
 
 /** A client's kind or a Work entry's category; a client with neither is a client. */
 const categoryOf = (
@@ -729,11 +731,7 @@ const sameNamed = Effect.fn("KinWorkTools.sameNamed")(function* (
   return row;
 });
 
-export const update = Effect.fn("KinWorkTools.update")(function* (
-  scope: McpInvocationScope,
-  input: typeof UpdateInput.Type,
-) {
-  const lead = yield* resolveLead(scope);
+const runUpdate = Effect.fnUntraced(function* (lead: Lead, input: typeof UpdateInput.Type) {
   yield* admitted(lead, "record_update", input);
   const records = yield* KinRecords;
   yield* sourceOf(lead, input.sourceEventId);
@@ -779,3 +777,4 @@ export const update = Effect.fn("KinWorkTools.update")(function* (
         ];
   return { key: after.key, rev: after.rev, state: after.state, changed, ...marksOf(after) };
 });
+export const update = leadTool("KinWorkTools.update", runUpdate);

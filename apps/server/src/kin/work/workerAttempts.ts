@@ -492,9 +492,9 @@ export const unsettledStops = Effect.fn("KinWorkerAttempts.unsettledStops")(func
 });
 
 /**
- * Whether the owner withdrew work this event started. The same authorisation is the event itself,
- * and any event of the wake-up that started that work naming the same chat message (a widget tap
- * or reaction on it, or the message delivered again); other messages are other instructions.
+ * Whether the owner withdrew work this event started: the event itself, or one of its wake-up
+ * naming the same chat message (a tap or reaction on it, or the message again). An attempt with no
+ * event (pre-K061) withdraws its whole wake-up instead; missing provenance never permits.
  */
 export const eventWithdrawn = Effect.fn("KinWorkerAttempts.eventWithdrawn")(function* (input: {
   readonly orgId: KinOrgId;
@@ -513,6 +513,18 @@ export const eventWithdrawn = Effect.fn("KinWorkerAttempts.eventWithdrawn")(func
     same.push(sql`(e.wakeup_id = ${input.wakeupId}
       AND json_extract(e.json, '$.chatId') = ${event.chatId}
       AND json_extract(e.json, '$.messageId') = ${event.messageId})`);
+  // The worker's wake-up, or the lead's one running at `started_at` (one at a time, K034), began
+  // it; with no worker row, any wake-up begun before the withdrawal may have.
+  same.push(sql`(a.source_event_id IS NULL AND (
+    EXISTS (SELECT 1 FROM kin_workers k WHERE k.org_id = a.org_id AND k.worker_id = a.worker_id
+      AND k.wakeup_id = ${input.wakeupId})
+    OR EXISTS (SELECT 1 FROM kin_wakeups w WHERE w.org_id = a.org_id
+      AND w.agent_id = a.agent_id AND w.wakeup_id = ${input.wakeupId}
+      AND w.started_at <= a.started_at AND (w.ended_at IS NULL OR w.ended_at >= a.started_at))
+    OR (NOT EXISTS (SELECT 1 FROM kin_workers k
+        WHERE k.org_id = a.org_id AND k.worker_id = a.worker_id)
+      AND EXISTS (SELECT 1 FROM kin_wakeups w WHERE w.org_id = a.org_id
+        AND w.wakeup_id = ${input.wakeupId} AND w.started_at <= a.withdrawn_at))))`);
   const found = yield* sql`SELECT 1 FROM kin_worker_attempts a
     LEFT JOIN kin_events e ON e.org_id = a.org_id AND e.event_id = a.source_event_id
     WHERE a.org_id = ${input.orgId} AND a.agent_id = ${input.agentId}
