@@ -414,8 +414,8 @@ const tracked = Effect.fn("KinLeadProvision.tracked")(function* (orgId: KinOrgId
       e.owner_id AS "agentId",
       CASE e.state WHEN 'doing' THEN 0 WHEN 'waiting' THEN 0 ELSE 1 END AS rank,
       COALESCE(e.due_at, e.updated_at) AS at, e.key, e.state
-    FROM kin_records e WHERE e.org_id = ${orgId} AND e.owner_kind = 'agent'
-      AND e.state NOT IN ('done', 'dropped')
+    FROM kin_records e WHERE e.org_id = ${orgId} AND e.register_id = 'work'
+      AND e.owner_kind = 'agent' AND e.state NOT IN ('done', 'dropped')
     UNION ALL
     SELECT 'work', COALESCE(k.title, 'Coding task'), NULL, k.chat_id, k.agent_id, 0, k.started_at,
       NULL, NULL

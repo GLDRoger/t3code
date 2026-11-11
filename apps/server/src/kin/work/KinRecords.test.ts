@@ -4,6 +4,7 @@ import { assert, it } from "@effect/vitest";
 import {
   AuthKinChatScope,
   EnvironmentId,
+  KIN_WORK_WS_METHODS,
   KinAgentId,
   type KinChatError,
   KinOrgId,
@@ -364,17 +365,10 @@ it.effect(
         ),
         { reason: "not_allowed" },
       );
-      for (const method of [
-        "kin.work.summary",
-        "kin.work.list",
-        "kin.work.get",
-        "kin.work.subscribe",
-        "kin.work.create",
-        "kin.work.assign",
-        "kin.work.update",
-        "kin.work.confirm",
-        "kin.work.decline",
-      ])
+      // Every Work method, the clients, contacts and projects ones included.
+      const methods = Object.values(KIN_WORK_WS_METHODS);
+      assert.lengthOf(methods, 20);
+      for (const method of methods)
         assert.isTrue(
           (yield* Effect.exit(authorizeRpc([AuthKinChatScope], method, { orgId })))._tag ===
             "Failure",

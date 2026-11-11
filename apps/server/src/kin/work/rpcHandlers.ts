@@ -8,6 +8,7 @@ import * as Stream from "effect/Stream";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinServer } from "../KinServer.ts";
+import * as Clients from "./ownerClients.ts";
 import * as Work from "./ownerWork.ts";
 
 const group = RpcGroup.make(...KinWorkRpcs);
@@ -70,6 +71,39 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
     }),
     "kin.work.decline": Effect.fn("KinWork.rpc.decline")(function* (input) {
       return yield* call((people) => Work.decline(people, input));
+    }),
+    "kin.work.parties": Effect.fn("KinWork.rpc.parties")(function* (input) {
+      return yield* call((people) => Clients.parties(people, input));
+    }),
+    "kin.work.party": Effect.fn("KinWork.rpc.party")(function* (input) {
+      return yield* call((people) => Clients.party(people, input));
+    }),
+    "kin.work.projects": Effect.fn("KinWork.rpc.projects")(function* (input) {
+      return yield* call((people) => Clients.projects(people, input));
+    }),
+    "kin.work.project": Effect.fn("KinWork.rpc.project")(function* (input) {
+      return yield* call((people) => Clients.project(people, input));
+    }),
+    "kin.work.history": Effect.fn("KinWork.rpc.history")(function* (input) {
+      return yield* call((people) => Clients.history(people, input));
+    }),
+    "kin.work.createParty": Effect.fn("KinWork.rpc.createParty")(function* (input) {
+      return yield* call((people) => Clients.createParty(people, input));
+    }),
+    "kin.work.updateParty": Effect.fn("KinWork.rpc.updateParty")(function* (input) {
+      return yield* call((people) => Clients.updateParty(people, input));
+    }),
+    "kin.work.createContact": Effect.fn("KinWork.rpc.createContact")(function* (input) {
+      return yield* call((people) => Clients.createContact(people, input));
+    }),
+    "kin.work.updateContact": Effect.fn("KinWork.rpc.updateContact")(function* (input) {
+      return yield* call((people) => Clients.updateContact(people, input));
+    }),
+    "kin.work.createProject": Effect.fn("KinWork.rpc.createProject")(function* (input) {
+      return yield* call((people) => Clients.createProject(people, input));
+    }),
+    "kin.work.updateProject": Effect.fn("KinWork.rpc.updateProject")(function* (input) {
+      return yield* call((people) => Clients.updateProject(people, input));
     }),
   });
 });
