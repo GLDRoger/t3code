@@ -91,12 +91,15 @@ export function KinWorkDueRow(props: {
       accessibilityRole="button"
       accessibilityLabel={`Due: ${due}. Change`}
       actions={[
-        ...kinWorkDueChoices(now).map((choice) => ({
-          id: `${DUE}${choice.day}`,
-          title: choice.label,
-          subtitle: kinWorkDueLabel(choice.day, now),
-          state: choice.day === view.dueDay ? ("on" as const) : ("off" as const),
-        })),
+        ...kinWorkDueChoices(now).map((choice) => {
+          const date = kinWorkDueLabel(choice.day, now);
+          return {
+            id: `${DUE}${choice.day}`,
+            title: choice.label,
+            ...(date.toLowerCase() === choice.label.toLowerCase() ? {} : { subtitle: date }),
+            state: choice.day === view.dueDay ? ("on" as const) : ("off" as const),
+          };
+        }),
         ...(view.due === null ? [] : [{ id: NO_DATE, title: KIN_WORK_COPY.noDate }]),
       ]}
       onPressAction={({ nativeEvent: { event } }) => {
