@@ -1,4 +1,5 @@
 import {
+  EnvironmentId,
   KIN_RECORD_CHANGES_CAP,
   KinAgentId,
   KinChatError,
@@ -6,6 +7,7 @@ import {
   KinMessageId,
   KinPersonId,
   KinRecordId,
+  ThreadId,
   type KinOrgId,
   type KinRecord,
   type KinRecordCategory,
@@ -165,6 +167,15 @@ type LinkRow = {
   readonly chatId: string | null;
   readonly label: string | null;
   readonly createdAt: number;
+  readonly otherId: string | null;
+  readonly otherKey: string | null;
+  readonly otherTitle: string | null;
+  readonly workerId: string | null;
+  readonly workerThreadId: string | null;
+  readonly workerEnvironmentId: string | null;
+  readonly workerEndedAt: number | null;
+  readonly workerPullUrl: string | null;
+  readonly workerPullNumber: number | null;
 };
 export type FieldChange = {
   readonly field: string;
@@ -203,10 +214,18 @@ const changesOf = Effect.fn("KinRecords.changesOf")(function* (
 
 const linksOf = Effect.fn("KinRecords.linksOf")(function* (orgId: KinOrgId, recordId: string) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<LinkRow>`SELECT kind, relation, target, chat_id AS "chatId", label,
-      created_at AS "createdAt"
-    FROM kin_record_links WHERE org_id = ${orgId} AND record_id = ${recordId}
-    ORDER BY created_at, kind, target`;
+  // Same-org joins only: the other end is opened by what this host stores, never by the target text.
+  const rows = yield* sql<LinkRow>`SELECT l.kind, l.relation, l.target, l.chat_id AS "chatId",
+      l.label, l.created_at AS "createdAt",
+      o.record_id AS "otherId", o.key AS "otherKey", o.title AS "otherTitle",
+      k.worker_id AS "workerId", k.thread_id AS "workerThreadId",
+      k.environment_id AS "workerEnvironmentId", k.ended_at AS "workerEndedAt",
+      k.pull_request_url AS "workerPullUrl", k.pull_request_number AS "workerPullNumber"
+    FROM kin_record_links l
+    LEFT JOIN kin_records o ON l.kind = 'record' AND o.org_id = l.org_id AND o.record_id = l.target
+    LEFT JOIN kin_workers k ON l.kind = 'worker' AND k.org_id = l.org_id AND k.worker_id = l.target
+    WHERE l.org_id = ${orgId} AND l.record_id = ${recordId}
+    ORDER BY l.created_at, l.kind, l.target`;
   return rows.map((row): KinRecordLink => ({
     kind: row.kind,
     relation: row.relation,
@@ -214,6 +233,29 @@ const linksOf = Effect.fn("KinRecords.linksOf")(function* (orgId: KinOrgId, reco
     chatId: row.chatId === null ? null : KinChatId.make(row.chatId),
     label: row.label,
     createdAt: iso(row.createdAt),
+    ...(row.otherId === null || row.otherKey === null || row.otherTitle === null
+      ? {}
+      : {
+          record: {
+            recordId: KinRecordId.make(row.otherId),
+            key: row.otherKey,
+            title: row.otherTitle as KinRecord["title"],
+          },
+        }),
+    ...(row.workerId === null
+      ? {}
+      : {
+          worker: {
+            threadId: row.workerThreadId === null ? null : ThreadId.make(row.workerThreadId),
+            remoteEnvironmentId:
+              row.workerEnvironmentId === null ? null : EnvironmentId.make(row.workerEnvironmentId),
+            running: row.workerEndedAt === null,
+            pullRequest:
+              row.workerPullUrl === null || row.workerPullNumber === null
+                ? null
+                : { url: row.workerPullUrl, number: row.workerPullNumber },
+          },
+        }),
   }));
 });
 
@@ -235,7 +277,15 @@ export const toDetail = Effect.fn("KinRecords.toDetail")(function* (
     createdBy: actorOf(row.createdByKind, row.createdById),
     links: yield* linksOf(orgId, row.recordId),
     changes: yield* changesOf(orgId, row.recordId, changeLimit),
+    seq: yield* recordSeq(orgId, row.recordId),
   } satisfies KinRecordDetail;
+});
+
+const recordSeq = Effect.fn("KinRecords.recordSeq")(function* (orgId: KinOrgId, recordId: string) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ seq: number | null }>`SELECT MAX(seq) AS seq FROM kin_record_changes
+    WHERE org_id = ${orgId} AND record_id = ${recordId}`;
+  return row?.seq ?? 0;
 });
 
 /** The latest change number in an org, which clients and cursors compare against. */

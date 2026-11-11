@@ -38,7 +38,7 @@ Check that the case builds with `--dry-run --case <id>`. Then run it on the text
 
 The lead voice cases grade the reply text with `textMust` and `textMustNot`: a length cap such as `[\\s\\S]{160,}`, Kin's internal words, and requests that the owner reconfigure Kin. Each has a control beside it (`kin-lead-notice-failing-check-reaches-owner`, `kin-lead-asked-for-a-list-gives-the-list`) so a fix that makes leads terse or silent everywhere fails too.
 
-The `kin-lead-work-*` cases check the Work tools (`record_create`, `records_query`, `record_update`), which lead cases also see: one entry per "track this" with its due date, status from Work rather than memory, no repeat of status already reported, an existing entry updated rather than duplicated, and a one- or two-line reply after bookkeeping, with `kin-lead-work-list-control` as the control. Write `{{WORK_RULE}}` where `LeadPrompt` puts the Work rule; the runner fills in the current text.
+The `kin-lead-work-*` cases check the Work tools (`record_create`, `records_query`, `record_update`), which lead cases also see: one entry per "track this" with its due date, status from Work rather than memory, no repeat of status already reported, an existing entry updated rather than duplicated, and a one- or two-line reply after bookkeeping, with `kin-lead-work-list-control` as the control. `kin-lead-work-withdrawn-stops-worker` checks that work the owner closed or took back stops the worker the lead started for it, with `kin-lead-work-withdrawn-nothing-running-control` ending silently when nothing was under way. Write `{{WORK_RULE}}` where `LeadPrompt` puts the Work rule and `{{WITHDRAWN_WORK}}` where it puts the line for withdrawn work; the runner fills in the current text.
 
 ## Device manager cases
 

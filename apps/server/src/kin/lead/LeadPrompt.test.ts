@@ -539,13 +539,33 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
       dedupeKey: null,
       provenance: { _tag: "human", personId: teammateId, memberId: teammateMember },
     });
+    // An entry the owner just took back from the lead, in the same turn.
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+      VALUES (${orgId}, 'work', 'Work', 'W', 1, 0)`;
+    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
+        owner_id, notes, created_by_kind, created_by_id, origin_key, created_at, updated_at)
+      VALUES (${orgId}, 'rec-taken', 'work', 'W-1', 'Invented-taken-work-zq', 'open', 'person',
+        ${personId}, 'Invented-taken-notes-zq', 'person', ${personId}, 'owner:taken', 0, 0)`;
+    const taken = decodeEvent({
+      _tag: "record.changed",
+      orgId,
+      agentId,
+      eventId: "event-taken",
+      receivedAt: timestamp,
+      dedupeKey: "record-withdrawn:rec-taken:2",
+      provenance: { _tag: "human", personId, memberId },
+      recordId: "rec-taken",
+      key: "W-1",
+      seq: 2,
+      reason: "withdrawn",
+    });
     const build = (wakeupId: string) =>
       Effect.gen(function* () {
-        yield* stored(wakeupId, [asked, routineEvent]);
+        yield* stored(wakeupId, [asked, routineEvent, taken]);
         return yield* (yield* KinLeadPrompt).build({
           ...input,
           wakeupId: KinWakeupId.make(wakeupId),
-          events: [asked, routineEvent],
+          events: [asked, routineEvent, taken],
           lane: { chatId, mode: "reply" },
           budgetContext: "5% of today left",
           routineFacts: new Map([[routineEvent.eventId, "Invented-routine-fact-zq"]]),
@@ -600,6 +620,9 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
       "Invented-reacted-plan-zq",
       "Invented-tracked-work-zq",
       "Invented-before-join-zq",
+      "Invented-taken-work-zq",
+      "Invented-taken-notes-zq",
+      "took it back from you",
       "Budget:",
       "Domain:",
       "Charter:",
@@ -616,11 +639,11 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
       expect(off).not.toContain(team);
     // The same lead in a chat only its owner ever read: the owner's parts are there.
     yield* sql`UPDATE kin_leads SET owner_chat_id = 'fixture-direct'`;
-    yield* stored("owner-wake-2", [routineEvent]);
+    yield* stored("owner-wake-2", [routineEvent, taken]);
     const owners = yield* (yield* KinLeadPrompt).build({
       ...input,
       wakeupId: KinWakeupId.make("owner-wake-2"),
-      events: [routineEvent],
+      events: [routineEvent, taken],
       budgetContext: "5% of today left",
     });
     for (const part of [
@@ -633,6 +656,8 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
       "Invented-client-terms-zq",
       "Invented-unlabelled-zq",
       "Invented-kept-since-zq",
+      "Invented-taken-work-zq",
+      "The owner closed this Work entry or took it back from you.",
     ])
       expect(owners).toContain(part);
     // What a teammate said reaches the owner's turn as their words, in the index, never a rule.

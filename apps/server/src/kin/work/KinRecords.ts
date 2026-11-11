@@ -35,6 +35,7 @@ import {
   byId,
   byKey,
   type FieldChange,
+  type Principal,
   isClosed,
   latestSeq,
   notFound,
@@ -93,11 +94,15 @@ export type QueryInput = {
   readonly open?: boolean;
   readonly late?: boolean;
   readonly dueBy?: number;
+  readonly dueAfter?: number;
   readonly text?: string;
   readonly keys?: ReadonlyArray<string>;
   readonly category?: KinRecordCategory;
+  readonly side?: KinRecordSide;
   readonly offset?: number;
   readonly limit?: number;
+  /** The time `late` is judged at; a later page passes the first page's so offsets hold. */
+  readonly at?: number;
 };
 
 const isChatError = Schema.is(KinChatError);
@@ -161,20 +166,30 @@ export class KinRecords extends Context.Service<
       orgId: KinOrgId,
       key: string,
     ) => Effect.Effect<RecordRow | undefined, KinChatError>;
+    readonly getById: (
+      orgId: KinOrgId,
+      recordId: string,
+    ) => Effect.Effect<RecordRow | undefined, KinChatError>;
     readonly detail: (
       row: RecordRow,
       changeLimit?: number,
     ) => Effect.Effect<Effect.Success<ReturnType<typeof toDetail>>, KinChatError>;
     readonly seq: (orgId: KinOrgId) => Effect.Effect<number, KinChatError>;
-    /** The latest change number now, then again after every committed change in the org. */
-    readonly changes: (orgId: KinOrgId) => Stream.Stream<number, KinChatError>;
+    /** The latest change number now, then again with the entry after every committed change. */
+    readonly changes: (
+      orgId: KinOrgId,
+    ) => Stream.Stream<{ readonly seq: number; readonly key?: string }, KinChatError>;
   }
 >()("t3/kin/work/KinRecords") {}
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue;
-  const ticks = yield* PubSub.unbounded<{ readonly orgId: KinOrgId; readonly seq: number }>();
+  const ticks = yield* PubSub.unbounded<{
+    readonly orgId: KinOrgId;
+    readonly seq: number;
+    readonly key: string;
+  }>();
   const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
 
   const failed = <A, E extends { readonly _tag: string }, R>(effect: Effect.Effect<A, E, R>) =>
@@ -207,7 +222,7 @@ const make = Effect.gen(function* () {
   const logChange = Effect.fn("KinRecords.logChange")(function* (
     orgId: KinOrgId,
     writer: Writer,
-    row: { readonly recordId: string; readonly rev: number },
+    row: { readonly recordId: string; readonly key: string; readonly rev: number },
     kind: "created" | "updated" | "linked",
     fields: ReadonlyArray<FieldChange>,
     now: number,
@@ -225,15 +240,17 @@ const make = Effect.gen(function* () {
         ${writer.chatId ?? null})
       RETURNING seq`;
     const seq = change?.seq ?? 0;
-    yield* sql.afterCommit(PubSub.publish(ticks, { orgId, seq }));
+    yield* sql.afterCommit(PubSub.publish(ticks, { orgId, seq, key: row.key }));
     return seq;
   });
 
   /**
-   * Work given to a lead by someone else wakes it, with the stored human assigner as the turn's
-   * provenance. Slice 1 wakes only for the owner's assignments; any other is recorded and waits.
+   * Wakes a lead about an entry someone else changed, with that human as the turn's provenance:
+   * given to it (`assigned`, by the stored assigner), or closed or taken back while it held it
+   * open (`withdrawn`, by the person who did). Slice 1 wakes only for the lead's owner; any other
+   * change is recorded and waits.
    */
-  const wakeAssigned = Effect.fn("KinRecords.wakeAssigned")(function* (
+  const wakeLead = Effect.fn("KinRecords.wakeLead")(function* (
     orgId: KinOrgId,
     writer: Writer,
     row: { readonly recordId: string; readonly key: string },
@@ -241,6 +258,7 @@ const make = Effect.gen(function* () {
     assignedBy: KinPersonId | null,
     seq: number,
     now: number,
+    reason: "assigned" | "withdrawn" = "assigned",
   ) {
     if (to._tag !== "agent") return;
     if (writer.actor._tag === "agent" && writer.actor.agentId === to.agentId) return;
@@ -254,7 +272,7 @@ const make = Effect.gen(function* () {
       ORDER BY m.member_id LIMIT 1`;
     // Only the lead's owner is an assigner this slice wakes for; a teammate's waits for slice 2.
     if (lead === undefined || lead.ownerPersonId !== assignedBy) return;
-    const key = `record-assigned:${row.recordId}:${seq}`;
+    const key = `record-${reason}:${row.recordId}:${seq}`;
     yield* queue
       .enqueue({
         _tag: "record.changed",
@@ -271,7 +289,7 @@ const make = Effect.gen(function* () {
         recordId: KinRecordId.make(row.recordId),
         key: row.key,
         seq,
-        reason: "assigned",
+        reason,
       })
       .pipe(
         Effect.catchTags({
@@ -284,6 +302,7 @@ const make = Effect.gen(function* () {
   const ownerExists = Effect.fn("KinRecords.ownerExists")(function* (
     orgId: KinOrgId,
     who: KinWorkPrincipal,
+    role = "to own it",
   ) {
     const rows =
       who._tag === "agent"
@@ -294,7 +313,7 @@ const make = Effect.gen(function* () {
     if (rows.length === 0)
       return yield* new KinChatError({
         reason: "not_found",
-        message: `No ${who._tag === "agent" ? "lead" : "person"} ${principalId(who).slice(0, 60)} here to own it.`,
+        message: `No ${who._tag === "agent" ? "lead" : "person"} ${principalId(who).slice(0, 60)} here ${role}.`,
       });
   });
 
@@ -357,7 +376,14 @@ const make = Effect.gen(function* () {
             ? []
             : [{ field: "waitingOn", from: null, to: shownPrincipal(waitingOn) }]),
         ];
-        const seq = yield* logChange(orgId, writer, { recordId, rev: 1 }, "created", fields, now);
+        const seq = yield* logChange(
+          orgId,
+          writer,
+          { recordId, key, rev: 1 },
+          "created",
+          fields,
+          now,
+        );
         if (input.source !== undefined)
           yield* insertLink(
             orgId,
@@ -372,7 +398,7 @@ const make = Effect.gen(function* () {
           );
         for (const link of input.links ?? []) yield* insertLink(orgId, recordId, link, now);
         if (givenAway)
-          yield* wakeAssigned(orgId, writer, { recordId, key }, input.owner, assignedBy, seq, now);
+          yield* wakeLead(orgId, writer, { recordId, key }, input.owner, assignedBy, seq, now);
         const row = yield* byId(orgId, recordId).pipe(provideSql);
         if (row === undefined) return yield* unavailable;
         return { row, created: true };
@@ -391,8 +417,6 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const row = yield* byKey(orgId, key).pipe(provideSql);
         if (row === undefined) return yield* notFound(key);
-        if (expectedRev !== undefined && expectedRev !== row.rev)
-          return yield* conflict(row.key, row.rev);
         const now = yield* Clock.currentTimeMillis;
         const before = toRecord(row, now);
         const changes: Array<FieldChange> = [];
@@ -416,6 +440,8 @@ const make = Effect.gen(function* () {
             : patch.waitingOn !== undefined
               ? patch.waitingOn
               : before.waitingOn;
+        if (waitingOn !== null && !samePrincipal(waitingOn, before.waitingOn))
+          yield* ownerExists(orgId, waitingOn, "to wait on");
         if (
           !samePrincipal(waitingOn, before.waitingOn) ||
           (state !== "waiting" && row.waitingOnId !== null)
@@ -431,6 +457,11 @@ const make = Effect.gen(function* () {
         }
         let reassigned: KinWorkPrincipal | undefined;
         if (patch.owner !== undefined && !samePrincipal(patch.owner, before.owner)) {
+          if (isClosed(state))
+            return yield* new KinChatError({
+              reason: "invalid_state",
+              message: `${row.key} is ${state}. Reopen it before giving it to someone.`,
+            });
           yield* ownerExists(orgId, patch.owner);
           changes.push({
             field: "owner",
@@ -444,12 +475,30 @@ const make = Effect.gen(function* () {
           set("assigned_at", writer.askedBy === undefined || writer.askedBy === null ? null : now);
           reassigned = patch.owner;
         }
+        // Reopened by a person, a lead's entry is given to it again, with that person's authority.
+        const reopened =
+          reassigned === undefined &&
+          before.owner._tag === "agent" &&
+          writer.actor._tag === "person" &&
+          isClosed(row.state) &&
+          !isClosed(state);
+        if (reopened) {
+          set("assigned_by_person_id", writer.askedBy ?? null);
+          set("assigned_at", writer.askedBy === undefined || writer.askedBy === null ? null : now);
+        }
         if (patch.dueAt !== undefined && patch.dueAt !== row.dueAt) {
           changes.push({ field: "due", from: shownDue(row.dueAt), to: shownDue(patch.dueAt) });
           set("due_at", patch.dueAt);
         }
-        if (patch.dueAllDay !== undefined && (patch.dueAllDay ? 1 : 0) !== row.dueAllDay)
+        if (patch.dueAllDay !== undefined && (patch.dueAllDay ? 1 : 0) !== row.dueAllDay) {
+          if ((patch.dueAt === undefined ? row.dueAt : patch.dueAt) !== null)
+            changes.push({
+              field: "dueAllDay",
+              from: shown(row.dueAllDay === 1),
+              to: shown(patch.dueAllDay),
+            });
           set("due_all_day", patch.dueAllDay ? 1 : 0);
+        }
         if (patch.notes !== undefined && patch.notes !== row.notes) {
           changes.push({ field: "notes", from: row.notes, to: patch.notes });
           set("notes", patch.notes);
@@ -475,7 +524,10 @@ const make = Effect.gen(function* () {
           changes.push({ field: "sensitive", from: "false", to: "true" });
           set("sensitive", 1);
         }
+        // A retry of a change that already landed finds nothing to do: that is success.
         if (sets.length === 0) return row;
+        if (expectedRev !== undefined && expectedRev !== row.rev)
+          return yield* conflict(row.key, row.rev);
         const rev = row.rev + 1;
         set("rev", rev);
         set("updated_at", now);
@@ -485,13 +537,31 @@ const make = Effect.gen(function* () {
         const seq = yield* logChange(
           orgId,
           writer,
-          { recordId: row.recordId, rev },
+          { recordId: row.recordId, key: row.key, rev },
           "updated",
           changes,
           now,
         );
         if (reassigned !== undefined)
-          yield* wakeAssigned(orgId, writer, row, reassigned, writer.askedBy ?? null, seq, now);
+          yield* wakeLead(orgId, writer, row, reassigned, writer.askedBy ?? null, seq, now);
+        if (reopened)
+          yield* wakeLead(orgId, writer, row, before.owner, writer.askedBy ?? null, seq, now);
+        // A lead never keeps working an open entry a person closed or took from it.
+        const withdrawnFrom: Principal | undefined =
+          !isClosed(row.state) && (isClosed(state) || reassigned !== undefined)
+            ? before.owner
+            : undefined;
+        if (withdrawnFrom !== undefined && writer.actor._tag === "person")
+          yield* wakeLead(
+            orgId,
+            writer,
+            row,
+            withdrawnFrom,
+            writer.actor.personId,
+            seq,
+            now,
+            "withdrawn",
+          );
         const updated = yield* byId(orgId, row.recordId).pipe(provideSql);
         if (updated === undefined) return yield* unavailable;
         return updated;
@@ -509,12 +579,13 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
         if (!(yield* insertLink(orgId, recordId, input, now))) return false;
-        const [row] = yield* sql<{ rev: number }>`SELECT rev FROM kin_records
+        const [row] = yield* sql<{ rev: number; key: string }>`SELECT rev, key FROM kin_records
           WHERE org_id = ${orgId} AND record_id = ${recordId}`;
+        if (row === undefined) return yield* notFound(recordId);
         yield* logChange(
           orgId,
           writer,
-          { recordId, rev: row?.rev ?? 1 },
+          { recordId, key: row.key, rev: row.rev },
           "linked",
           [{ field: input.kind, from: null, to: input.label ?? input.target }],
           now,
@@ -527,7 +598,7 @@ const make = Effect.gen(function* () {
   const query = Effect.fn("KinRecords.query")(function* (orgId: KinOrgId, input: QueryInput) {
     return yield* failed(
       Effect.gen(function* () {
-        const now = yield* Clock.currentTimeMillis;
+        const now = input.at ?? (yield* Clock.currentTimeMillis);
         const where = [sql`r.org_id = ${orgId}`];
         if (input.owner !== undefined)
           where.push(
@@ -539,8 +610,14 @@ const make = Effect.gen(function* () {
         else if (input.open === false) where.push(sql`r.state IN ('done', 'dropped')`);
         if (input.late === true)
           where.push(sql`r.due_at < ${now} AND r.state NOT IN ('done', 'dropped')`);
+        else if (input.late === false)
+          where.push(
+            sql`(r.due_at IS NULL OR r.due_at >= ${now} OR r.state IN ('done', 'dropped'))`,
+          );
         if (input.dueBy !== undefined) where.push(sql`r.due_at <= ${input.dueBy}`);
+        if (input.dueAfter !== undefined) where.push(sql`r.due_at >= ${input.dueAfter}`);
         if (input.category !== undefined) where.push(sql`r.category = ${input.category}`);
+        if (input.side !== undefined) where.push(sql`r.side = ${input.side}`);
         if (input.keys !== undefined && input.keys.length > 0)
           where.push(sql`r.key IN ${sql.in(input.keys)}`);
         const text = input.text?.trim().toLowerCase();
@@ -570,6 +647,9 @@ const make = Effect.gen(function* () {
     get: Effect.fn("KinRecords.get")(function* (orgId, key) {
       return yield* failed(byKey(orgId, key).pipe(provideSql));
     }),
+    getById: Effect.fn("KinRecords.getById")(function* (orgId, recordId) {
+      return yield* failed(byId(orgId, recordId).pipe(provideSql));
+    }),
     detail: Effect.fn("KinRecords.detail")(function* (row, changeLimit) {
       const now = yield* Clock.currentTimeMillis;
       return yield* failed(toDetail(row, now, changeLimit).pipe(provideSql));
@@ -582,11 +662,12 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const subscription = yield* PubSub.subscribe(ticks);
           const now = yield* failed(latestSeq(orgId).pipe(provideSql));
+          const first: { readonly seq: number; readonly key?: string } = { seq: now };
           return Stream.concat(
-            Stream.make(now),
+            Stream.make(first),
             Stream.fromEffectRepeat(PubSub.take(subscription)).pipe(
               Stream.filter((tick) => tick.orgId === orgId),
-              Stream.map((tick) => tick.seq),
+              Stream.map((tick) => ({ seq: tick.seq, key: tick.key })),
             ),
           );
         }),

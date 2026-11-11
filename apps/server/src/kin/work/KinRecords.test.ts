@@ -8,6 +8,7 @@ import {
   type KinChatError,
   KinOrgId,
   KinPersonId,
+  KinRecordId,
   type MemoryItemHead,
   ProviderInstanceId,
   ThreadId,
@@ -16,6 +17,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 
 import { authorizeRpc } from "../../auth/RpcAuthorization.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
@@ -369,6 +371,9 @@ it.effect(
         "kin.work.subscribe",
         "kin.work.create",
         "kin.work.assign",
+        "kin.work.update",
+        "kin.work.confirm",
+        "kin.work.decline",
       ])
         assert.isTrue(
           (yield* Effect.exit(authorizeRpc([AuthKinChatScope], method, { orgId })))._tag ===
@@ -483,5 +488,431 @@ it.effect("the Work section shows a change once: after the lead's reply it is no
     const second = yield* section;
     assert.deepStrictEqual(second.changed, []);
     assert.strictEqual(second.open, 0);
+  }).pipe(Effect.provide(layer)),
+);
+
+/** Every Work wake-up so far: who, why, which entry, and whose authority. */
+const wakes = assignedEvents.pipe(
+  Effect.map((rows) =>
+    rows
+      .map((row) => {
+        const event = JSON.parse(row.json) as {
+          reason: string;
+          key: string;
+          seq: number;
+          provenance: { personId: string; memberId: string };
+        };
+        return {
+          seq: event.seq,
+          wake: [row.agentId, event.reason, event.key, event.provenance.personId],
+        };
+      })
+      .toSorted((a, b) => a.seq - b.seq)
+      .map((row) => row.wake),
+  ),
+);
+const toLead = { _tag: "agent" as const, agentId: lead };
+
+it.effect(
+  "the owner edits an entry field by field, in the owner's name, and a retry is a no-op",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const created = yield* OwnerWork.create([owner], {
+        orgId,
+        title: "Invented: book the venue",
+        dueAt: "2026-11-20T10:00:00.000Z",
+        clientRequestId: "edit-1",
+      });
+      const edit = {
+        orgId,
+        key: created.key,
+        rev: created.rev,
+        title: "Invented: book the bigger venue",
+        notes: "Invented notes",
+        category: "obligation" as const,
+        dueAt: null,
+      };
+      const edited = yield* OwnerWork.update([owner], edit);
+      assert.include(edited, { rev: 2, title: edit.title, notes: edit.notes, dueAt: null });
+      assert.deepStrictEqual(edited.changes[0], {
+        seq: edited.seq!,
+        at: edited.changes[0]!.at,
+        by: { _tag: "person", personId: ownerId },
+        via: "owner",
+        kind: "updated",
+        fields: [
+          { field: "title", from: "Invented: book the venue", to: edit.title },
+          { field: "due", from: "2026-11-20T10:00:00.000Z", to: null },
+          { field: "notes", from: "", to: "Invented notes" },
+          { field: "category", from: null, to: "obligation" },
+        ],
+      });
+      // The same edit again, on the revision it was based on, changes nothing and succeeds.
+      const retried = yield* OwnerWork.update([owner], edit);
+      assert.include(retried, { rev: 2, seq: edited.seq });
+      assert.lengthOf(retried.changes, 2);
+      assert.include(
+        yield* Effect.flip(OwnerWork.update([owner], { ...edit, title: "Invented: other" })),
+        { reason: "conflict" },
+      );
+      // Waiting on someone who is here, then closed, then reopened, then due on a day.
+      assert.include(
+        yield* Effect.flip(
+          OwnerWork.update([owner], {
+            orgId,
+            key: created.key,
+            rev: 2,
+            state: "waiting",
+            waitingOn: { _tag: "agent", agentId: KinAgentId.make("nobody") },
+          }),
+        ),
+        { reason: "not_found" },
+      );
+      const waiting = yield* OwnerWork.update([owner], {
+        orgId,
+        key: created.key,
+        rev: 2,
+        state: "waiting",
+        waitingOn: { _tag: "person", personId: mateId },
+      });
+      assert.deepInclude(waiting, { waitingOn: { _tag: "person", personId: mateId } });
+      const done = yield* OwnerWork.update([owner], {
+        orgId,
+        key: created.key,
+        rev: 3,
+        state: "done",
+      });
+      assert.include(done, { state: "done", waitingOn: null });
+      assert.isNotNull(done.closedAt);
+      const reopened = yield* OwnerWork.update([owner], {
+        orgId,
+        key: created.key,
+        rev: 4,
+        state: "open",
+        dueAt: "2026-11-25",
+        dueAllDay: true,
+      });
+      assert.include(reopened, { state: "open", closedAt: null, dueAllDay: true });
+      assert.deepStrictEqual(
+        reopened.changes.slice(0, 3).map((change) => change.fields.map((field) => field.field)),
+        [
+          ["state", "due", "dueAllDay"],
+          ["state", "waitingOn"],
+          ["state", "waitingOn"],
+        ],
+      );
+      // The owner's own entry: nobody to tell.
+      assert.lengthOf(yield* wakes, 0);
+      for (const refused of [
+        OwnerWork.update([mate], { orgId, key: created.key, rev: 5, title: "Invented" }),
+        OwnerWork.confirm([mate], { orgId, key: created.key, rev: 5 }),
+        OwnerWork.decline([mate], { orgId, key: created.key, rev: 5 }),
+      ])
+        assert.include(yield* refused.pipe(Effect.asVoid, Effect.flip), { reason: "not_allowed" });
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "closing, reopening or taking back a lead's open entry tells that lead in an owner-only turn",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      const give = (id: string) =>
+        OwnerWork.create([owner], {
+          orgId,
+          title: `Invented: ${id}`,
+          owner: toLead,
+          clientRequestId: id,
+        });
+      const first = yield* give("first");
+      const done = yield* OwnerWork.update([owner], {
+        orgId,
+        key: first.key,
+        rev: 1,
+        state: "done",
+      });
+      const reopened = yield* OwnerWork.update([owner], {
+        orgId,
+        key: first.key,
+        rev: done.rev,
+        state: "doing",
+      });
+      assert.deepInclude(reopened, { assignedBy: { _tag: "person", personId: ownerId } });
+      const back = yield* OwnerWork.assign([owner], { orgId, key: first.key, to: null });
+      assert.deepInclude(back, { owner: { _tag: "person", personId: ownerId } });
+      const second = yield* give("second");
+      yield* OwnerWork.assign([owner], {
+        orgId,
+        key: second.key,
+        to: { _tag: "agent", agentId: other },
+      });
+      assert.deepStrictEqual(yield* wakes, [
+        [lead, "assigned", "W-1", ownerId],
+        [lead, "withdrawn", "W-1", ownerId],
+        [lead, "assigned", "W-1", ownerId],
+        [lead, "withdrawn", "W-1", ownerId],
+        [lead, "assigned", "W-2", ownerId],
+        [lead, "withdrawn", "W-2", ownerId],
+        [other, "assigned", "W-2", ownerId],
+      ]);
+      // A withdrawn turn is the owner's alone and answers in the lead's chat with the owner.
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
+          status, event_ids)
+        VALUES ('told', ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running', '[]')`;
+      yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = 'told'
+        WHERE tag = 'record.changed' AND agent_id = ${lead}
+          AND json_extract(json, '$.reason') = 'withdrawn'`;
+      const told = { orgId, agentId: lead, wakeupId: "told" };
+      assert.strictEqual(yield* turnAudience(told), "owner_only");
+      assert.deepStrictEqual(yield* turnChat(told), { chatId: "lead-chat", asked: false });
+      // Its own close, Kin's close on a merge, and the owner's own entry wake nobody.
+      const third = yield* give("third");
+      const fourth = yield* give("fourth");
+      const before = (yield* wakes).length;
+      yield* sql`UPDATE kin_wakeups SET audience = 'owner_only' WHERE wakeup_id = 'told'`;
+      const toldEvent = (yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
+        FROM kin_events WHERE wakeup_id = 'told' ORDER BY event_id LIMIT 1`)[0]!.eventId;
+      yield* LeadWork.update(scopeOf(lead), {
+        key: third.key,
+        sourceEventId: toldEvent,
+        state: "done",
+      });
+      yield* records.update(orgId, { actor: { _tag: "system" }, via: "github" }, fourth.key, {
+        state: "done",
+      });
+      yield* OwnerWork.update([owner], { orgId, key: first.key, rev: back.rev, state: "dropped" });
+      assert.lengthOf(yield* wakes, before);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("assigning refuses closed entries and records the session's owner as the assigner", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const created = yield* OwnerWork.create([owner], {
+      orgId,
+      title: "Invented: send the invoice",
+      clientRequestId: "assign-1",
+    });
+    const toMate = yield* OwnerWork.assign([owner], {
+      orgId,
+      key: created.key,
+      to: { _tag: "person", personId: mateId },
+      rev: created.rev,
+    });
+    assert.deepInclude(toMate, {
+      owner: { _tag: "person", personId: mateId },
+      assignedBy: { _tag: "person", personId: ownerId },
+    });
+    assert.deepInclude(toMate.changes[0], { by: { _tag: "person", personId: ownerId } });
+    for (const state of ["done", "dropped"] as const) {
+      const current = yield* OwnerWork.get([owner], { orgId, key: created.key });
+      yield* OwnerWork.update([owner], { orgId, key: created.key, rev: current.rev, state });
+      for (const to of [toLead, null])
+        assert.include(
+          yield* Effect.flip(OwnerWork.assign([owner], { orgId, key: created.key, to })),
+          { reason: "invalid_state" },
+        );
+    }
+    assert.lengthOf(yield* wakes, 0);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "confirming keeps a lead's suggestion, declining drops it, and a kept one can't be declined",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const records = yield* KinRecords.KinRecords;
+      const suggest = (id: string) =>
+        records.create(
+          orgId,
+          { actor: { _tag: "agent", agentId: lead }, via: "lead", askedBy: ownerId },
+          { originKey: id, title: `Invented: ${id}`, owner: toLead, confirmed: false },
+        );
+      const kept = (yield* suggest("kept")).row;
+      const confirmed = yield* OwnerWork.confirm([owner], { orgId, key: kept.key, rev: kept.rev });
+      assert.include(confirmed, { confirmed: true, rev: 2 });
+      assert.deepInclude(confirmed.changes[0], {
+        by: { _tag: "person", personId: ownerId },
+        fields: [{ field: "confirmed", from: "false", to: "true" }],
+      });
+      assert.include(
+        yield* Effect.flip(OwnerWork.decline([owner], { orgId, key: kept.key, rev: 2 })),
+        { reason: "invalid_state" },
+      );
+      const declined = (yield* suggest("declined")).row;
+      const dropped = yield* OwnerWork.decline([owner], {
+        orgId,
+        key: declined.key,
+        rev: declined.rev,
+      });
+      assert.include(dropped, { state: "dropped", confirmed: false, rev: 2 });
+      // Retried on the revision it saw: already declined, so it succeeds and changes nothing.
+      assert.include(
+        yield* OwnerWork.decline([owner], { orgId, key: declined.key, rev: declined.rev }),
+        { rev: 2 },
+      );
+      // The lead held it open, so it is told once.
+      assert.deepStrictEqual(yield* wakes, [[lead, "withdrawn", declined.key, ownerId]]);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "the list filters on not late, due after, category and side, and pages keep their time",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const records = yield* KinRecords.KinRecords;
+      const day = 24 * 60 * 60 * 1000;
+      const rows = [
+        { title: "a", dueAt: 1 * day, category: "task" },
+        { title: "b", dueAt: 3 * day, category: "issue", side: "theirs" },
+        { title: "c", dueAt: 5 * day, category: "task" },
+        { title: "d", dueAt: null, category: "obligation" },
+        { title: "e", dueAt: 2 * day, category: "task" },
+      ] as const;
+      for (const row of rows)
+        yield* records.create(
+          orgId,
+          { actor: { _tag: "person", personId: ownerId }, via: "owner", askedBy: ownerId },
+          {
+            ...row,
+            originKey: row.title,
+            title: `Invented ${row.title}`,
+            owner: { _tag: "person", personId: ownerId },
+          },
+        );
+      yield* records.update(orgId, { actor: { _tag: "system" }, via: "github" }, "W-5", {
+        state: "done",
+      });
+      yield* TestClock.adjust("36 hours");
+      const titles = (input: Omit<Parameters<typeof OwnerWork.list>[1], "orgId">) =>
+        OwnerWork.list([owner], { orgId, ...input }).pipe(
+          Effect.map((page) => page.records.map((record) => record.title)),
+        );
+      assert.deepStrictEqual(yield* titles({ late: false }), [
+        "Invented b",
+        "Invented c",
+        "Invented d",
+        "Invented e",
+      ]);
+      assert.deepStrictEqual(yield* titles({ category: "task", open: true }), [
+        "Invented a",
+        "Invented c",
+      ]);
+      assert.deepStrictEqual(yield* titles({ side: "theirs" }), ["Invented b"]);
+      // Due this week and not late, a page at a time: b turns late between the pages, and the
+      // second page is still judged as of the first, so c is neither skipped nor repeated.
+      const week = {
+        open: true,
+        late: false,
+        dueAfter: "1970-01-02T12:00:00.000Z",
+        dueBy: "1970-01-09T12:00:00.000Z",
+        limit: 1,
+      };
+      const first = yield* OwnerWork.list([owner], { orgId, ...week });
+      assert.deepInclude(first, { total: 2, nextCursor: `o:1:${1.5 * day}` });
+      assert.deepStrictEqual(
+        first.records.map((record) => [record.title, record.late]),
+        [["Invented b", false]],
+      );
+      yield* TestClock.adjust("3 days");
+      const second = yield* OwnerWork.list([owner], { orgId, ...week, cursor: first.nextCursor! });
+      assert.deepInclude(second, { total: 2, nextCursor: null, asOf: first.asOf });
+      assert.deepStrictEqual(
+        second.records.map((record) => record.title),
+        ["Invented c"],
+      );
+      // The cursor the screens already hold still reads.
+      assert.lengthOf((yield* OwnerWork.list([owner], { orgId, cursor: "o:4" })).records, 1);
+      assert.include(yield* Effect.flip(OwnerWork.list([owner], { orgId, cursor: "o:x" })), {
+        reason: "invalid_state",
+      });
+      assert.include(yield* OwnerWork.summary([owner], { orgId }), { open: 4, closed: 1 });
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("an entry opens by id, and its links carry what opens the other end", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    const records = yield* KinRecords.KinRecords;
+    const writer = { actor: { _tag: "agent" as const, agentId: lead }, via: "lead" as const };
+    const parent = (yield* records.create(orgId, writer, {
+      originKey: "parent",
+      title: "Invented launch",
+      owner: toLead,
+    })).row;
+    const step = (yield* records.create(orgId, writer, {
+      originKey: "step",
+      title: "Invented launch step",
+      owner: toLead,
+    })).row;
+    yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
+      VALUES ('old', ${orgId}, ${lead}, 'test', 0, 'completed', '[]')`;
+    yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id,
+        model_json, provenance_json, status, started_at, title, pull_request_url, pull_request_number)
+      VALUES ('wk', ${orgId}, ${lead}, 'old', 'build', 'wk-thread', '{}', '{}', 'running', 0,
+        'Invented worker', 'https://github.com/invented/repo/pull/7', 7)`;
+    yield* records.link(orgId, writer, step.recordId, {
+      kind: "record",
+      target: parent.recordId,
+      relation: "parent",
+    });
+    yield* records.link(orgId, writer, step.recordId, {
+      kind: "worker",
+      target: "wk",
+      relation: "attempt",
+    });
+    yield* records.link(orgId, writer, step.recordId, {
+      kind: "record",
+      target: "rec_gone",
+      relation: "relates",
+    });
+    const byId = yield* OwnerWork.get([owner], {
+      orgId,
+      recordId: KinRecordId.make(step.recordId),
+    });
+    assert.strictEqual(byId.key, step.key);
+    assert.deepStrictEqual(
+      byId.links.map((link) => [link.target, link.record ?? null, link.worker ?? null]),
+      [
+        [
+          parent.recordId,
+          { recordId: KinRecordId.make(parent.recordId), key: parent.key, title: parent.title },
+          null,
+        ],
+        ["rec_gone", null, null],
+        [
+          "wk",
+          null,
+          {
+            threadId: ThreadId.make("wk-thread"),
+            remoteEnvironmentId: null,
+            running: true,
+            pullRequest: { url: "https://github.com/invented/repo/pull/7", number: 7 },
+          },
+        ],
+      ],
+    );
+    // Its own change number moves with its links, not with another entry's change.
+    assert.strictEqual(byId.seq, byId.changes[0]!.seq);
+    yield* records.update(orgId, writer, parent.key, { state: "doing" });
+    assert.strictEqual((yield* OwnerWork.get([owner], { orgId, key: step.key })).seq, byId.seq);
+    assert.include(
+      yield* Effect.flip(OwnerWork.get([owner], { orgId, recordId: KinRecordId.make("rec_x") })),
+      { reason: "not_found" },
+    );
+    assert.include(
+      yield* Effect.flip(
+        OwnerWork.get([mate], { orgId, recordId: KinRecordId.make(step.recordId) }),
+      ),
+      {
+        reason: "not_allowed",
+      },
+    );
   }).pipe(Effect.provide(layer)),
 );

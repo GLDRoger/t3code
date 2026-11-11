@@ -62,5 +62,14 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
     "kin.work.assign": Effect.fn("KinWork.rpc.assign")(function* (input) {
       return yield* call((people) => Work.assign(people, input));
     }),
+    "kin.work.update": Effect.fn("KinWork.rpc.update")(function* (input) {
+      return yield* call((people) => Work.update(people, input));
+    }),
+    "kin.work.confirm": Effect.fn("KinWork.rpc.confirm")(function* (input) {
+      return yield* call((people) => Work.confirm(people, input));
+    }),
+    "kin.work.decline": Effect.fn("KinWork.rpc.decline")(function* (input) {
+      return yield* call((people) => Work.decline(people, input));
+    }),
   });
 });

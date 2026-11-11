@@ -6,7 +6,13 @@ import {
   AuthOrchestrationReadScope,
   EnvironmentAuthorizationError,
 } from "./auth.ts";
-import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  EnvironmentId,
+  IsoDateTime,
+  NonNegativeInt,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 import {
   KinAgentId,
   KinChatError,
@@ -116,6 +122,22 @@ export const KinRecordLink = Schema.Struct({
   // Server-written: a PR number, a worker title. Plain text, never markup.
   label: Schema.NullOr(KinText),
   createdAt: IsoDateTime,
+  /** A `record` link's other end as it is now, to open it by key; absent once it is gone. */
+  record: Schema.optional(
+    Schema.Struct({ recordId: KinRecordId, key: KinRecordKey, title: KinTrimmedText }),
+  ),
+  /**
+   * A `worker` link's run, as its task card shows it: the thread (in `remoteEnvironmentId` when
+   * that is set, else on this host) and the draft pull request Kin opened from it.
+   */
+  worker: Schema.optional(
+    Schema.Struct({
+      threadId: Schema.NullOr(ThreadId),
+      remoteEnvironmentId: Schema.NullOr(EnvironmentId),
+      running: Schema.Boolean,
+      pullRequest: Schema.NullOr(KinPullRequestRef),
+    }),
+  ),
 });
 export type KinRecordLink = typeof KinRecordLink.Type;
 
@@ -154,6 +176,8 @@ export const KinRecordDetail = Schema.Struct({
   links: Schema.Array(KinRecordLink),
   /** Newest first, at most `KIN_RECORD_CHANGES_CAP`. */
   changes: Schema.Array(KinRecordChange),
+  /** This entry's latest change number, links included: compare with a `changed` event's. */
+  seq: Schema.optional(NonNegativeInt),
 });
 export type KinRecordDetail = typeof KinRecordDetail.Type;
 export const KIN_RECORD_CHANGES_CAP = 50;
@@ -166,9 +190,14 @@ export const KinWorkListInput = Schema.Struct({
   states: Schema.optional(Schema.Array(KinRecordState)),
   /** Neither done nor dropped. Ignored when `states` is set. */
   open: Schema.optional(Schema.Boolean),
+  /** `true`: only late entries. `false`: none that are late. Late is as of the first page. */
   late: Schema.optional(Schema.Boolean),
   /** Due at or before this time. */
   dueBy: Schema.optional(IsoDateTime),
+  /** Due at or after this time. */
+  dueAfter: Schema.optional(IsoDateTime),
+  category: Schema.optional(KinRecordCategory),
+  side: Schema.optional(KinRecordSide),
   /** Case-insensitive match on title and notes. */
   text: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
   /** From the previous page's `nextCursor`. */
@@ -188,7 +217,11 @@ export const KinWorkListResult = Schema.Struct({
 });
 export type KinWorkListResult = typeof KinWorkListResult.Type;
 
-export const KinWorkGetInput = Schema.Struct({ orgId: KinOrgId, key: KinRecordKey });
+/** By key, or by record id as a `record` link names it. */
+export const KinWorkGetInput = Schema.Union([
+  Schema.Struct({ orgId: KinOrgId, key: KinRecordKey }),
+  Schema.Struct({ orgId: KinOrgId, recordId: KinRecordId }),
+]);
 export type KinWorkGetInput = typeof KinWorkGetInput.Type;
 
 /** Counts for the pinned row and the Work screen's people and leads section; under 2 KB. */
@@ -203,6 +236,8 @@ export const KinWorkSummaryInput = Schema.Struct({ orgId: KinOrgId });
 export type KinWorkSummaryInput = typeof KinWorkSummaryInput.Type;
 export const KinWorkSummary = Schema.Struct({
   ...KinWorkCounts,
+  /** Done or dropped, ever. */
+  closed: Schema.optional(NonNegativeInt),
   /** Every owner with an open entry, most open first. */
   owners: Schema.Array(Schema.Struct({ owner: KinWorkPrincipal, ...KinWorkCounts })),
   seq: NonNegativeInt,
@@ -216,7 +251,13 @@ export type KinWorkSummary = typeof KinWorkSummary.Type;
  */
 export const KinWorkSubscribeInput = Schema.Struct({ orgId: KinOrgId });
 export type KinWorkSubscribeInput = typeof KinWorkSubscribeInput.Type;
-export const KinWorkEvent = Schema.Union([Schema.TaggedStruct("changed", { seq: NonNegativeInt })]);
+export const KinWorkEvent = Schema.Union([
+  Schema.TaggedStruct("changed", {
+    seq: NonNegativeInt,
+    /** The entry that changed; absent on the first event, which is only the latest number. */
+    key: Schema.optional(KinRecordKey),
+  }),
+]);
 export type KinWorkEvent = typeof KinWorkEvent.Type;
 
 /** The owner's "New": a short form. Long text belongs in chat. */
@@ -234,23 +275,59 @@ export const KinWorkCreateInput = Schema.Struct({
 });
 export type KinWorkCreateInput = typeof KinWorkCreateInput.Type;
 
-/** The owner gives an entry to a lead or a person. Given to a lead, it is an instruction to do it. */
+/**
+ * The owner gives an open entry to a lead or a person; given to a lead, it is an instruction to do
+ * it. `null` takes it back: every entry has one owner, so it returns to the owner. A lead that
+ * loses an open entry is told, in a turn only the owner reads.
+ */
 export const KinWorkAssignInput = Schema.Struct({
   orgId: KinOrgId,
   key: KinRecordKey,
-  to: KinWorkPrincipal,
+  to: Schema.NullOr(KinWorkPrincipal),
   /** The revision the owner saw; a different current one is refused as a conflict. */
   rev: Schema.optional(NonNegativeInt),
 });
 export type KinWorkAssignInput = typeof KinWorkAssignInput.Type;
 
-const KIN_WORK_WS_METHODS = {
+/**
+ * The owner's edit: only the fields given change, each logged. A stale `rev` is a conflict unless
+ * the entry already holds every value given, so a retry succeeds. Closing an entry a lead holds
+ * tells that lead to stop; reopening one gives it back to the lead to do.
+ */
+export const KinWorkUpdateInput = Schema.Struct({
+  orgId: KinOrgId,
+  key: KinRecordKey,
+  rev: NonNegativeInt,
+  title: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(280))),
+  notes: Schema.optional(KinText.check(Schema.isMaxLength(4_000))),
+  /** `null` clears it. A `YYYY-MM-DD` day with `dueAllDay` is that day in the owner's zone. */
+  dueAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  dueAllDay: Schema.optional(Schema.Boolean),
+  state: Schema.optional(KinRecordState),
+  /** Who it waits on, while `waiting`; ignored in any other state. */
+  waitingOn: Schema.optional(Schema.NullOr(KinWorkPrincipal)),
+  category: Schema.optional(Schema.NullOr(KinRecordCategory)),
+});
+export type KinWorkUpdateInput = typeof KinWorkUpdateInput.Type;
+
+/** Keep a lead's suggested entry (`confirm`), or decline it, which drops it. */
+export const KinWorkConfirmInput = Schema.Struct({
+  orgId: KinOrgId,
+  key: KinRecordKey,
+  rev: NonNegativeInt,
+});
+export type KinWorkConfirmInput = typeof KinWorkConfirmInput.Type;
+
+export const KIN_WORK_WS_METHODS = {
   summary: "kin.work.summary",
   list: "kin.work.list",
   get: "kin.work.get",
   subscribe: "kin.work.subscribe",
   create: "kin.work.create",
   assign: "kin.work.assign",
+  update: "kin.work.update",
+  confirm: "kin.work.confirm",
+  decline: "kin.work.decline",
 } as const;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -283,6 +360,21 @@ export const KinWorkRpcs = [
     success: KinRecordDetail,
     error,
   }),
+  Rpc.make(KIN_WORK_WS_METHODS.update, {
+    payload: KinWorkUpdateInput,
+    success: KinRecordDetail,
+    error,
+  }),
+  Rpc.make(KIN_WORK_WS_METHODS.confirm, {
+    payload: KinWorkConfirmInput,
+    success: KinRecordDetail,
+    error,
+  }),
+  Rpc.make(KIN_WORK_WS_METHODS.decline, {
+    payload: KinWorkConfirmInput,
+    success: KinRecordDetail,
+    error,
+  }),
 ] as const;
 
 export const KIN_WORK_RPC_SCOPES = {
@@ -293,4 +385,8 @@ export const KIN_WORK_RPC_SCOPES = {
   // Giving a lead work starts agent work on the owner's budget, as a message to it does.
   [KIN_WORK_WS_METHODS.create]: AuthOrchestrationOperateScope,
   [KIN_WORK_WS_METHODS.assign]: AuthOrchestrationOperateScope,
+  // Closing, reopening or declining an entry a lead holds wakes that lead.
+  [KIN_WORK_WS_METHODS.update]: AuthOrchestrationOperateScope,
+  [KIN_WORK_WS_METHODS.confirm]: AuthOrchestrationOperateScope,
+  [KIN_WORK_WS_METHODS.decline]: AuthOrchestrationOperateScope,
 } as const;

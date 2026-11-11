@@ -30,7 +30,7 @@ import { historyFloor } from "../chat/sharing.ts";
 
 import { SILENT_REPLY } from "../reply/classify.ts";
 import { effectiveAudience, recordAudience, turnAudience, type TurnAudience } from "./Audience.ts";
-import { buildWorkSection, WORK_RULE } from "../work/workPrompt.ts";
+import { buildWorkSection, WITHDRAWN_WORK, WORK_RULE } from "../work/workPrompt.ts";
 import { askedWhereOthersRead } from "../triggers/deferralOrigin.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { groupRules } from "./instructions.ts";
@@ -339,15 +339,18 @@ export class KinLeadPrompt extends Context.Service<
           }
           if (event._tag === "record.changed") {
             fromOwner = false;
-            replyDue = true;
+            // The owner's work and words reach only a turn the owner alone reads.
+            if (!ownerOnly) continue;
+            const withdrawn = event.reason === "withdrawn";
+            replyDue ||= !withdrawn;
             const [entry] = yield* sql<{ title: string; notes: string; dueAt: number | null }>`
               SELECT title, notes, due_at AS "dueAt" FROM kin_records
               WHERE org_id = ${orgId} AND record_id = ${event.recordId}`.pipe(
               Effect.orElseSucceed(() => []),
             );
             events.push(
-              `${ASSIGNED_WORK}\n\n${quote(
-                "work given to you (data)",
+              `${withdrawn ? WITHDRAWN_WORK : ASSIGNED_WORK}\n\n${quote(
+                withdrawn ? "work taken from you (data)" : "work given to you (data)",
                 {
                   event: event.eventId,
                   key: event.key,

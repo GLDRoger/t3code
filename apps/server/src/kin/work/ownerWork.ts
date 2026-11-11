@@ -3,10 +3,13 @@ import {
   KinChatError,
   type KinOrgId,
   type KinWorkAssignInput,
+  type KinWorkConfirmInput,
   type KinWorkCreateInput,
+  type KinWorkGetInput,
   type KinWorkListInput,
   type KinWorkPrincipal,
   type KinWorkSummary,
+  type KinWorkUpdateInput,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -15,9 +18,10 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
-import { KinRecords, type Writer } from "./KinRecords.ts";
+import { KinRecords, type Patch, type Writer } from "./KinRecords.ts";
 import {
   endOfDay,
+  isClosed,
   iso,
   notFound,
   ownerZone,
@@ -57,19 +61,28 @@ const millis = (value: string, field: string) => {
       );
 };
 
+/** `o:<offset>` or `o:<offset>:<ms>`: the time the first page judged `late` at, so pages hold. */
+const parseCursor = (cursor: string | undefined) => {
+  if (cursor === undefined) return Effect.succeed({ offset: 0, at: undefined });
+  const found = /^o:(\d{1,9})(?::(\d{1,15}))?$/.exec(cursor);
+  return found === null
+    ? Effect.fail(
+        new KinChatError({ reason: "invalid_state", message: "That page cursor is stale." }),
+      )
+    : Effect.succeed({
+        offset: Number.parseInt(found[1]!, 10),
+        at: found[2] === undefined ? undefined : Number.parseInt(found[2], 10),
+      });
+};
+
 export const list = Effect.fn("KinWork.list")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinWorkListInput,
 ) {
   yield* theOwner(people, input.orgId);
   const records = yield* KinRecords;
-  const offset =
-    input.cursor === undefined ? 0 : Number.parseInt(input.cursor.replace(/^o:/, ""), 10);
-  if (!Number.isFinite(offset) || offset < 0)
-    return yield* new KinChatError({
-      reason: "invalid_state",
-      message: "That page cursor is stale.",
-    });
+  const cursor = yield* parseCursor(input.cursor);
+  const at = cursor.at ?? (yield* Clock.currentTimeMillis);
   const limit = input.limit ?? 50;
   const page = yield* records.query(input.orgId, {
     ...(input.owner === undefined ? {} : { owner: input.owner }),
@@ -77,29 +90,44 @@ export const list = Effect.fn("KinWork.list")(function* (
     ...(input.open === undefined ? {} : { open: input.open }),
     ...(input.late === undefined ? {} : { late: input.late }),
     ...(input.dueBy === undefined ? {} : { dueBy: yield* millis(input.dueBy, "dueBy") }),
+    ...(input.dueAfter === undefined
+      ? {}
+      : { dueAfter: yield* millis(input.dueAfter, "dueAfter") }),
+    ...(input.category === undefined ? {} : { category: input.category }),
+    ...(input.side === undefined ? {} : { side: input.side }),
     ...(input.text === undefined ? {} : { text: input.text }),
-    offset,
+    offset: cursor.offset,
     limit,
+    at,
   });
-  const now = yield* Clock.currentTimeMillis;
+  const next = cursor.offset + page.rows.length;
   return {
-    records: page.rows.map((row) => toRecord(row, now)),
+    records: page.rows.map((row) => toRecord(row, at)),
     total: page.total,
-    nextCursor: offset + page.rows.length < page.total ? `o:${offset + page.rows.length}` : null,
+    nextCursor: next < page.total ? `o:${next}:${at}` : null,
     seq: page.seq,
-    asOf: iso(now),
+    asOf: iso(at),
   };
+});
+
+const found = Effect.fn("KinWork.found")(function* (
+  orgId: KinOrgId,
+  ref: { readonly key: string } | { readonly recordId: string },
+) {
+  const records = yield* KinRecords;
+  const row =
+    "key" in ref ? yield* records.get(orgId, ref.key) : yield* records.getById(orgId, ref.recordId);
+  if (row === undefined) return yield* notFound("key" in ref ? ref.key : "with that id");
+  return row;
 });
 
 export const get = Effect.fn("KinWork.get")(function* (
   people: ReadonlyArray<PersonIdentity>,
-  input: { readonly orgId: KinOrgId; readonly key: string },
+  input: KinWorkGetInput,
 ) {
   yield* theOwner(people, input.orgId);
   const records = yield* KinRecords;
-  const row = yield* records.get(input.orgId, input.key);
-  if (row === undefined) return yield* notFound(input.key);
-  return yield* records.detail(row, KIN_RECORD_CHANGES_CAP);
+  return yield* records.detail(yield* found(input.orgId, input), KIN_RECORD_CHANGES_CAP);
 });
 
 type Counts = { open: number; doing: number; waiting: number; late: number; dueThisWeek: number };
@@ -111,6 +139,10 @@ export const summary = Effect.fn("KinWork.summary")(function* (
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
   const now = yield* Clock.currentTimeMillis;
+  const [closed] = yield* sql<{ closed: number }>`SELECT COUNT(*) AS closed FROM kin_records
+    WHERE org_id = ${input.orgId} AND state IN ('done', 'dropped')`.pipe(
+    Effect.mapError(() => unavailable),
+  );
   const rows = yield* sql<{ ownerKind: string; ownerId: string } & Counts>`
     SELECT owner_kind AS "ownerKind", owner_id AS "ownerId", COUNT(*) AS open,
       SUM(state = 'doing') AS doing, SUM(state = 'waiting') AS waiting,
@@ -148,6 +180,7 @@ export const summary = Effect.fn("KinWork.summary")(function* (
   );
   return {
     ...total,
+    closed: closed?.closed ?? 0,
     owners,
     seq: yield* records.seq(input.orgId),
     asOf: iso(now),
@@ -164,7 +197,7 @@ export const subscribe = (
       const records = yield* KinRecords;
       return records
         .changes(input.orgId)
-        .pipe(Stream.map((seq) => ({ _tag: "changed" as const, seq })));
+        .pipe(Stream.map((tick) => ({ _tag: "changed" as const, ...tick })));
     }),
   );
 
@@ -176,11 +209,7 @@ export const create = Effect.fn("KinWork.create")(function* (
   const person = yield* theOwner(people, input.orgId);
   const records = yield* KinRecords;
   const dueAt =
-    input.dueAt === undefined
-      ? null
-      : input.dueAllDay === true && /^\d{4}-\d{2}-\d{2}$/.test(input.dueAt)
-        ? endOfDay(input.dueAt, yield* ownerZone(input.orgId))
-        : yield* millis(input.dueAt, "dueAt");
+    input.dueAt === undefined ? null : yield* dueMillis(input.orgId, input.dueAt, input.dueAllDay);
   const owner: KinWorkPrincipal = input.owner ?? { _tag: "person", personId: person.personId };
   const { row } = yield* records.create(input.orgId, ownerWriter(person), {
     originKey: `owner:${input.clientRequestId}`,
@@ -194,20 +223,92 @@ export const create = Effect.fn("KinWork.create")(function* (
   return yield* records.detail(row, KIN_RECORD_CHANGES_CAP);
 });
 
+/** A closed entry is refused: reopen it first. Taking it back (`to: null`) returns it to the owner. */
 export const assign = Effect.fn("KinWork.assign")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinWorkAssignInput,
 ) {
   const person = yield* theOwner(people, input.orgId);
-  const records = yield* KinRecords;
-  const row = yield* records.update(
+  const to: KinWorkPrincipal = input.to ?? { _tag: "person", personId: person.personId };
+  return yield* change(person, input.orgId, input.key, { owner: to }, input.rev);
+});
+
+export const update = Effect.fn("KinWork.update")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinWorkUpdateInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  const due: Patch =
+    input.dueAt === undefined
+      ? input.dueAllDay === undefined
+        ? {}
+        : { dueAllDay: input.dueAllDay }
+      : input.dueAt === null
+        ? { dueAt: null, dueAllDay: false }
+        : {
+            dueAt: yield* dueMillis(input.orgId, input.dueAt, input.dueAllDay),
+            dueAllDay: input.dueAllDay === true,
+          };
+  return yield* change(
+    person,
     input.orgId,
-    ownerWriter(person),
     input.key,
-    { owner: input.to },
+    {
+      ...(input.title === undefined ? {} : { title: input.title }),
+      ...(input.notes === undefined ? {} : { notes: input.notes }),
+      ...(input.state === undefined ? {} : { state: input.state }),
+      ...(input.waitingOn === undefined ? {} : { waitingOn: input.waitingOn }),
+      ...(input.category === undefined ? {} : { category: input.category }),
+      ...due,
+    },
     input.rev,
   );
+});
+
+/** Keeps a lead's suggestion: it counts as the owner's from now on. */
+export const confirm = Effect.fn("KinWork.confirm")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinWorkConfirmInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  return yield* change(person, input.orgId, input.key, { confirmed: true }, input.rev);
+});
+
+/** Declines a lead's suggestion by dropping it; an entry the owner already kept is refused. */
+export const decline = Effect.fn("KinWork.decline")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinWorkConfirmInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  const row = yield* found(input.orgId, input);
+  if (row.confirmed === 1)
+    return yield* new KinChatError({
+      reason: "invalid_state",
+      message: `${row.key} is not a suggestion${isClosed(row.state) ? "" : "; drop it instead"}.`,
+    });
+  return yield* change(person, input.orgId, input.key, { state: "dropped" }, input.rev);
+});
+
+const change = Effect.fn("KinWork.change")(function* (
+  person: PersonIdentity,
+  orgId: KinOrgId,
+  key: string,
+  patch: Patch,
+  rev: number | undefined,
+) {
+  const records = yield* KinRecords;
+  const row = yield* records.update(orgId, ownerWriter(person), key, patch, rev);
   return yield* records.detail(row, KIN_RECORD_CHANGES_CAP);
+});
+
+const dueMillis = Effect.fn("KinWork.dueMillis")(function* (
+  orgId: KinOrgId,
+  dueAt: string,
+  allDay: boolean | undefined,
+) {
+  return allDay === true && /^\d{4}-\d{2}-\d{2}$/.test(dueAt)
+    ? endOfDay(dueAt, yield* ownerZone(orgId))
+    : yield* millis(dueAt, "dueAt");
 });
 
 const ownerWriter = (person: PersonIdentity): Writer => ({
