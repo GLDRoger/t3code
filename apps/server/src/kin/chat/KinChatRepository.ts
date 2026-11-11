@@ -71,6 +71,8 @@ type InsertMessage = Omit<KinMessage, "seq" | "authorRole" | "clientMessageId"> 
   readonly wakeupId?: KinWakeupId | undefined;
   // Only the server-only task card creator may attribute a message outside an agent wake-up.
   readonly serverTaskCard?: true;
+  /** Shown in the chat, but never pushed and never counted as unread or on the badge. */
+  readonly silent?: true;
   readonly clientMessageId: {
     readonly kind: "send" | "act" | "task-card";
     readonly id: typeof TrimmedNonEmptyString.Type;
@@ -1443,12 +1445,13 @@ const make = Effect.gen(function* () {
             const inserted =
               yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id, author_agent_id,
  author_owner_person_id, author_thread_id, author_member_id, author_role, kind, body, attachments_json, intent, mentions_json, reply_to,
- widget_id, floor_run_id, status, sent_by, client_message_id, created_at, edited_at)
+ widget_id, floor_run_id, status, sent_by, client_message_id, created_at, edited_at, silent)
  VALUES (${input.messageId}, ${input.orgId}, ${input.chatId}, ${seq}, ${author._tag},
  ${member?.principal._tag === "person" ? member.principal.personId : null}, ${member?.principal._tag === "agent" ? member.principal.agentId : null},
  ${agent?.ownerPersonId ?? null}, ${author._tag === "agent" ? author.threadId : null},
  ${memberId}, ${member?.role ?? "member"}, ${input.kind}, ${input.body}, ${attachmentsJson}, ${input.intent}, ${mentions}, ${input.replyTo},
- ${input.widgetId}, ${input.floorRunId}, ${input.status}, ${input.sentBy}, ${clientId}, ${input.createdAt}, ${input.editedAt})
+ ${input.widgetId}, ${input.floorRunId}, ${input.status}, ${input.sentBy}, ${clientId}, ${input.createdAt}, ${input.editedAt},
+ ${input.silent === true ? 1 : 0})
  ON CONFLICT DO NOTHING RETURNING message_id`;
             if (inserted.length === 0)
               return yield* new KinChatError({
@@ -1624,7 +1627,7 @@ const make = Effect.gen(function* () {
           Result: Schema.Struct({ count: NonNegativeInt }),
           execute:
             () => sql`SELECT COUNT(*) AS count FROM kin_messages WHERE org_id = ${input.orgId}
- AND chat_id = ${input.chatId} AND status = 'posted' AND (author_member_id IS NULL OR author_member_id != ${input.memberId})
+ AND chat_id = ${input.chatId} AND status = 'posted' AND silent = 0 AND (author_member_id IS NULL OR author_member_id != ${input.memberId})
  AND seq > COALESCE((SELECT last_read_seq FROM kin_read_state WHERE org_id = ${input.orgId}
  AND chat_id = ${input.chatId} AND member_id = ${input.memberId}), 0)`,
         })(input).pipe(NodeSqliteClient.readOnly);

@@ -148,6 +148,8 @@ export class MemoryRecoveryHooks extends Context.Service<
       branch: string;
       reason: string;
       conflictBranch?: string;
+      /** The owner must act or has lost something; anything else is logged and posted silently. */
+      needsOwner?: true;
     }) => Effect.Effect<void>;
   }
 >()("t3/kin/memory/Memory/MemoryRecoveryHooks") {}
@@ -630,6 +632,7 @@ const make = Effect.gen(function* () {
           orgId,
           branch,
           reason: "Reset tampered branch to anchor; unpushed work at the replaced tip is lost",
+          needsOwner: true,
         });
       }
     }).pipe(
@@ -1304,6 +1307,7 @@ const make = Effect.gen(function* () {
             orgId,
             branch: row.branch,
             reason: `Shadow memory at ${row.head} never reached the remote and is gone from this server; the lead's shadow memory restarts from the default branch`,
+            needsOwner: true,
           });
       }
     }

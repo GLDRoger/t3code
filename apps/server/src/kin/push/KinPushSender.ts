@@ -216,7 +216,7 @@ const make = Effect.gen(function* () {
           JOIN kin_messages m ON m.org_id = cm.org_id AND m.chat_id = cm.chat_id
           WHERE cm.org_id = ${orgId} AND cm.person_id = ${personId}
             AND cm.principal_kind = 'person' AND cm.left_at IS NULL
-            AND m.status = 'posted'
+            AND m.status = 'posted' AND m.silent = 0
             AND (m.author_member_id IS NULL OR m.author_member_id != cm.member_id)
             AND m.seq > COALESCE((SELECT r.last_read_seq FROM kin_read_state r
               WHERE r.chat_id = cm.chat_id AND r.member_id = cm.member_id), 0)
@@ -300,7 +300,7 @@ const make = Effect.gen(function* () {
               AND k.status = 'running')) AS owner_timed
       FROM kin_messages m
       WHERE m.org_id = ${orgId} AND m.message_id = ${messageId} AND m.status = 'posted'
-        AND m.kind != 'widget_action'`;
+        AND m.kind != 'widget_action' AND m.silent = 0`;
     // A card that waits on someone announces itself through its widget push.
     if (row === undefined || row.awaits_card === 1) return undefined;
     const chat = yield* chatName(orgId, row.chat_id);
