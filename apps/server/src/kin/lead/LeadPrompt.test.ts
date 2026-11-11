@@ -14,6 +14,7 @@ import {
   type KinAuthor,
   type KinRole,
 } from "@t3tools/contracts";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -205,9 +206,12 @@ const memory = Layer.succeed(
     syncCheckout: () => Effect.die("Unused"),
   }),
 );
+const teamMemory = (env: Record<string, string>) =>
+  ConfigProvider.layer(ConfigProvider.fromUnknown(env));
 const layer = KinLeadPrompt.layer.pipe(
   Layer.provideMerge(Layer.merge(repository, memory)),
   Layer.provideMerge(database),
+  Layer.merge(teamMemory({ KIN_TEAM_MEMORY: "on" })),
 );
 const seed = Effect.gen(function* () {
   const repo = yield* Chat.KinChatRepository;
@@ -597,6 +601,15 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
       "Charter:",
     ])
       expect(shared).not.toContain(owners);
+    // Until the host turns team memory on, a shared turn's prompt carries no memory at all.
+    const off = yield* build("shared-wake-off").pipe(Effect.provide(teamMemory({})));
+    expect(off).toContain("Invented teammate question");
+    for (const team of [
+      "# What the team can know",
+      "Invented-team-status-zq",
+      "Invented-teammate-said-zq",
+    ])
+      expect(off).not.toContain(team);
     // The same lead in a chat only its owner ever read: the owner's parts are there.
     yield* sql`UPDATE kin_leads SET owner_chat_id = 'fixture-direct'`;
     yield* stored("owner-wake-2", [routineEvent]);
