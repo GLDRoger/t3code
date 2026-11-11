@@ -1,5 +1,11 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
+  KIN_CLEAR_CHAT_ACTION,
+  KIN_CLEAR_CHAT_FAILED,
+  KIN_CLEAR_CHAT_TITLE,
+  kinClearChatBody,
+} from "@t3tools/client-runtime/kin/kinClearChat";
+import {
   kinDomainLabel,
   kinLeadModelName,
   kinLeadTrackingDetail,
@@ -9,6 +15,15 @@ import type { EnvironmentId, KinChatId, KinLeadProfile } from "@t3tools/contract
 import { AsyncResult } from "effect/reactivity";
 import { useId, useState } from "react";
 
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "../components/ui/alert-dialog";
 import { Button } from "../components/ui/button";
 import { Label } from "../components/ui/label";
 import {
@@ -44,6 +59,8 @@ export function KinLeadSheet(props: {
   readonly environmentId: EnvironmentId;
   readonly chatId: KinChatId;
   readonly muted: boolean;
+  /** The viewer is the one person in this chat, so it is theirs to clear. */
+  readonly ownsChat: boolean;
 }) {
   const { lead, environmentId } = props;
   const canEdit = useAtomValue(kinClient.leadUpdate.permissionAtom(environmentId));
@@ -51,12 +68,25 @@ export function KinLeadSheet(props: {
   const mute = useAtomCommand(kinClient.mute, { reportFailure: false });
   const [muteState, setMuteState] = useState<"idle" | "saving" | "failed">("idle");
   const muteId = useId();
+  // The host decides again on the call; this only hides what it would refuse.
+  const canClear = useAtomValue(kinClient.clear.permissionAtom(environmentId)) && props.ownsChat;
+  const clear = useAtomCommand(kinClient.clear, { reportFailure: false });
+  const [clearState, setClearState] = useState<"idle" | "confirm" | "clearing" | "failed">("idle");
   const providers = useAtomValue(serverEnvironment.providersValueAtom(environmentId));
 
   const setMuted = async (muted: boolean) => {
     setMuteState("saving");
     const result = await mute({ environmentId, input: { chatId: props.chatId, muted } });
     setMuteState(AsyncResult.isFailure(result) ? "failed" : "idle");
+  };
+
+  const clearChat = async () => {
+    setClearState("clearing");
+    const result = await clear({ environmentId, input: { chatId: props.chatId } });
+    if (AsyncResult.isFailure(result)) return setClearState("failed");
+    setClearState("idle");
+    // Nothing to announce: the chat behind the sheet is empty.
+    props.onOpenChange(false);
   };
 
   return (
@@ -136,8 +166,45 @@ export function KinLeadSheet(props: {
               ) : null}
             </Section>
           ) : null}
+          {canClear ? (
+            <Section title="Chat">
+              <Button
+                size="sm"
+                variant="destructive-outline"
+                className="self-start"
+                disabled={clearState === "clearing"}
+                onClick={() => setClearState("confirm")}
+              >
+                {KIN_CLEAR_CHAT_ACTION}
+              </Button>
+              {clearState === "failed" ? (
+                <p role="alert" className="text-xs text-destructive-foreground">
+                  {KIN_CLEAR_CHAT_FAILED}
+                </p>
+              ) : null}
+            </Section>
+          ) : null}
         </div>
       </SheetPopup>
+      <AlertDialog
+        open={clearState === "confirm"}
+        onOpenChange={(open) => {
+          if (!open) setClearState((held) => (held === "confirm" ? "idle" : held));
+        }}
+      >
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{KIN_CLEAR_CHAT_TITLE}</AlertDialogTitle>
+            <AlertDialogDescription>{kinClearChatBody(lead.name)}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+            <Button variant="destructive" onClick={() => void clearChat()}>
+              {KIN_CLEAR_CHAT_ACTION}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
     </Sheet>
   );
 }

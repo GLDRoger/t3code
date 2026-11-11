@@ -329,6 +329,22 @@ describe("kin chat feed", () => {
     expect(state.contiguousSeq).toBe(400);
   });
 
+  it("drops a cleared chat's reactions and drafts with its messages", () => {
+    const held = {
+      ...applyKinChatEvent(emptyKinChat, backlog([message(1)], 1)),
+      reactions: [{ messageId: "m1", memberId: "me", emoji: "👍" }],
+      drafts: [{ draftId: "d", agentId: "lead", text: "Half a reply", startedAt: at(0) }],
+    } as unknown as KinChatState;
+    // A gap reset keeps them: the page that refills the feed still holds their messages.
+    expect(applyKinChatEvent(held, { _tag: "reset", lastSeq: 1 })).toMatchObject({
+      reactions: held.reactions,
+      drafts: held.drafts,
+    });
+    expect(
+      applyKinChatEvent(held, { _tag: "reset", lastSeq: 1, lastChangeSeq: 3, cleared: true }),
+    ).toMatchObject({ messages: [], reactions: [], drafts: [], changeSeq: 3 });
+  });
+
   it("marks the chat left only for a member event with leftAt", () => {
     const state = applyKinChatEvent(emptyKinChat, backlog([], 0));
     // Anyone else's change counts up, so the chat's details read its members again.

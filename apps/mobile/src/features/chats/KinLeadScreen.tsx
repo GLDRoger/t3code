@@ -12,6 +12,12 @@ import {
   kinLeadTrackingDetail,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
+import {
+  KIN_CLEAR_CHAT_ACTION,
+  KIN_CLEAR_CHAT_TITLE,
+  kinClearChatBody,
+  kinOwnsDirectChat,
+} from "@t3tools/client-runtime/kin/kinClearChat";
 import { kinAgentAvatar, kinChatMuted } from "@t3tools/client-runtime/kin/kinScreenState";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -22,7 +28,9 @@ import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { AppBar } from "../../components/ui/AppBar";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
+import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
 import { ListToggleRow } from "../../components/ui/ListToggleRow";
@@ -111,6 +119,7 @@ function KinLeadBody(props: {
             <>
               <KinLeadProfileView lead={lead} modelName={kinLeadModelName(lead.model, providers)} />
               <KinLeadNotifications environmentId={environmentId} lead={lead} />
+              <KinLeadClearChat environmentId={environmentId} lead={lead} />
             </>
           ) : AsyncResult.isInitial(result) ? (
             <View
@@ -178,6 +187,51 @@ function KinLeadNotifications(props: {
         value={muted}
         onValueChange={(next) =>
           void runMute({ environmentId, input: { chatId: chat.chatId, muted: next } })
+        }
+      />
+    </ListSection>
+  );
+}
+
+/** Empties the viewer's chat with this lead, once they confirm; the chat behind shows it. */
+function KinLeadClearChat(props: {
+  readonly environmentId: EnvironmentId;
+  readonly lead: KinLeadProfile;
+}) {
+  const { environmentId, lead } = props;
+  const navigation = useNavigation();
+  const host = useKinHostAt(environmentId);
+  const inbox = useAtomValue(kinClient.inbox({ environmentId, input: {} }));
+  const canClear = useAtomValue(kinClient.clear.permissionAtom(environmentId));
+  const runClear = useAtomCommand(kinClient.clear, "Clearing this chat");
+  const { personId } = kinFeedViewer(
+    host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
+    lead.orgId,
+  );
+  const chat =
+    inbox._tag === "Success"
+      ? inbox.value.value.chats.find((held) => held.chatId === lead.ownerChatId)
+      : undefined;
+  // The host decides again on the call; this only hides what it would refuse.
+  if (!canClear || chat === undefined || !kinOwnsDirectChat(chat.kind, chat.members, personId))
+    return null;
+  return (
+    <ListSection>
+      <ListActionRow
+        label={KIN_CLEAR_CHAT_ACTION}
+        icon="trash"
+        tone="danger"
+        onPress={() =>
+          Dialog.confirm({
+            title: KIN_CLEAR_CHAT_TITLE,
+            message: kinClearChatBody(lead.name),
+            confirmText: KIN_CLEAR_CHAT_ACTION,
+            destructive: true,
+            onConfirm: () =>
+              void runClear({ environmentId, input: { chatId: chat.chatId } }).then((result) => {
+                if (AsyncResult.isSuccess(result)) navigation.goBack();
+              }),
+          })
         }
       />
     </ListSection>

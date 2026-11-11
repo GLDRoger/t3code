@@ -7,5 +7,7 @@ import * as SqlClient from "effect/sql/SqlClient";
  */
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* sql`ALTER TABLE kin_chats ADD COLUMN cleared_change_seq INTEGER NOT NULL DEFAULT 0`;
+  const columns = yield* sql<{ name: string }>`PRAGMA table_info(kin_chats)`;
+  if (!columns.some((column) => column.name === "cleared_change_seq"))
+    yield* sql`ALTER TABLE kin_chats ADD COLUMN cleared_change_seq INTEGER NOT NULL DEFAULT 0`;
 });

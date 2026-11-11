@@ -308,6 +308,9 @@ export function applyKinChatEvent(
         contiguousSeq: event.lastSeq,
         changeSeq: event.lastChangeSeq ?? 0,
         needsHistoryReload: true,
+        // A cleared chat keeps nothing that hung on its messages; a draft's later deltas no
+        // longer line up, so its reply shows when it lands.
+        ...(event.cleared === true ? { reactions: [], drafts: [] } : {}),
       };
     case "message": {
       const messages = mergeMessages(state.messages, [event.message], streamFloor(state));

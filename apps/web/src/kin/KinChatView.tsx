@@ -1,3 +1,4 @@
+import { kinOwnsDirectChat } from "@t3tools/client-runtime/kin/kinClearChat";
 import { useAtomValue } from "@effect/atom-react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import {
@@ -285,6 +286,10 @@ export function KinChatView(props: {
           environmentId={environmentId}
           chatId={chatId}
           muted={muted}
+          ownsChat={
+            summary !== undefined &&
+            kinOwnsDirectChat(summary.kind, summary.members, viewer.personId)
+          }
         />
       )}
       {state._tag === "ready" ? (
