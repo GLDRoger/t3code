@@ -1,0 +1,348 @@
+import {
+  CommandId,
+  type KinChatId,
+  KinChatError,
+  type KinEvent,
+  type KinMemoryItemId,
+  KinWorkerId,
+  MessageId,
+  type ModelSelection,
+} from "@t3tools/contracts";
+import { formatThreadLink } from "@t3tools/shared/threadLinks";
+import * as Clock from "effect/Clock";
+import * as Effect from "effect/Effect";
+import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
+
+import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
+import { ServerConfig } from "../../config.ts";
+import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
+import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
+import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
+import { deriveProviderInstanceConfigMap } from "../../provider/ProviderInstanceRegistryHydration.ts";
+import * as ServerSettings from "../../serverSettings.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
+import { KinIdentity } from "../chat/KinIdentity.ts";
+import { effectiveAudience } from "./Audience.ts";
+import { KinBudget } from "./KinBudget.ts";
+import type { resolveLead } from "./LeadMemory.ts";
+import { isOrgPaused } from "./orgState.ts";
+import { toolAdmitted } from "./SharedTools.ts";
+import { buildBrief } from "./workerBrief.ts";
+import { labelOf, resolveProject, type Checkout, type HostProject } from "./workerProjects.ts";
+import { publishBranch } from "./workerPublish.ts";
+import type { DelegateInput } from "./Workers.ts";
+import { WorkerTracker } from "./WorkerTracker.ts";
+import { localThreadId } from "./workThread.ts";
+
+type Lead = Effect.Success<ReturnType<typeof resolveLead>>;
+type Config = {
+  readonly models: { readonly strong: ModelSelection; readonly cheap: ModelSelection };
+  readonly ownerChatId: KinChatId;
+  readonly ownerPersonId: string;
+  readonly createdBy: string | null;
+};
+type Input = typeof DelegateInput.Type;
+
+const STILL =
+  "Nothing started. Say so once, in one line, and don't ask the owner to change your setup. You can still read repos, pull requests and CI yourself, or answer from memory.";
+/** What a lead hears for anything the local path doesn't do yet. */
+export const LOCAL_BUILD_ONLY = `On this host, workers do build tasks only, started from your direct chat with the owner: no review, research, follow-up or stop from you yet. ${STILL}`;
+export const LOCAL_DIRECT_ONLY = `On this host, work starts only from your direct chat with the owner, when only the owner is in the turn. If this came from somewhere else, say you'll pick it up there with the owner. ${STILL}`;
+const NOT_CLAUDE = `Workers on this host run on Claude only, which has the file wall they need. ${STILL}`;
+const LAUNCH_FAILED = `The worker couldn't start on this host. Retry the same call or tell the owner. ${STILL}`;
+
+const denied = (message: string) => new KinChatError({ reason: "not_allowed", message });
+const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const isChatError = Schema.is(KinChatError);
+
+/**
+ * `kin_delegate` when the host names no worker environment: the worker is a thread on this server,
+ * in a fresh worktree of one of its projects. `WorkIsolation` gives it file tools in that worktree
+ * and nothing else, and `WorkerTracker` commits, publishes and reports for it. Only the host
+ * owner's own lead, from its direct chat with the owner in an owner-only turn, starts one.
+ */
+export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (shared: {
+  readonly lead: (scope: McpInvocationScope) => Effect.Effect<Lead, KinChatError>;
+  readonly leadConfig: (ctx: Lead) => Effect.Effect<Config, KinChatError>;
+  readonly sourceEvent: (ctx: Lead, eventId: string) => Effect.Effect<KinEvent, KinChatError>;
+  readonly open: (
+    ctx: Lead,
+    chats: ReadonlyArray<KinChatId | null>,
+  ) => Effect.Effect<boolean, KinChatError>;
+  readonly pick: (
+    model: Input["model"],
+    configured: Config["models"],
+  ) => Effect.Effect<ModelSelection, KinChatError>;
+  readonly hash: (value: unknown) => Effect.Effect<string, KinChatError>;
+  readonly memoryKeys: Effect.Effect<ReadonlySet<string>, KinChatError>;
+  readonly hostProjects: () => Effect.Effect<ReadonlyArray<HostProject>>;
+  readonly connectedRepos: ReadonlyArray<string>;
+  readonly memoryItem: (
+    ctx: Lead,
+    id: KinMemoryItemId,
+  ) => Effect.Effect<
+    { readonly id: string; readonly title: string; readonly body: string },
+    KinChatError
+  >;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const identity = yield* KinIdentity;
+  const chat = yield* KinChatService;
+  const budget = yield* KinBudget;
+  const tracker = yield* WorkerTracker;
+  const environment = yield* ServerEnvironment;
+  const orchestrator = yield* OrchestratorV2;
+  const launcher = yield* ThreadLaunchService.ThreadLaunchService;
+  const settings = yield* ServerSettings.ServerSettingsService;
+  const path = yield* Path.Path;
+  const kinDirectory = path.join((yield* ServerConfig).stateDir, "kin");
+
+  /**
+   * From stored rows only: the host owner's own lead, the turn owner-only, its event the owner's in
+   * the lead's direct chat with them, and nothing in the turn from another chat or another lead.
+   */
+  const ownersDirectChat = Effect.fn("KinLocalWorkers.ownersDirectChat")(
+    function* (ctx: Lead, config: Config, event: KinEvent) {
+      const { owner } = identity;
+      if (
+        ctx.orgId !== owner.orgId ||
+        config.ownerPersonId !== owner.personId ||
+        (config.createdBy !== null && config.createdBy !== owner.personId)
+      )
+        return false;
+      if (
+        (event._tag !== "chat.message" &&
+          event._tag !== "widget.action" &&
+          event._tag !== "chat.reaction") ||
+        event.chatId !== config.ownerChatId
+      )
+        return false;
+      if ((yield* effectiveAudience(ctx)) !== "owner_only") return false;
+      const rows = yield* sql<{ chatId: string | null; origin: string | null }>`
+        SELECT json_extract(json, '$.chatId') AS "chatId", json_extract(json, '$.origin') AS origin
+        FROM kin_events WHERE org_id = ${ctx.orgId} AND agent_id = ${ctx.agentId}
+          AND wakeup_id = ${ctx.wakeupId} ORDER BY event_id`;
+      return (
+        rows.length > 0 &&
+        rows.every(
+          (row) =>
+            row.origin === null && (row.chatId === null || row.chatId === config.ownerChatId),
+        )
+      );
+    },
+    Effect.provideService(SqlClient.SqlClient, sql),
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin local worker check failed; refusing", { cause }).pipe(
+        Effect.as(false),
+      ),
+    ),
+  );
+
+  /** Claude only: the work wall (`WorkIsolation`) wraps Claude sessions and nothing else. */
+  const claudeOnly = Effect.fn("KinLocalWorkers.claudeOnly")(function* (chosen: ModelSelection) {
+    const entry = deriveProviderInstanceConfigMap(yield* settings.getSettings)[chosen.instanceId];
+    if (entry?.driver !== "claudeAgent") return yield* denied(NOT_CLAUDE);
+  });
+
+  /** A project on this server with a repository, never Kin's own memory or state. */
+  const locate = Effect.fn("KinLocalWorkers.locate")(function* (named: string) {
+    const memory = yield* shared.memoryKeys;
+    const all = yield* shared.hostProjects();
+    const inKin = (root: string | undefined) => {
+      if (root === undefined) return true;
+      const relative = path.relative(kinDirectory, path.resolve(root));
+      return !relative.startsWith("..") && !path.isAbsolute(relative);
+    };
+    const checkouts: Array<Checkout> = all.flatMap((project) =>
+      project.repositoryKey === undefined ||
+      memory.has(project.repositoryKey.toLowerCase()) ||
+      inKin(project.root)
+        ? []
+        : [
+            {
+              projectId: project.projectId,
+              title: project.title,
+              repositoryKey: project.repositoryKey,
+              slug: /^github\.com\/([^/]+\/[^/]+)$/i.exec(project.repositoryKey)?.[1],
+            },
+          ],
+    );
+    const found = resolveProject({
+      named,
+      checkouts,
+      hostProjects: all,
+      connectedRepos: shared.connectedRepos,
+      allowed: undefined,
+    });
+    const said = `"${named.slice(0, 80).replaceAll('"', "'")}"`;
+    const retry = "Nothing started. Call again with one of those names, or ask which one is meant.";
+    if (found._tag === "resolved") return found.checkout;
+    if (found._tag === "ambiguous")
+      return yield* new KinChatError({
+        reason: "invalid_state",
+        message: `${said} fits several here: ${found.labels.join(", ")}. ${retry}`,
+      });
+    if (found._tag === "unknown" && found.labels.length > 0)
+      return yield* new KinChatError({
+        reason: "not_found",
+        message: `No project or repository here is called ${said}. Work can start in: ${found.labels.join(", ")}. ${retry}`,
+      });
+    return yield* new KinChatError({
+      reason: "unavailable",
+      message: `That repository isn't cloned on this host yet, so work can't start in it. That is a step on the host, not a fault in you or in this request. ${STILL}`,
+    });
+  });
+
+  const delegate = Effect.fn("KinLocalWorkers.delegate")(function* (
+    scope: McpInvocationScope,
+    input: Input,
+  ) {
+    const ctx = yield* shared.lead(scope);
+    // Default-deny for everything this slice doesn't do, before anything is read.
+    if (input.kind !== "build" || input.reviewOf !== undefined)
+      return yield* denied(LOCAL_BUILD_ONLY);
+    const plan = yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const config = yield* shared.leadConfig(ctx);
+        const event = yield* shared.sourceEvent(ctx, input.sourceEventId);
+        if (!(yield* ownersDirectChat(ctx, config, event))) return yield* denied(LOCAL_DIRECT_ONLY);
+        return { config, event, open: yield* shared.open(ctx, [config.ownerChatId]) };
+      }),
+    );
+    if (!plan.open)
+      return yield* denied(
+        "Starting work isn't open to you in this chat. Nothing started; tell the owner what you would do.",
+      );
+    if (yield* isOrgPaused(ctx.orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
+      return yield* denied(
+        `Kin is paused by the owner, so no new work starts until they resume it. ${STILL}`,
+      );
+    if (!(yield* budget.admitWorker(ctx.orgId)))
+      return yield* new KinChatError({
+        reason: "limit",
+        message: `Today's budget for coding work is used up, so this waits for the daily reset or a higher limit. ${STILL}`,
+      });
+    const modelSelection = yield* shared.pick(input.model, plan.config.models);
+    yield* claudeOnly(modelSelection);
+    const target = yield* locate(input.project);
+    const items = yield* Effect.forEach(input.memoryItemIds ?? [], (id) =>
+      shared.memoryItem(ctx, id),
+    );
+    const workerId = KinWorkerId.make(
+      `wk-${(yield* shared.hash({ wakeupId: ctx.wakeupId, input })).slice(0, 32)}`,
+    );
+    const branch = publishBranch(workerId);
+    const threadId = localThreadId(workerId);
+    const chatId = plan.config.ownerChatId;
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* shared.lead(scope);
+        // The checks again where the row is written: a join may have shared the turn meanwhile.
+        if (
+          !(yield* toolAdmitted(ctx, "kin_delegate", input).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          )) ||
+          !(yield* ownersDirectChat(ctx, yield* shared.leadConfig(ctx), plan.event))
+        )
+          return yield* denied(LOCAL_DIRECT_ONLY);
+        const startedAt = yield* Clock.currentTimeMillis;
+        const inserted = yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id,
+          kind, thread_id, review_of, model_json, provenance_json, status, report_json, started_at,
+          ended_at, title, chat_id, project_id, environment_id, remote_project_id, repository_key,
+          context)
+          VALUES (${workerId}, ${ctx.orgId}, ${ctx.agentId}, ${ctx.wakeupId}, 'build', ${threadId},
+          NULL, ${yield* encodeJson(modelSelection)}, ${yield* encodeJson(plan.event.provenance)},
+          'queued', NULL, ${startedAt}, NULL, ${input.title}, ${chatId}, ${target.projectId}, NULL,
+          NULL, ${target.repositoryKey}, 'private')
+          ON CONFLICT (worker_id) DO NOTHING RETURNING worker_id`;
+        if (inserted.length > 0) return;
+        const [stored] = yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId"
+          FROM kin_workers WHERE org_id = ${ctx.orgId} AND agent_id = ${ctx.agentId}
+            AND worker_id = ${workerId} ORDER BY worker_id`;
+        if (stored?.wakeupId !== ctx.wakeupId) return yield* denied(LOCAL_DIRECT_ONLY);
+      }),
+    );
+    const brief = buildBrief({
+      goal: input.goal,
+      brief: input.brief,
+      ...(input.quoted === undefined ? {} : { quoted: input.quoted }),
+      branch,
+      local: true,
+      memory: items,
+    });
+    const baseRef =
+      input.baseRef ??
+      (yield* launcher
+        .checkWorktreeBase({
+          projectId: target.projectId,
+          workspaceStrategy: { type: "worktree", baseRef: "origin/HEAD", startFromOrigin: true },
+        })
+        .pipe(
+          Effect.as("origin/HEAD"),
+          Effect.orElseSucceed(() => "HEAD"),
+        ));
+    // A retry replays the same command, which returns the thread the first launch made.
+    yield* launcher
+      .launch({
+        commandId: CommandId.make(`kin-work:${workerId}`),
+        threadId,
+        projectId: target.projectId,
+        title: input.title,
+        modelSelection,
+        runtimeMode: "auto-accept-edits",
+        interactionMode: "default",
+        workspaceStrategy: { type: "worktree", baseRef, branch, startFromOrigin: true },
+        initialMessage: {
+          messageId: MessageId.make(`kin-work-msg:${workerId}`),
+          text: brief,
+          attachments: [],
+        },
+        createdBy: "system",
+        creationSource: "server",
+      })
+      .pipe(
+        Effect.tapError((cause) =>
+          Effect.gen(function* () {
+            yield* Effect.logWarning("Kin local worker launch failed", { workerId, cause });
+            yield* sql`UPDATE kin_workers SET status = 'failed', ended_at = ${yield* Clock.currentTimeMillis}
+              WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId} AND status = 'queued'`;
+          }).pipe(Effect.ignore),
+        ),
+        Effect.mapError((error) =>
+          isChatError(error)
+            ? error
+            : new KinChatError({ reason: "unavailable", message: LAUNCH_FAILED }),
+        ),
+      );
+    // Cards are best effort: a launched worker must not fail because its card could not be shown.
+    yield* chat
+      .createTaskCard({
+        orgId: ctx.orgId,
+        chatId,
+        authorAgentId: ctx.agentId,
+        threadId,
+        title: input.title,
+        model: modelSelection.model,
+      })
+      .pipe(
+        Effect.provideService(OrchestratorV2, orchestrator),
+        Effect.provideService(ServerEnvironment, environment),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin worker task card unavailable", { cause }),
+        ),
+      );
+    yield* tracker.track(ctx.orgId, workerId);
+    return {
+      workerId,
+      threadLink: formatThreadLink({
+        environmentId: yield* environment.getEnvironmentId,
+        threadId,
+      }),
+      project: labelOf(target),
+    };
+  });
+
+  return { delegate };
+});

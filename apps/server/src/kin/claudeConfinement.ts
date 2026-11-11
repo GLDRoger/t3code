@@ -14,6 +14,8 @@ export interface FileScope {
   readonly tools: ReadonlyArray<string>;
   /** Real attachments directory: `Read` may open a Kin chat attachment directly inside it. */
   readonly attachments?: string;
+  /** `false` refuses every MCP tool too, for a session that must have none. */
+  readonly mcp?: boolean;
 }
 
 const pathLimit = 4096;
@@ -56,13 +58,16 @@ const safeGlob = (glob: string) =>
   !/(?:^|[{,])\s*\//.test(glob) &&
   !/(?:^|[/{,])\.git(?:$|[/},])/i.test(glob);
 
-/** Decides one tool call. Kin's MCP tools pass; built-in tools reach only the scope's real paths. */
+/**
+ * Decides one tool call. MCP tools pass unless the scope refuses them; built-in tools reach only
+ * the scope's real paths.
+ */
 export const permits = Effect.fn("KinClaudeConfinement.permits")(function* (
   scope: FileScope,
   tool: string,
   input: unknown,
 ) {
-  if (tool.startsWith("mcp__")) return true;
+  if (tool.startsWith("mcp__")) return scope.mcp !== false;
   const root = scope.root;
   if (root === undefined || !scope.tools.includes(tool)) return false;
   const targets = callTargets(tool, input);

@@ -15,6 +15,8 @@ export interface HostProject {
   readonly projectId: ProjectId;
   readonly title: string;
   readonly repositoryKey: string | undefined;
+  /** Its folder on this host, where a worker on this server would branch from. */
+  readonly root?: string;
 }
 
 export type Resolution =

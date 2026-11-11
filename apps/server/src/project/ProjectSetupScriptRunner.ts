@@ -16,6 +16,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { isWorkThread } from "../kin/lead/workThread.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
@@ -49,7 +50,7 @@ export interface ProjectSetupScriptOutputLine {
 /**
  * A thread a link below full access started does not run this project's setup
  * script: the script is the user's own code, and such a link only grants T3's
- * tools (see `mcp/linkOrigin.ts`).
+ * tools (see `mcp/linkOrigin.ts`). Nor does a Kin work thread, which has no shell.
  */
 export interface ProjectSetupScriptRunnerResultSkippedForLink {
   readonly status: "skipped-for-link";
@@ -357,6 +358,8 @@ export const make = Effect.gen(function* () {
       ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
       ...(input.projectCwd === undefined ? {} : { projectCwd: input.projectCwd }),
     };
+    // Repository code, run as this server's user, for an agent Kin gave no shell.
+    if (isWorkThread(input.threadId)) return { status: "skipped-for-link" } as const;
     // A thread whose origin cannot be read might be a link's: run nothing.
     const thread = yield* threads.getThreadShell(ThreadId.make(input.threadId)).pipe(
       Effect.mapError(

@@ -11,6 +11,7 @@ import { McpInvocationContext } from "../../mcp/McpInvocationContext.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as DreamSession from "../dreaming/DreamSession.ts";
 import * as KinLead from "../lead/layer.ts";
+import { isWorkThread } from "../lead/workThread.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { KinServer } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
@@ -119,9 +120,11 @@ export const registry = <E, R>(base: Layer.Layer<McpSessionRegistry.McpSessionRe
         thread.subagent !== true &&
         Option.isSome(kin.services) &&
         Context.get(kin.services.value, KinIdentity).isAgentThread(thread.threadId);
-      // Dream threads read untrusted material, so they get no MCP authority on either endpoint.
-      const isDreamThread = (threadId: ThreadId) =>
-        Option.isSome(kin.services) && threadId.startsWith(DreamSession.threadPrefix);
+      // Dream and work threads read untrusted material, so they get no MCP authority on either
+      // endpoint. A work thread is refused even with Kin off: its prefix only ever takes away.
+      const readsUntrusted = (threadId: ThreadId) =>
+        isWorkThread(threadId) ||
+        (Option.isSome(kin.services) && threadId.startsWith(DreamSession.threadPrefix));
       const resolveAgent = Effect.fn("KinMcp.resolveAgent")(function* (token: string) {
         const scope = yield* base.resolve(token);
         return scope !== undefined &&
@@ -136,7 +139,7 @@ export const registry = <E, R>(base: Layer.Layer<McpSessionRegistry.McpSessionRe
           const scope = yield* base.resolve(token);
           if (scope === undefined) return undefined;
           return isAgentThread(scope.thread) ||
-            isDreamThread(scope.thread.threadId) ||
+            readsUntrusted(scope.thread.threadId) ||
             agentSessions.has(scope.thread.providerSessionId)
             ? undefined
             : scope;
@@ -157,7 +160,7 @@ export const registry = <E, R>(base: Layer.Layer<McpSessionRegistry.McpSessionRe
         ),
         issue: Effect.fn("KinMcp.issue")(function* (request) {
           const issued = yield* base.issue(request);
-          if (isDreamThread(request.threadId)) {
+          if (readsUntrusted(request.threadId)) {
             yield* base.revokeProviderSession(issued.config.providerSessionId);
             return issued;
           }

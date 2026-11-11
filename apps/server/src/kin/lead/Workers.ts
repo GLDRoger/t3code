@@ -49,6 +49,7 @@ import { sharedTurnMayTouch, toolAdmitted } from "./SharedTools.ts";
 import { isOrgPaused, STOP_REASON } from "./orgState.ts";
 import { resolveLead } from "./LeadMemory.ts";
 import { quote } from "./LeadPrompt.ts";
+import { LOCAL_BUILD_ONLY, makeLocalDelegate } from "./localWorkers.ts";
 import { buildBrief, publishNote, Quoted, reportFormat } from "./workerBrief.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
 import {
@@ -449,6 +450,7 @@ const make = Effect.gen(function* () {
             projectId: project.id,
             title: project.title,
             repositoryKey: project.repositoryIdentity?.canonicalKey,
+            root: project.workspaceRoot,
           });
         cursor =
           listed.nextCursor !== null && listed.nextCursor > cursor ? listed.nextCursor : null;
@@ -600,10 +602,30 @@ const make = Effect.gen(function* () {
     Effect.catchCause((cause) => Effect.logWarning("Kin worker task card unavailable", { cause })),
   );
 
+  // With no worker environment named, work runs on this server, under `localWorkers.ts`' rules.
+  const shared = guarded("KinWorkers.local");
+  const local = yield* makeLocalDelegate({
+    lead: (scope) => shared(lead(scope)),
+    leadConfig: (ctx) => shared(leadConfig(ctx)),
+    sourceEvent: (ctx, eventId) => shared(sourceEvent(ctx, eventId)),
+    open: (ctx, chats) => shared(open(ctx, chats)),
+    pick: (model, configured) => shared(pick(model, configured)),
+    hash: (value) => shared(hash(value)),
+    memoryKeys,
+    hostProjects,
+    connectedRepos: connected.repos,
+    memoryItem: (ctx, id) =>
+      memory.readItemQuietly(ctx.orgId, id, { lead: ctx.agentId }).pipe(
+        Effect.map((item) => ({ id, title: item.head.title, body: item.body })),
+        Effect.mapError(() => missing()),
+      ),
+  });
+
   const delegate = Effect.fn("KinWorkers.delegate")(function* (
     scope: McpInvocationScope,
     input: typeof DelegateInput.Type,
   ) {
+    if (Option.isNone(env.environmentId)) return yield* local.delegate(scope, input);
     const ctx = yield* lead(scope);
     const plan = yield* sql.withTransaction(
       Effect.gen(function* () {
@@ -834,6 +856,7 @@ const make = Effect.gen(function* () {
     scope: McpInvocationScope,
     input: typeof FollowUpInput.Type,
   ) {
+    if (Option.isNone(env.environmentId)) return yield* denied(LOCAL_BUILD_ONLY);
     const ctx = yield* lead(scope);
     const plan = yield* sql.withTransaction(
       Effect.gen(function* () {
@@ -941,6 +964,8 @@ const make = Effect.gen(function* () {
     scope: McpInvocationScope,
     input: typeof StopInput.Type,
   ) {
+    // The owner stops a worker on this server from its thread, as any other.
+    if (Option.isNone(env.environmentId)) return yield* denied(LOCAL_BUILD_ONLY);
     const ctx = yield* lead(scope);
     const record = yield* sql.withTransaction(
       Effect.gen(function* () {
