@@ -255,7 +255,7 @@ it.effect("serves real WS sends, subscriptions and afterSeq resume with org isol
         updatedAt: direct.createdAt,
       }),
     };
-    yield* repo.insertWidget(foreignWidget);
+    yield* repo.insertWidget({ ...foreignWidget, audience: "chat" });
     const orgs = yield* client["kin.orgs.list"]({});
     assert.deepStrictEqual(
       orgs.orgs.map(({ orgId }) => orgId),
@@ -373,11 +373,13 @@ it.effect(
       });
       assert.deepStrictEqual(yield* Queue.take(events), { _tag: "message", message: live });
       const delayed = yield* repo.insertMessage({
+        audience: "chat",
         ...live,
         messageId: KinMessageId.make("delayed"),
         clientMessageId: { kind: "send", id: "delayed" },
       });
       const later = yield* repo.insertMessage({
+        audience: "chat",
         ...live,
         messageId: KinMessageId.make("later"),
         clientMessageId: { kind: "send", id: "later" },
@@ -510,7 +512,7 @@ it.effect("resets large backlogs and bounds a resume to the current snapshot", (
           updatedAt: direct.createdAt,
         }),
       };
-      yield* repo.insertWidget(widget);
+      yield* repo.insertWidget({ ...widget, audience: "chat" });
       widgets.push(widget);
     }
     const [frozen] = yield* sql<{ seq: number; change: number }>`SELECT MAX(seq) AS seq,
@@ -1183,6 +1185,7 @@ it.effect("replays offline edits, deletions and widget revisions once with after
     });
     const widgetId = KinWidgetId.make("offline-widget");
     yield* repo.insertWidget({
+      audience: "chat",
       ...person,
       chatId: direct.chatId,
       messageId: old.messageId,

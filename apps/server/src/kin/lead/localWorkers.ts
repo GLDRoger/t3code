@@ -321,6 +321,7 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
       .createTaskCard({
         orgId: ctx.orgId,
         chatId,
+        audience: "owner",
         authorAgentId: ctx.agentId,
         threadId,
         title: input.title,

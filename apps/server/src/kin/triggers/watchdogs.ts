@@ -520,6 +520,7 @@ const make = Effect.gen(function* () {
         orgId,
         chatId: lead.chatId,
         messageId,
+        audience: "owner",
         body: `An objective due ${item.due} still has open GitHub work: ${open.slice(0, 20).join(", ")}${open.length > 20 ? ` and ${open.length - 20} more` : ""}.\n${Pings.quoted(item.title)}`,
       });
     }
@@ -541,7 +542,13 @@ const make = Effect.gen(function* () {
       lead === undefined
         ? Effect.logWarning("Kin webhook source needs the owner", { orgId, body })
         : chat
-            .notice({ orgId, chatId: lead.chatId, messageId: KinMessageId.make(messageId), body })
+            .notice({
+              orgId,
+              chatId: lead.chatId,
+              messageId: KinMessageId.make(messageId),
+              audience: "owner",
+              body,
+            })
             .pipe(Effect.asVoid);
     for (const source of sources) {
       const task = all.find((candidate) => candidate.id === source.scheduledTaskId);

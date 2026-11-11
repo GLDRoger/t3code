@@ -363,6 +363,7 @@ const seed = (sources: ReadonlyArray<Source>, level = "L3") =>
           memberId: memberMemberId,
         };
         const message = yield* repo.insertMessage({
+          audience: "chat",
           orgId,
           chatId: chat.chatId,
           messageId: KinMessageId.make("member-ask"),

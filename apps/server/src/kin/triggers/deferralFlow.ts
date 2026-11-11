@@ -480,6 +480,7 @@ const make = Effect.gen(function* () {
       orgId,
       chatId,
       messageId: KinMessageId.make(`deferral-failed:${orgId}:${fire.fireId}`),
+      audience: "owner",
       body: `I couldn't handle the deferral ${title} due ${ownerDateTime(dueAt, timeZone)}.`,
     });
   });

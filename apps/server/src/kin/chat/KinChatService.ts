@@ -73,6 +73,7 @@ import { effectiveAudience } from "../lead/Audience.ts";
 import { KinStop } from "../lead/KinStop.ts";
 import { isOrgOwner } from "../lead/orgState.ts";
 import * as Repository from "./KinChatRepository.ts";
+import type { WriteAudience } from "./KinChatRepository.ts";
 import { KinAttachmentStore } from "./KinAttachmentStore.ts";
 import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
 import * as Reactions from "./reactions.ts";
@@ -114,6 +115,8 @@ export class KinChatService extends Context.Service<
       readonly chatId: KinChatId;
       readonly body: string;
       readonly waitingFor?: KinPersonId;
+      /** Who `body` is for (`WriteAudience`), checked against the chat in the write's transaction. */
+      readonly audience: WriteAudience;
     }) => Effect.Effect<
       { readonly message: KinMessage; readonly waiting: KinWaitingItem | null },
       ServiceError
@@ -184,6 +187,7 @@ export class KinChatService extends Context.Service<
     readonly createTaskCard: (input: {
       readonly orgId: KinOrgId;
       readonly chatId: KinChatId;
+      readonly audience: WriteAudience;
       readonly authorAgentId: KinAgentId;
       readonly threadId: ThreadId;
       readonly title: string;
@@ -198,6 +202,7 @@ export class KinChatService extends Context.Service<
     readonly setTaskCardClosed: (input: {
       readonly orgId: KinOrgId;
       readonly chatId: KinChatId;
+      readonly audience: WriteAudience;
       readonly threadId: ThreadId;
       readonly closed: boolean;
     }) => Effect.Effect<KinWidget, ServiceError>;
@@ -205,6 +210,7 @@ export class KinChatService extends Context.Service<
     readonly setTaskCardState: (input: {
       readonly orgId: KinOrgId;
       readonly chatId: KinChatId;
+      readonly audience: WriteAudience;
       readonly threadId: ThreadId;
       readonly state: Pick<KinTaskCardState, "status" | "pullRequests" | "lastError">;
     }) => Effect.Effect<KinWidget, ServiceError>;
@@ -454,6 +460,13 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toPersistenceSqlError("KinChatService.sharedTurn")),
   );
+  /** A person's words are the chat's; a lead's are the owner's alone on an owner-only turn. */
+  const authorAudience = (identity: Identity) =>
+    identity._tag === "agent"
+      ? sharedTurn(identity).pipe(
+          Effect.map((shared): WriteAudience => (shared ? "chat" : "owner")),
+        )
+      : Effect.succeed<WriteAudience>("chat");
   const authorFor = (identity: Identity, member: KinChatMember): KinAuthor =>
     identity._tag === "person"
       ? { _tag: "human", personId: identity.personId, memberId: member.memberId }
@@ -549,6 +562,7 @@ const make = Effect.gen(function* () {
     const messageId = yield* decodeMessageId(SecureRandom.uuidV4Unsafe()).pipe(Effect.orDie);
     const message = yield* repo.insertMessage({
       orgId: identity.orgId,
+      audience: yield* authorAudience(identity),
       caller: identity._tag === "agent" ? identity.caller : undefined,
       wakeupId: identity._tag === "agent" ? identity.wakeupId : undefined,
       chatId: input.chatId,
@@ -673,6 +687,8 @@ const make = Effect.gen(function* () {
       const at = yield* now;
       const closed = yield* repo.updateWidget({
         ...widget,
+        // A tap's results are the card's own words, shown to whoever may tap it.
+        audience: "chat",
         expectedRevision: widget.revision,
         closedAt: at,
         updatedAt: at,
@@ -699,6 +715,7 @@ const make = Effect.gen(function* () {
         const at = yield* now;
         const updated = yield* repo.updateWidget({
           ...widget,
+          audience: "chat",
           state: applied.state,
           expectedRevision: widget.revision,
           closedAt: applied.closed ? at : widget.closedAt,
@@ -733,6 +750,7 @@ const make = Effect.gen(function* () {
       // Compare-and-set on the revision the tap saw: the first answer settles the card.
       const answered = yield* repo.updateWidget({
         ...widget,
+        audience: "chat",
         state: answer,
         awaiting: [],
         expectedRevision: widget.revision,
@@ -946,6 +964,7 @@ const make = Effect.gen(function* () {
         chatId: input.chatId,
         messageId,
         author: { _tag: "system" },
+        audience: input.audience,
         kind: "system",
         body: input.body,
         intent: null,
@@ -1641,6 +1660,7 @@ const make = Effect.gen(function* () {
       const message = yield* repo.insertMessage({
         orgId: input.orgId,
         chatId: input.chatId,
+        audience: input.audience,
         messageId: KinMessageId.make(SecureRandom.uuidV4Unsafe()),
         author: {
           _tag: "agent",
@@ -1679,7 +1699,7 @@ const make = Effect.gen(function* () {
         closedAt: null,
         updatedAt,
       };
-      yield* repo.insertWidget(widget);
+      yield* repo.insertWidget({ ...widget, audience: input.audience });
       const anchor = yield* requireRecord(
         repo.getMessage({ ...input, messageId: message.messageId }),
       );
@@ -1696,6 +1716,7 @@ const make = Effect.gen(function* () {
       if ((existing.closedAt !== null) === input.closed) return existing;
       const widget = yield* repo.updateWidget({
         ...existing,
+        audience: input.audience,
         awaiting: input.closed ? [] : existing.awaiting,
         expectedRevision: existing.revision,
         closedAt: input.closed ? yield* now : null,
@@ -1722,6 +1743,7 @@ const make = Effect.gen(function* () {
       const updatedAt = yield* now;
       const widget = yield* repo.updateWidget({
         ...existing,
+        audience: input.audience,
         state: { ...next, updatedAt },
         expectedRevision: existing.revision,
         updatedAt,
@@ -1746,6 +1768,7 @@ const make = Effect.gen(function* () {
       )
         return yield* notAllowed;
       let state = yield* validateState(input.type, input.state);
+      const audience = yield* authorAudience(identity);
       let widget: KinWidget;
       if (input.widgetId === undefined) {
         if (input.revision !== undefined) return yield* invalidState;
@@ -1776,7 +1799,7 @@ const make = Effect.gen(function* () {
           closedAt: input.closed === true ? yield* now : null,
           updatedAt: yield* now,
         };
-        yield* repo.insertWidget(widget);
+        yield* repo.insertWidget({ ...widget, audience });
         const anchor = yield* requireRecord(
           repo.getMessage({ orgId: identity.orgId, messageId: message.messageId }),
         );
@@ -1835,6 +1858,7 @@ const make = Effect.gen(function* () {
         }
         widget = yield* repo.updateWidget({
           ...existing,
+          audience,
           state,
           awaiting,
           expectedRevision: input.revision,
@@ -2130,7 +2154,7 @@ const make = Effect.gen(function* () {
         closedAt: null,
         updatedAt: yield* now,
       };
-      yield* repo.insertWidget(widget);
+      yield* repo.insertWidget({ ...widget, audience: yield* authorAudience(identity) });
       const anchor = yield* requireRecord(
         repo.getMessage({ orgId: identity.orgId, messageId: message.messageId }),
       );

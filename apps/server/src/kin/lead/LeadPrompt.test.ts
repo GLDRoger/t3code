@@ -367,6 +367,7 @@ it.effect.each([
         });
       const send = (id: string, author: KinAuthor) =>
         repo.insertMessage({
+          audience: "chat",
           orgId,
           chatId,
           messageId: KinMessageId.make(id),
@@ -462,6 +463,7 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
     });
     // Said in the group while only the owner read it; the teammate joins after.
     yield* repo.insertMessage({
+      audience: "chat",
       orgId,
       chatId,
       messageId: KinMessageId.make("before-join"),
@@ -490,6 +492,7 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
       mutedUntil: null,
     });
     yield* repo.insertMessage({
+      audience: "chat",
       orgId,
       chatId,
       messageId: KinMessageId.make("teammate-asks"),
@@ -673,6 +676,7 @@ it.effect("a shared prompt carries nothing from before the latest join", () =>
     let said = 0;
     const say = (body: string, author: KinPersonId, member: KinMemberId) =>
       repo.insertMessage({
+        audience: "chat",
         orgId,
         chatId,
         messageId: KinMessageId.make(`said-${++said}`),
@@ -879,6 +883,7 @@ it.effect.each([
           ? { _tag: "agent", agentId, memberId, ownerPersonId: personId, threadId }
           : { _tag: "system" };
     yield* repo.insertMessage({
+      audience: "chat",
       orgId,
       chatId,
       messageId: KinMessageId.make("message"),
@@ -1031,6 +1036,7 @@ it.effect.each([
         mutedUntil: null,
       });
       yield* repo.insertMessage({
+        audience: "chat",
         orgId,
         chatId,
         messageId: KinMessageId.make("sized"),
@@ -1090,6 +1096,7 @@ it.effect("hands the turn the files on its messages and only names an older mess
       ["current", [current]],
     ] as const)
       yield* repo.insertMessage({
+        audience: "chat",
         orgId,
         chatId,
         messageId: KinMessageId.make(id),
@@ -1145,6 +1152,7 @@ it.effect("hands the turn the files on its messages and only names an older mess
     const board = attachment("board-photo.png");
     const say = (id: string, body: string, files: ReadonlyArray<typeof board> = []) =>
       repo.insertMessage({
+        audience: "chat",
         orgId,
         chatId,
         messageId: KinMessageId.make(id),
@@ -1165,6 +1173,7 @@ it.effect("hands the turn the files on its messages and only names an older mess
       });
     yield* say("asked", "What's on this board?", [board]);
     yield* repo.insertMessage({
+      audience: "chat",
       orgId,
       chatId,
       messageId: KinMessageId.make("kin-failed:wake"),
@@ -1226,6 +1235,7 @@ it.effect("quotes a choice tap as the owner's words, not its JSON", () =>
       mutedUntil: null,
     });
     yield* repo.insertMessage({
+      audience: "chat",
       orgId,
       chatId,
       messageId: KinMessageId.make("tap"),
@@ -1438,6 +1448,7 @@ it.effect(
           continue;
         }
         yield* repo.insertMessage({
+          audience: "chat",
           orgId,
           chatId,
           messageId: KinMessageId.make(id),
@@ -1873,6 +1884,7 @@ it.effect.each([
         ["asked", "Invented remind-me words"],
       ] as const)
         yield* repo.insertMessage({
+          audience: "chat",
           orgId,
           chatId,
           messageId: KinMessageId.make(messageId),

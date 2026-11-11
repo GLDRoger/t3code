@@ -292,6 +292,7 @@ const make = Effect.gen(function* () {
       .insertMessage({
         orgId,
         chatId,
+        audience: "owner",
         messageId: KinMessageId.make(`kin-run-skipped:${hex(runId)}`),
         author: { _tag: "system" },
         kind: "system",

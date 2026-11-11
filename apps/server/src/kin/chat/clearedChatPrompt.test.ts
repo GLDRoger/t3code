@@ -118,6 +118,7 @@ it.effect(
       VALUES (${agentId}, ${orgId}, 'Lead', 0, '{}', '[]', ${chatId})`;
       const say = (id: string, body: string) =>
         repo.insertMessage({
+          audience: "chat",
           orgId,
           chatId,
           messageId: KinMessageId.make(id),

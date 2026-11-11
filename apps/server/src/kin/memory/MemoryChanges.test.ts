@@ -84,12 +84,14 @@ it.effect("only the owner can undo an item on an earlier memory change card", ()
     // Cards are no longer posted; ones already in a chat keep their Undo.
     const widgetId = KinWidgetId.make("memory-changes:lead:wake-1");
     const { message } = yield* Context.get(services, KinChatService).notice({
+      audience: "chat",
       orgId,
       chatId: direct.chatId,
       messageId: KinMessageId.make(widgetId),
       body: "Memory: 2 changes, including You prefer short replies",
     });
     yield* repo.insertWidget({
+      audience: "chat",
       orgId,
       chatId: direct.chatId,
       widgetId,

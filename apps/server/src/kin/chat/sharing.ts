@@ -37,6 +37,24 @@ export const recordJoin = Effect.fn("KinChatSharing.recordJoin")(function* (
 });
 
 /**
+ * Whether anyone but the owner of its leads reads the chat now, or anyone else ever did
+ * (`shared_at`). Each person in it must be its owner member and own a lead; none found is shared.
+ */
+export const chatShared = Effect.fn("KinChatSharing.chatShared")(function* (
+  sql: SqlClient.SqlClient,
+  input: { readonly orgId: string; readonly chatId: string },
+) {
+  const rows = yield* sql`SELECT 1 FROM kin_chats c
+    WHERE c.org_id = ${input.orgId} AND c.chat_id = ${input.chatId} AND c.shared_at IS NULL
+      AND NOT EXISTS (SELECT 1 FROM kin_chat_members m WHERE m.org_id = c.org_id
+        AND m.chat_id = c.chat_id AND m.principal_kind = 'person' AND m.left_at IS NULL
+        AND (m.role <> 'owner' OR NOT EXISTS (SELECT 1 FROM kin_agents a
+          WHERE a.org_id = m.org_id AND a.owner_person_id = m.person_id)))
+    LIMIT 1`;
+  return rows.length === 0;
+});
+
+/**
  * The chat's history floor: the first seq a shared turn may see of it. The latest join among the
  * people in it now besides its owner, never below where it was first shared; a re-join raises it.
  * NULL for a chat never shared or not found, so a shared turn sees none of it.

@@ -485,6 +485,7 @@ const make = Effect.gen(function* () {
             orgId,
             chatId: KinChatId.make(current.chatId),
             messageId: KinMessageId.make(widgetId),
+            audience: "owner",
             body,
           });
           const widget: KinWidget = {
@@ -503,7 +504,7 @@ const make = Effect.gen(function* () {
             closedAt: null,
             updatedAt: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
           };
-          yield* repo.insertWidget(widget);
+          yield* repo.insertWidget({ ...widget, audience: "owner" });
           yield* sql.afterCommit(hub.publish({ type: "widget.updated", orgId, widget }));
           return widget;
         }),

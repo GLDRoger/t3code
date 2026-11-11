@@ -571,6 +571,10 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const chatId = yield* cardChat(input.orgId, input.workerId, input.fallback);
           if (chatId === null) return;
+          const route = yield* workerChat({ orgId: input.orgId, workerId: input.workerId }).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
+          const audience = route?.audience ?? "owner";
           const where = yield* destination(turn, chatId).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
           );
@@ -579,6 +583,7 @@ const make = Effect.gen(function* () {
             .createTaskCard({
               orgId: input.orgId,
               chatId,
+              audience,
               authorAgentId: input.agentId,
               threadId: input.threadId,
               title: input.title,
@@ -593,6 +598,7 @@ const make = Effect.gen(function* () {
             yield* chat.setTaskCardClosed({
               orgId: input.orgId,
               chatId,
+              audience,
               threadId: input.threadId,
               closed: false,
             });
@@ -997,6 +1003,8 @@ const make = Effect.gen(function* () {
         .setTaskCardClosed({
           orgId: ctx.orgId,
           chatId: record.chatId,
+          // Closing writes no words.
+          audience: "chat",
           threadId: record.threadId,
           closed: true,
         })
