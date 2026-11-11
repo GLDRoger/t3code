@@ -567,6 +567,10 @@
       "types": "./src/kin/kinGroups.ts",
       "default": "./src/kin/kinGroups.ts"
     },
+    "./kin/kinTeam": {
+      "types": "./src/kin/kinTeam.ts",
+      "default": "./src/kin/kinTeam.ts"
+    },
     "./kin/kinListSwitch": {
       "types": "./src/kin/kinListSwitch.ts",
       "default": "./src/kin/kinListSwitch.ts"

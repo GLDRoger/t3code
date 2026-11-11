@@ -1,7 +1,8 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { KinHost } from "@t3tools/client-runtime/kin/kinHost";
 import { Atom } from "effect/reactivity";
-import { PlusIcon, SparklesIcon, UsersIcon } from "lucide-react";
+import { useNavigate } from "@tanstack/react-router";
+import { PlusIcon, SparklesIcon, UserPlusIcon, UsersIcon } from "lucide-react";
 
 import { SidebarHeaderIconButton } from "../components/sidebar/SidebarThreadHeader";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
@@ -9,6 +10,7 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { kinClient } from "./kinClient";
 import { kinGroupFormAtom } from "./kinGroupForm";
 import { kinLeadFormAtom, type KinLeadFormTarget } from "./kinLeadForm";
+import { kinTeamAddRequestAtom } from "./kinTeamForm";
 import { useKinHost } from "./useKinHost";
 
 /** Where a new lead would go: the Kin host and the viewer's organization there. */
@@ -37,10 +39,12 @@ function PermittedNewLeadButton(props: { readonly target: KinLeadFormTarget }) {
   const { environmentId, orgId } = props.target;
   const canAddLead = useAtomValue(kinClient.leadCreate.permissionAtom(environmentId));
   const canAddGroup = useAtomValue(kinClient.groupCreate.permissionAtom(environmentId));
-  if (!canAddLead && !canAddGroup) return null;
+  const canAddTeammate = useAtomValue(kinClient.inviteCreate.permissionAtom(environmentId));
+  const navigate = useNavigate();
+  if (!canAddLead && !canAddGroup && !canAddTeammate) return null;
   return (
     <Menu>
-      <MenuTrigger render={<SidebarHeaderIconButton label="New group or lead" />}>
+      <MenuTrigger render={<SidebarHeaderIconButton label="New group, lead or teammate" />}>
         <PlusIcon />
       </MenuTrigger>
       <MenuPopup align="end">
@@ -58,6 +62,20 @@ function PermittedNewLeadButton(props: { readonly target: KinLeadFormTarget }) {
           <MenuItem onClick={() => openKinLeadForm(props.target)}>
             <SparklesIcon />
             New lead
+          </MenuItem>
+        ) : null}
+        {canAddTeammate ? (
+          <MenuItem
+            onClick={() => {
+              appAtomRegistry.set(kinTeamAddRequestAtom, true);
+              void navigate({
+                to: "/kin/$environmentId/$orgId/team",
+                params: { environmentId, orgId },
+              });
+            }}
+          >
+            <UserPlusIcon />
+            Add teammate
           </MenuItem>
         ) : null}
       </MenuPopup>

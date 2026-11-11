@@ -29,7 +29,11 @@ export type KinGithubLogin = typeof KinGithubLogin.Type;
 
 export const KinPeopleListInput = Schema.Struct({ orgId: KinOrgId });
 export type KinPeopleListInput = typeof KinPeopleListInput.Type;
-export const KinPeopleListResult = Schema.Struct({ people: Schema.Array(KinPerson) });
+export const KinPeopleListResult = Schema.Struct({
+  people: Schema.Array(KinPerson),
+  // The people with a device that still opens Kin; the rest need a new invite link.
+  joined: Schema.Array(KinPersonId),
+});
 export type KinPeopleListResult = typeof KinPeopleListResult.Type;
 
 export const KinPeopleCreateInviteInput = Schema.Struct({
@@ -100,6 +104,13 @@ export type KinPeopleRevokeDeviceInput = typeof KinPeopleRevokeDeviceInput.Type;
 export const KinPeopleRevokeDeviceResult = Schema.Struct({ revoked: Schema.Boolean });
 export type KinPeopleRevokeDeviceResult = typeof KinPeopleRevokeDeviceResult.Type;
 
+/** Signs a person out everywhere and cancels their unused invite links. They stay a person. */
+export const KinPeopleRemoveAccessInput = Schema.Struct({
+  orgId: KinOrgId,
+  personId: KinPersonId,
+});
+export type KinPeopleRemoveAccessInput = typeof KinPeopleRemoveAccessInput.Type;
+
 export const KinPeopleSetGithubLoginInput = Schema.Struct({
   orgId: KinOrgId,
   personId: KinPersonId,
@@ -132,6 +143,7 @@ export const KIN_PEOPLE_WS_METHODS = {
   peopleCreateInvite: "kin.people.createInvite",
   peopleListDevices: "kin.people.listDevices",
   peopleRevokeDevice: "kin.people.revokeDevice",
+  peopleRemoveAccess: "kin.people.removeAccess",
   peopleSetGithubLogin: "kin.people.setGithubLogin",
 } as const;
 
@@ -168,6 +180,11 @@ export const KinPeopleRpcs = [
     success: KinPeopleRevokeDeviceResult,
     error: KinPeopleError,
   }),
+  Rpc.make(KIN_PEOPLE_WS_METHODS.peopleRemoveAccess, {
+    payload: KinPeopleRemoveAccessInput,
+    success: KinPeopleRevokeDeviceResult,
+    error: KinPeopleError,
+  }),
   Rpc.make(KIN_PEOPLE_WS_METHODS.peopleSetGithubLogin, {
     payload: KinPeopleSetGithubLoginInput,
     success: KinPerson,
@@ -183,6 +200,7 @@ export const KIN_PEOPLE_RPC_SCOPES = {
   [KIN_PEOPLE_WS_METHODS.peopleCreateInvite]: AuthAccessWriteScope,
   [KIN_PEOPLE_WS_METHODS.peopleListDevices]: AuthAccessReadScope,
   [KIN_PEOPLE_WS_METHODS.peopleRevokeDevice]: AuthAccessWriteScope,
+  [KIN_PEOPLE_WS_METHODS.peopleRemoveAccess]: AuthAccessWriteScope,
   // A member links their own handle from a chat-only session; the service checks ownership.
   [KIN_PEOPLE_WS_METHODS.peopleSetGithubLogin]: AuthKinChatScope,
 } as const satisfies Record<
