@@ -142,6 +142,7 @@ it.effect("only the owner can undo an item on an earlier memory change card", ()
             : { _tag: "stale" as const };
         }),
       relabel: () => Effect.die("Unused"),
+      retire: () => Effect.die("Unused"),
       items: () => Effect.succeed([]),
     });
     const member = [{ _tag: "person" as const, orgId, personId: KinPersonId.make("priya") }];
@@ -224,9 +225,15 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
       head("migrated", { sensitive: false }),
     ].map((item) => ({ head: item, body }));
     const relabelled: Array<{ itemId: string; sensitive: boolean; person: string }> = [];
+    const retired: Array<{ itemId: string; by: string }> = [];
     const memory = Context.get(services, KinMemoryChanges);
     yield* memory.attachWriter({
       undo: () => Effect.die("Unused"),
+      retire: (_org, input) =>
+        Effect.sync(() => {
+          retired.push(input);
+          return { retired: true };
+        }),
       items: () => Effect.succeed(items),
       relabel: (_org, input) =>
         Effect.sync(() => {
@@ -263,6 +270,19 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
       yield* memory.confirmSuggestions(member, { orgId, asOf: 10 }).pipe(Effect.flip),
       { reason: "not_allowed" },
     );
+    const forgotten = { orgId, itemId: KinMemoryItemId.make("later") };
+    assert.include(yield* memory.forget(member, forgotten).pipe(Effect.flip), {
+      reason: "not_allowed",
+    });
+    assert.include(
+      yield* memory
+        .forget([owner], { orgId, itemId: KinMemoryItemId.make("never-saved") })
+        .pipe(Effect.flip),
+      { reason: "not_found" },
+    );
+    assert.deepStrictEqual(retired, []);
+    assert.deepStrictEqual(yield* memory.forget([owner], forgotten), { itemId: "later" });
+    assert.deepStrictEqual(retired, [{ itemId: "later", by: "owner" }]);
     assert.deepStrictEqual(relabelled, []);
 
     const shown = () =>
@@ -435,6 +455,7 @@ it.effect("a suggestion first bound after a listing stays out of that listing's 
     const memory = Context.get(services, KinMemoryChanges);
     yield* memory.attachWriter({
       undo: () => Effect.die("Unused"),
+      retire: () => Effect.die("Unused"),
       items: () => Effect.succeed(items),
       relabel: (_org, input) =>
         Effect.sync(() => {

@@ -158,6 +158,7 @@ const runner = Layer.effectDiscard(
       yield* memoryChanges.value.attachWriter({
         undo: writer.value.undoChange,
         relabel: writer.value.relabel,
+        retire: writer.value.retire,
         items: (orgId) => memory.items(orgId),
       });
     yield* Effect.gen(function* () {

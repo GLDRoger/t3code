@@ -28,6 +28,8 @@ import * as KinBudget from "../lead/KinBudget.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
 import { isCheckoutPath } from "../memory/checkoutPaths.ts";
+import { spent } from "../memory/keeping.ts";
+import { isOwnerReviewedPath } from "../memory/lint.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
@@ -98,7 +100,7 @@ const extractPrompt = (input: { orgId: string; head: string; full: boolean }) =>
 
 Read ${scratch}/material.json. It lists every original since the last good dream${input.full ? ", plus every current item" : ""}. Cite entries by their "ref".
 
-1. Extract durable facts into item files under objectives/, commitments/, deferrals/, decisions/, people/ or claims/, and fold journal/ entries. Merge duplicates and mark replaced items with invalid_at and superseded_by.
+1. Extract durable facts, meaning only what will still matter weeks from now and could not be cheaply found again: lasting facts about the company, clients, people and projects, how the owner wants things done, decisions with their reasons, and promises with their dates. Never make an item of a to-do, a follow-up minutes or hours away, where work stands or what someone is waiting for, anything readable again from a repo, PR or check, or small talk; one item holds one thing. Put them into item files under objectives/, commitments/, deferrals/, decisions/, people/ or claims/, and fold journal/ entries. Merge duplicates and mark replaced items with invalid_at and superseded_by.
 2. Edit only item files and journal/. Never delete a file. Never edit rules.md or INDEX.md. Do not run git.
 3. A new item, or one whose source changes, takes source = the material ref, and said_by and trust = that entry's saidBy and trust.
 4. Give every item you create or change, and every material entry marked "unlabelled", a front-matter line "sensitive: true" or "sensitive: false". true is for the owner alone: access (credentials, where they are kept, who holds them, how to get in); money and commercial terms (what a client is charged, what people or suppliers are paid, discounts, margins, bank and billing details); an arrangement with a client or partner the team isn't meant to know, such as a client lending the company their subscription; and anything the owner asked to keep private. false is ordinary company knowledge the team can know, such as project status. When unsure, true. Never change true to false, never remove the line, and an item you merge others into is true if any of them was. Leave shared_by and shared_from alone, and never edit an item that has shared_from.
@@ -299,6 +301,44 @@ const make = Effect.gen(function* () {
     return { tree, special, dreamJson };
   });
 
+  /**
+   * Retires notes that were never memory and whose moment has passed, on the default branch and
+   * without the owner: `spent` matches only obvious to-dos, follow-ups and progress. Left alone:
+   * a teammate's words, anything the owner chose who may know, and the kinds the owner reviews.
+   * A failure here never fails the dream.
+   */
+  const retireSpent = Effect.fn("DreamRunner.retireSpent")(
+    function* (orgId: KinOrgId, memoryWriter: Writer.MemoryWriter["Service"]) {
+      const now = yield* Clock.currentTimeMillis;
+      const labels = yield* storedLabels(orgId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      const retired = [];
+      for (const item of yield* memory.items(orgId)) {
+        const { head } = item;
+        if (
+          head.shared_from !== undefined ||
+          head.shared_by !== undefined ||
+          labels.held.has(head.id) ||
+          labels.shared.has(head.id) ||
+          isOwnerReviewedPath(head.path) ||
+          !spent(item, now)
+        )
+          continue;
+        const result = yield* memoryWriter.retire(orgId, { itemId: head.id, by: "nightly" });
+        if (result.retired) retired.push(head.id);
+      }
+      if (retired.length > 0)
+        yield* Effect.logInfo("Kin nightly pass retired spent notes", { orgId, retired });
+    },
+    (effect, orgId) =>
+      effect.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin nightly pass could not retire spent notes", { orgId, cause }),
+        ),
+      ),
+  );
+
   const dream = Effect.fn("DreamRunner.dream")(function* (
     orgId: KinOrgId,
     claimed: NonNullable<Effect.Success<ReturnType<typeof claim>>>,
@@ -316,6 +356,7 @@ const make = Effect.gen(function* () {
     const paused = isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     const pausedFailure = "Kin was paused during the dream";
     if (Option.isNone(writer)) return failed(["The memory writer is not available"]);
+    yield* retireSpent(orgId, writer.value);
     const base = yield* writer.value.dreamBase(orgId);
     yield* sql`UPDATE kin_dream_runs SET base_head = ${base.head}
       WHERE org_id = ${orgId} AND dream_id = ${dreamId} AND status = 'running' RETURNING dream_id`;
