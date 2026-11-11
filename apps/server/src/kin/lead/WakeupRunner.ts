@@ -56,6 +56,7 @@ import * as LeadDelivery from "./LeadDelivery.ts";
 import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
 import { isOrgPaused } from "./orgState.ts";
 import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
+import { setupFailureIn, type SetupFailure } from "../reply/classify.ts";
 
 /** How long one wake-up may run before it is interrupted. */
 const WAKEUP_DEADLINE_MS = 900_000;
@@ -149,6 +150,7 @@ const make = Effect.gen(function* () {
   const finishWakeup = Effect.fn("WakeupRunner.finishWakeup")(function* (
     row: typeof RunningRow.Type,
     status: "completed" | "failed" | "timed_out",
+    setup: SetupFailure | null = null,
   ) {
     // Read first: finishing returns retried events to the queue, which drops their lane.
     const lane =
@@ -164,11 +166,13 @@ const make = Effect.gen(function* () {
         ? "partway"
         : lane.value.mode !== "reply"
           ? undefined
-          : finished.failedEventIds.length > 0
-            ? "gave_up"
-            : finished.retried > 0
-              ? "retrying"
-              : undefined;
+          : setup !== null
+            ? setup
+            : finished.failedEventIds.length > 0
+              ? "gave_up"
+              : finished.retried > 0
+                ? "retrying"
+                : undefined;
     if (outcome !== undefined)
       yield* bridge.value.failed({
         orgId: row.orgId,
@@ -424,7 +428,8 @@ const make = Effect.gen(function* () {
       yield* Fiber.interrupt(steerer);
       // Its steers still queued would start with no wake-up to own them, or hold the lead's
       // queue for good; they go, and their messages return with the rest of its events.
-      for (const leftover of (yield* threads.getThreadProjection(threadId)).runs) {
+      const final = yield* threads.getThreadProjection(threadId);
+      for (const leftover of final.runs) {
         if (leftover.status !== "queued" || !isSteerRun(wakeupId, leftover)) continue;
         yield* threads
           .dispatch({
@@ -444,6 +449,7 @@ const make = Effect.gen(function* () {
         : result.run?.status === "completed"
           ? "completed"
           : "failed";
+      const setup = status === "failed" ? setupFailureIn(final, runId) : null;
       // The stop switch interrupted this run: hand its events back without spending an attempt.
       const stopped = status === "failed" && (yield* paused(row.orgId));
       // Someone besides the owner joined while it worked: it says nothing more, and a fresh
@@ -521,7 +527,7 @@ const make = Effect.gen(function* () {
             countAttempt: false,
             notBefore: (yield* Clock.currentTimeMillis) + PAUSE_POLL_INTERVAL_MS,
           });
-        else yield* finishWakeup(row, status);
+        else yield* finishWakeup(row, status, setup);
       }).pipe(
         Effect.onExit((exit) =>
           result.timedOut && Exit.isFailure(exit)

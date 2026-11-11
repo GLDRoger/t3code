@@ -703,36 +703,48 @@ describe("WakeupRunner", () => {
         assert.strictEqual((yield* (yield* Budget.KinBudget).get(orgId)).leadUnits, 55.5);
       }).pipe(Effect.provide(harness({ failed: true })), provideDeterministicTestRuntime),
   );
-  it.effect("tells the owner at once that a failed start retries soon, then that it stopped", () =>
-    Effect.gen(function* () {
-      const outcomes: Array<string> = [];
-      const bridge = Layer.mock(KinReplyBridge)({
-        lane: () =>
-          Effect.succeedSome({
-            chatId: KinChatId.make("owner-chat"),
-            mode: "reply" as const,
-            leadName: "Lead",
-          }),
-        preparing: () => Effect.void,
-        begin: () => Effect.void,
-        complete: () => Effect.void,
-        end: () => Effect.void,
-        failed: (input) => Effect.sync(() => void outcomes.push(input.outcome)),
-      });
-      yield* Effect.gen(function* () {
-        yield* seed;
-        const sql = yield* SqlClient.SqlClient;
-        yield* (yield* KinEventQueue.KinEventQueue).enqueue(laneMessage("asked"));
-        for (const wait of ["15 seconds", "60 seconds", undefined] as const) {
-          yield* Fiber.join(yield* run());
-          if (wait !== undefined) yield* TestClock.adjust(wait);
-        }
-        assert.deepStrictEqual(outcomes, ["retrying", "retrying", "gave_up"]);
-        assert.deepStrictEqual(yield* sql`SELECT state, attempts FROM kin_events`, [
-          { state: "failed", attempts: 3 },
-        ]);
-      }).pipe(Effect.provide(harness({ failed: true }).pipe(Layer.provide(bridge))));
-    }).pipe(provideDeterministicTestRuntime),
+  it.effect.each([
+    { failureCode: undefined, said: ["retrying", "retrying", "gave_up"] },
+    // No retry signs the account in: each try names the fix, and the bridge says it once.
+    { failureCode: "authentication_failed", said: ["signin", "signin", "signin"] },
+  ])(
+    "tells the owner at once why a failed start stopped or retries ($failureCode)",
+    ({ failureCode, said }) =>
+      Effect.gen(function* () {
+        const outcomes: Array<string> = [];
+        const bridge = Layer.mock(KinReplyBridge)({
+          lane: () =>
+            Effect.succeedSome({
+              chatId: KinChatId.make("owner-chat"),
+              mode: "reply" as const,
+              leadName: "Lead",
+            }),
+          preparing: () => Effect.void,
+          begin: () => Effect.void,
+          complete: () => Effect.void,
+          end: () => Effect.void,
+          failed: (input) => Effect.sync(() => void outcomes.push(input.outcome)),
+        });
+        yield* Effect.gen(function* () {
+          yield* seed;
+          const sql = yield* SqlClient.SqlClient;
+          yield* (yield* KinEventQueue.KinEventQueue).enqueue(laneMessage("asked"));
+          for (const wait of ["15 seconds", "60 seconds", undefined] as const) {
+            yield* Fiber.join(yield* run());
+            if (wait !== undefined) yield* TestClock.adjust(wait);
+          }
+          assert.deepStrictEqual(outcomes, said);
+          assert.deepStrictEqual(yield* sql`SELECT state, attempts FROM kin_events`, [
+            { state: "failed", attempts: 3 },
+          ]);
+        }).pipe(
+          Effect.provide(
+            harness({ failed: true, ...(failureCode === undefined ? {} : { failureCode }) }).pipe(
+              Layer.provide(bridge),
+            ),
+          ),
+        );
+      }).pipe(provideDeterministicTestRuntime),
   );
   it.effect(
     "runs two wake-ups on one T3 thread with distinct provider threads and captures only each run's usage",

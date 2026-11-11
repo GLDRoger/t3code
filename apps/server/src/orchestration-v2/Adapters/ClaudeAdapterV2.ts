@@ -10237,7 +10237,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             const terminalFailure =
               resultFailure?.class === "usage_limit"
                 ? { ...resultFailure, resetAt: resetAt ?? resultFailure.resetAt ?? null }
-                : resultFailure;
+                : resultFailure !== null &&
+                    context.authenticationFailureMessage !== undefined &&
+                    !permissionDenied
+                  ? { ...resultFailure, code: "authentication_failed" }
+                  : resultFailure;
             yield* finalizeActiveTurn({
               context,
               status: interrupted
