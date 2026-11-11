@@ -205,10 +205,14 @@ it.live.each([
         ])
           expect(yield* fs.exists(`${a.read}/${file}`)).toBe(false);
         const promptSnapshot = yield* memory.readPromptSnapshot(orgA, prepared.head);
-        expect(promptSnapshot).toEqual({
+        expect(promptSnapshot).toMatchObject({
           rules: yield* fs.readFileString(`${source}/rules.md`),
           index: yield* memory.readIndex(orgA),
         });
+        expect(promptSnapshot.items.map((item) => item.id).toSorted()).toEqual([
+          "com-001",
+          "def-001",
+        ]);
         yield* assertPrompt(prepared.head, false);
         yield* memory.rebuildIndex(orgA);
         expect((yield* memory.readPromptSnapshot(orgA, prepared.head)).index).toBe(

@@ -3,10 +3,16 @@ import {
   KinChatError,
   KinMemoryChangeCard,
   type KinAgentId,
+  type KinMemoryListInput,
+  type KinMemoryListItem,
+  type KinMemoryListResult,
+  type KinMemorySetVisibilityInput,
+  type KinMemorySetVisibilityResult,
   type KinMemoryUndoInput,
   type KinMemoryUndoResult,
   type KinOrgId,
   type KinWidgetId,
+  type MemoryItemHead,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -22,16 +28,26 @@ import * as SqlError from "effect/sql/SqlError";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
-import type { PersonIdentity } from "../chat/KinIdentity.ts";
+import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import type { MemoryWriter } from "./MemoryWriter.ts";
+import { hold, reaches, release, storedLabels, type StoredLabels } from "./sensitivity.ts";
 
 /** The writer's Undo, attached by the lead runtime that owns the writer. */
 export type KinMemoryUndo = MemoryWriter["Service"]["undoChange"];
+/** What the owner's own memory actions need of the lead runtime, which owns memory and its writer. */
+export interface KinMemoryPort {
+  readonly undo: KinMemoryUndo;
+  readonly relabel: MemoryWriter["Service"]["relabel"];
+  /** Every current item on the default branch. */
+  readonly items: (
+    orgId: KinOrgId,
+  ) => Effect.Effect<ReadonlyArray<MemoryItemHead>, { readonly _tag: string }>;
+}
 
 /**
- * Per-item Undo on the `memory_changes` cards earlier versions posted. Memory writes post nothing
- * now. No MCP tool or agent path reaches `undo`; it does only what the owner could already ask
- * the lead to do.
+ * The owner's own actions on what the leads remember: per-item Undo on the `memory_changes` cards
+ * earlier versions posted, and seeing and choosing who may know each item. No MCP tool or agent
+ * path reaches them, and only the organization's owner may call the last two.
  */
 export class KinMemoryChanges extends Context.Service<
   KinMemoryChanges,
@@ -40,7 +56,20 @@ export class KinMemoryChanges extends Context.Service<
       people: ReadonlyArray<PersonIdentity>,
       input: KinMemoryUndoInput,
     ) => Effect.Effect<KinMemoryUndoResult, KinChatError>;
-    readonly attachWriter: (undo: KinMemoryUndo) => Effect.Effect<void, never, Scope.Scope>;
+    /** What the leads remember and who may know each item; the owner only. */
+    readonly list: (
+      people: ReadonlyArray<PersonIdentity>,
+      input: KinMemoryListInput,
+    ) => Effect.Effect<KinMemoryListResult, KinChatError>;
+    /**
+     * The owner's choice for one item. "Only you" holds at once; "the team can know" takes effect
+     * when the item's file says so, with who decided and when.
+     */
+    readonly setVisibility: (
+      people: ReadonlyArray<PersonIdentity>,
+      input: KinMemorySetVisibilityInput,
+    ) => Effect.Effect<KinMemorySetVisibilityResult, KinChatError>;
+    readonly attachWriter: (port: KinMemoryPort) => Effect.Effect<void, never, Scope.Scope>;
   }
 >()("t3/kin/memory/MemoryChanges/KinMemoryChanges") {}
 
@@ -50,6 +79,7 @@ const refused = (reason: KinChatError["reason"], message: string) =>
   new KinChatError({ reason, message });
 const notFound = refused("not_found", "Kin record not found.");
 const notAllowed = refused("not_allowed", "Only the lead's owner can undo its memory changes.");
+const ownerOnly = refused("not_allowed", "Only the owner can see or change this.");
 const unavailable = refused("unavailable", "Kin memory is unavailable. Try again.");
 const stale = refused("conflict", "This changed again since, so it wasn't undone.");
 const isKinChatError = Schema.is(KinChatError);
@@ -58,7 +88,39 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const repo = yield* Repository.KinChatRepository;
   const hub = yield* Hub.KinChatHub;
-  let writer: KinMemoryUndo | undefined;
+  const { owner } = yield* KinIdentity;
+  let port: KinMemoryPort | undefined;
+  const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
+  /** Shown as turns treat it: held, or never labelled, is the owner's alone. */
+  const listed = (head: MemoryItemHead, labels: StoredLabels): KinMemoryListItem => ({
+    itemId: head.id,
+    kind: head.kind,
+    title: head.title,
+    onlyOwner: !reaches("shared", head, labels),
+    from:
+      head.shared_from === undefined
+        ? null
+        : { name: head.shared_from.name, chatName: head.shared_from.chat_name },
+  });
+  const ownerOf = Effect.fn("KinMemoryChanges.ownerOf")(function* (
+    people: ReadonlyArray<PersonIdentity>,
+    orgId: KinOrgId,
+  ) {
+    const person = people.find((candidate) => candidate.orgId === orgId);
+    if (person === undefined) return yield* notFound;
+    if (person.orgId !== owner.orgId || person.personId !== owner.personId) return yield* ownerOnly;
+    if (port === undefined) return yield* unavailable;
+    return { person, port };
+  });
+  const failed = <A, E extends { readonly _tag: string }>(effect: Effect.Effect<A, E>) =>
+    effect.pipe(
+      Effect.tapError((error) =>
+        isKinChatError(error)
+          ? Effect.void
+          : Effect.logWarning("Kin memory changes failed", { errorTag: error._tag }),
+      ),
+      Effect.mapError((error) => (isKinChatError(error) ? error : unavailable)),
+    );
 
   const transaction = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     sql
@@ -135,27 +197,29 @@ const make = Effect.gen(function* () {
       if (item === undefined) return yield* notFound;
       if (item.undo === "undone") return { card };
       if (item.undo === "stale") return yield* stale;
-      if (writer === undefined) return yield* unavailable;
-      const result = yield* writer(input.orgId, {
-        agentId: card.agentId,
-        itemId: item.itemId,
-        path: item.path,
-        branch: card.branch,
-        base: card.base,
-        commit: card.commit,
-      }).pipe(
-        Effect.catch((error) =>
-          Effect.logWarning("Kin memory undo failed", { errorTag: error._tag }).pipe(
-            Effect.andThen(
-              Effect.fail(
-                error._tag === "MemorySecretBlocked"
-                  ? refused("invalid_state", "The earlier version looks like it has a secret.")
-                  : unavailable,
+      if (port === undefined) return yield* unavailable;
+      const result = yield* port
+        .undo(input.orgId, {
+          agentId: card.agentId,
+          itemId: item.itemId,
+          path: item.path,
+          branch: card.branch,
+          base: card.base,
+          commit: card.commit,
+        })
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("Kin memory undo failed", { errorTag: error._tag }).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  error._tag === "MemorySecretBlocked"
+                    ? refused("invalid_state", "The earlier version looks like it has a secret.")
+                    : unavailable,
+                ),
               ),
             ),
           ),
-        ),
-      );
+        );
       const next = yield* mark(
         input.orgId,
         input.widgetId,
@@ -176,14 +240,42 @@ const make = Effect.gen(function* () {
 
   return KinMemoryChanges.of({
     undo,
+    list: Effect.fn("KinMemoryChanges.list")(function* (people, input) {
+      const { port } = yield* ownerOf(people, input.orgId);
+      const items = yield* port.items(input.orgId);
+      const labels = yield* storedLabels(input.orgId).pipe(provideSql);
+      // Settled reminders and replaced notes are history, not something a lead still uses.
+      return {
+        items: items
+          .filter(
+            (head) =>
+              head.status === "open" && head.invalid_at === null && head.superseded_by === null,
+          )
+          .map((head) => listed(head, labels)),
+      };
+    }, failed),
+    setVisibility: Effect.fn("KinMemoryChanges.setVisibility")(function* (people, input) {
+      const { person, port } = yield* ownerOf(people, input.orgId);
+      const known = (yield* port.items(input.orgId)).filter((head) => head.id === input.itemId);
+      if (known.length !== 1) return yield* notFound;
+      // Held first, so "only you" is true from this moment whatever the commit below does.
+      if (input.onlyOwner) yield* hold(input.orgId, input.itemId).pipe(provideSql);
+      const { head } = yield* port.relabel(input.orgId, {
+        itemId: input.itemId,
+        sensitive: input.onlyOwner,
+        person: person.personId,
+      });
+      if (!input.onlyOwner) yield* release(input.orgId, input.itemId).pipe(provideSql);
+      return { item: listed(head, yield* storedLabels(input.orgId).pipe(provideSql)) };
+    }, failed),
     attachWriter: Effect.fn("KinMemoryChanges.attachWriter")(function* (next) {
       yield* Effect.acquireRelease(
         Effect.sync(() => {
-          writer = next;
+          port = next;
         }),
         () =>
           Effect.sync(() => {
-            if (writer === next) writer = undefined;
+            if (port === next) port = undefined;
           }),
       );
     }),

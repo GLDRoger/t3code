@@ -37,8 +37,19 @@ const material: ReadonlyArray<MaterialEntry> = [
   },
 ];
 const existing = fixtureItem({ id: "clm-001", kind: "claim", source: "old", trust: "member" });
+const teammateSaid = (overrides: Record<string, unknown> = {}) =>
+  fixtureItem({
+    id: "clm-said",
+    kind: "claim",
+    source: "old",
+    trust: "member",
+    sensitive: false,
+    shared_from: { person: "p1", chat: "c1", name: "Invented person", chat_name: "Invented room" },
+    ...overrides,
+  });
 const base = new Map([
   ["rules.md", "Invented rules\n"],
+  ["claims/said.md", teammateSaid()],
   ["INDEX.md", "As of 2026-11-07T00:00:00.000Z\n"],
   ["claims/existing.md", existing],
   ["journal/2026/11-07.md", "\n## 10:00 · wake-up\n"],
@@ -149,6 +160,22 @@ it.effect.each([
       changes: [...goodDream.changes, { path: "claims/existing.md", sources: [ownerRef] }],
     },
     failures: ["claims/existing.md source old is not in the material"],
+  },
+  {
+    name: "rejects a change to what a teammate's chat left, and passing it off as the owner's",
+    tree: new Map([
+      ...goodTree,
+      ["claims/said.md", teammateSaid({ title: "Invented rule to follow" })],
+      ["claims/new.md", newClaim({ shared_by: { person: "p1", at: "2026-11-07T10:00:00.000Z" } })],
+    ]),
+    dream: {
+      ...goodDream,
+      changes: [...goodDream.changes, { path: "claims/said.md", sources: [ownerRef] }],
+    },
+    failures: [
+      "claims/said.md came from a chat other people read and is not a dream's to change",
+      "claims/new.md changes who let the team know it",
+    ],
   },
   {
     name: "rejects an item that fails the schema",

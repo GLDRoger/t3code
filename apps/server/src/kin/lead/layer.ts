@@ -155,7 +155,11 @@ const runner = Layer.effectDiscard(
     const memoryChanges = yield* Effect.serviceOption(KinMemoryChanges);
     const lander = yield* Effect.serviceOption(MemoryLander.MemoryLander);
     if (Option.isSome(writer) && Option.isSome(memoryChanges))
-      yield* memoryChanges.value.attachWriter(writer.value.undoChange);
+      yield* memoryChanges.value.attachWriter({
+        undo: writer.value.undoChange,
+        relabel: writer.value.relabel,
+        items: (orgId) => memory.query(orgId, {}),
+      });
     yield* Effect.gen(function* () {
       const context = yield* Layer.build(routineRuntime);
       yield* Context.get(context, Scheduler.Scheduler).register(

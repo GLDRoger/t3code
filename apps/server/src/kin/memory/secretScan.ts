@@ -103,7 +103,7 @@ export const ruleWindows = function* (value: string) {
       rightContext: offset + 8192 < value.length ? 1 : 0,
     };
 };
-const entropy = (value: string) => {
+export const entropy = (value: string) => {
   const counts = new Map<string, number>();
   for (const char of value) counts.set(char, (counts.get(char) ?? 0) + 1);
   let bits = 0;

@@ -35,7 +35,9 @@ import * as SecretScan from "../memory/secretScan.ts";
 import { KinIssuedTokens } from "../mcp/KinIssuedTokens.ts";
 import * as KinTriggerInbox from "../triggers/KinTriggerInbox.ts";
 import * as KinTriggerStore from "../triggers/KinTriggerStore.ts";
+import { classify, storedLabels } from "../memory/sensitivity.ts";
 import { checkDream, DreamJson } from "./checkDream.ts";
+import { keepLabels } from "./labels.ts";
 import * as DreamSession from "./DreamSession.ts";
 import { collectMaterial, type DreamMaterial } from "./material.ts";
 
@@ -99,7 +101,8 @@ Read ${scratch}/material.json. It lists every original since the last good dream
 1. Extract durable facts into item files under objectives/, commitments/, deferrals/, decisions/, people/ or claims/, and fold journal/ entries. Merge duplicates and mark replaced items with invalid_at and superseded_by.
 2. Edit only item files and journal/. Never delete a file. Never edit rules.md or INDEX.md. Do not run git.
 3. A new item, or one whose source changes, takes source = the material ref, and said_by and trust = that entry's saidBy and trust.
-4. Write ${scratch}/dream.json:
+4. Give every item you create or change, and every material entry marked "unlabelled", a front-matter line "sensitive: true" or "sensitive: false". true is for the owner alone: access (credentials, where they are kept, who holds them, how to get in); money and commercial terms (what a client is charged, what people or suppliers are paid, discounts, margins, bank and billing details); an arrangement with a client or partner the team isn't meant to know, such as a client lending the company their subscription; and anything the owner asked to keep private. false is ordinary company knowledge the team can know, such as project status. When unsure, true. Never change true to false, never remove the line, and an item you merge others into is true if any of them was. Leave shared_by and shared_from alone, and never edit an item that has shared_from.
+5. Write ${scratch}/dream.json:
 {"changes":[{"path":"...","sources":["ref"]}],"merges":[{"into":"id","from":["id"],"sources":["ref"]}],"supersessions":[{"id":"...","invalid_at":"...","superseded_by":"id","sources":["ref"]}],"contradictions":[{"items":["id"],"summary":"...","sources":["ref"]}]}
 List every file you changed in "changes". Use empty arrays when there is nothing to report.`;
 
@@ -318,6 +321,7 @@ const make = Effect.gen(function* () {
       WHERE org_id = ${orgId} AND dream_id = ${dreamId} AND status = 'running' RETURNING dream_id`;
     const files = new Map([...base.files].filter(([file]) => isCheckoutPath(file)));
     const baseText = new Map([...files].map(([file, bytes]) => [file, bytes.toString("utf8")]));
+    const labels = yield* storedLabels(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     const material = yield* collectMaterial({
       orgId,
       from: claimed.from,
@@ -325,9 +329,11 @@ const make = Effect.gen(function* () {
       full,
       timeZone,
       files: baseText,
+      classified: new Set(labels.classified.keys()),
     }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
-    // Current items alone are not new: with no original since the last good night, no model runs.
-    if (!material.entries.some((entry) => entry.kind !== "item")) {
+    // Current items alone are not new: with no original since the last good night, no model runs,
+    // unless some item is still unlabelled.
+    if (!material.entries.some((entry) => entry.kind !== "item" || entry.unlabelled === true)) {
       yield* Effect.logInfo("Kin dream skipped: nothing new", { orgId, dreamId });
       return {
         _tag: "succeeded",
@@ -388,10 +394,18 @@ const make = Effect.gen(function* () {
         material: material.entries,
         requireResolutions: true,
       });
+      const { changes, classified } = yield* keepLabels({
+        orgId,
+        base: baseText,
+        tree: checkout.tree,
+        changes: checked.changes,
+        merges: checked.dream?.merges ?? [],
+        labels,
+      });
       const findings = yield* scanner.scan({
         orgId,
         files: [
-          ...[...checked.changes].map(([file, text]) => ({
+          ...[...changes].map(([file, text]) => ({
             path: file,
             content: new TextEncoder().encode(text),
           })),
@@ -406,7 +420,7 @@ const make = Effect.gen(function* () {
         ],
       });
       let credential = false;
-      for (const text of [...checked.changes.values(), checkout.dreamJson ?? ""])
+      for (const text of [...changes.values(), checkout.dreamJson ?? ""])
         if (yield* tokens.containsIssuedToken(text)) credential = true;
       const failures = [
         ...checked.failures,
@@ -417,11 +431,13 @@ const make = Effect.gen(function* () {
       const { commit } = yield* writer.value.commitDream(orgId, {
         branch,
         base: base.head,
-        files: checked.changes,
+        files: changes,
         message: `kin(dream): ${ownerDate}\n\nKin-Dream: ${dreamId}\nMaterial-Until: ${iso(claimed.until)}\n`,
       });
       // A pause during the checks or the push fails the dream, and settling deletes its branch.
       if (yield* paused) return failed([pausedFailure]);
+      // The branch waits for the owner, so who may know each item until then is kept here.
+      yield* classify(orgId, classified).pipe(Effect.provideService(SqlClient.SqlClient, sql));
       return {
         _tag: "succeeded",
         dreamId,

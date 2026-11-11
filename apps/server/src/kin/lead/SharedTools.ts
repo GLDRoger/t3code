@@ -17,12 +17,11 @@ type Condition = (
 ) => Effect.Effect<boolean, SqlError, SqlClient.SqlClient>;
 
 /**
- * What a tool may do in a turn someone besides the owner can read. Every tool on the Kin MCP
- * endpoint has a line here, and the endpoint's gate refuses any tool without one, so a new tool
- * stays refused in such turns until it is added. Conditions read stored rows; arguments only
- * name what the call is about.
+ * What a tool may do in a turn someone besides the owner can read. The endpoint's gate refuses
+ * any tool without a line here. Conditions read stored rows; arguments only name the subject.
+ * `team_memory` admits the call and `LeadMemory` limits it to what the team can know.
  */
-export type SharedToolPolicy = "allowed" | "refused" | Condition;
+export type SharedToolPolicy = "allowed" | "team_memory" | "refused" | Condition;
 
 const field = (args: unknown, name: string) =>
   Predicate.hasProperty(args, name) ? args[name] : undefined;
@@ -100,13 +99,15 @@ export const SHARED_TOOLS = {
   kin_follow_up: ownerAskedAboutWorkerHere,
   kin_worker_stop: ownerAskedAboutWorkerHere,
   kin_hand_off: "refused",
-  memory_search: "refused",
-  memory_read: "refused",
-  memory_write: "refused",
+  memory_search: "team_memory",
+  memory_read: "team_memory",
+  memory_write: "team_memory",
+  kin_journal: "team_memory",
+  // Who may know an item is the owner's to decide.
+  memory_label: "refused",
   kin_defer: "refused",
   kin_schedule: "refused",
   kin_cancel: "refused",
-  kin_journal: "refused",
   kin_github_repos: "refused",
   kin_github_prs: "refused",
   kin_github_pr: "refused",
@@ -121,7 +122,7 @@ export const sharedToolAllowed = Effect.fn("KinSharedTools.allowed")(
       ? SHARED_TOOLS[name as keyof typeof SHARED_TOOLS]
       : undefined;
     if (policy === undefined || policy === "refused") return false;
-    if (policy === "allowed") return true;
+    if (policy === "allowed" || policy === "team_memory") return true;
     return yield* policy(turn, args);
   },
   Effect.catchCause((cause) =>
