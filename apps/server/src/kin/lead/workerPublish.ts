@@ -58,6 +58,11 @@ export class KinWorkerPublish extends Context.Service<
       readonly repositoryKey: string;
       /** The worker's worktree there, as its server reports it. */
       readonly worktreePath: string;
+      /**
+       * A worker on this server, which has no shell: Kin commits its edits, from a worktree that
+       * must be one of `projectRoot`'s own.
+       */
+      readonly local?: { readonly projectRoot: string };
       readonly title: string;
       /** Read again just before each GitHub write; true stops the publish there. */
       readonly paused: Effect.Effect<boolean>;
@@ -74,6 +79,8 @@ const touchesGitHubDir = (path: string) => {
   const lower = path.toLowerCase();
   return lower === GITHUB_DIR || lower.startsWith(`${GITHUB_DIR}/`);
 };
+/** Who the commit Kin makes for a worker on this server is by. */
+const COMMITTER = ["-c", "user.name=Kin", "-c", "user.email=kin@users.noreply.github.com"];
 /** The most a worker's fetch may add to Kin's disk; the transfer cap only bounds the wire. */
 const MAX_INCOMING_BYTES = 1024 * 1024 * 1024;
 
@@ -105,7 +112,8 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
   const scratchRoot = `${stateDir}/kin-worker-publish`;
   yield* fs.remove(scratchRoot, { recursive: true, force: true }).pipe(Effect.ignore);
 
-  // Kin's own bare repository, named explicitly: its config, hooks and refs are Kin's alone.
+  // Kin's own bare repository, named explicitly: its config, hooks and refs are Kin's alone. With
+  // `worktree`, a local worker's checkout instead, whose git metadata the worker can't write.
   const git = (
     cwd: string,
     args: ReadonlyArray<string>,
@@ -113,6 +121,7 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
       readonly env?: NodeJS.ProcessEnv;
       readonly ext?: boolean;
       readonly raw?: boolean;
+      readonly worktree?: boolean;
     } = {},
   ) =>
     vcs
@@ -122,7 +131,7 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
         cwd,
         args: [
           "--no-replace-objects",
-          `--git-dir=${cwd}`,
+          options.worktree === true ? `--work-tree=${cwd}` : `--git-dir=${cwd}`,
           "-c",
           "core.hooksPath=/dev/null",
           "-c",
@@ -158,6 +167,53 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
       ),
     );
 
+  /**
+   * Commits a local worker's edits on its branch, once: a second publish finds nothing new. The
+   * worktree must be registered to the project's own checkout, which Kin's server cloned.
+   */
+  const commitLocal = Effect.fn("KinWorkerPublish.commitLocal")(function* (
+    worktreePath: string,
+    local: { readonly projectRoot: string },
+    branch: string,
+  ) {
+    const failed = (step: string) => () => refuse(`git couldn't ${step}`);
+    const outside = refuse("the worktree isn't one of the project's own");
+    const real = (path: string) => fs.realPath(path).pipe(Effect.mapError(() => outside));
+    const worktree = yield* real(worktreePath);
+    const root = yield* real(local.projectRoot);
+    if (worktree === root) return yield* outside;
+    const listed = yield* git(root, ["worktree", "list", "--porcelain", "-z"], {
+      raw: true,
+      worktree: true,
+    }).pipe(Effect.mapError(failed("list the project's worktrees")));
+    const registered = yield* Effect.forEach(
+      listed
+        .split("\0")
+        .flatMap((line) => (line.startsWith("worktree ") ? [line.slice("worktree ".length)] : [])),
+      (path) => fs.realPath(path).pipe(Effect.orElseSucceed(() => undefined)),
+    );
+    if (!registered.includes(worktree)) return yield* outside;
+    const head = yield* git(worktree, ["symbolic-ref", "--quiet", "HEAD"], {
+      worktree: true,
+    }).pipe(Effect.mapError(failed("read the worktree's branch")));
+    if (head !== `refs/heads/${branch}`) return yield* refuse(`the worktree isn't on ${branch}`);
+    const changes = yield* git(worktree, ["status", "--porcelain", "-z"], {
+      raw: true,
+      worktree: true,
+    }).pipe(Effect.mapError(failed("read the worktree's changes")));
+    if (changes.length === 0) return;
+    yield* git(worktree, ["add", "--all"], { worktree: true }).pipe(
+      Effect.mapError(failed("stage the worker's changes")),
+    );
+    yield* git(
+      worktree,
+      [...COMMITTER, "commit", "--quiet", "--no-verify", "-m", "Kin worker changes"],
+      {
+        worktree: true,
+      },
+    ).pipe(Effect.mapError(failed("commit the worker's changes")));
+  });
+
   const publish: KinWorkerPublish["Service"]["publish"] = Effect.fn("KinWorkerPublish.publish")(
     function* (input) {
       const match = /^github\.com\/([^/]+\/[^/]+)$/i.exec(input.repositoryKey);
@@ -168,6 +224,8 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
         return yield* refuse("the worker environment reported an unusable worktree path");
       const branch = publishBranch(input.workerId);
       const incoming = `refs/kin/incoming/${input.workerId}`;
+      const failed = (step: string) => () => refuse(`git couldn't ${step}`);
+      if (input.local !== undefined) yield* commitLocal(input.worktreePath, input.local, branch);
 
       // Contents write stays here: `holder: "server"` is fixed, never taken from any input.
       const minted = yield* app
@@ -204,7 +262,6 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
       if (typeof base !== "string" || !safeRef.test(base))
         return yield* refuse("GitHub didn't name the repository's default branch");
 
-      const failed = (step: string) => () => refuse(`git couldn't ${step}`);
       // A fresh bare repository for this publish only, removed when it ends however it ends.
       yield* fs
         .makeDirectory(scratchRoot, { recursive: true })
@@ -235,10 +292,10 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
           "--quiet",
           "--no-tags",
           "--",
-          transport.worker(input.worktreePath),
+          input.local === undefined ? transport.worker(input.worktreePath) : input.worktreePath,
           `+refs/heads/${branch}:${incoming}`,
         ],
-        { ext: true },
+        { ext: input.local === undefined },
       ).pipe(Effect.mapError(failed(`fetch ${branch} from the worker environment`)));
       const incomingBytes =
         (yield* diskBytes(cache).pipe(Effect.mapError(failed("measure Kin's copy")))) - baseline;

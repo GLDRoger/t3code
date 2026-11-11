@@ -40,10 +40,16 @@ export const reportFormat = [
 export const publishNote = (branch: string) =>
   `Commit your work on the branch \`${branch}\` in this worktree. Don't push or open a pull request: you have no GitHub write access. When your run ends, Kin pushes \`${branch}\` and opens a draft PR. Changes under .github/workflows are never published.`;
 
+/** What a build worker on this server hears: it has no shell, so Kin commits and publishes. */
+export const localPublishNote = (branch: string) =>
+  `Leave your changes as edits in this worktree, which is on the branch \`${branch}\`. When your run ends, Kin commits them and opens a draft PR. Changes under .github are never published.`;
+
 export const buildBrief = (input: {
   readonly goal: string;
   /** A build worker's branch, which Kin publishes. */
   readonly branch?: string;
+  /** The worker runs on this server with no shell, so Kin commits for it. */
+  readonly local?: boolean;
   readonly brief?: string;
   readonly quoted?: typeof Quoted.Type;
   readonly memory?: ReadonlyArray<{
@@ -65,7 +71,9 @@ export const buildBrief = (input: {
           "Review the work below independently. You get only its references, not how it was briefed.",
           quote("work to review", input.reviewRefs, true),
         ]),
-    ...(input.branch === undefined ? [] : [publishNote(input.branch)]),
+    ...(input.branch === undefined
+      ? []
+      : [input.local === true ? localPublishNote(input.branch) : publishNote(input.branch)]),
     reportFormat,
   ].join("\n\n");
 

@@ -29,6 +29,7 @@ import {
   type OrchestrationV2RunStatus,
   type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
+import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -42,9 +43,13 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Result from "effect/Result";
 import * as Schedule from "effect/Schedule";
 import * as TestClock from "effect/testing/TestClock";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { ServerConfig } from "../../config.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
+import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
+import * as ServerSettings from "../../serverSettings.ts";
 import * as EventStore from "../../persistence/OrchestrationEventStore.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
@@ -65,9 +70,12 @@ import { laneFor } from "../reply/KinReplyBridge.ts";
 import { sharedToolAllowed } from "./SharedTools.ts";
 import { KinLevelGate } from "./LevelGate.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
+import { localPublishNote } from "./workerBrief.ts";
 import * as Publish from "./workerPublish.ts";
 import * as Workers from "./Workers.ts";
 import * as Tracker from "./WorkerTracker.ts";
+import { LOCAL_BUILD_ONLY, LOCAL_DIRECT_ONLY } from "./localWorkers.ts";
+import { localThreadId } from "./workThread.ts";
 
 const leadThread = ThreadId.make("lead-thread");
 const leadId = KinAgentId.make("lead");
@@ -519,26 +527,141 @@ const repositories = Layer.mock(ProjectService.ProjectService)({
   listPage: () =>
     Effect.succeed({
       projects: [
-        { id: project, title: "App", repositoryIdentity: { canonicalKey: repoKey } },
+        {
+          id: project,
+          title: "App",
+          workspaceRoot: "/home/user/app",
+          repositoryIdentity: { canonicalKey: repoKey },
+        },
         {
           id: ProjectId.make("site-project"),
           title: "Marketing site",
+          workspaceRoot: "/home/user/site",
           repositoryIdentity: { canonicalKey: "github.com/acme/site" },
         },
         {
           id: ProjectId.make("memory-project"),
           title: "Memory",
+          workspaceRoot: "/home/user/memory",
           repositoryIdentity: { canonicalKey: memoryKey },
+        },
+        // A lead's own checkout under Kin's state is never a place for work, whatever it holds.
+        {
+          id: ProjectId.make("kin-state-project"),
+          title: "Kin state",
+          workspaceRoot: "/state/kin/leads/lead",
+          repositoryIdentity: { canonicalKey: "github.com/acme/kin-state" },
         },
       ] as never,
       nextCursor: null,
     }),
+  getById: (projectId) =>
+    Effect.succeed(
+      projectId === project
+        ? Option.some({ id: project, workspaceRoot: "/home/user/app" } as never)
+        : Option.none(),
+    ),
 });
+
+interface LocalRun {
+  readonly id: RunId;
+  status: OrchestrationV2RunStatus;
+  readonly completedAt: null;
+  reply?: string;
+}
+/**
+ * This server's own thread launch and runs, for workers that run here. Threads are created in
+ * Kin's real orchestrator, so cards and the follower read real shells; runs are the test's.
+ */
+const fakeLocal = () => {
+  const launches: Array<ThreadLaunchService.ThreadLaunchInput> = [];
+  const runs = new Map<ThreadId, Array<LocalRun>>();
+  const dispatched: Array<unknown> = [];
+  const interrupted: Array<ThreadId> = [];
+  let changed = Deferred.makeUnsafe<void>();
+  const signal = () => {
+    const previous = changed;
+    changed = Deferred.makeUnsafe<void>();
+    return Deferred.succeed(previous, undefined);
+  };
+  const launcher = Layer.effect(
+    ThreadLaunchService.ThreadLaunchService,
+    Effect.gen(function* () {
+      const orchestrator = yield* OrchestratorV2;
+      return ThreadLaunchService.ThreadLaunchService.of({
+        launch: (input) =>
+          Effect.gen(function* () {
+            launches.push(input);
+            const threadId = input.threadId!;
+            if (!runs.has(threadId)) {
+              yield* orchestrator
+                .dispatch({
+                  type: "thread.create",
+                  commandId: input.commandId,
+                  threadId,
+                  projectId: input.projectId,
+                  title: input.title,
+                  modelSelection: input.modelSelection,
+                  runtimeMode: input.runtimeMode,
+                  interactionMode: input.interactionMode,
+                  branch: input.workspaceStrategy.branch ?? null,
+                  worktreePath: "/home/user/.t3/worktrees/app/kin-worker",
+                  createdBy: "system",
+                  creationSource: "server",
+                })
+                .pipe(Effect.orDie);
+              runs.set(threadId, [
+                { id: RunId.make(`${threadId}:run-1`), status: "running", completedAt: null },
+              ]);
+            }
+            return { threadId, projection: {} as never, resumed: false };
+          }),
+        checkWorktreeBase: () => Effect.void,
+        retryPreparation: () => Effect.die("unused"),
+        prepareRun: () => Effect.die("unused"),
+      });
+    }),
+  );
+  const threads = {
+    waitForThread: (input: ThreadManagement.ThreadManagementWaitInput) =>
+      Effect.gen(function* () {
+        // Taken before the read, so an end between them still wakes this wait.
+        const waiting = changed;
+        const last = runs.get(input.threadId)?.at(-1);
+        if (last === undefined) return { threadId: input.threadId, run: null, timedOut: false };
+        if (!terminal(last.status)) {
+          yield* Deferred.await(waiting);
+          return { threadId: input.threadId, run: last as never, timedOut: true };
+        }
+        return { threadId: input.threadId, run: last as never, timedOut: false };
+      }),
+    getThreadProjection: (threadId: ThreadId) =>
+      Effect.succeed({
+        thread: { worktreePath: "/home/user/.t3/worktrees/app/kin-worker" },
+        runs: runs.get(threadId) ?? [],
+        messages: (runs.get(threadId) ?? []).flatMap((run) =>
+          run.reply === undefined ? [] : [{ role: "assistant", runId: run.id, text: run.reply }],
+        ),
+      } as never),
+    dispatch: (command: unknown) => Effect.sync(() => void dispatched.push(command) as never),
+  };
+  /** Ends the thread's latest run here, as the worker's last turn or the owner's stop would. */
+  const finish = (threadId: ThreadId, status: OrchestrationV2RunStatus, reply?: string) =>
+    Effect.gen(function* () {
+      const last = runs.get(threadId)!.at(-1)!;
+      last.status = status;
+      if (reply !== undefined) last.reply = reply;
+      yield* signal();
+    });
+  return { launches, runs, dispatched, interrupted, launcher, threads, finish };
+};
+type FakeLocal = ReturnType<typeof fakeLocal>;
 
 const run = <A, E>(
   test: (input: {
     readonly ctx: Effect.Success<ReturnType<typeof setup>>;
     readonly remote: FakeWorkers;
+    readonly local: FakeLocal;
     readonly stopped: Array<ThreadId>;
     readonly workers: Workers.KinWorkers["Service"];
     readonly tracker: Tracker.WorkerTracker["Service"];
@@ -551,17 +674,22 @@ const run = <A, E>(
   Effect.gen(function* () {
     const ctx = yield* setup(level);
     const remote = fakeWorkers();
+    const local = fakeLocal();
     const stopped: Array<ThreadId> = [];
     const threads = Layer.mock(ThreadManagement.ThreadManagementService)({
       stopDelegatedTasks: (input) =>
         Effect.sync(() => {
           stopped.push(input.threadId);
         }),
+      waitForThread: local.threads.waitForThread,
+      getThreadProjection: local.threads.getThreadProjection,
+      dispatch: local.threads.dispatch as never,
     });
     return yield* Effect.gen(function* () {
       return yield* test({
         ctx,
         remote,
+        local,
         stopped,
         workers: yield* Workers.KinWorkers,
         tracker: yield* Tracker.WorkerTracker,
@@ -578,6 +706,12 @@ const run = <A, E>(
               Layer.succeed(WorkerEnvironment.KinWorkerEnvironment, remote.service),
               Layer.succeed(Publish.KinWorkerPublish, remote.publisher),
               threads,
+              local.launcher,
+              ServerSettings.layerTest({
+                providerInstances: { claude: { driver: ProviderDriverKind.make("claudeAgent") } },
+              } as never),
+              Layer.succeed(ServerConfig, { stateDir: "/state" } as never),
+              NodeServices.layer,
               EventStore.layer,
               memory,
               repositories,
@@ -675,6 +809,25 @@ const cards = (sql: SqlClient.SqlClient, orgId: KinOrgId) =>
       rows.map((row) => ({ ...row, state: JSON.parse(row.state) as KinTaskCardState })),
     ),
   );
+/** A host with no worker environment: work runs on this server, on the lead's Claude model. */
+const goLocal = Effect.fn("WorkersTest.goLocal")(function* (
+  ctx: Effect.Success<ReturnType<typeof setup>>,
+  remote: FakeWorkers,
+) {
+  remote.state.environmentId = Option.none();
+  const models = JSON.stringify({ strong: claude, cheap: { ...claude, model: "claude-haiku" } });
+  yield* ctx.sql`UPDATE kin_leads SET models_json = ${models} WHERE agent_id = ${leadId}`;
+});
+const localRow = (sql: SqlClient.SqlClient, orgId: KinOrgId, workerId: KinWorkerId) =>
+  sql<{
+    environmentId: string | null;
+    remoteProjectId: string | null;
+    context: string;
+  }>`SELECT environment_id AS "environmentId", remote_project_id AS "remoteProjectId", context
+    FROM kin_workers WHERE org_id = ${orgId} AND worker_id = ${workerId} ORDER BY worker_id`.pipe(
+    Effect.map((rows) => rows[0]!),
+  );
+
 const pause = (sql: SqlClient.SqlClient, orgId: KinOrgId) =>
   sql`INSERT INTO kin_org_state (org_id, paused, paused_at, paused_by) SELECT ${orgId}, 1, 0, person_id FROM kin_people WHERE org_id = ${orgId} ORDER BY person_id LIMIT 1`.pipe(
     Effect.orDie,
@@ -743,7 +896,7 @@ it.effect(
 );
 
 it.effect(
-  "kin_delegate refuses with no worker environment, at 0 worker units, while paused, foreign ids and non-lead callers",
+  "kin_delegate refuses at 0 worker units, while paused, foreign ids and non-lead callers",
   () =>
     run(({ ctx, remote, workers }) =>
       Effect.gen(function* () {
@@ -756,13 +909,6 @@ it.effect(
           assert.include(refused.message, "You can still read repos, pull requests and CI");
           assert.notMatch(refused.message, /tell the owner|worker project|add (it|a|the) /i);
         };
-        remote.state.environmentId = Option.none();
-        honest(
-          yield* Effect.flip(workers.delegate(scope, delegateInput)),
-          "unavailable",
-          "this host's worker environment isn't set up",
-        );
-        remote.state.environmentId = Option.some(workerEnv);
         const budget = Context.get(ctx.services, KinBudget);
         yield* ctx.sql`INSERT INTO kin_budget_limits (org_id, limits_json) VALUES (${ctx.orgId}, '{"leadUnits":10,"workerUnits":0}')`;
         assert.isFalse(yield* budget.admitWorker(ctx.orgId));
@@ -857,20 +1003,27 @@ it.effect(
 
 // The host's chats, 9-10 Nov 2026: with no worker environment, the Tech lead guessed its project
 // as "t3code", then "GLDRoger/t3code", heard only "Workers may only run in this lead's worker
-// projects", and asked the owner for two days to add one.
-it.effect.each(["t3code", "GLDRoger/t3code"])(
-  "with no worker environment, a lead naming %s hears that, not a fault in its own setup",
-  (named) =>
-    run(({ remote, workers }) =>
+// projects", and asked the owner for two days to add one. Work now runs on this server, so the
+// lead hears what is here, never that its own setup is at fault.
+it.effect.each([
+  // Never Kin's own state (`kin-state-project`), whatever repository it holds.
+  ["t3code", "not_found", "Work can start in: Memory, acme/app, acme/site. Nothing started"],
+  ["GLDRoger/t3code", "unavailable", "isn't cloned on this host yet"],
+] as const)(
+  "with no worker environment, a lead naming %s, which isn't cloned here, hears that, not a fault in its own setup",
+  ([named, reason, truth]) =>
+    run(({ ctx, remote, local, workers }) =>
       Effect.gen(function* () {
-        remote.state.environmentId = Option.none();
+        yield* goLocal(ctx, remote);
         const refused = yield* Effect.flip(
           workers.delegate(scope, { ...delegateInput, project: named }),
         );
-        assert.strictEqual(refused.reason, "unavailable");
-        assert.include(refused.message, "this host's worker environment isn't set up");
+        assert.strictEqual(refused.reason, reason);
+        assert.include(refused.message, truth);
+        assert.include(refused.message, "Nothing started");
         assert.notMatch(refused.message, /worker project|tell the owner/i);
         assert.lengthOf(remote.calls, 0);
+        assert.lengthOf(local.launches, 0);
       }),
     ),
 );
@@ -2484,4 +2637,281 @@ it.effect("an app-owned delegate_task child on a lead thread is stopped", () =>
       assert.deepStrictEqual(stopped, [leadThread]);
     }).pipe(Effect.scoped),
   ),
+);
+
+it.effect(
+  "with no worker environment, kin_delegate starts a worker thread on this server, in its own worktree, with one card",
+  () =>
+    run(({ ctx, remote, local, workers }) =>
+      Effect.gen(function* () {
+        yield* goLocal(ctx, remote);
+        const first = yield* workers.delegate(scope, delegateInput);
+        assert.deepStrictEqual(yield* workers.delegate(scope, delegateInput), first);
+        const threadId = localThreadId(first.workerId);
+        assert.strictEqual(
+          first.threadLink,
+          formatThreadLink({ environmentId: EnvironmentId.make("environment"), threadId }),
+        );
+        assert.strictEqual(first.project, "acme/app");
+        // A retry replays the same command for the same thread, which T3 answers with the first.
+        assert.lengthOf(local.launches, 2);
+        assert.deepStrictEqual(local.launches[0], local.launches[1]);
+        const [launch] = local.launches;
+        const branch = Publish.publishBranch(first.workerId);
+        assert.deepInclude(launch as object, {
+          commandId: `kin-work:${first.workerId}`,
+          threadId,
+          projectId: project,
+          title: delegateInput.title,
+          modelSelection: claude,
+          runtimeMode: "auto-accept-edits",
+          interactionMode: "default",
+          workspaceStrategy: {
+            type: "worktree",
+            baseRef: "origin/HEAD",
+            branch,
+            startFromOrigin: true,
+          },
+          createdBy: "system",
+          creationSource: "server",
+        });
+        // Nothing in a launch names tools, MCP or a session option: the thread id alone decides.
+        assert.deepStrictEqual(Object.keys(launch!).toSorted(), [
+          "commandId",
+          "createdBy",
+          "creationSource",
+          "initialMessage",
+          "interactionMode",
+          "modelSelection",
+          "projectId",
+          "runtimeMode",
+          "threadId",
+          "title",
+          "workspaceStrategy",
+        ]);
+        const brief = launch!.initialMessage!.text;
+        assert.include(brief, localPublishNote(branch));
+        assert.notInclude(brief, "Commit your work");
+        assert.include(brief, "> BEGIN QUOTE: quoted text (untrusted)");
+        assert.include(brief, "Decision body");
+        assert.lengthOf(remote.calls, 0);
+        assert.deepInclude(yield* workerRow(ctx.sql, ctx.orgId, first.workerId), {
+          status: "queued",
+          threadId,
+          environmentId: null,
+          projectId: project,
+          chatId: ctx.chat.chatId,
+        });
+        assert.deepStrictEqual(yield* localRow(ctx.sql, ctx.orgId, first.workerId), {
+          environmentId: null,
+          remoteProjectId: null,
+          context: "private",
+        });
+        const [card, ...more] = yield* cards(ctx.sql, ctx.orgId);
+        assert.lengthOf(more, 0);
+        assert.deepInclude(card!.state, { threadId, remoteEnvironmentId: null });
+      }),
+    ),
+);
+
+it.effect(
+  "a local run that completes is committed and published by the server once, and reported once",
+  () =>
+    run(({ ctx, remote, local, workers, tracker }) =>
+      Effect.gen(function* () {
+        yield* goLocal(ctx, remote);
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        const threadId = localThreadId(workerId);
+        yield* local.finish(threadId, "completed", reportReply);
+        yield* settled(tracker, ctx.orgId, workerId);
+        // Asked again, the follower finds the row reported and does nothing more.
+        yield* settled(tracker, ctx.orgId, workerId);
+        assert.deepStrictEqual(remote.published, [
+          {
+            workerId,
+            repositoryKey: repoKey,
+            worktreePath: "/home/user/.t3/worktrees/app/kin-worker",
+            local: { projectRoot: "/home/user/app" },
+            title: delegateInput.title,
+            paused: (remote.published[0] as { paused: unknown }).paused,
+          },
+        ]);
+        const [reported, ...others] = yield* reports(ctx.sql, ctx.orgId);
+        assert.lengthOf(others, 0);
+        assert.deepStrictEqual(reported!.event.report, published(report));
+        assert.strictEqual(reported!.event.dedupeKey, `worker-report:${threadId}:run-1`);
+        assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "completed");
+        // The PR is the thread's own link, so its card and thread view show it.
+        assert.deepStrictEqual(local.dispatched, [
+          {
+            type: "thread.pull-request.link",
+            commandId: `kin-work-pr:${workerId}:9`,
+            threadId,
+            host: "github.com",
+            repository: "acme/app",
+            number: 9,
+            url: "https://github.com/acme/app/pull/9",
+            source: "created",
+          },
+        ]);
+        assert.lengthOf(remote.calls, 0);
+      }),
+    ),
+);
+
+it.effect.each(["failed", "interrupted", "cancelled"] as const)(
+  "a local run that ends %s reports once and publishes nothing",
+  (status) =>
+    run(({ ctx, remote, local, workers, tracker }) =>
+      Effect.gen(function* () {
+        yield* goLocal(ctx, remote);
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        yield* local.finish(localThreadId(workerId), status, reportReply);
+        yield* settled(tracker, ctx.orgId, workerId);
+        yield* settled(tracker, ctx.orgId, workerId);
+        assert.lengthOf(remote.published, 0);
+        assert.lengthOf(local.dispatched, 0);
+        const [reported, ...others] = yield* reports(ctx.sql, ctx.orgId);
+        assert.lengthOf(others, 0);
+        assert.deepStrictEqual(reported!.event.report, { ...report, parsed: true });
+        assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, status);
+        // The owner's stop closes the card, as a stopped remote worker's does.
+        assert.strictEqual(
+          (yield* cards(ctx.sql, ctx.orgId))[0]!.closedAt !== null,
+          status !== "failed",
+        );
+      }),
+    ),
+);
+
+/** A direct chat between a teammate and the lead, where the owner isn't. */
+const teammateDirect = Effect.fn("WorkersTest.teammateDirect")(function* (
+  sql: SqlClient.SqlClient,
+  orgId: KinOrgId,
+) {
+  const at = "1970-01-01T00:00:00.000Z";
+  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+    VALUES ('teammate', ${orgId}, 'teammate', 'Teammate', ${at}) ON CONFLICT DO NOTHING`;
+  yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+    VALUES ('teammate-direct', ${orgId}, 'direct', 'teammate:lead', 0, ${at})`;
+  for (const [member, kind, who] of [
+    ["teammate-direct-person", "person", "teammate"],
+    ["teammate-direct-lead", "agent", leadId],
+  ] as const)
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+        person_id, agent_id, role, joined_at)
+      VALUES (${member}, ${orgId}, 'teammate-direct', ${kind},
+        ${kind === "person" ? who : null}, ${kind === "agent" ? who : null}, 'member', ${at})`;
+  yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+      author_member_id, author_role, kind, body, mentions_json, status, created_at)
+    VALUES ('teammate-message', ${orgId}, 'teammate-direct', 1, 'human', 'teammate',
+      'teammate-direct-person', 'member', 'text', 'Please fix the flaky test', '[]', 'posted', ${at})`;
+  yield* sql`UPDATE kin_events SET json = json_set(json, '$.chatId', 'teammate-direct',
+      '$.messageId', 'teammate-message', '$.provenance.personId', 'teammate')
+    WHERE event_id = 'lead-event'`;
+});
+
+it.effect.each([
+  [
+    "a shared turn in the owner's own direct chat",
+    (ctx: Effect.Success<ReturnType<typeof setup>>) =>
+      ctx.sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake'`.pipe(
+        Effect.asVoid,
+      ),
+  ],
+  [
+    "a group with a teammate in it",
+    (ctx: Effect.Success<ReturnType<typeof setup>>) =>
+      Effect.gen(function* () {
+        yield* group(ctx.sql, ctx.orgId, "team", "teammate");
+        yield* askedIn(ctx.sql, "team");
+      }),
+  ],
+  [
+    "a teammate's direct chat",
+    (ctx: Effect.Success<ReturnType<typeof setup>>) => teammateDirect(ctx.sql, ctx.orgId),
+  ],
+  [
+    "an owner-only group that isn't the lead's direct chat with the owner",
+    (ctx: Effect.Success<ReturnType<typeof setup>>) =>
+      Effect.gen(function* () {
+        yield* group(ctx.sql, ctx.orgId, "solo", "owner");
+        yield* askedIn(ctx.sql, "solo");
+      }),
+  ],
+  [
+    "an owner-only turn that a due reminder from another chat also woke",
+    (ctx: Effect.Success<ReturnType<typeof setup>>) =>
+      Effect.gen(function* () {
+        yield* group(ctx.sql, ctx.orgId, "solo", "owner");
+        const due = {
+          _tag: "deferral.due",
+          orgId: ctx.orgId,
+          agentId: leadId,
+          eventId: "due-event",
+          receivedAt: "1970-01-01T00:00:00.000Z",
+          dedupeKey: null,
+          provenance: { _tag: "system" },
+          subject: { type: "deferral", itemId: "def-1", phase: "due" },
+          lateByMs: 0,
+          origin: { agentId: leadId, chatId: "solo" },
+        };
+        yield* ctx.sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
+          VALUES ('due-event', ${ctx.orgId}, ${leadId}, 'deferral.due', 'P1', ${JSON.stringify(due)}, 0, 0, 'claimed', 'wake')`;
+      }),
+  ],
+] as const)("the local path refuses work asked from %s and starts nothing", ([, arrange]) =>
+  run(({ ctx, remote, local, workers }) =>
+    Effect.gen(function* () {
+      yield* goLocal(ctx, remote);
+      yield* arrange(ctx);
+      assert.include(yield* Effect.flip(workers.delegate(scope, teamDelegate)), {
+        reason: "not_allowed",
+        message: LOCAL_DIRECT_ONLY,
+      });
+      assert.lengthOf(local.launches, 0);
+      assert.lengthOf(yield* ctx.sql`SELECT 1 FROM kin_workers WHERE org_id = ${ctx.orgId}`, 0);
+      assert.lengthOf(yield* cards(ctx.sql, ctx.orgId), 0);
+    }),
+  ),
+);
+
+it.effect(
+  "the local path takes build work only, picks Claude only, and refuses follow-ups and stops from a lead",
+  () =>
+    run(({ ctx, remote, local, workers }) =>
+      Effect.gen(function* () {
+        yield* goLocal(ctx, remote);
+        for (const input of [
+          { ...delegateInput, kind: "research" as const },
+          { ...delegateInput, kind: "review" as const, reviewOf: KinWorkerId.make("other-worker") },
+        ])
+          assert.include(yield* Effect.flip(workers.delegate(scope, input)), {
+            reason: "not_allowed",
+            message: LOCAL_BUILD_ONLY,
+          });
+        // A lead can't name its way past the work wall, which only wraps Claude sessions.
+        const notClaude = yield* Effect.flip(
+          workers.delegate(scope, { ...delegateInput, model: codex }),
+        );
+        assert.include(notClaude, { reason: "not_allowed" });
+        assert.include(notClaude.message, "Claude only");
+        assert.include(
+          yield* Effect.flip(
+            workers.followUp(scope, {
+              workerId: KinWorkerId.make("other-worker"),
+              brief: "More",
+              sourceEventId: "lead-event",
+            }),
+          ),
+          { reason: "not_allowed", message: LOCAL_BUILD_ONLY },
+        );
+        assert.include(
+          yield* Effect.flip(workers.stop(scope, { workerId: KinWorkerId.make("other-worker") })),
+          { reason: "not_allowed", message: LOCAL_BUILD_ONLY },
+        );
+        assert.lengthOf(local.launches, 0);
+        assert.lengthOf(remote.calls, 0);
+      }),
+    ),
 );

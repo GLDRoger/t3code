@@ -29,6 +29,8 @@ const fixture = Effect.fn("WorkerPublishTest.fixture")(function* (
     readonly maxIncomingBytes?: number;
     /** Answers for the publisher's pause checks, in order; then not paused. */
     readonly paused?: ReadonlyArray<boolean>;
+    /** A worker on this server: a worktree of the clone, its edits left uncommitted. */
+    readonly local?: boolean;
   } = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
@@ -53,15 +55,25 @@ const fixture = Effect.fn("WorkerPublishTest.fixture")(function* (
   yield* git(`${root}/seed`, "commit", "--quiet", "-m", "seed");
   yield* git(`${root}/seed`, "push", "--quiet", origin, "main");
   yield* git(root, "clone", "--quiet", origin, worker);
-  yield* git(worker, "switch", "--quiet", "-c", Publish.publishBranch(workerId));
+  const tree = options.local === true ? `${root}/worktrees/app` : worker;
+  if (options.local === true)
+    yield* git(worker, "worktree", "add", "--quiet", "-b", Publish.publishBranch(workerId), tree);
+  else yield* git(worker, "switch", "--quiet", "-c", Publish.publishBranch(workerId));
   for (const [path, text] of Object.entries(files)) {
-    yield* fs.makeDirectory(`${worker}/${path}`.replace(/\/[^/]+$/, ""), { recursive: true });
-    yield* fs.writeFileString(`${worker}/${path}`, text);
+    yield* fs.makeDirectory(`${tree}/${path}`.replace(/\/[^/]+$/, ""), { recursive: true });
+    yield* fs.writeFileString(`${tree}/${path}`, text);
+    if (options.local === true) continue;
     yield* git(worker, "add", path);
     yield* git(worker, "commit", "--quiet", "-m", `add ${path}`);
   }
   for (const change of options.changes ?? []) {
-    if (change.kind === "symlink") {
+    if (options.local === true) {
+      if (change.kind !== "file") return yield* Effect.die("a local worker only edits files");
+      yield* fs.makeDirectory(`${tree}/${change.path}`.replace(/\/[^/]+$/, ""), {
+        recursive: true,
+      });
+      yield* fs.writeFileString(`${tree}/${change.path}`, change.text);
+    } else if (change.kind === "symlink") {
       yield* fs.symlink(change.target, `${worker}/${change.path}`);
       yield* git(worker, "add", change.path);
       yield* git(worker, "commit", "--quiet", "-m", "link");
@@ -87,7 +99,7 @@ const fixture = Effect.fn("WorkerPublishTest.fixture")(function* (
       yield* git(worker, "commit", "--quiet", "-m", "merge side");
     }
   }
-  const head = yield* git(worker, "rev-parse", "HEAD");
+  const head = yield* git(tree, "rev-parse", "HEAD");
   const remoteBranch = git(
     root,
     `--git-dir=${origin}`,
@@ -149,16 +161,18 @@ const fixture = Effect.fn("WorkerPublishTest.fixture")(function* (
     ),
   );
   const pauses = [...(options.paused ?? [])];
-  const publish = (worktreePath = worker) =>
+  const publish = (worktreePath = tree) =>
     service.publish({
       workerId,
       repositoryKey: "github.com/acme/app",
       worktreePath,
+      ...(options.local === true ? { local: { projectRoot: worker } } : {}),
       title: "Fix",
       paused: Effect.sync(() => pauses.shift() ?? false),
     });
   const scratch = fs.readDirectory(`${root}/state/kin-worker-publish`);
-  return { publish, head, remoteBranch, requests, tokens, scratch };
+  const log = (format: string) => git(tree, "log", `--format=${format}`, "main..HEAD");
+  return { publish, head, remoteBranch, requests, tokens, scratch, root, worker, tree, git, log };
 });
 
 it.live(
@@ -260,5 +274,62 @@ it.live("refuses a worktree path it can't pass on", () =>
         reason: "the worker environment reported an unusable worktree path",
       });
     assert.isFalse(requests.some((request) => request.method === "POST"));
+  }).pipe(Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer)), Effect.scoped),
+);
+
+it.live("commits a local worker's edits as Kin, once, and publishes them as one draft PR", () =>
+  Effect.gen(function* () {
+    const { publish, remoteBranch, requests, log, tree, git } = yield* fixture(
+      { "README.md": "# Acme app\n", "src/new.ts": "export {};\n" },
+      { local: true },
+    );
+    const first = yield* publish();
+    assert.strictEqual(yield* remoteBranch, first.sha);
+    assert.strictEqual(
+      yield* log("%an <%ae> %s"),
+      "Kin <kin@users.noreply.github.com> Kin worker changes",
+    );
+    assert.strictEqual(yield* git(tree, "status", "--porcelain"), "");
+    // Nothing new to commit the second time: the same commit and the same PR.
+    assert.deepStrictEqual(yield* publish(), first);
+    assert.strictEqual((yield* log("%H")).split("\n").length, 1);
+    assert.lengthOf(
+      requests.filter((request) => request.method === "POST"),
+      1,
+    );
+  }).pipe(Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer)), Effect.scoped),
+);
+
+it.live("refuses a local worker's .github edit after committing it, and pushes nothing", () =>
+  Effect.gen(function* () {
+    const { publish, remoteBranch, requests } = yield* fixture(
+      { "src/fix.ts": "export {};\n" },
+      {
+        local: true,
+        changes: [{ kind: "file", path: ".github/workflows/leak.yml", text: "on: push\n" }],
+      },
+    );
+    assert.include(yield* Effect.flip(publish()), {
+      reason: "kin/worker/wk-1 changes .github/, which Kin never publishes",
+    });
+    assert.strictEqual(yield* remoteBranch, "");
+    assert.isFalse(requests.some((request) => request.method === "POST"));
+  }).pipe(Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer)), Effect.scoped),
+);
+
+it.live("refuses a local publish from anywhere but one of the project's own worktrees", () =>
+  Effect.gen(function* () {
+    const { publish, requests, root, worker, tree, git } = yield* fixture(
+      { "src/fix.ts": "export {};\n" },
+      { local: true },
+    );
+    // Another checkout on the same branch name, which the project never made.
+    yield* git(root, "clone", "--quiet", worker, `${root}/elsewhere`);
+    yield* git(`${root}/elsewhere`, "switch", "--quiet", "-c", Publish.publishBranch(workerId));
+    for (const path of [`${root}/elsewhere`, worker, `${tree}/src`, `${root}/missing`])
+      assert.include(yield* Effect.flip(publish(path)), {
+        reason: "the worktree isn't one of the project's own",
+      });
+    assert.lengthOf(requests, 0);
   }).pipe(Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer)), Effect.scoped),
 );
