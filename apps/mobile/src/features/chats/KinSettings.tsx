@@ -103,7 +103,7 @@ export function KinSettings() {
     );
   const signOut = (environment: EnvironmentPresentation) =>
     Dialog.alert(
-      `Sign out of ${environment.label}?`,
+      owned.length === 1 ? "Sign out of your Kin?" : `Sign out of ${environment.label}?`,
       "This phone forgets the connection and the chats it holds. To come back, connect it again from the computer that runs your Kin.",
       [
         { text: "Cancel", style: "cancel" },

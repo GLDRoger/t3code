@@ -55,7 +55,7 @@ import {
   workspaceLocationFromState,
 } from "./Stack";
 import { KIN_ONLY } from "./lib/kinOnly";
-import { kinOnlyLinkState } from "./lib/kinOnlyRoutes";
+import { isHomeLinkState, kinOnlyLinkState } from "./lib/kinOnlyRoutes";
 import { appAtomRegistry } from "./state/atom-registry";
 import { subscribeComposerDraftModelReconciliation } from "./state/use-composer-drafts";
 import { environmentThreadShells, threadEnvironment } from "./state/threads";
@@ -157,6 +157,10 @@ const appLinking = {
     state: Parameters<typeof getActionFromState>[0],
     options: Parameters<typeof getActionFromState>[1],
   ): ReturnType<typeof getActionFromState> =>
+    // In a Kin-only app a link that isn't for a Kin screen lands on the chat list, as the root.
+    (KIN_ONLY && isHomeLinkState(state)
+      ? CommonActions.reset({ index: 0, routes: [{ name: "Home" }] })
+      : undefined) ??
     // Our router handles the selection; React Navigation's type only lists its own actions.
     (workspaceDetailLinkAction(state) as ReturnType<typeof getActionFromState>) ??
     pairingFormLinkAction(

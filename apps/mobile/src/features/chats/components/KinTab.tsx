@@ -9,10 +9,12 @@ export function useKinTab() {
   return use(KinTabContext);
 }
 
-/** A list's bar as a tab: no Back, and search as a button in the bar, since the dock has the foot. */
+/** A list's bar as a tab: no Back, and search under the title, since the dock has the foot. */
 export function kinTabBar(
   tab: { readonly bottomClearance: number } | null,
   bar: { readonly onBack: () => void; readonly search: AppBarSearch },
 ): { readonly onBack?: () => void; readonly search: AppBarSearch } {
-  return tab === null ? bar : { search: { ...bar.search, compactToolbar: false, mode: "inline" } };
+  return tab === null
+    ? bar
+    : { search: { ...bar.search, compactToolbar: false, placement: "top" } };
 }

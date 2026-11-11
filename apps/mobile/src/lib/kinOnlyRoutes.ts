@@ -67,6 +67,14 @@ export function kinOnlyLinkState(
 }
 
 /**
+ * Whether a link's state is Home alone. Navigating there would push a second Home over whatever
+ * is open, so the app resets to it instead.
+ */
+export function isHomeLinkState(state: LinkState | undefined): boolean {
+  return state?.routes.length === 1 && state.routes[0]?.name === "Home";
+}
+
+/**
  * The address a coding thread has in the web app of the computer this phone is paired with, or
  * null when that computer has no address a browser can open (a relay or tunnel connection).
  */

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  isHomeLinkState,
   kinOnlyLinkState,
   kinOnlyRouteNames,
   kinOnlyScreens,
@@ -36,6 +37,12 @@ describe("kinOnlyLinkState", () => {
 
   it("opens the chat list for a link nothing could parse", () => {
     expect(kinOnlyLinkState(undefined, allowed)).toEqual(home);
+  });
+
+  it("marks a redirected link as Home alone, which resets the stack instead of pushing", () => {
+    expect(isHomeLinkState(kinOnlyLinkState({ routes: [{ name: "Thread" }] }, allowed))).toBe(true);
+    expect(isHomeLinkState({ routes: [{ name: "Home" }, { name: "KinChat" }] })).toBe(false);
+    expect(isHomeLinkState(undefined)).toBe(false);
   });
 
   it.each([
