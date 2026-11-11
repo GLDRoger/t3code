@@ -120,8 +120,14 @@ const memoryPullRequestSweep = Effect.fn("KinMemoryPullRequests.sweepDue")(funct
   });
 });
 
-/** The writer's fsck and remote sync, off the reply path: at start, then every five minutes. */
-const memorySync = Effect.fn("KinMemory.syncDue")(function* (memory: Memory.Memory["Service"]) {
+/**
+ * The writer's fsck and remote sync, off the reply path: at start, then every five minutes. Each
+ * sync then ends who may know whatever the default branch now holds retired, GitHub merges too.
+ */
+const memorySync = Effect.fn("KinMemory.syncDue")(function* (
+  memory: Memory.Memory["Service"],
+  writer: Option.Option<Writer.MemoryWriter["Service"]>,
+) {
   const { repositories } = yield* MemoryConfig.MemoryConfig;
   let due = 0;
   return Effect.gen(function* () {
@@ -137,6 +143,18 @@ const memorySync = Effect.fn("KinMemory.syncDue")(function* (memory: Memory.Memo
               orgId,
               cause: Cause.pretty(cause),
             }),
+          ),
+          Effect.andThen(
+            Option.isNone(writer)
+              ? Effect.void
+              : writer.value.reconcileSharing(orgId).pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning("Kin could not reconcile retired memory's sharing", {
+                      orgId,
+                      cause: Cause.pretty(cause),
+                    }),
+                  ),
+                ),
           ),
         ),
       { discard: true },
@@ -165,7 +183,7 @@ const runner = Layer.effectDiscard(
       const context = yield* Layer.build(routineRuntime);
       yield* Context.get(context, Scheduler.Scheduler).register(
         "kin-memory-sync",
-        yield* memorySync(memory),
+        yield* memorySync(memory, writer),
       );
       if (Option.isSome(lander))
         yield* Context.get(context, Scheduler.Scheduler).register(

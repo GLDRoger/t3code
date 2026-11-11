@@ -61,6 +61,46 @@ export const onPersonJoined = Effect.fn("KinChatSharing.onPersonJoined")(functio
 });
 
 /**
+ * In the transaction that removes `personId` from the org: every event that is theirs (their
+ * message, tap or reaction, work done for them, or anything in their own chat with a lead) stops.
+ * Running turns holding one are aborted, as a join aborts them, and the events expire rather than
+ * requeue. Returns the turns the caller stops after commit and the leads whose queue changed.
+ */
+export const onPersonRemoved = Effect.fn("KinChatSharing.onPersonRemoved")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly personId: string;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const now = yield* Clock.currentTimeMillis;
+  const theirs = sql`(
+    (json_extract(e.json, '$.provenance._tag') = 'human'
+      AND json_extract(e.json, '$.provenance.personId') = ${input.personId})
+    OR json_extract(e.json, '$.origin.personId') = ${input.personId}
+    OR EXISTS (SELECT 1 FROM kin_messages m WHERE m.org_id = e.org_id
+      AND e.tag IN ('chat.message', 'widget.action')
+      AND m.message_id = json_extract(e.json, '$.messageId') AND m.author_kind = 'human'
+      AND m.author_person_id = ${input.personId})
+    OR EXISTS (SELECT 1 FROM kin_chats c JOIN kin_chat_members cm ON cm.org_id = c.org_id
+      AND cm.chat_id = c.chat_id
+      WHERE c.org_id = e.org_id AND c.kind = 'direct' AND cm.principal_kind = 'person'
+        AND cm.person_id = ${input.personId} AND c.chat_id = json_extract(e.json, '$.chatId')))`;
+  const turns = yield* sql<{ agentId: KinAgentId; wakeupId: string }>`
+    UPDATE kin_wakeups AS w SET aborted_at = ${now}, shared_since = COALESCE(shared_since, ${now})
+    WHERE w.org_id = ${input.orgId} AND w.status = 'running' AND w.aborted_at IS NULL
+      AND w.settled_at IS NULL
+      AND EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = w.org_id
+        AND e.agent_id = w.agent_id AND e.wakeup_id = w.wakeup_id AND ${theirs})
+    RETURNING agent_id AS "agentId", wakeup_id AS "wakeupId"`;
+  // Claimed by a turn just aborted, too: its finish requeues what it held, and these never run.
+  const expired = yield* sql<{ agentId: KinAgentId }>`UPDATE kin_events AS e SET state = 'expired'
+    WHERE e.org_id = ${input.orgId} AND ${theirs} AND (e.state = 'queued'
+      OR (e.state = 'claimed' AND EXISTS (SELECT 1 FROM kin_wakeups w
+        WHERE w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id AND w.aborted_at IS NOT NULL)))
+    RETURNING agent_id AS "agentId"`;
+  return { turns, expired };
+});
+
+/**
  * Where a worker's report and card go: its own chat, or its lead's owner chat once that chat was
  * shared after an owner-only turn gave it the work, or a join raised its floor above where the
  * work began (`moved`). From stored rows only.

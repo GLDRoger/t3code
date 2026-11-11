@@ -10,6 +10,7 @@ import {
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
 import { unified } from "unified";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
@@ -23,6 +24,7 @@ import * as Hub from "../chat/KinChatHub.ts";
 import * as Repo from "../chat/KinChatRepository.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as Cache from "../memory/MemoryCache.ts";
+import { authorise, fingerprint } from "../memory/sensitivity.ts";
 import * as Persistence from "../persistence/KinPersistence.ts";
 import * as Pings from "./pings.ts";
 
@@ -70,6 +72,8 @@ function layer(
   ) => Effect.Effect<MemoryItemHead, Memory.MemoryNotFound | Memory.MemoryDuplicateId> = () =>
     Effect.succeed(head),
   hubLayer = Hub.layer,
+  // Whether the owner let the team know every item read: a chase quotes one where others read.
+  teamKnows = true,
 ) {
   const dependencies = Chat.layer.pipe(
     Layer.provideMerge(hubLayer),
@@ -91,7 +95,13 @@ function layer(
                   "None",
                 );
                 const current = yield* readHead(id);
-                return { head: { ...current, id }, body: "" };
+                const item = { head: { ...current, id }, body: "" };
+                if (teamKnows)
+                  yield* authorise(orgId, id, fingerprint(item), "owner_setting").pipe(
+                    Effect.provideService(SqlClient.SqlClient, sql),
+                    Effect.orDie,
+                  );
+                return item;
               }),
             query: () =>
               Effect.gen(function* () {
@@ -116,6 +126,7 @@ function layer(
         }),
       ).pipe(Layer.provide(dependencies)),
     ),
+    Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_TEAM_MEMORY: "on" }))),
   );
 }
 const seed = Effect.gen(function* () {
@@ -172,6 +183,25 @@ describe("KinPings", () => {
         ),
       );
     }),
+  );
+
+  // Review 14: a chase quoted a memory item's words into a chat other people read.
+  it.effect("chases where others read only with an item the team may know, else stops it", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const pings = yield* Pings.KinPings;
+      const sql = yield* SqlClient.SqlClient;
+      yield* TestClock.setTime(Date.parse("2026-11-01T15:00:00Z"));
+      yield* pings.put(request);
+      yield* pings.sweep(orgId);
+      assert.lengthOf(
+        yield* sql`SELECT message_id FROM kin_messages WHERE org_id = ${orgId} ORDER BY seq`,
+        0,
+      );
+      const [row] = yield* sql<{ stopped: number | null }>`SELECT stopped_at AS stopped
+        FROM kin_ping_items WHERE org_id = ${orgId} AND item_id = 'item'`;
+      assert.isNotNull(row?.stopped ?? null);
+    }).pipe(Effect.provide(layer(undefined, undefined, undefined, false))),
   );
 
   it.effect("answers only the recipient and only a reply to a multi-item ping", () =>

@@ -16,6 +16,7 @@ import * as HttpServer from "effect/http/HttpServer";
 import type { SessionStore } from "../../auth/SessionStore.ts";
 import * as ServerConfig from "../../config.ts";
 import { layerKinAuthTest, pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import * as Hub from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import { KinIdentity, KinIdentityConfig } from "../chat/KinIdentity.ts";
 import { KinServer, type Services } from "../KinServer.ts";
@@ -33,6 +34,7 @@ const identities = KinIdentity.layer.pipe(
   Layer.provideMerge(Repository.layer),
 );
 const layer = People.layer.pipe(
+  Layer.provideMerge(Hub.layer),
   Layer.provideMerge(identities),
   Layer.provideMerge(layerKinAuthTest("kin-people-http-")),
 );
@@ -54,7 +56,13 @@ it.effect(
         people
           .createInvite(ownerSession, { orgId: identity.owner.orgId, displayName: "Suraj" })
           .pipe(Effect.map((created) => JSON.stringify({ secret: created.secret })));
-      const context = yield* Effect.context<SqlClient.SqlClient | KinIdentity | SessionStore>();
+      const context = yield* Effect.context<
+        | SqlClient.SqlClient
+        | KinIdentity
+        | SessionStore
+        | Repository.KinChatRepository
+        | Hub.KinChatHub
+      >();
       // Route handlers read their services per request, from the context the server passes in.
       const routeContext = yield* Layer.build(
         Layer.mergeAll(
