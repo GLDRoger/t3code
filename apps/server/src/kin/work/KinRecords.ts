@@ -46,6 +46,7 @@ import {
 import {
   byId,
   byKey,
+  effectivelySensitive,
   type FieldChange,
   type Principal,
   isClosed,
@@ -773,6 +774,29 @@ const make = Effect.gen(function* () {
           changes,
           now,
         );
+        // Only a person lowers what is sensitive: any other write that would, labels the entry
+        // instead, as Kin's own change. What inherits through it then stays sensitive too.
+        if (
+          writer.actor._tag !== "person" &&
+          (row.sensitive === 1 || row.inheritedSensitive === 1) &&
+          (yield* effectivelySensitive(orgId, row.recordId).pipe(provideSql)) === false
+        ) {
+          yield* sql`UPDATE kin_records SET sensitive = 1, rev = ${rev + 1}, updated_at = ${now}
+            WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
+          yield* logChange(
+            orgId,
+            {
+              actor: { _tag: "system" },
+              via: writer.via,
+              ...(writer.wakeupId === undefined ? {} : { wakeupId: writer.wakeupId }),
+              ...(writer.chatId === undefined ? {} : { chatId: writer.chatId }),
+            },
+            { recordId: row.recordId, key: row.key, rev: rev + 1 },
+            "updated",
+            [{ field: "sensitive", from: "false", to: "true" }],
+            now,
+          );
+        }
         if (reassigned !== undefined)
           yield* wakeLead(orgId, writer, row, reassigned, writer.askedBy ?? null, seq, now);
         if (reopened)

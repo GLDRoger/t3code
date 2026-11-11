@@ -28,8 +28,24 @@ import { resolveLead } from "../lead/LeadMemory.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import { partyPage, projectDetail } from "./crm.ts";
 import { type GroupBy, KinRecords, type Patch, type Writer } from "./KinRecords.ts";
-import { fieldList, fieldText, LISTS, type ListName, listOf, parseFields } from "./lists.ts";
-import { endOfDay, iso, notFound, ownerZone, type RecordRow, toRecord } from "./recordRows.ts";
+import {
+  fieldList,
+  fieldText,
+  LISTS,
+  type ListName,
+  listOf,
+  parseFields,
+  sensitiveFields,
+} from "./lists.ts";
+import {
+  endOfDay,
+  iso,
+  notFound,
+  ownerZone,
+  type RecordRow,
+  sensitiveNow,
+  toRecord,
+} from "./recordRows.ts";
 
 /** The lead tools' inputs, results and the one call each makes. Model-facing text lives in `mcp/tools.ts`. */
 
@@ -82,6 +98,11 @@ export const QueryInput = Schema.Struct({
     Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(50)),
   ),
 });
+/** The entry is sensitive, its own label or inherited; these fields are, whatever the label. */
+const Marks = Schema.Struct({
+  sensitive: Schema.optional(Schema.Literal(true)),
+  sensitiveFields: Schema.optional(Schema.Array(Schema.String)),
+});
 const Row = Schema.Struct({
   key: Schema.String,
   title: Schema.String,
@@ -104,7 +125,7 @@ const Row = Schema.Struct({
   phone: Schema.optional(Schema.String),
   terms: Schema.optional(Schema.String),
   repos: Schema.optional(Schema.Array(Schema.String)),
-  sensitive: Schema.optional(Schema.Literal(true)),
+  ...Marks.fields,
   rev: Schema.Number,
 });
 export const QueryResult = Schema.Struct({
@@ -113,7 +134,12 @@ export const QueryResult = Schema.Struct({
   records: Schema.Array(Row),
   groups: Schema.optional(
     Schema.Array(
-      Schema.Struct({ group: Schema.String, count: Schema.Number, late: Schema.Number }),
+      Schema.Struct({
+        group: Schema.String,
+        count: Schema.Number,
+        late: Schema.Number,
+        sensitive: Schema.optional(Schema.Literal(true)),
+      }),
     ),
   ),
 });
@@ -126,7 +152,12 @@ export const GetResult = Schema.Struct({
     Schema.Struct({ kind: Schema.String, relation: Schema.String, target: Schema.String }),
   ),
   history: Schema.Array(
-    Schema.Struct({ at: Schema.String, by: Schema.String, change: Schema.String }),
+    Schema.Struct({
+      at: Schema.String,
+      by: Schema.String,
+      change: Schema.String,
+      sensitive: Schema.optional(Schema.Literal(true)),
+    }),
   ),
   /** A client's: what each side owes, open, its contacts and its projects. */
   owed: Schema.optional(
@@ -144,6 +175,7 @@ export const GetResult = Schema.Struct({
         key: Schema.String,
         title: Schema.String,
         health: Schema.NullOr(Schema.String),
+        sensitive: Schema.optional(Schema.Literal(true)),
       }),
     ),
   ),
@@ -186,7 +218,12 @@ export const CreateInput = Schema.Struct({
 });
 export const CreateResult = Schema.Struct({
   records: Schema.Array(
-    Schema.Struct({ key: Schema.String, title: Schema.String, created: Schema.Boolean }),
+    Schema.Struct({
+      key: Schema.String,
+      title: Schema.String,
+      created: Schema.Boolean,
+      ...Marks.fields,
+    }),
   ),
 });
 export const UpdateInput = Schema.Struct({
@@ -218,6 +255,7 @@ export const UpdateResult = Schema.Struct({
   rev: Schema.Number,
   state: KinRecordState,
   changed: Schema.Array(Schema.String),
+  ...Marks.fields,
 });
 
 type Lead = Effect.Success<ReturnType<typeof resolveLead>>;
@@ -303,6 +341,14 @@ const namer = Effect.fn("KinWorkTools.namer")(function* (lead: Lead) {
         : (personNames.get(who.personId) ?? "a person");
 });
 
+const marksOf = (row: RecordRow): typeof Marks.Type => {
+  const fields = sensitiveFields(listOf(row.registerId));
+  return {
+    ...(row.sensitive === 1 || row.inheritedSensitive === 1 ? { sensitive: true as const } : {}),
+    ...(fields.length === 0 ? {} : { sensitiveFields: [...fields] }),
+  };
+};
+
 const rowFor = (
   name: (who: KinWorkPrincipal | null) => string | undefined,
   row: RecordRow,
@@ -345,7 +391,7 @@ const rowFor = (
     ...text("phone"),
     ...text("terms"),
     ...(repos.length === 0 ? {} : { repos: [...repos] }),
-    ...(record.sensitive || record.sensitiveInherited === true ? { sensitive: true as const } : {}),
+    ...marksOf(row),
     rev: record.rev,
   } as typeof Row.Type;
 };
@@ -483,15 +529,15 @@ const groupsFor = Effect.fn("KinWorkTools.groups")(function* (
   const titles =
     (by === "client" || by === "project") && ids.length > 0
       ? new Map(
-          (yield* sql<{ id: string; label: string }>`SELECT record_id AS id,
-              title || ' (' || key || ')' AS label
-            FROM kin_records WHERE org_id = ${lead.orgId} AND record_id IN ${sql.in(ids)}
-            ORDER BY record_id`).map((row) => [row.id, row.label]),
+          (yield* sql<{ id: string; label: string; sensitive: number }>`SELECT r.record_id AS id,
+              r.title || ' (' || r.key || ')' AS label, ${sensitiveNow(sql)} AS sensitive
+            FROM kin_records r WHERE r.org_id = ${lead.orgId} AND r.record_id IN ${sql.in(ids)}
+            ORDER BY r.record_id`).map((row) => [row.id, row]),
         )
-      : new Map<string, string>();
+      : new Map<string, { readonly label: string; readonly sensitive: number }>();
   const label = (group: string | null) => {
     if (group === null) return "none";
-    if (by === "client" || by === "project") return titles.get(group) ?? "none";
+    if (by === "client" || by === "project") return titles.get(group)?.label ?? "none";
     if (by !== "owner") return group;
     const [kind, ...id] = group.split(":");
     const who: KinWorkPrincipal | null =
@@ -502,7 +548,14 @@ const groupsFor = Effect.fn("KinWorkTools.groups")(function* (
           : null;
     return name(who) ?? "someone";
   };
-  return rows.map((row) => ({ group: label(row.group), count: row.count, late: row.late }));
+  return rows.map((row) => ({
+    group: label(row.group),
+    count: row.count,
+    late: row.late,
+    ...(row.group !== null && titles.get(row.group)?.sensitive === 1
+      ? { sensitive: true as const }
+      : {}),
+  }));
 });
 
 export const get = Effect.fn("KinWorkTools.get")(function* (
@@ -542,6 +595,7 @@ export const get = Effect.fn("KinWorkTools.get")(function* (
             key: one.key,
             title: one.name,
             health: one.health,
+            ...(one.sensitive || one.sensitiveInherited ? { sensitive: true as const } : {}),
           })),
         }),
     ...(project === undefined
@@ -569,6 +623,10 @@ export const get = Effect.fn("KinWorkTools.get")(function* (
         change.kind === "created"
           ? "created"
           : change.fields.map((field) => `${field.field}: ${field.to ?? "cleared"}`).join("; "),
+      ...(change.kind !== "created" &&
+      change.fields.some((field) => sensitiveFields(list).includes(field.field))
+        ? { sensitive: true as const }
+        : {}),
     })),
   };
 });
@@ -600,7 +658,13 @@ export const create = Effect.fn("KinWorkTools.create")(function* (
     const existing =
       list === "work" ? undefined : yield* sameNamed(lead, list, row.title, partyId ?? null);
     if (existing !== undefined) {
-      results.push({ key: existing.key, title: existing.title, created: false });
+      const found = yield* records.get(lead.orgId, existing.key);
+      results.push({
+        key: existing.key,
+        title: existing.title,
+        created: false,
+        ...(found === undefined ? {} : marksOf(found)),
+      });
       continue;
     }
     // The same row from the same event is the same entry: a retry, or a repeat in one call.
@@ -630,7 +694,7 @@ export const create = Effect.fn("KinWorkTools.create")(function* (
       confirmed: row.suggested !== true && writer.askedBy !== null,
       ...(source === undefined ? {} : { source }),
     });
-    results.push({ key: stored.key, title: stored.title, created });
+    results.push({ key: stored.key, title: stored.title, created, ...marksOf(stored) });
   }
   return { records: results };
 });
@@ -695,9 +759,16 @@ export const update = Effect.fn("KinWorkTools.update")(function* (
   const before = yield* records.get(lead.orgId, input.key);
   if (before === undefined) return yield* notFound(input.key);
   const after = yield* records.update(lead.orgId, writer, input.key, full, input.expectedRev);
+  // Kin's own change, a label kept on, follows the lead's in the same write.
   const changed =
     after.rev === before.rev
       ? []
-      : ((yield* records.detail(after, 1)).changes[0]?.fields.map((field) => field.field) ?? []);
-  return { key: after.key, rev: after.rev, state: after.state, changed };
+      : [
+          ...new Set(
+            (yield* records.detail(after, Math.min(after.rev - before.rev, 2))).changes
+              .toReversed()
+              .flatMap((change) => change.fields.map((field) => field.field)),
+          ),
+        ];
+  return { key: after.key, rev: after.rev, state: after.state, changed, ...marksOf(after) };
 });
