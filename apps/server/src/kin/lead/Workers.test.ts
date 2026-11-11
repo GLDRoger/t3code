@@ -11,6 +11,7 @@ import {
   KinAgentId,
   KinChatId,
   KinMemberId,
+  CommandId,
   KinEventId,
   KinMemoryItemId,
   KinOrgId,
@@ -3744,52 +3745,29 @@ const upgradedFromK058 = (sql: SqlClient.SqlClient) =>
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 59`;
     assert.deepStrictEqual(
       (yield* runKinMigrations()).map(([id]) => id),
-      [59, 60, 61, 62],
+      [59, 60, 61, 62, 63],
     );
   }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
 const attemptRows = (sql: SqlClient.SqlClient, workerId: KinWorkerId) =>
-  sql<{ sourceEventId: string | null; withdrawnAt: number | null }>`SELECT
-      source_event_id AS "sourceEventId", withdrawn_at AS "withdrawnAt"
+  sql<{ sourceEventId: string | null; withdrawnAt: number | null; legacy: number }>`SELECT
+      source_event_id AS "sourceEventId", withdrawn_at AS "withdrawnAt", legacy
     FROM kin_worker_attempts WHERE worker_id = ${workerId} ORDER BY started_at`;
 
 it.effect.each([
-  ["on this server", true, "tracked"],
-  ["in the worker environment", false, "tracked"],
-  ["on this server, begun before Kin tracked attempts", true, "legacy"],
-  ["in the worker environment, begun before Kin tracked attempts", false, "legacy"],
-  ["on this server, followed up in this turn before Kin tracked attempts", true, "followed up"],
-  [
-    "in the worker environment, followed up in this turn before Kin tracked attempts",
-    false,
-    "followed up",
-  ],
+  ["on this server", true],
+  ["in the worker environment", false],
 ] as const)(
   "work the owner withdrew is never started again %s from the owner's message that asked for it",
-  ([, onHost, era]) =>
+  ([, onHost]) =>
     run(({ ctx, remote, local, workers, tracker }) =>
       Effect.gen(function* () {
         if (onHost) yield* goLocal(ctx, remote);
         const launches = () =>
           onHost ? local.launches.length : remote.tools("t3_thread_launch").length;
         const first = yield* workers.delegate(scope, delegateInput);
-        // Delegated in an earlier turn; this turn's follow-up began the attempt now running.
-        if (era === "followed up") {
-          yield* ctx.sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at,
-              ended_at, status, event_ids)
-            VALUES ('earlier', ${ctx.orgId}, ${leadId}, 'test', -10, -5, 'completed', '[]')`;
-          yield* ctx.sql`UPDATE kin_workers SET wakeup_id = 'earlier'
-            WHERE worker_id = ${first.workerId}`;
-        }
-        if (era !== "tracked") yield* upgradedFromK058(ctx.sql);
         const entry = yield* entryOf(ctx);
         yield* ownerSets(ctx, entry.key, "done");
         yield* settled(tracker, ctx.orgId, first.workerId);
-        // An upgraded worker's withdrawal names no event: nothing recorded one.
-        if (era !== "tracked")
-          assert.deepStrictEqual(
-            (yield* attemptRows(ctx.sql, first.workerId)).map((row) => row.sourceEventId),
-            [null],
-          );
         // The same turn asks again from the same message, under another title and no entry.
         assert.include(
           yield* Effect.flip(workers.delegate(scope, { ...delegateInput, title: "Again" })),
@@ -3835,34 +3813,205 @@ it.effect.each([
           body: "Actually, do it after all",
           clientMessageId: "fresh",
         });
-        const freshEvent = yield* sameWakeup(ctx, "fresh-event", { messageId: fresh.messageId });
-        const freshAsk = workers.delegate(scope, {
+        yield* sameWakeup(ctx, "fresh-event", { messageId: fresh.messageId });
+        yield* workers.delegate(scope, {
           ...delegateInput,
           title: "Fresh ask",
           sourceEventId: "fresh-event",
         });
-        if (era === "tracked") {
-          yield* freshAsk;
-          assert.strictEqual(launches(), 2);
-          return;
+        assert.strictEqual(launches(), 2);
+      }),
+    ),
+);
+
+/** The turn dies and recovery requeues its events, which a later wake-up of the lead claims. */
+const reclaimedBy = (ctx: Effect.Success<ReturnType<typeof setup>>, wakeupId: string) =>
+  Effect.gen(function* () {
+    const [dead] = yield* ctx.sql<{ runId: RunId }>`SELECT run_id AS "runId" FROM kin_wakeups
+      WHERE wakeup_id = 'wake'`;
+    yield* (yield* OrchestratorV2).dispatch({
+      type: "run.interrupt",
+      commandId: CommandId.make("interrupt:wake"),
+      threadId: leadThread,
+      runId: dead!.runId,
+    });
+    yield* Context.get(ctx.services, KinEventQueue).requeueUnfinished(
+      ctx.orgId,
+      KinWakeupId.make("wake"),
+    );
+    const run = yield* startWakeupRun(leadThread, wakeupId);
+    yield* ctx.sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model,
+        started_at, status, event_ids)
+      VALUES (${wakeupId}, ${ctx.orgId}, ${leadId}, ${leadThread}, ${run.id}, 'test', 1, 'running',
+        '[]')`;
+    yield* ctx.sql`UPDATE kin_events SET state = 'claimed', wakeup_id = ${wakeupId}
+      WHERE org_id = ${ctx.orgId} AND state = 'queued'`;
+    const turn = { orgId: ctx.orgId, agentId: leadId, wakeupId };
+    yield* recordAudience(turn, yield* turnAudience(turn));
+  });
+const theEntry = Effect.fn("WorkersTest.theEntry")(function* (
+  ctx: Effect.Success<ReturnType<typeof setup>>,
+  title: string,
+) {
+  const { rows } = yield* Context.get(ctx.services, KinRecords).query(ctx.orgId, {});
+  return rows.find((row) => row.title === title)!;
+});
+
+it.effect.each([
+  ["on this server, tracked", true, "tracked"],
+  ["in the worker environment, tracked", false, "tracked"],
+  ["on this server, begun before Kin tracked attempts", true, "legacy"],
+  ["in the worker environment, begun before Kin tracked attempts", false, "legacy"],
+] as const)(
+  "withdrawn work's event, requeued and claimed by a later wake-up, starts nothing again %s",
+  ([, onHost, era]) =>
+    run(({ ctx, remote, local, workers, tracker }) =>
+      Effect.gen(function* () {
+        if (onHost) yield* goLocal(ctx, remote);
+        const launches = () =>
+          onHost ? local.launches.length : remote.tools("t3_thread_launch").length;
+        const first = yield* workers.delegate(scope, delegateInput);
+        // Other work from the same message, which the owner leaves alone.
+        const other = yield* workers.delegate(scope, { ...delegateInput, title: "Other work" });
+        // The owner's message, a reaction and a card tap on it, and an assignment, all received
+        // before the withdrawal.
+        yield* sameWakeup(ctx, "reaction-event", { _tag: "chat.reaction", emoji: "👍" });
+        yield* sameWakeup(ctx, "tap-event", { _tag: "widget.action", actionId: "approve" });
+        const assignedEntry = yield* owned(ctx, (people) =>
+          OwnerWork.create(people, {
+            orgId: ctx.orgId,
+            title: "Invented assigned task",
+            clientRequestId: "assigned",
+            owner: { _tag: "agent", agentId: leadId },
+          }),
+        );
+        const assigned = yield* claim(ctx.sql, { tag: "record.changed", reason: "assigned" });
+        if (era === "legacy") {
+          yield* upgradedFromK058(ctx.sql);
+          assert.deepStrictEqual(yield* attemptRows(ctx.sql, first.workerId), [
+            { sourceEventId: null, withdrawnAt: null, legacy: 1 },
+          ]);
         }
-        // Without the event, the whole wake-up that began the work counts as withdrawn.
-        assert.include(yield* Effect.flip(freshAsk), {
-          reason: "not_allowed",
-          message: WORK_NOT_YOURS,
+        yield* TestClock.adjust("10 millis");
+        yield* ownerSets(ctx, (yield* theEntry(ctx, delegateInput.title)).key, "done");
+        yield* settled(tracker, ctx.orgId, first.workerId);
+        yield* reclaimedBy(ctx, "wake-2");
+        const refused = <A, E, R>(call: Effect.Effect<A, E, R>) =>
+          Effect.flip(call).pipe(
+            Effect.map((error) =>
+              assert.include<object>(error as object, {
+                reason: "not_allowed",
+                message: WORK_NOT_YOURS,
+              }),
+            ),
+          );
+        yield* refused(workers.delegate(scope, { ...delegateInput, title: "Again" }));
+        yield* refused(
+          workers.delegate(scope, {
+            ...delegateInput,
+            title: "Once more",
+            sourceEventId: "reaction-event",
+          }),
+        );
+        yield* refused(
+          workers.delegate(scope, {
+            ...delegateInput,
+            title: "Tapped",
+            sourceEventId: "tap-event",
+          }),
+        );
+        if (!onHost)
+          yield* refused(
+            workers.followUp(scope, {
+              workerId: other.workerId,
+              brief: "Carry on.",
+              sourceEventId: "lead-event",
+            }),
+          );
+        assert.strictEqual(launches(), 2);
+        // The assignment names another entry: with the event, it is the owner's own; without, it was
+        // received before the withdrawal, and the owner gives it again.
+        const fromAssignment = workers.delegate(scope, {
+          ...delegateInput,
+          title: "Assigned work",
+          entry: assignedEntry.key,
+          sourceEventId: assigned,
         });
-        assert.strictEqual(launches(), 1);
-        // A turn the owner wakes after the withdrawal is not.
-        yield* ctx.sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at,
-            status, event_ids)
-          VALUES ('later', ${ctx.orgId}, ${leadId}, 'test', 1, 'completed', '[]')`;
-        assert.isFalse(
+        if (era === "tracked") yield* fromAssignment;
+        else yield* refused(fromAssignment);
+        // The owner's message received after the withdrawal is a fresh instruction.
+        const fresh = yield* Context.get(ctx.services, KinChatService).send(ctx.person, {
+          chatId: ctx.chat.chatId,
+          body: "Actually, do it after all",
+          clientMessageId: "fresh",
+        });
+        const [lead] = yield* ctx.sql<{ json: string }>`SELECT json FROM kin_events
+          WHERE event_id = 'lead-event'`;
+        const json = {
+          ...JSON.parse(lead!.json),
+          eventId: "fresh-event",
+          messageId: fresh.messageId,
+        };
+        yield* ctx.sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+            received_at, queued_at, state, wakeup_id)
+          VALUES ('fresh-event', ${ctx.orgId}, ${leadId}, 'chat.message', 'P0',
+            ${JSON.stringify(json)}, 20, 20, 'claimed', 'wake-2')`;
+        yield* workers.delegate(scope, {
+          ...delegateInput,
+          title: "Fresh ask",
+          sourceEventId: "fresh-event",
+        });
+        assert.strictEqual(launches(), era === "tracked" ? 4 : 3);
+        // An event Kin can't find was never shown to be received after the withdrawal.
+        assert.strictEqual(
           yield* eventWithdrawn({
             orgId: ctx.orgId,
             agentId: leadId,
-            wakeupId: "later",
-            event: { ...freshEvent, eventId: "later-event" } as unknown as KinEvent,
+            wakeupId: "wake-2",
+            event: { ...json, eventId: "never-stored" } as unknown as KinEvent,
           }),
+          era === "legacy",
+        );
+      }),
+    ),
+);
+
+it.effect.each([
+  ["on this server", true],
+  ["in the worker environment", false],
+] as const)(
+  "a retry in a later wake-up, of work begun from the event before a legacy withdrawal, starts nothing %s",
+  ([, onHost]) =>
+    run(({ ctx, remote, local, workers, tracker }) =>
+      Effect.gen(function* () {
+        if (onHost) yield* goLocal(ctx, remote);
+        const first = yield* workers.delegate(scope, delegateInput);
+        yield* upgradedFromK058(ctx.sql);
+        yield* reclaimedBy(ctx, "wake-2");
+        // The later wake-up delegates from the requeued event before the owner withdraws anything.
+        const retryInput = { ...delegateInput, title: "Second" };
+        const second = yield* workers.delegate(scope, retryInput);
+        if (onHost) yield* local.finish(localThreadId(second.workerId), "failed");
+        else
+          yield* remote.finish(
+            ThreadId.make((yield* workerRow(ctx.sql, ctx.orgId, second.workerId)).threadId),
+            "failed",
+          );
+        yield* settled(tracker, ctx.orgId, second.workerId);
+        assert.strictEqual(
+          (yield* workerRow(ctx.sql, ctx.orgId, second.workerId)).status,
+          "failed",
+        );
+        yield* TestClock.adjust("10 millis");
+        yield* ownerSets(ctx, (yield* theEntry(ctx, delegateInput.title)).key, "done");
+        yield* settled(tracker, ctx.orgId, first.workerId);
+        assert.include(yield* Effect.flip(workers.delegate(scope, retryInput)), {
+          reason: "not_allowed",
+          message: WORK_NOT_YOURS,
+        });
+        assert.strictEqual(
+          (yield* workerRow(ctx.sql, ctx.orgId, second.workerId)).status,
+          "failed",
         );
       }),
     ),
@@ -4275,23 +4424,21 @@ it.effect.each([
 );
 
 it.effect(
-  "a worker begun before Kin tracked attempts, finishing on a public repository, waits for the owner",
+  "a worker begun before Kin tracked attempts waits for the owner to publish, even on a private repository",
   () =>
     run(({ ctx, remote, workers, tracker }) =>
       Effect.gen(function* () {
-        remote.state.visibility = "public";
         const { workerId } = yield* workers.delegate(scope, delegateInput);
         yield* upgradedFromK058(ctx.sql);
-        assert.lengthOf(yield* attemptRows(ctx.sql, workerId), 0);
+        // The upgrade gives it a legacy attempt, which can't show what started it.
+        assert.deepStrictEqual(yield* attemptRows(ctx.sql, workerId), [
+          { sourceEventId: null, withdrawnAt: null, legacy: 1 },
+        ]);
         yield* finishRemote(ctx, remote, workerId);
         yield* settled(tracker, ctx.orgId, workerId);
-        // Its row is made as it publishes, and what it never recorded publishes nothing.
-        assert.deepStrictEqual(yield* attemptRows(ctx.sql, workerId), [
-          { sourceEventId: null, withdrawnAt: null },
-        ]);
         assert.deepStrictEqual(remote.writes, []);
         const [card] = yield* publishCards(ctx.sql);
-        assert.deepStrictEqual(card!.state.why, ["public_repository"]);
+        assert.deepStrictEqual(card!.state.why, ["sensitive_work"]);
         yield* tapCard(ctx, card!, "publish");
         yield* settled(tracker, ctx.orgId, workerId);
         assert.deepStrictEqual(remote.writes, ["push", "pull_request"]);
