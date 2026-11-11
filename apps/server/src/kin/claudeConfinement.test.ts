@@ -97,9 +97,9 @@ it.effect("a Kin session's file tools reach only its real checkout", () =>
         [lead, "Read", { file_path: 5 }, false],
         [lead, "Read", {}, false],
         [lead, "Read", "notes.md", false],
-        [lead, "Grep", { pattern: "token" }, true],
+        [lead, "Grep", { pattern: "token" }, false, "the root holds links out"],
         [lead, "Grep", { pattern: "token", path: "sub", glob: "**/*.md" }, true],
-        [lead, "Grep", { pattern: "token", path: root, output_mode: "content" }, true],
+        [lead, "Grep", { pattern: "token", path: root, output_mode: "content" }, false],
         ...refusedPaths.map(
           (searched) => [lead, "Grep", { pattern: "token", path: searched }, false] as const,
         ),
@@ -114,7 +114,7 @@ it.effect("a Kin session's file tools reach only its real checkout", () =>
         [lead, "Grep", { pattern: "token", glob: ".git/**" }, false],
         [lead, "Grep", { pattern: "token", glob: "**/.git/config" }, false],
         [lead, "Grep", { pattern: "token", path: 7 }, false],
-        [lead, "Glob", { pattern: "**/*.md" }, true],
+        [lead, "Glob", { pattern: "**/*.md" }, false, "the root holds links out"],
         [lead, "Glob", { pattern: "*.md", path: "sub" }, true],
         ...refusedPaths.map(
           (searched) => [lead, "Glob", { pattern: "**/*", path: searched }, false] as const,

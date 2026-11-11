@@ -19,6 +19,9 @@ export interface FileScope {
 }
 
 const pathLimit = 4096;
+/** Entries a Grep or Glob tree may hold; a bigger one is refused, not searched unchecked. */
+const treeLimit = 1_000_000;
+const walkConcurrency = 64;
 const unsafeCharacters = /[\u0000-\u001f\u007f\\]/;
 // Attachment ids end in a random UUID or a content hash, so only a turn that was handed one names it.
 const attachmentName = new RegExp(
@@ -99,13 +102,52 @@ export const permits = Effect.fn("KinClaudeConfinement.permits")(function* (
       current = parent;
     }
   });
+  // Grep and Glob walk the whole tree they are given, so every link in it must stay in the root;
+  // read on each call, since a setup script can add links after the session starts.
+  const treeInside = Effect.fnUntraced(function* (top: string) {
+    let frontier = [top];
+    let seen = 0;
+    while (frontier.length > 0) {
+      const listed = yield* Effect.forEach(
+        frontier,
+        (directory) =>
+          fs.readDirectoryEntries(directory).pipe(
+            Effect.map((entries) => entries.map((entry) => ({ entry, directory }))),
+            Effect.orElseSucceed(() => undefined),
+          ),
+        { concurrency: walkConcurrency },
+      );
+      if (listed.some((entries) => entries === undefined)) return false;
+      const entries = listed.flatMap((each) => each ?? []);
+      seen += entries.length;
+      if (seen > treeLimit) return false;
+      const links = entries.flatMap(({ entry, directory }) =>
+        entry.type === "SymbolicLink" ? [path.join(directory, entry.name)] : [],
+      );
+      const resolved = yield* Effect.forEach(
+        links,
+        (link) => fs.realPath(link).pipe(Effect.orElseSucceed(() => undefined)),
+        { concurrency: walkConcurrency },
+      );
+      if (resolved.some((real) => real === undefined || !inside(root, real))) return false;
+      frontier = entries.flatMap(({ entry, directory }) =>
+        entry.type === "Directory" ? [path.join(directory, entry.name)] : [],
+      );
+    }
+    return true;
+  });
   for (const raw of targets.paths) {
     if (!safeText(raw) || raw.startsWith("~") || /^file:/i.test(raw)) return false;
     if (raw.split("/").includes("..")) return false;
     const lexical = path.resolve(root, raw);
     const real = yield* realTarget(lexical);
     if (real === undefined) return false;
-    if (inside(root, lexical) && inside(root, real)) continue;
+    if (inside(root, lexical) && inside(root, real)) {
+      if (tool !== "Grep" && tool !== "Glob") continue;
+      const info = yield* fs.stat(real).pipe(Effect.orElseSucceed(() => undefined));
+      if (info?.type !== "Directory" || (yield* treeInside(real))) continue;
+      return false;
+    }
     const attachment =
       tool === "Read" &&
       scope.attachments !== undefined &&
