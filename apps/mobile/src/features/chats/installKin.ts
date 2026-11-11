@@ -1,6 +1,20 @@
 import { installKinNotifications } from "./notifications/installKinNotifications";
+import { CommonActions } from "@react-navigation/native";
+
+import { rootNavigationRef, whenRootNavigationReady } from "../../lib/rootNavigation";
+import {
+  installKinAccessEnded,
+  installKinChatOnlyMemory,
+  installKinShellReset,
+  readKinAppShell,
+} from "./state/kinChatOnly";
 import { installKinStartList } from "./state/kinLastList";
 import { startKinOutbox } from "./state/kinOutboxDelivery";
+
+const resetToHome = () =>
+  whenRootNavigationReady(() =>
+    rootNavigationRef.dispatch(CommonActions.reset({ index: 0, routes: [{ name: "Home" }] })),
+  );
 
 /**
  * Kin's app services. Install before upstream's notification router: Kin reads the cold-start
@@ -15,9 +29,16 @@ export function installKin(navigate: (href: string) => void): () => void {
       navigated = true;
       navigate(href);
     }),
+    installKinChatOnlyMemory(),
+    installKinShellReset(resetToHome),
+    installKinAccessEnded(() => {
+      // Only a teammate's phone: with coding environments too, Home is not about this team.
+      if (readKinAppShell() === "chatOnly") resetToHome();
+    }),
     installKinStartList(
       () => navigate("/kin"),
-      () => !navigated,
+      // On a teammate's phone Home is already the Kin list.
+      () => !navigated && readKinAppShell() !== "chatOnly",
     ),
   ];
   return () => {

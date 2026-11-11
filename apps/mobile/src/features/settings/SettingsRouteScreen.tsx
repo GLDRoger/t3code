@@ -23,6 +23,8 @@ import { deriveProjectGroupLabel } from "@t3tools/client-runtime/state/project-g
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { hasCloudPublicConfig } from "../cloud/publicConfig";
+import { KinTeammateSettings } from "../chats/KinTeammateSettings";
+import { useKinAppShell } from "../chats/state/kinChatOnly";
 import { useAdaptiveWorkspaceLayout } from "../layout/adaptive-workspace-context";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
 import { SettingsRow } from "./components/SettingsRow";
@@ -35,6 +37,11 @@ import { filterSettingsSections } from "./settings-search";
 import { usePaneRole } from "../../components/ui/Pane";
 
 export function SettingsRouteScreen() {
+  // A teammate's session reaches none of the coding settings, so its phone gets its own short list.
+  return useKinAppShell() === "chatOnly" ? <KinTeammateSettings /> : <CodingSettingsRouteScreen />;
+}
+
+function CodingSettingsRouteScreen() {
   const list = useSettingsListPlacement();
   return <SettingsListScreen sidebar={list.sidebar} selected={list.selected} />;
 }

@@ -145,6 +145,14 @@ export function sessionGrantsScope(
   return parent !== undefined && session.scopes?.includes(parent) === true;
 }
 
+/** A teammate's session: it reaches Kin chats and none of the coding app. */
+export function sessionIsChatOnly(session: SessionGrantInput): boolean {
+  return (
+    sessionGrantsScope(session, AuthKinChatScope) &&
+    !sessionGrantsScope(session, AuthOrchestrationReadScope)
+  );
+}
+
 export function sessionHasLegacyPermissions(session: SessionGrantInput): boolean {
   const permissions = session.permissions;
   return (

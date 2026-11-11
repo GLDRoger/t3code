@@ -7,11 +7,9 @@ import type {
   AuthSessionState,
 } from "@t3tools/contracts";
 import {
-  AuthKinChatScope,
-  AuthOrchestrationReadScope,
   EnvironmentHttpCommonError,
   PRIMARY_LOCAL_ENVIRONMENT_ID,
-  sessionGrantsScope,
+  sessionIsChatOnly,
 } from "@t3tools/contracts";
 import type { EnvironmentHttpCommonError as EnvironmentHttpCommonErrorType } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -311,8 +309,7 @@ function isTransientBootstrapError(error: unknown): boolean {
 async function bootstrapServerAuth(urlCredential: string | null): Promise<ServerAuthGateState> {
   const currentSession = await fetchSessionState();
   if (currentSession.authenticated && !urlCredential) {
-    return sessionGrantsScope(currentSession, AuthKinChatScope) &&
-      !sessionGrantsScope(currentSession, AuthOrchestrationReadScope)
+    return sessionIsChatOnly(currentSession)
       ? { status: "authenticated", chatOnly: true }
       : { status: "authenticated" };
   }

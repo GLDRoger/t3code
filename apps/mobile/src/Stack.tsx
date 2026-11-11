@@ -20,7 +20,7 @@ import { AppText as Text } from "./components/ui/AppText";
 import { androidWorkspaceDestinationAnimation } from "./lib/android-workspace-navigation";
 import { getCompactBrandHeaderOptions } from "./features/layout/workspace/brand-header-options";
 import { WorkspaceConnectionStatusProvider } from "./features/home/WorkspaceConnectionTitle";
-import { WorkspaceRootScreen } from "./features/layout/workspace/WorkspaceRootScreen";
+import { AppHomeScreen } from "./features/layout/workspace/AppHomeScreen";
 import {
   recordHomeFocus,
   recordHomeTransitionEnd,
@@ -486,7 +486,7 @@ const RootStackConfig = createWorkspaceStackNavigator({
         }
       : {}),
     Home: createNativeStackScreen({
-      screen: WorkspaceRootScreen,
+      screen: AppHomeScreen,
       linking: "",
       listeners: {
         transitionStart: ({ data }) => recordHomeTransitionStart(data.closing),
