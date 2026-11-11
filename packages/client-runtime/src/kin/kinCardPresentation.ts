@@ -15,6 +15,7 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { kinHeldLine } from "./kinAgentRetire.ts";
 import { kinApprovalWidgetView, type KinApprovalWidgetView } from "./kinApprovalPresentation.ts";
 import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks.ts";
 import { kinSentences } from "./kinScreenState.ts";
@@ -86,6 +87,18 @@ const clamp = (text: string, max: number) => {
   return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : chars.join("");
 };
 
+const OPENS_THREAD = "Opens the thread";
+
+/** The task card in an app with no coding threads: nothing to open, and nothing said of one. */
+export function kinTaskCardWithoutThread(task: KinTaskCardView): KinTaskCardView {
+  return {
+    ...task,
+    open: null,
+    unknownEnvironment: false,
+    accessibilityLabel: task.accessibilityLabel.replace(` ${OPENS_THREAD}.`, ""),
+  };
+}
+
 function kinTaskCardView(
   state: KinTaskCardState,
   /** The environment hosting this chat. A local card must name it; only remote cards go elsewhere. */
@@ -115,7 +128,7 @@ function kinTaskCardView(
     detail,
     model,
     ...pullRequests.map((pr) => pr.label),
-    open === null ? null : "Opens the thread",
+    open === null ? null : OPENS_THREAD,
   ];
   return {
     title,
@@ -476,6 +489,37 @@ export function kinCardDraws(
 
 /** What a message's card draws. Anything this build can't read falls back to plain text. */
 export function kinCardView(
+  widget: KinWidget | undefined,
+  hostEnvironmentId: EnvironmentId,
+  isKnownEnvironment: (environmentId: EnvironmentId) => boolean,
+  /** The card's agent by name when it is retired: its reminders and schedules are on hold. */
+  heldFor: string | null = null,
+): KinCardView {
+  const view = kinLiveCardView(widget, hostEnvironmentId, isKnownEnvironment);
+  if (heldFor === null || view.kind !== "deferral" || !HELD_TYPES.has(widget?.type ?? ""))
+    return view;
+  const { deferral } = view;
+  if (deferral.phase === "closed" || deferral.actions.length === 0) return view;
+  // Nothing fires while its agent is retired, so no countdown and nothing to tap.
+  const lines = [
+    ...deferral.lines.filter((line) => !/^(Next run|Paused)\b/.test(line)),
+    kinHeldLine(heldFor),
+  ];
+  return {
+    kind: "deferral",
+    deferral: {
+      ...deferral,
+      lines,
+      countdown: null,
+      actions: [],
+      accessibilityLabel: kinSentences([`${deferral.eyebrow}: ${deferral.title}`, ...lines]),
+    },
+  };
+}
+
+const HELD_TYPES: ReadonlySet<string> = new Set(["deferral", "reminder", "scheduled_task"]);
+
+function kinLiveCardView(
   widget: KinWidget | undefined,
   hostEnvironmentId: EnvironmentId,
   isKnownEnvironment: (environmentId: EnvironmentId) => boolean,

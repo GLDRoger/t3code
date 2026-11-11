@@ -1,3 +1,4 @@
+import { KIN_RETIRED_LABEL } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_WORK_ASSIGN,
@@ -352,6 +353,9 @@ function KinWorkItem(
             <dd className="flex min-w-0 items-center gap-2">
               <KinAvatar avatar={view.owner.avatar} size="sm" />
               <span className="truncate text-foreground">{view.owner.name}</span>
+              {view.owner.retired ? (
+                <span className="shrink-0 text-xs text-muted-foreground">{KIN_RETIRED_LABEL}</span>
+              ) : null}
             </dd>
             <dt className="text-muted-foreground">Due</dt>
             <dd className="flex min-w-0 items-center gap-2 text-foreground">
@@ -844,7 +848,13 @@ function KinWorkLeadChat(
   },
 ) {
   const { environmentId, orgId } = props;
-  const result = useAtomValue(kinClient.leads({ environmentId, input: { orgId } }));
+  // The owner's list keeps a retired agent, whose chat is where it is restored.
+  const canRestore = useAtomValue(kinClient.leadRestore.permissionAtom(environmentId));
+  const result = useAtomValue(
+    canRestore
+      ? kinClient.agents({ environmentId, orgId })
+      : kinClient.leads({ environmentId, input: { orgId } }),
+  );
   const lead = Option.getOrNull(AsyncResult.value(result))?.leads.find(
     (held) => held.agentId === props.agentId,
   );

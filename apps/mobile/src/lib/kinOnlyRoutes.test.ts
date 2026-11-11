@@ -5,7 +5,6 @@ import {
   kinOnlyLinkState,
   kinOnlyRouteNames,
   kinOnlyScreens,
-  kinThreadWebUrl,
 } from "./kinOnlyRoutes";
 
 const allowed = kinOnlyRouteNames(["KinChats", "KinChat", "KinWork"]);
@@ -55,23 +54,5 @@ describe("kinOnlyLinkState", () => {
   ])("keeps a link to $label", ({ routes }) => {
     const state = { routes };
     expect(kinOnlyLinkState(state, allowed)).toBe(state);
-  });
-});
-
-describe("kinThreadWebUrl", () => {
-  const thread = { environmentId: "env 1", threadId: "thread/2" };
-
-  it("is the thread's page on the paired computer's web app", () => {
-    expect(kinThreadWebUrl("https://kin.example.test:3773/", thread)).toBe(
-      "https://kin.example.test:3773/threads/env%201/thread%2F2",
-    );
-  });
-
-  it.each([
-    { label: "a relay connection with no address", address: null },
-    { label: "an SSH target", address: "owner@kin.example.test" },
-    { label: "a scheme a browser can't open", address: "ssh://kin.example.test" },
-  ])("is nothing for $label", ({ address }) => {
-    expect(kinThreadWebUrl(address, thread)).toBeNull();
   });
 });

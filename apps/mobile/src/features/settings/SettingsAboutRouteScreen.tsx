@@ -9,6 +9,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AppText as Text } from "../../components/ui/AppText";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { useDeadlinePassed } from "../../lib/clock";
+import { KIN_ONLY } from "../../lib/kinOnly";
 import {
   type AppUpdateCheckState,
   isAppUpdateCheckAvailable,
@@ -120,8 +121,13 @@ function AppSettingsSection() {
 
   return (
     <SettingsSection title="App">
-      <SettingsRow icon="internaldrive" label="Client Storage" target="SettingsClientStorage" />
-      <SettingsRow icon="stethoscope" label="Diagnostics" target="SettingsDiagnostics" />
+      {/* Cache sizes and connection logs are for someone debugging the coding app. */}
+      {KIN_ONLY ? null : (
+        <>
+          <SettingsRow icon="internaldrive" label="Client Storage" target="SettingsClientStorage" />
+          <SettingsRow icon="stethoscope" label="Diagnostics" target="SettingsDiagnostics" />
+        </>
+      )}
       <SettingsRow
         icon="doc.on.doc"
         label="Open source licenses"

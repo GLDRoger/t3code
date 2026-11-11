@@ -1,9 +1,11 @@
-import { KinAgentId, KinMemberId } from "@t3tools/contracts";
+import { KinAgentId, KinMemberId, type KinChatMembersResult } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   kinApplyMention,
+  kinGroupMemberViews,
   kinGroupNameCheck,
+  kinMentionCandidates,
   kinMentionQuery,
   kinMentionsIn,
   type KinMentionCandidate,
@@ -58,6 +60,30 @@ describe("kin group mentions", () => {
     expect(named("@Growth lead and @Growth")).toEqual([growthLead.memberId, growth.memberId]);
     expect(named("@Growthish plans, me@Growth, @Tech leader")).toEqual([]);
     expect(named("no one named")).toEqual([]);
+  });
+
+  it("marks a retired agent in a group and stops offering its name", () => {
+    const member = (id: string, name: string) => ({
+      memberId: KinMemberId.make(`m-${id}`),
+      principal: { _tag: "agent", agentId: KinAgentId.make(id) },
+      role: "member",
+      leftAt: null,
+      displayName: name,
+    });
+    const group = {
+      chat: { leadAgentId: KinAgentId.make("tech") },
+      members: [member("tech", "Tech lead"), member("growth", "Growth")],
+    } as unknown as KinChatMembersResult;
+    const retired = new Set(["tech"]);
+    expect(
+      kinGroupMemberViews(group, null, retired).map((view) => [view.name, view.detail]),
+    ).toEqual([
+      ["Tech lead", "Retired"],
+      ["Growth", null],
+    ]);
+    expect(kinMentionCandidates(group.members, retired).map((held) => held.name)).toEqual([
+      "Growth",
+    ]);
   });
 
   it("holds back a name the host would refuse", () => {

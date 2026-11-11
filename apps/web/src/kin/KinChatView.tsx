@@ -34,6 +34,14 @@ import {
 } from "@t3tools/client-runtime/kin/kinInboxModel";
 import { KIN_INTRO_PROMPTS, kinIntroVisible } from "@t3tools/client-runtime/kin/kinIntro";
 import {
+  kinAgentGroups,
+  kinHeldCardAgent,
+  kinRetiredChatLine,
+  kinRetiredDirectAgentId,
+  kinRetiredGroupAnswerer,
+  kinRetiredGroupLine,
+} from "@t3tools/client-runtime/kin/kinAgentRetire";
+import {
   kinChatReadOnly,
   kinChatReadOnlyLine,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
@@ -117,6 +125,7 @@ import {
   kinPreviewKey,
   useKinComposerAttachments,
 } from "./KinComposerAttachments";
+import { KinRestoreAgent, type KinAgentTarget } from "./KinAgentRetire";
 import { kinClient } from "./kinClient";
 import { KinGroupSheet } from "./KinGroupSheet";
 import { kinProfileRequestAtom } from "./kinTeamForm";
@@ -145,6 +154,7 @@ import { useKinHostAt } from "./useKinHost";
 
 type ChatResult = AsyncResult.AsyncResult<KinSynced<KinChatState>, unknown> | null;
 type InboxResult = AsyncResult.AsyncResult<KinSynced<KinInboxState>, unknown> | null;
+const NO_RETIRED_AGENTS: ReadonlySet<string> = new Set();
 type LeadsResult = AsyncResult.AsyncResult<KinLeadsListResult, unknown> | null;
 const noLeadsAtom: Atom.Atom<LeadsResult> = Atom.make<LeadsResult>(null);
 type GroupResult = AsyncResult.AsyncResult<KinChatMembersResult, unknown> | null;
@@ -210,11 +220,15 @@ export function KinChatView(props: {
       ? inbox.value.value.chats.find((chat) => chat.chatId === chatId)
       : undefined;
   const ownedAgentId = summary === undefined ? null : kinOwnedLeadAgentId(summary, viewer.personId);
+  const canRestore = useAtomValue(kinClient.leadRestore.permissionAtom(props.environmentId));
   // A direct chat's lead has details to open: the viewer's own, or one they were let message.
+  // The owner's list carries their retired agents too, so a retired one still has details.
   const leadsAtom: Atom.Atom<LeadsResult> =
     environmentId === null || summary === undefined || summary.kind !== "direct"
       ? noLeadsAtom
-      : kinClient.leads({ environmentId, input: { orgId: summary.orgId } });
+      : canRestore
+        ? kinClient.agents({ environmentId, orgId: summary.orgId })
+        : kinClient.leads({ environmentId, input: { orgId: summary.orgId } });
   const leads = useAtomValue(leadsAtom);
   const lead =
     leads?._tag === "Success" && ownedAgentId !== null
@@ -227,6 +241,23 @@ export function KinChatView(props: {
   const about: KinLeadAbout | null =
     lead !== null ? { kind: "own", lead } : contact !== null ? { kind: "contact", contact } : null;
   const readOnly = kinChatReadOnly(summary, viewer.personId);
+  const activeAgents =
+    leads?._tag === "Success" ? kinAgentGroups(leads.value.leads).active.length : 0;
+  // The profile is read after a retire or restore; the directory says it for everyone else.
+  const retiredAgentId =
+    lead !== null
+      ? lead.retired === undefined
+        ? null
+        : lead.agentId
+      : kinRetiredDirectAgentId(summary, viewer.retiredAgents ?? NO_RETIRED_AGENTS);
+  const retiredName =
+    retiredAgentId === null
+      ? null
+      : (lead?.name ?? viewer.agentNames.get(retiredAgentId) ?? "This agent");
+  const restorable: KinAgentTarget | null =
+    lead === null || lead.retired === undefined || environmentId === null || !canRestore
+      ? null
+      : { environmentId, orgId: lead.orgId, agentId: lead.agentId, name: lead.name };
   // A group's row carries only the viewer's own member; who else is in it is read by name.
   const isGroup = summary !== undefined && summary.kind !== "direct";
   const groupAtom: Atom.Atom<GroupResult> =
@@ -236,7 +267,8 @@ export function KinChatView(props: {
   const groupResult = useAtomValue(groupAtom);
   // What was last read stays up while a change is read again.
   const group = groupResult === null ? null : Option.getOrNull(AsyncResult.value(groupResult));
-  const mentionable = kinMentionCandidates(group?.members ?? null);
+  const mentionable = kinMentionCandidates(group?.members ?? null, viewer.retiredAgents);
+  const silentAnswerer = kinRetiredGroupAnswerer(group, viewer.retiredAgents);
   const [profileHeld, setProfileHeld] = useState(false);
   // A teammate's row on the Team page leads here with the lead's details already open.
   const profileRequested = useAtomValue(kinProfileRequestAtom) === chatId && chatId !== null;
@@ -294,6 +326,7 @@ export function KinChatView(props: {
           orgId={summary.orgId}
           personId={viewer.personId}
           muted={muted}
+          retiredAgents={viewer.retiredAgents ?? NO_RETIRED_AGENTS}
         />
       )}
       {about === null || avatar === null || environmentId === null || chatId === null ? null : (
@@ -306,6 +339,7 @@ export function KinChatView(props: {
           chatId={chatId}
           personId={viewer.personId}
           muted={muted}
+          activeAgents={activeAgents}
           ownsChat={
             summary !== undefined &&
             kinOwnsDirectChat(summary.kind, summary.members, viewer.personId)
@@ -332,7 +366,7 @@ export function KinChatView(props: {
           unread={summary?.unread ?? null}
           presence={presence}
           stopLead={
-            summary === undefined || ownedAgentId === null || !canInterrupt
+            summary === undefined || ownedAgentId === null || !canInterrupt || retiredName !== null
               ? null
               : (wakeupId) =>
                   kinClient.leadInterrupt
@@ -348,6 +382,10 @@ export function KinChatView(props: {
           ownsLead={ownedAgentId !== null}
           about={contact === null || contact.intro.trim() === "" ? null : contact.intro}
           readOnly={readOnly}
+          retired={retiredName === null ? null : { name: retiredName, restorable }}
+          groupNotice={
+            silentAnswerer === null ? null : kinRetiredGroupLine(silentAnswerer, canRestore)
+          }
         />
       ) : (
         <KinChatStateView state={state} onRetry={retry} />
@@ -526,6 +564,10 @@ function KinChatFeed(props: {
   readonly about: string | null;
   /** The viewer reads this chat and can no longer write in it. */
   readonly readOnly: boolean;
+  /** This direct chat's agent is retired: its history stays, with Restore where the owner may. */
+  readonly retired: { readonly name: string; readonly restorable: KinAgentTarget | null } | null;
+  /** Said over the composer of a group whose answering agent is retired. */
+  readonly groupNotice: string | null;
 }) {
   const listRef = useRef<LegendListRef | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
@@ -788,6 +830,7 @@ function KinChatFeed(props: {
             widget={widget}
             environmentId={props.environmentId}
             viewerPersonId={props.viewer.personId}
+            heldFor={kinHeldCardAgent(message.author, props.viewer, props.retired?.name ?? null)}
             reactions={chips}
             onReact={
               reactable
@@ -976,7 +1019,21 @@ function KinChatFeed(props: {
             {notice}
           </p>
         )}
-        {props.readOnly ? (
+        {props.groupNotice === null ? null : (
+          <p role="status" className="pb-2 text-center text-xs text-muted-foreground">
+            {props.groupNotice}
+          </p>
+        )}
+        {props.retired !== null ? (
+          <div role="status" className="flex flex-col items-center gap-2 py-3">
+            <p className="text-center text-sm text-muted-foreground">
+              {kinRetiredChatLine(props.retired.name, props.retired.restorable !== null)}
+            </p>
+            {props.retired.restorable === null ? null : (
+              <KinRestoreAgent agent={props.retired.restorable} />
+            )}
+          </div>
+        ) : props.readOnly ? (
           <p role="status" className="py-3 text-center text-sm text-muted-foreground">
             {kinChatReadOnlyLine(props.agentName)}
           </p>

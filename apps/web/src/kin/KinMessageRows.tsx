@@ -83,6 +83,8 @@ export function KinMessageRow(props: {
   readonly widget: KinWidget | undefined;
   readonly environmentId: EnvironmentId;
   readonly viewerPersonId: KinPersonId | null;
+  /** The card's agent by name when it is retired, so its reminders and schedules read as on hold. */
+  readonly heldFor: string | null;
   readonly reactions: ReadonlyArray<KinReactionChip>;
   /** Toggles the viewer's reaction; null where they can't react, such as a privileged card. */
   readonly onReact: ((emoji: KinReactionEmoji) => void) | null;
@@ -169,6 +171,7 @@ export function KinMessageRow(props: {
               widget={props.widget}
               environmentId={props.environmentId}
               viewerPersonId={props.viewerPersonId}
+              heldFor={props.heldFor}
             />
           </div>
           {canReact && !hasBubble ? <KinReactMenu mine={mine} onReact={onReact} /> : null}

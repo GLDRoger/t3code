@@ -5,6 +5,7 @@ import {
   KIN_CLEAR_CHAT_TITLE,
   kinClearChatBody,
 } from "@t3tools/client-runtime/kin/kinClearChat";
+import { kinRestoreCopy, kinRetiredWhen } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import {
   kinDomainLabel,
   kinLeadAccessCandidates,
@@ -50,10 +51,12 @@ import {
 import { Switch } from "../components/ui/switch";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
+import { KinRestoreAgent, KinRetireAgent } from "./KinAgentRetire";
 import { KinAvatar } from "./KinAvatar";
 import { kinClient } from "./kinClient";
 import { serverEnvironment } from "../state/server";
 import { kinLeadFormAtom } from "./kinLeadForm";
+import { useNowMinuteMs } from "./useKinClock";
 
 function Section(props: { readonly title: string; readonly children: React.ReactNode }) {
   return (
@@ -84,8 +87,12 @@ export function KinLeadSheet(props: {
   readonly muted: boolean;
   /** The viewer is the one person in this chat, so it is theirs to clear. */
   readonly ownsChat: boolean;
+  /** How many of the viewer's own agents are active: the last one can't be retired. */
+  readonly activeAgents: number;
 }) {
   const { about, environmentId } = props;
+  const nowMs = useNowMinuteMs();
+  const retired = about.kind === "own" ? about.lead.retired : undefined;
   const canMute = useAtomValue(kinClient.mute.permissionAtom(environmentId));
   const mute = useAtomCommand(kinClient.mute, { reportFailure: false });
   const [muteState, setMuteState] = useState<"idle" | "saving" | "failed">("idle");
@@ -121,7 +128,11 @@ export function KinLeadSheet(props: {
               {about.kind === "own" ? (
                 <SheetDescription>
                   {kinDomainLabel(about.lead.domain)}
-                  {about.lead.working ? " · Working now" : ""}
+                  {retired !== undefined
+                    ? ` · ${kinRetiredWhen(retired.at, nowMs)}`
+                    : about.lead.working
+                      ? " · Working now"
+                      : ""}
                 </SheetDescription>
               ) : null}
             </div>
@@ -133,6 +144,7 @@ export function KinLeadSheet(props: {
               lead={about.lead}
               environmentId={environmentId}
               personId={props.personId}
+              activeAgents={props.activeAgents}
               onClose={() => props.onOpenChange(false)}
             />
           ) : (
@@ -214,14 +226,34 @@ function KinOwnLead(props: {
   readonly lead: KinLeadProfile;
   readonly environmentId: EnvironmentId;
   readonly personId: string | null;
+  readonly activeAgents: number;
   readonly onClose: () => void;
 }) {
   const { lead, environmentId } = props;
-  const canEdit = useAtomValue(kinClient.leadUpdate.permissionAtom(environmentId));
-  const canShare = useAtomValue(kinClient.leadAllow.permissionAtom(environmentId));
+  const isRetired = lead.retired !== undefined;
+  // A retired agent takes no changes; it is restored first.
+  const canEdit = useAtomValue(kinClient.leadUpdate.permissionAtom(environmentId)) && !isRetired;
+  const canShare = useAtomValue(kinClient.leadAllow.permissionAtom(environmentId)) && !isRetired;
+  const canRetire = useAtomValue(kinClient.leadRetire.permissionAtom(environmentId));
+  const canRestore = useAtomValue(kinClient.leadRestore.permissionAtom(environmentId));
   const providers = useAtomValue(serverEnvironment.providersValueAtom(environmentId));
+  const target = { environmentId, orgId: lead.orgId, agentId: lead.agentId, name: lead.name };
   return (
     <>
+      {isRetired ? (
+        <Section title="Retired">
+          <p className="text-sm text-foreground">
+            {canRestore
+              ? kinRestoreCopy(lead.name).detail
+              : `${lead.name} is retired, so it won't see new messages.`}
+          </p>
+          {canRestore ? (
+            <div className="flex flex-col items-start gap-2">
+              <KinRestoreAgent agent={target} />
+            </div>
+          ) : null}
+        </Section>
+      ) : null}
       <Section title="Responsible for">
         <p className="whitespace-pre-line text-sm text-foreground">
           {lead.charter.trim() === "" ? "Nothing written yet." : lead.charter}
@@ -243,9 +275,11 @@ function KinOwnLead(props: {
       {canShare ? (
         <KinLeadAccess lead={lead} environmentId={environmentId} personId={props.personId} />
       ) : null}
-      <Section title="In hand">
+      <Section title={isRetired ? "On hold" : "In hand"}>
         {lead.tracking.length === 0 ? (
-          <p className="text-sm text-muted-foreground">Nothing in hand right now.</p>
+          <p className="text-sm text-muted-foreground">
+            {isRetired ? "Nothing is waiting on it." : "Nothing in hand right now."}
+          </p>
         ) : (
           <ul className="flex flex-col gap-2">
             {lead.tracking.map((item, index) => (
@@ -262,6 +296,11 @@ function KinOwnLead(props: {
       <Section title="Model">
         <p className="text-sm text-foreground">{kinLeadModelName(lead.model, providers)}</p>
       </Section>
+      {canRetire && !isRetired ? (
+        <Section title="Retire">
+          <KinRetireAgent agent={target} activeAgents={props.activeAgents} />
+        </Section>
+      ) : null}
     </>
   );
 }

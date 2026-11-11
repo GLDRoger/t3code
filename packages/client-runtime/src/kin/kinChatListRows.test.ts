@@ -5,8 +5,12 @@ import type { KinInboxRow, KinInboxView } from "./kinInboxModel.ts";
 import type { KinDirectory } from "./kinScreenState.ts";
 
 const directory: KinDirectory = {
-  agentNames: new Map([["lead", "Tech lead"]]),
+  agentNames: new Map([
+    ["lead", "Tech lead"],
+    ["old", "Finance"],
+  ]),
   me: new Set(["owner"]),
+  retiredAgents: new Set(["old"]),
 };
 
 const member = (principal: object) => ({ principal, role: "member", leftAt: null });
@@ -14,7 +18,11 @@ const member = (principal: object) => ({ principal, role: "member", leftAt: null
 function row(
   chatId: string,
   lastMessage: object | null,
-  extra: { readonly fold?: KinInboxRow["fold"]; readonly kind?: string } = {},
+  extra: {
+    readonly fold?: KinInboxRow["fold"];
+    readonly kind?: string;
+    readonly agentId?: string;
+  } = {},
 ): KinInboxRow {
   return {
     chat: {
@@ -26,7 +34,7 @@ function row(
       lastMessageAt: lastMessage === null ? null : "2026-11-08T09:30:00.000Z",
       members: [
         member({ _tag: "person", personId: "owner" }),
-        member({ _tag: "agent", agentId: "lead" }),
+        member({ _tag: "agent", agentId: extra.agentId ?? "lead" }),
       ],
       lastMessage:
         lastMessage === null
@@ -63,6 +71,23 @@ describe("kinChatListRows", () => {
       "empty-old",
     ]);
     expect(rows[2]).toMatchObject({ fresh: true, preview: "Say hello to get started" });
+  });
+
+  it("lists a retired agent's chats last, and a group it is in where it was", () => {
+    const rows = list([
+      row("retired-talked", { body: "Invoices sent." }, { agentId: "old" }),
+      row("retired-empty", null, { agentId: "old" }),
+      row("group", { body: "Done." }, { agentId: "old", kind: "team_group" }),
+      row("empty", null),
+    ]);
+    expect(rows.map((item) => [item.chat.chatId, item.retired])).toEqual([
+      ["group", false],
+      ["empty", false],
+      ["retired-talked", true],
+      ["retired-empty", true],
+    ]);
+    // Nobody is there to greet, and its last words stay readable.
+    expect(rows.map((item) => item.preview).slice(2)).toEqual(["Invoices sent.", "Retired"]);
   });
 
   it.each([

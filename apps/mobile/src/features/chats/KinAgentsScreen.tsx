@@ -1,5 +1,11 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import {
+  KIN_RESTORE_ACTION,
+  KIN_RETIRED_LABEL,
+  kinAgentGroups,
+} from "@t3tools/client-runtime/kin/kinAgentRetire";
+import { kinDomainLabel } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { EnvironmentId, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -16,6 +22,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { kinClient } from "./state/kinClient";
+import { kinRetiredWhenNow, useKinAgentRetire } from "./state/useKinAgentRetire";
 
 export type KinAgentsParams = { readonly environmentId: string; readonly orgId: string };
 
@@ -70,10 +77,19 @@ function KinAgentsFrame(props: {
 function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId }) {
   const navigation = useNavigation();
   const { environmentId, orgId } = props;
-  const atom = kinClient.leads({ environmentId, input: { orgId } });
+  // Only a session that may restore an agent asks the host for the retired ones.
+  const canRestore = useAtomValue(kinClient.leadRestore.permissionAtom(environmentId));
+  const atom = canRestore
+    ? kinClient.agents({ environmentId, orgId })
+    : kinClient.leads({ environmentId, input: { orgId } });
   const result = useAtomValue(atom);
   const canAdd = useAtomValue(kinClient.leadCreate.permissionAtom(environmentId));
-  const agents = Option.getOrNull(AsyncResult.value(result))?.leads ?? null;
+  const retire = useKinAgentRetire(environmentId);
+  // What was last read stays up while a change is read again.
+  const all = Option.getOrNull(AsyncResult.value(result))?.leads ?? null;
+  const groups = all === null ? null : kinAgentGroups(all);
+  const agents = groups?.active ?? null;
+  const retired = groups?.retired ?? [];
   const add = canAdd
     ? () => navigation.navigate("KinLeadForm", { environmentId, orgId })
     : undefined;
@@ -103,7 +119,7 @@ function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly 
             <AppActivityIndicator />
           </View>
         )
-      ) : agents.length === 0 ? (
+      ) : agents.length === 0 && retired.length === 0 ? (
         <EmptyState
           variant="plain"
           title="No agents yet"
@@ -117,11 +133,29 @@ function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly 
               key={agent.agentId}
               icon="sparkles"
               label={agent.name}
-              description={agent.domain}
+              description={kinDomainLabel(agent.domain)}
               {...(agent.working ? { detail: "Working" } : {})}
               onPress={() =>
                 navigation.navigate("KinLead", { environmentId, orgId, agentId: agent.agentId })
               }
+            />
+          ))}
+        </ListSection>
+      )}
+      {retired.length === 0 ? null : (
+        <ListSection
+          title={KIN_RETIRED_LABEL}
+          footer="A retired agent's chats, tasks and what it remembers are kept. Restoring it starts its reminders and scheduled tasks again."
+        >
+          {retired.map((agent) => (
+            <ListRow
+              key={agent.agentId}
+              icon="sparkles"
+              label={agent.name}
+              description={kinRetiredWhenNow(agent.retired?.at)}
+              detail={retire.busy === agent.agentId ? "Restoring…" : KIN_RESTORE_ACTION}
+              disabled={retire.busy !== null}
+              onPress={() => retire.restore(agent)}
             />
           ))}
         </ListSection>

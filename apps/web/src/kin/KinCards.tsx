@@ -106,12 +106,14 @@ export const KinCard = memo(function KinCard(props: {
   readonly widget: KinWidget | undefined;
   readonly environmentId: EnvironmentId;
   readonly viewerPersonId: KinPersonId | null;
+  readonly heldFor: string | null;
 }) {
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
   const view = kinCardView(
     props.widget,
     props.environmentId,
     (environmentId) => !catalog.isReady || catalog.entries.has(environmentId),
+    props.heldFor,
   );
   switch (view.kind) {
     case "task":
