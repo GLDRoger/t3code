@@ -47,9 +47,15 @@ describe("remote", () => {
     expect(readKinJoinLink(link)).toBe(link);
     expect(readKinJoinLink(`  Hi Maya, join here: ${link}. See you there!\n`)).toBe(link);
     expect(readKinJoinLink(`<${link}>`)).toBe(link);
-    // What the invite page hands the phone app, on any app channel's scheme.
-    expect(readKinJoinLink(buildKinJoinAppLink(link))).toBe(link);
-    expect(readKinJoinLink(buildKinJoinAppLink(link).replace("t3code:", "t3code-dev:"))).toBe(link);
+    // What the invite page hands the phone app, on the scheme the host names.
+    expect(buildKinJoinAppLink("kin", link)).toBe(
+      `kin://kin/join?link=${encodeURIComponent(link)}`,
+    );
+    expect(buildKinJoinAppLink("kin-dev", link)).toMatch(/^kin-dev:\/\/kin\/join\?link=/);
+    // This build reads its own app channels' schemes; a branded build reads its own instead.
+    expect(readKinJoinLink(buildKinJoinAppLink("t3code", link))).toBe(link);
+    expect(readKinJoinLink(buildKinJoinAppLink("t3code-dev", link))).toBe(link);
+    expect(readKinJoinLink(buildKinJoinAppLink("kin", link))).toBeNull();
     expect(readKinJoinLink("http://192.168.1.20:3773/kin/invite#org.invite.secret")).toBe(
       "http://192.168.1.20:3773/kin/invite#org.invite.secret",
     );

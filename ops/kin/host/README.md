@@ -43,6 +43,8 @@ Root runs only scripts from a **root-owned clone**, `/root/kin-ops`. A clone `ki
 
 Owner overrides such as `T3CODE_LAN=true` go in `~/.t3/service.env`, which the unit reads and the backup copies. The unit reads it before `kin-server.env`, so it can't change `PATH`, the build or the Node version.
 
+On a phone, the invite page offers to open the join link in the app at `kin://`. A fork whose app registers another scheme sets `KIN_APP_SCHEME` (such as `kin-preview`) in `~/.t3/service.env` and restarts kin-server.
+
 Team memory is off unless `~/.t3/service.env` sets `KIN_TEAM_MEMORY=on` (any other value is off): until then a chat other people read gets no memory at all, while your own chats, the Memory page and its suggestions work as before.
 Leave it off until the sharing machinery has passed an independent review; choose on the Memory page what the team may know first, then set it and restart kin-server.
 

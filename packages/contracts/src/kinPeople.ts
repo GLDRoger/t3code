@@ -135,6 +135,15 @@ export type KinInviteAcceptResult = typeof KinInviteAcceptResult.Type;
 export const KIN_INVITE_ACCEPT_ROUTE = "/kin/invites/accept";
 /** The same accept for a browser: under `/api` so the web app reaches it, answered with a cookie. */
 export const KIN_INVITE_BROWSER_ACCEPT_ROUTE = "/api/kin/invites/accept";
+/** A URL scheme, such as `kin`, without the colon. */
+export const KinAppScheme = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9+.-]{0,31}$/));
+/**
+ * GET with no session: the scheme of the app this host's teammates install, for the invite page
+ * a phone's browser opens. The web build is shared with T3 Code, so only the host knows it.
+ */
+export const KIN_INVITE_APP_ROUTE = "/api/kin/invites/app";
+export const KinInviteAppResult = Schema.Struct({ appScheme: KinAppScheme });
+export type KinInviteAppResult = typeof KinInviteAppResult.Type;
 
 export const KIN_PEOPLE_WS_METHODS = {
   peopleListInvites: "kin.people.listInvites",

@@ -1,8 +1,12 @@
 import {
   KIN_INVITE_ACCEPT_ROUTE,
+  KIN_INVITE_APP_ROUTE,
   KIN_INVITE_BROWSER_ACCEPT_ROUTE,
+  KinAppScheme,
   KinInviteAcceptRequest,
+  type KinInviteAppResult,
 } from "@t3tools/contracts";
+import * as Config from "effect/Config";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -22,6 +26,25 @@ export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const router = yield* HttpRouter.HttpRouter;
     const origins = trustedBrowserOrigins(yield* ServerConfig.ServerConfig);
+    // A fork that brands its app differently sets its own scheme; Kin's app registers `kin://`.
+    const appScheme = yield* Config.schema(KinAppScheme, "KIN_APP_SCHEME").pipe(
+      Config.withDefault("kin"),
+      Effect.catch((error) =>
+        Effect.logError("Invalid KIN_APP_SCHEME; invite pages offer kin://.", error.message).pipe(
+          Effect.as("kin"),
+        ),
+      ),
+    );
+    yield* router.add(
+      "GET",
+      KIN_INVITE_APP_ROUTE,
+      Effect.gen(function* () {
+        if (Option.isNone((yield* KinServer).services))
+          return HttpServerResponse.empty({ status: 503 });
+        const result: KinInviteAppResult = { appScheme };
+        return yield* HttpServerResponse.json(result);
+      }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 500 }))),
+    );
     yield* router.add(
       "POST",
       KIN_INVITE_ACCEPT_ROUTE,

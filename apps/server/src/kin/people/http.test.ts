@@ -3,6 +3,7 @@ import { assert, it } from "@effect/vitest";
 import {
   AuthSessionId,
   AuthStandardClientScopes,
+  KIN_INVITE_APP_ROUTE,
   KIN_INVITE_BROWSER_ACCEPT_ROUTE,
 } from "@t3tools/contracts";
 import type * as Context from "effect/Context";
@@ -98,6 +99,13 @@ it.effect(
           ),
         );
       const json = { "content-type": "application/json" };
+
+      // The invite page asks, with no session, which app scheme to hand the link to.
+      const app = yield* Effect.promise(() =>
+        handler(new Request(`http://kin.example${KIN_INVITE_APP_ROUTE}`), routeContext),
+      );
+      assert.equal(app.status, 200);
+      assert.deepEqual(yield* Effect.promise(() => app.json()), { appScheme: "kin" });
 
       const forged = yield* invite();
       const crossSite = yield* accept(forged, { ...json, origin: "https://elsewhere.example" });
