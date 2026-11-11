@@ -15,6 +15,7 @@ import {
   kinDomainLabel,
   kinLeadAccessCandidates,
   kinLeadAccessChanged,
+  kinLeadOwnerSeesLine,
   kinLeadAccessProblem,
   kinLeadModelName,
   kinLeadTrackingDetail,
@@ -437,7 +438,7 @@ function KinLeadContactView({ contact }: { readonly contact: KinLeadContact }) {
           {contact.name}
         </Text>
       </View>
-      <ListSection title="About">
+      <ListSection title="About" footer={kinLeadOwnerSeesLine(contact.ownerName)}>
         <View className="px-4 py-3">
           <Text textRole="body" selectable className="text-foreground">
             {intro === "" ? `Message ${contact.name} here like a colleague.` : intro}

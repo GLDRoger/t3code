@@ -411,8 +411,8 @@ const make = Effect.gen(function* () {
     return member;
   });
   /**
-   * Another person's direct chat with a lead is between the two of them: the lead reads it only
-   * on a turn that person's message there woke, never on its owner's. Stored rows decide.
+   * Another person's direct chat with a lead: the lead reads it only on a turn that person's
+   * message there woke, never on its owner's. Stored rows decide.
    */
   const leadMayRead = Effect.fn("KinChatService.leadMayRead")(
     function* (agent: AgentIdentity, chatId: KinChatId) {

@@ -670,17 +670,19 @@ export const disallow = Effect.fn("KinLeadProvision.disallow")(function* (
 
 /**
  * The leads of other people this person may message, oldest first: name, what the owner lets
- * teammates read about it, and the person's own chat with it. Nothing else of the lead.
+ * teammates read about it, the person's own chat with it, and who owns it (and so can see that
+ * chat). Nothing else of the lead.
  */
 export const contacts = Effect.fn("KinLeadProvision.contacts")(function* (person: PersonIdentity) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<KinLeadContact>`
+  const rows = yield* sql<Omit<KinLeadContact, "ownerName"> & { readonly ownerName: string }>`
     SELECT l.org_id AS "orgId", l.agent_id AS "agentId", l.name, l.public_intro AS intro,
-      c.chat_id AS "chatId"
+      c.chat_id AS "chatId", o.display_name AS "ownerName"
     FROM kin_lead_access x
     JOIN kin_leads l ON l.org_id = x.org_id AND l.agent_id = x.agent_id
     JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
       AND a.role = 'lead' AND a.retired_at IS NULL AND a.owner_person_id <> x.person_id
+    JOIN kin_people o ON o.org_id = a.org_id AND o.person_id = a.owner_person_id
     JOIN kin_chats c ON c.org_id = x.org_id AND c.kind = 'direct'
       AND c.direct_key = x.person_id || ':' || x.agent_id
     WHERE x.org_id = ${person.orgId} AND x.person_id = ${person.personId}
@@ -688,12 +690,13 @@ export const contacts = Effect.fn("KinLeadProvision.contacts")(function* (person
     ORDER BY x.granted_at, l.agent_id`.pipe(
     Effect.mapError(toPersistenceSqlError("KinLeadProvision.contacts")),
   );
-  return rows.map(({ orgId, agentId, name, intro, chatId }) => ({
+  return rows.map(({ orgId, agentId, name, intro, chatId, ownerName }) => ({
     orgId,
     agentId,
     name,
     intro,
     chatId,
+    ownerName,
   }));
 });
 
