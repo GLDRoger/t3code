@@ -205,6 +205,7 @@ describe("Kin migrations", () => {
           { migration_id: 44, name: "WakeupSharedSince" },
           { migration_id: 45, name: "WakeupAudienceAbort" },
           { migration_id: 46, name: "ChatCleared" },
+          { migration_id: 47, name: "SilentMessages" },
           { migration_id: 48, name: "ChatSharing" },
         ]);
         assert.deepStrictEqual(
@@ -307,6 +308,7 @@ describe("Kin migrations", () => {
           { migration_id: 44, name: "WakeupSharedSince" },
           { migration_id: 45, name: "WakeupAudienceAbort" },
           { migration_id: 46, name: "ChatCleared" },
+          { migration_id: 47, name: "SilentMessages" },
           { migration_id: 48, name: "ChatSharing" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
@@ -433,6 +435,7 @@ describe("Kin migrations", () => {
         [44, "WakeupSharedSince"],
         [45, "WakeupAudienceAbort"],
         [46, "ChatCleared"],
+        [47, "SilentMessages"],
         [48, "ChatSharing"],
       ]);
       const before = yield* kinSchema;
@@ -460,6 +463,7 @@ describe("Kin migrations", () => {
       ])
         yield* sql.unsafe(`DROP TRIGGER ${trigger}`);
       yield* sql`DROP INDEX idx_kin_messages_changes`;
+      yield* sql`ALTER TABLE kin_messages DROP COLUMN silent`;
       yield* sql`ALTER TABLE kin_messages DROP COLUMN change_seq`;
       yield* sql`ALTER TABLE kin_chats DROP COLUMN change_seq`;
       yield* sql`ALTER TABLE kin_webhook_sources DROP COLUMN secret_sha256`;
@@ -574,6 +578,7 @@ describe("Kin migrations", () => {
         [44, "WakeupSharedSince"],
         [45, "WakeupAudienceAbort"],
         [46, "ChatCleared"],
+        [47, "SilentMessages"],
         [48, "ChatSharing"],
       ]);
       assert.deepStrictEqual(
@@ -644,6 +649,7 @@ describe("Kin migrations", () => {
         { migration_id: 44, name: "WakeupSharedSince" },
         { migration_id: 45, name: "WakeupAudienceAbort" },
         { migration_id: 46, name: "ChatCleared" },
+        { migration_id: 47, name: "SilentMessages" },
         { migration_id: 48, name: "ChatSharing" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
@@ -717,6 +723,7 @@ describe("Kin migrations", () => {
         [44, "WakeupSharedSince"],
         [45, "WakeupAudienceAbort"],
         [46, "ChatCleared"],
+        [47, "SilentMessages"],
         [48, "ChatSharing"],
       ]);
       assert.deepStrictEqual(
@@ -767,6 +774,7 @@ describe("Kin migrations", () => {
         [44, "WakeupSharedSince"],
         [45, "WakeupAudienceAbort"],
         [46, "ChatCleared"],
+        [47, "SilentMessages"],
         [48, "ChatSharing"],
       ]);
       const columns = yield* sql<{ name: string }>`
@@ -826,9 +834,10 @@ describe("Kin migrations", () => {
           [44, "WakeupSharedSince"],
           [45, "WakeupAudienceAbort"],
           [46, "ChatCleared"],
+          [47, "SilentMessages"],
           [48, "ChatSharing"],
         ]);
-        assert.deepStrictEqual((yield* kinHistory).slice(-14), [
+        assert.deepStrictEqual((yield* kinHistory).slice(-15), [
           { migration_id: 32, name: "WorkerEnvironment" },
           { migration_id: 33, name: "ApproverKeyConfirmations" },
           { migration_id: 34, name: "PerLeadWakeups" },
@@ -842,6 +851,7 @@ describe("Kin migrations", () => {
           { migration_id: 44, name: "WakeupSharedSince" },
           { migration_id: 45, name: "WakeupAudienceAbort" },
           { migration_id: 46, name: "ChatCleared" },
+          { migration_id: 47, name: "SilentMessages" },
           { migration_id: 48, name: "ChatSharing" },
         ]);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_lead_deliveries`, [delivery]);
@@ -885,6 +895,17 @@ describe("Kin migrations", () => {
       }
       yield* sql`INSERT INTO kin_messages (org_id, chat_id, message_id, seq, author_kind, author_role, kind, body, mentions_json, status, created_at)
         VALUES ('org', 'dm', 'kin-level-lowered:e-1', 5, 'system', 'member', 'system', 'Lead moved down to L0', '[]', 'posted', ${timestamp})`;
+      // K047: the failed-night notice every lead's chat got on 11 Nov 2026; other notices stay.
+      for (const [seq, id, body] of [
+        [
+          6,
+          "kin-memory:dream",
+          "Last night's dream failed and merged nothing; the next dream retries the same material.\nThe dream session failed",
+        ],
+        [7, "kin-memory:other", "Recovered from remote head"],
+      ] as const)
+        yield* sql`INSERT INTO kin_messages (org_id, chat_id, message_id, seq, author_kind, author_role, kind, body, mentions_json, status, created_at)
+          VALUES ('org', 'dm', ${id}, ${seq}, 'system', 'member', 'text', ${body}, '[]', 'posted', ${timestamp})`;
       yield* undoPeopleInvites;
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 35`;
       assert.deepStrictEqual(yield* runKinMigrations(), [
@@ -898,6 +919,7 @@ describe("Kin migrations", () => {
         [44, "WakeupSharedSince"],
         [45, "WakeupAudienceAbort"],
         [46, "ChatCleared"],
+        [47, "SilentMessages"],
         [48, "ChatSharing"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT message_id, status FROM kin_messages ORDER BY seq`, [
@@ -906,6 +928,8 @@ describe("Kin migrations", () => {
         { message_id: "shadow-summary:lead:2026-11-09", status: "dismissed" },
         { message_id: "routine:morning", status: "posted" },
         { message_id: "kin-level-lowered:e-1", status: "dismissed" },
+        { message_id: "kin-memory:dream", status: "dismissed" },
+        { message_id: "kin-memory:other", status: "posted" },
       ]);
       assert.deepStrictEqual(yield* sql`SELECT widget_id FROM kin_widgets`, [
         { widget_id: "routine:morning" },
@@ -1043,6 +1067,7 @@ describe("Kin migrations", () => {
         [44, "WakeupSharedSince"],
         [45, "WakeupAudienceAbort"],
         [46, "ChatCleared"],
+        [47, "SilentMessages"],
         [48, "ChatSharing"],
       ]);
       assert.deepStrictEqual(

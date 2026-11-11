@@ -283,6 +283,11 @@ export function layerWithRegistry<Error>(
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
     readonly managedPolicy?: ManagedPolicyDocument;
+    /**
+     * Runs each turn in its thread's project root, as the server does, instead of no working
+     * directory, and reports each resolved directory.
+     */
+    readonly projectCwd?: (cwd: string | null) => Effect.Effect<void>;
   } = {},
 ): Layer.Layer<
   | Orchestrator.OrchestratorV2
@@ -296,12 +301,6 @@ export function layerWithRegistry<Error>(
     ServerConfig.ServerConfig,
     makeReplayServerConfig(scenario.name).pipe(Effect.orDie),
   ).pipe(Layer.provide(NodeServices.layer));
-  const layerRuntimeBase =
-    scenario.runtimePolicyOverride === undefined
-      ? RuntimePolicy.layer
-      : RuntimePolicy.layerWithOverride(scenario.runtimePolicyOverride).pipe(
-          Layer.provide(RuntimePolicy.layer),
-        );
   const layerDatabase = options.databaseLayer ?? SqlitePersistence.layerMemory;
   // Share one continuation queue across adapters, orchestrator, and worker through layer memoization.
   const layerContinuationRequests =
@@ -333,6 +332,34 @@ export function layerWithRegistry<Error>(
   const layerEventSinkProvided = EventSink.layerFromStores.pipe(
     Layer.provide(Layer.mergeAll(layerStores, layerDatabase)),
   );
+  const projectCwd = options.projectCwd;
+  const layerPolicy =
+    projectCwd !== undefined
+      ? Layer.effect(
+          RuntimePolicy.RuntimePolicyV2,
+          Effect.map(RuntimePolicy.RuntimePolicyV2, (base) => ({
+            resolve: (input: Parameters<typeof base.resolve>[0]) =>
+              base.resolve(input).pipe(Effect.tap((policy) => projectCwd(policy.cwd))),
+          })),
+        ).pipe(
+          Layer.provide(RuntimePolicy.layerFromProjectStore),
+          Layer.provide(
+            Layer.mergeAll(
+              layerStores,
+              layerServerSettings,
+              Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+                getInstance: () => Effect.undefined,
+              }),
+            ),
+          ),
+        )
+      : RuntimePolicy.layer;
+  const layerRuntimeBase =
+    scenario.runtimePolicyOverride === undefined
+      ? layerPolicy
+      : RuntimePolicy.layerWithOverride(scenario.runtimePolicyOverride).pipe(
+          Layer.provide(layerPolicy),
+        );
   const layerRuntime = RuntimePolicy.layerEnforcingCeiling.pipe(
     Layer.provide(Layer.merge(layerRuntimeBase, layerServerSettings)),
   );

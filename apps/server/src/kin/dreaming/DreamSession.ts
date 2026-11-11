@@ -96,13 +96,28 @@ export const layer = Layer.effect(
         const refused = yield* refusal(turn);
         if (refused !== undefined)
           return yield* new DreamRefused({ orgId: turn.orgId, reason: refused });
-        const { project } = yield* projects.bootstrap({
-          commandId: CommandId.make(`kin-dream-project:${turn.orgId}`),
-          projectId: ProjectId.make(`kin-dream:${turn.orgId}`),
-          workspaceRoot: turn.workspaceRoot,
-          title: `Kin dreams · ${turn.orgId}`,
-        });
         const key = `${turn.dreamId}:${turn.turn}`;
+        const bootstrap = (suffix: string) =>
+          projects.bootstrap({
+            commandId: CommandId.make(`kin-dream-project:${turn.orgId}${suffix}`),
+            projectId: ProjectId.make(`kin-dream:${turn.orgId}${suffix}`),
+            workspaceRoot: turn.workspaceRoot,
+            title: `Kin dreams · ${turn.orgId}`,
+          });
+        const shared = (yield* bootstrap("")).project;
+        // Someone deleted the org's dream project; its id and command now replay the deletion.
+        const bootstrapped =
+          shared.deletedAt === null ? shared : (yield* bootstrap(`:${turn.dreamId}`)).project;
+        // The org has one dream project, made by the first dream; each dream's turns run in its
+        // own folder, and the earlier folder is gone by now.
+        const project =
+          bootstrapped.workspaceRoot === turn.workspaceRoot
+            ? bootstrapped
+            : yield* projects.update({
+                commandId: CommandId.make(`kin-dream-project-root:${key}`),
+                projectId: bootstrapped.id,
+                workspaceRoot: turn.workspaceRoot,
+              });
         const threadId = dreamThreadId(turn.dreamId, turn.turn);
         const messageId = MessageId.make(`kin-dream-msg:${key}`);
         const sent = yield* launch.launch({

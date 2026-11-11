@@ -1314,6 +1314,11 @@ describe("KinChatRepository", () => {
         message("after-read", { author: agentAuthor, authorRole: "member" }),
       );
       assert.strictEqual(yield* repo.unreadCount(scope), 1);
+      yield* repo.insertMessage({
+        ...message("bookkeeping", { author: { _tag: "system" }, mentions: [] }),
+        silent: true,
+      });
+      assert.strictEqual(yield* repo.unreadCount(scope), 1);
       assert.deepStrictEqual(
         Option.getOrThrow(yield* repo.getMessage({ orgId, messageId: decodeMessageId("agent") }))
           .author,

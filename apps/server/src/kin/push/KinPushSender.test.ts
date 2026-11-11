@@ -201,6 +201,7 @@ const postMessage = (
     readonly body?: string;
     readonly mentions?: ReadonlyArray<string>;
     readonly replyTo?: KinMessageId;
+    readonly silent?: boolean;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -211,13 +212,14 @@ const postMessage = (
     const agent = typeof author === "object" && "agentMemberId" in author;
     yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
         author_person_id, author_agent_id, author_owner_person_id, author_thread_id,
-        author_member_id, author_role, kind, body, mentions_json, reply_to, status, created_at)
+        author_member_id, author_role, kind, body, mentions_json, reply_to, status, created_at, silent)
       VALUES (${messageId}, 'org_01', ${options.chatId ?? "chat_team"}, ${seq},
         ${human ? "human" : agent ? "agent" : "system"}, ${human ? author.personId : null},
         ${agent ? "lead_fin" : null}, ${agent ? owner : null}, ${agent ? "thread-fin" : null},
         ${human ? author.memberId : agent ? author.agentMemberId : null}, 'member', 'text',
         ${options.body ?? "Ship it before Friday, the secret is hunter2"},
-        ${JSON.stringify(options.mentions ?? [])}, ${options.replyTo ?? null}, ${status}, ${T})`;
+        ${JSON.stringify(options.mentions ?? [])}, ${options.replyTo ?? null}, ${status}, ${T},
+        ${options.silent === true ? 1 : 0})`;
     return messageId;
   });
 
@@ -514,7 +516,15 @@ describe("KinPushSender", () => {
         yield* sql`INSERT INTO kin_waiting (waiting_id, org_id, person_id, chat_id, reason,
             created_at, resolved_at)
           VALUES (${waitingId}, 'org_01', ${owner}, 'chat_team', 'question', ${T}, ${resolvedAt})`;
+      // Kin's silent bookkeeping rings nobody and never counts.
       apns.sent.length = 0;
+      const silent = { chatId: "chat_dm", silent: true } as const;
+      yield* notify({
+        _tag: "message",
+        orgId,
+        messageId: yield* postMessage(sql, "system", "posted", silent),
+      });
+      assert.deepStrictEqual(apns.sent, []);
       const messageId = yield* postMessage(sql, dm, "posted", { chatId: "chat_dm" });
       yield* notify({ _tag: "message", orgId, messageId });
       // Two unread in the group, one in the DM, one open waiting item.
