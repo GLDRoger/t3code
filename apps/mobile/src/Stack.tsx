@@ -145,6 +145,8 @@ import { workspaceDetailRouter } from "./features/layout/workspace/workspace-det
 import { KIN_ONLY } from "./lib/kinOnly";
 import { kinOnlyRouteNames, kinOnlyScreens } from "./lib/kinOnlyRoutes";
 
+const PAIRING_TITLE = KIN_ONLY ? "Connect to your Kin" : "Add Environment";
+
 const settingsPage = (title: string) => pageRoute({ title, itemStyle: "standard" });
 
 // Thread settings keep the Duo's vertical bar so cancel, search, filter and confirm sit in the
@@ -233,7 +235,7 @@ const SETTINGS_SCREENS = {
   SettingsEnvironmentNew: createNativeStackScreen({
     screen: ConnectionsNewRouteScreen,
     linking: "settings/environment-new",
-    options: settingsPage("Add Environment"),
+    options: settingsPage(PAIRING_TITLE),
   }),
   SettingsArchive: createNativeStackScreen({
     screen: ArchivedThreadsRouteScreen,
@@ -745,7 +747,7 @@ const RootStackConfig = createWorkspaceStackNavigator({
       ConnectionsNew: createNativeStackScreen({
         screen: ConnectionsNewRouteScreen,
         linking: "connections/new",
-        options: sheetRoute({ title: "Add Environment", detent: 0.55, maxDetent: 0.7 }),
+        options: sheetRoute({ title: PAIRING_TITLE, detent: 0.55, maxDetent: 0.7 }),
       }),
       NotFound: createNativeStackScreen({
         screen: NotFoundScreen,
