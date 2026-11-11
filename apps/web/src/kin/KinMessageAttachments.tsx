@@ -1,8 +1,20 @@
+import { kinLocalImageUrls } from "@t3tools/client-runtime/kin/kinAttachments";
 import type { EnvironmentId, KinAttachment } from "@t3tools/contracts";
+import { useEffect, useSyncExternalStore } from "react";
 
 import { useAssetUrls } from "../assets/assetUrls";
 import { openExpandedImagePreview } from "../components/chat/ExpandedImageDialog";
 import { GuestMessageAttachments } from "../components/chat/GuestMessageAttachments";
+import { kinLocalPreviews } from "./kinOutbox";
+
+const NO_RESOURCES: ReadonlyArray<never> = [];
+const loaded = (src: string) =>
+  new Promise<void>((resolve) => {
+    const image = new Image();
+    image.onload = () => resolve();
+    image.onerror = () => resolve();
+    image.src = src;
+  });
 
 /**
  * A Kin message's files, drawn as a thread message's are. The bytes load from signed asset URLs
@@ -13,25 +25,59 @@ export function KinMessageAttachments(props: {
   readonly attachments: ReadonlyArray<KinAttachment>;
   /** Where image previews open; the chat mounts the dialog host under the same key. */
   readonly previewKey: string;
+  /** The viewer's own message: its images show this tab's copies until the host's have loaded. */
+  readonly clientMessageId?: string | undefined;
+  /** Not posted yet: the host serves no upload before its message claims it, so none is asked. */
+  readonly unposted?: boolean;
 }) {
-  const { attachments } = props;
+  const { attachments, clientMessageId } = props;
+  const local = kinLocalImageUrls(
+    attachments,
+    useSyncExternalStore(kinLocalPreviews.subscribe, () => kinLocalPreviews.get(clientMessageId)),
+  );
   const urls = useAssetUrls(
     props.environmentId,
-    attachments.map((attachment) => ({
-      _tag: "attachment" as const,
-      attachmentId: attachment.id,
-      fileName: attachment.name,
-      mimeType: attachment.mimeType,
-    })),
+    props.unposted === true
+      ? NO_RESOURCES
+      : attachments.map((attachment) => ({
+          _tag: "attachment" as const,
+          attachmentId: attachment.id,
+          fileName: attachment.name,
+          mimeType: attachment.mimeType,
+        })),
   );
-  const urlById = new Map(attachments.map((attachment, index) => [attachment.id, urls[index]]));
-  const url = (id: string) => urlById.get(id) ?? undefined;
+  const hostUrlById = new Map(
+    props.unposted === true
+      ? []
+      : attachments.map((attachment, index) => [attachment.id, urls[index] ?? undefined]),
+  );
+  const handoff = [...local.keys()].map((id) => hostUrlById.get(id));
+  const ready =
+    props.unposted !== true && handoff.length > 0 && handoff.every((src) => src !== undefined)
+      ? handoff.join("\n")
+      : "";
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- preloads the host's images so the local copies swap out without an empty frame
+  useEffect(() => {
+    if (ready === "" || clientMessageId === undefined) return;
+    let current = true;
+    void Promise.all(ready.split("\n").map(loaded)).then(() => {
+      if (current) kinLocalPreviews.forget(clientMessageId);
+    });
+    return () => {
+      current = false;
+    };
+  }, [ready, clientMessageId]);
+  const url = (id: string) => local.get(id) ?? hostUrlById.get(id);
   const filesReady = attachments.every(
     (attachment) => attachment.type !== "file" || url(attachment.id) !== undefined,
   );
   const openImage = (id: string) => {
     const images = attachments.flatMap((attachment) => {
-      const src = attachment.type === "image" ? url(attachment.id) : undefined;
+      // The dialog outlives the handoff that frees local copies, so it takes the host's when minted.
+      const src =
+        attachment.type === "image"
+          ? (hostUrlById.get(attachment.id) ?? local.get(attachment.id))
+          : undefined;
       return src === undefined
         ? []
         : [{ id: attachment.id, src, name: attachment.name, mimeType: attachment.mimeType }];

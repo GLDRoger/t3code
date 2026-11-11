@@ -44,6 +44,7 @@ import * as Queue from "./KinEventQueue.ts";
 import { hashedEventId } from "./eventIds.ts";
 import { isOrgOwner, isOrgPaused, STOP_REASON } from "./orgState.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
+import { workThreadPrefix } from "./workThread.ts";
 
 /** A claim that races a pause returns its events for this long, so a paused org does not spin. */
 export const PAUSE_POLL_INTERVAL_MS = 5_000;
@@ -468,7 +469,10 @@ const stopThreadTree = Effect.fn("KinWorkers.stopThreadTree")(function* (
   return active !== undefined;
 });
 
-/** The lead runtime's fan-out: lead and dream runs and their delegated tasks, the worker server, then routines. */
+/**
+ * The lead runtime's fan-out: lead, dream and local worker runs and their delegated tasks, the
+ * worker server, then routines.
+ */
 const isMissingThread = (error: { readonly _tag: string; readonly cause?: unknown }) =>
   error._tag === "OrchestratorProjectionError" &&
   typeof error.cause === "object" &&
@@ -495,6 +499,9 @@ export const makeFanOut = Effect.fn("KinStop.makeFanOut")(function* (
           SELECT thread_id AS "threadId" FROM kin_leads WHERE org_id = ${orgId} AND thread_id IS NOT NULL
           UNION SELECT thread_id FROM kin_dream_runs
             WHERE org_id = ${orgId} AND status = 'running' AND thread_id IS NOT NULL
+          UNION SELECT thread_id FROM kin_workers
+            WHERE org_id = ${orgId} AND ended_at IS NULL AND environment_id IS NULL
+              AND thread_id = ${workThreadPrefix} || worker_id
           ORDER BY 1`.pipe(Effect.mapError(failed), Effect.exit);
         if (Exit.isFailure(rows)) return [rows];
         return yield* Effect.forEach(

@@ -8,6 +8,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as KinDreamIsolation from "../kin/dreaming/DreamIsolation.ts";
 import * as KinLeadIsolation from "../kin/lead/LeadIsolation.ts";
+import * as KinWorkIsolation from "../kin/lead/WorkIsolation.ts";
 
 export type ProviderOrchestrationAdapterInfrastructure =
   | ClaudeAdapterV2.ClaudeAgentSdkQueryRunner
@@ -16,10 +17,13 @@ export type ProviderOrchestrationAdapterInfrastructure =
   | CursorSdk.CursorSdk
   | IdAllocator.IdAllocatorV2;
 
+// Work isolation runs first, so a lead or dream wrapper behind it can only narrow a work session.
 /** Reuse the continuation worker's exact layer reference so memoization shares one queue. */
 export const layer = Layer.mergeAll(
-  KinLeadIsolation.claudeQueryRunner(
-    KinDreamIsolation.claudeQueryRunner(ClaudeAdapterV2.layerQueryRunner),
+  KinWorkIsolation.claudeQueryRunner(
+    KinLeadIsolation.claudeQueryRunner(
+      KinDreamIsolation.claudeQueryRunner(ClaudeAdapterV2.layerQueryRunner),
+    ),
   ),
   CodexAdapterV2.layerAppServerClientFactory,
   CursorAgentSdk.layer.pipe(Layer.provideMerge(CursorSdk.layer)),

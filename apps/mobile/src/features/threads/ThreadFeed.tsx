@@ -514,20 +514,25 @@ function MessageAttachmentImage(props: {
   readonly maxWidth?: number;
   readonly height?: number;
   readonly onPressPreview: (source: FilePreviewSource) => void;
+  /** Its message isn't posted, so the host has no bytes to serve yet. */
+  readonly unposted?: boolean;
 }) {
   const withGallery = useFilePreviewGallery();
   const sourceIdentifier = useId();
-  const resource = {
-    _tag: "attachment" as const,
-    attachmentId: props.attachmentId,
-    fileName: props.name,
-    mimeType: props.mimeType,
-  };
+  const resource =
+    props.unposted === true
+      ? null
+      : {
+          _tag: "attachment" as const,
+          attachmentId: props.attachmentId,
+          fileName: props.name,
+          mimeType: props.mimeType,
+        };
   const uri = useAssetUrl(props.environmentId, resource);
   const refreshAssetUrl = useRefreshAssetUrl(props.environmentId, resource);
   const retriedImage = useRef(false);
 
-  if (uri === null) {
+  if (uri === null || resource === null) {
     return (
       <View
         className={`${props.className} items-center justify-center`}
@@ -1004,11 +1009,14 @@ export function MessageAttachmentList(props: {
   readonly environmentId: EnvironmentId;
   readonly onPressPreview: (source: FilePreviewSource) => void;
   readonly onPlaybackStart: () => void;
+  /** A message the host hasn't posted: its uploads aren't served until it claims them. */
+  readonly unposted?: boolean;
 }) {
   return props.attachments.map((attachment) =>
     isImageAttachment(attachment) ? (
       <MessageAttachmentImage
         key={attachment.id}
+        {...(props.unposted === true ? { unposted: true } : {})}
         environmentId={props.environmentId}
         attachmentId={attachment.id}
         name={attachment.name}

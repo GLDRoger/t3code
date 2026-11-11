@@ -1,4 +1,39 @@
-import type { OrchestrationV2TurnItem } from "@t3tools/contracts";
+import type {
+  OrchestrationV2ProviderFailure,
+  OrchestrationV2ThreadProjection,
+  OrchestrationV2TurnItem,
+  RunId,
+} from "@t3tools/contracts";
+
+/**
+ * A failure no retry fixes: the model account needs signing in again (`signin`) or cannot use
+ * the lead's model (`access`). The codes are the adapters'.
+ */
+export type SetupFailure = "signin" | "access";
+export function setupFailure(failure: OrchestrationV2ProviderFailure): SetupFailure | null {
+  if (failure.code === "authentication_failed" || failure.code === "api_error_401") return "signin";
+  if (failure.code === "api_error_403" || failure.class === "permission_error") return "access";
+  return null;
+}
+/** The setup failure that ended a run from `rootRunId` on, if one did. */
+export function setupFailureIn(
+  projection: Pick<OrchestrationV2ThreadProjection, "runs" | "turnItems">,
+  rootRunId: RunId,
+): SetupFailure | null {
+  const root = projection.runs.find((run) => run.id === rootRunId);
+  if (root === undefined) return null;
+  const runs = new Set(
+    projection.runs.filter((run) => run.ordinal >= root.ordinal).map((run) => run.id),
+  );
+  for (const item of projection.turnItems) {
+    // A retry the provider recovered from leaves its error item `completed`: it ended nothing.
+    if (item.type !== "error" || item.status !== "failed") continue;
+    if (item.runId === null || !runs.has(item.runId)) continue;
+    const found = setupFailure(item.failure);
+    if (found !== null) return found;
+  }
+  return null;
+}
 
 /** A pre-tool segment up to this long, in one paragraph, is a status note, not a message. */
 export const NOTE_MAX_CHARS = 160;

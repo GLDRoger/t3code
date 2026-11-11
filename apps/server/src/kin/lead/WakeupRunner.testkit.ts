@@ -129,6 +129,8 @@ type HarnessOptions = {
   readonly hold?: Deferred.Deferred<void>;
   readonly entered?: Deferred.Deferred<void>;
   readonly failed?: boolean;
+  /** The failed turn's failure code, as an adapter names it. */
+  readonly failureCode?: string;
   readonly writer?: Layer.Layer<Writer.MemoryWriter, never, SqlClient.SqlClient>;
   readonly piUsage?: boolean;
   readonly prepare?: Memory.Memory["Service"]["prepareWakeup"];
@@ -345,7 +347,7 @@ function parts(options: HarnessOptions) {
                       failure: {
                         class: "provider_error" as const,
                         message: "Fixture provider failure",
-                        code: null,
+                        code: options.failureCode ?? null,
                         retryable: false,
                       },
                     }

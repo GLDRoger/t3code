@@ -60,7 +60,12 @@ export const kinPreviewKey = (draftKey: string) => `kin:${draftKey}`;
 type DraftAttachment = ComposerImageAttachment | ComposerFileAttachment;
 
 export type KinDraftAttachments =
-  | { readonly _tag: "ready"; readonly attachments: ReadonlyArray<KinAttachment> }
+  | {
+      readonly _tag: "ready";
+      readonly attachments: ReadonlyArray<KinAttachment>;
+      /** The images' own bytes, in order, which show until the posted message's copies load. */
+      readonly images: ReadonlyArray<Blob>;
+    }
   | { readonly _tag: "blocked"; readonly reason: string };
 
 /**
@@ -225,7 +230,7 @@ export function useKinComposerAttachments(input: {
       ...(current?.images ?? []),
       ...(current?.files ?? []),
     ];
-    if (waiting.length === 0) return { _tag: "ready", attachments: [] };
+    if (waiting.length === 0) return { _tag: "ready", attachments: [], images: [] };
     for (const attachment of waiting) {
       const upload =
         readAttachmentUpload(attachment.id)?.status === "failed"
@@ -239,6 +244,9 @@ export function useKinComposerAttachments(input: {
       return { _tag: "blocked", reason: "An attachment did not upload. Retry it or remove it." };
     return {
       _tag: "ready",
+      images: waiting.flatMap((attachment, index) =>
+        attachment.type === "image" && uploaded[index] !== undefined ? [attachment.file] : [],
+      ),
       // The queue answers in the order asked; a Kin message keeps the kind, not the source.
       attachments: waiting.flatMap((attachment, index) => {
         const stored = uploaded[index];
