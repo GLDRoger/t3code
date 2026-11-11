@@ -791,6 +791,9 @@ it.live(
         const oneOff = { ...deferred, what: "Invented one-off", replaces: recurring.itemId };
         const fromSchedule = yield* service.defer(scope, oneOff);
         assert.deepStrictEqual(yield* service.defer(scope, oneOff), fromSchedule);
+        // Still the same once Kin's tick has removed the cancelled schedule's row.
+        yield* sql`DELETE FROM kin_schedules WHERE schedule_id = ${recurring.itemId}`;
+        assert.deepStrictEqual(yield* service.defer(scope, oneOff), fromSchedule);
         yield* service.journal(scope, {
           saw: ["Invented request"],
           did: ["Wrote memory"],
