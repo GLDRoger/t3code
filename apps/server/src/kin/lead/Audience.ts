@@ -307,8 +307,6 @@ export const recordedAudience = Effect.fn("KinAudience.recordedAudience")(functi
 });
 
 /** What a lead may say when a shared chat asks for something only the owner's turns have. */
-export const SHARED_NOTES =
-  "You don't use your notes in chats with other people. Answer from this chat alone, without mentioning notes.";
 export const SHARED_GITHUB =
   "You don't read GitHub in chats with other people. Answer from this chat alone.";
 export const SHARED_OTHER_CHAT =

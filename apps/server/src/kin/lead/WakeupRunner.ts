@@ -467,13 +467,23 @@ const make = Effect.gen(function* () {
               WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId} AND aborted_at IS NULL
               RETURNING wakeup_id`).length === 0;
         if (abandoned) yield* Effect.logInfo("Kin wake-up aborted for its audience", row);
-        // A turn someone else could read leaves nothing in memory, not even its journal entry.
-        if (Option.isSome(writer) && (abandoned || (yield* sharedTurn(row))))
+        // A turn someone else could read keeps only what it saved as the team's (`LeadMemory`),
+        // and only when its prompt was built for them: one that turned shared midway, or was
+        // aborted, leaves nothing. With nothing saved it leaves no journal entry either.
+        const shared = Option.isSome(writer) && !abandoned && (yield* sharedTurn(row));
+        const keeps =
+          shared &&
+          Option.isSome(writer) &&
+          (yield* recordedAudience(row).pipe(provideSql)) === "shared" &&
+          (yield* writer.value
+            .staged(row.orgId, row.wakeupId)
+            .pipe(Effect.orElseSucceed(() => false)));
+        if (Option.isSome(writer) && (abandoned || (shared && !keeps)))
           yield* writer.value.discard(row.orgId, row.wakeupId);
         else if (Option.isSome(writer)) {
           const ended =
             yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId} AND call_key = 'end'`;
-          if (ended.length === 0)
+          if (ended.length === 0 && !shared)
             yield* writer.value.appendJournal(row.orgId, row.wakeupId, [
               Writer.LEAD_ENDED_WITHOUT_KIN_END,
             ]);

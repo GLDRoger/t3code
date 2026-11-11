@@ -211,6 +211,14 @@ export const MemoryItemEvery = Schema.Struct({
   ),
 });
 export type MemoryItemEvery = typeof MemoryItemEvery.Type;
+const MemoryItemSharedBy = Schema.Struct({ person: KinPersonId, at: Schema.String });
+const MemoryItemSharedFrom = Schema.Struct({
+  person: KinPersonId,
+  chat: KinChatId,
+  // The person's and the chat's names when it was said, for the owner's index.
+  name: Schema.String,
+  chat_name: Schema.String,
+});
 export const MemoryItemFrontMatter = Schema.Struct({
   id: KinMemoryItemId,
   kind: MemoryItemKind,
@@ -242,6 +250,13 @@ export const MemoryItemFrontMatter = Schema.Struct({
   said_by: TrimmedNonEmptyString,
   trust: MemoryTrust,
   links: Schema.Array(Schema.String),
+  // Whether only the owner's own turns may see the item. Absent on an item nobody has labelled
+  // yet, which reads as sensitive.
+  sensitive: Schema.optional(Schema.Boolean),
+  // Who let the team know a once-sensitive item, and when. Server-written.
+  shared_by: Schema.optional(MemoryItemSharedBy),
+  // Set on an item saved in a chat other people read: who said it and where. Server-written.
+  shared_from: Schema.optional(MemoryItemSharedFrom),
 });
 export type MemoryItemFrontMatter = typeof MemoryItemFrontMatter.Type;
 

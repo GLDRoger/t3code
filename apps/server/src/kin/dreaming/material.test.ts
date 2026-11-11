@@ -226,6 +226,9 @@ it.effect(
           author_member_id, author_role, kind, body, mentions_json, status, created_at)
         VALUES (${id}, ${orgId}, ${`dm-${lead}`}, 1, 'human', 'owner', ${`owner-${lead}`}, 'owner',
           'text', 'Invented note', '[]', 'posted', ${createdAt})`;
+      const claim = (id: string, fields: Record<string, unknown> = {}) =>
+        fixtureItem({ id, kind: "claim", due: null, ...fields });
+      const teammate = { person: "p1", chat: "c1", name: "Invented person", chat_name: "Room" };
       const entry = (wakeup: string, agent: string) =>
         `\n## 09:00 · wake-up ${wakeup} · ${agent} · L2\n\nOutcome: completed\nEvents: e\n\n- Invented.\n`;
       const material = yield* collectMaterial({
@@ -237,13 +240,19 @@ it.effect(
         files: new Map([
           ["journal/2026/11-09.md", entry("w-old", "lead-growth")],
           ["journal/2026/11-10.md", entry("w-new", "lead-tech")],
+          ["claims/labelled.md", claim("labelled", { sensitive: true })],
+          ["claims/legacy.md", claim("legacy")],
+          ["claims/said.md", claim("said", { shared_from: teammate })],
         ]),
       });
+      // An item nobody has labelled is material every night until it is; what a teammate's chat
+      // left never is, labelled or not.
       assert.deepStrictEqual(
-        material.entries.map(({ ref, saidBy }) => ({ ref, saidBy })),
+        material.entries.map(({ ref, saidBy, unlabelled }) => ({ ref, saidBy, unlabelled })),
         [
-          { ref: "memory:journal/2026/11-10.md", saidBy: "lead-tech" },
-          { ref: "kin:chat:dm-lead-tech:message:m-new", saidBy: "owner" },
+          { ref: "memory:journal/2026/11-10.md", saidBy: "lead-tech", unlabelled: undefined },
+          { ref: "kin:chat:dm-lead-tech:message:m-new", saidBy: "owner", unlabelled: undefined },
+          { ref: "memory:claims/legacy.md", saidBy: "demo-owner", unlabelled: true },
         ],
       );
     }).pipe(Effect.provide(layer)),

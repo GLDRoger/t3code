@@ -169,6 +169,8 @@ describe("WakeupRunner", () => {
           commitDream: () => Effect.die("unused"),
           deleteDreamBranch: () => Effect.die("unused"),
           undoChange: () => Effect.die("unused"),
+          relabel: () => Effect.die("unused"),
+          staged: () => Effect.succeed(false),
           stage: () => Effect.die("unused"),
           appendJournal: () => Effect.void,
           discard: () => Effect.void,
@@ -255,11 +257,14 @@ describe("WakeupRunner", () => {
     "runs a turn a teammate can read on its own thread without file tools, then the owner's on a fresh one",
     () => {
       const memory: Array<string> = [];
+      // Whether the running turn saved something for the team (`LeadMemory`).
+      let saved = false;
       const writer = Layer.mock(Writer.MemoryWriter)({
         appendJournal: (_org, wakeupId) => Effect.sync(() => memory.push(`journal:${wakeupId}`)),
         commitWakeup: (_org, wakeupId) =>
           Effect.sync(() => (memory.push(`commit:${wakeupId}`), { commit: "fixture" })),
         discard: (_org, wakeupId) => Effect.sync(() => memory.push(`discard:${wakeupId}`)),
+        staged: () => Effect.sync(() => saved),
       });
       return Effect.gen(function* () {
         yield* seed;
@@ -299,6 +304,10 @@ describe("WakeupRunner", () => {
         const shared = yield* turn("shared");
         assert.deepStrictEqual(shared.audience, "shared");
         assert.isTrue(shared.threadId.startsWith(SHARED_THREAD_PREFIX));
+        saved = true;
+        const saving = yield* turn("saving");
+        assert.deepStrictEqual(saving.audience, "shared");
+        saved = false;
         yield* sql`UPDATE kin_chat_members SET left_at = ${at} WHERE member_id = 'teammate-member'`;
         const again = yield* turn("again");
         assert.isTrue(again.threadId.startsWith("kin:"));
@@ -318,6 +327,8 @@ describe("WakeupRunner", () => {
         ]);
         assert.deepStrictEqual(kept(shared.wakeupId), []);
         assert.include(memory, `discard:${shared.wakeupId}`);
+        // One that saved something for the team commits exactly that.
+        assert.deepStrictEqual(kept(saving.wakeupId), [`commit:${saving.wakeupId}`]);
         assert.lengthOf(kept(again.wakeupId), 2);
       }).pipe(Effect.provide(harness({ writer })), provideDeterministicTestRuntime);
     },
@@ -331,6 +342,7 @@ describe("WakeupRunner", () => {
         commitWakeup: (_org, wakeupId) =>
           Effect.sync(() => (memory.push(`commit:${wakeupId}`), { commit: "fixture" })),
         discard: (_org, wakeupId) => Effect.sync(() => memory.push(`discard:${wakeupId}`)),
+        staged: () => Effect.succeed(false),
       });
       // While the first turn runs, the teammate's join commits with its abort mark.
       let during: Effect.Effect<void> = Effect.void;
@@ -454,6 +466,8 @@ describe("WakeupRunner", () => {
           commitDream: () => Effect.die("unused"),
           deleteDreamBranch: () => Effect.die("unused"),
           undoChange: () => Effect.die("unused"),
+          relabel: () => Effect.die("unused"),
+          staged: () => Effect.succeed(false),
           stage: (_org, wakeup) =>
             Effect.sync(() => {
               assert.isTrue(owner === undefined || owner === wakeup);
@@ -545,6 +559,8 @@ describe("WakeupRunner", () => {
                 commitDream: () => Effect.die("unused"),
                 deleteDreamBranch: () => Effect.die("unused"),
                 undoChange: () => Effect.die("unused"),
+                relabel: () => Effect.die("unused"),
+                staged: () => Effect.succeed(false),
                 discard: () => Effect.void,
                 appendJournal: (_org, _wakeup, lines) =>
                   Effect.sync(() =>

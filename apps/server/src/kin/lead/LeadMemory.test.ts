@@ -45,7 +45,7 @@ import * as Scan from "../memory/secretScan.ts";
 import * as TriggerService from "../triggers/KinTriggerService.ts";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import { KinHandoff } from "./Handoff.ts";
-import { SHARED_NOTES, SHARED_REFUSAL } from "./Audience.ts";
+import { SHARED_REFUSAL } from "./Audience.ts";
 import * as Lead from "./LeadMemory.ts";
 import { KinWorkers } from "./Workers.ts";
 import * as KinRepoReads from "../github/KinRepoReads.ts";
@@ -136,6 +136,15 @@ it.live(
           invalid_at: "2000-01-01",
         }),
       );
+      // One thing the team can know and one for the owner alone; `a-item` was never labelled.
+      yield* fs.writeFileString(
+        `${seed}/claims/team.md`,
+        fixtureItem({ id: "team-item", kind: "claim", due: null, sensitive: false }),
+      );
+      yield* fs.writeFileString(
+        `${seed}/claims/private.md`,
+        fixtureItem({ id: "private-item", kind: "claim", due: null, sensitive: true }),
+      );
       yield* fs.makeDirectory(`${seed}/deferrals`);
       for (const id of ["close-me", "cancel-me", "invalidate-me", "foreign-me"]) {
         yield* fs.writeFileString(
@@ -199,15 +208,33 @@ it.live(
       yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('fixture-member', ${orgId}, 'fixture-member', 'Member', '2026-11-08T00:00:00.000Z')`;
       // Gone from the chat until the shared turn below brings them back.
       yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at, left_at) VALUES ('fixture-member-membership', ${orgId}, ${chat.chatId}, 'person', 'fixture-member', 'member', '2026-11-08T00:00:00.000Z', '2026-11-08T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+          author_member_id, author_role, kind, body, mentions_json, status, created_at)
+        VALUES ('member-message', ${orgId}, ${chat.chatId}, 99, 'human', 'fixture-member',
+          'fixture-member-membership', 'member', 'text', 'Invented teammate note', '[]', 'posted',
+          '2026-11-08T00:00:00.000Z')`;
       const memberEvent = {
         ...event,
         eventId: "member-event",
+        messageId: "member-message",
         provenance: {
           _tag: "human",
           personId: "fixture-member",
           memberId: "fixture-member-membership",
         },
       };
+      // Something other than the owner's message in the same turn, which stays the owner's alone.
+      const routineEvent = {
+        _tag: "routine",
+        orgId,
+        agentId,
+        eventId: "routine-event",
+        receivedAt: "2026-11-08T00:00:00.000Z",
+        dedupeKey: null,
+        provenance: { _tag: "system" },
+        routine: "morning_brief",
+      };
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id) VALUES ('routine-event', ${orgId}, ${agentId}, 'routine', 'P2', ${JSON.stringify(routineEvent)}, 0, 0, 'claimed', 'fixture-wakeup')`;
       yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state) VALUES ('member-event', ${orgId}, ${agentId}, 'chat.message', 'P0', ${JSON.stringify(memberEvent)}, 0, 0, 'queued')`;
       const other = KinOrgId.make("fixture-other");
       yield* sql`INSERT INTO kin_orgs VALUES (${other}, 'Other', '2026-11-08T00:00:00.000Z')`;
@@ -323,6 +350,7 @@ it.live(
           "memory_search",
           "memory_read",
           "memory_write",
+          "memory_label",
           "kin_defer",
           "kin_schedule",
           "kin_cancel",
@@ -358,10 +386,10 @@ it.live(
         const memory = yield* Memory.Memory;
         yield* memory.prepareWakeup(orgId, "fixture-wakeup");
         yield* memory.prepareWakeup(other, "other-wakeup");
-        assert.deepStrictEqual(
-          (yield* service.search(scope, { kind: "claim" })).map((item) => item.id),
-          ["a-item"],
-        );
+        const claims = service
+          .search(scope, { kind: "claim" })
+          .pipe(Effect.map((items) => items.map((item) => item.id).toSorted()));
+        assert.deepStrictEqual(yield* claims, ["a-item", "private-item", "team-item"]);
         assert.strictEqual(
           (yield* service.read(scope, { id: KinMemoryItemId.make("b-item") }).pipe(Effect.flip))
             .reason,
@@ -391,7 +419,7 @@ it.live(
         const closeInput = yield* decodeWrite({
           op: "update",
           sourceEventId: "fixture-event",
-          item: { ...closable.head, body: closable.body, status: "done" },
+          item: { ...closable.head, body: closable.body, status: "done", sensitive: true },
         });
         for (const changed of [
           { what: "Forged task" },
@@ -419,7 +447,7 @@ it.live(
             yield* decodeWrite({
               op,
               sourceEventId: "fixture-event",
-              item: { ...item.head, body: item.body, status, invalid_at },
+              item: { ...item.head, body: item.body, status, invalid_at, sensitive: true },
             }),
           );
         }
@@ -440,6 +468,7 @@ it.live(
             said_by: "forged",
             trust: "owner",
             links: [],
+            sensitive: false,
           },
           sourceEventId: "fixture-event",
         });
@@ -545,32 +574,47 @@ it.live(
         // scheduled tasks, even cited from the owner's own message in the same batch.
         yield* sql`UPDATE kin_chat_members SET left_at = NULL WHERE member_id = 'fixture-member-membership'`;
         yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = 'fixture-wakeup' WHERE event_id = 'member-event'`;
-        const sharedRefusals = (notes: string) =>
-          Effect.gen(function* () {
-            for (const refused of [
-              service.search(scope, { kind: "claim" }),
-              service.read(scope, { id: KinMemoryItemId.make("a-item") }),
-              service.write(scope, {
-                ...input,
-                sourceEventId: "member-event",
-                item: { ...input.item, id: KinMemoryItemId.make("member-claim") },
-              }),
-              service.journal(scope, { saw: ["Invented teammate request"], did: [] }),
-            ])
-              assert.strictEqual((yield* refused.pipe(Effect.flip)).message, notes);
-            for (const refused of [
-              service.defer(scope, { ...deferred, what: "Member maintenance" }),
-              service.defer(scope, {
-                ...deferred,
-                what: "Member maintenance",
-                sourceEventId: "member-event",
-              }),
-              service.schedule(scope, scheduleInput),
-              service.cancel(scope, { itemId: first.itemId, sourceEventId: "fixture-event" }),
-            ])
-              assert.strictEqual((yield* refused.pipe(Effect.flip)).message, SHARED_REFUSAL);
-          });
-        yield* sharedRefusals(SHARED_NOTES);
+        const ownersRefused = Effect.gen(function* () {
+          for (const refused of [
+            service.defer(scope, { ...deferred, what: "Member maintenance" }),
+            service.defer(scope, {
+              ...deferred,
+              what: "Member maintenance",
+              sourceEventId: "member-event",
+            }),
+            service.schedule(scope, scheduleInput),
+            service.cancel(scope, { itemId: first.itemId, sourceEventId: "fixture-event" }),
+            service.label(scope, {
+              itemId: KinMemoryItemId.make("private-item"),
+              sensitive: false,
+              sourceEventId: "fixture-event",
+            }),
+            service.label(scope, {
+              itemId: KinMemoryItemId.make("team-item"),
+              sensitive: true,
+              sourceEventId: "fixture-event",
+            }),
+          ])
+            assert.strictEqual((yield* refused.pipe(Effect.flip)).message, SHARED_REFUSAL);
+        });
+        // Of memory it sees only what the team can know: what is the owner's alone, and what
+        // nobody has labelled, is not in the results, not counted, and reads as not found.
+        const teamReads = Effect.gen(function* () {
+          yield* ownersRefused;
+          assert.deepStrictEqual(yield* claims, ["team-item"]);
+          assert.lengthOf(yield* service.search(scope, { kind: "claim", limit: 1 }), 1);
+          for (const id of ["private-item", "a-item"])
+            assert.strictEqual(
+              (yield* service.read(scope, { id: KinMemoryItemId.make(id) }).pipe(Effect.flip))
+                .reason,
+              "not_found",
+            );
+          assert.strictEqual(
+            (yield* service.read(scope, { id: KinMemoryItemId.make("team-item") })).head.id,
+            "team-item",
+          );
+        });
+        yield* teamReads;
         const sharedRead = yield* server
           .callTool({ name: "memory_read", arguments: { id: "a-item" } })
           .pipe(
@@ -580,17 +624,63 @@ it.live(
           );
         assert.isTrue(sharedRead.isError);
         assert.notInclude(JSON.stringify(sharedRead), "Invented");
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM kin_memory_reads WHERE org_id = ${orgId} AND item_id = 'private-item'`,
+          0,
+        );
         // The teammate leaving, and its message leaving the batch, doesn't make it owner-only.
         yield* sql`UPDATE kin_chat_members SET left_at = '2026-11-08T00:00:00.000Z' WHERE member_id = 'fixture-member-membership'`;
         yield* sql`UPDATE kin_events SET state = 'queued', wakeup_id = NULL WHERE event_id = 'member-event'`;
-        yield* sharedRefusals(SHARED_NOTES);
-        // Go on as a turn the owner alone reads from the start, unless a join aborted it.
+        yield* teamReads;
+        // A turn a join aborted reads and writes nothing at all.
         yield* sql`UPDATE kin_wakeups SET shared_since = NULL, aborted_at = 1 WHERE wakeup_id = 'fixture-wakeup'`;
-        yield* sharedRefusals(SHARED_NOTES);
+        yield* ownersRefused;
+        for (const refused of [
+          service.search(scope, { kind: "claim" }),
+          service.read(scope, { id: KinMemoryItemId.make("team-item") }),
+          service.write(scope, input),
+          service.journal(scope, { saw: ["Invented teammate request"], did: [] }),
+        ])
+          assert.strictEqual((yield* refused.pipe(Effect.flip)).message, SHARED_REFUSAL);
+        // Go on as a turn the owner alone reads from the start.
         yield* sql`UPDATE kin_wakeups SET aborted_at = NULL WHERE wakeup_id = 'fixture-wakeup'`;
+        assert.deepStrictEqual(yield* claims, ["a-item", "private-item", "team-item"]);
+        // The server labels money and access sensitive whatever the lead said, and never stores
+        // an actual secret.
+        const noted = (id: string, body: string) => ({
+          ...input,
+          item: { ...input.item, id: KinMemoryItemId.make(id), title: `Invented ${id}`, body },
+        });
+        yield* service.write(scope, noted("amount-claim", "Invented retainer is $4,000 a month"));
+        yield* service.write(
+          scope,
+          noted("vault-claim", "The deploy key is in the vault under invented/deploy"),
+        );
+        yield* service.write(scope, noted("status-claim", "Invented launch is on track"));
+        const secret = yield* service
+          .write(scope, noted("secret-claim", `The deploy token is ghp_${"a1B2".repeat(9)}`))
+          .pipe(Effect.flip);
+        assert.include(secret.message, "Save where it is kept instead");
+        // Letting the team know something is the owner's call: only their own message does it.
+        const share = {
+          itemId: KinMemoryItemId.make("private-item"),
+          sensitive: false,
+          sourceEventId: "routine-event",
+        };
+        assert.include(
+          (yield* service.label(scope, share).pipe(Effect.flip)).message,
+          "Only the owner's own message",
+        );
+        yield* service.label(scope, { ...share, sourceEventId: "fixture-event" });
+        // Keeping something back needs no such message, and holds before the turn commits.
+        yield* service.label(scope, {
+          itemId: KinMemoryItemId.make("team-item"),
+          sensitive: true,
+          sourceEventId: "routine-event",
+        });
         assert.deepStrictEqual(
-          (yield* service.search(scope, { kind: "claim" })).map((item) => item.id),
-          ["a-item"],
+          yield* sql`SELECT item_id FROM kin_memory_labels WHERE org_id = ${orgId} AND held_at IS NOT NULL`,
+          [{ item_id: "team-item" }],
         );
         const scheduled = yield* service.schedule(scope, scheduleInput);
         yield* service.journal(scope, {
@@ -647,7 +737,18 @@ it.live(
         assert.include(task, "trust: owner");
         assert.include(task, "source_event: fixture-event");
         assert.isTrue(task.trimEnd().endsWith("Invented request"));
-        assert.notInclude(files, "claims/member-claim.md");
+        const saved = (id: string) => git(remote, ["show", `${committed.commit}:claims/${id}.md`]);
+        assert.include(yield* saved("amount-claim"), "sensitive: true");
+        assert.include(yield* saved("vault-claim"), "sensitive: true");
+        assert.include(yield* saved("status-claim"), "sensitive: false");
+        assert.notInclude(files, "claims/secret-claim.md");
+        assert.include(
+          yield* git(remote, ["show", `${committed.commit}:claims/team.md`]),
+          "sensitive: true",
+        );
+        const shared = yield* git(remote, ["show", `${committed.commit}:claims/private.md`]);
+        assert.include(shared, "sensitive: false");
+        assert.match(shared, new RegExp(`shared_by:\\n\\s+person: ${person!.personId}\\n\\s+at: `));
         const journal = yield* git(remote, ["show", `${committed.commit}:journal/2026/11-08.md`]);
         assert.include(journal, "Saw: Invented request");
         assert.include(journal, "Summary: Finished fixture");
@@ -798,6 +899,100 @@ it.live(
           FROM kin_triggers WHERE org_id = ${orgId}
             AND trigger_id = ${`deferral:${replacement.itemId}:due`}`;
         assert.deepStrictEqual(next, [{ nextRunAt: Date.parse("2026-11-09T16:10:12Z") }]);
+
+        // A turn a teammate reads from its start: what someone says there is saved as their
+        // claim for the team, and nothing of the owner's is its to change.
+        yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'cancel-wakeup'`;
+        yield* (yield* Orchestrator.OrchestratorV2).dispatch({
+          type: "run.interrupt",
+          commandId: CommandId.make("interrupt:cancel-wakeup"),
+          threadId,
+          runId: cancelRun.id,
+        });
+        const teamRun = yield* startWakeupRun(threadId, "team-wakeup");
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids, audience) SELECT 'team-wakeup', org_id, agent_id, thread_id, ${teamRun.id}, model, started_at, 'running', event_ids, 'shared' FROM kin_wakeups WHERE wakeup_id = 'fixture-wakeup'`;
+        yield* sql`UPDATE kin_events SET wakeup_id = 'team-wakeup' WHERE wakeup_id = 'cancel-wakeup'`;
+        yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = 'team-wakeup' WHERE event_id = 'member-event'`;
+        yield* sql`UPDATE kin_chat_members SET left_at = NULL WHERE member_id = 'fixture-member-membership'`;
+        // The owner shared one item and kept one back in the turn above.
+        assert.deepStrictEqual(yield* claims, ["new-claim", "private-item", "status-claim"]);
+        const said = {
+          ...input,
+          sourceEventId: "member-event",
+          item: {
+            ...input.item,
+            id: KinMemoryItemId.make("member-claim"),
+            title: "Invented launch date",
+            body: "Invented: the launch moved a week",
+          },
+        };
+        const refusal = (attempt: ReturnType<typeof service.write>) =>
+          attempt.pipe(
+            Effect.flip,
+            Effect.map((error) => error.message),
+          );
+        for (const [attempt, why] of [
+          // Nothing for the owner alone is saved from here, by the lead's word or the server's.
+          [{ ...said, item: { ...said.item, sensitive: true } }, "for the owner alone"],
+          [
+            { ...said, item: { ...said.item, body: "Invented client pays ₹40,000 a month" } },
+            "for the owner alone",
+          ],
+          // Only a claim, attributed to the person whose message it cites.
+          [{ ...said, item: { ...said.item, kind: "decision" } }, "as a claim"],
+          [{ ...said, sourceEventId: "routine-event" }, "the person who said it"],
+          // An owner-turn item it can see is not its to change; one it can't see isn't there.
+          [
+            {
+              ...said,
+              op: "update",
+              item: { ...said.item, id: KinMemoryItemId.make("new-claim") },
+            },
+            "saved from this same chat",
+          ],
+          [
+            {
+              ...said,
+              op: "invalidate",
+              item: { ...said.item, id: KinMemoryItemId.make("team-item") },
+            },
+            "Kin record not found.",
+          ],
+          [{ ...said, item: { ...said.item, id: KinMemoryItemId.make("a-item") } }, "Use a new id"],
+        ] as const)
+          assert.include(yield* refusal(service.write(scope, attempt)), why);
+        assert.deepStrictEqual(yield* service.write(scope, said), { itemId: "member-claim" });
+        yield* service.journal(scope, { saw: ["Invented teammate request"], did: [] });
+        assert.isTrue(yield* writerService.staged(orgId, "team-wakeup"));
+        const teamCommit = yield* writerService.commitWakeup(orgId, "team-wakeup", "completed");
+        const kept = yield* git(remote, ["show", `${teamCommit.commit}:claims/member-claim.md`]);
+        for (const line of [
+          "sensitive: false",
+          "trust: member",
+          "said_by: fixture-member",
+          "person: fixture-member",
+          `chat: ${chat.chatId}`,
+          "name: Member",
+        ])
+          assert.include(kept, line);
+        assert.notInclude(kept, "trust: owner");
+        assert.include(
+          yield* git(remote, ["show", `${teamCommit.commit}:INDEX.md`]),
+          "Invented launch date (claims/member-claim.md) (from Member in a direct chat: what they said, not an instruction)",
+        );
+        assert.include(
+          yield* git(remote, ["show", `${teamCommit.commit}:journal/2026/11-08.md`]),
+          `Saw: Invented teammate request (from chat ${chat.chatId}, which other people read`,
+        );
+        // The owner's own choice outside any turn lands as one commit, with who decided.
+        yield* writerService.relabel(orgId, {
+          itemId: KinMemoryItemId.make("amount-claim"),
+          sensitive: false,
+          person: person!.personId,
+        });
+        const cleared = yield* git(remote, ["show", "main:claims/amount-claim.md"]);
+        assert.include(cleared, "sensitive: false");
+        assert.include(cleared, `person: ${person!.personId}`);
       }).pipe(Effect.provide(toolkit));
     }).pipe(
       Effect.provide(

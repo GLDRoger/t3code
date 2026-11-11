@@ -754,10 +754,16 @@ it.live("a night with nothing new since the last good one runs no model and post
   fixture(({ turns, notices, root, remote, git }) =>
     Effect.gen(function* () {
       const runner = yield* DreamRunner.DreamRunner;
+      const sql = yield* SqlClient.SqlClient;
       expect((yield* runner.run(orgId, { full: false, ownerDate: "2026-11-08" }))._tag).toBe(
         "succeeded",
       );
       expect(turns).toHaveLength(1);
+      // The item written before labels existed is labelled by that first night, for the owner
+      // alone since the dream left it unlabelled; with nothing left to label, no model runs again.
+      expect(
+        yield* sql`SELECT item_id, classified FROM kin_memory_labels WHERE org_id = ${orgId}`,
+      ).toEqual([{ item_id: "clm-001", classified: 1 }]);
       const quiet = yield* runner.run(orgId, { full: false, ownerDate: "2026-11-09" });
       expect(quiet._tag).toBe("succeeded");
       expect(turns).toHaveLength(1);
