@@ -59,6 +59,15 @@ export const schemaKeyFailure = (error: MemoryItemError) => {
   };
 };
 
+/** How every reader parses an item's front matter, so a rewrite reads it the same way. */
+export const FRONT_MATTER_YAML = {
+  schema: "core",
+  version: "1.2",
+  uniqueKeys: true,
+  resolveKnownTags: false,
+  keepSourceTokens: true,
+} as const;
+
 /** The keys whose parsed values differ between two versions of an item, in either's order. */
 export const changedKeys = (before: object, after: object) => {
   const earlier = new Map(Object.entries(before));
@@ -83,13 +92,7 @@ export const parseFrontMatter = Effect.fnUntraced(function* (
   }
   const value: unknown = yield* Effect.try({
     try: () => {
-      const doc = parseDocument(parts[1] ?? "", {
-        schema: "core",
-        version: "1.2",
-        uniqueKeys: true,
-        resolveKnownTags: false,
-        keepSourceTokens: true,
-      });
+      const doc = parseDocument(parts[1] ?? "", FRONT_MATTER_YAML);
       const problem = doc.errors[0] ?? doc.warnings[0];
       if (problem) {
         const links = doc.get("links", true);

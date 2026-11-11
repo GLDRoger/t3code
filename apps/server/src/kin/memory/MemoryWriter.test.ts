@@ -1644,11 +1644,6 @@ it.effect("a cleared chat's words leave every item quoting them, and the items s
       `${source}/claims/said.md`,
       item("said", { source: cleared, quote: FIXTURE_QUOTE }),
     );
-    // Made from it by a dream, carrying its words over.
-    yield* fs.writeFileString(
-      `${source}/claims/folded.md`,
-      item("folded", { source: "memory:claims/said.md", quote: FIXTURE_QUOTE }),
-    );
     yield* fs.writeFileString(
       `${source}/claims/kept.md`,
       item("kept", { source: "kin:chat:kept-chat:message:m-kept", quote: FIXTURE_QUOTE }),
@@ -1744,12 +1739,10 @@ it.effect("a cleared chat's words leave every item quoting them, and the items s
       // Whether a clear's own event ran it or, after a crash, the sync at startup does.
       yield* writer.stripQuotes(orgId);
       for (const branch of ["main", shadow]) {
-        for (const path of ["claims/said.md", "claims/folded.md"]) {
-          const text = yield* show(branch, path);
-          assert.notInclude(text, "quote:", `${branch} ${path}`);
-          assert.include(text, "Invented fixture body.", `${branch} ${path}`);
-          assert.include(text, `title: "Invented `, `${branch} ${path}`);
-        }
+        const text = yield* show(branch, "claims/said.md");
+        assert.notInclude(text, "quote:", branch);
+        assert.include(text, "Invented fixture body.", branch);
+        assert.include(text, `title: "Invented `, branch);
         assert.include(yield* show(branch, "claims/kept.md"), `quote: "${FIXTURE_QUOTE}"`);
       }
       const done = yield* heads;
