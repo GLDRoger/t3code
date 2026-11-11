@@ -1009,8 +1009,16 @@ const make = Effect.gen(function* () {
               `def-${(yield* hash({ wakeup: ctx.wakeupId, input })).slice(0, 32)}`,
             );
           if (input.replaces === id) return yield* invalid("`replaces` names this same item.");
-          if (input.replaces !== undefined)
-            yield* cancelOwn(ctx, input.replaces, input.sourceEventId);
+          const replaced =
+            input.replaces === undefined
+              ? undefined
+              : yield* KinSchedules.readSchedule(sql, ctx.orgId, input.replaces);
+          // A native schedule is cancelled only once its replacement is staged; a retry finds it gone.
+          if (replaced === undefined) {
+            if (input.replaces !== undefined)
+              yield* cancelOwn(ctx, input.replaces, input.sourceEventId);
+          } else if (replaced.deletedAt === null)
+            yield* ownSchedule(ctx, replaced, input.sourceEventId);
           const recorded = DateTime.formatIso(DateTime.makeUnsafe(ctx.startedAt));
           const fields = {
             id,
@@ -1043,6 +1051,8 @@ const make = Effect.gen(function* () {
               sourceEventId: input.sourceEventId,
             }),
           );
+          if (replaced !== undefined && replaced.deletedAt === null)
+            yield* schedules.cancel(ctx.orgId, replaced.scheduleId);
           return { itemId: id };
         }),
       );

@@ -17,7 +17,7 @@ import * as KinSchedules from "./kinSchedules.ts";
 import * as KinTriggerSink from "./KinTriggerSink.ts";
 import { projection } from "./webhooks.testkit.ts";
 
-/** Saves rows as the real service would, with no native task behind them. */
+/** Saves and tombstones rows as the real service would, with no native task behind them. */
 export const recordingSchedules = (saves: KinSchedules.SaveInput[], cancels: string[]) =>
   Layer.effect(
     KinSchedules.KinSchedules,
@@ -34,7 +34,8 @@ export const recordingSchedules = (saves: KinSchedules.SaveInput[], cancels: str
             Effect.orDie,
           ),
         cancel: (orgId, scheduleId) =>
-          sql`DELETE FROM kin_schedules WHERE org_id = ${orgId} AND schedule_id = ${scheduleId}`.pipe(
+          sql`UPDATE kin_schedules SET deleted_at = COALESCE(deleted_at, 1)
+            WHERE org_id = ${orgId} AND schedule_id = ${scheduleId}`.pipe(
             Effect.tap(() => Effect.sync(() => cancels.push(scheduleId))),
             Effect.asVoid,
             Effect.orDie,

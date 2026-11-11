@@ -460,7 +460,7 @@ it.effect("an edited prompt is put to the owner once and runs only after he conf
 });
 
 it.effect("the card's Pause, Run now and Delete act on the native task", () => {
-  const { recorded, layer } = harness();
+  const { recorded, workers, layer } = harness();
   return Effect.gen(function* () {
     yield* nativeSetup();
     const chat = yield* Chat.KinChatService;
@@ -477,12 +477,25 @@ it.effect("the card's Pause, Run now and Delete act on the native task", () => {
         clientActionId: `${actionId}-${widget.revision}`,
       });
     });
+    // A run already handed to Kin, then paused before Kin's tick: it doesn't run.
+    const due = Effect.fn("test.nativeDue")(function* () {
+      yield* TestClock.setTime(Date.parse((yield* tasks.list()).tasks[0]!.nextRunAt!));
+      yield* workers.get("scheduled-tasks")!;
+    });
+    yield* due();
     yield* tap("pause");
     yield* drain;
     assert.isFalse((yield* tasks.list()).tasks[0]!.enabled);
     assert.include((yield* nativeCard()).state, { status: "paused" });
+    assert.lengthOf(yield* nativeRuns(), 0);
     // Run now still runs a paused schedule, as before.
     yield* tap("run_now");
+    yield* drain;
+    assert.lengthOf(yield* nativeRuns(), 1);
+    // The same when the pause comes from T3's Scheduled tasks screen.
+    yield* tasks.setEnabled({ id: taskId, enabled: true });
+    yield* due();
+    yield* tasks.setEnabled({ id: taskId, enabled: false });
     yield* drain;
     assert.lengthOf(yield* nativeRuns(), 1);
     yield* tap("delete");

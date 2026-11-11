@@ -783,6 +783,14 @@ it.live(
         const scheduled = yield* service.schedule(scope, scheduleInput);
         // kin_cancel removes a native schedule through the same owner-only gate.
         yield* service.cancel(scope, { itemId: scheduled.itemId, sourceEventId: "fixture-event" });
+        // kin_defer can turn a native schedule into a one-off: the schedule goes once it is staged.
+        const recurring = yield* service.schedule(scope, {
+          ...scheduleInput,
+          what: "Summarise the stale branches",
+        });
+        const oneOff = { ...deferred, what: "Invented one-off", replaces: recurring.itemId };
+        const fromSchedule = yield* service.defer(scope, oneOff);
+        assert.deepStrictEqual(yield* service.defer(scope, oneOff), fromSchedule);
         yield* service.journal(scope, {
           saw: ["Invented request"],
           did: ["Wrote memory"],
@@ -837,7 +845,8 @@ it.live(
           every: { at: "08:00", days: [1, 5] },
           sourceEvent: "fixture-event",
         });
-        assert.deepStrictEqual(nativeCancels, [scheduled.itemId]);
+        assert.deepStrictEqual(nativeCancels, [scheduled.itemId, recurring.itemId]);
+        assert.include(files, `deferrals/${fromSchedule.itemId}.md`);
         const saved = (id: string) => git(remote, ["show", `${committed.commit}:claims/${id}.md`]);
         assert.include(yield* saved("amount-claim"), "sensitive: true");
         assert.include(yield* saved("vault-claim"), "sensitive: true");
