@@ -70,6 +70,7 @@ function harness() {
     },
     onChange: (state) => states.push(state),
     now: () => Date.parse("2026-11-11T08:00:00.000Z"),
+    hostFilters: () => true,
     schedule: (run) => {
       timers.push(run);
       return () => timers.splice(timers.indexOf(run), 1);

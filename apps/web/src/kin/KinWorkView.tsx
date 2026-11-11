@@ -8,6 +8,7 @@ import {
   KIN_WORK_STALE,
   KIN_WORK_TITLE,
   kinWorkEntrySummary,
+  kinWorkHostEdits,
   kinWorkListFooter,
   kinWorkNothing,
   kinWorkOverview,
@@ -18,20 +19,28 @@ import {
   type KinWorkRowView,
 } from "@t3tools/client-runtime/kin/kinWork";
 import {
+  KIN_WORK_COPY,
+  kinWorkApplied,
+  type KinWorkAction,
+  type KinWorkNotice,
+} from "@t3tools/client-runtime/kin/kinWorkChanges";
+import {
   KIN_WORK_LIST_INITIAL,
   createKinWorkList,
   type KinWorkListState,
 } from "@t3tools/client-runtime/kin/kinWorkList";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
-import type { KinRecordKey } from "@t3tools/contracts";
+import type { KinRecord, KinRecordKey } from "@t3tools/contracts";
 import { LegendList } from "@legendapp/list/react";
 import { Link } from "@tanstack/react-router";
-import { ArrowLeftIcon, ListChecksIcon, PlusIcon } from "lucide-react";
+import * as Option from "effect/Option";
+import { AsyncResult } from "effect/reactivity";
+import { ArrowLeftIcon, ListChecksIcon, PlusIcon, XIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../components/WorkspaceBreadcrumb";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
-import { Alert, AlertDescription } from "../components/ui/alert";
+import { Alert, AlertAction, AlertDescription } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import {
@@ -56,7 +65,9 @@ import { useNowMinuteMs } from "./useKinClock";
 import {
   kinWorkLiveAtom,
   useKinWork,
+  useKinWorkChanges,
   useKinWorkDirectory,
+  type KinWorkChangesHandle,
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./useKinWork";
@@ -105,6 +116,7 @@ export function KinWorkView({
   const state = useKinWork(props);
   const canAdd = useAtomValue(kinClient.workCreate.permissionAtom(props.environmentId));
   const directory = useKinWorkDirectory(props, state._tag === "ready");
+  const changes = useKinWorkChanges(props);
   const [adding, setAdding] = useState(false);
   const add = state._tag === "ready" && canAdd ? () => setAdding(true) : null;
   return (
@@ -160,6 +172,7 @@ export function KinWorkView({
           live={state.live}
           stale={state.stale}
           directory={directory}
+          changes={changes}
           onOpen={setOpenKey}
           onAdd={add}
         />
@@ -171,6 +184,8 @@ export function KinWorkView({
           {...props}
           itemKey={openKey}
           directory={directory}
+          changes={changes}
+          onOpenKey={setOpenKey}
           onClose={() => setOpenKey(null)}
         />
       )}
@@ -221,12 +236,16 @@ function KinWorkBody(
     readonly live: KinWorkLive;
     readonly stale: boolean;
     readonly directory: KinWorkDirectory;
+    readonly changes: KinWorkChangesHandle;
     readonly onOpen: (key: KinRecordKey) => void;
     readonly onAdd: (() => void) | null;
   },
 ) {
   const { environmentId, orgId, live } = props;
   const { names } = props.directory;
+  const { state: changed, changes } = props.changes;
+  const hostEdits = kinWorkHostEdits(live.summary);
+  const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId)) && hostEdits;
   const now = new Date(useNowMinuteMs());
   const [listState, setListState] = useState<KinWorkListState>(KIN_WORK_LIST_INITIAL);
   const [list] = useState(() =>
@@ -235,6 +254,13 @@ function KinWorkBody(
       read: (input) => kinClient.workList.run(appAtomRegistry, { environmentId, input }),
       onChange: setListState,
       now: Date.now,
+      // The first counts are in before the list exists, and say which filters the host has.
+      hostFilters: () =>
+        kinWorkHostEdits(
+          appAtomRegistry
+            .get(kinWorkLiveAtom({ environmentId, orgId }))
+            .pipe(AsyncResult.value, Option.getOrNull)?.summary ?? null,
+        ),
       schedule: (run, ms) => {
         const timer = setTimeout(run, ms);
         return () => clearTimeout(timer);
@@ -253,17 +279,22 @@ function KinWorkBody(
 
   const { filter } = listState;
   const overview = kinWorkOverview(live.summary, filter, names);
-  const rows = kinWorkShown(filter, listState.records).map((record) =>
-    kinWorkRow(record, names, now),
+  const records = kinWorkShown(filter, listState.records, hostEdits).map((record) =>
+    kinWorkApplied(record, changed),
   );
+  const rows = records.map((record) => kinWorkRow(record, names, now));
+  const act = (key: KinRecordKey, action: KinWorkAction) => {
+    const record = records.find((held) => held.key === key);
+    if (record !== undefined) void changes.run(record, action, names);
+  };
   const nothing = kinWorkNothing(filter, names);
-  const footer = kinWorkListFooter(filter, rows.length, listState.total, listState.more);
+  const footer = kinWorkListFooter(filter, rows.length, listState.total, listState.more, hostEdits);
   return (
     // Hundreds of tasks stay cheap: only the rows in view mount.
     <LegendList<KinWorkRowView>
       data={rows}
       keyExtractor={(row) => row.key}
-      extraData={listState}
+      extraData={[listState, changed]}
       recycleItems
       onEndReached={() => void list.loadMore()}
       onEndReachedThreshold={0.5}
@@ -279,6 +310,14 @@ function KinWorkBody(
             filter={filter}
             onChange={(next) => list.setFilter(next)}
           />
+          {changed.notice === null ? null : (
+            <KinWorkListNotice
+              notice={changed.notice}
+              record={records.find((held) => held.key === changed.notice?.key) ?? null}
+              onUndo={(record) => void changes.undo(record, names)}
+              onDismiss={changes.dismiss}
+            />
+          )}
         </div>
       }
       ListEmptyComponent={
@@ -334,7 +373,12 @@ function KinWorkBody(
       }
       renderItem={({ item: row }) => (
         <div className="mx-auto w-full max-w-3xl border-b border-border/60 px-4">
-          <KinWorkRow row={row} onOpen={() => props.onOpen(row.key)} />
+          <KinWorkRow
+            row={row}
+            saving={changed.pending[row.key] !== undefined}
+            onOpen={() => props.onOpen(row.key)}
+            onAct={canChange ? (action) => act(row.key, action) : null}
+          />
         </div>
       )}
       estimatedItemSize={60}
@@ -414,27 +458,105 @@ function KinWorkFilters(props: {
   );
 }
 
-function KinWorkRow(props: { readonly row: KinWorkRowView; readonly onOpen: () => void }) {
-  const { row } = props;
+/** What the last change did, with the way back, said once above the rows. */
+function KinWorkListNotice(props: {
+  readonly notice: KinWorkNotice;
+  /** The task as listed now; null once the list has moved on without it. */
+  readonly record: KinRecord | null;
+  readonly onUndo: (record: KinRecord) => void;
+  readonly onDismiss: () => void;
+}) {
+  const { notice, record } = props;
   return (
-    <button
-      type="button"
-      aria-label={row.accessibilityLabel}
-      onClick={props.onOpen}
-      className="flex w-full items-start gap-3 rounded-md px-2 py-2.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
+    <Alert
+      variant={notice.kind === "saved" ? "success" : notice.kind === "failed" ? "error" : "warning"}
     >
-      <span className="flex h-5 items-center">
-        <KinWorkStateIcon state={row.state} />
-      </span>
-      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="line-clamp-2 text-sm text-foreground">{row.title}</span>
-        <span className="truncate text-xs text-muted-foreground">{row.line}</span>
-      </span>
-      {row.late ? (
-        <Badge size="sm" variant="error">
-          Late
-        </Badge>
+      <AlertDescription>
+        {notice.key}: {notice.text}
+      </AlertDescription>
+      <AlertAction>
+        {notice.undo === null || record === null ? null : (
+          <Button size="xs" variant="outline" onClick={() => props.onUndo(record)}>
+            {KIN_WORK_COPY.undo}
+          </Button>
+        )}
+        <Button size="icon-xs" variant="ghost" aria-label="Dismiss" onClick={props.onDismiss}>
+          <XIcon />
+        </Button>
+      </AlertAction>
+    </Alert>
+  );
+}
+
+const TICK_LABEL = { done: KIN_WORK_COPY.done, reopen: KIN_WORK_COPY.reopen } as const;
+
+function KinWorkRow(props: {
+  readonly row: KinWorkRowView;
+  readonly saving: boolean;
+  readonly onOpen: () => void;
+  /** Null where this browser or this host can't change a task. */
+  readonly onAct: ((action: KinWorkAction) => void) | null;
+}) {
+  const { row, onAct } = props;
+  const tick = onAct === null ? null : row.tick;
+  return (
+    <div className="flex items-start gap-1 py-1" aria-busy={props.saving}>
+      {tick === null || onAct === null ? (
+        <span className="flex size-7 shrink-0 items-center justify-center pt-1.5">
+          <KinWorkStateIcon state={row.state} />
+        </span>
+      ) : (
+        <span className="pt-1.5">
+          <Button
+            size="icon-xs"
+            variant="ghost"
+            disabled={props.saving}
+            aria-label={`${TICK_LABEL[tick]}: ${row.title}`}
+            title={TICK_LABEL[tick]}
+            onClick={() => onAct({ type: "state", state: tick === "done" ? "done" : "open" })}
+          >
+            <KinWorkStateIcon state={row.state} />
+          </Button>
+        </span>
+      )}
+      <button
+        type="button"
+        aria-label={row.accessibilityLabel}
+        onClick={props.onOpen}
+        className="flex min-w-0 flex-1 items-start gap-3 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
+      >
+        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="line-clamp-2 text-sm text-foreground">{row.title}</span>
+          <span className="truncate text-xs text-muted-foreground">{row.line}</span>
+        </span>
+        {row.late ? (
+          <Badge size="sm" variant="error">
+            Late
+          </Badge>
+        ) : null}
+      </button>
+      {row.suggested && onAct !== null ? (
+        <span className="flex shrink-0 items-center gap-1 pt-1.5">
+          <Button
+            size="xs"
+            variant="ghost"
+            disabled={props.saving}
+            aria-label={`${KIN_WORK_COPY.decline}: ${row.title}`}
+            onClick={() => onAct({ type: "decline" })}
+          >
+            {KIN_WORK_COPY.decline}
+          </Button>
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={props.saving}
+            aria-label={`${KIN_WORK_COPY.keep}: ${row.title}`}
+            onClick={() => onAct({ type: "confirm" })}
+          >
+            {KIN_WORK_COPY.keep}
+          </Button>
+        </span>
       ) : null}
-    </button>
+    </div>
   );
 }

@@ -7,6 +7,7 @@ import { useEffect } from "react";
 import { environmentCatalog } from "../../../connection/catalog";
 import { connectionAtomRuntime } from "../../../connection/runtime";
 import * as MobileSecureStorage from "../../../persistence/mobile-secure-storage";
+import { appAtomRegistry } from "../../../state/atom-registry";
 import { environmentPresentations } from "../../../state/presentation";
 import { kinCachedOrgsAtom, kinClient, markKinHostKnown } from "./kinClient";
 import {
@@ -77,6 +78,12 @@ const kinHostAtAtom = Atom.family((environmentId: EnvironmentId) =>
     });
   }).pipe(Atom.withLabel(`kin:host:${environmentId}`)),
 );
+
+/** Whether the host a route names is reachable right now, asked at the moment of a change. */
+export function kinHostConnected(environmentId: EnvironmentId): boolean {
+  const host = appAtomRegistry.get(kinHostAtAtom(environmentId));
+  return host._tag === "host" && host.connected;
+}
 
 /** The Kin host a route names, connected or not; `unpaired` when it left the catalog. */
 export function useKinHostAt(environmentId: EnvironmentId): KinRouteHost {

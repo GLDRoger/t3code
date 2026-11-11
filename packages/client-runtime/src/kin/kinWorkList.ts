@@ -68,6 +68,8 @@ export function createKinWorkList(options: {
   ) => Promise<AtomCommandResult<KinWorkListResult, unknown>>;
   readonly onChange: (state: KinWorkListState) => void;
   readonly now: () => number;
+  /** The host has the newer filters, so "Due this week" is asked for whole. */
+  readonly hostFilters: () => boolean;
   /** Runs `run` after `ms`; returns its cancel. */
   readonly schedule: (run: () => void, ms: number) => () => void;
 }) {
@@ -98,7 +100,12 @@ export function createKinWorkList(options: {
   const load = async (want: number) => {
     const mine = ++generation;
     running = true;
-    const query = kinWorkListQuery(options.orgId, state.filter, options.now());
+    const query = kinWorkListQuery(
+      options.orgId,
+      state.filter,
+      options.now(),
+      options.hostFilters(),
+    );
     let records: ReadonlyArray<KinRecord> = [];
     let next: string | null = null;
     let seq: number | null = null;
@@ -212,7 +219,7 @@ export function createKinWorkList(options: {
       running = true;
       set({ loadingMore: true, moreFailed: false });
       const result = await options.read({
-        ...kinWorkListQuery(options.orgId, state.filter, options.now()),
+        ...kinWorkListQuery(options.orgId, state.filter, options.now(), options.hostFilters()),
         limit: KIN_WORK_PAGE,
         cursor,
       });

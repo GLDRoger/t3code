@@ -4,18 +4,29 @@ import {
   kinWorkScreenState,
   type KinWorkScreenState,
 } from "@t3tools/client-runtime/kin/kinWork";
+import {
+  createKinWorkChanges,
+  createKinWorkItemWatch,
+  type KinWorkChangesState,
+} from "@t3tools/client-runtime/kin/kinWorkChanges";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type {
   EnvironmentId,
   KinOrgId,
   KinOwnerTimeZone,
   KinPeopleListResult,
+  KinRecordDetail,
+  KinRecordKey,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
+import { useEffect, useState } from "react";
 
+import { environmentCatalog } from "../../../connection/catalog";
+import { appAtomRegistry } from "../../../state/atom-registry";
+import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "./kinClient";
-import { useKinHostAt } from "./useKinHost";
+import { kinHostConnected, useKinHostAt } from "./useKinHost";
 
 export interface KinWorkTarget {
   readonly environmentId: EnvironmentId;
@@ -68,3 +79,68 @@ export function useKinWorkDirectory({ environmentId, orgId }: KinWorkTarget, ena
 }
 
 export type KinWorkDirectory = ReturnType<typeof useKinWorkDirectory>;
+
+/** The owner's changes to tasks on one host, for a list or a task on screen. */
+export function useKinWorkChanges(
+  { environmentId, orgId }: KinWorkTarget,
+  /** A form that opens already typing over this task. */
+  editing?: KinRecordDetail,
+) {
+  const update = useAtomCommand(kinClient.workUpdate, { reportFailure: false });
+  const assign = useAtomCommand(kinClient.workAssign, { reportFailure: false });
+  const confirm = useAtomCommand(kinClient.workConfirm, { reportFailure: false });
+  const decline = useAtomCommand(kinClient.workDecline, { reportFailure: false });
+  // The form's first state is the controller's, which exists only once this has run.
+  const [held] = useState(() => Atom.make<KinWorkChangesState>(KIN_WORK_NO_CHANGES));
+  const [changes] = useState(() =>
+    createKinWorkChanges({
+      orgId,
+      update: (input) => update({ environmentId, input }),
+      assign: (input) => assign({ environmentId, input }),
+      confirm: (input) => confirm({ environmentId, input }),
+      decline: (input) => decline({ environmentId, input }),
+      reread: (key) =>
+        appAtomRegistry.refresh(kinClient.workItem({ environmentId, input: { orgId, key } })),
+      online: () => kinHostConnected(environmentId),
+      ...(editing === undefined ? {} : { editing }),
+      onChange: (next) => appAtomRegistry.set(held, next),
+    }),
+  );
+  return { state: useAtomValue(held), changes };
+}
+
+/** Reads the open task again when Work says it changed, and not for anyone else's change. */
+export function useKinWorkItemWatch(
+  { environmentId, orgId }: KinWorkTarget,
+  key: KinRecordKey,
+  heldSeq: number | undefined | null,
+) {
+  const live = Option.getOrNull(
+    AsyncResult.value(useAtomValue(kinWorkLiveAtom({ environmentId, orgId }))),
+  );
+  const [watch] = useState(() =>
+    createKinWorkItemWatch({
+      key,
+      reread: () =>
+        appAtomRegistry.refresh(kinClient.workItem({ environmentId, input: { orgId, key } })),
+    }),
+  );
+  const named = live?.changed[key] ?? 0;
+  const unnamed = live?.unnamed ?? 0;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the open task from the host again when the host announces a change to it
+  useEffect(() => {
+    watch.changed(
+      { changed: { [key]: named }, unnamed },
+      heldSeq === null ? null : heldSeq === undefined ? {} : { seq: heldSeq },
+    );
+  }, [watch, key, named, unnamed, heldSeq]);
+}
+
+/** Which environments this phone can open a thread in, as a task card decides it. */
+export function useKinWorkPlace(environmentId: EnvironmentId) {
+  const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
+  return {
+    environmentId,
+    isKnownEnvironment: (id: EnvironmentId) => !catalog.isReady || catalog.entries.has(id),
+  };
+}

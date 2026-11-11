@@ -14,6 +14,7 @@ import { KinTeamScreen } from "./KinTeamScreen";
 import { KinTeammateScreen } from "./KinTeammateScreen";
 import { KinWaitingScreen } from "./KinWaitingScreen";
 import { KinWorkAssignScreen } from "./KinWorkAssignScreen";
+import { KinWorkEditScreen } from "./KinWorkEditScreen";
 import { KinWorkItemScreen } from "./KinWorkItemScreen";
 import { KinWorkNewScreen } from "./KinWorkNewScreen";
 import { KinWorkScreen } from "./KinWorkScreen";
@@ -50,6 +51,10 @@ export const KIN_SCREENS = {
     options: sheetRoute({ detent: 0.75 }),
   }),
   // A full sheet, so the keyboard never covers what is being typed.
+  KinWorkEdit: createNativeStackScreen({
+    screen: KinWorkEditScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
   KinWorkNew: createNativeStackScreen({
     screen: KinWorkNewScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
