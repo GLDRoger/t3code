@@ -13,6 +13,7 @@ import { WorkspaceEmptyDetail } from "../WorkspaceEmptyDetail";
 export function WorkspaceListEmptyDetail(props: {
   readonly hasConnections: boolean;
   readonly onAddConnection: () => void;
+  readonly onJoinKin: () => void;
   readonly onStartNewTask: () => void;
 }) {
   const { panes } = useWorkspacePaneState();
@@ -40,6 +41,7 @@ export function WorkspaceListEmptyDetail(props: {
         onAddConnection={
           Platform.OS === "android" && !props.hasConnections ? props.onAddConnection : undefined
         }
+        onJoinKin={props.onJoinKin}
         onStartNewTask={
           Platform.OS === "android" && panes.primarySidebarVisible
             ? undefined

@@ -13,6 +13,7 @@ import {
 
 import { useEnvironments, type EnvironmentPresentation } from "../../state/environments";
 import { useProjects } from "../../state/entities";
+import { useChatOnlyEnvironments } from "../chats/state/kinChatOnly";
 import { useMobileProjectGroupingSettings } from "../../state/project-grouping";
 import { toggleSettingsEnvironment } from "./settings-environment-filter.logic";
 
@@ -116,7 +117,16 @@ export function useSettingsEnvironmentFilter() {
   const groupingSettings = useMobileProjectGroupingSettings();
   const groupingMode = groupingSettings.sidebarProjectGroupingMode;
   const projectGroups = settingsProjectGroups(projects, groupingMode);
-  const availableTargets = connectedSettingsTargets(environments);
+  const chatOnly = useChatOnlyEnvironments();
+  const connectedTargets = connectedSettingsTargets(environments);
+  // A teammate's session can't read or change any of these settings, so it is no target.
+  const availableTargets = useMemo(
+    () =>
+      chatOnly.length === 0
+        ? connectedTargets
+        : connectedTargets.filter((entry) => !chatOnly.includes(entry.environmentId)),
+    [connectedTargets, chatOnly],
+  );
   const selectedTargets = useMemo(
     () =>
       availableTargets.filter(

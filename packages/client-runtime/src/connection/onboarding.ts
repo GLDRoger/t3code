@@ -22,7 +22,7 @@ import {
   SshConnectionRegistration,
 } from "./catalog.ts";
 import * as ConnectionCredentialStore from "./credentialStore.ts";
-import { mapRemoteEnvironmentError } from "./errors.ts";
+import { mapKinInviteError, mapRemoteEnvironmentError } from "./errors.ts";
 import {
   BearerConnectionTarget,
   ConnectionBlockedError,
@@ -144,7 +144,7 @@ export const preparePairingRegistration = Effect.fn(
         httpBaseUrl: target.httpBaseUrl,
         secret: target.credential,
         ...(presentation.metadata.label ? { label: presentation.metadata.label } : {}),
-      }).pipe(Effect.mapError(mapRemoteEnvironmentError))).accessToken
+      }).pipe(Effect.mapError(mapKinInviteError))).accessToken
     : (yield* bootstrapRemoteBearerSession({
         httpBaseUrl: target.httpBaseUrl,
         credential: target.credential,

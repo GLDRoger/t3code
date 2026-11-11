@@ -1,4 +1,4 @@
-import { readHostedPairingRequest } from "@t3tools/shared/remote";
+import { readHostedPairingRequest, readKinJoinLink } from "@t3tools/shared/remote";
 import * as Schema from "effect/Schema";
 
 const MOBILE_PAIRING_URL_PARAM = "pairingUrl";
@@ -45,6 +45,10 @@ export function buildPairingUrl(host: string, code: string): string {
 export function parsePairingUrl(url: string): { host: string; code: string } {
   const trimmed = url.trim();
   if (!trimmed) return { host: "", code: "" };
+
+  // A teammate's join link carries its secret as the whole fragment; splitting it would drop it.
+  const joinLink = readKinJoinLink(trimmed);
+  if (joinLink !== null) return { host: joinLink, code: "" };
 
   try {
     const parsed = new URL(trimmed);

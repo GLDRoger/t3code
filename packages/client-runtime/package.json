@@ -567,6 +567,10 @@
       "types": "./src/kin/kinGroups.ts",
       "default": "./src/kin/kinGroups.ts"
     },
+    "./kin/kinJoin": {
+      "types": "./src/kin/kinJoin.ts",
+      "default": "./src/kin/kinJoin.ts"
+    },
     "./kin/kinTeam": {
       "types": "./src/kin/kinTeam.ts",
       "default": "./src/kin/kinTeam.ts"

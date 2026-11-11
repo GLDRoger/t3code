@@ -43,4 +43,11 @@ describe("parsePairingUrl", () => {
       code: "pairing-token",
     });
   });
+
+  it("keeps a scanned teammate join link whole, so its secret survives to the connect step", () => {
+    const link = "https://kin.example.com/kin/invite#org.invite.secret";
+    const scanned = parsePairingUrl(extractPairingUrlFromQrPayload(link));
+    expect(scanned).toEqual({ host: link, code: "" });
+    expect(buildPairingUrl(scanned.host, scanned.code)).toBe(link);
+  });
 });
