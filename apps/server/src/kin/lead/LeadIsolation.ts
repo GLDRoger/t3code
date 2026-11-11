@@ -1,3 +1,5 @@
+import type { HookCallbackMatcher } from "@anthropic-ai/claude-agent-sdk";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -5,6 +7,12 @@ import * as Path from "effect/Path";
 
 import { ServerConfig } from "../../config.ts";
 import * as ClaudeAdapterV2 from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import {
+  type AuthSettings,
+  makeConfiner,
+  sessionEnvironment,
+  withConfinementHook,
+} from "../claudeConfinement.ts";
 import { KinEnabled, layer as kinEnabledLayer } from "../KinEnabled.ts";
 import { threadPrefix as dreamThreadPrefix } from "../dreaming/DreamIsolation.ts";
 import { SHARED_THREAD_PREFIX } from "./Audience.ts";
@@ -36,7 +44,10 @@ export const leadBlockedTools = [
   "Workflow",
 ];
 
-/** Read deny rules for host secrets a lead's `Read`, `Grep` and `Glob` could otherwise reach. */
+/**
+ * The confinement hook allows only the lead's real memory checkout; these deny rules are a second
+ * wall that holds if the hook is ever lost.
+ */
 const leadSecretReadRules = (config: {
   readonly baseDir: string;
   readonly secretsDir: string;
@@ -62,6 +73,11 @@ const leadOptions = (
   options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions,
   denied: ReadonlyArray<string>,
   shared: boolean,
+  confinement: {
+    readonly hook: HookCallbackMatcher;
+    readonly auth: AuthSettings;
+    readonly environment: NodeJS.ProcessEnv;
+  },
 ) => {
   const { tools, settings, env } = options;
   // A turn someone besides the owner reads gets no file tools: its cwd is the owner's memory.
@@ -74,19 +90,30 @@ const leadOptions = (
     ],
     // The user's own MCP servers and plugins could hand a lead a shell again.
     strictMcpConfig: true,
+    hooks: withConfinementHook(options.hooks, confinement.hook),
     // Kin tools load upfront: a lead that never searched for `kin_chat_post` could not reply.
-    // Flag settings env beats a user settings.json env; a settings file path can't take keys.
+    // A settings file path can't take keys.
     ...(typeof settings === "string"
       ? {}
-      : { settings: { ...settings, env: { ...settings?.env, ENABLE_TOOL_SEARCH: "false" } } }),
-    ...(env === undefined ? {} : { env: { ...env, ENABLE_TOOL_SEARCH: "false" } }),
+      : {
+          settings: {
+            ...confinement.auth,
+            ...settings,
+            env: { ...confinement.auth.env, ...settings?.env, ENABLE_TOOL_SEARCH: "false" },
+          },
+        }),
+    env: {
+      ...sessionEnvironment(env ?? confinement.environment),
+      ENABLE_TOOL_SEARCH: "false",
+    },
   };
 };
 
 /**
- * A lead runs full-access with Kin's memory checkout as its cwd, so its Claude session loads user
- * settings only: never a project `CLAUDE.md`, `.claude/` or `.mcp.json` that memory might carry.
- * The cwd is the lead project's root, which Kin sets; a match only ever narrows what loads.
+ * A lead runs full-access with Kin's memory checkout as its cwd, so its Claude session loads no
+ * settings file: not a project `CLAUDE.md`, `.claude/` or `.mcp.json` that memory might carry, nor
+ * the user's hooks, plugins and env. It keeps the owner's model credentials. The cwd is the lead
+ * project's root, which Kin sets; a match only ever narrows what loads.
  */
 export const claudeQueryRunner = <E, R>(
   base: Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunner, E, R>,
@@ -101,6 +128,7 @@ export const claudeQueryRunner = <E, R>(
       const config = yield* ServerConfig;
       const kinDirectory = path.join(config.stateDir, "kin");
       const denied = [...leadBlockedTools, ...leadSecretReadRules(config)];
+      const confiner = yield* makeConfiner();
       const real = (target: string) => fs.realPath(target).pipe(Effect.orElseSucceed(() => target));
       const within = (parent: string, child: string) => {
         const relative = path.relative(parent, child);
@@ -115,28 +143,31 @@ export const claudeQueryRunner = <E, R>(
             (within(kinDirectory, path.resolve(cwd)) ||
               within(yield* real(kinDirectory), yield* real(cwd)));
           const isDream = input.threadId.startsWith(dreamThreadPrefix);
-          return yield* runner.open(
-            isKin
-              ? {
-                  ...input,
-                  options: {
-                    ...input.options,
-                    // Narrow, never widen: a dream's `[]` stays `[]` whichever wrapper runs first.
-                    settingSources: (
-                      input.options.settingSources ?? ["user", "project", "local"]
-                    ).filter((source) => source === "user"),
-                    // Dreams edit their own checkout and already refuse the shell and the web.
-                    ...(isDream
-                      ? {}
-                      : leadOptions(
-                          input.options,
-                          denied,
-                          input.threadId.startsWith(SHARED_THREAD_PREFIX),
-                        )),
-                  },
-                }
-              : input,
-          );
+          if (!isKin) return yield* runner.open(input);
+          // Narrow, never widen: a dream's `[]` stays `[]` whichever wrapper runs first.
+          const settingSources: Array<never> = [];
+          // Dreams edit their own checkout; DreamIsolation confines them.
+          if (isDream)
+            return yield* runner.open({ ...input, options: { ...input.options, settingSources } });
+          const shared = input.threadId.startsWith(SHARED_THREAD_PREFIX);
+          const root = shared ? undefined : yield* confiner.root(cwd);
+          const attachments = yield* confiner.root(config.attachmentsDir);
+          return yield* runner.open({
+            ...input,
+            options: {
+              ...input.options,
+              settingSources,
+              ...leadOptions(input.options, denied, shared, {
+                hook: confiner.hook({
+                  root,
+                  tools: shared ? [] : leadTools,
+                  ...(attachments === undefined ? {} : { attachments }),
+                }),
+                auth: yield* confiner.ownerAuth(input.options.env),
+                environment: yield* HostProcess.Environment,
+              }),
+            },
+          });
         }),
       });
     }),

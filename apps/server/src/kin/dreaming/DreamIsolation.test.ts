@@ -1,3 +1,4 @@
+import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -12,6 +13,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import * as ClaudeAdapterV2 from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import { hookAllows, kinSecretVariables } from "../claudeConfinement.testkit.ts";
 import * as DreamIsolation from "./DreamIsolation.ts";
 
 const options = ClaudeAdapterV2.makeClaudeQueryOptions({
@@ -38,6 +40,8 @@ const options = ClaudeAdapterV2.makeClaudeQueryOptions({
 const canUseTool: NonNullable<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions["canUseTool"]> = () =>
   Promise.resolve({ behavior: "deny", message: "declined" });
 
+const callerHook: HookCallback = () => Promise.resolve({});
+
 it.effect(
   "a dream query loads no user config but the owner's model credentials, no MCP or shell",
   () =>
@@ -53,7 +57,13 @@ it.effect(
           permissions: { allow: ["Bash"] },
         }),
       );
-      const env = { CLAUDE_CONFIG_DIR: configDir };
+      const dreamDir = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+      yield* fs.writeFileString(`${dreamDir}/notes.md`, "x");
+      const env = {
+        CLAUDE_CONFIG_DIR: configDir,
+        PATH: "/usr/bin",
+        ...Object.fromEntries(kinSecretVariables.map((name) => [name, "secret"])),
+      };
       const opened: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
       const base = Layer.succeed(
         ClaudeAdapterV2.ClaudeAgentSdkQueryRunner,
@@ -75,7 +85,7 @@ it.effect(
             .open({
               threadId: ThreadId.make(threadId),
               providerSessionId: ProviderSessionId.make("session"),
-              options: { ...options, env },
+              options: { ...options, cwd: dreamDir, env },
             })
             .pipe(Effect.exit);
         yield* open("kin-dream:dream_20261108_fixture:extract");
@@ -85,7 +95,12 @@ it.effect(
           .open({
             threadId: ThreadId.make("kin-dream:spoofed"),
             providerSessionId: ProviderSessionId.make("session"),
-            options: { ...options, permissionMode: "default", canUseTool, hooks: {} },
+            options: {
+              ...options,
+              permissionMode: "default",
+              canUseTool,
+              hooks: { PreToolUse: [{ hooks: [callerHook] }] },
+            },
           })
           .pipe(Effect.exit);
       }).pipe(Effect.provide(DreamIsolation.claudeQueryRunner(base)));
@@ -97,9 +112,12 @@ it.effect(
       );
       assert.strictEqual(spoofed?.permissionMode, "default");
       assert.strictEqual(spoofed?.canUseTool, canUseTool);
-      assert.isUndefined(spoofed?.hooks);
+      // The caller's hooks are dropped; the one left is the confinement hook.
+      assert.deepStrictEqual(Object.keys(spoofed?.hooks ?? {}), ["PreToolUse"]);
+      assert.notInclude(spoofed?.hooks?.PreToolUse?.[0]?.hooks ?? [], callerHook);
+      assert.strictEqual(spoofed?.hooks?.PreToolUse?.length, 1);
       assert.strictEqual(options.permissionMode, "bypassPermissions");
-      assert.strictEqual(other?.env, env);
+      assert.deepStrictEqual(other?.env, env);
       assert.strictEqual(dream?.permissionMode, "acceptEdits");
       assert.deepStrictEqual(dream?.settingSources, []);
       assert.strictEqual(dream?.strictMcpConfig, true);
@@ -115,6 +133,23 @@ it.effect(
         env: { ANTHROPIC_BASE_URL: "https://gateway.test" },
       });
       assert.deepStrictEqual(dream?.extraArgs, { "thinking-display": "summarized" });
-      assert.strictEqual(dream?.cwd, "/dream");
+      assert.strictEqual(dream?.cwd, dreamDir);
+      assert.deepStrictEqual(dream?.env, { CLAUDE_CONFIG_DIR: configDir, PATH: "/usr/bin" });
+      // Its reads and its edits reach the real checkout and nothing outside it.
+      const allows = (tool: string, input: unknown) =>
+        Effect.promise(() => hookAllows(dream, tool, input));
+      assert.isTrue(
+        yield* allows("Edit", { file_path: "notes.md", old_string: "x", new_string: "y" }),
+      );
+      assert.isTrue(yield* allows("Write", { file_path: `${dreamDir}/new.md`, content: "x" }));
+      for (const [tool, input] of [
+        ["Read", { file_path: `${configDir}/settings.json` }],
+        ["Read", { file_path: "/proc/self/environ" }],
+        ["Write", { file_path: "/etc/kin", content: "x" }],
+        ["Write", { file_path: "../escape.md", content: "x" }],
+        ["Edit", { file_path: "~/.bashrc", old_string: "x", new_string: "y" }],
+        ["Grep", { pattern: "x", path: "/" }],
+      ] as const)
+        assert.isFalse(yield* allows(tool, input), JSON.stringify(input));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
