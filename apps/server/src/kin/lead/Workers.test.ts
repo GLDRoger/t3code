@@ -1228,7 +1228,13 @@ it.effect(
         assert.lengthOf(events, 2);
         const byWorker = new Map(events.map((item) => [item.event.workerId, item]));
         assert.strictEqual(byWorker.get(done.workerId)!.priority, "P1");
-        assert.strictEqual(byWorker.get(done.workerId)!.event.eventId, `worker-report:${doneRun}`);
+        assert.strictEqual(
+          byWorker.get(done.workerId)!.event.dedupeKey,
+          `worker-report:${doneRun}`,
+        );
+        // The memory writer refuses any other character in the wake-up's event ids.
+        for (const item of events)
+          assert.match(item.event.eventId, /^worker-(report|abandoned)-[a-f0-9]{32}$/);
         assert.deepStrictEqual(byWorker.get(done.workerId)!.event.report, published(report));
         const synthesized = byWorker.get(cancelled.workerId)!.event.report;
         assert.deepInclude(synthesized, {
@@ -1295,7 +1301,7 @@ it.effect(
         const last = yield* remote.finish(threadId, "completed", reportReply);
         yield* settled(tracker, ctx.orgId, worker.workerId);
         assert.deepStrictEqual(
-          (yield* reports(ctx.sql, ctx.orgId)).map((item) => item.event.eventId),
+          (yield* reports(ctx.sql, ctx.orgId)).map((item) => item.event.dedupeKey),
           [`worker-report:${last}`],
         );
       }),
