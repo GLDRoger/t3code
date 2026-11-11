@@ -8,7 +8,7 @@ import * as Schema from "effect/Schema";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as HttpClient from "effect/http/HttpClient";
 
-import { bootstrapRemoteBearerSession } from "../authorization/remote.ts";
+import { acceptRemoteKinInvite, bootstrapRemoteBearerSession } from "../authorization/remote.ts";
 import { deriveWsBaseUrl, normalizeHttpBaseUrl } from "../environment/endpoint.ts";
 import { fetchRemoteEnvironmentDescriptor } from "../environment/descriptor.ts";
 import * as ClientCapabilities from "../platform/capabilities.ts";
@@ -138,17 +138,22 @@ export const preparePairingRegistration = Effect.fn(
   if (compatibilityError !== null && compatibilityError.serverUpdateRequired !== true) {
     return yield* compatibilityError;
   }
-  const access = yield* bootstrapRemoteBearerSession({
-    httpBaseUrl: target.httpBaseUrl,
-    credential: target.credential,
-    clientMetadata: presentation.metadata,
-  }).pipe(Effect.mapError(mapRemoteEnvironmentError));
+  // A teammate's invite is redeemed for a chat-only session; a pairing code for a full one.
+  const token = target.kinInvite
+    ? (yield* acceptRemoteKinInvite({
+        httpBaseUrl: target.httpBaseUrl,
+        secret: target.credential,
+        ...(presentation.metadata.label ? { label: presentation.metadata.label } : {}),
+      }).pipe(Effect.mapError(mapRemoteEnvironmentError))).accessToken
+    : (yield* bootstrapRemoteBearerSession({
+        httpBaseUrl: target.httpBaseUrl,
+        credential: target.credential,
+        clientMetadata: presentation.metadata,
+      }).pipe(Effect.mapError(mapRemoteEnvironmentError))).access_token;
 
   return new BearerConnectionRegistration({
     ...route,
-    credential: new BearerConnectionCredential({
-      token: access.access_token,
-    }),
+    credential: new BearerConnectionCredential({ token }),
   });
 });
 

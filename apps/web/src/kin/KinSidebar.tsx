@@ -1,6 +1,7 @@
 import { SidebarChromeFooter, SidebarChromeHeader } from "../components/sidebar/SidebarChrome";
 import { SidebarContent, SidebarGroup } from "../components/ui/sidebar";
 import { isElectron } from "../env";
+import { isChatOnlySession } from "../environments/primary";
 import { KinChatList } from "./KinChatList";
 import { KinNewLeadButton } from "./KinNewLeadButton";
 
@@ -26,7 +27,8 @@ export function KinSidebar() {
           <KinChatList />
         </SidebarGroup>
       </SidebarContent>
-      <SidebarChromeFooter />
+      {/* Settings, pull requests and usage are the owner's; a teammate's session has none. */}
+      {isChatOnlySession() ? null : <SidebarChromeFooter />}
     </>
   );
 }

@@ -37,6 +37,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import type * as RpcGroup from "effect/rpc/RpcGroup";
+import { isChatOnly } from "./chatOnlyConfig.ts";
 
 type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 
@@ -290,6 +291,8 @@ const requiredScopesForRpcCall = (
  * handler (`authorizeAttachmentRead`), which gives such a session no file outside its chats.
  */
 const kinChatMayCall = (method: string, payload: unknown) =>
+  // Connecting needs a config snapshot; the handler sends such a session an empty one.
+  method === WS_METHODS.subscribeServerConfig ||
   method === WS_METHODS.attachmentsCreateUploadUrl ||
   method === WS_METHODS.attachmentsDelete ||
   (method === WS_METHODS.assetsCreateUrl &&
@@ -305,7 +308,7 @@ export const authorizeRpc = (
 ) => {
   const coarse = requiredScopeForRpcMethod(method);
   if (scopes.every((scope) => scope === AuthKinChatScope) && coarse !== AuthKinChatScope) {
-    return scopes.length > 0 && kinChatMayCall(method, payload)
+    return isChatOnly(scopes) && kinChatMayCall(method, payload)
       ? Effect.void
       : Effect.fail(rpcAuthorizationError(coarse));
   }

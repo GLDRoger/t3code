@@ -62,6 +62,7 @@ import { useNativeFontScale } from "../settings/appearance/useScaledTextRole";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import type { ComposerEditorHandle } from "../../native/T3ComposerEditor.types";
 import { appAtomRegistry } from "../../state/atom-registry";
+import { AppText } from "../../components/ui/AppText";
 import { setComposerDraftText } from "../../state/use-composer-drafts";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useMarkdownPreviewStyles } from "../files/FileMarkdownPreview";
@@ -142,6 +143,10 @@ import {
   kinOwnedLeadAgentId,
   kinStaleNotice,
 } from "@t3tools/client-runtime/kin/kinScreenState";
+import {
+  kinChatReadOnly,
+  kinChatReadOnlyLine,
+} from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { useKinHostAt } from "./state/useKinHost";
 import { useKinReconnect } from "./state/useKinReconnect";
 import {
@@ -245,8 +250,9 @@ function KinLiveChat(props: {
       : undefined;
   // The owner's own lead in their direct chat: the only one they can stop.
   const ownedAgentId = summary === undefined ? null : kinOwnedLeadAgentId(summary, viewer.personId);
+  // A direct chat's lead has details to open: the viewer's own, or one they were let message.
   const leads = useAtomValue(
-    environmentId === null || summary === undefined || ownedAgentId === null
+    environmentId === null || summary === undefined || summary.kind !== "direct"
       ? noLeadsAtom
       : kinClient.leads({ environmentId, input: { orgId: summary.orgId } }),
   );
@@ -265,6 +271,11 @@ function KinLiveChat(props: {
     leads !== null && AsyncResult.isSuccess(leads)
       ? (leads.value.leads.find((lead) => lead.agentId === ownedAgentId)?.charter ?? null)
       : null;
+  const contact =
+    leads !== null && AsyncResult.isSuccess(leads) && ownedAgentId === null
+      ? (leads.value.contacts?.find((held) => held.chatId === chatId) ?? null)
+      : null;
+  const readOnly = kinChatReadOnly(summary, viewer.personId);
   const navigation = useNavigation();
   const canInterrupt = useAtomValue(kinClient.leadInterrupt.permissionAtom(props.environmentId));
   const canMute = useAtomValue(kinClient.mute.permissionAtom(props.environmentId));
@@ -350,18 +361,32 @@ function KinLiveChat(props: {
         direct={summary?.kind === "direct"}
         ownsLead={ownedAgentId !== null}
         lead={
-          environmentId === null || summary === undefined || ownedAgentId === null
+          environmentId === null || summary === undefined
             ? null
-            : {
-                charter,
-                open: () =>
-                  navigation.navigate("KinLead", {
-                    environmentId,
-                    orgId: summary.orgId,
-                    agentId: ownedAgentId,
-                  }),
-              }
+            : ownedAgentId !== null
+              ? {
+                  charter,
+                  open: () =>
+                    navigation.navigate("KinLead", {
+                      environmentId,
+                      orgId: summary.orgId,
+                      agentId: ownedAgentId,
+                    }),
+                }
+              : contact !== null
+                ? {
+                    charter: null,
+                    open: () =>
+                      navigation.navigate("KinLead", {
+                        environmentId,
+                        orgId: summary.orgId,
+                        agentId: contact.agentId,
+                      }),
+                  }
+                : null
         }
+        about={contact === null || contact.intro.trim() === "" ? null : contact.intro.trim()}
+        readOnly={readOnly}
         onRetry={retry}
         readHistory={
           state._tag === "ready" && state.connected
@@ -558,8 +583,12 @@ function KinChatPage(props: {
   readonly direct?: boolean;
   /** The viewer owns this direct chat's lead, so a first run shows the intro. */
   readonly ownsLead?: boolean;
-  /** The viewer's own lead in this chat, for its details and the intro; null otherwise. */
+  /** This direct chat's lead, for its details and the owner's intro; null otherwise. */
   readonly lead?: { readonly charter: string | null; readonly open: () => void } | null;
+  /** What the owner of someone else's lead wrote for the people let message it. */
+  readonly about?: string | null;
+  /** The viewer may read this chat and no longer write in it. */
+  readonly readOnly?: boolean;
   /** Opens a group's details; null for any other chat. */
   readonly group?: (() => void) | null;
   /** A group's leads, which the composer offers on `@`. */
@@ -625,6 +654,8 @@ function KinChatPage(props: {
             members={props.members ?? []}
             direct={props.direct ?? false}
             ownsLead={props.ownsLead ?? false}
+            about={props.about ?? null}
+            readOnly={props.readOnly ?? false}
             mentionable={props.mentionable}
           />
         ) : (
@@ -770,6 +801,8 @@ function KinChatFeed(props: {
   readonly members: ReadonlyArray<KinChatMember>;
   readonly direct: boolean;
   readonly ownsLead: boolean;
+  readonly about: string | null;
+  readonly readOnly: boolean;
   readonly mentionable?: ReadonlyArray<KinMentionCandidate>;
 }) {
   const listRef = useRef<LegendListRef>(null);
@@ -1156,7 +1189,13 @@ function KinChatFeed(props: {
     }
   };
 
-  const composer = (
+  const composer = props.readOnly ? (
+    <View className="px-6 pt-3" style={{ paddingBottom: composerInset + 12 }}>
+      <AppText textRole="footnote" className="text-center text-foreground-muted">
+        {kinChatReadOnlyLine(props.agentName)}
+      </AppText>
+    </View>
+  ) : (
     <KinComposer
       orgId={props.orgId}
       chatId={props.chatId}
@@ -1249,7 +1288,7 @@ function KinChatFeed(props: {
             detail={
               props.agentName === null
                 ? "Messages in this chat show up here."
-                : "It reads every message here."
+                : (props.about ?? "It reads every message here.")
             }
           />
         )}

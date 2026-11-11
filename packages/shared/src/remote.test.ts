@@ -22,6 +22,24 @@ describe("remote", () => {
     });
   });
 
+  it("reads a teammate's invite link as an invite, never as a pairing code", () => {
+    expect(
+      resolveRemotePairingTarget({
+        pairingUrl: "https://remote.example.com/kin/invite#org.invite.secret",
+      }),
+    ).toEqual({
+      credential: "org.invite.secret",
+      httpBaseUrl: "https://remote.example.com/",
+      wsBaseUrl: "wss://remote.example.com/",
+      kinInvite: true,
+    });
+    expect(
+      resolveRemotePairingTarget({
+        pairingUrl: "https://remote.example.com/kin/invite#token=pairing-token",
+      }),
+    ).not.toHaveProperty("kinInvite");
+  });
+
   it("accepts pairing urls that still use a query token", () => {
     expect(
       resolveRemotePairingTarget({

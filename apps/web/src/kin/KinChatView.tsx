@@ -34,6 +34,10 @@ import {
 } from "@t3tools/client-runtime/kin/kinInboxModel";
 import { KIN_INTRO_PROMPTS, kinIntroVisible } from "@t3tools/client-runtime/kin/kinIntro";
 import {
+  kinChatReadOnly,
+  kinChatReadOnlyLine,
+} from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import {
   kinPresenceLine,
   kinPresenceNeedsClock,
   kinPresenceTimerStart,
@@ -115,7 +119,7 @@ import {
 } from "./KinComposerAttachments";
 import { kinClient } from "./kinClient";
 import { KinGroupSheet } from "./KinGroupSheet";
-import { KinLeadSheet } from "./KinLeadSheet";
+import { KinLeadSheet, type KinLeadAbout } from "./KinLeadSheet";
 import {
   kinApplyMention,
   kinMemberNames,
@@ -205,16 +209,23 @@ export function KinChatView(props: {
       ? inbox.value.value.chats.find((chat) => chat.chatId === chatId)
       : undefined;
   const ownedAgentId = summary === undefined ? null : kinOwnedLeadAgentId(summary, viewer.personId);
-  // Only the viewer's own leads have a profile to open; a teammate's list is empty.
+  // A direct chat's lead has details to open: the viewer's own, or one they were let message.
   const leadsAtom: Atom.Atom<LeadsResult> =
-    environmentId === null || summary === undefined || ownedAgentId === null
+    environmentId === null || summary === undefined || summary.kind !== "direct"
       ? noLeadsAtom
       : kinClient.leads({ environmentId, input: { orgId: summary.orgId } });
   const leads = useAtomValue(leadsAtom);
   const lead =
-    leads?._tag === "Success"
+    leads?._tag === "Success" && ownedAgentId !== null
       ? (leads.value.leads.find((held) => held.agentId === ownedAgentId) ?? null)
       : null;
+  const contact =
+    leads?._tag === "Success" && ownedAgentId === null
+      ? (leads.value.contacts?.find((held) => held.chatId === chatId) ?? null)
+      : null;
+  const about: KinLeadAbout | null =
+    lead !== null ? { kind: "own", lead } : contact !== null ? { kind: "contact", contact } : null;
+  const readOnly = kinChatReadOnly(summary, viewer.personId);
   // A group's row carries only the viewer's own member; who else is in it is read by name.
   const isGroup = summary !== undefined && summary.kind !== "direct";
   const groupAtom: Atom.Atom<GroupResult> =
@@ -264,7 +275,7 @@ export function KinChatView(props: {
         avatar={avatar}
         tasks={tasks}
         muted={muted}
-        onOpenProfile={lead === null && group === null ? null : () => setProfileOpen(true)}
+        onOpenProfile={about === null && group === null ? null : () => setProfileOpen(true)}
       />
       {group === null || environmentId === null || summary === undefined ? null : (
         <KinGroupSheet
@@ -277,14 +288,15 @@ export function KinChatView(props: {
           muted={muted}
         />
       )}
-      {lead === null || avatar === null || environmentId === null || chatId === null ? null : (
+      {about === null || avatar === null || environmentId === null || chatId === null ? null : (
         <KinLeadSheet
           open={profileOpen}
           onOpenChange={setProfileOpen}
-          lead={lead}
+          about={about}
           avatar={avatar}
           environmentId={environmentId}
           chatId={chatId}
+          personId={viewer.personId}
           muted={muted}
           ownsChat={
             summary !== undefined &&
@@ -326,6 +338,8 @@ export function KinChatView(props: {
           members={group?.members ?? summary?.members ?? []}
           direct={summary?.kind === "direct"}
           ownsLead={ownedAgentId !== null}
+          about={contact === null || contact.intro.trim() === "" ? null : contact.intro}
+          readOnly={readOnly}
         />
       ) : (
         <KinChatStateView state={state} onRetry={retry} />
@@ -500,6 +514,10 @@ function KinChatFeed(props: {
   readonly mentionable: ReadonlyArray<KinMentionCandidate>;
   readonly direct: boolean;
   readonly ownsLead: boolean;
+  /** What the owner of someone else's lead wrote for the people it talks to. */
+  readonly about: string | null;
+  /** The viewer reads this chat and can no longer write in it. */
+  readonly readOnly: boolean;
 }) {
   const listRef = useRef<LegendListRef | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
@@ -873,7 +891,7 @@ function KinChatFeed(props: {
               <EmptyDescription>
                 {props.agentName === null
                   ? "Messages in this chat show up here."
-                  : "Your first message starts the chat."}
+                  : (props.about ?? "Your first message starts the chat.")}
               </EmptyDescription>
             </EmptyHeader>
           </Empty>
@@ -937,14 +955,20 @@ function KinChatFeed(props: {
             {notice}
           </p>
         )}
-        <KinComposer
-          draftKey={draftKey}
-          environmentId={props.environmentId}
-          recipient={props.title}
-          textareaRef={composerRef}
-          onSend={sendText}
-          mentionable={props.mentionable}
-        />
+        {props.readOnly ? (
+          <p role="status" className="py-3 text-center text-sm text-muted-foreground">
+            {kinChatReadOnlyLine(props.agentName)}
+          </p>
+        ) : (
+          <KinComposer
+            draftKey={draftKey}
+            environmentId={props.environmentId}
+            recipient={props.title}
+            textareaRef={composerRef}
+            onSend={sendText}
+            mentionable={props.mentionable}
+          />
+        )}
       </div>
       <ExpandedImageDialogHost threadKey={previewKey} />
     </div>

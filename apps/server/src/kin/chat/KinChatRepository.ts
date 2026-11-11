@@ -329,6 +329,10 @@ export class KinChatRepository extends Context.Service<
     readonly setMute: (
       input: MemberScope & { readonly mutedUntil: IsoDateTime | null },
     ) => Effect.Effect<Option.Option<KinChatMember>, RepositoryError>;
+    /** A person's role in a chat they are in; never to or from the chat's owner. */
+    readonly setRole: (
+      input: MemberScope & { readonly role: "member" | "guest" },
+    ) => Effect.Effect<Option.Option<KinChatMember>, RepositoryError>;
     readonly leaveChat: (
       input: MemberScope & { readonly leftAt: IsoDateTime },
     ) => Effect.Effect<ReadonlyArray<KinWaitingItem>, RepositoryError>;
@@ -1141,6 +1145,15 @@ const make = Effect.gen(function* () {
         return changed.length === 0 ? Option.none() : yield* memberOne(input);
       },
       Effect.mapError(toRepositoryError("KinChatRepository.setMute")),
+    ),
+    setRole: Effect.fn("KinChatRepository.setRole")(
+      function* (input) {
+        const changed = yield* sql`UPDATE kin_chat_members SET role = ${input.role}
+ WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND member_id = ${input.memberId}
+ AND principal_kind = 'person' AND role <> 'owner' AND left_at IS NULL RETURNING member_id`;
+        return changed.length === 0 ? Option.none() : yield* memberOne(input);
+      },
+      Effect.mapError(toRepositoryError("KinChatRepository.setRole")),
     ),
     leaveChat: Effect.fn("KinChatRepository.leaveChat")(
       function* (input) {

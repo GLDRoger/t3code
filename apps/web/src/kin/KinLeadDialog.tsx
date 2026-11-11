@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_LEAD_CHARTER_MAX,
+  KIN_LEAD_INTRO_MAX,
   KIN_LEAD_NAME_MAX,
   kinDomainSlug,
   kinLeadChanges,
@@ -46,18 +47,20 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
   const create = useAtomCommand(kinClient.leadCreate, { reportFailure: false });
   const update = useAtomCommand(kinClient.leadUpdate, { reportFailure: false });
   const [initial] = useState(() =>
-    lead === null ? { name: "", area: "", charter: "" } : kinLeadDraftOf(lead),
+    lead === null ? { name: "", area: "", charter: "", intro: "" } : kinLeadDraftOf(lead),
   );
   const [name, setName] = useState(initial.name);
   const [area, setArea] = useState(initial.area);
   const [charter, setCharter] = useState(initial.charter);
+  const [intro, setIntro] = useState(initial.intro);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const nameId = useId();
   const areaId = useId();
   const charterId = useId();
+  const introId = useId();
 
-  const checked = kinLeadDraftCheck({ name, area, charter });
+  const checked = kinLeadDraftCheck({ name, area, charter, intro });
   const areaInvalid = area.trim() !== "" && kinDomainSlug(area) === null;
   const canSave = checked.ok && !busy;
 
@@ -67,13 +70,19 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
     if (lead !== null && changes === null) return closeLeadForm();
     setBusy(true);
     setError(null);
-    const { name: leadName, domain, charter: leadCharter } = checked;
+    const { name: leadName, domain, charter: leadCharter, intro: leadIntro } = checked;
     // Each command settles into its own result type, so both reduce to the chat to open.
     const saved =
       lead === null
         ? await create({
             environmentId,
-            input: { orgId, name: leadName, domain, charter: leadCharter },
+            input: {
+              orgId,
+              name: leadName,
+              domain,
+              charter: leadCharter,
+              ...(leadIntro === "" ? undefined : { intro: leadIntro }),
+            },
           }).then((result) =>
             result._tag === "Success"
               ? { chatId: result.value.ownerChatId }
@@ -179,6 +188,28 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
                   {charter.length > KIN_LEAD_CHARTER_MAX
                     ? `${charter.length - KIN_LEAD_CHARTER_MAX} characters too long.`
                     : "The lead reads this before every reply. You can change it later."}
+                </p>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={introId}>What teammates see</Label>
+                <Textarea
+                  id={introId}
+                  rows={2}
+                  value={intro}
+                  aria-invalid={intro.length > KIN_LEAD_INTRO_MAX}
+                  placeholder="Handles billing questions and invoices."
+                  onChange={(event) => setIntro(event.target.value)}
+                />
+                <p
+                  className={
+                    intro.length > KIN_LEAD_INTRO_MAX
+                      ? "text-xs text-destructive-foreground"
+                      : "text-xs text-muted-foreground"
+                  }
+                >
+                  {intro.length > KIN_LEAD_INTRO_MAX
+                    ? `${intro.length - KIN_LEAD_INTRO_MAX} characters too long.`
+                    : "Optional. People you let message this lead see this and nothing above."}
                 </p>
               </div>
               {error === null ? null : (

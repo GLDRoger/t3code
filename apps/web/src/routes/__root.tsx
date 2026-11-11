@@ -51,6 +51,8 @@ import { useUiStateStore } from "../uiStateStore";
 import { configureClientTracing } from "../observability/clientTracing";
 import { resolveInitialServerAuthGateState } from "../environments/primary";
 import { GUEST_PAGE_PATH } from "../guestPage";
+import { KIN_INVITE_LINK_PATH } from "@t3tools/shared/remote";
+import { kinListAt } from "../kin/kinListSwitch";
 import { hasHostedPairingRequest, isHostedStaticApp } from "../hostedPairing";
 import { useHostedPromptLinkLanding } from "../components/promptLinks/HostedPromptLinkLanding";
 import { isLocalEnvironmentDisabled } from "../localEnvironment";
@@ -65,7 +67,8 @@ export const Route = createRootRoute({
   beforeLoad: async ({ location }) => {
     // Guest links open on the owner's tunnel host in a browser with no T3 session, and must
     // not trigger pairing or an environment connection.
-    if (location.pathname === GUEST_PAGE_PATH) {
+    // An invite link is the same: its page signs the teammate in itself.
+    if (location.pathname === GUEST_PAGE_PATH || location.pathname === KIN_INVITE_LINK_PATH) {
       return {
         authGateState: {
           status: "guest",
@@ -90,6 +93,13 @@ export const Route = createRootRoute({
     }
 
     const authGateState = await resolveInitialServerAuthGateState();
+    if (
+      authGateState.status === "authenticated" &&
+      authGateState.chatOnly &&
+      kinListAt(location.pathname) !== "kin"
+    ) {
+      throw redirect({ to: "/kin", replace: true });
+    }
     if (authGateState.status === "authenticated") {
       // Idempotent, so every navigation can ask for it.
       void configureClientTracing();
@@ -154,7 +164,7 @@ function RootRouteBranch() {
     authGateState.status === "hosted-static",
   );
 
-  if (pathname === GUEST_PAGE_PATH) return <Outlet />;
+  if (pathname === GUEST_PAGE_PATH || pathname === KIN_INVITE_LINK_PATH) return <Outlet />;
 
   if (
     pathname === "/pair" ||
@@ -173,6 +183,16 @@ function RootRouteBranch() {
   const isWelcome = pathname === "/welcome";
   if (authGateState.status !== "authenticated" && authGateState.status !== "hosted-static") {
     return <Outlet />;
+  }
+  // A teammate's session gets Kin's list and chats: no setup, thread sync or coding chrome.
+  if (authGateState.status === "authenticated" && authGateState.chatOnly) {
+    return (
+      <CommandPalette>
+        <AppSidebarLayout chatOnly>
+          <Outlet />
+        </AppSidebarLayout>
+      </CommandPalette>
+    );
   }
 
   // Settings can reopen /welcome mid-session, so it mounts everything the app does except the

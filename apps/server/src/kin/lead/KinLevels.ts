@@ -60,14 +60,37 @@ const ownerPlacedSql = (sql: SqlClient.SqlClient, chatId: KinChatId | null) => s
       AND lm.principal_kind = 'agent' AND lm.agent_id = l.agent_id AND lm.left_at IS NULL
     WHERE g.org_id = l.org_id AND g.chat_id = ${chatId} AND g.kind <> 'direct'))`;
 
-/** A chat's level before its cap: the lead's, raised to `OWNER_PLACED_LEVEL` where its owner put it. */
-const chatBase = (lead: KinLevel, ownerPlaced: boolean) =>
-  ownerPlaced && !atLeast(lead, OWNER_PLACED_LEVEL) ? OWNER_PLACED_LEVEL : lead;
+/**
+ * What a lead does for someone who isn't its owner: it talks. Starting work, opening pull
+ * requests and asking for a privileged action stay the owner's to ask for.
+ */
+const TEAMMATE_LEVEL: KinLevel = "L1";
+
+/**
+ * Whether `chatId` is the direct chat of a person the lead's owner let message it, from stored
+ * rows only. A row that has since been revoked still counts, so a reply under way when access
+ * ends can land; nothing new wakes the lead there (`ChatWake`).
+ */
+const teammateChatSql = (sql: SqlClient.SqlClient, chatId: KinChatId | null) => sql`EXISTS (
+    SELECT 1 FROM kin_lead_access x
+    JOIN kin_chats t ON t.org_id = x.org_id AND t.kind = 'direct'
+      AND t.direct_key = x.person_id || ':' || x.agent_id
+    WHERE x.org_id = l.org_id AND x.agent_id = l.agent_id AND t.chat_id = ${chatId})`;
+
+/**
+ * A chat's level before its cap: the lead's, raised to `OWNER_PLACED_LEVEL` where its owner put
+ * it and to `TEAMMATE_LEVEL` in the direct chat of someone its owner let message it.
+ */
+const chatBase = (lead: KinLevel, ownerPlaced: boolean, teammateChat = false) => {
+  const floor = ownerPlaced ? OWNER_PLACED_LEVEL : teammateChat ? TEAMMATE_LEVEL : lead;
+  return atLeast(lead, floor) ? lead : floor;
+};
 
 /**
  * For a chat target, `min(base, chat cap)`, where the base is the lead's level, or at least L2 in
- * a chat its owner placed it in. The lead's level otherwise (lead spec, Permissions). Read from
- * `kin_leads`, `kin_chats`, `kin_chat_members` and `kin_chat_levels` only; no tool input or model text.
+ * a chat its owner placed it in and L1 in an allowed teammate's direct chat. The lead's level
+ * otherwise (lead spec, Permissions). Read from `kin_leads`, `kin_chats`, `kin_chat_members`,
+ * `kin_chat_levels` and `kin_lead_access` only; no tool input or model text.
  */
 export const effectiveLevel = Effect.fn("KinLevels.effectiveLevel")(function* (input: {
   readonly orgId: KinOrgId;
@@ -76,8 +99,14 @@ export const effectiveLevel = Effect.fn("KinLevels.effectiveLevel")(function* (i
 }) {
   const sql = yield* SqlClient.SqlClient;
   const chatId = input.chatId ?? null;
-  const [row] = yield* sql<{ level: string; chatLevel: string | null; ownerPlaced: number }>`
-    SELECT l.level, c.level AS "chatLevel", ${ownerPlacedSql(sql, chatId)} AS "ownerPlaced"
+  const [row] = yield* sql<{
+    level: string;
+    chatLevel: string | null;
+    ownerPlaced: number;
+    teammateChat: number;
+  }>`
+    SELECT l.level, c.level AS "chatLevel", ${ownerPlacedSql(sql, chatId)} AS "ownerPlaced",
+      ${teammateChatSql(sql, chatId)} AS "teammateChat"
     FROM kin_leads l
     JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
     LEFT JOIN kin_chat_levels c ON c.org_id = l.org_id AND c.agent_id = l.agent_id
@@ -88,19 +117,13 @@ export const effectiveLevel = Effect.fn("KinLevels.effectiveLevel")(function* (i
   if (row === undefined) return yield* new KinLevelRefused({ reason: "not_a_lead" });
   const decode = (value: unknown) =>
     decodeLevel(value).pipe(Effect.mapError(toPersistenceDecodeError("KinLevels.effectiveLevel")));
-  const base = chatBase(yield* decode(row.level), row.ownerPlaced === 1);
+  const base = chatBase(yield* decode(row.level), row.ownerPlaced === 1, row.teammateChat === 1);
   if (row.chatLevel === null) return base;
   const chat = yield* decode(row.chatLevel);
   return atLeast(chat, base) ? base : chat;
 });
 
 export const lowest = (a: KinLevel, b: KinLevel) => (atLeast(a, b) ? b : a);
-
-/**
- * What a lead does for someone who isn't its owner: it talks. Starting work, opening pull
- * requests and asking for a privileged action stay the owner's to ask for.
- */
-const TEAMMATE_LEVEL: KinLevel = "L1";
 
 /**
  * The chat a due deferral or a passed-on request was first asked in, and the lead asked there.

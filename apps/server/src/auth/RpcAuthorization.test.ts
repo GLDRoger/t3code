@@ -19,7 +19,9 @@ import {
   AuthTerminalOperateScope,
   WS_METHODS,
   WsRpcGroup,
+  type ServerConfig,
 } from "@t3tools/contracts";
+import { chatOnlyServerConfig, isChatOnly } from "./chatOnlyConfig.ts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -548,6 +550,40 @@ it.effect.each(["chat-only", "legacy-owner"] as const)(
 
 const CHAT_ATTACHMENT_METHODS = ["attachments.createUploadUrl", "attachments.delete"];
 
+it.effect("a chat-only session connects with a config that carries nothing of the host", () =>
+  Effect.gen(function* () {
+    yield* RpcAuthorization.authorizeRpc([AuthKinChatScope], "subscribeServerConfig", {});
+    expect(
+      yield* RpcAuthorization.authorizeRpc([AuthKinChatScope], "subscribeServerLifecycle", {}).pipe(
+        Effect.flip,
+      ),
+    ).toMatchObject({ _tag: "EnvironmentAuthorizationError" });
+    expect(isChatOnly([AuthKinChatScope])).toBe(true);
+    expect(isChatOnly([])).toBe(false);
+    expect(isChatOnly([AuthKinChatScope, "orchestration:read"])).toBe(false);
+    const environment = { environmentId: "environment-one" } as ServerConfig["environment"];
+    const auth = { policy: "loopback-browser" } as ServerConfig["auth"];
+    expect(chatOnlyServerConfig(environment, auth)).toEqual({
+      environment,
+      auth,
+      cwd: "/",
+      keybindingsConfigPath: "/",
+      keybindings: [],
+      issues: [],
+      providers: [],
+      availableEditors: [],
+      observability: {
+        logsDirectoryPath: "/",
+        localTracingEnabled: false,
+        otlpTracesEnabled: false,
+        otlpMetricsEnabled: false,
+        otlpLogsEnabled: false,
+      },
+      settings: DEFAULT_SERVER_SETTINGS,
+    });
+  }),
+);
+
 it.effect("a chat-only session may upload, and ask only for stored attachments", () =>
   Effect.gen(function* () {
     const allowed = (
@@ -607,7 +643,10 @@ it.effect.each(
 
 it.effect.each(
   Object.keys(RPC_REQUIRED_SCOPES).filter(
-    (method) => !method.startsWith("kin.") && !CHAT_ATTACHMENT_METHODS.includes(method),
+    (method) =>
+      !method.startsWith("kin.") &&
+      !CHAT_ATTACHMENT_METHODS.includes(method) &&
+      method !== "subscribeServerConfig",
   ),
 )("chat-only sessions are refused before dispatch or stream subscription: %s", (method) =>
   Effect.gen(function* () {
