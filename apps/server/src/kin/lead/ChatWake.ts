@@ -7,11 +7,13 @@ import {
   TrimmedNonEmptyString,
   type KinEvent,
   type KinMessage,
+  type KinPersonId,
 } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
 
 import * as Clock from "effect/Clock";
+import * as Config from "effect/Config";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -27,6 +29,7 @@ import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { speakerOrder } from "../floor/KinFloor.ts";
 import { KinPresence, queueLabel, syncQueued } from "../reply/KinPresence.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
+import * as LeadAccess from "./LeadAccess.ts";
 
 const decodeTap = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
@@ -36,6 +39,8 @@ const decodeTap = Schema.decodeUnknownEffect(
 // Matches the resume expiry: older unanswered messages are not worth a wake-up after downtime.
 const CATCH_UP_WINDOW = { hours: 24 } as const;
 const CATCH_UP_LIMIT_PER_ORG = 200;
+/** Lead turns one teammate's direct messages may ask for in any 24 hours, unless configured. */
+const DEFAULT_TEAMMATE_DAILY_TURNS = 50;
 
 /**
  * Turns committed human chat posts and widget taps into `chat.message` and `widget.action`
@@ -49,6 +54,15 @@ const make = Effect.gen(function* () {
   const repo = yield* KinChatRepository;
   const queue = yield* KinEventQueue;
   const presence = yield* Effect.serviceOption(KinPresence);
+  const dailyTurns = yield* Config.Int("KIN_TEAMMATE_DAILY_TURNS").pipe(
+    Config.withDefault(DEFAULT_TEAMMATE_DAILY_TURNS),
+    Effect.map((value) => Math.max(0, value)),
+    Effect.catch((cause) =>
+      Effect.logWarning("KIN_TEAMMATE_DAILY_TURNS is not a number; using the default", {
+        cause,
+      }).pipe(Effect.as(DEFAULT_TEAMMATE_DAILY_TURNS)),
+    ),
+  );
   // The working line shows the moment a message is accepted, before any wake-up claims it.
   const showQueued = Effect.fn("KinChatWake.showQueued")(
     function* (orgId: KinOrgId, chatId: KinChatId, agentId: KinAgentId) {
@@ -61,12 +75,81 @@ const make = Effect.gen(function* () {
     Effect.catchCause((cause) => Effect.logWarning("Kin queue line failed", { cause })),
   );
 
+  /**
+   * Someone else's direct chat with a lead: their message wakes it only while its owner lets
+   * them message it, and for at most `dailyTurns` turns in any 24 hours across all such chats,
+   * since every turn is the owner's to pay for. Past that the chat says so once and the message
+   * is not answered. A message already queued was admitted when it arrived.
+   */
+  const admitted = Effect.fn("KinChatWake.admitted")(function* (
+    message: KinMessage,
+    personId: KinPersonId,
+    agentId: KinAgentId,
+    leadName: string,
+    dedupeKey: string,
+  ) {
+    const pair = { orgId: message.orgId, agentId, personId };
+    const known = yield* sql`SELECT 1 FROM kin_events
+      WHERE org_id = ${message.orgId} AND dedupe_key = ${dedupeKey} LIMIT 1`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinChatWake.admitted")),
+    );
+    if (known.length > 0) return true;
+    const access = Effect.provideService(SqlClient.SqlClient, sql);
+    if (
+      !(yield* LeadAccess.allowed(pair).pipe(
+        access,
+        Effect.mapError(toPersistenceSqlError("KinChatWake.admitted")),
+      ))
+    )
+      return false;
+    const used = yield* LeadAccess.recentTurns({
+      ...pair,
+      now: yield* Clock.currentTimeMillis,
+    }).pipe(access, Effect.mapError(toPersistenceSqlError("KinChatWake.admitted")));
+    if (used.turns < dailyTurns) return true;
+    // One line per full day of turns: it is said again only once the oldest of them has aged out.
+    const messageId = KinMessageId.make(
+      `kin-dm-limit-${NodeCrypto.createHash("sha256")
+        .update(`${personId}:${message.chatId}:${used.oldestAt}`)
+        .digest("hex")
+        .slice(0, 32)}`,
+    );
+    if (Option.isSome(yield* repo.getMessage({ orgId: message.orgId, messageId }))) return false;
+    const notice = yield* repo.insertMessage({
+      orgId: message.orgId,
+      chatId: message.chatId,
+      messageId,
+      author: { _tag: "system" },
+      kind: "system",
+      body: `${leadName} has answered as much as it can for you today and didn't see your last message. Send it again later.`,
+      intent: null,
+      mentions: [],
+      replyTo: null,
+      widgetId: null,
+      floorRunId: null,
+      status: "posted",
+      sentBy: null,
+      clientMessageId: null,
+      createdAt: DateTime.formatIso(yield* DateTime.now),
+      editedAt: null,
+    });
+    yield* hub.publish({ type: "message.posted", orgId: message.orgId, message: notice });
+    return false;
+  });
+
   const wake = Effect.fn("KinChatWake.wake")(
     function* (message: KinMessage) {
       if (message.author._tag !== "human" || message.status !== "posted") return;
       if (message.kind !== "text" && message.kind !== "widget_action") return;
-      const leads = yield* sql<{ agentId: string; memberId: string }>`
-        SELECT l.agent_id AS "agentId", m.member_id AS "memberId" FROM kin_leads l
+      const leads = yield* sql<{
+        agentId: string;
+        memberId: string;
+        name: string;
+        ownerPersonId: string;
+        kind: string;
+      }>`
+        SELECT l.agent_id AS "agentId", m.member_id AS "memberId", l.name,
+          a.owner_person_id AS "ownerPersonId", c.kind FROM kin_leads l
         JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id AND a.retired_at IS NULL
         JOIN kin_chats c ON c.org_id = l.org_id AND c.chat_id = ${message.chatId}
           AND c.archived_at IS NULL
@@ -98,6 +181,12 @@ const make = Effect.gen(function* () {
         // Every field comes from the stored message, so a replay enqueues byte-identical JSON.
         const prefix = message.kind === "widget_action" ? "widget-action" : "chat-message";
         const dedupeKey = `${prefix}:${message.messageId}:${agentId}`;
+        if (
+          target.kind === "direct" &&
+          message.author.personId !== target.ownerPersonId &&
+          !(yield* admitted(message, message.author.personId, agentId, target.name, dedupeKey))
+        )
+          continue;
         // The memory writer accepts only [a-zA-Z0-9_-] in event ids, so hash the readable key.
         const eventId = KinEventId.make(
           `${prefix}-${NodeCrypto.createHash("sha256").update(dedupeKey).digest("hex").slice(0, 32)}`,

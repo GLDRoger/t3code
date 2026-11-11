@@ -1803,10 +1803,10 @@ describe("KinActionExecutor", () => {
     // nothing, since no shared context holds it (the production layer test checks the output).
     assert.notInclude(source("kin/KinServer.ts"), "KinActionExecutor");
 
-    // Leads are the owner's: the `kin lead` CLI, and three RPCs that check the caller is the
-    // lead's owner themselves (`create`, `update`, and `profiles`, which reads only their own).
-    // Nothing else the server runs (MCP, agent toolkits, routes, schedules) reaches the
-    // provisioning module or that CLI, and no RPC reaches what the CLI does unchecked.
+    // Leads are the owner's: the `kin lead` CLI, and RPCs that check the caller owns the lead
+    // (`create`, `update`, `access`, `allow`, `disallow`) or read only what is the caller's to see
+    // (`profiles`, `contacts`). Nothing else the server runs (MCP, agent toolkits, routes,
+    // schedules) reaches the provisioning module, and no RPC reaches what the CLI does unchecked.
     assert.deepStrictEqual(importers("kin/lead/KinLeadProvision.ts"), [
       "kin/chat/rpcHandlers.ts",
       "kin/cli/lead.ts",
@@ -1814,7 +1814,7 @@ describe("KinActionExecutor", () => {
     assert.deepStrictEqual(importers("kin/chat/rpcHandlers.ts"), ["kin/rpcHandlers.ts"]);
     assert.notMatch(
       source("kin/chat/rpcHandlers.ts"),
-      /\bLeadProvision\.(?!create\b|update\b|profiles\b|KinLeadProvisionError\b|ts\b)\w+/,
+      /\bLeadProvision\.(?!create\b|update\b|profiles\b|contacts\b|access\b|allow\b|disallow\b|KinLeadProvisionError\b|ts\b)\w+/,
     );
     assert.deepStrictEqual(importers("kin/cli/lead.ts"), ["binCli.ts"]);
     const served = new Set<string>();

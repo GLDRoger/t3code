@@ -290,12 +290,11 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
               (entry) => entry.orgId === input.orgId,
             );
             // An org the session's person isn't in has no leads to show them.
-            if (person === undefined) return { leads: [] };
-            return {
-              leads: yield* LeadProvision.profiles(person).pipe(
-                Effect.provideContext(kin.value.services.value),
-              ),
-            };
+            if (person === undefined) return { leads: [], contacts: [] };
+            return yield* Effect.all({
+              leads: LeadProvision.profiles(person),
+              contacts: LeadProvision.contacts(person),
+            }).pipe(Effect.provideContext(kin.value.services.value));
           }),
         ),
         Effect.mapError(toLeadError),
@@ -313,6 +312,54 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
               orgId,
               agentId,
               fields,
+            }).pipe(Effect.provideContext(kin.value.services.value));
+          }),
+        ),
+        Effect.mapError(toLeadError),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.lead.access.list": (input) =>
+      services.pipe(
+        Effect.flatMap(() =>
+          Effect.gen(function* () {
+            if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+            return yield* LeadProvision.access({
+              ...input,
+              editor: { _tag: "session", session },
+            }).pipe(Effect.provideContext(kin.value.services.value));
+          }),
+        ),
+        Effect.mapError(toLeadError),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.lead.access.grant": (input) =>
+      services.pipe(
+        Effect.flatMap(() =>
+          Effect.gen(function* () {
+            if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+            return yield* LeadProvision.allow({
+              ...input,
+              editor: { _tag: "session", session },
+            }).pipe(Effect.provideContext(kin.value.services.value));
+          }),
+        ),
+        Effect.mapError(toLeadError),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.lead.access.revoke": (input) =>
+      services.pipe(
+        Effect.flatMap(() =>
+          Effect.gen(function* () {
+            if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+            return yield* LeadProvision.disallow({
+              ...input,
+              editor: { _tag: "session", session },
             }).pipe(Effect.provideContext(kin.value.services.value));
           }),
         ),

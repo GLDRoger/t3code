@@ -459,6 +459,53 @@ describe("KinChatService", () => {
     }).pipe(Effect.provide(attachmentLayer)),
   );
 
+  it.effect("a lead reads another person's direct chat only on a turn that person woke", () =>
+    Effect.gen(function* () {
+      const { repo, service, person, agent, chat } = yield* seed();
+      const sql = yield* SqlClient.SqlClient;
+      const mateId = KinPersonId.make("mate");
+      yield* repo.insertPerson({
+        orgId: person.orgId,
+        personId: mateId,
+        handle: "mate",
+        displayName: "Mate",
+        githubLogin: null,
+        createdAt: timestamp,
+      });
+      const mate = { _tag: "person", orgId: person.orgId, personId: mateId } as const;
+      const lead = { orgId: person.orgId, agentId };
+      // Not hers to start until the owner allows it.
+      assert.include(yield* service.createDirect(mate, lead).pipe(Effect.flip), {
+        reason: "not_allowed",
+      });
+      yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
+        VALUES (${person.orgId}, ${agentId}, ${mateId}, ${person.personId}, 0)`;
+      const theirs = yield* service.createDirect(mate, lead);
+      const said = yield* service.send(mate, {
+        chatId: theirs.chatId,
+        body: "Between us",
+        clientMessageId: "mate-1",
+      });
+      // The running turn answers the owner, who is not in that chat: it reads its own, not hers.
+      assert.lengthOf(yield* service.read(agent, { chatId: chat.chatId }), 1);
+      assert.include(yield* service.read(agent, { chatId: theirs.chatId }).pipe(Effect.flip), {
+        reason: "not_found",
+      });
+      assert.include(
+        yield* service
+          .history(person, { chatId: theirs.chatId, beforeSeq: 99, limit: 10 })
+          .pipe(Effect.flip),
+        { reason: "not_found" },
+      );
+      // Her message wakes the lead: that turn reads her chat.
+      yield* startAgentWakeup({ orgId: person.orgId, agentId, threadId, message: said });
+      assert.deepStrictEqual(
+        (yield* service.read(agent, { chatId: theirs.chatId })).map((message) => message.body),
+        ["Between us"],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("bound chat-only members can use their own chats but not the owner's chat", () =>
     Effect.gen(function* () {
       const { repo, service, identity, person, chat } = yield* seed();

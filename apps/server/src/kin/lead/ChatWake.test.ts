@@ -11,12 +11,14 @@ import {
   KinMessageId,
   KinOrgId,
 } from "@t3tools/contracts";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Hub from "../chat/KinChatHub.ts";
@@ -526,4 +528,77 @@ describe("ChatWake", () => {
       "kin/push/KinPushDispatch.ts",
     ]);
   });
+  it.effect(
+    "wakes a lead for another person's direct message only while its owner allows it, a bounded number of times a day",
+    () =>
+      Effect.gen(function* () {
+        yield* seed("a");
+        const sql = yield* SqlClient.SqlClient;
+        const hub = yield* Hub.KinChatHub;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('mate', 'a', 'mate', 'Mate', ${createdAt})`;
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+          VALUES ('mate-chat', 'a', 'direct', 'mate:lead-a', 0, ${createdAt})`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+          VALUES ('mate-member', 'a', 'mate-chat', 'person', 'mate', 'member', ${createdAt})`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+          VALUES ('lead-in-mate-chat', 'a', 'mate-chat', 'agent', 'lead-a', 'member', ${createdAt})`;
+        const { attempts, settle } = yield* start();
+        const say = (messageId: string, seq: number) =>
+          hub.publish({
+            type: "message.posted",
+            orgId: KinOrgId.make("a"),
+            message: decodeMessage({
+              ...message("a", messageId, { chat: "mate-chat", seq }),
+              author: { _tag: "human", personId: "mate", memberId: "mate-member" },
+              authorRole: "member",
+            }),
+          });
+        const notices = sql<{ body: string }>`SELECT body FROM kin_messages
+          WHERE org_id = 'a' AND chat_id = 'mate-chat' AND author_kind = 'system' ORDER BY seq`;
+
+        // Being in the chat is not enough: the owner has not allowed it.
+        yield* say("uninvited", 1);
+        yield* settle;
+        assert.deepStrictEqual(keys(attempts), []);
+
+        yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
+          VALUES ('a', 'lead-a', 'mate', 'owner-a', 0)`;
+        for (const [index, id] of ["first", "second", "third", "fourth"].entries())
+          yield* say(id, index + 2);
+        // The owner's own chat is never counted.
+        yield* post("a", "owners", { seq: 2 });
+        yield* settle;
+        assert.deepStrictEqual(keys(attempts), [
+          "chat-message:first:lead-a",
+          "chat-message:second:lead-a",
+          "chat-message:owners:lead-a",
+        ]);
+        // Told once, however many more arrive.
+        assert.deepStrictEqual(yield* notices, [
+          {
+            body: "Lead has answered as much as it can for you today and didn't see your last message. Send it again later.",
+          },
+        ]);
+
+        // The turns age out a day after they were asked for.
+        yield* TestClock.adjust("25 hours");
+        yield* say("next-day", 6);
+        yield* settle;
+        assert.include(keys(attempts), "chat-message:next-day:lead-a");
+
+        yield* sql`UPDATE kin_lead_access SET revoked_at = 1 WHERE person_id = 'mate'`;
+        yield* say("after", 7);
+        yield* settle;
+        assert.notInclude(keys(attempts), "chat-message:after:lead-a");
+        assert.lengthOf(yield* notices, 1);
+      }).pipe(
+        Effect.provide(
+          Layer.merge(
+            services,
+            ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_TEAMMATE_DAILY_TURNS: 2 })),
+          ),
+        ),
+      ),
+  );
 });
