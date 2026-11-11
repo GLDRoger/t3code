@@ -55,7 +55,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_delegate", {
     ...workers,
     description:
-      "Start a worker for one build, review or research task in a project or repository on this host, named in plain words in project (a name such as t3code, or owner/name). Brief it with one goal, the facts it needs, and member text in quoted. model defaults to strong. For review, set reviewOf to the author workerId and pick a model with a different instance and model; the reviewer gets only your goal and the author's reported PR or commit. Returns workerId and threadLink. Don't wait: its report arrives as a later event. If it is refused, nothing started: don't retry, do what you still can yourself, and say in one line what you couldn't. Identical retries return the same worker.",
+      "Start a worker for one build, review or research task in a project or repository on this host, named in plain words in project (a name such as t3code, or owner/name). Brief it with one goal, the facts it needs, and member text in quoted. model defaults to strong. For review, set reviewOf to the author workerId and pick a model with a different instance and model; the reviewer gets only your goal and the author's reported PR or commit. Returns workerId and threadLink. Where workers run on this server itself, only build tasks start, and only from your direct chat with the owner. Don't wait: its report arrives as a later event. If it is refused, nothing started: don't retry, do what you still can yourself, and say in one line what you couldn't. Identical retries return the same worker.",
     parameters: Workers.DelegateInput,
     success: Workers.DelegateResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

@@ -362,16 +362,23 @@ it.effect.each([true, false])(
           threadId: ThreadId.make("kin-dream:dream_20260101_abc:extract"),
           providerInstanceId: ProviderInstanceId.make("codex"),
         });
-        for (const path of ["/mcp", "/kin/mcp"])
-          assert.strictEqual(
-            (yield* request(path, dream.config.authorizationHeader, "initialize", initialize))
-              .status,
-            401,
-          );
+        // A worker on this server reads untrusted repository text: no T3 or Kin tools either.
+        const work = yield* registry.issue({
+          threadId: ThreadId.make("kin-work:wk-fixture"),
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        });
+        for (const untrusted of [dream, work])
+          for (const path of ["/mcp", "/kin/mcp"])
+            assert.strictEqual(
+              (yield* request(path, untrusted.config.authorizationHeader, "initialize", initialize))
+                .status,
+              401,
+            );
         const tokens = Context.get(services, KinIssuedTokens.KinIssuedTokens);
         const leak = (header: string) => tokens.containsIssuedToken(`argv: "${header}"`);
         assert.isTrue(yield* leak(ordinary.config.authorizationHeader));
         assert.isFalse(yield* leak(dream.config.authorizationHeader));
+        assert.isFalse(yield* leak(work.config.authorizationHeader));
         yield* registry.revokeThread(ThreadId.make("ordinary-thread"));
         assert.isFalse(yield* leak(ordinary.config.authorizationHeader));
         const result = yield* request(

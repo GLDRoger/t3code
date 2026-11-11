@@ -38,6 +38,7 @@ import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/OrchestrationEventStore.ts";
+import * as ProjectService from "../../project/ProjectService.ts";
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
@@ -52,6 +53,7 @@ import { isOrgPaused, STOP_REASON } from "./orgState.ts";
 import { parseReport } from "./workerBrief.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
 import * as Publish from "./workerPublish.ts";
+import { localThreadId, workThreadPrefix } from "./workThread.ts";
 
 export const endedStatuses = new Set<OrchestrationV2RunStatus>([
   "completed",
@@ -79,6 +81,15 @@ export const WorkerTrackerSpacing = Context.Reference<Duration.Duration>(
 export const unboundThreadId = (workerId: KinWorkerId) => ThreadId.make(`kin-worker-${workerId}`);
 const isBound = (worker: { readonly workerId: KinWorkerId; readonly threadId: ThreadId }) =>
   worker.threadId !== unboundThreadId(worker.workerId);
+/** A worker on this server (`LocalWorkers`): no environment, and the thread Kin named for it. */
+const isLocal = (worker: {
+  readonly workerId: KinWorkerId;
+  readonly threadId: ThreadId;
+  readonly environmentId: EnvironmentId | null;
+}) => worker.environmentId === null && worker.threadId === localThreadId(worker.workerId);
+/** The longest one wait on a local worker's thread blocks a follower. */
+const LOCAL_WAIT_MS = 600_000;
+const MAX_REPLY_CHARS = 200_000;
 const cardStateEquivalent = Schema.toEquivalence(
   KinTaskCardState.mapFields((fields) => ({
     status: fields.status,
@@ -100,6 +111,22 @@ const withPublished = (
           ...state.pullRequests.filter((pull) => pull.url !== worker.pullRequestUrl),
         ],
       };
+/** Kin's PR replaces any the worker claims; a refusal becomes an open question for the lead. */
+const withPublication = (
+  report: WorkerReport,
+  published: { readonly url: string } | { readonly refused: string } | undefined,
+): WorkerReport =>
+  published === undefined
+    ? report
+    : "url" in published
+      ? {
+          ...report,
+          evidence: [
+            { kind: "pr", ref: published.url, note: "Kin opened this from the worker's branch" },
+            ...report.evidence.filter((item) => item.kind !== "pr"),
+          ],
+        }
+      : { ...report, openQuestions: [...report.openQuestions, published.refused] };
 const WorkerRow = Schema.Struct({
   orgId: KinOrgId,
   workerId: KinWorkerId,
@@ -110,6 +137,7 @@ const WorkerRow = Schema.Struct({
   status: Schema.String,
   startedAt: Schema.Number,
   repositoryKey: Schema.NullOr(Schema.String),
+  projectId: Schema.NullOr(ProjectId),
   remoteProjectId: Schema.NullOr(ProjectId),
   title: Schema.NullOr(Schema.String),
   model: Schema.String,
@@ -163,6 +191,7 @@ const make = Effect.gen(function* () {
   const repo = yield* KinChatRepository;
   const hub = yield* KinChatHub;
   const environment = yield* Effect.serviceOption(ServerEnvironment);
+  const projects = yield* ProjectService.ProjectService;
   // Followers live as long as this service, so shutting down stops them.
   const followers = yield* Scope.Scope;
   const bootedAt = yield* Clock.currentTimeMillis;
@@ -174,7 +203,8 @@ const make = Effect.gen(function* () {
     const [raw] = yield* sql`SELECT org_id AS "orgId", worker_id AS "workerId",
       agent_id AS "agentId", thread_id AS "threadId", chat_id AS "chatId",
       environment_id AS "environmentId", status, started_at AS "startedAt",
-      repository_key AS "repositoryKey", remote_project_id AS "remoteProjectId", title,
+      repository_key AS "repositoryKey", project_id AS "projectId",
+      remote_project_id AS "remoteProjectId", title,
       model_json AS model, kind, pull_request_url AS "pullRequestUrl",
       pull_request_number AS "pullRequestNumber"
       FROM kin_workers WHERE org_id = ${orgId} AND worker_id = ${workerId} ORDER BY worker_id`;
@@ -398,12 +428,15 @@ const make = Effect.gen(function* () {
   const publish = Effect.fn("WorkerTracker.publish")(function* (
     worker: WorkerRow,
     worktreePath: string | null,
+    local?: { readonly projectRoot: string },
   ) {
     const branch = Publish.publishBranch(worker.workerId);
     const refused = (reason: string) => ({ refused: `Kin didn't publish ${branch}: ${reason}.` });
     if (Option.isNone(publisher))
       return refused(
-        "this host has no Kin GitHub App, so the commits stay in the worker environment",
+        local === undefined
+          ? "this host has no Kin GitHub App, so the commits stay in the worker environment"
+          : "this host has no Kin GitHub App, so the changes stay in the worker's worktree",
       );
     if (worker.repositoryKey === null || worktreePath === null)
       return refused("the worker has no repository or worktree to publish from");
@@ -419,6 +452,7 @@ const make = Effect.gen(function* () {
         workerId: worker.workerId,
         repositoryKey: worker.repositoryKey,
         worktreePath,
+        ...(local === undefined ? {} : { local }),
         title: worker.title ?? "Kin worker",
         paused,
       })
@@ -485,8 +519,10 @@ const make = Effect.gen(function* () {
     shown: { card?: ReturnType<typeof remoteTaskCardState> },
   ) {
     const worker = yield* workerRow(orgId, workerId);
-    if (worker === undefined || worker.environmentId === null) return true;
+    if (worker === undefined) return true;
     if (endedStatuses.has(worker.status as OrchestrationV2RunStatus)) return true;
+    if (isLocal(worker)) return yield* followLocalOnce(worker);
+    if (worker.environmentId === null) return true;
     const environmentId = worker.environmentId;
     if (!isBound(worker)) return yield* reconcile(worker, environmentId);
     // The worker's own tasks there wake it for its answer, which the report waits for.
@@ -571,24 +607,95 @@ const make = Effect.gen(function* () {
         completedAt == null
           ? yield* Clock.currentTimeMillis
           : DateTime.toEpochMillis(DateTime.makeUnsafe(completedAt)),
-      report:
-        published === undefined
-          ? report
-          : "url" in published
-            ? {
-                ...report,
-                evidence: [
-                  {
-                    kind: "pr",
-                    ref: published.url,
-                    note: "Kin opened this from the worker's branch",
-                  },
-                  ...report.evidence.filter((item) => item.kind !== "pr"),
-                ],
-              }
-            : { ...report, openQuestions: [...report.openQuestions, published.refused] },
+      report: withPublication(report, published),
     });
   });
+
+  /**
+   * One wait on a worker's thread on this server; true once its latest run is reported. Kin, not
+   * the worker, commits and publishes, and only after the run ended completed.
+   */
+  const followLocalOnce = Effect.fn("WorkerTracker.followLocalOnce")(function* (worker: WorkerRow) {
+    const here = Option.isSome(environment)
+      ? yield* environment.value.getEnvironmentId
+      : EnvironmentId.make("local");
+    const abandoned = Effect.fn("WorkerTracker.localAbandoned")(function* (summary: string) {
+      return yield* record(worker, {
+        key: `worker-abandoned:${worker.workerId}:${worker.startedAt}`,
+        status: "failed",
+        endedAt: yield* Clock.currentTimeMillis,
+        report: blocked(worker, here, summary),
+      });
+    });
+    const shell = yield* orchestrator.getThreadShell(worker.threadId);
+    if (shell === null) return yield* abandoned("The worker's thread never started.");
+    // The project the row was started in, never one the thread was moved to since.
+    if (worker.projectId === null || shell.projectId !== worker.projectId)
+      return yield* abandoned("The worker's thread is no longer in its project.");
+    const waited = yield* threads.waitForThread({
+      projectId: worker.projectId,
+      threadId: worker.threadId,
+      timeoutMs: LOCAL_WAIT_MS,
+    });
+    if (waited.timedOut) return false;
+    if (waited.run === null) return yield* abandoned("The worker's thread never started a run.");
+    if (!endedStatuses.has(waited.run.status)) return false;
+    const projection = yield* threads.getThreadProjection(worker.threadId);
+    // Someone wrote in the thread since: that newer run's end reports instead.
+    if (projection.runs.at(-1)?.id !== waited.run.id) return false;
+    const run = waited.run;
+    const reply = projection.messages
+      .findLast((message) => message.role === "assistant" && message.runId === run.id)
+      ?.text.slice(-MAX_REPLY_CHARS);
+    const report =
+      (reply === undefined ? undefined : parseReport(reply)) ??
+      blocked(worker, here, `Worker ended ${run.status} without a report.`);
+    const project =
+      run.status === "completed" && worker.kind === "build"
+        ? Option.getOrUndefined(yield* projects.getById(worker.projectId))
+        : undefined;
+    const published =
+      run.status !== "completed" || worker.kind !== "build"
+        ? undefined
+        : project === undefined
+          ? {
+              refused: `Kin didn't publish ${Publish.publishBranch(worker.workerId)}: the worker's project is gone.`,
+            }
+          : yield* publish(worker, projection.thread.worktreePath, {
+              projectRoot: project.workspaceRoot,
+            });
+    if (published !== undefined && "url" in published) yield* linkPullRequest(worker, published);
+    return yield* record(worker, {
+      key: `worker-report:${run.id}`,
+      status: run.status,
+      endedAt:
+        run.completedAt === null
+          ? yield* Clock.currentTimeMillis
+          : DateTime.toEpochMillis(run.completedAt),
+      report: withPublication(report, published),
+    });
+  });
+
+  /** The thread's own PR link, which its task card and thread view show (`TaskCardUpdater`). */
+  const linkPullRequest = Effect.fn("WorkerTracker.linkPullRequest")(
+    function* (worker: WorkerRow, pull: { readonly url: string; readonly number: number }) {
+      const repository = worker.repositoryKey?.replace(/^github\.com\//i, "");
+      if (repository === undefined) return;
+      yield* threads.dispatch({
+        type: "thread.pull-request.link",
+        commandId: CommandId.make(`kin-work-pr:${worker.workerId}:${pull.number}`),
+        threadId: worker.threadId,
+        host: "github.com",
+        repository,
+        number: pull.number,
+        url: pull.url,
+        source: "created",
+      });
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin couldn't link a worker's PR to its thread", { cause }),
+    ),
+  );
 
   /** A revoked or expired link, or a thread gone there: the worker can't report, so it fails. */
   const abandon = Effect.fn("WorkerTracker.abandon")(function* (
@@ -710,7 +817,8 @@ const make = Effect.gen(function* () {
   const openWorkers = sql<{ orgId: string; workerId: string }>`
     SELECT org_id AS "orgId", worker_id AS "workerId" FROM kin_workers
     WHERE org_id IN (SELECT org_id FROM kin_leads GROUP BY org_id)
-      AND environment_id IS NOT NULL AND status NOT IN ${sql.in([...endedStatuses])}
+      AND (environment_id IS NOT NULL OR thread_id = ${workThreadPrefix} || worker_id)
+      AND status NOT IN ${sql.in([...endedStatuses])}
     ORDER BY org_id, worker_id`;
 
   const start = Effect.gen(function* () {
