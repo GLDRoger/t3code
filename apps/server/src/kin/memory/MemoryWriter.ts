@@ -45,6 +45,7 @@ import { journalEntry, MemoryJournalError, type JournalContext } from "./journal
 import { QUOTE_MISSING, quoteRefusal } from "./keeping.ts";
 import { isOwnerReviewedPath, kinShapeFailure } from "./lint.ts";
 import { KinSecretScan, KinSecretScanError } from "./secretScan.ts";
+import { deletedQuotes } from "./quoteAccess.ts";
 import { retireLabels } from "./sensitivity.ts";
 import * as MemoryLander from "./MemoryLander.ts";
 import { MemoryPullRequests } from "./MemoryPullRequests.ts";
@@ -238,6 +239,12 @@ export class MemoryWriter extends Context.Service<
      * GitHub merge, a promoted shadow branch, or a grant older than retirement clearing one.
      */
     readonly reconcileSharing: (orgId: KinOrgId) => Effect.Effect<void, Failure>;
+    /**
+     * Drops the quote from the current version of every item that quotes a deleted message, on
+     * the default branch and each lead's shadow branch; the items stay. It reads what is stored,
+     * so it runs after a clear and at every sync, which also finishes one a crash cut short.
+     */
+    readonly stripQuotes: (orgId: KinOrgId) => Effect.Effect<void, Failure>;
   }
 >()("t3/kin/memory/MemoryWriter") {}
 const isRepoSlug = Schema.is(RepoSlug);
@@ -259,6 +266,8 @@ const make = Effect.gen(function* () {
     );
   // The default-branch head `reconcileSharing` last swept, so an unchanged branch costs one read.
   const reconciledHeads = new Map<KinOrgId, string>();
+  // Each branch head `stripQuotes` found clean, with how many clears had run by then.
+  const unquotedHeads = new Map<string, string>();
   const recovery = yield* MemoryRecoveryHooks;
   // Shadow branches whose last push was refused; the owner hears once until a push lands.
   const unpushedShadows = new Set<string>();
@@ -679,7 +688,7 @@ const make = Effect.gen(function* () {
     yield* recovery.notify({ orgId, branch: config.defaultBranch ?? "main", reason });
     return yield* new MemorySyncConflict({ orgId, operation: "push", reason });
   });
-  /** One item changed by the owner outside a wake-up, committed and landed as a wake-up's is. */
+  /** Items changed by the owner or Kin outside a wake-up, committed and landed as a wake-up's are. */
   const ownerCommit = Effect.fn("MemoryWriter.ownerCommit")(function* (
     orgId: KinOrgId,
     input: {
@@ -688,14 +697,15 @@ const make = Effect.gen(function* () {
       readonly branch: string;
       readonly head: string;
       readonly headFiles: ReadonlyMap<string, Buffer>;
-      readonly path: string;
-      readonly content: string;
+      readonly files: ReadonlyMap<string, string>;
       readonly message: string;
     },
   ) {
     const { writer, branch, head, headFiles } = input;
     const onMain = branch === (config.defaultBranch ?? "main");
-    const changes = new Map([[input.path, Buffer.from(input.content)]]);
+    const changes = new Map(
+      [...input.files].map(([path, content]) => [path, Buffer.from(content)] as const),
+    );
     const regular = yield* regularPaths(orgId, writer, head);
     const combined = new Map(
       [...headFiles, ...changes]
@@ -1415,8 +1425,7 @@ const make = Effect.gen(function* () {
             branch: input.branch,
             head,
             headFiles,
-            path: input.path,
-            content: restored,
+            files: new Map([[input.path, restored]]),
             message: `kin(${input.agentId}): owner undo ${input.itemId}\n\nKin-Undo: ${input.commit}\n`,
           });
           return { _tag: "undone", commit } as const;
@@ -1464,8 +1473,7 @@ const make = Effect.gen(function* () {
             branch: main,
             head,
             headFiles,
-            path: item.head.path,
-            content: render(next, body),
+            files: new Map([[item.head.path, render(next, body)]]),
             message: `kin: owner ${input.sensitive ? "keeps" : "shares"} ${input.itemId}\n`,
           });
           return { head: labelled };
@@ -1512,8 +1520,9 @@ const make = Effect.gen(function* () {
             branch: main,
             head,
             headFiles,
-            path: item.head.path,
-            content: render({ ...frontMatter, invalid_at: invalidAt }, body),
+            files: new Map([
+              [item.head.path, render({ ...frontMatter, invalid_at: invalidAt }, body)],
+            ]),
             message:
               input.by === "owner"
                 ? `kin: owner forgets ${input.itemId}\n`
@@ -1542,6 +1551,59 @@ const make = Effect.gen(function* () {
           }
           yield* endSharing(orgId, ending);
           reconciledHeads.set(orgId, head);
+        }),
+      ),
+    ),
+    stripQuotes: Effect.fn("MemoryWriter.stripQuotes")((orgId) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const main = config.defaultBranch ?? "main";
+          const { writer } = yield* validate(orgId);
+          yield* refuseDuringPurge(orgId);
+          const repo = yield* repoFor(orgId);
+          const shadows = (yield* git(orgId, writer, [
+            "for-each-ref",
+            "--format=%(refname:strip=2)",
+            "refs/heads/kin/shadow/",
+          ]))
+            .split("\n")
+            .filter((branch) => branch !== "");
+          // The nightly sync tells the owner nothing when the default branch refuses writes.
+          const mainWritable =
+            mainWrites === "direct" ||
+            (mainWrites === "pull_request" &&
+              (yield* refuseOffGitHub(orgId).pipe(Effect.result))._tag === "Success");
+          const [clears] = yield* sql<{ mark: number }>`SELECT
+              COALESCE(SUM(cleared_change_seq), 0) AS mark FROM kin_chats WHERE org_id = ${orgId}`.pipe(
+            Effect.mapError(toPersistenceSqlError("MemoryWriter.stripQuotes")),
+          );
+          for (const branch of [...(mainWritable ? [main] : []), ...shadows.toSorted()]) {
+            const head = yield* branchHead(orgId, writer, branch);
+            const swept = `${head}\u0000${clears?.mark ?? 0}`;
+            if (unquotedHeads.get(`${orgId}\u0000${branch}`) === swept) continue;
+            const headFiles = yield* filesAt(orgId, writer, head);
+            const stripped = yield* deletedQuotes(
+              orgId,
+              new Map([...headFiles].map(([path, bytes]) => [path, bytes.toString("utf8")])),
+            ).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.mapError(toPersistenceSqlError("MemoryWriter.stripQuotes")),
+            );
+            if (stripped.size === 0) {
+              unquotedHeads.set(`${orgId}\u0000${branch}`, swept);
+              continue;
+            }
+            yield* ownerCommit(orgId, {
+              writer,
+              repoUrl: repo.repoUrl,
+              branch,
+              head,
+              headFiles,
+              files: stripped,
+              message: "kin: drop quotes of deleted messages\n",
+            });
+          }
         }),
       ),
     ),

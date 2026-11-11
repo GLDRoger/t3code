@@ -107,7 +107,7 @@ export const spent = (
 
 /** Most characters a memory item's `quote` holds. */
 export const QUOTE_MAX = 400;
-/** Fewer folded characters than this prove nothing, unless they are the whole message. */
+/** Fewer folded characters than this match almost any message, unless they are all of it. */
 const QUOTE_MIN = 12;
 export const QUOTE_TOO_LONG = `a quote is at most ${QUOTE_MAX} characters; quote only the words that say it`;
 const QUOTE_NO_WORDS =

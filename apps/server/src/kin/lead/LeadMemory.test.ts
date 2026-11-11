@@ -965,6 +965,28 @@ it.live(
           whole(yield* service.read(scope, { id: reminder.itemId })).head.title,
           "Invented stretch",
         );
+        // The owner's words show only while he can open the message they came from.
+        const quotesShown = Effect.gen(function* () {
+          const read = whole(yield* service.read(scope, { id: KinMemoryItemId.make("new-claim") }));
+          const found = (yield* service.search(scope, { kind: "claim" })).find(
+            (item) => item.id === "new-claim",
+          );
+          // And in the files the lead greps, its checkout.
+          const { read: checkout } = yield* memory.prepareWakeup(orgId, "shadow-wakeup", {
+            lead: agentId,
+          });
+          const file = yield* fs.readFileString(`${checkout}/claims/new-claim.md`);
+          return [
+            read.head.quote,
+            found !== undefined && "quote" in found ? found.quote : "none",
+            file.includes(`quote: ${quoted.quote}`),
+            file.includes("Invented"),
+          ];
+        });
+        assert.deepStrictEqual(yield* quotesShown, [quoted.quote, quoted.quote, true, true]);
+        yield* sql`UPDATE kin_messages SET status = 'deleted' WHERE message_id = ${message.messageId}`;
+        assert.deepStrictEqual(yield* quotesShown, [undefined, "none", false, true]);
+        yield* sql`UPDATE kin_messages SET status = 'posted' WHERE message_id = ${message.messageId}`;
         const armed = () =>
           sql<{ nextRunAt: number | null }>`SELECT next_run_at AS "nextRunAt" FROM kin_triggers
             WHERE org_id = ${orgId} AND trigger_id = ${`deferral:${reminder.itemId}:due`}`;

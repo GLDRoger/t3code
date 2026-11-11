@@ -5,6 +5,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, expect, it } from "@effect/vitest";
 import {
   KinAgentId,
+  KinChatId,
   KinMemoryItemId,
   KinOrgId,
   type MemoryItemHead,
@@ -16,6 +17,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Persistence from "../persistence/KinPersistence.ts";
+import * as Repository from "../chat/KinChatRepository.ts";
 import * as Vcs from "../../vcs/VcsProcess.ts";
 import * as Memory from "./Memory.ts";
 import { MemoryConfig } from "./MemoryConfig.ts";
@@ -1619,4 +1621,149 @@ it.effect.each(["legacy", "shadow", "github"] as const)(
       ),
       Effect.scoped,
     ),
+);
+
+// Clearing a chat deleted its messages and once left their words quoted in memory.
+it.effect("a cleared chat's words leave every item quoting them, and the items stay", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const vcs = yield* Vcs.VcsProcess;
+    const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+    const source = `${root}/seed`;
+    const remote = `${root}/remote.git`;
+    const git = (cwd: string, args: ReadonlyArray<string>) =>
+      vcs
+        .run({ operation: "test.writer", command: "git", cwd, args })
+        .pipe(Effect.map((r) => r.stdout.trim()));
+    const cleared = "kin:chat:cleared-chat:message:m-cleared";
+    const item = (id: string, fields: Record<string, unknown>) =>
+      fixtureItem({ id, kind: "claim", title: `Invented ${id}`, due: null, ...fields });
+    yield* fs.makeDirectory(`${source}/claims`, { recursive: true });
+    yield* fs.writeFileString(`${source}/rules.md`, "Invented rules\n");
+    yield* fs.writeFileString(
+      `${source}/claims/said.md`,
+      item("said", { source: cleared, quote: FIXTURE_QUOTE }),
+    );
+    // Made from it by a dream, carrying its words over.
+    yield* fs.writeFileString(
+      `${source}/claims/folded.md`,
+      item("folded", { source: "memory:claims/said.md", quote: FIXTURE_QUOTE }),
+    );
+    yield* fs.writeFileString(
+      `${source}/claims/kept.md`,
+      item("kept", { source: "kin:chat:kept-chat:message:m-kept", quote: FIXTURE_QUOTE }),
+    );
+    yield* git(source, ["init", "-b", "main"]);
+    yield* git(source, ["add", "--", "."]);
+    yield* git(source, [
+      "-c",
+      "user.name=Fixture Bot",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "commit",
+      "-m",
+      "fixture",
+    ]);
+    yield* git(root, ["clone", "--bare", "--", source, remote]);
+    const config = Layer.succeed(MemoryConfig, {
+      baseDirectory: root,
+      directMainPush: true,
+      repositories: [{ orgId, repoUrl: remote, path: "state" }],
+    });
+    const layer = Writer.layer.pipe(
+      Layer.provideMerge(
+        Memory.layer.pipe(
+          Layer.provide(config),
+          Layer.provide(Layer.succeed(Memory.MemorySyncHooks, { syncItems: () => Effect.void })),
+        ),
+      ),
+      Layer.provideMerge(Repository.layer),
+      Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
+      Layer.provide(config),
+      Layer.provide(Layer.succeed(Writer.MemoryWriterHooks, { notify: () => Effect.void })),
+      Layer.provide(
+        Layer.succeed(Writer.MemoryWriterAuthority, {
+          resolve: (_org: KinOrgId, wakeupId: string) =>
+            Effect.succeed({
+              orgId,
+              wakeupId,
+              agentId,
+              level: "L0" as const,
+              timeZone: "UTC",
+              startedAt: "2026-11-08T00:00:00.000Z",
+              eventIds: [],
+              sources: new Map(),
+            }),
+        }),
+      ),
+      Layer.provide(Scan.layer),
+    );
+    yield* Effect.gen(function* () {
+      const memory = yield* Memory.Memory;
+      const writer = yield* Writer.MemoryWriter;
+      const chats = yield* Repository.KinChatRepository;
+      const sql = yield* SqlClient.SqlClient;
+      const at = "2026-11-08T00:00:00.000Z";
+      yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Org', ${at})`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('owner', ${orgId}, 'owner', 'Owner', ${at})`;
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at) VALUES (${agentId}, ${orgId}, 'Lead', 'lead', 'owner', ${at})`;
+      for (const [chat, message] of [
+        ["cleared-chat", "m-cleared"],
+        ["kept-chat", "m-kept"],
+      ] as const) {
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES (${chat}, ${orgId}, 'team_group', 1, ${at})`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at) VALUES (${`owner-${chat}`}, ${orgId}, ${chat}, 'person', 'owner', 'owner', ${at})`;
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+            author_member_id, author_role, kind, body, mentions_json, status, created_at)
+          VALUES (${message}, ${orgId}, ${chat}, 1, 'human', 'owner', ${`owner-${chat}`}, 'owner',
+            'text', ${FIXTURE_SAID}, '[]', 'posted', ${at})`;
+      }
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, models_json, worker_projects_json, owner_chat_id)
+        VALUES (${agentId}, ${orgId}, 'Lead', 'L0', 0, '{}', '[]', 'kept-chat')`;
+      yield* memory.ensureCheckouts(orgId);
+      yield* memory.prepareWakeup(orgId);
+      // An L0 lead's wake-up leaves the same items on its shadow branch.
+      yield* writer.appendJournal(orgId, "wake0", ["Only a note."]);
+      yield* writer.commitWakeup(orgId, "wake0", "completed");
+      const shadow = Memory.shadowBranch(agentId);
+      const bare = (args: ReadonlyArray<string>) => git(root, [`--git-dir=${remote}`, ...args]);
+      const show = (branch: string, path: string) => bare(["show", `${branch}:${path}`]);
+      const heads = Effect.all([bare(["rev-parse", "main"]), bare(["rev-parse", shadow])]);
+
+      // Nothing was deleted yet, so the sweep each sync runs changes nothing.
+      const untouched = yield* heads;
+      yield* writer.stripQuotes(orgId);
+      assert.deepStrictEqual(yield* heads, untouched);
+
+      yield* chats.clearChat({
+        orgId,
+        chatId: KinChatId.make("cleared-chat"),
+        clearedAt: at,
+        clearedAtMs: Date.parse(at),
+      });
+      // Whether a clear's own event ran it or, after a crash, the sync at startup does.
+      yield* writer.stripQuotes(orgId);
+      for (const branch of ["main", shadow]) {
+        for (const path of ["claims/said.md", "claims/folded.md"]) {
+          const text = yield* show(branch, path);
+          assert.notInclude(text, "quote:", `${branch} ${path}`);
+          assert.include(text, "Invented fixture body.", `${branch} ${path}`);
+          assert.include(text, `title: "Invented `, `${branch} ${path}`);
+        }
+        assert.include(yield* show(branch, "claims/kept.md"), `quote: "${FIXTURE_QUOTE}"`);
+      }
+      const done = yield* heads;
+      yield* writer.stripQuotes(orgId);
+      assert.deepStrictEqual(yield* heads, done);
+    }).pipe(Effect.provide(layer));
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        gitLayer,
+        NodeServices.layer,
+        Persistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
+      ),
+    ),
+    Effect.scoped,
+  ),
 );

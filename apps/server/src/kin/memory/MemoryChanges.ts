@@ -33,7 +33,7 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
-import { readableBy } from "../chat/sharing.ts";
+import { readableSources } from "./quoteAccess.ts";
 import type { MemoryItem } from "./MemoryCache.ts";
 import type { MemoryWriter } from "./MemoryWriter.ts";
 import {
@@ -113,8 +113,6 @@ const stale = refused("conflict", "This changed again since, so it wasn't undone
 const changed = refused("conflict", "This item changed since it was listed. Look at it again.");
 const isKinChatError = Schema.is(KinChatError);
 const PREVIEW_MAX = 200;
-// As `LeadMemory.authority` writes the source of an item saved from a chat message.
-const CHAT_SOURCE = /^kin:chat:([^:]+):message:(.+)$/;
 type Provenance = NonNullable<KinMemoryListItem["provenance"]>;
 /** The item's own one-line account, else the start of what it says. */
 const previewOf = ({ head, body }: MemoryItem) => {
@@ -149,35 +147,15 @@ const make = Effect.gen(function* () {
   });
   /**
    * Who said each item and when, with the words it quotes, only from a message the owner can
-   * open in chat now (`readableBy`): one deleted, or in a chat he left, gives neither.
+   * open in chat now (`readableSources`): one deleted, or in a chat he left, gives neither.
    */
   const provenanceOf = Effect.fn("KinMemoryChanges.provenanceOf")(
     function* (orgId: KinOrgId, person: KinPersonId, items: ReadonlyArray<MemoryItem>) {
-      const cited = new Map<string, Set<string>>();
-      for (const { head } of items) {
-        const [, chatId, messageId] = CHAT_SOURCE.exec(head.source) ?? [];
-        if (chatId === undefined || messageId === undefined) continue;
-        cited.set(chatId, (cited.get(chatId) ?? new Set()).add(messageId));
-      }
-      const saidAt = new Map<string, string>();
-      if (cited.size > 0) {
-        const members = yield* sql<{ chatId: string; memberId: string }>`SELECT chat_id AS "chatId",
-          member_id AS "memberId" FROM kin_chat_members
-        WHERE org_id = ${orgId} AND principal_kind = 'person' AND person_id = ${person}
-          AND left_at IS NULL AND chat_id IN ${sql.in([...cited.keys()])}
-        ORDER BY chat_id, member_id`;
-        for (const { chatId, memberId } of members) {
-          const rows = yield* sql<{ messageId: string; createdAt: string }>`SELECT
-            message_id AS "messageId", created_at AS "createdAt" FROM kin_messages
-          WHERE kin_messages.org_id = ${orgId} AND kin_messages.chat_id = ${chatId}
-            AND kin_messages.status = 'posted' AND kin_messages.kind = 'text'
-            AND kin_messages.message_id IN ${sql.in([...(cited.get(chatId) ?? [])])}
-            AND ${readableBy(sql, orgId, memberId)}
-          ORDER BY kin_messages.seq`;
-          for (const row of rows)
-            saidAt.set(`kin:chat:${chatId}:message:${row.messageId}`, row.createdAt);
-        }
-      }
+      const saidAt = yield* readableSources(
+        orgId,
+        person,
+        items.map(({ head }) => head.source),
+      ).pipe(provideSql);
       return ({ head }: MemoryItem): Provenance => {
         const at = saidAt.get(head.source);
         return {

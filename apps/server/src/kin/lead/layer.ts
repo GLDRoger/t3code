@@ -29,6 +29,9 @@ import * as Writer from "../memory/MemoryWriter.ts";
 import * as MemoryLander from "../memory/MemoryLander.ts";
 import * as MemoryPullRequests from "../memory/MemoryPullRequests.ts";
 import * as Cause from "effect/Cause";
+import * as Stream from "effect/Stream";
+import type { KinOrgId } from "@t3tools/contracts";
+import { KinChatHub } from "../chat/KinChatHub.ts";
 import * as Clock from "effect/Clock";
 import * as Scan from "../memory/secretScan.ts";
 import * as LeadMemory from "./LeadMemory.ts";
@@ -124,6 +127,17 @@ const memoryPullRequestSweep = Effect.fn("KinMemoryPullRequests.sweepDue")(funct
   });
 });
 
+/** A failed sweep is retried by the next sync, which also finishes one a crash cut short. */
+const stripQuotes = (writer: Writer.MemoryWriter["Service"], orgId: KinOrgId) =>
+  writer.stripQuotes(orgId).pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin could not drop the quotes of deleted messages", {
+        orgId,
+        cause: Cause.pretty(cause),
+      }),
+    ),
+  );
+
 /**
  * The writer's fsck and remote sync, off the reply path: at start, then every five minutes. Each
  * sync then ends who may know whatever the default branch now holds retired, GitHub merges too.
@@ -158,6 +172,7 @@ const memorySync = Effect.fn("KinMemory.syncDue")(function* (
                       cause: Cause.pretty(cause),
                     }),
                   ),
+                  Effect.andThen(stripQuotes(writer.value, orgId)),
                 ),
           ),
         ),
@@ -176,6 +191,14 @@ const runner = Layer.effectDiscard(
     const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
     const memoryChanges = yield* Effect.serviceOption(KinMemoryChanges);
     const lander = yield* Effect.serviceOption(MemoryLander.MemoryLander);
+    const hub = yield* KinChatHub;
+    // A cleared chat's messages are gone, so are the words memory quoted from them.
+    if (Option.isSome(writer))
+      yield* (yield* hub.subscribeAll).pipe(
+        Stream.filter((event) => event.type === "chat.cleared"),
+        Stream.runForEach((event) => stripQuotes(writer.value, event.orgId)),
+        Effect.forkScoped,
+      );
     if (Option.isSome(writer) && Option.isSome(memoryChanges))
       yield* memoryChanges.value.attachWriter({
         undo: writer.value.undoChange,
