@@ -76,13 +76,12 @@ export interface Shown {
   readonly body: string;
 }
 
-/** Who let the team know an item, from stored rows: the owner three ways, or a teammate's own words. */
-export type Sharing =
-  | "owner_message"
-  | "owner_label"
-  | "owner_setting"
-  | "owner_confirmed"
-  | "teammate";
+/**
+ * Who let the team know an item, from stored rows: the owner's own message that wrote it, his
+ * setting or confirmation on the Memory screen, or a teammate's own words. Older rows may say
+ * `owner_label`, which chat no longer grants.
+ */
+export type Sharing = "owner_message" | "owner_setting" | "owner_confirmed" | "teammate";
 
 /** The one projection every shared-turn surface returns, built from the fixed field list above. */
 export const shareable = ({ head, body }: Shown): SharedItem => ({
@@ -186,8 +185,9 @@ export const visibility = (item: Shown, labels: StoredLabels): Visibility => {
 
 /**
  * Binds each suggestion that recorded no content (an earlier version's) to the words `items`
- * hold now, the first time the owner is shown them; it is suggested, and confirmable, only as
- * those words from then on. Returns the labels as stored after.
+ * hold now, the first time the owner is shown them, at a fresh revision so no earlier listing's
+ * yes takes it; it is suggested, and confirmable, only as those words from then on. Returns the
+ * labels as stored after.
  */
 export const bindSuggestions = Effect.fn("KinSensitivity.bindSuggestions")(function* (
   orgId: KinOrgId,
@@ -201,9 +201,17 @@ export const bindSuggestions = Effect.fn("KinSensitivity.bindSuggestions")(funct
   for (const item of items) {
     const suggestion = labels.suggested.get(item.head.id);
     if (suggestion?.content !== null || counts.get(item.head.id) !== 1) continue;
-    yield* sql`UPDATE kin_memory_labels SET suggested_content = ${fingerprint(item)}
-      WHERE org_id = ${orgId} AND item_id = ${item.head.id}
-        AND suggested_content IS NULL AND suggested_rev = ${suggestion.rev}`;
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* sql`INSERT INTO kin_memory_label_revisions (org_id, revision) VALUES (${orgId}, 1)
+          ON CONFLICT (org_id) DO UPDATE SET revision = revision + 1`;
+        yield* sql`UPDATE kin_memory_labels SET suggested_content = ${fingerprint(item)},
+            suggested_rev = (SELECT revision FROM kin_memory_label_revisions
+              WHERE org_id = ${orgId})
+          WHERE org_id = ${orgId} AND item_id = ${item.head.id}
+            AND suggested_content IS NULL AND suggested_rev = ${suggestion.rev}`;
+      }),
+    );
     bound = true;
   }
   return bound ? yield* storedLabels(orgId) : labels;
@@ -270,8 +278,7 @@ export const hold = Effect.fn("KinSensitivity.hold")(function* (orgId: KinOrgId,
 
 /**
  * The team may know `content` of the item, from here until anyone changes it. Callers settle
- * `how` from stored rows: the owner's own message, tool, setting or confirmation, or a teammate's
- * own message in a shared turn. Ends any hold and any open suggestion.
+ * `how` from stored rows (`Sharing`). Ends any hold and any open suggestion.
  */
 export const authorise = Effect.fn("KinSensitivity.authorise")(function* (
   orgId: KinOrgId,

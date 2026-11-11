@@ -45,7 +45,7 @@ import { KinBudget } from "./KinBudget.ts";
 import * as KinLevels from "./KinLevels.ts";
 import { SHARED_REFUSAL, destination, effectiveAudience, turnChat } from "./Audience.ts";
 import { workerChat } from "./ChatSharing.ts";
-import { toolAdmitted } from "./SharedTools.ts";
+import { sharedTurnMayTouch, toolAdmitted } from "./SharedTools.ts";
 import { isOrgPaused, STOP_REASON } from "./orgState.ts";
 import { resolveLead } from "./LeadMemory.ts";
 import { quote } from "./LeadPrompt.ts";
@@ -607,11 +607,18 @@ const make = Effect.gen(function* () {
     const ctx = yield* lead(scope);
     const plan = yield* sql.withTransaction(
       Effect.gen(function* () {
-        // The owner's notes never go to work started where someone else reads.
+        const audience = yield* effectiveAudience(ctx).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        );
+        // The owner's notes never go to work started where someone else reads, and such a turn
+        // reads the report of only a worker it may touch.
         if (
-          (input.memoryItemIds?.length ?? 0) > 0 &&
-          (yield* effectiveAudience(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql))) !==
-            "owner_only"
+          audience !== "owner_only" &&
+          ((input.memoryItemIds?.length ?? 0) > 0 ||
+            (input.reviewOf !== undefined &&
+              !(yield* sharedTurnMayTouch(ctx, input.reviewOf).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              ))))
         )
           return yield* denied(SHARED_REFUSAL);
         const config = yield* leadConfig(ctx);
@@ -870,16 +877,12 @@ const make = Effect.gen(function* () {
         const audience = yield* effectiveAudience(ctx).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
         );
-        const [stored] = yield* sql<{ context: string | null }>`SELECT context FROM kin_workers
-          WHERE org_id = ${ctx.orgId} AND worker_id = ${input.workerId} ORDER BY worker_id`;
         // Where its answer lands now: its chat, or the owner's once private work's chat was shared.
         const answersIn = yield* cardChat(ctx.orgId, input.workerId, workerChatId);
         if (
           !(yield* toolAdmitted(ctx, "kin_follow_up", input).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
           )) ||
-          // Private work takes briefs only from owner-only turns.
-          (audience !== "owner_only" && stored?.context === "private") ||
           (answersIn !== null &&
             (yield* destination(ctx, answersIn).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),

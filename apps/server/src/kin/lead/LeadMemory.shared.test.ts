@@ -75,9 +75,7 @@ const state: {
   /** Runs once, right after the next load of items with their bodies. */
   afterLoad: (() => void) | undefined;
   stage: (wakeupId: string) => Effect.Effect<void>;
-  /** When every item's file last changed, by commit time. */
-  changedAt: number;
-} = { items: [], afterLoad: undefined, stage: () => Effect.void, changedAt: 0 };
+} = { items: [], afterLoad: undefined, stage: () => Effect.void };
 const loaded = () => {
   const items = state.items;
   const after = state.afterLoad;
@@ -97,8 +95,6 @@ const memory = Layer.mock(Memory.Memory)({
   query: () => Effect.sync(() => state.items.map((item) => ({ ...item.head, duplicate: false }))),
   readItem: (_org, id, _view, admit) => pick(id, admit),
   readItemQuietly: (_org, id) => pick(id),
-  readItemChangedAt: (_org, id) =>
-    pick(id).pipe(Effect.map((item) => ({ item, changedAt: state.changedAt }))),
 });
 const identity = Layer.mock(KinIdentity)({
   owner: { _tag: "person", orgId, personId: ownerId },
@@ -131,7 +127,6 @@ const setup = Effect.gen(function* () {
   state.items = [];
   state.afterLoad = undefined;
   state.stage = () => Effect.void;
-  state.changedAt = 0;
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES (${orgId}, 'Fixture', ${at})`;
   yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES
@@ -406,32 +401,41 @@ it.effect("two leads can't both take a teammate's last write of the day", () =>
   }).pipe(Effect.provide(layer)),
 );
 
-// Review of e1460657a0: the owner's "the team can know it" in chat covered whatever the item said
-// when the tool ran, including a rewording another lead or the nightly pass made after his message.
-it.effect("the owner's word in chat covers only what the item said when he gave it", () =>
-  Effect.gen(function* () {
-    yield* setup;
-    const sql = yield* SqlClient.SqlClient;
-    const note: MemoryItem = { head: head("owner-note", { sensitive: true }), body };
-    state.items = [note];
-    const share = {
-      itemIds: [KinMemoryItemId.make("owner-note")],
-      sensitive: false,
-      sourceEventId: "owner-said",
-    };
-    const service = yield* Lead.LeadMemory;
-    state.changedAt = Date.parse(at) + 5_000;
-    const later = yield* service.label(scopeOf(leads.o), share).pipe(Effect.flip);
-    assert.include(later.message, "changed after the owner's message");
-    const authorisedRows = sql`SELECT item_id FROM kin_memory_labels
-      WHERE org_id = ${orgId} AND shared_content IS NOT NULL`;
-    assert.deepStrictEqual(yield* authorisedRows, []);
-    state.changedAt = Date.parse(at) - 60_000;
-    assert.deepStrictEqual(yield* service.label(scopeOf(leads.o), share), {
-      itemIds: [KinMemoryItemId.make("owner-note")],
-    });
-    assert.deepStrictEqual(yield* authorisedRows, [{ item_id: "owner-note" }]);
-  }).pipe(Effect.provide(layer)),
+// Review of 8c8ee76d04: commit time can't tell when this host adopted a rewording, so the owner's
+// "the team can know it" in chat now only asks; his yes on the Memory screen decides.
+it.effect(
+  "the owner's word in chat only suggests letting the team know, at the words read now",
+  () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const sql = yield* SqlClient.SqlClient;
+      const note: MemoryItem = { head: head("owner-note", { sensitive: true }), body };
+      state.items = [note];
+      const before = yield* sql<{
+        revision: number;
+      }>`SELECT revision FROM kin_memory_label_revisions
+      WHERE org_id = ${orgId}`;
+      assert.deepStrictEqual(
+        yield* (yield* Lead.LeadMemory).label(scopeOf(leads.o), {
+          itemIds: [KinMemoryItemId.make("owner-note")],
+          sensitive: false,
+          sourceEventId: "owner-said",
+        }),
+        { itemIds: [KinMemoryItemId.make("owner-note")], note: Lead.AWAITING_OWNER },
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT item_id, shared_content, suggested_content, suggested_rev
+        FROM kin_memory_labels WHERE org_id = ${orgId}`,
+        [
+          {
+            item_id: "owner-note",
+            shared_content: null,
+            suggested_content: fingerprint(note),
+            suggested_rev: (before[0]?.revision ?? 0) + 1,
+          },
+        ],
+      );
+    }).pipe(Effect.provide(layer)),
 );
 
 // Review of e1460657a0: only a typed staging failure gave the place back.

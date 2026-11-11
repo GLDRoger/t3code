@@ -55,7 +55,6 @@ const memory = Layer.succeed(
     query: () => Effect.succeed([]),
     readItem: () => Effect.die("Unused"),
     readItemQuietly: (org, id) => Effect.fail(new Memory.MemoryNotFound({ orgId: org, id })),
-    readItemChangedAt: () => Effect.die("Unused"),
     rebuildIndex: () => Effect.die("Unused"),
     rebuildCache: () => Effect.die("Unused"),
     syncCheckout: () => Effect.die("Unused"),

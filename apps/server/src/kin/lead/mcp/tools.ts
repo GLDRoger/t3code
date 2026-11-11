@@ -109,7 +109,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("memory_read", {
     ...shared,
     description:
-      "Open one memory item and record that it was used. Returns whether its review is overdue or it was flagged misleading. Reading the file directly does not record the use.",
+      "Open one memory item and record that it was used. In a turn only the owner reads, it also says whether its review is overdue or it was flagged misleading; in a chat other people read it opens only what the team can know, without those. Reading the file directly does not record the use.",
     parameters: Lead.ReadInput,
     success: Lead.ReadResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -123,7 +123,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("memory_label", {
     ...shared,
     description:
-      'Change who may know memory items, by itemIds (one or several), with this turn\'s sourceEventId. sensitive true keeps them between you and the owner: use it when the owner says so ("keep that between us"). sensitive false lets the team know them: only when the owner\'s own message in this turn says so ("that\'s fine to share with the team", "yes, the team can know those"), never on your own judgement; anything else is refused.',
+      'Change who may know memory items, by itemIds (one or several), with this turn\'s sourceEventId. sensitive true keeps them between you and the owner, at once: use it when the owner says so ("keep that between us"). sensitive false asks the owner to let the team know them: only when the owner\'s own message in this turn says so ("that\'s fine to share with the team", "yes, the team can know those"), never on your own judgement; anything else is refused. They stay the owner\'s alone until he says yes in Memory: pass on the note it returns.',
     parameters: Lead.LabelInput,
     success: Lead.LabelResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

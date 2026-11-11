@@ -1021,6 +1021,10 @@ it.effect("a chat that can't start work can't reach a worker started in one that
         yield* ctx.sql`INSERT INTO kin_chat_levels (org_id, agent_id, chat_id, level, level_since)
           VALUES (${ctx.orgId}, ${leadId}, 'team', 'L1', 0)`;
         yield* askFrom(ctx.sql, "dm-event", ctx.chat.chatId);
+        // Owner-only again, so only the levels stand between this turn and the author's refs.
+        yield* ctx.sql`UPDATE kin_events SET state = 'done', wakeup_id = NULL
+          WHERE event_id = 'side-event'`;
+        yield* ctx.sql`UPDATE kin_wakeups SET shared_since = NULL WHERE wakeup_id = 'wake'`;
         const review = workers.delegate(scope, {
           ...teamDelegate,
           kind: "review",
@@ -1598,6 +1602,9 @@ it.effect(
         );
         assert.lengthOf(remote.tools("t3_thread_send"), 0);
         // Nor reviewed from it: a listed project named beside it can't carry the author's refs out.
+        // The turn answers only the side group now, so the review may touch that worker.
+        yield* ctx.sql`UPDATE kin_events SET state = 'done', wakeup_id = NULL
+          WHERE event_id = 'lead-event'`;
         const { threadId: ownersThread } = yield* workerRow(ctx.sql, ctx.orgId, owners.workerId);
         yield* remote.finish(ThreadId.make(ownersThread), "completed", reportReply);
         yield* settled(tracker, ctx.orgId, owners.workerId);
@@ -2286,6 +2293,67 @@ it.effect(
         assert.lengthOf(yield* chatCards(sql, ctx.chat.chatId), 1);
       }),
     ),
+);
+
+// Review of 8c8ee76d04: a review copies its source's refs into a worker the group reads.
+it.effect("a shared turn reviews only its own chat's shared work that no join moved", () =>
+  run(({ ctx, remote, tracker, workers }) =>
+    Effect.gen(function* () {
+      const sql = ctx.sql;
+      const { started, addBob } = yield* finishedSharedWork(ctx, remote, tracker, workers);
+      const evidence = JSON.stringify({
+        ...report,
+        evidence: [{ kind: "pr", ref: "https://example.invalid/pr/7" }],
+        parsed: true,
+      });
+      for (const [workerId, chatId, context] of [
+        ["private-work", "team", "private"],
+        ["direct-work", ctx.chat.chatId, "shared"],
+      ])
+        yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id,
+              model_json, provenance_json, status, report_json, started_at, chat_id, environment_id,
+              repository_key, context)
+            VALUES (${workerId}, ${ctx.orgId}, ${leadId}, 'wake', 'build', ${`${workerId}-thread`},
+              ${JSON.stringify(codex)}, '{"_tag":"system"}', 'completed', ${evidence}, 0, ${chatId},
+              ${workerEnv}, ${repoKey}, ${context})`;
+      const turn = { orgId: ctx.orgId, agentId: leadId, wakeupId: "wake" };
+      const review = (reviewOf: string, sourceEventId = "lead-event") => ({
+        ...teamDelegate,
+        kind: "review" as const,
+        reviewOf: KinWorkerId.make(reviewOf),
+        model: claude,
+        title: "Review it",
+        goal: "Check the change is right.",
+        sourceEventId,
+      });
+      const refused = Effect.fn("WorkersTest.refusedReview")(function* (
+        input: ReturnType<typeof review>,
+      ) {
+        assert.isFalse(yield* sharedToolAllowed(turn, "kin_delegate", input));
+        assert.include(yield* Effect.flip(workers.delegate(scope, input)), {
+          reason: "not_allowed",
+          message: SHARED_REFUSAL,
+        });
+      });
+      const launches = remote.tools("t3_thread_launch").length;
+      yield* refused(review("private-work"));
+      yield* refused(review("direct-work"));
+      assert.lengthOf(remote.tools("t3_thread_launch"), launches);
+
+      assert.isTrue(yield* sharedToolAllowed(turn, "kin_delegate", review(started.workerId)));
+      // Nor does it build on a branch of such work.
+      const on = (baseRef: string) =>
+        sharedToolAllowed(turn, "kin_delegate", { ...teamDelegate, baseRef });
+      assert.isFalse(yield* on("origin/kin/worker/private-work"));
+      assert.isFalse(yield* on("refs/heads/KIN/WORKER/direct-work~1"));
+      assert.isTrue(yield* on(`origin/kin/worker/${started.workerId}`));
+      assert.isTrue(yield* on("origin/main"));
+      yield* addBob;
+      yield* askAgain(sql);
+      yield* refused(review(started.workerId, "again-event"));
+      assert.lengthOf(remote.tools("t3_thread_launch"), launches);
+    }),
+  ),
 );
 
 // The gate refuses an aborted turn first; dispatch checks again inside its own write.
