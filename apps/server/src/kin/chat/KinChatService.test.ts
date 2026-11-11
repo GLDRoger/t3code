@@ -615,6 +615,22 @@ describe("KinChatService", () => {
         .pipe(Stream.take(1), Stream.runDrain);
       yield* service.subscribeChats(members, {}).pipe(Stream.take(1), Stream.runDrain);
       assert.equal((yield* service.orgs(members)).me[0]!.personId, me.personId);
+      // A teammate sees only the agents they own, may message, or share a chat with.
+      const seen = Effect.map(service.orgs(members), (result) =>
+        result.orgs[0]!.agents.map((agent) => agent.agentId),
+      );
+      assert.deepStrictEqual(yield* seen, [ownAgent]);
+      yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
+        VALUES (${person.orgId}, ${agentId}, ${memberId}, ${person.personId}, 0)`;
+      assert.deepStrictEqual(yield* seen, [agentId, ownAgent]);
+      yield* sql`UPDATE kin_lead_access SET revoked_at = 1 WHERE person_id = ${memberId}`;
+      assert.deepStrictEqual(yield* seen, [ownAgent]);
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+        VALUES ('shared-group', ${person.orgId}, 'team_group', 0, ${timestamp})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, agent_id, role, joined_at)
+        VALUES ('suraj-in-group', ${person.orgId}, 'shared-group', 'person', ${memberId}, NULL, 'member', ${timestamp}),
+          ('lead-in-group', ${person.orgId}, 'shared-group', 'agent', NULL, ${agentId}, 'member', ${timestamp})`;
+      assert.deepStrictEqual(yield* seen, [agentId, ownAgent]);
       assert.include(
         yield* service
           .history(members, { chatId: chat.chatId, beforeSeq: 100, limit: 50 })
