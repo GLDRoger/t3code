@@ -135,6 +135,7 @@ export function KinMessageRow(props: {
             environmentId={props.environmentId}
             attachments={attachments}
             previewKey={props.previewKey}
+            clientMessageId={message.clientMessageId}
           />
         </div>
       )}
@@ -347,6 +348,8 @@ export function KinPendingRow(props: {
             environmentId={props.environmentId}
             attachments={attachments}
             previewKey={props.previewKey}
+            clientMessageId={entry.clientMessageId}
+            unposted
           />
         </div>
       )}

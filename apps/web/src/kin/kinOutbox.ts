@@ -3,6 +3,7 @@ import {
   createKinOutbox,
   type KinOutboxStorage,
 } from "@t3tools/client-runtime/kin/kinOutbox";
+import { createKinLocalPreviews } from "@t3tools/client-runtime/kin/kinAttachments";
 import { createKinOutboxRetry } from "@t3tools/client-runtime/kin/kinOutboxRetry";
 import { environmentSessionGenerationAtom } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -30,6 +31,9 @@ const localStorageOutbox: KinOutboxStorage = {
     window.localStorage.setItem(OUTBOX_KEY, payload);
   },
 };
+
+/** Blob copies of the images this tab sent, until their posted message's own copies load. */
+export const kinLocalPreviews = createKinLocalPreviews((url) => URL.revokeObjectURL(url));
 
 export const kinOutbox = createKinOutbox({
   registry: appAtomRegistry,

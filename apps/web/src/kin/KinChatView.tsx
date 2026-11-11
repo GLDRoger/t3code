@@ -128,7 +128,7 @@ import {
   kinMentionsIn,
   type KinMentionCandidate,
 } from "@t3tools/client-runtime/kin/kinGroups";
-import { deliverKinOutbox, kinOutbox, startKinOutbox } from "./kinOutbox";
+import { deliverKinOutbox, kinLocalPreviews, kinOutbox, startKinOutbox } from "./kinOutbox";
 import { kinFeedDisplay } from "./kinFeedDisplay";
 import {
   formatKinMessageTime,
@@ -731,7 +731,11 @@ function KinChatFeed(props: {
     });
   };
 
-  const sendText = async (body: string, attachments: ReadonlyArray<KinAttachment> = []) => {
+  const sendText = async (
+    body: string,
+    attachments: ReadonlyArray<KinAttachment> = [],
+    images: ReadonlyArray<Blob> = [],
+  ) => {
     const queued = await kinOutbox.enqueue({
       environmentId: props.environmentId,
       chatId: props.chatId,
@@ -741,6 +745,10 @@ function KinChatFeed(props: {
       mentions: kinMentionsIn(body, props.mentionable),
     });
     if (queued._tag !== "queued") return false;
+    kinLocalPreviews.remember(
+      queued.entry.clientMessageId,
+      images.map((image) => URL.createObjectURL(image)),
+    );
     jumpToEnd();
     void deliverKinOutbox();
     return true;
@@ -809,11 +817,16 @@ function KinChatFeed(props: {
             onEdit={() =>
               void kinOutbox.discard(item.entry.clientMessageId).then((body) => {
                 if (body === null) return;
+                kinLocalPreviews.forget(item.entry.clientMessageId);
                 restoreDraft(draftKey, body);
                 composerRef.current?.focus();
               })
             }
-            onDiscard={() => void kinOutbox.discard(item.entry.clientMessageId)}
+            onDiscard={() =>
+              void kinOutbox.discard(item.entry.clientMessageId).then((body) => {
+                if (body !== null) kinLocalPreviews.forget(item.entry.clientMessageId);
+              })
+            }
           />
         );
       case "day":
@@ -1077,7 +1090,11 @@ function KinComposer(props: {
   readonly environmentId: EnvironmentId;
   readonly recipient: string;
   readonly textareaRef: React.RefObject<HTMLTextAreaElement | null>;
-  readonly onSend: (body: string, attachments: ReadonlyArray<KinAttachment>) => Promise<boolean>;
+  readonly onSend: (
+    body: string,
+    attachments: ReadonlyArray<KinAttachment>,
+    images: ReadonlyArray<Blob>,
+  ) => Promise<boolean>;
   /** The group's leads, offered on `@`; a message that names one is answered by it. */
   readonly mentionable: ReadonlyArray<KinMentionCandidate>;
 }) {
@@ -1117,7 +1134,7 @@ function KinComposer(props: {
     const settled = await files.settle();
     if (settled._tag === "blocked") return;
     if (body.length === 0 && settled.attachments.length === 0) return;
-    if (!(await onSend(body, settled.attachments))) return;
+    if (!(await onSend(body, settled.attachments, settled.images))) return;
     // Keeps anything typed while the files were uploading.
     const typed = appAtomRegistry.get(atom);
     appAtomRegistry.set(atom, typed.startsWith(drafted) ? typed.slice(drafted.length) : typed);
