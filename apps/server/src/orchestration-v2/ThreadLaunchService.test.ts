@@ -1178,6 +1178,35 @@ it.effect("fetches the origin base from the remote it already resolved", () => {
   }).pipe(Effect.provide(harness.layer));
 });
 
+it.effect.each([
+  { thread: "kin-work:wk-hooks", runHooks: false },
+  { thread: "thread:launch:hooks", runHooks: undefined },
+])("creates the worktree for $thread with runHooks $runHooks", ({ thread, runHooks }) => {
+  type Options = GitVcsDriver.CreateWorktreeOptions | undefined;
+  let created: Deferred.Deferred<Options> | null = null;
+  const harness = makeHarness({
+    createWorktree: (input, options) =>
+      Deferred.succeed(created!, options).pipe(
+        Effect.as({
+          worktree: { path: "/repo-worktrees/feature", refName: input.newRefName, headSha: "abc" },
+        } as never),
+      ),
+  });
+  return Effect.gen(function* () {
+    const deferred = yield* Deferred.make<Options>();
+    created = deferred;
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    yield* launches.launch(
+      launchInput({
+        command: `command:${thread}`,
+        thread,
+        workspace: { type: "worktree", baseRef: "main", branch: "feature" },
+      }),
+    );
+    assert.strictEqual((yield* Deferred.await(deferred))?.runHooks, runHooks);
+  }).pipe(Effect.provide(harness.layer));
+});
+
 it.effect("shows the fetch diagnosis when preparing a worktree from origin fails", () => {
   const detail =
     "Git could not authenticate with the remote. Check Git credentials or SSH access on the server, then retry.";

@@ -42,6 +42,7 @@ const makeHarness = Effect.fn(function* (options: {
   readonly opening?: Deferred.Deferred<void>;
   readonly shell?: string | null;
   readonly threadId?: string;
+  readonly trigger?: "setup" | "settle";
 }) {
   const listeners = new Set<(event: TerminalEvent) => Effect.Effect<void>>();
   const writes = yield* Queue.unbounded<string>();
@@ -81,6 +82,7 @@ const makeHarness = Effect.fn(function* (options: {
   const start = runner.runForThread({
     threadId: options.threadId ?? threadId,
     worktreePath: "/repo/.t3/worktrees/feature",
+    ...(options.trigger === undefined ? {} : { trigger: options.trigger }),
     observeCompletion: { onOutputLine: (line) => Queue.offer(outputLines, line) },
     project: {
       id: ProjectId.make("project-1"),
@@ -92,6 +94,7 @@ const makeHarness = Effect.fn(function* (options: {
           command: "vp i",
           icon: "configure",
           runOnWorktreeCreate: true,
+          runOnSettle: true,
         },
       ],
     },
@@ -115,12 +118,14 @@ const setup = Effect.fn(function* (
 });
 
 describe("ProjectSetupScriptRunner", () => {
-  it.effect("runs no setup script for a Kin work thread, which has no shell", () =>
-    Effect.gen(function* () {
-      const { start, writes } = yield* makeHarness({ threadId: "kin-work:wk-fixture" });
-      expect(yield* start).toEqual({ status: "skipped-for-link" });
-      expect(yield* Queue.size(writes)).toBe(0);
-    }),
+  it.effect.each(["setup", "settle"] as const)(
+    "runs no %s script for a Kin work thread, which has no shell",
+    (trigger) =>
+      Effect.gen(function* () {
+        const { start, writes } = yield* makeHarness({ threadId: "kin-work:wk-fixture", trigger });
+        expect(yield* start).toEqual({ status: "skipped-for-link" });
+        expect(yield* Queue.size(writes)).toBe(0);
+      }),
   );
 
   it.effect("writes immediately when the spawned fallback is PowerShell", () =>
