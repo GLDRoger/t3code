@@ -40,7 +40,7 @@ import {
   MemoryDuplicateId,
   shadowBranch,
 } from "./Memory.ts";
-import { parseFrontMatter, MemoryItemError, schemaKeyFailure } from "./frontMatter.ts";
+import { changedKeys, parseFrontMatter, MemoryItemError, schemaKeyFailure } from "./frontMatter.ts";
 import { journalEntry, MemoryJournalError, type JournalContext } from "./journal.ts";
 import { QUOTE_MISSING, quoteRefusal } from "./keeping.ts";
 import { isOwnerReviewedPath, kinShapeFailure } from "./lint.ts";
@@ -886,7 +886,6 @@ const make = Effect.gen(function* () {
         if (body !== parsed.body || item.title !== fm.title)
           return yield* new MemoryConflict({ existingId: item.id });
         if (item.id === fm.id) {
-          const proposed = new Map(Object.entries(fm));
           const mutable = new Set([
             "orgId",
             "path",
@@ -924,14 +923,7 @@ const make = Effect.gen(function* () {
             fm.due === source.due
           )
             mutable.add("due");
-          const existing = new Map(Object.entries(item));
-          if (
-            [...new Set([...existing.keys(), ...proposed.keys()])].some(
-              (key) =>
-                !mutable.has(key) &&
-                JSON.stringify(existing.get(key)) !== JSON.stringify(proposed.get(key)),
-            )
-          )
+          if (changedKeys(item, fm).some((key) => !mutable.has(key)))
             return yield* new MemoryConflict({ existingId: item.id });
         }
       }

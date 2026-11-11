@@ -3,7 +3,7 @@ import { KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
-import { QUOTE_MISSING, QUOTE_TOO_LONG } from "../memory/keeping.ts";
+import { QUOTE_MISSING } from "../memory/keeping.ts";
 import { checkDream } from "./checkDream.ts";
 import type { MaterialEntry } from "./material.ts";
 
@@ -59,7 +59,6 @@ const statedEntry: MaterialEntry = {
   trust: "owner",
   at: "2026-11-01T00:00:00.000Z",
   text: stated(),
-  quote: statedQuote,
 };
 const reminderRef = "memory:deferrals/remind.md";
 const reminderEntry: MaterialEntry = {
@@ -71,18 +70,16 @@ const reminderEntry: MaterialEntry = {
   text: fixtureItem({ id: "def-remind", said_by: "fixture-owner" }),
   reminder: true,
 };
-const longRef = "memory:claims/long.md";
-const longQuote = `Invented ${"long ".repeat(80)}words`;
-const longEntry: MaterialEntry = {
-  ref: longRef,
-  kind: "item",
-  saidBy: "fixture-owner",
-  trust: "owner",
-  at: "2026-11-01T00:00:00.000Z",
-  text: fixtureItem({ id: "clm-long", kind: "claim", quote: longQuote }),
-  quote: longQuote,
-};
-const items: ReadonlyArray<MaterialEntry> = [...material, statedEntry, reminderEntry, longEntry];
+const items: ReadonlyArray<MaterialEntry> = [...material, statedEntry, reminderEntry];
+const statedDeferral = (overrides: Record<string, unknown> = {}) =>
+  fixtureItem({
+    id: "def-stated",
+    on_due: "remind",
+    source: ownerRef,
+    said_by: "fixture-owner",
+    sensitive: false,
+    ...overrides,
+  });
 const teammateSaid = (overrides: Record<string, unknown> = {}) =>
   fixtureItem({
     id: "clm-said",
@@ -99,6 +96,7 @@ const base = new Map([
   ["INDEX.md", "As of 2026-11-07T00:00:00.000Z\n"],
   ["claims/existing.md", existing],
   ["claims/stated.md", stated()],
+  ["deferrals/stated.md", statedDeferral()],
   ["journal/2026/11-07.md", "\n## 10:00 · wake-up\n"],
 ]);
 const newClaim = (overrides: Record<string, unknown> = {}) =>
@@ -225,7 +223,7 @@ it.effect.each([
     ],
   },
   {
-    name: "rejects a quote changed on a kept item, or not carried over from the item folded in",
+    name: "rejects a quote changed on a stated item, and trust or a quote taken from an item",
     material: [
       ...material,
       {
@@ -235,7 +233,6 @@ it.effect.each([
         trust: "member" as const,
         at: "2026-11-01T00:00:00.000Z",
         text: existing,
-        quote: "invented fixture body",
       },
     ],
     tree: new Map([
@@ -282,7 +279,10 @@ it.effect.each([
     },
     failures: [
       "claims/existing.md holds what a person stated, so a dream may not change its quote",
-      "claims/folded.md quote: must keep the quote of memory:claims/existing.md as it is",
+      "claims/folded.md claims member from memory:claims/existing.md; what is made from a memory item is at most agent",
+      "claims/folded.md quote: an item made from a memory item is the agent's own and carries no quote",
+      "claims/carried.md claims member from memory:claims/existing.md; what is made from a memory item is at most agent",
+      "claims/carried.md quote: an item made from a memory item is the agent's own and carries no quote",
     ],
   },
   {
@@ -343,6 +343,7 @@ it.effect.each([
     const result = yield* checkDream({
       orgId,
       base,
+      stored: base,
       tree: "tree" in row ? row.tree : goodTree,
       special: "special" in row ? row.special : [],
       dreamJson: dream === null ? undefined : json(dream),
@@ -358,10 +359,12 @@ it.effect.each([
   }),
 );
 
-const statedFails = (field: string) =>
-  `claims/stated.md holds what a person stated, so a dream may not change its ${field}`;
-const replacedOnlyByItsOwn =
-  "claims/stated.md may be replaced only by an item made from it, with its trust and quote";
+const statedFails = (field: string, path = "claims/stated.md") =>
+  `${path} holds what a person stated, so a dream may not change its ${field}`;
+const fromItem = (path: string, trust: string, source = statedRef) =>
+  `${path} claims ${trust} from ${source}; what is made from a memory item is at most agent`;
+const noQuoteFromItem = (path: string) =>
+  `${path} quote: an item made from a memory item is the agent's own and carries no quote`;
 it.effect.each([
   {
     name: "refuses rewording what a person stated",
@@ -394,6 +397,43 @@ it.effect.each([
     failures: [statedFails("status")],
   },
   {
+    name: "refuses changing its id",
+    files: [["claims/stated.md", stated({ id: "clm-renamed" })]],
+    failures: [statedFails("id")],
+  },
+  {
+    name: "refuses changing when it became true",
+    files: [["claims/stated.md", stated({ valid_from: "2026-10-01T00:00:00.000Z" })]],
+    failures: [statedFails("valid_from")],
+  },
+  {
+    name: "refuses changing what a reminder the owner set does when due",
+    files: [["deferrals/stated.md", statedDeferral({ on_due: "start" })]],
+    failures: [statedFails("on_due", "deferrals/stated.md")],
+  },
+  {
+    name: "refuses changing its links",
+    files: [["claims/stated.md", stated({ links: ["issue #12", "dec-099"] })]],
+    failures: [statedFails("links")],
+  },
+  {
+    name: "refuses changing when it is next checked",
+    files: [["claims/stated.md", stated({ review_by: "2026-12-01" })]],
+    failures: [statedFails("review_by")],
+  },
+  {
+    name: "refuses deleting it",
+    removed: ["claims/stated.md"],
+    files: [],
+    failures: ["claims/stated.md was deleted"],
+  },
+  {
+    name: "refuses renaming it",
+    removed: ["claims/stated.md"],
+    files: [["claims/renamed.md", stated()]],
+    failures: ["claims/stated.md was deleted"],
+  },
+  {
     name: "refuses replacing it with the agent's own item",
     files: [
       ["claims/stated.md", stated({ superseded_by: "clm-agent", status: "superseded" })],
@@ -408,47 +448,58 @@ it.effect.each([
         }),
       ],
     ],
-    failures: [replacedOnlyByItsOwn],
+    failures: [statedFails("status"), statedFails("superseded_by")],
   },
   {
-    name: "refuses replacing it with an item in other words",
+    name: "refuses replacing it with an item made from it that inherits its trust and quote",
     files: [
-      ["claims/stated.md", stated({ superseded_by: "clm-reworded", status: "superseded" })],
-      [
-        "claims/reworded.md",
-        newClaim({ id: "clm-reworded", source: statedRef, quote: "the invented report on Friday" }),
-      ],
-    ],
-    failures: [
-      replacedOnlyByItsOwn,
-      `claims/reworded.md quote: must keep the quote of ${statedRef} as it is`,
-    ],
-  },
-  {
-    name: "lets an item made from it, with its trust and quote, replace it, and its labels change",
-    files: [
-      [
-        "claims/stated.md",
-        stated({
-          superseded_by: "clm-merged",
-          status: "superseded",
-          review_by: "2026-12-01",
-          sensitive: true,
-          links: ["issue #12", "merged"],
-        }),
-      ],
+      ["claims/stated.md", stated({ superseded_by: "clm-merged", status: "superseded" })],
       ["claims/merged.md", newClaim({ id: "clm-merged", source: statedRef })],
     ],
+    failures: [
+      statedFails("status"),
+      statedFails("superseded_by"),
+      fromItem("claims/merged.md", "owner"),
+      noQuoteFromItem("claims/merged.md"),
+    ],
+  },
+  {
+    name: "refuses a new item citing it with the owner's trust",
+    files: [
+      ["claims/summary.md", newClaim({ id: "clm-summary", source: statedRef, quote: undefined })],
+    ],
+    failures: [fromItem("claims/summary.md", "owner")],
+  },
+  {
+    name: "lets a new item cite it as the agent's own, with no quote",
+    files: [
+      [
+        "claims/summary.md",
+        newClaim({ id: "clm-summary", source: statedRef, trust: "agent", quote: undefined }),
+      ],
+    ],
     failures: [],
+  },
+  {
+    name: "lets it be labelled, and writes back the stored item with only that label",
+    files: [["claims/stated.md", stated({ sensitive: true })]],
+    failures: [],
+    written: { "claims/stated.md": stated().replace("sensitive: false", "sensitive: true") },
+  },
+  {
+    name: "keeps it as stored when the dream rewrote it with the same values",
+    files: [
+      ["claims/stated.md", stated().replace('links: ["issue #12"]', 'links:\n  - "issue #12"')],
+    ],
+    failures: [],
+    written: { "claims/stated.md": undefined },
   },
   {
     name: "refuses passing a reminder off as the owner's statement",
     files: [
       ["claims/reminded.md", newClaim({ id: "clm-r", source: reminderRef, quote: undefined })],
     ],
-    failures: [
-      "claims/reminded.md claims owner from a reminder; what a reminder says is at most agent",
-    ],
+    failures: [fromItem("claims/reminded.md", "owner", reminderRef)],
   },
   {
     name: "lets an item made from a reminder be the agent's",
@@ -460,17 +511,14 @@ it.effect.each([
     ],
     failures: [],
   },
-  {
-    name: "refuses carrying over a quote past the limit",
-    files: [["claims/long-copy.md", newClaim({ id: "clm-lc", source: longRef, quote: longQuote })]],
-    failures: [`claims/long-copy.md quote: ${QUOTE_TOO_LONG}`],
-  },
 ] as const)("checkDream $name", (row) =>
   Effect.gen(function* () {
+    const removed = new Set<string>("removed" in row ? row.removed : []);
     const result = yield* checkDream({
       orgId,
       base,
-      tree: new Map([...goodTree, ...row.files]),
+      stored: base,
+      tree: new Map([...goodTree, ...row.files].filter(([path]) => !removed.has(path))),
       special: [],
       dreamJson: json({
         ...goodDream,
@@ -483,5 +531,41 @@ it.effect.each([
       requireResolutions: true,
     });
     assert.deepStrictEqual(result.failures, [...row.failures]);
+    if ("written" in row)
+      for (const [path, text] of Object.entries(row.written))
+        assert.strictEqual(result.changes.get(path), text);
+  }),
+);
+
+it.effect("compares a stated item with what the dream was shown, and keeps what is stored", () =>
+  Effect.gen(function* () {
+    // The dream was shown the item without a quote it may not read; it returned that copy.
+    const shown = new Map([...base, ["claims/stated.md", stated({ quote: undefined })]]);
+    const result = yield* checkDream({
+      orgId,
+      base: shown,
+      stored: base,
+      tree: new Map([
+        ...goodTree,
+        ["claims/stated.md", stated({ quote: undefined, sensitive: true })],
+      ]),
+      special: [],
+      dreamJson: json({
+        ...goodDream,
+        changes: [...goodDream.changes, { path: "claims/stated.md", sources: [statedRef] }],
+      }),
+      material: items,
+      requireResolutions: true,
+    });
+    assert.deepStrictEqual(result.failures, []);
+    assert.strictEqual(
+      result.changes.get("claims/stated.md"),
+      stated().replace("sensitive: false", "sensitive: true"),
+    );
+    assert.strictEqual(
+      result.committed.get("claims/stated.md"),
+      result.changes.get("claims/stated.md"),
+    );
+    assert.strictEqual(result.committed.get("claims/existing.md"), existing);
   }),
 );

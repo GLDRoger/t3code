@@ -59,6 +59,15 @@ export const schemaKeyFailure = (error: MemoryItemError) => {
   };
 };
 
+/** The keys whose parsed values differ between two versions of an item, in either's order. */
+export const changedKeys = (before: object, after: object) => {
+  const earlier = new Map(Object.entries(before));
+  const later = new Map(Object.entries(after));
+  return [...new Set([...earlier.keys(), ...later.keys()])].filter(
+    (key) => JSON.stringify(earlier.get(key)) !== JSON.stringify(later.get(key)),
+  );
+};
+
 // Parsing runs per blob under Memory.load; avoid creating a span for every item.
 export const parseFrontMatter = Effect.fnUntraced(function* (
   orgId: KinOrgId,
