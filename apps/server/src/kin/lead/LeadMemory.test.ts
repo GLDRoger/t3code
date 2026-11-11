@@ -245,6 +245,21 @@ it.live(
           ),
         ),
       );
+      // Runs before the lead's cancel reads the item: between its gate and its transaction.
+      const beforeRead = { effect: Effect.void as Effect.Effect<void> };
+      const hookedMemory = Layer.effect(
+        Memory.Memory,
+        Effect.gen(function* () {
+          const memory = yield* Memory.Memory;
+          return Memory.Memory.of({
+            ...memory,
+            readItemQuietly: (...args) =>
+              Effect.suspend(() => beforeRead.effect).pipe(
+                Effect.andThen(memory.readItemQuietly(...args)),
+              ),
+          });
+        }),
+      ).pipe(Layer.provideMerge(memoryLayer));
       const writer = Writer.layer.pipe(
         Layer.provideMerge(Lead.authority),
         Layer.provide(Cache.layer),
@@ -255,7 +270,7 @@ it.live(
       const toolkit = registration.pipe(
         Layer.provideMerge(Lead.layer),
         Layer.provideMerge(writer),
-        Layer.provideMerge(memoryLayer),
+        Layer.provideMerge(hookedMemory),
         Layer.provideMerge(Registry.layer),
         Layer.provide(Layer.succeedContext(services)),
         Layer.provide(
@@ -753,6 +768,17 @@ it.live(
           onDue: "remind",
           replaces: reminder.itemId,
         });
+        // A join that aborts the turn after its gate still stops the replace inside its write.
+        beforeRead.effect = sql`UPDATE kin_wakeups SET aborted_at = 1, shared_since = 1
+          WHERE wakeup_id = 'cancel-wakeup'`.pipe(Effect.orDie, Effect.asVoid);
+        assert.strictEqual(
+          (yield* service.defer(scope, corrected).pipe(Effect.flip)).message,
+          SHARED_REFUSAL,
+        );
+        assert.deepStrictEqual(yield* armed(), [{ nextRunAt: Date.parse("2026-11-09T16:09:12Z") }]);
+        beforeRead.effect = Effect.void;
+        yield* sql`UPDATE kin_wakeups SET aborted_at = NULL, shared_since = NULL
+          WHERE wakeup_id = 'cancel-wakeup'`;
         const replacement = yield* service.defer(scope, corrected);
         assert.deepStrictEqual(yield* service.defer(scope, corrected), replacement);
         // Stopped before the commit, so the wrong time can't fire meanwhile.

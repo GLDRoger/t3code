@@ -35,6 +35,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { messageForViewer } from "./messageView.ts";
+import { readableBy, recordJoin } from "./sharing.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlSchema from "effect/sql/SqlSchema";
 import {
@@ -61,7 +62,11 @@ const KinReadState = Schema.Struct({
 type KinReadState = typeof KinReadState.Type;
 export type RepositoryError = PersistenceSqlError | PersistenceDecodeError | KinChatError;
 type Scope = { readonly orgId: KinOrgId };
-const AttachmentChat = Schema.Struct({ orgId: KinOrgId, chatId: KinChatId });
+const AttachmentChat = Schema.Struct({
+  orgId: KinOrgId,
+  chatId: KinChatId,
+  messageId: KinMessageId,
+});
 type AttachmentChat = typeof AttachmentChat.Type;
 type ChatScope = Scope & { readonly chatId: KinChatId };
 type MemberScope = ChatScope & { readonly memberId: KinMemberId };
@@ -472,7 +477,7 @@ const make = Effect.gen(function* () {
         Request: Schema.String,
         Result: AttachmentChat,
         execute: (id) =>
-          sql`SELECT a.org_id AS "orgId", a.chat_id AS "chatId" FROM kin_message_attachments a
+          sql`SELECT a.org_id AS "orgId", a.chat_id AS "chatId", a.message_id AS "messageId" FROM kin_message_attachments a
  JOIN kin_messages m ON m.org_id = a.org_id AND m.message_id = a.message_id
  WHERE a.attachment_id = ${id} AND m.status <> 'deleted'`,
       })(attachmentId).pipe(NodeSqliteClient.readOnly);
@@ -916,7 +921,7 @@ const make = Effect.gen(function* () {
         const lastChangeSeq = counters[0]!.change_seq;
         // Without a change cursor, replay only new messages; change_seq runs ahead of seq.
         const afterChangeSeq = input.afterChangeSeq ?? lastChangeSeq;
-        const visible = sql`(${member.role === "owner" ? 1 : 0} = 1 OR status NOT IN ('suggested', 'dismissed') OR author_member_id = ${member.memberId})`;
+        const visible = sql`(${member.role === "owner" ? 1 : 0} = 1 OR status NOT IN ('suggested', 'dismissed') OR author_member_id = ${member.memberId}) AND ${readableBy(sql, input.orgId, member.memberId)}`;
         const messages = yield* SqlSchema.findAll({
           Request: Schema.Unknown,
           Result: MessageRow,
@@ -1065,9 +1070,11 @@ const make = Effect.gen(function* () {
               }
               yield* sql`UPDATE kin_chat_members SET left_at = NULL, joined_at = ${input.joinedAt}, role = ${input.role}
  WHERE org_id = ${input.orgId} AND member_id = ${input.memberId}`;
+              yield* recordJoin(sql, input);
               return yield* requireRecord(memberOne(input));
             }
             yield* sql`INSERT INTO kin_chat_members (org_id, chat_id, member_id, role, joined_at, left_at, muted_until, principal_kind, person_id, agent_id) VALUES (${input.orgId}, ${input.chatId}, ${input.memberId}, ${input.role}, ${input.joinedAt}, ${input.leftAt}, ${input.mutedUntil}, ${input.principal._tag}, ${input.principal._tag === "person" ? input.principal.personId : null}, ${input.principal._tag === "agent" ? input.principal.agentId : null}) ON CONFLICT DO NOTHING RETURNING member_id`;
+            yield* recordJoin(sql, input);
             return yield* requireRecord(memberOne(input));
           }),
         );
@@ -1438,6 +1445,7 @@ const make = Effect.gen(function* () {
                   () => sql`SELECT ${sql.literal(messageColumns)} FROM kin_messages WHERE org_id = ${input.orgId}
  AND chat_id = ${input.chatId} AND seq < ${request.beforeSeq}
  AND (${viewer === null || viewer.role === "owner" ? 1 : 0} = 1 OR status NOT IN ('suggested', 'dismissed') OR author_member_id = ${viewer?.memberId ?? null})
+ AND ${readableBy(sql, input.orgId, viewer?.memberId)}
  ORDER BY seq DESC LIMIT ${request.limit + 1}`,
               })(input);
               const messages = rows
@@ -1476,7 +1484,8 @@ const make = Effect.gen(function* () {
           execute:
             () => sql`SELECT ${sql.literal(messageColumns)} FROM kin_messages WHERE org_id = ${input.orgId}
  AND chat_id = ${input.chatId} AND seq > ${request.afterSeq}
- AND (${input.viewerMemberId ?? null} IS NULL OR status NOT IN ('suggested', 'dismissed') OR author_member_id = ${input.viewerMemberId ?? null} OR EXISTS (SELECT 1 FROM kin_chat_members WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND member_id = ${input.viewerMemberId ?? null} AND role = 'owner')) ORDER BY seq LIMIT ${request.limit}`,
+ AND (${input.viewerMemberId ?? null} IS NULL OR status NOT IN ('suggested', 'dismissed') OR author_member_id = ${input.viewerMemberId ?? null} OR EXISTS (SELECT 1 FROM kin_chat_members WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND member_id = ${input.viewerMemberId ?? null} AND role = 'owner'))
+ AND ${readableBy(sql, input.orgId, input.viewerMemberId)} ORDER BY seq LIMIT ${request.limit}`,
         })(input).pipe(
           NodeSqliteClient.readOnly,
           Effect.map((messages) => messages.map((m) => messageForViewer(m, viewer?.principal))),
@@ -1574,6 +1583,7 @@ const make = Effect.gen(function* () {
           execute:
             () => sql`SELECT COUNT(*) AS count FROM kin_messages WHERE org_id = ${input.orgId}
  AND chat_id = ${input.chatId} AND status = 'posted' AND (author_member_id IS NULL OR author_member_id != ${input.memberId})
+ AND ${readableBy(sql, input.orgId, input.memberId)}
  AND seq > COALESCE((SELECT last_read_seq FROM kin_read_state WHERE org_id = ${input.orgId}
  AND chat_id = ${input.chatId} AND member_id = ${input.memberId}), 0)`,
         })(input).pipe(NodeSqliteClient.readOnly);

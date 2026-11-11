@@ -36,6 +36,7 @@ import { workersConfigured } from "../lead/workerEnvironment.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import { readGithubLinks } from "./deferralGithub.ts";
+import { cardChatFor } from "./deferralOrigin.ts";
 import {
   DeferralSnapshot,
   GRACE_MS,
@@ -237,15 +238,19 @@ const make = Effect.gen(function* () {
         MemoryDuplicateId: () => Effect.undefined,
       }),
     );
-  // The item's chat when it belongs to the org, else the owner's direct chat.
+  // The item's chat when it belongs to the org and was never shared, else an owner chat: the
+  // owner chat of the lead it fires with once that chat was shared, else the first lead's.
   const cardChat = Effect.fn("KinDeferralFlow.cardChat")(function* (
     orgId: KinOrgId,
     item: MemoryItemHead | undefined,
   ) {
     if (item?.chat !== undefined) {
-      const [own] = yield* sql`SELECT 1 FROM kin_chats
-        WHERE org_id = ${orgId} AND chat_id = ${item.chat} ORDER BY chat_id`;
-      if (own !== undefined) return KinChatId.make(item.chat);
+      const lead = yield* liveLead(sql, orgId, {
+        chatId: item.chat,
+        prefer: CHIEF_OF_STAFF_DOMAIN,
+      });
+      const chatId = yield* cardChatFor(sql, orgId, item.chat, lead?.ownerChatId ?? null);
+      if (chatId !== null) return chatId;
     }
     const lead = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
     return lead === undefined ? null : lead.ownerChatId;

@@ -112,6 +112,14 @@ const roomReminder = decodeHead({
   title: "Invented room reminder",
   every: undefined,
   chat: "fixture-room",
+  source_event: "room-ask:event-room",
+});
+// From before reminders recorded their source event: where it was asked can't be resolved.
+const legacyReminder = decodeHead({
+  ...task("rem-legacy", "owner").head,
+  title: "Invented legacy reminder",
+  every: undefined,
+  chat: "fixture-room",
 });
 const database = authorityLayer;
 const repository = Chat.layer.pipe(Layer.provide(database));
@@ -132,14 +140,18 @@ const memory = Layer.succeed(
         ? Effect.fail(new Memory.MemoryError({ orgId: org, operation: "promptSnapshot" }))
         : Effect.succeed({
             rules: `Invented rules ${head}`,
-            index: `Invented index ${head}\n- [deferral] Invented room reminder (deferrals/rem-room.md)`,
+            index: `Invented index ${head}\n- [deferral] Invented room reminder (deferrals/rem-room.md)\n- [deferral] Invented legacy reminder (deferrals/rem-legacy.md)`,
           }),
     ensureCheckouts: () => Effect.die("Unused"),
     prepareWakeup: () => Effect.die("Unused"),
     readIndex: () => Effect.die("Unused"),
     readRules: () => Effect.die("Unused"),
     // A reminder asked for in fixture-room, which only some tests create.
-    query: () => Effect.succeed([{ ...roomReminder, duplicate: false }]),
+    query: () =>
+      Effect.succeed([
+        { ...roomReminder, duplicate: false },
+        { ...legacyReminder, duplicate: false },
+      ]),
     readItem: () => Effect.die("Unused"),
     readItemQuietly: (org, id) => {
       const found = org === orgId ? dueItems.get(id) : undefined;
@@ -277,7 +289,9 @@ it.effect(
 );
 
 it.effect.each([
-  { case: "a group whose only human is the owner", audience: "owner_only" },
+  { case: "a group whose only human is the owner", audience: "owner_only", alone: true },
+  // Fifth review of cfb0c8993b: a chat someone else could once read stays shared after they leave.
+  { case: "a group a teammate has left", audience: "shared" },
   { case: "a group a teammate is in", audience: "shared", teammateStays: true },
   { case: "a batch with the owner's and a teammate's messages", audience: "shared", batch: true },
   { case: "a reminder a teammate's turn set up", audience: "shared", reminder: true },
@@ -293,16 +307,17 @@ it.effect.each([
       githubLogin: null,
       createdAt: timestamp,
     });
-    yield* repo.addMember({
-      orgId,
-      chatId,
-      memberId: teammateMember,
-      principal: { _tag: "person", personId: teammateId },
-      role: "member",
-      joinedAt: timestamp,
-      leftAt: null,
-      mutedUntil: null,
-    });
+    if (!("alone" in row))
+      yield* repo.addMember({
+        orgId,
+        chatId,
+        memberId: teammateMember,
+        principal: { _tag: "person", personId: teammateId },
+        role: "member",
+        joinedAt: timestamp,
+        leftAt: null,
+        mutedUntil: null,
+      });
     const send = (id: string, author: KinAuthor) =>
       repo.insertMessage({
         orgId,
@@ -358,8 +373,7 @@ it.effect.each([
           origin: { agentId, chatId, personId: teammateId },
         }),
       );
-    // Only a member who stays makes the group shared; one who has left reads nothing new.
-    if (!("teammateStays" in row))
+    if (!("teammateStays" in row) && !("alone" in row))
       yield* sql`UPDATE kin_chat_members SET left_at = ${timestamp} WHERE member_id = ${teammateMember}`;
     yield* stored(input.wakeupId, events);
     yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
@@ -397,6 +411,25 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
       handle: "teammate",
       githubLogin: null,
       createdAt: timestamp,
+    });
+    // Said in the group while only the owner read it; the teammate joins after.
+    yield* repo.insertMessage({
+      orgId,
+      chatId,
+      messageId: KinMessageId.make("before-join"),
+      author: { _tag: "human", personId, memberId },
+      kind: "text",
+      body: "Invented-before-join-zq",
+      intent: null,
+      mentions: [],
+      replyTo: null,
+      widgetId: null,
+      floorRunId: null,
+      status: "posted",
+      sentBy: null,
+      createdAt: timestamp,
+      editedAt: null,
+      clientMessageId: null,
     });
     yield* repo.addMember({
       orgId,
@@ -482,14 +515,14 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
       "Invented-routine-fact-zq",
       "Invented-reacted-plan-zq",
       "Invented-tracked-work-zq",
+      "Invented-before-join-zq",
       "Budget:",
       "Domain:",
       "Charter:",
     ])
       expect(shared).not.toContain(owners);
-    // The same lead, its owner alone in the chat: the owner's parts are there.
-    yield* sql`UPDATE kin_chat_members SET left_at = ${timestamp} WHERE member_id = ${teammateMember}`;
-    yield* sql`DELETE FROM kin_messages WHERE message_id = 'teammate-asks'`;
+    // The same lead in a chat only its owner ever read: the owner's parts are there.
+    yield* sql`UPDATE kin_leads SET owner_chat_id = 'fixture-direct'`;
     yield* stored("owner-wake-2", [routineEvent]);
     const owners = yield* (yield* KinLeadPrompt).build({
       ...input,
@@ -502,28 +535,58 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("an owner-only index leaves out a reminder asked for where a teammate reads", () =>
-  Effect.gen(function* () {
-    const repo = yield* leadWithOwner;
-    const sql = yield* SqlClient.SqlClient;
-    yield* stored(input.wakeupId, [routineEvent]);
-    expect(yield* (yield* KinLeadPrompt).build(input)).toContain("Invented room reminder");
-    yield* repo.insertPerson({
-      orgId,
-      personId: teammateId,
-      displayName: "Teammate",
-      handle: "teammate",
-      githubLogin: null,
-      createdAt: timestamp,
-    });
-    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+// Fifth review of cfb0c8993b: the index and a dream disagreed on a reminder that names a chat
+// but no source event. One rule now: unresolved provenance is left out of both.
+it.effect(
+  "an owner-only index leaves out a reminder asked for where a teammate reads, or from where it can't tell",
+  () =>
+    Effect.gen(function* () {
+      const repo = yield* leadWithOwner;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
       VALUES ('fixture-room', ${orgId}, 'team_group', 0, ${timestamp})`;
-    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
-      VALUES ('room-teammate', ${orgId}, 'fixture-room', 'person', ${teammateId}, 'member', ${timestamp})`;
-    const built = yield* (yield* KinLeadPrompt).build(input);
-    expect(built).toContain("Invented index head-one");
-    expect(built).not.toContain("Invented room reminder");
-  }).pipe(Effect.provide(layer)),
+      yield* stored("room-ask", [
+        decodeEvent({
+          _tag: "chat.message",
+          orgId,
+          agentId,
+          chatId: "fixture-room",
+          messageId: "room-message",
+          eventId: "event-room",
+          receivedAt: timestamp,
+          dedupeKey: null,
+          provenance: { _tag: "human", personId, memberId },
+        }),
+      ]);
+      yield* stored(input.wakeupId, [routineEvent]);
+      const before = yield* (yield* KinLeadPrompt).build(input);
+      expect(before).toContain("Invented room reminder");
+      expect(before).not.toContain("Invented legacy reminder");
+      yield* repo.insertPerson({
+        orgId,
+        personId: teammateId,
+        displayName: "Teammate",
+        handle: "teammate",
+        githubLogin: null,
+        createdAt: timestamp,
+      });
+      yield* repo.addMember({
+        orgId,
+        chatId: KinChatId.make("fixture-room"),
+        memberId: KinMemberId.make("room-teammate"),
+        principal: { _tag: "person", personId: teammateId },
+        role: "member",
+        joinedAt: timestamp,
+        leftAt: null,
+        mutedUntil: null,
+      });
+      // Once shared, for good: the teammate leaving changes nothing.
+      yield* sql`UPDATE kin_chat_members SET left_at = ${timestamp} WHERE member_id = 'room-teammate'`;
+      const built = yield* (yield* KinLeadPrompt).build(input);
+      expect(built).toContain("Invented index head-one");
+      expect(built).not.toContain("Invented room reminder");
+      expect(built).not.toContain("Invented legacy reminder");
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect.each([
@@ -872,8 +935,13 @@ it.effect("hands the turn the files on its messages and only names an older mess
       leftAt: null,
       mutedUntil: null,
     });
+    // The lead's own chat, which only its owner reads: the turn quotes its history.
+    yield* (yield* SqlClient.SqlClient)`INSERT INTO kin_leads (agent_id, org_id, name, level_since,
+        models_json, worker_projects_json, owner_chat_id)
+      VALUES (${agentId}, ${orgId}, 'Lead', 0, '{}', '[]', ${chatId})`;
     const prompt = yield* KinLeadPrompt;
     const events = [event("current")];
+    yield* stored(input.wakeupId, events);
     expect(yield* prompt.attachments({ orgId, events })).toEqual([current]);
     const built = yield* prompt.build({ ...input, events, lane: { chatId, mode: "reply" } });
     expect(built.split("> BEGIN QUOTE: owner message")[1]).toContain('"whiteboard.png"');
@@ -1173,6 +1241,10 @@ it.effect(
           clientMessageId: null,
         });
       }
+      // The lead's own record: without one, the turn can't be the owner's and reads no history.
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+        VALUES (${agentId}, ${orgId}, 'Fixture lead', 0, '{}', '[]', ${chatId})`;
+      yield* stored(input.wakeupId, [event("now")]);
       const prompt = yield* KinLeadPrompt;
       const built = yield* prompt.build({
         ...input,
@@ -1204,8 +1276,10 @@ it.effect(
         archivedAt: null,
         directKey: `${personId}:${agentId}`,
       });
-      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id, domain, charter)
-        VALUES (${agentId}, ${orgId}, 'Fixture lead', 0, '{}', '[]', ${direct}, 'growth', 'Grow signups.')`;
+      yield* sql`UPDATE kin_leads SET owner_chat_id = ${direct}, domain = 'growth',
+        charter = 'Grow signups.' WHERE agent_id = ${agentId}`;
+      yield* sql`DELETE FROM kin_events WHERE wakeup_id = ${input.wakeupId}`;
+      yield* sql`DELETE FROM kin_wakeups WHERE wakeup_id = ${input.wakeupId}`;
       yield* stored(input.wakeupId, [routineEvent]);
       const dm = yield* prompt.build({ ...input, lane: { chatId: direct, mode: "notice" } });
       expect(dm).not.toContain("# Group rules");

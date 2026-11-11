@@ -407,6 +407,12 @@ const make = Effect.gen(function* () {
       );
     const allowed = yield* sql.withTransaction(
       Effect.gen(function* () {
+        // Checked again where the run stops: a join may have aborted the turn since `notes`.
+        if (
+          (yield* effectiveAudience(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql))) !==
+          "owner_only"
+        )
+          return "shared" as const;
         const [creator] =
           head.source_event === undefined
             ? []
@@ -435,6 +441,7 @@ const make = Effect.gen(function* () {
         return true;
       }),
     );
+    if (allowed === "shared") return yield* invalid(SHARED_REFUSAL);
     if (!allowed)
       return yield* invalid(
         "Only the lead that set it up can cancel or replace it, from the chat it was set up in or the owner's direct chat.",

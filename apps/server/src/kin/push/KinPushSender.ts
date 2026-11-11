@@ -164,8 +164,9 @@ const make = Effect.gen(function* () {
       person_id: KinPersonId;
       member_id: string;
       muted_until: string | null;
+      joined_seq: number;
     }>`
-      SELECT person_id, member_id, muted_until FROM kin_chat_members
+      SELECT person_id, member_id, muted_until, joined_seq FROM kin_chat_members
       WHERE org_id = ${orgId} AND chat_id = ${chatId} AND principal_kind = 'person'
         AND left_at IS NULL
       ORDER BY person_id`;
@@ -173,6 +174,7 @@ const make = Effect.gen(function* () {
       personId: row.person_id,
       memberId: row.member_id,
       muted: row.muted_until !== null && Date.parse(row.muted_until) > now,
+      joinedSeq: row.joined_seq,
     }));
   });
 
@@ -216,7 +218,7 @@ const make = Effect.gen(function* () {
           JOIN kin_messages m ON m.org_id = cm.org_id AND m.chat_id = cm.chat_id
           WHERE cm.org_id = ${orgId} AND cm.person_id = ${personId}
             AND cm.principal_kind = 'person' AND cm.left_at IS NULL
-            AND m.status = 'posted'
+            AND m.status = 'posted' AND m.seq >= cm.joined_seq
             AND (m.author_member_id IS NULL OR m.author_member_id != cm.member_id)
             AND m.seq > COALESCE((SELECT r.last_read_seq FROM kin_read_state r
               WHERE r.chat_id = cm.chat_id AND r.member_id = cm.member_id), 0)
@@ -268,8 +270,9 @@ const make = Effect.gen(function* () {
       asked_json: string;
       awaits_card: number;
       owner_timed: number;
+      seq: number;
     }>`
-      SELECT m.chat_id, m.author_kind, m.author_person_id, m.author_member_id, m.body,
+      SELECT m.chat_id, m.seq, m.author_kind, m.author_person_id, m.author_member_id, m.body,
         m.mentions_json,
         COALESCE(
           (SELECT display_name FROM kin_agents a
@@ -329,6 +332,7 @@ const make = Effect.gen(function* () {
       recipients: people
         .filter(
           (person) =>
+            person.joinedSeq <= row.seq &&
             person.personId !== row.author_person_id &&
             person.memberId !== row.author_member_id &&
             kinPushConcerns({
@@ -351,8 +355,9 @@ const make = Effect.gen(function* () {
       revision: number;
       phase: unknown;
       awaiting_json: string;
+      seq: number;
     }>`SELECT w.chat_id, w.type, w.revision, json_extract(w.state_json, '$.phase') AS phase,
-        w.awaiting_json
+        w.awaiting_json, m.seq
       FROM kin_widgets w JOIN kin_messages m ON m.message_id = w.message_id
       WHERE w.org_id = ${orgId} AND w.widget_id = ${widgetId} AND w.closed_at IS NULL
         AND m.status = 'posted'`;
@@ -387,7 +392,7 @@ const make = Effect.gen(function* () {
         deepLink: chatLink(orgId, row.chat_id),
       },
       recipients: people
-        .filter((person) => awaiting.has(person.personId))
+        .filter((person) => person.joinedSeq <= row.seq && awaiting.has(person.personId))
         .map((person) => ({ personId: person.personId, silent: person.muted || quiet })),
     } satisfies Push;
   });

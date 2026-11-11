@@ -130,6 +130,16 @@ const undoWakeupAudience = Effect.gen(function* () {
   yield* sql`ALTER TABLE kin_wakeups DROP COLUMN audience`;
 });
 
+// Earlier migrations add their own columns to these tables again on a rerun; K046 follows them.
+const undoChatSharing = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE kin_workers DROP COLUMN moved_at`;
+  yield* sql`ALTER TABLE kin_workers DROP COLUMN context`;
+  yield* sql`ALTER TABLE kin_chat_members DROP COLUMN joined_seq`;
+  yield* sql`ALTER TABLE kin_chats DROP COLUMN shared_from_seq`;
+  yield* sql`ALTER TABLE kin_chats DROP COLUMN shared_at`;
+});
+
 const undoApproverKeyConfirmations = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`DROP TABLE kin_approver_key_confirmations`;
@@ -192,6 +202,7 @@ describe("Kin migrations", () => {
           { migration_id: 43, name: "WakeupAudience" },
           { migration_id: 44, name: "WakeupSharedSince" },
           { migration_id: 45, name: "WakeupAudienceAbort" },
+          { migration_id: 46, name: "ChatSharing" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -292,6 +303,7 @@ describe("Kin migrations", () => {
           { migration_id: 43, name: "WakeupAudience" },
           { migration_id: 44, name: "WakeupSharedSince" },
           { migration_id: 45, name: "WakeupAudienceAbort" },
+          { migration_id: 46, name: "ChatSharing" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -416,6 +428,7 @@ describe("Kin migrations", () => {
         [43, "WakeupAudience"],
         [44, "WakeupSharedSince"],
         [45, "WakeupAudienceAbort"],
+        [46, "ChatSharing"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -513,6 +526,7 @@ describe("Kin migrations", () => {
       yield* undoMessageAttachments;
       yield* undoGroupLead;
       yield* undoWakeupAudience;
+      yield* undoChatSharing;
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 5`;
       assert.deepStrictEqual(yield* runKinMigrations(), [
         [5, "OneChatOwner"],
@@ -554,6 +568,7 @@ describe("Kin migrations", () => {
         [43, "WakeupAudience"],
         [44, "WakeupSharedSince"],
         [45, "WakeupAudienceAbort"],
+        [46, "ChatSharing"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
@@ -622,6 +637,7 @@ describe("Kin migrations", () => {
         { migration_id: 43, name: "WakeupAudience" },
         { migration_id: 44, name: "WakeupSharedSince" },
         { migration_id: 45, name: "WakeupAudienceAbort" },
+        { migration_id: 46, name: "ChatSharing" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);
@@ -693,6 +709,7 @@ describe("Kin migrations", () => {
         [43, "WakeupAudience"],
         [44, "WakeupSharedSince"],
         [45, "WakeupAudienceAbort"],
+        [46, "ChatSharing"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT session_id, via FROM kin_auth_paired_sessions ORDER BY session_id`,
@@ -741,6 +758,7 @@ describe("Kin migrations", () => {
         [43, "WakeupAudience"],
         [44, "WakeupSharedSince"],
         [45, "WakeupAudienceAbort"],
+        [46, "ChatSharing"],
       ]);
       const columns = yield* sql<{ name: string }>`
         SELECT name FROM pragma_table_info('kin_workers')`;
@@ -798,8 +816,9 @@ describe("Kin migrations", () => {
           [43, "WakeupAudience"],
           [44, "WakeupSharedSince"],
           [45, "WakeupAudienceAbort"],
+          [46, "ChatSharing"],
         ]);
-        assert.deepStrictEqual((yield* kinHistory).slice(-12), [
+        assert.deepStrictEqual((yield* kinHistory).slice(-13), [
           { migration_id: 32, name: "WorkerEnvironment" },
           { migration_id: 33, name: "ApproverKeyConfirmations" },
           { migration_id: 34, name: "PerLeadWakeups" },
@@ -812,6 +831,7 @@ describe("Kin migrations", () => {
           { migration_id: 43, name: "WakeupAudience" },
           { migration_id: 44, name: "WakeupSharedSince" },
           { migration_id: 45, name: "WakeupAudienceAbort" },
+          { migration_id: 46, name: "ChatSharing" },
         ]);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_lead_deliveries`, [delivery]);
         assert.deepStrictEqual(
@@ -866,6 +886,7 @@ describe("Kin migrations", () => {
         [43, "WakeupAudience"],
         [44, "WakeupSharedSince"],
         [45, "WakeupAudienceAbort"],
+        [46, "ChatSharing"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT message_id, status FROM kin_messages ORDER BY seq`, [
         { message_id: "promotion:lead:L1", status: "dismissed" },
@@ -881,6 +902,96 @@ describe("Kin migrations", () => {
         { waiting_id: "waiting-3" },
       ]);
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "K046 shares a chat anyone besides the owner was ever in, from when they could read",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const at = (day: number) => `2026-11-0${day}T00:00:00.000Z`;
+        yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
+        for (const person of ["owner", "teammate"])
+          yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES (${person}, 'org', ${person}, ${person}, ${timestamp})`;
+        for (const agent of ["lead", "lead-2"])
+          yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+          VALUES (${agent}, 'org', ${agent}, 'lead', 'owner', ${timestamp})`;
+        for (const chat of ["left", "leads"])
+          yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+          VALUES (${chat}, 'org', 'team_group', 3, ${timestamp})`;
+        const member = (
+          chat: string,
+          id: string,
+          kind: string,
+          principal: string,
+          leftAt: string | null,
+        ) =>
+          sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id,
+            agent_id, role, joined_at, left_at)
+          VALUES (${id}, 'org', ${chat}, ${kind}, ${kind === "person" ? principal : null},
+            ${kind === "agent" ? principal : null}, ${principal === "owner" ? "owner" : "member"}, ${at(kind === "person" && principal === "teammate" ? 3 : 1)},
+            ${leftAt})`;
+        // A teammate who joined after two messages and has since left; the other has only leads.
+        yield* member("left", "left-owner", "person", "owner", null);
+        yield* member("left", "left-teammate", "person", "teammate", at(5));
+        yield* member("left", "left-lead", "agent", "lead", null);
+        yield* member("leads", "leads-owner", "person", "owner", null);
+        yield* member("leads", "leads-lead", "agent", "lead", null);
+        yield* member("leads", "leads-lead-2", "agent", "lead-2", null);
+        for (const chat of ["left", "leads"]) {
+          for (const [seq, day] of [
+            [1, 1],
+            [2, 2],
+            [3, 4],
+          ] as const)
+            yield* sql`INSERT INTO kin_messages (org_id, chat_id, message_id, seq, author_kind,
+              author_person_id, author_member_id, author_role, kind, body, mentions_json, status, created_at)
+            VALUES ('org', ${chat}, ${`${chat}-${seq}`}, ${seq}, 'human', 'owner', ${`${chat}-owner`}, 'owner', 'text',
+              'Invented', '[]', 'posted', ${at(day)})`;
+        }
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+        VALUES ('lead', 'org', 'Lead', 0, '{}', '[]', 'leads')`;
+        for (const [wakeup, audience] of [
+          ["shared-wake", "shared"],
+          ["private-wake", "owner_only"],
+          ["old-wake", null],
+        ] as const)
+          yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids, audience)
+          VALUES (${wakeup}, 'org', 'lead', 'test', 0, 'completed', '[]', ${audience})`;
+        for (const [worker, wakeup, chat, asker] of [
+          ["shared", "shared-wake", "left", "owner"],
+          ["private", "private-wake", "left", "owner"],
+          ["asked-by-teammate", "old-wake", "leads", "teammate"],
+          ["asked-by-owner", "old-wake", "leads", "owner"],
+        ] as const)
+          yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id, model_json, provenance_json, status, started_at, chat_id)
+          VALUES (${worker}, 'org', 'lead', ${wakeup}, 'build', ${worker}, '{}',
+            ${JSON.stringify({ _tag: "human", personId: asker, memberId: "m" })}, 'running', 0, ${chat})`;
+        yield* undoChatSharing;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 46`;
+        assert.deepStrictEqual(yield* runKinMigrations(), [[46, "ChatSharing"]]);
+        assert.deepStrictEqual(
+          yield* sql`SELECT chat_id, shared_at IS NOT NULL AS shared, shared_from_seq FROM kin_chats ORDER BY chat_id`,
+          [
+            { chat_id: "leads", shared: 0, shared_from_seq: null },
+            { chat_id: "left", shared: 1, shared_from_seq: 3 },
+          ],
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT member_id, joined_seq FROM kin_chat_members WHERE joined_seq <> 0 ORDER BY member_id`,
+          [{ member_id: "left-teammate", joined_seq: 3 }],
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT worker_id, context, moved_at IS NOT NULL AS moved FROM kin_workers ORDER BY worker_id`,
+          [
+            { worker_id: "asked-by-owner", context: "private", moved: 0 },
+            { worker_id: "asked-by-teammate", context: "shared", moved: 0 },
+            { worker_id: "private", context: "private", moved: 1 },
+            { worker_id: "shared", context: "shared", moved: 0 },
+          ],
+        );
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect("K034 swaps the running wake-up index to per lead on a database with rows", () =>
@@ -919,6 +1030,7 @@ describe("Kin migrations", () => {
         [43, "WakeupAudience"],
         [44, "WakeupSharedSince"],
         [45, "WakeupAudienceAbort"],
+        [46, "ChatSharing"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT name FROM sqlite_master WHERE type = 'index' AND name GLOB 'idx_kin_wakeups_running*' ORDER BY name`,
@@ -954,7 +1066,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 45");
+      assert.include(String(exit), "below the latest applied migration 46");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -1062,6 +1174,8 @@ describe("Kin migrations", () => {
           repository_key: "github.com/acme/app",
           pull_request_url: null,
           pull_request_number: null,
+          context: null,
+          moved_at: null,
         },
         kin_memory_reads: { org_id: "org", item_id: "fixture-id", last_read_at: 1794009600000 },
         kin_cursor: { org_id: "org", consumer: "worker-tracker", after_sequence: 42 },

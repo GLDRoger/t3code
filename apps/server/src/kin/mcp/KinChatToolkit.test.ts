@@ -401,6 +401,36 @@ it.effect("an owner-only turn posts nothing where a teammate reads, and the owne
         intent: "evidence",
       })).isError,
     );
+    // Nor where a teammate once read: a group stays shared after everyone else leaves.
+    const groups = Context.get(Option.getOrThrow((yield* Kin.KinServer).services), KinGroups);
+    const past = yield* groups.create([person], {
+      orgId: person.orgId,
+      title: "Past",
+      agentIds: [agentId],
+      personIds: [KinPersonId.make("teammate")],
+    });
+    const [left] = yield* sql<{ memberId: string }>`SELECT member_id AS "memberId"
+      FROM kin_chat_members WHERE chat_id = ${past.chatId} AND person_id = 'teammate'`;
+    yield* groups.removeMember([person], {
+      chatId: past.chatId,
+      memberId: KinMemberId.make(left!.memberId),
+    });
+    assert.include(
+      errorOf(
+        yield* call("kin_chat_post", {
+          chatId: past.chatId,
+          body: "Invented private brief",
+          intent: "evidence",
+          clientMessageId: "routine-3",
+        }),
+      ),
+      { reason: "not_allowed", message: PRIVATE_DESTINATION },
+    );
+    assert.deepStrictEqual(
+      yield* sql`SELECT body FROM kin_messages WHERE chat_id = ${past.chatId}
+        AND author_kind = 'agent' ORDER BY seq`,
+      [],
+    );
   }).pipe(Effect.provide(layer)),
 );
 

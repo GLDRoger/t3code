@@ -35,6 +35,8 @@ import {
   type DeferralPlan,
 } from "./deferrals.ts";
 import { type GithubLinkState, readGithubLinks, readGithubLinkSets } from "./deferralGithub.ts";
+import { cardChatFor } from "./deferralOrigin.ts";
+import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { isScheduledTask, syncScheduledTasks } from "./scheduledTasks.ts";
 
 export class KinTriggerSyncError extends Schema.TaggedError<KinTriggerSyncError>()(
@@ -235,11 +237,14 @@ const make = Effect.gen(function* () {
     // only ever messages the owner, and the lead's own reply already said when, so no card.
     let chatId: KinChatId | null = null;
     if (item.chat !== undefined && (plan.onDue === "start" || plan.onDue === "chase")) {
-      const [chat] = yield* sql`SELECT 1 FROM kin_chats
-        WHERE org_id = ${orgId} AND chat_id = ${item.chat} ORDER BY chat_id`;
-      if (chat === undefined)
+      // Once its chat was shared, the card goes to the owner chat of the lead it fires with.
+      const lead = yield* liveLead(sql, orgId, {
+        chatId: item.chat,
+        prefer: CHIEF_OF_STAFF_DOMAIN,
+      });
+      chatId = yield* cardChatFor(sql, orgId, item.chat, lead?.ownerChatId ?? null);
+      if (chatId === null)
         yield* Effect.logWarning("Deferral chat is not in its organization", { orgId, itemId });
-      else chatId = KinChatId.make(item.chat);
     }
     yield* cards.write({ orgId, itemId, state, chatId, now });
   });

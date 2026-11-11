@@ -29,7 +29,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
-import { abortPrivateTurns } from "../lead/Audience.ts";
+import { freezeMovedCard, onPersonJoined, settleCards, workerChat } from "../lead/ChatSharing.ts";
 import { KinStop } from "../lead/KinStop.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import * as Hub from "./KinChatHub.ts";
@@ -206,24 +206,75 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * In the join's transaction: a turn that may hold the owner's context and answers here never
-   * continues once someone else can read it. Its run stops after commit and a fresh, shared
-   * wake-up answers its events.
+   * In the join's transaction (`onPersonJoined`): a turn that may hold the owner's context, or
+   * that read the chat before it was shared, never continues once someone else can read it; its
+   * run stops after commit. What was asked there before stays the owner's: it expires, and private
+   * work there answers in the owner's chat, its card here frozen.
    */
-  const abortTurns = Effect.fn("KinGroups.abortTurns")(function* (
+  const shareWith = Effect.fn("KinGroups.shareWith")(function* (
     chat: Pick<KinChat, "orgId" | "chatId">,
     personId: string,
   ) {
-    const turns = yield* query("KinGroups.abortTurns")(
-      abortPrivateTurns({ orgId: chat.orgId, chatId: chat.chatId, personId }).pipe(
+    const shared = yield* query("KinGroups.shareWith")(
+      onPersonJoined({ orgId: chat.orgId, chatId: chat.chatId, personId }).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
       ),
     );
-    if (turns.length === 0 || Option.isNone(stop)) return;
+    const withChat = <A, E>(
+      effect: Effect.Effect<
+        A,
+        E,
+        SqlClient.SqlClient | Repository.KinChatRepository | Hub.KinChatHub
+      >,
+    ) =>
+      effect.pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.provideService(Repository.KinChatRepository, repo),
+        Effect.provideService(Hub.KinChatHub, hub),
+      );
+    yield* withChat(settleCards(chat)).pipe(
+      Effect.catchTags({
+        SqlError: (cause) => Effect.fail(toPersistenceSqlError("KinGroups.settleCards")(cause)),
+      }),
+    );
+    for (const worker of shared.moved) {
+      const route = yield* query("KinGroups.workerChat")(
+        workerChat({ orgId: chat.orgId, workerId: worker.workerId }).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        ),
+      );
+      if (route?.moved === undefined) continue;
+      yield* withChat(
+        freezeMovedCard({
+          orgId: chat.orgId,
+          chatId: chat.chatId,
+          threadId: worker.threadId,
+          leadName: route.moved.leadName,
+        }),
+      ).pipe(
+        Effect.catchTags({
+          SqlError: (cause) => Effect.fail(toPersistenceSqlError("KinGroups.freezeCard")(cause)),
+        }),
+      );
+    }
+    if (shared.expired.length > 0 && Option.isSome(presence)) {
+      const line = presence.value;
+      yield* sql.afterCommit(
+        Effect.forEach(
+          new Set(shared.expired.map((row) => row.agentId)),
+          (id) =>
+            syncQueued(line, chat.orgId, KinAgentId.make(id)).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            ),
+          { discard: true },
+        ),
+      );
+    }
+    if (shared.turns.length === 0 || Option.isNone(stop)) return;
     yield* sql.afterCommit(
       stop.value.abortTurns(
         chat.orgId,
-        turns.map((turn) => KinWakeupId.make(turn.wakeupId)),
+        shared.turns.map((turn) => KinWakeupId.make(turn.wakeupId)),
       ),
     );
   });
@@ -328,7 +379,7 @@ const make = Effect.gen(function* () {
           ? yield* join(chat, principal, "member", joinedAt)
           : // Someone who was here before keeps their member id, so their old messages stay theirs.
             yield* repo.addMember({ ...earlier, role: "member", joinedAt, leftAt: null });
-      if (principal._tag === "person") yield* abortTurns(chat, principal.personId);
+      if (principal._tag === "person") yield* shareWith(chat, principal.personId);
       if (principal._tag === "agent" && (chat.leadAgentId ?? null) === null)
         yield* repo.updateChat({
           orgId: chat.orgId,

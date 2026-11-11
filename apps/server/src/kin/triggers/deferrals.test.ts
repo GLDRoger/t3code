@@ -30,11 +30,13 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as Chat from "../chat/KinChatService.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
+import { turnAudience } from "../lead/Audience.ts";
 import * as Budget from "../lead/KinBudget.ts";
 import * as Queue from "../lead/KinEventQueue.ts";
 import * as LeadDelivery from "../lead/LeadDelivery.ts";
 import { leadWakeup } from "../lead/LeadDelivery.testkit.ts";
 import * as WorkerEnvironment from "../lead/workerEnvironment.ts";
+import { laneFor } from "../reply/KinReplyBridge.ts";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import { fakeRepository } from "../memory/__fixtures__/repository.ts";
 import * as Memory from "../memory/Memory.ts";
@@ -842,6 +844,91 @@ it.effect(
     }).pipe(Effect.provide(layerFor([remind])));
   },
 );
+
+// Fifth review of cfb0c8993b: a reminder an owner-only turn set stays the owner's after a join.
+it.effect("a reminder set privately in a group later shared fires into the owner's chat", () => {
+  const remind = makeDeferral("def-g", {
+    on_due: "remind",
+    chat: KinChatId.make("group-a"),
+    source_event: KinEventId.make("set-event"),
+  });
+  return Effect.gen(function* () {
+    yield* setup();
+    const sql = yield* SqlClient.SqlClient;
+    const repo = yield* Repository.KinChatRepository;
+    const lead = KinAgentId.make(`lead-${orgId}`);
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at)
+      VALUES ('group-a', ${orgId}, 'team_group', 'Plans', 0, '1970-01-01T00:00:00.000Z')`;
+    const join = (
+      memberId: string,
+      principal: Parameters<typeof repo.addMember>[0]["principal"],
+      role: "owner" | "member" = "member",
+    ) =>
+      repo.addMember({
+        orgId,
+        chatId: KinChatId.make("group-a"),
+        memberId: KinMemberId.make(memberId),
+        principal,
+        role,
+        joinedAt: "1970-01-01T00:00:00.000Z",
+        leftAt: null,
+        mutedUntil: null,
+      });
+    yield* join(
+      "group-owner",
+      { _tag: "person", personId: KinPersonId.make(`owner-${orgId}`) },
+      "owner",
+    );
+    yield* join("group-lead", { _tag: "agent", agentId: lead });
+    // The owner asked for it in the group while only they read there: an owner-only turn.
+    yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status,
+        event_ids, audience) VALUES ('set-wake', ${orgId}, ${lead}, 'test', 0, 'completed',
+        '["set-event"]', 'owner_only')`;
+    const asked = {
+      _tag: "chat.message",
+      orgId,
+      agentId: lead,
+      eventId: "set-event",
+      receivedAt: "1970-01-01T00:00:00.000Z",
+      dedupeKey: null,
+      provenance: { _tag: "human", personId: `owner-${orgId}`, memberId: "group-owner" },
+      chatId: "group-a",
+      messageId: "set-message",
+    };
+    yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
+        queued_at, state, wakeup_id)
+      VALUES ('set-event', ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(asked)}, 0, 0,
+        'done', 'set-wake')`;
+    yield* (yield* TriggerService.KinTriggerService).syncItem(remind);
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES ('teammate', ${orgId}, 'teammate', 'Teammate', '1970-01-01T00:00:00.000Z')`;
+    yield* join("group-teammate", { _tag: "person", personId: KinPersonId.make("teammate") });
+    yield* tick(dueAt);
+
+    const eventId = yield* reminderEvent();
+    const [due] = yield* sql<{
+      json: string;
+    }>`SELECT json FROM kin_events WHERE event_id = ${eventId}`;
+    assert.notProperty(JSON.parse(due!.json), "origin");
+    yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status,
+        event_ids) VALUES ('fire-wake', ${orgId}, ${lead}, 'test', 0, 'running', json_array(${eventId}))`;
+    yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = 'fire-wake' WHERE event_id = ${eventId}`;
+    const turn = { orgId, agentId: lead, wakeupId: KinWakeupId.make("fire-wake") };
+    assert.equal(yield* turnAudience(turn), "owner_only");
+    assert.deepInclude(Option.getOrThrow(yield* laneFor(turn)), {
+      chatId: KinChatId.make(`chat-${orgId}`),
+    });
+    yield* sql`UPDATE kin_events SET state = 'queued', wakeup_id = NULL WHERE event_id = ${eventId}`;
+    yield* sql`DELETE FROM kin_wakeups WHERE wakeup_id = 'fire-wake'`;
+    yield* leadWakeup({ orgId, eventId, chatId: `chat-${orgId}`, body: "Your reminder." });
+    yield* (yield* LeadDelivery.KinLeadDelivery).settle(orgId);
+    assert.equal((yield* reminderCard("def-g", dueAt)).chatId, `chat-${orgId}`);
+    const inGroup =
+      yield* sql`SELECT 1 FROM kin_messages m JOIN kin_chats c ON c.chat_id = m.chat_id
+      WHERE m.chat_id = 'group-a' AND m.seq >= c.shared_from_seq`;
+    assert.lengthOf(inGroup, 0);
+  }).pipe(Effect.provide(layerFor([remind])));
+});
 
 it.effect("a reminder whose wake-up fails falls back to Kin's line, marked as a fallback", () => {
   const remind = makeDeferral("def-r", { on_due: "remind" });

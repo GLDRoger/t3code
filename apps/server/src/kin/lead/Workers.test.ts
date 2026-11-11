@@ -10,10 +10,11 @@ import {
   KinChatError,
   KinAgentId,
   KinChatId,
+  KinMemberId,
   KinEventId,
   KinMemoryItemId,
   KinOrgId,
-  type KinPersonId,
+  KinPersonId,
   KinWakeupId,
   KinWorkerId,
   NodeId,
@@ -48,6 +49,7 @@ import * as EventStore from "../../persistence/OrchestrationEventStore.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
+import { KinGroups } from "../chat/KinGroups.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
@@ -171,7 +173,7 @@ const setup = Effect.fn("WorkersTest.setup")(function* (level = "L2") {
   yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id) VALUES ('other-lead', ${other}, 'Other', 0, ${models}, '[]', 'other-chat')`;
   yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids) VALUES ('other-wake', ${other}, 'other-lead', 'test', 0, 'completed', '[]')`;
   yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id, model_json, provenance_json, status, report_json, started_at) VALUES ('other-worker', ${other}, 'other-lead', 'other-wake', 'build', 'other-thread', ${JSON.stringify(codex)}, '{"_tag":"system"}', 'completed', ${JSON.stringify({ ...report, parsed: true })}, 0)`;
-  return { services, orgId, chat, sql, other };
+  return { services, orgId, chat, sql, other, person: person! };
 });
 
 const workerEnv = EnvironmentId.make("worker-env");
@@ -1953,6 +1955,147 @@ it.effect(
         );
         assert.lengthOf(remote.tools("t3_thread_send"), 0);
         assert.deepStrictEqual(yield* cards(sql, ctx.orgId), before);
+      }),
+    ),
+);
+
+/** The owner adds the teammate to `chatId` through the group's own write. */
+const addTeammate = (ctx: Effect.Success<ReturnType<typeof setup>>, chatId: string) =>
+  Context.get(ctx.services, KinGroups)
+    .addMember([ctx.person], {
+      chatId: KinChatId.make(chatId),
+      principal: { _tag: "person", personId: KinPersonId.make("teammate") },
+    })
+    .pipe(Effect.orDie);
+const chatCards = (sql: SqlClient.SqlClient, chatId: string) =>
+  sql<{
+    title: string;
+    closedAt: string | null;
+  }>`SELECT json_extract(state_json, '$.title') AS title,
+    closed_at AS "closedAt" FROM kin_widgets WHERE chat_id = ${chatId} AND type = 'task'
+    ORDER BY widget_id`;
+/** What was posted in `chatId` from the moment it was shared. */
+const sinceShared = (sql: SqlClient.SqlClient, chatId: string) =>
+  sql<{ body: string }>`SELECT m.body FROM kin_messages m JOIN kin_chats c ON c.chat_id = m.chat_id
+    WHERE m.chat_id = ${chatId} AND m.seq >= c.shared_from_seq ORDER BY m.seq`;
+
+// Fifth review of cfb0c8993b: work an owner-only turn gave out stays the owner's after a join.
+it.effect(
+  "private work in a group a teammate then joins reports to the owner's chat, and the group keeps only a fixed line",
+  () =>
+    run(({ ctx, remote, tracker, workers }) =>
+      Effect.gen(function* () {
+        const sql = ctx.sql;
+        yield* group(sql, ctx.orgId, "team", "owner");
+        yield* askedIn(sql, "team");
+        const turn = { orgId: ctx.orgId, agentId: leadId, wakeupId: "wake" };
+        yield* recordAudience(turn, yield* turnAudience(turn));
+        const started = yield* workers.delegate(scope, delegateInput);
+        assert.lengthOf(yield* chatCards(sql, "team"), 1);
+        yield* addTeammate(ctx, "team");
+        assert.deepStrictEqual(yield* chatCards(sql, "team"), [
+          { title: "Moved to your private chat with Lead", closedAt: "1970-01-01T00:00:00.000Z" },
+        ]);
+        const { threadId } = yield* workerRow(sql, ctx.orgId, started.workerId);
+        yield* remote.finish(ThreadId.make(threadId), "completed", reportReply);
+        yield* settled(tracker, ctx.orgId, started.workerId);
+        const [reported] = yield* reports(sql, ctx.orgId);
+        assert.isUndefined(reported!.event.chatId);
+        assert.isUndefined(reported!.event.origin);
+        assert.deepStrictEqual(
+          yield* answering(sql, ctx.orgId, reported!.event.eventId, "report-dm"),
+          {
+            audience: "owner_only",
+            lane: { chatId: ctx.chat.chatId, mode: "notice", leadName: "Lead" },
+          },
+        );
+        assert.deepStrictEqual(yield* sinceShared(sql, "team"), []);
+        assert.deepStrictEqual(yield* chatCards(sql, "team"), [
+          { title: "Moved to your private chat with Lead", closedAt: "1970-01-01T00:00:00.000Z" },
+        ]);
+        assert.lengthOf(yield* chatCards(sql, ctx.chat.chatId), 1);
+      }),
+    ),
+);
+
+it.effect(
+  "a follow-up a private turn sends stays private, though a teammate joins before it is sent",
+  () =>
+    run(({ ctx, remote, tracker, workers }) =>
+      Effect.gen(function* () {
+        const sql = ctx.sql;
+        yield* group(sql, ctx.orgId, "team", "owner");
+        yield* askedIn(sql, "team");
+        const turn = { orgId: ctx.orgId, agentId: leadId, wakeupId: "wake" };
+        yield* recordAudience(turn, yield* turnAudience(turn));
+        const started = yield* workers.delegate(scope, teamDelegate);
+        // Work a shared turn gave out, now followed up by an owner-only one.
+        yield* sql`UPDATE kin_workers SET context = 'shared' WHERE worker_id = ${started.workerId}`;
+        const { threadId } = yield* workerRow(sql, ctx.orgId, started.workerId);
+        yield* remote.finish(ThreadId.make(threadId), "completed", reportReply);
+        yield* settled(tracker, ctx.orgId, started.workerId);
+        remote.hooks.sent = Effect.suspend(() => {
+          remote.hooks.sent = Effect.void;
+          return addTeammate(ctx, "team");
+        }).pipe(Effect.asVoid);
+        yield* workers.followUp(scope, {
+          workerId: started.workerId,
+          brief: "Use what I told you privately.",
+          sourceEventId: "lead-event",
+        });
+        const [row] = yield* sql<{ context: string }>`SELECT context FROM kin_workers
+          WHERE worker_id = ${started.workerId}`;
+        assert.strictEqual(row?.context, "private");
+        yield* remote.finish(ThreadId.make(threadId), "completed", reportReply);
+        yield* settled(tracker, ctx.orgId, started.workerId);
+        const last = (yield* reports(sql, ctx.orgId)).at(-1)!;
+        assert.isUndefined(last.event.chatId);
+        assert.deepStrictEqual(yield* sinceShared(sql, "team"), []);
+      }),
+    ),
+);
+
+it.effect(
+  "work asked while a teammate was in the group reports there shared after they leave, and the group stays shared",
+  () =>
+    run(({ ctx, remote, tracker, workers }) =>
+      Effect.gen(function* () {
+        const sql = ctx.sql;
+        yield* group(sql, ctx.orgId, "team", "owner");
+        yield* addTeammate(ctx, "team");
+        yield* askedIn(sql, "team");
+        // The turn that answers in the group now: begun after the teammate joined.
+        yield* sql`UPDATE kin_wakeups SET aborted_at = NULL, shared_since = NULL, started_at = 1
+          WHERE wakeup_id = 'wake'`;
+        const turn = { orgId: ctx.orgId, agentId: leadId, wakeupId: "wake" };
+        yield* recordAudience(turn, yield* turnAudience(turn));
+        const started = yield* workers.delegate(scope, teamDelegate);
+        const [member] = yield* sql<{ memberId: string }>`SELECT member_id AS "memberId"
+          FROM kin_chat_members WHERE chat_id = 'team' AND person_id = 'teammate'`;
+        yield* Context.get(ctx.services, KinGroups)
+          .removeMember([ctx.person], {
+            chatId: KinChatId.make("team"),
+            memberId: KinMemberId.make(member!.memberId),
+          })
+          .pipe(Effect.orDie);
+        const { threadId } = yield* workerRow(sql, ctx.orgId, started.workerId);
+        yield* remote.finish(ThreadId.make(threadId), "completed", reportReply);
+        yield* settled(tracker, ctx.orgId, started.workerId);
+        const [reported] = yield* reports(sql, ctx.orgId);
+        assert.strictEqual(reported!.event.chatId, "team");
+        assert.deepStrictEqual(
+          yield* answering(sql, ctx.orgId, reported!.event.eventId, "report-team"),
+          {
+            audience: "shared",
+            lane: { chatId: KinChatId.make("team"), mode: "notice", leadName: "Lead" },
+          },
+        );
+        // Shared turns get no notes and keep no journal; the owner's next word there is shared too.
+        yield* askFrom(sql, "later-event", "team");
+        assert.strictEqual(
+          (yield* answering(sql, ctx.orgId, "later-event", "later-wake")).audience,
+          "shared",
+        );
       }),
     ),
 );

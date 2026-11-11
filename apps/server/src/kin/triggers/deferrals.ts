@@ -26,7 +26,7 @@ import { KinChatHub } from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
-import { type DeferralSource, deferralOrigin } from "./deferralOrigin.ts";
+import { type DeferralSource, firingOrigin } from "./deferralOrigin.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { workersConfigured } from "../lead/workerEnvironment.ts";
 import * as Memory from "../memory/Memory.ts";
@@ -232,7 +232,7 @@ export const deferralLead = Effect.fn("Deferrals.lead")(function* (
 ) {
   const lead = yield* liveLead(sql, orgId, { chatId: item?.chat, prefer: CHIEF_OF_STAFF_DOMAIN });
   if (lead === undefined) return undefined;
-  const origin = yield* deferralOrigin(sql, orgId, item, lead);
+  const origin = yield* firingOrigin(sql, orgId, item, lead);
   const level = yield* KinLevels.effectiveLevel({
     orgId,
     agentId: lead.agentId,
@@ -359,7 +359,7 @@ export const makeDeferralStarter = Effect.gen(function* () {
       prefer: CHIEF_OF_STAFF_DOMAIN,
     });
     if (lead === undefined) return false;
-    const origin = yield* deferralOrigin(sql, orgId, input.item, lead);
+    const origin = yield* firingOrigin(sql, orgId, input.item, lead);
     const moved = yield* sql`UPDATE kin_deferral_runs SET state = 'started', updated_at = ${now}
       WHERE org_id = ${orgId} AND item_id = ${itemId} AND due_at = ${dueAt}
         AND state = ${input.from} RETURNING item_id`;
