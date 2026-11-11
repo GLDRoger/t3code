@@ -39,7 +39,7 @@ const decodeTap = Schema.decodeUnknownEffect(
 // Matches the resume expiry: older unanswered messages are not worth a wake-up after downtime.
 const CATCH_UP_WINDOW = { hours: 24 } as const;
 const CATCH_UP_LIMIT_PER_ORG = 200;
-/** Lead turns one teammate's direct messages may ask for in any 24 hours, unless configured. */
+/** Lead turns one teammate's messages and taps may ask for in any 24 hours, unless configured. */
 const DEFAULT_TEAMMATE_DAILY_TURNS = 50;
 
 /**
@@ -76,36 +76,26 @@ const make = Effect.gen(function* () {
   );
 
   /**
-   * Someone else's direct chat with a lead: their message wakes it only while its owner lets
-   * them message it, and for at most `dailyTurns` turns in any 24 hours across all such chats,
-   * since every turn is the owner's to pay for. Past that the chat says so once and the message
-   * is not answered. A message already queued was admitted when it arrived.
+   * A teammate wakes a lead (in a direct chat, only while its owner allows them) for at most
+   * `dailyTurns` turns in any 24 hours across every chat: the owner pays for each. Past that the
+   * chat says so once. Run in the transaction that enqueues, so the count and the turn are one step.
    */
   const admitted = Effect.fn("KinChatWake.admitted")(function* (
     message: KinMessage,
     personId: KinPersonId,
-    agentId: KinAgentId,
-    leadName: string,
+    target: { readonly agentId: KinAgentId; readonly name: string; readonly direct: boolean },
     dedupeKey: string,
   ) {
-    const pair = { orgId: message.orgId, agentId, personId };
+    const pair = { orgId: message.orgId, agentId: target.agentId, personId };
     const known = yield* sql`SELECT 1 FROM kin_events
-      WHERE org_id = ${message.orgId} AND dedupe_key = ${dedupeKey} LIMIT 1`.pipe(
-      Effect.mapError(toPersistenceSqlError("KinChatWake.admitted")),
-    );
+      WHERE org_id = ${message.orgId} AND dedupe_key = ${dedupeKey} LIMIT 1`;
     if (known.length > 0) return true;
     const access = Effect.provideService(SqlClient.SqlClient, sql);
-    if (
-      !(yield* LeadAccess.allowed(pair).pipe(
-        access,
-        Effect.mapError(toPersistenceSqlError("KinChatWake.admitted")),
-      ))
-    )
-      return false;
+    if (target.direct && !(yield* LeadAccess.allowed(pair).pipe(access))) return false;
     const used = yield* LeadAccess.recentTurns({
       ...pair,
       now: yield* Clock.currentTimeMillis,
-    }).pipe(access, Effect.mapError(toPersistenceSqlError("KinChatWake.admitted")));
+    }).pipe(access);
     if (used.turns < dailyTurns) return true;
     // One line per full day of turns: it is said again only once the oldest of them has aged out.
     const messageId = KinMessageId.make(
@@ -115,13 +105,21 @@ const make = Effect.gen(function* () {
         .slice(0, 32)}`,
     );
     if (Option.isSome(yield* repo.getMessage({ orgId: message.orgId, messageId }))) return false;
+    // Everyone in a group reads the line, so there it names who it is about.
+    const [person] = target.direct
+      ? []
+      : yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+          WHERE org_id = ${message.orgId} AND person_id = ${personId}`;
     const notice = yield* repo.insertMessage({
       orgId: message.orgId,
       chatId: message.chatId,
       messageId,
       author: { _tag: "system" },
       kind: "system",
-      body: `${leadName} has answered as much as it can for you today and didn't see your last message. Send it again later.`,
+      body:
+        person === undefined
+          ? `${target.name} has answered as much as it can for you today and didn't see your last message. Send it again later.`
+          : `${target.name} has answered as much as it can for ${person.name} today and didn't see their last message. ${person.name} can send it again later.`,
       intent: null,
       mentions: [],
       replyTo: null,
@@ -133,9 +131,24 @@ const make = Effect.gen(function* () {
       createdAt: DateTime.formatIso(yield* DateTime.now),
       editedAt: null,
     });
-    yield* hub.publish({ type: "message.posted", orgId: message.orgId, message: notice });
+    yield* sql.afterCommit(
+      hub.publish({ type: "message.posted", orgId: message.orgId, message: notice }),
+    );
     return false;
   });
+
+  const enqueue = (event: KinEvent) =>
+    queue.enqueue(event).pipe(
+      Effect.map((result) => !result.duplicate),
+      Effect.catchTags({
+        KinEventQueueRetiredAgent: () => Effect.succeed(false),
+        KinEventQueueUnknownAgent: () => Effect.succeed(false),
+        KinEventQueueConflict: (error) =>
+          Effect.logWarning("Kin chat wake-up conflicts with a stored event", error).pipe(
+            Effect.as(false),
+          ),
+      }),
+    );
 
   const wake = Effect.fn("KinChatWake.wake")(
     function* (message: KinMessage) {
@@ -181,12 +194,6 @@ const make = Effect.gen(function* () {
         // Every field comes from the stored message, so a replay enqueues byte-identical JSON.
         const prefix = message.kind === "widget_action" ? "widget-action" : "chat-message";
         const dedupeKey = `${prefix}:${message.messageId}:${agentId}`;
-        if (
-          target.kind === "direct" &&
-          message.author.personId !== target.ownerPersonId &&
-          !(yield* admitted(message, message.author.personId, agentId, target.name, dedupeKey))
-        )
-          continue;
         // The memory writer accepts only [a-zA-Z0-9_-] in event ids, so hash the readable key.
         const eventId = KinEventId.make(
           `${prefix}-${NodeCrypto.createHash("sha256").update(dedupeKey).digest("hex").slice(0, 32)}`,
@@ -204,17 +211,23 @@ const make = Effect.gen(function* () {
         const event: KinEvent = Option.isSome(actionId)
           ? { ...base, _tag: "widget.action", actionId: actionId.value }
           : { ...base, _tag: "chat.message" };
-        const queued = yield* queue.enqueue(event).pipe(
-          Effect.map((result) => !result.duplicate),
-          Effect.catchTags({
-            KinEventQueueRetiredAgent: () => Effect.succeed(false),
-            KinEventQueueUnknownAgent: () => Effect.succeed(false),
-            KinEventQueueConflict: (error) =>
-              Effect.logWarning("Kin chat wake-up conflicts with a stored event", error).pipe(
-                Effect.as(false),
-              ),
-          }),
-        );
+        // The owner is never capped. Anyone else's turn is counted and enqueued in one step.
+        const personId = message.author.personId;
+        const queued =
+          personId === target.ownerPersonId
+            ? yield* enqueue(event)
+            : yield* sql
+                .withTransaction(
+                  admitted(
+                    message,
+                    personId,
+                    { agentId, name: target.name, direct: target.kind === "direct" },
+                    dedupeKey,
+                  ).pipe(
+                    Effect.flatMap((admit) => (admit ? enqueue(event) : Effect.succeed(false))),
+                  ),
+                )
+                .pipe(Effect.mapError(toPersistenceSqlError("KinChatWake.admitted")));
         if (queued) yield* showQueued(message.orgId, message.chatId, agentId);
       }
     },

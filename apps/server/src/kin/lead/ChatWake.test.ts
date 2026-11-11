@@ -602,4 +602,78 @@ describe("ChatWake", () => {
         ),
       ),
   );
+  it.effect("counts a teammate's group messages and taps toward the same daily cap", () =>
+    Effect.gen(function* () {
+      yield* seed("a");
+      const sql = yield* SqlClient.SqlClient;
+      const hub = yield* Hub.KinChatHub;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('mate', 'a', 'mate', 'Mate', ${createdAt})`;
+      yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
+        VALUES ('a', 'lead-a', 'mate', 'owner-a', 0)`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+        VALUES ('mate-chat', 'a', 'direct', 'mate:lead-a', 0, ${createdAt}),
+          ('group', 'a', 'team_group', NULL, 0, ${createdAt})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, agent_id, role, joined_at)
+        VALUES ('mate-member', 'a', 'mate-chat', 'person', 'mate', NULL, 'member', ${createdAt}),
+          ('lead-in-mate-chat', 'a', 'mate-chat', 'agent', NULL, 'lead-a', 'member', ${createdAt}),
+          ('mate-in-group', 'a', 'group', 'person', 'mate', NULL, 'member', ${createdAt}),
+          ('owner-in-group', 'a', 'group', 'person', 'owner-a', NULL, 'owner', ${createdAt}),
+          ('lead-in-group', 'a', 'group', 'agent', NULL, 'lead-a', 'member', ${createdAt})`;
+      const { attempts, settle } = yield* start();
+      const say = (messageId: string, seq: number, chat: string, tap?: string) =>
+        hub.publish({
+          type: "message.posted",
+          orgId: KinOrgId.make("a"),
+          message: decodeMessage({
+            ...message("a", messageId, { chat, seq, ...(tap === undefined ? {} : { tap }) }),
+            author: {
+              _tag: "human",
+              personId: "mate",
+              memberId: chat === "group" ? "mate-in-group" : "mate-member",
+            },
+            authorRole: "member",
+          }),
+        });
+      const notices = sql<{ chat: string; body: string }>`SELECT chat_id AS chat, body
+        FROM kin_messages WHERE org_id = 'a' AND author_kind = 'system' ORDER BY chat_id`;
+
+      yield* say("group-first", 1, "group");
+      yield* say("group-tap", 2, "group", "approve");
+      // The day's turns are used up in the group, so the direct chat and the group both stop.
+      yield* say("direct-after", 1, "mate-chat");
+      yield* say("group-after", 3, "group");
+      yield* hub.publish({
+        type: "message.posted",
+        orgId: KinOrgId.make("a"),
+        message: decodeMessage({
+          ...message("a", "owner-in-group", { chat: "group", seq: 4 }),
+          author: { _tag: "human", personId: "owner-a", memberId: "owner-in-group" },
+        }),
+      });
+      yield* settle;
+      assert.deepStrictEqual(keys(attempts), [
+        "chat-message:group-first:lead-a",
+        "widget-action:group-tap:lead-a",
+        "chat-message:owner-in-group:lead-a",
+      ]);
+      assert.deepStrictEqual(yield* notices, [
+        {
+          chat: "group",
+          body: "Lead has answered as much as it can for Mate today and didn't see their last message. Mate can send it again later.",
+        },
+        {
+          chat: "mate-chat",
+          body: "Lead has answered as much as it can for you today and didn't see your last message. Send it again later.",
+        },
+      ]);
+    }).pipe(
+      Effect.provide(
+        Layer.merge(
+          services,
+          ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_TEAMMATE_DAILY_TURNS: 2 })),
+        ),
+      ),
+    ),
+  );
 });
