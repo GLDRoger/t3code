@@ -38,6 +38,7 @@ import {
   kinHeldCardAgent,
   kinRetiredChatLine,
   kinRetiredDirectAgentId,
+  kinRetiredEmptyChat,
   kinRetiredGroupAnswerer,
   kinRetiredGroupLine,
 } from "@t3tools/client-runtime/kin/kinAgentRetire";
@@ -670,7 +671,8 @@ function KinChatFeed(props: {
   const canLoadEarlier = props.connected && earlierPage !== null;
   const latestSeq = latestKinSeq(messages);
   const showIntro = kinIntroVisible({
-    ownsLead: props.ownsLead,
+    // Nobody is there to greet in a retired agent's chat.
+    ownsLead: props.ownsLead && props.retired === null,
     agentName: props.agentName,
     viewerPersonId: props.viewer.personId,
     messages,
@@ -943,6 +945,7 @@ function KinChatFeed(props: {
     </div>
   );
 
+  const retiredEmpty = props.retired === null ? null : kinRetiredEmptyChat(props.retired.name);
   // After a reset the feed is empty until the latest page reloads; that's not an empty chat.
   const empty =
     rows.length === 0 && earlierPage === null && !live.needsHistoryReload
@@ -950,12 +953,18 @@ function KinChatFeed(props: {
           <Empty size="compact">
             <EmptyHeader>
               <EmptyTitle>
-                {props.agentName === null ? "No messages yet" : `Say hello to ${props.agentName}`}
+                {retiredEmpty !== null
+                  ? retiredEmpty.title
+                  : props.agentName === null
+                    ? "No messages yet"
+                    : `Say hello to ${props.agentName}`}
               </EmptyTitle>
               <EmptyDescription>
-                {props.agentName === null
-                  ? "Messages in this chat show up here."
-                  : (props.about ?? "Your first message starts the chat.")}
+                {retiredEmpty !== null
+                  ? retiredEmpty.detail
+                  : props.agentName === null
+                    ? "Messages in this chat show up here."
+                    : (props.about ?? "Your first message starts the chat.")}
               </EmptyDescription>
             </EmptyHeader>
           </Empty>

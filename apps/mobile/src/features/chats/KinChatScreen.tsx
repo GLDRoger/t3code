@@ -150,6 +150,7 @@ import {
   kinHeldCardAgent,
   kinRetiredChatLine,
   kinRetiredDirectAgentId,
+  kinRetiredEmptyChat,
   kinRetiredGroupAnswerer,
   kinRetiredGroupLine,
 } from "@t3tools/client-runtime/kin/kinAgentRetire";
@@ -1033,7 +1034,8 @@ function KinChatFeed(props: {
   const canLoadEarlier = props.readHistory !== null && earlierPage !== null;
   const latestSeq = latestKinSeq(messages);
   const showIntro = kinIntroVisible({
-    ownsLead: props.ownsLead,
+    // Nobody is there to greet in a retired agent's chat.
+    ownsLead: props.ownsLead && props.retired === null,
     agentName: props.agentName,
     viewerPersonId: props.viewer.personId,
     messages,
@@ -1371,6 +1373,7 @@ function KinChatFeed(props: {
 
   // After a reset the feed is empty until the latest page reloads; that's not an empty chat.
   // Inside the list, so the first send keeps the same tree and the composer keeps the keyboard.
+  const retiredEmpty = props.retired === null ? null : kinRetiredEmptyChat(props.retired.name);
   const empty =
     rows.length === 0 && earlierPage === null && !live.needsHistoryReload ? (
       <View className="p-4">
@@ -1378,12 +1381,18 @@ function KinChatFeed(props: {
           <EmptyState
             variant="plain"
             title={
-              props.agentName === null ? "No messages yet" : `Say hello to ${props.agentName}.`
+              retiredEmpty !== null
+                ? retiredEmpty.title
+                : props.agentName === null
+                  ? "No messages yet"
+                  : `Say hello to ${props.agentName}.`
             }
             detail={
-              props.agentName === null
-                ? "Messages in this chat show up here."
-                : (props.about ?? "It reads every message here.")
+              retiredEmpty !== null
+                ? retiredEmpty.detail
+                : props.agentName === null
+                  ? "Messages in this chat show up here."
+                  : (props.about ?? "It reads every message here.")
             }
           />
         )}
