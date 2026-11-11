@@ -2,8 +2,11 @@ import { LegendList } from "@legendapp/list/react-native";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import type { EnvironmentId, KinOrgId } from "@t3tools/contracts";
-import { useEffect, type ReactNode } from "react";
-import { View } from "react-native";
+import { kinHomeTabs, type KinHomeTab } from "@t3tools/client-runtime/kin/kinJoin";
+import { Atom } from "effect/reactivity";
+import { useEffect, useState, type ReactNode } from "react";
+import { Platform, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppBar } from "../../components/ui/AppBar";
 import type { AppBarProps } from "../../components/ui/AppBar.types";
@@ -31,7 +34,13 @@ import {
 import { kinClient } from "./state/kinClient";
 import { useKinAccessEnded } from "./state/kinChatOnly";
 import { rememberKinListAtom } from "./state/kinLastList";
+import { useKinHost } from "./state/useKinHost";
 import { useKinInbox } from "./state/useKinInbox";
+import { KinTeammateSettings } from "./KinTeammateSettings";
+import { environmentSession } from "../../state/session";
+import { SidebarTabBar } from "../layout/workspace/WorkspaceSidebarTabs";
+import { useFloatingWorkspaceTabs } from "../layout/workspace/useSystemWorkspaceTabBar";
+import { workspaceDockBottomClearance } from "../layout/workspace/workspace-tabs-state";
 
 /** The Kin list as a page over coding threads: opening and leaving it is the switch between them. */
 export function KinChatsScreen() {
@@ -46,45 +55,98 @@ export function KinChatsScreen() {
   return <KinChatsList onBack={() => navigation.goBack()} />;
 }
 
-/** The Kin list as the whole app, on a phone that only holds a teammate's session. */
+/** The dock's own names for the tabs it can draw; a Kin tab without one waits for its icon. */
+const KIN_DOCK_TABS: Partial<Record<KinHomeTab, string>> = {
+  chats: "threads",
+  settings: "settings",
+};
+const noSessionAtom = Atom.make(null);
+
+/**
+ * Kin as the whole app, on a phone that only holds a teammate's session: the chat list and
+ * Settings as tabs of the same dock the coding workspace uses, with the tabs the session allows.
+ */
 export function KinHomeScreen() {
   const navigation = useNavigation();
+  const host = useKinHost();
+  const session = useAtomValue(
+    host._tag === "host"
+      ? environmentSession.sessionStateValueAtom(host.environmentId)
+      : noSessionAtom,
+  );
   const accessEnded = useKinAccessEnded().length > 0;
-  const settings = {
-    accessibilityLabel: "Settings",
-    icon: "gearshape",
-    onPress: () => navigation.navigate("Settings"),
-  } as const;
-  if (accessEnded) {
-    return (
-      <View collapsable={false} className="flex-1 bg-screen">
-        <NativeStackScreenOptions options={{ headerTitle: undefined }} />
-        <AppBar title="Kin" actions={[settings]} />
-        <ScreenContent surface="screen">
-          <ScreenScrollView
-            className="flex-1"
-            contentInsetAdjustmentBehavior="automatic"
-            contentContainerStyle={{ padding: 16, gap: 12 }}
-          >
-            <EmptyState
-              variant="plain"
-              title="You no longer have access"
-              detail="Your team's Kin signed this phone out. Ask them for a new join link to get back in."
-              actionLabel="Join with a new link"
-              onAction={() => navigation.navigate("KinJoin")}
-            />
-          </ScreenScrollView>
-        </ScreenContent>
-      </View>
-    );
-  }
-  return <KinChatsList home actions={[settings]} />;
+  const insets = useSafeAreaInsets();
+  const compact = useFloatingWorkspaceTabs();
+  const [tab, setTab] = useState<KinHomeTab>("chats");
+  // Android has no dock here yet, so Settings stays a button in the bar.
+  const docked = Platform.OS === "ios";
+  const tabs = kinHomeTabs(session).filter((candidate) => KIN_DOCK_TABS[candidate] !== undefined);
+  const bottomClearance = docked
+    ? workspaceDockBottomClearance({ bottomInset: insets.bottom, keyboardHeight: 0 })
+    : 0;
+  const actions = docked
+    ? undefined
+    : [
+        {
+          accessibilityLabel: "Settings",
+          icon: "gearshape",
+          onPress: () => navigation.navigate("Settings"),
+        } as const,
+      ];
+  return (
+    <View collapsable={false} className="flex-1 bg-screen">
+      {tab === "settings" ? (
+        <KinTeammateSettings tab={{ bottomClearance }} />
+      ) : accessEnded ? (
+        <>
+          <NativeStackScreenOptions options={{ headerTitle: undefined }} />
+          <AppBar title="Kin" actions={actions} />
+          <ScreenContent surface="screen">
+            <ScreenScrollView
+              className="flex-1"
+              contentInsetAdjustmentBehavior="automatic"
+              contentContainerStyle={{ padding: 16, gap: 12 }}
+            >
+              <EmptyState
+                variant="plain"
+                title="You no longer have access"
+                detail="Your team's Kin signed this phone out. Ask them for a new join link to get back in."
+                actionLabel="Join with a new link"
+                onAction={() => navigation.navigate("KinJoin")}
+              />
+            </ScreenScrollView>
+          </ScreenContent>
+        </>
+      ) : (
+        <KinChatsList home bottomClearance={bottomClearance} actions={actions} />
+      )}
+      {docked ? (
+        <View
+          pointerEvents="box-none"
+          style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 128 }}
+        >
+          <SidebarTabBar
+            compact={compact}
+            reserveComposeSpace={false}
+            tabs={tabs}
+            selectedTab={tab}
+            onSelect={setTab}
+            nativeTab={(candidate) => KIN_DOCK_TABS[candidate] ?? candidate}
+          />
+        </View>
+      ) : null}
+    </View>
+  );
 }
 
 function KinChatsList({
   home,
+  bottomClearance = 0,
   ...bar
-}: Pick<AppBarProps, "onBack" | "actions"> & { readonly home?: boolean }) {
+}: Pick<AppBarProps, "onBack" | "actions"> & {
+  readonly home?: boolean;
+  readonly bottomClearance?: number;
+}) {
   const navigation = useNavigation();
   const { host, state, retry } = useKinInbox();
   const orgId =
@@ -107,6 +169,7 @@ function KinChatsList({
           state={state}
           directory={kinDirectory(host)}
           onRetry={retry}
+          bottomClearance={bottomClearance}
           {...(home
             ? { emptyDetail: "When someone on your team starts a chat with you, it shows up here." }
             : {})}
@@ -206,6 +269,8 @@ export function KinChatsView(props: {
   readonly memory?: ReactNode;
   /** What an empty list says, for a viewer who can't start chats with leads. */
   readonly emptyDetail?: string;
+  /** Room under the last row for a tab dock drawn over the list. */
+  readonly bottomClearance?: number;
   readonly onOpenWaiting: () => void;
   readonly onOpenChat: (chatId: KinChatRowView["chatId"]) => void;
 }) {
@@ -219,7 +284,11 @@ export function KinChatsView(props: {
       <ScreenScrollView
         className="flex-1"
         contentInsetAdjustmentBehavior="automatic"
-        contentContainerStyle={{ padding: 16, gap: 12 }}
+        contentContainerStyle={{
+          padding: 16,
+          paddingBottom: 16 + (props.bottomClearance ?? 0),
+          gap: 12,
+        }}
       >
         <KinScreenState state={state} onRetry={props.onRetry} loading={<KinChatRowSkeletons />}>
           {() => (
@@ -246,7 +315,7 @@ export function KinChatsView(props: {
       renderScrollComponent={NativeScrollView}
       className="flex-1"
       contentInsetAdjustmentBehavior="automatic"
-      contentContainerStyle={{ paddingTop: 4, paddingBottom: 24 }}
+      contentContainerStyle={{ paddingTop: 4, paddingBottom: 24 + (props.bottomClearance ?? 0) }}
       data={rows}
       keyExtractor={(row) => row.chat.chatId}
       estimatedItemSize={64}

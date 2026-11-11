@@ -10,6 +10,7 @@ import {
   kinAccessEnded,
   kinAppShell,
   kinChatOnlyEnvironments,
+  kinHomeTabs,
   kinJoinFailureMessage,
   kinJoinOffersApp,
   kinJoinStanding,
@@ -110,6 +111,15 @@ describe("the app's shell", () => {
     // The session outranks memory both ways: a teammate later paired with full access, and back.
     expect(chatOnly({ team: owner }, [team])).toEqual([]);
     expect(chatOnly({ team: teammate, laptop: teammate }, [])).toEqual([team, laptop]);
+  });
+
+  it("offers the Kin tabs a session has been allowed, and no others", () => {
+    expect(kinHomeTabs(teammate)).toEqual(["chats", "settings"]);
+    expect(kinHomeTabs(owner)).toEqual(["chats", "work", "team", "memory", "settings"]);
+    expect(
+      kinHomeTabs({ authenticated: true, permissions: ["kin:chat", "orchestration:read"] }),
+    ).toEqual(["chats", "work", "settings"]);
+    expect(kinHomeTabs(null)).toEqual(["chats", "settings"]);
   });
 
   it("is only Kin when every saved environment is a teammate's", () => {

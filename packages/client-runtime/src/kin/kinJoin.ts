@@ -1,4 +1,12 @@
-import { sessionIsChatOnly, type EnvironmentId, type SessionGrantInput } from "@t3tools/contracts";
+import {
+  KIN_MEMORY_RPC_SCOPES,
+  KIN_PEOPLE_RPC_SCOPES,
+  KIN_WORK_RPC_SCOPES,
+  sessionGrantsScope,
+  sessionIsChatOnly,
+  type EnvironmentId,
+  type SessionGrantInput,
+} from "@t3tools/contracts";
 import { readKinJoinLink } from "@t3tools/shared/remote";
 
 /** A join link a teammate gave the app, and the address it points at, shown before joining. */
@@ -120,4 +128,22 @@ export function kinAccessEnded(
     connection.lastFailure?._tag === "ConnectionBlockedError" &&
     connection.lastFailure.reason === "authentication"
   );
+}
+
+export type KinHomeTab = "chats" | "work" | "team" | "memory" | "settings";
+
+/**
+ * The tabs of a Kin-only home, in order, from what the session has been allowed: a tab whose page
+ * the host would refuse is never offered. A teammate's session gets chats and settings.
+ */
+export function kinHomeTabs(session: SessionGrantInput | null): ReadonlyArray<KinHomeTab> {
+  const allowed = (scope: Parameters<typeof sessionGrantsScope>[1]) =>
+    session !== null && sessionGrantsScope(session, scope);
+  return [
+    "chats",
+    ...(allowed(KIN_WORK_RPC_SCOPES["kin.work.list"]) ? (["work"] as const) : []),
+    ...(allowed(KIN_PEOPLE_RPC_SCOPES["kin.people.listInvites"]) ? (["team"] as const) : []),
+    ...(allowed(KIN_MEMORY_RPC_SCOPES["kin.memory.list"]) ? (["memory"] as const) : []),
+    "settings",
+  ];
 }

@@ -11,6 +11,7 @@ import * as Dialog from "../../components/ui/Dialog";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
+import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { useConnectionController } from "../connection/useConnectionController";
 import { SettingsRow } from "../settings/components/SettingsRow";
 import { SettingsSection } from "../settings/components/SettingsSection";
@@ -43,7 +44,10 @@ function useMyName(): string | null {
  * nothing else. Everything about providers, projects and coding belongs to sessions with more
  * access, and those get the full Settings list.
  */
-export function KinTeammateSettings() {
+export function KinTeammateSettings(props: {
+  /** As a tab of the Kin home: no way back, and room under the list for the tab dock. */
+  readonly tab?: { readonly bottomClearance: number };
+}) {
   const navigation = useNavigation();
   const controller = useConnectionController();
   const environments = useChatOnlyEnvironments();
@@ -70,12 +74,23 @@ export function KinTeammateSettings() {
 
   return (
     <View collapsable={false} className="flex-1 bg-screen">
-      <AppBar title="Settings" onBack={() => navigation.goBack()} />
+      {props.tab ? (
+        <>
+          <NativeStackScreenOptions options={{ headerTitle: undefined }} />
+          <AppBar title="Settings" />
+        </>
+      ) : (
+        <AppBar title="Settings" onBack={() => navigation.goBack()} />
+      )}
       <ScreenContent surface="screen">
         <ScreenScrollView
           className="flex-1"
           contentInsetAdjustmentBehavior="automatic"
-          contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
+          contentContainerStyle={{
+            padding: 16,
+            paddingBottom: 32 + (props.tab?.bottomClearance ?? 0),
+            gap: 20,
+          }}
         >
           {name === null && team === null ? null : (
             <SettingsSection>
@@ -94,8 +109,16 @@ export function KinTeammateSettings() {
               label="Notifications"
               onPress={() => void Linking.openSettings()}
             />
-            <SettingsRow icon="paintbrush" label="Appearance" target="SettingsAppearance" />
-            <SettingsRow icon="info.circle" label="About" target="SettingsAbout" />
+            <SettingsRow
+              icon="paintbrush"
+              label="Appearance"
+              onPress={() => navigation.navigate("SettingsAppearance")}
+            />
+            <SettingsRow
+              icon="info.circle"
+              label="About"
+              onPress={() => navigation.navigate("SettingsAbout")}
+            />
           </SettingsSection>
           {environments.map((environmentId) => (
             <Button
