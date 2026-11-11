@@ -86,11 +86,17 @@ export function KinLeadScreen({ route }: StaticScreenProps<KinLeadParams>) {
       <View collapsable={false} className="flex-1 bg-screen">
         <AppBar title="Lead details" onClose={() => navigation.goBack()} />
         <ScreenContent surface="screen">
-          <EmptyState
-            variant="plain"
-            title="This link doesn't name a lead"
-            detail="Open a lead from its chat."
-          />
+          <ScreenScrollView
+            className="flex-1"
+            contentInsetAdjustmentBehavior="automatic"
+            contentContainerStyle={{ padding: 16 }}
+          >
+            <EmptyState
+              variant="plain"
+              title="This link doesn't name a lead"
+              detail="Open a lead from its chat."
+            />
+          </ScreenScrollView>
         </ScreenContent>
       </View>
     );

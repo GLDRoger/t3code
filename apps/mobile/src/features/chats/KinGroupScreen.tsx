@@ -68,11 +68,17 @@ export function KinGroupScreen({ route }: StaticScreenProps<KinGroupParams>) {
       <View collapsable={false} className="flex-1 bg-screen">
         <AppBar title="Group details" onClose={() => navigation.goBack()} />
         <ScreenContent surface="screen">
-          <EmptyState
-            variant="plain"
-            title="This link doesn't name a group"
-            detail="Open a group from your chats."
-          />
+          <ScreenScrollView
+            className="flex-1"
+            contentInsetAdjustmentBehavior="automatic"
+            contentContainerStyle={{ padding: 16 }}
+          >
+            <EmptyState
+              variant="plain"
+              title="This link doesn't name a group"
+              detail="Open a group from your chats."
+            />
+          </ScreenScrollView>
         </ScreenContent>
       </View>
     );
