@@ -7,7 +7,7 @@ import {
 import {
   createKinWorkChanges,
   createKinWorkItemWatch,
-  type KinWorkChangesState,
+  kinWorkChangesStart,
 } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type {
@@ -90,8 +90,7 @@ export function useKinWorkChanges(
   const assign = useAtomCommand(kinClient.workAssign, { reportFailure: false });
   const confirm = useAtomCommand(kinClient.workConfirm, { reportFailure: false });
   const decline = useAtomCommand(kinClient.workDecline, { reportFailure: false });
-  // The form's first state is the controller's, which exists only once this has run.
-  const [held] = useState(() => Atom.make<KinWorkChangesState>(KIN_WORK_NO_CHANGES));
+  const [state, setState] = useState(() => kinWorkChangesStart(editing));
   const [changes] = useState(() =>
     createKinWorkChanges({
       orgId,
@@ -103,10 +102,10 @@ export function useKinWorkChanges(
         appAtomRegistry.refresh(kinClient.workItem({ environmentId, input: { orgId, key } })),
       online: () => kinHostConnected(environmentId),
       ...(editing === undefined ? {} : { editing }),
-      onChange: (next) => appAtomRegistry.set(held, next),
+      onChange: setState,
     }),
   );
-  return { state: useAtomValue(held), changes };
+  return { state, changes };
 }
 
 /** Reads the open task again when Work says it changed, and not for anyone else's change. */

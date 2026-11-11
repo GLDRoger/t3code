@@ -117,12 +117,23 @@ export interface KinWorkChangesState {
   readonly notice: KinWorkNotice | null;
 }
 
-export const KIN_WORK_NO_CHANGES: KinWorkChangesState = {
+const KIN_WORK_NO_CHANGES: KinWorkChangesState = {
   pending: {},
   answers: {},
   edit: null,
   notice: null,
 };
+
+const editOf = (item: KinRecordDetail): KinWorkEdit => ({
+  key: item.key,
+  title: item.title,
+  notes: item.notes,
+  from: { title: item.title, notes: item.notes },
+});
+
+/** Where the changes start: nothing done, and a form already typing over `editing` if given. */
+export const kinWorkChangesStart = (editing?: KinRecordDetail): KinWorkChangesState =>
+  editing === undefined ? KIN_WORK_NO_CHANGES : { ...KIN_WORK_NO_CHANGES, edit: editOf(editing) };
 
 /** A task as the owner should see it now: the host's newest word, then what is being saved. */
 export function kinWorkApplied<R extends KinRecord>(record: R, state: KinWorkChangesState): R {
@@ -239,16 +250,7 @@ export function createKinWorkChanges(options: {
   readonly onChange: (state: KinWorkChangesState) => void;
 }) {
   const { orgId } = options;
-  const editOf = (item: KinRecordDetail): KinWorkEdit => ({
-    key: item.key,
-    title: item.title,
-    notes: item.notes,
-    from: { title: item.title, notes: item.notes },
-  });
-  let state: KinWorkChangesState =
-    options.editing === undefined
-      ? KIN_WORK_NO_CHANGES
-      : { ...KIN_WORK_NO_CHANGES, edit: editOf(options.editing) };
+  let state = kinWorkChangesStart(options.editing);
   const set = (patch: Partial<KinWorkChangesState>) => {
     state = { ...state, ...patch };
     options.onChange(state);

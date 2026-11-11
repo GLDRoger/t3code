@@ -5,10 +5,9 @@ import {
   type KinWorkScreenState,
 } from "@t3tools/client-runtime/kin/kinWork";
 import {
-  KIN_WORK_NO_CHANGES,
   createKinWorkChanges,
   createKinWorkItemWatch,
-  type KinWorkChangesState,
+  kinWorkChangesStart,
 } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type {
@@ -86,7 +85,7 @@ export function useKinWorkChanges({ environmentId, orgId }: KinWorkTarget) {
   const assign = useAtomCommand(kinClient.workAssign, { reportFailure: false });
   const confirm = useAtomCommand(kinClient.workConfirm, { reportFailure: false });
   const decline = useAtomCommand(kinClient.workDecline, { reportFailure: false });
-  const [state, setState] = useState<KinWorkChangesState>(KIN_WORK_NO_CHANGES);
+  const [state, setState] = useState(() => kinWorkChangesStart());
   const [changes] = useState(() =>
     createKinWorkChanges({
       orgId,
