@@ -12,6 +12,7 @@ import LeadAccess from "./migrations/K050_LeadAccess.ts";
 import ChatSharing from "./migrations/K051_ChatSharing.ts";
 import MemoryLabels from "./migrations/K052_MemoryLabels.ts";
 import MemorySharing from "./migrations/K053_MemorySharing.ts";
+import SharedProjection from "./migrations/K054_SharedProjection.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -104,6 +105,7 @@ const loader = Migrator.fromRecord({
   "51_ChatSharing": ChatSharing,
   "52_MemoryLabels": MemoryLabels,
   "53_MemorySharing": MemorySharing,
+  "54_SharedProjection": SharedProjection,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

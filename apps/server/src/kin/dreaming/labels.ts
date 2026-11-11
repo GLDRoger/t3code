@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import { isItemPath } from "../memory/checkoutPaths.ts";
 import { parseFrontMatter } from "../memory/frontMatter.ts";
 import {
+  contentOf,
   fingerprint,
   isSensitive,
   mustBeSensitive,
@@ -79,9 +80,8 @@ export const keepLabels = Effect.fn("DreamLabels.keep")(function* (input: {
   const suggested = new Map<string, string>();
   for (const { path, text, frontMatter, body } of after) {
     const { id } = frontMatter;
-    const content = [frontMatter.title, frontMatter.what ?? "", body, ...frontMatter.links].join(
-      "\n",
-    );
+    // The words a shared turn would be given, the same projection an authorisation covers.
+    const content = contentOf({ head: frontMatter, body });
     const sensitive =
       labelBefore(id) === true ||
       input.labels.held.has(id) ||

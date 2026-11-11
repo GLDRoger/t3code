@@ -22,8 +22,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
-import { buildIndex } from "../memory/buildIndex.ts";
-import { reaching } from "../memory/sensitivity.ts";
+import { buildTeamIndex } from "../memory/buildIndex.ts";
+import { reaching, shareable } from "../memory/sensitivity.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
 import { liveReactions, reactionAnswer } from "../chat/reactions.ts";
 import { historyFloor } from "../chat/sharing.ts";
@@ -609,12 +609,11 @@ export class KinLeadPrompt extends Context.Service<
                 }),
               ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
               if (items.length === 0) return "";
-              return buildIndex(
-                items.map((item) => item.head),
-                yield* cache.lastReads(orgId),
-                yield* Clock.currentTimeMillis,
-                yield* cache.ownerTimeZone(orgId),
-                true,
+              return buildTeamIndex(
+                items.map((item) => {
+                  const { body: _body, ...head } = shareable(item);
+                  return head;
+                }),
               );
             }).pipe(
               Effect.catch((cause) =>

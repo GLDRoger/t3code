@@ -1,5 +1,11 @@
 import { assert, it } from "@effect/vitest";
-import { KinOrgId } from "@t3tools/contracts";
+import {
+  KinChatId,
+  KinOrgId,
+  KinPersonId,
+  MemoryItemHead,
+  type MemoryItemKind,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -7,6 +13,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import {
+  NEVER_SHARED_FIELDS,
+  SHARED_HEAD_FIELDS,
+  SharedItem,
   authorise,
   classify,
   fingerprint,
@@ -14,6 +23,7 @@ import {
   looksLikeSecret,
   mustBeSensitive,
   reaches,
+  shareable,
   storedLabels,
   suggest,
   visibility,
@@ -24,6 +34,7 @@ const orgId = KinOrgId.make("fixture-org");
 const item = (id: string, body: string, sensitive?: boolean) => ({
   head: {
     id,
+    kind: "claim" as MemoryItemKind,
     title: `Invented ${id}`,
     links: [],
     ...(sensitive === undefined ? {} : { sensitive }),
@@ -58,6 +69,32 @@ it.effect("only a stored authorisation of the exact words lets the team know an 
     assert.isFalse(team({ ...shared, body: "Invented status, reworded.\n" }));
     assert.isFalse(team({ ...shared, head: { ...shared.head, title: "Invented other title" } }));
     assert.isFalse(team({ ...shared, head: { ...shared.head, sensitive: true } }));
+    // Every part of what a shared turn is given counts as its words, its kind and who said it too.
+    assert.isFalse(team({ ...shared, head: { ...shared.head, kind: "decision" } }));
+    const said = item("said", "Invented remark.\n", false);
+    const from = {
+      person: KinPersonId.make("fixture-teammate"),
+      chat: KinChatId.make("fixture-chat"),
+      name: "Teammate",
+      chat_name: "Invented room",
+    };
+    yield* authorise(
+      orgId,
+      "said",
+      fingerprint({ ...said, head: { ...said.head, shared_from: from } }),
+      "teammate",
+    );
+    const saidLabels = yield* storedLabels(orgId);
+    assert.isTrue(
+      reaches("shared", { ...said, head: { ...said.head, shared_from: from } }, saidLabels),
+    );
+    assert.isFalse(
+      reaches(
+        "shared",
+        { ...said, head: { ...said.head, shared_from: { ...from, name: "Invented other" } } },
+        saidLabels,
+      ),
+    );
     assert.strictEqual(visibility(item("nightly", "x"), labels), "suggested");
     assert.strictEqual(visibility(item("hinted", "Invented hint.\n", false), labels), "suggested");
     // A suggestion is of particular words: other words aren't suggested.
@@ -69,6 +106,39 @@ it.effect("only a stored authorisation of the exact words lets the team know an 
     assert.isFalse(reaches("shared", shared, yield* storedLabels(orgId)));
   }).pipe(Effect.provide(layer)),
 );
+
+// Review of 9de4e8d197: a dream's private words in a field the fingerprint skipped reached a
+// shared memory_read. Every head field is either given to shared turns or never is.
+it("a shared turn is given a fixed projection, and every head field is accounted for", () => {
+  const listed = [...SHARED_HEAD_FIELDS, ...NEVER_SHARED_FIELDS];
+  assert.sameMembers(Object.keys(MemoryItemHead.fields), listed);
+  assert.strictEqual(new Set(listed).size, listed.length);
+  const head = {
+    ...item("full", "Invented body.\n", false).head,
+    what: "Invented what",
+    links: ["Invented link"],
+    owner: "Invented private owner note",
+    source: "kin:chat:private-chat:message:private-message",
+    path: "claims/full.md",
+    shared_from: {
+      person: KinPersonId.make("fixture-teammate"),
+      chat: KinChatId.make("fixture-chat"),
+      name: "Teammate",
+      chat_name: "Invented room",
+    },
+  };
+  const projected = shareable({ head, body: "Invented body.\n" });
+  assert.sameMembers(Object.keys(projected), Object.keys(SharedItem.fields));
+  assert.deepStrictEqual(projected.from, { name: "Teammate", chat_name: "Invented room" });
+  for (const hidden of ["private", "claims/full.md", "fixture-teammate", "fixture-chat"])
+    assert.notInclude(JSON.stringify(projected), hidden);
+  // What it is not given is not what an authorisation covers.
+  const reworded = { ...head, owner: "Invented other" };
+  assert.strictEqual(
+    fingerprint({ head, body: "Invented body.\n" }),
+    fingerprint({ head: reworded, body: "Invented body.\n" }),
+  );
+});
 
 it.effect("each new suggestion comes at a later revision, and an owner's word ends it", () =>
   Effect.gen(function* () {

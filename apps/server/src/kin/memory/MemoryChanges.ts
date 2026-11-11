@@ -34,6 +34,7 @@ import type { MemoryItem } from "./MemoryCache.ts";
 import type { MemoryWriter } from "./MemoryWriter.ts";
 import {
   authorise,
+  bindSuggestions,
   fingerprint,
   hold,
   storedLabels,
@@ -96,6 +97,7 @@ const notAllowed = refused("not_allowed", "Only the lead's owner can undo its me
 const ownerOnly = refused("not_allowed", "Only the owner can see or change this.");
 const unavailable = refused("unavailable", "Kin memory is unavailable. Try again.");
 const stale = refused("conflict", "This changed again since, so it wasn't undone.");
+const changed = refused("conflict", "This item changed since it was listed. Look at it again.");
 const isKinChatError = Schema.is(KinChatError);
 const PREVIEW_MAX = 200;
 /** The item's own one-line account, else the start of what it says. */
@@ -122,6 +124,7 @@ const make = Effect.gen(function* () {
       item.head.shared_from === undefined
         ? null
         : { name: item.head.shared_from.name, chatName: item.head.shared_from.chat_name },
+    version: fingerprint(item),
   });
   // Settled reminders and replaced notes are history, not something a lead still uses.
   const current = (items: ReadonlyArray<MemoryItem>) =>
@@ -270,7 +273,10 @@ const make = Effect.gen(function* () {
     list: Effect.fn("KinMemoryChanges.list")(function* (people, input) {
       const { port } = yield* ownerOf(people, input.orgId);
       const items = current(yield* port.items(input.orgId));
-      const labels = yield* storedLabels(input.orgId).pipe(provideSql);
+      const labels = yield* storedLabels(input.orgId).pipe(
+        Effect.flatMap((stored) => bindSuggestions(input.orgId, items, stored)),
+        provideSql,
+      );
       const listedItems = items.map((item) => listed(item, labels));
       const shown = new Set<string>(
         listedItems.filter((item) => item.visibility === "suggested").map((item) => item.itemId),
@@ -290,6 +296,10 @@ const make = Effect.gen(function* () {
       );
       const [item] = known;
       if (item === undefined || known.length !== 1) return yield* notFound;
+      // The team is let know only these words, and only if they are the listed version.
+      const words = fingerprint(item);
+      if (!input.onlyOwner && input.version !== undefined && input.version !== words)
+        return yield* changed;
       // Held first, so "only you" is true from this moment whatever the commit below does.
       if (input.onlyOwner) yield* hold(input.orgId, input.itemId).pipe(provideSql);
       const { head } = yield* port.relabel(input.orgId, {
@@ -298,10 +308,10 @@ const make = Effect.gen(function* () {
         person: person.personId,
       });
       const next = { head, body: item.body };
-      if (!input.onlyOwner)
-        yield* authorise(input.orgId, input.itemId, fingerprint(next), "owner_setting").pipe(
-          provideSql,
-        );
+      if (!input.onlyOwner) {
+        if (fingerprint(next) !== words) return yield* changed;
+        yield* authorise(input.orgId, input.itemId, words, "owner_setting").pipe(provideSql);
+      }
       return { item: listed(next, yield* storedLabels(input.orgId).pipe(provideSql)) };
     }, failed),
     confirmSuggestions: Effect.fn("KinMemoryChanges.confirmSuggestions")(function* (people, input) {
@@ -309,6 +319,7 @@ const make = Effect.gen(function* () {
       const items = current(yield* port.items(input.orgId));
       const labels = yield* storedLabels(input.orgId).pipe(provideSql);
       const asked = "itemIds" in input ? new Set<string>(input.itemIds) : undefined;
+      const versions = "itemIds" in input ? input.versions : undefined;
       const counts = new Map<string, number>();
       for (const { head } of items) counts.set(head.id, (counts.get(head.id) ?? 0) + 1);
       const chosen = items.filter((item) => {
@@ -317,6 +328,8 @@ const make = Effect.gen(function* () {
           suggestion !== undefined &&
           counts.get(item.head.id) === 1 &&
           visibility(item, labels) === "suggested" &&
+          (versions?.[item.head.id] === undefined ||
+            versions[item.head.id] === fingerprint(item)) &&
           (asked === undefined
             ? "asOf" in input && suggestion.rev <= input.asOf
             : asked.has(item.head.id))
@@ -331,10 +344,10 @@ const make = Effect.gen(function* () {
           person: person.personId,
         });
         const next = { head, body: item.body };
-        // Still suggested above, so this is the content that was suggested.
-        yield* authorise(input.orgId, item.head.id, fingerprint(item), "owner_confirmed").pipe(
-          provideSql,
-        );
+        // Still suggested above, so these are the words suggested and listed; nothing else.
+        const words = fingerprint(item);
+        if (fingerprint(next) !== words) continue;
+        yield* authorise(input.orgId, item.head.id, words, "owner_confirmed").pipe(provideSql);
         confirmed.push(next);
       }
       const after = yield* storedLabels(input.orgId).pipe(provideSql);
