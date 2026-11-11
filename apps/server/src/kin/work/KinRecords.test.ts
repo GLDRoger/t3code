@@ -872,14 +872,17 @@ it.effect("an entry opens by id, and its links carry what opens the other end", 
       target: "rec_gone",
       relation: "relates",
     });
-    const byId = yield* OwnerWork.get([owner], { orgId, recordId: step.recordId });
+    const byId = yield* OwnerWork.get([owner], {
+      orgId,
+      recordId: KinRecordId.make(step.recordId),
+    });
     assert.strictEqual(byId.key, step.key);
     assert.deepStrictEqual(
       byId.links.map((link) => [link.target, link.record ?? null, link.worker ?? null]),
       [
         [
           parent.recordId,
-          { recordId: parent.recordId, key: parent.key, title: parent.title },
+          { recordId: KinRecordId.make(parent.recordId), key: parent.key, title: parent.title },
           null,
         ],
         ["rec_gone", null, null],
@@ -887,7 +890,7 @@ it.effect("an entry opens by id, and its links carry what opens the other end", 
           "wk",
           null,
           {
-            threadId: "wk-thread",
+            threadId: ThreadId.make("wk-thread"),
             remoteEnvironmentId: null,
             running: true,
             pullRequest: { url: "https://github.com/invented/repo/pull/7", number: 7 },
@@ -903,8 +906,13 @@ it.effect("an entry opens by id, and its links carry what opens the other end", 
       yield* Effect.flip(OwnerWork.get([owner], { orgId, recordId: KinRecordId.make("rec_x") })),
       { reason: "not_found" },
     );
-    assert.include(yield* Effect.flip(OwnerWork.get([mate], { orgId, recordId: step.recordId })), {
-      reason: "not_allowed",
-    });
+    assert.include(
+      yield* Effect.flip(
+        OwnerWork.get([mate], { orgId, recordId: KinRecordId.make(step.recordId) }),
+      ),
+      {
+        reason: "not_allowed",
+      },
+    );
   }).pipe(Effect.provide(layer)),
 );
