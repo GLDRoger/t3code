@@ -520,6 +520,18 @@ const make = Effect.gen(function* () {
       if (stored?.request_hash !== digest) return yield* reused(key);
     }
   });
+  /** Whether this exact call already went through in this wake-up. */
+  const receipted = Effect.fn("LeadMemory.receipted")(function* (
+    ctx: Effect.Success<ReturnType<typeof resolve>>,
+    key: string,
+    request: unknown,
+  ) {
+    const digest = yield* hash(request);
+    const [prior] = yield* sql<{
+      request_hash: string;
+    }>`SELECT request_hash FROM kin_lead_tool_calls WHERE org_id = ${ctx.orgId} AND wakeup_id = ${ctx.wakeupId} AND call_key = ${key}`;
+    return prior?.request_hash === digest;
+  });
   /**
    * Only the lead that set an item up cancels it, asked from the chat it was set up in or that
    * lead's owner chat. The run stops in the same transaction as the checks; memory follows at commit.
@@ -1009,8 +1021,20 @@ const make = Effect.gen(function* () {
               `def-${(yield* hash({ wakeup: ctx.wakeupId, input })).slice(0, 32)}`,
             );
           if (input.replaces === id) return yield* invalid("`replaces` names this same item.");
-          if (input.replaces !== undefined)
-            yield* cancelOwn(ctx, input.replaces, input.sourceEventId);
+          // A retry of a replacement already made has nothing left to replace.
+          const retried =
+            input.replaces !== undefined &&
+            (yield* receipted(ctx, `item:${id}`, { ...input, itemId: id }));
+          const replaced =
+            input.replaces === undefined || retried
+              ? undefined
+              : yield* KinSchedules.readSchedule(sql, ctx.orgId, input.replaces);
+          // A native schedule is cancelled only once its replacement is staged.
+          if (replaced === undefined) {
+            if (input.replaces !== undefined && !retried)
+              yield* cancelOwn(ctx, input.replaces, input.sourceEventId);
+          } else if (replaced.deletedAt === null)
+            yield* ownSchedule(ctx, replaced, input.sourceEventId);
           const recorded = DateTime.formatIso(DateTime.makeUnsafe(ctx.startedAt));
           const fields = {
             id,
@@ -1043,6 +1067,8 @@ const make = Effect.gen(function* () {
               sourceEventId: input.sourceEventId,
             }),
           );
+          if (replaced !== undefined && replaced.deletedAt === null)
+            yield* schedules.cancel(ctx.orgId, replaced.scheduleId);
           return { itemId: id };
         }),
       );
