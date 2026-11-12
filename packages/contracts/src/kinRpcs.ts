@@ -147,8 +147,7 @@ export const KinGithubWebhookRpcs = [
     error: KinError,
   }),
 ] as const;
-// The zone routines, deferrals, notices and due times use: any member reads it, the owner sets it.
-// Unset reads as UTC.
+// Owner only: the zone routines, deferrals and notices use. Unset reads as UTC.
 const KinTimeZoneRpcs = [
   Rpc.make("kin.triggers.getTimeZone", {
     payload: KinOwnerTimeZoneGetInput,
@@ -197,8 +196,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_WORKER_NETWORK_RPC_SCOPES,
   "kin.budget.get": AuthOrchestrationReadScope,
   "kin.budget.set": AuthSettingsWriteScope,
-  // A teammate's app shows that Kin is stopped; the server drops the owner's reason for them.
-  "kin.org.get": AuthKinChatScope,
+  "kin.org.get": AuthOrchestrationReadScope,
   // Stopping agent work is an orchestration operation, as force-stopping a thread is.
   "kin.org.pause": AuthOrchestrationOperateScope,
   "kin.org.resume": AuthOrchestrationOperateScope,
@@ -223,7 +221,7 @@ export const KIN_RPC_SCOPES = {
   "kin.groups.setLead": AuthSettingsWriteScope,
   "kin.groups.rename": AuthSettingsWriteScope,
   "kin.groups.delete": AuthSettingsWriteScope,
-  "kin.triggers.getTimeZone": AuthKinChatScope,
+  "kin.triggers.getTimeZone": AuthOrchestrationReadScope,
   "kin.triggers.setTimeZone": AuthSettingsWriteScope,
   "kin.webhooks.github.setup": AuthSettingsWriteScope,
   "kin.webhooks.github.setSecret": AuthSettingsWriteScope,
