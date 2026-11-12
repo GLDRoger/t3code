@@ -18,6 +18,7 @@ import { KinDatesScreen, KinListScreen } from "./KinListScreen";
 import { KinLeadScreen } from "./KinLeadScreen";
 import { KinMemoryScreen } from "./KinMemoryScreen";
 import { KinProjectScreen } from "./KinProjectScreen";
+import { KinSettingsScreen } from "./KinSettings";
 import { KinInviteScreen } from "./KinInviteScreen";
 import { KinJoinScreen } from "./KinJoinScreen";
 import { KinTeamScreen } from "./KinTeamScreen";
@@ -40,6 +41,12 @@ export const KIN_SCREENS = {
     screen: KinChatsScreen,
     linking: "kin",
     options: pageRoute({ title: "Kin" }),
+  }),
+  // A Settings page: the name puts it in the Settings tab, beside the list on wide layouts.
+  SettingsKin: createNativeStackScreen({
+    screen: KinSettingsScreen,
+    linking: "settings/kin",
+    options: pageRoute({ title: "Kin", itemStyle: "standard" }),
   }),
   KinWaiting: createNativeStackScreen({
     screen: KinWaitingScreen,

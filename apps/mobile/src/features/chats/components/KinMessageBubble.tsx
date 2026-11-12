@@ -30,7 +30,7 @@ import {
   kinPlainText,
   type KinFeedRow,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
-import type { KinOutboxEntry } from "@t3tools/client-runtime/kin/kinOutbox";
+import { kinOutboxRetractable, type KinOutboxEntry } from "@t3tools/client-runtime/kin/kinOutbox";
 import {
   KIN_PICKER_REACTIONS,
   KIN_REACTION_NAMES,
@@ -370,24 +370,29 @@ export function KinPendingBubble(props: {
   readonly connected: boolean;
   /** The row above is the viewer's own bubble. */
   readonly continues: boolean;
-  /** Puts the body back in the draft and drops the refused send. */
+  /** Puts the body back in the draft and drops the unsent message. */
   readonly onEdit: () => void;
   readonly onDiscard: () => void;
 }) {
   const { entry } = props;
   const failed = entry.state === "failed";
+  const queued = !failed && entry.state !== "sending" && !props.connected;
   const status = failed
     ? `Not sent: ${entry.error ?? "refused"}`
-    : props.connected || entry.state === "sending"
-      ? "Sending…"
-      : "Waiting for connection";
+    : queued
+      ? "Waiting for connection"
+      : "Sending…";
   const attachments = entry.attachments ?? [];
   const refs = entry.refs ?? [];
+  // Only while it reads as refused or waiting: a "Sending…" bubble is on its way.
+  const editable = (failed || queued) && kinOutboxRetractable(entry);
+  // Edit keeps only the text, so a message with files or doc references is only deleted.
+  const canEdit = editable && attachments.length === 0 && refs.length === 0;
   const hasBody = entry.body.trim().length > 0;
   const remove = () =>
     Dialog.confirm({
       title: "Delete this message?",
-      message: "It was never sent.",
+      message: failed ? "It was never sent." : "It hasn't been sent yet.",
       confirmText: "Delete",
       destructive: true,
       onConfirm: props.onDiscard,
@@ -409,12 +414,22 @@ export function KinPendingBubble(props: {
       )}
       {hasBody ? (
         <Pressable
-          disabled={!failed}
-          onPress={props.onEdit}
-          onLongPress={failed ? remove : undefined}
-          accessibilityRole={failed ? "button" : undefined}
+          disabled={!editable}
+          onPress={canEdit ? props.onEdit : remove}
+          onLongPress={editable ? remove : undefined}
+          accessibilityRole={editable ? "button" : undefined}
           accessibilityLabel={kinSentences([`You: ${kinPlainText(entry.body)}`, status])}
-          accessibilityHint={failed ? "Edit it in the message box." : undefined}
+          accessibilityHint={
+            canEdit
+              ? "Edit it in the message box. Touch and hold to delete it."
+              : editable
+                ? "Deletes it."
+                : undefined
+          }
+          accessibilityActions={editable ? [{ name: "delete", label: "Delete" }] : undefined}
+          onAccessibilityAction={(event) => {
+            if (event.nativeEvent.actionName === "delete") remove();
+          }}
           className={cn(OWN_WIDTH_CLASS_NAME, OWN_BUBBLE_CLASS_NAME, !failed && "opacity-70")}
         >
           <Text textRole="body" className="text-user-bubble-foreground">
@@ -438,14 +453,14 @@ export function KinPendingBubble(props: {
         >
           {status}
         </Text>
-        {failed && hasBody ? (
+        {hasBody && canEdit ? (
           <Pressable onPress={props.onEdit} hitSlop={12}>
             <Text textRole="caption" className="font-t3-medium text-foreground">
               Edit
             </Text>
           </Pressable>
         ) : null}
-        {failed && !hasBody ? (
+        {editable && !(hasBody && canEdit) ? (
           <Pressable onPress={remove} hitSlop={12}>
             <Text textRole="caption" className="font-t3-medium text-foreground">
               Delete

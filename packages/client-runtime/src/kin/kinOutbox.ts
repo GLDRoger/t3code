@@ -39,6 +39,8 @@ const KinOutboxRecord = Schema.Struct({
   createdAt: Schema.String,
   /** Null while it waits to go out; why the host refused it for good otherwise. */
   error: Schema.NullOr(Schema.String),
+  /** A send was tried; the host may hold it even if no reply came, so it can't be taken back. */
+  attempted: Schema.optional(Schema.Boolean),
 });
 export type KinOutboxRecord = typeof KinOutboxRecord.Type;
 
@@ -110,6 +112,13 @@ export function classifyKinSendFailure(error: unknown): KinSendOutcome {
 }
 
 const TIMED_OUT: KinSendOutcome = { _tag: "offline" };
+
+/**
+ * Whether the author may still edit or delete an unsent message: one never handed to the host,
+ * or one the host refused. A tried send that got no answer may already be posted.
+ */
+export const kinOutboxRetractable = (entry: KinOutboxEntry): boolean =>
+  entry.state === "failed" || (entry.state === "waiting" && entry.attempted !== true);
 
 export function createKinOutbox(options: KinOutboxOptions) {
   const now = options.now ?? (() => new Date());
@@ -214,7 +223,9 @@ export function createKinOutbox(options: KinOutboxOptions) {
   };
 
   const deliverOne = async (entry: KinOutboxEntry): Promise<"next" | "stop"> => {
-    set({ ...entry, state: "sending" });
+    set({ ...entry, state: "sending", attempted: true });
+    // On disk before the host can see it, so a restart never offers to delete a posted message.
+    if (entry.attempted !== true) await persist();
     const outcome = await sendWithTimeout(entry);
     const current = entries.get(entry.clientMessageId);
     // Discarded while in flight, or a duplicate ack for an entry that already settled.
@@ -297,7 +308,7 @@ export function createKinOutbox(options: KinOutboxOptions) {
   /** Drops an unsent message for good; the same id is never sent again. Returns its body. */
   const discard = async (clientMessageId: string): Promise<string | null> => {
     const entry = entries.get(clientMessageId);
-    if (entry === undefined || entry.state === "sending" || entry.state === "sent") return null;
+    if (entry === undefined || !kinOutboxRetractable(entry)) return null;
     remove(entry);
     await persist();
     return entry.body;

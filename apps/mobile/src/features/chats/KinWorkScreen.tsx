@@ -8,7 +8,6 @@ import {
   KIN_WORK_OFFLINE,
   KIN_WORK_ONLY_OWNER,
   KIN_WORK_SEARCH_PLACEHOLDER,
-  KIN_WORK_STALE,
   KIN_WORK_TITLE,
   kinWorkEntrySummary,
   kinWorkHostEdits,
@@ -64,13 +63,19 @@ import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { KinListBanner } from "./components/KinListBanner";
-import { KinWorkAreaSwitch, KinWorkTaskRow, type KinWorkAreas } from "./components/KinWorkPieces";
+import {
+  KinWorkAreaSwitch,
+  KinWorkStaleNotice,
+  KinWorkTaskRow,
+  type KinWorkAreas,
+} from "./components/KinWorkPieces";
 import { KinDocsList } from "./KinDocsList";
 import { KinClientsList, KinProjectsList } from "./KinWorkLists";
 import { KinListsArea, KinMoneyArea, KinMoneyHeadlineRow } from "./KinWorkMoney";
 import { kinClient } from "./state/kinClient";
 import {
   kinWorkLiveAtom,
+  refreshKinWorkLive,
   useKinWork,
   useKinWorkChanges,
   useKinWorkChoices,
@@ -214,10 +219,11 @@ function KinWorkStates(
   const directory = useKinWorkDirectory(target, ready);
   const choices = useKinWorkChoices(target, ready && hostClients);
   const [area, setArea] = useState(props.start);
+  const [words, setWords] = useState("");
   if (state._tag === "ready") {
     const shared = { ...target, live: state.live, stale: state.stale, directory };
     // An older server has tasks only: no switch, and a link to clients says why.
-    const areas = hostClients ? { area, onArea: setArea } : null;
+    const areas = hostClients ? { area, onArea: setArea, words, onWords: setWords } : null;
     if (area !== "tasks" && !hostClients) {
       return (
         <KinWorkMessage>
@@ -251,7 +257,12 @@ function KinWorkStates(
         onBack={() => navigation.goBack()}
         areas={areas}
         choices={hostClients ? choices : null}
-        initial={{ ...KIN_WORK_DEFAULT_FILTER, party: props.party, project: props.project }}
+        initial={{
+          ...KIN_WORK_DEFAULT_FILTER,
+          party: props.party,
+          project: props.project,
+          text: areas?.words ?? "",
+        }}
         onSearchAll={searchAll}
       />
     );
@@ -352,6 +363,10 @@ export function KinWorkTaskList(
     if (!props.stale) list.changed(live.seq);
   }, [list, live.seq, props.stale]);
 
+  const refresh = () => {
+    refreshKinWorkLive({ environmentId, orgId });
+    list.refresh();
+  };
   const { filter } = listState;
   const overview = kinWorkOverview(live.summary, filter, names);
   const records = kinWorkShown(filter, listState.records, hostEdits).map((record) =>
@@ -386,7 +401,7 @@ export function KinWorkTaskList(
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
         title={props.title}
-        refresh={{ accessibilityLabel: "Refresh", onPress: list.refresh }}
+        refresh={{ accessibilityLabel: "Refresh", onPress: refresh }}
         actions={[
           ...(props.onSearchAll === undefined
             ? []
@@ -407,7 +422,10 @@ export function KinWorkTaskList(
           onBack: props.onBack,
           search: {
             value: filter.text,
-            onChangeText: (text) => list.setFilter({ ...filter, text }),
+            onChangeText: (text) => {
+              props.areas?.onWords(text);
+              list.setFilter({ ...filter, text });
+            },
             placeholder: KIN_WORK_SEARCH_PLACEHOLDER,
             closeAccessibilityLabel: "Close search",
             clearAccessibilityLabel: "Clear search",
@@ -447,7 +465,7 @@ export function KinWorkTaskList(
               {within?.header}
               {props.stale || listState.stale ? (
                 <View className="px-4">
-                  <Notice message={KIN_WORK_STALE} />
+                  <KinWorkStaleNotice environmentId={environmentId} onRetry={refresh} />
                 </View>
               ) : null}
               <KinWorkFilters

@@ -25,6 +25,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { hasCloudPublicConfig } from "../cloud/publicConfig";
 import { KinSettings } from "../chats/KinSettings";
 import { useKinIsHome } from "../chats/state/kinHome";
+import { useKinHost } from "../chats/state/useKinHost";
 import { useAdaptiveWorkspaceLayout } from "../layout/adaptive-workspace-context";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
 import { SettingsRow } from "./components/SettingsRow";
@@ -176,8 +177,14 @@ function SettingsList(props: { readonly connections: readonly SettingsListRow[] 
   const query = workspace?.state.tabs.settings.query ?? "";
   const overflowRows = useOverflowRows();
   const indexSections = useSettingsIndexSections();
+  const kinRows = useKinSettingsRows();
   const sections = filterSettingsSections(
-    [{ rows: overflowRows }, { title: "Connections", rows: props.connections }, ...indexSections],
+    [
+      { rows: overflowRows },
+      { title: "Connections", rows: props.connections },
+      { rows: kinRows },
+      ...indexSections,
+    ],
     query,
   );
 
@@ -287,6 +294,13 @@ function useSettingsIndexSections(): SettingsListSection[] {
       ],
     },
   ];
+}
+
+/** Kin's agents, schedules, approvals and notifications, once a Kin host is known. */
+function useKinSettingsRows(): SettingsListRow[] {
+  const host = useKinHost();
+  if (host._tag !== "host") return [];
+  return [{ id: "SettingsKin", icon: "bubble.left", label: "Kin", target: "SettingsKin" }];
 }
 
 function useOverflowRows(): SettingsListRow[] {

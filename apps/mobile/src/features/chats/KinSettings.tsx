@@ -6,7 +6,7 @@ import { kinHomeTabs } from "@t3tools/client-runtime/kin/kinJoin";
 import type { EnvironmentId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { Linking, View } from "react-native";
+import { View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
 import { Button } from "../../components/ui/Button";
@@ -20,7 +20,10 @@ import { environmentSession } from "../../state/session";
 import { useConnectionController } from "../connection/useConnectionController";
 import { SettingsRow } from "../settings/components/SettingsRow";
 import { SettingsSection } from "../settings/components/SettingsSection";
+import { useSettingsPageBack } from "../settings/useSettingsPageBack";
 import { useKinTab } from "./components/KinTab";
+import { useKinIsHome } from "./state/kinHome";
+import { openKinNotificationSettings } from "./notifications/installKinNotifications";
 import { useChatOnlyEnvironments } from "./state/kinChatOnly";
 import { kinClient } from "./state/kinClient";
 import { useKinInbox } from "./state/useKinInbox";
@@ -63,9 +66,14 @@ const CONNECTION_LABEL: Record<EnvironmentPresentation["connection"]["phase"], s
  * itself; a teammate, whose session reaches none of the rest, gets the app and the way to leave.
  * Drawn as a tab of the Kin home, or as a pushed page where there is no dock.
  */
-export function KinSettings() {
+export function KinSettings(props: {
+  /** The coding app's Settings already holds environments, sign-out and the app's own pages. */
+  readonly inCodingApp?: boolean;
+}) {
+  const inCodingApp = props.inCodingApp === true;
   const navigation = useNavigation();
   const pushed = useRoute().name !== "Home";
+  const settingsBack = useSettingsPageBack();
   const bottomClearance = useKinTab()?.bottomClearance ?? 0;
   const controller = useConnectionController();
   const { environments } = useEnvironments();
@@ -80,7 +88,11 @@ export function KinSettings() {
   const probe = host._tag === "host" && host.probe._tag === "ready" ? host.probe : null;
   const team = probe?.orgs.orgs[0]?.name ?? null;
   const orgId = probe?.orgs.me[0]?.orgId ?? null;
-  const owned = environments.filter((held) => !teammateIds.includes(held.environmentId));
+  const owned = environments.filter(
+    (held) =>
+      !teammateIds.includes(held.environmentId) &&
+      (!inCodingApp || (host._tag === "host" && held.environmentId === host.environmentId)),
+  );
   // The pages below belong to whoever runs this Kin; a teammate's session would be refused.
   const company =
     host._tag === "host" && orgId !== null && !teammateIds.includes(host.environmentId)
@@ -118,7 +130,16 @@ export function KinSettings() {
 
   return (
     <View collapsable={false} className="flex-1 bg-screen">
-      <AppBar title="Settings" {...(pushed ? { onBack: () => navigation.goBack() } : {})} />
+      <AppBar
+        title={inCodingApp ? "Kin" : "Settings"}
+        {...(inCodingApp
+          ? settingsBack === undefined
+            ? {}
+            : { onBack: settingsBack }
+          : pushed
+            ? { onBack: () => navigation.goBack() }
+            : {})}
+      />
       <ScreenContent surface="screen">
         <ScreenScrollView
           className="flex-1"
@@ -202,20 +223,25 @@ export function KinSettings() {
             <SettingsRow
               icon="bell.badge"
               label="Notifications"
-              onPress={() => void Linking.openSettings()}
+              onPress={() => void openKinNotificationSettings()}
             />
-            <SettingsRow
-              icon="paintbrush"
-              label="Appearance"
-              onPress={() => navigation.navigate("SettingsAppearance")}
-            />
-            <SettingsRow
-              icon="info.circle"
-              label="About"
-              onPress={() => navigation.navigate("SettingsAbout")}
-            />
+            {inCodingApp ? null : (
+              <>
+                <SettingsRow
+                  icon="paintbrush"
+                  label="Appearance"
+                  onPress={() => navigation.navigate("SettingsAppearance")}
+                />
+                <SettingsRow
+                  icon="info.circle"
+                  label="About"
+                  onPress={() => navigation.navigate("SettingsAbout")}
+                />
+              </>
+            )}
           </SettingsSection>
-          {owned.map((environment) => (
+          {/* The coding app signs out of a computer from Environments. */}
+          {(inCodingApp ? [] : owned).map((environment) => (
             <Button
               key={environment.environmentId}
               tone="danger"
@@ -237,6 +263,11 @@ export function KinSettings() {
       </ScreenContent>
     </View>
   );
+}
+
+/** Kin's page in the coding app's Settings; where Kin is the whole app, its own Settings. */
+export function KinSettingsScreen() {
+  return <KinSettings inCodingApp={!useKinIsHome()} />;
 }
 
 /** One computer this phone is connected to: where it stands, and a way to try again now. */

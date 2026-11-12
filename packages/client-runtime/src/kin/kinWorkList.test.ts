@@ -193,6 +193,16 @@ describe("createKinWorkList", () => {
     h.list.changed(8);
     await h.answer(page(1, 4, 4, 8));
     expect(h.state()).toMatchObject({ stale: false, seq: 8 });
+
+    // Connected but nothing new announced: pull to refresh is the way back.
+    h.list.changed(9);
+    await h.answer(null);
+    expect(h.state().stale).toBe(true);
+    h.list.refresh();
+    expect(h.state()).toMatchObject({ stale: true, refreshing: true });
+    await h.answer(page(1, 5, 5, 9));
+    expect(h.state()).toMatchObject({ stale: false, refreshing: false, seq: 9 });
+    expect(h.state().records).toHaveLength(5);
   });
 
   it("says so when the first read fails, and retries on demand or when the host is heard again", async () => {

@@ -24,6 +24,7 @@ import {
   createKinWorkActions,
   kinWorkDraftCheck,
   kinWorkHostClients,
+  kinWorkAssignees,
   kinWorkHostEdits,
   kinWorkItemView,
   kinWorkListFooter,
@@ -432,6 +433,36 @@ describe("kinWorkRow", () => {
     // A host from before clients sends none of it: the row and the ways in show nothing new.
     expect(kinWorkRow(record(), names, now).line).toBe("W-1 · You · Not started");
     expect(kinWorkHostClients(null)).toBe(false);
+  });
+});
+
+describe("kinWorkAssignees", () => {
+  const person = (personId: KinPersonId, displayName: string) => ({
+    personId,
+    orgId,
+    handle: displayName.toLowerCase(),
+    displayName,
+    githubLogin: null,
+  });
+  const sami = { _tag: "person", personId: KinPersonId.make("invented-sami") } as const;
+  const people = [
+    person(me.personId, "Invented Owner"),
+    person(priya.personId, "Priya"),
+    person(sami.personId, "Sami"),
+  ];
+  const offered = (current: typeof sami | null) =>
+    kinWorkAssignees({
+      orgs: null,
+      orgId,
+      people,
+      names,
+      current,
+      joined: [me.personId, priya.personId],
+    }).people.map((to) => to.key);
+
+  it("leaves out people whose access was removed, unless the task is with them now", () => {
+    expect(offered(null)).toEqual(["person:invented-owner", "person:invented-priya"]);
+    expect(offered(sami)).toContain("person:invented-sami");
   });
 });
 
