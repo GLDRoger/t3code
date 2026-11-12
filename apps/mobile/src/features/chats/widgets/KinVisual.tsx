@@ -14,6 +14,7 @@ import {
   kinVisualSaveFile,
   readKinVisualMessage,
 } from "@t3tools/shared/kinVisual";
+import { kinVisualSaveBytes } from "@t3tools/shared/kinVisualSvg";
 import { AsyncResult } from "effect/reactivity";
 import { memo, useEffect, useRef, useState } from "react";
 import { Modal, Platform, Pressable, View } from "react-native";
@@ -97,14 +98,22 @@ function KinVisualWebView(props: {
     touchedAt.current = null;
     const saved = kinVisualSaveFile(file.name, file.mimeType);
     if (saved === null) return;
-    let bytes: Uint8Array;
+    let bytes: Uint8Array<ArrayBuffer>;
     try {
       bytes = Uint8Array.from(atob(file.data), (char) => char.charCodeAt(0));
     } catch {
       return;
     }
+    const cleaned = kinVisualSaveBytes(saved.mimeType, bytes);
+    if ("error" in cleaned) {
+      Dialog.alert(
+        "Couldn't save this file",
+        `Kin couldn't save this SVG safely: ${cleaned.error}.`,
+      );
+      return;
+    }
     void shareGeneratedAttachment({
-      bytes,
+      bytes: cleaned.bytes,
       attachment: { name: saved.name, mimeType: saved.mimeType },
       signal: new AbortController().signal,
     }).then(
