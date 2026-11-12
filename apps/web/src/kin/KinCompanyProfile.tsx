@@ -28,6 +28,7 @@ import { Label } from "../components/ui/label";
 import { Skeleton } from "../components/ui/skeleton";
 import { Textarea } from "../components/ui/textarea";
 import { useAtomCommand } from "../state/use-atom-command";
+import { KinBrandSection, KinTemplatesSection } from "./KinBrand";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { kinClient } from "./kinClient";
 import { kinHostConnected, useKinHost } from "./useKinHost";
@@ -167,6 +168,8 @@ function Profile(
             </section>
           ))
         )}
+        <KinBrandSection {...props} profile={profile} onRefresh={props.onRefresh} />
+        <KinTemplatesSection environmentId={environmentId} orgId={orgId} />
       </div>
     );
   }

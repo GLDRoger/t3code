@@ -3,6 +3,7 @@ import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime"
 import type { EnvironmentId, KinPersonId } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { memo, useRef, useState } from "react";
+import { Image } from "expo-image";
 import { View } from "react-native";
 
 import { AppText as Text } from "../../../components/ui/AppText";
@@ -10,6 +11,7 @@ import { Button } from "../../../components/ui/Button";
 import { cn } from "../../../lib/cn";
 import { useNowMinuteMs } from "../../../lib/clock";
 import { uuidv4 } from "../../../lib/uuid";
+import { useAssetUrlState } from "../../../state/assets";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
 import {
@@ -100,6 +102,9 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
           </Text>
         )}
       </View>
+      {choice.image === null ? null : (
+        <KinChoiceImage environmentId={environmentId} image={choice.image} />
+      )}
       {answerText !== null ? (
         <Text
           textRole="footnote"
@@ -154,3 +159,26 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
     </View>
   );
 });
+
+function KinChoiceImage(props: {
+  readonly environmentId: EnvironmentId;
+  readonly image: NonNullable<KinChoiceCardView["image"]>;
+}) {
+  const asset = useAssetUrlState(props.environmentId, {
+    _tag: "attachment",
+    attachmentId: props.image.attachmentId,
+    mimeType: props.image.mimeType,
+  });
+  return (
+    <View className="h-36 overflow-hidden rounded-xl border border-border bg-white">
+      {asset._tag === "Success" ? (
+        <Image
+          source={{ uri: asset.url }}
+          contentFit="contain"
+          accessibilityLabel="The picture this asks about"
+          style={{ flex: 1, margin: 8 }}
+        />
+      ) : null}
+    </View>
+  );
+}

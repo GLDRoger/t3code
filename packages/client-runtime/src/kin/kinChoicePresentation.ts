@@ -19,6 +19,8 @@ export interface KinChoiceCardView {
   readonly question: string;
   readonly detail: string | null;
   readonly options: ReadonlyArray<{ readonly id: string; readonly label: string }>;
+  /** A picture of what is asked about, such as a new logo: a file in the card's chat. */
+  readonly image: { readonly attachmentId: string; readonly mimeType: string } | null;
   readonly answer: {
     readonly optionId: string;
     readonly label: string;
@@ -52,6 +54,10 @@ export function kinChoiceCardView(widget: KinWidget): KinChoiceCardView | null {
     question: line(card.question),
     detail: card.detail === null || card.detail.trim() === "" ? null : card.detail.trim(),
     options,
+    image:
+      card.image === undefined
+        ? null
+        : { attachmentId: card.image.attachmentId, mimeType: card.image.mimeType },
     answer:
       card.answer === null
         ? null

@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { kinHasNotesHistory } from "@t3tools/client-runtime/kin/kinTemplates";
 import {
   KIN_FIELD_FILES_MAX,
   KIN_LISTS,
@@ -76,6 +77,7 @@ import {
   KinInvoicePayments,
   KinMoneyActionNotice,
 } from "./KinInvoice";
+import { KinNotesVersions } from "./KinConfirm";
 import { KinEntryFilePicker, KinEntryPick, KinEntryText } from "./KinWorkEntryEdit";
 import { KinWorkPrivateMark, KinWorkSection as Section } from "./KinWorkParts";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
@@ -911,9 +913,18 @@ export function KinListEntry(
             )}
           </Section>
         )}
-        {view.notes === null ? null : (
+        {view.notes === null && !kinHasNotesHistory(item) ? null : (
           <Section title={KIN_LISTS.entry.notes}>
-            <p className="whitespace-pre-wrap text-sm text-foreground">{view.notes}</p>
+            {view.notes === null ? null : (
+              <p className="whitespace-pre-wrap text-sm text-foreground">{view.notes}</p>
+            )}
+            <KinNotesVersions
+              item={item}
+              names={names}
+              now={props.now}
+              busy={changes.busy}
+              onRestore={canChange ? (notes) => void changes.edit(item.rev, { notes }) : null}
+            />
           </Section>
         )}
         {props.links}

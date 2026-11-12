@@ -46,6 +46,7 @@ import { memo, useRef, useState, type ReactNode } from "react";
 import { environmentCatalog } from "../connection/catalog";
 import { useNowMinuteMs } from "./useKinClock";
 import { cn, randomUUID } from "../lib/utils";
+import { useAssetUrls } from "../assets/assetUrls";
 import { useAtomCommand } from "../state/use-atom-command";
 import { Button } from "../components/ui/button";
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
@@ -380,6 +381,9 @@ function KinChoiceCard(props: {
       {choice.detail === null ? null : (
         <p className="whitespace-pre-line text-xs text-muted-foreground">{choice.detail}</p>
       )}
+      {choice.image === null ? null : (
+        <KinChoiceImage environmentId={environmentId} image={choice.image} />
+      )}
       {answerText !== null ? (
         <p className="text-xs font-medium text-muted-foreground">{answerText}</p>
       ) : phase === "expired" ? (
@@ -406,6 +410,24 @@ function KinChoiceCard(props: {
         </>
       )}
     </CardFrame>
+  );
+}
+
+function KinChoiceImage(props: {
+  readonly environmentId: EnvironmentId;
+  readonly image: NonNullable<KinChoiceCardView["image"]>;
+}) {
+  const [url] = useAssetUrls(props.environmentId, [
+    { _tag: "attachment", attachmentId: props.image.attachmentId, mimeType: props.image.mimeType },
+  ]);
+  return url === undefined || url === null ? (
+    <div aria-hidden className="h-24 w-full rounded-md bg-muted" />
+  ) : (
+    <img
+      src={url}
+      alt="The picture this asks about"
+      className="max-h-40 w-full rounded-md border border-border bg-white object-contain p-2"
+    />
   );
 }
 

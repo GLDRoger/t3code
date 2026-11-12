@@ -1085,6 +1085,12 @@ describe("KinChatService", () => {
         const stranger = { ...person, personId: KinPersonId.make("invented-stranger") };
         assert.isFalse(yield* service.attachmentReadable(stranger, "kin-chat-doc-page-html"));
         assert.isFalse(yield* service.attachmentReadable(stranger, photo));
+        // The company logo: its owner reads Kin's copy to show it; nobody else does.
+        yield* sql`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at, updated_by_kind, updated_by_id)
+          VALUES (${person.orgId}, '{"logo":{"attachmentId":"kin-chat-logo-png"}}', 1, 0, 'person', ${person.personId})`;
+        assert.isTrue(yield* service.attachmentReadable(person, "kin-chat-logo-png"));
+        assert.isFalse(yield* service.attachmentReadable(stranger, "kin-chat-logo-png"));
+        assert.isFalse(yield* service.attachmentReadable(person, "kin-chat-not-the-logo-png"));
         assert.deepStrictEqual(
           Option.getOrThrow(yield* service.visualSources("kin-chat-doc-page-html")),
           {

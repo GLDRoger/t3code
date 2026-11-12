@@ -80,6 +80,7 @@ import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { KinAvatar } from "./KinAvatar";
+import { KinNotesVersions } from "./KinConfirm";
 import { KinListEntry } from "./KinWorkEntry";
 import { KinWorkSection as Section } from "./KinWorkParts";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
@@ -599,6 +600,13 @@ function KinWorkItem(
             ) : (
               <p className="whitespace-pre-wrap text-sm text-foreground">{view.notes}</p>
             )}
+            <KinNotesVersions
+              item={props.item}
+              names={names}
+              now={props.now}
+              busy={saving}
+              onRestore={change === null ? null : (notes) => change({ type: "edit", notes })}
+            />
           </Section>
         )}
         <KinWorkLinks {...props} links={view.links} />
