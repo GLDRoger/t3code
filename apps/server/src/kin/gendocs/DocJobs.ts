@@ -237,7 +237,7 @@ export const planJob = Effect.fn("KinDocJobs.plan")(function* (
 });
 
 const returnRules = [
-  `Put each finished file in out/ under a plain name (letters, digits, spaces, . _ - and brackets). Kin takes back only what your report names, as evidence {"kind": "file", "ref": "out/<name>"}: PDF, PNG, JPEG, WebP, SVG without scripts, CSV, XLSX, DOCX, PPTX, Markdown, text or JSON, at most ${RETURN_CAPS.files} files, ${RETURN_CAPS.fileBytes / 1048576} MB each and ${RETURN_CAPS.totalBytes / 1048576} MB in all. No links, no HTML, no macros. Anything else in out/ is left behind.`,
+  `Put each finished file in out/ under a plain name (letters, digits, spaces, . _ - and brackets). Kin takes back only what your report names, as evidence {"kind": "file", "ref": "out/<name>"}: PDF, PNG, JPEG, WebP, SVG, CSV, XLSX, DOCX, PPTX, Markdown, text or JSON, at most ${RETURN_CAPS.files} files, ${RETURN_CAPS.fileBytes / 1048576} MB each and ${RETURN_CAPS.totalBytes / 1048576} MB in all. No links, no HTML. An SVG is plain shapes, text and paint, with no script, image, outside link or CSS import. An Office file has no macros, embedded objects, templates or outside links but web and email hyperlinks. A CSV cell that starts with = + - or @ and isn't a number starts with ' instead. Anything else in out/ is left behind.`,
   "Kin commits nothing and opens no pull request for this task, whatever you were told before; it removes this worktree after taking the files.",
 ];
 

@@ -31,6 +31,8 @@ const DEFAULT_BRANCH = "main";
 const MAX_RECIPE_BYTES = 20 * 1024 * 1024;
 const MAX_RECIPE_MD_BYTES = 64 * 1024;
 const MAX_RECIPES = 200;
+const MAX_RECIPE_FILES = 500;
+const LFS_POINTER = /^version https:\/\/git-lfs\.github\.com\/spec\//;
 const COMMITTER = ["-c", "user.name=Kin", "-c", "user.email=kin@localhost"];
 // Names a tool would act on if they reached a checkout: project scripts, agent settings, git's own.
 const forbiddenName =
@@ -381,18 +383,38 @@ export const layer = Layer.effect(
           changes.push({ mode, blob, file: raw[index + 1]! });
         }
         if (changes.length === 0) return { _tag: "unchanged", left } as const;
-        let bytes = 0;
         for (const change of changes) {
           if (change.mode === "120000" || change.mode === "160000")
             return refused(`${change.file} is a link or a submodule, which a recipe can't hold`);
           if (change.file.split("/").some((part) => forbiddenName.test(part)))
             return refused(`${change.file} is a file Kin never commits`);
-          if (/^0+$/.test(change.blob)) continue;
-          bytes += Number.parseInt(yield* git(root, ["cat-file", "-s", change.blob]), 10);
+        }
+        // The folder as it would be committed, not just what changed: its size, and no pointers.
+        const tree = yield* git(worktree, ["write-tree"], at);
+        const listed = (yield* git(root, ["ls-tree", "-r", "-l", "-z", tree, "--", folder], {
+          raw: true,
+        }))
+          .split("\0")
+          .filter((line) => line.length > 0);
+        if (listed.length > MAX_RECIPE_FILES)
+          return refused(`a recipe holds at most ${MAX_RECIPE_FILES} files`);
+        let bytes = 0;
+        for (const line of listed) {
+          const [meta = "", file = ""] = line.split("\t");
+          const [mode = "", , blob = "", size = ""] = meta.split(/ +/);
+          if (mode === "120000" || mode === "160000")
+            return refused(`${file} is a link or a submodule, which a recipe can't hold`);
+          const length = Number.parseInt(size, 10);
+          bytes += length;
+          if (
+            length <= 1024 &&
+            LFS_POINTER.test(yield* git(root, ["cat-file", "blob", blob], { raw: true }))
+          )
+            return refused(`${file} is a Git LFS pointer, not the file itself`);
         }
         if (bytes > MAX_RECIPE_BYTES)
           return refused(
-            `the change adds ${Math.ceil(bytes / 1048576)} MB; a recipe holds at most 20 MB`,
+            `with this change it is ${Math.ceil(bytes / 1048576)} MB; a recipe holds at most 20 MB`,
           );
         const markdown = yield* git(worktree, ["show", `:${folder}/RECIPE.md`], {
           ...at,

@@ -164,6 +164,23 @@ it.layer(layer)("KinWorkspace", (it) => {
         assert.strictEqual(reasons[5], "unchanged");
         const report = (yield* workspace.recipes(orgId)).find((recipe) => recipe.name === "report");
         assert.deepStrictEqual(report?.changed, { _tag: "starter" });
+        // A Git LFS pointer is no file a worker can run; and the cap is the whole folder's.
+        const pointer = yield* attempt("lfs", (worktree) =>
+          fs.writeFileString(
+            `${worktree}/recipes/report/font.ttf`,
+            "version https://git-lfs.github.com/spec/v1\noid sha256:00\nsize 1\n",
+          ),
+        );
+        assert.match(pointer, /Git LFS pointer/);
+        const grow = (name: string) =>
+          attempt(name, (worktree) =>
+            fs.writeFile(
+              `${worktree}/recipes/report/${name}.bin`,
+              new Uint8Array(11 * 1024 * 1024),
+            ),
+          );
+        assert.strictEqual(yield* grow("first"), "committed");
+        assert.match(yield* grow("second"), /recipe holds at most 20 MB/);
       }),
   );
 });
