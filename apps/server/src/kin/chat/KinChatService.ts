@@ -79,6 +79,8 @@ import { undoDeferral } from "../triggers/KinTriggerService.ts";
 import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
 import * as PublishCard from "../widgets/workerPublishCard.ts";
+import { answerChange } from "../work/companyProfile.ts";
+import { docsForViewer } from "./privateDocs.ts";
 import * as Hub from "./KinChatHub.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import { effectiveAudience } from "../lead/Audience.ts";
@@ -805,6 +807,15 @@ const make = Effect.gen(function* () {
             now: yield* Clock.currentTimeMillis,
             emoji: reaction?.emoji ?? null,
           });
+    // A profile change a lead asked for lands only here, from the owner's own answer on its card.
+    if (choice !== null)
+      yield* answerChange({
+        orgId: identity.orgId,
+        widgetId: widget.widgetId,
+        personId: identity.personId,
+        confirmed: choice.option.kind === "yes",
+        now: yield* Clock.currentTimeMillis,
+      }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(cardTapError));
     const message = yield* post(identity, member, {
       chatId: widget.chatId,
       kind: "widget_action",
@@ -886,11 +897,21 @@ const make = Effect.gen(function* () {
       lastMessage.author.memberId !== member.memberId
         ? yield* repo.getPerson({ orgId: chat.orgId, personId: lastMessage.author.personId })
         : Option.none();
+    const shown =
+      lastMessage === null
+        ? null
+        : (yield* docsForViewer(identity.orgId, identity, {
+            messages: [lastMessage],
+            widgets: [],
+          }).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.mapError(toPersistenceSqlError("KinChatService.privateDocs")),
+          )).messages[0]!;
     return {
       ...chat,
       // A list row never carries a group's member list; `kin.chat.members` does.
       members: group ? [member] : yield* repo.listMembers(chat),
-      lastMessage,
+      lastMessage: shown,
       ...(Option.isSome(author) ? { lastAuthorName: author.value.displayName } : {}),
       unread: yield* repo.unreadCount(member),
       working:
@@ -1324,11 +1345,27 @@ const make = Effect.gen(function* () {
           const identity = yield* personFor(caller, input);
           const live = yield* hub.subscribeForViewer(identity);
           const member = yield* memberFor(identity, input.chatId);
-          const resumed = yield* repo.resume({
-            ...member,
-            afterSeq: input.afterSeq ?? 0,
-            afterChangeSeq: input.afterChangeSeq,
+          const viewed = Effect.fn("KinChatService.viewed")(function* <
+            T extends {
+              readonly messages: ReadonlyArray<KinMessage>;
+              readonly widgets: ReadonlyArray<KinWidget>;
+            },
+          >(page: T) {
+            return {
+              ...page,
+              ...(yield* docsForViewer(identity.orgId, identity, page).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.mapError(toPersistenceSqlError("KinChatService.privateDocs")),
+              )),
+            };
           });
+          const resumed = yield* viewed(
+            yield* repo.resume({
+              ...member,
+              afterSeq: input.afterSeq ?? 0,
+              afterChangeSeq: input.afterChangeSeq,
+            }),
+          );
           const backlog: KinChatStreamEvent = resumed.reset
             ? {
                 _tag: "reset",
@@ -1361,11 +1398,13 @@ const make = Effect.gen(function* () {
           let cursor = { lastSeq: resumed.lastSeq, lastChangeSeq: resumed.lastChangeSeq };
           let delivered = 0;
           const checkpoint = Effect.fn("KinChatService.subscribeCheckpoint")(function* () {
-            const next = yield* repo.resume({
-              ...member,
-              afterSeq: cursor.lastSeq,
-              afterChangeSeq: cursor.lastChangeSeq,
-            });
+            const next = yield* viewed(
+              yield* repo.resume({
+                ...member,
+                afterSeq: cursor.lastSeq,
+                afterChangeSeq: cursor.lastChangeSeq,
+              }),
+            );
             cursor = { lastSeq: next.lastSeq, lastChangeSeq: next.lastChangeSeq };
             delivered = 0;
             if (next.cleared === true) {
@@ -1477,6 +1516,20 @@ const make = Effect.gen(function* () {
               }),
               Stream.filter(Option.isSome),
               Stream.map((event) => event.value),
+              Stream.mapEffect((event) =>
+                event._tag === "message" || event._tag === "widget"
+                  ? viewed({
+                      messages: event._tag === "message" ? [event.message] : [],
+                      widgets: event._tag === "widget" ? [event.widget] : [],
+                    }).pipe(
+                      Effect.map((page): KinChatStreamEvent =>
+                        event._tag === "message"
+                          ? { ...event, message: page.messages[0]! }
+                          : { ...event, widget: page.widgets[0]! },
+                      ),
+                    )
+                  : Effect.succeed(event),
+              ),
               // Widget writes bump their anchor's change_seq, so they count toward the refresh too.
               // The dedupe state above is updated per event; the hub delivers one event per chunk.
               Stream.mapEffect((event) =>
@@ -1747,11 +1800,20 @@ const make = Effect.gen(function* () {
       function* (identity, input) {
         identity = yield* identityFor(identity, input);
         const member = yield* memberFor(identity, input.chatId);
-        const page = yield* repo.history({
+        const stored = yield* repo.history({
           ...input,
           orgId: identity.orgId,
           viewerMemberId: member.memberId,
         });
+        const page = {
+          ...stored,
+          ...(identity._tag === "person"
+            ? yield* docsForViewer(identity.orgId, identity, stored).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.mapError(toPersistenceSqlError("KinChatService.privateDocs")),
+              )
+            : {}),
+        };
         return {
           ...page,
           reactions: yield* Reactions.liveReactions({
