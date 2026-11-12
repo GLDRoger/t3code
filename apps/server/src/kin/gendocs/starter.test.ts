@@ -3,6 +3,7 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
+import * as NodeZlib from "node:zlib";
 
 import { assert, describe, it } from "@effect/vitest";
 
@@ -23,6 +24,14 @@ const load = (recipe: string) =>
 const config = (recipe: string): unknown =>
   JSON.parse(NodeFS.readFileSync(NodePath.join(root, "recipes", recipe, "config.json"), "utf8"));
 
+/** One part of a ZIP the starter wrote: it writes each part once, deflated, sizes in the header. */
+const inflatePart = (zip: Buffer, name: string) => {
+  const head = zip.lastIndexOf(Buffer.from("PK\u0003\u0004"), zip.indexOf(name));
+  const start = head + 30 + zip.readUInt16LE(head + 26) + zip.readUInt16LE(head + 28);
+  return NodeZlib.inflateRawSync(zip.subarray(start, start + zip.readUInt32LE(head + 18))).toString(
+    "utf8",
+  );
+};
 const inr = (minor: number) => ({ minor, currency: "INR" });
 const base = {
   invoiceKey: "INV-9",
@@ -176,6 +185,27 @@ describe("accountant-pack", () => {
     assert.isTrue(text.startsWith("PK\u0003\u0004"));
     for (const part of ["[Content_Types].xml", "xl/workbook.xml", "xl/worksheets/sheet1.xml"])
       assert.include(text, part);
+    // Text a spreadsheet would run as a formula is written as text; numbers stay numbers.
+    const risky = sheetOf(
+      ['=HYPERLINK("x")', "+1+1", "-x", "@SUM(A1)", "\tx", " =1", "-5", "1,000.50", "plain"].map(
+        (number) => ({ number, amount: inr(-100) }),
+      ),
+      [
+        { header: "No.", field: "number" },
+        { header: "Amount", field: "amount" },
+      ],
+    );
+    assert.strictEqual(
+      toCsv(risky),
+      'No.,Amount\r\n"\'=HYPERLINK(""x"")",-1.00\r\n\'+1+1,-1.00\r\n\'-x,-1.00\r\n\'@SUM(A1),-1.00\r\n\'\tx,-1.00\r\n\' =1,-1.00\r\n-5,-1.00\r\n"1,000.50",-1.00\r\nplain,-1.00\r\nTotal,-9.00\r\n',
+    );
+    const sheet = inflatePart(
+      Buffer.from(toXlsx([{ name: "Risky", cells: risky }])),
+      "xl/worksheets/sheet1.xml",
+    );
+    assert.notInclude(sheet, "<f>");
+    assert.include(sheet, '<c r="A2" t="inlineStr"><is><t>=HYPERLINK(&quot;x&quot;)</t></is></c>');
+    assert.include(sheet, '<c r="B2" s="1"><v>-1.00</v></c>');
   });
 });
 

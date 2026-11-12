@@ -136,11 +136,71 @@ export const typeMismatch = (extension: Extension, bytes: Uint8Array): string | 
         return wrong;
       }
     }
-    case "csv":
+    case "csv": {
+      const text = utf8(bytes);
+      return text === undefined ? "it isn't plain UTF-8 text" : csvProblem(text);
+    }
     case "md":
     case "txt":
       return utf8(bytes) === undefined ? "it isn't plain UTF-8 text" : undefined;
   }
+};
+
+const PLAIN_NUMBER = /^[+-]?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$/;
+const FORMULA_START: Record<string, string> = {
+  "=": '"="',
+  "+": '"+"',
+  "-": '"-"',
+  "@": '"@"',
+  "\t": "a tab",
+  "\r": "a carriage return",
+};
+
+/** The first cell a spreadsheet would run as a formula, by row and column, or `undefined`. */
+const csvProblem = (text: string): string | undefined => {
+  let row = 1;
+  let column = 1;
+  let at = 0;
+  while (at <= text.length) {
+    let cell = "";
+    if (text[at] === '"') {
+      at += 1;
+      while (at < text.length) {
+        if (text[at] === '"') {
+          if (text[at + 1] !== '"') break;
+          at += 1;
+        }
+        cell += text[at];
+        at += 1;
+      }
+      at += 1;
+    }
+    while (
+      at < text.length &&
+      text[at] !== "," &&
+      text[at] !== "\n" &&
+      !text.startsWith("\r\n", at)
+    ) {
+      cell += text[at];
+      at += 1;
+    }
+    const start = cell.replace(/^ +/, "")[0];
+    if (
+      start !== undefined &&
+      FORMULA_START[start] !== undefined &&
+      !PLAIN_NUMBER.test(cell.trim())
+    )
+      return `row ${row}, column ${column} starts with ${FORMULA_START[start]}: a spreadsheet would run it as a formula. Write that cell with a leading ' (as the starter recipes do) or as a plain number`;
+    if (text[at] === ",") {
+      column += 1;
+      at += 1;
+    } else {
+      row += 1;
+      column = 1;
+      at += text[at] === "\r" ? 2 : 1;
+    }
+  }
+  return undefined;
 };
 
 const pdfPages = (bytes: Uint8Array) => {

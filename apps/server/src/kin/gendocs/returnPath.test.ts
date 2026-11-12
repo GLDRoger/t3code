@@ -142,6 +142,23 @@ it("checks leading bytes and text", () => {
     "it isn't plain UTF-8 text",
   );
   assert.isDefined(typeMismatch("json", Buffer.from("{not json")));
+  // A cell a spreadsheet would run as a formula, unless it is a plain number or starts with '.
+  assert.isUndefined(
+    typeMismatch("csv", Buffer.from('a,-5,"1,000.50",+3.5\r\n\'=1+1,"\'@x","a ""=q"""\r\n')),
+  );
+  const fix =
+    "a spreadsheet would run it as a formula. Write that cell with a leading ' (as the starter recipes do) or as a plain number";
+  for (const [csv, where] of [
+    ["a,b\r\nc,=1+1\r\n", 'row 2, column 2 starts with "="'],
+    ['"=HYPERLINK(""x"")",b\n', 'row 1, column 1 starts with "="'],
+    ["a,@SUM(A1)", 'row 1, column 2 starts with "@"'],
+    ["a\n-x", 'row 2, column 1 starts with "-"'],
+    ["+cmd", 'row 1, column 1 starts with "+"'],
+    ['"\tx"', "row 1, column 1 starts with a tab"],
+    ['"\rx"', "row 1, column 1 starts with a carriage return"],
+    ["a,  =1", 'row 1, column 2 starts with "="'],
+  ] as const)
+    assert.strictEqual(typeMismatch("csv", Buffer.from(csv)), `${where}: ${fix}`, csv);
 });
 
 const NS = 'xmlns="http://www.w3.org/2000/svg"';
