@@ -27,6 +27,8 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
+import type * as Scope from "effect/Scope";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Base64Url from "effect/encoding/Base64Url";
 
@@ -110,6 +112,8 @@ export class ApproverKeys extends Context.Service<
     readonly activeApprovers: (
       orgId: KinOrgId,
     ) => Effect.Effect<ReadonlyArray<KinPersonId>, KinApprovalError>;
+    /** Each key change after it commits, owing its owner the push `kin_key_pushes` records. */
+    readonly changes: Effect.Effect<PubSub.Subscription<void>, never, Scope.Scope>;
   }
 >()("t3/kin/approvals/ApproverKeys") {}
 
@@ -122,6 +126,7 @@ const make = Effect.gen(function* () {
   const store = yield* makeKeyStore;
   const { sql, seal, toKey, select } = store;
   // Single-use, session-bound, short-lived: memory is enough, and a restart only means retrying.
+  const changed = yield* PubSub.unbounded<void>();
   const challenges = new Map<
     AuthSessionId,
     { readonly challenge: string; readonly expiresAt: number }
@@ -219,16 +224,18 @@ const make = Effect.gen(function* () {
   });
 
   const notify = (row: KeyRow, change: KinKeyChange["change"], at: number, lastKey: boolean) =>
-    notices.changed({
-      orgId: row.org_id as KinOrgId,
-      ownerPersonId: row.human_id as KinPersonId,
-      thumbprint: row.thumbprint as KinKeyThumbprint,
-      deviceLabel: row.device_label,
-      platform: row.platform,
-      change,
-      at,
-      lastKey,
-    });
+    notices
+      .changed({
+        orgId: row.org_id as KinOrgId,
+        ownerPersonId: row.human_id as KinPersonId,
+        thumbprint: row.thumbprint as KinKeyThumbprint,
+        deviceLabel: row.device_label,
+        platform: row.platform,
+        change,
+        at,
+        lastKey,
+      })
+      .pipe(Effect.andThen(sql.afterCommit(PubSub.publish(changed, undefined))));
 
   const registerKey = Effect.fn("ApproverKeys.registerKey")(
     function* (caller: KinKeyCaller, input: KinApprovalsRegisterKeyInput) {
@@ -508,6 +515,7 @@ const make = Effect.gen(function* () {
     requireActive,
     reconcileSessions,
     activeApprovers,
+    changes: PubSub.subscribe(changed),
   });
 });
 

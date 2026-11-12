@@ -48,9 +48,9 @@ export type KinKeyChange = {
 };
 
 /**
- * Writes a fixed-text notice into the owner's own chat inside the caller's transaction, so it
- * lands exactly when the key change does; a failure rolls the change back. The push follows from
- * the stored message after commit. Tag here, layer in the chat module, as with `KinExecutionNotices`.
+ * Writes a fixed-text notice into the owner's own chat, when one exists, and the push the change
+ * owes the owner, inside the caller's transaction, so both land exactly when the key change does;
+ * a failure rolls the change back. Tag here, layer in the chat module, as with `KinExecutionNotices`.
  */
 export class KinKeyNotices extends Context.Service<
   KinKeyNotices,

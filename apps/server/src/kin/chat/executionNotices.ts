@@ -156,7 +156,8 @@ export const keyNoticeBody = (input: KinKeyChange, timeZone: string) => {
 /**
  * One notice per change (the message id is the key's), written in the key change's transaction.
  * It goes to a chat only the owner reads: the chief of staff's, another live lead's, else the
- * owner's first. With none, Settings' recent activity is the record.
+ * owner's first. With none, Settings' recent activity is the record. Either way the change owes
+ * the owner a push with the same text, recorded here and sent after the commit.
  */
 export const keyNoticesLayer = Layer.effect(
   KinKeyNotices,
@@ -184,24 +185,38 @@ export const keyNoticesLayer = Layer.effect(
     return KinKeyNotices.of({
       changed: Effect.fn("KinKeyNotices.changed")(
         function* (input) {
-          const chatId = yield* ownerChat(input);
-          if (chatId === undefined) {
-            yield* Effect.logInfo("Kin key notice has no owner chat; Settings shows the change", {
-              orgId: input.orgId,
-              change: input.change,
-            });
-            return;
-          }
           const [zone] = yield* sql<{ timeZone: string }>`SELECT time_zone AS "timeZone"
             FROM kin_trigger_settings WHERE org_id = ${input.orgId} ORDER BY org_id`;
-          const timeZone = Option.getOrElse(decodeZone(zone?.timeZone), () => "UTC");
-          yield* chat.notice({
-            orgId: input.orgId,
-            chatId: KinChatId.make(chatId),
-            messageId: KinMessageId.make(`kin-key-${input.change}:${input.thumbprint}`),
-            audience: "owner",
-            body: keyNoticeBody(input, timeZone),
-          });
+          const body = keyNoticeBody(
+            input,
+            Option.getOrElse(decodeZone(zone?.timeZone), () => "UTC"),
+          );
+          const messageId = KinMessageId.make(`kin-key-${input.change}:${input.thumbprint}`);
+          const chatId = yield* ownerChat(input);
+          if (chatId === undefined)
+            yield* Effect.logInfo(
+              "Kin key notice has no owner-only chat; Settings and a push say it",
+              {
+                orgId: input.orgId,
+                change: input.change,
+              },
+            );
+          else
+            yield* chat.notice({
+              orgId: input.orgId,
+              chatId: KinChatId.make(chatId),
+              messageId,
+              audience: "owner",
+              body,
+            });
+          yield* sql`INSERT INTO kin_key_pushes ${sql.insert({
+            org_id: input.orgId,
+            thumbprint: input.thumbprint,
+            change: input.change,
+            body,
+            message_id: chatId === undefined ? null : messageId,
+            owed_at: input.at,
+          })} ON CONFLICT (org_id, thumbprint, change) DO NOTHING`;
         },
         Effect.mapError(
           () =>

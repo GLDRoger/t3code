@@ -2638,7 +2638,7 @@ describe("KinChatService", () => {
           (yield* notified).map((message) => message.body),
           [keyNoticeBody(change(first, "added", 1), "UTC")],
         );
-      }).pipe(Effect.provide(keyNoticesLayer), Effect.provide(layer)),
+      }).pipe(Effect.provide(Layer.provideMerge(keyNoticesLayer, layer))),
   );
   it.effect(
     "shows a doc labelled sensitive since as private to teammates and to shared turns",
