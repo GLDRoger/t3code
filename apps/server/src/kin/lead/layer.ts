@@ -42,6 +42,10 @@ import { handlers } from "./mcp/handlers.ts";
 import { KinWorkToolkit } from "../work/mcp/tools.ts";
 import { handlers as workHandlers } from "../work/mcp/handlers.ts";
 import { KinDocsToolkit } from "../work/mcp/docTools.ts";
+import { handlers as documentHandlers, KinDocumentToolkit } from "../gendocs/mcp.ts";
+import * as DocJobs from "../gendocs/DocJobs.ts";
+import * as Toolchain from "../gendocs/toolchain.ts";
+import * as Workspace from "../gendocs/workspace.ts";
 import { handlers as docHandlers } from "../work/mcp/docHandlers.ts";
 import { importWork } from "../work/importWork.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
@@ -280,6 +284,7 @@ const registration = Layer.mergeAll(
   McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers),
   McpHttpServer.toolkitRegistration(KinWorkToolkit, workHandlers),
   McpHttpServer.toolkitRegistration(KinDocsToolkit, docHandlers),
+  McpHttpServer.toolkitRegistration(KinDocumentToolkit, documentHandlers),
 );
 const toolkit = LeadMemory.layer.pipe(
   Layer.provide(KinSchedules.layer),
@@ -347,7 +352,10 @@ const repoReads = Layer.unwrap(
 );
 // Workers run only in the linked worker environment; see workerEnvironment.ts.
 const workers = Workers.layer.pipe(
-  Layer.provideMerge(WorkerTracker.layer.pipe(Layer.provide(workerPublish))),
+  Layer.provideMerge(
+    WorkerTracker.layer.pipe(Layer.provide(workerPublish), Layer.provide(DocJobs.collectorLayer)),
+  ),
+  Layer.provideMerge(Layer.mergeAll(Workspace.layer, Toolchain.layer)),
   Layer.provideMerge(WorkerEnvironment.layer),
   // The repositories the owner connected are part of where the owner's own work may start.
   Layer.provide(GithubEvents.repoScopeLayer),

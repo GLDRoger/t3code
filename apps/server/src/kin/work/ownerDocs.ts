@@ -7,6 +7,8 @@ import {
   type KinDocRestoreInput,
   type KinDocsListInput,
   type KinOrgId,
+  type KinRecipesInput,
+  type KinRecipesResult,
   type KinSearchInput,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -15,6 +17,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
+import { KinWorkspace } from "../gendocs/workspace.ts";
 import { changedSections, outlineOf, patchOf } from "./docBody.ts";
 import * as Docs from "./docs.ts";
 import { KinRecords } from "./KinRecords.ts";
@@ -253,3 +256,33 @@ export const subscribe = (
       );
     }),
   );
+
+/** The company's recipes, as the Docs screen lists them. */
+export const recipes = Effect.fn("KinDocs.recipes")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinRecipesInput,
+) {
+  yield* theOwner(people, input.orgId);
+  const stored = yield* (yield* KinWorkspace).recipes(input.orgId);
+  return {
+    recipes: stored.map((recipe) => ({
+      name: recipe.name,
+      title: recipe.title,
+      description: recipe.description,
+      inputs: recipe.inputs.map((one) => ({
+        name: one.name,
+        type: one.type,
+        required: one.required,
+        from: one.from,
+        ...(one.description === undefined ? {} : { description: one.description }),
+      })),
+      outputs: [...recipe.outputs],
+      list: recipe.list,
+      numbered: recipe.numbered,
+      sensitive: recipe.sensitive,
+      changedAt: recipe.changedAt === null ? null : iso(recipe.changedAt),
+      changedBy: recipe.changed,
+      commit: recipe.commit,
+    })),
+  } satisfies KinRecipesResult;
+});

@@ -2,6 +2,7 @@ import {
   KinChatError,
   KinChatId,
   KinMessageId,
+  KinDocFile,
   type KinDocOperation,
   type KinDocRow,
   type KinDocVersion,
@@ -62,6 +63,8 @@ type VersionRow = {
   readonly answeredAuthorKind: string | null;
   readonly answeredAuthorId: string | null;
   readonly audience: "owner_only" | "shared" | null;
+  readonly bodyKind: "markdown" | "file";
+  readonly fileJson: string | null;
   readonly createdAt: number;
 };
 
@@ -70,6 +73,9 @@ const Operations = Schema.fromJsonString(
 );
 const encodeOperations = Schema.encodeEffect(Operations);
 const decodeOperations = Schema.decodeUnknownOption(Operations);
+const FileJson = Schema.fromJsonString(KinDocFile);
+const encodeFile = Schema.encodeEffect(FileJson);
+const decodeFile = Schema.decodeUnknownOption(FileJson);
 const KNOWN_OPS: ReadonlyArray<KinDocOperation["op"]> = [
   "create",
   "replace_section",
@@ -99,6 +105,11 @@ const transaction = <A, E extends { readonly _tag: string }, R>(effect: Effect.E
 
 export const docNotFound = (key: string) =>
   new KinChatError({ reason: "not_found", message: `No doc ${key.slice(0, 40)}.` });
+const fileOnly = (key: string) =>
+  new KinChatError({
+    reason: "invalid_state",
+    message: `${key} is a generated file, so its text isn't edited here. Make it again to change it; every version is kept.`,
+  });
 const stale = (key: string, latest: number) =>
   new KinChatError({
     reason: "conflict",
@@ -110,12 +121,17 @@ const selectVersion = (sql: SqlClient.SqlClient) => sql`SELECT version, title, b
     restored_from AS "restoredFrom", actor_kind AS "actorKind", actor_id AS "actorId", via,
     wakeup_id AS "wakeupId", chat_id AS "chatId", answered_message_id AS "answeredMessageId",
     answered_author_kind AS "answeredAuthorKind", answered_author_id AS "answeredAuthorId",
-    audience, created_at AS "createdAt"
+    audience, body_kind AS "bodyKind", file_json AS "fileJson", created_at AS "createdAt"
   FROM kin_doc_versions`;
 
 export const toVersion = (row: VersionRow): KinDocVersion => {
   const answeredBy = principal(row.answeredAuthorKind, row.answeredAuthorId);
+  const file =
+    row.bodyKind === "file" && row.fileJson !== null
+      ? Option.getOrUndefined(decodeFile(row.fileJson))
+      : undefined;
   return {
+    ...(file === undefined ? {} : { file }),
     version: row.version,
     at: iso(row.createdAt),
     kind: row.kind,
@@ -188,7 +204,7 @@ export const toDocRow = (row: RecordRow, latest: VersionRow, now: number): KinDo
     sensitive: record.sensitive,
     ...(record.sensitiveInherited === true ? { sensitiveInherited: true as const } : {}),
     archived: row.state === "dropped",
-    bodyKind: "markdown",
+    bodyKind: latest.bodyKind,
     latest: toVersion(latest),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
@@ -218,9 +234,11 @@ const insertVersion = Effect.fn("KinDocs.insertVersion")(function* (
     readonly restoredFrom?: number;
     readonly originKey: string;
     readonly now: number;
+    readonly file?: KinDocFile;
   },
 ) {
   const sql = yield* SqlClient.SqlClient;
+  const file = version.file;
   const actorId =
     writer.actor._tag === "agent"
       ? writer.actor.agentId
@@ -231,14 +249,17 @@ const insertVersion = Effect.fn("KinDocs.insertVersion")(function* (
   yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body_kind, body, title, kind,
       summary, operations_json, base_version, restored_from, actor_kind, actor_id, via, wakeup_id,
       chat_id, answered_message_id, answered_author_kind, answered_author_id, audience, origin_key,
-      created_at)
-    VALUES (${orgId}, ${recordId}, ${version.version}, 'markdown', ${version.body}, ${version.title},
+      created_at, file_json, file_attachment_id, worker_id)
+    VALUES (${orgId}, ${recordId}, ${version.version}, ${file === undefined ? "markdown" : "file"},
+      ${version.body}, ${version.title},
       ${version.kind}, ${version.summary}, ${yield* encodeOperations(version.operations)},
       ${version.baseVersion}, ${version.restoredFrom ?? null}, ${writer.actor._tag}, ${actorId},
       ${writer.via}, ${writer.wakeupId ?? null}, ${writer.chatId ?? null},
       ${answered?.messageId ?? null}, ${answered?.author._tag ?? null},
       ${answered === undefined ? null : answered.author._tag === "person" ? answered.author.personId : answered.author.agentId},
-      ${provenance.audience ?? null}, ${version.originKey}, ${version.now})`;
+      ${provenance.audience ?? null}, ${version.originKey}, ${version.now},
+      ${file === undefined ? null : yield* encodeFile(file)}, ${file?.attachmentId ?? null},
+      ${file?.workerId ?? null})`;
 });
 
 /** The version an identical earlier call made, so a retry returns it and changes nothing. */
@@ -330,6 +351,7 @@ const revise = Effect.fn("KinDocs.revise")(function* (
     readonly operations: ReadonlyArray<KinDocOperation>;
     readonly restoredFrom?: number;
     readonly originKey: string;
+    readonly file?: KinDocFile;
   },
 ) {
   const records = yield* KinRecords;
@@ -390,6 +412,7 @@ export const edit = Effect.fn("KinDocs.edit")(function* (
       if (again !== undefined) return again;
       const current = yield* versionOf(orgId, row.recordId);
       if (current === undefined) return yield* unavailable;
+      if (current.bodyKind === "file") return yield* fileOnly(row.key);
       const applied = applyOperations(current.body, row.title, input.operations);
       if (applied._tag === "refused") return yield* applied.error;
       // Every operation already holds: a retry of an edit that landed, so nothing to write.
@@ -428,6 +451,7 @@ export const rewrite = Effect.fn("KinDocs.rewrite")(function* (
       if (again !== undefined) return again;
       const current = yield* versionOf(orgId, row.recordId);
       if (current === undefined) return yield* unavailable;
+      if (current.bodyKind === "file") return yield* fileOnly(row.key);
       if (current.version !== input.baseVersion) return yield* stale(row.key, current.version);
       const refused = rewriteRefusal(current.body, body);
       if (refused !== undefined) return yield* refused;
@@ -463,6 +487,7 @@ export const restore = Effect.fn("KinDocs.restore")(function* (
       if (again !== undefined) return again;
       const current = yield* versionOf(orgId, row.recordId);
       if (current === undefined) return yield* unavailable;
+      if (current.bodyKind === "file") return yield* fileOnly(row.key);
       if (current.version !== input.latest) return yield* stale(row.key, current.version);
       const old = yield* versionOf(orgId, row.recordId, input.version);
       if (old === undefined)
@@ -479,6 +504,74 @@ export const restore = Effect.fn("KinDocs.restore")(function* (
         operations: [{ op: "restore" }],
         restoredFrom: old.version,
         originKey: input.originKey,
+      });
+    }),
+  );
+});
+
+/**
+ * A generated file as the next version of the doc `docOrigin` names, made with it on first use.
+ * `originKey` is the build's own, so collecting the same build again changes nothing.
+ */
+export const fileVersion = Effect.fn("KinDocs.fileVersion")(function* (
+  orgId: KinOrgId,
+  writer: Writer,
+  provenance: Provenance,
+  input: {
+    readonly docOrigin: string;
+    readonly originKey: string;
+    readonly title: string;
+    readonly summary: string;
+    readonly owner: KinWorkPrincipal;
+    readonly sensitive: boolean;
+    readonly partyId?: string | null;
+    readonly projectId?: string | null;
+    readonly file: KinDocFile;
+  },
+) {
+  return yield* transaction(
+    Effect.gen(function* () {
+      const records = yield* KinRecords;
+      const { row, created } = yield* records.create(orgId, writer, {
+        list: "docs",
+        originKey: input.docOrigin,
+        title: input.title,
+        owner: input.owner,
+        ...(input.partyId === undefined ? {} : { partyId: input.partyId }),
+        ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
+        ...(input.sensitive ? { sensitive: true } : {}),
+      });
+      if (listOf(row.registerId) !== "docs") return yield* unavailable;
+      const again = yield* retried(orgId, row.recordId, input.originKey);
+      if (again !== undefined) return again;
+      const now = yield* Clock.currentTimeMillis;
+      const current = created ? undefined : yield* versionOf(orgId, row.recordId);
+      const version = {
+        title: input.title,
+        body: "",
+        summary: input.summary,
+        originKey: input.originKey,
+        file: input.file,
+      };
+      if (current === undefined) {
+        yield* insertVersion(orgId, row.recordId, writer, provenance, {
+          ...version,
+          version: 1,
+          kind: "created",
+          operations: [{ op: "create" }],
+          baseVersion: null,
+          now,
+        });
+        yield* indexRecord(orgId, row.recordId);
+        return { ...(yield* settle(orgId, row.recordId)), created: true };
+      }
+      // A sensitive build makes the whole doc sensitive; a later plain one never unlabels it.
+      if (input.sensitive && row.sensitive === 0)
+        yield* records.update(orgId, writer, row.key, { sensitive: true });
+      return yield* revise(orgId, writer, provenance, row, current, {
+        ...version,
+        kind: "rewritten",
+        operations: [{ op: "rewrite" }],
       });
     }),
   );
@@ -587,7 +680,7 @@ export const latestOf = Effect.fn("KinDocs.latestOf")(function* (
       v.actor_kind AS "actorKind", v.actor_id AS "actorId", v.via, v.wakeup_id AS "wakeupId",
       v.chat_id AS "chatId", v.answered_message_id AS "answeredMessageId",
       v.answered_author_kind AS "answeredAuthorKind", v.answered_author_id AS "answeredAuthorId",
-      v.audience, v.created_at AS "createdAt"
+      v.audience, v.body_kind AS "bodyKind", v.file_json AS "fileJson", v.created_at AS "createdAt"
     FROM kin_doc_versions v
     WHERE v.org_id = ${orgId} AND v.record_id IN ${sql.in(recordIds)}
       AND v.version = (SELECT MAX(w.version) FROM kin_doc_versions w

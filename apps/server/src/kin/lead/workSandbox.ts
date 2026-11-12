@@ -27,6 +27,7 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import { ServerConfig } from "../../config.ts";
+import { toolDirectories } from "../gendocs/toolchain.ts";
 import { sessionEnvironment } from "../claudeConfinement.ts";
 import { grantedHosts, noteBlocked, refusedHosts } from "./workNetwork.ts";
 import { workThreadPrefix } from "./workThread.ts";
@@ -47,16 +48,20 @@ const commandLimits = {
 };
 
 /** A shell child's environment; the check runs with exactly this, plus its fake model's address. */
-const childEnvironment = (env: NodeJS.ProcessEnv, tmp: string, runtimeBin: string | undefined) => {
+const childEnvironment = (
+  env: NodeJS.ProcessEnv,
+  tmp: string,
+  runtimeBin: string | undefined,
+  toolBins: ReadonlyArray<string> = [],
+) => {
   const session = sessionEnvironment(env);
+  const first = [...(runtimeBin === undefined ? [] : [runtimeBin]), ...toolBins];
   return {
     ...session,
     ...commandLimits,
     CLAUDE_CODE_TMPDIR: tmp,
-    // The server's own Node first: version-manager shims live in the home the shell can't read.
-    ...(runtimeBin === undefined
-      ? {}
-      : { PATH: [runtimeBin, session.PATH].filter(Boolean).join(":") }),
+    // The server's own Node and Kin's tools first: shims in the home the shell can't read fail.
+    ...(first.length === 0 ? {} : { PATH: [...first, session.PATH].filter(Boolean).join(":") }),
   };
 };
 
@@ -641,7 +646,7 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const { stateDir } = yield* ServerConfig;
+    const { stateDir, baseDir } = yield* ServerConfig;
     const context = yield* Effect.context<
       | FileSystem.FileSystem
       | Path.Path
@@ -711,6 +716,12 @@ export const layer = Layer.effect(
       const protectedRoots = [...denied, ...privateHomeDirs.map((entry) => path.join(home, entry))];
       const runtime = yield* real(path.dirname(path.dirname(yield* HostProcess.ExecutablePath)));
       const readable: Array<string> = [];
+      const tools: Array<string> = [];
+      for (const entry of toolDirectories(baseDir)) {
+        const resolved = yield* real(entry);
+        if (resolved !== undefined && !isInside(state, resolved)) tools.push(resolved);
+      }
+      readable.push(...tools);
       for (const entry of [...(runtime === undefined ? [] : [runtime]), ...host.readPaths]) {
         const resolved = yield* real(entry);
         if (resolved === undefined) continue;
@@ -721,7 +732,7 @@ export const layer = Layer.effect(
           return yield* Effect.fail(`the readable path "${entry}" would reopen private data`);
         readable.push(resolved);
       }
-      return { denied, readable, tmpRoot, runtime };
+      return { denied, readable, tmpRoot, runtime, tools };
     });
 
     /** What the host most likely lacks for Claude Code's sandbox, for the owner's status. */
@@ -764,7 +775,7 @@ export const layer = Layer.effect(
         const domains = yield* grantedHosts(stateDir, workerId);
         const resolved = yield* resolve({ env, readPaths: host.readPaths }).pipe(Effect.result);
         if (resolved._tag === "Failure") return yield* fileOnlyBecause(resolved.failure);
-        const { denied, readable, tmpRoot, runtime } = resolved.success;
+        const { denied, readable, tmpRoot, runtime, tools } = resolved.success;
         const runtimeBin = runtime === undefined ? undefined : path.join(runtime, "bin");
         const paths = (worktree: string, tmp: string) =>
           gitCommonDir(worktree).pipe(
@@ -811,7 +822,7 @@ export const layer = Layer.effect(
           yield* fs.remove(tmp.success, { recursive: true }).pipe(Effect.ignore);
           return yield* fileOnlyBecause(childPaths.failure, version);
         }
-        const childEnv = childEnvironment(env, tmp.success, runtimeBin);
+        const childEnv = childEnvironment(env, tmp.success, runtimeBin, tools);
         const namesBlockedHosts = "namesBlockedHosts" in checked && checked.namesBlockedHosts;
         yield* record(true, "the sandbox check passed", version, { namesBlockedHosts });
         return {

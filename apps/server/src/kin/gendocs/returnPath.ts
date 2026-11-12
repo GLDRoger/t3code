@@ -15,7 +15,7 @@ import * as Effect from "effect/Effect";
  * A 60-page deck with a full-screen image per slide is about 60-90 MB as PPTX or PDF; a month's
  * pack is a handful of sheets. Past these, a job is almost surely wrong, and a phone pays for it.
  */
-const RETURN_CAPS = {
+export const RETURN_CAPS = {
   files: 20,
   fileBytes: 100 * 1024 * 1024,
   totalBytes: 200 * 1024 * 1024,

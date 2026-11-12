@@ -219,6 +219,14 @@ export class KinChatService extends Context.Service<
       readonly threadId: ThreadId;
       readonly state: Pick<KinTaskCardState, "status" | "pullRequests" | "lastError">;
     }) => Effect.Effect<KinWidget, ServiceError>;
+    /** The docs a document job made, from the job's stored row; on this server's own cards. */
+    readonly setTaskCardDocuments: (input: {
+      readonly orgId: KinOrgId;
+      readonly chatId: KinChatId;
+      readonly threadId: ThreadId;
+      readonly documents: NonNullable<KinTaskCardState["documents"]>;
+      readonly lastError: string | null;
+    }) => Effect.Effect<KinWidget, ServiceError>;
     readonly act: (
       identity: PersonCaller,
       input: KinWidgetsActInput,
@@ -509,6 +517,19 @@ const make = Effect.gen(function* () {
     if (!mayWrite(member, identity._tag === "agent", yield* Clock.currentTimeMillis))
       return yield* notAllowed;
   });
+  /** A generated doc's file is the owner's alone: the person whose agent's job made it. */
+  const docFileReadable = (caller: PersonCaller, attachmentId: string) =>
+    Effect.forEach("_tag" in caller ? [caller] : caller, (person) =>
+      sql`SELECT 1 FROM kin_doc_versions v
+        JOIN kin_doc_jobs j ON j.org_id = v.org_id AND j.worker_id = v.worker_id
+        JOIN kin_agents a ON a.org_id = j.org_id AND a.agent_id = j.agent_id
+        WHERE v.org_id = ${person.orgId} AND v.file_attachment_id = ${attachmentId}
+          AND a.owner_person_id = ${person.personId}
+        LIMIT 1`.pipe(Effect.map((rows) => rows.length > 0)),
+    ).pipe(
+      Effect.map((found) => found.some(Boolean)),
+      Effect.mapError(toPersistenceSqlError("KinChatService.docFileReadable")),
+    );
   /** Whether the member may read the message: nothing from before they joined. */
   const readable = (member: KinChatMember, messageId: string, floorOf?: string) =>
     memberReads(sql, { orgId: member.orgId, memberId: member.memberId, messageId, floorOf }).pipe(
@@ -1633,7 +1654,7 @@ const make = Effect.gen(function* () {
     attachmentReadable: Effect.fn("KinChatService.attachmentReadable")(
       function* (caller, attachmentId) {
         const owner = yield* repo.attachmentChat(attachmentId);
-        if (Option.isNone(owner)) return false;
+        if (Option.isNone(owner)) return yield* docFileReadable(caller, attachmentId);
         const identity =
           "_tag" in caller ? caller : caller.find((viewer) => viewer.orgId === owner.value.orgId);
         if (identity === undefined || identity.orgId !== owner.value.orgId) return false;
@@ -1887,6 +1908,32 @@ const make = Effect.gen(function* () {
       const widget = yield* repo.updateWidget({
         ...existing,
         audience: input.audience,
+        state: { ...next, updatedAt },
+        expectedRevision: existing.revision,
+        updatedAt,
+      });
+      yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
+      return widget;
+    }, transaction),
+    setTaskCardDocuments: Effect.fn("KinChatService.setTaskCardDocuments")(function* (input) {
+      const existing = yield* requireRecord(
+        repo.getWidget({ orgId: input.orgId, widgetId: yield* taskCardWidgetId(input) }),
+      );
+      if (existing.type !== "task" || existing.chatId !== input.chatId) return yield* notFound;
+      const previous = yield* TaskCard.decodeTaskCardEffect(existing.state).pipe(
+        Effect.mapError(() => invalidState),
+      );
+      if (previous.remoteEnvironmentId !== null) return yield* invalidState;
+      const next = {
+        ...previous,
+        documents: input.documents,
+        ...(input.lastError === null ? {} : { lastError: input.lastError }),
+      };
+      if (TaskCard.taskCardEquivalent(next, previous)) return existing;
+      const updatedAt = yield* now;
+      const widget = yield* repo.updateWidget({
+        ...existing,
+        audience: "owner",
         state: { ...next, updatedAt },
         expectedRevision: existing.revision,
         updatedAt,
