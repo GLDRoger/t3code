@@ -1,4 +1,10 @@
-import { KinChatError, KinDocsRpcs, KinFinanceRpcs, KinWorkRpcs } from "@t3tools/contracts";
+import {
+  KinChatError,
+  KinDocsRpcs,
+  KinFinanceRpcs,
+  KinStatementRpcs,
+  KinWorkRpcs,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -11,10 +17,12 @@ import { KinServer } from "../KinServer.ts";
 import * as Clients from "./ownerClients.ts";
 import * as Docs from "./ownerDocs.ts";
 import * as Money from "./ownerMoney.ts";
+import * as Statements from "./ownerStatements.ts";
 import * as Work from "./ownerWork.ts";
 
 const group = RpcGroup.make(...KinWorkRpcs, ...KinDocsRpcs);
 const finance = RpcGroup.make(...KinFinanceRpcs);
+const statements = RpcGroup.make(...KinStatementRpcs);
 const disabled = new KinChatError({
   reason: "disabled",
   message: "Kin is not running on this host.",
@@ -182,6 +190,22 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       }),
       "kin.work.void": Effect.fn("KinWork.rpc.void")(function* (input) {
         return yield* call((people) => Money.voidEntry(people, input));
+      }),
+    }),
+    ...statements.of({
+      "kin.work.statementUnlock": Effect.fn("KinWork.rpc.statementUnlock")(function* (input) {
+        return yield* call((people) => Statements.unlock(people, input));
+      }),
+      "kin.work.statementForgetPassword": Effect.fn("KinWork.rpc.statementForgetPassword")(
+        function* (input) {
+          return yield* call((people) => Statements.forgetPassword(people, input));
+        },
+      ),
+      "kin.work.statementApply": Effect.fn("KinWork.rpc.statementApply")(function* (input) {
+        return yield* call((people) => Statements.apply(people, input));
+      }),
+      "kin.work.statementUndo": Effect.fn("KinWork.rpc.statementUndo")(function* (input) {
+        return yield* call((people) => Statements.undo(people, input));
       }),
     }),
   };

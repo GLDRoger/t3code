@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off -- fixtures are committed files and ZIPs built byte by byte.
 import * as NodeFS from "node:fs";
 import * as NodeZlib from "node:zlib";
 

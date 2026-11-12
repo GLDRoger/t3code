@@ -239,10 +239,7 @@ const xml = (
     on.open?.(
       tag.name.replace(/^\w+:/, ""),
       Object.fromEntries(
-        Object.entries(tag.attributes).map(([key, value]) => [
-          key,
-          typeof value === "string" ? value : value.value,
-        ]),
+        Object.entries(tag.attributes).map(([key, value]) => [key, String(value)]),
       ),
     ),
   );

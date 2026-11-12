@@ -48,6 +48,8 @@ import * as Render from "../gendocs/render.ts";
 import * as Toolchain from "../gendocs/toolchain.ts";
 import * as Workspace from "../gendocs/workspace.ts";
 import { handlers as docHandlers } from "../work/mcp/docHandlers.ts";
+import { handlers as statementHandlers } from "../work/mcp/statementHandlers.ts";
+import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
 import { importWork } from "../work/importWork.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
@@ -285,6 +287,7 @@ const registration = Layer.mergeAll(
   McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers),
   McpHttpServer.toolkitRegistration(KinWorkToolkit, workHandlers),
   McpHttpServer.toolkitRegistration(KinDocsToolkit, docHandlers),
+  McpHttpServer.toolkitRegistration(KinStatementToolkit, statementHandlers),
   McpHttpServer.toolkitRegistration(KinDocumentToolkit, documentHandlers),
 );
 const toolkit = LeadMemory.layer.pipe(

@@ -39,6 +39,7 @@ import DocumentLabels from "./migrations/K077_DocumentLabels.ts";
 import RecipeLabelBaselines from "./migrations/K078_RecipeLabelBaselines.ts";
 import ImportRuns from "./migrations/K079_ImportRuns.ts";
 import RecordRequestHash from "./migrations/K080_RecordRequestHash.ts";
+import BankStatements from "./migrations/K081_BankStatements.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -158,6 +159,7 @@ const loader = Migrator.fromRecord({
   "78_RecipeLabelBaselines": RecipeLabelBaselines,
   "79_ImportRuns": ImportRuns,
   "80_RecordRequestHash": RecordRequestHash,
+  "81_BankStatements": BankStatements,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that
