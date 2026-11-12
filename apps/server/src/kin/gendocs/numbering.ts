@@ -85,6 +85,41 @@ export const issuedNumber = Effect.fn("KinNumbers.issued")(function* (
   return row?.number;
 });
 
+/** The series a number issued now goes in, and how far past it the old system's receipts reach. */
+const seriesToday = Effect.fn("KinNumbers.seriesToday")(function* (
+  orgId: KinOrgId,
+  registerId: string,
+  rule: KinNumberingRule,
+) {
+  const now = yield* Clock.currentTimeMillis;
+  const zone = yield* ownerZone(orgId);
+  const day = dayIn(now, zone);
+  const year = rule.series === "financial_year" ? financialYear(day) : null;
+  const series = `${rule.prefix}|${year ?? "running"}`;
+  // A receipt number the old system issued may still sit only in a payment's note: past it.
+  const floor = registerId === "receipts" ? yield* notedFloor(orgId, rule, year, series) : 0;
+  return { now, zone, day, year, series, floor };
+});
+
+/**
+ * The number issuing the entry `key` would give it now, read without taking it: `null` when it
+ * has one, is void, or its list doesn't number its entries.
+ */
+export const nextNumber = Effect.fn("KinNumbers.next")(function* (orgId: KinOrgId, key: string) {
+  const sql = yield* SqlClient.SqlClient;
+  const row = yield* (yield* KinRecords).get(orgId, key);
+  if (row === undefined) return yield* notFound(key);
+  const def = yield* listDef(orgId, row.registerId);
+  const rule = def === undefined ? undefined : numberingOf(def);
+  if (def === undefined || rule === undefined || row.state === "dropped") return null;
+  if ((yield* issuedNumber(orgId, row.recordId)) !== undefined) return null;
+  const { year, series, floor } = yield* seriesToday(orgId, def.id, rule);
+  const [last] = yield* sql<{ seq: number }>`SELECT last_seq AS seq FROM kin_number_series
+      WHERE org_id = ${orgId} AND register_id = ${def.id} AND series = ${series}`;
+  const number = formatNumber(rule, year, Math.max(last?.seq ?? 0, floor) + 1);
+  return number.length > MAX_NUMBER_LENGTH ? null : number;
+}, workFailure);
+
 /**
  * Issues the entry `key`: the next number in its list's series for today in the owner's zone,
  * written to its `number` field, its state moved from draft to issued and its date set if it
@@ -110,20 +145,12 @@ export const issue = Effect.fn("KinNumbers.issue")(function* (
         return { key: row.key, number: had, state: row.state, issued: false } satisfies Issued;
       if (row.state === "dropped")
         return yield* invalid(`${row.key} is void, so it gets no number. Make a new one instead.`);
-      const now = yield* Clock.currentTimeMillis;
-      const zone = yield* ownerZone(orgId);
-      const day = dayIn(now, zone);
-      const year = rule.series === "financial_year" ? financialYear(day) : null;
-      const series = `${rule.prefix}|${year ?? "running"}`;
-      // A receipt number the old system issued may still sit only in a payment's note: past it.
-      if (def.id === "receipts") {
-        const floor = yield* notedFloor(orgId, rule, year, series);
-        if (floor > 0)
-          yield* sql`INSERT INTO kin_number_series (org_id, register_id, series, last_seq)
-            VALUES (${orgId}, ${def.id}, ${series}, ${floor})
-            ON CONFLICT (org_id, register_id, series) DO UPDATE
-              SET last_seq = MAX(kin_number_series.last_seq, excluded.last_seq)`;
-      }
+      const { now, zone, day, year, series, floor } = yield* seriesToday(orgId, def.id, rule);
+      if (floor > 0)
+        yield* sql`INSERT INTO kin_number_series (org_id, register_id, series, last_seq)
+          VALUES (${orgId}, ${def.id}, ${series}, ${floor})
+          ON CONFLICT (org_id, register_id, series) DO UPDATE
+            SET last_seq = MAX(kin_number_series.last_seq, excluded.last_seq)`;
       const [next] = yield* sql<{ seq: number }>`INSERT INTO kin_number_series
             (org_id, register_id, series, last_seq)
           VALUES (${orgId}, ${def.id}, ${series}, 1)
@@ -265,6 +292,42 @@ export const adopt = Effect.fn("KinNumbers.adopt")(function* (
         [{ field: "number", from: null, to: number }],
       );
       return { key: updated.key, number, state: updated.state, issued: true } satisfies Issued;
+    }),
+  );
+}, workFailure);
+
+/**
+ * Takes a void entry back: paid when its payments cover it, else owed again once it has its number,
+ * else a draft. Its number, series and payments are as they were. A void receipt stays void: the
+ * payment it was for may have a new one already.
+ */
+export const unvoidEntry = Effect.fn("KinNumbers.unvoid")(function* (
+  orgId: KinOrgId,
+  writer: Writer,
+  key: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const records = yield* KinRecords;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const row = yield* records.get(orgId, key);
+      if (row === undefined) return yield* notFound(key);
+      const def = yield* listDef(orgId, row.registerId);
+      if (def === undefined) return yield* unknownList(row.registerId);
+      if (def.id === "receipts")
+        return yield* invalid(`${row.key} is a void receipt, and stays void. Make a new one.`);
+      const number = (yield* issuedNumber(orgId, row.recordId)) ?? null;
+      if (row.state !== "dropped")
+        return { key: row.key, number, state: row.state, issued: false } satisfies Issued;
+      const paidUp = row.amountMinor !== null && row.amountMinor - row.paid <= 0;
+      const state =
+        paidUp && def.states.includes("done")
+          ? ("done" as const)
+          : number !== null && def.states.includes("waiting")
+            ? ("waiting" as const)
+            : ("open" as const);
+      const updated = yield* records.update(orgId, writer, row.key, { state });
+      return { key: updated.key, number, state: updated.state, issued: false } satisfies Issued;
     }),
   );
 }, workFailure);

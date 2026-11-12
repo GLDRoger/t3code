@@ -919,6 +919,9 @@ const make = Effect.gen(function* () {
         if (list === "receipts") {
           if (RECEIPT_TIES.some((field) => field in (patch.fields ?? {})))
             return yield* invalid(RECEIPT_TIES_ARE_KINS);
+          // Its payment may have a new receipt since: two live ones would count it twice.
+          if (row.state === "dropped" && patch.state !== undefined && patch.state !== "dropped")
+            return yield* invalid(`${row.key} is a void receipt, and stays void. Make a new one.`);
           const tied =
             patch.amount !== undefined &&
             (patch.amount?.minor !== row.amountMinor || patch.amount?.currency !== row.currency) &&

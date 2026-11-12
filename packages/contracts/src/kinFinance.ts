@@ -20,6 +20,7 @@ import {
   KinMoneyTotals,
 } from "./kinMoney.ts";
 import {
+  KinGstin,
   KinRecord,
   KinRecordDetail,
   KinRecordKey,
@@ -347,7 +348,10 @@ export type KinWorkFilesResult = typeof KinWorkFilesResult.Type;
  */
 export const KinIssueInput = Schema.Struct({ orgId: KinOrgId, key: KinRecordKey });
 export type KinIssueInput = typeof KinIssueInput.Type;
-/** Voids an entry: kept, with its number if it had one, so the series stays complete. */
+/**
+ * Voids an entry: kept, with its number if it had one, so the series stays complete. `unvoid`
+ * takes it back: owed again, or paid if its payments cover it. A void receipt stays void.
+ */
 export const KinVoidInput = Schema.Struct({ orgId: KinOrgId, key: KinRecordKey });
 export type KinVoidInput = typeof KinVoidInput.Type;
 export const KinIssueResult = Schema.Struct({
@@ -365,12 +369,14 @@ export const KinIssueResult = Schema.Struct({
   problems: Schema.Array(Schema.String),
 });
 export type KinIssueResult = typeof KinIssueResult.Type;
+/** The number Issue would give the entry now; another issue first may take it. */
+export const KinNextNumberResult = Schema.Struct({
+  /** `null` when it has one already or its list doesn't number its entries. */
+  number: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type KinNextNumberResult = typeof KinNextNumberResult.Type;
 
 const ProfileText = Schema.NullOr(KinTrimmedText.check(Schema.isMaxLength(500)));
-/** India's 15-character GST number. */
-export const KinGstin = Schema.String.check(
-  Schema.isPattern(/^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/),
-);
 export const KinCompanyBank = Schema.Struct({
   accountName: ProfileText,
   accountNumber: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9A-Z]{6,34}$/))),
@@ -488,7 +494,9 @@ const KIN_FINANCE_WS_METHODS = {
   companyProfile: "kin.work.companyProfile",
   setCompanyProfile: "kin.work.setCompanyProfile",
   issue: "kin.work.issue",
+  nextNumber: "kin.work.nextNumber",
   void: "kin.work.void",
+  unvoid: "kin.work.unvoid",
   receipts: "kin.work.receipts",
   makeReceipt: "kin.work.makeReceipt",
 } as const;
@@ -546,7 +554,17 @@ export const KinFinanceRpcs = [
     success: KinIssueResult,
     error,
   }),
+  Rpc.make(KIN_FINANCE_WS_METHODS.nextNumber, {
+    payload: KinIssueInput,
+    success: KinNextNumberResult,
+    error,
+  }),
   Rpc.make(KIN_FINANCE_WS_METHODS.void, { payload: KinVoidInput, success: KinIssueResult, error }),
+  Rpc.make(KIN_FINANCE_WS_METHODS.unvoid, {
+    payload: KinVoidInput,
+    success: KinIssueResult,
+    error,
+  }),
   Rpc.make(KIN_FINANCE_WS_METHODS.receipts, {
     payload: KinReceiptsInput,
     success: KinReceiptsResult,
@@ -573,7 +591,9 @@ export const KIN_FINANCE_RPC_SCOPES = {
   [KIN_FINANCE_WS_METHODS.setCompanyProfile]: AuthSettingsWriteScope,
   // A number is an entry change, like a payment; nothing leaves the host.
   [KIN_FINANCE_WS_METHODS.issue]: AuthOrchestrationOperateScope,
+  [KIN_FINANCE_WS_METHODS.nextNumber]: AuthOrchestrationReadScope,
   [KIN_FINANCE_WS_METHODS.void]: AuthOrchestrationOperateScope,
+  [KIN_FINANCE_WS_METHODS.unvoid]: AuthOrchestrationOperateScope,
   [KIN_FINANCE_WS_METHODS.receipts]: AuthOrchestrationReadScope,
   // A receipt is an entry with a number, like issuing one.
   [KIN_FINANCE_WS_METHODS.makeReceipt]: AuthOrchestrationOperateScope,

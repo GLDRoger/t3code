@@ -16,7 +16,7 @@ import {
   kinAdvanceInput,
   kinInvoiceActions,
   kinInvoiceTitle,
-  kinInvoiceUnvoidState,
+  kinInvoiceMissingClient,
   kinInvoiceView,
   kinReceiptNotice,
   kinReceiptView,
@@ -148,13 +148,22 @@ describe("kinInvoiceView", () => {
   it("reads a void invoice as void, owing nothing, with its way back", () => {
     const view = kinInvoiceView(invoice({ state: "dropped", late: true }), invoices, now);
     expect([view.void, view.balance]).toEqual([true, null]);
-    expect(kinInvoiceUnvoidState(view)).toBe("waiting");
-    expect(kinInvoiceUnvoidState({ number: null })).toBe("open");
+  });
+});
+
+describe("kinInvoiceMissingClient", () => {
+  it("opens the invoice's client when its missing tax details stopped the invoice", () => {
+    const party = { key: "C-4", title: "Invented Foods" };
+    const reason =
+      "Nothing was made: the client has no place of supply: give it a GSTIN or a place of supply";
+    expect(kinInvoiceMissingClient(reason, party)).toEqual({ key: "C-4", name: "Invented Foods" });
+    expect(kinInvoiceMissingClient("Kin couldn't make it.", party)).toBeNull();
+    expect(kinInvoiceMissingClient(reason, null)).toBeNull();
   });
 });
 
 describe("kinInvoiceActions", () => {
-  const all = { render: true, issue: true, change: true, receipt: true };
+  const all = { render: true, issue: true, receipt: true };
   it.each([
     ["a draft", { void: false, number: null }, all, { make: true, issue: true, void: true }],
     ["an issued one", { void: false, number: "Q/1" }, all, { issue: false, void: true }],
@@ -162,7 +171,7 @@ describe("kinInvoiceActions", () => {
     [
       "a device that may only read",
       { void: false, number: null },
-      { render: false, issue: false, change: false, receipt: false },
+      { render: false, issue: false, receipt: false },
       { make: false, issue: false, void: false, unvoid: false, receipt: false },
     ],
   ])("offers what fits %s", (_name, view, allowed, expected) => {

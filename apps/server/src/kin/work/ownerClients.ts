@@ -157,6 +157,13 @@ const defined = <T extends Record<string, unknown>>(value: T) =>
   };
 const fieldsOf = (value: Readonly<Record<string, FieldValue | null | undefined>>) =>
   defined(value) as Readonly<Record<string, FieldValue | null>>;
+/** The client fields an invoice reads, under the keys the documents read them by. */
+const partyFields = (input: KinPartyCreateInput | KinPartyUpdateInput) => ({
+  terms: input.terms,
+  address: input.address,
+  gstin: input.gstin,
+  placeOfSupply: input.placeOfSupply,
+});
 const activeState = (active: boolean | undefined) =>
   active === undefined ? {} : { state: active ? ("open" as const) : ("dropped" as const) };
 
@@ -204,7 +211,7 @@ export const createParty = Effect.fn("KinWork.createParty")(function* (
     category: input.kind ?? "client",
     ...(input.notes === undefined ? {} : { notes: input.notes }),
     ...(input.sensitive === undefined ? {} : { sensitive: input.sensitive }),
-    fields: fieldsOf({ terms: input.terms, address: input.address }),
+    fields: fieldsOf(partyFields(input)),
   });
   return yield* partyOut(row);
 });
@@ -228,9 +235,9 @@ export const updateParty = Effect.fn("KinWork.updateParty")(function* (
         sensitive: input.sensitive,
       }),
       ...activeState(input.active),
-      ...(input.terms === undefined && input.address === undefined
+      ...(Object.keys(defined(partyFields(input))).length === 0
         ? {}
-        : { fields: fieldsOf({ terms: input.terms, address: input.address }) }),
+        : { fields: fieldsOf(partyFields(input)) }),
     },
     input.rev,
   );

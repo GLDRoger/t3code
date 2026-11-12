@@ -9,8 +9,11 @@ import {
   KIN_WORK_FORM_CHANGED,
   createKinWorkForm,
   createKinWorkPageWatch,
+  kinClientCreateInput,
   kinClientDraftCheck,
   kinClientDraftOf,
+  kinClientDraftWithGstin,
+  kinClientGstinNote,
   kinClientUpdateInput,
   kinContactDraftCheck,
   kinContactDraftOf,
@@ -83,6 +86,50 @@ describe("createKinWorkForm", () => {
     ]);
     // A billing address typed away clears it, rather than keeping blank lines.
     expect(kinClientUpdateInput({ address: " \n " })).toEqual({ address: null });
+  });
+
+  it("takes a client's GSTIN and state, the state from the GSTIN, saying when they disagree", () => {
+    const blank = { ...kinClientDraftOf(), name: "Invented Foods" };
+    const typed = kinClientDraftWithGstin(blank, " 27bbbbb2222b1z5 ");
+    expect([typed.placeOfSupply, kinClientGstinNote(typed), kinClientDraftCheck(typed)]).toEqual([
+      "Maharashtra",
+      null,
+      null,
+    ]);
+    expect(kinClientCreateInput(typed)).toMatchObject({
+      gstin: "27BBBBB2222B1Z5",
+      placeOfSupply: "Maharashtra",
+    });
+    // A state already chosen stays, and the mismatch is said, not refused.
+    const elsewhere = kinClientDraftWithGstin(
+      { ...blank, placeOfSupply: "Karnataka" },
+      "27BBBBB2222B1Z5",
+    );
+    expect([elsewhere.placeOfSupply, kinClientDraftCheck(elsewhere)]).toEqual(["Karnataka", null]);
+    expect(kinClientGstinNote(elsewhere)).toMatch(/registered in Maharashtra, not Karnataka/);
+    expect(kinClientDraftCheck({ ...blank, gstin: "27BBBBB" })).toMatch(/GSTIN isn't right/);
+    // A stored code reads as its state; anything else is a country, an export.
+    const stored = (placeOfSupply: string) =>
+      kinClientDraftOf({
+        name: "Invented Foods",
+        kind: "client",
+        terms: null,
+        address: null,
+        gstin: null,
+        placeOfSupply,
+        notes: "",
+        sensitive: false,
+      });
+    expect(
+      [stored("29"), stored("United States")].map((one) => [one.placeOfSupply, one.abroad]),
+    ).toEqual([
+      ["Karnataka", false],
+      ["United States", true],
+    ]);
+    expect(kinClientUpdateInput({ gstin: " ", placeOfSupply: "" })).toEqual({
+      gstin: null,
+      placeOfSupply: null,
+    });
   });
 
   it("offers the one already there when the name is taken, and keeps the form", async () => {

@@ -822,6 +822,17 @@ export const kinClient = {
     tag: "kin.work.void",
     concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
   }),
+  workUnvoid: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:unvoid",
+    tag: "kin.work.unvoid",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+  }),
+  /** The number Issue would give now; read when its confirmation opens. */
+  workNextNumber: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:next-number",
+    tag: "kin.work.nextNumber",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+  }),
   /** Money's receipts, newest first. Its `permissionAtom` gates the section. */
   receiptsRead,
   receipts: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
@@ -858,10 +869,15 @@ export const kinClient = {
     tag: "kin.docs.undoRecipe",
     concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.recipe}` },
   }),
-  clearRecipeLabel: createEnvironmentRpcCommand(connectionAtomRuntime, {
-    label: "kin:docs:clear-recipe-label",
-    tag: "kin.docs.clearRecipeLabel",
+  labelRecipe: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:docs:label-recipe",
+    tag: "kin.docs.labelRecipe",
     concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.recipe}` },
+  }),
+  setDefaultRecipe: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:docs:set-default-recipe",
+    tag: "kin.docs.setDefaultRecipe",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
   }),
   docLabel: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:docs:label",

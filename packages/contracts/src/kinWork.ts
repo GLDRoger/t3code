@@ -485,6 +485,49 @@ export type KinWorkConfirmInput = typeof KinWorkConfirmInput.Type;
 // The light CRM. A client page and a project page each come whole from one call: no joins or
 // arithmetic on the client. Everything is computed on read from entries and their change logs.
 
+/** India's 15-character GST number. */
+export const KIN_GSTIN_PATTERN = /^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
+export const KinGstin = Schema.String.check(Schema.isPattern(KIN_GSTIN_PATTERN));
+/** GST state codes, as the first two digits of a GSTIN, and their states. */
+export const KIN_GST_STATES: Readonly<Record<string, string>> = {
+  "01": "Jammu and Kashmir",
+  "02": "Himachal Pradesh",
+  "03": "Punjab",
+  "04": "Chandigarh",
+  "05": "Uttarakhand",
+  "06": "Haryana",
+  "07": "Delhi",
+  "08": "Rajasthan",
+  "09": "Uttar Pradesh",
+  "10": "Bihar",
+  "11": "Sikkim",
+  "12": "Arunachal Pradesh",
+  "13": "Nagaland",
+  "14": "Manipur",
+  "15": "Mizoram",
+  "16": "Tripura",
+  "17": "Meghalaya",
+  "18": "Assam",
+  "19": "West Bengal",
+  "20": "Jharkhand",
+  "21": "Odisha",
+  "22": "Chhattisgarh",
+  "23": "Madhya Pradesh",
+  "24": "Gujarat",
+  "26": "Dadra and Nagar Haveli and Daman and Diu",
+  "27": "Maharashtra",
+  "29": "Karnataka",
+  "30": "Goa",
+  "31": "Lakshadweep",
+  "32": "Kerala",
+  "33": "Tamil Nadu",
+  "34": "Puducherry",
+  "35": "Andaman and Nicobar Islands",
+  "36": "Telangana",
+  "37": "Andhra Pradesh",
+  "38": "Ladakh",
+};
+
 /** Fields sensitive whatever the entry's own label: contact details and commercial terms. */
 export const KIN_SENSITIVE_FIELDS = {
   clients: ["terms"],
@@ -496,6 +539,7 @@ const Notes = KinText.check(Schema.isMaxLength(4_000));
 const ShortText = KinTrimmedText.check(Schema.isMaxLength(200));
 const RequestId = TrimmedNonEmptyString.check(Schema.isMaxLength(120));
 const Address = KinTrimmedText.check(Schema.isMaxLength(500));
+const PlaceOfSupply = KinTrimmedText.check(Schema.isMaxLength(60));
 const PageLimit = Schema.Int.check(
   Schema.isGreaterThanOrEqualTo(1),
   Schema.isLessThanOrEqualTo(KIN_RECORDS_PAGE_CAP),
@@ -539,6 +583,10 @@ export const KinPartyDetail = Schema.Struct({
   terms: Schema.NullOr(KinText),
   /** The billing address an invoice shows. */
   address: Schema.NullOr(KinText),
+  /** Its GSTIN, when it has one; its invoices are taxed by its state. */
+  gstin: Schema.NullOr(KinText),
+  /** Where it is supplied: an Indian state, or a country outside India for an export. */
+  placeOfSupply: Schema.NullOr(KinText),
   /** Which fields here are sensitive whatever `sensitive` says. */
   sensitiveFields: SensitiveFields,
   createdAt: IsoDateTime,
@@ -737,6 +785,9 @@ export const KinPartyCreateInput = Schema.Struct({
   notes: Schema.optional(Notes),
   terms: Schema.optional(Notes),
   address: Schema.optional(Address),
+  gstin: Schema.optional(KinGstin),
+  /** A state from `KIN_GST_STATES`, or a country for an export. */
+  placeOfSupply: Schema.optional(PlaceOfSupply),
   /** Labels everything pointing at it sensitive too. */
   sensitive: Schema.optional(Schema.Boolean),
   clientRequestId: RequestId,
@@ -758,6 +809,9 @@ export const KinPartyUpdateInput = Schema.Struct({
   terms: Schema.optional(Schema.NullOr(Notes)),
   /** `null` clears. */
   address: Schema.optional(Schema.NullOr(Address)),
+  /** `null` clears these two. */
+  gstin: Schema.optional(Schema.NullOr(KinGstin)),
+  placeOfSupply: Schema.optional(Schema.NullOr(PlaceOfSupply)),
   sensitive: Schema.optional(Schema.Boolean),
   active: Schema.optional(Schema.Boolean),
 });

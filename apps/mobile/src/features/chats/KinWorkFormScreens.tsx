@@ -13,9 +13,12 @@ import {
 import {
   KIN_WORK_FORM_COPY,
   KIN_WORK_FORM_LIMITS,
+  KIN_GST_STATE_NAMES,
   kinClientCreateInput,
   kinClientDraftCheck,
   kinClientDraftOf,
+  kinClientDraftWithGstin,
+  kinClientGstinNote,
   kinClientUpdateInput,
   kinContactCreateInput,
   kinContactDraftCheck,
@@ -50,6 +53,9 @@ import { Button } from "../../components/ui/Button";
 import { Chip } from "../../components/ui/Chip";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ListActionRow } from "../../components/ui/ListActionRow";
+import { ListRowLayout } from "../../components/ui/ListRowLayout";
+import { Menu } from "../../components/ui/Menu";
+import { Notice } from "../../components/ui/Notice";
 import { ListSection } from "../../components/ui/ListSection";
 import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { useNowMinuteMs } from "../../lib/clock";
@@ -213,6 +219,9 @@ function ClientFormGate(props: KinWorkTarget & { readonly editing: KinPartyDetai
   return <ClientForm {...props} />;
 }
 
+const NO_PLACE = "none";
+const ABROAD = "abroad";
+
 function ClientForm(props: KinWorkTarget & { readonly editing: KinPartyDetail | null }) {
   const navigation = useNavigation();
   const { environmentId, orgId, editing } = props;
@@ -253,6 +262,11 @@ function ClientForm(props: KinWorkTarget & { readonly editing: KinPartyDetail | 
   }, [form, editing]);
   const { draft } = state;
   const moved = kinWorkFormMoved(state);
+  const gstinNote = kinClientGstinNote(draft);
+  const placeId = draft.abroad ? ABROAD : draft.placeOfSupply || NO_PLACE;
+  const placeLabel = draft.abroad
+    ? COPY.party.placeAbroad
+    : draft.placeOfSupply || COPY.party.placeNone;
   const openClient = (to: KinRecordKey) => {
     navigation.goBack();
     navigation.navigate("KinClient", { environmentId, orgId, party: to });
@@ -335,6 +349,56 @@ function ClientForm(props: KinWorkTarget & { readonly editing: KinPartyDetail | 
           onChangeText={(address) => form.edit({ address })}
         />
       </ListSection>
+      <ListSection footer={gstinNote === null ? COPY.party.placeHint : undefined}>
+        <KinWorkTextField
+          label={COPY.party.gstin}
+          value={draft.gstin}
+          disabled={state.saving}
+          maxLength={20}
+          placeholder={COPY.party.gstinPlaceholder}
+          hint={COPY.party.gstinHint}
+          moved={moved.gstin}
+          onChangeText={(gstin) => {
+            const next = kinClientDraftWithGstin(draft, gstin);
+            form.edit({ gstin: next.gstin, placeOfSupply: next.placeOfSupply });
+          }}
+        />
+        <Menu
+          title={COPY.party.place}
+          accessibilityRole="button"
+          accessibilityLabel={`${COPY.party.place}: ${placeLabel}. Change`}
+          actions={[
+            { id: NO_PLACE, title: COPY.party.placeNone },
+            ...KIN_GST_STATE_NAMES.map((name) => ({ id: name, title: name })),
+            { id: ABROAD, title: COPY.party.placeAbroad },
+          ].map((one) => ({
+            ...one,
+            state: one.id === placeId ? ("on" as const) : ("off" as const),
+          }))}
+          onPressAction={({ nativeEvent: { event } }) =>
+            form.edit(
+              event === ABROAD
+                ? { abroad: true, placeOfSupply: "" }
+                : { abroad: false, placeOfSupply: event === NO_PLACE ? "" : event },
+            )
+          }
+        >
+          <View pointerEvents="none">
+            <ListRowLayout label={placeLabel} detail={COPY.party.place} />
+          </View>
+        </Menu>
+        {draft.abroad ? (
+          <KinWorkTextField
+            label={COPY.party.country}
+            value={draft.placeOfSupply}
+            disabled={state.saving}
+            maxLength={60}
+            placeholder={COPY.party.countryPlaceholder}
+            onChangeText={(placeOfSupply) => form.edit({ placeOfSupply })}
+          />
+        ) : null}
+      </ListSection>
+      {gstinNote === null ? null : <Notice message={gstinNote} />}
       <ListSection>
         <KinWorkTextField
           label={COPY.party.notes}

@@ -531,6 +531,24 @@ it.effect(
         { field: "category", from: "vendor", to: "client" },
       ]);
       assert.deepStrictEqual(history.items[0]!.by, { _tag: "person", personId: ownerId });
+      // Its tax details, under the keys an invoice reads them by; null clears one.
+      const taxed = yield* Clients.updateParty([owner], {
+        orgId,
+        key: "C-1",
+        rev: 2,
+        gstin: "27BBBBB2222B1Z5",
+        placeOfSupply: "Maharashtra",
+      });
+      assert.include(taxed, { rev: 3, gstin: "27BBBBB2222B1Z5", placeOfSupply: "Maharashtra" });
+      const stored = yield* (yield* KinRecords.KinRecords).get(orgId, "C-1");
+      assert.deepInclude(JSON.parse(stored!.fieldsJson), {
+        gstin: "27BBBBB2222B1Z5",
+        placeOfSupply: "Maharashtra",
+      });
+      assert.include(
+        yield* Clients.updateParty([owner], { orgId, key: "C-1", rev: 3, gstin: null }),
+        { gstin: null, placeOfSupply: "Maharashtra" },
+      );
       const contact = yield* Clients.createContact([owner], {
         orgId,
         party: "C-1",
@@ -582,7 +600,7 @@ it.effect(
       const closed = yield* Clients.updateParty([owner], {
         orgId,
         key: "C-1",
-        rev: 2,
+        rev: 4,
         active: false,
       });
       assert.include(closed, { active: false });
@@ -592,7 +610,7 @@ it.effect(
       const reopened = yield* Clients.updateParty([owner], {
         orgId,
         key: "C-1",
-        rev: 3,
+        rev: 5,
         active: true,
       });
       assert.include(reopened, { active: true, closedAt: null });
@@ -600,7 +618,7 @@ it.effect(
       const wrongList: ReadonlyArray<Effect.Effect<unknown, KinChatError, Services>> = [
         Clients.updateParty([owner], { orgId, key: entry.key, rev: 1, name: "x" }),
         Clients.party([owner], { orgId, key: "CT-1" }),
-        OwnerWork.update([owner], { orgId, key: "C-1", rev: 4, title: "x" }),
+        OwnerWork.update([owner], { orgId, key: "C-1", rev: 6, title: "x" }),
         OwnerWork.create([owner], { orgId, title: "x", party: "CT-1", clientRequestId: "z" }),
       ];
       for (const refused of wrongList)

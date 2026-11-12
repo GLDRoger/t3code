@@ -295,6 +295,8 @@ export const KinRecipe = Schema.Struct({
   list: Schema.NullOr(TrimmedNonEmptyString),
   numbered: Schema.Boolean,
   sensitive: Schema.Boolean,
+  /** The one made for its list unless another is picked: the owner's choice, else its own. */
+  default: Schema.optional(Schema.Literal(true)),
   /** Written in a turn that read something sensitive: its documents are labelled until cleared. */
   labelled: Schema.optional(Schema.Literal(true)),
   /** With a label: the recipe's images and PDFs, for the owner to look at before clearing it. */
@@ -390,6 +392,21 @@ export const KinRecipeClearLabelResult = Schema.Struct({
   commit: TrimmedNonEmptyString,
 });
 export type KinRecipeClearLabelResult = typeof KinRecipeClearLabelResult.Type;
+/** The owner raises or lowers a recipe's label as they saw it, as a doc's label is. */
+export const KinRecipeLabelInput = Schema.Struct({
+  ...KinRecipeClearLabelInput.fields,
+  sensitive: Schema.Boolean,
+});
+export type KinRecipeLabelInput = typeof KinRecipeLabelInput.Type;
+
+/** Makes the recipe the one its list uses unless another is picked. */
+export const KinRecipeDefaultInput = KinRecipeUndoInput;
+export type KinRecipeDefaultInput = typeof KinRecipeDefaultInput.Type;
+export const KinRecipeDefaultResult = Schema.Struct({
+  list: TrimmedNonEmptyString,
+  recipe: TrimmedNonEmptyString,
+});
+export type KinRecipeDefaultResult = typeof KinRecipeDefaultResult.Type;
 
 export const KinDocsSubscribeInput = Schema.Struct({ orgId: KinOrgId });
 export type KinDocsSubscribeInput = typeof KinDocsSubscribeInput.Type;
@@ -470,6 +487,8 @@ const KIN_DOCS_WS_METHODS = {
   undoRecipe: "kin.docs.undoRecipe",
   label: "kin.docs.label",
   clearRecipeLabel: "kin.docs.clearRecipeLabel",
+  labelRecipe: "kin.docs.labelRecipe",
+  setDefaultRecipe: "kin.docs.setDefaultRecipe",
 } as const;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -524,6 +543,16 @@ export const KinDocsRpcs = [
     success: KinRecipeClearLabelResult,
     error,
   }),
+  Rpc.make(KIN_DOCS_WS_METHODS.labelRecipe, {
+    payload: KinRecipeLabelInput,
+    success: KinRecipeClearLabelResult,
+    error,
+  }),
+  Rpc.make(KIN_DOCS_WS_METHODS.setDefaultRecipe, {
+    payload: KinRecipeDefaultInput,
+    success: KinRecipeDefaultResult,
+    error,
+  }),
 ] as const;
 
 export const KIN_DOCS_RPC_SCOPES = {
@@ -542,4 +571,7 @@ export const KIN_DOCS_RPC_SCOPES = {
   // Lowers what an agent may show others: the owner's call, as the entry labels beside it are.
   [KIN_DOCS_WS_METHODS.label]: AuthOrchestrationOperateScope,
   [KIN_DOCS_WS_METHODS.clearRecipeLabel]: AuthOrchestrationOperateScope,
+  [KIN_DOCS_WS_METHODS.labelRecipe]: AuthOrchestrationOperateScope,
+  // Which recipe makes a list's documents, as undoing a recipe's change is.
+  [KIN_DOCS_WS_METHODS.setDefaultRecipe]: AuthOrchestrationOperateScope,
 } as const;

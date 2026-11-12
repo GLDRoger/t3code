@@ -992,9 +992,39 @@ describe("invoices", () => {
           })
           .pipe(Effect.flip);
         assert.include(changed.message, "never changes");
+        // Issue's confirmation reads the number it would give, taking none.
+        const preview = () => OwnerMoney.nextNumber(people, { orgId, key: "INV-3" });
+        assert.deepStrictEqual(
+          [yield* preview(), yield* preview()].map((one) => one.number),
+          ["INV/26-27/003", "INV/26-27/003"],
+        );
+        assert.isNull((yield* OwnerMoney.nextNumber(people, { orgId, key: "INV-1" })).number);
+        assert.include(
+          yield* Effect.flip(
+            OwnerMoney.nextNumber([{ ...people[0]!, personId: "someone" }], {
+              orgId,
+              key: "INV-3",
+            }),
+          ),
+          { reason: "not_allowed" },
+        );
         // Voided, it keeps its number, and the next one is never that number again.
         const voided = yield* OwnerMoney.voidEntry(people, { orgId, key: "INV-1" });
         assert.deepStrictEqual([voided.state, voided.number], ["dropped", first.number]);
+        // Undoing the void makes it owed again with that number; paid in full, it is paid.
+        const back = yield* OwnerMoney.unvoidEntry(people, { orgId, key: "INV-1" });
+        assert.deepStrictEqual([back.state, back.number], ["waiting", first.number]);
+        yield* OwnerMoney.recordPayment(people, {
+          orgId,
+          key: "INV-2",
+          amount: { minor: 10_000_000, currency: "INR" },
+          paidOn: "2026-11-12",
+          clientRequestId: "paid-2",
+        });
+        yield* OwnerMoney.voidEntry(people, { orgId, key: "INV-2" });
+        const paid = yield* OwnerMoney.unvoidEntry(people, { orgId, key: "INV-2" });
+        assert.deepStrictEqual([paid.state, paid.number], ["done", "INV/26-27/002"]);
+        yield* OwnerMoney.voidEntry(people, { orgId, key: "INV-1" });
         const third = yield* OwnerMoney.issue(people, { orgId, key: "INV-3" });
         assert.strictEqual(third.number, "INV/26-27/003");
         // The series follows India's financial year in the owner's zone.

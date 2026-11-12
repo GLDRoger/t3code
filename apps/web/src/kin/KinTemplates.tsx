@@ -8,7 +8,14 @@ import {
 } from "@t3tools/client-runtime/kin/kinTemplates";
 
 import { AsyncResult } from "effect/reactivity";
-import { EyeIcon, LockOpenIcon, MessageSquareIcon, RotateCcwIcon } from "lucide-react";
+import {
+  CheckIcon,
+  EyeIcon,
+  LockIcon,
+  LockOpenIcon,
+  MessageSquareIcon,
+  RotateCcwIcon,
+} from "lucide-react";
 import { useState } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
@@ -41,21 +48,23 @@ import {
 } from "./useKinMoney";
 import { useKinWorkDirectory, type KinWorkTarget } from "./useKinWork";
 
-type Ask = { readonly kind: "undo" | "clear"; readonly template: KinTemplateView };
+type Ask = { readonly kind: "undo" | "clear" | "set"; readonly template: KinTemplateView };
 
 /** The templates Kin makes documents from: who changed each last, a preview, and ways back. */
 export function KinTemplatesSection(props: KinWorkTarget) {
   const { environmentId, orgId } = props;
   const allowed = useAtomValue(kinClient.companyRead.permissionAtom(environmentId));
   const canUndo = useAtomValue(kinClient.undoRecipe.permissionAtom(environmentId));
-  const canClear = useAtomValue(kinClient.clearRecipeLabel.permissionAtom(environmentId));
+  const canLabel = useAtomValue(kinClient.labelRecipe.permissionAtom(environmentId));
+  const canDefault = useAtomValue(kinClient.setDefaultRecipe.permissionAtom(environmentId));
   const canPreview = useAtomValue(kinClient.docRender.permissionAtom(environmentId));
   const recipes = useKinRecipes(props, allowed);
   const { names } = useKinWorkDirectory(props, allowed);
   const asker = useKinAskAgent(props);
   const actions = useKinMoneyActions(props);
   const undo = useAtomCommand(kinClient.undoRecipe, { reportFailure: false });
-  const clear = useAtomCommand(kinClient.clearRecipeLabel, { reportFailure: false });
+  const label = useAtomCommand(kinClient.labelRecipe, { reportFailure: false });
+  const setDefault = useAtomCommand(kinClient.setDefaultRecipe, { reportFailure: false });
   const [asking, setAsking] = useState<Ask | null>(null);
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<{ readonly ok: boolean; readonly text: string } | null>(null);
@@ -97,7 +106,10 @@ export function KinTemplatesSection(props: KinWorkTarget) {
       send: () =>
         ask.kind === "undo"
           ? undo({ environmentId, input })
-          : clear({ environmentId, input: { ...input, commit: ask.template.commit } }),
+          : label({
+              environmentId,
+              input: { ...input, commit: ask.template.commit, sensitive: ask.kind === "set" },
+            }),
     });
     setBusy(false);
     recipes.refresh();
@@ -107,10 +119,27 @@ export function KinTemplatesSection(props: KinWorkTarget) {
       text:
         ask.kind === "clear"
           ? KIN_TEMPLATES.cleared
-          : "removed" in outcome.value && outcome.value.removed
-            ? KIN_TEMPLATES.removed
-            : KIN_TEMPLATES.undone,
+          : ask.kind === "set"
+            ? KIN_TEMPLATES.set
+            : "removed" in outcome.value && outcome.value.removed
+              ? KIN_TEMPLATES.removed
+              : KIN_TEMPLATES.undone,
     });
+  };
+  const makeDefault = async (template: KinTemplateView, list: string) => {
+    setBusy(true);
+    setSaid(null);
+    const outcome = await kinListSend({
+      online: () => kinHostConnected(environmentId),
+      send: () => setDefault({ environmentId, input: { orgId, recipe: template.name } }),
+    });
+    setBusy(false);
+    recipes.refresh();
+    setSaid(
+      outcome.ok
+        ? { ok: true, text: KIN_TEMPLATES.defaultSet(list) }
+        : { ok: false, text: outcome.problem },
+    );
   };
   const heading = (
     <div className="flex flex-col items-start gap-2 sm:flex-row sm:gap-4">
@@ -157,6 +186,11 @@ export function KinTemplatesSection(props: KinWorkTarget) {
                 <li key={template.name} className="flex flex-col gap-2 p-3">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-sm font-medium text-foreground">{template.title}</span>
+                    {template.isDefault && group.list !== null ? (
+                      <Badge size="sm" variant="secondary">
+                        {KIN_TEMPLATES.isDefault(group.title)}
+                      </Badge>
+                    ) : null}
                     {template.labelled ? (
                       <Badge size="sm" variant="warning">
                         {KIN_TEMPLATES.private}
@@ -193,15 +227,28 @@ export function KinTemplatesSection(props: KinWorkTarget) {
                         {KIN_TEMPLATES.undo}
                       </Button>
                     ) : null}
-                    {canClear && template.labelled ? (
+                    {canDefault && group.list !== null && !template.isDefault ? (
                       <Button
                         size="xs"
                         variant="outline"
                         disabled={busy}
-                        onClick={() => setAsking({ kind: "clear", template })}
+                        onClick={() => void makeDefault(template, group.title)}
                       >
-                        <LockOpenIcon />
-                        {KIN_TEMPLATES.clearPrivate}
+                        <CheckIcon />
+                        {KIN_TEMPLATES.pickFor(group.title)}
+                      </Button>
+                    ) : null}
+                    {canLabel ? (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        disabled={busy}
+                        onClick={() =>
+                          setAsking({ kind: template.labelled ? "clear" : "set", template })
+                        }
+                      >
+                        {template.labelled ? <LockOpenIcon /> : <LockIcon />}
+                        {template.labelled ? KIN_TEMPLATES.clearPrivate : KIN_TEMPLATES.setPrivate}
                       </Button>
                     ) : null}
                   </div>
@@ -236,11 +283,17 @@ export function KinTemplatesSection(props: KinWorkTarget) {
                   detail: KIN_TEMPLATES.undoDetail,
                   action: KIN_TEMPLATES.undo,
                 }
-              : {
-                  title: KIN_TEMPLATES.clearTitle,
-                  detail: KIN_TEMPLATES.clearDetail,
-                  action: KIN_TEMPLATES.clearPrivate,
-                }
+              : asking.kind === "set"
+                ? {
+                    title: KIN_TEMPLATES.setTitle,
+                    detail: KIN_TEMPLATES.setDetail,
+                    action: KIN_TEMPLATES.setPrivate,
+                  }
+                : {
+                    title: KIN_TEMPLATES.clearTitle,
+                    detail: KIN_TEMPLATES.clearDetail,
+                    action: KIN_TEMPLATES.clearPrivate,
+                  }
         }
         onConfirm={() => {
           if (asking !== null) void confirm(asking);

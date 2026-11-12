@@ -430,6 +430,8 @@ export interface KinPreviewFile {
 export function useKinMoneyActions({ environmentId, orgId }: KinWorkTarget) {
   const issue = useAtomCommand(kinClient.workIssue, { reportFailure: false });
   const voidIt = useAtomCommand(kinClient.workVoid, { reportFailure: false });
+  const unvoid = useAtomCommand(kinClient.workUnvoid, { reportFailure: false });
+  const readNext = useAtomCommand(kinClient.workNextNumber, { reportFailure: false });
   const receipt = useAtomCommand(kinClient.makeReceipt, { reportFailure: false });
   const render = useAtomCommand(kinClient.docRender, { reportFailure: false });
   const [busy, setBusy] = useState(false);
@@ -478,6 +480,20 @@ export function useKinMoneyActions({ environmentId, orgId }: KinWorkTarget) {
         key,
         () => null,
       ),
+    unvoid: (key: KinRecordKey) =>
+      run(
+        () => unvoid({ environmentId, input: { orgId, key } }),
+        key,
+        () => null,
+      ),
+    /** The number Issue would give now; null when it can't be read. Changes nothing. */
+    nextNumber: async (key: KinRecordKey) => {
+      const read = await kinListSend({
+        online: () => kinHostConnected(environmentId),
+        send: () => readNext({ environmentId, input: { orgId, key } }),
+      });
+      return read.ok ? read.value.number : null;
+    },
     makeReceipt: (
       key: KinRecordKey | undefined,
       input: Omit<Parameters<typeof receipt>[0]["input"], "orgId" | "clientRequestId">,

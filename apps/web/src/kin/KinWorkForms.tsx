@@ -3,9 +3,12 @@ import { KIN_CLIENTS, KIN_PROJECTS } from "@t3tools/client-runtime/kin/kinWorkCl
 import {
   KIN_WORK_FORM_COPY,
   KIN_WORK_FORM_LIMITS,
+  KIN_GST_STATE_NAMES,
   kinClientCreateInput,
   kinClientDraftCheck,
   kinClientDraftOf,
+  kinClientDraftWithGstin,
+  kinClientGstinNote,
   kinClientUpdateInput,
   kinContactCreateInput,
   kinContactDraftCheck,
@@ -27,6 +30,7 @@ import type {
 } from "@t3tools/contracts";
 import { useEffect, useId, useState } from "react";
 
+import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import {
   Dialog,
@@ -173,6 +177,9 @@ function PrivateSwitch(props: {
   );
 }
 
+const NO_PLACE = "none";
+const ABROAD = "abroad";
+
 /** A client or vendor, new or being edited. */
 export function KinClientDialog(
   props: KinWorkTarget & {
@@ -220,7 +227,17 @@ export function KinClientDialog(
   }, [form, editing]);
   const { draft } = state;
   const moved = kinWorkFormMoved(state);
-  const ids = { name: useId(), terms: useId(), address: useId(), notes: useId() };
+  const ids = {
+    name: useId(),
+    terms: useId(),
+    address: useId(),
+    gstin: useId(),
+    place: useId(),
+    country: useId(),
+    notes: useId(),
+  };
+  const gstinNote = kinClientGstinNote(draft);
+  const place = draft.abroad ? ABROAD : draft.placeOfSupply || NO_PLACE;
   const save = async () => {
     const outcome = await form.save();
     if (!outcome.saved) return;
@@ -294,6 +311,82 @@ export function KinClientDialog(
           onChange={(event) => form.edit({ address: event.target.value })}
         />
       </Field>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field
+          id={ids.gstin}
+          label={COPY.party.gstin}
+          hint={COPY.party.gstinHint}
+          moved={moved.gstin}
+        >
+          <Input
+            id={ids.gstin}
+            value={draft.gstin}
+            maxLength={20}
+            placeholder={COPY.party.gstinPlaceholder}
+            autoComplete="off"
+            autoCapitalize="characters"
+            spellCheck={false}
+            onChange={(event) => {
+              const next = kinClientDraftWithGstin(draft, event.target.value);
+              form.edit({ gstin: next.gstin, placeOfSupply: next.placeOfSupply });
+            }}
+          />
+        </Field>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor={ids.place}>{COPY.party.place}</Label>
+          <Select
+            value={place}
+            onValueChange={(value) =>
+              form.edit(
+                value === ABROAD
+                  ? { abroad: true, placeOfSupply: "" }
+                  : { abroad: false, placeOfSupply: value === NO_PLACE ? "" : String(value) },
+              )
+            }
+          >
+            <SelectTrigger id={ids.place} className="w-full min-w-0">
+              <SelectValue>
+                {draft.abroad
+                  ? COPY.party.placeAbroad
+                  : draft.placeOfSupply || COPY.party.placeNone}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectPopup alignItemWithTrigger={false}>
+              <SelectItem value={NO_PLACE}>{COPY.party.placeNone}</SelectItem>
+              {KIN_GST_STATE_NAMES.map((name) => (
+                <SelectItem key={name} value={name}>
+                  {name}
+                </SelectItem>
+              ))}
+              <SelectItem value={ABROAD}>{COPY.party.placeAbroad}</SelectItem>
+            </SelectPopup>
+          </Select>
+          {moved.placeOfSupply === undefined ? null : (
+            <p className="text-xs text-muted-foreground">
+              It now says: {moved.placeOfSupply.trim() || COPY.party.placeNone}
+            </p>
+          )}
+        </div>
+      </div>
+      {draft.abroad ? (
+        <Field id={ids.country} label={COPY.party.country}>
+          <Input
+            id={ids.country}
+            value={draft.placeOfSupply}
+            maxLength={60}
+            placeholder={COPY.party.countryPlaceholder}
+            autoComplete="off"
+            onChange={(event) => form.edit({ placeOfSupply: event.target.value })}
+          />
+        </Field>
+      ) : null}
+      {gstinNote === null ? (
+        <p className="-mt-2 text-xs text-muted-foreground">{COPY.party.placeHint}</p>
+      ) : (
+        <Alert variant="warning">
+          <AlertDescription>{gstinNote}</AlertDescription>
+        </Alert>
+      )}
       <Field id={ids.notes} label={COPY.party.notes} moved={moved.notes}>
         <Textarea
           id={ids.notes}

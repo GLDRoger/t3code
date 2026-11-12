@@ -1,4 +1,6 @@
 import {
+  KIN_GST_STATES,
+  KIN_GSTIN_PATTERN,
   KinRecordKey,
   KinRepoName,
   kinRealDay,
@@ -33,6 +35,7 @@ const NAME_MAX = 200;
 const SHORT_MAX = 200;
 const NOTES_MAX = 4_000;
 const ADDRESS_MAX = 500;
+const PLACE_MAX = 60;
 export const KIN_WORK_FORM_LIMITS = { name: NAME_MAX, short: SHORT_MAX, notes: NOTES_MAX };
 
 export const KIN_WORK_FORM_COPY = {
@@ -54,6 +57,16 @@ export const KIN_WORK_FORM_COPY = {
     address: "Billing address",
     addressPlaceholder: "Street, city, state and PIN code",
     addressHint: "Printed on their invoices.",
+    gstin: "GSTIN",
+    gstinPlaceholder: "27ABCDE1234F1Z5",
+    gstinHint: "Leave empty if they aren't registered for GST.",
+    place: "State",
+    placeNone: "Not set",
+    placeAbroad: "Outside India",
+    placeHint:
+      "Where the supply goes. Invoices charge CGST and SGST in your own state, IGST in another.",
+    country: "Country",
+    countryPlaceholder: "United States",
     notes: "Notes",
     notesPlaceholder: "Anything worth remembering about them",
   },
@@ -96,18 +109,71 @@ export interface KinClientDraft {
   readonly vendor: boolean;
   readonly terms: string;
   readonly address: string;
+  readonly gstin: string;
+  /** A state's name from `KIN_GST_STATES`, a country when `abroad`, or empty. */
+  readonly placeOfSupply: string;
+  readonly abroad: boolean;
   readonly notes: string;
   readonly private: boolean;
 }
 
-export const kinClientDraftOf = (party?: KinPartyDetail): KinClientDraft => ({
-  name: party?.name ?? "",
-  vendor: party?.kind === "vendor",
-  terms: party?.terms ?? "",
-  address: party?.address ?? "",
-  notes: party?.notes ?? "",
-  private: party?.sensitive ?? false,
-});
+/** The states a client may be in, by name. */
+export const KIN_GST_STATE_NAMES = Object.values(KIN_GST_STATES).sort((a, b) => a.localeCompare(b));
+const letters = (text: string) => text.toLowerCase().replace(/[^a-z]/g, "");
+/** A stored place as a state's name: by name, or by its code as the server reads one. */
+function kinGstStateName(place: string): string | null {
+  const code = /^\s*(\d{2})\b/.exec(place)?.[1];
+  if (code !== undefined && KIN_GST_STATES[code] !== undefined) return KIN_GST_STATES[code];
+  const wanted = letters(place);
+  if (wanted === "") return null;
+  return KIN_GST_STATE_NAMES.find((name) => letters(name) === wanted) ?? null;
+}
+const gstinOf = (text: string) => text.replace(/\s+/g, "").toUpperCase();
+/** The state a GSTIN is registered in, from its first two digits; null for one that isn't valid. */
+function kinGstinState(gstin: string): string | null {
+  const value = gstinOf(gstin);
+  return KIN_GSTIN_PATTERN.test(value) ? (KIN_GST_STATES[value.slice(0, 2)] ?? null) : null;
+}
+
+export const kinClientDraftOf = (
+  party?: Pick<
+    KinPartyDetail,
+    "name" | "kind" | "terms" | "address" | "gstin" | "placeOfSupply" | "notes" | "sensitive"
+  >,
+): KinClientDraft => {
+  const place = party?.placeOfSupply?.trim() ?? "";
+  const state = kinGstStateName(place);
+  return {
+    name: party?.name ?? "",
+    vendor: party?.kind === "vendor",
+    terms: party?.terms ?? "",
+    address: party?.address ?? "",
+    gstin: party?.gstin ?? "",
+    placeOfSupply: state ?? place,
+    abroad: place !== "" && state === null,
+    notes: party?.notes ?? "",
+    private: party?.sensitive ?? false,
+  };
+};
+
+/** A GSTIN typed in: the state it names fills in an empty one. */
+export function kinClientDraftWithGstin(draft: KinClientDraft, gstin: string): KinClientDraft {
+  const state = kinGstinState(gstin);
+  return state !== null && !draft.abroad && draft.placeOfSupply === ""
+    ? { ...draft, gstin, placeOfSupply: state }
+    : { ...draft, gstin };
+}
+
+/** What a GSTIN and the state chosen beside it say together, when they disagree. */
+export function kinClientGstinNote(draft: KinClientDraft): string | null {
+  const state = kinGstinState(draft.gstin);
+  if (state === null) return null;
+  if (draft.abroad)
+    return `This GSTIN is registered in ${state}, so its invoices are taxed as supplies to ${state}, not as exports.`;
+  if (draft.placeOfSupply !== "" && draft.placeOfSupply !== state)
+    return `This GSTIN is registered in ${state}, not ${draft.placeOfSupply}. Its invoices use the GSTIN's state, ${state}.`;
+  return null;
+}
 
 const tooLong = (text: string, max: number, what: string) =>
   text.trim().length > max ? `Keep ${what} under ${max} characters.` : null;
@@ -118,6 +184,10 @@ export const kinClientDraftCheck = (draft: KinClientDraft): string | null =>
     : (tooLong(draft.name, NAME_MAX, "the name") ??
       tooLong(draft.terms, NOTES_MAX, "the terms") ??
       tooLong(draft.address, ADDRESS_MAX, "the address") ??
+      (draft.gstin.trim() !== "" && !KIN_GSTIN_PATTERN.test(gstinOf(draft.gstin))
+        ? "That GSTIN isn't right: it has 15 letters and digits, like 27ABCDE1234F1Z5."
+        : null) ??
+      tooLong(draft.placeOfSupply, PLACE_MAX, "the country") ??
       tooLong(draft.notes, NOTES_MAX, "the notes"));
 
 export const kinClientCreateInput = (
@@ -127,6 +197,8 @@ export const kinClientCreateInput = (
   ...(draft.vendor ? { kind: "vendor" as const } : {}),
   ...(draft.terms.trim() === "" ? {} : { terms: draft.terms.trim() }),
   ...(draft.address.trim() === "" ? {} : { address: draft.address.trim() }),
+  ...(draft.gstin.trim() === "" ? {} : { gstin: gstinOf(draft.gstin) }),
+  ...(draft.placeOfSupply.trim() === "" ? {} : { placeOfSupply: draft.placeOfSupply.trim() }),
   ...(draft.notes.trim() === "" ? {} : { notes: draft.notes.trim() }),
   ...(draft.private ? { sensitive: true } : {}),
 });
@@ -142,6 +214,10 @@ export const kinClientUpdateInput = (
     : { kind: changed.vendor ? ("vendor" as const) : ("client" as const) }),
   ...(changed.terms === undefined ? {} : { terms: changed.terms.trim() || null }),
   ...(changed.address === undefined ? {} : { address: changed.address.trim() || null }),
+  ...(changed.gstin === undefined ? {} : { gstin: gstinOf(changed.gstin) || null }),
+  ...(changed.placeOfSupply === undefined
+    ? {}
+    : { placeOfSupply: changed.placeOfSupply.trim() || null }),
   ...(changed.notes === undefined ? {} : { notes: changed.notes.trim() }),
   ...(changed.private === undefined ? {} : { sensitive: changed.private }),
 });

@@ -18,12 +18,19 @@ export const KIN_TEMPLATES = {
   undone: "Undone.",
   removed: "Undone. That change made this template, so it's gone until you undo again.",
   private: "Private",
-  privateDetail:
-    "An agent wrote it after reading something private, so what it makes is marked private.",
+  privateDetail: "What it makes is marked private, so only you and your own chats see it.",
   clearPrivate: "Mark as not private",
   clearTitle: "Mark this template as not private?",
   clearDetail: "Documents it makes from now on are no longer marked private because of it.",
   cleared: "No longer marked private.",
+  setPrivate: "Mark as private",
+  setTitle: "Mark this template as private?",
+  setDetail:
+    "Documents it makes from now on are private: only you see them, and agents only in your own chats.",
+  set: "Marked private.",
+  isDefault: (list: string) => `Used for ${list.toLowerCase()}`,
+  pickFor: (list: string) => `Use for ${list.toLowerCase()}`,
+  defaultSet: (list: string) => `Kin now makes ${list.toLowerCase()} with this template.`,
   askChange: "Change how invoices look",
   askChangeDraft: "I'd like to change how our invoices look: ",
   noPreviewEntry: "Preview needs an entry. Open one from its list and use Make invoice there.",
@@ -41,6 +48,8 @@ export interface KinTemplateView {
   readonly description: string | null;
   readonly changed: string;
   readonly labelled: boolean;
+  /** The one its list's documents are made with unless another is picked. */
+  readonly isDefault: boolean;
   readonly commit: string;
   /** A template that needs an entry can only be previewed from one. */
   readonly forEntry: boolean;
@@ -60,6 +69,11 @@ const changedBy = (recipe: KinRecipe, names: KinWorkNames) =>
       ? kinWorkActorName({ _tag: "agent", agentId: recipe.changedBy.agentId }, names)
       : kinWorkActorName({ _tag: "person", personId: recipe.changedBy.personId }, names);
 
+/** The template a list's documents are made with: its default, else the first there is. */
+export const kinDefaultTemplate = <T extends Pick<KinRecipe, "default">>(
+  templates: ReadonlyArray<T>,
+): T | null => templates.find((one) => one.default === true) ?? templates[0] ?? null;
+
 /** Templates by what they make, invoices first, each with who changed it last and when. */
 export function kinTemplateGroups(
   recipes: ReadonlyArray<KinRecipe>,
@@ -78,6 +92,7 @@ export function kinTemplateGroups(
           ? by
           : `Changed by ${by}, ${formatKinTime(new Date(recipe.changedAt), now)}`,
       labelled: recipe.labelled === true,
+      isDefault: recipe.default === true,
       commit: recipe.commit,
       forEntry: recipe.list !== null,
       canUndo: recipe.changedBy._tag !== "starter",

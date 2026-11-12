@@ -658,6 +658,37 @@ describe("recipe documents", () => {
         Effect.flip,
       );
       assert.strictEqual(reused.reason, "not_allowed");
+      // Each list's default is marked; the owner picks another, only one made for a list.
+      const defaults = () =>
+        Effect.map(OwnerDocs.recipes(people, { orgId }), (all) =>
+          all.recipes.filter((one) => one.default === true).map((one) => one.name),
+        );
+      assert.deepStrictEqual(yield* defaults(), ["invoice", "receipt"]);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_recipe_defaults (org_id, list, recipe, set_by_person_id, set_at)
+        VALUES (${orgId}, 'invoices', 'gone', ${ownerId}, 0)`;
+      assert.deepStrictEqual(
+        yield* defaults(),
+        ["invoice", "receipt"],
+        "a gone recipe is no default",
+      );
+      assert.match(
+        (yield* Effect.flip(OwnerDocs.setDefaultRecipe(people, { orgId, recipe: "report" })))
+          .message,
+        /isn't made for a list's entries/,
+      );
+      assert.include(
+        yield* Effect.flip(OwnerDocs.setDefaultRecipe(someone, { orgId, recipe: "invoice" })),
+        { reason: "not_allowed" },
+      );
+      assert.deepStrictEqual(
+        yield* OwnerDocs.setDefaultRecipe(people, { orgId, recipe: "invoice" }),
+        { list: "invoices", recipe: "invoice" },
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT recipe FROM kin_recipe_defaults WHERE org_id = ${orgId}`,
+        [{ recipe: "invoice" }],
+      );
       // A preview neither takes an id nor finds what one filed.
       const again = yield* OwnerDocs.render(people, { ...asked, preview: true });
       assert.deepStrictEqual(
@@ -991,6 +1022,12 @@ describe("receipts", () => {
           [remade.receipt !== next.receipt, remade.number],
           [true, "QST-RN/26-27/011"],
         );
+        // The void one stays void, by the owner's Undo void or an edit: two would count it twice.
+        for (const back of [
+          OwnerMoney.unvoidEntry(people, { orgId, key: KinRecordKey.make(next.receipt) }),
+          records.update(orgId, system, next.receipt, { state: "open" }),
+        ])
+          assert.match((yield* Effect.flip(back)).message, /void receipt, and stays void/);
         const held = (yield* OwnerMoney.receipts(people, { orgId })).receipts.find(
           (one) => one.key === advance.receipt,
         )!.paymentId!;
@@ -1533,7 +1570,12 @@ describe("worker document jobs", () => {
           Effect.map(listed(name), (one) => one?.labelled === true);
         const clear = Effect.gen(function* () {
           const commit = (yield* listed())!.commit;
-          return yield* OwnerDocs.clearRecipeLabel(people, { orgId, recipe: "quote", commit });
+          return yield* OwnerDocs.labelRecipe(people, {
+            orgId,
+            recipe: "quote",
+            commit,
+            sensitive: false,
+          });
         });
         assert.match((yield* writeQuote(1, 1))!.summary, /committed it/);
         assert.deepStrictEqual(
@@ -1552,10 +1594,11 @@ describe("worker document jobs", () => {
         yield* OwnerDocs.undoRecipe(people, { orgId, recipe: "quote" });
         assert.isFalse(yield* quote());
         const someone = [{ _tag: "person" as const, orgId, personId: KinPersonId.make("someone") }];
-        const refused = yield* OwnerDocs.clearRecipeLabel(someone, {
+        const refused = yield* OwnerDocs.labelRecipe(someone, {
           orgId,
           recipe: "quote",
           commit: seen,
+          sensitive: false,
         }).pipe(Effect.flip);
         assert.strictEqual(refused.reason, "not_allowed");
 
@@ -1594,16 +1637,27 @@ describe("worker document jobs", () => {
         yield* unlabel;
         assert.isTrue(yield* labelled());
         // Clearing what the owner no longer sees is refused, and changes nothing.
-        const stale = yield* OwnerDocs.clearRecipeLabel(people, {
+        const stale = yield* OwnerDocs.labelRecipe(people, {
           orgId,
           recipe: "quote",
           commit: merge,
+          sensitive: false,
         }).pipe(Effect.flip);
         assert.deepInclude(stale, { reason: "invalid_state" });
         assert.match(stale.message, /changed after you looked/);
         assert.isTrue(yield* labelled());
         yield* clear;
         assert.isFalse(yield* labelled());
+        // The owner can mark it private again, and what it makes is private from then on.
+        yield* OwnerDocs.labelRecipe(people, {
+          orgId,
+          recipe: "quote",
+          commit: (yield* listed())!.commit,
+          sensitive: true,
+        });
+        assert.deepStrictEqual([yield* labelled(), yield* quote()], [true, true]);
+        yield* clear;
+        assert.deepStrictEqual([yield* labelled(), yield* quote()], [false, false]);
         // The starter recipes, and revisions from before Kin recorded where main was, have no
         // row and read as the job that wrote them did.
         assert.isFalse(yield* labelled("report"));

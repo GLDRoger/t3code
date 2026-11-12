@@ -4,17 +4,20 @@ import {
   kinBase64Bytes,
   kinDocFileLine,
   kinInvoiceActions,
-  kinInvoiceUnvoidState,
+  kinInvoiceMissingClient,
   kinTemplatesFor,
   type KinInvoiceView,
 } from "@t3tools/client-runtime/kin/kinInvoices";
-import { KIN_LISTS } from "@t3tools/client-runtime/kin/kinLists";
+import { KIN_LISTS, kinListSend } from "@t3tools/client-runtime/kin/kinLists";
+import { kinDefaultTemplate } from "@t3tools/client-runtime/kin/kinTemplates";
+import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import type {
   EnvironmentId,
   KinDocFile,
   KinListDefinition,
   KinRecipe,
+  KinPartyRef,
   KinRecordKey,
 } from "@t3tools/contracts";
 import {
@@ -27,6 +30,11 @@ import {
   StampIcon,
 } from "lucide-react";
 import { useId, useState } from "react";
+
+import { useAtomCommand } from "../state/use-atom-command";
+import { appAtomRegistry } from "../rpc/atomRegistry";
+import { KinClientDialog } from "./KinWorkForms";
+import { kinHostConnected } from "./useKinHost";
 
 import { useAssetUrls } from "../assets/assetUrls";
 import { Alert, AlertDescription } from "../components/ui/alert";
@@ -84,20 +92,30 @@ export function KinInvoiceActions(
     readonly invoice: KinInvoiceView;
     readonly def: KinListDefinition | null;
     readonly actions: MoneyActions;
-    /** Moves it back from void, as a status change. */
-    readonly onUnvoid: (state: "open" | "waiting") => void;
+    /** The invoice's client, to edit when Make invoice needs a detail of theirs. */
+    readonly party: KinPartyRef | null;
     readonly busy: boolean;
   },
 ) {
-  const { environmentId, invoice, actions } = props;
+  const { environmentId, orgId, invoice, actions } = props;
   const allowed = {
     render: useAtomValue(kinClient.docRender.permissionAtom(environmentId)),
     issue: useAtomValue(kinClient.workIssue.permissionAtom(environmentId)),
-    change: useAtomValue(kinClient.workUpdate.permissionAtom(environmentId)),
     receipt: useAtomValue(kinClient.makeReceipt.permissionAtom(environmentId)),
   };
   const can = kinInvoiceActions(invoice, props.def, allowed);
   const [asking, setAsking] = useState<"issue" | "void" | null>(null);
+  const readNext = useAtomCommand(kinClient.workNextNumber, { reportFailure: false });
+  const [next, setNext] = useState<{ readonly number: string | null } | "reading" | null>(null);
+  const askIssue = async () => {
+    setAsking("issue");
+    setNext("reading");
+    const read = await kinListSend({
+      online: () => kinHostConnected(environmentId),
+      send: () => readNext({ environmentId, input: { orgId, key: props.itemKey } }),
+    });
+    setNext(read.ok ? read.value : null);
+  };
   const [making, setMaking] = useState(false);
   const busy = props.busy || actions.busy;
   if (!can.make && !can.issue && !can.void && !can.unvoid) return null;
@@ -119,7 +137,7 @@ export function KinInvoiceActions(
           </Button>
         ) : null}
         {can.issue ? (
-          <Button size="sm" variant="outline" disabled={busy} onClick={() => setAsking("issue")}>
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => void askIssue()}>
             <StampIcon />
             {KIN_INVOICES.issue}
           </Button>
@@ -135,7 +153,7 @@ export function KinInvoiceActions(
             size="sm"
             variant="outline"
             disabled={busy}
-            onClick={() => props.onUnvoid(kinInvoiceUnvoidState(invoice))}
+            onClick={() => void actions.unvoid(props.itemKey)}
           >
             <RotateCcwIcon />
             {KIN_INVOICES.unvoid}
@@ -156,8 +174,16 @@ export function KinInvoiceActions(
             <AlertDialogDescription>
               {asking === "void"
                 ? KIN_INVOICES.voidDetail
-                : KIN_INVOICES.issueDetail(invoice.prefix)}
+                : next !== null && next !== "reading" && next.number !== null
+                  ? KIN_INVOICES.issueNumber(next.number)
+                  : KIN_INVOICES.issueDetail(invoice.prefix)}
             </AlertDialogDescription>
+            {asking === "issue" && next === "reading" ? (
+              <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Spinner />
+                {KIN_INVOICES.readingNumber}
+              </p>
+            ) : null}
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogClose render={<Button variant="outline" />}>
@@ -200,6 +226,7 @@ function KinMakeDocumentDialog(
     readonly itemKey: KinRecordKey;
     readonly list: string;
     readonly actions: MoneyActions;
+    readonly party: KinPartyRef | null;
     readonly onClose: () => void;
   },
 ) {
@@ -208,7 +235,9 @@ function KinMakeDocumentDialog(
   const templates: ReadonlyArray<KinRecipe> =
     recipes.state._tag === "ready" ? kinTemplatesFor(recipes.state.value.recipes, props.list) : [];
   const [picked, setPicked] = useState<string | null>(null);
-  const recipe = templates.find((one) => one.name === picked) ?? templates[0] ?? null;
+  const recipe = templates.find((one) => one.name === picked) ?? kinDefaultTemplate(templates);
+  const missing = kinInvoiceMissingClient(actions.problem, props.party);
+  const [editing, setEditing] = useState(false);
   const [shown, setShown] = useState<{
     readonly url: string;
     readonly file: KinPreviewFile;
@@ -304,6 +333,16 @@ function KinMakeDocumentDialog(
               </Alert>
             ) : null}
             <KinMoneyActionNotice actions={actions} />
+            {missing === null ? null : (
+              <div className="flex flex-col items-start gap-2">
+                <p className="text-sm text-foreground">
+                  {KIN_INVOICES.missingClient(missing.name)}
+                </p>
+                <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
+                  {KIN_INVOICES.editClient(missing.name)}
+                </Button>
+              </div>
+            )}
           </div>
         </DialogPanel>
         <DialogFooter>
@@ -333,7 +372,40 @@ function KinMakeDocumentDialog(
           )}
         </DialogFooter>
       </DialogPopup>
+      {editing && missing !== null ? (
+        <KinEditClient
+          {...props}
+          clientKey={missing.key}
+          onDone={() => {
+            setEditing(false);
+            actions.dismiss();
+          }}
+        />
+      ) : null}
     </Dialog>
+  );
+}
+
+/** The client's own edit form, opened from the invoice that needs one of its details. */
+function KinEditClient(
+  props: KinWorkTarget & { readonly clientKey: KinRecordKey; readonly onDone: () => void },
+) {
+  const { environmentId, orgId } = props;
+  const atom = kinClient.workClient({ environmentId, input: { orgId, key: props.clientKey } });
+  const state = kinWorkReadState(useAtomValue(atom));
+  if (state._tag !== "ready") return null;
+  return (
+    <KinClientDialog
+      environmentId={environmentId}
+      orgId={orgId}
+      editing={state.value.party}
+      onSaved={() => {
+        appAtomRegistry.refresh(atom);
+        props.onDone();
+      }}
+      onOpenExisting={props.onDone}
+      onClose={props.onDone}
+    />
   );
 }
 

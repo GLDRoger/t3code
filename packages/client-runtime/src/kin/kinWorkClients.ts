@@ -33,6 +33,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 export const KIN_CLIENTS = {
   title: "Clients",
+  tax: "Tax details",
+  noTax: "No GSTIN or state yet. Invoices need one to work out GST.",
   all: "All clients",
   search: "Search clients",
   add: "New client",
@@ -299,6 +301,8 @@ export interface KinClientPageView {
   readonly contacts: ReadonlyArray<KinContactView>;
   readonly terms: string | null;
   readonly address: string | null;
+  /** "GSTIN 27ABCDE1234F1Z5 · Maharashtra"; null when neither is set. */
+  readonly tax: string | null;
   readonly notes: string | null;
 }
 
@@ -344,6 +348,10 @@ export function kinClientPageView(
     contacts: page.contacts.map(kinContactView),
     terms: terms === "" ? null : terms,
     address: party.address?.trim() || null,
+    tax:
+      [party.gstin === null ? null : `GSTIN ${party.gstin}`, party.placeOfSupply?.trim() || null]
+        .filter((part) => part !== null)
+        .join(" · ") || null,
     notes: notes === "" ? null : notes,
   };
 }

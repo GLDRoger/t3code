@@ -529,6 +529,18 @@ function ClientPage(
             <p className="whitespace-pre-wrap text-sm text-foreground">{view.address}</p>
           </KinWorkSection>
         )}
+        {view.vendor && view.tax === null ? null : (
+          <KinWorkSection title={KIN_CLIENTS.tax}>
+            <p
+              className={cn(
+                "text-sm",
+                view.tax === null ? "text-muted-foreground" : "text-foreground",
+              )}
+            >
+              {view.tax ?? KIN_CLIENTS.noTax}
+            </p>
+          </KinWorkSection>
+        )}
         <KinWorkSection title={KIN_CLIENTS.terms} action={<KinWorkPrivateMark />}>
           {view.terms === null ? (
             <p className="text-sm text-muted-foreground">{KIN_CLIENTS.noTerms}</p>
