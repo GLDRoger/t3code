@@ -463,8 +463,20 @@ it.effect(
       });
       // A retry is the same client; another of the same name is refused, naming the one there.
       assert.include(
-        yield* Clients.createParty([owner], { orgId, name: "x", clientRequestId: "j" }),
+        yield* Clients.createParty([owner], {
+          orgId,
+          name: "Invented Juniper",
+          kind: "vendor",
+          clientRequestId: "j",
+        }),
         { key: "C-1" },
+      );
+      // QA Q16: the same request id with other words was taken as saved, as chat refuses.
+      assert.include(
+        yield* Effect.flip(
+          Clients.createParty([owner], { orgId, name: "x", clientRequestId: "j" }),
+        ),
+        { reason: "not_allowed" },
       );
       assert.include(
         yield* Effect.flip(

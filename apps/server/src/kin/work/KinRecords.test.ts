@@ -269,6 +269,16 @@ it.effect(
         clientRequestId: "new-1",
       });
       assert.include(created, { key: "W-1", state: "open" });
+      const retry = {
+        orgId,
+        title: "Invented: compare the two hosting quotes",
+        clientRequestId: "new-1",
+      };
+      assert.include(yield* OwnerWork.create([owner], retry), { key: "W-1" });
+      assert.include(
+        yield* Effect.flip(OwnerWork.create([owner], { ...retry, title: "Invented: other" })),
+        { reason: "not_allowed" },
+      );
       assert.lengthOf(yield* assignedEvents, 0);
       const assigned = yield* OwnerWork.assign([owner], {
         orgId,

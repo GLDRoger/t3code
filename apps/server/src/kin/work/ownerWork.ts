@@ -21,7 +21,7 @@ import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { readableFrom } from "../chat/sharing.ts";
 import { summaryGroups } from "./crm.ts";
-import { KinRecords, type Patch, type Totals, type Writer } from "./KinRecords.ts";
+import { KinRecords, requestHashOf, type Patch, type Totals, type Writer } from "./KinRecords.ts";
 import { fieldList, LISTS, type ListName, parseFields } from "./lists.ts";
 import { isBuiltIn, listDef, unknownList } from "./registers.ts";
 import {
@@ -303,6 +303,7 @@ export const create = Effect.fn("KinWork.create")(function* (
   const projectId = yield* refId(input.orgId, input.project, "projects");
   const { row } = yield* records.create(input.orgId, ownerWriter(person), {
     originKey: `owner:${input.clientRequestId}`,
+    requestHash: requestHashOf(input),
     title: input.title,
     owner,
     dueAt,

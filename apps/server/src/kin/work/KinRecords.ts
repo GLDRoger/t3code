@@ -1,5 +1,6 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
+import { stableStringify } from "@t3tools/shared/relaySigning";
 import {
   KIN_RECORDS_PAGE_CAP,
   KinChatError,
@@ -132,6 +133,8 @@ export type CreateInput = Fields & {
   readonly list?: string;
   /** A create with a key already stored returns that entry and changes nothing. */
   readonly originKey: string;
+  /** A person's request (`requestHashOf`): the same key asking for something else is refused. */
+  readonly requestHash?: string;
   readonly source?: { readonly chatId: KinChatId; readonly messageId: KinMessageId };
   readonly links?: ReadonlyArray<LinkInput>;
 };
@@ -225,6 +228,9 @@ const conflict = (key: string, rev: number) =>
     reason: "conflict",
     message: `${key} changed since you read it; it is at revision ${rev} now. Read it again.`,
   });
+/** What a person's create asked for, without the id it was sent under. */
+export const requestHashOf = ({ clientRequestId: _, ...request }: { clientRequestId: string }) =>
+  NodeCrypto.createHash("sha256").update(stableStringify(request)).digest("hex");
 const recordIdFor = (orgId: string, originKey: string) =>
   KinRecordId.make(
     `rec_${NodeCrypto.createHash("sha256").update(`${orgId.length}:${orgId}${originKey}`).digest("hex").slice(0, 24)}`,
@@ -653,7 +659,20 @@ const make = Effect.gen(function* () {
   ) {
     const recordId = recordIdFor(orgId, input.originKey);
     const existing = yield* byId(orgId, recordId).pipe(provideSql);
-    if (existing !== undefined) return { row: existing, created: false };
+    if (existing !== undefined) {
+      const [stored] = yield* sql<{ hash: string | null }>`SELECT request_hash AS hash
+        FROM kin_records WHERE org_id = ${orgId} AND record_id = ${recordId}`;
+      if (
+        input.requestHash !== undefined &&
+        stored?.hash != null &&
+        stored.hash !== input.requestHash
+      )
+        return yield* new KinChatError({
+          reason: "not_allowed",
+          message: "That retry key already created a different entry.",
+        });
+      return { row: existing, created: false };
+    }
     const def = yield* resolveList(orgId, input.list ?? "work");
     if (def.archivedAt !== null)
       return yield* invalid(`${def.name} is archived; the owner can restore it.`);
@@ -704,7 +723,7 @@ const make = Effect.gen(function* () {
         sensitive, confirmed, notes, rev, source_chat_id, source_message_id, created_by_kind,
         created_by_id, assigned_by_person_id, assigned_at, origin_key, created_at, updated_at,
         closed_at, party_id, project_id, repo, fields_json, amount_minor, currency, date_at,
-        date_all_day, repeat_json)
+        date_all_day, repeat_json, request_hash)
       VALUES (${orgId}, ${recordId}, ${list}, ${key}, ${input.title}, ${state},
         ${waitingOn?._tag ?? null}, ${waitingOn === null ? null : principalId(waitingOn)},
         ${input.owner._tag}, ${principalId(input.owner)}, ${input.side ?? "ours"},
@@ -717,7 +736,7 @@ const make = Effect.gen(function* () {
         ${isClosed(state) ? now : null}, ${partyId}, ${projectId}, ${input.repo ?? null},
         ${yield* encodeFieldValues(fields)}, ${amount?.minor ?? null}, ${amount?.currency ?? null},
         ${input.dateAt ?? null}, ${input.dateAllDay === true ? 1 : 0},
-        ${repeat === undefined ? null : yield* encodeRepeat(repeat)})`;
+        ${repeat === undefined ? null : yield* encodeRepeat(repeat)}, ${input.requestHash ?? null})`;
     const changes: Array<FieldChange> = [
       { field: "title", from: null, to: input.title },
       { field: "state", from: null, to: state },
