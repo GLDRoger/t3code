@@ -36,6 +36,7 @@ import { readIsolated } from "./statementReader.ts";
 import { matchRows, type RowMatch } from "./statementMatch.ts";
 import {
   defaultSelection,
+  type Held,
   type Review,
   reviewCard,
   STATEMENT_REVIEW_TEXT,
@@ -407,6 +408,32 @@ export const selectionOf = (stored: Pick<StatementRow, "selectionJson">, review:
     ? defaultSelection(review)
     : Option.getOrElse(decodeSelection(stored.selectionJson), () => defaultSelection(review));
 
+/**
+ * Rows this statement recorded that are still recorded: every row while it is applied, and after
+ * an undo the ones it kept, such as a payment with a receipt. With the receipt that holds each.
+ */
+export const heldRows = Effect.fn("KinStatements.heldRows")(function* (
+  orgId: KinOrgId,
+  statementId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ row: number; receipt: string | null }>`SELECT e.row_index AS row,
+      MAX((SELECT COALESCE(n.number, r.key) FROM kin_records r
+        LEFT JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
+        WHERE r.org_id = e.org_id AND r.register_id = 'receipts' AND r.state <> 'dropped'
+          AND e.payment_id IS NOT NULL AND json_extract(r.fields_json, '$.payment') = e.payment_id
+        ORDER BY r.created_at DESC, r.record_id DESC LIMIT 1)) AS receipt
+    FROM kin_bank_statement_entries e
+    WHERE e.org_id = ${orgId} AND e.statement_id = ${statementId}
+    GROUP BY e.row_index ORDER BY e.row_index`;
+  return new Map(
+    rows.map((one) => [
+      one.row,
+      one.receipt === null ? "Already recorded" : `Already recorded · receipt ${one.receipt}`,
+    ]),
+  ) satisfies Held;
+});
+
 const decodeReviewCard = Schema.decodeUnknownOption(KinStatementReviewCard);
 export const cardState = Effect.fn("KinStatements.cardState")(function* (
   orgId: KinOrgId,
@@ -432,15 +459,29 @@ export const saveRead = Effect.fn("KinStatements.saveRead")(function* (input: {
   readonly now: number;
 }) {
   const sql = yield* SqlClient.SqlClient;
-  const card = reviewCard(input.statementId, input.review, yield* expenseCategories(input.orgId));
-  const json = yield* storeReview(input.review);
   const before = yield* statementRow(input.orgId, input.statementId);
+  const earlier = before?.reviewJson == null ? undefined : reviewOf(before.reviewJson);
+  // A card from an earlier read never confirms this one: its revision is always below.
+  const selection = {
+    ...defaultSelection(input.review),
+    revision:
+      before === undefined || earlier === undefined ? 0 : selectionOf(before, earlier).revision + 1,
+  };
+  const card = reviewCard(
+    input.statementId,
+    input.review,
+    yield* expenseCategories(input.orgId),
+    selection,
+    yield* heldRows(input.orgId, input.statementId),
+  );
+  const json = yield* storeReview(input.review);
   // Each read gets its own card, so a fresh read never edits a card the owner is looking at.
   const widgetId = `kin-statement:${input.statementId}:${card.hash.slice(0, 12)}`;
   yield* sql`UPDATE kin_bank_statements SET status = 'read', reason = NULL,
       source = ${input.review.source}, account = ${input.review.statement.account},
       review_json = ${json}, review_hash = ${card.hash}, review_widget_id = ${widgetId},
-      selection_json = NULL, read_at = ${input.now}, applied_at = NULL, applied_by = NULL,
+      selection_json = ${yield* encodeSelection(selection)}, read_at = ${input.now},
+      applied_at = NULL, applied_by = NULL,
       undone_at = NULL
     WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId}`;
   const previous = before?.reviewWidgetId ?? null;

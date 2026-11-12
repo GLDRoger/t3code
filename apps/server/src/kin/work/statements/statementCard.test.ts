@@ -15,7 +15,7 @@ const row: StatementRow = {
   balanceMinor: null,
   foreign: null,
 };
-const reviewWith = (candidate: Partial<Candidate>): Review => ({
+const reviewWith = (candidate: Partial<Candidate>, read: Partial<StatementRow> = {}): Review => ({
   statement: {
     kind: "account",
     bank: "Invented Bank",
@@ -25,7 +25,7 @@ const reviewWith = (candidate: Partial<Candidate>): Review => ({
     to: row.date,
     openingMinor: null,
     closingMinor: null,
-    rows: [row],
+    rows: [{ ...row, ...read }],
     check: checkBalances("account", [row], null, null, "INR"),
   },
   format: "csv",
@@ -55,14 +55,17 @@ const reviewWith = (candidate: Partial<Candidate>): Review => ({
 });
 
 describe("statement review cards", () => {
-  it("makes a new card when only how a row fits its entry changes", () => {
+  it("makes a new card when only a row as read, or how it fits its entry, changes", () => {
     const hashes = [
       reviewWith({}),
       reviewWith({ fit: "tds", tdsMinor: 1_000_000 }),
       reviewWith({ fit: "tds", tdsMinor: 900_000 }),
       reviewWith({ fit: "part" }),
+      reviewWith({}, { date: "2026-10-15" }),
+      reviewWith({}, { amountMinor: 9_000_001 }),
+      reviewWith({}, { direction: "debit" }),
     ].map((review) => reviewHash("st_1", review));
-    assert.lengthOf(new Set(hashes), 4);
+    assert.lengthOf(new Set(hashes), 7);
     assert.strictEqual(reviewHash("st_1", reviewWith({})), hashes[0]);
   });
 });
