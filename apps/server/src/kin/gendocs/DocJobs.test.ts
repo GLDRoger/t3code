@@ -14,6 +14,8 @@ import {
   ThreadId,
   type WorkerReport,
 } from "@t3tools/contracts";
+import { AgentScope } from "@t3tools/shared/AgentScope";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -125,7 +127,15 @@ const base = Layer.mergeAll(KinRecords.layer, identity, gate).pipe(
   Layer.provideMerge(Sqlite.layerMemory),
   Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
 );
+// Threads whose processes the fake scope can't confirm gone; every other thread's are.
+const alive = new Set<string>();
+const scopes = Layer.succeed(AgentScope, {
+  ...AgentScope.defaultValue(),
+  reap: (threadId: string) => Effect.succeed(!alive.has(threadId)),
+});
 const layer = DocJobs.collectorLayer.pipe(
+  Layer.provideMerge(scopes),
+  Layer.provideMerge(Layer.succeed(HostProcess.Platform, "linux")),
   Layer.provideMerge(Workspace.layer),
   Layer.provideMerge(Vcs.layer),
   Layer.provideMerge(chat),
@@ -228,6 +238,59 @@ const input = (
   ...more,
 });
 const shell = { available: true } as const;
+
+/** A recipe job for INV-1 as `document` records it, with a worktree holding a PDF and a link. */
+const docJob = (
+  workerId: KinWorkerId,
+  options: { readonly worker: string; readonly commit?: string },
+) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const fs = yield* FileSystem.FileSystem;
+    const workspace = yield* Workspace.KinWorkspace;
+    const [entry] = yield* sql<{ recordId: string }>`SELECT record_id AS "recordId" FROM kin_records
+      WHERE org_id = ${orgId} AND key = 'INV-1'`;
+    const prepared = yield* workspace.prepare(orgId, workerId, {
+      "in/inputs.json": '{"bank":"000111222333"}',
+    });
+    yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id,
+        model_json, provenance_json, status, started_at, ended_at, title, chat_id, context)
+      VALUES (${workerId}, ${orgId}, ${lead}, 'wake-3', 'build', ${`kin-work:${workerId}`}, '{}',
+        '{}', ${options.worker}, 0, ${options.worker === "running" ? null : 1}, 'Invoice INV-1',
+        'lead-chat', 'private')`;
+    yield* sql`INSERT INTO kin_doc_jobs (org_id, worker_id, agent_id, wakeup_id, mode, recipe,
+        recipe_commit, entry_record_id, inputs_sha256, number, sensitive, doc_origin, worktree_path,
+        branch, chat_id, audience, answered_message_id, answered_author_kind, answered_author_id,
+        created_at)
+      VALUES (${orgId}, ${workerId}, ${lead}, 'wake-3', 'document', 'invoice',
+        ${options.commit ?? prepared.base}, ${entry!.recordId}, 'inputs-a', NULL, 1,
+        ${`recipe:invoice:${entry!.recordId}`}, ${prepared.worktree}, ${prepared.branch},
+        'lead-chat', 'owner_only', 'msg-3', 'person', ${ownerId}, 0)`;
+    yield* fs.makeDirectory(`${prepared.worktree}/out`, { recursive: true });
+    yield* fs.writeFileString(
+      `${prepared.worktree}/out/invoice.pdf`,
+      "%PDF-1.7\n1 0 obj\n<< /Type /Page >>\nendobj\n%%EOF\n",
+    );
+    yield* fs.writeFileString(`${prepared.worktree}/out/extra.pdf`, "%PDF-1.7\n%%EOF\n");
+    yield* fs.symlink("/etc/hosts", `${prepared.worktree}/out/linked.pdf`);
+    return prepared;
+  });
+const owed = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ workerId: string }>`SELECT worker_id AS "workerId" FROM kin_doc_jobs
+    WHERE org_id = ${orgId} AND removed_at IS NULL ORDER BY worker_id`;
+  return rows.map((row) => row.workerId);
+});
+const pdfReport: WorkerReport = {
+  result: "done",
+  summary: "Made it.",
+  evidence: [{ kind: "file", ref: "out/invoice.pdf" }],
+  openQuestions: [],
+  memorySuggestions: [],
+  misleadingMemory: [],
+  parsed: true,
+};
+const threadOf = (workerId: KinWorkerId) => ThreadId.make(`kin-work:${workerId}`);
 
 describe("document jobs", () => {
   it.effect("give the worker only the recipe's declared inputs, read from stored rows", () =>
@@ -359,38 +422,10 @@ describe("document jobs", () => {
     () =>
       Effect.gen(function* () {
         yield* seed;
-        const sql = yield* SqlClient.SqlClient;
         const fs = yield* FileSystem.FileSystem;
         const config = yield* ServerConfig;
-        const workspace = yield* Workspace.KinWorkspace;
         const collector = yield* DocJobs.KinDocCollector;
-        const [entry] = yield* sql<{
-          recordId: string;
-        }>`SELECT record_id AS "recordId" FROM kin_records
-        WHERE org_id = ${orgId} AND key = 'INV-1'`;
-        const job = (workerId: KinWorkerId) =>
-          Effect.gen(function* () {
-            yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id,
-              model_json, provenance_json, status, started_at, title, chat_id, context)
-            VALUES (${workerId}, ${orgId}, ${lead}, 'wake-3', 'build', ${`kin-work:${workerId}`}, '{}',
-              '{}', 'running', 0, 'Invoice INV-1', 'lead-chat', 'private')`;
-            yield* sql`INSERT INTO kin_doc_jobs (org_id, worker_id, agent_id, wakeup_id, mode, recipe,
-              recipe_commit, entry_record_id, inputs_sha256, number, sensitive, doc_origin, worktree_path,
-              branch, chat_id, audience, answered_message_id, answered_author_kind, answered_author_id,
-              created_at)
-            VALUES (${orgId}, ${workerId}, ${lead}, 'wake-3', 'document', 'invoice', 'commit-a',
-              ${entry!.recordId}, 'inputs-a', NULL, 1, ${`recipe:invoice:${entry!.recordId}`}, '', '',
-              'lead-chat', 'owner_only', 'msg-3', 'person', ${ownerId}, 0)`;
-            const prepared = yield* workspace.prepare(orgId, workerId, {});
-            yield* fs.makeDirectory(`${prepared.worktree}/out`, { recursive: true });
-            yield* fs.writeFileString(
-              `${prepared.worktree}/out/invoice.pdf`,
-              "%PDF-1.7\n1 0 obj\n<< /Type /Page >>\nendobj\n%%EOF\n",
-            );
-            yield* fs.writeFileString(`${prepared.worktree}/out/extra.pdf`, "%PDF-1.7\n%%EOF\n");
-            yield* fs.symlink("/etc/hosts", `${prepared.worktree}/out/linked.pdf`);
-            return prepared;
-          });
+        const job = (workerId: KinWorkerId) => docJob(workerId, { worker: "running" });
         const report: WorkerReport = {
           result: "done",
           // The worker claims a number, a recipe and a file Kin never filed; none of it is used.
@@ -432,7 +467,7 @@ describe("document jobs", () => {
           },
           {
             name: "invoice.pdf",
-            recipe: { name: "invoice", commit: "commit-a" },
+            recipe: { name: "invoice", commit: prepared.base },
             inputsHash: "inputs-a",
             workerId: first,
             number: null,
@@ -489,6 +524,113 @@ describe("document jobs", () => {
         );
         assert.strictEqual(stopped?.result, "blocked");
         assert.match(cards.at(-1)?.lastError ?? "", /didn't finish/);
+      }).pipe(Effect.provide(layer)),
+  );
+  it.effect("remove a job's worktree and inputs whatever ended it, and say so on its row", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const fs = yield* FileSystem.FileSystem;
+      const sql = yield* SqlClient.SqlClient;
+      const collector = yield* DocJobs.KinDocCollector;
+      // An outcome stored before a crash still owes the worktree; collecting again removes it.
+      const stranded = KinWorkerId.make("wk-stranded");
+      const left = yield* docJob(stranded, { worker: "running" });
+      yield* sql`UPDATE kin_doc_jobs SET collected_at = 1,
+          outcome_json = '{"summary":"Kin filed no file from this job.","documents":[],"problems":[]}'
+        WHERE worker_id = ${stranded}`;
+      const again = yield* collector.collect(
+        { orgId, workerId: stranded, threadId: threadOf(stranded) },
+        true,
+        pdfReport,
+      );
+      assert.match(again!.summary, /^Kin filed no file/);
+      assert.isFalse(yield* fs.exists(left.worktree));
+      // A run that ended without collection (abandoned, crashed, failed to launch) goes at startup;
+      // a running one stays.
+      const failed = KinWorkerId.make("wk-failed");
+      const running = KinWorkerId.make("wk-running");
+      const failedTree = yield* docJob(failed, { worker: "failed" });
+      const runningTree = yield* docJob(running, { worker: "running" });
+      assert.deepStrictEqual(yield* owed, [failed, running]);
+      yield* collector.sweep;
+      assert.deepStrictEqual(yield* owed, [running]);
+      assert.isFalse(yield* fs.exists(failedTree.worktree));
+      assert.isTrue(yield* fs.exists(`${runningTree.worktree}/in/inputs.json`));
+      // Cleanup takes the inputs first, and never follows a link planted in their place.
+      yield* fs.remove(`${runningTree.worktree}/in`, { recursive: true });
+      const outside = `${runningTree.worktree}.outside`;
+      yield* fs.makeDirectory(outside);
+      yield* fs.writeFileString(`${outside}/inputs.json`, "not the job's");
+      yield* fs.symlink(outside, `${runningTree.worktree}/in`);
+      yield* collector.cleanup(orgId, running);
+      assert.deepStrictEqual(yield* owed, []);
+      assert.strictEqual(yield* fs.readFileString(`${outside}/inputs.json`), "not the job's");
+      yield* fs.remove(outside, { recursive: true });
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("take nothing back until the worker's processes are confirmed gone", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const fs = yield* FileSystem.FileSystem;
+      const collector = yield* DocJobs.KinDocCollector;
+      const workerId = KinWorkerId.make("wk-alive");
+      const prepared = yield* docJob(workerId, { worker: "running" });
+      alive.add(threadOf(workerId));
+      const refused = yield* collector.collect(
+        { orgId, workerId, threadId: threadOf(workerId) },
+        true,
+        pdfReport,
+      );
+      assert.strictEqual(refused?.result, "blocked");
+      assert.match(refused!.summary, /couldn't confirm the worker had stopped/);
+      assert.deepStrictEqual(refused?.evidence, []);
+      assert.isFalse(yield* fs.exists(prepared.worktree));
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "judge a job's files by the recipe at the commit it ran, and keep its first outcome",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const fs = yield* FileSystem.FileSystem;
+        const workspace = yield* Workspace.KinWorkspace;
+        const collector = yield* DocJobs.KinDocCollector;
+        // The invoice recipe changes on main after the job started: it no longer makes invoice.pdf.
+        const writer = KinWorkerId.make("wk-recipe-writer");
+        const recipeJob = yield* workspace.prepare(orgId, writer, {});
+        const md = `${recipeJob.worktree}/recipes/invoice/RECIPE.md`;
+        yield* fs.writeFileString(
+          md,
+          (yield* fs.readFileString(md)).replace(/^outputs: .*$/m, "outputs: [renamed.pdf]"),
+        );
+        const changed = yield* workspace.applyRecipeChange(orgId, {
+          workerId: writer,
+          recipe: "invoice",
+          agentId: lead,
+        });
+        assert.strictEqual(changed._tag, "committed");
+        const workerId = KinWorkerId.make("wk-old-recipe");
+        yield* docJob(workerId, { worker: "running", commit: recipeJob.base });
+        const result = yield* collector.collect(
+          { orgId, workerId, threadId: threadOf(workerId) },
+          true,
+          pdfReport,
+        );
+        assert.match(result!.summary, /^Kin filed the file as D-/);
+        // A different outcome for the same job never replaces the stored one.
+        const [row] = yield* sql<{ outcomeJson: string }>`SELECT outcome_json AS "outcomeJson"
+        FROM kin_doc_jobs WHERE worker_id = ${workerId}`;
+        const differing = yield* DocJobs.recordOutcome(orgId, workerId, '{"summary":"other"}').pipe(
+          Effect.flip,
+        );
+        assert.strictEqual(differing.reason, "not_allowed");
+        assert.strictEqual(
+          yield* DocJobs.recordOutcome(orgId, workerId, row!.outcomeJson),
+          row!.outcomeJson,
+        );
       }).pipe(Effect.provide(layer)),
   );
 });

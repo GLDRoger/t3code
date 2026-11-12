@@ -52,8 +52,10 @@ type Entry = {
 
 // @effect-diagnostics-next-line extendsNativeError:off - a local throw sentinel inside one pure check.
 class Refusal extends Error {
-  constructor(readonly reason: string) {
+  readonly reason: string;
+  constructor(reason: string) {
     super(reason);
+    this.reason = reason;
   }
 }
 const refuse = (reason: string): never => {

@@ -4,7 +4,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { assert, it } from "@effect/vitest";
-import { vi } from "vitest";
+import { vi } from "vite-plus/test";
 import * as Effect from "effect/Effect";
 
 import { takeOutputs, typeMismatch } from "./returnPath.ts";
@@ -152,16 +152,20 @@ it.effect("reads only the out/ it checked, even when out/ is swapped right after
     // The swap lands right after Kin first looks at out/, before it reads the files in it.
     const open = NodeFS.promises.open.bind(NodeFS.promises);
     const realpath = NodeFS.promises.realpath.bind(NodeFS.promises);
-    using _open = vi.spyOn(NodeFS.promises, "open").mockImplementation(async (...args) => {
-      const handle = await open(...args);
-      swap(args[0]);
-      return handle;
-    });
-    using _realpath = vi.spyOn(NodeFS.promises, "realpath").mockImplementation(async (...args) => {
-      const resolved = await realpath(...args);
-      swap(args[0]);
-      return resolved;
-    });
+    using _open = vi
+      .spyOn(NodeFS.promises, "open")
+      .mockImplementation(async (path: NodeFS.PathLike, flags?: string | number) => {
+        const handle = await open(path, flags);
+        swap(path);
+        return handle;
+      });
+    using _realpath = vi
+      .spyOn(NodeFS.promises, "realpath")
+      .mockImplementation(async (path: NodeFS.PathLike) => {
+        const resolved = await realpath(path);
+        swap(path);
+        return resolved;
+      });
     const result = yield* takeOutputs({
       worktree: NodePath.join(root, "job"),
       named: ["secret.txt", "mine.txt"],

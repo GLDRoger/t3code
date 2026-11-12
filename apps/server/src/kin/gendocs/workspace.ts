@@ -68,6 +68,12 @@ export class KinWorkspace extends Context.Service<
     readonly root: (orgId: KinOrgId) => Effect.Effect<string, KinChatError>;
     /** Every readable recipe on `main`; a broken one is left out and logged. */
     readonly recipes: (orgId: KinOrgId) => Effect.Effect<ReadonlyArray<StoredRecipe>, KinChatError>;
+    /** A recipe as it was at `commit`; `undefined` when it wasn't there or doesn't read. */
+    readonly recipeAt: (
+      orgId: KinOrgId,
+      name: string,
+      commit: string,
+    ) => Effect.Effect<Recipe | undefined, KinChatError>;
     /** A fresh worktree for the job, holding `files` as Kin wrote them. */
     readonly prepare: (
       orgId: KinOrgId,
@@ -209,6 +215,29 @@ export const layer = Layer.effect(
       };
     });
 
+    /** One recipe's RECIPE.md at `ref`, parsed; `undefined`, logged, when it doesn't read. */
+    const readRecipe = Effect.fn("KinWorkspace.readRecipe")(function* (
+      root: string,
+      ref: string,
+      name: string,
+    ) {
+      const spec = `${ref}:recipes/${name}/RECIPE.md`;
+      const size = yield* git(root, ["cat-file", "-s", spec]).pipe(
+        Effect.map((text) => Number.parseInt(text, 10)),
+        Effect.orElseSucceed(() => Number.NaN),
+      );
+      if (!(size > 0 && size <= MAX_RECIPE_MD_BYTES)) return undefined;
+      const parsed = parseRecipe(yield* git(root, ["cat-file", "blob", spec], { raw: true }));
+      if ("reason" in parsed || parsed.name !== name) {
+        yield* Effect.logWarning("Kin skipped a recipe it couldn't read", {
+          name,
+          reason: "reason" in parsed ? parsed.reason : "its name isn't its folder's",
+        });
+        return undefined;
+      }
+      return parsed;
+    });
+
     const recipes = Effect.fn("KinWorkspace.recipes")(function* (orgId: KinOrgId) {
       const root = yield* lock.withPermits(1)(ensureLocked(orgId));
       const listed = yield* git(
@@ -223,24 +252,20 @@ export const layer = Layer.effect(
         .split("\0")
         .filter((name) => recipeName.test(name))
         .slice(0, MAX_RECIPES)) {
-        const spec = `${DEFAULT_BRANCH}:recipes/${name}/RECIPE.md`;
-        const size = yield* git(root, ["cat-file", "-s", spec]).pipe(
-          Effect.map((text) => Number.parseInt(text, 10)),
-          Effect.orElseSucceed(() => Number.NaN),
-        );
-        if (!(size > 0 && size <= MAX_RECIPE_MD_BYTES)) continue;
-        const parsed = parseRecipe(yield* git(root, ["cat-file", "blob", spec], { raw: true }));
-        if ("reason" in parsed || parsed.name !== name) {
-          yield* Effect.logWarning("Kin skipped a recipe it couldn't read", {
-            name,
-            reason: "reason" in parsed ? parsed.reason : "its name isn't its folder's",
-          });
-          continue;
-        }
-        found.push({ ...parsed, ...(yield* lastChange(root, name)) });
+        const parsed = yield* readRecipe(root, DEFAULT_BRANCH, name);
+        if (parsed !== undefined) found.push({ ...parsed, ...(yield* lastChange(root, name)) });
       }
       return found;
     }, failed("read the recipes"));
+
+    const recipeAt = Effect.fn("KinWorkspace.recipeAt")(function* (
+      orgId: KinOrgId,
+      name: string,
+      commit: string,
+    ) {
+      if (!recipeName.test(name) || !/^[0-9a-f]{40}$/.test(commit)) return undefined;
+      return yield* readRecipe(yield* lock.withPermits(1)(ensureLocked(orgId)), commit, name);
+    }, failed("read a recipe"));
 
     const discardLocked = Effect.fn("KinWorkspace.discardLocked")(function* (
       root: string,
@@ -423,6 +448,13 @@ export const layer = Layer.effect(
       failed("make the documents workspace"),
     );
 
-    return KinWorkspace.of({ root: rootFor, recipes, prepare, applyRecipeChange, discard });
+    return KinWorkspace.of({
+      root: rootFor,
+      recipes,
+      recipeAt,
+      prepare,
+      applyRecipeChange,
+      discard,
+    });
   }),
 );

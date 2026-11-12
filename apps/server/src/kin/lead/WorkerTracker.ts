@@ -569,6 +569,8 @@ const make = Effect.gen(function* () {
     // Whether or not this run's row was still the attempt's, a stopped attempt owes the owner this.
     if (yield* stopRequested(worker)) yield* settleSoon(attemptOf(worker));
     if (recorded === undefined) return false;
+    // However a document job ended, its worktree and inputs go now.
+    if (Option.isSome(documents)) yield* documents.value.cleanup(worker.orgId, worker.workerId);
     yield* endPublishCard(attemptOf(worker));
     yield* releaseHosts(stateDir, worker.workerId).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
@@ -1576,6 +1578,7 @@ const make = Effect.gen(function* () {
     // Stopped attempts that died before saying what reached GitHub say it now.
     for (const key of yield* inSql(Attempts.unsettledStops()).pipe(Effect.retry(retry)))
       yield* settleSoon(key);
+    if (Option.isSome(documents)) yield* documents.value.sweep;
     for (const row of yield* openWorkers.pipe(Effect.retry(retry)))
       yield* track(KinOrgId.make(row.orgId), KinWorkerId.make(row.workerId));
   }).pipe(
