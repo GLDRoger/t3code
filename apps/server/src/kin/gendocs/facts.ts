@@ -4,10 +4,16 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { readProfile } from "../work/companyProfile.ts";
+import { logoFile, logoPath } from "./brand.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { type FieldValues, parseFields } from "../work/lists.ts";
 import { dayIn } from "../work/money.ts";
-import { ownerZone, type RecordRow, sensitiveNow } from "../work/recordRows.ts";
+import {
+  notedReceiptNumbers,
+  ownerZone,
+  type RecordRow,
+  sensitiveNow,
+} from "../work/recordRows.ts";
 import { type ListDef, listDef, sensitiveKeys, stateLabel } from "../work/registers.ts";
 import { issuedNumber } from "./numbering.ts";
 import {
@@ -50,6 +56,12 @@ export type Gathered = {
   /** Whether what this input reads is confidential, by where it comes from (`jobSensitive`). */
   readonly sensitive: (input: InputDecl) => boolean;
   readonly number: string | null;
+  /** The logo's file, for a recipe that reads `company.logo`; `null` when there is none. */
+  readonly logo: {
+    readonly bytes: Uint8Array;
+    readonly extension: string;
+    readonly sha256: string;
+  } | null;
 };
 
 // Bank details and tax ids; a company's name, address and place of supply print on every invoice.
@@ -72,6 +84,12 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
   const zone = yield* ownerZone(orgId);
   const now = yield* Clock.currentTimeMillis;
   const profile = yield* readProfile(orgId);
+  const wantsLogo = recipe.inputs.some((input) => sourceOf(input.from)?._tag === "logo");
+  const logoBytes = wantsLogo && profile.logo !== null ? yield* logoFile(profile.logo) : null;
+  const logo =
+    logoBytes === null || profile.logo === null
+      ? null
+      : { ...logoBytes, sha256: profile.logo.sha256 };
   const def = entry === undefined ? undefined : yield* listDef(orgId, entry.registerId);
   const fields = entry === undefined ? {} : parseFields(entry.fieldsJson);
   const client = entry?.partyId == null ? undefined : yield* records.getById(orgId, entry.partyId);
@@ -93,6 +111,44 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
   const sensitiveTables = new Set<string>();
   for (const input of recipe.inputs) {
     const source = sourceOf(input.from);
+    if (source?._tag === "advances") {
+      if (entry === undefined) continue;
+      sensitiveTables.add(input.name);
+      // Received before the day it is issued (today, for one not dated yet), or set against it
+      // from an advance's own receipt.
+      const before = dayIn(entry.dateAt ?? now, zone);
+      const rows = yield* sql<{
+        minor: number;
+        currency: string;
+        paidOn: string;
+        note: string;
+        receipt: string | null;
+      }>`SELECT p.amount_minor AS minor, p.currency, p.paid_on AS "paidOn", p.note,
+          (SELECT n.number FROM kin_records r
+            JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
+            WHERE r.org_id = p.org_id AND r.register_id = 'receipts'
+              AND json_extract(r.fields_json, '$.payment') = p.payment_id
+            ORDER BY r.key LIMIT 1) AS receipt
+        FROM kin_record_payments p
+        WHERE p.org_id = ${orgId} AND p.record_id = ${entry.recordId} AND p.voided_at IS NULL
+          AND (p.paid_on < ${before} OR p.origin_key LIKE 'receipt:%')
+        ORDER BY p.paid_on, p.payment_id LIMIT 200`;
+      const noted = yield* notedReceiptNumbers(
+        orgId,
+        rows.map((row) => row.note),
+      );
+      tables.set(
+        input.name,
+        rows.map((row) =>
+          pick(input, {
+            receipt: row.receipt ?? (noted.has(row.note.trim()) ? row.note.trim() : null),
+            amount: { minor: row.minor, currency: row.currency },
+            paidOn: row.paidOn,
+          }),
+        ),
+      );
+      continue;
+    }
     if (source?._tag !== "rows" && source?._tag !== "payments") continue;
     const month = input.period === undefined ? undefined : given[input.period];
     if (typeof month !== "string" || !/^\d{4}-(?:0[1-9]|1[0-2])$/.test(month)) continue;
@@ -232,9 +288,13 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
         const value: unknown =
           head === "bank" && tail !== undefined
             ? Reflect.get(profile.bank ?? {}, tail)
-            : Reflect.get(profile, head!);
+            : head === "brand" && tail !== undefined
+              ? Reflect.get(profile.brand, tail)
+              : Reflect.get(profile, head!);
         return typeof value === "string" && value.length > 0 ? value : null;
       }
+      case "logo":
+        return logo === null ? null : logoPath(logo.extension);
       case "system":
         return source.key === "today"
           ? dayIn(now, zone)
@@ -243,6 +303,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
             : recipe.numbered && number === null;
       case "rows":
       case "payments":
+      case "advances":
         return tables.get(input.name);
     }
   };
@@ -251,6 +312,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
       case undefined:
       case "agent":
       case "system":
+      case "logo":
         return false;
       case "entry":
         return entryLabelled || AMOUNT_COLUMNS.has(source.key);
@@ -266,6 +328,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
         return SENSITIVE_COMPANY.test(source.key);
       case "rows":
       case "payments":
+      case "advances":
         return sensitiveTables.has(input.name);
     }
   };
@@ -273,7 +336,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
     input.type === "money" ||
     Object.values(input.columns).includes("money") ||
     fromSource(sourceOf(input.from), input);
-  return { facts, currency, sensitive, number } satisfies Gathered;
+  return { facts, currency, sensitive, number, logo } satisfies Gathered;
 });
 
 /** Only the columns the input declares, so a row carries nothing else Kin stores. */

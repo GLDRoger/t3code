@@ -1,6 +1,8 @@
 // Loaded first: the chat and trigger modules import each other.
 import "../chat/KinChatService.ts";
 import { assert, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { ServerConfig } from "../../config.ts";
 import {
   EnvironmentId,
   KinAgentId,
@@ -15,6 +17,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
@@ -45,7 +48,13 @@ const at = "2026-11-11T00:00:00.000Z";
 const owner = { _tag: "person" as const, orgId, personId: ownerId };
 const mate = { _tag: "person" as const, orgId, personId: mateId };
 const DAY = 24 * 60 * 60 * 1000;
-type Services = KinIdentity | KinLevelGate | KinRecords.KinRecords | SqlClient.SqlClient;
+type Services =
+  | KinIdentity
+  | KinLevelGate
+  | KinRecords.KinRecords
+  | SqlClient.SqlClient
+  | FileSystem.FileSystem
+  | ServerConfig;
 
 const scope: McpInvocationScope = {
   environmentId: EnvironmentId.make("fixture"),
@@ -81,6 +90,8 @@ const layer = Layer.mergeAll(KinRecords.layer, identity, gate).pipe(
   Layer.provideMerge(KinPersistence.layer),
   Layer.provideMerge(Sqlite.layerMemory),
   Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-crm-" })),
+  Layer.provideMerge(NodeServices.layer),
 );
 
 /** The owner, a teammate, one lead with its direct chat, and a running turn the owner woke. */

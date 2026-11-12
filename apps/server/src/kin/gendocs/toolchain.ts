@@ -42,6 +42,31 @@ const TYPST_RELEASES: Readonly<
     sha256: "7f9fdd9584866245de9a79e0add8f9236fae6f40a8a45e2c4771ccc14db4e0fa",
   },
 };
+/**
+ * Open-licence fonts recipes may name besides Typst's own (Libertinus Serif, New Computer Modern,
+ * DejaVu Sans Mono): Poppins, a geometric sans, and Mukta, a humanist sans, each with Latin, the
+ * rupee sign and Devanagari. SIL OFL 1.1, from google/fonts at this commit, checked by checksum.
+ */
+const FONTS_COMMIT = "35e77c3854970a550d9894a85aba21420813a019";
+const FONT_FILES: ReadonlyArray<{ readonly path: string; readonly sha256: string }> = [
+  {
+    path: "ofl/poppins/Poppins-Regular.ttf",
+    sha256: "7e65201e9b79159e2300267cc885e16c8dcef2424cdfa09a29bfb0980a94a7ba",
+  },
+  {
+    path: "ofl/poppins/Poppins-Bold.ttf",
+    sha256: "983676516167748b74de6f4771fb384c664fd913acb8b471122ecacf5da5ea6c",
+  },
+  {
+    path: "ofl/mukta/Mukta-Regular.ttf",
+    sha256: "2958e4af564507df2a856164df6f9978dacb03f999a4f34a0c269dc8a4de9688",
+  },
+  {
+    path: "ofl/mukta/Mukta-Bold.ttf",
+    sha256: "7d22891cd57507b04af95a67ffaf59b7073b3595a27d1cfbbcefb418de820a12",
+  },
+];
+const MAX_FONT_BYTES = 2 * 1024 * 1024;
 const MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024;
 const MAX_UNPACKED_BYTES = 256 * 1024 * 1024;
 const MAX_MEMBERS = 200;
@@ -76,12 +101,16 @@ const toolsRoot = (baseDir: string) => `${baseDir}/kin-tools`;
 export const toolDirectories = (baseDir: string) => [
   `${toolsRoot(baseDir)}/typst-${TYPST_VERSION}`,
 ];
+const fontsDirectory = (baseDir: string) =>
+  `${toolsRoot(baseDir)}/fonts-${FONTS_COMMIT.slice(0, 12)}`;
 
 export class KinToolchain extends Context.Service<
   KinToolchain,
   {
     /** The pinned Typst's path on this host, fetched first if need be, or why there is none. */
     readonly ensure: () => Effect.Effect<string, KinChatError>;
+    /** The folder of Kin's pinned fonts, fetched first if need be; `undefined` when it can't be. */
+    readonly fonts: () => Effect.Effect<string | undefined>;
   }
 >()("t3/kin/gendocs/toolchain/KinToolchain") {}
 
@@ -235,6 +264,52 @@ export const layer = Layer.effect(
           ),
       ),
     );
-    return KinToolchain.of({ ensure });
+    const fontsDir = fontsDirectory(baseDir);
+    /** Each pinned font, fetched once and checked; a font that won't fetch leaves Typst's own. */
+    const fonts: KinToolchain["Service"]["fonts"] = Effect.fn("KinToolchain.fonts")(
+      function* () {
+        yield* fs.makeDirectory(fontsDir, { recursive: true });
+        for (const font of FONT_FILES) {
+          const target = path.join(fontsDir, path.basename(font.path));
+          const have = yield* fs.readFile(target).pipe(
+            Effect.flatMap(sha256),
+            Effect.orElseSucceed(() => ""),
+          );
+          if (have === font.sha256) continue;
+          const response = yield* http.get(
+            `https://raw.githubusercontent.com/google/fonts/${FONTS_COMMIT}/${font.path}`,
+          );
+          const chunks: Array<Uint8Array> = [];
+          let received = 0;
+          yield* response.stream.pipe(
+            Stream.runForEach((chunk) => {
+              received += chunk.length;
+              if (received > MAX_FONT_BYTES) return Effect.fail(unavailable("font too large"));
+              chunks.push(chunk);
+              return Effect.void;
+            }),
+          );
+          const bytes = new Uint8Array(received);
+          let at = 0;
+          for (const chunk of chunks) {
+            bytes.set(chunk, at);
+            at += chunk.length;
+          }
+          if ((yield* sha256(bytes)) !== font.sha256)
+            return yield* unavailable(`${font.path} didn't match its pinned checksum`);
+          const scratch = `${target}.tmp`;
+          yield* fs.writeFile(scratch, bytes);
+          yield* fs.rename(scratch, target);
+        }
+        return fontsDir;
+      },
+      lock.withPermits(1),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Kin couldn't fetch its fonts; recipes get Typst's own", {
+          cause,
+        }).pipe(Effect.as(undefined)),
+      ),
+    );
+    return KinToolchain.of({ ensure, fonts });
   }),
 );

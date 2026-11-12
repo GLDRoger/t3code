@@ -42,7 +42,12 @@ export const RENDER_LIMITS: {
 const STDERR_BYTES = 64 * 1024;
 
 export type Rendered =
-  | { readonly _tag: "made"; readonly files: ReadonlyArray<Taken> }
+  | {
+      readonly _tag: "made";
+      readonly files: ReadonlyArray<Taken>;
+      /** The first PDF's first page as a PNG, when asked for. */
+      readonly page?: Taken;
+    }
   /** The recipe, its inputs or its template didn't make a file; the reason is data to show. */
   | { readonly _tag: "failed"; readonly reason: string };
 
@@ -53,7 +58,14 @@ export type RenderRequest = {
   readonly inputs: Readonly<Record<string, Value>>;
   /** For the PDF's creation date and `datetime.today()`: the day as of 00:00 UTC. */
   readonly day: string;
+  /** The company logo, placed at `/brand/logo.<extension>` when an input reads `company.logo`. */
+  readonly logo?: { readonly bytes: Uint8Array; readonly extension: string } | null;
+  /** Also make the first page as a PNG, for a look at it in a chat. */
+  readonly page?: boolean;
 };
+
+/** Pixels per inch of a page preview: an A4 page about 900 pixels wide. */
+const PAGE_PPI = 110;
 
 export class KinDocRenderer extends Context.Service<
   KinDocRenderer,
@@ -73,6 +85,10 @@ export const typstArgs = (input: {
   readonly root: string;
   readonly output: string;
   readonly creationTimestamp: number;
+  /** Kin's pinned fonts, outside the root: fonts are read, never shown as files. */
+  readonly fonts?: string | undefined;
+  /** The first page as a PNG instead of the PDF. */
+  readonly page?: boolean;
 }) => [
   // A certificate that isn't there fails any download before it connects (typst-kit downloader).
   "--cert",
@@ -83,6 +99,7 @@ export const typstArgs = (input: {
   "--ignore-system-fonts",
   "--font-path",
   `${input.root}/recipe`,
+  ...(input.fonts === undefined ? [] : ["--font-path", input.fonts]),
   "--package-path",
   `${input.root}/.no-packages`,
   "--package-cache-path",
@@ -91,8 +108,9 @@ export const typstArgs = (input: {
   String(input.creationTimestamp),
   "--diagnostic-format",
   "short",
-  "--format",
-  "pdf",
+  ...(input.page === true
+    ? ["--format", "png", "--pages", "1", "--ppi", String(PAGE_PPI)]
+    : ["--format", "pdf"]),
   "--input",
   `output=${input.output}`,
   `${input.root}/recipe/template.typ`,
@@ -230,7 +248,13 @@ const pdfPages = (bytes: Uint8Array) => {
   return count > 0 ? count : null;
 };
 const taken = (name: string, bytes: Uint8Array): Taken => {
-  const extension = name.endsWith(".xlsx") ? "xlsx" : name.endsWith(".csv") ? "csv" : "pdf";
+  const extension = name.endsWith(".xlsx")
+    ? "xlsx"
+    : name.endsWith(".csv")
+      ? "csv"
+      : name.endsWith(".png")
+        ? "png"
+        : "pdf";
   return {
     name,
     extension,
@@ -239,7 +263,9 @@ const taken = (name: string, bytes: Uint8Array): Taken => {
         ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         : extension === "csv"
           ? "text/csv"
-          : "application/pdf",
+          : extension === "png"
+            ? "image/png"
+            : "application/pdf",
     bytes,
     sha256: NodeCrypto.createHash("sha256").update(bytes).digest("hex"),
     pages: extension === "pdf" ? pdfPages(bytes) : null,
@@ -283,12 +309,15 @@ export const makeLayer = (limits: typeof RENDER_LIMITS = RENDER_LIMITS) =>
       }).pipe(Effect.ignoreCause({ log: true }));
 
       /** Every file checked as the return path checks a worker's: type by its bytes. */
-      const checked = Effect.fn("KinDocRenderer.check")(function* (files: ReadonlyArray<Taken>) {
-        for (const file of files) {
+      const checked = Effect.fn("KinDocRenderer.check")(function* (
+        files: ReadonlyArray<Taken>,
+        page?: Taken,
+      ) {
+        for (const file of page === undefined ? files : [...files, page]) {
           const problem = yield* Effect.promise(() => typeMismatch(file.extension, file.bytes));
           if (problem !== undefined) return failed(`${file.name}: ${problem}`);
         }
-        return { _tag: "made", files } satisfies Rendered;
+        return { _tag: "made", files, ...(page === undefined ? {} : { page }) } satisfies Rendered;
       });
 
       const typst = Effect.fn("KinDocRenderer.typst")(function* (
@@ -313,13 +342,31 @@ export const makeLayer = (limits: typeof RENDER_LIMITS = RENDER_LIMITS) =>
                   `the ${request.recipe.name} recipe has no template.typ, so Kin can't render it. Have it rewritten with writeRecipe`,
                 );
               const binary = yield* toolchain.ensure();
+              const fonts = yield* toolchain.fonts();
               yield* fs.writeFileString(path.join(root, "inputs.json"), yield* encodeJson(data));
+              // Only a recipe that reads the logo gets its file, at the one place it names.
+              if (
+                request.logo != null &&
+                request.recipe.inputs.some((input) => input.from === "company.logo")
+              ) {
+                yield* fs.makeDirectory(path.join(root, "brand"));
+                yield* fs.writeFile(
+                  path.join(root, `brand/logo.${request.logo.extension}`),
+                  request.logo.bytes,
+                );
+              }
               const made: Array<Taken> = [];
-              for (const output of request.recipe.outputs) {
+              let page: Taken | undefined;
+              const runs = request.recipe.outputs.map((output) => ({ output, page: false }));
+              if (request.page === true && runs[0] !== undefined)
+                runs.push({ output: runs[0].output, page: true });
+              for (const { output, page: asPage } of runs) {
                 const args = typstArgs({
                   root,
                   output,
                   creationTimestamp: Math.floor(Date.parse(`${request.day}T00:00:00Z`) / 1000),
+                  fonts,
+                  page: asPage,
                 });
                 const scoped = yield* scopes.wrap({
                   command: binary,
@@ -369,10 +416,11 @@ export const makeLayer = (limits: typeof RENDER_LIMITS = RENDER_LIMITS) =>
                           ? `${output}: the template imports a package, and Kin renders with no packages. ${plainError(run.stderr, root)}`
                           : `${output}: ${plainError(run.stderr, root)}`,
                       );
-                    made.push(taken(output, run.stdout));
+                    if (asPage) page = taken(output.replace(/\.pdf$/, "-page-1.png"), run.stdout);
+                    else made.push(taken(output, run.stdout));
                 }
               }
-              return yield* checked(made);
+              return yield* checked(made, page);
             }),
           (scratch) => fs.remove(scratch, { recursive: true, force: true }).pipe(Effect.ignore),
         );

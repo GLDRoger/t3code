@@ -1,4 +1,4 @@
-/** The files a new workspace starts with, as they are copied into it: its README and three recipes. */
+/** The files a new workspace starts with, as they are copied into it: its README and four recipes. */
 export const STARTER_FILES: Readonly<Record<string, string>> = {
   "README.md": String.raw`# Kin workspace
 
@@ -31,6 +31,10 @@ RECIPE.md starts with front matter between --- lines:
   - client.name, client.address, client.gstin, client.placeOfSupply, client.terms: that entry's client;
   - company.legalName, company.tradeName, company.address, company.gstin, company.pan,
     company.placeOfSupply, company.sac, company.bank.<accountName|accountNumber|ifsc|bankName|branch|upi>;
+  - company.logo: the logo's path in the render folder, such as /brand/logo.png, or null;
+    company.brand.<primaryColor|secondaryColor|font|footer>: the company's look, each may be null;
+  - entry.advances (a table): the entry's payments received before its date or set against it
+    from an advance's receipt, with columns receipt, amount, paidOn;
   - rows.<list> (a table, with period: naming a month input): that list's entries dated in the
     month, with columns from key, title, state, amount, tax, date, due, client,
     category, number and field_<field>;
@@ -56,9 +60,11 @@ to /inputs.json beside a copy of the recipe: money as { "minor": 11800000, "curr
 "text": "₹1,18,000.00" }, days as 2026-11-12. template.typ reads json("/inputs.json") and lays
 it out; sys.inputs.output names the PDF being made. It never adds up money itself.
 
-Typst 0.15 runs with only this recipe's files and the inputs, its own fonts and any font in the
-folder, no packages and no network, for at most 20 seconds. sample.json holds invented inputs:
-Kin renders it before it keeps a change to the recipe.
+Typst 0.15 runs with only this recipe's files, the inputs and the company logo when an input
+reads it, no packages and no network, for at most 20 seconds. Fonts: Typst's own (Libertinus
+Serif, New Computer Modern, DejaVu Sans Mono), Poppins and Mukta (fetched by Kin, SIL OFL), and
+any font in the folder. sample.json holds invented inputs: Kin renders it before it keeps a
+change to the recipe.
 `,
   "recipes/invoice/RECIPE.md": String.raw`---
 name: invoice
@@ -95,6 +101,16 @@ inputs:
   bankName: { type: text, from: company.bank.bankName, required: false }
   bankBranch: { type: text, from: company.bank.branch, required: false }
   bankUpi: { type: text, from: company.bank.upi, required: false }
+  logo: { type: text, from: company.logo, required: false }
+  brandPrimary: { type: text, from: company.brand.primaryColor, required: false }
+  brandSecondary: { type: text, from: company.brand.secondaryColor, required: false }
+  brandFont: { type: text, from: company.brand.font, required: false }
+  brandFooter: { type: text, from: company.brand.footer, required: false }
+  advances:
+    type: table
+    from: entry.advances
+    required: false
+    columns: { receipt: text, amount: money, paidOn: date }
   billTo: { type: text, required: false, description: "A billing address for this invoice only, when the owner gives one other than the client's" }
   lines:
     type: table
@@ -129,6 +145,14 @@ computed:
   issuedText: { date: [issuedDay, "D MMM YYYY"] }
   dueText: { date: [dueOn, "D MMM YYYY"] }
   billedAt: { first: [billTo, clientAddress] }
+  advanceLines:
+    each:
+      rows: advances
+      set:
+        paidText: { date: [paidOn, "D MMM YYYY"] }
+  advanceTotal: { sum: advances.amount }
+  balance: { minus: [tax.total, advanceTotal] }
+default: true
 outputs: [invoice.pdf]
 ---
 
@@ -137,10 +161,12 @@ each line's value (quantity times rate), the tax lines (CGST and SGST, or UTGST,
 state; IGST between states; none for an export under a letter of undertaking, with the
 endorsement and the country), the total and the amount in words. If the entry's amount and the
 lines don't agree, nothing is made and the reason says by how much: tell the owner, don't change
-a figure. A draft (no number yet) carries a DRAFT mark.
+a figure. A draft (no number yet) carries a DRAFT mark. Money received before the invoice was issued, or set
+against it from an advance's receipt, shows as "Less advance received" with the balance due.
 
-The wording the owner may change (the export endorsements and the footer) is at the top of
-template.typ.
+It shows the company logo and brand colours, font and footer line from the company profile when
+they are set, and looks right without them. The wording the owner may change (the export
+endorsements and the footer) is at the top of template.typ.
 `,
   "recipes/invoice/template.typ": String.raw`// Lays out what Kin computed; no arithmetic here.
 #let d = json("/inputs.json")
@@ -150,7 +176,9 @@ template.typ.
 
 #let ink = rgb("#1f2933")
 #let soft = rgb("#6b7280")
-#let rule = rgb("#d1d5db")
+#let accent = if d.brandPrimary != none { rgb(d.brandPrimary) } else { ink }
+#let rule = if d.brandSecondary != none { rgb(d.brandSecondary) } else { rgb("#d1d5db") }
+#let body-font = if d.brandFont != none { (d.brandFont, "Libertinus Serif") } else { "Libertinus Serif" }
 #let t = d.tax
 #let draft = d.draft != false or d.number == none
 #let heading-text = if t.registered { "Tax Invoice" } else { "Invoice" }
@@ -182,9 +210,12 @@ template.typ.
   background: if draft {
     rotate(-35deg, text(size: 96pt, fill: rgb(220, 38, 38, 28), weight: "bold")[DRAFT])
   },
-  footer: align(center, text(size: 7.5pt, fill: soft, footer-text)),
+  footer: align(center, text(size: 7.5pt, fill: soft)[
+    #if d.brandFooter != none [#d.brandFooter \ ]
+    #footer-text
+  ]),
 )
-#set text(font: "Libertinus Serif", size: 9.5pt, fill: ink)
+#set text(font: body-font, size: 9.5pt, fill: ink)
 #set par(leading: 0.55em)
 
 #let label(body) = text(size: 7.5pt, fill: soft, upper(body))
@@ -194,6 +225,7 @@ template.typ.
   columns: (1fr, auto),
   align: (left + top, right + top),
   [
+    #if d.logo != none [#image(d.logo, height: 14mm) \ #v(1mm)]
     #text(size: 15pt, weight: "bold", d.supplier)
     #if d.supplierTrade != none [ \ #text(fill: soft, d.supplierTrade)]
     #if d.supplierAddress != none [ \ #d.supplierAddress]
@@ -202,7 +234,7 @@ template.typ.
     #if t.supplierState != none [ \ State: #t.supplierState]
   ],
   [
-    #text(size: 17pt, weight: "bold", heading-text)
+    #text(size: 17pt, weight: "bold", fill: accent, heading-text)
     \ #if d.number != none and not draft [No. #d.number] else [#text(fill: rgb("#dc2626"), weight: "bold")[DRAFT · not numbered]]
     \ Date: #d.issuedText
     #if d.dueText != none [ \ Due: #d.dueText]
@@ -210,7 +242,7 @@ template.typ.
 )
 
 #v(6mm)
-#line(length: 100%, stroke: 0.6pt + rule)
+#line(length: 100%, stroke: 0.8pt + accent)
 #v(3mm)
 
 #grid(
@@ -233,7 +265,7 @@ template.typ.
 
 #table(
   columns: (auto, 1fr, auto, auto, auto, auto),
-  stroke: (x, y) => if y == 0 { (bottom: 0.8pt + ink) } else { (bottom: 0.4pt + rule) },
+  stroke: (x, y) => if y == 0 { (bottom: 0.8pt + accent) } else { (bottom: 0.4pt + rule) },
   inset: (x: 5pt, y: 6pt),
   align: (x, y) => if x >= 3 { right } else { left },
   table.header(..("#", "Description", "SAC", "Qty", "Rate", "Taxable value").map(h => text(weight: "bold", h))),
@@ -248,8 +280,18 @@ template.typ.
   align: (left, right),
   [Taxable value], [#t.taxable.text],
   ..t.taxes.map(x => ([#x.name at #x.rate%], [#x.amount.text])).flatten(),
-  table.hline(stroke: 0.8pt + ink),
+  table.hline(stroke: 0.8pt + accent),
   text(weight: "bold")[Total], text(weight: "bold", t.total.text),
+  ..if d.advanceLines != none and d.advanceLines.len() > 0 {
+    (
+      ..d.advanceLines.map(a => (
+        [Less advance received#if a.receipt != none [ (#a.receipt)], #a.paidText],
+        [−#a.amount.text],
+      )).flatten(),
+      table.hline(stroke: 0.8pt + accent),
+      text(weight: "bold")[Balance due], text(weight: "bold", d.balance.text),
+    )
+  } else { () },
 )))
 
 #v(2mm)
@@ -304,11 +346,158 @@ template.typ.
   "bankName": "Sample Bank",
   "bankBranch": "Indiranagar",
   "bankUpi": null,
+  "logo": "logo",
+  "brandPrimary": null,
+  "brandSecondary": null,
+  "brandFont": null,
+  "brandFooter": null,
+  "advances": [{ "receipt": "RCT/26-27/001", "amount": { "minor": 2500000, "currency": "INR" }, "paidOn": "2026-10-20" }],
   "billTo": null,
   "lines": [{ "description": "Advisory", "sac": null, "quantity": "3", "unit": "days", "rate": { "minor": 3333300, "currency": "INR" } }],
   "gstRate": null,
   "exportUnderLut": null,
   "notes": null
+}
+`,
+  "recipes/receipt/RECIPE.md": String.raw`---
+name: receipt
+title: Receipt
+description: A receipt for money received, for one receipts entry, against an invoice or as an advance, numbered in its own series, with the amount in words.
+kind: typst
+list: receipts
+numbered: true
+sensitive: true
+default: true
+inputs:
+  receiptKey: { type: text, from: entry.key }
+  amount: { type: money, from: entry.amount }
+  receivedOn: { type: date, from: entry.date, required: false }
+  number: { type: text, from: system.number, required: false }
+  draft: { type: boolean, from: system.draft }
+  today: { type: date, from: system.today }
+  client: { type: text, from: client.name, required: false }
+  clientAddress: { type: text, from: client.address, required: false }
+  clientGstin: { type: text, from: client.gstin, required: false }
+  towards: { type: text, from: entry.fields.towards, required: false }
+  mode: { type: text, from: entry.fields.mode, required: false }
+  reference: { type: text, from: entry.fields.reference, required: false }
+  supplier: { type: text, from: company.legalName }
+  supplierTrade: { type: text, from: company.tradeName, required: false }
+  supplierAddress: { type: text, from: company.address, required: false }
+  supplierGstin: { type: text, from: company.gstin, required: false }
+  supplierPan: { type: text, from: company.pan, required: false }
+  logo: { type: text, from: company.logo, required: false }
+  brandPrimary: { type: text, from: company.brand.primaryColor, required: false }
+  brandSecondary: { type: text, from: company.brand.secondaryColor, required: false }
+  brandFont: { type: text, from: company.brand.font, required: false }
+  brandFooter: { type: text, from: company.brand.footer, required: false }
+  receivedFrom: { type: text, required: false, description: "Who paid, only when the owner names someone other than the entry's client" }
+computed:
+  words: { words: amount }
+  day: { first: [receivedOn, today] }
+  dayText: { date: [day, "D MMM YYYY"] }
+  payer: { first: [receivedFrom, client] }
+outputs: [receipt.pdf]
+---
+
+One receipt PDF for a receipts entry: who it was received from, towards what (an invoice's number
+or an advance), the amount in figures and words, the mode and its reference, numbered in the
+receipts series. Make it with kin_receipt, which numbers it first; asked again it is the same
+receipt. A receipt Kin hasn't numbered yet carries a DRAFT mark.
+
+It shows the company logo and brand colours, font and footer line when they are set. The wording
+the owner may change is at the top of template.typ.
+`,
+  "recipes/receipt/template.typ": String.raw`// Lays out what Kin computed; no arithmetic here.
+#let d = json("/inputs.json")
+#let heading-text = "Receipt"
+#let footer-text = "This is a computer-generated receipt and needs no signature."
+
+#let ink = rgb("#1f2933")
+#let soft = rgb("#6b7280")
+#let accent = if d.brandPrimary != none { rgb(d.brandPrimary) } else { ink }
+#let rule = if d.brandSecondary != none { rgb(d.brandSecondary) } else { rgb("#d1d5db") }
+#let body-font = if d.brandFont != none { (d.brandFont, "Libertinus Serif") } else { "Libertinus Serif" }
+#let draft = d.draft != false or d.number == none
+
+#set document(title: heading-text + if d.number != none { " " + d.number } else { "" })
+#set page(
+  paper: "a5",
+  flipped: true,
+  margin: (x: 16mm, top: 14mm, bottom: 16mm),
+  background: if draft {
+    rotate(-30deg, text(size: 72pt, fill: rgb(220, 38, 38, 28), weight: "bold")[DRAFT])
+  },
+  footer: align(center, text(size: 7pt, fill: soft)[
+    #if d.brandFooter != none [#d.brandFooter \ ]
+    #footer-text
+  ]),
+)
+#set text(font: body-font, size: 9.5pt, fill: ink)
+#set par(leading: 0.55em)
+
+#let label(body) = text(size: 7pt, fill: soft, upper(body))
+
+#grid(
+  columns: (1fr, auto),
+  align: (left + top, right + top),
+  [
+    #if d.logo != none [#image(d.logo, height: 12mm) \ #v(1mm)]
+    #text(size: 13pt, weight: "bold", d.supplier)
+    #if d.supplierTrade != none [ \ #text(fill: soft, d.supplierTrade)]
+    #if d.supplierAddress != none [ \ #d.supplierAddress]
+    #if d.supplierGstin != none [ \ GSTIN #d.supplierGstin]
+    #if d.supplierPan != none [ · PAN #d.supplierPan]
+  ],
+  [
+    #text(size: 16pt, weight: "bold", fill: accent, heading-text)
+    \ #if d.number != none and not draft [No. #d.number] else [#text(fill: rgb("#dc2626"), weight: "bold")[DRAFT · not numbered]]
+    \ Date: #d.dayText
+  ],
+)
+
+#v(4mm)
+#line(length: 100%, stroke: 0.8pt + accent)
+#v(4mm)
+
+#let row(name, value) = if value != none and value != "" { ([#label(name)], [#value]) } else { () }
+#grid(
+  columns: (32mm, 1fr),
+  row-gutter: 3.5mm,
+  ..row("Received from", if d.payer != none [#text(weight: "bold", d.payer)#if d.clientAddress != none [ \ #d.clientAddress]#if d.clientGstin != none [ \ GSTIN #d.clientGstin]]),
+  ..row("The sum of", d.words),
+  ..row("Towards", d.towards),
+  ..row("Mode", if d.mode != none { upper(d.mode.slice(0, 1)) + d.mode.slice(1) }),
+  ..row("Reference", d.reference),
+)
+
+#v(6mm)
+#align(right, box(stroke: 0.8pt + accent, inset: (x: 10pt, y: 7pt), text(size: 14pt, weight: "bold", d.amount.text)))
+`,
+  "recipes/receipt/sample.json": String.raw`{
+  "receiptKey": "RCT-1",
+  "amount": { "minor": 2500000, "currency": "INR" },
+  "receivedOn": "2026-10-20",
+  "number": "RCT/26-27/001",
+  "draft": false,
+  "today": "2026-10-20",
+  "client": "Example Client Pvt Ltd",
+  "clientAddress": "12 Sample Road, Pune 411001",
+  "clientGstin": "27BBBBB2222B1Z5",
+  "towards": "Advance for the website redesign",
+  "mode": "bank transfer",
+  "reference": "UTR 000123456789",
+  "supplier": "Sample Studio Pvt Ltd",
+  "supplierTrade": null,
+  "supplierAddress": "4 Example Lane, Bengaluru 560001",
+  "supplierGstin": "29AAAAA1111A1Z5",
+  "supplierPan": "AAAAA1111A",
+  "logo": "logo",
+  "brandPrimary": null,
+  "brandSecondary": null,
+  "brandFont": null,
+  "brandFooter": null,
+  "receivedFrom": null
 }
 `,
   "recipes/accountant-pack/RECIPE.md": String.raw`---
@@ -403,6 +592,9 @@ inputs:
   organisation: { type: text, required: false }
   date: { type: text, required: false, description: "As it should read, such as 12 Nov 2026" }
   body: { type: text, required: true, description: "Markdown: headings, paragraphs, lists, tables, and a line [chart: name] where a chart goes. Only figures the owner gave or Kin showed you; never work one out." }
+  logo: { type: text, from: company.logo, required: false }
+  brandPrimary: { type: text, from: company.brand.primaryColor, required: false }
+  brandFont: { type: text, from: company.brand.font, required: false }
   charts:
     type: table
     required: false
@@ -413,16 +605,17 @@ computed:
 outputs: [report.pdf]
 ---
 
-A report PDF. Write the body as Markdown with headings, short paragraphs, lists and tables, and
+A report PDF, with the company logo and brand colour when they are set. Write the body as Markdown with headings, short paragraphs, lists and tables, and
 a line [chart: name] for each chart in charts. Values are drawn as given, never summed.
 `,
   "recipes/report/template.typ": String.raw`// Lays out the body Kin parsed and draws the charts from their rows; text is data, never markup.
 #let d = json("/inputs.json")
-#let palette = (rgb("#2563eb"), rgb("#f59e0b"), rgb("#10b981"), rgb("#ef4444"), rgb("#8b5cf6"), rgb("#0891b2"))
+#let accent = if d.brandPrimary != none { rgb(d.brandPrimary) } else { rgb("#2563eb") }
+#let palette = (accent, rgb("#f59e0b"), rgb("#10b981"), rgb("#ef4444"), rgb("#8b5cf6"), rgb("#0891b2"))
 
 #set document(title: d.title)
 #set page(paper: "a4", margin: (x: 20mm, y: 20mm), footer: context align(center, text(size: 8pt, fill: luma(120), counter(page).display("1"))))
-#set text(font: "Libertinus Serif", size: 10.5pt)
+#set text(font: if d.brandFont != none { (d.brandFont, "Libertinus Serif") } else { "Libertinus Serif" }, size: 10.5pt)
 #set par(justify: true, leading: 0.6em)
 #show heading.where(level: 1): set text(size: 15pt)
 
@@ -498,7 +691,8 @@ a line [chart: name] for each chart in charts. Values are drawn as given, never 
   }))
 }
 
-#text(size: 22pt, weight: "bold", d.title)
+#if d.logo != none { place(top + right, image(d.logo, height: 12mm)) }
+#text(size: 22pt, weight: "bold", fill: accent, d.title)
 #if d.subtitle != none [ \ #text(size: 12pt, fill: luma(90), d.subtitle)]
 #let byline = (d.organisation, d.date).filter(x => x != none)
 #if byline.len() > 0 [ \ #text(size: 9pt, fill: luma(120), byline.join(" · "))]
@@ -533,7 +727,10 @@ a line [chart: name] for each chart in charts. Values are drawn as given, never 
     { "chart": "revenue", "kind": "bar", "label": "Jul", "value": "4", "series": null },
     { "chart": "revenue", "kind": "bar", "label": "Aug", "value": "5.5", "series": null },
     { "chart": "revenue", "kind": "bar", "label": "Sep", "value": "6", "series": null }
-  ]
+  ],
+  "logo": "logo",
+  "brandPrimary": null,
+  "brandFont": null
 }
 `,
 };

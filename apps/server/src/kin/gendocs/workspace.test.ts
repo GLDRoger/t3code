@@ -42,6 +42,7 @@ it.layer(layer)("KinWorkspace", (it) => {
       assert.deepStrictEqual(recipes.map((recipe) => recipe.name).sort(), [
         "accountant-pack",
         "invoice",
+        "receipt",
         "report",
       ]);
       assert.deepStrictEqual(recipes[0]!.changed, { _tag: "starter" });
@@ -220,7 +221,7 @@ it.layer(layer)("KinWorkspace", (it) => {
       const refused = yield* change(1, "invoice.pdf: template.typ:4:1: error: unknown variable");
       assert.match(
         refused._tag === "refused" ? refused.reason : refused._tag,
-        /^its sample didn't render, so Kin kept the recipe as it was: .*unknown variable/,
+        /^invoice\.pdf: template\.typ:4:1: error: unknown variable/,
       );
       assert.strictEqual(samples[0], STARTER_FILES["recipes/invoice/sample.json"]);
       assert.strictEqual((yield* described("invoice"))!.description, original);
@@ -236,7 +237,7 @@ it.layer(layer)("KinWorkspace", (it) => {
       );
       assert.match(
         unrendered._tag === "refused" ? unrendered.reason : unrendered._tag,
-        /didn't render from its sample, so Kin left the recipe as it is: invoice\.pdf: an invented error/,
+        /can't be kept, so Kin left the recipe as it is: invoice\.pdf: an invented error/,
       );
       assert.strictEqual(samples.at(-1), STARTER_FILES["recipes/invoice/sample.json"]);
       assert.strictEqual((yield* described("invoice"))!.description, "Change 2.");

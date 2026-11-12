@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
@@ -264,6 +265,63 @@ export const KinPaymentVoidInput = Schema.Struct({
 });
 export type KinPaymentVoidInput = typeof KinPaymentVoidInput.Type;
 
+/**
+ * A receipt: money received, numbered in its own series. Against an invoice's payment, or an
+ * advance received before any invoice, later set against one (`invoice` then names it).
+ */
+export const KinReceipt = Schema.Struct({
+  key: KinRecordKey,
+  number: Schema.NullOr(TrimmedNonEmptyString),
+  state: KinRecordState,
+  receivedOn: Schema.NullOr(KinDay),
+  amount: Schema.NullOr(KinMoney),
+  receivedFrom: Schema.NullOr(KinRecordRef),
+  towards: Schema.NullOr(Schema.String),
+  mode: Schema.NullOr(Schema.String),
+  reference: Schema.NullOr(Schema.String),
+  invoice: Schema.NullOr(KinRecordKey),
+  paymentId: Schema.NullOr(TrimmedNonEmptyString),
+  /** True when it was received before it was set against an invoice. */
+  advance: Schema.Boolean,
+  document: Schema.NullOr(Schema.Struct({ key: KinRecordKey, title: KinTrimmedText })),
+});
+export type KinReceipt = typeof KinReceipt.Type;
+export const KinReceiptsInput = Schema.Struct({
+  orgId: KinOrgId,
+  /** Newest first; default 100. */
+  limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 200 }))),
+});
+export type KinReceiptsInput = typeof KinReceiptsInput.Type;
+export const KinReceiptsResult = Schema.Struct({ receipts: Schema.Array(KinReceipt) });
+export type KinReceiptsResult = typeof KinReceiptsResult.Type;
+/**
+ * Makes a receipt, numbered and with its PDF: for a payment recorded on an invoice (a number the
+ * old system gave it, in its note, is kept), or for a receipts entry such as an advance. With
+ * `against`, an advance is set against that invoice as a payment. Retries return the same receipt.
+ */
+export const KinMakeReceiptInput = Schema.Struct({
+  orgId: KinOrgId,
+  paymentId: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
+  key: Schema.optional(KinRecordKey),
+  /** Money received before any invoice: a new receipt from the client, towards some work. */
+  advance: Schema.optional(
+    Schema.Struct({ client: Schema.optional(KinRecordKey), amount: KinMoney, receivedOn: KinDay }),
+  ),
+  against: Schema.optional(KinRecordKey),
+  towards: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(300))),
+  mode: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(40))),
+  reference: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(120))),
+  /** A retry with the same id returns the same receipt. */
+  clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+});
+export type KinMakeReceiptInput = typeof KinMakeReceiptInput.Type;
+export const KinMakeReceiptResult = Schema.Struct({
+  receipt: KinReceipt,
+  /** Why its PDF couldn't be made; the receipt and its number stand either way. */
+  problems: Schema.Array(Schema.String),
+});
+export type KinMakeReceiptResult = typeof KinMakeReceiptResult.Type;
+
 /** A file the owner can keep on an entry: one on a message in a chat the owner is in. */
 export const KinWorkFile = Schema.Struct({ ...KinFileRef.fields, sentAt: IsoDateTime });
 export type KinWorkFile = typeof KinWorkFile.Type;
@@ -322,6 +380,43 @@ export const KinCompanyBank = Schema.Struct({
   upi: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[\w.-]{2,256}@[A-Za-z]{2,64}$/))),
 });
 export type KinCompanyBank = typeof KinCompanyBank.Type;
+/** Logo files a recipe may show: drawn as sent, never re-encoded. */
+const KIN_LOGO_MIME_TYPES = ["image/png", "image/jpeg", "image/svg+xml"] as const;
+/** The company's logo: Kin's own copy of an image the owner sent, kept with the profile. */
+export const KinCompanyLogo = Schema.Struct({
+  attachmentId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  name: KinTrimmedText.check(Schema.isMaxLength(255)),
+  mimeType: Schema.Literals(KIN_LOGO_MIME_TYPES),
+  bytes: NonNegativeInt,
+  /** In pixels; `null` for an SVG with no size of its own. */
+  width: Schema.NullOr(NonNegativeInt),
+  height: Schema.NullOr(NonNegativeInt),
+  sha256: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)),
+});
+export type KinCompanyLogo = typeof KinCompanyLogo.Type;
+/** Fonts every recipe can use: Typst's own and the open-licence ones Kin fetches. */
+const KIN_RECIPE_FONTS = [
+  "Poppins",
+  "Mukta",
+  "Libertinus Serif",
+  "New Computer Modern",
+  "DejaVu Sans Mono",
+] as const;
+const BrandColor = Schema.NullOr(Schema.String.check(Schema.isPattern(/^#[0-9A-Fa-f]{6}$/)));
+/** How the company's documents look where a recipe asks: colours, a font and a footer line. */
+export const KinCompanyBrand = Schema.Struct({
+  primaryColor: BrandColor,
+  secondaryColor: BrandColor,
+  font: Schema.NullOr(Schema.Literals(KIN_RECIPE_FONTS)),
+  footer: Schema.NullOr(KinTrimmedText.check(Schema.isMaxLength(300))),
+});
+export type KinCompanyBrand = typeof KinCompanyBrand.Type;
+const NO_BRAND: KinCompanyBrand = {
+  primaryColor: null,
+  secondaryColor: null,
+  font: null,
+  footer: null,
+};
 const KinCompanyProfileFields = {
   legalName: ProfileText,
   tradeName: ProfileText,
@@ -333,6 +428,9 @@ const KinCompanyProfileFields = {
   /** The services accounting code its invoices usually carry. */
   sac: Schema.NullOr(Schema.String.check(Schema.isPattern(/^\d{4,8}$/))),
   bank: KinCompanyBank,
+  // Profiles stored before the logo and brand existed read as having neither.
+  logo: Schema.NullOr(KinCompanyLogo).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  brand: KinCompanyBrand.pipe(Schema.withDecodingDefaultKey(Effect.succeed(NO_BRAND))),
 };
 export const KinCompanyProfileData = Schema.Struct(KinCompanyProfileFields);
 export type KinCompanyProfileData = typeof KinCompanyProfileData.Type;
@@ -366,6 +464,16 @@ export const KinCompanyProfileSetInput = Schema.Struct({
       upi: Schema.optional(KinCompanyBank.fields.upi),
     }),
   ),
+  /** A client only clears the logo; a new one comes from a file the owner sent, by the agent's card. */
+  logo: Schema.optional(Schema.Null),
+  brand: Schema.optional(
+    Schema.Struct({
+      primaryColor: Schema.optional(KinCompanyBrand.fields.primaryColor),
+      secondaryColor: Schema.optional(KinCompanyBrand.fields.secondaryColor),
+      font: Schema.optional(KinCompanyBrand.fields.font),
+      footer: Schema.optional(KinCompanyBrand.fields.footer),
+    }),
+  ),
 });
 export type KinCompanyProfileSetInput = typeof KinCompanyProfileSetInput.Type;
 
@@ -381,6 +489,8 @@ const KIN_FINANCE_WS_METHODS = {
   setCompanyProfile: "kin.work.setCompanyProfile",
   issue: "kin.work.issue",
   void: "kin.work.void",
+  receipts: "kin.work.receipts",
+  makeReceipt: "kin.work.makeReceipt",
 } as const;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -437,6 +547,16 @@ export const KinFinanceRpcs = [
     error,
   }),
   Rpc.make(KIN_FINANCE_WS_METHODS.void, { payload: KinVoidInput, success: KinIssueResult, error }),
+  Rpc.make(KIN_FINANCE_WS_METHODS.receipts, {
+    payload: KinReceiptsInput,
+    success: KinReceiptsResult,
+    error,
+  }),
+  Rpc.make(KIN_FINANCE_WS_METHODS.makeReceipt, {
+    payload: KinMakeReceiptInput,
+    success: KinMakeReceiptResult,
+    error,
+  }),
 ] as const;
 
 export const KIN_FINANCE_RPC_SCOPES = {
@@ -454,4 +574,7 @@ export const KIN_FINANCE_RPC_SCOPES = {
   // A number is an entry change, like a payment; nothing leaves the host.
   [KIN_FINANCE_WS_METHODS.issue]: AuthOrchestrationOperateScope,
   [KIN_FINANCE_WS_METHODS.void]: AuthOrchestrationOperateScope,
+  [KIN_FINANCE_WS_METHODS.receipts]: AuthOrchestrationReadScope,
+  // A receipt is an entry with a number, like issuing one.
+  [KIN_FINANCE_WS_METHODS.makeReceipt]: AuthOrchestrationOperateScope,
 } as const;

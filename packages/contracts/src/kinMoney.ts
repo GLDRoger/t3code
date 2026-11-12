@@ -59,6 +59,19 @@ export const KinFieldValue = Schema.Union([Schema.String, Schema.Array(Schema.St
 export type KinFieldValue = typeof KinFieldValue.Type;
 
 /** Money paid against an entry that is paid over time. A voided one stays in the history and counts for nothing. */
+/**
+ * The receipt for a payment: Kin's receipt entry, or only the number another system gave it,
+ * kept in the payment's note, until a receipt is made for it (`key` and `document` then null).
+ */
+export const KinPaymentReceipt = Schema.Struct({
+  key: Schema.NullOr(TrimmedNonEmptyString),
+  number: Schema.NullOr(TrimmedNonEmptyString),
+  receivedOn: KinDay,
+  amount: KinMoney,
+  /** The receipt's PDF, a doc. */
+  document: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type KinPaymentReceipt = typeof KinPaymentReceipt.Type;
 export const KinPayment = Schema.Struct({
   paymentId: TrimmedNonEmptyString,
   amount: KinMoney,
@@ -66,5 +79,7 @@ export const KinPayment = Schema.Struct({
   note: Schema.String,
   recordedAt: IsoDateTime,
   voidedAt: Schema.NullOr(IsoDateTime),
+  /** Absent from older servers; `null` when it has no receipt yet (make one with makeReceipt). */
+  receipt: Schema.optionalKey(Schema.NullOr(KinPaymentReceipt)),
 });
 export type KinPayment = typeof KinPayment.Type;

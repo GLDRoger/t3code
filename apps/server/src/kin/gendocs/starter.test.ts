@@ -296,20 +296,24 @@ describe("accountant-pack", () => {
   });
 });
 
-it("ships three recipes that parse, read only what Kin supplies, and make their samples", async () => {
-  const [inv, pack, report] = ["invoice", "accountant-pack", "report"].map(recipe);
+it("ships four recipes that parse, read only what Kin supplies, and make their samples", async () => {
+  const [inv, pack, report, receipt] = ["invoice", "accountant-pack", "report", "receipt"].map(
+    recipe,
+  );
   assert.deepStrictEqual(
-    [inv!, pack!, report!].map((one) => [
+    [inv!, pack!, report!, receipt!].map((one) => [
       one.name,
       one.kind,
       one.list,
       one.numbered,
       one.sensitive,
+      one.default,
     ]),
     [
-      ["invoice", "typst", "invoices", true, true],
-      ["accountant-pack", "table", null, false, true],
-      ["report", "typst", null, false, false],
+      ["invoice", "typst", "invoices", true, true, true],
+      ["accountant-pack", "table", null, false, true, false],
+      ["report", "typst", null, false, false, false],
+      ["receipt", "typst", "receipts", true, true, true],
     ],
   );
   // No recipe carries a script any more: a template, a declaration and a sample.
@@ -317,7 +321,7 @@ it("ships three recipes that parse, read only what Kin supplies, and make their 
     Object.keys(STARTER_FILES).filter((file) => /\.(mjs|js|py|sh)$/.test(file)),
     [],
   );
-  for (const one of [inv!, report!]) {
+  for (const one of [inv!, report!, receipt!]) {
     const sample = sampleInputs(one, STARTER_FILES[`recipes/${one.name}/sample.json`]);
     if (typeof sample === "string") return assert.fail(sample);
     assert.property(computeData(sample, one.computed), "data", one.name);
@@ -368,6 +372,9 @@ it("ships three recipes that parse, read only what Kin supplies, and make their 
     "organisation",
     "date",
     "body",
+    "logo",
+    "brandPrimary",
+    "brandFont",
     "charts",
   ]);
 

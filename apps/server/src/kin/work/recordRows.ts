@@ -487,14 +487,71 @@ const paymentsOf = Effect.fn("KinRecords.paymentsOf")(function* (
       note, created_at AS "createdAt", voided_at AS "voidedAt"
     FROM kin_record_payments WHERE org_id = ${orgId} AND record_id = ${recordId}
     ORDER BY paid_on DESC, created_at DESC, payment_id`;
-  return rows.map((payment): KinPayment => ({
-    paymentId: payment.paymentId,
-    amount: { minor: payment.minor, currency: payment.currency },
-    paidOn: payment.paidOn,
-    note: payment.note,
-    recordedAt: iso(payment.createdAt),
-    voidedAt: payment.voidedAt === null ? null : iso(payment.voidedAt),
-  }));
+  const receipts =
+    rows.length === 0
+      ? []
+      : yield* sql<{ payment: string; key: string; number: string | null; doc: string | null }>`
+        SELECT json_extract(r.fields_json, '$.payment') AS payment, r.key, n.number,
+          (SELECT d.key FROM kin_doc_jobs j
+            JOIN kin_doc_versions v ON v.org_id = j.org_id AND v.worker_id = j.worker_id
+            JOIN kin_records d ON d.org_id = v.org_id AND d.record_id = v.record_id
+            WHERE j.org_id = r.org_id AND j.entry_record_id = r.record_id AND j.recipe = 'receipt'
+            ORDER BY j.created_at DESC LIMIT 1) AS doc
+        FROM kin_records r
+        LEFT JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
+        WHERE r.org_id = ${orgId} AND r.register_id = 'receipts' AND r.state <> 'dropped'
+          AND json_extract(r.fields_json, '$.payment') IN ${sql.in(rows.map((row) => row.paymentId))}
+        ORDER BY r.key`;
+  const numbers = yield* notedReceiptNumbers(
+    orgId,
+    rows.map((row) => row.note),
+  );
+  return rows.map((payment): KinPayment => {
+    const receipt = receipts.find((one) => one.payment === payment.paymentId);
+    const noted = numbers.has(payment.note.trim()) ? payment.note.trim() : undefined;
+    return {
+      paymentId: payment.paymentId,
+      amount: { minor: payment.minor, currency: payment.currency },
+      paidOn: payment.paidOn,
+      note: payment.note,
+      recordedAt: iso(payment.createdAt),
+      voidedAt: payment.voidedAt === null ? null : iso(payment.voidedAt),
+      receipt:
+        receipt === undefined && noted === undefined
+          ? null
+          : {
+              key: receipt?.key ?? null,
+              number: receipt?.number ?? noted ?? null,
+              receivedOn: payment.paidOn,
+              amount: { minor: payment.minor, currency: payment.currency },
+              document: receipt?.doc ?? null,
+            },
+    };
+  });
+});
+
+/** `QST-RN/2026-27/001`: a receipt number another system issued, kept as a payment's note. */
+const ISSUED_RECEIPT = /^[A-Za-z][A-Za-z0-9-]{0,7}\/(?:\d{2})?\d{2}-\d{2}\/\d{1,9}$/;
+/**
+ * Which of these payment notes are receipt numbers another system gave: shaped like one, and not
+ * a number of an entry in another list, such as the invoice's own number noted on its payment.
+ */
+export const notedReceiptNumbers = Effect.fn("KinRecords.notedReceiptNumbers")(function* (
+  orgId: KinOrgId,
+  notes: ReadonlyArray<string>,
+) {
+  const shaped = [...new Set(notes.map((note) => note.trim()))].filter((note) =>
+    ISSUED_RECEIPT.test(note),
+  );
+  if (shaped.length === 0) return new Set<string>();
+  const sql = yield* SqlClient.SqlClient;
+  const other = new Set(
+    (yield* sql<{ number: string }>`SELECT number FROM kin_issued_numbers
+      WHERE org_id = ${orgId} AND register_id <> 'receipts' AND number IN ${sql.in(shaped)}`).map(
+      (row) => row.number,
+    ),
+  );
+  return new Set(shaped.filter((note) => !other.has(note)));
 });
 
 export const recordSeq = Effect.fn("KinRecords.recordSeq")(function* (

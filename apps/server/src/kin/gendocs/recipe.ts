@@ -53,6 +53,7 @@ const FrontMatter = Schema.Struct({
   list: Schema.optional(Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_]{1,39}$/))),
   numbered: Schema.optional(Schema.Boolean),
   sensitive: Schema.optional(Schema.Boolean),
+  default: Schema.optional(Schema.Boolean),
   inputs: Schema.optional(Schema.Record(Name, Declared)),
   computed: Schema.optional(Schema.Record(Name, Schema.Unknown)),
   workbook: Schema.optional(FileName),
@@ -81,6 +82,8 @@ export type Recipe = {
   readonly list: string | null;
   readonly numbered: boolean;
   readonly sensitive: boolean;
+  /** The one to use for its list unless the owner asks for another. */
+  readonly default: boolean;
   readonly inputs: ReadonlyArray<InputDecl>;
   /** Fields Kin works out, in order, each `{ <function>: <arguments> }` (`compute.ts`). */
   readonly computed: ReadonlyArray<readonly [string, unknown]>;
@@ -95,6 +98,7 @@ const ENTRY_KEYS = ["key", "title", "state", "amount", "tax", "date", "due", "no
 const CLIENT_KEYS = ["name", "address", "gstin", "placeOfSupply", "terms"];
 const COMPANY_KEYS = ["legalName", "tradeName", "address", "gstin", "pan", "placeOfSupply", "sac"];
 const BANK_KEYS = ["accountName", "accountNumber", "ifsc", "bankName", "branch", "upi"];
+const BRAND_KEYS = ["primaryColor", "secondaryColor", "font", "footer"];
 const SYSTEM_KEYS = ["number", "draft", "today"];
 /** What a `rows.<list>` table may hold per row; a recipe names the columns it wants. */
 const ROW_COLUMNS = [
@@ -110,6 +114,8 @@ const ROW_COLUMNS = [
   "number",
 ];
 const PAYMENT_COLUMNS = ["invoice", "client", "amount", "paidOn"];
+/** An entry's payments received before it was issued, or set from an advance's receipt. */
+const ADVANCE_COLUMNS = ["receipt", "amount", "paidOn"];
 
 /** Where a value comes from, parsed; `undefined` for a `from` this server doesn't read. */
 export type Source =
@@ -118,8 +124,11 @@ export type Source =
   | { readonly _tag: "entryField"; readonly field: string }
   | { readonly _tag: "client"; readonly key: string }
   | { readonly _tag: "company"; readonly key: string }
+  /** The logo's path in the render root, `/brand/logo.<ext>`, or null without one. */
+  | { readonly _tag: "logo" }
   | { readonly _tag: "rows"; readonly list: string }
   | { readonly _tag: "payments" }
+  | { readonly _tag: "advances" }
   | { readonly _tag: "system"; readonly key: string };
 export const sourceOf = (from: string): Source | undefined => {
   if (from === "agent") return { _tag: "agent" };
@@ -128,14 +137,17 @@ export const sourceOf = (from: string): Source | undefined => {
   const tail = rest.join(".");
   switch (head) {
     case "entry":
+      if (tail === "advances") return { _tag: "advances" };
       if (rest[0] === "fields" && rest.length === 2 && /^[a-z][a-zA-Z0-9]{0,39}$/.test(rest[1]!))
         return { _tag: "entryField", field: rest[1]! };
       return ENTRY_KEYS.includes(tail) ? { _tag: "entry", key: tail } : undefined;
     case "client":
       return CLIENT_KEYS.includes(tail) ? { _tag: "client", key: tail } : undefined;
     case "company":
+      if (tail === "logo") return { _tag: "logo" };
       return COMPANY_KEYS.includes(tail) ||
-        (rest[0] === "bank" && rest.length === 2 && BANK_KEYS.includes(rest[1]!))
+        (rest[0] === "bank" && rest.length === 2 && BANK_KEYS.includes(rest[1]!)) ||
+        (rest[0] === "brand" && rest.length === 2 && BRAND_KEYS.includes(rest[1]!))
         ? { _tag: "company", key: tail }
         : undefined;
     case "rows":
@@ -167,22 +179,34 @@ export const parseRecipe = (text: string): Recipe | RecipeProblem => {
     const source = sourceOf(from);
     if (source === undefined)
       return problem(`input ${name} reads from ${from}, which Kin doesn't supply`);
-    const isTable = source._tag === "rows" || source._tag === "payments";
+    const isTable =
+      source._tag === "rows" || source._tag === "payments" || source._tag === "advances";
     if (isTable !== (declared.type === "table") && source._tag !== "agent")
       return problem(`input ${name}: its type doesn't match what ${from} gives`);
     if (declared.type === "month" && source._tag !== "agent")
       return problem(`input ${name}: a month is the agent's to give`);
+    if (
+      (source._tag === "logo" || (source._tag === "company" && source.key.startsWith("brand."))) &&
+      declared.type !== "text"
+    )
+      return problem(`input ${name}: ${from} is text`);
     if (declared.type === "table" && Object.keys(declared.columns ?? {}).length === 0)
       return problem(`input ${name} is a table with no columns`);
     if (isTable) {
-      const allowed = source._tag === "payments" ? PAYMENT_COLUMNS : ROW_COLUMNS;
+      const allowed =
+        source._tag === "payments"
+          ? PAYMENT_COLUMNS
+          : source._tag === "advances"
+            ? ADVANCE_COLUMNS
+            : ROW_COLUMNS;
       const extra = Object.keys(declared.columns ?? {}).filter(
-        (column) => !allowed.includes(column) && !column.startsWith("field_"),
+        (column) =>
+          !allowed.includes(column) && !(source._tag !== "advances" && column.startsWith("field_")),
       );
       if (extra.length > 0)
         return problem(`input ${name} asks for columns Kin doesn't have: ${extra.join(", ")}`);
       const period = declared.period === undefined ? undefined : front.inputs?.[declared.period];
-      if (period?.type !== "month")
+      if (source._tag !== "advances" && period?.type !== "month")
         return problem(`input ${name} needs period: a month input of the agent's`);
     }
     inputs.push({
@@ -237,6 +261,7 @@ export const parseRecipe = (text: string): Recipe | RecipeProblem => {
     list: front.list ?? null,
     numbered: front.numbered ?? false,
     sensitive: front.sensitive ?? false,
+    default: front.default ?? false,
     inputs,
     computed,
     sheets,
@@ -251,7 +276,12 @@ export const needsEntry = (recipe: Recipe) =>
   recipe.list !== null ||
   recipe.inputs.some((input) => {
     const source = sourceOf(input.from);
-    return source?._tag === "entry" || source?._tag === "entryField" || source?._tag === "client";
+    return (
+      source?._tag === "entry" ||
+      source?._tag === "entryField" ||
+      source?._tag === "client" ||
+      source?._tag === "advances"
+    );
   });
 
 export type Money = { readonly minor: number; readonly currency: string };

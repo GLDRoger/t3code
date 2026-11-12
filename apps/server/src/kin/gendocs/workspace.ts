@@ -71,12 +71,22 @@ export type RecipeChange =
     }
   | { readonly _tag: "unchanged"; readonly left: ReadonlyArray<string> }
   | { readonly _tag: "refused"; readonly reason: string };
-/** Why a change can't be kept, from rendering its sample; `undefined` when it rendered. */
-export type VerifyChange = (change: {
+export type RecipeFile = { readonly path: string; readonly blob: string; readonly size: number };
+/** A recipe's folder as it would be kept: parsed, with its sample, files and template. */
+export type CheckedRecipe = {
+  /** A commit, or for a change not yet kept the tree it would commit. */
   readonly commit: string;
   readonly recipe: Recipe;
   readonly sample: string | undefined;
-}) => Effect.Effect<string | undefined>;
+  readonly files: ReadonlyArray<RecipeFile>;
+  readonly template: string | undefined;
+};
+/** Why a change can't be kept, from rendering its sample; `undefined` when it rendered. */
+export type VerifyChange = (change: CheckedRecipe) => Effect.Effect<string | undefined>;
+export type RecipePreview =
+  | ({ readonly _tag: "checked" } & CheckedRecipe)
+  | { readonly _tag: "unchanged" }
+  | { readonly _tag: "refused"; readonly reason: string };
 export type ChangedBy =
   | { readonly _tag: "agent"; readonly agentId: KinAgentId }
   | { readonly _tag: "owner"; readonly personId: KinPersonId };
@@ -166,6 +176,14 @@ export class KinWorkspace extends Context.Service<
       by: ChangedBy,
       verify: VerifyChange,
     ) => Effect.Effect<RecipeUndo, KinChatError>;
+    /**
+     * The job's change to `recipes/<recipe>/` as it would be kept, checked but not committed:
+     * `commit` is its tree, which renders as a commit does.
+     */
+    readonly previewRecipeChange: (
+      orgId: KinOrgId,
+      input: { readonly workerId: KinWorkerId; readonly recipe: string },
+    ) => Effect.Effect<RecipePreview>;
     /** Removes the job's worktree and branch, with the inputs it held. */
     readonly discard: (orgId: KinOrgId, workerId: KinWorkerId) => Effect.Effect<void>;
     /** `main`'s commit now. */
@@ -469,6 +487,7 @@ export const layer = Layer.effect(
         return refused(`a recipe holds at most ${MAX_RECIPE_FILES} files`);
       let bytes = 0;
       const files: Array<string> = [];
+      const blobs: Array<RecipeFile> = [];
       for (const line of listed) {
         const [meta = "", file = ""] = line.split("\t");
         const [mode = "", , blob = "", size = ""] = meta.split(/ +/);
@@ -478,6 +497,7 @@ export const layer = Layer.effect(
           return refused(`${file} is a file Kin never commits`);
         files.push(file);
         const length = Number.parseInt(size, 10);
+        blobs.push({ path: file, blob, size: length });
         bytes += length;
         if (
           length <= 1024 &&
@@ -503,12 +523,97 @@ export const layer = Layer.effect(
       const sample = yield* git(root, ["cat-file", "blob", `${tree}:${folder}/sample.json`], {
         raw: true,
       }).pipe(Effect.option);
+      const template = blobs.find((one) => one.path === `${folder}/template.typ`);
       return {
         _tag: "checked",
         recipe: parsed,
         sample: sample._tag === "Some" ? sample.value : undefined,
+        files: blobs,
+        template:
+          template === undefined || template.size > MAX_RECIPE_MD_BYTES * 16
+            ? undefined
+            : yield* git(root, ["cat-file", "blob", template.blob], { raw: true }),
       } as const;
     });
+
+    /** The job's change staged on its own index and checked; nothing is committed. */
+    const stageChange = Effect.fn("KinWorkspace.stageChange")(function* (
+      orgId: KinOrgId,
+      workerId: KinWorkerId,
+      recipe: string,
+    ) {
+      const refused = (reason: string) => ({ _tag: "refused", reason }) as const;
+      if (!recipeName.test(recipe))
+        return refused(
+          "a recipe's name is 2 to 40 lowercase letters, digits and hyphens, starting with a letter",
+        );
+      const root = yield* rootOf(orgId);
+      const worktree = jobPath(workerId);
+      const branch = branchOf(workerId);
+      const at = { gitDir: gitDirOf(root, workerId) };
+      const folder = `recipes/${recipe}`;
+      if (
+        (yield* git(worktree, ["symbolic-ref", "--quiet", "HEAD"], at)) !== `refs/heads/${branch}`
+      )
+        return refused("the job's worktree isn't on its branch");
+      // Commits made in the worktree aren't Kin's, so a branch that moved past main is refused.
+      const ahead = yield* git(root, ["rev-list", "--count", `${DEFAULT_BRANCH}..${branch}`]);
+      if (ahead !== "0") return refused("the job's branch has commits Kin didn't make");
+      const status = yield* git(
+        worktree,
+        ["status", "--porcelain", "-z", "--untracked-files=all"],
+        {
+          ...at,
+          raw: true,
+        },
+      );
+      const left = status
+        .split("\0")
+        .filter((entry) => /^.. /.test(entry))
+        .map((entry) => entry.slice(3))
+        .filter(
+          (file) =>
+            file !== folder && !file.startsWith(`${folder}/`) && !/^(?:in|out|build)\//.test(file),
+        )
+        .slice(0, 20);
+      // Only the recipe the job was for is ever staged; anything else stays behind and is reported.
+      yield* git(worktree, ["add", "--all", "--", folder], at);
+      const staged = yield* git(worktree, ["diff", "--cached", "--name-only", "-z"], {
+        ...at,
+        raw: true,
+      });
+      if (staged === "") return { _tag: "unchanged", left } as const;
+      // The folder as it would be committed, not just what changed.
+      const tree = yield* git(worktree, ["write-tree"], at);
+      const checked = yield* checkTree(root, tree, recipe);
+      if (checked._tag === "refused") return checked;
+      return { ...checked, _tag: "staged", tree, left, root, worktree, branch, at } as const;
+    });
+
+    const previewRecipeChange = Effect.fn("KinWorkspace.previewRecipeChange")(
+      function* (
+        orgId: KinOrgId,
+        input: { readonly workerId: KinWorkerId; readonly recipe: string },
+      ) {
+        const staged = yield* stageChange(orgId, input.workerId, input.recipe);
+        if (staged._tag !== "staged")
+          return staged._tag === "unchanged" ? ({ _tag: "unchanged" } as const) : staged;
+        return {
+          _tag: "checked",
+          commit: staged.tree,
+          recipe: staged.recipe,
+          sample: staged.sample,
+          files: staged.files,
+          template: staged.template,
+        } as const;
+      },
+      lock.withPermits(1),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Kin couldn't check a recipe change", { cause }).pipe(
+          Effect.as({ _tag: "refused", reason: "Kin couldn't read the change" } as const),
+        ),
+      ),
+    );
 
     const applyRecipeChange = Effect.fn("KinWorkspace.applyRecipeChange")(
       function* (
@@ -521,52 +626,9 @@ export const layer = Layer.effect(
         },
       ) {
         const refused = (reason: string) => ({ _tag: "refused", reason }) as const;
-        if (!recipeName.test(input.recipe))
-          return refused(
-            "a recipe's name is 2 to 40 lowercase letters, digits and hyphens, starting with a letter",
-          );
-        const root = yield* rootOf(orgId);
-        const worktree = jobPath(input.workerId);
-        const branch = branchOf(input.workerId);
-        const at = { gitDir: gitDirOf(root, input.workerId) };
-        const folder = `recipes/${input.recipe}`;
-        if (
-          (yield* git(worktree, ["symbolic-ref", "--quiet", "HEAD"], at)) !== `refs/heads/${branch}`
-        )
-          return refused("the job's worktree isn't on its branch");
-        // Commits made in the worktree aren't Kin's, so a branch that moved past main is refused.
-        const ahead = yield* git(root, ["rev-list", "--count", `${DEFAULT_BRANCH}..${branch}`]);
-        if (ahead !== "0") return refused("the job's branch has commits Kin didn't make");
-        const status = yield* git(
-          worktree,
-          ["status", "--porcelain", "-z", "--untracked-files=all"],
-          {
-            ...at,
-            raw: true,
-          },
-        );
-        const left = status
-          .split("\0")
-          .filter((entry) => /^.. /.test(entry))
-          .map((entry) => entry.slice(3))
-          .filter(
-            (file) =>
-              file !== folder &&
-              !file.startsWith(`${folder}/`) &&
-              !/^(?:in|out|build)\//.test(file),
-          )
-          .slice(0, 20);
-        // Only the recipe the job was for is ever staged; anything else stays behind and is reported.
-        yield* git(worktree, ["add", "--all", "--", folder], at);
-        const staged = yield* git(worktree, ["diff", "--cached", "--name-only", "-z"], {
-          ...at,
-          raw: true,
-        });
-        if (staged === "") return { _tag: "unchanged", left } as const;
-        // The folder as it would be committed, not just what changed.
-        const tree = yield* git(worktree, ["write-tree"], at);
-        const checked = yield* checkTree(root, tree, input.recipe);
-        if (checked._tag === "refused") return checked;
+        const checked = yield* stageChange(orgId, input.workerId, input.recipe);
+        if (checked._tag !== "staged") return checked;
+        const { root, worktree, branch, at, left } = checked;
         const base = yield* lastChange(root, input.recipe, branch);
         yield* git(
           worktree,
@@ -587,11 +649,10 @@ export const layer = Layer.effect(
           commit,
           recipe: checked.recipe,
           sample: checked.sample,
+          files: checked.files,
+          template: checked.template,
         });
-        if (unrendered !== undefined)
-          return refused(
-            `its sample didn't render, so Kin kept the recipe as it was: ${unrendered}`,
-          );
+        if (unrendered !== undefined) return refused(unrendered);
         // Fast-forward when main didn't move, else a merge commit, else nothing on a conflict.
         const onMain = yield* lastChange(root, input.recipe);
         const merged = yield* git(root, ["merge", "-q", "--ff-only", branch]).pipe(
@@ -725,10 +786,12 @@ export const layer = Layer.effect(
             commit,
             recipe: checked.recipe,
             sample: checked.sample,
+            files: checked.files,
+            template: checked.template,
           });
           if (unrendered !== undefined)
             return refused(
-              `what it would bring back didn't render from its sample, so Kin left the recipe as it is: ${unrendered}`,
+              `what it would bring back can't be kept, so Kin left the recipe as it is: ${unrendered}`,
             );
         }
         yield* git(root, ["update-ref", `refs/heads/${DEFAULT_BRANCH}`, commit, head]);
@@ -793,6 +856,7 @@ export const layer = Layer.effect(
       prepare,
       checkoutRecipe,
       applyRecipeChange,
+      previewRecipeChange,
       undoRecipe,
       discard,
       head,

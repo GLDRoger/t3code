@@ -1,6 +1,7 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous content hash; Digest would add a service to every caller.
 import * as NodeCrypto from "node:crypto";
 import {
+  CommandId,
   KinAgentId,
   KinChatError,
   KinChatId,
@@ -9,6 +10,8 @@ import {
   KinRecordKey,
   KinTrimmedText,
   type KinWorkerId,
+  MessageId,
+  ProjectId,
   type ThreadId,
   TrimmedNonEmptyString,
   type WorkerReport,
@@ -18,6 +21,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -26,6 +30,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { ServerConfig } from "../../config.ts";
+import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { quote } from "../lead/LeadPrompt.ts";
 import { reportFormat } from "../lead/workerBrief.ts";
@@ -37,10 +42,31 @@ import { turnSensitive } from "../work/workerAttempts.ts";
 import { entrySensitive } from "./facts.ts";
 import { canonical } from "./make.ts";
 import type { Value } from "./recipe.ts";
-import { labelChange, recordBaseline, verifySample } from "./recipeLabels.ts";
+import {
+  labelChange,
+  recordBaseline,
+  renderSample,
+  type SampleLogo,
+  sampleLogo,
+  verifySample,
+} from "./recipeLabels.ts";
+import {
+  checkReferences,
+  type Reference,
+  REFERENCE_CAPS,
+  referenceCopy,
+  ReferencesJson,
+  sampleLeak,
+} from "./references.ts";
 import { KinDocRenderer } from "./render.ts";
-import { RETURN_CAPS, takeOutputs } from "./returnPath.ts";
-import { jobWorktree, KinWorkspace, type StoredRecipe } from "./workspace.ts";
+import { RETURN_CAPS, type Taken, takeOutputs } from "./returnPath.ts";
+import {
+  type CheckedRecipe,
+  jobWorktree,
+  KinWorkspace,
+  type StoredRecipe,
+  type VerifyChange,
+} from "./workspace.ts";
 
 // A worker's document job: a one-off file from the agent's brief, or writing a recipe. A recipe's
 // document is made in the call instead (`make.ts`). When the run ends Kin takes back only the files
@@ -68,6 +94,14 @@ export const DocumentInput = Schema.Struct({
   }),
   writeRecipe: Schema.optional(Schema.Boolean).annotate({
     description: "Write a new recipe, or change the one named in recipe, instead of making a file.",
+  }),
+  references: Schema.optional(
+    Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(128))).check(
+      Schema.isMaxLength(REFERENCE_CAPS.files),
+    ),
+  ).annotate({
+    description:
+      "With writeRecipe: attachment ids (each the file's name without its extension) of files the owner sent in this chat that show the look to copy, such as an invoice in the company's existing format (PDF, PNG, JPEG, WebP or SVG). The worker looks at them; their data never goes in the recipe.",
   }),
   sourceEventId: TrimmedNonEmptyString,
 });
@@ -108,12 +142,16 @@ export type Plan = {
   readonly draft: boolean;
   readonly sensitive: boolean;
   readonly docOrigin: string;
+  /** The owner's files a recipe writer looks at, copied into `in/references/`. */
+  readonly references: ReadonlyArray<Reference>;
 };
 
 /** What a worker job will run with: the agent's brief, and an entry's key if it named one. */
 export const planJob = Effect.fn("KinDocJobs.plan")(function* (
   orgId: KinOrgId,
   input: DocumentInput,
+  /** The chat the turn answers in: the only place references come from. */
+  chatId: string | undefined,
 ) {
   const workspace = yield* KinWorkspace;
   const records = yield* KinRecords;
@@ -130,7 +168,11 @@ export const planJob = Effect.fn("KinDocJobs.plan")(function* (
   if (input.writeRecipe === true) {
     if (input.recipe === undefined)
       return yield* invalid(`Name the recipe to write in recipe. ${NOTHING}`);
-    const inputsJson = canonical({ brief: input.brief ?? "" });
+    const references = yield* checkReferences(orgId, chatId, input.references ?? []);
+    const inputsJson = canonical({
+      brief: input.brief ?? "",
+      references: references.map((one) => one.sha256),
+    });
     return {
       mode: "recipe",
       recipe: named ?? null,
@@ -141,8 +183,10 @@ export const planJob = Effect.fn("KinDocJobs.plan")(function* (
       inputsHash: sha256(inputsJson),
       number: null,
       draft: false,
-      sensitive: false,
+      // A reference is the owner's own document: whatever was written from it is labelled.
+      sensitive: references.length > 0,
       docOrigin: `recipe:${input.recipe}`,
+      references,
     } satisfies Plan;
   }
 
@@ -157,6 +201,8 @@ export const planJob = Effect.fn("KinDocJobs.plan")(function* (
   // A one-off file: the agent's brief is all the worker gets, plus the entry's key if named.
   if (input.inputs !== undefined && Object.keys(input.inputs).length > 0)
     return yield* invalid(`A one-off file takes its figures in brief, not inputs. ${NOTHING}`);
+  if ((input.references ?? []).length > 0)
+    return yield* invalid(`references are for writeRecipe: a recipe copies their look. ${NOTHING}`);
   if ((input.brief ?? "").trim().length === 0)
     return yield* invalid(`Say in brief what to make, with every figure it shows. ${NOTHING}`);
   const inputsJson = canonical({
@@ -179,6 +225,7 @@ export const planJob = Effect.fn("KinDocJobs.plan")(function* (
       entry !== undefined && entrySensitive(entry, yield* listDef(orgId, entry.registerId)),
     docOrigin:
       entry === undefined ? `file:${inputsHash}` : `file:${entry.recordId}:${sha256(input.title)}`,
+    references: [],
   } satisfies Plan;
 });
 
@@ -213,8 +260,9 @@ export const docBrief = (plan: Plan, input: DocumentInput) => {
       "You were called by Kin. Do this task yourself.",
       `Goal:\n${plan.recipe === null ? "Write" : "Change"} the recipe \`${plan.recipeName}\` in recipes/${plan.recipeName}/, so Kin can make "${input.title}" from it.`,
       ...said,
+      ...(plan.references.length === 0 ? [] : [referencesBrief(plan.references)]),
       RECIPE_GUIDE,
-      `Only files under recipes/${plan.recipeName}/ are kept: when your run ends Kin checks RECIPE.md, renders the recipe from its sample.json, and commits the folder, with its history, only if that render works; otherwise the agent gets Typst's error. Read recipes/ for working examples: recipes/invoice/ shows computed fields and a template. You have no shell and need none: write the files with your file tools.`,
+      `Only files under recipes/${plan.recipeName}/ are kept: when your run ends Kin checks RECIPE.md, renders the recipe from its sample.json, and commits the folder, with its history, only if that render works. If it doesn't, Kin sends you Typst's error to fix, up to ${MAX_FOLLOW_UPS} times in all.${plan.references.length === 0 ? "" : " Once it renders, Kin shows you its first page once, to compare with the references and adjust."} Read recipes/ for working examples: recipes/invoice/ shows computed fields, the logo and brand colours, and a template. You have no shell and need none: write the files with your file tools.`,
       reportFormat,
     ].join("\n\n");
   return [
@@ -227,13 +275,23 @@ export const docBrief = (plan: Plan, input: DocumentInput) => {
   ].join("\n\n");
 };
 
+/** At most this many messages go back to a recipe writer after its first run: fixes and one look. */
+export const MAX_FOLLOW_UPS = 3;
+
+const referencesBrief = (references: ReadonlyArray<Reference>) =>
+  [
+    `References: the owner sent ${references.length === 1 ? "a file" : "these files"} showing the look the documents should have, read-only in in/references/: ${references.map((one) => one.name).join(", ")}. Open each with your Read tool, which shows PDFs and images.`,
+    "Copy the look, never the data: the layout, where the logo sits, colours, fonts, column order and labels, header and footer blocks, wording of fixed text such as terms. Every name, address, number, tax id and amount in them is real and stays out of the recipe: those come from Kin's inputs, and sample.json holds invented values. Kin refuses a sample holding the company's or a client's real details.",
+    `Never copy a reference file into the recipe. The only exception is an image the template shows, up to ${REFERENCE_CAPS.shownImageBytes / 1048576} MB, such as a signature the owner sent; the company logo comes from company.logo, not a file.`,
+  ].join("\n");
+
 const RECIPE_GUIDE = `A recipe is a folder: RECIPE.md, template.typ (for a PDF), sample.json and anything the template shows, such as a logo or a font. Kin renders it itself, with no worker; nothing in it runs but the template, in Typst 0.15 with no packages and no network.
 RECIPE.md starts with YAML front matter between --- lines: name (the folder's name), kind (typst, or table for CSVs and a workbook), title, description (one line the agent reads), list (when it is for one entry of a list, such as invoices), numbered (true when it shows the entry's issued number), sensitive (Kin labels a file confidential by where its inputs come from, such as amounts, bank details, tax ids or a sensitive entry; true here labels it so anyway), inputs, computed (typst), sheets and workbook (table), and outputs (for typst each PDF's name; for table each file's name, {month} for an input's value).
-Each input has a type (text, integer, decimal, money, date, boolean, month or table with columns), required (default true for stored values, false for the agent's), a description, and from: where Kin reads it. Leave from out for the agent's own words; otherwise one of entry.key|title|state|amount|tax|date|due|notes|number, entry.fields.<field>, client.name|address|gstin|placeOfSupply|terms, company.legalName|tradeName|address|gstin|pan|placeOfSupply|sac, company.bank.accountName|accountNumber|ifsc|bankName|branch|upi, system.number|draft|today, rows.<list> (a table of that list's entries in a month, with period naming a month input; columns from key, title, state, amount, tax, date, due, client, category, number, field_<field>), or payments (a table: invoice, client, amount, paidOn).
+Each input has a type (text, integer, decimal, money, date, boolean, month or table with columns), required (default true for stored values, false for the agent's), a description, and from: where Kin reads it. Leave from out for the agent's own words; otherwise one of entry.key|title|state|amount|tax|date|due|notes|number, entry.fields.<field>, client.name|address|gstin|placeOfSupply|terms, company.legalName|tradeName|address|gstin|pan|placeOfSupply|sac, company.bank.accountName|accountNumber|ifsc|bankName|branch|upi, company.logo (text: the logo's path, such as /brand/logo.png, or null when the company has none; show it with image(d.logo, height: 16mm)), company.brand.primaryColor|secondaryColor|font|footer (text: colours as #RRGGBB for rgb(), a font name, a footer line; each may be null, so keep a default), system.number|draft|today, rows.<list> (a table of that list's entries in a month, with period naming a month input; columns from key, title, state, amount, tax, date, due, client, category, number, field_<field>), or payments (a table: invoice, client, amount, paidOn).
 Every figure the document shows that Kin doesn't store is a computed field, worked out by Kin in exact integers, in order, each one function: times [amount, factor], percent [amount, rate] (round: half-up, half-even, down or up), sum [amounts, or table.column], minus [a, b], first [values], each { rows: <table>, set: { <column>: <field> } } (each column it sets is one value per row: text, a number or an amount, never a table), words <amount>, date [<day>, "D MMM YYYY" | "D MMMM YYYY" | "DD/MM/YYYY" | "MMMM YYYY"], gst { taxable, total, recordedTax, rate, supplierGstin, supplierPlace, clientGstin, clientPlace, exportUnderLut } and markdown <text>. Arguments name inputs or earlier fields, or are literals.
-template.typ reads #let d = json("/inputs.json"): every input and computed field, money as {minor, currency, text}; it shows money by its text and never does arithmetic on it. sys.inputs.output is the PDF being made. Put wording the owner may change in #let lines at its top.
+template.typ reads #let d = json("/inputs.json"): every input and computed field, money as {minor, currency, text}; it shows money by its text and never does arithmetic on it. sys.inputs.output is the PDF being made. Put wording the owner may change in #let lines at its top. Fonts: Poppins (geometric sans) and Mukta (humanist sans), both with Devanagari and ₹, Libertinus Serif, New Computer Modern and DejaVu Sans Mono, or a font file kept in the folder; name a fallback list such as (d.brandFont, "Poppins") when the font comes from the brand. Page size, margins, columns, their order and labels, header and footer blocks, a second page for terms (pagebreak()) and a signature image are all the template's: lay them out as the owner's format has them. default: true in the front matter marks the recipe the agent uses for its list unless the owner asks for another, such as invoice beside invoice-export.
 A table recipe's sheets each have a name, the table input they show, a CSV file name, columns (header and field, amount.currency for a money column's currency) and leaveOutOfTotals; workbook names the XLSX.
-sample.json holds invented values for every input, as Kin would give them: money as {"minor": <integer>, "currency": "INR"}, days as 2026-11-12.
+sample.json holds invented values for every input, as Kin would give them: money as {"minor": <integer>, "currency": "INR"}, days as 2026-11-12. Never a real company's or client's details. Give a logo input any non-null text and Kin renders the sample with the company's logo, or a stand-in when it has none.
 The body after the front matter is notes for the agent on when and how to use it.`;
 
 export type JobRow = {
@@ -258,7 +316,13 @@ export type JobRow = {
   readonly outcomeJson: string | null;
   /** The worker's title: what the agent called the file. */
   readonly title: string;
+  readonly referencesJson: string | null;
+  /** Messages Kin has sent back to a recipe writer, and whether one showed it its page. */
+  readonly passes: number;
+  readonly compared: number;
+  readonly projectId: string | null;
 };
+const decodeReferences = Schema.decodeUnknownOption(ReferencesJson);
 
 const OutcomeJson = Schema.fromJsonString(
   Schema.Struct({
@@ -300,12 +364,22 @@ const reported = (report: WorkerReport, outcome: Outcome): WorkerReport => ({
   ),
 });
 
+export const CONTINUED = "continued";
+/** A recipe writer's next pass: what Kin tells it, and what to record if it can't be told. */
+type Again = {
+  readonly _tag: "again";
+  readonly text: string;
+  readonly compared: boolean;
+  readonly otherwise: Outcome;
+};
+
 export class KinDocCollector extends Context.Service<
   KinDocCollector,
   {
     /**
      * The report for a finished document job, once its files are filed, or `undefined` when
-     * the worker is no document job. Collecting again returns the same outcome.
+     * the worker is no document job. Collecting again returns the same outcome. `continued`
+     * when Kin sent a recipe writer back to work: its next run ends the job instead.
      */
     readonly collect: (
       worker: {
@@ -315,7 +389,7 @@ export class KinDocCollector extends Context.Service<
       },
       completed: boolean,
       report: WorkerReport,
-    ) => Effect.Effect<WorkerReport | undefined>;
+    ) => Effect.Effect<WorkerReport | undefined | typeof CONTINUED>;
     /** Removes a job's worktree, its inputs first; a no-op for a worker that is no document job. */
     readonly cleanup: (orgId: KinOrgId, workerId: KinWorkerId) => Effect.Effect<void>;
     /** At startup: removes the worktree of every job whose run is over. */
@@ -427,6 +501,7 @@ export const makeCollectorLayer = (options: { readonly sweepPage?: number } = {}
       const chat = yield* KinChatService;
       const scopes = yield* AgentScope;
       const renderer = yield* KinDocRenderer;
+      const threads = yield* ThreadManagementService;
       // Workers elsewhere have no shell (`KinWorkSandbox`), so file tools are all that touched out/.
       const shellHost = (yield* HostProcess.Platform) === "linux";
       const jobContext = Effect.provideService(SqlClient.SqlClient, sql);
@@ -439,78 +514,27 @@ export const makeCollectorLayer = (options: { readonly sweepPage?: number } = {}
           Effect.provideService(KinWorkspace, workspace),
         );
 
-      const outcomeOf = Effect.fn("KinDocCollector.outcome")(function* (
+      /** Files a job's files as docs, each a version of its doc, shown on the job's card. */
+      const fileTaken = Effect.fn("KinDocCollector.file")(function* (
         job: JobRow,
-        completed: boolean,
-        report: WorkerReport,
+        files: ReadonlyArray<Taken>,
+        options: {
+          readonly entry: RecordRow | undefined;
+          readonly docOrigin: (file: Taken) => string;
+          readonly title: (file: Taken) => string;
+          readonly summary: string;
+          readonly sensitive: boolean;
+        },
       ) {
-        const worktree = jobWorktree(config.worktreesDir, job.workerId);
-        if (job.mode === "recipe") {
-          if (!completed || job.recipe === null)
-            return {
-              summary: "Kin kept no recipe change: the run didn't finish.",
-              documents: [],
-              problems: [],
-            };
-          const orgId = job.orgId;
-          const withWorkspace = Effect.provideService(KinWorkspace, workspace);
-          yield* recordBaseline(orgId).pipe(withWorkspace);
-          const change = yield* workspace.applyRecipeChange(orgId, {
-            workerId: job.workerId,
-            recipe: job.recipe,
-            agentId: job.agentId,
-            verify: verifySample(renderer, orgId),
-          });
-          if (change._tag === "committed")
-            yield* labelChange(orgId, job.recipe, change, job.sensitive === 1).pipe(withWorkspace);
-          const left =
-            change._tag === "refused" || change.left.length === 0
-              ? []
-              : [`Kin kept only recipes/${job.recipe}/; it left out ${change.left.join(", ")}.`];
-          return {
-            summary:
-              change._tag === "committed"
-                ? `Kin rendered the ${job.recipe} recipe's sample and committed it (${change.commit.slice(0, 12)}); make documents with it with kin_document.`
-                : change._tag === "unchanged"
-                  ? `The ${job.recipe} recipe is unchanged: the worker left nothing new in recipes/${job.recipe}/.`
-                  : `Kin didn't keep the ${job.recipe} recipe: ${change.reason}.`,
-            documents: [],
-            problems: left,
-          } satisfies Outcome;
-        }
-        if (!completed)
-          return {
-            summary: "Kin took back no file: the run didn't finish.",
-            documents: [],
-            problems: [],
-          };
-        // A recipe job from before Kin rendered recipes itself: its files are no recipe's output.
-        if (job.recipe !== null)
-          return {
-            summary: `Kin took back no file: it now makes the ${job.recipe} recipe's documents itself, so ask for it again.`,
-            documents: [],
-            problems: [],
-          } satisfies Outcome;
-        const named = report.evidence
-          .filter((item) => item.kind === "file")
-          .map((item) => item.ref);
-        const returned = yield* takeOutputs({ worktree, named });
-        const problems = returned.refused.map((one) => `${one.name} wasn't saved: ${one.reason}.`);
-        const retry = [...new Set(returned.refused.flatMap((one) => one.retry ?? []))];
-        const documents: Array<Outcome["documents"][number]> = [];
-        const entry =
-          job.entryRecordId === null
-            ? undefined
-            : yield* records.getById(job.orgId, job.entryRecordId);
         const writer: Writer = {
           actor: { _tag: "agent", agentId: job.agentId },
           via: "worker",
           wakeupId: job.wakeupId,
           ...(job.chatId === null ? {} : { chatId: KinChatId.make(job.chatId) }),
         };
-        for (const file of returned.taken) {
+        const documents: Array<Outcome["documents"][number]> = [];
+        for (const file of files) {
           const attachmentId = yield* renderer.store(job.orgId, job.workerId, file);
-          const title = returned.taken.length === 1 ? job.title : `${job.title} · ${file.name}`;
           const written = yield* Docs.fileVersion(
             job.orgId,
             writer,
@@ -531,13 +555,13 @@ export const makeCollectorLayer = (options: { readonly sweepPage?: number } = {}
               audience: job.audience,
             },
             {
-              docOrigin: `${job.docOrigin}:${file.name}`,
+              docOrigin: options.docOrigin(file),
               originKey: `kin-doc-job:${job.workerId}:${file.name}`,
-              title: title.slice(0, 200),
-              summary: "Made by a worker from the agent's brief",
+              title: options.title(file).slice(0, 200),
+              summary: options.summary,
               owner: { _tag: "agent", agentId: job.agentId },
-              sensitive: job.sensitive === 1,
-              ...(entry?.partyId === undefined ? {} : { partyId: entry.partyId }),
+              sensitive: options.sensitive,
+              ...(options.entry?.partyId == null ? {} : { partyId: options.entry.partyId }),
               file: {
                 attachmentId,
                 name: file.name,
@@ -553,14 +577,227 @@ export const makeCollectorLayer = (options: { readonly sweepPage?: number } = {}
               },
             },
           );
-          if (entry !== undefined)
-            yield* Docs.link(job.orgId, writer, { key: written.row.key }, [entry.key], "relates");
+          if (options.entry !== undefined)
+            yield* Docs.link(
+              job.orgId,
+              writer,
+              { key: written.row.key },
+              [options.entry.key],
+              "relates",
+            );
           documents.push({
             recordId: written.row.recordId,
             key: written.row.key,
             title: written.row.title,
           });
         }
+        return documents;
+      });
+
+      /** Puts a page for the worker to look at in its own `in/`, never through a link put there. */
+      const showPage = Effect.fn("KinDocCollector.showPage")(function* (
+        job: JobRow,
+        page: Taken,
+        pass: number,
+      ) {
+        const worktree = yield* fs.realPath(jobWorktree(config.worktreesDir, job.workerId));
+        const inputs = path.join(worktree, "in");
+        yield* fs.makeDirectory(inputs, { recursive: true });
+        if ((yield* fs.realPath(inputs)) !== inputs) return undefined;
+        const folder = path.join(inputs, `rendered-${pass}`);
+        yield* fs.makeDirectory(folder);
+        if ((yield* fs.realPath(folder)) !== folder) return undefined;
+        yield* fs.writeFile(path.join(folder, "page-1.png"), page.bytes, { flag: "wx" });
+        return `in/rendered-${pass}/page-1.png`;
+      });
+
+      /**
+       * A recipe writer's run, checked before anything is kept: a change that doesn't render, or
+       * holds a reference or real details, goes back to it with the reason; one written from
+       * references goes back once with its first page to compare. Bounded by `MAX_FOLLOW_UPS`.
+       * Otherwise the change is committed and its sample filed for the owner to see.
+       */
+      const recipeOutcome = Effect.fn("KinDocCollector.recipe")(function* (
+        job: JobRow,
+        completed: boolean,
+      ) {
+        if (!completed || job.recipe === null)
+          return {
+            summary: "Kin kept no recipe change: the run didn't finish.",
+            documents: [],
+            problems: [],
+          } satisfies Outcome;
+        const orgId = job.orgId;
+        const recipe = job.recipe;
+        const withWorkspace = Effect.provideService(KinWorkspace, workspace);
+        const references = Option.getOrElse(
+          decodeReferences(job.referencesJson ?? "[]"),
+          (): ReadonlyArray<Reference> => [],
+        );
+        const logo: SampleLogo = yield* sampleLogo(orgId).pipe(
+          jobContext,
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(ServerConfig, config),
+        );
+        /** Why a change can't be kept for what it holds, before it is rendered. */
+        const kept = Effect.fn("KinDocCollector.kept")(
+          function* (change: CheckedRecipe) {
+            const copied = referenceCopy(change.files, references, change.template);
+            if (copied !== undefined) return copied;
+            return yield* sampleLeak(orgId, change.sample).pipe(jobContext);
+          },
+          Effect.orElseSucceed(() => "Kin couldn't check its sample; try again"),
+        );
+        let accepted: CheckedRecipe | undefined;
+        const verify: VerifyChange = Effect.fn("KinDocCollector.verify")(function* (change) {
+          const refused =
+            (yield* kept(change)) ?? (yield* verifySample(renderer, orgId, logo)(change));
+          if (refused === undefined) accepted = change;
+          return refused;
+        });
+        if (job.passes < MAX_FOLLOW_UPS) {
+          const preview = yield* workspace.previewRecipeChange(orgId, {
+            workerId: job.workerId,
+            recipe,
+          });
+          if (preview._tag !== "unchanged") {
+            const lookAgain = references.length > 0 && job.compared === 0;
+            const refused = preview._tag === "refused" ? preview.reason : yield* kept(preview);
+            const rendered =
+              preview._tag === "refused" || refused !== undefined
+                ? undefined
+                : yield* renderSample(renderer, orgId, logo, preview, lookAgain);
+            const reason =
+              refused ??
+              (typeof rendered === "string" ? `its sample didn't render: ${rendered}` : undefined);
+            const otherwise: Outcome = {
+              summary: `Kin didn't keep the ${recipe} recipe: ${reason ?? "it couldn't show the worker its page"}.`,
+              documents: [],
+              problems: [],
+            };
+            if (reason !== undefined)
+              return {
+                _tag: "again",
+                compared: false,
+                otherwise,
+                text: [
+                  `Kin couldn't keep recipes/${recipe}/ yet: ${reason}.`,
+                  "Fix it with your file tools, then end with your report as before.",
+                ].join("\n\n"),
+              } satisfies Again;
+            if (lookAgain && typeof rendered === "object" && rendered?.page !== undefined) {
+              const shown = yield* showPage(job, rendered.page, job.passes + 1).pipe(
+                Effect.orElseSucceed(() => undefined),
+              );
+              if (shown !== undefined)
+                return {
+                  _tag: "again",
+                  compared: true,
+                  otherwise,
+                  text: [
+                    `Your recipe renders. Kin put its first page, made from sample.json, at ${shown}.`,
+                    `Open it with your Read tool beside the references in in/references/ and compare the look: layout, logo, colours, fonts, spacing, columns and labels. Change the template where it differs, or leave it if it already matches. Kin shows you the page only this once. End with your report as before.`,
+                  ].join("\n\n"),
+                } satisfies Again;
+            }
+          }
+        }
+        yield* recordBaseline(orgId).pipe(withWorkspace);
+        const change = yield* workspace.applyRecipeChange(orgId, {
+          workerId: job.workerId,
+          recipe,
+          agentId: job.agentId,
+          verify,
+        });
+        if (change._tag === "unchanged")
+          return {
+            summary: `The ${recipe} recipe is unchanged: the worker left nothing new in recipes/${recipe}/.`,
+            documents: [],
+            problems: [],
+          } satisfies Outcome;
+        if (change._tag === "refused")
+          return {
+            summary: `Kin didn't keep the ${recipe} recipe: ${change.reason}.`,
+            documents: [],
+            problems: [],
+          } satisfies Outcome;
+        const sensitive = yield* labelChange(orgId, recipe, change, job.sensitive === 1).pipe(
+          withWorkspace,
+        );
+        const left =
+          change.left.length === 0
+            ? []
+            : [`Kin kept only recipes/${recipe}/; it left out ${change.left.join(", ")}.`];
+        // The owner sees the new look: the sample as Kin renders it, PDF and first page.
+        const sample =
+          accepted === undefined
+            ? undefined
+            : yield* renderSample(
+                renderer,
+                orgId,
+                logo,
+                { ...accepted, commit: change.revision },
+                true,
+              );
+        const files =
+          sample === undefined || typeof sample === "string"
+            ? []
+            : sample.page === undefined
+              ? sample.files
+              : [...sample.files, sample.page];
+        const documents = yield* fileTaken(job, files, {
+          entry: undefined,
+          docOrigin: (file) => `recipe-sample:${recipe}:${file.extension}`,
+          title: (file) =>
+            `${accepted?.recipe.title ?? recipe} sample${file.extension === "png" ? " · page 1" : ""}`,
+          summary: `The ${recipe} recipe's sample, with invented data, as Kin renders it now`,
+          sensitive,
+        });
+        return {
+          summary: `Kin rendered the ${recipe} recipe's sample and committed it (${change.commit.slice(0, 12)})${documents.length === 0 ? "" : "; the sample is on the task card in the owner's chat"}. Make documents with it with kin_document; kin_recipe_undo with recipe ${recipe} puts the look back as it was.`,
+          documents,
+          problems: left,
+        } satisfies Outcome;
+      });
+
+      const outcomeOf = Effect.fn("KinDocCollector.outcome")(function* (
+        job: JobRow,
+        completed: boolean,
+        report: WorkerReport,
+      ) {
+        const worktree = jobWorktree(config.worktreesDir, job.workerId);
+        if (job.mode === "recipe") return yield* recipeOutcome(job, completed);
+        if (!completed)
+          return {
+            summary: "Kin took back no file: the run didn't finish.",
+            documents: [],
+            problems: [],
+          };
+        // A recipe job from before Kin rendered recipes itself: its files are no recipe's output.
+        if (job.recipe !== null)
+          return {
+            summary: `Kin took back no file: it now makes the ${job.recipe} recipe's documents itself, so ask for it again.`,
+            documents: [],
+            problems: [],
+          } satisfies Outcome;
+        const named = report.evidence
+          .filter((item) => item.kind === "file")
+          .map((item) => item.ref);
+        const returned = yield* takeOutputs({ worktree, named });
+        const problems = returned.refused.map((one) => `${one.name} wasn't saved: ${one.reason}.`);
+        const retry = [...new Set(returned.refused.flatMap((one) => one.retry ?? []))];
+        const entry =
+          job.entryRecordId === null
+            ? undefined
+            : yield* records.getById(job.orgId, job.entryRecordId);
+        const documents = yield* fileTaken(job, returned.taken, {
+          entry,
+          docOrigin: (file) => `${job.docOrigin}:${file.name}`,
+          title: (file) =>
+            returned.taken.length === 1 ? job.title : `${job.title} · ${file.name}`,
+          summary: "Made by a worker from the agent's brief",
+          sensitive: job.sensitive === 1,
+        });
         const count = documents.length;
         return {
           summary:
@@ -573,6 +810,36 @@ export const makeCollectorLayer = (options: { readonly sweepPage?: number } = {}
         } satisfies Outcome;
       });
 
+      /** Sends a recipe writer its next pass, counted first so a crash can't loop it. */
+      const sendBack = Effect.fn("KinDocCollector.sendBack")(
+        function* (job: JobRow, threadId: ThreadId, again: Again) {
+          if (job.projectId === null) return false;
+          const pass = job.passes + 1;
+          const counted = yield* sql`UPDATE kin_doc_jobs SET passes = ${pass},
+              compared = MAX(compared, ${again.compared ? 1 : 0})
+            WHERE org_id = ${job.orgId} AND worker_id = ${job.workerId} AND passes = ${job.passes}
+              AND collected_at IS NULL RETURNING worker_id`;
+          if (counted.length === 0) return false;
+          yield* threads.sendToThread({
+            projectId: ProjectId.make(job.projectId),
+            commandId: CommandId.make(`kin-doc-pass:${job.workerId}:${pass}`),
+            threadId,
+            messageId: MessageId.make(`kin-doc-pass:${job.workerId}:${pass}`),
+            text: again.text,
+            attachments: [],
+            mode: "queue",
+            createdBy: "system",
+            creationSource: "server",
+          });
+          return true;
+        },
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't send a recipe writer its next pass", { cause }).pipe(
+            Effect.as(false),
+          ),
+        ),
+      );
+
       /** A document job's outcome, filed once: a later collection returns the stored one. */
       const settle = Effect.fn("KinDocCollector.settle")(function* (
         job: JobRow,
@@ -584,7 +851,7 @@ export const makeCollectorLayer = (options: { readonly sweepPage?: number } = {}
         if (stored !== undefined && stored._tag === "Some") return stored.value;
         // out/ is read only once nothing the worker started can still change it.
         const gone = yield* scopes.reap(threadId);
-        const outcome =
+        const result: Outcome | Again =
           !gone && shellHost
             ? UNCONFIRMED
             : yield* outcomeOf(job, completed, workerReport).pipe(
@@ -594,6 +861,8 @@ export const makeCollectorLayer = (options: { readonly sweepPage?: number } = {}
                   ),
                 ),
               );
+        if ("_tag" in result && (yield* sendBack(job, threadId, result))) return CONTINUED;
+        const outcome = "_tag" in result ? result.otherwise : result;
         yield* recordOutcome(job.orgId, job.workerId, yield* encodeOutcome(outcome)).pipe(
           jobContext,
         );
@@ -624,7 +893,9 @@ export const makeCollectorLayer = (options: { readonly sweepPage?: number } = {}
             j.chat_id AS "chatId", j.audience, j.answered_message_id AS "answeredMessageId",
             j.answered_author_kind AS "answeredAuthorKind", j.answered_author_id AS "answeredAuthorId",
             j.collected_at AS "collectedAt",
-            j.outcome_json AS "outcomeJson", COALESCE(w.title, 'Document') AS title
+            j.outcome_json AS "outcomeJson", COALESCE(w.title, 'Document') AS title,
+            j.references_json AS "referencesJson", j.passes, j.compared,
+            w.project_id AS "projectId"
           FROM kin_doc_jobs j
           LEFT JOIN kin_workers w ON w.org_id = j.org_id AND w.worker_id = j.worker_id
           WHERE j.org_id = ${worker.orgId} AND j.worker_id = ${worker.workerId}
@@ -638,15 +909,22 @@ export const makeCollectorLayer = (options: { readonly sweepPage?: number } = {}
           }
           const [job] = found.success;
           if (job === undefined) return undefined;
-          // Every way out of a document job ends in its cleanup; none falls through to publishing.
+          // Every way out of a document job ends in its cleanup, but a writer sent back to work;
+          // none falls through to publishing.
           return yield* settle(job, worker.threadId, completed, workerReport).pipe(
-            Effect.map((outcome) => reported(workerReport, outcome)),
+            Effect.map((outcome) =>
+              outcome === CONTINUED ? CONTINUED : reported(workerReport, outcome),
+            ),
             Effect.catchCause((cause) =>
               Effect.logWarning("Kin document collection failed", { cause }).pipe(
                 Effect.as(reported(workerReport, FAILED)),
               ),
             ),
-            Effect.ensuring(cleanup(job.orgId, job.workerId)),
+            Effect.onExit((exit) =>
+              Exit.isSuccess(exit) && exit.value === CONTINUED
+                ? Effect.void
+                : cleanup(job.orgId, job.workerId),
+            ),
           );
         },
         Effect.provideService(KinRecords, records),

@@ -3,8 +3,10 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { readProfile } from "../work/companyProfile.ts";
+import { logoFile, logoPath } from "./brand.ts";
 import { checkedSample, type Recipe, type Value } from "./recipe.ts";
-import { KinDocRenderer } from "./render.ts";
+import { KinDocRenderer, type Rendered } from "./render.ts";
 import {
   type ChangedBy,
   KinWorkspace,
@@ -39,22 +41,64 @@ export const sampleInputs = (
     : checked.inputs;
 };
 
+/** A stand-in logo for a sample when the company has none yet: a plain mark, no text. */
+const PLACEHOLDER_LOGO = new TextEncoder().encode(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="80" viewBox="0 0 240 80"><rect width="240" height="80" rx="10" fill="#94a3b8"/><rect x="18" y="18" width="44" height="44" rx="22" fill="#e2e8f0"/><rect x="76" y="30" width="140" height="20" rx="6" fill="#e2e8f0"/></svg>',
+);
+export type SampleLogo = { readonly bytes: Uint8Array; readonly extension: string };
+
+/** The logo a sample renders with: the company's, else the stand-in. */
+export const sampleLogo = Effect.fn("KinRecipeLabels.sampleLogo")(function* (orgId: KinOrgId) {
+  const profile = yield* readProfile(orgId);
+  const own = profile.logo === null ? null : yield* logoFile(profile.logo);
+  return own ?? { bytes: PLACEHOLDER_LOGO, extension: "svg" };
+});
+
+/** A recipe's sample rendered as Kin renders a document from it, or why it can't be. */
+export const renderSample: (
+  renderer: KinDocRenderer["Service"],
+  orgId: KinOrgId,
+  logo: SampleLogo,
+  change: Parameters<VerifyChange>[0],
+  page?: boolean,
+) => Effect.Effect<Extract<Rendered, { readonly _tag: "made" }> | string> = Effect.fn(
+  "KinRecipeLabels.renderSample",
+)(
+  function* (renderer, orgId, logo, change, page = false) {
+    const given = sampleInputs(change.recipe, change.sample);
+    if (typeof given === "string") return given;
+    // A sample that shows a logo shows the company's own, at the path Kin puts it.
+    const logoInputs = change.recipe.inputs.filter((input) => input.from === "company.logo");
+    const shown = logoInputs.some((input) => given[input.name] != null);
+    const inputs = {
+      ...given,
+      ...Object.fromEntries(
+        logoInputs.map((input) => [input.name, shown ? logoPath(logo.extension) : null]),
+      ),
+    };
+    const rendered = yield* renderer.render({
+      orgId,
+      recipe: change.recipe,
+      commit: change.commit,
+      inputs,
+      day: typeof inputs.today === "string" ? inputs.today : SAMPLE_DAY,
+      logo: shown ? logo : null,
+      page,
+    });
+    return rendered._tag === "made" ? rendered : rendered.reason;
+  },
+  Effect.catch((error) => Effect.succeed(error.message)),
+);
+
 /** Why a recipe can't be kept: its sample, rendered as Kin renders a document from it. */
 export const verifySample =
-  (renderer: KinDocRenderer["Service"], orgId: KinOrgId): VerifyChange =>
-  ({ commit, recipe, sample }) =>
-    Effect.gen(function* () {
-      const inputs = sampleInputs(recipe, sample);
-      if (typeof inputs === "string") return inputs;
-      const rendered = yield* renderer.render({
-        orgId,
-        recipe,
-        commit,
-        inputs,
-        day: typeof inputs.today === "string" ? inputs.today : SAMPLE_DAY,
-      });
-      return rendered._tag === "made" ? undefined : rendered.reason;
-    }).pipe(Effect.catch((error) => Effect.succeed(error.message)));
+  (renderer: KinDocRenderer["Service"], orgId: KinOrgId, logo: SampleLogo): VerifyChange =>
+  (change) =>
+    renderSample(renderer, orgId, logo, change).pipe(
+      Effect.map((rendered) =>
+        typeof rendered === "string" ? `its sample didn't render: ${rendered}` : undefined,
+      ),
+    );
 
 /**
  * Where `main` was before Kin's first change that labels as it commits, recorded before that
@@ -147,7 +191,7 @@ export const undoRecipe = Effect.fn("KinRecipeLabels.undo")(function* (
     orgId,
     name,
     by,
-    verifySample(renderer, orgId),
+    verifySample(renderer, orgId, yield* sampleLogo(orgId)),
   );
   if (undone._tag === "undone")
     yield* label(

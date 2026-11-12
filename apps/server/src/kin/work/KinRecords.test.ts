@@ -1,6 +1,8 @@
 // Loaded first: the chat and trigger modules import each other.
 import "../chat/KinChatService.ts";
 import { assert, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { ServerConfig } from "../../config.ts";
 import {
   AuthKinChatScope,
   EnvironmentId,
@@ -83,6 +85,8 @@ const layer = Layer.mergeAll(KinRecords.layer, identity, gate).pipe(
   Layer.provideMerge(KinPersistence.layer),
   Layer.provideMerge(Sqlite.layerMemory),
   Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-records-" })),
+  Layer.provideMerge(NodeServices.layer),
 );
 
 /** Two leads with direct chats with the owner, and a teammate. */
@@ -392,12 +396,12 @@ it.effect(
       ];
       for (const error of refused) assert.include(error, { reason: "not_allowed" });
       // Every Work method: the clients, contacts and projects ones, lists, money, the profile,
-      // and issuing and voiding numbered entries.
+      // issuing and voiding numbered entries, and receipts.
       const methods = [
         ...Object.values(KIN_WORK_WS_METHODS),
         ...KinFinanceRpcs.map((rpc) => rpc._tag),
       ];
-      assert.lengthOf(methods, 31);
+      assert.lengthOf(methods, 33);
       for (const method of methods)
         assert.isTrue(
           (yield* Effect.exit(authorizeRpc([AuthKinChatScope], method, { orgId })))._tag ===

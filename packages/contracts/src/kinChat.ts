@@ -281,6 +281,13 @@ export const KinChoiceCardState = Schema.Struct({
   question: KinTrimmedText.check(Schema.isMaxLength(240)),
   detail: Schema.NullOr(KinText.check(Schema.isMaxLength(2000))),
   options: Schema.Array(KinChoiceOption).check(Schema.isMinLength(2), Schema.isMaxLength(4)),
+  /** A picture of what is asked about, such as a new logo: a file in this card's chat. */
+  image: Schema.optionalKey(
+    Schema.Struct({
+      attachmentId: KinTrimmedText,
+      mimeType: KinTrimmedText.check(Schema.isMaxLength(100)),
+    }),
+  ),
   // The first answer settles the card.
   answer: Schema.NullOr(
     Schema.Struct({

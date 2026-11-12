@@ -28,6 +28,9 @@ lines above it:
   imported number in that year's series.
 - Payments are recorded as **Record payment** records them: an invoice paid in full becomes Paid,
   on the day of its last payment.
+- A payment whose note is a receipt number the old system issued, such as `QST-RN/2026-27/001`,
+  keeps it: the receipt Kin makes for that payment carries the same number, and Kin's receipt
+  numbering carries on after the highest one in that year's series.
 - `asOf` is the last day the old system was kept up. Entries still open from before it get a note
   saying so, so nobody takes an old to-do for current.
 

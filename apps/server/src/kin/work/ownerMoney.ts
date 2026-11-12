@@ -1,4 +1,6 @@
 import {
+  type KinMakeReceiptInput,
+  type KinReceiptsInput,
   KIN_RECORD_CHANGES_CAP,
   KinChatError,
   type KinCompanyProfileInput,
@@ -28,6 +30,7 @@ import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { readableFrom } from "../chat/sharing.ts";
 import { remakeForEntry } from "../gendocs/make.ts";
 import * as Numbers from "../gendocs/numbering.ts";
+import { listReceipts, makeReceipt as makeReceiptFor } from "../gendocs/receipts.ts";
 import { readProfile, setProfile } from "./companyProfile.ts";
 import { KinRecords } from "./KinRecords.ts";
 import { dates as datesView, moneySummary } from "./moneyViews.ts";
@@ -387,4 +390,47 @@ export const setCompanyProfile = Effect.fn("KinMoney.setCompanyProfile")(functio
   const person = yield* theOwner(people, input.orgId);
   const { orgId, rev, ...patch } = input;
   return yield* setProfile(orgId, { _tag: "person", personId: person.personId }, patch, rev);
+}, workFailure);
+
+/** Receipts for Money: newest first, each with its number, who it was from and what for. */
+export const receipts = Effect.fn("KinMoney.receipts")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinReceiptsInput,
+) {
+  yield* theOwner(people, input.orgId);
+  return { receipts: yield* listReceipts(input.orgId, { limit: input.limit ?? 100 }) };
+}, workFailure);
+
+/** The owner's tap on a payment or an advance: its receipt, numbered, with its PDF. */
+export const makeReceipt = Effect.fn("KinMoney.makeReceipt")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinMakeReceiptInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  const writer = ownerWriter(person);
+  const made = yield* makeReceiptFor({
+    orgId: input.orgId,
+    writer,
+    requester: { _tag: "owner", personId: person.personId, writer },
+    paymentId: input.paymentId,
+    key: input.key,
+    advance:
+      input.advance === undefined
+        ? undefined
+        : {
+            client: input.advance.client,
+            amount: input.advance.amount,
+            receivedOn: input.advance.receivedOn,
+            originKey: `receipt:advance:owner:${input.clientRequestId}`,
+          },
+    against: input.against,
+    extras: { towards: input.towards, mode: input.mode, reference: input.reference },
+    admit: Effect.void,
+  });
+  if (made.receipt === undefined)
+    return yield* new KinChatError({
+      reason: "unavailable",
+      message: "Kin couldn't read the receipt.",
+    });
+  return { receipt: made.receipt, problems: made.problems };
 }, workFailure);

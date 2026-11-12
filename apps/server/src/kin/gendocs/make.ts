@@ -121,6 +121,7 @@ type Plan = {
   readonly draft: boolean;
   readonly sensitive: boolean;
   readonly docOrigin: string;
+  readonly logo: { readonly bytes: Uint8Array; readonly extension: string } | null;
 };
 
 /** The exact inputs from stored rows and the requester's own, and what follows from them. */
@@ -144,7 +145,14 @@ const plan = Effect.fn("KinDocMaker.plan")(function* (request: MakeRequest, reci
   const gathered = yield* gatherFacts(request.orgId, recipe, entry, request.given);
   const assembled = assembleInputs(recipe, request.given, gathered.facts, gathered.currency);
   if ("error" in assembled) return yield* assembled.error;
-  const inputsHash = sha256(canonical(assembled.inputs));
+  // The logo's bytes are part of what was rendered, though the template sees only its path.
+  const inputsHash = sha256(
+    canonical(
+      gathered.logo === null
+        ? assembled.inputs
+        : { inputs: assembled.inputs, logo: gathered.logo.sha256 },
+    ),
+  );
   const fromTurn =
     request.requester._tag === "agent" &&
     (yield* turnSensitive(request.orgId, request.requester.wakeupId));
@@ -162,6 +170,7 @@ const plan = Effect.fn("KinDocMaker.plan")(function* (request: MakeRequest, reci
       entry === undefined
         ? `recipe:${recipe.name}:${inputsHash}`
         : `recipe:${recipe.name}:${entry.recordId}`,
+    logo: gathered.logo,
   } satisfies Plan;
 });
 
@@ -226,6 +235,7 @@ export const makeDocument = Effect.fn("KinDocMaker.make")(function* (request: Ma
     commit: recipe.commit,
     inputs: first.inputs,
     day,
+    logo: first.logo,
   });
   if (rendered._tag === "failed")
     return yield* invalid(`${NOTHING} The ${recipe.name} recipe didn't render: ${rendered.reason}`);
