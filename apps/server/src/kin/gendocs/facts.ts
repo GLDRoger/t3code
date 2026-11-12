@@ -118,44 +118,15 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
   const sensitiveTables = new Set<string>();
   for (const input of recipe.inputs) {
     const source = sourceOf(input.from);
-    if (source?._tag === "advances") {
+    if (source?._tag === "entryPayments") {
       if (entry === undefined) continue;
       sensitiveTables.add(input.name);
-      // Received before the day it is issued (today, for one not dated yet), or set against it
-      // from an advance's own receipt.
-      const before = dayIn(entry.dateAt ?? now, zone);
-      const rows = yield* sql<{
-        minor: number;
-        currency: string;
-        paidOn: string;
-        note: string;
-        originKey: string;
-        receipt: string | null;
-      }>`SELECT p.amount_minor AS minor, p.currency, p.paid_on AS "paidOn", p.note,
-          p.origin_key AS "originKey",
-          (SELECT n.number FROM kin_records r
-            JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
-            WHERE r.org_id = p.org_id AND r.register_id = 'receipts' AND r.state <> 'dropped'
-              AND r.origin_key LIKE 'receipt:%'
-              AND json_extract(r.fields_json, '$.payment') = p.payment_id
-            ORDER BY r.created_at DESC, r.record_id DESC LIMIT 1) AS receipt
-        FROM kin_record_payments p
-        WHERE p.org_id = ${orgId} AND p.record_id = ${entry.recordId} AND p.voided_at IS NULL
-          AND (p.paid_on < ${before} OR p.origin_key LIKE 'receipt:%')
-        ORDER BY p.paid_on, p.payment_id LIMIT 200`;
-      const noted = yield* notedReceiptNumbers(
-        orgId,
-        rows.filter(fromImport).map((row) => row.note),
-      );
+      const paid = yield* entryPayments(orgId, entry, dayIn(entry.dateAt ?? now, zone));
       tables.set(
         input.name,
-        rows.map((row) =>
-          pick(input, {
-            receipt: row.receipt ?? (fromImport(row) ? noted.get(row.note) : undefined) ?? null,
-            amount: { minor: row.minor, currency: row.currency },
-            paidOn: row.paidOn,
-          }),
-        ),
+        paid
+          .filter((row) => !source.advancesOnly || row.kind === "advance")
+          .map((row) => pick(input, row)),
       );
       continue;
     }
@@ -269,7 +240,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
           case "key":
             return entry.key;
           case "title":
-            return entry.title;
+            return withoutOwnNumber(entry.title, [number, cellOf(fields, "number")]);
           case "state":
             return def === undefined ? entry.state : stateLabel(def, entry.state);
           case "amount":
@@ -313,7 +284,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
             : recipe.numbered && number === null;
       case "rows":
       case "payments":
-      case "advances":
+      case "entryPayments":
         return tables.get(input.name);
     }
   };
@@ -338,7 +309,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
         return SENSITIVE_COMPANY.test(source.key);
       case "rows":
       case "payments":
-      case "advances":
+      case "entryPayments":
         return sensitiveTables.has(input.name);
     }
   };
@@ -348,6 +319,67 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
     fromSource(sourceOf(input.from), input);
   return { facts, currency, sensitive, number, logo } satisfies Gathered;
 });
+
+/**
+ * A title without the entry's own number at its start, as an import writes "QST/2026-27/008
+ * Website build": the document shows the number on its own. The stored title stays as it is.
+ */
+const withoutOwnNumber = (title: string, numbers: ReadonlyArray<unknown>) => {
+  for (const number of numbers) {
+    if (typeof number !== "string" || number === "" || !title.startsWith(number)) continue;
+    const rest = /^(?:\s*[·•|:–—-]\s*|\s+)(.*)$/s.exec(title.slice(number.length))?.[1]?.trim();
+    if (rest !== undefined && rest !== "") return rest;
+  }
+  return title;
+};
+
+/**
+ * An entry's live payments, oldest first, each with its receipt's number and how it settles the
+ * entry: an advance (received before `before`, its issue day, or set against it from an advance's
+ * receipt), TDS the client deducted, or money received.
+ */
+const entryPayments = Effect.fn("KinDocFacts.entryPayments")(function* (
+  orgId: KinOrgId,
+  entry: RecordRow,
+  before: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    minor: number;
+    currency: string;
+    paidOn: string;
+    note: string;
+    originKey: string;
+    receipt: string | null;
+  }>`SELECT p.amount_minor AS minor, p.currency, p.paid_on AS "paidOn", p.note,
+      p.origin_key AS "originKey",
+      (SELECT n.number FROM kin_records r
+        JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
+        WHERE r.org_id = p.org_id AND r.register_id = 'receipts' AND r.state <> 'dropped'
+          AND r.origin_key LIKE 'receipt:%'
+          AND json_extract(r.fields_json, '$.payment') = p.payment_id
+        ORDER BY r.created_at DESC, r.record_id DESC LIMIT 1) AS receipt
+    FROM kin_record_payments p
+    WHERE p.org_id = ${orgId} AND p.record_id = ${entry.recordId} AND p.voided_at IS NULL
+    ORDER BY p.paid_on, p.payment_id LIMIT 200`;
+  const noted = yield* notedReceiptNumbers(
+    orgId,
+    rows.filter(fromImport).map((row) => row.note),
+  );
+  return rows.map((row) => ({
+    receipt: row.receipt ?? (fromImport(row) ? noted.get(row.note) : undefined) ?? null,
+    amount: { minor: row.minor, currency: row.currency },
+    paidOn: row.paidOn,
+    kind:
+      row.paidOn < before || row.originKey.startsWith("receipt:")
+        ? "advance"
+        : TDS_ORIGIN.test(row.originKey)
+          ? "tds"
+          : "received",
+  }));
+});
+// A bank statement records TDS a client deducted as a payment of its own (`statementApply.ts`).
+const TDS_ORIGIN = /^statement:.*:tds$/;
 
 /** Only the columns the input declares, so a row carries nothing else Kin stores. */
 const pick = (input: InputDecl, row: Readonly<Record<string, Cell>>) =>

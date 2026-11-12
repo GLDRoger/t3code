@@ -611,6 +611,15 @@ describe("recipe documents", () => {
         `${config.attachmentsDir}/${file.attachmentId}.csv`,
       );
       assert.match(text, /INV\/26-27\/001,INV-1,/);
+      // A title that starts with its own number, as an import writes one, shows the number once.
+      yield* (yield* KinRecords.KinRecords).update(
+        orgId,
+        { actor: { _tag: "system" }, via: "import" },
+        "INV-1",
+        { title: "INV/26-27/001 · October retainer" },
+      );
+      yield* LeadDocuments.make(scope, invoice({ title: "Invoice INV-1 again" }));
+      assert.strictEqual(rendered.at(-1)!.request.inputs.title, "October retainer");
     }).pipe(Effect.provide(layer)),
   );
 
@@ -873,24 +882,37 @@ describe("receipts", () => {
         // The invoice shows the advance and what is left; one paid on its day isn't an advance.
         yield* LeadDocuments.make(scope, invoice({ entry: "INV-2", title: "Invoice INV-2" }));
         assert.deepStrictEqual(
-          [rendered.at(-1)!.request.inputs.advances, latestData().balance.text],
+          [rendered.at(-1)!.request.inputs.paid, latestData().balance.text],
           [
             [
               {
                 receipt: "QST-RN/26-27/009",
                 amount: { minor: 50_000, currency: "INR" },
                 paidOn: "2026-11-05",
+                kind: "advance",
               },
             ],
             "₹1,500.00",
           ],
         );
+        // Every payment settles it, not only the advance: nothing is left on INV-1.
         yield* LeadDocuments.make(scope, invoice({ title: "Invoice INV-1 again" }));
         assert.deepStrictEqual(
-          (rendered.at(-1)!.request.inputs.advances as ReadonlyArray<{ receipt: string }>).map(
-            (one) => one.receipt,
-          ),
-          ["QST-RN/2026-27/007"],
+          [
+            (latestData().paidLines as ReadonlyArray<Record<string, unknown>>).map((one) => [
+              one.kind,
+              one.receipt,
+              one.paidText,
+            ]),
+            latestData().balance.text,
+          ],
+          [
+            [
+              ["advance", "QST-RN/2026-27/007", "1 Oct 2026"],
+              ["received", "QST-RN/26-27/008", "12 Nov 2026"],
+            ],
+            "₹0.00",
+          ],
         );
 
         // What a screen lists: newest first, who from, towards, the invoice and the PDF.
@@ -1198,7 +1220,7 @@ describe("receipts", () => {
           ).pipe(
             Effect.map(() =>
               (
-                rendered.at(-1)!.request.inputs.advances as ReadonlyArray<{
+                rendered.at(-1)!.request.inputs.paid as ReadonlyArray<{
                   receipt: string | null;
                   paidOn: string;
                 }>

@@ -114,8 +114,8 @@ const ROW_COLUMNS = [
   "number",
 ];
 const PAYMENT_COLUMNS = ["invoice", "client", "amount", "paidOn"];
-/** An entry's payments received before it was issued, or set from an advance's receipt. */
-const ADVANCE_COLUMNS = ["receipt", "amount", "paidOn"];
+/** An entry's live payments; `kind` is advance, tds or received. */
+const ENTRY_PAYMENT_COLUMNS = ["receipt", "amount", "paidOn", "kind"];
 
 /** Where a value comes from, parsed; `undefined` for a `from` this server doesn't read. */
 export type Source =
@@ -128,7 +128,8 @@ export type Source =
   | { readonly _tag: "logo" }
   | { readonly _tag: "rows"; readonly list: string }
   | { readonly _tag: "payments" }
-  | { readonly _tag: "advances" }
+  /** `entry.payments`, or `entry.advances`: those received before its date or from an advance. */
+  | { readonly _tag: "entryPayments"; readonly advancesOnly: boolean }
   | { readonly _tag: "system"; readonly key: string };
 export const sourceOf = (from: string): Source | undefined => {
   if (from === "agent") return { _tag: "agent" };
@@ -137,7 +138,8 @@ export const sourceOf = (from: string): Source | undefined => {
   const tail = rest.join(".");
   switch (head) {
     case "entry":
-      if (tail === "advances") return { _tag: "advances" };
+      if (tail === "advances" || tail === "payments")
+        return { _tag: "entryPayments", advancesOnly: tail === "advances" };
       if (rest[0] === "fields" && rest.length === 2 && /^[a-z][a-zA-Z0-9]{0,39}$/.test(rest[1]!))
         return { _tag: "entryField", field: rest[1]! };
       return ENTRY_KEYS.includes(tail) ? { _tag: "entry", key: tail } : undefined;
@@ -180,7 +182,7 @@ export const parseRecipe = (text: string): Recipe | RecipeProblem => {
     if (source === undefined)
       return problem(`input ${name} reads from ${from}, which Kin doesn't supply`);
     const isTable =
-      source._tag === "rows" || source._tag === "payments" || source._tag === "advances";
+      source._tag === "rows" || source._tag === "payments" || source._tag === "entryPayments";
     if (isTable !== (declared.type === "table") && source._tag !== "agent")
       return problem(`input ${name}: its type doesn't match what ${from} gives`);
     if (declared.type === "month" && source._tag !== "agent")
@@ -196,17 +198,18 @@ export const parseRecipe = (text: string): Recipe | RecipeProblem => {
       const allowed =
         source._tag === "payments"
           ? PAYMENT_COLUMNS
-          : source._tag === "advances"
-            ? ADVANCE_COLUMNS
+          : source._tag === "entryPayments"
+            ? ENTRY_PAYMENT_COLUMNS
             : ROW_COLUMNS;
       const extra = Object.keys(declared.columns ?? {}).filter(
         (column) =>
-          !allowed.includes(column) && !(source._tag !== "advances" && column.startsWith("field_")),
+          !allowed.includes(column) &&
+          !(source._tag !== "entryPayments" && column.startsWith("field_")),
       );
       if (extra.length > 0)
         return problem(`input ${name} asks for columns Kin doesn't have: ${extra.join(", ")}`);
       const period = declared.period === undefined ? undefined : front.inputs?.[declared.period];
-      if (source._tag !== "advances" && period?.type !== "month")
+      if (source._tag !== "entryPayments" && period?.type !== "month")
         return problem(`input ${name} needs period: a month input of the agent's`);
     }
     inputs.push({
@@ -280,7 +283,7 @@ export const needsEntry = (recipe: Recipe) =>
       source?._tag === "entry" ||
       source?._tag === "entryField" ||
       source?._tag === "client" ||
-      source?._tag === "advances"
+      source?._tag === "entryPayments"
     );
   });
 

@@ -33,8 +33,10 @@ RECIPE.md starts with front matter between --- lines:
     company.placeOfSupply, company.sac, company.bank.<accountName|accountNumber|ifsc|bankName|branch|upi>;
   - company.logo: the logo's path in the render folder, such as /brand/logo.png, or null;
     company.brand.<primaryColor|secondaryColor|font|footer>: the company's look, each may be null;
-  - entry.advances (a table): the entry's payments received before its date or set against it
-    from an advance's receipt, with columns receipt, amount, paidOn;
+  - entry.payments (a table): every payment on the entry not taken back, with columns receipt,
+    amount, paidOn and kind: advance (received before its date, or set against it from an
+    advance's receipt), tds (tax the client deducted) or received; entry.advances is only the
+    advances;
   - rows.<list> (a table, with period: naming a month input): that list's entries dated in the
     month, with columns from key, title, state, amount, tax, date, due, client,
     category, number and field_<field>;
@@ -106,11 +108,11 @@ inputs:
   brandSecondary: { type: text, from: company.brand.secondaryColor, required: false }
   brandFont: { type: text, from: company.brand.font, required: false }
   brandFooter: { type: text, from: company.brand.footer, required: false }
-  advances:
+  paid:
     type: table
-    from: entry.advances
+    from: entry.payments
     required: false
-    columns: { receipt: text, amount: money, paidOn: date }
+    columns: { receipt: text, amount: money, paidOn: date, kind: text }
   billTo: { type: text, required: false, description: "A billing address for this invoice only, when the owner gives one other than the client's" }
   lines:
     type: table
@@ -145,13 +147,13 @@ computed:
   issuedText: { date: [issuedDay, "D MMM YYYY"] }
   dueText: { date: [dueOn, "D MMM YYYY"] }
   billedAt: { first: [billTo, clientAddress] }
-  advanceLines:
+  paidLines:
     each:
-      rows: advances
+      rows: paid
       set:
         paidText: { date: [paidOn, "D MMM YYYY"] }
-  advanceTotal: { sum: advances.amount }
-  balance: { minus: [tax.total, advanceTotal] }
+  paidTotal: { sum: paid.amount }
+  balance: { minus: [tax.total, paidTotal] }
 default: true
 outputs: [invoice.pdf]
 ---
@@ -161,8 +163,9 @@ each line's value (quantity times rate), the tax lines (CGST and SGST, or UTGST,
 state; IGST between states; none for an export under a letter of undertaking, with the
 endorsement and the country), the total and the amount in words. If the entry's amount and the
 lines don't agree, nothing is made and the reason says by how much: tell the owner, don't change
-a figure. A draft (no number yet) carries a DRAFT mark. Money received before the invoice was issued, or set
-against it from an advance's receipt, shows as "Less advance received" with the balance due.
+a figure. A draft (no number yet) carries a DRAFT mark. Each payment on it shows as a line, "Less advance
+received" (received before it was issued, or set against it from an advance's receipt), "Less TDS
+deducted" or "Less received", then the balance due.
 
 It shows the company logo and brand colours, font and footer line from the company profile when
 they are set, and looks right without them. The wording the owner may change (the export
@@ -173,6 +176,7 @@ endorsements and the footer) is at the top of template.typ.
 #let lut-endorsement = "SUPPLY MEANT FOR EXPORT UNDER BOND OR LETTER OF UNDERTAKING WITHOUT PAYMENT OF INTEGRATED TAX"
 #let paid-export-endorsement = "SUPPLY MEANT FOR EXPORT ON PAYMENT OF INTEGRATED TAX"
 #let footer-text = "This is a computer-generated invoice and needs no signature."
+#let paid-labels = (advance: "Less advance received", tds: "Less TDS deducted", received: "Less received")
 
 #let ink = rgb("#1f2933")
 #let soft = rgb("#6b7280")
@@ -282,10 +286,10 @@ endorsements and the footer) is at the top of template.typ.
   ..t.taxes.map(x => ([#x.name at #x.rate%], [#x.amount.text])).flatten(),
   table.hline(stroke: 0.8pt + accent),
   text(weight: "bold")[Total], text(weight: "bold", t.total.text),
-  ..if d.advanceLines != none and d.advanceLines.len() > 0 {
+  ..if d.paidLines != none and d.paidLines.len() > 0 {
     (
-      ..d.advanceLines.map(a => (
-        [Less advance received#if a.receipt != none [ (#a.receipt)], #a.paidText],
+      ..d.paidLines.map(a => (
+        [#paid-labels.at(a.kind, default: "Less received")#if a.receipt != none [ (#a.receipt)], #a.paidText],
         [−#a.amount.text],
       )).flatten(),
       table.hline(stroke: 0.8pt + accent),
@@ -351,7 +355,7 @@ endorsements and the footer) is at the top of template.typ.
   "brandSecondary": null,
   "brandFont": null,
   "brandFooter": null,
-  "advances": [{ "receipt": "RCT/26-27/001", "amount": { "minor": 2500000, "currency": "INR" }, "paidOn": "2026-10-20" }],
+  "paid": [{ "receipt": "RCT/26-27/001", "amount": { "minor": 2500000, "currency": "INR" }, "paidOn": "2026-10-20", "kind": "advance" }],
   "billTo": null,
   "lines": [{ "description": "Advisory", "sac": null, "quantity": "3", "unit": "days", "rate": { "minor": 3333300, "currency": "INR" } }],
   "gstRate": null,
