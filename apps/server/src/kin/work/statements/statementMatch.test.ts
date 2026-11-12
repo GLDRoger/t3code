@@ -65,7 +65,9 @@ describe("statement matching", () => {
   it.each([
     {
       name: "a credit of the exact balance from the named client",
-      rows: [row({ description: "NEFT CR-ICIC0000001-BRIGHTLINE MEDIA LLP", amountMinor: 11_800_000 })],
+      rows: [
+        row({ description: "NEFT CR-ICIC0000001-BRIGHTLINE MEDIA LLP", amountMinor: 11_800_000 }),
+      ],
       invoices: [invoice({ amountMinor: 11_800_000, client: "Brightline Media LLP" })],
       expenses: [],
       group: "matched",
@@ -73,7 +75,12 @@ describe("statement matching", () => {
     },
     {
       name: "a credit of the invoice less 10% TDS",
-      rows: [row({ description: "NEFT CR-UTIB0000002-NORTHWIND RETAIL PVT LTD", amountMinor: 9_000_000 })],
+      rows: [
+        row({
+          description: "NEFT CR-UTIB0000002-NORTHWIND RETAIL PVT LTD",
+          amountMinor: 9_000_000,
+        }),
+      ],
       invoices: [invoice({ amountMinor: 10_000_000, client: "Northwind Retail Pvt Ltd" })],
       expenses: [],
       group: "matched",
@@ -108,9 +115,24 @@ describe("statement matching", () => {
     },
     {
       name: "a subscription debit on its billing day",
-      rows: [row({ direction: "debit", description: "UPI-GITHUB-github@invbank", amountMinor: 336_000, date: "2026-10-24" })],
+      rows: [
+        row({
+          direction: "debit",
+          description: "UPI-GITHUB-github@invbank",
+          amountMinor: 336_000,
+          date: "2026-10-24",
+        }),
+      ],
       invoices: [],
-      expenses: [expense({ amountMinor: 336_000, day: null, due: "2026-10-22", vendor: "GitHub", repeats: true })],
+      expenses: [
+        expense({
+          amountMinor: 336_000,
+          day: null,
+          due: "2026-10-22",
+          vendor: "GitHub",
+          repeats: true,
+        }),
+      ],
       group: "matched",
       fit: "exact",
     },
@@ -126,13 +148,17 @@ describe("statement matching", () => {
         }),
       ],
       invoices: [],
-      expenses: [expense({ currency: "USD", amountMinor: 1_500, day: "2026-09-22", vendor: "Figma" })],
+      expenses: [
+        expense({ currency: "USD", amountMinor: 1_500, day: "2026-09-22", vendor: "Figma" }),
+      ],
       group: "matched",
       fit: "foreign",
     },
     {
       name: "a debit with no expense of its amount",
-      rows: [row({ direction: "debit", description: "UPI-SWIGGY-swiggy@invbank", amountMinor: 54_704 })],
+      rows: [
+        row({ direction: "debit", description: "UPI-SWIGGY-swiggy@invbank", amountMinor: 54_704 }),
+      ],
       invoices: [],
       expenses: [expense({ amountMinor: 99_900 })],
       group: "unmatched",
@@ -167,7 +193,12 @@ describe("statement matching", () => {
     ["IMPS-627812345-SELF-XXXXXXXX7710-OWN ACCOUNT", "transfer", undefined, undefined],
     ["SMS CHGS JUL-SEP 26 INCL GST", "expense", "HDFC Bank", "fees"],
     ["CBDT TDS PAYMENT-CHALLAN 26101", "expense", "Tax payment", "taxes"],
-    ["UPI-AMAZON WEB SERVICES-aws@invbank-SUBSCRIPTION", "expense", "Amazon Web Services", "software"],
+    [
+      "UPI-AMAZON WEB SERVICES-aws@invbank-SUBSCRIPTION",
+      "expense",
+      "Amazon Web Services",
+      "software",
+    ],
     ["NEFT DR-SBIN0000003-PRIYA NAIR-OCT DESIGN RETAINER", "expense", "Priya Nair", "contractors"],
     ["POS 4321XXXXXXXX7710 FIGMA INC", "expense", "Figma Inc", "software"],
     ["UPI-UBER INDIA-uberindia@invbank", "expense", "Uber India", "travel"],

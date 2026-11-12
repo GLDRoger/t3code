@@ -100,7 +100,9 @@ const nameIn = (name: string, narration: string) => {
   if (wanted.length === 0) return 0;
   const said = new Set(tokens(narration));
   const flat = squashed(narration);
-  const found = wanted.filter((word) => said.has(word) || (word.length >= 5 && flat.includes(word)));
+  const found = wanted.filter(
+    (word) => said.has(word) || (word.length >= 5 && flat.includes(word)),
+  );
   return found.length / wanted.length;
 };
 
@@ -127,11 +129,17 @@ const invoiceCandidate = (
     score += 50;
     why.push("same amount");
   } else if (invoice.paidMinor === 0 && row.amountMinor < balance) {
-    const bases = [invoice.amountMinor, ...(invoice.taxMinor === null ? [] : [invoice.amountMinor - invoice.taxMinor])];
+    const bases = [
+      invoice.amountMinor,
+      ...(invoice.taxMinor === null ? [] : [invoice.amountMinor - invoice.taxMinor]),
+    ];
     for (const base of bases)
       for (const rate of TDS_RATES) {
         const tds = Math.round((base * rate) / 100);
-        if (tdsMinor === undefined && Math.abs(balance - tds - row.amountMinor) <= TDS_SLACK_MINOR) {
+        if (
+          tdsMinor === undefined &&
+          Math.abs(balance - tds - row.amountMinor) <= TDS_SLACK_MINOR
+        ) {
           tdsMinor = balance - row.amountMinor;
           fit = "tds";
           score += 40;
@@ -144,7 +152,9 @@ const invoiceCandidate = (
     [invoice.number, invoice.key]
       .filter((one): one is string => one !== null && squashed(one).length >= 4)
       .some((one) => squashed(row.description).includes(squashed(one))) ||
-    (row.reference !== null && squashed(number).length >= 4 && squashed(row.reference).includes(squashed(number)));
+    (row.reference !== null &&
+      squashed(number).length >= 4 &&
+      squashed(row.reference).includes(squashed(number)));
   if (numbered) {
     score += 35;
     why.push("invoice number in the narration");
@@ -199,7 +209,12 @@ const expenseCandidate = (
     score += 10;
     why.push("same days");
   }
-  if (expense.repeats && expense.open && expense.due !== null && Math.abs(daysBetween(expense.due, row.date)) <= 5) {
+  if (
+    expense.repeats &&
+    expense.open &&
+    expense.due !== null &&
+    Math.abs(daysBetween(expense.due, row.date)) <= 5
+  ) {
     score += 10;
     why.push("its usual billing day");
   }
@@ -218,7 +233,8 @@ const TRANSFER =
   /\bself\b|own a\/?c|own account|to own|from own|sweep|\bfd\b|fixed deposit|credit card payment|\bcc (payment|pymt)|card payment|payment received|thank you|autopay|bill ?desk.*card/i;
 const CHARGES =
   /chgs|charges|\bfees?\b|annual fee|gst on|sms chg|min(imum)? bal|cash handling|commission|penalty/i;
-const TAX = /\bcbdt\b|\btds\b|\bgst ?(pmt|payment|challan)|\bgstn\b|advance tax|challan|income tax|\bitns\b/i;
+const TAX =
+  /\bcbdt\b|\btds\b|\bgst ?(pmt|payment|challan)|\bgstn\b|advance tax|challan|income tax|\bitns\b/i;
 const PAYROLL = /salary|\bsal\b|payroll|drawings?|reimburse/i;
 const INTEREST = /\bint\.?\s?(pd|paid|cr)\b|interest|cashback|refund|reversal|\brev\b/i;
 const CATEGORIES: ReadonlyArray<readonly [RegExp, string]> = [
@@ -226,7 +242,10 @@ const CATEGORIES: ReadonlyArray<readonly [RegExp, string]> = [
     /\baws\b|amazon web|google ?(cloud|workspace|ads)|microsoft|github|notion|slack|zoom|adobe|openai|anthropic|figma|atlassian|digitalocean|vercel|cloudflare|heroku|netlify|dropbox|canva|linear|jetbrains|apple\.com|icloud|godaddy|namecheap|hostinger/i,
     "software",
   ],
-  [/uber|\bola\b|rapido|makemytrip|irctc|indigo|vistara|air ?india|goibibo|cleartrip|\bhotel|oyo|fastag|petrol|fuel/i, "travel"],
+  [
+    /uber|\bola\b|rapido|makemytrip|irctc|indigo|vistara|air ?india|goibibo|cleartrip|\bhotel|oyo|fastag|petrol|fuel/i,
+    "travel",
+  ],
   [/swiggy|zomato|cafe|coffee|restaurant|chai|starbucks|dominos|eatsure|food/i, "meals"],
   [/\brent\b|lease|cowork|wework|91springboard/i, "rent"],
   [/croma|reliance digital|apple store|dell|lenovo|\bhp\b|vijay sales/i, "hardware"],
@@ -236,12 +255,19 @@ const CATEGORIES: ReadonlyArray<readonly [RegExp, string]> = [
 /** Who a narration paid, from the way banks write UPI, card, NEFT and ACH lines. */
 export const vendorOf = (narration: string): string | undefined => {
   const said = narration.replace(/\s+/g, " ").trim();
-  const parts = (text: string) => text.split(/[-/]/).map((part) => part.trim()).filter(Boolean);
+  const parts = (text: string) =>
+    text
+      .split(/[-/]/)
+      .map((part) => part.trim())
+      .filter(Boolean);
   let found: string | undefined;
   if (/^UPI[-/]/i.test(said)) {
     const pieces = parts(said);
     found = /^(DR|CR|P2M|P2A)$/i.test(pieces[1] ?? "") ? pieces[3] : pieces[1];
-  } else if (/^(NEFT|IMPS|RTGS)\s?(DR|CR)?[-/]/i.test(said)) found = parts(said).find((piece, index) => index >= 2 && !/^\d+$/.test(piece) && !/^[A-Z]{4}0/i.test(piece));
+  } else if (/^(NEFT|IMPS|RTGS)\s?(DR|CR)?[-/]/i.test(said))
+    found = parts(said).find(
+      (piece, index) => index >= 2 && !/^\d+$/.test(piece) && !/^[A-Z]{4}0/i.test(piece),
+    );
   else if (/^ACH\s?D?[-\s]/i.test(said)) found = said.replace(/^ACH\s?D?[-\s]+/i, "").split("-")[0];
   else if (/^POS\b/i.test(said)) found = said.replace(/^POS\s+\S*\d{4}\S*\s+/i, "");
   else found = said;
@@ -265,7 +291,11 @@ export const vendorOf = (narration: string): string | undefined => {
 /** What an unmatched row likely is, for the owner's quick actions. */
 export const suggest = (
   row: StatementRow,
-  input: { readonly ownAccounts: ReadonlyArray<string>; readonly known: ReadonlyArray<KnownVendor>; readonly bank: string | null },
+  input: {
+    readonly ownAccounts: ReadonlyArray<string>;
+    readonly known: ReadonlyArray<KnownVendor>;
+    readonly bank: string | null;
+  },
 ): Suggestion => {
   const text = row.description;
   // A card spend names its own card, which is not a move between accounts.
@@ -275,13 +305,24 @@ export const suggest = (
   if (ownAccount !== undefined || TRANSFER.test(text))
     return {
       action: "transfer",
-      why: ownAccount === undefined ? "Looks like money moved between your own accounts" : `Looks like a move to or from your account ••${ownAccount}`,
+      why:
+        ownAccount === undefined
+          ? "Looks like money moved between your own accounts"
+          : `Looks like a move to or from your account ••${ownAccount}`,
     };
   if (row.direction === "credit")
-    return INTEREST.test(text) ? { action: "ignore", why: "Interest, a refund or a reversal" } : { action: "later" };
-  if (TAX.test(text)) return { action: "expense", vendor: "Tax payment", category: "taxes", why: "A tax payment" };
+    return INTEREST.test(text)
+      ? { action: "ignore", why: "Interest, a refund or a reversal" }
+      : { action: "later" };
+  if (TAX.test(text))
+    return { action: "expense", vendor: "Tax payment", category: "taxes", why: "A tax payment" };
   if (CHARGES.test(text))
-    return { action: "expense", vendor: input.bank ?? "Bank charges", category: "fees", why: "Bank charges" };
+    return {
+      action: "expense",
+      vendor: input.bank ?? "Bank charges",
+      category: "fees",
+      why: "Bank charges",
+    };
   if (PAYROLL.test(text)) return { action: "ignore", why: "Salary, drawings or a reimbursement" };
   const guessed = vendorOf(text);
   const known = input.known
@@ -324,14 +365,19 @@ export const matchRows = (
   });
   // One entry answers one row: the clearest claim keeps it, and the others see it as taken.
   const order = results
-    .flatMap((result, index) => (result.candidates[0] === undefined ? [] : [{ index, score: result.candidates[0].score }]))
+    .flatMap((result, index) =>
+      result.candidates[0] === undefined ? [] : [{ index, score: result.candidates[0].score }],
+    )
     .toSorted((left, right) => right.score - left.score || left.index - right.index);
   const settled = new Map<number, RowMatch>();
   for (const { index } of order) {
     const { row, candidates } = results[index]!;
     const open = candidates.filter((one) => !taken.has(one.recordId));
     const [best, next] = open;
-    const clear = best !== undefined && best.score >= CONFIDENT && (next === undefined || best.score - next.score >= MARGIN);
+    const clear =
+      best !== undefined &&
+      best.score >= CONFIDENT &&
+      (next === undefined || best.score - next.score >= MARGIN);
     if (clear) taken.add(best.recordId);
     settled.set(index, {
       group: clear ? "matched" : open.length > 0 ? "choose" : "unmatched",
