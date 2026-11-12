@@ -88,7 +88,14 @@ const keptVariables = [
   "all_proxy",
 ];
 /** What a shell's commands still see; Claude Code sets their proxy variables and TMPDIR itself. */
-const commandVariables = new Set(["PATH", "HOME", ...keptVariables, ...pointerVariables, "SHELL"]);
+const commandVariables = new Set([
+  "PATH",
+  "HOME",
+  ...keptVariables,
+  ...pointerVariables,
+  "SHELL",
+  "VP_HOME",
+]);
 const commandSees = (name: string) =>
   name.startsWith("LC_") || (commandVariables.has(name) && name !== "CLAUDE_CODE_ENTRYPOINT");
 
@@ -130,7 +137,11 @@ const workerEnvironment = (
     HOME: place.home,
     // No CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: it also refuses any command with a variable or loop.
     ...(place.configDir === undefined ? {} : { CLAUDE_CONFIG_DIR: place.configDir }),
-    ...(shell === undefined ? {} : { ...commandLimits, CLAUDE_CODE_TMPDIR: shell.tmp }),
+    // Claude Code makes its proxy's bridge sockets in its own TMPDIR; a command's sandbox mounts
+    // only the task's temp directory, and a fresh /tmp hides any other.
+    ...(shell === undefined
+      ? {}
+      : { ...commandLimits, CLAUDE_CODE_TMPDIR: shell.tmp, TMPDIR: shell.tmp }),
   };
 };
 

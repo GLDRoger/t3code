@@ -32,10 +32,13 @@ export interface ShellPaths {
   readonly readable: ReadonlyArray<string>;
 }
 
-/** One result of the check; a failed `gate` line keeps the shell off, an `info` line never does. */
+/**
+ * One result of the check; a failed `gate` line keeps the shell off, an `info` line never does.
+ * An `unchecked` gate needed commands that never ran, so it proves nothing either way.
+ */
 export interface CheckLine {
   readonly passed: boolean;
-  readonly kind: "gate" | "info";
+  readonly kind: "gate" | "info" | "unchecked";
   readonly label: string;
 }
 
@@ -256,6 +259,32 @@ const sessionSockets = (env: NodeJS.ProcessEnv) => {
 };
 
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeToolResult = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Union([
+      Schema.String,
+      Schema.Array(Schema.Struct({ text: Schema.optional(Schema.String) })),
+    ]),
+  ),
+);
+const toolResultText = (raw: string) => {
+  const content = decodeToolResult(raw);
+  if (content._tag === "None") return "";
+  return typeof content.value === "string"
+    ? content.value
+    : content.value.map((block) => block.text ?? "").join(" ");
+};
+const REASON_LIMIT = 400;
+/** Claude Code's own words for the owner: one bounded line, its reminders and `secrets` cut. */
+const oneLine = (text: string, secrets: ReadonlyArray<string>) => {
+  const flat = secrets
+    .reduce((kept, secret) => kept.split(secret).join("[secret]"), text)
+    .replace(/<system-reminder>[\s\S]*?(?:<\/system-reminder>|$)/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return flat.length > REASON_LIMIT ? `${flat.slice(0, REASON_LIMIT)}…` : flat;
+};
+
 const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
 
 export interface ProbeInput {
@@ -300,6 +329,7 @@ export const probe = Effect.fn("KinWorkSandbox.probe")(function* (input: ProbeIn
   const canary = `sk-ant-${token}`;
   // A stored login as Claude Code keeps one; the API key outranks it, so it is never used.
   const login = `sk-ant-oat01-${token}-login`;
+  const secrets = [canary, login, token];
   const failedEarly = (failed: string): CheckResult => ({
     failed,
     version: null,
@@ -388,6 +418,9 @@ export const probe = Effect.fn("KinWorkSandbox.probe")(function* (input: ProbeIn
   const lingering = [`${base}1`, `${base}2`, `${base}3`];
   const ran = `${token}-ran`;
   const viaProxy = `--noproxy '' --proxy "$HTTP_PROXY"`;
+  // Split so no command line holds the token; output past Claude Code's limit never reaches the
+  // model, so environments print only the lines that would give a key or login away.
+  const holdsToken = `grep -aF -e "${token.slice(0, 12)}""${token.slice(12)}"`;
   const command = [
     `curl -s -m 5 -o /dev/null https://${PROBE_BLOCKED}/`,
     `cat ${quote(`${outside}/secret.txt`)}`,
@@ -400,14 +433,14 @@ export const probe = Effect.fn("KinWorkSandbox.probe")(function* (input: ProbeIn
     `touch ${quote(`${tree}/inside`)}`,
     `touch ${quote(`${tmp}/inside`)}`,
     `echo "tmpdir=$TMPDIR"`,
-    "env",
+    `env | ${holdsToken}`,
     // Where else a key or login could sit: this process's and each ancestor's environment, and
     // what the CLI keeps in the task's temp and config directories.
-    "tr '\\0' '\\n' 2>/dev/null < /proc/self/environ",
+    `tr '\\0' '\\n' 2>/dev/null < /proc/self/environ | ${holdsToken}`,
     // Its ancestors in the sandbox's own PID namespace, which numbers them from 1.
-    `cat ${Array.from({ length: 64 }, (_, index) => `/proc/${index + 1}/environ`).join(" ")} 2>/dev/null | tr '\\0' '\\n'`,
+    `cat ${Array.from({ length: 64 }, (_, index) => `/proc/${index + 1}/environ`).join(" ")} 2>/dev/null | tr '\\0' '\\n' | ${holdsToken}`,
     // Names only: the command's own output file is in the temp directory as it runs.
-    `grep -rlsF -e "${token.slice(0, 12)}""${token.slice(12)}" ${quote(tmp)} ${quote(configDir)} && echo "found-""secret"`,
+    `${holdsToken} -rls ${quote(tmp)} ${quote(configDir)} && echo "found-""secret"`,
     `ls /proc/${process.pid}`,
     `curl -s -m 3 http://127.0.0.1:${tcpPort}/`,
     `curl -s -m 3 ${viaProxy} http://127.0.0.1:${tcpPort}/`,
@@ -454,7 +487,12 @@ export const probe = Effect.fn("KinWorkSandbox.probe")(function* (input: ProbeIn
     { cwd: tree, configDir, baseUrl: `http://127.0.0.1:${port}`, key: canary },
   );
   const messages: Array<SDKMessage> = [];
-  const session = query({ prompt: "Run the Kin sandbox check.", options });
+  // Claude Code's own error output, its last part kept, for when the session or a command fails.
+  let stderr = "";
+  const session = query({
+    prompt: "Run the Kin sandbox check.",
+    options: { ...options, stderr: (data) => (stderr = (stderr + data).slice(-4000)) },
+  });
   const ended = yield* Effect.tryPromise({
     try: async () => {
       for await (const message of session) messages.push(message);
@@ -470,26 +508,40 @@ export const probe = Effect.fn("KinWorkSandbox.probe")(function* (input: ProbeIn
   const version =
     init !== undefined && "claude_code_version" in init ? init.claude_code_version : null;
   if (ended._tag === "Failure" || result === undefined || result.subtype !== "success") {
+    const said = oneLine(stderr, secrets);
     const why =
       result !== undefined && "startup_failure_reason" in result
         ? String(result.startup_failure_reason)
-        : ended._tag === "Failure"
-          ? "the check session didn't finish"
-          : "the check session ended without a result";
+        : `${ended._tag === "Failure" ? "the check session didn't finish" : "the check session ended without a result"}${said === "" ? "" : `: ${said}`}`;
     return {
       ...failedEarly(`Claude Code couldn't run a sandboxed command here (${why})`),
       version,
     };
   }
   const output = results.join("\n");
-  // The command line echoes the marker once; the file's content is the token alone.
-  const leaked = output.split(ran).join("").includes(token);
+  const commandsRan = output.includes(ran) && results.length >= 2;
+  const notRan =
+    results.length === 0
+      ? `Claude Code returned no command result${stderr === "" ? "" : `: ${oneLine(stderr, secrets)}`}`
+      : !output.includes(ran)
+        ? oneLine(toolResultText(results[0] ?? ""), secrets) || "the first command printed nothing"
+        : "the second command never ran";
+  // The command line echoes the marker once; the file's content is the token alone, and the
+  // key and login hold it too, so they count only as their own gates.
+  const leaked = [ran, canary, login]
+    .reduce((rest, seen) => rest.split(seen).join(""), output)
+    .includes(token);
   const exists = (file: string) => fs.exists(file);
-  const gates: ReadonlyArray<readonly [failed: boolean, why: string, holds: string]> = [
+  // An `escape` gate's pass and a `works` gate's result mean nothing if the commands never ran;
+  // an escape seen anyway still counts. A `session` gate holds whether or not they ran.
+  const gates: ReadonlyArray<
+    readonly [failed: boolean, why: string, holds: string, needs?: "session" | "works"]
+  > = [
     [
-      !output.includes(ran) || results.length < 2,
-      "the check's commands never ran",
+      !commandsRan,
+      `the check's commands never ran: ${notRan}`,
       "the check's commands ran",
+      "session",
     ],
     [
       output.includes(canary),
@@ -541,16 +593,19 @@ export const probe = Effect.fn("KinWorkSandbox.probe")(function* (input: ProbeIn
       !(yield* exists(`${tree}/inside`)),
       "a command couldn't write its worktree",
       "commands write their worktree",
+      "works",
     ],
     [
       !(yield* exists(`${tmp}/inside`)),
       "a command couldn't write its temp directory",
       "commands write their temp directory",
+      "works",
     ],
     [
       !output.includes(`tmpdir=${tmp}`),
       "commands don't get the task's own temp directory",
       "commands get the task's own temp directory",
+      "works",
     ],
     [
       output.includes("environ"),
@@ -584,21 +639,25 @@ export const probe = Effect.fn("KinWorkSandbox.probe")(function* (input: ProbeIn
       yield* exists(marker("helper")),
       "the repository's key helper ran",
       "the repository's key helper never runs",
+      "session",
     ],
     [
       yield* exists(marker("hook")),
       "a hook from the repository ran",
       "the repository's hooks never run",
+      "session",
     ],
     [
       yield* exists(marker("session-hook")),
       "a hook from the repository ran",
       "the repository's session hooks never run",
+      "session",
     ],
     [
       yield* exists(marker("mcp")),
       "an MCP server from the repository ran",
       "the repository's MCP servers never run",
+      "session",
     ],
     ...(linux
       ? [
@@ -616,16 +675,17 @@ export const probe = Effect.fn("KinWorkSandbox.probe")(function* (input: ProbeIn
       : []),
   ];
   const namesBlockedHosts = output.includes(`deny network-outbound ${PROBE_BLOCKED}:`);
+  const judged = gates.map(([failed, why, holds, needs]): CheckLine =>
+    !commandsRan && (needs === "works" || (needs === undefined && !failed))
+      ? { passed: false, kind: "unchecked", label: `not checked: ${holds}` }
+      : { passed: !failed, kind: "gate", label: failed ? why : holds },
+  );
   return {
-    failed: gates.find(([failed]) => failed)?.[1],
+    failed: judged.find((line) => line.kind === "gate" && !line.passed)?.label,
     version,
     namesBlockedHosts,
     lines: [
-      ...gates.map(([failed, why, holds]): CheckLine => ({
-        passed: !failed,
-        kind: "gate",
-        label: failed ? why : holds,
-      })),
+      ...judged,
       {
         passed: namesBlockedHosts,
         kind: "info",
