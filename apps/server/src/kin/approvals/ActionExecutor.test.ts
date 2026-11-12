@@ -1742,6 +1742,11 @@ describe("KinActionExecutor", () => {
         ],
       ],
       ["outboundHttp.ts", ["const requireUndici = NodeModule.createRequire(import.meta.url);"]],
+      // Only resolves where a chart library's file is on disk; nothing is loaded into the server.
+      [
+        "kin/visualLibraries.ts",
+        ["const requireFromHere = NodeModule.createRequire(import.meta.url);"],
+      ],
       [
         "policy/ManagedPolicy.ts",
         ["const requireForFfi = NodeModule.createRequire(import.meta.url);"],

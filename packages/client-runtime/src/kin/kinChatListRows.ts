@@ -28,6 +28,7 @@ export interface KinChatListRow {
 const CARD_PREVIEWS: ReadonlyArray<readonly [prefix: string, preview: string]> = [
   ["choice:", "Asked you a question"],
   ["chart:", "Sent a chart"],
+  ["visual:", "Sent a visual"],
   ["approval:", "Needs your approval"],
   ["task:", "Started a task"],
   ["reminder:", "Reminder"],

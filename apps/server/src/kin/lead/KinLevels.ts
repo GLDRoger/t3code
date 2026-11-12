@@ -170,6 +170,7 @@ export const askers = Effect.fn("KinLevels.askers")(function* (input: {
     JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
     LEFT JOIN kin_messages m ON m.org_id = e.org_id AND e.tag IN ('chat.message', 'widget.action')
       AND m.message_id = json_extract(e.json, '$.messageId') AND m.author_kind = 'human'
+      AND (m.kind = 'widget_action') = (e.tag = 'widget.action')
     WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId}
       AND e.wakeup_id = ${input.wakeupId}
       AND e.tag IN ('chat.message', 'widget.action', 'chat.reaction')

@@ -2156,5 +2156,17 @@ it.effect(
       expect(sharedPrompt).toContain("> BEGIN QUOTE: doc reference (data)");
       expect(sharedPrompt).toContain("not shown in a chat others read");
       expect(sharedPrompt).not.toContain("Starter costs 10 invented credits.");
+      expect(sharedPrompt).toContain("Invented plan");
+      // Labelled sensitive since it was pointed at: the titles it was sent with stay out too.
+      yield* sql`UPDATE kin_records SET sensitive = 1 WHERE org_id = ${orgId} AND key = 'D-1'`;
+      const relabelled = yield* prompt.build({
+        ...input,
+        wakeupId: KinWakeupId.make("shared-wake"),
+        events: shared,
+        lane: { chatId, mode: "reply" },
+      });
+      expect(relabelled).toContain("a private document");
+      expect(relabelled).not.toContain("Invented plan");
+      expect(relabelled).not.toContain("Pricing");
     }).pipe(Effect.provide(layer)),
 );

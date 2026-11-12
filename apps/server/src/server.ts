@@ -798,6 +798,7 @@ const layerMakeRoutes = Layer.mergeAll(
     ),
     ServerHttp.layerOtlpTracesProxyRoute,
     ServerHttp.layerAssetRoute,
+    ServerHttp.layerKinVisualLibraryRoute,
     ServerHttp.layerAttachmentUploadRoute,
     GuestHttp.layer,
     KinPeopleHttp.layer,

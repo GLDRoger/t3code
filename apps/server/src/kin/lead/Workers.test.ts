@@ -3969,6 +3969,20 @@ const sameWakeup = (
     const [lead] = yield* ctx.sql<{ json: string }>`SELECT json FROM kin_events
       WHERE event_id = 'lead-event'`;
     const json = { ...JSON.parse(lead!.json), eventId, ...event };
+    // A tap is its own row, by the person who tapped, answering the message it was on.
+    if (json._tag === "widget.action") {
+      const tap = `${eventId}-row`;
+      yield* ctx.sql`UPDATE kin_chats SET last_seq = last_seq + 1 WHERE chat_id = ${json.chatId}`;
+      yield* ctx.sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+          author_person_id, author_member_id, author_role, kind, body, mentions_json, status,
+          created_at, reply_to)
+        SELECT ${tap}, m.org_id, m.chat_id, c.last_seq, m.author_kind, m.author_person_id,
+          m.author_member_id, m.author_role, 'widget_action', '{}', '[]', 'posted', m.created_at,
+          m.message_id
+        FROM kin_messages m JOIN kin_chats c ON c.chat_id = m.chat_id
+        WHERE m.message_id = ${json.messageId}`;
+      json.messageId = tap;
+    }
     yield* ctx.sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
         received_at, queued_at, state, wakeup_id)
       VALUES (${eventId}, ${ctx.orgId}, ${leadId}, ${json._tag}, 'P0', ${JSON.stringify(json)}, 1,
@@ -3991,7 +4005,7 @@ const upgradedFromK058 = (sql: SqlClient.SqlClient) =>
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 59`;
     assert.deepStrictEqual(
       (yield* runKinMigrations()).map(([id]) => id),
-      [59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69],
+      [59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71],
     );
   }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
 const attemptRows = (sql: SqlClient.SqlClient, workerId: KinWorkerId) =>
