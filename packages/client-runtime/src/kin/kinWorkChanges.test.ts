@@ -117,6 +117,8 @@ describe("createKinWorkChanges", () => {
     h.answer(AsyncResult.success(task({ owner: lead, state: "done", rev: 4, seq: 6 })));
     expect(await done).toBe(true);
     expect(kinWorkApplied(held, h.state())).toMatchObject({ state: "done", rev: 4 });
+    // Screens that read the task themselves, such as Give to, must not send revision 3 next.
+    expect(h.reread).toEqual(["W-1"]);
     expect(h.state().notice).toMatchObject({
       kind: "saved",
       text: "Marked done. Tech lead was told to stop.",

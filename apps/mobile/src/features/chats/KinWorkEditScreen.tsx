@@ -94,7 +94,8 @@ function KinWorkEditGate(props: ItemTarget) {
     environmentId: props.environmentId,
     input: { orgId: props.orgId, key: props.itemKey },
   });
-  const state = kinWorkItemState(useAtomValue(itemAtom), null);
+  const read = useAtomValue(itemAtom);
+  const state = kinWorkItemState(read, null);
   const close = () => navigation.goBack();
   if (!allowed) {
     return (
@@ -128,10 +129,16 @@ function KinWorkEditGate(props: ItemTarget) {
       </Frame>
     );
   }
-  return <KinWorkEditForm {...props} item={state.item} />;
+  return <KinWorkEditForm {...props} item={state.item} reading={read.waiting} />;
 }
 
-function KinWorkEditForm(props: ItemTarget & { readonly item: KinRecordDetail }) {
+function KinWorkEditForm(
+  props: ItemTarget & {
+    readonly item: KinRecordDetail;
+    /** A change made just before is still being read back; its old revision would be refused. */
+    readonly reading: boolean;
+  },
+) {
   const navigation = useNavigation();
   const { environmentId, orgId, itemKey, item } = props;
   const { names } = useKinWorkDirectory(props, true);
@@ -144,7 +151,7 @@ function KinWorkEditForm(props: ItemTarget & { readonly item: KinRecordDetail })
   const notice = changed.notice?.key === itemKey ? changed.notice : null;
 
   const save = async () => {
-    if (saving) return;
+    if (saving || props.reading) return;
     if (!(await changes.saveEdit(item, names))) return;
     appAtomRegistry.refresh(kinClient.workItem({ environmentId, input: { orgId, key: itemKey } }));
     navigation.goBack();
@@ -157,7 +164,7 @@ function KinWorkEditForm(props: ItemTarget & { readonly item: KinRecordDetail })
         label: KIN_WORK_COPY.save,
         onPress: () => void save(),
         loading: saving,
-        disabled: saving || edit === null || edit.title.trim() === "",
+        disabled: saving || props.reading || edit === null || edit.title.trim() === "",
       }}
     >
       {notice === null ? null : (

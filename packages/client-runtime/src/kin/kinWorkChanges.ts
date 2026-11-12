@@ -296,7 +296,7 @@ export function createKinWorkChanges(options: {
   readonly assign: (input: KinWorkAssignInput) => Sent;
   readonly confirm: (input: KinWorkConfirmInput) => Sent;
   readonly decline: (input: KinWorkConfirmInput) => Sent;
-  /** Reads a task again after the host said it had moved on. */
+  /** Reads a task again after a change, or after the host said it had moved on. */
   readonly reread: (key: KinRecordKey) => void;
   readonly online: () => boolean;
   /** A form that opens already typing over this task. */
@@ -382,6 +382,8 @@ export function createKinWorkChanges(options: {
     const outcome = await send(record, action);
     const pending = without(state.pending, key);
     if (outcome.ok) {
+      // Other screens read the task themselves; they must not send the revision this replaced.
+      options.reread(key);
       set({
         pending,
         answers: { ...state.answers, [key]: outcome.item },

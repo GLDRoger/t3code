@@ -92,7 +92,10 @@ function KinWorkAssignBody(props: ItemTarget) {
   const navigation = useNavigation();
   const { environmentId, orgId, itemKey } = props;
   const itemAtom = kinClient.workItem({ environmentId, input: { orgId, key: itemKey } });
-  const state = kinWorkItemState(useAtomValue(itemAtom), null);
+  const read = useAtomValue(itemAtom);
+  const state = kinWorkItemState(read, null);
+  // A change made just before is still being read back; its old revision would be refused.
+  const reading = read.waiting;
   const { orgs, people, names } = useKinWorkDirectory(props, true);
   const create = useAtomCommand(kinClient.workCreate, { reportFailure: false });
   const assign = useAtomCommand(kinClient.workAssign, { reportFailure: false });
@@ -136,7 +139,7 @@ function KinWorkAssignBody(props: ItemTarget) {
   }
 
   const give = async (item: KinRecordDetail, to: KinWorkAssignee) => {
-    if (giving !== null || to.current) return;
+    if (giving !== null || reading || to.current) return;
     setGiving(to.key);
     setProblem(null);
     const outcome = await actions.give(item, to.principal);
@@ -155,7 +158,7 @@ function KinWorkAssignBody(props: ItemTarget) {
         {...(to.current ? { description: "Has it" } : {})}
         selected={to.current || giving === to.key}
         separated={index > 0}
-        disabled={giving !== null && giving !== to.key}
+        disabled={(giving !== null && giving !== to.key) || (giving === null && reading)}
         onPress={() => void give(state.item, to)}
       />
     ));
