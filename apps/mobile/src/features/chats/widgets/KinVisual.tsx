@@ -22,6 +22,7 @@ import { WebView } from "react-native-webview";
 
 import { AppActivityIndicator } from "../../../components/ui/AppActivityIndicator";
 import { AppText as Text } from "../../../components/ui/AppText";
+import { REVIEW_MONO_FONT_FAMILY } from "../../review/reviewDiffRendering";
 import * as Dialog from "../../../components/ui/Dialog";
 import { shareGeneratedAttachment } from "../../../lib/attachmentDownload";
 import { tryOpenExternalUrl } from "../../../lib/openExternalUrl";
@@ -377,7 +378,11 @@ export const KinVisual = memo(function KinVisual(props: {
         <View className="flex-row flex-wrap items-center gap-x-3 gap-y-1">
           <Text textRole="caption" className="min-w-0 shrink text-foreground-muted">
             This visual asks to load from{" "}
-            <Text textRole="caption" className="font-mono text-foreground">
+            <Text
+              textRole="caption"
+              className="text-foreground"
+              style={{ fontFamily: REVIEW_MONO_FONT_FAMILY }}
+            >
               {blocked}
             </Text>
             {kinVisualHostUnicode(blocked) === null
