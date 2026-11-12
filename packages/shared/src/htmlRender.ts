@@ -386,7 +386,7 @@ function bootstrapMarkup(markup: string): string {
 }
 
 // Blank inert content without shifting offsets so it cannot receive the bootstrap.
-export const blankNonMarkup = (html: string) => {
+const blankNonMarkup = (html: string) => {
   const scan = html.replace(
     /<!--[\s\S]*?(?:-->|$)|<(script|style|textarea|title|xmp|iframe|noembed|noframes|noscript)\b[\s\S]*?(?:<\/\1\s*>|$)|<plaintext\b[\s\S]*$/gi,
     (match) => " ".repeat(match.length),

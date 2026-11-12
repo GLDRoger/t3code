@@ -1,4 +1,4 @@
-import { blankNonMarkup, injectHtmlRenderBootstrap } from "./htmlRender.ts";
+import { injectHtmlRenderBootstrap } from "./htmlRender.ts";
 
 export const KIN_VISUAL_TOOL_NAME = "kin_visual";
 export const KIN_VISUAL_CARD_TYPE = "visual";
@@ -124,6 +124,9 @@ export function kinVisualContentSecurityPolicy(
     "form-action 'none'",
     // Chromium ignores this; KIN_VISUAL_PRELUDE is what removes WebRTC. Kept for engines that honour it.
     "webrtc 'block'",
+    // Every HTML string meets the prelude's policy, and the page cannot make one of its own.
+    "require-trusted-types-for 'script'",
+    "trusted-types default kin",
     SANDBOX,
   ].join("; ");
 }
@@ -204,27 +207,7 @@ const KIN_SCRIPT = `(function(){var root=document.documentElement,subs=[],sheet=
 
 const KIN_MARKUP = `<style id="kin-visual">${KIN_CSS}</style><script>${KIN_SCRIPT}</script>`;
 
-// Hints that open a connection or look a name up before any policy check on a fetch.
-const RESOURCE_HINT =
-  /(?:^|\s)(?:preconnect|dns-prefetch|prefetch|prerender|preload|modulepreload|next)(?:\s|$)/i;
-const LINK_TAG = /<link\b[^>]*>/gi;
-const REL_ATTRIBUTE = /\srel\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i;
-
-/** Hint links in the markup go before the preload scanner can read them. Offsets match `scan`. */
-function withoutResourceHints(html: string): string {
-  const scan = blankNonMarkup(html);
-  let out = "";
-  let at = 0;
-  for (const tag of scan.matchAll(LINK_TAG)) {
-    const rel = REL_ATTRIBUTE.exec(tag[0]);
-    if (rel === null || !RESOURCE_HINT.test(rel[1] ?? rel[2] ?? rel[3] ?? "")) continue;
-    out += html.slice(at, tag.index);
-    at = tag.index + tag[0].length;
-  }
-  return out + html.slice(at);
-}
-
-const WEBRTC_GLOBALS = [
+const SEALED_GLOBALS = [
   "RTCPeerConnection",
   "webkitRTCPeerConnection",
   "mozRTCPeerConnection",
@@ -241,22 +224,93 @@ const WEBRTC_GLOBALS = [
   "RTCPeerConnectionIceEvent",
   "RTCEncodedAudioFrame",
   "RTCEncodedVideoFrame",
+  // Its output is markup no string check sees.
+  "XSLTProcessor",
+];
+
+// WebKit preconnects a <link> the moment it is inserted, with no policy check, so none may exist.
+// Frames would be a second realm with the globals above.
+const SEALED_ELEMENTS = ["link", "iframe", "frame", "object", "embed", "fencedframe", "portal"];
+const RAW_TEXT_ELEMENTS = [
+  "script",
+  "style",
+  "xmp",
+  "noembed",
+  "noframes",
+  "noscript",
+  "textarea",
+  "title",
+  "plaintext",
 ];
 
 /**
- * The page's first script. No policy closes WebRTC in Chromium, so it removes every peer-connection
- * entry point for good, and stops the page from making a second realm that still has them: a
- * srcdoc or javascript: frame is the only one CSP lets run (a sandboxed parent cannot reach a
- * blank child's globals, and data, blob, object and worker realms are refused by the policy).
+ * The page's first script. No policy closes WebRTC in Chromium or a preconnect in WebKit, so it
+ * removes every peer-connection entry point and makes sure no `<link>` or frame element can ever
+ * exist: every way markup or such an element is made goes through it. It takes the natives it
+ * needs before any other script runs, so a page that rewrites built-ins cannot blind it.
  */
-export const KIN_VISUAL_PRELUDE = `(function(){"use strict";var W=window,G=${JSON.stringify(WEBRTC_GLOBALS)},F=/^(?:IFRAME|FRAME|OBJECT|EMBED|FENCEDFRAME|PORTAL)$/i,U=/^\\s*(?:javascript|vbscript|data|blob):/i,H=${RESOURCE_HINT.toString()};function gone(o,n){try{Object.defineProperty(o,n,{configurable:false,enumerable:false,get:function(){return undefined;},set:function(){}});}catch(e){}}G.forEach(function(n){gone(W,n);});["mediaDevices","getUserMedia","webkitGetUserMedia","mozGetUserMedia"].forEach(function(n){gone(Navigator.prototype,n);});function fix(o,k,v){try{Object.defineProperty(o,k,{configurable:false,writable:false,value:v});}catch(e){}}function framing(el,name,value){var n;if(!F.test(el.tagName))return false;n=(""+name).toLowerCase();return n==="srcdoc"||n==="data"||(n==="src"&&U.test(""+value));}var E=Element.prototype,sa=E.setAttribute,sn=E.setAttributeNS;fix(E,"setAttribute",function(name,value){if(framing(this,name,value))return;return sa.call(this,name,value);});fix(E,"setAttributeNS",function(ns,name,value){if(framing(this,(""+name).replace(/^.*:/,""),value))return;return sn.call(this,ns,name,value);});[W.HTMLIFrameElement,W.HTMLFrameElement].forEach(function(C){var p=C&&C.prototype,s=p&&Object.getOwnPropertyDescriptor(p,"src");if(!p)return;try{Object.defineProperty(p,"srcdoc",{configurable:false,get:function(){return "";},set:function(){}});}catch(e){}if(s&&s.set)try{Object.defineProperty(p,"src",{configurable:false,get:s.get,set:function(v){if(!U.test(""+v))s.set.call(this,v);}});}catch(e){}});function bad(n){return F.test(n.tagName)||(n.tagName==="LINK"&&H.test(n.getAttribute("rel")||""));}function drop(n){var q,i;if(!n||n.nodeType!==1)return;if(bad(n)){n.remove();return;}q=n.getElementsByTagName("*");for(i=q.length-1;i>=0;i--)if(bad(q[i]))q[i].remove();}new MutationObserver(function(m){for(var i=0;i<m.length;i++){if(m[i].type==="attributes")drop(m[i].target);else for(var j=0;j<m[i].addedNodes.length;j++)drop(m[i].addedNodes[j]);}}).observe(document,{childList:true,subtree:true,attributes:true,attributeFilter:["srcdoc","src","data","rel","href"]});})();`;
+export const KIN_VISUAL_PRELUDE = `(function(){"use strict";
+var W=window,D=document,O=Object,A=Reflect.apply,DP=O.defineProperty,GD=O.getOwnPropertyDescriptor,S=String,TE=TypeError,
+X="http://www.w3.org/1999/xhtml",SEALED=${JSON.stringify(SEALED_ELEMENTS)},RAW=${JSON.stringify(RAW_TEXT_ELEMENTS)},
+SP=S.prototype,lower=SP.toLowerCase,code=SP.charCodeAt,cut=SP.slice,find=SP.indexOf,last=SP.lastIndexOf,AP=Array.prototype,pos=AP.indexOf,join=AP.join;
+function call(f,t,a){return A(f,t,a||[]);}
+function low(v){return call(lower,S(v));}
+function one(list,v){return call(pos,list,[v])!==-1;}
+function acc(p,n){return (p&&GD(p,n))||{};}
+function gone(o,n){try{DP(o,n,{configurable:false,enumerable:false,get:function(){return undefined;},set:function(){}});}catch(e){}}
+${JSON.stringify(SEALED_GLOBALS)}.forEach(function(n){gone(W,n);});
+["mediaDevices","getUserMedia","webkitGetUserMedia","mozGetUserMedia"].forEach(function(n){gone(Navigator.prototype,n);});
+var NP=Node.prototype,EP=Element.prototype,DcP=Document.prototype,
+gType=acc(NP,"nodeType").get,gFirst=acc(NP,"firstChild").get,gNext=acc(NP,"nextSibling").get,gParent=acc(NP,"parentNode").get,rm=NP.removeChild,
+gLocal=acc(EP,"localName").get,gNs=acc(EP,"namespaceURI").get,gContent=acc(HTMLTemplateElement.prototype,"content").get,gRoot=acc(DcP,"documentElement").get,
+IH=GD(EP,"innerHTML")||acc(HTMLElement.prototype,"innerHTML"),OH=GD(EP,"outerHTML")||acc(HTMLElement.prototype,"outerHTML"),
+mkEl=DcP.createElement,Parser=W.DOMParser,pfs=Parser.prototype.parseFromString,parser=new Parser(),
+MO=W.MutationObserver,watch=MO.prototype.observe,gAdded=acc(MutationRecord.prototype,"addedNodes").get,gLen=acc(NodeList.prototype,"length").get,item=NodeList.prototype.item,
+TT=W.trustedTypes,kin=null,kinHTML=null;
+function trusted(s){return kin?call(kinHTML,kin,[s]):s;}
+function html(n){return call(gType,n)===1&&call(gNs,n)===X;}
+function sealed(n){return html(n)&&one(SEALED,call(gLocal,n));}
+function after(n,root){var s;while(n&&n!==root){s=call(gNext,n);if(s)return s;n=call(gParent,n);}return null;}
+function clean(root){var n=call(gFirst,root),c;while(n){if(sealed(n)){c=after(n,root);call(rm,call(gParent,n),[n]);n=c;}else{if(html(n)&&call(gLocal,n)==="template")clean(call(gContent,n));c=call(gFirst,n);n=c||after(n,root);}}return root;}
+function ends(c){return c!==c||c===9||c===10||c===12||c===13||c===32||c===47||c===62;}
+function opens(s,i){var k,j,c,name;for(k=0;k<SEALED.length;k++){name=SEALED[k];for(j=0;j<name.length;j++){c=call(code,s,[i+1+j]);if(c>=65&&c<=90)c+=32;if(c!==call(code,name,[j]))break;}if(j===name.length&&ends(call(code,s,[i+1+j])))return true;}return false;}
+function risky(s){var i=-1;for(;;){i=call(find,s,["<",i+1]);if(i===-1)return false;if(opens(s,i))return true;}}
+function neutral(s){var out="",from=0,i=-1;for(;;){i=call(find,s,["<",i+1]);if(i===-1)break;if(opens(s,i)){out+=call(cut,s,[from,i])+"&lt;";from=i+1;}}return out+call(cut,s,[from]);}
+function scrub(v,whole){var s=S(v),d,t;if(!risky(s))return s;
+if(whole){d=call(pfs,parser,[trusted(s),"text/html"]);clean(d);s=call(OH.get,call(gRoot,d));}
+else{t=call(mkEl,D,["template"]);call(IH.set,t,[trusted(s)]);clean(call(gContent,t));s=call(IH.get,t);}
+return neutral(s);}
+function lock(p,n,d){try{d.configurable=false;d.enumerable=true;if("value" in d)d.writable=false;DP(p,n,d);}catch(e){}}
+function wrap(p,n,make){var f=p&&GD(p,n);if(f&&typeof f.value==="function")lock(p,n,{value:make(f.value)});}
+function sink(p,n){var d=p&&GD(p,n),set=d&&d.set;if(set)lock(p,n,{get:d.get,set:function(v){var s=S(v);call(set,this,[trusted(html(this)&&one(RAW,call(gLocal,this))?neutral(s):scrub(s,false))]);}});}
+function local(q){var s=S(q);return low(call(cut,s,[call(last,s,[":"])+1]));}
+if(TT&&typeof TT.createPolicy==="function"){try{kin=TT.createPolicy("kin",{createHTML:function(s){return s;}});kinHTML=kin.createHTML;}catch(e){kin=null;}
+if(kin)try{TT.createPolicy("default",{createHTML:function(s,t,where){var k=low(where);return scrub(s,call(find,k,["write"])!==-1||call(find,k,["parse"])!==-1);},createScript:function(s){return s;},createScriptURL:function(s){return s;}});}catch(e){}}
+sink(EP,"innerHTML");sink(HTMLElement.prototype,"innerHTML");sink(EP,"outerHTML");sink(HTMLElement.prototype,"outerHTML");sink(W.ShadowRoot&&ShadowRoot.prototype,"innerHTML");
+wrap(EP,"insertAdjacentHTML",function(f){return function(where,v){return call(f,this,[where,trusted(scrub(v,false))]);};});
+[DcP,W.HTMLDocument&&HTMLDocument.prototype].forEach(function(p){["write","writeln"].forEach(function(n){if(p&&GD(p,n))wrap(p,n,function(f){return function(){var a=[],i;for(i=0;i<arguments.length;i++)a[a.length]=S(arguments[i]);return call(f,this,[trusted(scrub(call(join,a,[""]),true))]);};});});});
+wrap(Range.prototype,"createContextualFragment",function(f){return function(v){return clean(call(f,this,[trusted(scrub(v,false))]));};});
+[EP,W.ShadowRoot&&ShadowRoot.prototype].forEach(function(p){wrap(p,"setHTMLUnsafe",function(f){return function(v,o){return call(f,this,[trusted(scrub(v,false)),o]);};});wrap(p,"setHTML",function(f){return function(v,o){return call(f,this,[scrub(v,false),o]);};});});
+["parseHTMLUnsafe","parseHTML"].forEach(function(n){wrap(Document,n,function(f){return function(v,o){return clean(call(f,this,[trusted(scrub(v,true)),o]));};});});
+wrap(Parser.prototype,"parseFromString",function(f){return function(v,type){return clean(call(f,this,[trusted(S(v)),S(type)]));};});
+wrap(DcP,"execCommand",function(f){return function(c,ui,v){var n=S(c);return call(f,this,low(n)==="inserthtml"?[n,ui,scrub(v,false)]:[n,ui,v]);};});
+wrap(DcP,"createElement",function(f){return function(n,o){var s=S(n);return call(f,this,[one(SEALED,low(s))?"kin-blocked":s,o]);};});
+wrap(DcP,"createElementNS",function(f){return function(ns,q,o){var u=ns==null?ns:S(ns),s=S(q);return call(f,this,[u,u===X&&one(SEALED,local(s))?"kin-blocked":s,o]);};});
+wrap(DOMImplementation.prototype,"createDocument",function(f){return function(ns,q,t){var u=ns==null?ns:S(ns),s=q==null?q:S(q);return call(f,this,[u,u===X&&s&&one(SEALED,local(s))?"kin-blocked":s,t]);};});
+wrap(W.CustomElementRegistry&&CustomElementRegistry.prototype,"define",function(f){return function(n,c,o){var e=o==null?undefined:o.extends;if(e!==undefined&&one(SEALED,low(e)))throw new TE("kin: not here");return call(f,this,[n,c,e===undefined?o:{extends:S(e)}]);};});
+call(watch,new MO(function(m){var i,j,l,n,p;for(i=0;i<m.length;i++){l=call(gAdded,m[i]);for(j=call(gLen,l)-1;j>=0;j--){n=call(item,l,[j]);if(sealed(n)){p=call(gParent,n);if(p)call(rm,p,[n]);}else if(call(gType,n)===1)clean(n);}}}),[D,{childList:true,subtree:true}]);
+})();`;
 
 const LEADING_DOCTYPE = /^\uFEFF?\s*(?:<!--[\s\S]*?-->\s*)*<!doctype[^>]*>/i;
 const THEME_SHEET = '<style id="t3-theme">';
 
-/** T3's theme bootstrap, then Kin's tokens and helper, ahead of anything the agent wrote. */
+/**
+ * T3's theme bootstrap, then Kin's tokens and helper, ahead of anything the agent wrote. The
+ * agent's markup reaches the parser only through the prelude's `document.write`, which takes out
+ * what must not exist with the browser's own parser, so no string reading of ours can disagree.
+ */
 export function kinVisualPageDocument(html: string): string {
-  const page = injectHtmlRenderBootstrap(withoutResourceHints(html));
+  const page = injectHtmlRenderBootstrap(html);
   const sheet = page.indexOf(THEME_SHEET);
   const close = sheet === -1 ? -1 : page.indexOf("</script>", sheet);
   const themed =
@@ -265,10 +319,10 @@ export function kinVisualPageDocument(html: string): string {
       : page.slice(0, close + "</script>".length) +
         KIN_MARKUP +
         page.slice(close + "</script>".length);
-  // Ahead of every byte the agent wrote, since a script before its <head> would otherwise run first.
   const doctype = LEADING_DOCTYPE.exec(themed);
   const at = doctype === null ? 0 : doctype[0].length;
-  return `${themed.slice(0, at)}<script>${KIN_VISUAL_PRELUDE}</script>${themed.slice(at)}`;
+  const markup = JSON.stringify(themed.slice(at)).replace(/</g, "\\u003c");
+  return `${themed.slice(0, at)}<script>${KIN_VISUAL_PRELUDE}</script><script>document.write(${markup})</script>`;
 }
 
 const example = (library: KinVisualLibrary, body: string) =>
@@ -277,7 +331,7 @@ const example = (library: KinVisualLibrary, body: string) =>
 /** The agent-facing account of the page: what it may hold, the libraries and the theme. */
 export const KIN_VISUAL_PAGE_GUIDE = [
   "The page is yours to design: any HTML, CSS and JavaScript, any chart kind or layout.",
-  "It runs sealed. It cannot reach the network, so put the data in the page itself: no fetch, no CDN script, no remote image, font or stylesheet. Those are blocked, and the owner is told which host the page wanted.",
+  "It runs sealed. It cannot reach the network, so put the data in the page itself: no fetch, no CDN script, no remote image, font or stylesheet. Those are blocked, and the owner is told which host the page wanted. Put CSS in a <style> element: <link>, <iframe>, <object> and <embed> elements are taken out of the page.",
   "Three libraries are served by Kin and are the only outside script. Use exactly these tags, and only the ones you need:",
   example(
     KIN_VISUAL_LIBRARIES[0],

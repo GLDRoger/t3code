@@ -150,8 +150,9 @@ function KinVisualWebView(props: {
           location(request.url) === location(props.uri) ||
           (request.isTopFrame === false && request.url.startsWith("about:"))
         }
-        // The server puts the same prelude first in the page; this runs it in every frame too.
-        injectedJavaScriptBeforeContentLoaded={`${KIN_VISUAL_PRELUDE}true;`}
+        // The server puts the same prelude first in the page; this runs it in every frame below
+        // ours too (iOS only). Not in the top frame: the prelude removes frames, ours included.
+        injectedJavaScriptBeforeContentLoaded={`if(window.top!==window){${KIN_VISUAL_PRELUDE}}true;`}
         injectedJavaScriptBeforeContentLoadedForMainFrameOnly={false}
         mediaCapturePermissionGrantType="deny"
         allowsInlineMediaPlayback

