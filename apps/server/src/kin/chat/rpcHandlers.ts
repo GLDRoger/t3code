@@ -25,6 +25,12 @@ const disabled = new KinChatError({
   message: "Kin is not running on this host.",
 });
 const isKinChatError = Schema.is(KinChatError);
+/** Open chats per connection: an owner keeps a few dozen open at most; this is several times that. */
+export const KIN_OPEN_CHATS_PER_CONNECTION = 200;
+const tooManyChats = new KinChatError({
+  reason: "limit",
+  message: "Too many chats are open on this device. Close some and try again.",
+});
 const leadRefusal = Schema.is(LeadProvision.KinLeadProvisionError);
 const leadReasons = {
   not_owner: "not_allowed",
@@ -97,6 +103,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
     const { identity, chat } = yield* services;
     return { chat, people: yield* identity.resolve(session) };
   });
+  let openChats = 0;
   return rpcs.of({
     "kin.budget.get": (input) =>
       services.pipe(
@@ -195,7 +202,19 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
       ),
     "kin.chat.subscribe": (input) =>
       Stream.unwrap(
-        viewer.pipe(Effect.map(({ chat, people }) => chat.subscribe(people, input))),
+        Effect.gen(function* () {
+          // Held for as long as the stream runs: `unwrap` scopes the effect to it.
+          yield* Effect.acquireRelease(
+            Effect.suspend(() =>
+              openChats >= KIN_OPEN_CHATS_PER_CONNECTION
+                ? Effect.fail(tooManyChats)
+                : Effect.sync(() => void (openChats += 1)),
+            ),
+            () => Effect.sync(() => void (openChats -= 1)),
+          );
+          const { chat, people } = yield* viewer;
+          return chat.subscribe(people, input);
+        }),
       ).pipe(
         Stream.tapError(logInfra),
         Stream.mapError(mapError),
