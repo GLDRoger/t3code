@@ -116,7 +116,11 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
       continue;
     }
     const list = yield* listDef(orgId, source.list);
-    if (list === undefined) continue;
+    // A list the org doesn't keep has no entries that month: an empty table, not a missing one.
+    if (list === undefined) {
+      tables.set(input.name, []);
+      continue;
+    }
     if (list.sensitive) sensitive = true;
     const rows = yield* sql<{
       key: string;

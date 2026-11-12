@@ -441,6 +441,22 @@ it.effect(
       VALUES ('kin-chat-plan', ${orgId}, ${chatId}, ${plan.messageId})`;
       assert.isTrue(yield* chats.attachmentReadable([priya], "kin-chat-plan"));
       assert.isFalse(yield* chats.attachmentReadable([sam], "kin-chat-plan"));
+      // A generated doc's file is on no message: only the owner whose agent's job made it reads it.
+      yield* sql`PRAGMA foreign_keys = OFF`;
+      yield* sql`INSERT INTO kin_doc_jobs (org_id, worker_id, agent_id, wakeup_id, mode, recipe,
+          recipe_commit, inputs_sha256, sensitive, doc_origin, worktree_path, branch, audience,
+          created_at)
+        VALUES (${orgId}, 'wk-doc', ${tech}, 'wake', 'document', 'report', 'c', 'h', 0, 'o', '', '',
+          'owner_only', 0)`;
+      yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body_kind, title, kind,
+          summary, operations_json, actor_kind, actor_id, via, origin_key, created_at,
+          file_attachment_id, worker_id)
+        VALUES (${orgId}, 'doc-record', 1, 'file', 'Report', 'created', 'Made', '[]', 'agent',
+          ${tech}, 'worker', 'kin-doc-job:wk-doc:report.pdf', 0, 'kin-chat-docfile', 'wk-doc')`;
+      yield* sql`PRAGMA foreign_keys = ON`;
+      assert.isTrue(yield* chats.attachmentReadable([owner], "kin-chat-docfile"));
+      for (const who of [priya, sam])
+        assert.isFalse(yield* chats.attachmentReadable([who], "kin-chat-docfile"));
 
       // Priya watches her list; being taken out removes the row there and then.
       const list = yield* Stream.toQueue(chats.subscribeChats([priya], {}), {
