@@ -67,6 +67,7 @@ import { KinListBanner } from "./components/KinListBanner";
 import { KinWorkAreaSwitch, KinWorkTaskRow, type KinWorkAreas } from "./components/KinWorkPieces";
 import { KinDocsList } from "./KinDocsList";
 import { KinClientsList, KinProjectsList } from "./KinWorkLists";
+import { KinListsArea, KinMoneyArea, KinMoneyHeadlineRow } from "./KinWorkMoney";
 import { kinClient } from "./state/kinClient";
 import {
   kinWorkLiveAtom,
@@ -82,7 +83,7 @@ import {
 export type KinWorkParams = {
   readonly environmentId: string;
   readonly orgId: string;
-  /** Which part of Work opens: `clients`, `projects` or `docs`; tasks otherwise. */
+  /** Which part of Work opens: `clients`, `projects`, `docs`, `money` or `lists`; tasks otherwise. */
   readonly show?: string;
   /** The client the tasks start narrowed to, or a new task starts under. */
   readonly party?: string;
@@ -149,11 +150,14 @@ export function KinWorkScreen({ route }: StaticScreenProps<KinWorkParams>) {
       </KinWorkMessage>
     );
   }
+  const { show } = route.params;
   const start =
-    route.params.show === "clients" ||
-    route.params.show === "projects" ||
-    route.params.show === "docs"
-      ? route.params.show
+    show === "clients" ||
+    show === "projects" ||
+    show === "docs" ||
+    show === "money" ||
+    show === "lists"
+      ? show
       : "tasks";
   return (
     <KinWorkStates
@@ -238,6 +242,8 @@ function KinWorkStates(
       );
     if (area === "clients" && areas !== null) return <KinClientsList {...shared} areas={areas} />;
     if (area === "projects" && areas !== null) return <KinProjectsList {...shared} areas={areas} />;
+    if (area === "money" && areas !== null) return <KinMoneyArea {...shared} areas={areas} />;
+    if (area === "lists" && areas !== null) return <KinListsArea {...shared} areas={areas} />;
     return (
       <KinWorkTaskList
         {...shared}
@@ -430,6 +436,14 @@ export function KinWorkTaskList(
           ListHeaderComponent={
             <View className="gap-3 pb-1 pt-2">
               {props.areas === null ? null : <KinWorkAreaSwitch {...props.areas} />}
+              {props.areas === null || within !== undefined ? null : (
+                <KinMoneyHeadlineRow
+                  environmentId={environmentId}
+                  orgId={orgId}
+                  seq={props.stale ? null : live.seq}
+                  onOpen={() => props.areas?.onArea("money")}
+                />
+              )}
               {within?.header}
               {props.stale || listState.stale ? (
                 <View className="px-4">

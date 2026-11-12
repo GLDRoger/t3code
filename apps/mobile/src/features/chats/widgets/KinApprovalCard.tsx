@@ -88,6 +88,7 @@ function OwnerCard(props: {
   const { action } = view;
   const navigation = useNavigation();
   const { status: key } = useKinApproverKey(environmentId, action.orgId);
+  const own = key._tag === "ready" ? key.own : null;
   const { approve, reject } = useDecidePendingAction();
   // Approving takes the challenge and the submit; declining only the reject. Each is its own grant.
   const canChallenge = useAtomValue(kinClient.approvalChallenge.permissionAtom(environmentId));
@@ -117,8 +118,8 @@ function OwnerCard(props: {
     setFailure(null);
     const outcome =
       which === "approving"
-        ? key._tag === "active"
-          ? await approve({ environmentId, action, thumbprint: key.key.thumbprint })
+        ? own !== null
+          ? await approve({ environmentId, action, thumbprint: own.thumbprint })
           : null
         : await reject({ environmentId, action });
     setBusy(null);
@@ -133,7 +134,7 @@ function OwnerCard(props: {
   };
 
   const showButtons = card.decidable && canDecide;
-  const approveReady = key._tag === "active";
+  const approveReady = own !== null;
   return (
     <CardBody card={card}>
       {failure === null ? null : (
@@ -155,11 +156,7 @@ function OwnerCard(props: {
       ) : null}
       {showButtons && canApprove && !approveReady && key._tag !== "loading" ? (
         <Text textRole="footnote" className="text-foreground-muted">
-          {key._tag === "pending"
-            ? "Finish setting up approvals on this phone to approve."
-            : key._tag === "unattested"
-              ? "This phone can't approve: it couldn't prove its key is in secure hardware."
-              : "Set up approvals on this phone to approve with Face ID."}
+          Set up approvals on this phone to approve with Face ID.
         </Text>
       ) : null}
       {showButtons && approveReady && card.approveBlocked !== null ? (
@@ -179,14 +176,14 @@ function OwnerCard(props: {
               }
               onPress={() => void decide("approving")}
             />
-          ) : key._tag !== "unattested" ? (
+          ) : (
             <Button
-              label={key._tag === "pending" ? "Finish setup" : "Set up approvals"}
+              label="Set up approvals"
               tone="primary"
               disabled={busy !== null}
               onPress={openSetup}
             />
-          ) : null}
+          )}
           {canDecline ? (
             <Button
               label="Decline"

@@ -27,7 +27,6 @@ import * as ServerConfig from "../../config.ts";
 import * as EnvironmentAuth from "../auth/EnvironmentAuthRuntime.ts";
 import * as KinEnabled from "../KinEnabled.ts";
 import type * as Provision from "../lead/KinLeadProvision.ts";
-import { approvalsCommand } from "./approvals.ts";
 import { githubCommand } from "./githubWebhook.ts";
 import { workerShellCommand } from "./workerShell.ts";
 
@@ -357,7 +356,6 @@ export const kinCommand = Command.make("kin").pipe(
         charterCommand,
       ]),
     ),
-    approvalsCommand,
     githubCommand,
     peopleCommand,
     workerShellCommand,

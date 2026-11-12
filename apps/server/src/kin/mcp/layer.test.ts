@@ -1,4 +1,6 @@
 import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import { FetchHttpClient } from "effect/http";
+import { ProcessRunner } from "../../processRunner.ts";
 import { ProviderInstanceRegistry } from "../../provider/ProviderInstanceRegistry.ts";
 import { authorityLayerWithDatabase, startAgentWakeup } from "../chat/WakeupAuthority.testkit.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -110,6 +112,8 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ProjectCloneTracker)({}),
   Layer.mock(ProjectService)({}),
   Layer.mock(ProjectSetupScriptRunner)({}),
+  Layer.mock(ProcessRunner)({}),
+  FetchHttpClient.layer,
   Layer.mock(ProviderAdapterRegistryV2)({}),
   Layer.mock(ProviderInstanceRegistry)({}),
   Layer.mock(ProviderRegistry)({}),
@@ -329,8 +333,9 @@ it.effect.each([true, false])(
         assert.sameMembers(toolNames, Object.keys(SHARED_TOOLS));
         // Four Work tools joined the lead toolkit with slice 1 of Work (`work/mcp/tools.ts`),
         // `kin_chart` and `kin_visual` after them, nine doc tools with Docs
-        // (`work/mcp/docTools.ts`), and five list and money tools with slice 5.
-        assert.lengthOf(toolNames, 44);
+        // (`work/mcp/docTools.ts`), five list and money tools with slice 5, and three for
+        // generated files (`gendocs/mcp.ts`).
+        assert.lengthOf(toolNames, 47);
         // A page runs on every reader's device, so a turn others can read never posts one.
         assert.strictEqual(SHARED_TOOLS.kin_visual, "refused");
         assert.isFalse(

@@ -18,6 +18,9 @@ import {
   type KinApprovalsOrgInput,
   type KinChatHistoryInput,
   type KinChatMembersInput,
+  type KinCompanyProfileInput,
+  type KinListsInput,
+  type KinMoneySummaryInput,
   type KinDocDiffInput,
   type KinDocGetInput,
   type KinDocsListInput,
@@ -211,6 +214,26 @@ const workHistoryRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "kin:work:history:read",
   tag: "kin.work.history",
 });
+
+const workListsRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:work:lists:read",
+  tag: "kin.work.lists",
+});
+const readWorkLists = guardedRead(workListsRead);
+const workMoneyRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:work:money:read",
+  tag: "kin.work.money",
+});
+const readWorkMoney = guardedRead(workMoneyRead);
+const workDatesRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:work:dates:read",
+  tag: "kin.work.dates",
+});
+const companyProfileRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:company:read",
+  tag: "kin.work.companyProfile",
+});
+const readCompanyProfile = guardedRead(companyProfileRead);
 
 /** Work's change number and counts, kept current by the host's own announcements. */
 const workLive = createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {
@@ -701,6 +724,56 @@ export const kinClient = {
     label: "kin:work:decline",
     tag: "kin.work.decline",
   }),
+  /** Every list an agent set up, as its definition: fields, statuses, categories. */
+  workLists: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:work:lists",
+    execute: Effect.fn("KinClient.workLists")(function* (input: KinListsInput) {
+      return yield* readWorkLists(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: sessionGeneration,
+  }),
+  /** Owed, received, spent and what is due, added up by the host per currency. */
+  workMoney: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:work:money",
+    execute: Effect.fn("KinClient.workMoney")(function* (input: KinMoneySummaryInput) {
+      return yield* readWorkMoney(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: sessionGeneration,
+  }),
+  /** One page of everything dated in a window; the Dates screen decides when. */
+  workDates: workDatesRead,
+  workListUpdate: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:list:update",
+    tag: "kin.work.updateList",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.list}` },
+  }),
+  workPaymentRecord: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:payment:record",
+    tag: "kin.work.recordPayment",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+  }),
+  workPaymentVoid: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:payment:void",
+    tag: "kin.work.voidPayment",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.paymentId },
+  }),
+  /** Its `permissionAtom` says whether this phone may read company details at all. */
+  companyRead: companyProfileRead,
+  companyProfile: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:company",
+    execute: Effect.fn("KinClient.companyProfile")(function* (input: KinCompanyProfileInput) {
+      return yield* readCompanyProfile(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: sessionGeneration,
+  }),
+  companyProfileSet: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:company:set",
+    tag: "kin.work.setCompanyProfile",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
+  }),
   memorySetVisibility: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:memory:set-visibility",
     tag: "kin.memory.setVisibility",
@@ -729,7 +802,7 @@ export const kinClient = {
     staleTimeMs: 5_000,
   }),
   approvalRead,
-  /** The org's approver keys; this phone finds its own by the thumbprint it saved. */
+  /** The org's keys that can approve, and recent changes; this phone finds its own by thumbprint. */
   approverKeys: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:approver-keys",
     execute: Effect.fn("KinClient.approverKeys")(function* (input: KinApprovalsOrgInput) {
@@ -760,6 +833,11 @@ export const kinClient = {
   registerKey: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:approver-key:register",
     tag: KIN_APPROVAL_WS_METHODS.registerKey,
+  }),
+  revokeKey: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:approver-key:revoke",
+    tag: KIN_APPROVAL_WS_METHODS.revokeKey,
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.thumbprint },
   }),
   registerPush: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:register-push",

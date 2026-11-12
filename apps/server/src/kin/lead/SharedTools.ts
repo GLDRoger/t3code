@@ -54,6 +54,7 @@ const ownerAsked = Effect.fnUntraced(function* (turn: Turn) {
     JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
     LEFT JOIN kin_messages m ON m.org_id = e.org_id AND e.tag IN ('chat.message', 'widget.action')
       AND m.message_id = json_extract(e.json, '$.messageId')
+      AND (m.kind = 'widget_action') = (e.tag = 'widget.action')
     WHERE e.org_id = ${turn.orgId} AND e.agent_id = ${turn.agentId}
       AND e.wakeup_id = ${turn.wakeupId}
     ORDER BY e.event_id`;
@@ -155,6 +156,10 @@ export const SHARED_TOOLS = {
   money_summary: "refused",
   dates_query: "refused",
   company_profile: "refused",
+  // Generated files, recipes and issued numbers read and make the owner's records and money.
+  kin_document: "refused",
+  kin_recipes: "refused",
+  kin_issue: "refused",
 } satisfies Record<string, SharedToolPolicy>;
 
 /** Whether `name` may run with these arguments in a turn someone besides the owner reads. */

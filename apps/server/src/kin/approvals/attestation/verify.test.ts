@@ -38,6 +38,15 @@ describe("Android key attestation", () => {
     });
   });
 
+  it("accepts CAs within their path length and key usage, and Android's own critical extension", () => {
+    for (const spec of [
+      { intermediate: { pathLength: 0, keyUsage: 0x04 } },
+      { intermediate: { pathLength: 1 }, extraCa: true },
+      { intermediate: { criticalOid: "1.3.6.1.4.1.11129.2.1.30" } },
+    ])
+      assert.deepStrictEqual(verify(spec), { attested: true, hardware: "strongbox" });
+  });
+
   const rejections: ReadonlyArray<readonly [string, Partial<AndroidChainSpec>, string]> = [
     ["another root", { root: newKey() }, "Google hardware attestation root"],
     ["a forged leaf", { leafSignedByStranger: true }, "isn't signed by the next one"],
@@ -62,6 +71,23 @@ describe("Android key attestation", () => {
     ["another signer", { signers: ["cd".repeat(32)] }, "signing certificates"],
     ["an extra signer", { signers: ["ab".repeat(32), "cd".repeat(32)] }, "signing certificates"],
     ["a key description above the leaf", { descriptionInIntermediate: true }, "outside the leaf"],
+    ["a leaf issued by a non-CA", { intermediate: { ca: false } }, "certificate 1 isn't a CA"],
+    ["an expired intermediate", { intermediate: { notAfter: "260101000000Z" } }, "1 is outside"],
+    [
+      "more CAs than a path length allows",
+      { intermediate: { pathLength: 0 }, extraCa: true },
+      "certificate 2 allows 0 CAs below it",
+    ],
+    [
+      "a CA whose key usage excludes certificate signing",
+      { intermediate: { keyUsage: 0x80 } },
+      "certificate 1 can't sign certificates",
+    ],
+    [
+      "an unknown critical extension on a CA",
+      { intermediate: { criticalOid: "1.2.3.4" } },
+      "certificate 1 has an unrecognised critical extension",
+    ],
   ];
   it.each(rejections)("refuses %s", (_name, spec, reason) => {
     const result = verify(spec);
@@ -194,6 +220,17 @@ describe("Apple App Attest", () => {
     ["a used App Attest key", { counter: 1 }, "counter"],
     ["a development build", { aaguid: "appattestdevelop" }, "environment"],
     ["a keyId for another key", { wrongKeyId: true }, "keyId"],
+    [
+      "a credential issued by a non-CA",
+      { intermediate: { ca: false } },
+      "certificate 1 isn't a CA",
+    ],
+    ["an expired intermediate", { intermediate: { notAfter: "260101000000Z" } }, "1 is outside"],
+    [
+      "an unknown critical extension on a CA",
+      { intermediate: { criticalOid: "1.3.6.1.4.1.11129.2.1.30" } },
+      "certificate 1 has an unrecognised critical extension",
+    ],
   ];
   it.each(rejections)("refuses %s", (_name, spec, reason) => {
     const result = verify(spec);

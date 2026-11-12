@@ -16,6 +16,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as SqlError from "effect/sql/SqlError";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
@@ -55,8 +56,15 @@ export class KinLevelGate extends Context.Service<
       agent: AgentIdentity,
       input: WidgetInput,
     ) => Effect.Effect<KinWidget, KinChatError>;
-    /** `kin_ask`'s choice card, gated like a post: it is the lead's reply too. */
-    readonly ask: (agent: AgentIdentity, input: AskInput) => Effect.Effect<KinWidget, KinChatError>;
+    /**
+     * `kin_ask`'s choice card, gated like a post: it is the lead's reply too. `bind` runs in the
+     * card's own transaction, so no tap reaches the card before what it answers knows it.
+     */
+    readonly ask: (
+      agent: AgentIdentity,
+      input: AskInput,
+      bind?: (widget: KinWidget) => Effect.Effect<void, SqlError.SqlError>,
+    ) => Effect.Effect<KinWidget, KinChatError>;
     /** A doc card, gated like a post. */
     readonly showCard: (
       agent: AgentIdentity,
@@ -295,8 +303,13 @@ const make = Effect.gen(function* () {
     upsertWidget: Effect.fn("KinLevelGate.upsertWidget")((agent, input) =>
       gated("gated widget upsert", agent, input.chatId, chat.upsertWidget(agent, input)),
     ),
-    ask: Effect.fn("KinLevelGate.ask")((agent, input) =>
-      gated("gated ask", agent, input.chatId, chat.ask(agent, input)),
+    ask: Effect.fn("KinLevelGate.ask")((agent, input, bind) =>
+      gated(
+        "gated ask",
+        agent,
+        input.chatId,
+        bind === undefined ? chat.ask(agent, input) : chat.ask(agent, input).pipe(Effect.tap(bind)),
+      ),
     ),
     showCard: Effect.fn("KinLevelGate.showCard")((agent, input) =>
       gated("gated card", agent, input.chatId, chat.showCard(agent, input)),

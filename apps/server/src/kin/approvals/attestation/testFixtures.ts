@@ -84,7 +84,15 @@ export type CertificateSpec = {
   readonly subjectKey: NodeCrypto.KeyObject;
   readonly issuerKey: NodeCrypto.KeyObject;
   readonly ca?: boolean;
-  readonly extensions?: ReadonlyArray<{ readonly oid: string; readonly value: Uint8Array }>;
+  /** basicConstraints' pathLenConstraint, on a CA. */
+  readonly pathLength?: number;
+  /** keyUsage's first byte, such as 0x04 for keyCertSign. */
+  readonly keyUsage?: number;
+  readonly extensions?: ReadonlyArray<{
+    readonly oid: string;
+    readonly value: Uint8Array;
+    readonly critical?: boolean;
+  }>;
   readonly notBefore?: string;
   readonly notAfter?: string;
   readonly serial?: Uint8Array;
@@ -93,10 +101,34 @@ export type CertificateSpec = {
 export function certificate(spec: CertificateSpec): Uint8Array {
   const extensions = [
     ...(spec.ca
-      ? [der.seq(der.oid("2.5.29.19"), der.bool(true), der.octet(der.seq(der.bool(true))))]
+      ? [
+          der.seq(
+            der.oid("2.5.29.19"),
+            der.bool(true),
+            der.octet(
+              der.seq(
+                der.bool(true),
+                ...(spec.pathLength === undefined ? [] : [der.int(spec.pathLength)]),
+              ),
+            ),
+          ),
+        ]
       : []),
+    ...(spec.keyUsage === undefined
+      ? []
+      : [
+          der.seq(
+            der.oid("2.5.29.15"),
+            der.bool(true),
+            der.octet(der.bits(new Uint8Array([spec.keyUsage]))),
+          ),
+        ]),
     ...(spec.extensions ?? []).map((extension) =>
-      der.seq(der.oid(extension.oid), der.octet(extension.value)),
+      der.seq(
+        der.oid(extension.oid),
+        ...(extension.critical ? [der.bool(true)] : []),
+        der.octet(extension.value),
+      ),
     ),
   ];
   const tbs = der.seq(
@@ -237,6 +269,25 @@ function keyDescription(spec: KeyDescriptionSpec): Uint8Array {
   );
 }
 
+/** How the CA certificate that issues the leaf is made. */
+export type IntermediateSpec = Pick<
+  CertificateSpec,
+  "ca" | "pathLength" | "keyUsage" | "notAfter"
+> & {
+  /** A critical extension with this OID and an empty SEQUENCE value. */
+  readonly criticalOid?: string;
+};
+const intermediateFields = (spec: IntermediateSpec | undefined) => ({
+  ca: spec?.ca ?? true,
+  ...(spec?.pathLength === undefined ? {} : { pathLength: spec.pathLength }),
+  ...(spec?.keyUsage === undefined ? {} : { keyUsage: spec.keyUsage }),
+  ...(spec?.notAfter === undefined ? {} : { notAfter: spec.notAfter }),
+});
+const criticalExtension = (spec: IntermediateSpec | undefined) =>
+  spec?.criticalOid === undefined
+    ? []
+    : [{ oid: spec.criticalOid, value: der.seq(), critical: true }];
+
 export type AndroidChainSpec = KeyDescriptionSpec & {
   /** The approval key the leaf certifies; a fresh one when omitted. */
   readonly approvalKey?: KeyPair;
@@ -245,6 +296,9 @@ export type AndroidChainSpec = KeyDescriptionSpec & {
   readonly leafNotAfter?: string;
   readonly leafSerial?: Uint8Array;
   readonly root?: KeyPair;
+  /** The CA under the root; the leaf's issuer unless `extraCa` adds one below it. */
+  readonly intermediate?: IntermediateSpec;
+  readonly extraCa?: boolean;
 };
 
 export function androidChain(fixture: TrustFixture, spec: AndroidChainSpec) {
@@ -266,14 +320,31 @@ export function androidChain(fixture: TrustFixture, spec: AndroidChainSpec) {
     issuer: spec.root ? "Other Root" : "Test Google Root",
     subjectKey: intermediate.publicKey,
     issuerKey: root.privateKey,
-    ca: true,
-    ...(spec.descriptionInIntermediate ? { extensions: [description] } : {}),
+    ...intermediateFields(spec.intermediate),
+    extensions: [
+      ...criticalExtension(spec.intermediate),
+      ...(spec.descriptionInIntermediate ? [description] : []),
+    ],
   });
+  const extra = spec.extraCa ? newKey() : undefined;
+  const extraDer =
+    extra === undefined
+      ? []
+      : [
+          certificate({
+            subject: "Test Attestation Key",
+            issuer: "Test Attestation Intermediate",
+            subjectKey: extra.publicKey,
+            issuerKey: intermediate.privateKey,
+            ca: true,
+          }),
+        ];
+  const issuer = extra ?? intermediate;
   const leafDer = certificate({
     subject: "Android Keystore Key",
-    issuer: "Test Attestation Intermediate",
+    issuer: extra === undefined ? "Test Attestation Intermediate" : "Test Attestation Key",
     subjectKey: approvalKey.publicKey,
-    issuerKey: spec.leafSignedByStranger ? newKey().privateKey : intermediate.privateKey,
+    issuerKey: spec.leafSignedByStranger ? newKey().privateKey : issuer.privateKey,
     extensions: [description],
     ...(spec.leafNotAfter ? { notAfter: spec.leafNotAfter } : {}),
     ...(spec.leafSerial ? { serial: spec.leafSerial } : {}),
@@ -281,7 +352,7 @@ export function androidChain(fixture: TrustFixture, spec: AndroidChainSpec) {
   return {
     publicJwk: publicJwkOf(approvalKey.publicKey),
     approvalKey,
-    certificateChain: [leafDer, intermediateDer, rootDer].map(b64),
+    certificateChain: [leafDer, ...extraDer, intermediateDer, rootDer].map(b64),
   };
 }
 
@@ -316,6 +387,7 @@ export type AppleSpec = {
   readonly aaguid?: string;
   readonly wrongKeyId?: boolean;
   readonly root?: KeyPair;
+  readonly intermediate?: IntermediateSpec;
 };
 
 export function appleAttestation(fixture: TrustFixture, spec: AppleSpec) {
@@ -345,7 +417,8 @@ export function appleAttestation(fixture: TrustFixture, spec: AppleSpec) {
     issuer: "Test Apple Root",
     subjectKey: intermediate.publicKey,
     issuerKey: root.privateKey,
-    ca: true,
+    ...intermediateFields(spec.intermediate),
+    extensions: criticalExtension(spec.intermediate),
   });
   const credCert = certificate({
     subject: "App Attest Key",

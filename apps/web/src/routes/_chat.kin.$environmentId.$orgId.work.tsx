@@ -1,10 +1,20 @@
-import { KinDocSectionId, KinOrgId, KinRecordKey, type EnvironmentId } from "@t3tools/contracts";
+import {
+  KinDocSectionId,
+  KinListId,
+  KinOrgId,
+  KinRecordKey,
+  type EnvironmentId,
+} from "@t3tools/contracts";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 
 import { KinWorkView, type KinWorkWhere } from "../kin/KinWorkView";
 
 const isKey = Schema.is(KinRecordKey);
+const isList = Schema.is(KinListId);
+const SHOWN = ["clients", "projects", "docs", "money", "lists", "dates"] as const;
+type Shown = (typeof SHOWN)[number];
+const isShown = (value: unknown): value is Shown => SHOWN.some((held) => held === value);
 const isSection = Schema.is(KinDocSectionId);
 const versionOf = (raw: unknown) => {
   const version = Number(raw);
@@ -16,8 +26,10 @@ const CLIENT = "client";
 interface KinWorkSearch {
   /** The open task. */
   task?: KinRecordKey;
-  /** The list on screen, when it isn't tasks. */
-  show?: "clients" | "projects" | "docs";
+  /** The part on screen, when it isn't tasks. */
+  show?: Shown;
+  /** The open list an agent set up. */
+  list?: KinListId;
   /** The open client or project. */
   client?: KinRecordKey;
   project?: KinRecordKey;
@@ -48,14 +60,18 @@ const searchOf = (where: KinWorkWhere): KinWorkSearch =>
         }
       : "project" in where
         ? { project: where.project }
-        : where.area === "tasks"
-          ? {}
-          : { show: where.area };
+        : "list" in where
+          ? { list: where.list }
+          : "dates" in where
+            ? { show: "dates" }
+            : where.area === "tasks"
+              ? {}
+              : { show: where.area };
 
 function KinWorkRoute() {
   const { environmentId, orgId } = Route.useParams();
   const search = Route.useSearch();
-  const { task, show, project } = search;
+  const { task, show, project, list } = search;
   const party = search[CLIENT];
   const navigate = Route.useNavigate();
   const router = useRouter();
@@ -80,7 +96,11 @@ function KinWorkRoute() {
         ? { party }
         : project !== undefined
           ? { project }
-          : { area: show ?? "tasks" };
+          : list !== undefined
+            ? { list }
+            : show === "dates"
+              ? { dates: true }
+              : { area: show ?? "tasks" };
   return (
     <KinWorkView
       // One mounted view per organization, so a list being read never lands under another.
@@ -121,9 +141,8 @@ export const Route = createFileRoute("/_chat/kin/$environmentId/$orgId/work")({
     const from = versionOf(raw.from);
     return {
       ...(isKey(raw.task) ? { task: raw.task } : {}),
-      ...(raw.show === "clients" || raw.show === "projects" || raw.show === "docs"
-        ? { show: raw.show }
-        : {}),
+      ...(isShown(raw.show) ? { show: raw.show } : {}),
+      ...(isList(raw.list) ? { list: raw.list } : {}),
       ...(isKey(raw[CLIENT]) ? { client: raw[CLIENT] } : {}),
       ...(isKey(raw.project) ? { project: raw.project } : {}),
       ...(isKey(raw.doc) ? { doc: raw.doc } : {}),

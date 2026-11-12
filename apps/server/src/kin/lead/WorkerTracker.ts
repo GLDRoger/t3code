@@ -57,10 +57,11 @@ import { KinEventQueue } from "./KinEventQueue.ts";
 import { KinLeadRegistry } from "./KinLeadRegistry.ts";
 import * as KinLevels from "./KinLevels.ts";
 import { isOrgPaused, STOP_REASON } from "./orgState.ts";
+import { KinDocCollector } from "../gendocs/DocJobs.ts";
 import { OWNER_DECLINED, parseReport, WAITING_FOR_OWNER } from "./workerBrief.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
 import * as Publish from "./workerPublish.ts";
-import { takeBlocked } from "./workNetwork.ts";
+import { releaseHosts, takeBlocked } from "./workNetwork.ts";
 import { localThreadId, workThreadPrefix } from "./workThread.ts";
 import { KinRecords, type Withdrawal } from "../work/KinRecords.ts";
 import * as Attempts from "../work/workerAttempts.ts";
@@ -302,6 +303,7 @@ const make = Effect.gen(function* () {
   const env = yield* WorkerEnvironment.KinWorkerEnvironment;
   const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
   const publisher = yield* Effect.serviceOption(Publish.KinWorkerPublish);
+  const documents = yield* Effect.serviceOption(KinDocCollector);
   const repo = yield* KinChatRepository;
   const hub = yield* KinChatHub;
   const environment = yield* Effect.serviceOption(ServerEnvironment);
@@ -566,8 +568,11 @@ const make = Effect.gen(function* () {
     );
     // Whether or not this run's row was still the attempt's, a stopped attempt owes the owner this.
     if (yield* stopRequested(worker)) yield* settleSoon(attemptOf(worker));
-    if (recorded !== undefined) yield* endPublishCard(attemptOf(worker));
     if (recorded === undefined) return false;
+    yield* endPublishCard(attemptOf(worker));
+    yield* releaseHosts(stateDir, worker.workerId).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+    );
     if (stoppedStatuses.has(recorded))
       yield* card(worker, (chatId, audience) =>
         chat.setTaskCardClosed({
@@ -1109,6 +1114,21 @@ const make = Effect.gen(function* () {
         Effect.orElseSucceed(() => []),
       ),
     );
+    // A document job's result is the files Kin takes back, never a commit or a pull request.
+    const filed = Option.isSome(documents)
+      ? yield* documents.value.collect(worker, status === "completed", report)
+      : undefined;
+    if (filed !== undefined)
+      return yield* settleRun(worker, {
+        runId: run.id,
+        status,
+        endedAt:
+          run.completedAt === null
+            ? yield* Clock.currentTimeMillis
+            : DateTime.toEpochMillis(run.completedAt),
+        report: filed,
+        published: undefined,
+      });
     const project =
       status === "completed" && worker.kind === "build"
         ? Option.getOrUndefined(yield* projects.getById(worker.projectId))

@@ -24,10 +24,12 @@ import {
   KinTrimmedText,
 } from "./kinChat.ts";
 import {
+  KinDay,
   KinFieldValue,
   KinFileRef,
   KinListId,
   KinMoney,
+  KinMoneyTotals,
   KinPayment,
   KinRepeatRule,
 } from "./kinMoney.ts";
@@ -136,6 +138,8 @@ export const KinRecord = Schema.Struct({
   repeat: Schema.optional(KinRepeatRule),
   /** An invoice's amount less the payments received against it. */
   balance: Schema.optional(KinMoney),
+  /** In a defined list's own rows, its fields by key, as its definition types them. */
+  fields: Schema.optional(Schema.Record(Schema.String, KinFieldValue)),
 });
 export type KinRecord = typeof KinRecord.Type;
 
@@ -222,8 +226,6 @@ export const KinRecordDetail = Schema.Struct({
   changes: Schema.Array(KinRecordChange),
   /** This entry's latest change number, links included: compare with a `changed` event's. */
   seq: Schema.optional(NonNegativeInt),
-  /** A defined list's own fields by key, as its definition types them. */
-  fields: Schema.optional(Schema.Record(Schema.String, KinFieldValue)),
   /** The files its file fields keep, such as a receipt. */
   files: Schema.optional(Schema.Array(KinFileRef)),
   /** An invoice's payments, newest first, voided ones included. */
@@ -232,6 +234,22 @@ export const KinRecordDetail = Schema.Struct({
 export type KinRecordDetail = typeof KinRecordDetail.Type;
 export const KIN_RECORD_CHANGES_CAP = 50;
 export const KIN_RECORDS_PAGE_CAP = 100;
+
+/** How a defined list's totals split: none, its categories, or its entries' dates. */
+export const KinListGroupBy = Schema.Literals(["none", "category", "month", "financialYear"]);
+export type KinListGroupBy = typeof KinListGroupBy.Type;
+/** `group` is a category, `2026-11` or `FY2026-27`; null is entries with none. */
+export const KinListTotals = Schema.Struct({
+  total: KinMoneyTotals,
+  groups: Schema.Array(
+    Schema.Struct({
+      group: Schema.NullOr(Schema.String),
+      count: NonNegativeInt,
+      total: KinMoneyTotals,
+    }),
+  ),
+});
+export type KinListTotals = typeof KinListTotals.Type;
 
 export const KinWorkListInput = Schema.Struct({
   orgId: KinOrgId,
@@ -257,6 +275,17 @@ export const KinWorkListInput = Schema.Struct({
   repo: Schema.optional(KinRepoName),
   /** Case-insensitive match on title and notes. */
   text: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
+  // Defined lists only.
+  /** One of the list's own categories. */
+  listCategory: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(60))),
+  /** Its own date on or after this day, and on or before `dateTo`, in the owner's time zone. */
+  dateFrom: Schema.optional(KinDay),
+  dateTo: Schema.optional(KinDay),
+  /** A payment was received against it on or after this day, and on or before `paidTo`. */
+  paidFrom: Schema.optional(KinDay),
+  paidTo: Schema.optional(KinDay),
+  /** Also answer `totals` for everything the filter matches, split this way. First page only. */
+  totalsBy: Schema.optional(KinListGroupBy),
   /** From the previous page's `nextCursor`. */
   cursor: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
   limit: Schema.optional(
@@ -271,6 +300,8 @@ export const KinWorkListResult = Schema.Struct({
   nextCursor: Schema.NullOr(Schema.String),
   seq: NonNegativeInt,
   asOf: IsoDateTime,
+  /** Asked for with `totalsBy`: exact sums per currency of every match, not of this page. */
+  totals: Schema.optional(KinListTotals),
 });
 export type KinWorkListResult = typeof KinWorkListResult.Type;
 
