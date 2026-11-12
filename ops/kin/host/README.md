@@ -290,6 +290,14 @@ To check, run `set -a; . ~/.t3/service.env; set +a`, then the same command with 
 - To watch a worker's thread, pair a client with the worker environment too: `sudo kin-worker run t3 pair --base-dir /home/kin-worker/.t3`. The port is loopback only, so reach it over SSH or Tailscale. Task cards update without it.
 - The worker environment has no Kin budget of its own: worker token use isn't visible to kin-server over the link yet, so worker units don't grow. Each worker still needs budget left to start.
 
+### Documents
+
+Files an agent asks for (`kin_document`: invoices, the accountant's pack, reports) are made by a worker on kin-server itself, even when a worker environment is set, and only with a [worker shell](#worker-shell); without one, only one-off text, Markdown, CSV, SVG and JSON files can be made. These workers get no network.
+
+- Each org's recipes are a git repository in `~/.t3/userdata/kin/workspaces/`, made from Kin's three starter recipes on first use and never pushed anywhere. It is backed up with the rest of `~/.t3/userdata`. A recipe change a worker makes is committed there by kin-server, with its history.
+- Typst 0.15.1 is fetched from its GitHub release the first time a recipe needs it, checked against the checksum pinned in kin-server, and kept in `~/.t3/kin-tools/`; worker shells can read it and find it on their PATH. Unpacking needs `tar` with xz support (`xz-utils`). On a host without internet, put the release's `typst` in `~/.t3/kin-tools/typst-0.15.1/` with its archive's SHA-256 in a `.sha256` file beside it.
+- A job's worktree, `~/.t3/worktrees/kin-documents/<worker>`, holds its inputs while it runs and is removed once kin-server has taken the files back.
+
 ## Update
 
 In a kin shell: `~/t3code/ops/kin/host/update.sh`. It fetches `kin` and builds it in a fresh worktree, `~/kin-builds/<sha>`: `vp i`, then `(cd apps/server && vp test run kin-contract)`, then `vp run build:desktop`. The running build is never touched. Only after every step passes does it refresh the units and the Node version, switch `~/kin-current` to the new build and run `systemctl --user restart kin-server`. A failed step deletes the half-built worktree and the server keeps running the old build. It keeps the 3 newest builds.
