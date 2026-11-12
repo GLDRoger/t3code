@@ -11,6 +11,8 @@ import {
   type KinWorkPrincipal,
   type KinWorkSummary,
   type KinWorkUpdateInput,
+  calendarTimeMillis,
+  isCalendarDay,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -59,7 +61,7 @@ export const theOwner = Effect.fn("KinWork.owner")(function* (
 });
 
 const millis = (value: string, field: string) => {
-  const ms = Date.parse(value);
+  const ms = calendarTimeMillis(value);
   return Number.isFinite(ms)
     ? Effect.succeed(ms)
     : Effect.fail(
@@ -471,7 +473,7 @@ export const dueMillis = Effect.fn("KinWork.dueMillis")(function* (
   dueAt: string,
   allDay: boolean | undefined,
 ) {
-  return allDay === true && /^\d{4}-\d{2}-\d{2}$/.test(dueAt)
+  return allDay === true && isCalendarDay(dueAt)
     ? endOfDay(dueAt, yield* ownerZone(orgId))
     : yield* millis(dueAt, "dueAt");
 });
