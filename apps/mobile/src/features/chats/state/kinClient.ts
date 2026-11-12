@@ -36,6 +36,7 @@ import {
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
 import { Atom, AsyncResult, AtomRegistry } from "effect/reactivity";
 
@@ -187,12 +188,37 @@ const workHistoryRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
 });
 
 /** Work's change number and counts, kept current by the host's own announcements. */
+// One per host and org, so a retry reaches the running counts stream without restarting it.
+const workRetries = new Map<string, PubSub.PubSub<void>>();
+const workRetriesOf = (environmentId: EnvironmentId, orgId: KinOrgId) => {
+  const key = JSON.stringify([environmentId, orgId]);
+  let retries = workRetries.get(key);
+  if (retries === undefined) {
+    retries = Effect.runSync(PubSub.unbounded<void>());
+    workRetries.set(key, retries);
+  }
+  return retries;
+};
+
+/** Reads Work's counts again inside the running stream, keeping what it holds meanwhile. */
+export const retryKinWorkLive = (environmentId: EnvironmentId, orgId: KinOrgId) =>
+  Effect.runSync(PubSub.publish(workRetriesOf(environmentId, orgId), undefined));
+
 const workLive = createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {
   label: KIN_WORK_LABEL,
   subscribe: (input: KinWorkSubscribeInput) =>
-    kinWorkLiveStream(input, (summaryInput) =>
-      readWorkSummary(summaryInput).pipe(
-        Effect.provideService(AtomRegistry.AtomRegistry, appAtomRegistry),
+    kinWorkLiveStream(
+      input,
+      (summaryInput) =>
+        readWorkSummary(summaryInput).pipe(
+          Effect.provideService(AtomRegistry.AtomRegistry, appAtomRegistry),
+        ),
+      Stream.unwrap(
+        currentEnvironmentId.pipe(
+          Effect.map((environmentId) =>
+            Stream.fromPubSub(workRetriesOf(environmentId, input.orgId)),
+          ),
+        ),
       ),
     ),
 });

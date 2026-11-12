@@ -55,7 +55,7 @@ import { useEffect, useState } from "react";
 import { environmentCatalog } from "../../../connection/catalog";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { useAtomCommand } from "../../../state/use-atom-command";
-import { kinClient } from "./kinClient";
+import { kinClient, retryKinWorkLive } from "./kinClient";
 import { kinHostConnected, useKinHostAt } from "./useKinHost";
 
 export interface KinWorkTarget {
@@ -77,9 +77,9 @@ const noZoneAtom: Atom.Atom<AsyncResult.AsyncResult<KinOwnerTimeZone, unknown>> 
 export const kinWorkLiveAtom = ({ environmentId, orgId }: KinWorkTarget) =>
   kinClient.workLive({ environmentId, input: { orgId } });
 
-/** Reads Work's counts again from a fresh subscription: the retry when a read failed. */
+/** Reads Work's counts again, keeping the rows and counts on screen until it answers. */
 export const refreshKinWorkLive = (target: KinWorkTarget) =>
-  appAtomRegistry.refresh(kinWorkLiveAtom(target));
+  retryKinWorkLive(target.environmentId, target.orgId);
 
 /** Work's counts and change number as one screen state, kept current by the host. */
 export function useKinWork(target: KinWorkTarget): KinWorkScreenState {
