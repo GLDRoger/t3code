@@ -23,26 +23,18 @@ import { KinLevelGate } from "../lead/LevelGate.ts";
 import { attachChangeCard, changeLines, proposeChange, readProfile } from "./companyProfile.ts";
 import { KinRecords } from "./KinRecords.ts";
 import { admitted, type Lead, leadTool, retryKey, sourceOf, writerFor } from "./leadWork.ts";
-import { dayIn, formatMoney, isCurrency, parseAmount } from "./money.ts";
+import { dayIn, formatMoney, parseAmount } from "./money.ts";
 import { dates, moneySection, moneySummary } from "./moneyViews.ts";
 import { endOfDay, iso, notFound, ownerZone } from "./recordRows.ts";
 import {
   attachCard,
   carryOut,
-  checkDraft,
   type FieldDef,
-  idFor,
-  isBuiltIn,
-  keyFor,
   listDef,
-  plain,
   PRESET_IDS,
-  PRESETS,
-  prefixFor,
-  type Proposal,
   propose,
+  proposalFor,
   stateLabel,
-  type StoredDefinition,
   unknownList,
 } from "./registers.ts";
 
@@ -166,108 +158,6 @@ const shownFields = (fields: ReadonlyArray<FieldDef>) =>
       ...(one.choices === undefined ? {} : { choices: [...one.choices] }),
     }));
 
-const fieldDefs = (fields: ReadonlyArray<typeof FieldInput.Type>) => {
-  const defs: Array<FieldDef> = [];
-  for (const one of fields) {
-    const label = plain(one.label);
-    const key = keyFor(label);
-    if (key === undefined) return invalid(`${one.label} needs a name made of letters.`);
-    defs.push({
-      key,
-      label,
-      type: one.type,
-      ...(one.choices === undefined ? {} : { choices: one.choices.map(plain) }),
-      ...(one.link === undefined ? {} : { link: one.link }),
-      sensitive: one.type === "money" || one.type === "file" || one.sensitive === true,
-    });
-  }
-  return defs;
-};
-
-/** The proposal a call describes: a preset with any extras, a new list, or additions to one. */
-const proposalFor = Effect.fn("KinWorkTools.proposalFor")(function* (
-  lead: Lead,
-  input: typeof DefineInput.Type,
-) {
-  const fields = fieldDefs(input.fields ?? []);
-  if (!Array.isArray(fields)) return yield* fields;
-  if (input.list !== undefined) {
-    const def = yield* listDef(lead.orgId, input.list);
-    if (def === undefined) return yield* unknownList(input.list);
-    if (def.builtIn !== null)
-      return yield* invalid(`${def.name} is built in; its fields are fixed.`);
-    // A field named again with new choices adds those choices to it.
-    const choices: Record<string, ReadonlyArray<string>> = {};
-    const added = fields.filter((one) => {
-      const existing = def.fields.find((field) => field.key === one.key);
-      if (existing?.type === "choice" && one.type === "choice") {
-        choices[one.key] = one.choices ?? [];
-        return false;
-      }
-      return true;
-    });
-    return {
-      _tag: "extend",
-      id: def.id,
-      fields: added,
-      categories: input.categories ?? [],
-      choices,
-      stateLabels: input.stateNames ?? {},
-    } satisfies Proposal;
-  }
-  const named = input.template ?? (input.name === undefined ? undefined : idFor(input.name));
-  if (named === undefined)
-    return yield* invalid("Name the list, start from a template, or say which list to add to.");
-  const preset = (PRESET_IDS as ReadonlyArray<string>).includes(named)
-    ? PRESETS[named as (typeof PRESET_IDS)[number]]
-    : undefined;
-  if (preset === undefined && (isBuiltIn(named) || named === "docs"))
-    return yield* invalid(`${input.name ?? named} is one of Kin's own lists already.`);
-  const name = preset?.name ?? input.name ?? named;
-  const amount = input.amount ?? preset?.amount ?? false;
-  const states = input.states ?? preset?.states ?? ["open", "done", "dropped"];
-  const definition: StoredDefinition = {
-    noun: input.noun ?? preset?.noun ?? name.toLowerCase().replace(/s$/, ""),
-    states,
-    stateLabels: { ...preset?.stateLabels, ...input.stateNames },
-    defaultState:
-      preset !== undefined && states.includes(preset.defaultState)
-        ? preset.defaultState
-        : states.includes("open")
-          ? "open"
-          : states[0]!,
-    categories: [...new Set([...(preset?.categories ?? []), ...(input.categories ?? [])])],
-    fields: [
-      ...(preset?.fields ?? []),
-      ...fields.filter((one) => !(preset?.fields ?? []).some((field) => field.key === one.key)),
-    ],
-    sensitive: input.sensitive ?? preset?.sensitive ?? amount,
-    amount,
-    currency: input.currency ?? preset?.currency ?? "INR",
-    ...((input.dueLabel ?? preset?.dueLabel)
-      ? { dueLabel: (input.dueLabel ?? preset?.dueLabel)! }
-      : {}),
-    ...((input.dateLabel ?? preset?.dateLabel)
-      ? { dateLabel: (input.dateLabel ?? preset?.dateLabel)! }
-      : {}),
-  };
-  if (!isCurrency(definition.currency))
-    return yield* invalid(`${definition.currency} is not a currency code.`);
-  const draft = {
-    id: named,
-    name,
-    prefix: input.prefix ?? preset?.prefix ?? prefixFor(name),
-    definition,
-  };
-  const refused = checkDraft(draft);
-  if (refused !== undefined) return yield* refused;
-  if ((yield* listDef(lead.orgId, draft.id)) !== undefined)
-    return yield* invalid(
-      `There is already a list ${draft.name}; propose fields to add to it with list instead.`,
-    );
-  return { _tag: "new", ...draft } satisfies Proposal;
-});
-
 const describeDefined = Effect.fn("KinWorkTools.describeDefined")(function* (
   lead: Lead,
   id: string,
@@ -306,7 +196,7 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
       next: "Created. Say so in one line, without listing the fields again.",
     };
   }
-  const proposal = yield* proposalFor(lead, input);
+  const proposal = yield* proposalFor(lead.orgId, input);
   const chat = yield* turnChat(lead);
   if (chat === undefined) return yield* invalid("This turn has no chat to propose a list in.");
   const proposalId = yield* propose({
