@@ -114,6 +114,7 @@ export function KinWorkItemSheet(
     readonly onOpenKey: (key: KinRecordKey) => void;
     readonly onOpenClient: (key: KinRecordKey) => void;
     readonly onOpenProject: (key: KinRecordKey) => void;
+    readonly onOpenDoc: (key: KinRecordKey) => void;
     readonly onClose: () => void;
   },
 ) {

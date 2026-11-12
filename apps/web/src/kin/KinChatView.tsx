@@ -2,6 +2,7 @@ import { kinOwnsDirectChat } from "@t3tools/client-runtime/kin/kinClearChat";
 import { useAtomValue } from "@effect/atom-react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import {
+  kinChatGoneCopy,
   buildKinFeedRows,
   initialKinPaging,
   kinActivePaging,
@@ -519,25 +520,7 @@ function KinChatStateView(props: {
       </div>
     );
   }
-  const copy =
-    state._tag === "gone"
-      ? {
-          title:
-            state.reason === "left"
-              ? "You were removed from this chat"
-              : state.reason === "disabled"
-                ? "Kin is turned off on this server"
-                : "This chat isn't available",
-          detail:
-            state.reason === "left"
-              ? "Ask the chat's owner to add you back."
-              : state.reason === "disabled"
-                ? "Ask whoever runs Kin here to turn it back on, then come back."
-                : state.reason === "not_found" || state.reason === "not_allowed"
-                  ? "It may have been removed, or you're no longer a member."
-                  : "Kin couldn't open this chat. Go back to your chats and try again.",
-        }
-      : STATE_COPY[state._tag];
+  const copy = state._tag === "gone" ? kinChatGoneCopy(state.reason) : STATE_COPY[state._tag];
   return (
     <Empty size="compact">
       <EmptyHeader>

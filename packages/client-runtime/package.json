@@ -571,6 +571,10 @@
       "types": "./src/kin/kinGroups.ts",
       "default": "./src/kin/kinGroups.ts"
     },
+    "./kin/kinInvoices": {
+      "types": "./src/kin/kinInvoices.ts",
+      "default": "./src/kin/kinInvoices.ts"
+    },
     "./kin/kinJoin": {
       "types": "./src/kin/kinJoin.ts",
       "default": "./src/kin/kinJoin.ts"
