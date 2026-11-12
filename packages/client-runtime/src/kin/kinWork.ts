@@ -1327,8 +1327,24 @@ export function kinWorkSettled(
 }
 
 /** Adding a task and giving one to someone, each answered with the task or a reason in words. */
+/**
+ * The host's latest answers to the owner's changes, per task, shared by every screen on one host
+ * and org, so a screen whose own read is behind still sends the revision the host is at.
+ */
+export interface KinWorkAnswers {
+  readonly get: (key: KinRecordKey) => KinRecordDetail | undefined;
+  readonly put: (item: KinRecordDetail) => void;
+}
+
+/** A task as held, or the host's newer answer to a change made to it from any screen. */
+export function kinWorkNewest<R extends KinRecord>(record: R, answers?: KinWorkAnswers): R {
+  const answer = answers?.get(record.key);
+  return answer !== undefined && answer.rev > record.rev ? { ...record, ...answer } : record;
+}
+
 export function createKinWorkActions(options: {
   readonly orgId: KinOrgId;
+  readonly answers?: KinWorkAnswers;
   readonly create: (input: KinWorkCreateInput) => Sent<KinRecordDetail>;
   readonly assign: (input: KinWorkAssignInput) => Sent<KinRecordDetail>;
   /** Reads a task again after the host refused a change to it. */
@@ -1347,11 +1363,13 @@ export function createKinWorkActions(options: {
       item: { readonly key: KinRecordKey; readonly rev: number },
       to: KinWorkPrincipal,
     ): Promise<KinWorkChangeResult> => {
+      const rev = Math.max(item.rev, options.answers?.get(item.key)?.rev ?? 0);
       const outcome = kinWorkSettled(
-        await options.assign({ orgId, key: item.key, to, rev: item.rev }),
+        await options.assign({ orgId, key: item.key, to, rev }),
         "give",
       );
-      if (!outcome.ok) options.reread(item.key);
+      if (outcome.ok) options.answers?.put(outcome.item);
+      else options.reread(item.key);
       return outcome;
     },
   };

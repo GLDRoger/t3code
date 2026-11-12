@@ -9,11 +9,7 @@ import {
   KIN_WORK_TITLE_MAX,
   kinWorkItemState,
 } from "@t3tools/client-runtime/kin/kinWork";
-import {
-  KIN_WORK_COPY,
-  kinWorkAtRev,
-  kinWorkEditMoved,
-} from "@t3tools/client-runtime/kin/kinWorkChanges";
+import { KIN_WORK_COPY, kinWorkEditMoved } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import { EnvironmentId, KinOrgId, KinRecordKey, type KinRecordDetail } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -32,6 +28,7 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import type { KinWorkItemParams } from "./KinWorkItemScreen";
 import { kinClient } from "./state/kinClient";
 import {
+  useKinWorkAnswer,
   useKinWorkChanges,
   useKinWorkDirectory,
   useKinWorkItemWatch,
@@ -59,14 +56,7 @@ export function KinWorkEditScreen({ route }: StaticScreenProps<KinWorkItemParams
       </Frame>
     );
   }
-  return (
-    <KinWorkEditGate
-      environmentId={environmentId}
-      orgId={orgId}
-      itemKey={key}
-      {...(route.params.rev === undefined ? {} : { rev: route.params.rev })}
-    />
-  );
+  return <KinWorkEditGate environmentId={environmentId} orgId={orgId} itemKey={key} />;
 }
 
 function Frame(props: {
@@ -96,7 +86,7 @@ function Frame(props: {
   );
 }
 
-type ItemTarget = KinWorkTarget & { readonly itemKey: KinRecordKey; readonly rev?: string };
+type ItemTarget = KinWorkTarget & { readonly itemKey: KinRecordKey };
 
 function KinWorkEditGate(props: ItemTarget) {
   const navigation = useNavigation();
@@ -105,7 +95,8 @@ function KinWorkEditGate(props: ItemTarget) {
     environmentId: props.environmentId,
     input: { orgId: props.orgId, key: props.itemKey },
   });
-  const state = kinWorkItemState(useAtomValue(itemAtom), null);
+  // Opens from the host's latest answer, so a just-saved edit isn't typed over from an old read.
+  const state = kinWorkItemState(useAtomValue(itemAtom), useKinWorkAnswer(props, props.itemKey));
   const close = () => navigation.goBack();
   if (!allowed) {
     return (
@@ -139,7 +130,7 @@ function KinWorkEditGate(props: ItemTarget) {
       </Frame>
     );
   }
-  return <KinWorkEditForm {...props} item={kinWorkAtRev(state.item, props.rev)} />;
+  return <KinWorkEditForm {...props} item={state.item} />;
 }
 
 function KinWorkEditForm(props: ItemTarget & { readonly item: KinRecordDetail }) {

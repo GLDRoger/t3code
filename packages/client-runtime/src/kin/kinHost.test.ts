@@ -179,6 +179,18 @@ describe("resolveKinHost", () => {
     expect(kinHostIdToSave(host)).toBeNull();
   });
 
+  it("waits on an earlier host's probe before letting a later one stand in", () => {
+    const down = { [c]: { phase: "available", error: null } } as const;
+    expect(resolve({ [a]: pending, [b]: ready }, { savedHostId: c, phases: down })).toMatchObject({
+      environmentId: c,
+      connected: false,
+    });
+    expect(resolve({ [a]: notKin, [b]: ready }, { savedHostId: c, phases: down })).toMatchObject({
+      environmentId: b,
+      standIn: true,
+    });
+  });
+
   it("goes back to the saved host once it reconnects, and keeps its cache with no live host", () => {
     const down = { [c]: { phase: "available", error: null } } as const;
     expect(resolve({ [b]: ready }, { savedHostId: c, phases: down })).toMatchObject({

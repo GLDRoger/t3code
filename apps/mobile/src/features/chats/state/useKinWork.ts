@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   kinWorkNames,
+  type KinWorkAnswers,
   kinWorkScreenState,
   type KinWorkScreenState,
 } from "@t3tools/client-runtime/kin/kinWork";
@@ -77,9 +78,15 @@ const noZoneAtom: Atom.Atom<AsyncResult.AsyncResult<KinOwnerTimeZone, unknown>> 
 export const kinWorkLiveAtom = ({ environmentId, orgId }: KinWorkTarget) =>
   kinClient.workLive({ environmentId, input: { orgId } });
 
-/** Reads Work's counts again, keeping the rows and counts on screen until it answers. */
-export const refreshKinWorkLive = (target: KinWorkTarget) =>
-  retryKinWorkLive(target.environmentId, target.orgId);
+/**
+ * Reads Work's counts again inside the running stream, keeping what is on screen. A stream that
+ * already ended with an error has nothing to retry in, so it starts over.
+ */
+export const refreshKinWorkLive = (target: KinWorkTarget) => {
+  const live = kinWorkLiveAtom(target);
+  if (AsyncResult.isFailure(appAtomRegistry.get(live))) appAtomRegistry.refresh(live);
+  else retryKinWorkLive(target.environmentId, target.orgId);
+};
 
 /** Work's counts and change number as one screen state, kept current by the host. */
 export function useKinWork(target: KinWorkTarget): KinWorkScreenState {
@@ -114,6 +121,30 @@ export function useKinWorkDirectory({ environmentId, orgId }: KinWorkTarget, ena
 
 export type KinWorkDirectory = ReturnType<typeof useKinWorkDirectory>;
 
+// The host's answers to the owner's changes, per host and org, read by every screen of a task.
+const kinWorkAnswersAtom = Atom.family((_key: string) =>
+  Atom.make<Readonly<Record<string, KinRecordDetail>>>({}).pipe(Atom.keepAlive),
+);
+const answersAtomOf = ({ environmentId, orgId }: KinWorkTarget) =>
+  kinWorkAnswersAtom(JSON.stringify([environmentId, orgId]));
+
+export function kinWorkAnswersOf(target: KinWorkTarget): KinWorkAnswers {
+  const atom = answersAtomOf(target);
+  return {
+    get: (key) => appAtomRegistry.get(atom)[key],
+    put: (item) => {
+      const held = appAtomRegistry.get(atom);
+      if ((held[item.key]?.rev ?? -1) >= item.rev) return;
+      appAtomRegistry.set(atom, { ...held, [item.key]: item });
+    },
+  };
+}
+
+/** The host's latest answer to a change to this task from any screen; null with none. */
+export function useKinWorkAnswer(target: KinWorkTarget, key: KinRecordKey) {
+  return useAtomValue(answersAtomOf(target))[key] ?? null;
+}
+
 /** The owner's changes to tasks on one host, for a list or a task on screen. */
 export function useKinWorkChanges(
   { environmentId, orgId }: KinWorkTarget,
@@ -135,6 +166,7 @@ export function useKinWorkChanges(
       reread: (key) =>
         appAtomRegistry.refresh(kinClient.workItem({ environmentId, input: { orgId, key } })),
       online: () => kinHostConnected(environmentId),
+      answers: kinWorkAnswersOf({ environmentId, orgId }),
       ...(editing === undefined ? {} : { editing }),
       onChange: setState,
     }),

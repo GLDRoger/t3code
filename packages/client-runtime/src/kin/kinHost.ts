@@ -127,10 +127,18 @@ export function resolveKinHost(input: {
   let fallback: KinHost | null = null;
   if (saved !== undefined) {
     if (!saved.connected) {
-      // A live host stands in for one that is down; a blip shows the saved host's cache.
-      const live = saved.down
-        ? input.candidates.find((c) => c.connected && input.probe(c.environmentId)._tag === "ready")
-        : undefined;
+      // A live host stands in for one that is down, awaiting earlier probes like the search below
+      // so it doesn't pick one and switch; a blip shows the saved host's cache.
+      let live: KinHostCandidate | undefined;
+      for (const candidate of saved.down ? input.candidates : []) {
+        if (!candidate.connected) continue;
+        const tag = input.probe(candidate.environmentId)._tag;
+        if (tag === "pending") break;
+        if (tag === "ready") {
+          live = candidate;
+          break;
+        }
+      }
       if (live !== undefined) {
         return {
           _tag: "host",

@@ -10,7 +10,6 @@ import {
   kinWorkItemState,
   type KinWorkAssignee,
 } from "@t3tools/client-runtime/kin/kinWork";
-import { kinWorkAtRev } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import { EnvironmentId, KinOrgId, KinRecordKey, type KinRecordDetail } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -31,7 +30,12 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { KinAvatar } from "./components/KinAvatar";
 import type { KinWorkItemParams } from "./KinWorkItemScreen";
 import { kinClient } from "./state/kinClient";
-import { useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
+import {
+  kinWorkAnswersOf,
+  useKinWorkAnswer,
+  useKinWorkDirectory,
+  type KinWorkTarget,
+} from "./state/useKinWork";
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
@@ -54,14 +58,7 @@ export function KinWorkAssignScreen({ route }: StaticScreenProps<KinWorkItemPara
       </Frame>
     );
   }
-  return (
-    <KinWorkAssignGate
-      environmentId={environmentId}
-      orgId={orgId}
-      itemKey={key}
-      {...(route.params.rev === undefined ? {} : { rev: route.params.rev })}
-    />
-  );
+  return <KinWorkAssignGate environmentId={environmentId} orgId={orgId} itemKey={key} />;
 }
 
 function Frame(props: { readonly onClose: () => void; readonly children: React.ReactNode }) {
@@ -81,7 +78,7 @@ function Frame(props: { readonly onClose: () => void; readonly children: React.R
   );
 }
 
-type ItemTarget = KinWorkTarget & { readonly itemKey: KinRecordKey; readonly rev?: string };
+type ItemTarget = KinWorkTarget & { readonly itemKey: KinRecordKey };
 
 function KinWorkAssignGate(props: ItemTarget) {
   const navigation = useNavigation();
@@ -100,13 +97,14 @@ function KinWorkAssignBody(props: ItemTarget) {
   const navigation = useNavigation();
   const { environmentId, orgId, itemKey } = props;
   const itemAtom = kinClient.workItem({ environmentId, input: { orgId, key: itemKey } });
-  const state = kinWorkItemState(useAtomValue(itemAtom), null);
+  const state = kinWorkItemState(useAtomValue(itemAtom), useKinWorkAnswer(props, itemKey));
   const { orgs, people, names } = useKinWorkDirectory(props, true);
   const create = useAtomCommand(kinClient.workCreate, { reportFailure: false });
   const assign = useAtomCommand(kinClient.workAssign, { reportFailure: false });
   const [actions] = useState(() =>
     createKinWorkActions({
       orgId,
+      answers: kinWorkAnswersOf(props),
       create: (input) => create({ environmentId, input }),
       assign: (input) => assign({ environmentId, input }),
       reread: () => appAtomRegistry.refresh(itemAtom),
@@ -147,7 +145,7 @@ function KinWorkAssignBody(props: ItemTarget) {
     if (giving !== null || to.current) return;
     setGiving(to.key);
     setProblem(null);
-    const outcome = await actions.give(kinWorkAtRev(item, props.rev), to.principal);
+    const outcome = await actions.give(item, to.principal);
     setGiving(null);
     if (!outcome.ok) return setProblem(outcome.problem);
     appAtomRegistry.refresh(itemAtom);

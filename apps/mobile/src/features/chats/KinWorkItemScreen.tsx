@@ -63,6 +63,7 @@ import {
 import { kinClient } from "./state/kinClient";
 import {
   useKinWork,
+  useKinWorkAnswer,
   useKinWorkChanges,
   useKinWorkChoices,
   useKinWorkDirectory,
@@ -76,8 +77,6 @@ export type KinWorkItemParams = {
   readonly orgId: string;
   /** The task's short handle, such as `W-12`. */
   readonly task: string;
-  /** The newest revision the task's sheet holds, for Give to and Edit; links leave it out. */
-  readonly rev?: string;
 };
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
@@ -157,7 +156,7 @@ function KinWorkItemBody(props: ItemTarget) {
   const { environmentId, orgId, itemKey } = props;
   const itemAtom = kinClient.workItem({ environmentId, input: { orgId, key: itemKey } });
   const { state: changed, changes } = useKinWorkChanges(props);
-  const state = kinWorkItemState(useAtomValue(itemAtom), changed.answers[itemKey] ?? null);
+  const state = kinWorkItemState(useAtomValue(itemAtom), useKinWorkAnswer(props, itemKey));
   useKinWorkItemWatch(props, itemKey, state._tag === "ready" ? state.item.seq : null);
   const directory = useKinWorkDirectory(props, true);
   const canGive = useAtomValue(kinClient.workAssign.permissionAtom(environmentId));
@@ -345,12 +344,7 @@ function KinWorkItemBody(props: ItemTarget) {
             label={view.assignLabel}
             disabled={saving}
             onPress={() =>
-              navigation.navigate("KinWorkAssign", {
-                environmentId,
-                orgId,
-                task: itemKey,
-                rev: String(item.rev),
-              })
+              navigation.navigate("KinWorkAssign", { environmentId, orgId, task: itemKey })
             }
           />
         ) : null}
@@ -374,12 +368,7 @@ function KinWorkItemBody(props: ItemTarget) {
             label="Edit title and notes"
             disabled={saving}
             onPress={() =>
-              navigation.navigate("KinWorkEdit", {
-                environmentId,
-                orgId,
-                task: itemKey,
-                rev: String(item.rev),
-              })
+              navigation.navigate("KinWorkEdit", { environmentId, orgId, task: itemKey })
             }
           />
         )}

@@ -17,8 +17,10 @@ import {
   KIN_WORK_TITLE_MAX,
   kinWorkClosed,
   kinWorkName,
+  kinWorkNewest,
   kinWorkSamePrincipal,
   kinWorkSettled,
+  type KinWorkAnswers,
   type KinWorkChangeResult,
   type KinWorkNames,
   type KinWorkRef,
@@ -178,15 +180,6 @@ export const kinWorkListNotice = (
     : null;
 };
 
-/**
- * A task at the newest revision known: a screen opened from the task's sheet is told the sheet's,
- * which may be the host's answer to a change its own read of the task hasn't caught up with.
- */
-export function kinWorkAtRev<R extends { readonly rev: number }>(item: R, rev?: string): R {
-  const known = rev === undefined ? Number.NaN : Number(rev);
-  return Number.isSafeInteger(known) && known > item.rev ? { ...item, rev: known } : item;
-}
-
 /** What a task's own screen says about it: nothing once a later change, such as Give to, is held. */
 export const kinWorkItemNotice = (
   state: KinWorkChangesState,
@@ -332,6 +325,8 @@ export function createKinWorkChanges(options: {
   /** A form that opens already typing over this task. */
   readonly editing?: KinRecordDetail;
   readonly onChange: (state: KinWorkChangesState) => void;
+  /** Answers shared with the task's other screens: read before sending, written on success. */
+  readonly answers?: KinWorkAnswers;
 }) {
   const { orgId } = options;
   let state = kinWorkChangesStart(options.editing);
@@ -403,10 +398,11 @@ export function createKinWorkChanges(options: {
 
   /** Makes one change to the task as the owner sees it. Resolves true when the host took it. */
   const run = async (
-    record: KinRecord,
+    held: KinRecord,
     action: KinWorkAction,
     names: KinWorkNames,
   ): Promise<boolean> => {
+    const record = kinWorkNewest(held, options.answers);
     const { key } = record;
     if (state.pending[key] !== undefined) return false;
     if (!options.online()) {
@@ -420,6 +416,7 @@ export function createKinWorkChanges(options: {
     const outcome = await send(record, action);
     const pending = without(state.pending, key);
     if (outcome.ok) {
+      options.answers?.put(outcome.item);
       set({
         pending,
         answers: { ...state.answers, [key]: outcome.item },

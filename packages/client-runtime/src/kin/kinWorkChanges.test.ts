@@ -11,14 +11,18 @@ import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { AtomCommandResult } from "../state/runtime.ts";
-import type { KinWorkNames } from "./kinWork.ts";
+import {
+  createKinWorkActions,
+  kinWorkNewest,
+  type KinWorkAnswers,
+  type KinWorkNames,
+} from "./kinWork.ts";
 import {
   KIN_WORK_EDIT_CHANGED,
   KIN_WORK_OFFLINE_CHANGE,
   createKinWorkChanges,
   createKinWorkItemWatch,
   kinWorkApplied,
-  kinWorkAtRev,
   kinWorkEditMoved,
   kinWorkItemNotice,
   kinWorkListNotice,
@@ -75,7 +79,7 @@ const never = (): never => {
 };
 
 /** A host whose answers the test releases one at a time. */
-function harness() {
+function harness(answers?: KinWorkAnswers) {
   const sent: Array<readonly [string, object]> = [];
   const waiting: Array<(answer: AtomCommandResult<KinRecordDetail, unknown>) => void> = [];
   const reread: Array<string> = [];
@@ -94,6 +98,7 @@ function harness() {
     decline: call("decline"),
     reread: (key) => reread.push(key),
     online: () => online,
+    ...(answers === undefined ? {} : { answers }),
     onChange: () => undefined,
   });
   return {
@@ -277,12 +282,46 @@ describe("createKinWorkChanges", () => {
   });
 });
 
-describe("kinWorkAtRev", () => {
-  it("sends the sheet's newer revision, never an older or garbled one", () => {
-    expect(kinWorkAtRev(task({ rev: 3 }), "4").rev).toBe(4);
-    expect(kinWorkAtRev(task({ rev: 5 }), "4").rev).toBe(5);
-    expect(kinWorkAtRev(task({ rev: 3 }), "x").rev).toBe(3);
-    expect(kinWorkAtRev(task({ rev: 3 })).rev).toBe(3);
+describe("answers shared between a task's screens", () => {
+  const store = () => {
+    const held = new Map<string, KinRecordDetail>();
+    return {
+      get: (key: string) => held.get(key),
+      put: (item: KinRecordDetail) => void held.set(item.key, item),
+    };
+  };
+
+  it("sends the revision another screen's change reached, from a copy read before it", async () => {
+    const answers = store();
+    const sent: Array<readonly [string, object]> = [];
+    const actions = createKinWorkActions({
+      orgId,
+      answers,
+      create: () => Promise.resolve(AsyncResult.success(task())),
+      assign: (input) => {
+        sent.push(["assign", input]);
+        return Promise.resolve(
+          AsyncResult.success(
+            task({ owner: input.to ?? me, state: "done", rev: (input.rev ?? 0) + 1 }),
+          ),
+        );
+      },
+      reread: () => undefined,
+    });
+    // Give to, on its own screen.
+    expect((await actions.give(task({ rev: 3 }), lead)).ok).toBe(true);
+
+    // Back on the sheet, whose read still holds revision 3: Mark done goes at revision 4.
+    const h = harness(answers);
+    const done = h.changes.run(task({ rev: 3 }), { type: "state", state: "done" }, names);
+    expect(h.sent).toEqual([["update", { orgId, key: "W-1", rev: 4, state: "done" }]]);
+    h.answer(AsyncResult.success(task({ owner: lead, state: "done", rev: 5 })));
+    await done;
+
+    // Give to again: it reads revision 3 too, and sends 5.
+    await actions.give(task({ rev: 3 }), me);
+    expect(sent.at(-1)).toEqual(["assign", { orgId, key: "W-1", to: me, rev: 5 }]);
+    expect(kinWorkNewest(task({ rev: 3 }), answers)).toMatchObject({ rev: 6, owner: me });
   });
 });
 
