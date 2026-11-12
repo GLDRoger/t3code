@@ -38,6 +38,7 @@ export const KIN_WORK_NEW = "New task";
 export const KIN_WORK_SEARCH_PLACEHOLDER = "Search tasks";
 export const KIN_WORK_LOAD_FAILED = "Couldn't load Work";
 export const KIN_WORK_STALE = "Offline. Showing the last update.";
+export const KIN_WORK_REFRESH_FAILED = "Couldn't refresh. Showing the last update.";
 export const KIN_WORK_ONLY_OWNER = {
   title: "Only the owner can open this",
   detail: "Work is shown to the person who runs this workspace for now.",

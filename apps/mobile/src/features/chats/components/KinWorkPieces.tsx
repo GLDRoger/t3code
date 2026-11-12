@@ -1,4 +1,9 @@
-import { KIN_WORK_PRIVATE, type KinWorkRowView } from "@t3tools/client-runtime/kin/kinWork";
+import {
+  KIN_WORK_PRIVATE,
+  KIN_WORK_REFRESH_FAILED,
+  KIN_WORK_STALE,
+  type KinWorkRowView,
+} from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_WORK_COPY, type KinWorkAction } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
   KIN_WORK_AREAS,
@@ -9,7 +14,7 @@ import {
   KIN_WORK_FORM_COPY,
   type KinWorkFormProblem,
 } from "@t3tools/client-runtime/kin/kinWorkForms";
-import type { KinRecordKey } from "@t3tools/contracts";
+import type { EnvironmentId, KinRecordKey } from "@t3tools/contracts";
 import { Pressable, TextInput, View } from "react-native";
 
 import { AppActivityIndicator } from "../../../components/ui/AppActivityIndicator";
@@ -22,6 +27,7 @@ import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
 import { SegmentedControl } from "../../../components/ui/SegmentedControl";
 import { cn } from "../../../lib/cn";
+import { useKinHostAt } from "../state/useKinHost";
 import { KinWorkStateSymbol } from "./KinWorkStateSymbol";
 
 type Bar = React.ComponentProps<typeof AppBar>;
@@ -309,5 +315,20 @@ export function KinWorkTextField(props: {
         </Text>
       )}
     </View>
+  );
+}
+
+/** Rows older than the host's: offline says so; a failed read while connected offers a retry. */
+export function KinWorkStaleNotice(props: {
+  readonly environmentId: EnvironmentId;
+  readonly onRetry: () => void;
+}) {
+  const host = useKinHostAt(props.environmentId);
+  if (host._tag !== "host" || !host.connected) return <Notice message={KIN_WORK_STALE} />;
+  return (
+    <Notice
+      message={KIN_WORK_REFRESH_FAILED}
+      action={{ label: "Try again", onPress: props.onRetry }}
+    />
   );
 }

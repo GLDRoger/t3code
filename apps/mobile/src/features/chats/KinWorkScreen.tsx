@@ -8,7 +8,6 @@ import {
   KIN_WORK_OFFLINE,
   KIN_WORK_ONLY_OWNER,
   KIN_WORK_SEARCH_PLACEHOLDER,
-  KIN_WORK_STALE,
   KIN_WORK_TITLE,
   kinWorkEntrySummary,
   kinWorkHostEdits,
@@ -63,11 +62,17 @@ import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { KinListBanner } from "./components/KinListBanner";
-import { KinWorkAreaSwitch, KinWorkTaskRow, type KinWorkAreas } from "./components/KinWorkPieces";
+import {
+  KinWorkAreaSwitch,
+  KinWorkStaleNotice,
+  KinWorkTaskRow,
+  type KinWorkAreas,
+} from "./components/KinWorkPieces";
 import { KinClientsList, KinProjectsList } from "./KinWorkLists";
 import { kinClient } from "./state/kinClient";
 import {
   kinWorkLiveAtom,
+  refreshKinWorkLive,
   useKinWork,
   useKinWorkChanges,
   useKinWorkChoices,
@@ -328,6 +333,10 @@ export function KinWorkTaskList(
     if (!props.stale) list.changed(live.seq);
   }, [list, live.seq, props.stale]);
 
+  const refresh = () => {
+    refreshKinWorkLive({ environmentId, orgId });
+    list.refresh();
+  };
   const { filter } = listState;
   const overview = kinWorkOverview(live.summary, filter, names);
   const records = kinWorkShown(filter, listState.records, hostEdits).map((record) =>
@@ -362,7 +371,7 @@ export function KinWorkTaskList(
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
         title={props.title}
-        refresh={{ accessibilityLabel: "Refresh", onPress: list.refresh }}
+        refresh={{ accessibilityLabel: "Refresh", onPress: refresh }}
         actions={[
           ...(add === null
             ? []
@@ -406,7 +415,7 @@ export function KinWorkTaskList(
               {within?.header}
               {props.stale || listState.stale ? (
                 <View className="px-4">
-                  <Notice message={KIN_WORK_STALE} />
+                  <KinWorkStaleNotice environmentId={environmentId} onRetry={refresh} />
                 </View>
               ) : null}
               <KinWorkFilters

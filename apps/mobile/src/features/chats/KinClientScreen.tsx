@@ -1,10 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import {
-  KIN_WORK_ONLY_OWNER,
-  KIN_WORK_STALE,
-  kinWorkHostEdits,
-} from "@t3tools/client-runtime/kin/kinWork";
+import { KIN_WORK_ONLY_OWNER, kinWorkHostEdits } from "@t3tools/client-runtime/kin/kinWork";
 import { kinWorkApplied, type KinWorkAction } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
   KIN_CLIENTS,
@@ -46,6 +42,7 @@ import {
   KinWorkLoading,
   KinWorkPrivateMark,
   KinWorkProblemNotice,
+  KinWorkStaleNotice,
   KinWorkTaskRow,
   KinWorkTimelineLines,
 } from "./components/KinWorkPieces";
@@ -285,7 +282,9 @@ function KinClientBody(
         </Text>
         {view.privacy.private ? <KinWorkPrivateMark /> : null}
       </View>
-      {props.stale ? <Notice message={KIN_WORK_STALE} /> : null}
+      {props.stale ? (
+        <KinWorkStaleNotice environmentId={environmentId} onRetry={props.onRefresh} />
+      ) : null}
       {problem === null ? null : (
         <KinWorkProblemNotice problem={problem} onDismiss={() => setProblem(null)} />
       )}
