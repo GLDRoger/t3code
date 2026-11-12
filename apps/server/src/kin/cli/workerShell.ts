@@ -34,11 +34,11 @@ export const workerShellCommand = Command.make("worker-shell", {
       const asked =
         host._tag === "off"
           ? `off: ${host.reason}`
-          : `on if the check passes; network ${host.domains.length === 0 ? "none" : host.domains.join(", ")}`;
+          : `on if the check passes; hosts are set in Kin's settings${host.domains.length === 0 ? "" : `, plus ${host.domains.join(", ")} from this host`}`;
       const checked = Option.match(last, {
         onNone: () => "no worker has started since this host kept a check",
         onSome: (status) =>
-          `${status.shell ? "shell" : "file tools only"} since ${DateTime.formatIso(DateTime.makeUnsafe(status.checkedAt))}: ${status.reason}${status.claudeCodeVersion === null ? "" : ` (Claude Code ${status.claudeCodeVersion})`}`,
+          `${status.shell ? "shell" : "file tools only"} since ${DateTime.formatIso(DateTime.makeUnsafe(status.checkedAt))}: ${status.reason}${status.claudeCodeVersion === null ? "" : ` (Claude Code ${status.claudeCodeVersion})`}${(status.install ?? []).length === 0 ? "" : `; install ${(status.install ?? []).join(", ")}`}`,
       });
       yield* Console.log(`Worker shell: ${asked}. Last check: ${checked}.`);
     }),

@@ -342,7 +342,13 @@ it.effect(
         WorkSandbox.KinWorkSandbox.of({
           prepare: Effect.fn("WorkIsolationTest.prepare")((input) => {
             asked.push(input.worktree);
-            return Effect.succeed({ _tag: "shell", sandbox, env, release: Effect.void } as const);
+            return Effect.succeed({
+              _tag: "shell",
+              sandbox,
+              env,
+              release: Effect.void,
+              noteMessage: () => Effect.void,
+            } as const);
           }),
         }),
       );

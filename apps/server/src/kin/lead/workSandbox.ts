@@ -9,6 +9,10 @@ import {
   type SandboxSettings,
   type SDKMessage,
 } from "@anthropic-ai/claude-agent-sdk";
+import {
+  type KinWorkerSandboxInstall,
+  KinWorkerSandboxInstall as Install,
+} from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -24,6 +28,8 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import { ServerConfig } from "../../config.ts";
 import { sessionEnvironment } from "../claudeConfinement.ts";
+import { grantedHosts, noteBlocked, refusedHosts } from "./workNetwork.ts";
+import { workThreadPrefix } from "./workThread.ts";
 
 /**
  * A shell worker's only tool. Claude's file tools run outside the OS sandbox, so beside a shell a
@@ -54,7 +60,10 @@ const childEnvironment = (env: NodeJS.ProcessEnv, tmp: string, runtimeBin: strin
   };
 };
 
-/** What the owner set on the host. Nothing the agent, the brief or the repository says reaches it. */
+/**
+ * What the owner set on the host. Nothing the agent, the brief or the repository says reaches it.
+ * `domains` are extras beside the org's list in Kin's settings, which the server grants per worker.
+ */
 export type HostShell =
   | {
       readonly _tag: "on";
@@ -182,6 +191,8 @@ export type Prepared =
       readonly env: NodeJS.ProcessEnv;
       /** Removes the task's private temp directory once its session closes. */
       readonly release: Effect.Effect<void>;
+      /** Keeps the hosts a message says the network rule refused, for the worker's report. */
+      readonly noteMessage: (message: SDKMessage) => Effect.Effect<void>;
     }
   | { readonly _tag: "file-only"; readonly reason: string };
 
@@ -190,6 +201,8 @@ export const WorkShellStatus = Schema.Struct({
   shell: Schema.Boolean,
   reason: Schema.String,
   claudeCodeVersion: Schema.NullOr(Schema.String),
+  install: Schema.optional(Schema.Array(Install)),
+  namesBlockedHosts: Schema.optional(Schema.Boolean),
 });
 const statusJson = Schema.fromJsonString(WorkShellStatus);
 const statusFile = (stateDir: string) => `${stateDir}/kin/worker-shell.json`;
@@ -205,6 +218,8 @@ export class KinWorkSandbox extends Context.Service<
   KinWorkSandbox,
   {
     readonly prepare: (input: {
+      /** Kin's thread for the worker; its id names the hosts the server granted it. */
+      readonly threadId: string;
       readonly worktree: string;
       readonly options: Pick<SdkOptions, "model" | "pathToClaudeCodeExecutable" | "env">;
     }) => Effect.Effect<Prepared>;
@@ -332,6 +347,8 @@ const fakeModel = (calls: ReadonlyArray<Record<string, unknown>>, results: Array
   );
 
 const PROBE_ID = "toolu_kin_probe";
+// On no allow-list; the check sees whether Claude Code names it when the proxy refuses it.
+const PROBE_BLOCKED = "kin-probe.invalid";
 const ModelRequest = Schema.fromJsonString(
   Schema.Struct({
     model: Schema.String,
@@ -472,6 +489,7 @@ const probe = Effect.fn("KinWorkSandbox.probe")(function* (input: {
   const lingering = `86${String(yield* Clock.currentTimeMillis).slice(-6)}`;
   const ran = `${token}-ran`;
   const command = [
+    `curl -s -m 5 -o /dev/null https://${PROBE_BLOCKED}/`,
     `cat ${quote(`${fixture.outside}/secret.txt`)}`,
     `cat ${quote(`${fixture.sharedTmp}/secret.txt`)}`,
     `touch ${quote(marker("written"))}`,
@@ -587,7 +605,11 @@ const probe = Effect.fn("KinWorkSandbox.probe")(function* (input: {
       "a process outlived the command that started it",
     ],
   ];
-  return { failed: checks.find(([failed]) => failed)?.[1], version };
+  return {
+    failed: checks.find(([failed]) => failed)?.[1],
+    version,
+    namesBlockedHosts: output.includes(`deny network-outbound ${PROBE_BLOCKED}:`),
+  };
 });
 
 /** Linux only: any process still running the probe's unique `sleep`, found by reading /proc. */
@@ -603,6 +625,13 @@ const lingers = Effect.fn("KinWorkSandbox.lingers")(function* (argument: string)
   );
   return lines.some((line) => line.split("\0").includes(argument));
 });
+
+const installHints: Record<KinWorkerSandboxInstall, string> = {
+  bubblewrap: "bubblewrap isn't installed",
+  socat: "socat isn't installed",
+  apparmor_bwrap_profile:
+    "Ubuntu's AppArmor may be stopping bubblewrap: no /etc/apparmor.d/bwrap profile",
+};
 
 // Owner data a `KIN_WORKER_READ_PATHS` entry may not reopen, beside the home and state directories.
 const privateHomeDirs = [".ssh", ".config", ".claude", ".codex", ".gnupg", ".local/share/keyrings"];
@@ -623,12 +652,21 @@ export const layer = Layer.effect(
       fs.realPath(target).pipe(Effect.orElseSucceed(() => undefined));
 
     const record = Effect.fn("KinWorkSandbox.record")(
-      function* (shell: boolean, reason: string, claudeCodeVersion: string | null) {
+      function* (
+        shell: boolean,
+        reason: string,
+        claudeCodeVersion: string | null,
+        found: {
+          readonly install?: ReadonlyArray<KinWorkerSandboxInstall>;
+          readonly namesBlockedHosts?: boolean;
+        } = {},
+      ) {
         const status = {
           checkedAt: yield* Clock.currentTimeMillis,
           shell,
           reason,
           claudeCodeVersion,
+          ...found,
         };
         yield* fs.makeDirectory(`${stateDir}/kin`, { recursive: true });
         yield* fs.writeFileString(
@@ -639,8 +677,12 @@ export const layer = Layer.effect(
       Effect.ignoreCause({ log: true }),
     );
 
-    const fileOnlyBecause = (reason: string, version: string | null = null) =>
-      record(false, reason, version).pipe(
+    const fileOnlyBecause = (
+      reason: string,
+      version: string | null = null,
+      install: ReadonlyArray<KinWorkerSandboxInstall> = [],
+    ) =>
+      record(false, reason, version, { install }).pipe(
         Effect.andThen(Effect.logWarning("Kin worker runs without a shell", { reason })),
         Effect.as({ _tag: "file-only", reason } as const),
       );
@@ -682,7 +724,7 @@ export const layer = Layer.effect(
       return { denied, readable, tmpRoot, runtime };
     });
 
-    /** Why Claude Code's sandbox most likely can't start here, for the owner's status line. */
+    /** What the host most likely lacks for Claude Code's sandbox, for the owner's status. */
     const missing = Effect.fn("KinWorkSandbox.missing")(
       function* (env: NodeJS.ProcessEnv) {
         const directories = (env.PATH ?? "").split(":").filter((entry) => entry.length > 0);
@@ -691,16 +733,17 @@ export const layer = Layer.effect(
             if (yield* fs.exists(path.join(directory, name))) return true;
           return false;
         });
-        if (!(yield* found("bwrap"))) return "bubblewrap isn't installed";
-        if (!(yield* found("socat"))) return "socat isn't installed";
+        const install: Array<KinWorkerSandboxInstall> = [];
+        if (!(yield* found("bwrap"))) install.push("bubblewrap");
+        if (!(yield* found("socat"))) install.push("socat");
         const restricted = yield* fs
           .readFileString("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
           .pipe(Effect.orElseSucceed(() => "0"));
         if (restricted.trim() === "1" && !(yield* fs.exists("/etc/apparmor.d/bwrap")))
-          return "Ubuntu's AppArmor may be stopping bubblewrap: no /etc/apparmor.d/bwrap profile";
-        return undefined;
+          install.push("apparmor_bwrap_profile");
+        return install;
       },
-      Effect.orElseSucceed(() => undefined),
+      Effect.orElseSucceed((): Array<KinWorkerSandboxInstall> => []),
     );
 
     const prepare: KinWorkSandbox["Service"]["prepare"] = Effect.fn("KinWorkSandbox.prepare")(
@@ -715,6 +758,10 @@ export const layer = Layer.effect(
             `worker shells run only on Linux, where every process a command starts ends with it; this host is ${platform}`,
           );
         const env = input.options.env ?? hostEnv;
+        const workerId = input.threadId.startsWith(workThreadPrefix)
+          ? input.threadId.slice(workThreadPrefix.length)
+          : "";
+        const domains = yield* grantedHosts(stateDir, workerId);
         const resolved = yield* resolve({ env, readPaths: host.readPaths }).pipe(Effect.result);
         if (resolved._tag === "Failure") return yield* fileOnlyBecause(resolved.failure);
         const { denied, readable, tmpRoot, runtime } = resolved.success;
@@ -732,7 +779,7 @@ export const layer = Layer.effect(
           tmpRoot,
           platform,
           paths,
-          domains: host.domains,
+          domains,
           options: input.options,
           env,
           runtimeBin,
@@ -746,10 +793,12 @@ export const layer = Layer.effect(
         );
         const version = "version" in checked ? checked.version : null;
         if (checked.failed !== undefined) {
-          const hint = yield* missing(env);
+          const install = yield* missing(env);
+          const hint = install.map((item) => installHints[item]).join("; ");
           return yield* fileOnlyBecause(
-            hint === undefined ? checked.failed : `${checked.failed}; ${hint}`,
+            hint === "" ? checked.failed : `${checked.failed}; ${hint}`,
             version,
+            install,
           );
         }
         const tmp = yield* fs
@@ -763,12 +812,19 @@ export const layer = Layer.effect(
           return yield* fileOnlyBecause(childPaths.failure, version);
         }
         const childEnv = childEnvironment(env, tmp.success, runtimeBin);
-        yield* record(true, "the sandbox check passed", version);
+        const namesBlockedHosts = "namesBlockedHosts" in checked && checked.namesBlockedHosts;
+        yield* record(true, "the sandbox check passed", version, { namesBlockedHosts });
         return {
           _tag: "shell",
-          sandbox: sandboxSettings(childPaths.success, host.domains, childEnv),
+          sandbox: sandboxSettings(childPaths.success, domains, childEnv),
           env: childEnv,
           release: fs.remove(tmp.success, { recursive: true }).pipe(Effect.ignore),
+          noteMessage: (message: SDKMessage) => {
+            const refused = refusedHosts(message);
+            return refused.length === 0
+              ? Effect.void
+              : noteBlocked(stateDir, workerId, refused).pipe(Effect.provide(context));
+          },
         } as const;
       },
       Effect.provide(context),

@@ -84,5 +84,6 @@ export * from "./kinWork.ts";
 export * from "./kinPush.ts";
 
 export * from "./kinRpcs.ts";
+export * from "./kinWorkerNetwork.ts";
 
 export * from "./kinPeople.ts";

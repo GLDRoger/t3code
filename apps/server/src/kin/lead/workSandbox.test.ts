@@ -11,6 +11,7 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import { ServerConfig } from "../../config.ts";
+import * as WorkNetwork from "./workNetwork.ts";
 import * as WorkSandbox from "./workSandbox.ts";
 
 it("the shell's network and readable paths come from the host's own settings, checked", () => {
@@ -139,7 +140,10 @@ const prepared = Effect.fn("WorkSandboxTest.prepared")(function* (
   const tree = yield* worktree();
   const sandbox = yield* WorkSandbox.KinWorkSandbox;
   const { stateDir } = yield* ServerConfig;
+  // What the server grants the worker when it starts; nothing else sets the network.
+  yield* WorkNetwork.grantHosts(stateDir, "wk-sandbox-test", ["registry.npmjs.org"]);
   const result = yield* sandbox.prepare({
+    threadId: "kin-work:wk-sandbox-test",
     worktree: tree,
     options: { model: "claude-haiku-4-5", pathToClaudeCodeExecutable: executable, env },
   });
@@ -223,6 +227,8 @@ it.live(
           assert.strictEqual(result._tag, canSandbox ? "shell" : "file-only", reason);
           assert.strictEqual(Option.getOrUndefined(status)?.shell, canSandbox);
           if (result._tag !== "shell") return;
+          // Claude Code named the host the check's command was refused, so reports can too.
+          assert.isTrue(Option.getOrUndefined(status)?.namesBlockedHosts);
           yield* result.release;
           assert.deepStrictEqual(result.sandbox.network?.allowedDomains, ["registry.npmjs.org"]);
           assert.isTrue(result.sandbox.filesystem?.denyRead?.includes(HOME ?? "/"));

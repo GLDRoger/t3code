@@ -319,6 +319,8 @@ export const WorkerReport = Schema.Struct({
   ),
   misleadingMemory: Schema.Array(Schema.Struct({ itemId: KinMemoryItemId, why: Schema.String })),
   parsed: Schema.Boolean,
+  /** Hosts the sandbox refused the worker's commands, from Claude Code's own record, not the worker. */
+  blockedHosts: Schema.optional(Schema.Array(Schema.String)),
 });
 export type WorkerReport = typeof WorkerReport.Type;
 

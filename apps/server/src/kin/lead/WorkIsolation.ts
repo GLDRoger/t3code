@@ -2,6 +2,7 @@ import type { HookCallbackMatcher } from "@anthropic-ai/claude-agent-sdk";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Stream from "effect/Stream";
 
 import * as ClaudeAdapterV2 from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import {
@@ -149,7 +150,11 @@ export const claudeQueryRunnerWith = <E, R, E2, R2>(
           const prepared =
             root === undefined
               ? undefined
-              : yield* sandboxes.prepare({ worktree: root, options: input.options });
+              : yield* sandboxes.prepare({
+                  threadId: input.threadId,
+                  worktree: root,
+                  options: input.options,
+                });
           const shell = prepared?._tag === "shell" ? prepared : undefined;
           const confinement = confiner.hook({
             root,
@@ -164,7 +169,11 @@ export const claudeQueryRunnerWith = <E, R, E2, R2>(
             .pipe(Effect.onError(() => shell?.release ?? Effect.void));
           return shell === undefined
             ? session
-            : { ...session, close: session.close.pipe(Effect.ensuring(shell.release)) };
+            : {
+                ...session,
+                messages: session.messages.pipe(Stream.tap(shell.noteMessage)),
+                close: session.close.pipe(Effect.ensuring(shell.release)),
+              };
         }),
       });
     }),

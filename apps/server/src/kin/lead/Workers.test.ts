@@ -50,6 +50,7 @@ import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
 import * as TestClock from "effect/testing/TestClock";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as FileSystem from "effect/FileSystem";
 import { ServerConfig } from "../../config.ts";
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
@@ -82,6 +83,7 @@ import * as Publish from "./workerPublish.ts";
 import * as Workers from "./Workers.ts";
 import * as Tracker from "./WorkerTracker.ts";
 import { LOCAL_BUILD_ONLY, LOCAL_DIRECT_ONLY } from "./localWorkers.ts";
+import * as WorkNetwork from "./workNetwork.ts";
 import { localThreadId } from "./workThread.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import * as LeadWork from "../work/leadWork.ts";
@@ -602,45 +604,46 @@ const memory = Layer.mock(Memory.Memory)({
 });
 // This host's projects: one is the same repository as a checkout in the worker environment, one
 // is connected here but has no checkout there.
-const repositories = Layer.mock(ProjectService.ProjectService)({
-  listPage: () =>
-    Effect.succeed({
-      projects: [
-        {
-          id: project,
-          title: "App",
-          workspaceRoot: "/home/user/app",
-          repositoryIdentity: { canonicalKey: repoKey },
-        },
-        {
-          id: ProjectId.make("site-project"),
-          title: "Marketing site",
-          workspaceRoot: "/home/user/site",
-          repositoryIdentity: { canonicalKey: "github.com/acme/site" },
-        },
-        {
-          id: ProjectId.make("memory-project"),
-          title: "Memory",
-          workspaceRoot: "/home/user/memory",
-          repositoryIdentity: { canonicalKey: memoryKey },
-        },
-        // A lead's own checkout under Kin's state is never a place for work, whatever it holds.
-        {
-          id: ProjectId.make("kin-state-project"),
-          title: "Kin state",
-          workspaceRoot: "/state/kin/leads/lead",
-          repositoryIdentity: { canonicalKey: "github.com/acme/kin-state" },
-        },
-      ] as never,
-      nextCursor: null,
-    }),
-  getById: (projectId) =>
-    Effect.succeed(
-      projectId === project
-        ? Option.some({ id: project, workspaceRoot: "/home/user/app" } as never)
-        : Option.none(),
-    ),
-});
+const repositories = (stateDir: string) =>
+  Layer.mock(ProjectService.ProjectService)({
+    listPage: () =>
+      Effect.succeed({
+        projects: [
+          {
+            id: project,
+            title: "App",
+            workspaceRoot: "/home/user/app",
+            repositoryIdentity: { canonicalKey: repoKey },
+          },
+          {
+            id: ProjectId.make("site-project"),
+            title: "Marketing site",
+            workspaceRoot: "/home/user/site",
+            repositoryIdentity: { canonicalKey: "github.com/acme/site" },
+          },
+          {
+            id: ProjectId.make("memory-project"),
+            title: "Memory",
+            workspaceRoot: "/home/user/memory",
+            repositoryIdentity: { canonicalKey: memoryKey },
+          },
+          // A lead's own checkout under Kin's state is never a place for work, whatever it holds.
+          {
+            id: ProjectId.make("kin-state-project"),
+            title: "Kin state",
+            workspaceRoot: `${stateDir}/kin/leads/lead`,
+            repositoryIdentity: { canonicalKey: "github.com/acme/kin-state" },
+          },
+        ] as never,
+        nextCursor: null,
+      }),
+    getById: (projectId) =>
+      Effect.succeed(
+        projectId === project
+          ? Option.some({ id: project, workspaceRoot: "/home/user/app" } as never)
+          : Option.none(),
+      ),
+  });
 
 interface LocalRun {
   readonly id: RunId;
@@ -772,6 +775,8 @@ const run = <A, E>(
     readonly stopped: Array<ThreadId>;
     readonly workers: Workers.KinWorkers["Service"];
     readonly tracker: Tracker.WorkerTracker["Service"];
+    /** This run's own server state directory. */
+    readonly stateDir: string;
     /**
      * The process restarting: the tracker's scope closes, so its followers die wherever they
      * are, and a fresh tracker and workers over the same database start.
@@ -788,6 +793,8 @@ const run = <A, E>(
 ) =>
   Effect.gen(function* () {
     const ctx = yield* setup(level);
+    const files = yield* FileSystem.FileSystem.pipe(Effect.provide(NodeServices.layer));
+    const stateDir = yield* files.makeTempDirectory({ prefix: "kin-workers-state-" });
     const remote = fakeWorkers();
     const local = fakeLocal();
     const stopped: Array<ThreadId> = [];
@@ -813,11 +820,11 @@ const run = <A, E>(
           ServerSettings.layerTest({
             providerInstances: { claude: { driver: ProviderDriverKind.make("claudeAgent") } },
           } as never),
-          Layer.succeed(ServerConfig, { stateDir: "/state" } as never),
+          Layer.succeed(ServerConfig, { stateDir } as never),
           NodeServices.layer,
           EventStore.layer,
           memory,
-          repositories,
+          repositories(stateDir),
           NodeCrypto.layer,
           // Connected on this host, with no project here: the owner's to reach, no one else's.
           Layer.succeed(KinGithubRepoScope, KinGithubRepoScope.of({ repos: ["GLDRoger/t3code"] })),
@@ -855,6 +862,7 @@ const run = <A, E>(
         stopped,
         workers: Context.get(first.built, Workers.KinWorkers),
         tracker: Context.get(first.built, Tracker.WorkerTracker),
+        stateDir,
         restart,
       }),
     ).pipe(
@@ -865,6 +873,7 @@ const run = <A, E>(
         Context.get(first.built, Registry.KinLeadRegistry),
       ),
       Effect.ensuring(Effect.suspend(() => Scope.close(current, Exit.void))),
+      Effect.ensuring(files.remove(stateDir, { recursive: true }).pipe(Effect.ignore)),
     );
   }).pipe(
     Effect.provide(
@@ -3391,6 +3400,44 @@ it.effect(
 );
 
 it.effect(
+  "a local worker starts with the owner's network list, and its report names each host it was refused",
+  () =>
+    run(({ ctx, remote, local, workers, tracker, stateDir }) =>
+      Effect.gen(function* () {
+        yield* goLocal(ctx, remote);
+        yield* ctx.sql`INSERT INTO kin_worker_network (org_id, host, allowed, changed_at, changed_by)
+          VALUES (${ctx.orgId}, 'github.com', 0, 0, 'owner'), (${ctx.orgId}, 'pkg.example.org', 1, 0, 'owner')`;
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        const granted = yield* WorkNetwork.grantedHosts(stateDir, workerId).pipe(
+          Effect.provide(NodeServices.layer),
+        );
+        assert.include(granted, "registry.npmjs.org");
+        assert.include(granted, "pkg.example.org");
+        assert.notInclude(granted, "github.com");
+        // What the worker's sandbox noted from its commands' refused connections.
+        yield* WorkNetwork.noteBlocked(stateDir, workerId, ["evil.example.com"]).pipe(
+          Effect.provide(NodeServices.layer),
+        );
+        const claimed = { ...report, blockedHosts: ["claimed.example.com"] };
+        yield* local.finish(
+          localThreadId(workerId),
+          "completed",
+          `Done.\n\`\`\`kin-report\n${JSON.stringify(claimed)}\n\`\`\``,
+        );
+        yield* settled(tracker, ctx.orgId, workerId);
+        const [reported] = yield* reports(ctx.sql, ctx.orgId);
+        // Kin's record replaces what the worker says it was refused.
+        assert.deepStrictEqual(reported!.event.report.blockedHosts, ["evil.example.com"]);
+        assert.isTrue(
+          reported!.event.report.openQuestions.some((question) =>
+            question.includes("refused network access to evil.example.com"),
+          ),
+        );
+      }),
+    ),
+);
+
+it.effect(
   "a run that completes after Kin stopped its worker is recorded stopped and not published",
   () =>
     run(({ ctx, remote, local, workers, tracker }) =>
@@ -3940,10 +3987,11 @@ const upgradedFromK058 = (sql: SqlClient.SqlClient) =>
     yield* sql`DROP INDEX idx_kin_records_register`;
     yield* sql`DROP INDEX idx_kin_records_repo`;
     yield* sql`ALTER TABLE kin_records DROP COLUMN repo`;
+    yield* sql`DROP TABLE kin_worker_network`;
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 59`;
     assert.deepStrictEqual(
       (yield* runKinMigrations()).map(([id]) => id),
-      [59, 60, 61, 62, 63, 64, 65, 66],
+      [59, 60, 61, 62, 63, 64, 65, 66, 69],
     );
   }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
 const attemptRows = (sql: SqlClient.SqlClient, workerId: KinWorkerId) =>
