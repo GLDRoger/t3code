@@ -149,8 +149,8 @@ export class MemoryRecoveryHooks extends Context.Service<
       branch: string;
       reason: string;
       conflictBranch?: string;
-      /** The owner must act or has lost something; anything else is logged and posted silently. */
-      needsOwner?: true;
+      /** What the owner reads, in plain words, when they must act or lost something; else only logged. */
+      owner?: string;
     }) => Effect.Effect<void>;
   }
 >()("t3/kin/memory/Memory/MemoryRecoveryHooks") {}
@@ -653,7 +653,8 @@ const make = Effect.gen(function* () {
           orgId,
           branch,
           reason: "Reset tampered branch to anchor; unpushed work at the replaced tip is lost",
-          needsOwner: true,
+          owner:
+            "Kin's memory was changed outside Kin, so Kin put back its last saved copy. The outside changes were dropped.",
         });
       }
     }).pipe(
@@ -1329,7 +1330,8 @@ const make = Effect.gen(function* () {
             orgId,
             branch: row.branch,
             reason: `Shadow memory at ${row.head} never reached the remote and is gone from this server; the agent's shadow memory restarts from the default branch`,
-            needsOwner: true,
+            owner:
+              "Some of an agent's recent notes were never backed up and are gone from this server. It carries on from the rest of its memory.",
           });
       }
     }

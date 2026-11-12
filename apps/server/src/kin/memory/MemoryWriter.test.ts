@@ -506,7 +506,7 @@ it.live.each([
           "show",
           `${second.commit}:journal/2026/11-08.md`,
         ]);
-        expect(journal).not.toContain("lost on restart");
+        expect(journal).not.toContain(Writer.RESTART_JOURNAL_LINE);
         expect(journal).not.toContain("Agent ended without calling kin_end.");
         return;
       }
@@ -538,7 +538,7 @@ it.live.each([
         const committed = yield* writer.commitWakeup(orgId, "wake1", "completed");
         expect(
           yield* git(paths.writer, ["show", `${committed.commit}:journal/2026/11-08.md`]),
-        ).toContain("lost on restart");
+        ).toContain(Writer.RESTART_JOURNAL_LINE);
         return;
       }
       if (scenario === "recovered-no-end") {

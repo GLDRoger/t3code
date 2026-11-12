@@ -349,6 +349,11 @@ export const authority = Layer.effect(
             agentId: row.agentId,
             wakeupId,
           }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+          // A shared turn's kin_end stages nothing (`end` below), so its receipt shows nothing lost.
+          const ownerOnly =
+            (yield* effectiveAudience({ orgId, agentId: row.agentId, wakeupId }).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            )) === "owner_only";
           return {
             orgId,
             wakeupId,
@@ -359,8 +364,8 @@ export const authority = Layer.effect(
             eventIds: [...sources.keys()],
             sources,
             stagedReceipts:
-              (yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} LIMIT 1`)
-                .length > 0,
+              (yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}
+                AND (call_key <> 'end' OR ${ownerOnly ? 1 : 0} = 1) LIMIT 1`).length > 0,
           };
         },
         Effect.mapError((error) =>
