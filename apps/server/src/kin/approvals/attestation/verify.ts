@@ -67,15 +67,66 @@ const parseCertificate = (der: Uint8Array) => {
 const withinValidity = (certificate: NodeCrypto.X509Certificate, now: number) =>
   Date.parse(certificate.validFrom) <= now && now <= Date.parse(certificate.validTo);
 
-/** Each certificate is signed by the next one. */
-function verifyLinks(chain: ReadonlyArray<NodeCrypto.X509Certificate>, now: number) {
+/** 2.5.29.19 and 2.5.29.15, the only critical extensions path validation here processes. */
+const BASIC_CONSTRAINTS_OID = "551d13";
+const KEY_USAGE_OID = "551d0f";
+const T_BIT_STRING = 3;
+const KEY_CERT_SIGN = 0x04;
+
+/** What a CA allows below it: `undefined` is no path length limit. */
+function caLimit(
+  certificate: NodeCrypto.X509Certificate,
+  index: number,
+  platformCritical: ReadonlySet<string>,
+) {
+  const extensions = Der.certificateExtensions(new Uint8Array(certificate.raw));
+  for (const [oid, extension] of extensions)
+    check(
+      !extension.critical ||
+        oid === BASIC_CONSTRAINTS_OID ||
+        oid === KEY_USAGE_OID ||
+        platformCritical.has(oid),
+      `certificate ${index} has an unrecognised critical extension`,
+    );
+  const usage = extensions.get(KEY_USAGE_OID);
+  if (usage !== undefined) {
+    const bits = Der.expect(Der.parse(usage.value), T_BIT_STRING).value;
+    check(
+      bits.length >= 2 && (bits[1]! & KEY_CERT_SIGN) !== 0,
+      `certificate ${index} can't sign certificates`,
+    );
+  }
+  const basic = extensions.get(BASIC_CONSTRAINTS_OID);
+  // Node's `ca` is OpenSSL's X509_check_ca() === 1: basicConstraints with cA TRUE.
+  check(basic !== undefined && certificate.ca, `certificate ${index} isn't a CA`);
+  const [, pathLength] = Der.sequence(Der.parse(basic!.value));
+  return pathLength === undefined ? undefined : Der.integer(pathLength);
+}
+
+/**
+ * RFC 5280 section 6.1 path validation for a chain ordered leaf first and ending at the pinned
+ * anchor: names, signatures and validity at `now` for every certificate, and every issuer a CA
+ * whose key usage and path length allow what it issued.
+ */
+function verifyPath(
+  chain: ReadonlyArray<NodeCrypto.X509Certificate>,
+  now: number,
+  platformCritical: ReadonlySet<string>,
+) {
   for (const [index, certificate] of chain.entries()) {
     check(withinValidity(certificate, now), `certificate ${index} is outside its validity`);
-    const issuer = chain[index + 1];
-    if (issuer === undefined) continue;
+    if (index === 0) continue;
+    const limit = caLimit(certificate, index, platformCritical);
+    // Self-issued CAs, such as a reissued root, don't count against a path length.
+    const below = chain.slice(1, index).filter((ca) => ca.subject !== ca.issuer).length;
     check(
-      certificate.checkIssued(issuer) && certificate.verify(issuer.publicKey),
-      `certificate ${index} isn't signed by the next one`,
+      limit === undefined || below <= limit,
+      `certificate ${index} allows ${limit} CAs below it`,
+    );
+    const issued = chain[index - 1]!;
+    check(
+      issued.checkIssued(certificate) && issued.verify(certificate.publicKey),
+      `certificate ${index - 1} isn't signed by the next one`,
     );
   }
 }
@@ -97,6 +148,8 @@ const certificatePoint = (certificate: NodeCrypto.X509Certificate) => {
 
 /** 1.3.6.1.4.1.11129.2.1.17 */
 const KEY_DESCRIPTION_OID = "2b06010401d679020111";
+/** 1.3.6.1.4.1.11129.2.1.30: provisioning info, on the remotely provisioned attestation CA. */
+const ANDROID_CA_CRITICAL: ReadonlySet<string> = new Set(["2b06010401d67902011e"]);
 const SECURITY_LEVEL = { trustedEnvironment: 1, strongBox: 2 } as const;
 const TAG = {
   purpose: 1,
@@ -156,7 +209,7 @@ export function verifyAndroidKeyAttestation(input: {
     const rootKey = spki(chain[chain.length - 1]!);
     const pinned = input.trust.googleRoots.find((root) => equalBytes(spki(root), rootKey));
     check(pinned !== undefined, "chain doesn't end at a Google hardware attestation root");
-    verifyLinks([...chain.slice(0, -1), pinned!], input.now);
+    verifyPath([...chain.slice(0, -1), pinned!], input.now, ANDROID_CA_CRITICAL);
     for (const certificate of chain) {
       check(
         !input.trust.androidRevokedSerials.has(normalizeSerial(certificate.serialNumber)),
@@ -322,13 +375,14 @@ export function verifyAppleAppAttest(input: {
     const x5c = field(statement ?? 0, "x5c");
     check(Array.isArray(x5c) && x5c.length >= 2, "attestation chain is too short");
     const chain = (x5c as ReadonlyArray<Cbor>).map((der) => parseCertificate(bytesOf(der)));
-    verifyLinks(chain, input.now);
     const top = chain[chain.length - 1]!;
     const root = input.trust.appleRoot;
     check(
-      withinValidity(root, input.now) && top.checkIssued(root) && top.verify(root.publicKey),
+      top.checkIssued(root) && top.verify(root.publicKey),
       "chain doesn't end at the Apple App Attest root",
     );
+    // App Attest defines no critical extension on its CAs.
+    verifyPath([...chain, root], input.now, new Set());
 
     const authData = bytesOf(field(object, "authData"));
     check(authData.length >= 55, "authenticator data is too short");
