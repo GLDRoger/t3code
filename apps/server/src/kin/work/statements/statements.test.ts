@@ -1097,8 +1097,11 @@ describe("bank statement safety", () => {
         owner: { _tag: "person", personId: ownerId },
         state: "open",
         amount: { minor: 11_800_000, currency: "INR" },
-        fields: { invoice: keys.exact, payment: payment!.paymentId },
       });
+      // Kin ties a receipt to its payment itself, as kin_receipt does.
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json,
+          '$.invoice', ${keys.exact}, '$.payment', ${payment!.paymentId})
+        WHERE record_id = ${receipt.row.recordId}`;
       const undone = yield* OwnerStatements.undo(people, { orgId, statementId: result.statement });
       const said = undone.card.result!.join(" ");
       assert.include(said, "2 left as you changed them");
