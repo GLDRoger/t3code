@@ -844,7 +844,7 @@ const make = Effect.gen(function* () {
       readonly lane: Lane;
       readonly outcome: FailedOutcome;
     }) {
-      if (input.outcome === "signin" || input.outcome === "access")
+      if (input.outcome === "signin" || input.outcome === "access" || input.outcome === "model")
         return yield* setupFailed({ ...input, outcome: input.outcome });
       const notice = failedNotices[input.outcome];
       yield* chat.notice({

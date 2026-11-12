@@ -791,6 +791,13 @@ it.effect("keeps a run that couldn't sign in out of the chat, and says so once p
       (yield* posted).map((row) => row.body),
       [line, line],
     );
+    // QA Q3: a model the provider doesn't know names the fix too.
+    yield* chats.send(owner, { chatId, body: "And now?", clientMessageId: "model" });
+    yield* bridge.failed({ orgId: owner.orgId, wakeupId: yield* retry(), lane, outcome: "model" });
+    assert.strictEqual(
+      (yield* posted).at(-1)?.body,
+      "Ada couldn't start: its model account doesn't offer the model it's set to use. Choose another model for it.",
+    );
   }).pipe(Effect.provide(layer)),
 );
 
