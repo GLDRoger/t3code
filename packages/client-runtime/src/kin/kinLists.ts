@@ -1070,3 +1070,52 @@ export function kinListEditInput(
     },
   };
 }
+
+const SHOWS: ReadonlyArray<string> = ["all", "open", "doing", "waiting", "done", "dropped"];
+const GROUPS: ReadonlyArray<string> = ["none", "category", "month", "financialYear"];
+const DAY_TEXT = /^\d{4}-\d{2}-\d{2}$/;
+
+/** A filter carried in a link, such as the one a Money figure opens. Anything odd is left out. */
+export function kinListFilterParam(text: string | undefined): KinListFilter {
+  if (text === undefined) return KIN_LIST_DEFAULT_FILTER;
+  let held: unknown;
+  try {
+    held = JSON.parse(text);
+  } catch {
+    return KIN_LIST_DEFAULT_FILTER;
+  }
+  if (typeof held !== "object" || held === null) return KIN_LIST_DEFAULT_FILTER;
+  const from = held as Record<string, unknown>;
+  const period = (value: unknown): KinPeriod | null => {
+    if (typeof value !== "object" || value === null) return null;
+    const { from: first, to: last } = value as Record<string, unknown>;
+    return typeof first === "string" &&
+      typeof last === "string" &&
+      DAY_TEXT.test(first) &&
+      DAY_TEXT.test(last)
+      ? { from: first, to: last }
+      : null;
+  };
+  const ref = (value: unknown): KinWorkRef | null => {
+    if (typeof value !== "object" || value === null) return null;
+    const { key, title } = value as Record<string, unknown>;
+    return typeof key === "string" && typeof title === "string"
+      ? { key: key as KinRecordKey, title }
+      : null;
+  };
+  return {
+    ...KIN_LIST_DEFAULT_FILTER,
+    ...(typeof from.show === "string" && SHOWS.includes(from.show)
+      ? { show: from.show as KinListShow }
+      : {}),
+    late: from.late === true,
+    category: typeof from.category === "string" ? from.category : null,
+    period: period(from.period),
+    paid: period(from.paid),
+    party: ref(from.party),
+    project: ref(from.project),
+    ...(typeof from.groupBy === "string" && GROUPS.includes(from.groupBy)
+      ? { groupBy: from.groupBy as KinListGroupBy }
+      : {}),
+  };
+}
