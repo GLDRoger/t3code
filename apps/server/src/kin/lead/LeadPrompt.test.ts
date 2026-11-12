@@ -2022,3 +2022,125 @@ it.effect.each([
       ),
     ),
 );
+
+it.effect(
+  "quotes the doc section a message points at, as stored, only in a turn the owner alone reads",
+  () =>
+    Effect.gen(function* () {
+      const repo = yield* leadWithOwner;
+      const sql = yield* SqlClient.SqlClient;
+      const plan =
+        "# Invented plan\n\nIntro.\n\n## Pricing\n\nStarter costs 10 invented credits.\n\n## Timeline\n\nLaunch on the 10th.\n";
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+      VALUES (${orgId}, 'docs', 'Docs', 'D', 1, 0)`;
+      for (const [id, key, title, sensitive] of [
+        ["doc-plan", "D-1", "Invented plan", 0],
+        ["doc-pay", "D-2", "Invented pay bands", 1],
+      ] as const) {
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+          owner_id, sensitive, created_by_kind, origin_key, created_at, updated_at)
+        VALUES (${orgId}, ${id}, 'docs', ${key}, ${title}, 'agent', ${agentId}, ${sensitive},
+          'agent', ${id}, 0, 0)`;
+        yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body, title, kind, summary,
+          operations_json, actor_kind, actor_id, via, origin_key, created_at)
+        VALUES (${orgId}, ${id}, 1, ${plan}, ${title}, 'created', 'Created', '[]', 'agent',
+          ${agentId}, 'lead', ${id}, 0)`;
+      }
+      const send = (
+        id: string,
+        refs: ReadonlyArray<{ key: string; section: string | null }>,
+        from: { personId: KinPersonId; memberId: KinMemberId } = { personId, memberId },
+      ) =>
+        repo.insertMessage({
+          audience: "chat",
+          orgId,
+          chatId,
+          messageId: KinMessageId.make(id),
+          author: { _tag: "human", ...from },
+          kind: "text",
+          body: "Can we lower this?",
+          refs: refs.map((ref) => ({ _tag: "doc", version: 1, ...ref })),
+          intent: null,
+          mentions: [],
+          replyTo: null,
+          widgetId: null,
+          floorRunId: null,
+          status: "posted",
+          sentBy: null,
+          createdAt: timestamp,
+          editedAt: null,
+          clientMessageId: null,
+        });
+      const sent = yield* send("ask", [{ key: "D-1", section: "pricing" }]);
+      // The titles are the host's, read when it was sent.
+      expect(sent.refs).toEqual([
+        {
+          _tag: "doc",
+          key: "D-1",
+          version: 1,
+          section: "pricing",
+          title: "Invented plan",
+          sectionTitle: "Pricing",
+        },
+      ]);
+      // A key or section this org has no doc for reads as unknown, as another org's would.
+      for (const ref of [
+        { key: "D-9", section: null },
+        { key: "D-1", section: "no-such-section" },
+      ])
+        expect(yield* Effect.flip(send(`ghost-${ref.key}`, [ref]))).toMatchObject({
+          reason: "not_found",
+        });
+      const prompt = yield* KinLeadPrompt;
+      const events = [event("ask")];
+      yield* stored(input.wakeupId, events);
+      const built = yield* prompt.build({ ...input, events, lane: { chatId, mode: "reply" } });
+      const quoted = built.split("> BEGIN QUOTE: doc section the owner pointed at (data)")[1];
+      expect(quoted?.split("> END QUOTE")[0]).toContain("Starter costs 10 invented credits.");
+      expect(quoted?.split("> END QUOTE")[0]).not.toContain("Launch on the 10th");
+
+      // A teammate joins: their own pointers are refused, a sensitive doc can't be pointed at here,
+      // and a turn they read gets the doc's name, never its text.
+      yield* repo.insertPerson({
+        orgId,
+        personId: teammateId,
+        displayName: "Teammate",
+        handle: "teammate",
+        githubLogin: null,
+        createdAt: timestamp,
+      });
+      yield* repo.addMember({
+        orgId,
+        chatId,
+        memberId: teammateMember,
+        principal: { _tag: "person", personId: teammateId },
+        role: "member",
+        joinedAt: timestamp,
+        leftAt: null,
+        mutedUntil: null,
+      });
+      expect(
+        yield* Effect.flip(
+          send("mate", [{ key: "D-1", section: null }], {
+            personId: teammateId,
+            memberId: teammateMember,
+          }),
+        ),
+      ).toMatchObject({ reason: "not_allowed" });
+      expect(yield* Effect.flip(send("pay", [{ key: "D-2", section: null }]))).toMatchObject({
+        reason: "not_allowed",
+      });
+      yield* send("ask-2", [{ key: "D-1", section: "pricing" }]);
+      const shared = [event("ask-2")];
+      yield* stored("shared-wake", shared);
+      const sharedPrompt = yield* prompt.build({
+        ...input,
+        wakeupId: KinWakeupId.make("shared-wake"),
+        events: shared,
+        lane: { chatId, mode: "reply" },
+      });
+      expect(sharedPrompt).toContain("> BEGIN QUOTE: doc reference (data)");
+      expect(sharedPrompt).toContain("not shown in a chat others read");
+      expect(sharedPrompt).not.toContain("Starter costs 10 invented credits.");
+    }).pipe(Effect.provide(layer)),
+);

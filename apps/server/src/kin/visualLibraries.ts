@@ -7,6 +7,12 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
 const requireFromHere = NodeModule.createRequire(import.meta.url);
+// Literal names only: what this file can resolve is readable here, whatever the table says.
+const entries: Record<string, (() => string) | undefined> = {
+  d3: () => requireFromHere.resolve("d3"),
+  echarts: () => requireFromHere.resolve("echarts"),
+  mermaid: () => requireFromHere.resolve("mermaid"),
+};
 
 /**
  * The library's prebuilt browser file in this install's `node_modules`, or null when the package
@@ -19,7 +25,7 @@ export const kinVisualLibraryPath = Effect.fn("Kin.visualLibraryPath")(function*
   const path = yield* Path.Path;
   const entry = yield* Effect.sync(() => {
     try {
-      return requireFromHere.resolve(library.name);
+      return entries[library.name]?.() ?? null;
     } catch {
       return null;
     }

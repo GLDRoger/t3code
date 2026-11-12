@@ -14,6 +14,8 @@ import {
   KinOwnerCheckCard,
   KinDeferralCard,
   KIN_MEMORY_CHANGES_CARD,
+  KIN_DOC_CARD,
+  type KinMessageRefInput,
   KIN_WORKER_PUBLISH_CARD,
   KinMessagesReactInput,
   KinMessagesSendInput,
@@ -244,6 +246,16 @@ export class KinChatService extends Context.Service<
       input: ChoiceCard.AskInput & {
         readonly chatId: KinChatId;
         readonly clientMessageId: string;
+      },
+    ) => Effect.Effect<KinWidget, ServiceError>;
+    /** A card Kin fills from stored rows, such as a doc card; no tap answers it. */
+    readonly showCard: (
+      identity: AgentIdentity,
+      input: {
+        readonly chatId: KinChatId;
+        readonly clientMessageId: string;
+        readonly type: typeof KIN_DOC_CARD;
+        readonly state: unknown;
       },
     ) => Effect.Effect<KinWidget, ServiceError>;
     /** `kin_chart`'s card: the agent's own message in that chat, limited like any other post. */
@@ -582,6 +594,7 @@ const make = Effect.gen(function* () {
       readonly chatId: KinChatId;
       readonly body: string;
       readonly attachments?: ReadonlyArray<KinAttachment> | undefined;
+      readonly refs?: ReadonlyArray<KinMessageRefInput> | undefined;
       readonly intent: KinAgentIntent | null;
       readonly mentions: ReadonlyArray<KinMemberId>;
       readonly replyTo: KinMessageId | null;
@@ -613,6 +626,7 @@ const make = Effect.gen(function* () {
       ...(input.attachments === undefined || input.attachments.length === 0
         ? {}
         : { attachments: input.attachments }),
+      ...(input.refs === undefined || input.refs.length === 0 ? {} : { refs: input.refs }),
       intent: input.intent,
       mentions: input.mentions,
       replyTo: input.replyTo,
@@ -914,8 +928,9 @@ const make = Effect.gen(function* () {
     const request = yield* decodeSend(input).pipe(Effect.mapError(() => invalidState));
     const member = yield* memberFor(identity, request.chatId);
     yield* canWrite(identity, member);
-    // A lead posts text; only a person's message can be files alone.
+    // A lead posts text; only a person's message can be files alone, or point at a doc.
     if (identity._tag === "agent" && request.body.trim().length === 0) return yield* invalidState;
+    if (identity._tag === "agent" && (request.refs?.length ?? 0) > 0) return yield* invalidState;
     if (request.mentions !== undefined && request.mentions.length > 100) return yield* invalidState;
     if (
       (identity._tag === "agent" && input.intent === undefined) ||
@@ -981,7 +996,7 @@ const make = Effect.gen(function* () {
     input: {
       readonly chatId: KinChatId;
       readonly clientMessageId: string;
-      readonly type: "choice" | "chart" | typeof KIN_VISUAL_CARD_TYPE;
+      readonly type: "choice" | "chart" | typeof KIN_DOC_CARD | typeof KIN_VISUAL_CARD_TYPE;
       readonly intent: KinAgentIntent;
       readonly state: Effect.Effect<unknown, KinChatError>;
       /** A stored file the card draws; read under the same rule as the message. */
@@ -1930,6 +1945,8 @@ const make = Effect.gen(function* () {
         input.type === KIN_WORKER_PUBLISH_CARD ||
         // Only kin_ask posts one, and only a tap answers it.
         input.type === "choice" ||
+        // Only the doc tools post one, from the stored doc.
+        input.type === KIN_DOC_CARD ||
         // Only kin_chart posts one, and it never changes.
         input.type === "chart" ||
         // Only kin_visual posts one, and its page is stored once.
@@ -2340,6 +2357,17 @@ const make = Effect.gen(function* () {
         ),
       });
     }),
+    showCard: Effect.fn("KinChatService.showCard")(
+      (identity, input) =>
+        postCard(identity, {
+          chatId: input.chatId,
+          clientMessageId: input.clientMessageId,
+          type: input.type,
+          intent: "answer",
+          state: validateState(input.type, input.state),
+        }),
+      transaction,
+    ),
     addWaiting: Effect.fn("KinChatService.addWaiting")(function* (identity, input) {
       yield* memberFor(identity, input.chatId);
       if (input.reason === "approval") return yield* notAllowed;

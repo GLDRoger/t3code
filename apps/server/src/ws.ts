@@ -684,10 +684,15 @@ type SplitWsRpc = Extract<
 >;
 const isSplitWsRpc = (rpc: ServerWsRpc): rpc is SplitWsRpc =>
   SPLIT_WS_RPC_PREFIXES.some((prefix) => rpc._tag.startsWith(`${prefix}.`));
-const isOtherWsRpc = (rpc: ServerWsRpc): rpc is Exclude<ServerWsRpc, SplitWsRpc> =>
-  !isSplitWsRpc(rpc);
+// Kin's methods get a group of their own: one group for everything else is too deep to type.
+type KinWsRpc = Extract<ServerWsRpc, { readonly _tag: `kin.${string}` }>;
+type OtherWsRpc = Exclude<ServerWsRpc, SplitWsRpc | KinWsRpc>;
+const isKinWsRpc = (rpc: ServerWsRpc): rpc is KinWsRpc => rpc._tag.startsWith("kin.");
+const isOtherWsRpc = (rpc: ServerWsRpc): rpc is OtherWsRpc =>
+  !isSplitWsRpc(rpc) && !isKinWsRpc(rpc);
 const serverWsRpcs = Array.from(ServerWsRpcGroup.requests.values());
 const SplitWsRpcGroup = RpcGroup.make(...serverWsRpcs.filter(isSplitWsRpc));
+const KinWsRpcGroup = RpcGroup.make(...serverWsRpcs.filter(isKinWsRpc));
 const OtherWsRpcGroup = RpcGroup.make(...serverWsRpcs.filter(isOtherWsRpc));
 // Replaying each intervening event costs a shell refetch; past this gap a
 // single O(active-threads) snapshot is cheaper and bounded.
@@ -3539,10 +3544,11 @@ export const layerWsRpc = (
           ),
       });
       const splitHandlers: Pick<typeof handlers, SplitWsRpc["_tag"]> = handlers;
-      const otherHandlers: Pick<typeof handlers, Exclude<ServerWsRpc, SplitWsRpc>["_tag"]> =
-        handlers;
-      return Context.merge(
+      const kinHandlers: Pick<typeof handlers, KinWsRpc["_tag"]> = handlers;
+      const otherHandlers: Pick<typeof handlers, OtherWsRpc["_tag"]> = handlers;
+      return Context.mergeAll(
         yield* SplitWsRpcGroup.toHandlers(splitHandlers),
+        yield* KinWsRpcGroup.toHandlers(kinHandlers),
         yield* OtherWsRpcGroup.toHandlers(otherHandlers),
       );
     }),

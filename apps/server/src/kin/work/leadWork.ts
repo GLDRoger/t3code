@@ -50,7 +50,7 @@ import { sensitiveShown, showsSensitive } from "./workerAttempts.ts";
 
 /** The lead tools' inputs, results and the one call each makes. Model-facing text lives in `mcp/tools.ts`. */
 
-const Who = TrimmedNonEmptyString.check(Schema.isMaxLength(120)).annotate({
+export const Who = TrimmedNonEmptyString.check(Schema.isMaxLength(120)).annotate({
   description:
     '"me" for you, "owner" for the owner, or an agent\'s agentId from kin_leads. Never a name.',
 });
@@ -69,10 +69,10 @@ const Notes = Schema.String.check(Schema.isMaxLength(4_000));
 const List = KinWorkListName.annotate({
   description: "work (default), clients, contacts or projects.",
 });
-const Client = TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
+export const Client = TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
   description: "A client or vendor: its key (C-3) or exact name.",
 });
-const Project = TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
+export const Project = TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
   description: "A project: its key (P-2) or exact name.",
 });
 const Detail = TrimmedNonEmptyString.check(Schema.isMaxLength(200));
@@ -259,8 +259,10 @@ export const UpdateResult = Schema.Struct({
   ...Marks.fields,
 });
 
-type Lead = Effect.Success<ReturnType<typeof resolveLead>>;
+export type Lead = Effect.Success<ReturnType<typeof resolveLead>>;
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+const isDoc = (key: string) =>
+  invalid(`${key.slice(0, 40)} is a doc: read it with doc_read and change it with doc_edit.`);
 
 /** Who the turn's events came from, by stored author: the owner only when every one is the owner's. */
 const askedBy = Effect.fn("KinWorkTools.askedBy")(function* (lead: Lead) {
@@ -299,7 +301,7 @@ const sourceOf = Effect.fn("KinWorkTools.sourceOf")(function* (lead: Lead, event
     : undefined;
 });
 
-const resolveWho = Effect.fn("KinWorkTools.resolveWho")(function* (lead: Lead, who: string) {
+export const resolveWho = Effect.fn("KinWorkTools.resolveWho")(function* (lead: Lead, who: string) {
   const sql = yield* SqlClient.SqlClient;
   if (who === "me") return { _tag: "agent", agentId: lead.agentId } satisfies KinWorkPrincipal;
   if (who === "owner") {
@@ -322,7 +324,7 @@ const dueOf = Effect.fn("KinWorkTools.dueOf")(function* (orgId: KinOrgId, due: s
 });
 
 /** How a lead reads names: itself as "you", the owner as "owner", other leads by name. */
-const namer = Effect.fn("KinWorkTools.namer")(function* (lead: Lead) {
+export const namer = Effect.fn("KinWorkTools.namer")(function* (lead: Lead) {
   const sql = yield* SqlClient.SqlClient;
   const agents = yield* sql<{ id: string; name: string }>`SELECT agent_id AS id,
       display_name AS name FROM kin_agents WHERE org_id = ${lead.orgId} ORDER BY agent_id`;
@@ -421,7 +423,7 @@ const resolveRef = Effect.fn("KinWorkTools.resolveRef")(function* (
     );
   return rows[0]!.recordId;
 });
-const refOrNull = Effect.fn("KinWorkTools.refOrNull")(function* (
+export const refOrNull = Effect.fn("KinWorkTools.refOrNull")(function* (
   lead: Lead,
   text: string | null | undefined,
   list: "clients" | "projects",
@@ -445,7 +447,7 @@ const fieldsFrom = (row: {
   ) as Record<string, string | ReadonlyArray<string> | null>;
 
 /** Refused, as the gate does, if the turn became one others read since the call was admitted. */
-const admitted = Effect.fn("KinWorkTools.admitted")(function* (
+export const admitted = Effect.fn("KinWorkTools.admitted")(function* (
   lead: Lead,
   tool: string,
   args: unknown,
@@ -454,7 +456,7 @@ const admitted = Effect.fn("KinWorkTools.admitted")(function* (
     return yield* new KinChatError({ reason: "not_allowed", message: SHARED_REFUSAL });
 });
 
-const writerFor = Effect.fn("KinWorkTools.writer")(function* (lead: Lead) {
+export const writerFor = Effect.fn("KinWorkTools.writer")(function* (lead: Lead) {
   const chat = yield* turnChat(lead);
   return {
     actor: { _tag: "agent", agentId: lead.agentId },
@@ -470,7 +472,7 @@ const writerFor = Effect.fn("KinWorkTools.writer")(function* (lead: Lead) {
  * whatever the tool, marks its wake-up, so work it then starts unlinked is gated. Its span names
  * the call, so the bodies are untraced.
  */
-const leadTool = <I, A, E, R>(
+export const leadTool = <I, A, E, R>(
   name: string,
   body: (lead: Lead, input: I) => Effect.Effect<A, E, R>,
 ) =>
@@ -482,7 +484,7 @@ const leadTool = <I, A, E, R>(
     return result;
   });
 
-const retryKey = (value: string) =>
+export const retryKey = (value: string) =>
   NodeCrypto.createHash("sha256").update(value).digest("hex").slice(0, 32);
 const titleKey = (title: string) => title.trim().replace(/\s+/g, " ").toLowerCase();
 
@@ -577,6 +579,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
   const records = yield* KinRecords;
   const row = yield* records.get(lead.orgId, input.key);
   if (row === undefined) return yield* notFound(input.key);
+  if (listOf(row.registerId) === "docs") return yield* isDoc(input.key);
   const detail = yield* records.detail(row, 10);
   const now = yield* Clock.currentTimeMillis;
   const name = yield* namer(lead);
@@ -763,6 +766,7 @@ const runUpdate = Effect.fnUntraced(function* (lead: Lead, input: typeof UpdateI
   };
   const before = yield* records.get(lead.orgId, input.key);
   if (before === undefined) return yield* notFound(input.key);
+  if (listOf(before.registerId) === "docs") return yield* isDoc(input.key);
   const after = yield* records.update(lead.orgId, writer, input.key, full, input.expectedRev);
   // Kin's own change, a label kept on, follows the lead's in the same write.
   const changed =

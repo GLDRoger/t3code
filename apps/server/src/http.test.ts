@@ -928,9 +928,10 @@ describe("Kin chat file URLs", () => {
                   people.some((person) => inChat.has(person.personId)),
               ),
             visualSources: () =>
-              Effect.succeed(
-                Option.some({ orgId, files: [{ attachmentId: kinFileId, mimeType: "image/png" }] }),
-              ),
+              Effect.succeedSome({
+                orgId,
+                files: [{ attachmentId: kinFileId, mimeType: "image/png" }],
+              }),
           }),
           Layer.mock(KinVisualHosts)({ served: () => Effect.succeed(allowedHosts) }),
         ),

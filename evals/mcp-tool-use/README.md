@@ -42,6 +42,10 @@ The `kin-lead-work-*` cases check the Work tools (`record_create`, `records_quer
 
 The `kin-lead-charts-*` cases check `kin_chart`: a week of numbers against the week before goes out as one chart with the earlier week as `comparison`, and money is sent as whole minor units with its currency. `kin-lead-one-number-is-a-sentence-not-a-chart` is their control.
 
+The `kin-lead-visual-*` case checks `kin_visual`: a flow between stages, which no chart kind draws, goes out as one page that holds its data and names no outside address. `kin-lead-a-trend-stays-a-chart-not-a-visual` is its control: a plain trend stays a `kin_chart` even when the owner says "visual".
+
+The `kin-lead-docs-*` cases check the doc tools: "move the launch to the 14th" on a long doc is one `doc_edit` and no rewrite (`kin-lead-docs-section-edit`); after the server refuses a one-section rewrite, the agent edits that section instead of resending it (`kin-lead-docs-rewrite-refused-uses-edit`, whose refusal is the server's wording); and a plan goes to a doc, a promise to an entry and a preference to memory (`kin-lead-docs-doc-entry-or-memory`). `kin-lead-docs-read-control` answers a question about a doc by reading it and writes nothing.
+
 `kin-lead-memory-quotes-owner-words` checks that a lead saves what the owner said with a `quote` of their words, and `kin-lead-memory-paraphrased-quote-refused` replays the server refusing a paraphrased quote and checks the lead never resends it: it retries with the exact words or leaves the item out.
 
 ## Device manager cases

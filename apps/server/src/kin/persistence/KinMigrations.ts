@@ -25,6 +25,7 @@ import LegacyWorkerAttempts from "./migrations/K063_LegacyWorkerAttempts.ts";
 import AgentRetirement from "./migrations/K064_AgentRetirement.ts";
 import WakeupRetired from "./migrations/K065_WakeupRetired.ts";
 import WakeupsUnretiredIndex from "./migrations/K066_WakeupsUnretiredIndex.ts";
+import Docs from "./migrations/K067_Docs.ts";
 import VisualHosts from "./migrations/K069_VisualHosts.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
@@ -131,6 +132,7 @@ const loader = Migrator.fromRecord({
   "64_AgentRetirement": AgentRetirement,
   "65_WakeupRetired": WakeupRetired,
   "66_WakeupsUnretiredIndex": WakeupsUnretiredIndex,
+  "67_Docs": Docs,
   "69_VisualHosts": VisualHosts,
 });
 

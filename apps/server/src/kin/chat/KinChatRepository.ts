@@ -14,6 +14,8 @@ import {
   KinChatMember,
   KinMemberId,
   KinMessage,
+  KinMessageRef,
+  type KinMessageRefInput,
   KinMessageId,
   KinWidget,
   KinWidgetId,
@@ -34,6 +36,9 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
+import { isOrgOwner } from "../lead/orgState.ts";
+import { sectionsOf } from "../work/docBody.ts";
+import { sensitiveNow } from "../work/recordRows.ts";
 import { messageForViewer } from "./messageView.ts";
 import { chatShared, readableBy, recordJoin } from "./sharing.ts";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -86,8 +91,10 @@ const PRIVATE_WRITE_REFUSED = "Kin withheld this: someone besides the owner read
 export const isPrivateWriteRefused = (error: unknown) =>
   isKinChatError(error) && error.message === PRIVATE_WRITE_REFUSED;
 type Audience = { readonly audience: WriteAudience };
-type InsertMessage = Omit<KinMessage, "seq" | "authorRole" | "clientMessageId"> & {
+type InsertMessage = Omit<KinMessage, "seq" | "authorRole" | "clientMessageId" | "refs"> & {
   readonly audience: WriteAudience;
+  /** Resolved here, in the write's transaction, against this org's docs. */
+  readonly refs?: ReadonlyArray<KinMessageRefInput> | undefined;
   readonly caller?: McpThreadCaller | undefined;
   // The reply bridge posts for a wake-up it resolved itself; its running row is the authority.
   readonly wakeupId?: KinWakeupId | undefined;
@@ -156,34 +163,44 @@ const memberColumns = `org_id AS "orgId", chat_id AS "chatId", member_id AS "mem
  ELSE json_object('_tag', principal_kind, 'agentId', agent_id) END AS principal`;
 const StoredAttachments = Schema.Array(KinAttachment);
 const encodeAttachments = Schema.encodeEffect(Schema.fromJsonString(StoredAttachments));
-const { attachments: _attachments, ...messageRowFields } = KinMessage.fields;
+const StoredRefs = Schema.Array(KinMessageRef);
+const encodeRefs = Schema.encodeEffect(Schema.fromJsonString(StoredRefs));
+const { attachments: _attachments, refs: _refs, ...messageRowFields } = KinMessage.fields;
 const MessageRow = Schema.Struct({
   ...messageRowFields,
   storedClientMessageId: Schema.NullOr(Schema.String),
   storedAttachments: Schema.NullOr(Schema.fromJsonString(StoredAttachments)),
+  storedRefs: Schema.NullOr(Schema.fromJsonString(StoredRefs)),
   author: Schema.fromJsonString(KinMessage.fields.author),
   mentions: Schema.fromJsonString(KinMessage.fields.mentions),
 }).pipe(
   Schema.decodeTo(
     Schema.toType(KinMessage),
     SchemaTransformation.transform({
-      decode: ({ storedClientMessageId, storedAttachments, ...message }): KinMessage => ({
+      decode: ({
+        storedClientMessageId,
+        storedAttachments,
+        storedRefs,
+        ...message
+      }): KinMessage => ({
         ...message,
         ...(storedAttachments === null ? {} : { attachments: storedAttachments }),
+        ...(storedRefs === null ? {} : { refs: storedRefs }),
         ...(storedClientMessageId?.startsWith("send:")
           ? { clientMessageId: storedClientMessageId.slice(5) }
           : {}),
       }),
-      encode: ({ attachments, ...message }) => ({
+      encode: ({ attachments, refs, ...message }) => ({
         ...message,
         storedAttachments: attachments ?? null,
+        storedRefs: refs ?? null,
         storedClientMessageId:
           message.clientMessageId === undefined ? null : `send:${message.clientMessageId}`,
       }),
     }),
   ),
 );
-const messageColumns = `org_id AS "orgId", chat_id AS "chatId", message_id AS "messageId", seq AS "seq", change_seq AS "changeSeq", client_message_id AS "storedClientMessageId", author_role AS "authorRole", kind AS "kind", body AS "body", attachments_json AS "storedAttachments", intent AS "intent", mentions_json AS "mentions", reply_to AS "replyTo", widget_id AS "widgetId", floor_run_id AS "floorRunId", status AS "status", sent_by AS "sentBy", created_at AS "createdAt", edited_at AS "editedAt", CASE author_kind WHEN 'human' THEN json_object('_tag', 'human', 'personId', author_person_id, 'memberId', author_member_id)
+const messageColumns = `org_id AS "orgId", chat_id AS "chatId", message_id AS "messageId", seq AS "seq", change_seq AS "changeSeq", client_message_id AS "storedClientMessageId", author_role AS "authorRole", kind AS "kind", body AS "body", attachments_json AS "storedAttachments", refs_json AS "storedRefs", intent AS "intent", mentions_json AS "mentions", reply_to AS "replyTo", widget_id AS "widgetId", floor_run_id AS "floorRunId", status AS "status", sent_by AS "sentBy", created_at AS "createdAt", edited_at AS "editedAt", CASE author_kind WHEN 'human' THEN json_object('_tag', 'human', 'personId', author_person_id, 'memberId', author_member_id)
  WHEN 'agent' THEN json_object('_tag', 'agent', 'agentId', author_agent_id, 'memberId', author_member_id,
  'ownerPersonId', author_owner_person_id, 'threadId', author_thread_id)
  ELSE json_object('_tag', author_kind) END AS author`;
@@ -463,8 +480,67 @@ const requireRecord = Effect.fnUntraced(function* <A, E, R>(
     ? record.value
     : yield* new KinChatError({ reason: "not_found", message: "Kin record not found." });
 });
+const sameRefs = (
+  stored: ReadonlyArray<KinMessageRefInput>,
+  asked: ReadonlyArray<KinMessageRefInput>,
+) =>
+  stored.length === asked.length &&
+  stored.every(
+    (ref, index) =>
+      ref.key === asked[index]?.key &&
+      ref.version === asked[index]?.version &&
+      ref.section === asked[index]?.section,
+  );
+const refRefused = (message: string) => new KinChatError({ reason: "not_allowed", message });
+
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  /**
+   * The doc sections a message points at, checked in the write's transaction: the org owner's
+   * own message, docs of this org at a version they have, and nothing sensitive where others read.
+   */
+  const resolveRefs = Effect.fnUntraced(function* (
+    input: Scope & { readonly chatId: KinChatId },
+    author: InsertMessage["author"],
+    refs: ReadonlyArray<KinMessageRefInput>,
+  ) {
+    if (refs.length === 0) return [];
+    if (
+      author._tag !== "human" ||
+      !(yield* isOrgOwner(input.orgId, author.personId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      ))
+    )
+      return yield* refRefused("Only the owner can point at a doc yet.");
+    const others = yield* sql`SELECT 1 FROM kin_chat_members WHERE org_id = ${input.orgId}
+      AND chat_id = ${input.chatId} AND principal_kind = 'person' AND left_at IS NULL
+      AND person_id != ${author.personId} LIMIT 1`;
+    const resolved: Array<KinMessageRef> = [];
+    for (const ref of refs) {
+      const [doc] = yield* sql<{ title: string; body: string; sensitive: number }>`
+        SELECT v.title, v.body, ${sensitiveNow(sql)} AS sensitive
+        FROM kin_records r JOIN kin_doc_versions v ON v.org_id = r.org_id
+          AND v.record_id = r.record_id AND v.version = ${ref.version}
+        WHERE r.org_id = ${input.orgId} AND r.key = ${ref.key} AND r.register_id = 'docs'
+        ORDER BY r.record_id`;
+      if (doc === undefined)
+        return yield* new KinChatError({ reason: "not_found", message: "Kin record not found." });
+      if (doc.sensitive === 1 && others.length > 0)
+        return yield* refRefused("That doc is sensitive: point at it in a chat only you read.");
+      const section =
+        ref.section === null
+          ? undefined
+          : sectionsOf(doc.body).find((part) => part.id === ref.section);
+      if (ref.section !== null && section === undefined)
+        return yield* new KinChatError({ reason: "not_found", message: "Kin record not found." });
+      resolved.push({
+        ...ref,
+        title: doc.title as KinMessageRef["title"],
+        sectionTitle: section === undefined ? null : section.title,
+      });
+    }
+    return resolved;
+  });
   const orgOne = Effect.fn("KinChatRepository.getOrg")(
     function (input: Scope) {
       return SqlSchema.findOneOption({
@@ -1416,7 +1492,8 @@ const make = Effect.gen(function* () {
                       attachment.id === existing.value.attachments?.[index]?.id,
                   ) ||
                   existing.value.mentions.length !== input.mentions.length ||
-                  !existing.value.mentions.every((id, index) => id === input.mentions[index])
+                  !existing.value.mentions.every((id, index) => id === input.mentions[index]) ||
+                  !sameRefs(existing.value.refs ?? [], input.refs ?? [])
                 )
                   return yield* new KinChatError({
                     reason: "not_allowed",
@@ -1514,6 +1591,7 @@ const make = Effect.gen(function* () {
                 });
             }
             yield* ownerOnly(input.audience, input);
+            const refs = yield* resolveRefs(input, author, input.refs ?? []);
             const mentions = yield* encodeMentions(input.mentions);
             const attachmentsJson =
               attachments.length === 0 ? null : yield* encodeAttachments(attachments);
@@ -1527,12 +1605,12 @@ const make = Effect.gen(function* () {
             const seq = (yield* requireRecord(Effect.succeed(allocated))).last_seq;
             const inserted =
               yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id, author_agent_id,
- author_owner_person_id, author_thread_id, author_member_id, author_role, kind, body, attachments_json, intent, mentions_json, reply_to,
+ author_owner_person_id, author_thread_id, author_member_id, author_role, kind, body, attachments_json, refs_json, intent, mentions_json, reply_to,
  widget_id, floor_run_id, status, sent_by, client_message_id, created_at, edited_at, silent)
  VALUES (${input.messageId}, ${input.orgId}, ${input.chatId}, ${seq}, ${author._tag},
  ${member?.principal._tag === "person" ? member.principal.personId : null}, ${member?.principal._tag === "agent" ? member.principal.agentId : null},
  ${agent?.ownerPersonId ?? null}, ${author._tag === "agent" ? author.threadId : null},
- ${memberId}, ${member?.role ?? "member"}, ${input.kind}, ${input.body}, ${attachmentsJson}, ${input.intent}, ${mentions}, ${input.replyTo},
+ ${memberId}, ${member?.role ?? "member"}, ${input.kind}, ${input.body}, ${attachmentsJson}, ${refs.length === 0 ? null : yield* encodeRefs(refs)}, ${input.intent}, ${mentions}, ${input.replyTo},
  ${input.widgetId}, ${input.floorRunId}, ${input.status}, ${input.sentBy}, ${clientId}, ${input.createdAt}, ${input.editedAt},
  ${input.silent === true ? 1 : 0})
  ON CONFLICT DO NOTHING RETURNING message_id`;
