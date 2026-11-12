@@ -8,6 +8,7 @@ import {
   type KinApprovalFailure,
 } from "@t3tools/client-runtime/kin/kinApprovalPresentation";
 import {
+  KIN_APPROVER_ENROLMENT_VERSION,
   KinApprovalError,
   type EnvironmentId,
   type KinApprovalsListKeysResult,
@@ -133,6 +134,7 @@ export function useEnrolApproverKey() {
       const registered = await registerKey({
         environmentId,
         input: {
+          enrolmentVersion: KIN_APPROVER_ENROLMENT_VERSION,
           orgId,
           publicJwk: created.publicJwk,
           platform: Platform.OS === "android" ? "android" : "ios",
