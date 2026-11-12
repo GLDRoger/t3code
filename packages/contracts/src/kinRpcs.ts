@@ -25,6 +25,7 @@ import { KinMemoryRpcs, KIN_MEMORY_RPC_SCOPES } from "./kinMemory.ts";
 import { KinWorkRpcs, KIN_WORK_RPC_SCOPES } from "./kinWork.ts";
 import { KinDocsRpcs, KIN_DOCS_RPC_SCOPES } from "./kinDocs.ts";
 import { KinFinanceRpcs, KIN_FINANCE_RPC_SCOPES } from "./kinFinance.ts";
+import { KinStatementRpcs, KIN_STATEMENT_RPC_SCOPES } from "./kinStatements.ts";
 import {
   KinChatError,
   KinChatRpcs,
@@ -177,6 +178,7 @@ export const KinRpcs = [
   ...KinWorkRpcs,
   ...KinDocsRpcs,
   ...KinFinanceRpcs,
+  ...KinStatementRpcs,
   ...KinGithubWebhookRpcs,
   ...KinPushRpcs,
   ...KinPeopleRpcs,
@@ -190,6 +192,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_WORK_RPC_SCOPES,
   ...KIN_DOCS_RPC_SCOPES,
   ...KIN_FINANCE_RPC_SCOPES,
+  ...KIN_STATEMENT_RPC_SCOPES,
   ...KIN_PUSH_RPC_SCOPES,
   ...KIN_PEOPLE_RPC_SCOPES,
   ...KIN_VISUAL_RPC_SCOPES,
