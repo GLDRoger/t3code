@@ -15,6 +15,12 @@ import * as PlatformError from "effect/PlatformError";
 import * as Queue from "effect/Queue";
 import * as Tracer from "effect/Tracer";
 import { HttpClient, HttpClientRequest, HttpRouter, HttpServerResponse } from "effect/http";
+import {
+  KIN_VISUAL_LIBRARIES,
+  KIN_VISUAL_OUTER_DOCUMENT,
+  kinVisualContentSecurityPolicy,
+} from "@t3tools/shared/kinVisual";
+import serverPackage from "../package.json" with { type: "json" };
 import { ASSET_ROUTE_PREFIX } from "./assets/AssetAccess.ts";
 import { ATTACHMENT_UPLOAD_ROUTE_PREFIX } from "./assets/AttachmentUpload.ts";
 import { openMediaFile } from "./assets/MediaFile.ts";
@@ -45,6 +51,7 @@ import * as SessionStore from "./auth/SessionStore.ts";
 import { base64UrlEncode } from "./auth/utils.ts";
 import { KinChatService } from "./kin/chat/KinChatService.ts";
 import { KinIdentity } from "./kin/chat/KinIdentity.ts";
+import { KinVisualHosts } from "./kin/chat/KinVisualHosts.ts";
 import { KinServer, type Services as KinServices } from "./kin/KinServer.ts";
 
 import * as ServerConfig from "./config.ts";
@@ -887,6 +894,10 @@ describe("Kin chat file URLs", () => {
       yield* fs.makeDirectory(config.attachmentsDir, { recursive: true });
       yield* fs.writeFileString(`${config.attachmentsDir}/${kinFileId}.png`, "pixels");
       yield* fs.writeFileString(`${config.attachmentsDir}/${threadFileId}.png`, "pixels");
+      const visualId = "kin-chat-33333333-3333-4333-8333-333333333333-html";
+      const visualHtml = `<!doctype html><title>t</title><img src="kin-file:${kinFileId}"><img src="kin-file:kin-chat-elsewhere"><script>fetch("https://evil.example.com")</script>`;
+      yield* fs.writeFileString(`${config.attachmentsDir}/${visualId}.html`, visualHtml);
+      const allowedHosts: Array<string> = [];
       const member = AuthSessionId.make("member-session");
       const outsider = AuthSessionId.make("outsider-session");
       // Sessions in force, and the people whose chat holds the file.
@@ -899,7 +910,7 @@ describe("Kin chat file URLs", () => {
         ),
       );
       const kin = yield* Layer.build(
-        Layer.merge(
+        Layer.mergeAll(
           Layer.mock(KinIdentity)({
             owner: { _tag: "person", orgId, personId: KinPersonId.make("owner") },
             isAgentThread: () => false,
@@ -912,11 +923,16 @@ describe("Kin chat file URLs", () => {
           Layer.mock(KinChatService)({
             attachmentReadable: (people, attachmentId) =>
               Effect.succeed(
-                attachmentId === kinFileId &&
+                (attachmentId === kinFileId || attachmentId === visualId) &&
                   Array.isArray(people) &&
                   people.some((person) => inChat.has(person.personId)),
               ),
+            visualSources: () =>
+              Effect.succeed(
+                Option.some({ orgId, files: [{ attachmentId: kinFileId, mimeType: "image/png" }] }),
+              ),
           }),
+          Layer.mock(KinVisualHosts)({ served: () => Effect.succeed(allowedHosts) }),
         ),
       );
       const layerRouteServices = Layer.mergeAll(
@@ -966,6 +982,7 @@ describe("Kin chat file URLs", () => {
       const mint = Effect.fn("test.mintKinUrl")(function* (
         attachmentId: string,
         reader?: AuthSessionId,
+        mimeType = "image/png",
       ) {
         const payload = base64UrlEncode(
           JSON.stringify({
@@ -973,7 +990,7 @@ describe("Kin chat file URLs", () => {
             kind: "attachment",
             attachmentId,
             ...(reader === undefined ? {} : { reader }),
-            mimeType: "image/png",
+            mimeType,
             expiresAt: Date.UTC(2100, 0, 1),
           }),
         );
@@ -1014,6 +1031,59 @@ describe("Kin chat file URLs", () => {
         cacheControl: "private, max-age=3600",
       });
 
+      // A chat's page: the URL gives an outer document with no agent content, and only a frame's
+      // request for the same URL gets the page. Each carries its policy on the response.
+      const visualUrl = yield* mint(visualId, member, "text/html");
+      const page = Effect.fn("test.fetchVisual")(function* (
+        query: string,
+        headers: Record<string, string> = {},
+      ) {
+        const response = yield* client.execute(
+          HttpClientRequest.get(`${visualUrl}${query}`).pipe(HttpClientRequest.setHeaders(headers)),
+        );
+        return {
+          status: response.status,
+          body: yield* response.text,
+          policy: response.headers["content-security-policy"],
+          cacheControl: response.headers["cache-control"],
+          contentType: response.headers["content-type"],
+        };
+      });
+      const sealed = {
+        status: 200,
+        cacheControl: "private, no-store",
+        contentType: "text/html; charset=utf-8",
+      };
+      const outer = yield* page("");
+      expect(outer).toMatchObject({
+        ...sealed,
+        body: KIN_VISUAL_OUTER_DOCUMENT,
+        policy: kinVisualContentSecurityPolicy("outer"),
+      });
+      expect(outer.body).not.toContain("evil.example.com");
+      // Asked for outside a frame, the page is not handed over: nothing would hold its navigation.
+      expect(yield* page("?frame=1")).toEqual(outer);
+      expect(yield* page("?frame=1", { "sec-fetch-dest": "document" })).toEqual(outer);
+      const inner = yield* page("?frame=1", { "sec-fetch-dest": "iframe" });
+      expect(inner).toMatchObject({ ...sealed, policy: kinVisualContentSecurityPolicy("page") });
+      expect(inner.policy).toContain("connect-src 'none'");
+      expect(inner.body).toContain('<script>fetch("https://evil.example.com")</script>');
+      expect(inner.body).toContain('<style id="t3-theme">');
+      // The chat's own picture becomes this reader's URL for it; a file from elsewhere stays dead.
+      const picture = /<img src="(\/api\/assets\/[^"]+)">/.exec(inner.body)?.[1];
+      expect(picture).toBeDefined();
+      expect(yield* fetch("GET", picture!)).toMatchObject({ status: 200, body: "pixels" });
+      expect(inner.body).toContain('<img src="kin-file:kin-chat-elsewhere">');
+      // The owner's list is the only way an outside host enters the policy, and never for script.
+      allowedHosts.push("tiles.example.com");
+      const widened = (yield* page("?frame=1", { "sec-fetch-dest": "iframe" })).policy ?? "";
+      expect(widened).toBe(kinVisualContentSecurityPolicy("page", ["tiles.example.com"]));
+      expect(widened).toContain("script-src 'unsafe-inline' 'unsafe-eval' 'self';");
+      // Someone outside the chat gets neither document.
+      const strangerUrl = yield* mint(visualId, outsider, "text/html");
+      expect((yield* fetch("GET", strangerUrl)).status).toBe(404);
+      expect((yield* fetch("GET", `${strangerUrl}?frame=1`)).status).toBe(404);
+
       const refused = [
         // A session that is not in the chat, and a URL naming no session at all.
         yield* mint(kinFileId, outsider),
@@ -1040,5 +1110,41 @@ describe("Kin chat file URLs", () => {
         ),
       ),
     ),
+  );
+  it.effect("serves a visual's three pinned libraries, cached for good, and nothing else", () =>
+    Effect.gen(function* () {
+      // The versions agents are told to load are the ones installed.
+      expect(
+        Object.fromEntries(KIN_VISUAL_LIBRARIES.map((library) => [library.name, library.version])),
+      ).toEqual({
+        echarts: serverPackage.devDependencies.echarts,
+        mermaid: serverPackage.devDependencies.mermaid,
+        d3: serverPackage.devDependencies.d3,
+      });
+      const services = yield* Layer.build(
+        HttpRouter.serve(ServerHttp.layerKinVisualLibraryRoute, {
+          disableListenLog: true,
+          disableLogger: true,
+        }).pipe(Layer.provideMerge(NodeHttpServer.layerTest)),
+      );
+      const client = Context.get(services, HttpClient.HttpClient);
+      for (const library of KIN_VISUAL_LIBRARIES) {
+        const response = yield* client.get(
+          `/api/kin/visual-lib/${library.version}/${library.name}.js`,
+        );
+        expect(response.status).toBe(200);
+        expect(response.headers["content-type"]).toBe("text/javascript; charset=utf-8");
+        expect(response.headers["cache-control"]).toBe("public, max-age=31536000, immutable");
+        expect(Number(response.headers["content-length"])).toBeGreaterThan(100_000);
+      }
+      for (const path of [
+        "6.1.0/chart.js",
+        "6.1.0/echarts.js/extra",
+        "latest/echarts.js",
+        "6.1.0/..%2f..%2fpackage.json",
+        "echarts.js",
+      ])
+        expect((yield* client.get(`/api/kin/visual-lib/${path}`)).status).toBe(404);
+    }).pipe(Effect.provide(NodeServices.layer)),
   );
 });

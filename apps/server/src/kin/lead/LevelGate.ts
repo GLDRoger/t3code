@@ -37,6 +37,7 @@ type PostInput = KinMessagesSendInput & { readonly intent: KinAgentIntent };
 type WidgetInput = Parameters<KinChatService["Service"]["upsertWidget"]>[1];
 type AskInput = Parameters<KinChatService["Service"]["ask"]>[1];
 type ChartInput = Parameters<KinChatService["Service"]["chart"]>[1];
+type VisualInput = Parameters<KinChatService["Service"]["visual"]>[1];
 type ReadInput = Parameters<KinChatService["Service"]["read"]>[1];
 
 /**
@@ -60,6 +61,11 @@ export class KinLevelGate extends Context.Service<
     readonly chart: (
       agent: AgentIdentity,
       input: ChartInput,
+    ) => Effect.Effect<KinWidget, KinChatError>;
+    /** `kin_visual`'s card, gated like a post. */
+    readonly visual: (
+      agent: AgentIdentity,
+      input: VisualInput,
     ) => Effect.Effect<KinWidget, KinChatError>;
     /** `kin_react`: the lead's reaction, gated like a post since it can stand for its reply. */
     readonly react: (
@@ -289,6 +295,9 @@ const make = Effect.gen(function* () {
     ),
     chart: Effect.fn("KinLevelGate.chart")((agent, input) =>
       gated("gated chart", agent, input.chatId, chat.chart(agent, input)),
+    ),
+    visual: Effect.fn("KinLevelGate.visual")((agent, input) =>
+      gated("gated visual", agent, input.chatId, chat.visual(agent, input)),
     ),
     react: Effect.fn("KinLevelGate.react")((agent, input) =>
       gated("gated reaction", agent, input.chatId, chat.react(agent, { ...input, on: true })),

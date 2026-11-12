@@ -469,6 +469,12 @@ export const kinClient = {
       key: ({ input }) => `${input.messageId}|${input.emoji}`,
     },
   }),
+  /** Owner-only: lets every visual in the org load from one more host. */
+  visualHostAllow: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:visual-host:allow",
+    tag: "kin.visuals.hosts.allow",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.host}` },
+  }),
   /** Owner-only Undo of one line on a memory change card. */
   memoryUndo: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:memory:undo",

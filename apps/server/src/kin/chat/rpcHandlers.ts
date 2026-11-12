@@ -16,6 +16,7 @@ import { KinOwnerTimeZone } from "../triggers/ownerTimeZone.ts";
 import { KinIdentity, type PersonIdentity } from "./KinIdentity.ts";
 import { KinChatService } from "./KinChatService.ts";
 import { KinGroups } from "./KinGroups.ts";
+import { KinVisualHosts } from "./KinVisualHosts.ts";
 
 const rpcs = RpcGroup.make(...KinChatAndBudgetRpcs);
 const unavailable = new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
@@ -60,6 +61,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
       timeZone: Context.get(kin.value.services.value, KinOwnerTimeZone),
       chat: Context.get(kin.value.services.value, KinChatService),
       groups: Context.get(kin.value.services.value, KinGroups),
+      visualHosts: Context.get(kin.value.services.value, KinVisualHosts),
     };
   });
   // Every group method: who the session is, then the one service call that decides.
@@ -72,6 +74,20 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
     services.pipe(
       Effect.flatMap(({ identity, groups }) =>
         identity.resolve(session).pipe(Effect.flatMap((people) => run(groups, people))),
+      ),
+      Effect.tapError(logInfra),
+      Effect.mapError(mapError),
+      Effect.catchDefect(defect),
+    );
+  const visualHosts = <A, E>(
+    run: (
+      hosts: KinVisualHosts["Service"],
+      people: ReadonlyArray<PersonIdentity>,
+    ) => Effect.Effect<A, E>,
+  ) =>
+    services.pipe(
+      Effect.flatMap(({ identity, visualHosts }) =>
+        identity.resolve(session).pipe(Effect.flatMap((people) => run(visualHosts, people))),
       ),
       Effect.tapError(logInfra),
       Effect.mapError(mapError),
@@ -149,6 +165,11 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
         Effect.mapError(mapError),
         Effect.catchDefect(defect),
       ),
+    "kin.visuals.hosts.list": (input) => visualHosts((hosts, people) => hosts.list(people, input)),
+    "kin.visuals.hosts.allow": (input) =>
+      visualHosts((hosts, people) => hosts.allow(people, input)),
+    "kin.visuals.hosts.remove": (input) =>
+      visualHosts((hosts, people) => hosts.remove(people, input)),
     "kin.orgs.list": () =>
       services.pipe(
         Effect.flatMap(({ identity, chat }) =>

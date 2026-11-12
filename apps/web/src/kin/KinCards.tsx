@@ -49,6 +49,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { Button } from "../components/ui/button";
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
 import { KinChart } from "./KinChart";
+import { KinVisual } from "./KinVisual";
 import { kinClient } from "./kinClient";
 
 const CANT_ACT_TEXT =
@@ -102,7 +103,10 @@ function useWidgetPost(environmentId: EnvironmentId) {
   };
 }
 
-/** The card for a message's widget, drawn from the shared presentation. Never renders HTML. */
+/**
+ * The card for a message's widget, drawn from the shared presentation. Never renders HTML of
+ * its own: a visual's page stays in a sealed frame (`KinVisual`).
+ */
 export const KinCard = memo(function KinCard(props: {
   readonly widget: KinWidget | undefined;
   readonly environmentId: EnvironmentId;
@@ -133,6 +137,12 @@ export const KinCard = memo(function KinCard(props: {
       return (
         <CardFrame>
           <KinChart view={view.chart} />
+        </CardFrame>
+      );
+    case "visual":
+      return (
+        <CardFrame label={view.visual.title}>
+          <KinVisual environmentId={props.environmentId} orgId={view.orgId} visual={view.visual} />
         </CardFrame>
       );
     case "digest":

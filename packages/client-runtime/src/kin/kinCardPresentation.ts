@@ -7,8 +7,10 @@ import {
   KinRoutineCard,
   KinScheduledTaskCard,
   KinTaskCardState,
+  KinVisualCardState,
   type EnvironmentId,
   type KinMessage,
+  type KinOrgId,
   type KinRoutineSection,
   type KinWidget,
 } from "@t3tools/contracts";
@@ -60,6 +62,7 @@ export type KinCardView =
   | { readonly kind: "deferral"; readonly deferral: KinDeferralCardView }
   | { readonly kind: "choice"; readonly choice: KinChoiceCardView }
   | { readonly kind: "chart"; readonly chart: KinChartView }
+  | { readonly kind: "visual"; readonly orgId: KinOrgId; readonly visual: KinVisualCardState }
   | { readonly kind: "digest"; readonly digest: KinDigestCardView }
   | { readonly kind: "memory_changes"; readonly changes: KinMemoryChangesCardView }
   | { readonly kind: "approval"; readonly approval: KinApprovalWidgetView }
@@ -79,6 +82,7 @@ const STATUS: Record<TaskStatus, { readonly label: string; readonly tone: KinTas
 
 const decodeTaskState = Schema.decodeUnknownOption(KinTaskCardState);
 const decodeRoutine = Schema.decodeUnknownOption(KinRoutineCard);
+const decodeVisual = Schema.decodeUnknownOption(KinVisualCardState);
 const decodeReminder = Schema.decodeUnknownOption(KinReminderCard);
 const decodeScheduledTask = Schema.decodeUnknownOption(KinScheduledTaskCard);
 const decodeWorkerPublish = Schema.decodeUnknownOption(KinWorkerPublishCard);
@@ -557,6 +561,12 @@ function kinLiveCardView(
     case "chart": {
       const chart = kinChartCardView(widget);
       return chart === null ? unknown(widget) : { kind: "chart", chart };
+    }
+    case "visual": {
+      const visual = decodeVisual(widget.state);
+      return Option.isSome(visual)
+        ? { kind: "visual", orgId: widget.orgId, visual: visual.value }
+        : unknown(widget);
     }
     case "routine": {
       const card = decodeRoutine(widget.state);

@@ -135,6 +135,7 @@ describe("kinChatListRows", () => {
       "Asked you a question",
     ],
     ["a chart posted without a body", { body: "", widgetId: "chart:1" }, null, "Sent a chart"],
+    ["a visual posted without a body", { body: "", widgetId: "visual:1" }, null, "Sent a visual"],
     ["an unknown card without a body", { body: "", widgetId: "later:1" }, null, "Sent a card"],
   ])("previews %s", (_name, lastMessage, author, preview) => {
     expect(list([row("chat", lastMessage)])[0]).toMatchObject({ author, preview });

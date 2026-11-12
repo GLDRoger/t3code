@@ -12,11 +12,14 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, Tool, Toolkit } from "effect/ai";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
+import { KIN_VISUAL_PAGE_GUIDE, KIN_VISUAL_TOOL_NAME } from "@t3tools/shared/kinVisual";
+
 import { KinIdentity } from "../../chat/KinIdentity.ts";
 import * as RepoReads from "../../github/KinRepoReads.ts";
 import { MEMORY_RULE } from "../../memory/keeping.ts";
 import * as ChartCard from "../../widgets/chartCard.ts";
 import * as ChoiceCard from "../../widgets/choiceCard.ts";
+import * as VisualCard from "../../widgets/visualCard.ts";
 import * as Handoff from "../Handoff.ts";
 import { KinLevelGate } from "../LevelGate.ts";
 import * as Lead from "../LeadMemory.ts";
@@ -100,6 +103,12 @@ export const KinLeadToolkit = Toolkit.make(
       'Put a small chart in the chat your reply goes to, when the answer is a trend or a comparison of three or more numbers: signups this week against last, spend by month. Not for one number or two, and not for a list of things: say those in text. It sits beside your reply, so still write the one-line takeaway. chart is line (change over time), bar (compare categories; several series sit side by side) or stacked_bar (parts of a total). unit is {kind: "count"}, {kind: "percent"} (12.5 means 12.5%) or {kind: "money", currency: "INR"} with every value in whole minor units (paise, cents): ₹1,299.50 is 129950. Never convert or round money yourself. labels has one entry per point, at most 24, each short; with labelType "day" they are YYYY-MM-DD, with "month" YYYY-MM, oldest first. series is one to four of {name, values}, values lined up with labels and null where there is none. To set one series against its previous period, send that one series and put the earlier period in comparison with the same labels. title says what it shows; caption is an optional line under it, such as the source or the period. Only numbers you have read or been given, never estimates. A refusal says what to change: fix that and call again.',
     parameters: ChartCard.ChartInput,
     success: ChartCard.ChartResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make(KIN_VISUAL_TOOL_NAME, {
+    ...chat,
+    description: `Put a rich visual in the chat your reply goes to: one page of HTML, CSS and JavaScript, drawn in a sealed frame under its title. kin_chart comes first for the kinds it draws. Use this for everything else: a dashboard of several figures, a sankey, treemap, heatmap, funnel, gauge, network graph, gantt or timeline, a flow or sequence diagram, a styled or sortable table, an interactive breakdown. It sits beside your reply, so still write the one-line takeaway. title says what it shows. html is the whole page. height is your estimate of its height in pixels at phone width; the frame then fits the page. One visual per call. Only data you have read or been given, never estimates. A refusal says what to change: fix that and call again.\n${KIN_VISUAL_PAGE_GUIDE}`,
+    parameters: VisualCard.VisualInput,
+    success: VisualCard.VisualResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_react", {
     ...chat,

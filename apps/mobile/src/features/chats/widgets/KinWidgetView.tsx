@@ -16,8 +16,9 @@ import { KinDeferralCard } from "./KinDeferralCard";
 import { KinDigestCard } from "./KinDigestCard";
 import { KinMemoryChangesCard } from "./KinMemoryChangesCard";
 import { KinTaskCard } from "./KinTaskCard";
+import { KinVisual } from "./KinVisual";
 
-/** The native card for a message's widget. Never falls back to HTML. */
+/** The native card for a message's widget. Only a `visual` card draws a page, in a sealed view. */
 export const KinWidgetView = memo(function KinWidgetView(props: {
   readonly widget: KinWidget | undefined;
   /** The environment hosting the chat. */
@@ -53,6 +54,10 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
         <View className="rounded-[20px] border border-border bg-card-alt p-4">
           <KinChart view={view.chart} />
         </View>
+      );
+    case "visual":
+      return (
+        <KinVisual environmentId={props.environmentId} orgId={view.orgId} visual={view.visual} />
       );
     case "digest":
       return <KinDigestCard digest={view.digest} onOpenLink={props.onOpenLink} />;
