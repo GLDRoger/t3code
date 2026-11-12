@@ -5,6 +5,7 @@ import {
   type KinChatSummary,
   type KinDocDetail,
   type KinDocDiff,
+  type KinDocEmbed,
   type KinDocRow,
   type KinDocSection,
   type KinDocVersion,
@@ -19,6 +20,7 @@ import {
   type KinWorkActor,
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
+import { kinDocBlockIndex, kinDocBlocks, kinDocParts } from "@t3tools/shared/kinDocBlocks";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -89,7 +91,40 @@ export const KIN_DOCS = {
     detail: "There is nothing earlier to compare it with.",
   },
   noAgent: "No agent keeps this doc, so there is nobody to ask yet.",
+  // The host drew nothing for the block: it predates them, or the block is new since it drew.
+  undrawn: { chart: "This chart can't be shown.", visual: "This visual can't be shown." },
 } as const;
+
+/** A stretch of a doc's markdown, or what the host drew for one of its blocks. */
+export type KinDocPiece =
+  | { readonly type: "text"; readonly text: string }
+  | { readonly type: "embed"; readonly embed: KinDocEmbed };
+
+/**
+ * `text` (the body, or a section of it) cut around its `kin_chart` and `kin_visual` blocks, each
+ * with the embed the host drew for that block of the body. A block it drew nothing for, or
+ * something of the other kind, reads as broken rather than as its raw JSON or HTML.
+ */
+export function kinDocPieces(
+  text: string,
+  doc: Pick<KinDocDetail, "body" | "embeds">,
+): ReadonlyArray<KinDocPiece> {
+  const blocks = kinDocBlocks(doc.body);
+  return kinDocParts(text).map((part): KinDocPiece => {
+    if (part.type === "text") return part;
+    const { kind, content } = part.block;
+    const embed = doc.embeds?.[kinDocBlockIndex(blocks, kind, content)];
+    return embed !== undefined && (embed._tag === kind || embed._tag === "broken")
+      ? { type: "embed", embed }
+      : { type: "embed", embed: { _tag: "broken", message: KIN_DOCS.undrawn[kind] } };
+  });
+}
+
+/** A piece's React key. A visual's frame keeps the first page it loads, so a new page gets a new one. */
+export const kinDocPieceKey = (piece: KinDocPiece, index: number) =>
+  piece.type === "embed" && piece.embed._tag === "visual"
+    ? `${index}:${piece.embed.attachmentId}`
+    : `${index}:${piece.type}`;
 
 export const KIN_SEARCH = {
   title: "Search",

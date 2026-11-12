@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
-import { kinDocBlockIndex, kinDocBlocks } from "./kinDocBlocks.ts";
+import { kinDocBlockIndex, kinDocBlocks, kinDocParts } from "./kinDocBlocks.ts";
 
 describe("kinDocBlocks", () => {
   it.each([
@@ -27,6 +27,21 @@ describe("kinDocBlocks", () => {
     ],
   ] as const)("%s", (_name, body, expected) => {
     expect(kinDocBlocks(body)).toEqual(expected);
+  });
+
+  it("cuts the body around its blocks, keeping other fences and the text between", () => {
+    const chart = { kind: "chart", info: "", content: "{}" } as const;
+    expect(
+      kinDocParts("Intro\n\n```kin_chart\n{}\n```\n\n```kin_chart\n{}\n```\n```ts\nx\n```\nEnd"),
+    ).toEqual([
+      { type: "text", text: "Intro\n" },
+      { type: "block", block: chart },
+      { type: "block", block: chart },
+      { type: "text", text: "```ts\nx\n```\nEnd" },
+    ]);
+    expect(kinDocParts("```kin_visual T\n<p>")).toEqual([
+      { type: "text", text: "```kin_visual T\n<p>" },
+    ]);
   });
 
   it("finds a reader's block by kind and text, its trailing newline or not", () => {

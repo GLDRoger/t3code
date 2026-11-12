@@ -10,6 +10,7 @@ import {
   type KinPersonId,
   type KinWidget,
 } from "@t3tools/contracts";
+import { KIN_VISUAL_FILE_SCHEME } from "@t3tools/shared/kinVisual";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -567,8 +568,9 @@ export function kinLinkToOpen(href: string): string | null {
  */
 export const kinImageSource = () => ({ uri: "" });
 
-const MARKDOWN_IMAGE = /!\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])/g;
+const MARKDOWN_IMAGE = /!\[([^\]]*)\](?:\(([^)]*)\)|\[[^\]]*\])/g;
 const HTML_IMAGE = /<img\b[^>]*>/gi;
+const imageAsText = (alt: string) => (alt.trim() ? `Image: ${alt.trim()}` : "Image");
 
 /**
  * The body a bubble renders: images become text before parsing, so no build (even one without
@@ -576,9 +578,31 @@ const HTML_IMAGE = /<img\b[^>]*>/gi;
  */
 export const kinBodyMarkdown = (body: string) =>
   body
-    .replace(MARKDOWN_IMAGE, (_match, alt: string) =>
-      alt.trim() ? `Image: ${alt.trim()}` : "Image",
-    )
+    .replace(MARKDOWN_IMAGE, (_match, alt: string) => imageAsText(alt))
+    .replace(HTML_IMAGE, "Image");
+
+const KIN_DOC_FILE = new RegExp(`^${KIN_VISUAL_FILE_SCHEME}([A-Za-z0-9_-]{1,200})$`, "i");
+
+/** The file a doc's image source names (`kin-file:<id>`, as the host keeps it), or null. */
+export function kinDocFileId(src: string): string | null {
+  const written = src.trim();
+  const bare = /^<([^>]*)>/.exec(written)?.[1] ?? written.split(/\s/, 1)[0] ?? "";
+  return KIN_DOC_FILE.exec(bare)?.[1]?.toLowerCase() ?? null;
+}
+
+/**
+ * The body a doc's reader renders: as a bubble's, except an inline image of a `kin-file:` keeps
+ * its place, its source written by `src`. The host serves a doc's reader only the doc's own files.
+ */
+export const kinDocMarkdown = (
+  body: string,
+  src: (id: string) => string = (id) => `${KIN_VISUAL_FILE_SCHEME}${id}`,
+) =>
+  body
+    .replace(MARKDOWN_IMAGE, (_match, alt: string, destination: string | undefined) => {
+      const id = destination === undefined ? null : kinDocFileId(destination);
+      return id === null ? imageAsText(alt) : `![${alt}](${src(id)})`;
+    })
     .replace(HTML_IMAGE, "Image");
 
 /** A standalone image block, drawn as text in its place. */

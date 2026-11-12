@@ -833,6 +833,6 @@ it.effect(
       );
       assert.deepStrictEqual(pages, [page]);
       assert.lengthOf(yield* files, 2);
-    }).pipe(Effect.provide(store), Effect.provide(layer));
+    }).pipe(Effect.provide(Layer.merge(store, layer)));
   },
 );
