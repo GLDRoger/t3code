@@ -76,6 +76,7 @@ import {
   isBuiltIn,
   type ListDef,
   listDef,
+  stateLabel,
   unknownList,
   verifyRefs,
 } from "./registers.ts";
@@ -942,10 +943,24 @@ const make = Effect.gen(function* () {
               message: `${row.key} has ${received} received, so its amount can't be less. Void a payment with payment_record first, then change the amount.`,
             });
         }
-        // Paid or owed follows the balance whenever the amount moves, unless the change says.
+        // Paid or owed follows the balance whenever the amount moves; a state saying otherwise is
+        // refused, while Draft and Void stay the caller's to set.
+        const balanced = amountChanged && row.paid > 0;
+        const owed = balanced ? patch.amount!.minor - row.paid : 0;
+        if (
+          balanced &&
+          ((patch.state === "done" && owed > 0) || (patch.state === "waiting" && owed === 0))
+        )
+          return yield* new SensitiveRefusal({
+            reason: "invalid_state",
+            message:
+              owed > 0
+                ? `${row.key} would still have ${formatMoney({ minor: owed, currency: amount!.currency })} owed, so it can't be ${stateLabel(def, "done")}. Leave the state out: recording the rest with payment_record marks it ${stateLabel(def, "done")}.`
+                : `${row.key} would be fully paid at this amount, so it can't be ${stateLabel(def, "waiting")}. Leave the state out.`,
+          });
         const settled =
-          amountChanged && row.paid > 0 && patch.state === undefined && row.state !== "dropped"
-            ? patch.amount!.minor === row.paid
+          balanced && patch.state === undefined && row.state !== "dropped"
+            ? owed === 0
               ? "done"
               : row.state === "done"
                 ? "waiting"
