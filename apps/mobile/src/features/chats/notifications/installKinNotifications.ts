@@ -24,7 +24,7 @@ import { kinClient } from "../state/kinClient";
 import { kinHostAtom } from "../state/useKinHost";
 import { KIN_NOTIFICATION_CATEGORIES } from "./kinCategories";
 import { kinActionDelivery, kinNotificationRoute } from "./kinPushPayload";
-import { createKinPushRefusals, kinPushPermissionStep } from "./kinPushRegistration";
+import { createKinPushRefusals, kinPushHost, kinPushPermissionStep } from "./kinPushRegistration";
 
 // A refusal is final for this response; anything else (a dropped socket) waits for a connect.
 const isFinalRefusal = Schema.is(Schema.Union([KinChatError, EnvironmentAuthorizationError]));
@@ -39,9 +39,10 @@ function registerCategories(): void {
   }
 }
 
+// The usual host while another stands in, so a tap on its push waits for it instead of dropping.
 const kinHostEnvironment = () => {
   const host = appAtomRegistry.get(kinHostAtom);
-  return host._tag === "host" ? host.environmentId : null;
+  return host._tag === "host" ? (host.standInFor ?? host.environmentId) : null;
 };
 
 const isConnected = (environmentId: EnvironmentId) =>
@@ -142,8 +143,8 @@ function createTokenRegistration() {
       : "production";
 
   const sync = async (ask: boolean) => {
-    const host = appAtomRegistry.get(kinHostAtom);
-    if (host._tag !== "host" || !host.connected || host.probe._tag !== "ready") return;
+    const host = kinPushHost(appAtomRegistry.get(kinHostAtom));
+    if (host === null) return;
     const { environmentId } = host;
     if (token === null) {
       const existing = await Notifications.getPermissionsAsync();
@@ -167,7 +168,7 @@ function createTokenRegistration() {
     if (registered === key) return;
     registered = key;
     const current = token;
-    const orgs = host.probe.orgs.me
+    const orgs = host.orgs.me
       .map(({ orgId, personId }) => ({ environmentId, orgId, personId, token: current }))
       .filter((target) => !refusals.isRefused(target));
     const results = await Promise.all(

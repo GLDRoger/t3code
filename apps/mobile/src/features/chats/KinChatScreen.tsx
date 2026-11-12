@@ -75,12 +75,11 @@ import {
 } from "./components/KinComposer";
 import { KinFoldLine } from "./components/KinFoldLine";
 import { askForKinNotifications } from "./notifications/installKinNotifications";
-import { kinWithoutChoiceEchoes } from "./state/kinChoiceEcho";
 import { kinStackWithoutChat } from "./state/kinChatStack";
 import { resetRootStack } from "../../lib/root-stack-reset";
 import { KinMessageSheet } from "./components/KinMessageSheet";
 import { KinChatTitle } from "./components/KinChatTitle";
-import { KinOfflineState, KinStaleNoticeView } from "./components/KinScreenState";
+import { KinOfflineState, KinStaleNoticeView, KinStandInNotice } from "./components/KinScreenState";
 import { KinIntro } from "./components/KinIntro";
 import {
   KinPresenceLine,
@@ -999,14 +998,8 @@ function KinChatFeed(props: {
       ? (props.viewer.agentNames.get(member.principal.agentId) ?? "Agent")
       : (props.viewer.memberNames?.get(memberId) ?? (member.role === "owner" ? "Owner" : "Member"));
   };
-  // What the feed draws, so the "New messages" pill never counts a hidden echo.
-  const shownMessages = kinWithoutChoiceEchoes(
-    kinFeedMessages(messages, widgets),
-    widgets,
-    streamed.reactions,
-  );
   const feedRows = buildKinFeedRows(
-    shownMessages,
+    kinFeedMessages(messages, widgets),
     props.viewer,
     expandedRuns,
     new Date(dayStartMs),
@@ -1054,9 +1047,7 @@ function KinChatFeed(props: {
       ? Math.max(0, listHeight - barOverlap - composerHeight)
       : null;
   const followsEnd = kinFollowsEnd(follow);
-  const unseen = followsEnd
-    ? 0
-    : kinUnseenCount(shownMessages, follow.seenSeq, props.viewer.personId);
+  const unseen = followsEnd ? 0 : kinUnseenCount(messages, follow.seenSeq, props.viewer.personId);
   const loading = paging.request !== null;
   const earlierPage = kinEarlierPage(props.chatId, messages, paging.exhausted, live.clearedSeq);
   const canLoadEarlier = props.readHistory !== null && earlierPage !== null;
@@ -1413,8 +1404,11 @@ function KinChatFeed(props: {
   );
 
   // Above the composer, so a long chat opened at its end still shows why it stopped updating.
+  // A stand-in computer's chat says whose it is before anyone types into it.
   const noticeBar =
-    notice === null ? null : (
+    notice === null ? (
+      <KinStandInNotice environmentId={props.environmentId} floating className="px-4 pb-3" />
+    ) : (
       <View className="px-4 pb-3">
         <KinStaleNoticeView
           notice={notice}

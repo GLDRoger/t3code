@@ -23,7 +23,7 @@ it("gives every lead tool a status a person would say, never Kin's own vocabular
   expect(call("something_new")).toBe(PHASE_LABELS.tool);
 });
 
-it("treats only sign-in and account access failures as ones no retry fixes", () => {
+it("treats only sign-in, account access and unknown model failures as ones no retry fixes", () => {
   const of = (code: string | null, failureClass = "provider_error" as const) =>
     setupFailure({ class: failureClass, message: "Failed.", code, retryable: null });
   expect(of("authentication_failed")).toBe("signin");
@@ -32,6 +32,14 @@ it("treats only sign-in and account access failures as ones no retry fixes", () 
   expect(
     setupFailure({ class: "permission_error", message: "No.", code: null, retryable: null }),
   ).toBe("access");
+  // QA Q3: a model the provider doesn't know is set up wrong, not a passing failure.
+  const said = (code: string, message: string) =>
+    setupFailure({ class: "provider_error", message, code, retryable: null });
+  expect(said("api_error_400", "API Error: 400 unknown provider for model claude-x")).toBe("model");
+  expect(said("api_error_404", 'API Error: 404 {"error":{"message":"model: claude-x"}}')).toBe(
+    "model",
+  );
+  expect(said("api_error_400", "API Error: 400 prompt is too long")).toBeNull();
   expect(of("api_error_529")).toBeNull();
   expect(of(null)).toBeNull();
 });

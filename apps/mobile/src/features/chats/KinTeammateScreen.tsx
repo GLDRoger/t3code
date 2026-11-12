@@ -219,12 +219,13 @@ function KinTeammateDetails(props: {
                 disabled={busy}
                 onPress={() => {
                   const { inviteId } = teammate;
-                  if (inviteId === null) return;
+                  const { cancel } = offered;
+                  if (inviteId === null || cancel === null) return;
                   Dialog.confirm({
-                    title: `${offered.cancel?.label ?? "Cancel invite"}?`,
-                    message: `The link you gave ${teammate.name} stops working. You can make a new one later.`,
-                    confirmText: offered.cancel?.label ?? "Cancel invite",
-                    cancelText: "Keep it",
+                    title: cancel.title,
+                    message: cancel.detail,
+                    confirmText: cancel.label,
+                    cancelText: cancel.keep,
                     destructive: true,
                     onConfirm: () => {
                       // Shown at once; the Team page says so if the host refuses.

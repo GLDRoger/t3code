@@ -58,6 +58,7 @@ import { KinIdentity } from "./KinIdentity.ts";
 import { KinChatService } from "./KinChatService.ts";
 import * as Repository from "./KinChatRepository.ts";
 import { makeKinHandlers } from "../rpcHandlers.ts";
+import { KIN_OPEN_CHATS_PER_CONNECTION } from "./rpcHandlers.ts";
 
 const decodeTaskState = Schema.decodeEffect(KinTaskCardState);
 
@@ -390,6 +391,28 @@ it.effect(
       assert.deepStrictEqual(yield* Queue.take(events), { _tag: "message", message: later });
       assert.deepStrictEqual(yield* Queue.take(events), { _tag: "message", message: delayed });
     }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
+);
+
+// QA Q17: one socket held 1,000 subscriptions to a chat, about 240 KB of server memory each.
+it.effect("caps the chats one connection keeps open with a plain refusal", () =>
+  Effect.gen(function* () {
+    const { direct } = yield* seed;
+    const handlers = yield* makeKinHandlers(session);
+    const client = yield* RpcTest.makeClient(group).pipe(
+      Effect.provide(
+        Layer.merge(
+          group.toLayer({ ...handlers, "server.probe": () => Effect.succeed({}) }),
+          RpcAuthorization.layer(AuthStandardClientScopes),
+        ),
+      ),
+    );
+    const subscribe = () => client["kin.chat.subscribe"]({ chatId: direct.chatId });
+    for (let open = 0; open < KIN_OPEN_CHATS_PER_CONNECTION; open++) {
+      const events = yield* Stream.toQueue(subscribe(), { capacity: "unbounded" });
+      assert.include(yield* Queue.take(events), { _tag: "backlog" });
+    }
+    assert.include(yield* Stream.runHead(subscribe()).pipe(Effect.flip), { reason: "limit" });
+  }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 
 it.effect("keeps transport handlers out of persistence", () =>
@@ -793,7 +816,7 @@ it.effect("lets only the owner stop and resume Kin over RPC; members may read th
     const { person, repo } = yield* seed;
     const clientFor = (
       handlers: Effect.Success<ReturnType<typeof makeKinHandlers>>,
-      scopes: ReadonlyArray<(typeof AuthStandardClientScopes)[number]> = AuthStandardClientScopes,
+      scopes: ReadonlyArray<AuthEnvironmentScope> = AuthStandardClientScopes,
     ) =>
       RpcTest.makeClient(group).pipe(
         Effect.provide(
@@ -827,21 +850,33 @@ it.effect("lets only the owner stop and resume Kin over RPC; members may read th
     const kin = yield* Kin.KinServer;
     const services = Option.getOrThrow(kin.services);
     const identity = Context.get(services, KinIdentity);
-    const member = yield* clientFor(
-      yield* makeKinHandlers(session).pipe(
-        Effect.provideService(Kin.KinServer, {
-          ...kin,
-          services: Option.some(
-            Context.add(services, KinIdentity, {
-              ...identity,
-              resolve: () =>
-                Effect.succeed([{ _tag: "person", orgId: person.orgId, personId: memberId }]),
-            }),
-          ),
-        }),
-      ),
+    const memberHandlers = yield* makeKinHandlers(session).pipe(
+      Effect.provideService(Kin.KinServer, {
+        ...kin,
+        services: Option.some(
+          Context.add(services, KinIdentity, {
+            ...identity,
+            resolve: () =>
+              Effect.succeed([{ _tag: "person", orgId: person.orgId, personId: memberId }]),
+          }),
+        ),
+      }),
     );
-    assert.deepStrictEqual(yield* member["kin.org.get"](input), paused);
+    const member = yield* clientFor(memberHandlers);
+    // The owner's own words for why stay his.
+    assert.deepStrictEqual(yield* member["kin.org.get"](input), { ...paused, reason: null });
+    // QA Q15: a teammate's session holds only kin:chat, and still sees the switch and the zone.
+    const teammate = yield* clientFor(memberHandlers, [AuthKinChatScope]);
+    assert.deepStrictEqual(yield* teammate["kin.org.get"](input), { ...paused, reason: null });
+    assert.deepStrictEqual(yield* teammate["kin.triggers.getTimeZone"](input), {
+      ...input,
+      timeZone: "UTC",
+    });
+    // The budget's amounts stay with the owner's settings.
+    assert.strictEqual(
+      (yield* teammate["kin.budget.get"](input).pipe(Effect.flip))._tag,
+      "EnvironmentAuthorizationError",
+    );
     assert.include(yield* member["kin.org.resume"](input).pipe(Effect.flip), {
       reason: "not_allowed",
     });
@@ -849,12 +884,12 @@ it.effect("lets only the owner stop and resume Kin over RPC; members may read th
       reason: "not_allowed",
     });
     const readOnly = yield* clientFor(handlers, [AuthOrchestrationReadScope]);
-    for (const method of ["kin.org.pause", "kin.org.resume"] as const)
+    // Reading the switch is Kin's chat scope now: a session without it sees no Kin at all.
+    for (const method of ["kin.org.pause", "kin.org.resume", "kin.org.get"] as const)
       assert.strictEqual(
         (yield* readOnly[method](input).pipe(Effect.flip))._tag,
         "EnvironmentAuthorizationError",
       );
-    assert.isTrue((yield* readOnly["kin.org.get"](input)).paused);
 
     const resumed = yield* client["kin.org.resume"](input);
     assert.isFalse(resumed.paused);

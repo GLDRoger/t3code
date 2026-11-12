@@ -1,5 +1,6 @@
 import { KIN_ONLY } from "../../../lib/kinOnly";
 import { KIN_ONLY_NO_HOST, KIN_ONLY_UNAUTHORIZED } from "../kinOnlyCopy";
+import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { ReactNode } from "react";
@@ -13,6 +14,8 @@ import { ErrorBanner } from "../../../components/ui/ErrorBanner";
 import { Notice } from "../../../components/ui/Notice";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
+import { environmentPresentations } from "../../../state/presentation";
+import { kinStandInLine } from "@t3tools/client-runtime/kin/kinHost";
 import {
   formatKinTime,
   kinInboxNotice,
@@ -186,11 +189,40 @@ export function KinOfflineState(props: {
   );
 }
 
+/**
+ * "Showing Studio Mac. Office Mac can't be reached." while another computer's Kin stands in, with
+ * a retry for the usual one. `environmentId` limits it to a screen showing that computer's Kin.
+ */
+export function KinStandInNotice(props: {
+  readonly environmentId?: EnvironmentId;
+  readonly floating?: boolean;
+  /** Wraps it in a padded view, drawn only when the line is. */
+  readonly className?: string;
+}) {
+  const host = useKinHost();
+  const presentations = useAtomValue(environmentPresentations.presentationsAtom);
+  const line = kinStandInLine(host, (id) => presentations.get(id)?.entry.target.label ?? null);
+  const { status, reconnect } = useKinReconnect(line?.usual ?? null);
+  if (line === null || host._tag !== "host") return null;
+  if (props.environmentId !== undefined && props.environmentId !== host.environmentId) return null;
+  const shown = (
+    <Notice
+      icon="wifi.slash"
+      message={status === "failed" ? `${line.message} Still no answer.` : line.message}
+      {...(props.floating ? { floating: true } : {})}
+      {...(reconnect === null
+        ? {}
+        : { action: { label: "Try again", onPress: reconnect, pending: status === "pending" } })}
+    />
+  );
+  return props.className === undefined ? shown : <View className={props.className}>{shown}</View>;
+}
+
 /** "Offline. Last updated 9:41." over a cached inbox, with Reconnect; nothing while it is live. */
 export function KinInboxNotice(props: { readonly state: KinReadyState }) {
   const { status, reconnect } = useKinReconnect(props.state.environmentId);
   const notice = kinInboxNotice(props.state, status, (date) => formatKinTime(date));
-  if (notice === null) return null;
+  if (notice === null) return <KinStandInNotice />;
   return <KinStaleNoticeView notice={notice} status={status} reconnect={reconnect} />;
 }
 

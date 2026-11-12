@@ -96,7 +96,7 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
   const { environmentId, orgId } = props;
   const target = { environmentId, orgId };
   const allowed = useAtomValue(kinClient.workCreate.permissionAtom(environmentId));
-  const { orgs, people, joined, names } = useKinWorkDirectory(target, allowed);
+  const { orgs, people, joined, invited, names } = useKinWorkDirectory(target, allowed);
   const create = useAtomCommand(kinClient.workCreate, { reportFailure: false });
   const assign = useAtomCommand(kinClient.workAssign, { reportFailure: false });
   const [actions] = useState(() =>
@@ -118,7 +118,15 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
   const words = kinWorkDraftWords(draft);
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const assignees = kinWorkAssignees({ orgs, orgId, people, joined, names, current: null });
+  const assignees = kinWorkAssignees({
+    orgs,
+    orgId,
+    people,
+    joined,
+    invited,
+    names,
+    current: null,
+  });
   const everyone = [...assignees.people, ...assignees.leads];
   const ownerKey =
     draft.owner === null ? (assignees.people[0]?.key ?? null) : kinWorkPrincipalKey(draft.owner);
@@ -195,9 +203,9 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                   {everyone.map((to) => (
                     <Chip
                       key={to.key}
-                      label={to.name}
+                      label={to.invited ? `${to.name}, invited` : to.name}
                       selected={to.key === ownerKey}
-                      disabled={saving}
+                      disabled={saving || to.invited === true}
                       onPress={() => setDraft({ ...draft, owner: to.principal })}
                     />
                   ))}

@@ -86,6 +86,12 @@ export const KinRecordRef = Schema.Struct({
   title: KinTrimmedText,
 });
 export type KinRecordRef = typeof KinRecordRef.Type;
+/** A client or vendor an entry or project is for. `kind` is absent from hosts before it was sent. */
+export const KinPartyRef = Schema.Struct({
+  ...KinRecordRef.fields,
+  kind: Schema.optional(KinPartyKind),
+});
+export type KinPartyRef = typeof KinPartyRef.Type;
 /** `owner/name` on GitHub. */
 export const KinRepoName = Schema.String.check(
   Schema.isPattern(/^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/),
@@ -122,7 +128,7 @@ export const KinRecord = Schema.Struct({
   closedAt: Schema.NullOr(IsoDateTime),
   // Optional below: absent when unset, and from hosts older than the clients slice.
   /** The client or vendor it is for, which makes it part of that client's record. */
-  party: Schema.optional(KinRecordRef),
+  party: Schema.optional(KinPartyRef),
   project: Schema.optional(KinRecordRef),
   repo: Schema.optional(KinRepoName),
   /** True when its project or client is labelled sensitive, whatever its own label says. */
@@ -568,7 +574,7 @@ export const KinProjectRow = Schema.Struct({
   recordId: KinRecordId,
   key: KinRecordKey,
   name: KinTrimmedText,
-  party: Schema.NullOr(KinRecordRef),
+  party: Schema.NullOr(KinPartyRef),
   /** Who leads it: a person or a lead. */
   owner: KinWorkPrincipal,
   state: KinProjectState,

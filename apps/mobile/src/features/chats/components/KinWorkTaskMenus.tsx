@@ -1,6 +1,7 @@
 import {
   kinWorkDueChoices,
   kinWorkDueLabel,
+  KIN_WORK_ASSIGN,
   KIN_WORK_NEW_COPY,
   type KinWorkAssignee,
   type KinWorkItemView,
@@ -50,6 +51,9 @@ export function KinWorkStatusRow(props: {
               id: `${WAITING}${to.key}`,
               title: to.name,
               state: to.current ? ("on" as const) : ("off" as const),
+              ...(to.invited
+                ? { subtitle: KIN_WORK_ASSIGN.invited, attributes: { disabled: true } }
+                : {}),
             })),
             { id: NOBODY, title: KIN_WORK_COPY.waitingOnNobody },
           ],
@@ -63,7 +67,7 @@ export function KinWorkStatusRow(props: {
         if (event === NOBODY)
           return props.onAct({ type: "state", state: "waiting", waitingOn: null });
         const on = people.find((to) => `${WAITING}${to.key}` === event);
-        if (on !== undefined)
+        if (on !== undefined && on.invited !== true)
           props.onAct({ type: "state", state: "waiting", waitingOn: on.principal });
       }}
     >

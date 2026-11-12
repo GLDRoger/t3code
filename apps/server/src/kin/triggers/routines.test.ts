@@ -196,7 +196,7 @@ it.effect(
     }).pipe(Effect.provide(fixture())),
 );
 
-it.effect("the owner's time zone reschedules routines from the defaults; others are refused", () =>
+it.effect("the owner's time zone reschedules routines from the defaults; only he sets it", () =>
   Effect.gen(function* () {
     yield* seed();
     const routines = yield* Routines.KinRoutines;
@@ -227,8 +227,8 @@ it.effect("the owner's time zone reschedules routines from the defaults; others 
     const input = { orgId: orgA, timeZone: "Asia/Kolkata" };
 
     assert.deepEqual(yield* zones.get(owner, input), { orgId: orgA, timeZone: "UTC" });
-    for (const call of [zones.set(member, input), zones.get(member, input)])
-      assert.include(yield* call.pipe(Effect.flip), { reason: "not_allowed" });
+    assert.include(yield* zones.set(member, input).pipe(Effect.flip), { reason: "not_allowed" });
+    assert.deepEqual(yield* zones.get(member, input), { orgId: orgA, timeZone: "UTC" });
     assert.include(
       yield* zones.set(owner, { ...input, timeZone: "Mars/Olympus" }).pipe(Effect.flip),
       { reason: "invalid_state" },

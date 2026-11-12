@@ -152,6 +152,10 @@ describe("command permissions", () => {
     [KIN_CHAT_WS_METHODS.chatsMute, AuthKinChatScope],
     // A person's own leads are part of their chat list.
     ["kin.leads.list", AuthKinChatScope],
+    // A teammate's app shows that Kin is stopped and due times in the owner's zone.
+    ["kin.org.get", AuthKinChatScope],
+    ["kin.triggers.getTimeZone", AuthKinChatScope],
+    ["kin.budget.get", AuthOrchestrationReadScope],
     [KIN_PEOPLE_WS_METHODS.peopleCreateInvite, AuthAccessWriteScope],
     [KIN_PEOPLE_WS_METHODS.peopleRevokeDevice, AuthAccessWriteScope],
     [KIN_PEOPLE_WS_METHODS.peopleRevokeInvite, AuthAccessWriteScope],

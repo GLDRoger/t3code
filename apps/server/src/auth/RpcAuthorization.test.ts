@@ -493,6 +493,8 @@ it("a chat-only grant cannot satisfy any non-chat method's declared permission",
     "kin.messages.markRead",
     "kin.messages.react",
     "kin.messages.send",
+    // Whether Kin is stopped; the reason in the owner's words reaches only him.
+    "kin.org.get",
     "kin.orgs.list",
     "kin.people.list",
     "kin.people.setGithubLogin",
@@ -500,6 +502,8 @@ it("a chat-only grant cannot satisfy any non-chat method's declared permission",
     "kin.push.registerDevice",
     "kin.push.unregisterDevice",
     "kin.push.watch",
+    // Read only: setting the zone stays the owner's.
+    "kin.triggers.getTimeZone",
     "kin.widgets.act",
   ]);
   // Kin schedules live in T3's scheduled tasks: a teammate's session reaches none of them.
