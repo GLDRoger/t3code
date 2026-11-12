@@ -156,6 +156,9 @@ export const SHARED_TOOLS = {
   money_summary: "refused",
   dates_query: "refused",
   company_profile: "refused",
+  // A statement is the owner's bank account; reading one marks the turn as a sensitive read.
+  statement_read: "refused",
+  statement_rows: "refused",
   // Generated files, recipes and issued numbers read and make the owner's records and money.
   kin_document: "refused",
   kin_recipes: "refused",

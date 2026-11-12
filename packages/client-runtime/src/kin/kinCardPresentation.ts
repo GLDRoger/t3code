@@ -2,6 +2,8 @@
 import {
   KIN_DOC_CARD,
   KIN_MEMORY_CHANGES_CARD,
+  KIN_STATEMENT_PASSWORD_CARD,
+  KIN_STATEMENT_REVIEW_CARD,
   KIN_WORKER_PUBLISH_CARD,
   KinWorkerPublishCard,
   KinReminderCard,
@@ -32,6 +34,12 @@ import {
   kinDeferralIsBookkeeping,
   type KinDeferralCardView,
 } from "./kinDeferralPresentation.ts";
+import {
+  kinStatementPasswordView,
+  kinStatementReviewView,
+  type KinStatementPasswordView,
+  type KinStatementReviewView,
+} from "./kinStatementPresentation.ts";
 import {
   kinMemoryChangesView,
   type KinMemoryChangesCardView,
@@ -69,6 +77,8 @@ export type KinCardView =
   | { readonly kind: "memory_changes"; readonly changes: KinMemoryChangesCardView }
   | { readonly kind: "approval"; readonly approval: KinApprovalWidgetView }
   | { readonly kind: "doc"; readonly doc: KinDocCardView }
+  | { readonly kind: "statement_review"; readonly review: KinStatementReviewView }
+  | { readonly kind: "statement_password"; readonly password: KinStatementPasswordView }
   | { readonly kind: "missing" }
   /** A card this build can't draw: its own plain words, or nothing when it has none. */
   | { readonly kind: "unknown"; readonly text: string | null };
@@ -588,6 +598,14 @@ function kinLiveCardView(
     case KIN_DOC_CARD: {
       const doc = kinDocCardView(widget);
       return doc === null ? unknown(widget) : { kind: "doc", doc };
+    }
+    case KIN_STATEMENT_REVIEW_CARD: {
+      const review = kinStatementReviewView(widget);
+      return review === null ? unknown(widget) : { kind: "statement_review", review };
+    }
+    case KIN_STATEMENT_PASSWORD_CARD: {
+      const password = kinStatementPasswordView(widget);
+      return password === null ? unknown(widget) : { kind: "statement_password", password };
     }
     case KIN_MEMORY_CHANGES_CARD: {
       const changes = kinMemoryChangesView(widget);
