@@ -620,6 +620,27 @@ describe("recipe documents", () => {
       );
       yield* LeadDocuments.make(scope, invoice({ title: "Invoice INV-1 again" }));
       assert.strictEqual(rendered.at(-1)!.request.inputs.title, "October retainer");
+      // TDS the client withheld settles it beside the money that came in, on its own line.
+      const records = yield* KinRecords.KinRecords;
+      const system = { actor: { _tag: "system" as const }, via: "import" as const };
+      for (const [minor, withheld] of [
+        [10_000, true],
+        [90_001, false],
+      ] as const)
+        yield* records.pay(orgId, system, "INV-1", {
+          amount: { minor, currency: "INR" },
+          paidOn: "2026-11-12",
+          originKey: `settle:${minor}`,
+          withheld,
+        });
+      yield* LeadDocuments.make(scope, invoice({ title: "Invoice INV-1 settled" }));
+      assert.deepStrictEqual(
+        [
+          (latestData().paidLines as ReadonlyArray<Record<string, unknown>>).map((one) => one.kind),
+          latestData().balance.text,
+        ],
+        [["tds", "received"], "₹0.00"],
+      );
     }).pipe(Effect.provide(layer)),
   );
 

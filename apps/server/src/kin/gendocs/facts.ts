@@ -335,8 +335,8 @@ const withoutOwnNumber = (title: string, numbers: ReadonlyArray<unknown>) => {
 
 /**
  * An entry's live payments, oldest first, each with its receipt's number and how it settles the
- * entry: an advance (received before `before`, its issue day, or set against it from an advance's
- * receipt), TDS the client deducted, or money received.
+ * entry: TDS the client deducted, an advance (received before `before`, its issue day, or set
+ * against it from an advance's receipt), or money received.
  */
 const entryPayments = Effect.fn("KinDocFacts.entryPayments")(function* (
   orgId: KinOrgId,
@@ -372,10 +372,10 @@ const entryPayments = Effect.fn("KinDocFacts.entryPayments")(function* (
     amount: { minor: row.minor, currency: row.currency },
     paidOn: row.paidOn,
     kind:
-      row.paidOn < before || row.originKey.startsWith("receipt:")
-        ? "advance"
-        : row.withheld === 1
-          ? "tds"
+      row.withheld === 1
+        ? "tds"
+        : row.paidOn < before || row.originKey.startsWith("receipt:")
+          ? "advance"
           : "received",
   }));
 });
