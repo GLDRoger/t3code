@@ -405,6 +405,17 @@ it.effect.each([true, false])(
         const text = yield* Effect.promise(() => HttpServerResponse.toWeb(result).text());
         assert.include(text, "Production composition");
         assert.notInclude(text, '"isError":true');
+        // Off unless the host switches it on: the page a visual draws is not fully sealed yet.
+        const visual = yield* request(
+          "/kin/mcp",
+          issued.config.authorizationHeader,
+          "tools/call",
+          { name: "kin_visual", arguments: { title: "Flow", html: "<p>Flow</p>" } },
+          initialized.headers["mcp-session-id"],
+        );
+        const refusal = yield* Effect.promise(() => HttpServerResponse.toWeb(visual).text());
+        assert.include(refusal, "not switched on");
+        assert.include(refusal, '"isError":true');
         const agentSessions = Context.get(services, KinAgentSessions);
         assert.isUndefined(yield* registry.resolve(issued.config.authorizationHeader.slice(7)));
         const caller = yield* agentSessions.resolveAgent(

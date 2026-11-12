@@ -2,6 +2,7 @@
 import * as NodeCrypto from "node:crypto";
 import { KinChatError, KinWakeupId } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
+import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -15,6 +16,13 @@ import { quote } from "../LeadPrompt.ts";
 import { LeadMemory, resolveLead } from "../LeadMemory.ts";
 import { KinWorkers } from "../Workers.ts";
 import { KinLeadToolkit } from "./tools.ts";
+
+// Off until the host says so: a page can still reach the network through WebRTC and preconnect,
+// which no browser lets a policy close (see docs/kin/specs/chat.md, "Visuals").
+const visualsOn = Config.Boolean("KIN_VISUALS").pipe(
+  Config.withDefault(false),
+  Effect.orElseSucceed(() => false),
+);
 
 const isKinChatError = Schema.is(KinChatError);
 const failure = (error: unknown) =>
@@ -94,6 +102,12 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
   ),
   kin_visual: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.visual")(function* (input) {
+      if (!(yield* visualsOn))
+        return yield* new KinChatError({
+          reason: "unavailable",
+          message:
+            "Visuals are not switched on for this server yet. Send a kin_chart if one of its kinds fits, or say it in text.",
+        });
       const lead = yield* resolveLead(yield* McpInvocationContext);
       const wakeupId = KinWakeupId.make(lead.wakeupId);
       const lane = yield* laneFor({ orgId: lead.orgId, agentId: lead.agentId, wakeupId });

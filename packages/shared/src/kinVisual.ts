@@ -117,7 +117,7 @@ export function kinVisualContentSecurityPolicy(
     "object-src 'none'",
     "base-uri 'none'",
     "form-action 'none'",
-    // Chromium only. Elsewhere a page can still reach a STUN server; see the Kin visuals doc.
+    // Browsers do not enforce this yet, so a page can still reach a STUN server: docs/kin/specs/chat.md.
     "webrtc 'block'",
     SANDBOX,
   ].join("; ");
