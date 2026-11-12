@@ -280,7 +280,8 @@ export interface KinReceiptView {
   readonly applied: string | null;
   readonly invoice: KinRecordKey | null;
   /** An advance not yet set against an invoice: the owner can. */
-  readonly settable: { readonly party: KinRecordKey | null } | null;
+  /** Only an advance from a client: Kin sets one only against that client's own invoice. */
+  readonly settable: { readonly party: KinRecordKey } | null;
   readonly document: KinRecordKey | null;
 }
 
@@ -305,9 +306,10 @@ export function kinReceiptView(receipt: KinReceipt, now: Date): KinReceiptView {
           ? KIN_RECEIPTS.unapplied
           : null,
     invoice: receipt.invoice,
-    settable: unapplied
-      ? { party: (receipt.receivedFrom?.key as KinRecordKey | undefined) ?? null }
-      : null,
+    settable:
+      unapplied && receipt.receivedFrom !== null
+        ? { party: receipt.receivedFrom.key as KinRecordKey }
+        : null,
     document: (receipt.document?.key as KinRecordKey | undefined) ?? null,
   };
 }

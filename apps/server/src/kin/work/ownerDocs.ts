@@ -311,7 +311,7 @@ export const recipes = Effect.fn("KinDocs.recipes")(function* (
       list: recipe.list,
       numbered: recipe.numbered,
       sensitive: recipe.sensitive,
-      ...(labelled[index] === true ? { labelled: true as const } : {}),
+      ...(labelled[index] === true ? { labelled: true as const, files: [...recipe.files] } : {}),
       changedAt: recipe.changedAt === null ? null : iso(recipe.changedAt),
       changedBy: recipe.changed,
       commit: recipe.commit,

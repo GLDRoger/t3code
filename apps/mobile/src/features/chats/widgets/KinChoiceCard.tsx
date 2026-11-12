@@ -2,16 +2,18 @@ import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, KinPersonId } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
+import { Image as ExpoImage } from "expo-image";
 import { memo, useRef, useState } from "react";
-import { Image } from "expo-image";
 import { View } from "react-native";
 
+import { AppActivityIndicator } from "../../../components/ui/AppActivityIndicator";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { Button } from "../../../components/ui/Button";
 import { cn } from "../../../lib/cn";
+import { assetImageSource } from "../../../lib/assetImageSource";
 import { useNowMinuteMs } from "../../../lib/clock";
 import { uuidv4 } from "../../../lib/uuid";
-import { useAssetUrlState } from "../../../state/assets";
+import { useAssetUrl, useRefreshAssetUrl } from "../../../state/assets";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
 import {
@@ -27,6 +29,53 @@ import {
   visibleKinCardStatus,
   type KinCardStatus,
 } from "@t3tools/client-runtime/kin/kinDeferralPresentation";
+
+// A mid grey: a white logo and a black one both stand out on it, in light and dark themes.
+const IMAGE_GROUND = "#8c8c8c";
+
+/** The card's picture, such as a logo to confirm, at a bounded size. */
+function ChoiceImage(props: {
+  readonly environmentId: EnvironmentId;
+  readonly image: NonNullable<KinChoiceCardView["image"]>;
+}) {
+  const { image } = props;
+  const resource = {
+    _tag: "attachment" as const,
+    attachmentId: image.attachmentId,
+    fileName: `image.${image.mimeType.split("/")[1]?.replace("svg+xml", "svg") ?? "png"}`,
+    mimeType: image.mimeType,
+  };
+  const uri = useAssetUrl(props.environmentId, resource);
+  const refresh = useRefreshAssetUrl(props.environmentId, resource);
+  const retried = useRef(false);
+  const [failed, setFailed] = useState(false);
+  return (
+    <View
+      className="h-28 items-center justify-center overflow-hidden rounded-xl border border-border p-3"
+      style={{ backgroundColor: IMAGE_GROUND }}
+    >
+      {failed ? (
+        <Text textRole="footnote" className="text-center text-white">
+          The picture couldn't load. Open the chat to see the file.
+        </Text>
+      ) : uri === null ? (
+        <AppActivityIndicator />
+      ) : (
+        <ExpoImage
+          source={assetImageSource(props.environmentId, resource, uri)}
+          contentFit="contain"
+          accessibilityLabel="The picture this question is about"
+          style={{ width: "100%", height: "100%" }}
+          onError={() => {
+            if (retried.current) return setFailed(true);
+            retried.current = true;
+            void refresh();
+          }}
+        />
+      )}
+    </View>
+  );
+}
 
 /** A lead's question with 2-4 answers. The owner's tap is their reply; it never approves anything. */
 export const KinChoiceCard = memo(function KinChoiceCard(props: {
@@ -103,7 +152,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
         )}
       </View>
       {choice.image === null ? null : (
-        <KinChoiceImage environmentId={environmentId} image={choice.image} />
+        <ChoiceImage environmentId={environmentId} image={choice.image} />
       )}
       {answerText !== null ? (
         <Text
@@ -159,26 +208,3 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
     </View>
   );
 });
-
-function KinChoiceImage(props: {
-  readonly environmentId: EnvironmentId;
-  readonly image: NonNullable<KinChoiceCardView["image"]>;
-}) {
-  const asset = useAssetUrlState(props.environmentId, {
-    _tag: "attachment",
-    attachmentId: props.image.attachmentId,
-    mimeType: props.image.mimeType,
-  });
-  return (
-    <View className="h-36 overflow-hidden rounded-xl border border-border bg-white">
-      {asset._tag === "Success" ? (
-        <Image
-          source={{ uri: asset.url }}
-          contentFit="contain"
-          accessibilityLabel="The picture this asks about"
-          style={{ flex: 1, margin: 8 }}
-        />
-      ) : null}
-    </View>
-  );
-}

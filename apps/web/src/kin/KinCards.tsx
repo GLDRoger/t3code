@@ -43,10 +43,11 @@ import { AsyncResult } from "effect/reactivity";
 import { SmartphoneIcon } from "lucide-react";
 import { memo, useRef, useState, type ReactNode } from "react";
 
+import { useAssetUrls } from "../assets/assetUrls";
+import { AttachmentImage } from "../components/media/AttachmentImage";
 import { environmentCatalog } from "../connection/catalog";
 import { useNowMinuteMs } from "./useKinClock";
 import { cn, randomUUID } from "../lib/utils";
-import { useAssetUrls } from "../assets/assetUrls";
 import { useAtomCommand } from "../state/use-atom-command";
 import { Button } from "../components/ui/button";
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
@@ -413,21 +414,43 @@ function KinChoiceCard(props: {
   );
 }
 
+/**
+ * The card's picture, such as a logo to confirm, at a bounded size on a mid grey that a white
+ * logo and a black one both stand out on. Its bytes load from the viewer's signed asset URL.
+ */
 function KinChoiceImage(props: {
   readonly environmentId: EnvironmentId;
   readonly image: NonNullable<KinChoiceCardView["image"]>;
 }) {
-  const [url] = useAssetUrls(props.environmentId, [
-    { _tag: "attachment", attachmentId: props.image.attachmentId, mimeType: props.image.mimeType },
+  const { image } = props;
+  const name = `image.${image.mimeType.split("/")[1]?.replace("svg+xml", "svg") ?? "png"}`;
+  const [src] = useAssetUrls(props.environmentId, [
+    {
+      _tag: "attachment",
+      attachmentId: image.attachmentId,
+      fileName: name,
+      mimeType: image.mimeType,
+    },
   ]);
-  return url === undefined || url === null ? (
-    <div aria-hidden className="h-24 w-full rounded-md bg-muted" />
-  ) : (
-    <img
-      src={url}
-      alt="The picture this asks about"
-      className="max-h-40 w-full rounded-md border border-border bg-white object-contain p-2"
-    />
+  const [failed, setFailed] = useState(false);
+  return (
+    <div className="flex h-28 items-center justify-center overflow-hidden rounded-md border border-border/80 bg-image-ground p-3">
+      {failed ? (
+        <p className="rounded bg-background/90 px-2 py-1 text-xs text-muted-foreground">
+          The picture couldn't load. Open the chat to see the file.
+        </p>
+      ) : src == null ? null : (
+        <AttachmentImage
+          name={name}
+          mimeType={image.mimeType}
+          src={src}
+          alt="The picture this question is about"
+          decoding="async"
+          onError={() => setFailed(true)}
+          className="max-h-full max-w-full object-contain"
+        />
+      )}
+    </div>
   );
 }
 

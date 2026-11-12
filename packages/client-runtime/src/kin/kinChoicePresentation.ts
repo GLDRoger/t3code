@@ -54,10 +54,7 @@ export function kinChoiceCardView(widget: KinWidget): KinChoiceCardView | null {
     question: line(card.question),
     detail: card.detail === null || card.detail.trim() === "" ? null : card.detail.trim(),
     options,
-    image:
-      card.image === undefined
-        ? null
-        : { attachmentId: card.image.attachmentId, mimeType: card.image.mimeType },
+    image: card.image === undefined ? null : card.image,
     answer:
       card.answer === null
         ? null

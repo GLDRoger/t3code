@@ -15,11 +15,13 @@ import {
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 
 import { takeLogo } from "../gendocs/brand.ts";
+import { KinDocRenderer } from "../gendocs/render.ts";
 import { turnChat } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { attachChangeCard, changeLines, proposeChange, readProfile } from "./companyProfile.ts";
@@ -468,6 +470,16 @@ const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof Profil
       typeof logoId === "string"
         ? yield* takeLogo(lead.orgId, (yield* writerFor(lead)).chatId, logoId)
         : undefined;
+    // Drawn once as documents draw it, where Typst is here already, so the card shows a real logo.
+    const renderer = yield* Effect.serviceOption(KinDocRenderer);
+    const undrawable =
+      taken === undefined || Option.isNone(renderer)
+        ? undefined
+        : yield* renderer.value.drawable({ bytes: taken.bytes, extension: taken.extension });
+    if (undrawable !== undefined)
+      return yield* invalid(
+        `That logo can't be used: it didn't draw (${undrawable}). Send it again or as a PNG. Nothing changed.`,
+      );
     const patch = {
       ...fields,
       ...(logoId === undefined ? {} : { logo: taken?.logo ?? null }),

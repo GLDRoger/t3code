@@ -1,5 +1,6 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous content hash; Digest would add a service to every caller.
 import * as NodeCrypto from "node:crypto";
+import * as NodeZlib from "node:zlib";
 import { KinChatError, type KinCompanyLogo, type KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -106,6 +107,128 @@ const checkLogo = (
   return { sniffed, ...size };
 };
 
+const CUT = "it is cut short or damaged; send the file again";
+const PNG_CHANNELS: Readonly<Record<number, number>> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
+const ADAM7 = [
+  [0, 0, 8, 8],
+  [4, 0, 8, 8],
+  [0, 4, 4, 8],
+  [2, 0, 4, 4],
+  [0, 2, 2, 4],
+  [1, 0, 2, 2],
+  [0, 1, 1, 2],
+] as const;
+
+/** How many bytes `data` inflates to, counted as it goes and never past `cap`; none if it can't. */
+const inflatedLength = (data: Uint8Array, cap: number) =>
+  Effect.promise(
+    () =>
+      new Promise<number | undefined>((resolve) => {
+        const inflate = NodeZlib.createInflate();
+        let total = 0;
+        inflate.on("data", (chunk: Uint8Array) => {
+          total += chunk.length;
+          if (total > cap) {
+            inflate.destroy();
+            resolve(total);
+          }
+        });
+        inflate.on("end", () => resolve(total));
+        inflate.on("error", () => resolve(undefined));
+        inflate.end(data);
+      }),
+  );
+
+/** Why a PNG's chunks or image data don't hold together, or `undefined`. */
+const pngProblem = Effect.fn("KinBrand.pngProblem")(function* (bytes: Uint8Array) {
+  let at = 8;
+  let header:
+    | { width: number; height: number; depth: number; color: number; laced: boolean }
+    | undefined;
+  const data: Array<Uint8Array> = [];
+  let ended = false;
+  while (!ended && at + 12 <= bytes.length) {
+    const length = u32(bytes, at);
+    const end = at + 12 + length;
+    if (end > bytes.length) return CUT;
+    if (NodeZlib.crc32(bytes.subarray(at + 4, end - 4)) !== u32(bytes, end - 4)) return CUT;
+    const type = String.fromCharCode(...bytes.subarray(at + 4, at + 8));
+    const body = bytes.subarray(at + 8, end - 4);
+    if (type === "IHDR" && length >= 13)
+      header = {
+        width: u32(body, 0),
+        height: u32(body, 4),
+        depth: body[8]!,
+        color: body[9]!,
+        laced: body[12] === 1,
+      };
+    else if (type === "IDAT") data.push(body);
+    else if (type === "IEND") ended = true;
+    at = end;
+  }
+  const channels = header === undefined ? undefined : PNG_CHANNELS[header.color];
+  if (!ended || header === undefined || channels === undefined || data.length === 0) return CUT;
+  const { width, height } = header;
+  const row = (pixels: number) =>
+    pixels === 0 ? 0 : 1 + Math.ceil((pixels * channels * header.depth) / 8);
+  const expected = header.laced
+    ? ADAM7.reduce(
+        (sum, [x, y, dx, dy]) =>
+          sum + row(Math.ceil((width - x) / dx)) * Math.max(0, Math.ceil((height - y) / dy)),
+        0,
+      )
+    : row(width) * height;
+  const total = new Uint8Array(data.reduce((sum, part) => sum + part.length, 0));
+  let offset = 0;
+  for (const part of data) {
+    total.set(part, offset);
+    offset += part.length;
+  }
+  const inflated = yield* inflatedLength(total, expected);
+  return inflated === undefined || inflated < expected ? CUT : undefined;
+});
+
+/** Why a JPEG has no whole image: no frame, no scan, or no end after its scan. */
+const jpegProblem = (bytes: Uint8Array) => {
+  let at = 2;
+  let frame = false;
+  while (at + 4 <= bytes.length) {
+    if (bytes[at] !== 0xff) return CUT;
+    const marker = bytes[at + 1]!;
+    if (marker === 0xff) {
+      at += 1;
+      continue;
+    }
+    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+      at += 2;
+      continue;
+    }
+    const length = u16(bytes, at + 2);
+    if (length < 2 || at + 2 + length > bytes.length) return CUT;
+    if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) frame = true;
+    if (marker === 0xda) {
+      const scan = at + 2 + length;
+      // The image ends at its last end marker; a scan with no data, or none, is cut.
+      for (let end = bytes.length - 2; end > scan; end -= 1)
+        if (bytes[end] === 0xff && bytes[end + 1] === 0xd9) return frame ? undefined : CUT;
+      return CUT;
+    }
+    at += 2 + length;
+  }
+  return CUT;
+};
+
+/** Why the logo's bytes don't hold a whole image, read through: `checkLogo` reads only headers. */
+export const decodeProblem = Effect.fn("KinBrand.decodeProblem")(function* (
+  bytes: Uint8Array,
+  mimeType: KinCompanyLogo["mimeType"],
+) {
+  if (mimeType === "image/png") return yield* pngProblem(bytes);
+  if (mimeType === "image/jpeg") return jpegProblem(bytes);
+  const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  return /<\/svg\s*>\s*$/i.test(text) ? undefined : CUT;
+});
+
 export type ChatFile = {
   readonly attachmentId: string;
   readonly mimeType: string | null;
@@ -176,6 +299,9 @@ export const takeLogo = Effect.fn("KinBrand.takeLogo")(function* (
   const checked = checkLogo(read.bytes);
   if ("error" in checked)
     return yield* invalid(`That logo can't be used: ${checked.error}. Nothing changed.`);
+  const broken = yield* decodeProblem(read.bytes, checked.sniffed.mimeType);
+  if (broken !== undefined)
+    return yield* invalid(`That logo can't be used: ${broken}. Nothing changed.`);
   const sha256 = NodeCrypto.createHash("sha256").update(read.bytes).digest("hex");
   const base = createDeterministicAttachmentId("kin-chat", `${orgId}:logo:${sha256}`);
   const fs = yield* FileSystem.FileSystem;
@@ -197,7 +323,12 @@ export const takeLogo = Effect.fn("KinBrand.takeLogo")(function* (
     height: checked.height,
     sha256,
   };
-  return { logo, shown: { attachmentId: file.attachmentId, mimeType: checked.sniffed.mimeType } };
+  return {
+    logo,
+    bytes: read.bytes,
+    extension: checked.sniffed.extension,
+    shown: { attachmentId: file.attachmentId, mimeType: checked.sniffed.mimeType },
+  };
 });
 
 /** Where the logo's file is, checked again against what the profile holds; `null` if gone or changed. */
