@@ -16,6 +16,7 @@ import {
 import {
   KIN_WORK_COPY,
   kinWorkApplied,
+  kinWorkItemNotice,
   type KinWorkNotice,
 } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
@@ -207,7 +208,7 @@ function KinWorkItemBody(props: ItemTarget) {
     place,
   );
   const saving = changed.pending[itemKey] !== undefined;
-  const notice = changed.notice?.key === itemKey ? changed.notice : null;
+  const notice = kinWorkItemNotice(changed, item);
   // An older host reads and hands over; everything else needs one that takes changes.
   const act =
     canChange && view.editable

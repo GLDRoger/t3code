@@ -317,7 +317,6 @@ function KinProjectSummary(props: {
           <ListRow
             icon="person.2"
             label={party.title}
-            detail="Client"
             onPress={() => props.onOpenClient(party.key)}
           />
         </ListSection>

@@ -209,12 +209,18 @@ function useKinPagedList<Filter extends { readonly text: string }, Row>(
 }
 
 /** The clients list: active or closed, by name, a page at a time. */
-export function useKinClientsList({ environmentId, orgId }: KinWorkTarget, seq: number | null) {
+export function useKinClientsList(
+  { environmentId, orgId }: KinWorkTarget,
+  seq: number | null,
+  /** What the search bar already holds when the list opens. */
+  text = "",
+) {
+  const initial = { ...KIN_CLIENTS_DEFAULT_FILTER, text };
   return useKinPagedList<KinClientsFilter, KinPartyRow>(
-    KIN_CLIENTS_DEFAULT_FILTER,
+    initial,
     (onChange) =>
       createKinPagedList({
-        initial: KIN_CLIENTS_DEFAULT_FILTER,
+        initial,
         sameFilter: kinClientsSameFilter,
         idOf: (row) => row.recordId,
         onChange,
@@ -233,12 +239,18 @@ export function useKinClientsList({ environmentId, orgId }: KinWorkTarget, seq: 
 }
 
 /** The projects list: under way, done or dropped, soonest target first. */
-export function useKinProjectsList({ environmentId, orgId }: KinWorkTarget, seq: number | null) {
+export function useKinProjectsList(
+  { environmentId, orgId }: KinWorkTarget,
+  seq: number | null,
+  /** What the search bar already holds when the list opens. */
+  text = "",
+) {
+  const initial = { ...KIN_PROJECTS_DEFAULT_FILTER, text };
   return useKinPagedList<KinProjectsFilter, KinProjectRow>(
-    KIN_PROJECTS_DEFAULT_FILTER,
+    initial,
     (onChange) =>
       createKinPagedList({
-        initial: KIN_PROJECTS_DEFAULT_FILTER,
+        initial,
         sameFilter: kinProjectsSameFilter,
         idOf: (row) => row.recordId,
         onChange,

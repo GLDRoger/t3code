@@ -19,6 +19,7 @@ import {
   createKinWorkItemWatch,
   kinWorkApplied,
   kinWorkEditMoved,
+  kinWorkItemNotice,
   kinWorkListNotice,
 } from "./kinWorkChanges.ts";
 import { KIN_WORK_NOTHING_NAMED, kinWorkNote } from "./kinWorkStream.ts";
@@ -177,6 +178,37 @@ describe("createKinWorkChanges", () => {
     h.answer(AsyncResult.success(task({ rev: 10, title: "Send the invented quote to Acme" })));
     expect(await second).toBe(true);
     expect(h.state()).toMatchObject({ edit: null, notice: { kind: "saved", text: "Saved." } });
+  });
+
+  it("puts a changed due date back, time and all, and says so once", async () => {
+    const h = harness();
+    const held = task({ dueAt: "2026-11-20T15:30:00.000Z", dueAllDay: false });
+    const moved = h.changes.run(held, { type: "due", day: "2026-11-14" }, names);
+    h.answer(AsyncResult.success(task({ dueAt: "2026-11-14T12:00:00.000Z", rev: 4 })));
+    expect(await moved).toBe(true);
+    expect(h.state().notice).toMatchObject({
+      text: "Due date changed.",
+      undo: { type: "dueBack" },
+    });
+
+    const undone = h.changes.undo(names);
+    expect(h.sent[1]).toEqual([
+      "update",
+      { orgId, key: "W-1", rev: 4, dueAt: "2026-11-20T15:30:00.000Z", dueAllDay: false },
+    ]);
+    h.answer(AsyncResult.success(task({ ...held, rev: 5 })));
+    await undone;
+    expect(h.state().notice).toMatchObject({ text: "Due date put back.", undo: null });
+  });
+
+  it("drops a task's notice once a later change to it, such as Give to, is held", async () => {
+    const h = harness();
+    const moved = h.changes.run(task(), { type: "due", day: "2026-11-14" }, names);
+    h.answer(AsyncResult.success(task({ rev: 4 })));
+    await moved;
+    expect(kinWorkItemNotice(h.state(), task({ rev: 4 }))).toMatchObject({ kind: "saved" });
+    expect(kinWorkItemNotice(h.state(), task({ rev: 5, owner: lead }))).toBeNull();
+    expect(kinWorkItemNotice(h.state(), task({ key: "W-2" }))).toBeNull();
   });
 
   it("sends nothing while offline, and queues nothing for later", async () => {

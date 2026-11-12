@@ -277,7 +277,11 @@ export function KinClientsList(props: ListProps) {
   const { environmentId, orgId } = props;
   const canAdd = useAtomValue(kinClient.workClientCreate.permissionAtom(environmentId));
   const now = new Date(useNowMinuteMs());
-  const { state, list } = useKinClientsList(props, props.stale ? null : props.live.seq);
+  const { state, list } = useKinClientsList(
+    props,
+    props.stale ? null : props.live.seq,
+    props.areas.words,
+  );
   const { filter } = state;
   return (
     <NamedList
@@ -296,7 +300,10 @@ export function KinClientsList(props: ListProps) {
       }}
       extra={state}
       search={{ text: filter.text, placeholder: KIN_CLIENTS.search }}
-      onSearch={(text) => list.setFilter({ ...filter, text })}
+      onSearch={(text) => {
+        props.areas.onWords(text);
+        list.setFilter({ ...filter, text });
+      }}
       views={[
         {
           id: "active",
@@ -333,7 +340,11 @@ export function KinProjectsList(props: ListProps) {
   const { environmentId, orgId } = props;
   const canAdd = useAtomValue(kinClient.workProjectCreate.permissionAtom(environmentId));
   const now = new Date(useNowMinuteMs());
-  const { state, list } = useKinProjectsList(props, props.stale ? null : props.live.seq);
+  const { state, list } = useKinProjectsList(
+    props,
+    props.stale ? null : props.live.seq,
+    props.areas.words,
+  );
   const { filter } = state;
   return (
     <NamedList
@@ -352,7 +363,10 @@ export function KinProjectsList(props: ListProps) {
       }}
       extra={state}
       search={{ text: filter.text, placeholder: KIN_PROJECTS.search }}
-      onSearch={(text) => list.setFilter({ ...filter, text })}
+      onSearch={(text) => {
+        props.areas.onWords(text);
+        list.setFilter({ ...filter, text });
+      }}
       views={KIN_PROJECT_VIEWS.map((view) => ({
         id: view.id,
         label: view.label,

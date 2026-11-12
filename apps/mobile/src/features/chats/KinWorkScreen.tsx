@@ -211,10 +211,11 @@ function KinWorkStates(
   const directory = useKinWorkDirectory(target, ready);
   const choices = useKinWorkChoices(target, ready && hostClients);
   const [area, setArea] = useState(props.start);
+  const [words, setWords] = useState("");
   if (state._tag === "ready") {
     const shared = { ...target, live: state.live, stale: state.stale, directory };
     // An older server has tasks only: no switch, and a link to clients says why.
-    const areas = hostClients ? { area, onArea: setArea } : null;
+    const areas = hostClients ? { area, onArea: setArea, words, onWords: setWords } : null;
     if (area !== "tasks" && !hostClients) {
       return (
         <KinWorkMessage>
@@ -235,7 +236,12 @@ function KinWorkStates(
         onBack={() => navigation.goBack()}
         areas={areas}
         choices={hostClients ? choices : null}
-        initial={{ ...KIN_WORK_DEFAULT_FILTER, party: props.party, project: props.project }}
+        initial={{
+          ...KIN_WORK_DEFAULT_FILTER,
+          party: props.party,
+          project: props.project,
+          text: areas?.words ?? "",
+        }}
       />
     );
   }
@@ -383,7 +389,10 @@ export function KinWorkTaskList(
           onBack: props.onBack,
           search: {
             value: filter.text,
-            onChangeText: (text) => list.setFilter({ ...filter, text }),
+            onChangeText: (text) => {
+              props.areas?.onWords(text);
+              list.setFilter({ ...filter, text });
+            },
             placeholder: KIN_WORK_SEARCH_PLACEHOLDER,
             closeAccessibilityLabel: "Close search",
             clearAccessibilityLabel: "Clear search",

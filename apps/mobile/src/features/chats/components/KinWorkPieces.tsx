@@ -63,6 +63,9 @@ export function KinWorkFrame(
 export type KinWorkAreas = {
   readonly area: KinWorkArea;
   readonly onArea: (area: KinWorkArea) => void;
+  /** The search bar keeps its words across parts, so each part searches with them too. */
+  readonly words: string;
+  readonly onWords: (words: string) => void;
 };
 
 /** Tasks, clients or projects: the three parts of Work, at the head of each list. */
