@@ -26,6 +26,7 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Vcs from "../../vcs/VcsProcess.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { sharedToolAllowed } from "../lead/SharedTools.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -79,7 +80,43 @@ const chat = Layer.mock(KinChatService)({
       cards.push({ documents: input.documents, lastError: input.lastError });
     }).pipe(Effect.as({} as never)),
 });
-const base = Layer.mergeAll(KinRecords.layer, identity).pipe(
+// Kin's card for the owner, stored as the chat service stores a lead's question; no level gate here.
+const gate = Layer.unwrap(
+  Effect.map(SqlClient.SqlClient, (sql) =>
+    Layer.mock(KinLevelGate)({
+      ask: (agent, input) =>
+        Effect.gen(function* () {
+          const messageId = `card-${input.clientMessageId}`;
+          const widgetId = `choice:${messageId}`;
+          const [{ seq }] = (yield* sql<{ seq: number }>`SELECT 1000 + COUNT(*) AS seq
+            FROM kin_widgets`) as [{ seq: number }];
+          const state = {
+            question: input.question,
+            detail: input.detail ?? null,
+            options: input.options.map((option, index) => ({
+              optionId: `option-${index + 1}`,
+              ...option,
+            })),
+            answer: null,
+          };
+          yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+              author_agent_id, author_owner_person_id, author_thread_id, author_member_id,
+              author_role, kind, body, mentions_json, status, created_at, client_message_id)
+            VALUES (${messageId}, ${agent.orgId}, ${input.chatId}, ${seq}, 'agent', ${agent.agentId},
+              ${ownerId}, 'lead-thread', 'lead-chat-lead', 'member', 'text', '', '[]', 'posted',
+              ${at}, ${`send:${input.clientMessageId}`})
+            ON CONFLICT DO NOTHING`;
+          yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class,
+              type, revision, state_json, awaiting_json, updated_at)
+            VALUES (${widgetId}, ${agent.orgId}, ${input.chatId}, ${messageId}, 'native', 'choice', 1,
+              ${JSON.stringify(state)}, ${JSON.stringify([ownerId])}, ${at})
+            ON CONFLICT DO NOTHING`;
+          return { widgetId } as never;
+        }).pipe(Effect.orDie),
+    }),
+  ),
+);
+const base = Layer.mergeAll(KinRecords.layer, identity, gate).pipe(
   Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),
   Layer.provideMerge(Sqlite.layerMemory),

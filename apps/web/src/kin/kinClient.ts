@@ -8,6 +8,7 @@ import {
   retryKinProbe,
   type KinSynced,
 } from "@t3tools/client-runtime/kin/kinStreams";
+import { KIN_DOCS_LABEL, kinDocsLiveStream } from "@t3tools/client-runtime/kin/kinDocsStream";
 import { KIN_WORK_LABEL, kinWorkLiveStream } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type { KinChatState } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
@@ -17,12 +18,18 @@ import {
   environmentSessionGenerationAtom,
 } from "@t3tools/client-runtime/state/runtime";
 import {
+  KIN_APPROVAL_WS_METHODS,
   KIN_CHAT_WS_METHODS,
   KIN_PEOPLE_WS_METHODS,
   type EnvironmentId,
+  type KinApprovalsOrgInput,
   type KinChatHistoryInput,
   type KinChatId,
   type KinChatMembersInput,
+  type KinDocDiffInput,
+  type KinDocGetInput,
+  type KinDocsListInput,
+  type KinDocsSubscribeInput,
   type KinMemoryListInput,
   type KinPeopleListInput,
   type KinLeadAccessInput,
@@ -31,6 +38,7 @@ import {
   type KinOwnerTimeZoneGetInput,
   type KinOrgId,
   type KinPartyPageInput,
+  type KinVisualHostsInput,
   type KinProjectPageInput,
   type KinWorkGetInput,
   type KinWorkSubscribeInput,
@@ -76,6 +84,12 @@ function guardedRead<Input, A, E>(command: {
     });
 }
 
+const approverKeysRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:approver-keys:read",
+  tag: KIN_APPROVAL_WS_METHODS.listKeys,
+});
+const readApproverKeys = guardedRead(approverKeysRead);
+
 const leadsRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "kin:leads:read",
   tag: "kin.leads.list",
@@ -86,6 +100,12 @@ const leadAccessRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   tag: "kin.lead.access.list",
 });
 const readLeadAccess = guardedRead(leadAccessRead);
+
+const visualHostsRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:visual-hosts:read",
+  tag: "kin.visuals.hosts.list",
+});
+const readVisualHosts = guardedRead(visualHostsRead);
 
 const membersRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "kin:chat-members:read",
@@ -163,6 +183,22 @@ const workLive = createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, 
       ),
     ),
 });
+
+const docsListRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:docs:list:read",
+  tag: "kin.docs.list",
+});
+const readDocsList = guardedRead(docsListRead);
+const docRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:docs:doc:read",
+  tag: "kin.docs.get",
+});
+const readDoc = guardedRead(docRead);
+const docDiffRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:docs:diff:read",
+  tag: "kin.docs.diff",
+});
+const readDocDiff = guardedRead(docDiffRead);
 
 const readOrgs = guardedRead(orgsRead);
 const readLeads = guardedRead(leadsRead);
@@ -249,6 +285,27 @@ export const kinClient = {
       environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
   }),
   leads,
+  /** The phones that approve, and those waiting to be allowed with their match numbers. */
+  approverKeys: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:approver-keys",
+    execute: Effect.fn("KinWebClient.approverKeys")(function* (input: KinApprovalsOrgInput) {
+      return yield* readApproverKeys(input);
+    }),
+    staleTimeMs: 10_000,
+    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
+      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  approverKeyAllow: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:approver-key:allow",
+    tag: KIN_APPROVAL_WS_METHODS.allowKey,
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.thumbprint },
+  }),
+  /** Decline for a waiting phone, Remove for one that approves. */
+  approverKeyRevoke: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:approver-key:revoke",
+    tag: KIN_APPROVAL_WS_METHODS.revokeKey,
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.thumbprint },
+  }),
   leadCreate: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:lead:create",
     tag: "kin.lead.create",
@@ -282,6 +339,26 @@ export const kinClient = {
     staleTimeMs: 30_000,
     refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
       environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  /** The outside hosts the owner lets visuals load from. Owner only. */
+  visualHosts: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:visual-hosts",
+    execute: Effect.fn("KinWebClient.visualHosts")(function* (input: KinVisualHostsInput) {
+      return yield* readVisualHosts(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
+      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  visualHostAllow: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:visual-hosts:allow",
+    tag: "kin.visuals.hosts.allow",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.host}` },
+  }),
+  visualHostRemove: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:visual-hosts:remove",
+    tag: "kin.visuals.hosts.remove",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.host}` },
   }),
   leadAllow: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:lead-access:allow",
@@ -543,6 +620,59 @@ export const kinClient = {
   workProjectUpdate: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:work:project:update",
     tag: "kin.work.updateProject",
+  }),
+  /** Docs' change number, kept current by the host's own announcements. */
+  docsLive: createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {
+    label: KIN_DOCS_LABEL,
+    subscribe: (input: KinDocsSubscribeInput) => kinDocsLiveStream(input),
+  }),
+  /** One page of docs; the list's controller decides when. Its `permissionAtom` gates Docs. */
+  docsList: docsListRead,
+  /** The docs linked to one client or one project, on that client's or project's page. */
+  docsUnder: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:docs:under",
+    execute: Effect.fn("KinWebClient.docsUnder")(function* (input: KinDocsListInput) {
+      return yield* readDocsList(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
+      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  /** A doc at one version, with its outline. */
+  doc: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:docs:doc",
+    execute: Effect.fn("KinWebClient.doc")(function* (input: KinDocGetInput) {
+      return yield* readDoc(input);
+    }),
+    staleTimeMs: 30_000,
+    // Read again on reconnecting; between those, the reader's watch reads only when it changed.
+    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
+      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  /** What differs between two versions, as a patch. Versions never change, so neither does this. */
+  docDiff: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:docs:diff",
+    execute: Effect.fn("KinWebClient.docDiff")(function* (input: KinDocDiffInput) {
+      return yield* readDocDiff(input);
+    }),
+    staleTimeMs: 5 * 60_000,
+    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
+      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  /** A page of a doc's versions, newest first. */
+  docHistory: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:docs:history:read",
+    tag: "kin.docs.history",
+  }),
+  docRestore: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:docs:restore",
+    tag: "kin.docs.restore",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+  }),
+  /** One search over tasks, clients, contacts, projects and docs. */
+  search: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:search",
+    tag: "kin.search",
   }),
   workCreate: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:work:create",

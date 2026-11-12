@@ -35,6 +35,7 @@ import {
 } from "./kinChat.ts";
 import { KinPushRpcs, KIN_PUSH_RPC_SCOPES } from "./kinPush.ts";
 import { KinPeopleRpcs, KIN_PEOPLE_RPC_SCOPES } from "./kinPeople.ts";
+import { KinVisualRpcs, KIN_VISUAL_RPC_SCOPES } from "./kinVisual.ts";
 import { KinWorkerNetworkRpcs, KIN_WORKER_NETWORK_RPC_SCOPES } from "./kinWorkerNetwork.ts";
 import {
   KinGithubWebhookOrgInput,
@@ -166,6 +167,7 @@ export const KinChatAndBudgetRpcs = [
   ...KinOrgRpcs,
   ...KinLeadRpcs,
   ...KinTimeZoneRpcs,
+  ...KinVisualRpcs,
 ] as const;
 export const KinRpcs = [
   ...KinChatAndBudgetRpcs,
@@ -190,6 +192,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_FINANCE_RPC_SCOPES,
   ...KIN_PUSH_RPC_SCOPES,
   ...KIN_PEOPLE_RPC_SCOPES,
+  ...KIN_VISUAL_RPC_SCOPES,
   ...KIN_WORKER_NETWORK_RPC_SCOPES,
   "kin.budget.get": AuthOrchestrationReadScope,
   "kin.budget.set": AuthSettingsWriteScope,
@@ -279,6 +282,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.approvals.registerKey": "kin-approvals",
   "kin.approvals.listKeys": "kin-approvals",
   "kin.approvals.revokeKey": "kin-approvals",
+  "kin.approvals.allowKey": "kin-approvals",
   "kin.audit.list": "kin-approvals",
   "kin.audit.verify": "kin-approvals",
   "kin.levels.get": "kin-levels",
@@ -330,6 +334,9 @@ export const KIN_RPC_AGGREGATES = {
   "kin.push.registerDevice": "kin-push",
   "kin.push.unregisterDevice": "kin-push",
   "kin.push.watch": "kin-push",
+  "kin.visuals.hosts.list": "kin-chat",
+  "kin.visuals.hosts.allow": "kin-chat",
+  "kin.visuals.hosts.remove": "kin-chat",
   "kin.triggers.getTimeZone": "kin-triggers",
   "kin.triggers.setTimeZone": "kin-triggers",
   "kin.webhooks.github.setup": "kin-webhooks",

@@ -6,6 +6,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
 import { kinCardDraws } from "@t3tools/client-runtime/kin/kinCardPresentation";
+import { kinDocRefLabel } from "@t3tools/client-runtime/kin/kinDocs";
 import type { KinOutboxEntry } from "@t3tools/client-runtime/kin/kinOutbox";
 import { KIN_REACTION_NAMES, type KinReactionChip } from "@t3tools/client-runtime/kin/kinReactions";
 import { kinAuthorAvatar } from "@t3tools/client-runtime/kin/kinGroups";
@@ -18,11 +19,13 @@ import { KinAvatar } from "./KinAvatar";
 import {
   KIN_REACTION_EMOJI,
   type EnvironmentId,
+  type KinMessageRef,
   type KinPersonId,
   type KinReactionEmoji,
   type KinWidget,
 } from "@t3tools/contracts";
-import { SmilePlusIcon } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import { FileTextIcon, SmilePlusIcon } from "lucide-react";
 
 import ChatMarkdown from "../components/ChatMarkdown";
 import { WorkGroupHeader } from "../components/chat/TimelineWorkGroupRows";
@@ -74,6 +77,43 @@ function KinBody(props: { readonly markdown: string; readonly environmentId: Env
   );
 }
 
+/** What a message is about, by name: "Launch plan › Pricing". */
+export function KinDocRefMark(props: { readonly label: string }) {
+  return (
+    <span className="inline-flex min-w-0 items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-xs text-foreground">
+      <FileTextIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="truncate">{props.label}</span>
+    </span>
+  );
+}
+
+/** The doc sections a message points at; each opens the doc there. */
+function KinDocRefs(props: {
+  readonly refs: ReadonlyArray<KinMessageRef>;
+  readonly environmentId: EnvironmentId;
+  readonly orgId: string;
+}) {
+  return (
+    <div className="flex max-w-[85%] flex-wrap gap-1">
+      {props.refs.map((ref) => {
+        const label = kinDocRefLabel(ref);
+        return (
+          <Link
+            key={`${ref.key}:${ref.section ?? ""}`}
+            to="/kin/$environmentId/$orgId/work"
+            params={{ environmentId: props.environmentId, orgId: props.orgId }}
+            search={{ doc: ref.key, ...(ref.section === null ? {} : { section: ref.section }) }}
+            aria-label={`Open ${label}`}
+            className="min-w-0 rounded-md outline-none ring-ring hover:opacity-80 focus-visible:ring-2 focus-visible:ring-inset"
+          >
+            <KinDocRefMark label={label} />
+          </Link>
+        );
+      })}
+    </div>
+  );
+}
+
 /** One message: the viewer's own sit right, others left; `head` names who and when over a group. */
 export function KinMessageRow(props: {
   readonly row: MessageRow;
@@ -82,6 +122,7 @@ export function KinMessageRow(props: {
   readonly direct: boolean;
   readonly widget: KinWidget | undefined;
   readonly environmentId: EnvironmentId;
+  readonly orgId: string;
   readonly viewerPersonId: KinPersonId | null;
   /** The card's agent by name when it is retired, so its reminders and schedules read as on hold. */
   readonly heldFor: string | null;
@@ -100,6 +141,7 @@ export function KinMessageRow(props: {
     message.widgetId !== null &&
     kinCardDraws(props.widget, props.environmentId, hasBody);
   const attachments = deleted ? [] : (message.attachments ?? []);
+  const refs = deleted ? [] : (message.refs ?? []);
   // Files alone need no bubble; a deleted or edited message still says so in one.
   const hasBubble =
     hasBody ||
@@ -141,6 +183,9 @@ export function KinMessageRow(props: {
           />
         </div>
       )}
+      {refs.length === 0 ? null : (
+        <KinDocRefs refs={refs} environmentId={props.environmentId} orgId={props.orgId} />
+      )}
       <div className={cn("flex w-full items-center gap-1", row.own && "flex-row-reverse")}>
         {hasBubble ? (
           <div
@@ -170,6 +215,7 @@ export function KinMessageRow(props: {
             <KinCard
               widget={props.widget}
               environmentId={props.environmentId}
+              orgId={props.orgId}
               viewerPersonId={props.viewerPersonId}
               heldFor={props.heldFor}
             />
@@ -322,6 +368,7 @@ export function KinPendingRow(props: {
   readonly entry: KinOutboxEntry;
   readonly connected: boolean;
   readonly environmentId: EnvironmentId;
+  readonly orgId: string;
   readonly previewKey: string;
   /** The row above is the viewer's own bubble. */
   readonly continues: boolean;
@@ -355,6 +402,9 @@ export function KinPendingRow(props: {
             unposted
           />
         </div>
+      )}
+      {entry.refs === undefined ? null : (
+        <KinDocRefs refs={entry.refs} environmentId={props.environmentId} orgId={props.orgId} />
       )}
       {hasBody ? (
         <div

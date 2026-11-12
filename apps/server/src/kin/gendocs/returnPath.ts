@@ -63,8 +63,9 @@ export type Returned = {
 };
 
 const plainName = /^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,99}$/;
+// A page reaches chat only as the agent's own kin_visual, under that turn's rules.
 const HTML_REFUSAL =
-  "HTML comes back only as a rich visual, which this host doesn't take yet: make a PDF or a PNG of it instead";
+  "a worker's HTML page doesn't come back as a file: make a PDF or a PNG of it, or the agent sends a page itself with kin_visual";
 const megabytes = (bytes: number) => `${Math.round(bytes / (1024 * 1024))} MB`;
 
 /** `out/<name>` or a bare `<name>`; anything with another directory, `..` or a leading `/` is not. */

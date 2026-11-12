@@ -490,46 +490,84 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
-it.effect("an agent restores a doc only when the owner asked, in a turn only the owner reads", () =>
-  Effect.gen(function* () {
-    yield* seed;
-    yield* turn();
-    const made = yield* LeadDocs.create(scopeOf(lead), {
-      sourceEventId: "ask-event",
-      title: "Invented launch plan",
-      body: plan,
-    });
-    yield* LeadDocs.edit(scopeOf(lead), {
-      key: made.key,
-      sourceEventId: "ask-event",
-      summary: "Moved the launch",
-      operations: [{ op: "replace_phrase", find: "the 10th", replace: "the 12th" }],
-    });
-    const restored = yield* LeadDocs.restore(scopeOf(lead), {
-      key: made.key,
-      sourceEventId: "ask-event",
-      version: 1,
-      latest: 2,
-    });
-    assert.strictEqual(restored.version, 3);
-    // A wake-up with no human behind it, such as a reminder, restores nothing.
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`UPDATE kin_events SET json = json_set(json, '$.provenance', json('{"_tag":"system"}')),
+it.effect(
+  "an agent restores a doc in any turn only the owner reads, never in one others read",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* turn();
+      const made = yield* LeadDocs.create(scopeOf(lead), {
+        sourceEventId: "ask-event",
+        title: "Invented launch plan",
+        body: plan,
+      });
+      yield* LeadDocs.edit(scopeOf(lead), {
+        key: made.key,
+        sourceEventId: "ask-event",
+        summary: "Moved the launch",
+        operations: [{ op: "replace_phrase", find: "the 10th", replace: "the 12th" }],
+      });
+      const restore = (version: number, latest: number) =>
+        LeadDocs.restore(scopeOf(lead), {
+          key: made.key,
+          sourceEventId: "ask-event",
+          version,
+          latest,
+        });
+      assert.strictEqual((yield* restore(1, 2)).version, 3);
+      // A restore is a new version, as undoable as a rewrite, so no human need have asked for it.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_events SET json = json_set(json, '$.provenance', json('{"_tag":"system"}')),
       tag = 'routine' WHERE event_id = 'ask-event'`;
-    assert.strictEqual(
-      reasonOf(
-        yield* Effect.flip(
-          LeadDocs.restore(scopeOf(lead), {
-            key: made.key,
+      assert.strictEqual((yield* restore(2, 3)).version, 4);
+      yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake'`;
+      assert.strictEqual(reasonOf(yield* Effect.flip(restore(1, 4))), "not_allowed");
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a refused edit of a sensitive doc hands back its text and marks the turn as a read",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const made = yield* newDoc(plan, { sensitive: true });
+      const open = yield* newDoc(plan, { title: "Invented open plan" });
+      yield* turn();
+      const marked = sql`SELECT 1 FROM kin_wakeup_sensitive_reads WHERE org_id = ${orgId}
+      AND wakeup_id = 'wake'`;
+      const edit = (key: string, operation: (typeof LeadDocs.EditInput.Type.operations)[number]) =>
+        Effect.flip(
+          LeadDocs.edit(scopeOf(lead), {
+            key,
             sourceEventId: "ask-event",
-            version: 2,
-            latest: 3,
+            summary: "Changed pricing",
+            operations: [operation],
           }),
-        ),
-      ),
-      "not_allowed",
-    );
-  }).pipe(Effect.provide(layer)),
+        );
+      // A doc no one labelled: its refusal is no sensitive read.
+      yield* edit(open.row.key, {
+        op: "replace_section",
+        section: "pricing",
+        hash: "x",
+        text: "New",
+      });
+      assert.lengthOf(yield* marked, 0);
+      // Its text now, to redo the edit against, and the read it is, rolled-back edit or not.
+      const conflict = yield* edit(made.row.key, {
+        op: "replace_section",
+        section: "pricing",
+        hash: "wrong",
+        text: "New pricing",
+      });
+      assert.include(conflict.message, "Starter costs 10 invented credits.");
+      assert.lengthOf(yield* marked, 1);
+      yield* sql`DELETE FROM kin_wakeup_sensitive_reads`;
+      // Section names and phrase counts are the doc's too.
+      const missing = yield* edit(made.row.key, { op: "insert_after", section: "nope", text: "x" });
+      assert.include(missing.message, "pricing");
+      assert.lengthOf(yield* marked, 1);
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect("another org's doc, by key or id, looks like no doc at all", () =>

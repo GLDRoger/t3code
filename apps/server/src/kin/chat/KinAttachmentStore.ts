@@ -5,7 +5,9 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 
 import { forgetPendingAttachment, type PendingUploadOwner } from "../../assets/AttachmentUpload.ts";
+import { resolveAttachmentRelativePath } from "../../attachmentPaths.ts";
 import {
+  createAttachmentId,
   isKinAttachmentId,
   KIN_ATTACHMENT_ID_PREFIX,
   resolveAttachmentPathById,
@@ -41,6 +43,8 @@ export class KinAttachmentStore extends Context.Service<
     readonly release: (claimed: ClaimedKinAttachments) => Effect.Effect<void>;
     /** Drops the pending uploads a written message no longer needs. */
     readonly discardPending: (attachments: ReadonlyArray<KinAttachment>) => Effect.Effect<void>;
+    /** Keeps a page an agent wrote as a new file of Kin's, never replacing one. */
+    readonly storePage: (html: string) => Effect.Effect<string, KinChatError>;
     /** Deletes Kin's stored files by id, for good; one already gone is not an error. */
     readonly remove: (attachmentIds: ReadonlyArray<string>) => Effect.Effect<void>;
   }
@@ -91,6 +95,26 @@ export const layer = Layer.effect(
           discard: true,
         }).pipe(Effect.provideContext(context)),
       ),
+      storePage: Effect.fn("KinAttachmentStore.storePage")(function* (html) {
+        // The `-html` suffix is what the asset route reads as a document.
+        const attachmentId = createAttachmentId(KIN_ATTACHMENT_OWNER, "html");
+        const filePath =
+          attachmentId === null
+            ? null
+            : resolveAttachmentRelativePath({
+                attachmentsDir,
+                relativePath: `${attachmentId}.html`,
+              });
+        if (attachmentId === null || filePath === null)
+          return yield* refused("The page could not be saved.");
+        const fileSystem = Context.get(context, FileSystem.FileSystem);
+        yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true }).pipe(
+          Effect.andThen(fileSystem.writeFileString(filePath, html, { flag: "wx" })),
+          Effect.tapError((cause) => Effect.logWarning("Kin could not save a visual.", cause)),
+          Effect.mapError(() => refused("The page could not be saved.")),
+        );
+        return attachmentId;
+      }),
       remove: Effect.fn("KinAttachmentStore.remove")((attachmentIds) =>
         AttachmentClaims.releaseClaimedAttachments(
           attachmentIds.flatMap((attachmentId) => {

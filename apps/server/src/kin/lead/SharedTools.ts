@@ -54,6 +54,7 @@ const ownerAsked = Effect.fnUntraced(function* (turn: Turn) {
     JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
     LEFT JOIN kin_messages m ON m.org_id = e.org_id AND e.tag IN ('chat.message', 'widget.action')
       AND m.message_id = json_extract(e.json, '$.messageId')
+      AND (m.kind = 'widget_action') = (e.tag = 'widget.action')
     WHERE e.org_id = ${turn.orgId} AND e.agent_id = ${turn.agentId}
       AND e.wakeup_id = ${turn.wakeupId}
     ORDER BY e.event_id`;
@@ -108,6 +109,8 @@ export const SHARED_TOOLS = {
   kin_react: "allowed",
   // Numbers the agent supplies, which it could have written in that chat as text; it reads nothing.
   kin_chart: "allowed",
+  // A page is code that runs on each reader's device: owner-only chats until it is reviewed.
+  kin_visual: "refused",
   kin_chat_read: inAskedChat,
   // Lists only the names of the leads in the asked chat (`KinHandoff.leads`).
   kin_leads: "allowed",

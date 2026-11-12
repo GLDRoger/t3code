@@ -36,7 +36,7 @@ import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { mentionsMoney } from "../memory/sensitivity.ts";
 import { indexRecord } from "./searchIndex.ts";
-import { withdrawAttempts } from "./workerAttempts.ts";
+import { SensitiveRefusal, withdrawAttempts } from "./workerAttempts.ts";
 import {
   checkFor,
   encodeFieldValues,
@@ -65,6 +65,7 @@ import {
   repeatOf,
   samePrincipal,
   selectRecords,
+  sensitiveNow,
   type StoredRepeat,
   toDetail,
   toRecord,
@@ -587,16 +588,19 @@ const make = Effect.gen(function* () {
     except: string | null,
   ) {
     if (list === "work" || list === "docs" || !isBuiltIn(list)) return;
-    const [row] = yield* sql<{ key: string }>`SELECT key FROM kin_records
-      WHERE org_id = ${orgId} AND register_id = ${list} AND state NOT IN ${sql.in(CLOSED)}
-        AND lower(title) = lower(${title}) AND record_id IS NOT ${except}
-        AND (${list} != 'contacts' OR party_id IS ${partyId})
-      ORDER BY key LIMIT 1`;
-    if (row !== undefined)
-      return yield* new KinChatError({
-        reason: "conflict",
+    const [row] = yield* sql<{ key: string; sensitive: number }>`SELECT r.key,
+        ${sensitiveNow(sql)} AS sensitive FROM kin_records r
+      WHERE r.org_id = ${orgId} AND r.register_id = ${list} AND r.state NOT IN ${sql.in(CLOSED)}
+        AND lower(r.title) = lower(${title}) AND r.record_id IS NOT ${except}
+        AND (${list} != 'contacts' OR r.party_id IS ${partyId})
+      ORDER BY r.key LIMIT 1`;
+    if (row !== undefined) {
+      const error = {
+        reason: "conflict" as const,
         message: `There is already a ${LISTS[list].noun} named ${title.slice(0, 80)}: ${row.key}.`,
-      });
+      };
+      return yield* row.sensitive === 1 ? new SensitiveRefusal(error) : new KinChatError(error);
+    }
   });
 
   const resolveList = Effect.fn("KinRecords.resolveList")(function* (orgId: KinOrgId, id: string) {
@@ -934,7 +938,33 @@ const make = Effect.gen(function* () {
           else merged[field] = value;
         }
         if (fieldsChanged) set("fields_json", yield* encodeFieldValues(merged));
-        const state = patch.state ?? row.state;
+        const amount = amountOf(row) ?? null;
+        const amountChanged =
+          patch.amount !== undefined &&
+          (patch.amount?.minor !== amount?.minor || patch.amount?.currency !== amount?.currency);
+        if (amountChanged && row.paid > 0) {
+          const received = formatMoney({ minor: row.paid, currency: amount!.currency });
+          // An invoice's payments are in its currency: a different one would make them nonsense.
+          if (patch.amount?.currency !== amount?.currency)
+            return yield* invalid(
+              `${row.key} has payments in ${amount?.currency}; void them before changing its currency.`,
+            );
+          if (patch.amount!.minor < row.paid)
+            return yield* new SensitiveRefusal({
+              reason: "invalid_state",
+              message: `${row.key} has ${received} received, so its amount can't be less. Void a payment with payment_record first, then change the amount.`,
+            });
+        }
+        // Paid or owed follows the balance whenever the amount moves, unless the change says.
+        const settled =
+          amountChanged && row.paid > 0 && patch.state === undefined && row.state !== "dropped"
+            ? patch.amount!.minor === row.paid
+              ? "done"
+              : row.state === "done"
+                ? "waiting"
+                : row.state
+            : undefined;
+        const state = patch.state ?? settled ?? row.state;
         // Closing a client or project would strand what points at it: close or move that first.
         if (
           (list === "clients" || list === "projects") &&
@@ -1021,16 +1051,7 @@ const make = Effect.gen(function* () {
             });
           set("due_all_day", patch.dueAllDay ? 1 : 0);
         }
-        const amount = amountOf(row) ?? null;
-        if (
-          patch.amount !== undefined &&
-          (patch.amount?.minor !== amount?.minor || patch.amount?.currency !== amount?.currency)
-        ) {
-          // An invoice's payments are in its currency: a different one would make them nonsense.
-          if (row.paid > 0 && patch.amount?.currency !== amount?.currency)
-            return yield* invalid(
-              `${row.key} has payments in ${amount?.currency}; void them before changing its currency.`,
-            );
+        if (amountChanged) {
           changes.push({
             field: "amount",
             from: shownAmount(amount),
@@ -1250,14 +1271,22 @@ const make = Effect.gen(function* () {
         if (row.registerId !== "invoices")
           return yield* invalid(`${row.key} is not an invoice; payments are recorded on invoices.`);
         const paymentId = paymentIdFor(orgId, payment.originKey);
-        const [earlier] = yield* sql<{ recordId: string; minor: number; paidOn: string }>`
-          SELECT record_id AS "recordId", amount_minor AS minor, paid_on AS "paidOn"
+        const [earlier] = yield* sql<{
+          recordId: string;
+          minor: number;
+          currency: string;
+          paidOn: string;
+          note: string;
+        }>`
+          SELECT record_id AS "recordId", amount_minor AS minor, currency, paid_on AS "paidOn", note
           FROM kin_record_payments WHERE org_id = ${orgId} AND origin_key = ${payment.originKey}`;
         if (earlier !== undefined) {
           if (
             earlier.recordId !== row.recordId ||
             earlier.minor !== payment.amount.minor ||
-            earlier.paidOn !== payment.paidOn
+            earlier.currency !== payment.amount.currency ||
+            earlier.paidOn !== payment.paidOn ||
+            earlier.note !== (payment.note ?? "")
           )
             return yield* new KinChatError({
               reason: "not_allowed",
@@ -1277,9 +1306,10 @@ const make = Effect.gen(function* () {
         if (payment.amount.minor <= 0) return yield* invalid("A payment is more than nothing.");
         const balance = amount.minor - row.paid;
         if (payment.amount.minor > balance)
-          return yield* invalid(
-            `That is more than the ${formatMoney({ minor: balance, currency: amount.currency })} still owed on ${row.key}.`,
-          );
+          return yield* new SensitiveRefusal({
+            reason: "invalid_state",
+            message: `That is more than the ${formatMoney({ minor: balance, currency: amount.currency })} still owed on ${row.key}.`,
+          });
         const now = yield* Clock.currentTimeMillis;
         yield* sql`INSERT INTO kin_record_payments (org_id, payment_id, record_id, amount_minor,
             currency, paid_on, note, origin_key, created_at, created_by_kind, created_by_id)

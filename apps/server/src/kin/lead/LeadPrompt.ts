@@ -26,6 +26,7 @@ import * as MemoryCache from "../memory/MemoryCache.ts";
 import { buildTeamIndex } from "../memory/buildIndex.ts";
 import { reaches, reaching, shareable, storedLabels } from "../memory/sensitivity.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
+import { PRIVATE_DOC, sensitiveDocs } from "../chat/privateDocs.ts";
 import { liveReactions, reactionAnswer } from "../chat/reactions.ts";
 import { historyFloor } from "../chat/sharing.ts";
 
@@ -158,11 +159,18 @@ export class KinLeadPrompt extends Context.Service<
           version: ref.version,
           ...(ref.section === null ? {} : { section: ref.section, sectionTitle: ref.sectionTitle }),
         };
-        if (!shown)
+        if (!shown) {
+          const hidden = yield* sensitiveDocs(orgId, [ref.key]).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.orElseSucceed(() => new Set([ref.key])),
+          );
           return quote("doc reference (data)", {
-            ...named,
+            ...(hidden.has(ref.key)
+              ? { doc: ref.key, title: PRIVATE_DOC, version: ref.version }
+              : named),
             text: "not shown in a chat others read",
           });
+        }
         const [doc] = yield* sql<{ body: string }>`SELECT v.body FROM kin_records r
           JOIN kin_doc_versions v ON v.org_id = r.org_id AND v.record_id = r.record_id
             AND v.version = ${ref.version}

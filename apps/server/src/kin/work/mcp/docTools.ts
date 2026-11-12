@@ -94,7 +94,7 @@ export const KinDocsToolkit = Toolkit.make(
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("doc_restore", {
     ...shared,
-    description: `Undo a doc's changes when the owner asks: brings back version as a new latest version, so nothing is lost and it can be undone again. latest is the newest version from doc_history; if it moved, nothing changes. ${writes}`,
+    description: `Undo a doc's changes: brings back version as a new latest version, so nothing is lost and it can be undone again. latest is the newest version from doc_history; if it moved, nothing changes. ${writes}`,
     parameters: Docs.RestoreInput,
     success: Docs.WriteResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

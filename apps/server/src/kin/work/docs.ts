@@ -29,6 +29,7 @@ import { KinRecords, type Writer } from "./KinRecords.ts";
 import { listOf } from "./lists.ts";
 import { actorOf, iso, principal, type RecordRow, toRecord, unavailable } from "./recordRows.ts";
 import { indexRecord } from "./searchIndex.ts";
+import { SensitiveRefusal } from "./workerAttempts.ts";
 
 /**
  * Docs over the records engine: a doc is a `docs` entry, so owner, client, project, label, links
@@ -211,6 +212,12 @@ export const toDocRow = (row: RecordRow, latest: VersionRow, now: number): KinDo
     rev: record.rev,
   };
 };
+
+/** A refusal about a sensitive doc quotes it (its text, its sections): reading it, as a read is. */
+const refusedOn = (row: RecordRow, error: KinChatError) =>
+  row.sensitive === 1 || row.inheritedSensitive === 1
+    ? new SensitiveRefusal({ reason: error.reason, message: error.message })
+    : error;
 
 const tooLong = (length: number) =>
   new KinChatError({
@@ -414,7 +421,7 @@ export const edit = Effect.fn("KinDocs.edit")(function* (
       if (current === undefined) return yield* unavailable;
       if (current.bodyKind === "file") return yield* fileOnly(row.key);
       const applied = applyOperations(current.body, row.title, input.operations);
-      if (applied._tag === "refused") return yield* applied.error;
+      if (applied._tag === "refused") return yield* refusedOn(row, applied.error);
       // Every operation already holds: a retry of an edit that landed, so nothing to write.
       if (applied.body === current.body && applied.title === row.title)
         return { row, version: current, created: false };
@@ -454,7 +461,7 @@ export const rewrite = Effect.fn("KinDocs.rewrite")(function* (
       if (current.bodyKind === "file") return yield* fileOnly(row.key);
       if (current.version !== input.baseVersion) return yield* stale(row.key, current.version);
       const refused = rewriteRefusal(current.body, body);
-      if (refused !== undefined) return yield* refused;
+      if (refused !== undefined) return yield* refusedOn(row, refused);
       return yield* revise(orgId, writer, provenance, row, current, {
         title: row.title,
         body,
@@ -622,6 +629,7 @@ export const link = Effect.fn("KinDocs.link")(function* (
         readonly key: string;
         readonly title: string;
         readonly added: boolean;
+        readonly sensitive: boolean;
       }> = [];
       for (const key of targets) {
         const other = yield* records.get(orgId, key);
@@ -645,7 +653,12 @@ export const link = Effect.fn("KinDocs.link")(function* (
           target: row.recordId,
           relation: "relates",
         });
-        linked.push({ key: other.key, title: other.title, added: there || back });
+        linked.push({
+          key: other.key,
+          title: other.title,
+          added: there || back,
+          sensitive: other.sensitive === 1 || other.inheritedSensitive === 1,
+        });
       }
       return linked;
     }),

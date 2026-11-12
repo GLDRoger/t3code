@@ -22,7 +22,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import type { KinRecordKey } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
-import { ArrowLeftIcon, ListChecksIcon, PlusIcon } from "lucide-react";
+import { ArrowLeftIcon, ListChecksIcon, PlusIcon, SearchIcon } from "lucide-react";
 import { useState } from "react";
 
 import {
@@ -36,6 +36,9 @@ import { Button } from "../components/ui/button";
 import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { isElectron } from "../env";
 import { appAtomRegistry } from "../rpc/atomRegistry";
+import { KinDocPage, type KinDocWhere } from "./KinDocPage";
+import { KinDocsList } from "./KinDocsList";
+import { KinSearchDialog } from "./KinSearchDialog";
 import { KinWorkClientPage, KinWorkClientsList } from "./KinWorkClients";
 import { KinClientDialog, KinProjectDialog } from "./KinWorkForms";
 import { KinWorkItemSheet } from "./KinWorkItemSheet";
@@ -85,16 +88,18 @@ export function KinWorkEntry(
   );
 }
 
-/** Which part of Work is on screen: one of its three lists, or one client or project. */
+/** Which part of Work is on screen: one of its four lists, or one client, project or doc. */
 export type KinWorkWhere =
   | { readonly area: KinWorkArea }
   | { readonly party: KinRecordKey }
-  | { readonly project: KinRecordKey };
+  | { readonly project: KinRecordKey }
+  | KinDocWhere;
 
 const AREA_TITLE: Record<KinWorkArea, string> = {
   tasks: KIN_WORK_TITLE,
   clients: KIN_CLIENTS.title,
   projects: KIN_PROJECTS.title,
+  docs: "Docs",
 };
 
 type Adding =
@@ -112,12 +117,15 @@ export function KinWorkView({
   onGo,
   openKey,
   onOpenKey: setOpenKey,
+  docLink,
   ...props
 }: KinWorkTarget & {
   readonly where: KinWorkWhere;
   readonly onGo: (where: KinWorkWhere) => void;
   readonly openKey: KinRecordKey | null;
   readonly onOpenKey: (key: KinRecordKey | null) => void;
+  /** The address of a doc, or one section of it, for Copy link. */
+  readonly docLink: (doc: KinRecordKey, section: string | null) => string;
 }) {
   const { environmentId } = props;
   const state = useKinWork(props);
@@ -132,11 +140,18 @@ export function KinWorkView({
   const choices = useKinWorkChoices(props, ready && hostClients);
   const changes = useKinWorkChanges(props);
   const [adding, setAdding] = useState<Adding>(null);
+  const [searching, setSearching] = useState(false);
   // Where the task list starts when it is opened from a client: narrowed to that client.
   const [narrowed, setNarrowed] = useState<KinWorkFilter>(KIN_WORK_DEFAULT_FILTER);
 
   const area: KinWorkArea =
-    "area" in where ? where.area : "party" in where ? "clients" : "projects";
+    "area" in where
+      ? where.area
+      : "party" in where
+        ? "clients"
+        : "project" in where
+          ? "projects"
+          : "docs";
   const onPage = !("area" in where);
   const addTask =
     ready && canAdd ? (draft: KinWorkDraft) => setAdding({ type: "task", draft }) : null;
@@ -147,7 +162,7 @@ export function KinWorkView({
         ? addTask === null
           ? null
           : { label: KIN_WORK_NEW, run: () => addTask(KIN_WORK_NO_DRAFT) }
-        : !hostClients
+        : !hostClients || area === "docs"
           ? null
           : area === "clients"
             ? canAddClient
@@ -158,6 +173,37 @@ export function KinWorkView({
               : null;
   const openClient = (key: KinRecordKey) => onGo({ party: key });
   const openProject = (key: KinRecordKey) => onGo({ project: key });
+  const openDoc = (doc: KinRecordKey, section?: string) =>
+    onGo(section === undefined ? { doc } : { doc, section });
+  const search = !searching ? null : (
+    <KinSearchDialog
+      {...props}
+      onClose={() => setSearching(false)}
+      onOpen={(hit) => {
+        setSearching(false);
+        if (hit.kind === "docs") openDoc(hit.key, hit.section?.id);
+        else if (hit.kind === "clients") openClient(hit.key);
+        else if (hit.kind === "projects") openProject(hit.key);
+        // A contact has no page of its own; its entry lists who it is with.
+        else setOpenKey(hit.key);
+      }}
+    />
+  );
+  // A doc is its own page, with its own header: it reads the same whoever may open Work.
+  if ("doc" in where)
+    return (
+      <>
+        <KinDocPage
+          key={where.doc}
+          {...props}
+          where={where}
+          directory={directory}
+          onGo={(next) => onGo(next ?? { area: "docs" })}
+          linkTo={(section) => docLink(where.doc, section)}
+        />
+        {search}
+      </>
+    );
   return (
     <>
       <WorkspacePageHeader electron={isElectron}>
@@ -203,12 +249,22 @@ export function KinWorkView({
             </WorkspaceBreadcrumbItem>
           )}
         </WorkspaceBreadcrumb>
-        {add === null ? null : (
-          <div className="ms-auto">
-            <Button size="sm" onClick={add.run}>
-              <PlusIcon />
-              {add.label}
+        {!ready ? null : (
+          <div className="ms-auto flex items-center gap-1">
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              aria-label="Search Work"
+              onClick={() => setSearching(true)}
+            >
+              <SearchIcon />
             </Button>
+            {add === null ? null : (
+              <Button size="sm" onClick={add.run}>
+                <PlusIcon />
+                {add.label}
+              </Button>
+            )}
           </div>
         )}
       </WorkspacePageHeader>
@@ -275,6 +331,7 @@ export function KinWorkView({
               onOpenTask={setOpenKey}
               onOpenClient={openClient}
               onOpenProject={openProject}
+              onOpenDoc={openDoc}
               onSeeAll={(party) => {
                 setNarrowed({ ...KIN_WORK_DEFAULT_FILTER, party });
                 onGo({ area: "tasks" });
@@ -295,8 +352,11 @@ export function KinWorkView({
               onOpenTask={setOpenKey}
               onOpenClient={openClient}
               onOpenProject={openProject}
+              onOpenDoc={openDoc}
               onAddTask={addTask}
             />
+          ) : area === "docs" ? (
+            <KinDocsList {...props} directory={directory} stale={state.stale} onOpen={openDoc} />
           ) : area === "clients" ? (
             <KinWorkClientsList
               {...props}
@@ -333,6 +393,7 @@ export function KinWorkView({
           )}
         </>
       )}
+      {search}
       {openKey === null || !ready ? null : (
         <KinWorkItemSheet
           // A fresh sheet per task, so one task's hand-over never shows on another.

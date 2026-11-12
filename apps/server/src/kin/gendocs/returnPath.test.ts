@@ -72,7 +72,7 @@ it.effect("takes only named, plain, regular files of the type their names say", 
       [
         [
           "page.html",
-          "HTML comes back only as a rich visual, which this host doesn't take yet: make a PDF or a PNG of it instead",
+          "a worker's HTML page doesn't come back as a file: make a PDF or a PNG of it, or the agent sends a page itself with kin_visual",
         ],
         ["../secret.pdf", "it isn't a plain file name in out/"],
         ["out/../secret.pdf", "it isn't a plain file name in out/"],

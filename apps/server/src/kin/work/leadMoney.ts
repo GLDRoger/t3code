@@ -6,30 +6,27 @@ import {
   KinListFieldType,
   KinListId,
   KinRecordKey,
+  KinChatId,
   KinRecordState,
+  KinWakeupId,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
+import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { turnChat } from "../lead/Audience.ts";
-import { readProfile, setProfile } from "./companyProfile.ts";
+import { KinLevelGate } from "../lead/LevelGate.ts";
+import { attachChangeCard, changeLines, proposeChange, readProfile } from "./companyProfile.ts";
 import { KinRecords } from "./KinRecords.ts";
-import {
-  admitted,
-  askedBy,
-  type Lead,
-  leadTool,
-  retryKey,
-  sourceOf,
-  writerFor,
-} from "./leadWork.ts";
+import { admitted, type Lead, leadTool, retryKey, sourceOf, writerFor } from "./leadWork.ts";
 import { dayIn, formatMoney, isCurrency, parseAmount } from "./money.ts";
 import { dates, moneySection, moneySummary } from "./moneyViews.ts";
 import { endOfDay, iso, notFound, ownerZone } from "./recordRows.ts";
 import {
+  attachCard,
   carryOut,
   checkDraft,
   type FieldDef,
@@ -50,6 +47,38 @@ import {
 /** The lead tools for lists and money. Model-facing text lives in `mcp/tools.ts`. */
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+
+/**
+ * A yes/no choice card Kin posts for a lead, so the owner's tap answers exactly the one thing it
+ * was made for. A retry with the same `clientMessageId` finds the same card.
+ */
+const askOwner = Effect.fn("KinOwnerCards.ask")(function* (
+  lead: Lead,
+  input: {
+    readonly chatId: string;
+    readonly clientMessageId: string;
+    readonly question: string;
+    readonly detail: string;
+    readonly yes: string;
+    readonly no: string;
+  },
+) {
+  const widget = yield* (yield* KinLevelGate).ask(
+    { ...lead, wakeupId: KinWakeupId.make(lead.wakeupId) },
+    {
+      chatId: KinChatId.make(input.chatId),
+      clientMessageId: input.clientMessageId,
+      question: input.question,
+      detail: input.detail.length <= 2000 ? input.detail : `${input.detail.slice(0, 1999)}…`,
+      options: [
+        { label: input.yes, kind: "yes" },
+        { label: input.no, kind: "no" },
+      ],
+    },
+  );
+  return widget.widgetId;
+});
+
 const Label = TrimmedNonEmptyString.check(Schema.isMaxLength(60));
 const FieldInput = Schema.Struct({
   label: Label,
@@ -287,11 +316,37 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
           fields: shownFields(proposal.fields),
           categories: [...proposal.categories],
         };
+  // The card is how a tap answers this proposal and no other; a typed yes still works without it.
+  const card = yield* askOwner(lead, {
+    chatId: chat.chatId,
+    clientMessageId: `kin-list:${proposalId}`,
+    question: `${proposal._tag === "new" ? "Create the list" : "Add to"} ${shown.name}?`,
+    detail: [
+      ...shown.fields.map(
+        (one) =>
+          `${one.label} (${one.type}${one.choices === undefined ? "" : `: ${one.choices.join(", ")}`})`,
+      ),
+      ...(shown.categories.length === 0 ? [] : [`Categories: ${shown.categories.join(", ")}`]),
+    ].join("\n"),
+    yes: proposal._tag === "new" ? "Create it" : "Add them",
+    no: "Not now",
+  }).pipe(
+    Effect.tap((widgetId) => attachCard({ orgId: lead.orgId, proposalId, widgetId })),
+    Effect.catchTags({
+      KinChatError: (error) =>
+        Effect.logWarning("Kin couldn't show a list proposal card", { reason: error.reason }).pipe(
+          Effect.as(undefined),
+        ),
+    }),
+  );
   return {
     status: "proposed" as const,
     proposal: proposalId,
     ...shown,
-    next: "Nothing is created yet. Put these fields to the owner in one short message and ask. Once they say yes, call list_define with this proposal in that later turn.",
+    next:
+      card === undefined
+        ? "Nothing is created yet. Put these fields to the owner in one short message and ask. Once they say yes, call list_define with this proposal in that later turn."
+        : "Nothing is created yet. Kin showed the owner these fields on a card to tap; ask in one short line without listing them again. Once they tap yes or say yes, call list_define with this proposal in that later turn.",
   };
 });
 export const define = leadTool("KinWorkTools.define", runDefine);
@@ -469,29 +524,61 @@ export const ProfileInput = Schema.Struct({
 export const ProfileResult = Schema.Struct({
   profile: Schema.Record(Schema.String, Schema.Unknown),
   rev: Schema.Number,
+  /** What a set asked for, waiting on the owner's Confirm on the card Kin showed them. */
+  proposed: Schema.optional(Schema.Array(Schema.String)),
+  next: Schema.optional(Schema.String),
   sensitive: Schema.Literal(true),
 });
 const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof ProfileInput.Type) {
   yield* admitted(lead, "company_profile", input);
+  const current = yield* readProfile(lead.orgId);
+  const { rev, updatedAt: _updatedAt, bank, ...rest } = current;
+  let proposed: ReadonlyArray<string> | undefined;
   if (input.set !== undefined) {
     if (input.sourceEventId === undefined)
       return yield* invalid("Pass this turn's sourceEventId to change the profile.");
     yield* sourceOf(lead, input.sourceEventId);
-    // Only the owner's own words change the company's legal and bank details.
-    if ((yield* askedBy(lead)) === null)
-      return yield* new KinChatError({
-        reason: "not_allowed",
-        message: "Only the owner's own message changes the company profile.",
+    const lines = changeLines(current, input.set);
+    if (lines.length > 0) {
+      const sql = yield* SqlClient.SqlClient;
+      const [chat] = yield* sql<{ chatId: string }>`SELECT owner_chat_id AS "chatId" FROM kin_leads
+        WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}`;
+      if (chat === undefined) return yield* invalid("There is no owner chat to confirm this in.");
+      const changeId = `pc_${retryKey(`${lead.orgId}|${lead.agentId}|${lead.wakeupId}|${rev}|${stableStringify(input.set)}`)}`;
+      yield* proposeChange({
+        orgId: lead.orgId,
+        changeId,
+        agentId: lead.agentId,
+        wakeupId: lead.wakeupId,
+        patch: input.set,
+        baseRev: rev,
+        now: yield* Clock.currentTimeMillis,
       });
-    yield* setProfile(lead.orgId, { _tag: "agent", agentId: lead.agentId }, input.set, undefined);
+      // Bank details and tax ids go on invoices: they change only by the owner's own Confirm.
+      const widgetId = yield* askOwner(lead, {
+        chatId: chat.chatId,
+        clientMessageId: `kin-profile:${changeId}`,
+        question: "Change the company profile?",
+        detail: lines.join("\n"),
+        yes: "Confirm",
+        no: "Cancel",
+      });
+      yield* attachChangeCard(lead.orgId, changeId, widgetId);
+      proposed = lines;
+    }
   }
-  const { rev, updatedAt: _updatedAt, bank, ...rest } = yield* readProfile(lead.orgId);
   const kept = (value: Record<string, unknown>) =>
     Object.fromEntries(Object.entries(value).filter(([, one]) => one !== null));
   const shownBank = kept(bank);
   return {
     profile: { ...kept(rest), ...(Object.keys(shownBank).length === 0 ? {} : { bank: shownBank }) },
     rev,
+    ...(proposed === undefined
+      ? {}
+      : {
+          proposed: [...proposed],
+          next: "Nothing has changed yet. Kin showed the owner this change on a card; it applies when they tap Confirm. Say so in one line.",
+        }),
     sensitive: true as const,
   };
 });

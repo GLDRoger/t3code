@@ -71,6 +71,8 @@ export const makeKinApprovalHandlers = Effect.fn("makeKinApprovalHandlers")(func
       keys.pipe(Effect.flatMap(({ keys, caller }) => keys.listKeys(caller, input))),
     "kin.approvals.revokeKey": (input) =>
       keys.pipe(Effect.flatMap(({ keys, caller }) => keys.revokeKey(caller, input))),
+    "kin.approvals.allowKey": (input) =>
+      keys.pipe(Effect.flatMap(({ keys, caller }) => keys.allowKey(caller, input))),
     "kin.audit.list": (input) =>
       asOwner(input.orgId).pipe(
         Effect.flatMap((owner) => owner.list(input).pipe(Effect.mapError(failed))),

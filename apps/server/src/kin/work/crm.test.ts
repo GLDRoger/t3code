@@ -4,7 +4,7 @@ import { assert, it } from "@effect/vitest";
 import {
   EnvironmentId,
   KinAgentId,
-  type KinChatError,
+  KinChatError,
   KinOrgId,
   KinPersonId,
   KinRecordId,
@@ -24,6 +24,7 @@ import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadMoney from "./leadMoney.ts";
@@ -44,7 +45,7 @@ const at = "2026-11-11T00:00:00.000Z";
 const owner = { _tag: "person" as const, orgId, personId: ownerId };
 const mate = { _tag: "person" as const, orgId, personId: mateId };
 const DAY = 24 * 60 * 60 * 1000;
-type Services = KinIdentity | KinRecords.KinRecords | SqlClient.SqlClient;
+type Services = KinIdentity | KinLevelGate | KinRecords.KinRecords | SqlClient.SqlClient;
 
 const scope: McpInvocationScope = {
   environmentId: EnvironmentId.make("fixture"),
@@ -71,7 +72,11 @@ const identity = Layer.mock(KinIdentity)({
       threadId: ThreadId.make("lead-thread"),
     }),
 });
-const layer = Layer.mergeAll(KinRecords.layer, identity).pipe(
+// No chat to show a card in: a proposal stands on the owner's typed answer.
+const gate = Layer.mock(KinLevelGate)({
+  ask: () => Effect.fail(new KinChatError({ reason: "unavailable", message: "No chat here." })),
+});
+const layer = Layer.mergeAll(KinRecords.layer, identity, gate).pipe(
   Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),
   Layer.provideMerge(Sqlite.layerMemory),

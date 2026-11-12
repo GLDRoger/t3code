@@ -48,9 +48,6 @@ const describe = (enrolment: KinPendingEnrolment, index: number) =>
     `   org      ${enrolment.orgId}, person ${enrolment.humanId}`,
     `   session  ${enrolment.sessionId} (${enrolment.sessionSubject ?? "unknown"}${enrolment.sessionClient === null ? "" : `, ${enrolment.sessionClient}`})`,
     `   created  ${at(enrolment.createdAt)}; the code works until ${at(enrolment.expiresAt)}, ${enrolment.attemptsLeft} ${enrolment.attemptsLeft === 1 ? "try" : "tries"} left`,
-    ...(enrolment.needsRecovery
-      ? ["   This org already has an approver key: confirm this one only with --recover."]
-      : []),
   ].join("\n");
 
 const normalizeCode = (value: string) => value.replace(/\s+/g, "");
@@ -150,13 +147,13 @@ const confirmKeyCommand = Command.make("confirm-key", {
   ),
   recover: Flag.Boolean("recover").pipe(
     Flag.withDescription(
-      "Lost phone: revoke this person's other approver keys, then activate this one. Audited.",
+      "Lost phone: also revoke this person's other approver keys, then activate this one. Audited.",
     ),
     Flag.withDefault(false),
   ),
 }).pipe(
   Command.withDescription(
-    "Confirm a phone's approver key on the Kin host: lists the phones waiting, then takes the code one shows. The first key in an org is confirmed only here.",
+    "Allow a phone to approve, from the Kin host: lists the phones waiting, then takes the code one shows. The usual way is Allow in Kin on the web or desktop, under Settings, then Approvals.",
   ),
   Command.withHandler((flags) =>
     runOnHost(flags, (module) =>
@@ -172,11 +169,6 @@ const confirmKeyCommand = Command.make("confirm-key", {
           `Phones waiting for this host:\n\n${pending.map(describe).join("\n\n")}\n`,
         );
         const chosen = yield* pick(pending, flags.key);
-        if (chosen.needsRecovery && !flags.recover)
-          return yield* new KinApprovalsCliError({
-            message:
-              "This org already has an approver key. Approve the new phone from that one, or run again with --recover if it's lost.",
-          });
         const code = yield* askCode(flags.code);
         const result = yield* ceremony.confirm({
           orgId: chosen.orgId,

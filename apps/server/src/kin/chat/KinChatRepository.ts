@@ -73,6 +73,12 @@ const AttachmentChat = Schema.Struct({
   messageId: KinMessageId,
 });
 type AttachmentChat = typeof AttachmentChat.Type;
+const ChatFile = Schema.Struct({
+  attachmentId: Schema.String,
+  messageId: KinMessageId,
+  mimeType: Schema.NullOr(Schema.String),
+});
+type ChatFile = typeof ChatFile.Type;
 type ChatScope = Scope & { readonly chatId: KinChatId };
 type MemberScope = ChatScope & { readonly memberId: KinMemberId };
 /**
@@ -251,6 +257,14 @@ export class KinChatRepository extends Context.Service<
     readonly attachmentChat: (
       attachmentId: string,
     ) => Effect.Effect<Option.Option<AttachmentChat>, RepositoryError>;
+    /** Files on undeleted messages of one chat, with the type each was sent as. */
+    readonly chatFiles: (
+      input: ChatScope,
+    ) => Effect.Effect<ReadonlyArray<ChatFile>, RepositoryError>;
+    /** Records a file a card of this message draws, so reading it follows the message. */
+    readonly attachCardFile: (
+      input: ChatScope & { readonly messageId: KinMessageId; readonly attachmentId: string },
+    ) => Effect.Effect<void, RepositoryError>;
     readonly openTaskCards: (
       input: Scope,
     ) => Effect.Effect<ReadonlyArray<KinWidget>, RepositoryError>;
@@ -856,6 +870,32 @@ const make = Effect.gen(function* () {
     getMember: memberOne,
     getMessage: messageOne,
     attachmentChat,
+    chatFiles: Effect.fn("KinChatRepository.chatFiles")(
+      function (input) {
+        return SqlSchema.findAll({
+          Request: Schema.Unknown,
+          Result: ChatFile,
+          execute: () => sql`SELECT a.attachment_id AS "attachmentId", a.message_id AS "messageId",
+   (SELECT json_extract(j.value, '$.mimeType') FROM json_each(COALESCE(m.attachments_json, '[]')) j
+     WHERE json_extract(j.value, '$.id') = a.attachment_id) AS "mimeType"
+ FROM kin_message_attachments a
+ JOIN kin_messages m ON m.org_id = a.org_id AND m.message_id = a.message_id
+ WHERE a.org_id = ${input.orgId} AND a.chat_id = ${input.chatId} AND m.status <> 'deleted'
+ ORDER BY a.attachment_id`,
+        })(input).pipe(NodeSqliteClient.readOnly);
+      },
+      Effect.mapError(toRepositoryError("KinChatRepository.chatFiles")),
+    ),
+    attachCardFile: Effect.fn("KinChatRepository.attachCardFile")(
+      function* (input) {
+        const message = yield* requireRecord(messageOne(input));
+        if (message.chatId !== input.chatId)
+          return yield* new KinChatError({ reason: "not_found", message: "Kin record not found." });
+        yield* sql`INSERT INTO kin_message_attachments (attachment_id, org_id, chat_id, message_id)
+ VALUES (${input.attachmentId}, ${input.orgId}, ${input.chatId}, ${input.messageId})`;
+      },
+      Effect.mapError(toRepositoryError("KinChatRepository.attachCardFile")),
+    ),
     openTaskCards: Effect.fn("KinChatRepository.openTaskCards")(
       (input) =>
         SqlSchema.findAll({

@@ -78,6 +78,7 @@ export const DocumentResult = Schema.Struct({
 });
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+const NO_INPUTS: Readonly<Record<string, Value>> = {};
 const denied = (message: string) => new KinChatError({ reason: "not_allowed", message });
 const NOTHING = "Nothing started.";
 
@@ -148,7 +149,7 @@ export const planJob = Effect.fn("KinDocJobs.plan")(function* (
       recipe: named ?? null,
       recipeName: input.recipe,
       entry: undefined,
-      inputs: {},
+      inputs: NO_INPUTS,
       inputsJson,
       inputsHash: sha256(inputsJson),
       number: null,
@@ -181,7 +182,7 @@ export const planJob = Effect.fn("KinDocJobs.plan")(function* (
       recipe: null,
       recipeName: null,
       entry,
-      inputs: {},
+      inputs: NO_INPUTS,
       inputsJson,
       inputsHash,
       number: null,

@@ -57,6 +57,7 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
       FROM kin_events e
       LEFT JOIN kin_messages m ON m.org_id = e.org_id AND e.tag IN ('chat.message', 'widget.action')
         AND m.message_id = json_extract(e.json, '$.messageId')
+        AND (m.kind = 'widget_action') = (e.tag = 'widget.action')
       WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId}
         AND e.wakeup_id = ${input.wakeupId}
       ORDER BY e.event_id`;
