@@ -1,11 +1,11 @@
-import type { KinWorkSubscribeInput, KinWorkSummary } from "@t3tools/contracts";
+import type { KinWorkEvent, KinWorkSubscribeInput, KinWorkSummary } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 
 import { subscribe } from "../rpc/index.ts";
 import { resubscribeWhenKinReturns, retryWhileKinUnavailable } from "./kinStreams.ts";
-import { kinWorkRefused } from "./kinWork.ts";
+import { kinWorkFailuresOf, kinWorkRefused } from "./kinWork.ts";
 
 /** Work as the host last described it: its change number, and the counts read at that number. */
 export interface KinWorkLive {
@@ -65,25 +65,47 @@ export function kinWorkNote(
   };
 }
 
+/** Asks the counts stream to read again now, inside the running stream. */
+export const KIN_WORK_RETRY = { _tag: "retry" } as const;
+
+/** A read cut off with its connection can stay pending; past this it counts as failed. */
+export const KIN_WORK_READ_TIMEOUT = Duration.seconds(20);
+
 /**
  * The host's change numbers, each followed by one read of the counts. A number the held counts
  * already cover reads nothing, so a burst costs one read, and reconnecting costs none unless
  * something changed meanwhile. Fails only when the host refuses this viewer.
  */
-export function kinWorkLiveStream<E, R>(
+export function kinWorkLiveStream<E, R, RR = never>(
   input: KinWorkSubscribeInput,
   readSummary: (input: KinWorkSubscribeInput) => Effect.Effect<KinWorkSummary, E, R>,
+  /** Each one reads the counts again, keeping what is held: the retry after a failed read. */
+  retries: Stream.Stream<unknown, never, RR> = Stream.never,
+) {
+  return kinWorkLiveFold(
+    Stream.merge(
+      resubscribeWhenKinReturns(
+        retryWhileKinUnavailable(subscribe("kin.work.subscribe", input)),
+        Stream.empty,
+        Stream.empty,
+      ),
+      retries.pipe(Stream.map(() => KIN_WORK_RETRY)),
+    ),
+    () => readSummary(input),
+  );
+}
+
+/** `kinWorkLiveStream` over any source of changes and retries. */
+export function kinWorkLiveFold<E, R, EE, RR>(
+  events: Stream.Stream<KinWorkEvent | typeof KIN_WORK_RETRY, EE, RR>,
+  readSummary: () => Effect.Effect<KinWorkSummary, E, R>,
 ) {
   return Stream.suspend(() => {
     let held: KinWorkSummary | null = null;
     let first = true;
     let named = KIN_WORK_NOTHING_NAMED;
     let last: KinWorkLive | null = null;
-    return resubscribeWhenKinReturns(
-      retryWhileKinUnavailable(subscribe("kin.work.subscribe", input)),
-      Stream.empty,
-      Stream.empty,
-    ).pipe(
+    return events.pipe(
       Stream.mapEffect((event) =>
         Effect.gen(function* () {
           const emit = (
@@ -91,21 +113,30 @@ export function kinWorkLiveStream<E, R>(
           ): ReadonlyArray<KinWorkLive> => [
             (last = { ...live, changed: named.changed, unnamed: named.unnamed }),
           ];
+          // The host's own events are tagged `changed`, so only this tag means a retry.
+          const retry = event._tag === "retry";
+          if (retry && named.latest === null) return NOTHING;
+          const seq = event._tag === "retry" ? (named.latest ?? 0) : event.seq;
           const before = named;
-          named = kinWorkNote(before, event);
+          if (event._tag !== "retry") named = kinWorkNote(before, event);
           const news = named !== before;
           // Counts read during a burst already cover this number; only which task it was is new.
-          if (held !== null && held.seq >= event.seq)
+          if (!retry && held !== null && held.seq >= seq)
             return news && last !== null ? emit(last) : NOTHING;
-          if (!first) yield* Effect.sleep(KIN_WORK_SETTLE);
+          if (!first && !retry) yield* Effect.sleep(KIN_WORK_SETTLE);
           first = false;
-          const read = yield* Effect.result(readSummary(input));
+          // A dropped socket interrupts the read in flight, or leaves it pending. Either is a failed
+          // read, not the stream's end, or the next session is never subscribed to.
+          const read = yield* Effect.exit(
+            readSummary().pipe(Effect.timeout(KIN_WORK_READ_TIMEOUT)),
+          );
           if (read._tag === "Failure") {
-            if (kinWorkRefused(read.failure)) return yield* Effect.fail(read.failure);
-            return emit({ seq: event.seq, summary: held, failed: true });
+            const refusal = kinWorkFailuresOf(read.cause).find(kinWorkRefused);
+            if (refusal !== undefined) return yield* Effect.fail(refusal);
+            return emit({ seq, summary: held, failed: true });
           }
-          held = read.success;
-          return emit({ seq: Math.max(event.seq, held.seq), summary: held, failed: false });
+          held = read.value;
+          return emit({ seq: Math.max(seq, held.seq), summary: held, failed: false });
         }),
       ),
       Stream.flattenIterable,

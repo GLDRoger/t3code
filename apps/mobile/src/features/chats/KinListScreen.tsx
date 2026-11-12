@@ -26,7 +26,6 @@ import {
   type KinListFilter,
   type KinListRowView,
 } from "@t3tools/client-runtime/kin/kinLists";
-import { KIN_WORK_STALE } from "@t3tools/client-runtime/kin/kinWork";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import {
   EnvironmentId,
@@ -48,12 +47,11 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { ListSection } from "../../components/ui/ListSection";
 import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { Menu } from "../../components/ui/Menu";
-import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { KinMonthGrid } from "./components/KinMonthGrid";
-import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
+import { KinWorkFrame, KinWorkLoading, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
 import { KinDateRowLine } from "./KinWorkMoney";
 import { kinClient } from "./state/kinClient";
@@ -64,6 +62,7 @@ import {
   useKinLists,
 } from "./state/useKinMoney";
 import {
+  refreshKinWorkLive,
   useKinWork,
   useKinWorkChoices,
   useKinWorkDirectory,
@@ -371,12 +370,16 @@ function KinListEntries(
   const footer = kinListFooter(rows.length, state.total, state.more);
   const open = (task: KinRecordKey) =>
     navigation.navigate("KinWorkItem", { environmentId, orgId, task });
+  const retry = () => {
+    refreshKinWorkLive(props);
+    entries.refresh();
+  };
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
         title={def.name}
         onBack={() => navigation.goBack()}
-        refresh={{ accessibilityLabel: "Refresh", onPress: entries.refresh }}
+        refresh={{ accessibilityLabel: "Refresh", onPress: retry }}
         {...(canEdit && !def.builtIn
           ? {
               actions: [
@@ -421,7 +424,7 @@ function KinListEntries(
             <View className="gap-3 pb-1 pt-2">
               {props.stale || state.stale ? (
                 <View className="px-4">
-                  <Notice message={KIN_WORK_STALE} />
+                  <KinWorkStaleNotice environmentId={environmentId} onRetry={retry} />
                 </View>
               ) : null}
               <ScrollView

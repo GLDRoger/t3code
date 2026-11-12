@@ -2,7 +2,7 @@ import { kinTabBar, useKinTab } from "./components/KinTab";
 import { LegendList } from "@legendapp/list/react-native";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
-import { KIN_WORK_STALE, KIN_WORK_TITLE } from "@t3tools/client-runtime/kin/kinWork";
+import { KIN_WORK_TITLE } from "@t3tools/client-runtime/kin/kinWork";
 import {
   KIN_CLIENTS,
   KIN_PROJECTS,
@@ -14,7 +14,7 @@ import {
   type KinHealthView,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
-import type { KinRecordKey } from "@t3tools/contracts";
+import type { EnvironmentId, KinRecordKey } from "@t3tools/contracts";
 import { Pressable, ScrollView, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -22,7 +22,6 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { Chip } from "../../components/ui/Chip";
 import { EmptyState } from "../../components/ui/EmptyState";
-import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { cn } from "../../lib/cn";
 import { useNowMinuteMs } from "../../lib/clock";
@@ -31,10 +30,12 @@ import {
   KinWorkAreaSwitch,
   KinWorkLoading,
   KinWorkPrivateMark,
+  KinWorkStaleNotice,
   type KinWorkAreas,
 } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
 import {
+  refreshKinWorkLive,
   useKinClientsList,
   useKinProjectsList,
   type KinWorkDirectory,
@@ -124,6 +125,7 @@ type ListProps = KinWorkTarget & {
 
 /** One of Work's two named lists: only the rows in view mount, and more load at the foot. */
 function NamedList(props: {
+  readonly environmentId: EnvironmentId;
   readonly areas: KinWorkAreas;
   readonly stale: boolean;
   readonly rows: ReadonlyArray<NamedRow>;
@@ -198,7 +200,7 @@ function NamedList(props: {
               <KinWorkAreaSwitch {...props.areas} />
               {props.stale ? (
                 <View className="px-4">
-                  <Notice message={KIN_WORK_STALE} />
+                  <KinWorkStaleNotice environmentId={props.environmentId} onRetry={list.refresh} />
                 </View>
               ) : null}
               <ScrollView
@@ -275,18 +277,33 @@ export function KinClientsList(props: ListProps) {
   const { environmentId, orgId } = props;
   const canAdd = useAtomValue(kinClient.workClientCreate.permissionAtom(environmentId));
   const now = new Date(useNowMinuteMs());
-  const { state, list } = useKinClientsList(props, props.stale ? null : props.live.seq);
+  const { state, list } = useKinClientsList(
+    props,
+    props.stale ? null : props.live.seq,
+    props.areas.words,
+  );
   const { filter } = state;
   return (
     <NamedList
+      environmentId={environmentId}
       areas={props.areas}
       stale={props.stale || state.stale}
       rows={state.records.map((row) => kinClientRow(row, props.directory.names, now))}
       state={state}
-      list={list}
+      list={{
+        loadMore: list.loadMore,
+        // The counts are read again too: they may be what failed.
+        refresh: () => {
+          refreshKinWorkLive(props);
+          list.refresh();
+        },
+      }}
       extra={state}
       search={{ text: filter.text, placeholder: KIN_CLIENTS.search }}
-      onSearch={(text) => list.setFilter({ ...filter, text })}
+      onSearch={(text) => {
+        props.areas.onWords(text);
+        list.setFilter({ ...filter, text });
+      }}
       views={[
         {
           id: "active",
@@ -323,18 +340,33 @@ export function KinProjectsList(props: ListProps) {
   const { environmentId, orgId } = props;
   const canAdd = useAtomValue(kinClient.workProjectCreate.permissionAtom(environmentId));
   const now = new Date(useNowMinuteMs());
-  const { state, list } = useKinProjectsList(props, props.stale ? null : props.live.seq);
+  const { state, list } = useKinProjectsList(
+    props,
+    props.stale ? null : props.live.seq,
+    props.areas.words,
+  );
   const { filter } = state;
   return (
     <NamedList
+      environmentId={environmentId}
       areas={props.areas}
       stale={props.stale || state.stale}
       rows={state.records.map((row) => kinProjectRow(row, props.directory.names, now))}
       state={state}
-      list={list}
+      list={{
+        loadMore: list.loadMore,
+        // The counts are read again too: they may be what failed.
+        refresh: () => {
+          refreshKinWorkLive(props);
+          list.refresh();
+        },
+      }}
       extra={state}
       search={{ text: filter.text, placeholder: KIN_PROJECTS.search }}
-      onSearch={(text) => list.setFilter({ ...filter, text })}
+      onSearch={(text) => {
+        props.areas.onWords(text);
+        list.setFilter({ ...filter, text });
+      }}
       views={KIN_PROJECT_VIEWS.map((view) => ({
         id: view.id,
         label: view.label,

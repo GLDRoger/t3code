@@ -16,6 +16,7 @@ import {
 import {
   KIN_WORK_COPY,
   kinWorkApplied,
+  kinWorkItemNotice,
   type KinWorkNotice,
 } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
@@ -63,6 +64,7 @@ import { KinListEntryBody } from "./KinListEntry";
 import { kinClient } from "./state/kinClient";
 import {
   useKinWork,
+  useKinWorkAnswer,
   useKinWorkChanges,
   useKinWorkChoices,
   useKinWorkDirectory,
@@ -155,7 +157,7 @@ function KinWorkItemBody(props: ItemTarget) {
   const { environmentId, orgId, itemKey } = props;
   const itemAtom = kinClient.workItem({ environmentId, input: { orgId, key: itemKey } });
   const { state: changed, changes } = useKinWorkChanges(props);
-  const state = kinWorkItemState(useAtomValue(itemAtom), changed.answers[itemKey] ?? null);
+  const state = kinWorkItemState(useAtomValue(itemAtom), useKinWorkAnswer(props, itemKey));
   useKinWorkItemWatch(props, itemKey, state._tag === "ready" ? state.item.seq : null);
   const directory = useKinWorkDirectory(props, true);
   const canGive = useAtomValue(kinClient.workAssign.permissionAtom(environmentId));
@@ -199,7 +201,7 @@ function KinWorkItemBody(props: ItemTarget) {
     );
   }
   const { item } = state;
-  const { orgs, people, names } = directory;
+  const { orgs, people, joined, names } = directory;
   if (item.list !== undefined) {
     const read = kinWorkItemView(item, names, now, KIN_RECORD_CHANGES_CAP, place);
     return (
@@ -258,13 +260,20 @@ function KinWorkItemBody(props: ItemTarget) {
     place,
   );
   const saving = changed.pending[itemKey] !== undefined;
-  const notice = changed.notice?.key === itemKey ? changed.notice : null;
+  const notice = kinWorkItemNotice(changed, item);
   // An older host reads and hands over; everything else needs one that takes changes.
   const act =
     canChange && view.editable
       ? (action: Parameters<typeof changes.run>[1]) => void changes.run(item, action, names)
       : null;
-  const waitingOn = kinWorkAssignees({ orgs, orgId, people, names, current: view.waitingOn });
+  const waitingOn = kinWorkAssignees({
+    orgs,
+    orgId,
+    people,
+    joined,
+    names,
+    current: view.waitingOn,
+  });
   const openChat = (chatId: KinChatId) => {
     navigation.goBack();
     navigation.navigate("KinChat", { environmentId, orgId, chatId });
