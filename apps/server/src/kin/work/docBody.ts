@@ -115,13 +115,15 @@ export const outlineOf = (body: string): ReadonlyArray<KinDocSection> =>
     .filter((section) => section.id !== "top" || section.text !== "")
     .map(({ text: _text, ...section }) => section);
 
-const join = (sections: ReadonlyArray<{ readonly text: string }>) =>
-  normalize(
-    sections
-      .map((section) => section.text)
-      .filter((text) => text !== "")
+/** Sections back into a body, with a blank line before each heading so none runs into another. */
+const join = (sections: ReadonlyArray<{ readonly text: string }>) => {
+  const texts = sections.map((section) => section.text).filter((text) => text !== "");
+  return normalize(
+    texts
+      .map((text, index) => (index < texts.length - 1 && !text.endsWith("\n") ? `${text}\n` : text))
       .join("\n"),
   );
+};
 
 const startsWithHeading = (text: string) => {
   const first = normalize(text).split("\n")[0] ?? "";
