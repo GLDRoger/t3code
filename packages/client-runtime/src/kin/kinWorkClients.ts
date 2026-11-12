@@ -241,11 +241,15 @@ export interface KinContactView {
   readonly accessibilityLabel: string;
 }
 
-const emailHref = (email: string) => (/^[^\s@]+@[^\s@]+$/.test(email) ? `mailto:${email}` : null);
-const phoneHref = (phone: string) => {
-  const digits = phone.replace(/[^\d+]/g, "");
-  return digits.replace(/\D/g, "").length >= 5 ? `tel:${digits}` : null;
-};
+/** The bar a contact's email must clear before a row offers to mail it; forms check the same. */
+export const kinContactEmailOk = (email: string) => /^[^\s@]+@[^\s@]+$/.test(email);
+export const KIN_CONTACT_PHONE_DIGITS = 5;
+export const kinContactPhoneOk = (phone: string) =>
+  phone.replace(/\D/g, "").length >= KIN_CONTACT_PHONE_DIGITS;
+
+const emailHref = (email: string) => (kinContactEmailOk(email) ? `mailto:${email}` : null);
+const phoneHref = (phone: string) =>
+  kinContactPhoneOk(phone) ? `tel:${phone.replace(/[^\d+]/g, "")}` : null;
 
 function kinContactView(contact: KinContact): KinContactView {
   const notes = contact.notes.trim();

@@ -25,7 +25,7 @@ describe("kinProjectFormCheck", () => {
 describe("kinProjectTargetHint", () => {
   it("names the year only outside this one, and never labels an impossible day", () => {
     expect(kinProjectTargetHint("2026-12-03", now)).not.toMatch(/2026/);
-    expect(kinProjectTargetHint("2027-03-02", now)).toMatch(/2027$/);
+    expect(kinProjectTargetHint("2027-03-02", now).match(/2027/g)).toHaveLength(1);
     expect(kinProjectTargetHint("2026-02-30", now)).toBe("Enter a real date.");
   });
 });
