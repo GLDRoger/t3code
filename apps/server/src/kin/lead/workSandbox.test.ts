@@ -195,6 +195,7 @@ it("the check runs the real session's options: only the model endpoint, key, hom
     HOME: "/home/kin/.t3/kin/worker-home",
     ...WorkSession.commandLimits,
     CLAUDE_CODE_TMPDIR: "/tmp/kin-1",
+    TMPDIR: "/tmp/kin-1",
   });
   // Commands keep the basics; everything else, and each credential, is unset for them.
   const denied = (options: typeof real) =>
@@ -334,9 +335,15 @@ it.effect(
         `${base}/claude`,
         `${base}/owner/bin`,
         `${base}/certs`,
+        `${base}/vite-plus/1.5.0/bin`,
+        `${base}/server-bin`,
       ])
         yield* fs.makeDirectory(directory, { recursive: true });
       yield* fs.writeFileString(`${base}/node/bin/node`, "");
+      // The server's own `vp`, through a link on its PATH as Vite+ installs it.
+      yield* fs.writeFileString(`${base}/vite-plus/1.5.0/bin/vp`, "");
+      yield* fs.chmod(`${base}/vite-plus/1.5.0/bin/vp`, 0o755);
+      yield* fs.symlink(`${base}/vite-plus/1.5.0/bin/vp`, `${base}/server-bin/vp`);
       yield* fs.writeFileString(`${base}/claude/claude`, "");
       yield* fs.writeFileString(`${tree}/ca.pem`, "");
       yield* fs.writeFileString(`${base}/ca.pem`, "");
@@ -361,10 +368,18 @@ it.effect(
           `${base}/owner/bin`,
         ],
         writable: [tree],
-      }).pipe(Effect.provideService(HostProcess.ExecutablePath, `${base}/node/bin/node`));
+      }).pipe(
+        Effect.provideService(HostProcess.ExecutablePath, `${base}/node/bin/node`),
+        Effect.provideService(HostProcess.Environment, { PATH: `${base}/server-bin` }),
+      );
       const path = (built.env.PATH ?? "").split(":");
-      // The server's Node and Claude Code first, then the fixed system directories, then the owner's.
-      assert.deepStrictEqual(path.slice(0, 2), [`${base}/node/bin`, `${base}/claude`]);
+      // The server's Node, Claude Code and `vp` first, then the system directories, then the owner's.
+      assert.deepStrictEqual(path.slice(0, 3), [
+        `${base}/node/bin`,
+        `${base}/claude`,
+        `${base}/vite-plus/1.5.0/bin`,
+      ]);
+      assert.strictEqual(built.env.VP_HOME, `${base}/vite-plus`);
       assert.strictEqual(path.at(-1), `${base}/owner/bin`);
       const system = [
         "/usr/local/sbin",
@@ -635,26 +650,43 @@ it.live(
           assert.match(result.tmp, /\/kin-[^/]+$/);
           // What `kin worker-shell --check` prints: every gate passed, each process line included.
           const { stateDir } = yield* ServerConfig;
-          const checked = yield* WorkSandbox.checkShell({
-            stateDir,
-            session: {
-              options: {
-                model: "claude-haiku-4-5",
-                pathToClaudeCodeExecutable: claude ?? "",
-                env: { PATH, HOME },
-                tools: [],
-                permissionMode: "default",
-                sessionId: "kin-sandbox-check",
+          const check = (paths: WorkSession.WorkSession["paths"]) =>
+            WorkSandbox.checkShell({
+              stateDir,
+              session: {
+                options: {
+                  model: "claude-haiku-4-5",
+                  pathToClaudeCodeExecutable: claude ?? "",
+                  env: { PATH, HOME },
+                  tools: [],
+                  permissionMode: "default",
+                  sessionId: "kin-sandbox-check",
+                },
+                credentials: {},
+                environment: { PATH, HOME },
               },
-              credentials: {},
-              environment: { PATH, HOME },
-            },
-            place: result.place,
-            paths: result.paths,
-            domains: ["registry.npmjs.org"],
-            readPaths: [],
-            providerHomes: [],
-          }).pipe(Effect.provide(SecureRandom.layerWebCrypto));
+              place: result.place,
+              paths,
+              domains: ["registry.npmjs.org"],
+              readPaths: [],
+              providerHomes: [],
+            }).pipe(Effect.provide(SecureRandom.layerWebCrypto));
+          // No shell to run commands with: the check says why, and claims no escape failed.
+          const broken = yield* check({ PATH: "/nonexistent", SHELL: "/nonexistent/bash" });
+          const brokenResult = broken._tag === "checked" ? broken.result : undefined;
+          assert.match(brokenResult?.failed ?? "", /^the check's commands never ran: \S/);
+          const unchecked = (brokenResult?.lines ?? []).filter((line) => line.kind === "unchecked");
+          assert.include(
+            unchecked.map((line) => line.label),
+            "not checked: commands read nothing outside",
+          );
+          assert.isFalse(unchecked.some((line) => line.passed));
+          assert.isFalse(
+            (brokenResult?.lines ?? []).some(
+              (line) => line.passed && line.label === "commands read nothing outside",
+            ),
+          );
+          const checked = yield* check(result.paths);
           assert.strictEqual(checked._tag, "checked");
           const lines = checked._tag === "checked" ? checked.result.lines : [];
           assert.deepStrictEqual(

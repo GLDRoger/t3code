@@ -61,6 +61,9 @@ cp -p "$REPO/.env" "$BUILD/.env"
 node_version="$(sed -n '/"engines"/,/}/s/.*"node": *"\([^"]*\)".*/\1/p' "$BUILD/package.json" | head -n1)"
 [ -n "$node_version" ] || { echo "update.sh: no engines.node in package.json." >&2; false; }
 mise install "node@$node_version"
+# Workers run kin's vp read-only from a home of their own, so vp can't use the system Node there
+# and can't download its own; give it the build's Node now.
+mise exec "node@$node_version" -- vp env install "$node_version" </dev/null
 
 cd "$BUILD"
 # Unattended, like scripts/setup-worktree.ts: a stale lockfile must fail, not be rewritten.

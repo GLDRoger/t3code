@@ -33,7 +33,7 @@ import { resolveClaudeHomePath } from "../../provider/Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../../provider/Drivers/CodexHomeLayout.ts";
 import { makeConfiner, type WorkerCredentials } from "../claudeConfinement.ts";
 import { documentWorktrees } from "../gendocs/workspace.ts";
-import { ownerPath, workerPaths } from "./workerPath.ts";
+import { ownerPath, serverVp, workerPaths } from "./workerPath.ts";
 import { grantedHosts, noteBlocked, refusedHosts } from "./workNetwork.ts";
 import { type CheckLine, type CheckResult, probe, type ShellPaths } from "./workSandboxProbe.ts";
 import { shellTools, type WorkerPlace, type WorkSession } from "./workSession.ts";
@@ -545,11 +545,11 @@ const gitCommonDir = Effect.fn("KinWorkSandbox.gitCommonDir")(function* (worktre
   return yield* fs.realPath(path.resolve(gitDir, common));
 });
 
-const installHints: Record<KinWorkerSandboxInstall, string> = {
+export const installHints: Record<KinWorkerSandboxInstall, string> = {
   bubblewrap: "bubblewrap isn't installed",
   socat: "socat isn't installed",
   apparmor_bwrap_profile:
-    "Ubuntu's AppArmor may be stopping bubblewrap: no /etc/apparmor.d/bwrap profile",
+    "Ubuntu's AppArmor may be stopping bubblewrap: it needs the /etc/apparmor.d/bwrap profile loaded and bwrap-userns-restrict disabled, which takes root (see the host README)",
 };
 
 /** What the host most likely lacks for Claude Code's sandbox, for the owner's status. */
@@ -569,7 +569,12 @@ const missing = Effect.fn("KinWorkSandbox.missing")(
     const restricted = yield* fs
       .readFileString("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
       .pipe(Effect.orElseSucceed(() => "0"));
-    if (restricted.trim() === "1" && !(yield* fs.exists("/etc/apparmor.d/bwrap")))
+    // Ubuntu's own `bwrap-userns-restrict` also names its profile `bwrap` and loads after ours;
+    // it denies every capability to what bubblewrap starts, so Claude Code's seccomp helper fails.
+    const restrictive =
+      (yield* fs.exists("/etc/apparmor.d/bwrap-userns-restrict")) &&
+      !(yield* fs.exists("/etc/apparmor.d/disable/bwrap-userns-restrict"));
+    if (restricted.trim() === "1" && (restrictive || !(yield* fs.exists("/etc/apparmor.d/bwrap"))))
       install.push("apparmor_bwrap_profile");
     return install;
   },
@@ -628,12 +633,14 @@ export const checkShell = Effect.fn("KinWorkSandbox.checkShell")(function* (inpu
   const runtime = yield* fs
     .realPath(path.dirname(path.dirname(yield* HostProcess.ExecutablePath)))
     .pipe(Effect.orElseSucceed(() => undefined));
+  // The server's `vp` is on every worker's PATH (`workerPaths`); its commands read it from here.
+  const vp = yield* serverVp(hostEnv);
   const roots = yield* shellRoots({
     home: yield* HostProcess.HomeDirectory,
     stateDir: input.stateDir,
     system: systemRoots[platform] ?? [],
     providerHomes: input.providerHomes,
-    readPaths: input.readPaths,
+    readPaths: [...(vp === undefined ? [] : [vp.home]), ...input.readPaths],
     runtime,
   }).pipe(Effect.result);
   if (roots._tag === "Failure") return { _tag: "unresolved", reason: roots.failure } as const;
