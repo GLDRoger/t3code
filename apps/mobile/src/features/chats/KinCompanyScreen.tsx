@@ -30,7 +30,8 @@ import {
   KinWorkPrivateMark,
   KinWorkTextField,
 } from "./components/KinWorkPieces";
-import { KinBrandForm, KinBrandRows, KinTemplateRows } from "./KinBrand";
+import { KinBrandForm, KinBrandRows } from "./KinBrand";
+import { KinTemplateRows } from "./KinTemplates";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected } from "./state/useKinHost";
 import { useKinCompanyProfile } from "./state/useKinMoney";
