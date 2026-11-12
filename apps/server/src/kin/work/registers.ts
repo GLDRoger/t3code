@@ -376,7 +376,7 @@ export const describe = (spec: FieldDef) =>
 
 /**
  * The ids a defined list's fields hold, against rows of this org, inside the caller's write:
- * a person or agent here, a client or project here, a file on a message here or imported.
+ * a person or agent here, a client or project here, a file on a message here.
  */
 export const verifyRefs = Effect.fn("KinRegisters.verifyRefs")(function* (
   orgId: KinOrgId,
@@ -409,9 +409,7 @@ export const verifyRefs = Effect.fn("KinRegisters.verifyRefs")(function* (
       const ids = value as ReadonlyArray<string>;
       const rows = yield* sql`SELECT a.attachment_id FROM kin_message_attachments a
         JOIN kin_messages m ON m.org_id = a.org_id AND m.message_id = a.message_id
-        WHERE a.org_id = ${orgId} AND a.attachment_id IN ${sql.in(ids)} AND m.status <> 'deleted'
-        UNION SELECT attachment_id FROM kin_entry_files
-        WHERE org_id = ${orgId} AND attachment_id IN ${sql.in(ids)}`;
+        WHERE a.org_id = ${orgId} AND a.attachment_id IN ${sql.in(ids)} AND m.status <> 'deleted'`;
       if (rows.length !== new Set(ids).size) return yield* gone;
     }
   }

@@ -93,8 +93,6 @@ describe("command permissions", () => {
     "kin.workers.network.get",
     "kin.workers.network.allow",
     "kin.workers.network.remove",
-    "kin.import.plan",
-    "kin.import.apply",
   ] as const)("guards the Kin owner setting %s with the destination settings grant", (method) =>
     Effect.scoped(
       Effect.gen(function* () {

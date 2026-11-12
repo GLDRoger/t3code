@@ -49,13 +49,6 @@ const MIME_TYPES = {
 } as const;
 type Extension = keyof typeof MIME_TYPES;
 const isExtension = (value: string): value is Extension => Object.hasOwn(MIME_TYPES, value);
-/** A file's type by the extension of its name, among the ones Kin keeps, or `undefined`. */
-export const keptType = (name: string) => {
-  const extension = name.slice(name.lastIndexOf(".") + 1).toLowerCase();
-  return name.includes(".") && isExtension(extension)
-    ? { extension, mimeType: MIME_TYPES[extension] }
-    : undefined;
-};
 
 export type Taken = {
   readonly name: string;

@@ -1,4 +1,4 @@
-import { type KinImportReport, KinOrgId, KinPersonId } from "@t3tools/contracts";
+import { KinOrgId, KinPersonId } from "@t3tools/contracts";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -46,23 +46,21 @@ const ownerOf = Effect.fn("kin.import.owner")(function* (
   return person;
 });
 
-const counts = (name: string, one: KinImportReport["entries"]) =>
-  `${name}: ${one.create} new, ${one.unchanged} already imported, ${one.matched} matched by name, ${one.changed} changed in Kin since (left alone), ${one.problems} with problems`;
+type Counts = KinImport.ImportReport["entries"];
+const counts = (name: string, one: Counts) =>
+  `${name}: ${one.create} new, ${one.unchanged} imported before, ${one.matched} matched by name, ${one.changed} changed in Kin since (left alone), ${one.problems} with problems`;
 
-/** The report as an operator reads it in a terminal. */
-const describeReport = (report: KinImportReport) =>
+const describeImport = (report: KinImport.ImportReport) =>
   [
-    `${report.applied ? "Imported" : "Plan for"} batch ${report.batch}${report.asOf === null ? "" : `, kept up until ${report.asOf}`}.`,
+    `${report.applied ? "Imported" : "Plan for"} batch ${report.batch}: ${report.rows} rows${report.asOf === null ? "" : `, kept up until ${report.asOf}`}.`,
     ...report.lists.map(
       (one) =>
         `List ${one.name}: ${one.action}${one.adds.length === 0 ? "" : ` (${one.adds.join(", ")})`}`,
     ),
-    ...report.company.map((one) => `Company ${one.field}: ${one.action}`),
     counts("Clients", report.clients),
     counts("Projects", report.projects),
     counts("Entries", report.entries),
     counts("Payments", report.payments),
-    counts("Files", report.files),
     ...report.money.map(
       (one) =>
         `Money in ${one.list}: ${one.entries} entries, ${formatMoney(one.total)}, ${formatMoney(one.paid)} paid`,
@@ -74,20 +72,44 @@ const describeReport = (report: KinImportReport) =>
     ...report.changed.map((one) => `Changed in Kin since: ${one.key} (${one.source})`),
     ...report.problems.map(
       (one) =>
-        `Problem in ${one.section}${one.source === null ? "" : ` ${one.source}`}: ${one.reason}`,
+        `Problem${one.line === null ? "" : ` on line ${one.line}`} (${one.kind}${one.source === null ? "" : ` ${one.source}`}): ${one.reason}`,
     ),
-    ...(report.moreProblems === 0 ? [] : [`And ${report.moreProblems} more problems.`]),
+    ...(report.more === 0 ? [] : [`And ${report.more} more.`]),
+  ].join("\n");
+
+const describeUndo = (report: KinImport.UndoReport) =>
+  [
+    `${report.applied ? "Undid" : "Undo plan for"} batch ${report.batch}: ${report.removes.entries} entries, ${report.removes.payments} payments, ${report.removes.clients} clients and ${report.removes.projects} projects ${report.applied ? "removed" : "to remove"}.`,
+    report.includeChanged
+      ? `Changed since import: ${report.changed}, removed with the rest.`
+      : `Changed since import: ${report.changed}, left as they are. Add --include-changed to remove them too.`,
+    ...report.kept.map((one) => `Kept ${one.key}: ${one.reason}.`),
+    ...report.lists.map((one) =>
+      one.action === "remove"
+        ? `List ${one.list}: ${report.applied ? "removed" : "to remove"}, nothing else is on it.`
+        : `List ${one.list}: kept, ${one.entries} other entries are on it.`,
+    ),
+    ...(report.lists.some((one) => one.action === "keep") || report.lists.length === 0
+      ? ["Numbering on lists that stay doesn't go back, so no number is issued twice."]
+      : []),
   ].join("\n");
 
 export const importCommand = Command.make("import", {
   ...authLocationFlags,
   file: Flag.String("file").pipe(
-    Flag.withDescription(
-      "A folder holding import.json and files/, or a ZIP of them. See the moving-in guide for the format.",
-    ),
+    Flag.withDescription("A kin-import file (JSON Lines) on this host. See the moving-in guide."),
+    Flag.optional,
+  ),
+  undo: Flag.String("undo").pipe(
+    Flag.withDescription("Take away what the batch with this name imported."),
+    Flag.optional,
   ),
   apply: Flag.Boolean("apply").pipe(
-    Flag.withDescription("Keep the import. Without it, Kin only reports what it would do."),
+    Flag.withDescription("Do it. Without it, Kin only reports what it would do."),
+    Flag.withDefault(false),
+  ),
+  includeChanged: Flag.Boolean("include-changed").pipe(
+    Flag.withDescription("With --undo, also remove imported entries someone changed since."),
     Flag.withDefault(false),
   ),
   org: Flag.String("org").pipe(
@@ -105,7 +127,7 @@ export const importCommand = Command.make("import", {
   ),
 }).pipe(
   Command.withDescription(
-    "Move records from another system into this host's Kin: clients, projects, list entries, payments and files. Runs a plan unless --apply is given; a rerun adds only what is new.",
+    "Move records from another system into this host's Kin, or undo an import. Plans unless --apply is given; a rerun adds only what is new.",
   ),
   Command.withHandler(
     Effect.fn("kin.import.run")(
@@ -115,13 +137,32 @@ export const importCommand = Command.make("import", {
           return yield* new KinImportCliError({
             message: "Kin is off on this host. Run with KIN_ENABLED=true, as the Kin server does.",
           });
+        if (Option.isSome(flags.file) === Option.isSome(flags.undo))
+          return yield* new KinImportCliError({
+            message: "Give --file to import, or --undo <batch> to take an import away.",
+          });
         const logLevel = yield* GlobalFlag.LogLevel;
         const config = yield* resolveCliAuthConfig(flags, logLevel, { quietLogs: flags.json });
+        const progress: KinImport.Progress = (done, of) =>
+          done % 5_000 === 0 || done === of ? Console.error(`${done} of ${of} rows`) : Effect.void;
         const report = yield* Effect.gen(function* () {
           const owner = yield* ownerOf(flags.org, flags.person);
           const imports = yield* KinImport.KinImport;
-          const bundle = yield* imports.fromHost(flags.file);
-          return yield* (flags.apply ? imports.apply : imports.plan)(flags.org, owner, bundle);
+          if (Option.isSome(flags.undo)) {
+            const undone = yield* imports.undo(flags.org, owner, flags.undo.value, {
+              apply: flags.apply,
+              includeChanged: flags.includeChanged,
+            });
+            return flags.json ? encodeReport(undone) : describeUndo(undone);
+          }
+          const lines = imports.fromFile(Option.getOrElse(flags.file, () => ""));
+          const done = yield* (flags.apply ? imports.apply : imports.plan)(
+            flags.org,
+            owner,
+            lines,
+            progress,
+          );
+          return flags.json ? encodeReport(done) : describeImport(done);
         }).pipe(
           Effect.provide(
             KinImport.layer.pipe(
@@ -134,7 +175,7 @@ export const importCommand = Command.make("import", {
             ),
           ),
         );
-        yield* Console.log(flags.json ? encodeReport(report) : describeReport(report));
+        yield* Console.log(report);
       },
       Effect.tapError((error) =>
         isCliError(error) || error._tag === "KinChatError"

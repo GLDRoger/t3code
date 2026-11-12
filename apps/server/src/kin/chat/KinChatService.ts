@@ -556,7 +556,7 @@ const make = Effect.gen(function* () {
   });
   /**
    * A generated doc's file is the owner's alone: the person whose agent's job made it, or who
-   * asked. A file a doc's markdown shows, or one imported onto an entry, is the org's owner's.
+   * asked. A file a doc's markdown shows is read by whoever reads Docs: the org's owner.
    */
   const docFileReadable = (caller: PersonCaller, attachmentId: string) =>
     Effect.forEach("_tag" in caller ? [caller] : caller, (person) =>
@@ -569,8 +569,6 @@ const make = Effect.gen(function* () {
           LIMIT 1`;
         if (made.length > 0) return true;
         const shown = yield* sql`SELECT 1 FROM kin_doc_files
-          WHERE org_id = ${person.orgId} AND attachment_id = ${attachmentId}
-          UNION ALL SELECT 1 FROM kin_entry_files
           WHERE org_id = ${person.orgId} AND attachment_id = ${attachmentId} LIMIT 1`;
         return shown.length > 0 && (yield* isOrgOwner(person.orgId, person.personId));
       }),

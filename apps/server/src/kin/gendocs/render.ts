@@ -12,8 +12,8 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
+import { createDeterministicAttachmentId } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
-import { keepOrgFile } from "../chat/KinAttachmentStore.ts";
 import { computeData } from "./compute.ts";
 import type { Recipe, Value } from "./recipe.ts";
 import { type Taken, typeMismatch } from "./returnPath.ts";
@@ -415,12 +415,16 @@ export const makeLayer = (limits: typeof RENDER_LIMITS = RENDER_LIMITS) =>
       );
       const store: KinDocRenderer["Service"]["store"] = Effect.fn("KinDocRenderer.store")(
         function* (orgId, jobId, file) {
-          const attachmentId = yield* keepOrgFile(orgId, jobId, file).pipe(
-            Effect.provideService(FileSystem.FileSystem, fs),
-            Effect.provideService(Path.Path, path),
-            Effect.provideService(ServerConfig, config),
-          );
-          if (attachmentId === undefined) return yield* unavailable;
+          const base = createDeterministicAttachmentId("kin-chat", `${orgId}:${file.sha256}`);
+          if (base === null) return yield* unavailable;
+          const attachmentId = `${base}-${file.extension}`;
+          const target = path.join(config.attachmentsDir, `${attachmentId}.${file.extension}`);
+          if (!(yield* fs.exists(target))) {
+            yield* fs.makeDirectory(config.attachmentsDir, { recursive: true });
+            const scratch = `${target}.${jobId}.tmp`;
+            yield* fs.writeFile(scratch, file.bytes);
+            yield* fs.rename(scratch, target);
+          }
           return attachmentId;
         },
         Effect.catchIf(
