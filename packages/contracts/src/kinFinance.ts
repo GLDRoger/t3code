@@ -121,6 +121,8 @@ export const KinListUpdateInput = Schema.Struct({
   list: KinListId,
   rev: NonNegativeInt,
   name: Schema.optional(Label),
+  /** What the list calls the states it uses; only the ones given change. */
+  stateLabels: Schema.optional(KinStateLabels),
   archived: Schema.optional(Schema.Boolean),
   retireFields: Schema.optional(Schema.Array(KinListFieldKey).check(Schema.isMaxLength(30))),
   restoreFields: Schema.optional(Schema.Array(KinListFieldKey).check(Schema.isMaxLength(30))),

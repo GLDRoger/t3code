@@ -61,7 +61,7 @@ import { KinDocCollector } from "../gendocs/DocJobs.ts";
 import { OWNER_DECLINED, parseReport, WAITING_FOR_OWNER } from "./workerBrief.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
 import * as Publish from "./workerPublish.ts";
-import { takeBlocked } from "./workNetwork.ts";
+import { releaseHosts, takeBlocked } from "./workNetwork.ts";
 import { localThreadId, workThreadPrefix } from "./workThread.ts";
 import { KinRecords, type Withdrawal } from "../work/KinRecords.ts";
 import * as Attempts from "../work/workerAttempts.ts";
@@ -568,8 +568,11 @@ const make = Effect.gen(function* () {
     );
     // Whether or not this run's row was still the attempt's, a stopped attempt owes the owner this.
     if (yield* stopRequested(worker)) yield* settleSoon(attemptOf(worker));
-    if (recorded !== undefined) yield* endPublishCard(attemptOf(worker));
     if (recorded === undefined) return false;
+    yield* endPublishCard(attemptOf(worker));
+    yield* releaseHosts(stateDir, worker.workerId).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+    );
     if (stoppedStatuses.has(recorded))
       yield* card(worker, (chatId, audience) =>
         chat.setTaskCardClosed({

@@ -20,7 +20,10 @@ import {
   KIN_WORK_AREAS,
   type KinWorkArea,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
-import type { KinRecordKey } from "@t3tools/contracts";
+import { KIN_DATES } from "@t3tools/client-runtime/kin/kinDates";
+import { KIN_LISTS, KIN_LIST_DEFAULT_FILTER } from "@t3tools/client-runtime/kin/kinLists";
+import { KIN_MONEY, type KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
+import type { KinListId, KinRecordKey } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { ArrowLeftIcon, ListChecksIcon, PlusIcon, SearchIcon } from "lucide-react";
 import { useState } from "react";
@@ -40,13 +43,17 @@ import { KinDocPage, type KinDocWhere } from "./KinDocPage";
 import { KinDocsList } from "./KinDocsList";
 import { KinSearchDialog } from "./KinSearchDialog";
 import { KinWorkClientPage, KinWorkClientsList } from "./KinWorkClients";
+import { KinWorkDates } from "./KinWorkDates";
 import { KinClientDialog, KinProjectDialog } from "./KinWorkForms";
 import { KinWorkItemSheet } from "./KinWorkItemSheet";
+import { KinWorkListPage, KinWorkListsIndex } from "./KinWorkLists";
+import { KinMoneyHeadline, KinWorkMoney } from "./KinWorkMoney";
 import { KinWorkNewDialog } from "./KinWorkNewDialog";
 import { KinWorkNotice, KinWorkRowSkeletons } from "./KinWorkParts";
 import { KinWorkProjectPage, KinWorkProjectsList } from "./KinWorkProjects";
 import { KinWorkTaskList } from "./KinWorkTasks";
 import { kinClient } from "./kinClient";
+import { useKinLists } from "./useKinMoney";
 import {
   kinWorkLiveAtom,
   useKinWork,
@@ -88,11 +95,13 @@ export function KinWorkEntry(
   );
 }
 
-/** Which part of Work is on screen: one of its four lists, or one client, project or doc. */
+/** Which part of Work is on screen: one of its parts, or one client, project, doc, list or the dates. */
 export type KinWorkWhere =
   | { readonly area: KinWorkArea }
   | { readonly party: KinRecordKey }
   | { readonly project: KinRecordKey }
+  | { readonly list: KinListId }
+  | { readonly dates: true }
   | KinDocWhere;
 
 const AREA_TITLE: Record<KinWorkArea, string> = {
@@ -100,6 +109,8 @@ const AREA_TITLE: Record<KinWorkArea, string> = {
   clients: KIN_CLIENTS.title,
   projects: KIN_PROJECTS.title,
   docs: "Docs",
+  money: KIN_MONEY.title,
+  lists: KIN_LISTS.title,
 };
 
 type Adding =
@@ -151,8 +162,20 @@ export function KinWorkView({
         ? "clients"
         : "project" in where
           ? "projects"
-          : "docs";
+          : "doc" in where
+            ? "docs"
+            : "lists";
   const onPage = !("area" in where);
+  const lists = useKinLists(props, {
+    enabled: ready && (area === "money" || area === "lists"),
+    seq: state._tag === "ready" && !state.stale ? state.live.seq : null,
+  });
+  // Where a list starts when a figure or a client opened it: narrowed to what is behind it.
+  const [listStart, setListStart] = useState<KinListOpen | null>(null);
+  const openList = (open: KinListOpen) => {
+    setListStart(open);
+    onGo({ list: open.list });
+  };
   const addTask =
     ready && canAdd ? (draft: KinWorkDraft) => setAdding({ type: "task", draft }) : null;
   const add =
@@ -162,15 +185,17 @@ export function KinWorkView({
         ? addTask === null
           ? null
           : { label: KIN_WORK_NEW, run: () => addTask(KIN_WORK_NO_DRAFT) }
-        : !hostClients || area === "docs"
+        : area === "money" || area === "lists" || area === "docs"
           ? null
-          : area === "clients"
-            ? canAddClient
-              ? { label: KIN_CLIENTS.add, run: () => setAdding({ type: "client" }) }
-              : null
-            : canAddProject
-              ? { label: KIN_PROJECTS.add, run: () => setAdding({ type: "project" }) }
-              : null;
+          : !hostClients
+            ? null
+            : area === "clients"
+              ? canAddClient
+                ? { label: KIN_CLIENTS.add, run: () => setAdding({ type: "client" }) }
+                : null
+              : canAddProject
+                ? { label: KIN_PROJECTS.add, run: () => setAdding({ type: "project" }) }
+                : null;
   const openClient = (key: KinRecordKey) => onGo({ party: key });
   const openProject = (key: KinRecordKey) => onGo({ project: key });
   const openDoc = (doc: KinRecordKey, section?: string) =>
@@ -242,6 +267,14 @@ export function KinWorkView({
                   {AREA_TITLE[area]}
                 </Button>
               </WorkspaceBreadcrumbItem>
+              {"dates" in where ? (
+                <>
+                  <WorkspaceBreadcrumbSeparator />
+                  <WorkspaceBreadcrumbItem current>
+                    <h1 className="truncate">{KIN_DATES.title}</h1>
+                  </WorkspaceBreadcrumbItem>
+                </>
+              ) : null}
             </>
           ) : (
             <WorkspaceBreadcrumbItem current>
@@ -309,7 +342,50 @@ export function KinWorkView({
               </ToggleGroup>
             </div>
           ) : null}
-          {area !== "tasks" && !hostClients ? (
+          {"dates" in where ? (
+            <KinWorkDates
+              {...props}
+              live={state.live}
+              stale={state.stale}
+              directory={directory}
+              onOpenKey={setOpenKey}
+            />
+          ) : "list" in where ? (
+            <KinWorkListPage
+              // A fresh page per list and per way in, so one figure's narrowing never shows on another.
+              key={`${where.list}:${listStart?.list === where.list ? JSON.stringify(listStart.filter) : ""}`}
+              {...props}
+              list={where.list}
+              live={state.live}
+              stale={state.stale}
+              directory={directory}
+              initial={listStart?.list === where.list ? listStart.filter : KIN_LIST_DEFAULT_FILTER}
+              openKey={openKey}
+              onOpenKey={setOpenKey}
+              onGone={() => onGo({ area: "lists" })}
+            />
+          ) : area === "money" ? (
+            <KinWorkMoney
+              {...props}
+              live={state.live}
+              stale={state.stale}
+              directory={directory}
+              lists={lists}
+              onOpenList={openList}
+              onOpenKey={setOpenKey}
+              onDates={() => onGo({ dates: true })}
+              onLists={() => onGo({ area: "lists" })}
+            />
+          ) : area === "lists" ? (
+            <KinWorkListsIndex
+              {...props}
+              live={state.live}
+              stale={state.stale}
+              lists={lists}
+              onOpenList={(list) => openList({ list, filter: KIN_LIST_DEFAULT_FILTER })}
+              onDates={() => onGo({ dates: true })}
+            />
+          ) : area !== "tasks" && !hostClients ? (
             <KinWorkNotice
               {...KIN_CLIENTS_OLDER_HOST}
               action={
@@ -337,6 +413,7 @@ export function KinWorkView({
                 onGo({ area: "tasks" });
               }}
               onAddTask={addTask}
+              onOpenList={openList}
             />
           ) : "project" in where ? (
             <KinWorkProjectPage
@@ -354,6 +431,7 @@ export function KinWorkView({
               onOpenProject={openProject}
               onOpenDoc={openDoc}
               onAddTask={addTask}
+              onOpenList={openList}
             />
           ) : area === "docs" ? (
             <KinDocsList {...props} directory={directory} stale={state.stale} onOpen={openDoc} />
@@ -389,6 +467,13 @@ export function KinWorkView({
               onAdd={add?.run ?? null}
               initial={narrowed}
               choices={hostClients ? choices : null}
+              header={
+                <KinMoneyHeadline
+                  {...props}
+                  seq={state.stale ? null : state.live.seq}
+                  onOpen={() => onGo({ area: "money" })}
+                />
+              }
             />
           )}
         </>

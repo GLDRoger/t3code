@@ -33,6 +33,7 @@ import {
   SmartphoneIcon,
   WrenchIcon,
   XIcon,
+  Building2Icon,
 } from "lucide-react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 
@@ -109,6 +110,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/access": ShieldCheckIcon,
   "/settings/approvals": FingerprintIcon,
   "/settings/secrets": KeyRoundIcon,
+  "/settings/company": Building2Icon,
   "/settings/maintenance": WrenchIcon,
   "/settings/labs": FlaskConicalIcon,
   "/settings/about": InfoIcon,

@@ -1,6 +1,3 @@
-// @effect-diagnostics nodeBuiltinImport:off -- synchronous SHA-256 for the confirmation's challenge.
-import * as NodeCrypto from "node:crypto";
-
 import {
   KinApprovalError,
   KinApproverKey,
@@ -15,13 +12,12 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { revokedBySession } from "../auth/ProofKeySessions.ts";
+import { KinAudit } from "./Audit.ts";
 import { KinKeySeal } from "./KeySeal.ts";
+import { KinPendingActions } from "./PendingActions.ts";
 
-/** How long a phone waits to be allowed, and how many host-CLI code tries it gets (spec section 4). */
-const CONFIRM_TTL_MS = 10 * 60 * 1000;
-export const MAX_CODE_ATTEMPTS = 5;
-/** Phones waiting at once in one org; past it, registering waits for one to be decided or expire. */
-export const MAX_WAITING_KEYS = 3;
+/** Phones that can approve at once in one org; past it, the owner removes one first. */
+export const MAX_ACTIVE_KEYS = 10;
 
 export type KeyRef = { readonly orgId: KinOrgId; readonly thumbprint: KinKeyThumbprint };
 
@@ -41,26 +37,11 @@ export type KeyRow = {
   readonly confirmed_at: number | null;
   readonly revoked_at: number | null;
   readonly seal: string | null;
-  readonly pending_seal: string | null;
-};
-
-export type ConfirmationRow = {
-  readonly org_id: string;
-  readonly thumbprint: string;
-  readonly session_id: string;
-  readonly challenge_sha256: string;
-  readonly verifier: string;
-  readonly attempts: number;
-  readonly created_at: number;
-  readonly expires_at: number;
 };
 
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const decodeKey = Schema.decodeUnknownEffect(KinApproverKey);
 const isKinApprovalError = Schema.is(KinApprovalError);
-
-const challengeSha256 = (challenge: Uint8Array) =>
-  NodeCrypto.createHash("sha256").update(challenge).digest("hex");
 
 export const sealFields = (row: KeyRow) => ({
   orgId: row.org_id,
@@ -71,17 +52,8 @@ export const sealFields = (row: KeyRow) => ({
   createdAt: row.created_at,
 });
 
-export const pendingSealFields = (row: KeyRow) => ({
-  ...sealFields(row),
-  deviceLabel: row.device_label,
-  platform: row.platform,
-  attested: row.attested,
-  sessionId: row.session_id,
-  proofKeyThumbprint: row.proof_key_thumbprint,
-});
-
-/** `attested` holds for a pending or active key only while its pending seal or seal verifies. */
-const toKeyWith = (row: KeyRow, sealed: boolean) =>
+/** `attested` holds for an active key only while its seal verifies. */
+const toKeyWith = (row: KeyRow, sealed: boolean, lastUsedAt: number | null) =>
   decodeKey({
     orgId: row.org_id,
     thumbprint: row.thumbprint,
@@ -96,6 +68,7 @@ const toKeyWith = (row: KeyRow, sealed: boolean) =>
     createdAt: iso(row.created_at),
     ...(row.confirmed_at === null ? {} : { confirmedAt: iso(row.confirmed_at) }),
     ...(row.revoked_at === null ? {} : { revokedAt: iso(row.revoked_at) }),
+    ...(lastUsedAt === null ? {} : { lastUsedAt: iso(lastUsedAt) }),
   });
 
 /** Callers see a plain refusal; the cause is logged through the persistence error shape. */
@@ -110,140 +83,41 @@ export const internal = (operation: string) => (cause: unknown) =>
         ),
       );
 
-/**
- * The key rows' SQL, shared by the server's `ApproverKeys` and the host's `kin approvals` CLI,
- * which opens the same database from another process. Nothing here is cached in memory.
- */
+/** The key rows' SQL. Nothing here is cached in memory. */
 export const makeKeyStore = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const seal = yield* KinKeySeal;
+  const actions = yield* KinPendingActions;
+  const audit = yield* KinAudit;
 
-  /** Registration's verdict, intact: a pending attested row whose pending seal verifies. */
-  const pendingVouched = (row: KeyRow) =>
-    row.state === "pending" &&
-    row.attested === 1 &&
-    seal.verifyPending(pendingSealFields(row), row.pending_seal);
-
-  const toKey = Effect.fn("ApproverKeyStore.toKey")(function* (row: KeyRow) {
-    if (row.state === "revoked" || row.attested !== 1) return yield* toKeyWith(row, false);
-    const sealed =
-      row.state === "active" ? seal.verify(sealFields(row), row.seal) : pendingVouched(row);
+  const toKey = Effect.fn("ApproverKeyStore.toKey")(function* (
+    row: KeyRow,
+    lastUsedAt: number | null = null,
+  ) {
+    if (row.state === "revoked" || row.attested !== 1)
+      return yield* toKeyWith(row, false, lastUsedAt);
+    const sealed = seal.verify(sealFields(row), row.seal);
     // Only a write that skipped the server, such as one straight into SQLite, leaves this.
     if (!sealed)
-      yield* Effect.logWarning(
-        "Kin approver key's seal doesn't verify; it can't sign or activate.",
-        {
-          orgId: row.org_id,
-          thumbprint: row.thumbprint,
-          state: row.state,
-        },
-      );
-    return yield* toKeyWith(row, sealed);
+      yield* Effect.logWarning("Kin approver key's seal doesn't verify; it can't sign.", {
+        orgId: row.org_id,
+        thumbprint: row.thumbprint,
+      });
+    return yield* toKeyWith(row, sealed, lastUsedAt);
   });
 
+  /** Rows from the old allow-from-Settings flow that never activated are closed at start. */
   const select = (ref: KeyRef) =>
     sql<KeyRow>`SELECT * FROM kin_approver_keys
-      WHERE org_id = ${ref.orgId} AND thumbprint = ${ref.thumbprint}`.pipe(
+      WHERE org_id = ${ref.orgId} AND thumbprint = ${ref.thumbprint} AND state != 'pending'`.pipe(
       Effect.map((rows) => rows[0]),
     );
 
-  const hasActiveKey = (orgId: KinOrgId) =>
-    sql`SELECT 1 FROM kin_approver_keys WHERE org_id = ${orgId} AND state = 'active' LIMIT 1`.pipe(
-      Effect.map((rows) => rows.length > 0),
-    );
+  const activeCount = (orgId: KinOrgId) =>
+    sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_approver_keys
+      WHERE org_id = ${orgId} AND state = 'active'`.pipe(Effect.map((rows) => rows[0]?.n ?? 0));
 
-  const deleteConfirmation = (ref: { readonly orgId: string; readonly thumbprint: string }) =>
-    sql`DELETE FROM kin_approver_key_confirmations
-      WHERE org_id = ${ref.orgId} AND thumbprint = ${ref.thumbprint}`;
-
-  /**
-   * The UPDATE that makes a pending attested key active, sealing exactly the row it read. It runs
-   * only when that row's pending seal verifies, and pins every field the pending seal covers.
-   */
-  const activate = Effect.fn("ApproverKeyStore.activate")(function* (row: KeyRow, now: number) {
-    if (!pendingVouched(row) || row.pending_seal === null) return undefined;
-    const [active] = yield* sql<KeyRow>`UPDATE kin_approver_keys
-        SET state = 'active', confirmed_at = ${now}, seal = ${seal.seal(sealFields(row))}
-        WHERE org_id = ${row.org_id} AND thumbprint = ${row.thumbprint}
-          AND state = 'pending' AND attested = 1 AND pending_seal = ${row.pending_seal}
-          AND public_jwk_json = ${row.public_jwk_json} AND human_id = ${row.human_id}
-          AND hardware = ${row.hardware} AND device_label = ${row.device_label}
-          AND platform = ${row.platform} AND session_id IS ${row.session_id}
-          AND proof_key_thumbprint IS ${row.proof_key_thumbprint}
-          AND created_at = ${row.created_at}
-        RETURNING *`;
-    if (active !== undefined)
-      yield* deleteConfirmation({ orgId: row.org_id, thumbprint: row.thumbprint });
-    return active;
-  });
-
-  const matchCodeOf = (
-    row: { readonly org_id: string; readonly thumbprint: string },
-    hash: string,
-  ) => seal.matchCode({ orgId: row.org_id, thumbprint: row.thumbprint, challengeSha256: hash });
-  const matchCodeFor = (row: KeyRow, challenge: Uint8Array) =>
-    matchCodeOf(row, challengeSha256(challenge));
-
-  /** Stored with the pending key: the request Settings allows, and the code the host CLI checks. */
-  const saveConfirmation = Effect.fn("ApproverKeyStore.saveConfirmation")(function* (input: {
-    readonly row: KeyRow;
-    readonly sessionId: string;
-    readonly challenge: Uint8Array;
-    readonly now: number;
-  }) {
-    const hash = challengeSha256(input.challenge);
-    const code = matchCodeFor(input.row, input.challenge);
-    const verifier = seal.confirmation({
-      ...sealFields(input.row),
-      sessionId: input.sessionId,
-      challengeSha256: hash,
-      code,
-    });
-    yield* sql`INSERT INTO kin_approver_key_confirmations ${sql.insert({
-      org_id: input.row.org_id,
-      thumbprint: input.row.thumbprint,
-      session_id: input.sessionId,
-      challenge_sha256: hash,
-      verifier,
-      attempts: 0,
-      created_at: input.now,
-      expires_at: input.now + CONFIRM_TTL_MS,
-    })}`;
-    return code;
-  });
-
-  /**
-   * The live request for a pending key: unexpired, under the try limit, for the session that
-   * registered it, and holding this server's match code. Requests from before the match code
-   * (whose phones show another number) never verify, so they read as expired.
-   */
-  const requestOf = (row: KeyRow, confirmation: ConfirmationRow | undefined, now: number) => {
-    if (
-      confirmation === undefined ||
-      !pendingVouched(row) ||
-      confirmation.expires_at <= now ||
-      confirmation.attempts >= MAX_CODE_ATTEMPTS ||
-      confirmation.session_id !== row.session_id
-    )
-      return undefined;
-    const matchCode = matchCodeOf(row, confirmation.challenge_sha256);
-    const verified = seal.verifyConfirmation(
-      {
-        ...sealFields(row),
-        sessionId: confirmation.session_id,
-        challengeSha256: confirmation.challenge_sha256,
-        code: matchCode,
-      },
-      confirmation.verifier,
-    );
-    return verified ? { matchCode, expiresAt: confirmation.expires_at } : undefined;
-  };
-
-  const selectConfirmations = (orgId: KinOrgId) =>
-    sql<ConfirmationRow>`SELECT * FROM kin_approver_key_confirmations
-      WHERE org_id = ${orgId} ORDER BY created_at, thumbprint`;
-
-  /** Sets `revoked` and voids the approved actions this key signed that haven't run. */
+  /** Sets `revoked` and voids what this key signed that hasn't started writing, in one transaction. */
   const revokeRow = (ref: KeyRef, reason: string) =>
     sql.withTransaction(
       Effect.gen(function* () {
@@ -253,14 +127,7 @@ export const makeKeyStore = Effect.gen(function* () {
           WHERE org_id = ${ref.orgId} AND thumbprint = ${ref.thumbprint} AND state != 'revoked'
           RETURNING *`;
         if (row === undefined) return undefined;
-        yield* sql`UPDATE kin_pending_actions
-          SET state = 'voided', state_reason = ${reason}, updated_at = ${now}
-          WHERE org_id = ${ref.orgId} AND state = 'approved' AND EXISTS (
-            SELECT 1 FROM kin_grants g
-            WHERE g.action_id = kin_pending_actions.action_id
-              AND g.revision = kin_pending_actions.revision
-              AND g.key_thumbprint = ${ref.thumbprint} AND g.consumed_at IS NULL)`;
-        yield* deleteConfirmation(ref);
+        yield* actions.voidKeyClaims({ orgId: ref.orgId, thumbprint: ref.thumbprint, reason });
         return row;
       }),
     );
@@ -273,7 +140,7 @@ export const makeKeyStore = Effect.gen(function* () {
   ) {
     const rows = yield* sql<{ org_id: KinOrgId; thumbprint: KinKeyThumbprint }>`
       SELECT k.org_id, k.thumbprint FROM kin_approver_keys k
-      WHERE k.state != 'revoked' AND ${orgId === undefined ? sql`1 = 1` : sql`k.org_id = ${orgId}`}
+      WHERE k.state = 'active' AND ${orgId === undefined ? sql`1 = 1` : sql`k.org_id = ${orgId}`}
         AND ${revokedBySession(
           sql,
           { sessionId: sql`k.session_id`, proofKey: sql`k.proof_key_thumbprint` },
@@ -281,27 +148,25 @@ export const makeKeyStore = Effect.gen(function* () {
         )}
       ORDER BY k.org_id, k.thumbprint`;
     for (const row of rows) {
-      yield* revokeRow({ orgId: row.org_id, thumbprint: row.thumbprint }, "session_revoked");
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const ref = { orgId: row.org_id, thumbprint: row.thumbprint };
+          const revoked = yield* revokeRow(ref, "session_revoked");
+          if (revoked === undefined) return;
+          yield* audit.append({
+            orgId: row.org_id,
+            event: "key_revoked",
+            keyThumbprint: row.thumbprint,
+            deviceLabel: revoked.device_label,
+            result: "the session it was set up from was signed out",
+          });
+        }),
+      );
     }
     return rows.length;
   });
 
-  return {
-    sql,
-    seal,
-    toKey,
-    pendingVouched,
-    select,
-    hasActiveKey,
-    activate,
-    matchCodeFor,
-    saveConfirmation,
-    requestOf,
-    selectConfirmations,
-    deleteConfirmation,
-    revokeRow,
-    reconcileSessions,
-  };
+  return { sql, seal, toKey, select, activeCount, revokeRow, reconcileSessions };
 });
 
 export type KeyStore = Effect.Success<typeof makeKeyStore>;

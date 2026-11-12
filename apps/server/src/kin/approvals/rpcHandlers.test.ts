@@ -33,7 +33,7 @@ it.effect("key and grant methods refuse as disabled when Kin is off", () =>
       reason: "disabled",
     });
     assert.include(
-      yield* handlers["kin.approvals.allowKey"]({
+      yield* handlers["kin.approvals.revokeKey"]({
         orgId,
         thumbprint: KinKeyThumbprint.make("NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs"),
       }).pipe(Effect.flip),

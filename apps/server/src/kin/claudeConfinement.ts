@@ -1,8 +1,14 @@
 import type { HookCallbackMatcher } from "@anthropic-ai/claude-agent-sdk";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as ChildProcess from "effect/process/ChildProcess";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 
 import { KIN_ATTACHMENT_ID_PREFIX } from "../attachmentStore.ts";
 import type * as ClaudeAdapterV2 from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
@@ -282,6 +288,65 @@ const ownerAuth = Effect.fn("KinClaudeConfinement.ownerAuth")(function* (
     ...(authOnly.length === 0 ? {} : { env: Object.fromEntries(authOnly) }),
   };
   return auth;
+});
+
+/** What a work session gets for its model: environment only, never a command to run. */
+export interface SessionCredentials {
+  readonly env?: Readonly<Record<string, string>>;
+}
+
+const HELPER_LIMIT = Duration.seconds(30);
+const HELPER_OUTPUT_LIMIT = 16_384;
+
+/**
+ * Runs the owner's `apiKeyHelper` from the home, with the server's environment, and returns its
+ * output as the two variables Claude Code sends a helper's output as. Claude Code would run it
+ * unsandboxed in the session's cwd: a relative helper in a worktree runs the repository's code.
+ */
+export const resolveCredentials = Effect.fn("KinClaudeConfinement.resolveCredentials")(function* (
+  auth: AuthSettings,
+) {
+  const { apiKeyHelper, env } = auth;
+  if (apiKeyHelper === undefined) return env === undefined ? {} : { env };
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const home = yield* HostProcess.HomeDirectory;
+  const environment = yield* HostProcess.Environment;
+  const key = yield* Effect.gen(function* () {
+    const child = yield* spawner.spawn(
+      ChildProcess.make("/bin/sh", ["-c", apiKeyHelper], {
+        cwd: home,
+        env: environment,
+        extendEnv: false,
+        stdin: "ignore",
+        stderr: "ignore",
+        forceKillAfter: Duration.seconds(2),
+      }),
+    );
+    const [output, exitCode] = yield* Effect.all(
+      [child.stdout.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+      { concurrency: "unbounded" },
+    );
+    const trimmed = output.trim();
+    return exitCode === 0 &&
+      trimmed.length > 0 &&
+      trimmed.length <= HELPER_OUTPUT_LIMIT &&
+      !/[\r\n]/.test(trimmed)
+      ? trimmed
+      : undefined;
+  }).pipe(
+    Effect.scoped,
+    Effect.timeoutOption(HELPER_LIMIT),
+    Effect.map(Option.flatMap(Option.fromUndefinedOr)),
+    Effect.orElseSucceed(() => Option.none<string>()),
+  );
+  if (Option.isNone(key)) {
+    yield* Effect.logWarning("The owner's apiKeyHelper gave a Kin work session no key");
+    return env === undefined ? {} : { env };
+  }
+  const credentials: SessionCredentials = {
+    env: { ...env, ANTHROPIC_API_KEY: key.value, ANTHROPIC_AUTH_TOKEN: key.value },
+  };
+  return credentials;
 });
 
 /** Built where the query runner is: a runner's `open` can't require the filesystem itself. */

@@ -36,6 +36,7 @@ export type SettingsPath =
   | "/settings/access"
   | "/settings/approvals"
   | "/settings/secrets"
+  | "/settings/company"
   | "/settings/maintenance"
   | "/settings/labs"
   | "/settings/about"
@@ -114,6 +115,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/access": "Sharing & access",
   "/settings/approvals": "Approvals",
   "/settings/secrets": "Secrets",
+  "/settings/company": "Company details",
   "/settings/maintenance": "Maintenance",
   "/settings/labs": "Labs",
   "/settings/about": "About",
@@ -163,6 +165,10 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
       "/settings/approvals",
       ...(isSecretsFeatureEnabled ? (["/settings/secrets"] as const) : []),
     ],
+  },
+  {
+    heading: "Kin",
+    paths: ["/settings/company"],
   },
   {
     heading: null,
@@ -434,9 +440,11 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "approval-phones",
     kinOnly: true,
-    title: "Phones that approve",
+    title: "Phones that can approve",
     to: "/settings/approvals",
-    searchTerms: ["kin approvals approve phone face id allow decline remove key device lost new"],
+    searchTerms: [
+      "kin approvals approve phone face id set up remove key device lost new recent changes",
+    ],
   },
   {
     id: "kin-start-list",
@@ -1226,6 +1234,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     desktopOnly: true,
   },
   {
+    id: "company-details",
+    title: "Company details",
+    to: "/settings/company",
+    searchTerms: ["kin legal name address gstin pan tax bank account ifsc upi invoice"],
+  },
+  {
     id: "network-access",
     title: "Network access",
     to: "/settings/access",
@@ -1368,6 +1382,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/access": "connections",
   "/settings/approvals": null,
   "/settings/secrets": null,
+  "/settings/company": null,
   "/settings/scheduled-tasks": null,
   "/settings/maintenance": null,
   "/settings/labs": null,

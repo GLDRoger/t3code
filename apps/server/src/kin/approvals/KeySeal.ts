@@ -25,25 +25,6 @@ export type KinSealedKeyFields = {
 };
 
 /**
- * What registration vouches for when the attestation verified: the key, who holds it, and the
- * attestation's verdict. A pending row that doesn't match its pending seal never activates.
- */
-export type KinPendingKeyFields = KinSealedKeyFields & {
-  readonly deviceLabel: string;
-  readonly platform: string;
-  readonly attested: number;
-  readonly sessionId: string | null;
-  readonly proofKeyThumbprint: string | null;
-};
-
-/** The exact enrolment a phone's code confirms: one key, from one session, for one challenge. */
-export type KinConfirmationFields = KinSealedKeyFields & {
-  readonly sessionId: string;
-  readonly challengeSha256: string;
-  readonly code: string;
-};
-
-/**
  * An HMAC the server writes when it activates an attested approver key. The key is a server
  * secret, so a row inserted or edited in SQLite never carries a valid seal.
  */
@@ -52,21 +33,6 @@ export class KinKeySeal extends Context.Service<
   {
     readonly seal: (key: KinSealedKeyFields) => string;
     readonly verify: (key: KinSealedKeyFields, seal: string | null) => boolean;
-    /** What `kin_approver_keys.pending_seal` holds, written when the attestation verified. */
-    readonly pendingSeal: (key: KinPendingKeyFields) => string;
-    readonly verifyPending: (key: KinPendingKeyFields, seal: string | null) => boolean;
-    /** What `kin_approver_key_confirmations.verifier` holds; checked with `verify`'s compare. */
-    readonly confirmation: (fields: KinConfirmationFields) => string;
-    readonly verifyConfirmation: (fields: KinConfirmationFields, verifier: string) => boolean;
-    /**
-     * The 6 digits a waiting phone and Settings both show. Keyed by the server secret and drawn
-     * after the key exists, so nobody can make a key whose number matches another phone's.
-     */
-    readonly matchCode: (fields: {
-      readonly orgId: string;
-      readonly thumbprint: string;
-      readonly challengeSha256: string;
-    }) => string;
     /** Runs `adopt` on the first start after the seal shipped, and never again once it succeeds. */
     readonly adoptOnce: <E, R>(adopt: Effect.Effect<number, E, R>) => Effect.Effect<void, E, R>;
   }
@@ -88,26 +54,6 @@ const make = (
   });
   const seal = (key: KinSealedKeyFields) =>
     mac({ v: 1, use: "kin-approver-key", ...keyFields(key) });
-  const pendingSeal = (key: KinPendingKeyFields) =>
-    mac({
-      v: 1,
-      use: "kin-approver-key-pending",
-      ...keyFields(key),
-      deviceLabel: key.deviceLabel,
-      platform: key.platform,
-      attested: key.attested,
-      sessionId: key.sessionId,
-      proofKeyThumbprint: key.proofKeyThumbprint,
-    });
-  const confirmation = (fields: KinConfirmationFields) =>
-    mac({
-      v: 1,
-      use: "kin-approver-key-confirmation",
-      ...keyFields(fields),
-      sessionId: fields.sessionId,
-      challengeSha256: fields.challengeSha256,
-      code: fields.code,
-    });
   const same = (expected: string, stored: string) => {
     const left = Buffer.from(expected);
     const right = Buffer.from(stored);
@@ -116,24 +62,6 @@ const make = (
   return KinKeySeal.of({
     seal,
     verify: (key, stored) => stored !== null && same(seal(key), stored),
-    pendingSeal,
-    verifyPending: (key, stored) => stored !== null && same(pendingSeal(key), stored),
-    confirmation,
-    verifyConfirmation: (fields, verifier) => same(confirmation(fields), verifier),
-    matchCode: (fields) => {
-      const digest = NodeCrypto.createHmac("sha256", secret)
-        .update(
-          stableStringify({
-            v: 1,
-            use: "kin-approver-key-match",
-            orgId: fields.orgId,
-            thumbprint: fields.thumbprint,
-            challengeSha256: fields.challengeSha256,
-          }),
-        )
-        .digest();
-      return String(digest.readUInt32BE(0) % 1_000_000).padStart(6, "0");
-    },
     adoptOnce: Effect.fn("KinKeySeal.adoptOnce")(function* <E, R>(
       adopt: Effect.Effect<number, E, R>,
     ) {

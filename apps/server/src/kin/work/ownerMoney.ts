@@ -99,8 +99,14 @@ export const updateList = Effect.fn("KinMoney.updateList")(function* (
             ? (def.archivedAt ?? now)
             : null;
       const name = input.name ?? def.name;
+      const unused = Object.keys(input.stateLabels ?? {}).filter(
+        (state) => !def.states.some((one) => one === state),
+      );
+      if (unused.length > 0) return yield* invalid(`${def.name} doesn't use ${unused.join(", ")}.`);
+      const stateLabels = { ...def.stateLabels, ...input.stateLabels };
       const changed =
         name !== def.name ||
+        def.states.some((state) => stateLabels[state] !== def.stateLabels[state]) ||
         archivedAt !== def.archivedAt ||
         fields.length !== def.fields.length ||
         fields.some((one, index) => one.retired !== def.fields[index]?.retired) ||
@@ -118,6 +124,7 @@ export const updateList = Effect.fn("KinMoney.updateList")(function* (
             definition_json = ${yield* encodeDefinition({
               ...definition,
               fields,
+              stateLabels,
               ...(numbering === undefined ? {} : { numbering }),
             })},
             rev = rev + 1

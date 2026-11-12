@@ -34,18 +34,17 @@ import {
   type KinApproverKeyRecord,
 } from "./approverKeyRecord";
 
-/** Where this phone's approval key stands with one host and org. */
+/** Where this phone's approval key stands with one host and org, beside the org's other phones. */
 export type KinApproverKeyStatus =
   | { readonly _tag: "loading" }
   | { readonly _tag: "unreadable"; readonly retry: () => void }
-  /** No key here, or one this host doesn't know. */
-  | { readonly _tag: "none"; readonly staleKey: boolean }
-  /** Waiting for Allow in Kin on the web or desktop; `code` is null once the request expired. */
-  | { readonly _tag: "pending"; readonly code: string | null; readonly thumbprint: string }
-  /** No App Attest (a simulator, an old phone): the host never activates this key. */
-  | { readonly _tag: "unattested" }
-  | { readonly _tag: "revoked" }
-  | { readonly _tag: "active"; readonly key: KinApproverKey };
+  | ({
+      readonly _tag: "ready";
+      /** This phone's key while it can approve; null when it has none, or one that was removed. */
+      readonly own: KinApproverKey | null;
+      /** This phone holds a key the host no longer accepts, so setting up replaces it. */
+      readonly staleKey: boolean;
+    } & KinApprovalsListKeysResult);
 
 export function useKinApproverKey(environmentId: EnvironmentId, orgId: KinOrgId) {
   const record = useAtomValue(kinApproverKeyRecordAtom);
@@ -71,14 +70,14 @@ function approverKeyStatus(
   const saved = record.value;
   const here =
     saved !== null && saved.environmentId === environmentId && saved.orgId === orgId ? saved : null;
-  const key = keys.value.keys.find((k) => here !== null && k.thumbprint === here.thumbprint);
-  if (here === null || key === undefined) return { _tag: "none", staleKey: saved !== null };
-  if (key.state === "revoked") return { _tag: "revoked" };
-  if (!key.attested) return { _tag: "unattested" };
-  if (key.state === "active") return { _tag: "active", key };
-  // The server's list says whether the request still waits, and with which number.
-  const request = keys.value.requests?.find((r) => r.thumbprint === key.thumbprint);
-  return { _tag: "pending", code: request?.matchCode ?? null, thumbprint: key.thumbprint };
+  const own = keys.value.keys.find((key) => here !== null && key.thumbprint === here.thumbprint);
+  // The list holds only keys that can approve, so a removed key reads as gone.
+  return {
+    _tag: "ready",
+    own: own ?? null,
+    staleKey: saved !== null && own === undefined,
+    ...keys.value,
+  };
 }
 
 const deviceCodeOf = (error: unknown): KinApprovalDeviceCode | null =>
@@ -156,8 +155,6 @@ export function useEnrolApproverKey() {
         environmentId,
         orgId,
         thumbprint: registered.value.key.thumbprint,
-        code: registered.value.code,
-        codeExpiresAt: Date.now() + 10 * 60_000,
       });
       appAtomRegistry.refresh(kinClient.approverKeys({ environmentId, input: { orgId } }));
       return { ok: true };
@@ -190,10 +187,17 @@ async function orDeviceFailure(
 
 const isApprovalError = Schema.is(KinApprovalError);
 
+const SAYS_WHAT_TO_DO: ReadonlySet<string> = new Set([
+  "invalid_state",
+  "not_owner",
+  "unattested",
+  "too_many_keys",
+  "bad_challenge",
+]);
+
 function hostText(cause: unknown) {
-  // Registration's refusals (too many phones waiting, signed out, not the owner) say what to do.
-  if (isApprovalError(cause) && (cause.reason === "invalid_state" || cause.reason === "not_owner"))
-    return cause.message;
+  // Registration's refusals (not a genuine app, not the owner, too many phones) say what to do.
+  if (isApprovalError(cause) && SAYS_WHAT_TO_DO.has(cause.reason)) return cause.message;
   return kinApprovalFailure(cause)?.text ?? "Kin didn't answer. Try again.";
 }
 
