@@ -23,6 +23,14 @@ import {
   KinText,
   KinTrimmedText,
 } from "./kinChat.ts";
+import {
+  KinFieldValue,
+  KinFileRef,
+  KinListId,
+  KinMoney,
+  KinPayment,
+  KinRepeatRule,
+} from "./kinMoney.ts";
 
 /**
  * Work: everything someone owes someone, as entries in lists. Built in: Work, and the light CRM's
@@ -116,6 +124,18 @@ export const KinRecord = Schema.Struct({
   repo: Schema.optional(KinRepoName),
   /** True when its project or client is labelled sensitive, whatever its own label says. */
   sensitiveInherited: Schema.optional(Schema.Literal(true)),
+  // Defined lists, such as expenses (slice 5); absent on Work and the light CRM.
+  /** The defined list it is in. */
+  list: Schema.optional(KinListId),
+  /** Its category among the list's own, such as an expense's `travel`. */
+  listCategory: Schema.optional(KinTrimmedText),
+  amount: Schema.optional(KinMoney),
+  /** When it happened, was issued or starts; `dateAllDay` as for `dueAt`. */
+  dateAt: Schema.optional(IsoDateTime),
+  dateAllDay: Schema.optional(Schema.Boolean),
+  repeat: Schema.optional(KinRepeatRule),
+  /** An invoice's amount less the payments received against it. */
+  balance: Schema.optional(KinMoney),
 });
 export type KinRecord = typeof KinRecord.Type;
 
@@ -202,6 +222,12 @@ export const KinRecordDetail = Schema.Struct({
   changes: Schema.Array(KinRecordChange),
   /** This entry's latest change number, links included: compare with a `changed` event's. */
   seq: Schema.optional(NonNegativeInt),
+  /** A defined list's own fields by key, as its definition types them. */
+  fields: Schema.optional(Schema.Record(Schema.String, KinFieldValue)),
+  /** The files its file fields keep, such as a receipt. */
+  files: Schema.optional(Schema.Array(KinFileRef)),
+  /** An invoice's payments, newest first, voided ones included. */
+  payments: Schema.optional(Schema.Array(KinPayment)),
 });
 export type KinRecordDetail = typeof KinRecordDetail.Type;
 export const KIN_RECORD_CHANGES_CAP = 50;
@@ -209,6 +235,8 @@ export const KIN_RECORDS_PAGE_CAP = 100;
 
 export const KinWorkListInput = Schema.Struct({
   orgId: KinOrgId,
+  /** Default `work`; a defined list such as `expenses` lists its entries. */
+  list: Schema.optional(KinListId),
   /** A lead's profile and the per-owner rows of the Work screen. */
   owner: Schema.optional(KinWorkPrincipal),
   states: Schema.optional(Schema.Array(KinRecordState)),
@@ -378,6 +406,11 @@ export const KinWorkUpdateInput = Schema.Struct({
   repo: Schema.optional(Schema.NullOr(KinRepoName)),
   /** The entry's own label; only the owner lowers one. */
   sensitive: Schema.optional(Schema.Boolean),
+  /** Lists with money and dates. `null` clears; the currency is the amount's own. */
+  amount: Schema.optional(Schema.NullOr(KinMoney)),
+  dateAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  dateAllDay: Schema.optional(Schema.Boolean),
+  repeat: Schema.optional(Schema.NullOr(KinRepeatRule)),
 });
 export type KinWorkUpdateInput = typeof KinWorkUpdateInput.Type;
 
