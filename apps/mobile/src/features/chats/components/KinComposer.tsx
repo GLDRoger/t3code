@@ -122,7 +122,8 @@ export function KinComposer({
   readonly orgId: string;
   readonly chatId: KinChatId;
   readonly environmentId: EnvironmentId;
-  readonly recipient: string;
+  /** Who reads the message; null for a direct chat whose agent this phone can't name yet. */
+  readonly recipient: string | null;
   /** The host is reachable: uploads need it, though text alone can wait in the outbox. */
   readonly connected: boolean;
   /** Space under the Send row: the bottom safe area, at least `KIN_COMPOSER_GUTTER`. */
@@ -169,7 +170,7 @@ export function KinComposer({
   // T3's dictation: it writes into this chat's draft at the cursor, as in the thread composer.
   const voice = useVoiceInputController({
     ownerKey: draftKey,
-    label: props.recipient,
+    label: props.recipient ?? "Kin chat",
     readDraftMessage: () => getComposerDraftSnapshot(draftKey).text,
     subscribeToDraftChanges: (onChange) => appAtomRegistry.subscribe(composerDraftsAtom, onChange),
     selection,
@@ -422,7 +423,7 @@ export function KinComposer({
                 inlineTokens={false}
                 multiline
                 value={draft.text}
-                placeholder={`Message ${props.recipient}`}
+                placeholder={props.recipient === null ? "Message" : `Message ${props.recipient}`}
                 readOnly={voice.freezesEditor || sending}
                 selection={selection}
                 onSelectionChange={setSelection}

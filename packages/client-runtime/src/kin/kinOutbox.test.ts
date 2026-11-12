@@ -15,6 +15,7 @@ import {
   classifyKinSendFailure,
   createKinOutbox,
   KIN_MESSAGE_MAX_LENGTH,
+  kinOutboxRetractable,
   splitKinOutbox,
   type KinOutboxRecord,
   type KinOutboxStorage,
@@ -248,6 +249,38 @@ describe("kinOutbox", () => {
       await outbox.deliver(ENV);
       expect(chat()[0]?.state).toBe("sent");
       expect(host.calls).toEqual(["client-1"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("can't take back a send that timed out, even after a restart: the host may hold it", async () => {
+    vi.useFakeTimers();
+    try {
+      const host = makeHost();
+      const disk = makeStorage();
+      host.setOnline(true);
+      // The host commits the row; the reply never arrives.
+      const first = setup(host, disk, (record) => {
+        void host.send(record);
+        return new Promise(() => {});
+      });
+      await first.outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "Maybe posted" });
+      expect(kinOutboxRetractable(first.chat()[0]!)).toBe(true);
+      const delivery = first.outbox.deliver(ENV);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await delivery;
+      expect(first.chat()[0]?.state).toBe("waiting");
+      expect(kinOutboxRetractable(first.chat()[0]!)).toBe(false);
+      expect(await first.outbox.discard("client-1")).toBeNull();
+
+      const second = setup(host, disk);
+      await second.outbox.load();
+      expect(kinOutboxRetractable(second.chat()[0]!)).toBe(false);
+      expect(await second.outbox.discard("client-1")).toBeNull();
+      await second.outbox.deliver(ENV);
+      expect(second.chat()[0]?.state).toBe("sent");
+      expect(host.rows.size).toBe(1);
     } finally {
       vi.useRealTimers();
     }

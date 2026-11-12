@@ -1,5 +1,5 @@
 import { makeKinFixtureMessages } from "@t3tools/client-runtime/kin/kinChatFixtures";
-import type { KinMessage, KinMessageId, KinWidget } from "@t3tools/contracts";
+import type { KinMessage, KinMessageId, KinReaction, KinWidget } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { kinWithoutChoiceEchoes } from "./kinChoiceEcho";
@@ -45,7 +45,7 @@ describe("kinWithoutChoiceEchoes", () => {
   it("drops the lead's bubble that repeats its choice card's question, before or after it", () => {
     const echo = said(agent!, "echo", "Red or Blue?");
     const ids = (messages: ReadonlyArray<KinMessage>) =>
-      kinWithoutChoiceEchoes(messages, widgets).map((message) => message.messageId);
+      kinWithoutChoiceEchoes(messages, widgets, []).map((message) => message.messageId);
     expect(ids([card, echo])).toEqual(["card"]);
     expect(ids([echo, card])).toEqual(["card"]);
   });
@@ -54,9 +54,24 @@ describe("kinWithoutChoiceEchoes", () => {
     const other = said(agent!, "other", "Pick one.");
     const fromHuman = said(human!, "human", "Red or Blue?");
     const far = said(agent!, "far", "Red or Blue?");
-    const ids = kinWithoutChoiceEchoes([far, other, card, fromHuman], widgets).map(
+    const ids = kinWithoutChoiceEchoes([far, other, card, fromHuman], widgets, []).map(
       (message) => message.messageId,
     );
     expect(ids).toEqual(["far", "other", "card", "human"]);
+  });
+
+  it("keeps an echo something hangs off: a reaction, a reply to it, or its own reply", () => {
+    const echo = said(agent!, "echo", "Red or Blue?");
+    const ids = (messages: ReadonlyArray<KinMessage>, reactions: ReadonlyArray<KinReaction>) =>
+      kinWithoutChoiceEchoes(messages, widgets, reactions).map((message) => message.messageId);
+    const reaction = { messageId: echo.messageId, removedAt: null } as KinReaction;
+    expect(ids([card, echo], [reaction])).toEqual(["card", "echo"]);
+    expect(ids([card, echo], [{ ...reaction, removedAt: "2026-11-08T09:01:00.000Z" }])).toEqual([
+      "card",
+    ]);
+    const reply = { ...said(human!, "reply", "Blue"), replyTo: echo.messageId };
+    expect(ids([card, echo, reply], [])).toEqual(["card", "echo", "reply"]);
+    const replying = { ...echo, replyTo: "earlier" as KinMessageId };
+    expect(ids([card, replying], [])).toEqual(["card", "echo"]);
   });
 });

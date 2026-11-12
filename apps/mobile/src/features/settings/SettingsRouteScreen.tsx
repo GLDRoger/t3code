@@ -298,17 +298,9 @@ function useSettingsIndexSections(): SettingsListSection[] {
 
 /** Kin's agents, schedules, approvals and notifications, once a Kin host is known. */
 function useKinSettingsRows(): SettingsListRow[] {
-  const navigation = useNavigation();
   const host = useKinHost();
   if (host._tag !== "host") return [];
-  return [
-    {
-      id: "KinSettings",
-      icon: "bubble.left",
-      label: "Kin",
-      onPress: () => navigation.navigate("KinSettings"),
-    },
-  ];
+  return [{ id: "SettingsKin", icon: "bubble.left", label: "Kin", target: "SettingsKin" }];
 }
 
 function useOverflowRows(): SettingsListRow[] {

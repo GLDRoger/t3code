@@ -100,9 +100,8 @@ function createActionDelivery() {
   };
 }
 
-// Set by a Kin moment that explains the prompt; until then a connect only registers a granted phone.
-let permissionWanted = false;
-let syncRegistration: (() => void) | null = null;
+// A connect only registers a phone that already allows notifications; asking is `ask: true`.
+let syncRegistration: ((ask: boolean) => void) | null = null;
 
 const askPermission = () =>
   Effect.runPromise(
@@ -111,20 +110,20 @@ const askPermission = () =>
     ),
   );
 
-/** A Kin chat is open: the moment to ask for Kin's notifications, once, if the phone hasn't said. */
+/**
+ * A Kin chat is on screen with its host connected: the moment to ask for Kin's notifications, if
+ * the phone hasn't said. Nothing is remembered, so an ask that can't run now never fires later.
+ */
 export function askForKinNotifications(): void {
-  if (permissionWanted) return;
-  permissionWanted = true;
-  syncRegistration?.();
+  syncRegistration?.(true);
 }
 
 /** The Kin notifications row: asks when the phone hasn't decided, otherwise opens the OS settings. */
 export async function openKinNotificationSettings(): Promise<void> {
   const existing = await Notifications.getPermissionsAsync().catch(() => null);
   if (existing !== null && !existing.granted && existing.canAskAgain) {
-    permissionWanted = true;
     await askPermission();
-    syncRegistration?.();
+    syncRegistration?.(false);
     return;
   }
   await Linking.openSettings();
@@ -142,14 +141,14 @@ function createTokenRegistration() {
       ? "development"
       : "production";
 
-  const sync = async () => {
+  const sync = async (ask: boolean) => {
     const host = appAtomRegistry.get(kinHostAtom);
     if (host._tag !== "host" || !host.connected || host.probe._tag !== "ready") return;
     const { environmentId } = host;
     if (token === null) {
       const existing = await Notifications.getPermissionsAsync();
       const step = kinPushPermissionStep(existing, {
-        wanted: permissionWanted,
+        wanted: ask,
         asked: permissionAsked,
       });
       if (step === "wait") return;
@@ -190,12 +189,12 @@ function createTokenRegistration() {
       registered = null;
     }
   };
-  const run = () => {
-    void sync().catch((cause: unknown) => console.warn("Kin push registration failed", cause));
+  const run = (ask = false) => {
+    void sync(ask).catch((cause: unknown) => console.warn("Kin push registration failed", cause));
   };
 
   syncRegistration = run;
-  const unsubscribeHost = appAtomRegistry.subscribe(kinHostAtom, run, { immediate: true });
+  const unsubscribeHost = appAtomRegistry.subscribe(kinHostAtom, () => run(), { immediate: true });
   const tokenSubscription = Notifications.addPushTokenListener((next) => {
     if (typeof next.data !== "string") return;
     token = next.data.toLowerCase();

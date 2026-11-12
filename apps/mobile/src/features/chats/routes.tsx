@@ -36,10 +36,11 @@ export const KIN_SCREENS = {
     linking: "kin",
     options: pageRoute({ title: "Kin" }),
   }),
-  KinSettings: createNativeStackScreen({
+  // A Settings page: the name puts it in the Settings tab, beside the list on wide layouts.
+  SettingsKin: createNativeStackScreen({
     screen: KinSettingsScreen,
-    linking: "kin/settings",
-    options: pageRoute({ title: "Kin" }),
+    linking: "settings/kin",
+    options: pageRoute({ title: "Kin", itemStyle: "standard" }),
   }),
   KinWaiting: createNativeStackScreen({
     screen: KinWaitingScreen,

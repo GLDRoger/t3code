@@ -30,7 +30,7 @@ import {
   kinPlainText,
   type KinFeedRow,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
-import type { KinOutboxEntry } from "@t3tools/client-runtime/kin/kinOutbox";
+import { kinOutboxRetractable, type KinOutboxEntry } from "@t3tools/client-runtime/kin/kinOutbox";
 import {
   KIN_PICKER_REACTIONS,
   KIN_REACTION_NAMES,
@@ -363,17 +363,16 @@ export function KinPendingBubble(props: {
   const { entry } = props;
   const failed = entry.state === "failed";
   const queued = !failed && entry.state !== "sending" && !props.connected;
-  // Anything not yet handed to the host can be taken back; the outbox refuses a send in flight.
-  const editable = entry.state !== "sending";
   const status = failed
     ? `Not sent: ${entry.error ?? "refused"}`
     : queued
       ? "Waiting for connection"
       : "Sending…";
   const attachments = entry.attachments ?? [];
-  // Edit keeps only the text, so a queued message with files is only deleted, never edited.
-  const canEdit = editable && (failed || attachments.length === 0);
-  const offersAction = failed || queued;
+  // Only while it reads as refused or waiting: a "Sending…" bubble is on its way.
+  const editable = (failed || queued) && kinOutboxRetractable(entry);
+  // Edit keeps only the text, so a message with files is only deleted.
+  const canEdit = editable && attachments.length === 0;
   const hasBody = entry.body.trim().length > 0;
   const remove = () =>
     Dialog.confirm({
@@ -436,14 +435,14 @@ export function KinPendingBubble(props: {
         >
           {status}
         </Text>
-        {offersAction && hasBody && canEdit ? (
+        {hasBody && canEdit ? (
           <Pressable onPress={props.onEdit} hitSlop={12}>
             <Text textRole="caption" className="font-t3-medium text-foreground">
               Edit
             </Text>
           </Pressable>
         ) : null}
-        {offersAction && !(hasBody && canEdit) ? (
+        {editable && !(hasBody && canEdit) ? (
           <Pressable onPress={remove} hitSlop={12}>
             <Text textRole="caption" className="font-t3-medium text-foreground">
               Delete

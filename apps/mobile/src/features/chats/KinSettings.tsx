@@ -19,7 +19,9 @@ import { environmentSession } from "../../state/session";
 import { useConnectionController } from "../connection/useConnectionController";
 import { SettingsRow } from "../settings/components/SettingsRow";
 import { SettingsSection } from "../settings/components/SettingsSection";
+import { useSettingsPageBack } from "../settings/useSettingsPageBack";
 import { useKinTab } from "./components/KinTab";
+import { useKinIsHome } from "./state/kinHome";
 import { openKinNotificationSettings } from "./notifications/installKinNotifications";
 import { useChatOnlyEnvironments } from "./state/kinChatOnly";
 import { kinClient } from "./state/kinClient";
@@ -70,6 +72,7 @@ export function KinSettings(props: {
   const inCodingApp = props.inCodingApp === true;
   const navigation = useNavigation();
   const pushed = useRoute().name !== "Home";
+  const settingsBack = useSettingsPageBack();
   const bottomClearance = useKinTab()?.bottomClearance ?? 0;
   const controller = useConnectionController();
   const { environments } = useEnvironments();
@@ -128,7 +131,13 @@ export function KinSettings(props: {
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
         title={inCodingApp ? "Kin" : "Settings"}
-        {...(pushed ? { onBack: () => navigation.goBack() } : {})}
+        {...(inCodingApp
+          ? settingsBack === undefined
+            ? {}
+            : { onBack: settingsBack }
+          : pushed
+            ? { onBack: () => navigation.goBack() }
+            : {})}
       />
       <ScreenContent surface="screen">
         <ScreenScrollView
@@ -250,9 +259,9 @@ export function KinSettings(props: {
   );
 }
 
-/** Kin's page in the coding app's Settings, for an owner who reaches Kin from the brand switch. */
+/** Kin's page in the coding app's Settings; where Kin is the whole app, its own Settings. */
 export function KinSettingsScreen() {
-  return <KinSettings inCodingApp />;
+  return <KinSettings inCodingApp={!useKinIsHome()} />;
 }
 
 /** One computer this phone is connected to: where it stands, and a way to try again now. */

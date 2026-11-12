@@ -122,8 +122,8 @@ const SETTINGS_SEARCH_TERMS = {
     "terms",
     "open source licenses",
   ],
-  KinSettings: ["agents", "approvals", "approve from this phone", "team", "memory", "chats"],
-} satisfies Partial<Record<SettingsPageTarget | "account" | "KinSettings", readonly string[]>>;
+  SettingsKin: ["agents", "approvals", "approve from this phone", "team", "memory", "chats"],
+} satisfies Partial<Record<SettingsPageTarget | "account", readonly string[]>>;
 const termsById: ReadonlyMap<string, readonly string[]> = new Map(
   Object.entries(SETTINGS_SEARCH_TERMS),
 );

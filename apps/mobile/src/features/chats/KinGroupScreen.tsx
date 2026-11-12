@@ -1,6 +1,8 @@
 import { kinListRoute } from "./state/kinHome";
+import { kinStackWithoutChat } from "./state/kinChatStack";
+import { resetRootStack } from "../../lib/root-stack-reset";
 import { useAtomValue } from "@effect/atom-react";
-import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { EnvironmentId, KinChatId, KinOrgId, type KinChatMembersResult } from "@t3tools/contracts";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
 import {
@@ -274,9 +276,12 @@ function KinGroupDetails(props: {
         void change("delete", "delete this group", () =>
           deleteGroup({ environmentId, input: { chatId } }),
         ).then((done) => {
-          // Closes this sheet and pops the deleted group's chat; `navigate` would push the list
-          // inside the sheet.
-          if (done) navigation.dispatch(StackActions.popTo(kinListRoute()));
+          // Closes this sheet and drops the deleted group's chat, even when a link opened it with
+          // no list below; `popTo` would leave the chat one Back away.
+          if (done)
+            resetRootStack(navigation, (stack) =>
+              kinStackWithoutChat(stack, chatId, kinListRoute()),
+            );
         }),
     });
 
