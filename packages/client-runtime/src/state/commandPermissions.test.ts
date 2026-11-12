@@ -176,6 +176,9 @@ describe("command permissions", () => {
     [KIN_WORK_WS_METHODS.update, AuthOrchestrationOperateScope],
     [KIN_WORK_WS_METHODS.confirm, AuthOrchestrationOperateScope],
     [KIN_WORK_WS_METHODS.decline, AuthOrchestrationOperateScope],
+    // Lowering a doc's or a recipe's label is the owner's, as relabelling an entry is.
+    ["kin.docs.label", AuthOrchestrationOperateScope],
+    ["kin.docs.clearRecipeLabel", AuthOrchestrationOperateScope],
   ] as const)("guards %s with the destination %s grant", ([method, scope]) =>
     Effect.scoped(
       Effect.gen(function* () {
