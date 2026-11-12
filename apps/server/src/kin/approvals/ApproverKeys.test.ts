@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   AuthKinChatScope,
   AuthSessionId,
+  KIN_APPROVER_ENROLMENT_VERSION,
   KinApprovalError,
   KinEventId,
   KinOrgId,
@@ -155,6 +156,7 @@ const androidInput = (
     ...spec,
   });
   return {
+    enrolmentVersion: KIN_APPROVER_ENROLMENT_VERSION,
     orgId,
     publicJwk: chain.publicJwk,
     platform: "android",
@@ -302,6 +304,24 @@ describe("ApproverKeys", () => {
       assert.strictEqual(reasonOf(mixed), "unattested");
       assert.strictEqual(yield* keyCount, 0);
       assert.deepStrictEqual(notices.posted, []);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("an app from before one-step set-up is told to update, before anything changes", () =>
+    Effect.gen(function* () {
+      const { keys, notices } = yield* seed;
+      const { challenge } = yield* keys.keyChallenge(phone);
+      const { enrolmentVersion: _, ...older } = androidInput(challenge);
+      const refused = yield* Effect.exit(keys.registerKey(phone, older));
+      // Build 36 shows the message only for `unavailable`, cut at 200 characters.
+      assert.strictEqual(reasonOf(refused), "unavailable");
+      assert.include(errorOf(refused)?.message, "update the Kin app");
+      assert.isAtMost(errorOf(refused)?.message.length ?? 0, 200);
+      assert.strictEqual(yield* keyCount, 0);
+      assert.deepStrictEqual(notices.posted, []);
+      // The challenge wasn't spent, so the updated app goes straight on.
+      const { key } = yield* keys.registerKey(phone, androidInput(challenge));
+      assert.strictEqual(key.state, "active");
     }).pipe(Effect.provide(layer)),
   );
 

@@ -1,8 +1,10 @@
 import type { KinActionId, KinWidget, KinWidgetId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
 
+import { ApproverKeys } from "../approvals/ApproverKeys.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinPushSender } from "./KinPushSender.ts";
 
@@ -54,6 +56,15 @@ const make = Effect.gen(function* () {
     if (actionId !== null && previous === undefined)
       yield* sender.notify({ _tag: "approval", orgId: widget.orgId, actionId });
   });
+
+  // Subscribed before the first pass, so a change committed during it is sent after it.
+  const keyChanges = yield* (yield* ApproverKeys).changes;
+  yield* sender.flushKeyPushes.pipe(
+    Effect.andThen(
+      Effect.forever(PubSub.take(keyChanges).pipe(Effect.andThen(sender.flushKeyPushes))),
+    ),
+    Effect.forkScoped,
+  );
 
   const events = yield* hub.subscribeAll;
   yield* Stream.runForEach(events, (event) =>

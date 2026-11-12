@@ -861,6 +861,78 @@ describe("invoices", () => {
       assert.strictEqual((yield* records.pay(orgId, system, "INV-1", once)).row.paid, 6_000_100);
     }).pipe(Effect.provide(layer)),
   );
+
+  it.effect(
+    "issue consecutive numbers per financial year, once per entry, kept when voided, never by an agent",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* defined(1, { template: "invoices" });
+        const asked = yield* turn(3, "Draft five invoices for Invented Acme");
+        yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [
+            { list: "clients", title: "Invented Acme" },
+            ...[1, 2, 3, 4, 5].map((n) => ({
+              list: "invoices",
+              title: `Invented retainer ${n}`,
+              client: "Invented Acme",
+              amount: "1 lakh",
+              state: "open" as const,
+            })),
+          ],
+        });
+        const own = yield* LeadWork.update(scope, {
+          sourceEventId: asked,
+          key: "INV-1",
+          fields: { number: "INV/26-27/999" },
+        }).pipe(Effect.flip);
+        assert.include(own.message, "when they are issued");
+        // Two issues at once get consecutive numbers, one each.
+        const both = yield* Effect.all(
+          [
+            OwnerMoney.issue(people, { orgId, key: "INV-1" }),
+            OwnerMoney.issue(people, { orgId, key: "INV-2" }),
+          ],
+          { concurrency: 2 },
+        );
+        assert.deepStrictEqual(both.map((one) => one.number).toSorted(), [
+          "INV/26-27/001",
+          "INV/26-27/002",
+        ]);
+        assert.deepStrictEqual(
+          both.map((one) => [one.state, one.issued]),
+          [
+            ["waiting", true],
+            ["waiting", true],
+          ],
+        );
+        const first = both.find((one) => one.key === "INV-1")!;
+        // A failed build is retried with the number it was given; asking again issues nothing.
+        const again = yield* OwnerMoney.issue(people, { orgId, key: "INV-1" });
+        assert.deepStrictEqual(again, { ...first, issued: false });
+        const changed = yield* (yield* KinRecords.KinRecords)
+          .update(orgId, OwnerWork.ownerWriter(people[0]!), "INV-1", {
+            fields: { number: "INV/26-27/777" },
+          })
+          .pipe(Effect.flip);
+        assert.include(changed.message, "never changes");
+        // Voided, it keeps its number, and the next one is never that number again.
+        const voided = yield* OwnerMoney.voidEntry(people, { orgId, key: "INV-1" });
+        assert.deepStrictEqual([voided.state, voided.number], ["dropped", first.number]);
+        const third = yield* OwnerMoney.issue(people, { orgId, key: "INV-3" });
+        assert.strictEqual(third.number, "INV/26-27/003");
+        // The series follows India's financial year in the owner's zone.
+        yield* TestClock.setTime(Date.parse("2027-03-31T18:29:59.000Z"));
+        const march = yield* OwnerMoney.issue(people, { orgId, key: "INV-4" });
+        yield* TestClock.setTime(Date.parse("2027-03-31T18:30:00.000Z"));
+        const april = yield* OwnerMoney.issue(people, { orgId, key: "INV-5" });
+        assert.deepStrictEqual([march.number, april.number], ["INV/26-27/004", "INV/27-28/001"]);
+        const records = yield* KinRecords.KinRecords;
+        const row = yield* records.get(orgId, "INV-5");
+        assert.include(row!.fieldsJson, "INV/27-28/001");
+      }).pipe(Effect.provide(layer)),
+  );
 });
 
 describe("the owner's taps", () => {

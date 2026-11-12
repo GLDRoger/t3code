@@ -500,7 +500,10 @@ export const KinApproverKeyAttestation = Schema.Union([
   }),
 ]);
 export type KinApproverKeyAttestation = typeof KinApproverKeyAttestation.Type;
+/** Sent by apps that set up in one step; older ones are refused with an ask to update. */
+export const KIN_APPROVER_ENROLMENT_VERSION = 2;
 export const KinApprovalsRegisterKeyInput = Schema.Struct({
+  enrolmentVersion: Schema.optional(Schema.Literal(KIN_APPROVER_ENROLMENT_VERSION)),
   orgId: KinOrgId,
   publicJwk: KinApproverPublicJwk,
   platform: KinApproverKeyPlatform,

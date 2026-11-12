@@ -361,6 +361,16 @@ export const KinTaskCardState = Schema.Struct({
   ]),
   pullRequests: Schema.Array(Schema.Struct({ url: Schema.String, number: Schema.Int })),
   lastError: Schema.NullOr(KinText),
+  /** The docs a document job filed; the card opens them once it is done. */
+  documents: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        recordId: TrimmedNonEmptyString,
+        key: TrimmedNonEmptyString,
+        title: KinTrimmedText,
+      }),
+    ),
+  ),
   updatedAt: IsoDateTime,
 });
 export type KinTaskCardState = typeof KinTaskCardState.Type;

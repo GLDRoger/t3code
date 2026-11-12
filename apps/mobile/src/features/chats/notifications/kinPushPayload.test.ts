@@ -60,6 +60,11 @@ describe("kinNotificationRoute", () => {
       { kin: 1, orgId: "kin-default", deepLink: "/kin/env-1/kin-default/actions/act-1" },
       "/kin",
     ],
+    [
+      "a phone that can now approve, or no longer can",
+      { kin: 1, orgId: "kin-default", deepLink: "/kin/env-1/kin-default/approvals" },
+      "/kin/env-1/kin-default/approvals",
+    ],
     ["JSON-encoded data", JSON.stringify(deferral), chatLink],
     // Each lead's DM and each group is its own chat, so each push opens its own chat.
     [
@@ -99,6 +104,7 @@ describe("kinNotificationRoute", () => {
     ["a dot segment", { ...deferral, deepLink: "/kin/../kin-default/chats/chat-1" }],
     ["an encoded dot segment", { ...deferral, deepLink: "/kin/%2E%2E/kin-default/chats/chat-1" }],
     ["a trailing segment", { ...deferral, deepLink: `${chatLink}/extra` }],
+    ["another org's approvals", { ...deferral, deepLink: "/kin/env-1/other-org/approvals" }],
     [
       "a link to another approval",
       {

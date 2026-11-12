@@ -6,6 +6,7 @@ import {
   type KinListDefinition,
   KinListField,
   KinListFieldKey,
+  KinNumberingRule,
   type KinOrgId,
   KinRecordState,
 } from "@t3tools/contracts";
@@ -54,6 +55,7 @@ export const StoredDefinition = Schema.Struct({
   categoryLabels: Schema.optional(Schema.Record(Schema.String, Label)),
   /** Entries are paid over time; Invoices are whether or not this says so. */
   payments: Schema.optional(Schema.Literal(true)),
+  numbering: Schema.optional(KinNumberingRule),
 });
 export type StoredDefinition = typeof StoredDefinition.Type;
 const DefinitionJson = Schema.fromJsonString(StoredDefinition);
@@ -129,6 +131,7 @@ export const PRESETS: Record<PresetId, StoredDefinition & { name: string; prefix
     dueLabel: "Due",
     dateLabel: "Issued",
     payments: true,
+    numbering: { prefix: "INV", series: "financial_year", width: 3 },
   },
   dates: {
     name: "Dates",
@@ -381,8 +384,17 @@ export const verifyRefs = Effect.fn("KinRegisters.verifyRefs")(function* (
   }
 });
 
+/** How a list numbers what it issues; invoices defined before numbering existed take the preset's. */
+export const numberingOf = (def: ListDef): KinNumberingRule | undefined =>
+  def.numbering ??
+  (def.id === "invoices" && def.builtIn === null ? PRESETS.invoices.numbering : undefined);
+
 /** The contract shape, with how many of its entries are open. */
-export const toDefinition = (def: ListDef, open: number): KinListDefinition => ({
+export const toDefinition = (
+  def: ListDef,
+  open: number,
+  numbering = numberingOf(def),
+): KinListDefinition => ({
   list: def.id,
   name: def.name,
   prefix: def.prefix,
@@ -399,6 +411,7 @@ export const toDefinition = (def: ListDef, open: number): KinListDefinition => (
   ...(def.payments === true ? { payments: true as const } : {}),
   ...(def.dueLabel === undefined ? {} : { dueLabel: def.dueLabel }),
   ...(def.dateLabel === undefined ? {} : { dateLabel: def.dateLabel }),
+  ...(numbering === undefined ? {} : { numbering }),
   archivedAt:
     def.archivedAt === null ? null : DateTime.formatIso(DateTime.makeUnsafe(def.archivedAt)),
   rev: def.rev,

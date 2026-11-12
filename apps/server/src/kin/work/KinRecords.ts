@@ -74,6 +74,7 @@ import {
 import {
   checkFields,
   isBuiltIn,
+  numberingOf,
   type ListDef,
   listDef,
   owedState,
@@ -241,6 +242,8 @@ const shownRepeat = (rule: KinRepeatRule | null | undefined) =>
       ? `every ${rule.days} days`
       : `every ${rule.every}`;
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+const NUMBERS_ARE_ISSUED =
+  "Kin gives this list's entries their numbers when they are issued, so nothing else sets one. Issue the entry instead; an invoice numbered elsewhere keeps that number in its notes.";
 const actorIdOf = (writer: Writer) =>
   writer.actor._tag === "agent"
     ? writer.actor.agentId
@@ -668,6 +671,8 @@ const make = Effect.gen(function* () {
       repeat: input.repeat,
     });
     if (invalidFor !== undefined) return yield* invalidFor;
+    if (writer.actor._tag !== "person" && numberingOf(def) !== undefined && "number" in fields)
+      return yield* invalid(NUMBERS_ARE_ISSUED);
     if (def.builtIn === null) yield* verifyRefs(orgId, def, fields).pipe(provideSql);
     const projectId = input.projectId ?? null;
     const project = projectId === null ? undefined : yield* target(orgId, projectId, "projects");
@@ -880,6 +885,19 @@ const make = Effect.gen(function* () {
           repeat: patch.repeat,
         });
         if (invalidFor !== undefined) return yield* invalidFor;
+        if (
+          numberingOf(def) !== undefined &&
+          patch.fields !== undefined &&
+          "number" in patch.fields
+        ) {
+          if (writer.actor._tag !== "person") return yield* invalid(NUMBERS_ARE_ISSUED);
+          const issued = yield* sql`SELECT 1 FROM kin_issued_numbers
+            WHERE org_id = ${orgId} AND record_id = ${row.recordId} LIMIT 1`;
+          if (issued.length > 0)
+            return yield* invalid(
+              `${row.key} was issued its number, and an issued number never changes.`,
+            );
+        }
         if (def.builtIn === null && patch.fields !== undefined)
           yield* verifyRefs(orgId, def, patch.fields).pipe(provideSql);
         const changes: Array<FieldChange> = [];
