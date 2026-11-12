@@ -59,7 +59,13 @@ export type Taken = {
   /** A PDF's page count, when its page objects can be counted without parsing it. */
   readonly pages: number | null;
 };
-export type Refused = { readonly name: string; readonly reason: string };
+export type Refused = {
+  readonly name: string;
+  /** What was found, in plain words for the owner and the agent. */
+  readonly reason: string;
+  /** For the worker only: how to make it so Kin takes it back. */
+  readonly retry?: string;
+};
 export type Returned = {
   readonly taken: ReadonlyArray<Taken>;
   readonly refused: ReadonlyArray<Refused>;
@@ -92,8 +98,19 @@ const utf8 = (bytes: Uint8Array): string | undefined => {
   }
 };
 
+/** How a worker makes a refused file again so Kin takes it; never shown to the owner. */
+const RETRY_HINTS: Partial<Record<Extension, string>> = {
+  xlsx: "Kin takes back Office files with no macros, embedded objects or outside links, plain web and email hyperlinks aside: make it again without them, or return a PDF.",
+  docx: "Kin takes back Office files with no macros, embedded objects or outside links, plain web and email hyperlinks aside: make it again without them, or return a PDF.",
+  pptx: "Kin takes back Office files with no macros, embedded objects or outside links, plain web and email hyperlinks aside: make it again without them, or return a PDF.",
+  svg: "Kin takes back only plain drawings: return it as a PNG or a PDF, or show it in chat with kin_visual.",
+};
+
 /** Why these bytes are not the type `extension` says, or `undefined` when they are. */
-export const typeMismatch = (extension: Extension, bytes: Uint8Array): string | undefined => {
+export const typeMismatch = async (
+  extension: Extension,
+  bytes: Uint8Array,
+): Promise<string | undefined> => {
   const wrong = `its bytes aren't a ${extension.toUpperCase()} file`;
   switch (extension) {
     case "pdf":
@@ -113,18 +130,16 @@ export const typeMismatch = (extension: Extension, bytes: Uint8Array): string | 
     case "docx":
     case "pptx": {
       if (!startsWith(bytes, [0x50, 0x4b, 0x03, 0x04])) return wrong;
-      const problem = officeProblem(extension, bytes);
+      const problem = await officeProblem(extension, bytes);
       return problem === undefined
         ? undefined
-        : `it's a ${extension.toUpperCase()} that ${problem}. Kin takes back Office files with no macros, embedded objects or outside links, plain web and email hyperlinks aside: make it again without them, or return a PDF`;
+        : `it's a ${extension.toUpperCase()} that ${problem}`;
     }
     case "svg": {
       const text = utf8(bytes);
       if (text === undefined || !/<svg[\s>/]/.test(text)) return wrong;
       const problem = svgProblem(text);
-      return problem === undefined
-        ? undefined
-        : `it's an SVG with ${problem}: Kin takes back only plain drawings. Return it as a PNG or a PDF, or show it in chat with kin_visual`;
+      return problem === undefined ? undefined : `it's an SVG with ${problem}`;
     }
     case "json": {
       const text = utf8(bytes);
@@ -364,9 +379,10 @@ export const takeOutputs = Effect.fn("KinGenDocs.takeOutputs")(function* (input:
       });
       continue;
     }
-    const mismatch = typeMismatch(one.extension, read.bytes);
+    const mismatch = yield* Effect.promise(() => typeMismatch(one.extension, read.bytes));
     if (mismatch !== undefined) {
-      refused.push({ name: one.name, reason: mismatch });
+      const retry = RETRY_HINTS[one.extension];
+      refused.push({ name: one.name, reason: mismatch, ...(retry === undefined ? {} : { retry }) });
       continue;
     }
     total += read.bytes.byteLength;

@@ -16,6 +16,7 @@ import {
   type KinWorkFile,
   type KinWorkFilesInput,
   type KinVoidInput,
+  KinRecordKey,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -25,6 +26,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { readableFrom } from "../chat/sharing.ts";
+import { remakeForEntry } from "../gendocs/make.ts";
 import * as Numbers from "../gendocs/numbering.ts";
 import { readProfile, setProfile } from "./companyProfile.ts";
 import { KinRecords } from "./KinRecords.ts";
@@ -239,7 +241,25 @@ export const issue = Effect.fn("KinMoney.issue")(function* (
   input: KinIssueInput,
 ) {
   const person = yield* theOwner(people, input.orgId);
-  return yield* Numbers.issue(input.orgId, ownerWriter(person), input.key);
+  const writer = ownerWriter(person);
+  const issued = yield* Numbers.issue(input.orgId, writer, input.key);
+  const remade = issued.issued
+    ? yield* remakeForEntry({
+        orgId: input.orgId,
+        entryKey: issued.key,
+        requester: { _tag: "owner", personId: person.personId, writer },
+        admit: Effect.void,
+      })
+    : { documents: [], problems: [] };
+  return {
+    ...issued,
+    documents: remade.documents.map((doc) => ({
+      key: KinRecordKey.make(doc.key),
+      title: doc.title,
+      version: doc.version,
+    })),
+    problems: remade.problems,
+  };
 }, workFailure);
 
 /** The owner's Void tap: kept with its number, so the series stays complete. */
@@ -248,7 +268,11 @@ export const voidEntry = Effect.fn("KinMoney.void")(function* (
   input: KinVoidInput,
 ) {
   const person = yield* theOwner(people, input.orgId);
-  return yield* Numbers.voidEntry(input.orgId, ownerWriter(person), input.key);
+  return {
+    ...(yield* Numbers.voidEntry(input.orgId, ownerWriter(person), input.key)),
+    documents: [],
+    problems: [],
+  };
 }, workFailure);
 
 export const recordPayment = Effect.fn("KinMoney.recordPayment")(function* (

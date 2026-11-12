@@ -25,7 +25,6 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { createDeterministicAttachmentId } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { quote } from "../lead/LeadPrompt.ts";
@@ -34,17 +33,16 @@ import * as Docs from "../work/docs.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import type { RecordRow } from "../work/recordRows.ts";
 import { listDef } from "../work/registers.ts";
-import { entrySensitive, gatherFacts, jobSensitive } from "./facts.ts";
-import { assembleInputs, needsEntry, type Value } from "./recipe.ts";
+import { entrySensitive } from "./facts.ts";
+import { canonical, turnSensitive } from "./make.ts";
+import type { Recipe, Value } from "./recipe.ts";
+import { KinDocRenderer } from "./render.ts";
 import { RETURN_CAPS, takeOutputs } from "./returnPath.ts";
 import { jobWorktree, KinWorkspace, type StoredRecipe } from "./workspace.ts";
 
-/**
- * A document job: a worker makes a file in a worktree of the org's workspace, from a recipe or
- * from the agent's brief alone, or writes a recipe. The server chooses the inputs, writes the
- * brief and, when the run ends, takes back only the files the report names (`takeOutputs`),
- * filing each as a version of a doc whose provenance comes from the job's stored row.
- */
+// A worker's document job: a one-off file from the agent's brief, or writing a recipe. A recipe's
+// document is made in the call instead (`make.ts`). When the run ends Kin takes back only the files
+// the report names, with provenance from the job's row, or commits the recipe once its sample renders.
 
 const recipeName = TrimmedNonEmptyString.check(Schema.isPattern(/^[a-z][a-z0-9-]{1,39}$/));
 export const DocumentInput = Schema.Struct({
@@ -60,7 +58,7 @@ export const DocumentInput = Schema.Struct({
   }),
   inputs: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)).annotate({
     description:
-      "Only the recipe's inputs that come from you, by name, as the owner said them. Kin reads every stored figure itself.",
+      "Only the recipe's inputs that come from you, by name, as the owner said them. Kin reads every stored figure and works out every sum itself.",
   }),
   brief: Schema.optional(Schema.String.check(Schema.isMaxLength(20_000))).annotate({
     description:
@@ -73,12 +71,18 @@ export const DocumentInput = Schema.Struct({
 });
 export type DocumentInput = typeof DocumentInput.Type;
 export const DocumentResult = Schema.Struct({
-  workerId: Schema.String,
-  threadLink: Schema.String,
+  /** The worker making a one-off file or writing a recipe; `null` when Kin made it in the call. */
+  workerId: Schema.NullOr(Schema.String),
+  threadLink: Schema.NullOr(Schema.String),
   recipe: Schema.NullOr(Schema.String),
   /** The number the file carries; `null` for a draft or an unnumbered recipe. */
   number: Schema.NullOr(Schema.String),
   draft: Schema.Boolean,
+  /** The docs a recipe made, already filed and shown as a card in the chat. */
+  documents: Schema.Array(
+    Schema.Struct({ key: Schema.String, title: Schema.String, version: Schema.Number }),
+  ),
+  sensitive: Schema.optional(Schema.Literal(true)),
 });
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
@@ -88,16 +92,6 @@ const NOTHING = "Nothing started.";
 
 const sha256 = (value: string | Uint8Array) =>
   NodeCrypto.createHash("sha256").update(value).digest("hex");
-/** Stable JSON: the same inputs hash the same whatever order they were built in. */
-const canonical = (value: unknown): string =>
-  Array.isArray(value)
-    ? `[${value.map(canonical).join(",")}]`
-    : typeof value === "object" && value !== null
-      ? `{${Object.keys(value)
-          .toSorted()
-          .map((key) => `${JSON.stringify(key)}:${canonical(Reflect.get(value, key))}`)
-          .join(",")}}`
-      : JSON.stringify(value);
 
 export type Plan = {
   readonly mode: "document" | "recipe";
@@ -112,17 +106,12 @@ export type Plan = {
   readonly draft: boolean;
   readonly sensitive: boolean;
   readonly docOrigin: string;
-  readonly tools: ReadonlyArray<"typst">;
 };
 
-/**
- * What a job will run with, from stored rows and the agent's declared inputs only. `shell` is
- * why this host's workers have no shell, if they haven't: a recipe needs one to run.
- */
+/** What a worker job will run with: the agent's brief, and an entry's key if it named one. */
 export const planJob = Effect.fn("KinDocJobs.plan")(function* (
   orgId: KinOrgId,
   input: DocumentInput,
-  shell: { readonly available: true } | { readonly available: false; readonly reason: string },
 ) {
   const workspace = yield* KinWorkspace;
   const records = yield* KinRecords;
@@ -135,18 +124,10 @@ export const planJob = Effect.fn("KinDocJobs.plan")(function* (
       reason: "not_found",
       message: `No entry ${input.entry}. ${NOTHING}`,
     });
-  const noShell = (what: string) =>
-    shell.available
-      ? undefined
-      : denied(
-          `${what} runs commands, and workers on this host have no shell (${shell.reason}). A one-off text, Markdown, CSV, SVG or JSON file can still be made. ${NOTHING}`,
-        );
 
   if (input.writeRecipe === true) {
     if (input.recipe === undefined)
       return yield* invalid(`Name the recipe to write in recipe. ${NOTHING}`);
-    const refused = noShell("Writing a recipe");
-    if (refused !== undefined) return yield* refused;
     const inputsJson = canonical({ brief: input.brief ?? "" });
     return {
       mode: "recipe",
@@ -160,80 +141,58 @@ export const planJob = Effect.fn("KinDocJobs.plan")(function* (
       draft: false,
       sensitive: false,
       docOrigin: `recipe:${input.recipe}`,
-      tools: ["typst"],
     } satisfies Plan;
   }
 
-  if (input.recipe !== undefined && named === undefined)
+  if (input.recipe !== undefined)
     return yield* new KinChatError({
       reason: "not_found",
-      message: `There is no recipe ${input.recipe}. Recipes here: ${recipes.map((one) => one.name).join(", ") || "none"}. Call kin_recipes, or have one written with writeRecipe. ${NOTHING}`,
+      message:
+        named === undefined
+          ? `There is no recipe ${input.recipe}. Recipes here: ${recipes.map((one) => one.name).join(", ") || "none"}. Call kin_recipes, or have one written with writeRecipe. ${NOTHING}`
+          : `Kin makes a recipe's document itself, in the call. ${NOTHING}`,
     });
-  if (named === undefined) {
-    // A one-off file: the agent's brief is all the worker gets, plus the entry's key if named.
-    if (input.inputs !== undefined && Object.keys(input.inputs).length > 0)
-      return yield* invalid(`A one-off file takes its figures in brief, not inputs. ${NOTHING}`);
-    if ((input.brief ?? "").trim().length === 0)
-      return yield* invalid(`Say in brief what to make, with every figure it shows. ${NOTHING}`);
-    const inputsJson = canonical({
-      title: input.title,
-      brief: input.brief,
-      entry: entry?.key ?? null,
-    });
-    const inputsHash = sha256(inputsJson);
-    return {
-      mode: "document",
-      recipe: null,
-      recipeName: null,
-      entry,
-      inputs: NO_INPUTS,
-      inputsJson,
-      inputsHash,
-      number: null,
-      draft: false,
-      sensitive:
-        entry !== undefined && entrySensitive(entry, yield* listDef(orgId, entry.registerId)),
-      docOrigin:
-        entry === undefined
-          ? `file:${inputsHash}`
-          : `file:${entry.recordId}:${sha256(input.title)}`,
-      tools: ["typst"],
-    } satisfies Plan;
-  }
-
-  const refused = noShell(`The ${named.name} recipe`);
-  if (refused !== undefined) return yield* refused;
-  if (needsEntry(named) && entry === undefined)
-    return yield* invalid(
-      `The ${named.name} recipe is for one entry: name it in entry. ${NOTHING}`,
-    );
-  if (named.list !== null && entry !== undefined && entry.registerId !== named.list)
-    return yield* invalid(
-      `The ${named.name} recipe is for ${named.list} entries, and ${entry.key} isn't one. ${NOTHING}`,
-    );
-  const given = input.inputs ?? {};
-  const gathered = yield* gatherFacts(orgId, named, entry, given);
-  const assembled = assembleInputs(named, given, gathered.facts, gathered.currency);
-  if ("error" in assembled) return yield* assembled.error;
-  const inputsJson = canonical(assembled.inputs);
+  // A one-off file: the agent's brief is all the worker gets, plus the entry's key if named.
+  if (input.inputs !== undefined && Object.keys(input.inputs).length > 0)
+    return yield* invalid(`A one-off file takes its figures in brief, not inputs. ${NOTHING}`);
+  if ((input.brief ?? "").trim().length === 0)
+    return yield* invalid(`Say in brief what to make, with every figure it shows. ${NOTHING}`);
+  const inputsJson = canonical({
+    title: input.title,
+    brief: input.brief,
+    entry: entry?.key ?? null,
+  });
   const inputsHash = sha256(inputsJson);
   return {
     mode: "document",
-    recipe: named,
-    recipeName: named.name,
+    recipe: null,
+    recipeName: null,
     entry,
-    inputs: assembled.inputs,
+    inputs: NO_INPUTS,
     inputsJson,
     inputsHash,
-    number: named.numbered ? gathered.number : null,
-    draft: named.numbered && gathered.number === null,
-    sensitive: jobSensitive(named, assembled.inputs, gathered),
+    number: null,
+    draft: false,
+    sensitive:
+      entry !== undefined && entrySensitive(entry, yield* listDef(orgId, entry.registerId)),
     docOrigin:
-      entry === undefined
-        ? `recipe:${named.name}:${inputsHash}`
-        : `recipe:${named.name}:${entry.recordId}`,
-    tools: named.tools,
+      entry === undefined ? `file:${inputsHash}` : `file:${entry.recordId}:${sha256(input.title)}`,
   } satisfies Plan;
+});
+
+/**
+ * A worker job's label as of now, inside the write that admits it: the plan's, anything the turn
+ * has read, or the entry's own. A brief or a recipe the agent writes may carry what it read.
+ */
+export const workerJobSensitive = Effect.fn("KinDocJobs.sensitive")(function* (
+  orgId: KinOrgId,
+  wakeupId: string,
+  plan: Plan,
+) {
+  if (plan.sensitive || (yield* turnSensitive(orgId, wakeupId))) return true;
+  if (plan.entry === undefined) return false;
+  const entry = yield* (yield* KinRecords).getById(orgId, plan.entry.recordId);
+  return entry !== undefined && entrySensitive(entry, yield* listDef(orgId, entry.registerId));
 });
 
 const returnRules = [
@@ -253,38 +212,48 @@ export const docBrief = (plan: Plan, input: DocumentInput) => {
       `Goal:\n${plan.recipe === null ? "Write" : "Change"} the recipe \`${plan.recipeName}\` in recipes/${plan.recipeName}/, so Kin can make "${input.title}" from it.`,
       ...said,
       RECIPE_GUIDE,
-      `Only files under recipes/${plan.recipeName}/ are kept: when your run ends Kin checks RECIPE.md and commits that folder, with its history. Read recipes/ for working examples. Test it on invented inputs you write in in/inputs.json, and look at what it makes; nothing in in/ or out/ is kept.`,
+      `Only files under recipes/${plan.recipeName}/ are kept: when your run ends Kin checks RECIPE.md, renders the recipe from its sample.json, and commits the folder, with its history, only if that render works; otherwise the agent gets Typst's error. Read recipes/ for working examples: recipes/invoice/ shows computed fields and a template. You have no shell and need none: write the files with your file tools.`,
       reportFormat,
     ].join("\n\n");
-  const recipe = plan.recipe;
   return [
     "You were called by Kin. Do this task yourself.",
-    recipe === null
-      ? `Goal:\nMake "${input.title}" as one file, from the brief below and nothing else. Every figure it shows must be one the brief gives: never work one out yourself.`
-      : `Goal:\nMake "${input.title}" with the ${recipe.title} recipe in recipes/${recipe.name}/. in/inputs.json holds its inputs exactly as Kin gave them. Never change a figure there or work one out yourself: the recipe's script does every sum.`,
-    ...(recipe === null
-      ? []
-      : [
-          quote(
-            `recipes/${recipe.name}/RECIPE.md (the org's recipe)`,
-            { text: recipe.instructions },
-            true,
-          ),
-        ]),
-    ...(plan.draft
-      ? ["It is a draft: it has no number yet, and it must say DRAFT where the number would be."]
-      : []),
+    `Goal:\nMake "${input.title}" as one file, from the brief below and nothing else. Every figure it shows must be one the brief gives: never work one out yourself.`,
     ...said,
-    "Typst and Node are on your PATH. If a step fails, report blocked with the error in plain words; never change the recipe or its numbers to get past it.",
+    "If a step fails, report blocked with the error in plain words.",
     ...returnRules,
     reportFormat,
   ].join("\n\n");
 };
 
-const RECIPE_GUIDE = `A recipe is a folder: RECIPE.md, its scripts and its templates. RECIPE.md starts with YAML front matter between --- lines:
-name (the folder's name), title, description (one line the agent reads), list (when it is for one entry of a list, such as invoices), numbered (true when it shows the entry's issued number), sensitive (Kin labels a file confidential by where its inputs come from, such as amounts, bank details, tax ids or a sensitive entry; true here labels it so anyway), tools ([typst] when it renders PDF or PNG), outputs (file names, * for a varying part), and inputs.
-Each input has a type (text, integer, decimal, money, date, boolean, month or table with columns), required (default true for stored values, false for the agent's), a description, and from: where Kin reads it. Leave from out for the agent's own words; otherwise one of entry.key|title|state|amount|tax|date|due|notes|number, entry.fields.<field>, client.name|gstin|placeOfSupply|terms, company.legalName|tradeName|address|gstin|pan|placeOfSupply|sac, company.bank.accountName|accountNumber|ifsc|bankName|branch|upi, system.number|draft|today, rows.<list> (a table of that list's entries in a month, with period naming a month input; columns from key, title, state, amount, tax, date, due, client, category, number, field_<field>), or payments (a table: invoice, client, amount, paidOn). Money is {"minor": <integer>, "currency": "INR"}.
-The body after the front matter tells a worker how to run it. Scripts are plain Node .mjs with no packages, run as node recipes/<name>/build.mjs in/inputs.json out; they do every sum in integer minor units. Typst templates read the data with --input; use typst compile --root . --ignore-system-fonts. Settings the owner may change go in config.json beside them.`;
+const RECIPE_GUIDE = `A recipe is a folder: RECIPE.md, template.typ (for a PDF), sample.json and anything the template shows, such as a logo or a font. Kin renders it itself, with no worker; nothing in it runs but the template, in Typst 0.15 with no packages and no network.
+RECIPE.md starts with YAML front matter between --- lines: name (the folder's name), kind (typst, or table for CSVs and a workbook), title, description (one line the agent reads), list (when it is for one entry of a list, such as invoices), numbered (true when it shows the entry's issued number), sensitive (Kin labels a file confidential by where its inputs come from, such as amounts, bank details, tax ids or a sensitive entry; true here labels it so anyway), inputs, computed (typst), sheets and workbook (table), and outputs (for typst each PDF's name; for table each file's name, {month} for an input's value).
+Each input has a type (text, integer, decimal, money, date, boolean, month or table with columns), required (default true for stored values, false for the agent's), a description, and from: where Kin reads it. Leave from out for the agent's own words; otherwise one of entry.key|title|state|amount|tax|date|due|notes|number, entry.fields.<field>, client.name|address|gstin|placeOfSupply|terms, company.legalName|tradeName|address|gstin|pan|placeOfSupply|sac, company.bank.accountName|accountNumber|ifsc|bankName|branch|upi, system.number|draft|today, rows.<list> (a table of that list's entries in a month, with period naming a month input; columns from key, title, state, amount, tax, date, due, client, category, number, field_<field>), or payments (a table: invoice, client, amount, paidOn).
+Every figure the document shows that Kin doesn't store is a computed field, worked out by Kin in exact integers, in order, each one function: times [amount, factor], percent [amount, rate] (round: half-up, half-even, down or up), sum [amounts, or table.column], minus [a, b], first [values], each { rows: <table>, set: { <column>: <field> } }, words <amount>, date [<day>, "D MMM YYYY" | "D MMMM YYYY" | "DD/MM/YYYY" | "MMMM YYYY"], gst { taxable, total, recordedTax, rate, supplierGstin, supplierPlace, clientGstin, clientPlace, exportUnderLut } and markdown <text>. Arguments name inputs or earlier fields, or are literals.
+template.typ reads #let d = json("/inputs.json"): every input and computed field, money as {minor, currency, text}; it shows money by its text and never does arithmetic on it. sys.inputs.output is the PDF being made. Put wording the owner may change in #let lines at its top.
+A table recipe's sheets each have a name, the table input they show, a CSV file name, columns (header and field, amount.currency for a money column's currency) and leaveOutOfTotals; workbook names the XLSX.
+sample.json holds invented values for every input, as Kin would give them: money as {"minor": <integer>, "currency": "INR"}, days as 2026-11-12.
+The body after the front matter is notes for the agent on when and how to use it.`;
+
+const SAMPLE_DAY = "2026-01-01";
+/** A recipe's sample.json as its inputs: each declared input's value, or null. */
+export const sampleInputs = (
+  recipe: Recipe,
+  sample: string | undefined,
+): Readonly<Record<string, Value>> | string => {
+  if (sample === undefined)
+    return "it has no sample.json: invented values for every input, so Kin can render it";
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(sample);
+  } catch {
+    return "its sample.json isn't JSON";
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+    return "its sample.json isn't an object of inputs";
+  return Object.fromEntries(
+    recipe.inputs.map((input) => [input.name, (Reflect.get(parsed, input.name) ?? null) as Value]),
+  );
+};
 
 export type JobRow = {
   readonly orgId: KinOrgId;
@@ -317,6 +286,8 @@ const OutcomeJson = Schema.fromJsonString(
       Schema.Struct({ recordId: Schema.String, key: Schema.String, title: Schema.String }),
     ),
     problems: Schema.Array(Schema.String),
+    /** How the worker makes a refused file again: the agent reads it, the owner never does. */
+    retry: Schema.optional(Schema.Array(Schema.String)),
   }),
 );
 type Outcome = typeof OutcomeJson.Type;
@@ -332,14 +303,6 @@ const decodeDocuments = Schema.decodeUnknownEffect(
 );
 const encodeOutcome = Schema.encodeEffect(OutcomeJson);
 
-/** `out/accounts-*.xlsx` style names, as a recipe declares its outputs. */
-const matchesOutput = (patterns: ReadonlyArray<string>, name: string) =>
-  patterns.some((pattern) =>
-    new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", "[^/]*")}$`).test(
-      name,
-    ),
-  );
-
 /** The report as the lead reads it: the worker's words, with what Kin itself filed and refused. */
 const reported = (report: WorkerReport, outcome: Outcome): WorkerReport => ({
   ...report,
@@ -350,7 +313,10 @@ const reported = (report: WorkerReport, outcome: Outcome): WorkerReport => ({
     ...report.evidence.filter((item) => item.kind !== "file"),
     ...outcome.documents.map((doc) => ({ kind: "link" as const, ref: doc.key, note: doc.title })),
   ],
-  openQuestions: [...outcome.problems, ...report.openQuestions].slice(0, 20),
+  openQuestions: [...outcome.problems, ...(outcome.retry ?? []), ...report.openQuestions].slice(
+    0,
+    20,
+  ),
 });
 
 export class KinDocCollector extends Context.Service<
@@ -378,7 +344,8 @@ export class KinDocCollector extends Context.Service<
 
 /**
  * Removes a job's worktree and records it gone once it is; until then its row says it's owed.
- * The inputs go first, and only from the worktree's own `in/`, never through a link put there.
+ * Nothing is removed unless the worktree is itself, not a link, at its own place under the
+ * documents folder; the inputs go first, only from its own `in/`, never through a link put there.
  */
 export const cleanupJob = Effect.fn("KinDocJobs.cleanup")(
   function* (orgId: KinOrgId, workerId: KinWorkerId) {
@@ -391,14 +358,28 @@ export const cleanupJob = Effect.fn("KinDocJobs.cleanup")(
       FROM kin_doc_jobs WHERE org_id = ${orgId} AND worker_id = ${workerId} ORDER BY worker_id`;
     if (job === undefined || job.removedAt !== null) return;
     const worktree = jobWorktree(config.worktreesDir, workerId);
-    const root = yield* fs.realPath(worktree).pipe(Effect.option);
-    const inputs = yield* fs.realPath(path.join(worktree, "in")).pipe(Effect.option);
-    if (
-      Option.isSome(root) &&
-      Option.isSome(inputs) &&
-      inputs.value === path.join(root.value, "in")
-    )
-      yield* fs.remove(path.join(inputs.value, "inputs.json"), { force: true });
+    if (yield* fs.exists(worktree)) {
+      const linked = yield* fs.readLink(worktree).pipe(
+        Effect.as(true),
+        Effect.orElseSucceed(() => false),
+      );
+      const canonical = yield* fs.realPath(worktree).pipe(Effect.option);
+      const documents = yield* fs.realPath(config.worktreesDir).pipe(Effect.option);
+      // A link at the worktree or at any folder above it would point the removal elsewhere.
+      if (
+        linked ||
+        Option.isNone(canonical) ||
+        Option.isNone(documents) ||
+        canonical.value !== path.join(documents.value, "kin-documents", workerId)
+      )
+        return yield* Effect.logWarning(
+          "Kin left a document job's worktree: it isn't a plain folder in its own place",
+          { workerId },
+        );
+      const inputs = yield* fs.realPath(path.join(worktree, "in")).pipe(Effect.option);
+      if (Option.isSome(inputs) && inputs.value === path.join(canonical.value, "in"))
+        yield* fs.remove(path.join(inputs.value, "inputs.json"), { force: true });
+    }
     yield* workspace.discard(orgId, workerId);
     if (yield* fs.exists(worktree))
       return yield* Effect.logWarning("Kin couldn't remove a document job's worktree yet", {
@@ -438,6 +419,7 @@ export const recordOutcome = Effect.fn("KinDocJobs.recordOutcome")(function* (
   );
 });
 
+const SWEEP_PAGE = 500;
 const UNCONFIRMED: Outcome = {
   summary:
     "Kin took back no file: it couldn't confirm the worker had stopped, so it couldn't trust out/. Ask again.",
@@ -450,223 +432,221 @@ const FAILED: Outcome = {
   problems: [],
 };
 
-export const collectorLayer = Layer.effect(
-  KinDocCollector,
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const config = yield* ServerConfig;
-    const workspace = yield* KinWorkspace;
-    const records = yield* KinRecords;
-    const chat = yield* KinChatService;
-    const scopes = yield* AgentScope;
-    // Workers elsewhere have no shell (`KinWorkSandbox`), so file tools are all that touched out/.
-    const shellHost = (yield* HostProcess.Platform) === "linux";
-    const jobContext = Effect.provideService(SqlClient.SqlClient, sql);
-    const cleanup = (orgId: KinOrgId, workerId: KinWorkerId) =>
-      cleanupJob(orgId, workerId).pipe(
-        jobContext,
-        Effect.provideService(FileSystem.FileSystem, fs),
-        Effect.provideService(Path.Path, path),
-        Effect.provideService(ServerConfig, config),
-        Effect.provideService(KinWorkspace, workspace),
-      );
+export const makeCollectorLayer = (options: { readonly sweepPage?: number } = {}) =>
+  Layer.effect(
+    KinDocCollector,
+    Effect.gen(function* () {
+      const sweepPage = options.sweepPage ?? SWEEP_PAGE;
+      const sql = yield* SqlClient.SqlClient;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const config = yield* ServerConfig;
+      const workspace = yield* KinWorkspace;
+      const records = yield* KinRecords;
+      const chat = yield* KinChatService;
+      const scopes = yield* AgentScope;
+      const renderer = yield* KinDocRenderer;
+      // Workers elsewhere have no shell (`KinWorkSandbox`), so file tools are all that touched out/.
+      const shellHost = (yield* HostProcess.Platform) === "linux";
+      const jobContext = Effect.provideService(SqlClient.SqlClient, sql);
+      const cleanup = (orgId: KinOrgId, workerId: KinWorkerId) =>
+        cleanupJob(orgId, workerId).pipe(
+          jobContext,
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+          Effect.provideService(ServerConfig, config),
+          Effect.provideService(KinWorkspace, workspace),
+        );
 
-    const store = Effect.fn("KinDocCollector.store")(function* (
-      orgId: KinOrgId,
-      workerId: KinWorkerId,
-      file: { readonly sha256: string; readonly extension: string; readonly bytes: Uint8Array },
-    ) {
-      const base = createDeterministicAttachmentId("kin-chat", `${orgId}:${file.sha256}`);
-      if (base === null) return yield* Effect.fail("no attachment id");
-      const attachmentId = `${base}-${file.extension}`;
-      const target = path.join(config.attachmentsDir, `${attachmentId}.${file.extension}`);
-      // Stored by content: the same bytes again are the same file, written once.
-      if (!(yield* fs.exists(target))) {
-        yield* fs.makeDirectory(config.attachmentsDir, { recursive: true });
-        const scratch = `${target}.${workerId}.tmp`;
-        yield* fs.writeFile(scratch, file.bytes);
-        yield* fs.rename(scratch, target);
-      }
-      return attachmentId;
-    });
-
-    const outcomeOf = Effect.fn("KinDocCollector.outcome")(function* (
-      job: JobRow,
-      completed: boolean,
-      report: WorkerReport,
-    ) {
-      const worktree = jobWorktree(config.worktreesDir, job.workerId);
-      if (job.mode === "recipe") {
-        if (!completed || job.recipe === null)
+      const outcomeOf = Effect.fn("KinDocCollector.outcome")(function* (
+        job: JobRow,
+        completed: boolean,
+        report: WorkerReport,
+      ) {
+        const worktree = jobWorktree(config.worktreesDir, job.workerId);
+        if (job.mode === "recipe") {
+          if (!completed || job.recipe === null)
+            return {
+              summary: "Kin kept no recipe change: the run didn't finish.",
+              documents: [],
+              problems: [],
+            };
+          const orgId = job.orgId;
+          const change = yield* workspace.applyRecipeChange(orgId, {
+            workerId: job.workerId,
+            recipe: job.recipe,
+            agentId: job.agentId,
+            verify: Effect.fn("KinDocCollector.verify")(
+              function* ({ commit, recipe, sample }) {
+                const inputs = sampleInputs(recipe, sample);
+                if (typeof inputs === "string") return inputs;
+                const rendered = yield* renderer.render({
+                  orgId,
+                  recipe,
+                  commit,
+                  inputs,
+                  day: typeof inputs.today === "string" ? inputs.today : SAMPLE_DAY,
+                });
+                return rendered._tag === "made" ? undefined : rendered.reason;
+              },
+              Effect.catch((error) => Effect.succeed(error.message)),
+            ),
+          });
+          const left =
+            change._tag === "refused" || change.left.length === 0
+              ? []
+              : [`Kin kept only recipes/${job.recipe}/; it left out ${change.left.join(", ")}.`];
           return {
-            summary: "Kin kept no recipe change: the run didn't finish.",
+            summary:
+              change._tag === "committed"
+                ? `Kin rendered the ${job.recipe} recipe's sample and committed it (${change.commit.slice(0, 12)}); make documents with it with kin_document.`
+                : change._tag === "unchanged"
+                  ? `The ${job.recipe} recipe is unchanged: the worker left nothing new in recipes/${job.recipe}/.`
+                  : `Kin didn't keep the ${job.recipe} recipe: ${change.reason}.`,
+            documents: [],
+            problems: left,
+          } satisfies Outcome;
+        }
+        if (!completed)
+          return {
+            summary: "Kin took back no file: the run didn't finish.",
             documents: [],
             problems: [],
           };
-        const change = yield* workspace.applyRecipeChange(job.orgId, {
-          workerId: job.workerId,
-          recipe: job.recipe,
-          agentId: job.agentId,
-        });
-        const left =
-          change._tag === "refused" || change.left.length === 0
-            ? []
-            : [`Kin kept only recipes/${job.recipe}/; it left out ${change.left.join(", ")}.`];
+        // A recipe job from before Kin rendered recipes itself: its files are no recipe's output.
+        if (job.recipe !== null)
+          return {
+            summary: `Kin took back no file: it now makes the ${job.recipe} recipe's documents itself, so ask for it again.`,
+            documents: [],
+            problems: [],
+          } satisfies Outcome;
+        const named = report.evidence
+          .filter((item) => item.kind === "file")
+          .map((item) => item.ref);
+        const returned = yield* takeOutputs({ worktree, named });
+        const problems = returned.refused.map((one) => `${one.name} wasn't saved: ${one.reason}.`);
+        const retry = [...new Set(returned.refused.flatMap((one) => one.retry ?? []))];
+        const documents: Array<Outcome["documents"][number]> = [];
+        const entry =
+          job.entryRecordId === null
+            ? undefined
+            : yield* records.getById(job.orgId, job.entryRecordId);
+        const writer: Writer = {
+          actor: { _tag: "agent", agentId: job.agentId },
+          via: "worker",
+          wakeupId: job.wakeupId,
+          ...(job.chatId === null ? {} : { chatId: KinChatId.make(job.chatId) }),
+        };
+        for (const file of returned.taken) {
+          const attachmentId = yield* renderer.store(job.orgId, job.workerId, file);
+          const title = returned.taken.length === 1 ? job.title : `${job.title} · ${file.name}`;
+          const written = yield* Docs.fileVersion(
+            job.orgId,
+            writer,
+            {
+              ...(job.answeredMessageId === null ||
+              job.answeredAuthorKind === null ||
+              job.answeredAuthorId === null
+                ? {}
+                : {
+                    answered: {
+                      messageId: job.answeredMessageId,
+                      author:
+                        job.answeredAuthorKind === "person"
+                          ? { _tag: "person", personId: KinPersonId.make(job.answeredAuthorId) }
+                          : { _tag: "agent", agentId: KinAgentId.make(job.answeredAuthorId) },
+                    },
+                  }),
+              audience: job.audience,
+            },
+            {
+              docOrigin: `${job.docOrigin}:${file.name}`,
+              originKey: `kin-doc-job:${job.workerId}:${file.name}`,
+              title: title.slice(0, 200),
+              summary: "Made by a worker from the agent's brief",
+              owner: { _tag: "agent", agentId: job.agentId },
+              sensitive: job.sensitive === 1,
+              ...(entry?.partyId === undefined ? {} : { partyId: entry.partyId }),
+              file: {
+                attachmentId,
+                name: file.name,
+                mimeType: file.mimeType,
+                bytes: file.bytes.length,
+                sha256: file.sha256,
+                pages: file.pages,
+                recipe: null,
+                inputsHash: job.inputsSha256,
+                workerId: job.workerId,
+                number: null,
+                draft: false,
+              },
+            },
+          );
+          if (entry !== undefined)
+            yield* Docs.link(job.orgId, writer, { key: written.row.key }, [entry.key], "relates");
+          documents.push({
+            recordId: written.row.recordId,
+            key: written.row.key,
+            title: written.row.title,
+          });
+        }
+        const count = documents.length;
         return {
           summary:
-            change._tag === "committed"
-              ? `Kin committed the ${job.recipe} recipe (${change.commit.slice(0, 12)}); run it with kin_document.`
-              : change._tag === "unchanged"
-                ? `The ${job.recipe} recipe is unchanged: the worker left nothing new in recipes/${job.recipe}/.`
-                : `Kin didn't keep the ${job.recipe} recipe: ${change.reason}.`,
-          documents: [],
-          problems: left,
-        } satisfies Outcome;
-      }
-      if (!completed)
-        return {
-          summary: "Kin took back no file: the run didn't finish.",
-          documents: [],
-          problems: [],
-        };
-      const named = report.evidence.filter((item) => item.kind === "file").map((item) => item.ref);
-      const returned = yield* takeOutputs({ worktree, named });
-      const problems = returned.refused.map((one) => `${one.name}: ${one.reason}`);
-      // The recipe as the worker ran it, never as main holds it now.
-      const recipe =
-        job.recipe === null
-          ? undefined
-          : yield* workspace.recipeAt(job.orgId, job.recipe, job.recipeCommit);
-      if (job.recipe !== null && recipe === undefined)
-        return {
-          summary: `Kin took back no file: it couldn't read the ${job.recipe} recipe at the commit this job ran.`,
-          documents: [],
+            count === 0
+              ? "Kin filed no file from this job."
+              : `Kin filed ${count === 1 ? "the file" : `${count} files`} as ${documents.map((doc) => doc.key).join(", ")}.`,
+          documents,
           problems,
+          ...(retry.length === 0 ? {} : { retry }),
         } satisfies Outcome;
-      const documents: Array<Outcome["documents"][number]> = [];
-      const entry =
-        job.entryRecordId === null
-          ? undefined
-          : yield* records.getById(job.orgId, job.entryRecordId);
-      const writer: Writer = {
-        actor: { _tag: "agent", agentId: job.agentId },
-        via: "worker",
-        wakeupId: job.wakeupId,
-        ...(job.chatId === null ? {} : { chatId: KinChatId.make(job.chatId) }),
-      };
-      for (const file of returned.taken) {
-        if (recipe !== undefined && !matchesOutput(recipe.outputs, file.name)) {
-          problems.push(`${file.name}: the ${recipe.name} recipe doesn't make a file by that name`);
-          continue;
-        }
-        const attachmentId = yield* store(job.orgId, job.workerId, file);
-        const title = returned.taken.length === 1 ? job.title : `${job.title} · ${file.name}`;
-        const written = yield* Docs.fileVersion(
-          job.orgId,
-          writer,
-          {
-            ...(job.answeredMessageId === null ||
-            job.answeredAuthorKind === null ||
-            job.answeredAuthorId === null
-              ? {}
-              : {
-                  answered: {
-                    messageId: job.answeredMessageId,
-                    author:
-                      job.answeredAuthorKind === "person"
-                        ? { _tag: "person", personId: KinPersonId.make(job.answeredAuthorId) }
-                        : { _tag: "agent", agentId: KinAgentId.make(job.answeredAuthorId) },
-                  },
-                }),
-            audience: job.audience,
-          },
-          {
-            docOrigin: `${job.docOrigin}:${file.name}`,
-            originKey: `kin-doc-job:${job.workerId}:${file.name}`,
-            title: title.slice(0, 200),
-            summary: `${job.recipe === null ? "Made" : `Made with the ${job.recipe} recipe`}${job.number === null ? "" : `, ${job.number}`}${job.number === null && recipe?.numbered === true ? ", draft" : ""}`,
-            owner: { _tag: "agent", agentId: job.agentId },
-            sensitive: job.sensitive === 1,
-            ...(entry?.partyId === undefined ? {} : { partyId: entry.partyId }),
-            file: {
-              attachmentId,
-              name: file.name,
-              mimeType: file.mimeType,
-              bytes: file.bytes.length,
-              sha256: file.sha256,
-              pages: file.pages,
-              recipe: job.recipe === null ? null : { name: job.recipe, commit: job.recipeCommit },
-              inputsHash: job.inputsSha256,
-              workerId: job.workerId,
-              number: job.number,
-              draft: recipe?.numbered === true && job.number === null,
-            },
-          },
-        );
-        if (entry !== undefined)
-          yield* Docs.link(job.orgId, writer, { key: written.row.key }, [entry.key], "relates");
-        documents.push({
-          recordId: written.row.recordId,
-          key: written.row.key,
-          title: written.row.title,
-        });
-      }
-      const count = documents.length;
-      return {
-        summary:
-          count === 0
-            ? "Kin filed no file from this job."
-            : `Kin filed ${count === 1 ? "the file" : `${count} files`} as ${documents.map((doc) => doc.key).join(", ")}.`,
-        documents,
-        problems,
-      } satisfies Outcome;
-    });
+      });
 
-    /** A document job's outcome, filed once: a later collection returns the stored one. */
-    const settle = Effect.fn("KinDocCollector.settle")(function* (
-      job: JobRow,
-      threadId: ThreadId,
-      completed: boolean,
-      workerReport: WorkerReport,
-    ) {
-      const stored = job.outcomeJson === null ? undefined : decodeOutcome(job.outcomeJson);
-      if (stored !== undefined && stored._tag === "Some") return stored.value;
-      // out/ is read only once nothing the worker started can still change it.
-      const gone = yield* scopes.reap(threadId);
-      const outcome =
-        !gone && shellHost
-          ? UNCONFIRMED
-          : yield* outcomeOf(job, completed, workerReport).pipe(
-              Effect.catchCause((cause) =>
-                Effect.logWarning("Kin couldn't file a document job's files", { cause }).pipe(
-                  Effect.as(FAILED),
+      /** A document job's outcome, filed once: a later collection returns the stored one. */
+      const settle = Effect.fn("KinDocCollector.settle")(function* (
+        job: JobRow,
+        threadId: ThreadId,
+        completed: boolean,
+        workerReport: WorkerReport,
+      ) {
+        const stored = job.outcomeJson === null ? undefined : decodeOutcome(job.outcomeJson);
+        if (stored !== undefined && stored._tag === "Some") return stored.value;
+        // out/ is read only once nothing the worker started can still change it.
+        const gone = yield* scopes.reap(threadId);
+        const outcome =
+          !gone && shellHost
+            ? UNCONFIRMED
+            : yield* outcomeOf(job, completed, workerReport).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("Kin couldn't file a document job's files", { cause }).pipe(
+                    Effect.as(FAILED),
+                  ),
                 ),
+              );
+        yield* recordOutcome(job.orgId, job.workerId, yield* encodeOutcome(outcome)).pipe(
+          jobContext,
+        );
+        if (job.chatId !== null) {
+          const documents = yield* decodeDocuments(outcome.documents);
+          yield* chat
+            .setTaskCardDocuments({
+              orgId: job.orgId,
+              chatId: KinChatId.make(job.chatId),
+              threadId,
+              documents,
+              lastError: documents.length === 0 ? (outcome.problems[0] ?? outcome.summary) : null,
+            })
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Kin couldn't update a document card", { cause }),
               ),
             );
-      yield* recordOutcome(job.orgId, job.workerId, yield* encodeOutcome(outcome)).pipe(jobContext);
-      if (job.chatId !== null) {
-        const documents = yield* decodeDocuments(outcome.documents);
-        yield* chat
-          .setTaskCardDocuments({
-            orgId: job.orgId,
-            chatId: KinChatId.make(job.chatId),
-            threadId,
-            documents,
-            lastError: documents.length === 0 ? (outcome.problems[0] ?? outcome.summary) : null,
-          })
-          .pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("Kin couldn't update a document card", { cause }),
-            ),
-          );
-      }
-      return outcome;
-    });
-    const collect: KinDocCollector["Service"]["collect"] = Effect.fn("KinDocCollector.collect")(
-      function* (worker, completed, workerReport) {
-        const found = yield* sql<JobRow>`SELECT j.org_id AS "orgId", j.worker_id AS "workerId",
+        }
+        return outcome;
+      });
+      const collect: KinDocCollector["Service"]["collect"] = Effect.fn("KinDocCollector.collect")(
+        function* (worker, completed, workerReport) {
+          const found = yield* sql<JobRow>`SELECT j.org_id AS "orgId", j.worker_id AS "workerId",
             j.agent_id AS "agentId", j.wakeup_id AS "wakeupId", j.mode, j.recipe,
             j.recipe_commit AS "recipeCommit", j.entry_record_id AS "entryRecordId",
             j.inputs_sha256 AS "inputsSha256", j.number, j.sensitive, j.doc_origin AS "docOrigin",
@@ -678,46 +658,54 @@ export const collectorLayer = Layer.effect(
           LEFT JOIN kin_workers w ON w.org_id = j.org_id AND w.worker_id = j.worker_id
           WHERE j.org_id = ${worker.orgId} AND j.worker_id = ${worker.workerId}
           ORDER BY j.worker_id`.pipe(Effect.result);
-        // Unreadable, it may be a document job: blocked, never handed on to be published.
-        if (found._tag === "Failure") {
-          yield* Effect.logWarning("Kin couldn't read a worker's document job", {
-            cause: found.failure,
-          });
-          return reported(workerReport, FAILED);
-        }
-        const [job] = found.success;
-        if (job === undefined) return undefined;
-        // Every way out of a document job ends in its cleanup; none falls through to publishing.
-        return yield* settle(job, worker.threadId, completed, workerReport).pipe(
-          Effect.map((outcome) => reported(workerReport, outcome)),
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Kin document collection failed", { cause }).pipe(
-              Effect.as(reported(workerReport, FAILED)),
+          // Unreadable, it may be a document job: blocked, never handed on to be published.
+          if (found._tag === "Failure") {
+            yield* Effect.logWarning("Kin couldn't read a worker's document job", {
+              cause: found.failure,
+            });
+            return reported(workerReport, FAILED);
+          }
+          const [job] = found.success;
+          if (job === undefined) return undefined;
+          // Every way out of a document job ends in its cleanup; none falls through to publishing.
+          return yield* settle(job, worker.threadId, completed, workerReport).pipe(
+            Effect.map((outcome) => reported(workerReport, outcome)),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Kin document collection failed", { cause }).pipe(
+                Effect.as(reported(workerReport, FAILED)),
+              ),
             ),
-          ),
-          Effect.ensuring(cleanup(job.orgId, job.workerId)),
-        );
-      },
-      Effect.provideService(KinRecords, records),
-      jobContext,
-    );
+            Effect.ensuring(cleanup(job.orgId, job.workerId)),
+          );
+        },
+        Effect.provideService(KinRecords, records),
+        jobContext,
+      );
 
-    const sweep = Effect.fn("KinDocCollector.sweep")(
-      function* () {
-        // A startup scan across orgs: a job whose run is over still owes its worktree.
-        const rows = yield* sql<{ orgId: KinOrgId; workerId: KinWorkerId }>`SELECT
-            j.org_id AS "orgId", j.worker_id AS "workerId"
-          FROM kin_doc_jobs j
-          LEFT JOIN kin_workers w ON w.org_id = j.org_id AND w.worker_id = j.worker_id
-          WHERE j.removed_at IS NULL
-            AND (j.collected_at IS NOT NULL OR w.worker_id IS NULL OR w.ended_at IS NOT NULL)
-          ORDER BY j.org_id, j.worker_id LIMIT 1000`;
-        for (const row of rows) yield* cleanup(row.orgId, row.workerId);
-      },
-      Effect.catchCause((cause) =>
-        Effect.logWarning("Kin couldn't sweep document worktrees", { cause }),
-      ),
-    );
-    return KinDocCollector.of({ collect, cleanup, sweep: sweep() });
-  }),
-);
+      const sweep = Effect.fn("KinDocCollector.sweep")(
+        function* () {
+          // A startup scan across orgs, a page at a time: a job whose run is over owes its worktree.
+          let after = { orgId: "", workerId: "" };
+          for (;;) {
+            const rows = yield* sql<{ orgId: KinOrgId; workerId: KinWorkerId }>`SELECT
+              j.org_id AS "orgId", j.worker_id AS "workerId"
+            FROM kin_doc_jobs j
+            LEFT JOIN kin_workers w ON w.org_id = j.org_id AND w.worker_id = j.worker_id
+            WHERE j.removed_at IS NULL
+              AND (j.collected_at IS NOT NULL OR w.worker_id IS NULL OR w.ended_at IS NOT NULL)
+              AND (j.org_id > ${after.orgId}
+                OR (j.org_id = ${after.orgId} AND j.worker_id > ${after.workerId}))
+            ORDER BY j.org_id, j.worker_id LIMIT ${sweepPage}`;
+            for (const row of rows) yield* cleanup(row.orgId, row.workerId);
+            if (rows.length < sweepPage) return;
+            after = rows.at(-1)!;
+          }
+        },
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't sweep document worktrees", { cause }),
+        ),
+      );
+      return KinDocCollector.of({ collect, cleanup, sweep: sweep() });
+    }),
+  );
+export const collectorLayer = makeCollectorLayer();

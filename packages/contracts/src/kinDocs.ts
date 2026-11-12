@@ -15,6 +15,7 @@ import {
   KinDocSectionId,
   KinMessageId,
   KinOrgId,
+  KinPersonId,
   KinText,
   KinTrimmedText,
 } from "./kinChat.ts";
@@ -277,10 +278,11 @@ export const KinRecipe = Schema.Struct({
   numbered: Schema.Boolean,
   sensitive: Schema.Boolean,
   changedAt: Schema.NullOr(IsoDateTime),
-  /** Kin's starter, or the agent whose worker changed it last. */
+  /** Kin's starter, the agent whose worker changed it last, or the owner who undid a change. */
   changedBy: Schema.Union([
     Schema.TaggedStruct("starter", {}),
     Schema.TaggedStruct("agent", { agentId: KinAgentId, workerId: Schema.NullOr(KinWorkerId) }),
+    Schema.TaggedStruct("owner", { personId: KinPersonId }),
   ]),
   commit: TrimmedNonEmptyString,
 });
@@ -289,6 +291,63 @@ export const KinRecipesInput = Schema.Struct({ orgId: KinOrgId });
 export type KinRecipesInput = typeof KinRecipesInput.Type;
 export const KinRecipesResult = Schema.Struct({ recipes: Schema.Array(KinRecipe) });
 export type KinRecipesResult = typeof KinRecipesResult.Type;
+
+/**
+ * The owner makes a recipe's document from a client, with no agent turn: "Make invoice" on an
+ * entry, "Export month" on Money. Kin gathers the inputs and renders it in the call. `preview`
+ * renders without filing and returns the file itself, at most 5 MB.
+ */
+export const KinDocRenderInput = Schema.Struct({
+  orgId: KinOrgId,
+  recipe: TrimmedNonEmptyString.check(Schema.isPattern(/^[a-z][a-z0-9-]{1,39}$/)),
+  /** The entry it is for, when the recipe reads one. */
+  entry: Schema.optional(KinRecordKey),
+  /** Only the recipe's inputs that aren't read from stored rows, such as `month`. */
+  inputs: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  title: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(120))),
+  preview: Schema.optional(Schema.Boolean),
+  /** The same id again returns what that request made. */
+  clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+});
+export type KinDocRenderInput = typeof KinDocRenderInput.Type;
+export const KinDocRenderResult = Schema.Struct({
+  /** Each file filed as a version of its doc; empty for a preview. */
+  documents: Schema.Array(
+    Schema.Struct({
+      recordId: KinRecordId,
+      key: KinRecordKey,
+      title: KinTrimmedText,
+      version: PositiveInt,
+    }),
+  ),
+  number: Schema.NullOr(TrimmedNonEmptyString),
+  draft: Schema.Boolean,
+  sensitive: Schema.Boolean,
+  preview: Schema.NullOr(
+    Schema.Array(
+      Schema.Struct({
+        name: TrimmedNonEmptyString,
+        mimeType: TrimmedNonEmptyString,
+        base64: Schema.String,
+      }),
+    ),
+  ),
+});
+export type KinDocRenderResult = typeof KinDocRenderResult.Type;
+
+/** Puts a recipe back as it was before its last change, as a new change: undo it to redo. */
+export const KinRecipeUndoInput = Schema.Struct({
+  orgId: KinOrgId,
+  recipe: TrimmedNonEmptyString.check(Schema.isPattern(/^[a-z][a-z0-9-]{1,39}$/)),
+});
+export type KinRecipeUndoInput = typeof KinRecipeUndoInput.Type;
+export const KinRecipeUndoResult = Schema.Struct({
+  recipe: TrimmedNonEmptyString,
+  commit: TrimmedNonEmptyString,
+  /** True when the change undone made the recipe, so it is gone until undone again. */
+  removed: Schema.Boolean,
+});
+export type KinRecipeUndoResult = typeof KinRecipeUndoResult.Type;
 
 export const KinDocsSubscribeInput = Schema.Struct({ orgId: KinOrgId });
 export type KinDocsSubscribeInput = typeof KinDocsSubscribeInput.Type;
@@ -365,6 +424,8 @@ const KIN_DOCS_WS_METHODS = {
   subscribe: "kin.docs.subscribe",
   search: "kin.search",
   recipes: "kin.docs.recipes",
+  render: "kin.docs.render",
+  undoRecipe: "kin.docs.undoRecipe",
 } as const;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -403,6 +464,16 @@ export const KinDocsRpcs = [
     success: KinRecipesResult,
     error,
   }),
+  Rpc.make(KIN_DOCS_WS_METHODS.render, {
+    payload: KinDocRenderInput,
+    success: KinDocRenderResult,
+    error,
+  }),
+  Rpc.make(KIN_DOCS_WS_METHODS.undoRecipe, {
+    payload: KinRecipeUndoInput,
+    success: KinRecipeUndoResult,
+    error,
+  }),
 ] as const;
 
 export const KIN_DOCS_RPC_SCOPES = {
@@ -415,4 +486,7 @@ export const KIN_DOCS_RPC_SCOPES = {
   [KIN_DOCS_WS_METHODS.subscribe]: AuthOrchestrationReadScope,
   [KIN_DOCS_WS_METHODS.search]: AuthOrchestrationReadScope,
   [KIN_DOCS_WS_METHODS.recipes]: AuthOrchestrationReadScope,
+  // Files a version, as restore does; it starts no agent work.
+  [KIN_DOCS_WS_METHODS.render]: AuthOrchestrationOperateScope,
+  [KIN_DOCS_WS_METHODS.undoRecipe]: AuthOrchestrationOperateScope,
 } as const;

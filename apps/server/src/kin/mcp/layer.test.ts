@@ -333,9 +333,9 @@ it.effect.each([true, false])(
         assert.sameMembers(toolNames, Object.keys(SHARED_TOOLS));
         // Four Work tools joined the lead toolkit with slice 1 of Work (`work/mcp/tools.ts`),
         // `kin_chart` and `kin_visual` after them, nine doc tools with Docs
-        // (`work/mcp/docTools.ts`), five list and money tools with slice 5, and three for
+        // (`work/mcp/docTools.ts`), five list and money tools with slice 5, and four for
         // generated files (`gendocs/mcp.ts`).
-        assert.lengthOf(toolNames, 47);
+        assert.lengthOf(toolNames, 48);
         // A page runs on every reader's device, so a turn others can read never posts one.
         assert.strictEqual(SHARED_TOOLS.kin_visual, "refused");
         assert.isFalse(

@@ -551,14 +551,14 @@ const make = Effect.gen(function* () {
     if (!mayWrite(member, identity._tag === "agent", yield* Clock.currentTimeMillis))
       return yield* notAllowed;
   });
-  /** A generated doc's file is the owner's alone: the person whose agent's job made it. */
+  /** A generated doc's file is the owner's alone: the person whose agent's job made it, or who asked. */
   const docFileReadable = (caller: PersonCaller, attachmentId: string) =>
     Effect.forEach("_tag" in caller ? [caller] : caller, (person) =>
       sql`SELECT 1 FROM kin_doc_versions v
         JOIN kin_doc_jobs j ON j.org_id = v.org_id AND j.worker_id = v.worker_id
-        JOIN kin_agents a ON a.org_id = j.org_id AND a.agent_id = j.agent_id
+        LEFT JOIN kin_agents a ON a.org_id = j.org_id AND a.agent_id = j.agent_id
         WHERE v.org_id = ${person.orgId} AND v.file_attachment_id = ${attachmentId}
-          AND a.owner_person_id = ${person.personId}
+          AND (a.owner_person_id = ${person.personId} OR j.asked_by_person_id = ${person.personId})
         LIMIT 1`.pipe(Effect.map((rows) => rows.length > 0)),
     ).pipe(
       Effect.map((found) => found.some(Boolean)),

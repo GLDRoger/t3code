@@ -2,6 +2,7 @@ import {
   KinAgentId,
   KinChatError,
   type KinOrgId,
+  KinPersonId,
   type KinRecipe,
   KinWorkerId,
 } from "@t3tools/contracts";
@@ -24,7 +25,8 @@ import { STARTER_FILES } from "./starter.ts";
 /**
  * The org's workspace: a git repository on this host holding its recipes, never pushed anywhere.
  * Recipes are read from `main` as git objects, so nothing left in a job's worktree reads as a
- * recipe. Only the server commits: a recipe job's change to its own folder, merged into `main`.
+ * recipe. Only the server commits: a recipe job's change to its own folder, merged into `main`
+ * once its sample renders, an undo of a recipe's last change, and its own starter recipes.
  */
 
 const DEFAULT_BRANCH = "main";
@@ -58,6 +60,22 @@ export type RecipeChange =
   | { readonly _tag: "committed"; readonly commit: string; readonly left: ReadonlyArray<string> }
   | { readonly _tag: "unchanged"; readonly left: ReadonlyArray<string> }
   | { readonly _tag: "refused"; readonly reason: string };
+/** Why a change can't be kept, from rendering its sample; `undefined` when it rendered. */
+export type VerifyChange = (change: {
+  readonly commit: string;
+  readonly recipe: Recipe;
+  readonly sample: string | undefined;
+}) => Effect.Effect<string | undefined>;
+export type ChangedBy =
+  | { readonly _tag: "agent"; readonly agentId: KinAgentId }
+  | { readonly _tag: "owner"; readonly personId: KinPersonId };
+export type RecipeUndo =
+  | { readonly _tag: "undone"; readonly commit: string; readonly removed: boolean }
+  | { readonly _tag: "refused"; readonly reason: string };
+const STARTER_RECIPES = Object.keys(STARTER_FILES).flatMap((file) => {
+  const name = /^recipes\/([^/]+)\/RECIPE\.md$/.exec(file)?.[1];
+  return name === undefined ? [] : [name];
+});
 
 const isChatError = Schema.is(KinChatError);
 const unavailable = (message = "Kin couldn't open the company's recipes on this host.") =>
@@ -70,27 +88,44 @@ export class KinWorkspace extends Context.Service<
     readonly root: (orgId: KinOrgId) => Effect.Effect<string, KinChatError>;
     /** Every readable recipe on `main`; a broken one is left out and logged. */
     readonly recipes: (orgId: KinOrgId) => Effect.Effect<ReadonlyArray<StoredRecipe>, KinChatError>;
-    /** A recipe as it was at `commit`; `undefined` when it wasn't there or doesn't read. */
-    readonly recipeAt: (
-      orgId: KinOrgId,
-      name: string,
-      commit: string,
-    ) => Effect.Effect<Recipe | undefined, KinChatError>;
     /** A fresh worktree for the job, holding `files` as Kin wrote them. */
     readonly prepare: (
       orgId: KinOrgId,
       workerId: KinWorkerId,
       files: Readonly<Record<string, string>>,
     ) => Effect.Effect<Prepared, KinChatError>;
-    /** The job's change to `recipes/<recipe>/`, committed by Kin and merged into `main`. */
+    /**
+     * The recipe's folder at `commit` written into `target`, regular files only: a link, a
+     * submodule or an oversize recipe is refused, so nothing in the copy reaches outside it.
+     */
+    readonly checkoutRecipe: (
+      orgId: KinOrgId,
+      name: string,
+      commit: string,
+      target: string,
+    ) => Effect.Effect<
+      { readonly _tag: "copied" } | { readonly _tag: "refused"; readonly reason: string },
+      KinChatError
+    >;
+    /**
+     * The job's change to `recipes/<recipe>/`, committed by Kin and merged into `main` only once
+     * `verify` rendered it from its sample.
+     */
     readonly applyRecipeChange: (
       orgId: KinOrgId,
       input: {
         readonly workerId: KinWorkerId;
         readonly recipe: string;
         readonly agentId: KinAgentId;
+        readonly verify: VerifyChange;
       },
     ) => Effect.Effect<RecipeChange>;
+    /** Puts the recipe back as it was before its last change, as a new commit: itself undoable. */
+    readonly undoRecipe: (
+      orgId: KinOrgId,
+      name: string,
+      by: ChangedBy,
+    ) => Effect.Effect<RecipeUndo, KinChatError>;
     /** Removes the job's worktree and branch, with the inputs it held. */
     readonly discard: (orgId: KinOrgId, workerId: KinWorkerId) => Effect.Effect<void>;
   }
@@ -111,7 +146,11 @@ export const layer = Layer.effect(
     const git = (
       cwd: string,
       args: ReadonlyArray<string>,
-      options: { readonly gitDir?: string; readonly raw?: boolean } = {},
+      options: {
+        readonly gitDir?: string;
+        readonly raw?: boolean;
+        readonly env?: Readonly<Record<string, string>>;
+      } = {},
     ) =>
       vcs
         .run({
@@ -140,6 +179,7 @@ export const layer = Layer.effect(
             GIT_TERMINAL_PROMPT: "0",
             GIT_NO_REPLACE_OBJECTS: "1",
             GIT_CONFIG_COUNT: "0",
+            ...options.env,
           },
           timeoutMs: 120_000,
         })
@@ -155,6 +195,47 @@ export const layer = Layer.effect(
     const branchOf = jobBranch;
     const gitDirOf = (root: string, workerId: KinWorkerId) =>
       path.join(root, ".git", "worktrees", workerId);
+
+    const current = new Set<string>();
+    /**
+     * A starter recipe no one has changed is replaced by today's starter: workspaces made before
+     * Kin rendered documents itself held script recipes a worker ran.
+     */
+    const upgradeStarters = Effect.fn("KinWorkspace.upgradeStarters")(function* (root: string) {
+      let changed = false;
+      for (const name of STARTER_RECIPES) {
+        const last = yield* lastChange(root, name);
+        const markdown = yield* git(
+          root,
+          ["cat-file", "blob", `${DEFAULT_BRANCH}:recipes/${name}/RECIPE.md`],
+          { raw: true },
+        ).pipe(Effect.orElseSucceed(() => ""));
+        if (
+          last.changed._tag !== "starter" ||
+          markdown === STARTER_FILES[`recipes/${name}/RECIPE.md`]
+        )
+          continue;
+        yield* git(root, ["rm", "-r", "-q", "--ignore-unmatch", "--", `recipes/${name}`]);
+        for (const [file, text] of Object.entries(STARTER_FILES))
+          if (file.startsWith(`recipes/${name}/`)) {
+            yield* fs.makeDirectory(path.dirname(path.join(root, file)), { recursive: true });
+            yield* fs.writeFileString(path.join(root, file), text);
+          }
+        yield* git(root, ["add", "--all", "--", `recipes/${name}`]);
+        changed = true;
+      }
+      if (!changed) return;
+      yield* fs.writeFileString(path.join(root, "README.md"), STARTER_FILES["README.md"]!);
+      yield* git(root, ["add", "--", "README.md"]);
+      yield* git(root, [
+        ...COMMITTER,
+        "commit",
+        "-q",
+        "--no-verify",
+        "-m",
+        "Kin's starter recipes, rendered by Kin",
+      ]);
+    });
 
     const ensureLocked = Effect.fn("KinWorkspace.ensure")(function* (orgId: KinOrgId) {
       const root = yield* rootOf(orgId);
@@ -176,7 +257,8 @@ export const layer = Layer.effect(
           "-m",
           "Kin's starter recipes",
         ]);
-      }
+      } else if (!current.has(root)) yield* upgradeStarters(root);
+      current.add(root);
       return root;
     });
 
@@ -195,25 +277,27 @@ export const layer = Layer.effect(
       const out = yield* git(root, [
         "log",
         "-1",
-        "--format=%H%x00%ct%x00%(trailers:key=Kin-Agent,valueonly)%x00%(trailers:key=Kin-Worker,valueonly)",
+        "--format=%H%x00%ct%x00%(trailers:key=Kin-Agent,valueonly)%x00%(trailers:key=Kin-Worker,valueonly)%x00%(trailers:key=Kin-Person,valueonly)",
         DEFAULT_BRANCH,
         "--",
         `recipes/${name}`,
       ]);
-      const [commit = "", at = "", agent = "", worker = ""] = out
+      const [commit = "", at = "", agent = "", worker = "", person = ""] = out
         .split("\0")
         .map((part) => part.trim());
       return {
         commit,
         changedAt: at === "" ? null : Number.parseInt(at, 10) * 1000,
         changed:
-          agent === ""
-            ? ({ _tag: "starter" } as const)
-            : ({
-                _tag: "agent",
-                agentId: KinAgentId.make(agent),
-                workerId: worker === "" ? null : KinWorkerId.make(worker),
-              } as const),
+          person !== ""
+            ? ({ _tag: "owner", personId: KinPersonId.make(person) } as const)
+            : agent === ""
+              ? ({ _tag: "starter" } as const)
+              : ({
+                  _tag: "agent",
+                  agentId: KinAgentId.make(agent),
+                  workerId: worker === "" ? null : KinWorkerId.make(worker),
+                } as const),
       };
     });
 
@@ -259,15 +343,6 @@ export const layer = Layer.effect(
       }
       return found;
     }, failed("read the recipes"));
-
-    const recipeAt = Effect.fn("KinWorkspace.recipeAt")(function* (
-      orgId: KinOrgId,
-      name: string,
-      commit: string,
-    ) {
-      if (!recipeName.test(name) || !/^[0-9a-f]{40}$/.test(commit)) return undefined;
-      return yield* readRecipe(yield* lock.withPermits(1)(ensureLocked(orgId)), commit, name);
-    }, failed("read a recipe"));
 
     const discardLocked = Effect.fn("KinWorkspace.discardLocked")(function* (
       root: string,
@@ -324,6 +399,7 @@ export const layer = Layer.effect(
           readonly workerId: KinWorkerId;
           readonly recipe: string;
           readonly agentId: KinAgentId;
+          readonly verify: VerifyChange;
         },
       ) {
         const refused = (reason: string) => ({ _tag: "refused", reason }) as const;
@@ -424,6 +500,10 @@ export const layer = Layer.effect(
         if ("reason" in parsed) return refused(`its RECIPE.md doesn't read: ${parsed.reason}`);
         if (parsed.name !== input.recipe)
           return refused(`RECIPE.md names ${parsed.name}, not ${input.recipe}`);
+        const sample = yield* git(worktree, ["show", `:${folder}/sample.json`], {
+          ...at,
+          raw: true,
+        }).pipe(Effect.option);
         yield* git(
           worktree,
           [
@@ -439,6 +519,15 @@ export const layer = Layer.effect(
           at,
         );
         const commit = yield* git(root, ["rev-parse", "--verify", branch]);
+        const unrendered = yield* input.verify({
+          commit,
+          recipe: parsed,
+          sample: sample._tag === "Some" ? sample.value : undefined,
+        });
+        if (unrendered !== undefined)
+          return refused(
+            `its sample didn't render, so Kin kept the recipe as it was: ${unrendered}`,
+          );
         // Fast-forward when main didn't move, else a merge commit, else nothing on a conflict.
         const merged = yield* git(root, ["merge", "-q", "--ff-only", branch]).pipe(
           Effect.as(true),
@@ -462,6 +551,92 @@ export const layer = Layer.effect(
       ),
     );
 
+    const checkoutRecipe = Effect.fn("KinWorkspace.checkoutRecipe")(
+      function* (orgId: KinOrgId, name: string, commit: string, target: string) {
+        const refused = (reason: string) => ({ _tag: "refused", reason }) as const;
+        if (!recipeName.test(name) || !/^[0-9a-f]{40}$/.test(commit))
+          return refused("Kin can't name that recipe");
+        const root = yield* rootOf(orgId);
+        const folder = `recipes/${name}`;
+        const listed = (yield* git(root, ["ls-tree", "-r", "-l", "-z", commit, "--", folder], {
+          raw: true,
+        }))
+          .split("\0")
+          .filter((line) => line.length > 0);
+        if (listed.length === 0) return refused(`there is no ${name} recipe at that commit`);
+        if (listed.length > MAX_RECIPE_FILES)
+          return refused(`a recipe holds at most ${MAX_RECIPE_FILES} files`);
+        let bytes = 0;
+        for (const line of listed) {
+          const [meta = "", file = ""] = line.split("\t");
+          const [mode = "", , , size = ""] = meta.split(/ +/);
+          if (mode !== "100644" && mode !== "100755")
+            return refused(`${file} is a link or a submodule, which a recipe can't hold`);
+          bytes += Number.parseInt(size, 10);
+        }
+        if (bytes > MAX_RECIPE_BYTES) return refused("the recipe is over 20 MB");
+        // A private index, so the workspace's own is never touched.
+        const env = { GIT_INDEX_FILE: path.join(path.dirname(target), ".kin-index") };
+        yield* git(root, ["read-tree", `${commit}:${folder}`], { env });
+        yield* git(root, ["checkout-index", "-a", "-f", `--prefix=${target}/`], { env });
+        yield* fs.remove(env.GIT_INDEX_FILE, { force: true });
+        // What git wrote, looked at again: regular files and folders only.
+        for (const entry of yield* fs.readDirectory(target, { recursive: true })) {
+          const linked = yield* fs.readLink(path.join(target, entry)).pipe(
+            Effect.as(true),
+            Effect.orElseSucceed(() => false),
+          );
+          if (linked) return refused(`${entry} isn't a plain file`);
+          const info = yield* fs.stat(path.join(target, entry));
+          if (info.type !== "File" && info.type !== "Directory")
+            return refused(`${entry} isn't a plain file`);
+        }
+        return { _tag: "copied" } as const;
+      },
+      failed("copy a recipe", "Kin couldn't read the recipe to render it."),
+    );
+
+    const undoRecipe = Effect.fn("KinWorkspace.undoRecipe")(
+      function* (orgId: KinOrgId, name: string, by: ChangedBy) {
+        const refused = (reason: string) => ({ _tag: "refused", reason }) as const;
+        if (!recipeName.test(name)) return refused("Kin can't name that recipe");
+        const root = yield* ensureLocked(orgId);
+        const folder = `recipes/${name}`;
+        const last = yield* lastChange(root, name);
+        if (last.commit === "") return refused(`there is no ${name} recipe`);
+        const parent = yield* git(root, [
+          "rev-parse",
+          "--verify",
+          "--quiet",
+          `${last.commit}^`,
+        ]).pipe(Effect.orElseSucceed(() => ""));
+        if (parent === "")
+          return refused(`the ${name} recipe is as Kin started it; there is nothing to undo`);
+        const before = yield* git(root, ["ls-tree", "-d", "--name-only", parent, "--", folder]);
+        yield* git(root, ["rm", "-r", "-q", "--ignore-unmatch", "--", folder]);
+        if (before !== "") yield* git(root, ["checkout", parent, "--", folder]);
+        const staged = yield* git(root, ["diff", "--cached", "--name-only"]);
+        if (staged === "") return refused(`the ${name} recipe's last change left it as it was`);
+        yield* git(root, [
+          ...COMMITTER,
+          "commit",
+          "-q",
+          "--no-verify",
+          "-m",
+          `Undo the last change to the ${name} recipe`,
+          "-m",
+          by._tag === "agent" ? `Kin-Agent: ${by.agentId}` : `Kin-Person: ${by.personId}`,
+        ]);
+        return {
+          _tag: "undone",
+          commit: yield* git(root, ["rev-parse", "--verify", DEFAULT_BRANCH]),
+          removed: before === "",
+        } as const;
+      },
+      lock.withPermits(1),
+      failed("undo a recipe change"),
+    );
+
     const rootFor = Effect.fn("KinWorkspace.root")(
       function* (orgId: KinOrgId) {
         return yield* ensureLocked(orgId);
@@ -473,9 +648,10 @@ export const layer = Layer.effect(
     return KinWorkspace.of({
       root: rootFor,
       recipes,
-      recipeAt,
       prepare,
+      checkoutRecipe,
       applyRecipeChange,
+      undoRecipe,
       discard,
     });
   }),

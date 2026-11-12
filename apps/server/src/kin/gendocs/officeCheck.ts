@@ -1,27 +1,32 @@
-// @effect-diagnostics nodeBuiltinImport:off -- a bounded, in-memory inflate of a few small parts; Effect has no zlib.
+// @effect-diagnostics nodeBuiltinImport:off -- a bounded, streaming inflate of each part; Effect has no zlib.
 import * as NodeZlib from "node:zlib";
 
 import { SaxesParser, type SaxesTagNS } from "saxes";
 
 import { svgProblem } from "./svgCheck.ts";
 
-/**
- * Whether an XLSX, DOCX or PPTX is only a document. Its ZIP is read here, under caps, and its XML
- * parts are inflated and parsed in memory. Macros, embedded objects and packages, ActiveX,
- * templates, data connections, fields and formulas that fetch or run, and any outside link but a
- * web or email hyperlink are refused. Hyperlinks stay: they open only when the reader clicks one.
- */
+// Whether an XLSX, DOCX or PPTX is only a document: its ZIP read under caps, each XML part inflated
+// a chunk at a time into an event parser. Macros, embedded objects, ActiveX, templates, data
+// connections, fields and formulas that fetch or run, and outside links but web or email
+// hyperlinks are refused. Hyperlinks stay: they open only when the reader clicks one.
 
 export type OfficeKind = "xlsx" | "docx" | "pptx";
 
-const OFFICE_CAPS = {
+export const OFFICE_CAPS = {
   entries: 2_000,
   entryBytes: 256 * 1024 * 1024,
   totalBytes: 1024 * 1024 * 1024,
-  partBytes: 4 * 1024 * 1024,
-  inflatedBytes: 16 * 1024 * 1024,
+  /** XML Kin parses: per part, and across the file. A part streams, so neither is held whole. */
+  partBytes: 256 * 1024 * 1024,
+  inflatedBytes: 512 * 1024 * 1024,
+  /** An SVG image inside is checked as one text, so it stays small. */
+  svgBytes: 16 * 1024 * 1024,
+  /** Past this, a part unpacks to far more than real XML does: a ZIP bomb, not a sheet. */
+  ratio: 500,
   commentBytes: 1024,
-} as const;
+};
+export type OfficeCaps = typeof OFFICE_CAPS;
+const CHUNK = 64 * 1024;
 
 const MAIN: Record<OfficeKind, { readonly part: string; readonly type: string }> = {
   xlsx: {
@@ -229,27 +234,64 @@ const directory = (bytes: Buffer) => {
   return entries;
 };
 
-/** One part's bytes, inflated in memory under the caps and checked against its CRC. */
-const inflate = (bytes: Buffer, entry: Entry, budget: number) => {
-  if (entry.size > OFFICE_CAPS.partBytes)
-    return refuse(`has ${entry.name}, which is too large for Kin to check`);
-  if (entry.size > budget) return refuse("has more XML than Kin checks in one file");
-  const head = entry.offset;
-  const data = head + 30 + bytes.readUInt16LE(head + 26) + bytes.readUInt16LE(head + 28);
-  const packed = bytes.subarray(data, data + entry.packed);
-  let out: Buffer;
-  try {
-    out =
-      entry.method === 0
-        ? Buffer.from(packed)
-        : NodeZlib.inflateRawSync(packed, { maxOutputLength: entry.size + 1 });
-  } catch {
-    return refuse(`${entry.name} doesn't unpack`);
-  }
-  if (out.length !== entry.size || NodeZlib.crc32(out) !== entry.crc)
-    return refuse(`${entry.name} doesn't match its ZIP directory`);
-  return out.toString("utf8");
-};
+/** One part's bytes, inflated a chunk at a time into `sink`, its size and CRC checked as they come. */
+const streamPart = (bytes: Buffer, entry: Entry, sink: (text: string) => void) =>
+  new Promise<void>((resolve, reject) => {
+    const head = entry.offset;
+    const data = head + 30 + bytes.readUInt16LE(head + 26) + bytes.readUInt16LE(head + 28);
+    const packed = bytes.subarray(data, data + entry.packed);
+    const mismatch = `${entry.name} doesn't match its ZIP directory`;
+    const decoder = new TextDecoder("utf-8");
+    let size = 0;
+    let crc = 0;
+    let done = false;
+    const fail = (error: unknown) => {
+      if (done) return;
+      done = true;
+      inflater?.destroy();
+      reject(error instanceof Refusal ? error : new Refusal(`${entry.name} doesn't unpack`));
+    };
+    const take = (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > entry.size) refuse(mismatch);
+      crc = NodeZlib.crc32(chunk, crc);
+      sink(decoder.decode(chunk, { stream: true }));
+    };
+    const finish = () => {
+      sink(decoder.decode());
+      if (size !== entry.size || crc !== entry.crc) refuse(mismatch);
+      done = true;
+      resolve();
+    };
+    const inflater =
+      entry.method === 0 ? undefined : NodeZlib.createInflateRaw({ chunkSize: CHUNK });
+    try {
+      if (inflater === undefined) {
+        for (let at = 0; at < packed.length; at += CHUNK) take(packed.subarray(at, at + CHUNK));
+        return finish();
+      }
+    } catch (error) {
+      return fail(error);
+    }
+    inflater.on("data", (chunk: Buffer) => {
+      if (done) return;
+      try {
+        take(chunk);
+      } catch (error) {
+        fail(error);
+      }
+    });
+    inflater.on("error", fail);
+    inflater.on("end", () => {
+      if (done) return;
+      try {
+        finish();
+      } catch (error) {
+        fail(error);
+      }
+    });
+    inflater.end(packed);
+  });
 
 type Handlers = {
   readonly open: (tag: SaxesTagNS) => void;
@@ -257,8 +299,11 @@ type Handlers = {
   readonly close?: (tag: SaxesTagNS) => void;
 };
 
-/** Parses one part namespace-aware; a handler's refusal stops it there. */
-const parse = (xml: string, part: string, handlers: Handlers) => {
+/** Reads a part into a parser's handlers; the first refusal stops it there. */
+type Source = (handlers: Handlers) => Promise<void>;
+
+/** Parses one part namespace-aware, as its text arrives; a handler's refusal stops it there. */
+const parser = (part: string, handlers: Handlers) => {
   const parser = new SaxesParser({ xmlns: true, position: false });
   const broken = () => refuse(`${part} isn't well-formed XML`);
   parser.on("doctype", broken);
@@ -270,12 +315,18 @@ const parse = (xml: string, part: string, handlers: Handlers) => {
     parser.on("cdata", text);
   }
   if (close !== undefined) parser.on("closetag", close);
-  try {
-    parser.write(xml).close();
-  } catch (error) {
-    if (error instanceof Refusal) throw error;
-    broken();
-  }
+  const guarded = (step: () => void) => {
+    try {
+      step();
+    } catch (error) {
+      if (error instanceof Refusal) throw error;
+      broken();
+    }
+  };
+  return {
+    write: (text: string) => guarded(() => parser.write(text)),
+    close: () => guarded(() => parser.close()),
+  };
 };
 
 /** An attribute with no prefix: the only one Office reads in package parts. */
@@ -295,10 +346,10 @@ const bodyAttributes = (tag: SaxesTagNS, part: string) => {
 };
 
 /** Each part's content type, from `[Content_Types].xml`. */
-const contentTypes = (xml: string, part: string) => {
+const contentTypes = async (read: Source, part: string) => {
   const defaults = new Map<string, string>();
   const overrides = new Map<string, string>();
-  parse(xml, part, {
+  await read({
     open: (tag) => {
       if (tag.uri !== CONTENT_TYPES)
         refuse(`has <${tag.name}>, which Kin doesn't read there (in ${part})`);
@@ -344,8 +395,8 @@ const linkProblem = (target: string): string | undefined => {
   }
 };
 
-const relationshipsProblem = (xml: string, part: string) =>
-  parse(xml, part, {
+const relationshipsProblem = (read: Source, part: string) =>
+  read({
     open: (tag) => {
       if (tag.uri !== RELATIONSHIPS)
         refuse(`has <${tag.name}>, which Kin doesn't read there (in ${part})`);
@@ -425,7 +476,7 @@ const formulaProblem = (formula: string): string | undefined => {
 };
 
 /** Refuses fields, formulas, actions and links in one XML part that fetch or run something. */
-const bodyProblem = (kind: OfficeKind, xml: string, part: string) => {
+const bodyProblem = async (kind: OfficeKind, read: Source, part: string) => {
   // Word splits a field's instruction over runs; nested fields sit inside it. Instruction text
   // outside a field's instruction is checked word by word.
   const fields: Array<{ text: string; checked: boolean }> = [];
@@ -440,7 +491,7 @@ const bodyProblem = (kind: OfficeKind, xml: string, part: string) => {
     field.checked = true;
     found(fieldProblem(field.text));
   };
-  parse(xml, part, {
+  await read({
     open: (tag) => {
       const attributes = bodyAttributes(tag, part);
       switch (tag.local) {
@@ -508,7 +559,11 @@ const XML_TYPE = /[/+]xml$/i;
 const SVG_TYPE = /^image\/svg\+xml$/i;
 
 /** Why these bytes aren't a plain `kind` document, or `undefined` when they are. */
-export const officeProblem = (kind: OfficeKind, input: Uint8Array): string | undefined => {
+export const officeProblem = async (
+  kind: OfficeKind,
+  input: Uint8Array,
+  caps: OfficeCaps = OFFICE_CAPS,
+): Promise<string | undefined> => {
   const bytes = Buffer.from(input.buffer, input.byteOffset, input.byteLength);
   try {
     const entries = directory(bytes);
@@ -520,26 +575,40 @@ export const officeProblem = (kind: OfficeKind, input: Uint8Array): string | und
       return refuse(`carries ${active.name}, which runs, embeds or fetches content`);
     const types = byName.get("[Content_Types].xml");
     if (types === undefined) return refuse("no [Content_Types].xml");
-    let budget: number = OFFICE_CAPS.inflatedBytes;
-    const read = (entry: Entry) => {
-      const text = inflate(bytes, entry, budget);
+    let budget = caps.inflatedBytes;
+    const admit = (entry: Entry, cap: number) => {
+      if (entry.size > cap) refuse(`has ${entry.name}, which is too large for Kin to check`);
+      if (entry.size > 1024 * 1024 && entry.size > Math.max(entry.packed, 1) * caps.ratio)
+        refuse(`has ${entry.name}, which unpacks to far more than any real document does`);
+      if (entry.size > budget) refuse("has more XML than Kin checks in one file");
       budget -= entry.size;
-      return text;
     };
-    const typeOf = contentTypes(read(types), types.name);
+    const source =
+      (entry: Entry): Source =>
+      async (handlers) => {
+        admit(entry, caps.partBytes);
+        const xml = parser(entry.name, handlers);
+        await streamPart(bytes, entry, xml.write);
+        xml.close();
+      };
+    const typeOf = await contentTypes(source(types), types.name);
     if (typeOf(main.part) !== main.type)
       return refuse(`its ${main.part} isn't a plain ${kind.toUpperCase()}`);
     const rest = entries.filter((entry) => entry !== types && !entry.name.endsWith("/"));
     for (const entry of rest)
-      if (entry.name.toLowerCase().endsWith(".rels")) relationshipsProblem(read(entry), entry.name);
+      if (entry.name.toLowerCase().endsWith(".rels"))
+        await relationshipsProblem(source(entry), entry.name);
     for (const entry of rest) {
       if (entry.name.toLowerCase().endsWith(".rels")) continue;
       const type = typeOf(entry.name) ?? "";
       if (SVG_TYPE.test(type) || entry.name.toLowerCase().endsWith(".svg")) {
-        const problem = svgProblem(read(entry));
+        admit(entry, caps.svgBytes);
+        const chunks: Array<string> = [];
+        await streamPart(bytes, entry, (text) => chunks.push(text));
+        const problem = svgProblem(chunks.join(""));
         if (problem !== undefined) refuse(`has ${entry.name}, an SVG with ${problem}`);
       } else if (XML_TYPE.test(type) || entry.name.toLowerCase().endsWith(".xml"))
-        bodyProblem(kind, read(entry), entry.name);
+        await bodyProblem(kind, source(entry), entry.name);
     }
     return undefined;
   } catch (error) {

@@ -33,6 +33,7 @@ import OwnerAnswerCards from "./migrations/K071_OwnerAnswerCards.ts";
 import GeneratedDocuments from "./migrations/K072_GeneratedDocuments.ts";
 import KeyPushes from "./migrations/K073_KeyPushes.ts";
 import DocJobCleanup from "./migrations/K074_DocJobCleanup.ts";
+import ServerRenderedDocuments from "./migrations/K075_ServerRenderedDocuments.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -146,6 +147,7 @@ const loader = Migrator.fromRecord({
   "72_GeneratedDocuments": GeneratedDocuments,
   "73_KeyPushes": KeyPushes,
   "74_DocJobCleanup": DocJobCleanup,
+  "75_ServerRenderedDocuments": ServerRenderedDocuments,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

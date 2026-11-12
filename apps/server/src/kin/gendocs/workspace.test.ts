@@ -1,7 +1,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { KinAgentId, KinOrgId, KinWorkerId, type VcsError } from "@t3tools/contracts";
+import { KinAgentId, KinOrgId, KinPersonId, KinWorkerId, type VcsError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -83,6 +83,7 @@ it.layer(layer)("KinWorkspace", (it) => {
         workerId,
         recipe: "quote",
         agentId,
+        verify: () => Effect.undefined,
       });
       assert.strictEqual(change._tag === "refused" ? change.reason : change._tag, "committed");
       assert.deepStrictEqual(change._tag === "committed" ? [...change.left].sort() : [], [
@@ -121,6 +122,7 @@ it.layer(layer)("KinWorkspace", (it) => {
             workerId,
             recipe: "report",
             agentId,
+            verify: () => Effect.undefined,
           });
           yield* workspace.discard(orgId, workerId);
           return change._tag === "refused" ? change.reason : change._tag;
@@ -182,5 +184,92 @@ it.layer(layer)("KinWorkspace", (it) => {
         assert.strictEqual(yield* grow("first"), "committed");
         assert.match(yield* grow("second"), /recipe holds at most 20 MB/);
       }),
+  );
+
+  it.effect("keeps a change only once its sample renders, and undoes and redoes it", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const workspace = yield* Workspace.KinWorkspace;
+      const personId = KinPersonId.make("owner-1");
+      const samples: Array<string | undefined> = [];
+      const change = (n: number, rendered: string | undefined) =>
+        Effect.gen(function* () {
+          const workerId = KinWorkerId.make(`wk-gate-${n}`);
+          const job = yield* workspace.prepare(orgId, workerId, {});
+          const md = `${job.worktree}/recipes/invoice/RECIPE.md`;
+          yield* fs.writeFileString(
+            md,
+            (yield* fs.readFileString(md)).replace(
+              /^description: .*$/m,
+              `description: Change ${n}.`,
+            ),
+          );
+          const result = yield* workspace.applyRecipeChange(orgId, {
+            workerId,
+            recipe: "invoice",
+            agentId,
+            verify: ({ sample }) =>
+              Effect.sync(() => samples.push(sample)).pipe(Effect.as(rendered)),
+          });
+          yield* workspace.discard(orgId, workerId);
+          return result;
+        });
+      const described = (name: string) =>
+        Effect.map(workspace.recipes(orgId), (all) => all.find((one) => one.name === name));
+      const original = (yield* described("invoice"))!.description;
+      const refused = yield* change(1, "invoice.pdf: template.typ:4:1: error: unknown variable");
+      assert.match(
+        refused._tag === "refused" ? refused.reason : refused._tag,
+        /^its sample didn't render, so Kin kept the recipe as it was: .*unknown variable/,
+      );
+      assert.strictEqual(samples[0], STARTER_FILES["recipes/invoice/sample.json"]);
+      assert.strictEqual((yield* described("invoice"))!.description, original);
+      assert.strictEqual((yield* change(2, undefined))._tag, "committed");
+      assert.strictEqual((yield* described("invoice"))!.description, "Change 2.");
+      // Undo puts it back as a new change by whoever undid it; undoing that redoes it.
+      const undone = yield* workspace.undoRecipe(orgId, "invoice", { _tag: "owner", personId });
+      assert.deepStrictEqual(undone._tag === "undone" ? undone.removed : undone, false);
+      assert.deepStrictEqual(
+        [(yield* described("invoice"))!.description, (yield* described("invoice"))!.changed],
+        [original, { _tag: "owner", personId }],
+      );
+      yield* workspace.undoRecipe(orgId, "invoice", { _tag: "agent", agentId });
+      assert.strictEqual((yield* described("invoice"))!.description, "Change 2.");
+      // Undoing the change that made a recipe removes it, and undoing that brings it back.
+      const removed = yield* workspace.undoRecipe(orgId, "quote", { _tag: "owner", personId });
+      assert.deepStrictEqual(removed._tag === "undone" ? removed.removed : removed, true);
+      assert.isUndefined(yield* described("quote"));
+      yield* workspace.undoRecipe(orgId, "quote", { _tag: "owner", personId });
+      assert.isDefined(yield* described("quote"));
+      const starter = yield* workspace.undoRecipe(orgId, "accountant-pack", {
+        _tag: "owner",
+        personId,
+      });
+      assert.match(starter._tag === "refused" ? starter.reason : starter._tag, /nothing to undo/);
+    }),
+  );
+
+  it.effect("replaces a starter recipe nobody changed with the one Kin renders now", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const older = KinOrgId.make("org-older");
+      const root = yield* (yield* Workspace.KinWorkspace).root(older);
+      // As an earlier Kin wrote it: a script recipe, committed without a trailer.
+      yield* fs.writeFileString(
+        `${root}/recipes/report/RECIPE.md`,
+        "---\nname: report\ntitle: Report\ndescription: Old.\noutputs: [report.pdf]\n---\nOld.\n",
+      );
+      yield* fs.writeFileString(`${root}/recipes/report/build.mjs`, "export {};\n");
+      yield* git(root, "add", "--all");
+      yield* git(root, "commit", "-qm", "Kin's starter recipes");
+      const upgraded = yield* Effect.gen(function* () {
+        const fresh = yield* Workspace.KinWorkspace;
+        return (yield* fresh.recipes(older)).find((one) => one.name === "report");
+      }).pipe(Effect.provide(Layer.fresh(Workspace.layer)));
+      assert.deepStrictEqual(
+        [upgraded?.description, yield* fs.exists(`${root}/recipes/report/build.mjs`)],
+        [/^description: (.*)$/m.exec(STARTER_FILES["recipes/report/RECIPE.md"]!)![1], false],
+      );
+    }),
   );
 });
