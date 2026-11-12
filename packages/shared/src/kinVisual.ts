@@ -95,6 +95,7 @@ export function kinVisualContentSecurityPolicy(
       "script-src 'unsafe-inline'",
       "style-src 'unsafe-inline'",
       "frame-src 'self'",
+      "worker-src 'none'",
       "base-uri 'none'",
       "form-action 'none'",
       SANDBOX,
@@ -113,11 +114,15 @@ export function kinVisualContentSecurityPolicy(
     `font-src ${sources("data:", "'self'")}`,
     `media-src ${sources("data:", "blob:", "'self'")}`,
     `connect-src ${allowed.length === 0 ? "'none'" : allowed.join(" ")}`,
+    // No library needs a worker, and a blob or data worker would be a second realm.
+    "worker-src 'none'",
+    "child-src 'none'",
     "frame-src 'none'",
     "object-src 'none'",
+    "manifest-src 'none'",
     "base-uri 'none'",
     "form-action 'none'",
-    // Browsers do not enforce this yet, so a page can still reach a STUN server: docs/kin/specs/chat.md.
+    // Chromium ignores this; KIN_VISUAL_PRELUDE is what removes WebRTC. Kept for engines that honour it.
     "webrtc 'block'",
     SANDBOX,
   ].join("; ");
@@ -174,6 +179,35 @@ const KIN_CSS =
 const KIN_SCRIPT = `(function(){var root=document.documentElement,subs=[],sheet=document.getElementById("t3-theme");function token(n){return getComputedStyle(root).getPropertyValue(n).trim();}function dark(){return getComputedStyle(root).colorScheme!=="light";}function still(){return window.matchMedia("(prefers-reduced-motion: reduce)").matches;}var kin=window.kin={token:token,dark:dark,reducedMotion:still,colors:function(){return [1,2,3,4,5,6].map(function(i){return token("--chart-"+i);});},onTheme:function(fn){subs.push(fn);},echarts:function(el,option){if(typeof el==="string")el=document.querySelector(el);var chart;function draw(){if(chart)chart.dispose();chart=window.echarts.init(el,dark()?"dark":null);var o=typeof option==="function"?option(kin):option,base={backgroundColor:"transparent",color:kin.colors(),textStyle:{fontFamily:token("--font-sans")},animation:!still()};for(var k in o)base[k]=o[k];chart.setOption(base);}draw();subs.push(draw);if(window.ResizeObserver)new ResizeObserver(function(){chart.resize();}).observe(el);return {get chart(){return chart;},redraw:draw};},mermaid:function(selector){var nodes=[].slice.call(document.querySelectorAll(selector||".mermaid")),source=nodes.map(function(n){return n.textContent;});function draw(){nodes.forEach(function(n,i){n.removeAttribute("data-processed");n.textContent=source[i];});window.mermaid.initialize({startOnLoad:false,securityLevel:"strict",theme:"base",themeVariables:{darkMode:dark(),background:token("--card"),primaryColor:token("--secondary"),primaryTextColor:token("--foreground"),primaryBorderColor:token("--border"),lineColor:token("--muted-foreground"),secondaryColor:token("--muted"),tertiaryColor:token("--card"),textColor:token("--foreground"),fontFamily:token("--font-sans"),fontSize:"14px"}});return window.mermaid.run({nodes:nodes});}subs.push(draw);return draw();}};if(sheet&&window.MutationObserver)new MutationObserver(function(){subs.slice().forEach(function(fn){try{fn();}catch(e){}});}).observe(sheet,{childList:true,characterData:true,subtree:true});document.addEventListener("securitypolicyviolation",function(e){var u;if(!/^(?:img|font|style|media|connect)-src/.test(e.effectiveDirective||""))return;try{u=new URL(e.blockedURI);}catch(x){return;}if(/^https?:$/.test(u.protocol)&&window.parent!==window)window.parent.postMessage({jsonrpc:"2.0",method:${JSON.stringify(BLOCKED_METHOD)},params:{host:u.hostname}},"*");});})();`;
 
 const KIN_MARKUP = `<style id="kin-visual">${KIN_CSS}</style><script>${KIN_SCRIPT}</script>`;
+
+const WEBRTC_GLOBALS = [
+  "RTCPeerConnection",
+  "webkitRTCPeerConnection",
+  "mozRTCPeerConnection",
+  "RTCDataChannel",
+  "RTCSessionDescription",
+  "RTCIceCandidate",
+  "RTCRtpSender",
+  "RTCRtpReceiver",
+  "RTCRtpTransceiver",
+  "RTCCertificate",
+  "RTCDtlsTransport",
+  "RTCIceTransport",
+  "RTCSctpTransport",
+  "RTCPeerConnectionIceEvent",
+  "RTCEncodedAudioFrame",
+  "RTCEncodedVideoFrame",
+];
+
+/**
+ * The page's first script. No policy closes WebRTC in Chromium, so it removes every peer-connection
+ * entry point for good, and stops the page from making a second realm that still has them: a
+ * srcdoc or javascript: frame is the only one CSP lets run (a sandboxed parent cannot reach a
+ * blank child's globals, and data, blob, object and worker realms are refused by the policy).
+ */
+const KIN_VISUAL_PRELUDE = `(function(){"use strict";var W=window,G=${JSON.stringify(WEBRTC_GLOBALS)},F=/^(?:IFRAME|FRAME|OBJECT|EMBED|FENCEDFRAME|PORTAL)$/i,U=/^\\s*(?:javascript|vbscript|data|blob):/i;function gone(o,n){try{Object.defineProperty(o,n,{configurable:false,enumerable:false,get:function(){return undefined;},set:function(){}});}catch(e){}}G.forEach(function(n){gone(W,n);});["mediaDevices","getUserMedia","webkitGetUserMedia","mozGetUserMedia"].forEach(function(n){gone(Navigator.prototype,n);});function fix(o,k,v){try{Object.defineProperty(o,k,{configurable:false,writable:false,value:v});}catch(e){}}function framing(el,name,value){var n;if(!F.test(el.tagName))return false;n=(""+name).toLowerCase();return n==="srcdoc"||n==="data"||(n==="src"&&U.test(""+value));}var E=Element.prototype,sa=E.setAttribute,sn=E.setAttributeNS;fix(E,"setAttribute",function(name,value){if(framing(this,name,value))return;return sa.call(this,name,value);});fix(E,"setAttributeNS",function(ns,name,value){if(framing(this,(""+name).replace(/^.*:/,""),value))return;return sn.call(this,ns,name,value);});[W.HTMLIFrameElement,W.HTMLFrameElement].forEach(function(C){var p=C&&C.prototype,s=p&&Object.getOwnPropertyDescriptor(p,"src");if(!p)return;try{Object.defineProperty(p,"srcdoc",{configurable:false,get:function(){return "";},set:function(){}});}catch(e){}if(s&&s.set)try{Object.defineProperty(p,"src",{configurable:false,get:s.get,set:function(v){if(!U.test(""+v))s.set.call(this,v);}});}catch(e){}});function drop(n){var q,i;if(!n||n.nodeType!==1)return;if(F.test(n.tagName)){n.remove();return;}q=n.getElementsByTagName("*");for(i=q.length-1;i>=0;i--)if(F.test(q[i].tagName))q[i].remove();}new MutationObserver(function(m){for(var i=0;i<m.length;i++){if(m[i].type==="attributes")drop(m[i].target);else for(var j=0;j<m[i].addedNodes.length;j++)drop(m[i].addedNodes[j]);}}).observe(document,{childList:true,subtree:true,attributes:true,attributeFilter:["srcdoc","src","data"]});})();`;
+
+const LEADING_DOCTYPE = /^\uFEFF?\s*(?:<!--[\s\S]*?-->\s*)*<!doctype[^>]*>/i;
 const THEME_SHEET = '<style id="t3-theme">';
 
 /** T3's theme bootstrap, then Kin's tokens and helper, ahead of anything the agent wrote. */
@@ -181,9 +215,16 @@ export function kinVisualPageDocument(html: string): string {
   const page = injectHtmlRenderBootstrap(html);
   const sheet = page.indexOf(THEME_SHEET);
   const close = sheet === -1 ? -1 : page.indexOf("</script>", sheet);
-  if (close === -1) return page;
-  const at = close + "</script>".length;
-  return page.slice(0, at) + KIN_MARKUP + page.slice(at);
+  const themed =
+    close === -1
+      ? page
+      : page.slice(0, close + "</script>".length) +
+        KIN_MARKUP +
+        page.slice(close + "</script>".length);
+  // Ahead of every byte the agent wrote, since a script before its <head> would otherwise run first.
+  const doctype = LEADING_DOCTYPE.exec(themed);
+  const at = doctype === null ? 0 : doctype[0].length;
+  return `${themed.slice(0, at)}<script>${KIN_VISUAL_PRELUDE}</script>${themed.slice(at)}`;
 }
 
 const example = (library: KinVisualLibrary, body: string) =>
