@@ -10,6 +10,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinAttachmentStore } from "../chat/KinAttachmentStore.ts";
+import { isOrgOwner } from "../lead/orgState.ts";
 import { ChartInput, chartCardState } from "../widgets/chartCard.ts";
 import { visualPage } from "../widgets/visualCard.ts";
 import type { Writer } from "./KinRecords.ts";
@@ -35,6 +36,19 @@ const said = (what: string) => (error: KinChatError) =>
   invalid(`${what}: ${error.message} Nothing was written.`);
 
 type FileRow = { readonly attachmentId: string; readonly mimeType: string | null };
+
+/**
+ * Whether the writer may read the org's docs, so take a file one shows. Docs are the owner's: the
+ * owner, a lead of the org in an owner-only turn (its tools are admitted only there), or Kin.
+ */
+const readsDocs = Effect.fn("KinDocFiles.readsDocs")(function* (orgId: KinOrgId, writer: Writer) {
+  const sql = yield* SqlClient.SqlClient;
+  if (writer.actor._tag === "system") return true;
+  if (writer.actor._tag === "person") return yield* isOrgOwner(orgId, writer.actor.personId);
+  const agents = yield* sql`SELECT 1 FROM kin_agents
+    WHERE org_id = ${orgId} AND agent_id = ${writer.actor.agentId} LIMIT 1`;
+  return agents.length > 0;
+});
 
 /** Checks a body's blocks and files, and keeps them with the doc. Runs in the version's transaction. */
 export const keepDocFiles = Effect.fn("KinDocFiles.keep")(function* (
@@ -72,12 +86,18 @@ export const keepDocFiles = Effect.fn("KinDocFiles.keep")(function* (
           JOIN kin_messages m ON m.org_id = a.org_id AND m.message_id = a.message_id
           WHERE a.org_id = ${orgId} AND a.chat_id = ${writer.chatId} AND m.status <> 'deleted'
             AND a.attachment_id IN ${sql.in(missing)} ORDER BY a.attachment_id`;
-    const fromDocs =
-      yield* sql<FileRow>`SELECT attachment_id AS "attachmentId", mime_type AS "mimeType"
-        FROM kin_doc_files WHERE org_id = ${orgId} AND attachment_id IN ${sql.in(missing)}
-      UNION SELECT file_attachment_id, json_extract(file_json, '$.mimeType') FROM kin_doc_versions
-        WHERE org_id = ${orgId} AND file_attachment_id IN ${sql.in(missing)}
-      ORDER BY 1`;
+    // Only files a doc of this org shows, and only to a writer who may read that doc.
+    const fromDocs = !(yield* readsDocs(orgId, writer))
+      ? []
+      : yield* sql<FileRow>`SELECT f.attachment_id AS "attachmentId", f.mime_type AS "mimeType"
+          FROM kin_doc_files f JOIN kin_records r ON r.org_id = f.org_id
+            AND r.record_id = f.record_id AND r.register_id = 'docs'
+          WHERE f.org_id = ${orgId} AND f.attachment_id IN ${sql.in(missing)}
+        UNION SELECT v.file_attachment_id, json_extract(v.file_json, '$.mimeType')
+          FROM kin_doc_versions v JOIN kin_records r ON r.org_id = v.org_id
+            AND r.record_id = v.record_id AND r.register_id = 'docs'
+          WHERE v.org_id = ${orgId} AND v.file_attachment_id IN ${sql.in(missing)}
+        ORDER BY 1`;
     for (const id of missing) {
       const found = [...fromChat, ...fromDocs].find((row) => row.attachmentId === id);
       if (found === undefined)

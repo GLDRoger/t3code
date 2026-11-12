@@ -28,6 +28,7 @@ import { tryOpenExternalUrl } from "../../../lib/openExternalUrl";
 import { useAssetUrlState, useRefreshAssetUrl } from "../../../state/assets";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { useHtmlRenderTheme } from "../../threads/HtmlRenderWebView";
+import { KinWorkPrivateMark } from "../components/KinWorkPieces";
 import { kinClient } from "../state/kinClient";
 
 // A link request counts only this soon after the reader touched the visual.
@@ -325,6 +326,7 @@ export const KinVisual = memo(function KinVisual(props: {
         <Text textRole="headline" numberOfLines={2} className="min-w-0 flex-1 text-foreground">
           {title}
         </Text>
+        {props.visual.sensitive === true ? <KinWorkPrivateMark label="" /> : null}
         {showing ? (
           <Pressable accessibilityRole="button" hitSlop={12} onPress={() => setExpanded(true)}>
             <Text textRole="footnote" className="font-t3-medium text-primary">

@@ -54,6 +54,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { KinRestoreAgent, KinRetireAgent } from "./KinAgentRetire";
 import { KinAvatar } from "./KinAvatar";
 import { kinClient } from "./kinClient";
+import { announceKinClearKept, useKinClearPreview } from "./useKinClearPreview";
 import { serverEnvironment } from "../state/server";
 import { kinLeadFormAtom } from "./kinLeadForm";
 import { useNowMinuteMs } from "./useKinClock";
@@ -108,12 +109,15 @@ export function KinLeadSheet(props: {
     setMuteState(AsyncResult.isFailure(result) ? "failed" : "idle");
   };
 
+  const clearPreview = useKinClearPreview(environmentId, props.chatId);
+
   const clearChat = async () => {
     setClearState("clearing");
     const result = await clear({ environmentId, input: { chatId: props.chatId } });
-    if (AsyncResult.isFailure(result)) return setClearState("failed");
+    if (!AsyncResult.isSuccess(result)) return setClearState("failed");
     setClearState("idle");
-    // Nothing to announce: the chat behind the sheet is empty.
+    // The chat behind the sheet is empty; only files a doc kept need saying.
+    announceKinClearKept(result.value.keptFiles);
     props.onOpenChange(false);
   };
 
@@ -184,7 +188,10 @@ export function KinLeadSheet(props: {
                 variant="destructive-outline"
                 className="self-start"
                 disabled={clearState === "clearing"}
-                onClick={() => setClearState("confirm")}
+                onClick={() => {
+                  clearPreview.ask();
+                  setClearState("confirm");
+                }}
               >
                 {KIN_CLEAR_CHAT_ACTION}
               </Button>
@@ -207,7 +214,7 @@ export function KinLeadSheet(props: {
           <AlertDialogHeader>
             <AlertDialogTitle>{KIN_CLEAR_CHAT_TITLE}</AlertDialogTitle>
             <AlertDialogDescription>
-              {kinClearChatBody(about.kind === "own" ? about.lead.name : null)}
+              {kinClearChatBody(about.kind === "own" ? about.lead.name : null, clearPreview.kept)}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

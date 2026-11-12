@@ -5,8 +5,10 @@ import { EnvironmentId, KinChatId, KinOrgId, type KinChatMembersResult } from "@
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
 import {
   KIN_CLEAR_CHAT_ACTION,
+  KIN_CLEAR_CHAT_DONE,
   KIN_CLEAR_CHAT_TITLE,
   kinClearChatBody,
+  kinClearChatKept,
 } from "@t3tools/client-runtime/kin/kinClearChat";
 import {
   kinGroupCountLabel,
@@ -187,6 +189,7 @@ function KinGroupDetails(props: {
   const deleteGroup = useAtomCommand(kinClient.groupDelete, { reportFailure: false });
   const canClear = useAtomValue(kinClient.clear.permissionAtom(environmentId)) && canChange;
   const clear = useAtomCommand(kinClient.clear, { reportFailure: false });
+  const preview = useAtomCommand(kinClient.clearPreview, { reportFailure: false });
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const title = group.chat.title ?? "Group";
@@ -249,20 +252,34 @@ function KinGroupDetails(props: {
         ),
     });
 
+  // The confirm says what a doc keeps, so it opens once the host has said.
   const askClear = () =>
-    Dialog.confirm({
-      title: KIN_CLEAR_CHAT_TITLE,
-      message: kinClearChatBody("group"),
-      confirmText: KIN_CLEAR_CHAT_ACTION,
-      destructive: true,
-      onConfirm: () =>
-        void change("clear", "clear this chat", () =>
-          clear({ environmentId, input: { chatId } }),
-        ).then((done) => {
-          // Nothing to announce: the chat behind this screen is empty.
-          if (done) navigation.goBack();
-        }),
-    });
+    void preview({ environmentId, input: { chatId, preview: true } }).then((asked) =>
+      Dialog.confirm({
+        title: KIN_CLEAR_CHAT_TITLE,
+        message: kinClearChatBody(
+          "group",
+          AsyncResult.isSuccess(asked) ? asked.value.keptFiles : undefined,
+        ),
+        confirmText: KIN_CLEAR_CHAT_ACTION,
+        destructive: true,
+        onConfirm: () => {
+          let kept: number | undefined;
+          void change("clear", "clear this chat", () =>
+            clear({ environmentId, input: { chatId } }).then((result) => {
+              if (AsyncResult.isSuccess(result)) kept = result.value.keptFiles;
+              return result;
+            }),
+          ).then((done) => {
+            if (!done) return;
+            // The chat behind this screen is empty; only files a doc kept need saying.
+            const line = kinClearChatKept(kept);
+            if (line !== null) Dialog.alert(KIN_CLEAR_CHAT_DONE, line);
+            navigation.goBack();
+          });
+        },
+      }),
+    );
 
   const askDelete = () =>
     Dialog.confirm({

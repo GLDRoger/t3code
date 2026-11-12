@@ -582,12 +582,17 @@ export type KinChatsMuteInput = typeof KinChatsMuteInput.Type;
 export type KinMessagesMarkReadResult = typeof KinMessagesMarkReadResult.Type;
 /**
  * Empties a chat for everyone in it, for good: its messages, cards, reactions and files. The chat,
- * its members and what its leads remember stay. A group's owner, or the one person in a direct
- * chat with a lead, may.
+ * its members and what its leads remember stay, and so do files a doc uses. A group's owner, or
+ * the one person in a direct chat with a lead, may. `preview` changes nothing and says what stays.
  */
-export const KinChatsClearInput = Schema.Struct({ chatId: KinChatId });
+export const KinChatsClearInput = Schema.Struct({
+  chatId: KinChatId,
+  preview: Schema.optional(Schema.Boolean),
+});
 export type KinChatsClearInput = typeof KinChatsClearInput.Type;
-export const KinChatsClearResult = Schema.Struct({});
+/** `keptFiles`: the chat's files that stay because a doc uses them. Absent from older servers. */
+export const KinChatsClearResult = Schema.Struct({ keptFiles: Schema.optional(NonNegativeInt) });
+export type KinChatsClearResult = typeof KinChatsClearResult.Type;
 export const KinWidgetsActInput = Schema.Struct({
   widgetId: KinWidgetId,
   revision: PositiveInt,

@@ -452,6 +452,8 @@ export class KinChatRepository extends Context.Service<
      * aborted and what was queued about them never runs. Returns what the caller finishes after
      * the commit.
      */
+    /** How many of the chat's files a doc of its org uses: a clear leaves these. */
+    readonly docKeptFiles: (input: ChatScope) => Effect.Effect<number, RepositoryError>;
     readonly clearChat: (
       input: ChatScope & { readonly clearedAt: IsoDateTime; readonly clearedAtMs: number },
     ) => Effect.Effect<
@@ -459,6 +461,8 @@ export class KinChatRepository extends Context.Service<
         readonly lastSeq: number;
         readonly lastChangeSeq: number;
         readonly attachmentIds: ReadonlyArray<string>;
+        /** The chat's files that stay because a doc uses them. */
+        readonly keptFiles: number;
         /** The open items it closed. */
         readonly waiting: ReadonlyArray<KinWaitingItem>;
         readonly taskCards: ReadonlyArray<KinWidget>;
@@ -495,6 +499,12 @@ const refRefused = (message: string) => new KinChatError({ reason: "not_allowed"
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  // A doc of the org shows the file, by `kin-file:` or as a generated version; docs are archived,
+  // never deleted, so any doc row keeps it.
+  const docUses = (orgId: KinOrgId) =>
+    sql`(attachment_id IN (SELECT attachment_id FROM kin_doc_files WHERE org_id = ${orgId})
+      OR attachment_id IN (SELECT file_attachment_id FROM kin_doc_versions
+        WHERE org_id = ${orgId} AND file_attachment_id IS NOT NULL))`;
   /**
    * The doc sections a message points at, checked in the write's transaction: the org owner's
    * own message, docs of this org at a version they have, and nothing sensitive where others read.
@@ -1818,6 +1828,16 @@ const make = Effect.gen(function* () {
       },
       Effect.mapError(toRepositoryError("KinChatRepository.endAgentThread")),
     ),
+    docKeptFiles: Effect.fn("KinChatRepository.docKeptFiles")(
+      function* (input) {
+        const [row] = yield* sql<{ count: number }>`SELECT COUNT(DISTINCT attachment_id) AS count
+          FROM kin_message_attachments
+          WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}
+            AND ${docUses(input.orgId)}`;
+        return row?.count ?? 0;
+      },
+      Effect.mapError(toRepositoryError("KinChatRepository.docKeptFiles")),
+    ),
     clearChat: Effect.fn("KinChatRepository.clearChat")(
       function* (input) {
         yield* requireRecord(chatOne(input));
@@ -1825,10 +1845,10 @@ const make = Effect.gen(function* () {
           WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
         const about = sql`tag IN ('chat.message', 'widget.action', 'chat.reaction')
           AND json_extract(json, '$.messageId') IN (${said})`;
-        const attachments = yield* sql<{ id: string }>`
-          SELECT attachment_id AS id FROM kin_message_attachments
+        const attachments = yield* sql<{ id: string; kept: number }>`
+          SELECT DISTINCT attachment_id AS id, ${docUses(input.orgId)} AS kept
+          FROM kin_message_attachments
           WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}
-            AND attachment_id NOT IN (SELECT attachment_id FROM kin_doc_files)
           ORDER BY attachment_id`;
         const taskCards = yield* SqlSchema.findAll({
           Request: Schema.Unknown,
@@ -1887,7 +1907,8 @@ const make = Effect.gen(function* () {
         return {
           lastSeq: counters!.lastSeq,
           lastChangeSeq: counters!.lastChangeSeq,
-          attachmentIds: attachments.map((row) => row.id),
+          attachmentIds: attachments.flatMap((row) => (row.kept === 1 ? [] : [row.id])),
+          keptFiles: attachments.filter((row) => row.kept === 1).length,
           waiting,
           taskCards,
           abortedWakeupIds: aborted.map((row) => KinWakeupId.make(row.wakeupId)),

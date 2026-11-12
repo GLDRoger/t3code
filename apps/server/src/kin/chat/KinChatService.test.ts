@@ -1137,6 +1137,20 @@ describe("KinChatService", () => {
           { reason: "invalid_state" },
         );
         assert.deepStrictEqual(yield* repo.listOpenWaiting(person), []);
+        // A turn that was shown something sensitive labels its visual, as it would a doc it wrote.
+        const [turn] = yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId"
+          FROM kin_wakeups WHERE org_id = ${person.orgId} AND status = 'running'`;
+        const inTurn = { ...agent, wakeupId: KinWakeupId.make(turn!.wakeupId) };
+        const plain = yield* service.visual(inTurn, { ...input, clientMessageId: "visual-plain" });
+        assert.notProperty(plain.state, "sensitive");
+        assert.notProperty(card.state, "sensitive");
+        yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
+          VALUES (${person.orgId}, ${turn!.wakeupId}, 0)`;
+        const labelled = yield* service.visual(inTurn, {
+          ...input,
+          clientMessageId: "visual-sensitive",
+        });
+        assert.deepInclude(labelled.state, { sensitive: true });
       }).pipe(Effect.provide(attachmentLayer)),
   );
 
@@ -2320,7 +2334,7 @@ describe("KinChatService", () => {
     }).pipe(Effect.provide(presenceLayer)),
   );
   it.effect(
-    "clears a chat for good: messages, cards, reactions and files go, but a doc's image stays; the chat, its members, memory and seq stay",
+    "clears a chat for good: messages, cards, reactions and files go, but a doc's image stays and is counted; the chat, its members, memory and seq stay",
     () =>
       Effect.gen(function* () {
         const { repo, service, person, agent, chat } = yield* seed();
@@ -2344,6 +2358,10 @@ describe("KinChatService", () => {
         })).attachments![0]!.id;
         yield* sql`INSERT INTO kin_doc_files (org_id, record_id, attachment_id, mime_type, page_sha256, created_at)
           VALUES (${person.orgId}, 'invented-doc', ${inDoc}, 'image/png', NULL, 0)`;
+        // Another org's doc naming this chat's photo keeps nothing here.
+        yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('another-org', 'Other', ${timestamp})`;
+        yield* sql`INSERT INTO kin_doc_files (org_id, record_id, attachment_id, mime_type, page_sha256, created_at)
+          VALUES ('another-org', 'their-doc', ${photo.attachments![0]!.id}, 'image/png', NULL, 0)`;
         const answer = yield* service.send(agent, {
           chatId: chat.chatId,
           clientMessageId: "lead-answer",
@@ -2397,7 +2415,18 @@ describe("KinChatService", () => {
         });
         assert.strictEqual((yield* Queue.take(list))._tag, "snapshot");
 
-        yield* service.clear(person, { chatId: chat.chatId });
+        // The confirm asks first, and asking changes nothing.
+        assert.deepStrictEqual(
+          yield* service.clear(person, { chatId: chat.chatId, preview: true }),
+          {
+            keptFiles: 1,
+          },
+        );
+        assert.deepStrictEqual(yield* kinRowCounts, before);
+
+        assert.deepStrictEqual(yield* service.clear(person, { chatId: chat.chatId }), {
+          keptFiles: 1,
+        });
 
         const after = yield* kinRowCounts;
         assert.deepStrictEqual(

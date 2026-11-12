@@ -33,6 +33,7 @@ import { useHtmlRenderTheme } from "../hooks/useHtmlRenderTheme";
 import { observeResize } from "../lib/observeResize";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
+import { KinWorkPrivateMark } from "./KinWorkParts";
 
 // Kept across remounts, so a card scrolled back into view does not jump.
 const measuredHeights = new Map<string, number>();
@@ -336,6 +337,7 @@ export function KinVisual(props: {
     <>
       <div className="flex items-center gap-2">
         <h3 className="min-w-0 flex-1 truncate font-medium">{title}</h3>
+        {props.visual.sensitive === true ? <KinWorkPrivateMark /> : null}
         {loaded === null ? null : (
           <Tooltip>
             <TooltipTrigger
