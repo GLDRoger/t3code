@@ -274,6 +274,16 @@ describe("KinImport", () => {
         ],
       );
       assert.strictEqual(yield* countOf("kin_records"), 8);
+
+      // The owner voids the imported payment; importing again leaves it voided, without a problem.
+      const sql2 = yield* SqlClient.SqlClient;
+      const [imported] = yield* sql2<{ key: string; paymentId: string }>`SELECT r.key,
+          p.payment_id AS "paymentId" FROM kin_record_payments p
+          JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id ORDER BY p.payment_id`;
+      yield* records.voidPayment(orgId, owner, imported!.key, imported!.paymentId);
+      const third = yield* imports.apply(orgId, ownerId, books());
+      assert.deepStrictEqual([third.problems, third.payments.create], [[], 0]);
+      assert.lengthOf(yield* sql2`SELECT 1 FROM kin_record_payments WHERE voided_at IS NULL`, 0);
     }).pipe(Effect.provide(layer)),
   );
 
