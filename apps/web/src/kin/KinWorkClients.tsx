@@ -26,6 +26,7 @@ import {
   kinWorkSend,
   type KinWorkFormProblem,
 } from "@t3tools/client-runtime/kin/kinWorkForms";
+import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type { KinContact, KinPartyPage, KinRecord, KinRecordKey } from "@t3tools/contracts";
 import { LegendList } from "@legendapp/list/react";
@@ -43,6 +44,7 @@ import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { cn } from "../lib/utils";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinClientDialog, KinContactDialog, KinProjectDialog } from "./KinWorkForms";
+import { KinWorkPlaceLists } from "./KinWorkPlaceLists";
 import {
   KinWorkHealthBadge,
   KinWorkNotice,
@@ -259,6 +261,8 @@ export function KinWorkClientPage(
     readonly onSeeAll: (party: KinWorkRef) => void;
     /** Opens the new-task form already about this client; null where tasks can't be added. */
     readonly onAddTask: ((draft: KinWorkDraft) => void) | null;
+    /** Opens one of the lists agents set up, narrowed to this client. */
+    readonly onOpenList: (open: KinListOpen) => void;
   },
 ) {
   const { state, refresh } = useKinClientPage(props, props.clientKey);
@@ -441,6 +445,15 @@ function ClientPage(
           KIN_CLIENTS.nothingOwing,
           addTask("theirs", KIN_CLIENTS.addTheyOwe),
         )}
+        <KinWorkPlaceLists
+          environmentId={environmentId}
+          orgId={orgId}
+          place={{ party: { key: view.key, title: view.name } }}
+          seq={props.stale ? null : page.seq}
+          directory={props.directory}
+          onOpenList={props.onOpenList}
+          onOpenKey={props.onOpenTask}
+        />
         <KinWorkSection
           title={KIN_CLIENTS.projects}
           action={

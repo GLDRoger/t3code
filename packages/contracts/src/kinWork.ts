@@ -138,6 +138,8 @@ export const KinRecord = Schema.Struct({
   repeat: Schema.optional(KinRepeatRule),
   /** An invoice's amount less the payments received against it. */
   balance: Schema.optional(KinMoney),
+  /** In a defined list's own rows, its fields by key, as its definition types them. */
+  fields: Schema.optional(Schema.Record(Schema.String, KinFieldValue)),
 });
 export type KinRecord = typeof KinRecord.Type;
 
@@ -224,8 +226,6 @@ export const KinRecordDetail = Schema.Struct({
   changes: Schema.Array(KinRecordChange),
   /** This entry's latest change number, links included: compare with a `changed` event's. */
   seq: Schema.optional(NonNegativeInt),
-  /** A defined list's own fields by key, as its definition types them. */
-  fields: Schema.optional(Schema.Record(Schema.String, KinFieldValue)),
   /** The files its file fields keep, such as a receipt. */
   files: Schema.optional(Schema.Array(KinFileRef)),
   /** An invoice's payments, newest first, voided ones included. */

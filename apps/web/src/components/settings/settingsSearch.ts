@@ -35,6 +35,7 @@ export type SettingsPath =
   | "/settings/connections"
   | "/settings/access"
   | "/settings/secrets"
+  | "/settings/company"
   | "/settings/maintenance"
   | "/settings/labs"
   | "/settings/about"
@@ -112,6 +113,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/connections": "Environments",
   "/settings/access": "Sharing & access",
   "/settings/secrets": "Secrets",
+  "/settings/company": "Company details",
   "/settings/maintenance": "Maintenance",
   "/settings/labs": "Labs",
   "/settings/about": "About",
@@ -157,6 +159,10 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
       "/settings/access",
       ...(isSecretsFeatureEnabled ? (["/settings/secrets"] as const) : []),
     ],
+  },
+  {
+    heading: "Kin",
+    paths: ["/settings/company"],
   },
   {
     heading: null,
@@ -1213,6 +1219,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     desktopOnly: true,
   },
   {
+    id: "company-details",
+    title: "Company details",
+    to: "/settings/company",
+    searchTerms: ["kin legal name address gstin pan tax bank account ifsc upi invoice"],
+  },
+  {
     id: "network-access",
     title: "Network access",
     to: "/settings/access",
@@ -1354,6 +1366,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/connections": "connections",
   "/settings/access": "connections",
   "/settings/secrets": null,
+  "/settings/company": null,
   "/settings/scheduled-tasks": null,
   "/settings/maintenance": null,
   "/settings/labs": null,

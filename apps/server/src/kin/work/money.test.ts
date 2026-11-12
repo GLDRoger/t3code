@@ -361,6 +361,32 @@ describe("lists through the tools", () => {
         stateLabels: { doing: "Under way" },
       }).pipe(Effect.flip);
       assert.include(unused, { reason: "invalid_state" });
+
+      // A void entry stays in the list and out of its sum, unless void is what was asked for.
+      yield* LeadWork.update(scope, { key: "EXP-3", sourceEventId: yes, state: "dropped" });
+      const everything = yield* OwnerWork.list(people, {
+        orgId,
+        list: "expenses",
+        totalsBy: "none",
+        limit: 1,
+      });
+      const voided = yield* OwnerWork.list(people, {
+        orgId,
+        list: "expenses",
+        states: ["dropped"],
+        totalsBy: "none",
+      });
+      assert.deepStrictEqual(
+        [everything.total, everything.totals?.total, voided.totals?.total],
+        [
+          5,
+          [
+            { minor: 30, currency: "INR" },
+            { minor: 1_300, currency: "USD" },
+          ],
+          [{ minor: 42_000_000, currency: "INR" }],
+        ],
+      );
     }).pipe(Effect.provide(layer)),
   );
 

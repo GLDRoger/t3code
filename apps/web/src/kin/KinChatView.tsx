@@ -174,6 +174,17 @@ const kinDraftAtom = Atom.family((_key: string) =>
 const kinDraftKey = (environmentId: EnvironmentId, orgId: string, chatId: string) =>
   `${environmentId}:${orgId}:${chatId}`;
 
+/** Readies a message in a chat's box for the owner to send, unless it is already there. */
+export function prefillKinDraft(
+  environmentId: EnvironmentId,
+  orgId: string,
+  chatId: string,
+  body: string,
+) {
+  const key = kinDraftKey(environmentId, orgId, chatId);
+  if (!appAtomRegistry.get(kinDraftAtom(key)).includes(body)) restoreDraft(key, body);
+}
+
 /** Puts an unsent body back in the draft, ahead of anything typed since. */
 function restoreDraft(key: string, body: string) {
   const atom = kinDraftAtom(key);
