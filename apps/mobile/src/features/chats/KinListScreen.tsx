@@ -5,11 +5,16 @@ import {
   KIN_DATES,
   kinAgendaWindow,
   kinDatesAgenda,
+  kinDatesMonth,
+  kinMonthWindow,
   kinOwnerToday,
+  kinShiftMonth,
 } from "@t3tools/client-runtime/kin/kinDates";
 import {
   KIN_LISTS,
+  kinCategoryLabel,
   kinListChips,
+  kinListColumns,
   kinListFilterParam,
   kinListFooter,
   kinListGroupings,
@@ -17,6 +22,7 @@ import {
   kinListNarrowings,
   kinListNothing,
   kinListRow,
+  type KinListColumn,
   type KinListFilter,
   type KinListRowView,
 } from "@t3tools/client-runtime/kin/kinLists";
@@ -46,6 +52,7 @@ import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
+import { KinMonthGrid } from "./components/KinMonthGrid";
 import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
 import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
 import { KinDateRowLine } from "./KinWorkMoney";
@@ -58,6 +65,7 @@ import {
 } from "./state/useKinMoney";
 import {
   useKinWork,
+  useKinWorkChoices,
   useKinWorkDirectory,
   type KinWorkDirectory,
   type KinWorkTarget,
@@ -178,6 +186,145 @@ function KinListGate(
 }
 
 const GROUP = "group:";
+const PICK = "pick:";
+const ANY = "any";
+const NONE = "none";
+
+/** A chip that narrows the list to one of a few things, to none of them, or not at all. */
+function NarrowMenu(props: {
+  readonly title: string;
+  readonly any: string;
+  readonly none: string;
+  readonly choices: ReadonlyArray<{ readonly value: string; readonly label: string }>;
+  /** A choice's value, `NONE`, or `ANY`. */
+  readonly current: string;
+  readonly onPick: (value: string) => void;
+}) {
+  const shown =
+    props.current === ANY
+      ? props.title
+      : props.current === NONE
+        ? props.none
+        : (props.choices.find((choice) => choice.value === props.current)?.label ?? props.title);
+  return (
+    <Menu
+      title={props.title}
+      accessibilityRole="button"
+      accessibilityLabel={`${props.title}: ${props.current === ANY ? props.any : shown}. Change`}
+      actions={[
+        { id: ANY, title: props.any, state: props.current === ANY ? "on" : "off" },
+        ...props.choices.map((choice) => ({
+          id: `${PICK}${choice.value}`,
+          title: choice.label,
+          state: choice.value === props.current ? ("on" as const) : ("off" as const),
+        })),
+        { id: NONE, title: props.none, state: props.current === NONE ? "on" : "off" },
+      ]}
+      onPressAction={({ nativeEvent: { event } }) =>
+        props.onPick(event.startsWith(PICK) ? event.slice(PICK.length) : event)
+      }
+    >
+      <View pointerEvents="none">
+        <Chip
+          size="small"
+          label={shown}
+          selected={props.current !== ANY}
+          trailingIcon="chevron.down"
+        />
+      </View>
+    </Menu>
+  );
+}
+
+const TABLE_ROW = "h-11 justify-center border-b border-border-subtle px-3";
+
+/**
+ * The list as a table on a phone: the entry's name stays put while its columns scroll sideways.
+ * Rows keep one height, so the pinned names and the scrolling cells stay on the same line.
+ */
+function KinListTable(props: {
+  readonly columns: ReadonlyArray<KinListColumn>;
+  readonly rows: ReadonlyArray<KinListRowView>;
+  readonly onOpen: (key: KinRecordKey) => void;
+}) {
+  const [first, ...rest] = props.columns;
+  if (first === undefined) return null;
+  return (
+    <View className="flex-row border-t border-border-subtle">
+      <View className="w-40 border-r border-border bg-screen">
+        <View className={`${TABLE_ROW} bg-grouped-card`}>
+          <Text textRole="footnote" className="font-t3-medium text-foreground-muted">
+            {first.label}
+          </Text>
+        </View>
+        {props.rows.map((row) => (
+          <Pressable
+            key={row.key}
+            accessibilityRole="button"
+            accessibilityLabel={row.accessibilityLabel}
+            onPress={() => props.onOpen(row.key)}
+            className={`${TABLE_ROW} active:opacity-60`}
+          >
+            <Text
+              textRole="footnote"
+              numberOfLines={2}
+              className={row.closed ? "text-foreground-muted" : "text-foreground"}
+            >
+              {row.cells[first.id] ?? ""}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+      <ScrollView horizontal className="flex-1" keyboardShouldPersistTaps="handled">
+        <View>
+          <View className="flex-row bg-grouped-card">
+            {rest.map((column) => (
+              <View key={column.id} className={`${TABLE_ROW} w-32`}>
+                <Text
+                  textRole="footnote"
+                  numberOfLines={1}
+                  className={
+                    column.numeric
+                      ? "text-right font-t3-medium text-foreground-muted"
+                      : "font-t3-medium text-foreground-muted"
+                  }
+                >
+                  {column.label}
+                </Text>
+              </View>
+            ))}
+          </View>
+          {props.rows.map((row) => (
+            <Pressable
+              key={row.key}
+              accessible={false}
+              onPress={() => props.onOpen(row.key)}
+              className="flex-row active:opacity-60"
+            >
+              {rest.map((column) => (
+                <View key={column.id} className={`${TABLE_ROW} w-32`}>
+                  <Text
+                    textRole="footnote"
+                    numberOfLines={2}
+                    className={
+                      column.numeric
+                        ? "text-right tabular-nums text-foreground"
+                        : column.id === "due" && row.late
+                          ? "text-danger-foreground"
+                          : "text-foreground"
+                    }
+                  >
+                    {row.cells[column.id] ?? ""}
+                  </Text>
+                </View>
+              ))}
+            </Pressable>
+          ))}
+        </View>
+      </ScrollView>
+    </View>
+  );
+}
 
 function KinListEntries(
   props: KinWorkTarget & {
@@ -203,7 +350,14 @@ function KinListEntries(
   const rows = state.records.map((record) =>
     kinListRow(record, def, context, { party: filter.party?.key ?? null }),
   );
-  const narrowings = kinListNarrowings(filter);
+  const narrowings = kinListNarrowings(filter, def).filter(
+    // The category and client chips already say what they are narrowed to.
+    (narrowing) =>
+      !(narrowing.id === "category" && def.categories.length > 0) && narrowing.id !== "party",
+  );
+  const { clients } = useKinWorkChoices(props, true);
+  const [table, setTable] = useState(false);
+  const columns = kinListColumns(def, state.records);
   const groupings = kinListGroupings(def);
   const nothing = kinListNothing(def, filter);
   const footer = kinListFooter(rows.length, state.total, state.more);
@@ -248,7 +402,7 @@ function KinListEntries(
           keyboardShouldPersistTaps="handled"
           // The search field floats over the foot of the list.
           contentContainerStyle={{ paddingBottom: 96 }}
-          data={rows}
+          data={table ? [] : rows}
           keyExtractor={(row) => row.key}
           extraData={state}
           estimatedItemSize={68}
@@ -277,8 +431,59 @@ function KinListEntries(
                   />
                 ))}
               </ScrollView>
-              {groupings.length <= 1 && narrowings.length === 0 ? null : (
+              {
                 <View className="flex-row flex-wrap gap-2 px-4">
+                  <Chip
+                    size="small"
+                    icon="square.split.2x1"
+                    label={KIN_LISTS.table}
+                    accessibilityLabel={`${KIN_LISTS.table}. ${table ? "On" : "Off"}`}
+                    selected={table}
+                    onPress={() => setTable(!table)}
+                  />
+                  {def.categories.length === 0 ? null : (
+                    <NarrowMenu
+                      title={KIN_LISTS.entry.category}
+                      any={KIN_LISTS.anyCategory}
+                      none={KIN_LISTS.noCategory}
+                      choices={def.categories.map((category) => ({
+                        value: category,
+                        label: kinCategoryLabel(category, def),
+                      }))}
+                      current={filter.noCategory ? NONE : (filter.category ?? ANY)}
+                      onPick={(value) =>
+                        entries.setFilter({
+                          ...filter,
+                          noCategory: value === NONE,
+                          category: value === NONE || value === ANY ? null : value,
+                        })
+                      }
+                    />
+                  )}
+                  <NarrowMenu
+                    title={KIN_LISTS.clientFilter}
+                    any={KIN_LISTS.anyClient}
+                    none={KIN_LISTS.noClient}
+                    choices={[
+                      ...clients,
+                      // A client arrived at from elsewhere stays named though it isn't a choice.
+                      ...(filter.party === null ||
+                      clients.some((held) => held.key === filter.party?.key)
+                        ? []
+                        : [filter.party]),
+                    ].map((held) => ({ value: held.key, label: held.title }))}
+                    current={filter.noParty ? NONE : (filter.party?.key ?? ANY)}
+                    onPick={(value) =>
+                      entries.setFilter({
+                        ...filter,
+                        noParty: value === NONE,
+                        party:
+                          value === NONE || value === ANY
+                            ? null
+                            : (clients.find((held) => held.key === value) ?? filter.party),
+                      })
+                    }
+                  />
                   {groupings.length <= 1 ? null : (
                     <Menu
                       title={KIN_LISTS.groupBy}
@@ -320,21 +525,34 @@ function KinListEntries(
                     />
                   ))}
                 </View>
-              )}
+              }
               {state.loading || state.failed !== null ? null : (
-                <View className="flex-row flex-wrap items-baseline gap-x-3 gap-y-1 px-5">
-                  {header.totals.map((line) => (
-                    <Text
-                      key={line}
-                      textRole="title"
-                      selectable
-                      className="font-t3-bold tabular-nums text-foreground"
-                    >
-                      {line}
-                    </Text>
+                <View className="flex-row flex-wrap items-end gap-x-6 gap-y-2 px-5">
+                  {header.figures.map((figure, index) => (
+                    <View key={figure.id} className="gap-0.5">
+                      {figure.label === null ? null : (
+                        <Text textRole="footnote" className="text-foreground-muted">
+                          {figure.label}
+                        </Text>
+                      )}
+                      {figure.lines.map((line) => (
+                        <Text
+                          key={line}
+                          textRole={index === 0 ? "title" : "body"}
+                          selectable
+                          className={
+                            index === 0
+                              ? "font-t3-bold tabular-nums text-foreground"
+                              : "tabular-nums text-foreground"
+                          }
+                        >
+                          {line}
+                        </Text>
+                      ))}
+                    </View>
                   ))}
                   {header.count === null ? null : (
-                    <Text textRole="footnote" className="text-foreground-muted">
+                    <Text textRole="footnote" className="pb-0.5 text-foreground-muted">
                       {header.count}
                     </Text>
                   )}
@@ -350,9 +568,14 @@ function KinListEntries(
                           key={group.key}
                           accessibilityRole={narrowed === null ? "text" : "button"}
                           accessibilityState={{ selected: group.selected }}
-                          accessibilityLabel={[group.label, group.count, ...group.totals].join(
-                            ". ",
-                          )}
+                          accessibilityLabel={[
+                            group.label,
+                            group.count,
+                            ...group.totals,
+                            group.billed,
+                          ]
+                            .filter((part) => part !== null)
+                            .join(". ")}
                           disabled={narrowed === null}
                           onPress={() =>
                             narrowed === null ? undefined : entries.setFilter(narrowed)
@@ -385,6 +608,14 @@ function KinListEntries(
                                 {line}
                               </Text>
                             ))}
+                            {group.billed === null ? null : (
+                              <Text
+                                textRole="footnote"
+                                className="tabular-nums text-foreground-muted"
+                              >
+                                {group.billed}
+                              </Text>
+                            )}
                           </View>
                         </Pressable>
                       );
@@ -392,23 +623,28 @@ function KinListEntries(
                   </ListSection>
                 </View>
               )}
+              {table && rows.length > 0 ? (
+                <KinListTable columns={columns} rows={rows} onOpen={open} />
+              ) : null}
             </View>
           }
           ListEmptyComponent={
-            <View className="px-4 pt-4">
-              {state.loading ? (
-                <KinWorkLoading label="Loading entries" />
-              ) : state.failed !== null ? (
-                <EmptyState
-                  variant="plain"
-                  title={KIN_LISTS.entriesFailed}
-                  detail="Check your connection to the server and try again."
-                  action={<Button tone="secondary" label="Try again" onPress={entries.refresh} />}
-                />
-              ) : (
-                <EmptyState variant="plain" {...nothing} />
-              )}
-            </View>
+            table && rows.length > 0 ? null : (
+              <View className="px-4 pt-4">
+                {state.loading ? (
+                  <KinWorkLoading label="Loading entries" />
+                ) : state.failed !== null ? (
+                  <EmptyState
+                    variant="plain"
+                    title={KIN_LISTS.entriesFailed}
+                    detail="Check your connection to the server and try again."
+                    action={<Button tone="secondary" label="Try again" onPress={entries.refresh} />}
+                  />
+                ) : (
+                  <EmptyState variant="plain" {...nothing} />
+                )}
+              </View>
+            )
           }
           ListFooterComponent={
             footer === null ? null : (
@@ -523,9 +759,16 @@ function KinDatesBody(props: KinWorkTarget) {
   const now = new Date(useNowMinuteMs());
   const [openOnly, setOpenOnly] = useState(true);
   const today = kinOwnerToday(now, names);
+  const [mode, setMode] = useState<"agenda" | "month">("agenda");
+  const [month, setMonth] = useState(() => today.slice(0, 7));
+  const [picked, setPicked] = useState<string | null>(null);
   const { state, retry } = useKinDates(
     props,
-    ready ? kinAgendaWindow(today, names.zone) : null,
+    !ready
+      ? null
+      : mode === "agenda"
+        ? kinAgendaWindow(today, names.zone)
+        : kinMonthWindow(month, names.zone),
     openOnly,
     ready && !work.stale ? work.live.seq : null,
   );
@@ -541,10 +784,68 @@ function KinDatesBody(props: KinWorkTarget) {
       </KinWorkFrame>
     );
   }
+  const failed = state._tag === "failed" || work._tag === "failed" || work._tag === "offline";
+  const modes = (
+    <View className="flex-row gap-2 px-2">
+      <Chip
+        label={KIN_DATES.agenda}
+        selected={mode === "agenda"}
+        onPress={() => setMode("agenda")}
+      />
+      <Chip label={KIN_DATES.month} selected={mode === "month"} onPress={() => setMode("month")} />
+    </View>
+  );
+  // A month keeps its grid while its entries are read, so stepping through months never blanks.
+  if (mode === "month" && ready && !failed) {
+    const grid = kinDatesMonth(month, state._tag === "ready" ? state.rows : [], names, now);
+    const day = picked !== null && picked.startsWith(month) ? picked : null;
+    const shown = day ?? (today.startsWith(month) ? today : null);
+    const rows = grid.weeks.flat().find((cell) => cell.day === shown)?.rows ?? [];
+    const dated = grid.weeks.flat().filter((cell) => cell.inMonth && cell.rows.length > 0);
+    return (
+      <KinWorkFrame {...frame}>
+        {modes}
+        <ListSection>
+          <ListToggleRow label={KIN_DATES.openOnly} value={openOnly} onValueChange={setOpenOnly} />
+        </ListSection>
+        <KinMonthGrid
+          label={grid.label}
+          weeks={grid.weeks}
+          selected={shown}
+          onPick={(next) => {
+            setPicked(next);
+            if (!next.startsWith(month)) setMonth(next.slice(0, 7));
+          }}
+          onShift={(by) => setMonth(kinShiftMonth(month, by))}
+        />
+        {state._tag !== "ready" ? (
+          <KinWorkLoading label="Loading dates" />
+        ) : shown !== null && rows.length > 0 ? (
+          <ListSection title={rows[0]?.when ?? shown}>
+            {rows.map((row) => (
+              <KinDateRowLine
+                key={row.id}
+                row={row}
+                onPress={() => navigation.navigate("KinWorkItem", { ...props, task: row.key })}
+              />
+            ))}
+          </ListSection>
+        ) : (
+          <Text textRole="footnote" className="px-2 text-foreground-muted">
+            {dated.length === 0
+              ? "Nothing dated this month."
+              : shown === null
+                ? "Tap a day with a dot to see what falls on it."
+                : "Nothing on this day."}
+          </Text>
+        )}
+      </KinWorkFrame>
+    );
+  }
   if (state._tag !== "ready") {
     return (
       <KinWorkFrame {...frame}>
-        {state._tag === "failed" || work._tag === "failed" || work._tag === "offline" ? (
+        {failed ? (
           <EmptyState
             variant="plain"
             title={KIN_DATES.loadFailed}
@@ -560,6 +861,7 @@ function KinDatesBody(props: KinWorkTarget) {
   const days = kinDatesAgenda(state.rows, names, now);
   return (
     <KinWorkFrame {...frame}>
+      {modes}
       <ListSection>
         <ListToggleRow label={KIN_DATES.openOnly} value={openOnly} onValueChange={setOpenOnly} />
       </ListSection>
