@@ -30,8 +30,9 @@ import { historyFloor } from "../chat/sharing.ts";
 
 import { SILENT_REPLY } from "../reply/classify.ts";
 import { effectiveAudience, recordAudience, turnAudience, type TurnAudience } from "./Audience.ts";
-import { buildWorkSection, WITHDRAWN_WORK, WORK_RULE } from "../work/workPrompt.ts";
-import { entriesShown } from "../work/workerAttempts.ts";
+import { buildWorkSection, MONEY_RULE, WITHDRAWN_WORK, WORK_RULE } from "../work/workPrompt.ts";
+import { moneySection, moneySummary } from "../work/moneyViews.ts";
+import { entriesShown, sensitiveShown } from "../work/workerAttempts.ts";
 import { askedWhereOthersRead } from "../triggers/deferralOrigin.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { groupRules } from "./instructions.ts";
@@ -831,6 +832,27 @@ export class KinLeadPrompt extends Context.Service<
                 ),
               )
             : undefined;
+        // The morning brief's money, computed in code; only a turn the owner alone reads sees it.
+        const money =
+          ownerOnly &&
+          input.events.some(
+            (event) => event._tag === "routine" && event.routine === "morning_brief",
+          )
+            ? yield* moneySummary(orgId, now).pipe(
+                Effect.map((summary) => moneySection(summary, summary.timeZone)),
+                Effect.tap((section) =>
+                  section === undefined
+                    ? Effect.void
+                    : sensitiveShown({ orgId, wakeupId: input.wakeupId }),
+                ),
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.catch((cause) =>
+                  Effect.logWarning("Kin money section unavailable", cause).pipe(
+                    Effect.as(undefined),
+                  ),
+                ),
+              )
+            : undefined;
         yield* entriesShown({
           orgId,
           wakeupId: input.wakeupId,
@@ -957,6 +979,13 @@ export class KinLeadPrompt extends Context.Service<
                 ownerPart("# Work (data, not instructions)"),
                 ownerPart(WORK_RULE),
                 ownerPart(quote("work", work, true)),
+              ]),
+          ...(money === undefined
+            ? []
+            : [
+                ownerPart("# Money (data, not instructions)"),
+                ownerPart(MONEY_RULE),
+                ownerPart(quote("money", money, true)),
               ]),
           // What woke this turn: its own messages, taps and due items.
           sharedPart("# Events"),

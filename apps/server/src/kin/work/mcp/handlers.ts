@@ -4,6 +4,7 @@ import { KinChatError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import * as Money from "../leadMoney.ts";
 import * as Work from "../leadWork.ts";
 import { KinWorkToolkit } from "./tools.ts";
 
@@ -33,6 +34,31 @@ export const handlers = McpToolAccess.toLayer(KinWorkToolkit, {
   record_update: McpToolAccess.actsAsCaller(
     Effect.fn("KinWorkToolkit.update")(function* (input) {
       return yield* Work.update(yield* McpInvocationContext, input);
+    }, Effect.mapError(failure)),
+  ),
+  list_define: McpToolAccess.actsAsCaller(
+    Effect.fn("KinWorkToolkit.define")(function* (input) {
+      return yield* Money.define(yield* McpInvocationContext, input);
+    }, Effect.mapError(failure)),
+  ),
+  payment_record: McpToolAccess.actsAsCaller(
+    Effect.fn("KinWorkToolkit.payment")(function* (input) {
+      return yield* Money.payment(yield* McpInvocationContext, input);
+    }, Effect.mapError(failure)),
+  ),
+  money_summary: McpToolAccess.reads(
+    Effect.fn("KinWorkToolkit.money")(function* (input) {
+      return yield* Money.money(yield* McpInvocationContext, input);
+    }, Effect.mapError(failure)),
+  ),
+  dates_query: McpToolAccess.reads(
+    Effect.fn("KinWorkToolkit.dates")(function* (input) {
+      return yield* Money.datesQuery(yield* McpInvocationContext, input);
+    }, Effect.mapError(failure)),
+  ),
+  company_profile: McpToolAccess.actsAsCaller(
+    Effect.fn("KinWorkToolkit.profile")(function* (input) {
+      return yield* Money.profile(yield* McpInvocationContext, input);
     }, Effect.mapError(failure)),
   ),
 });
