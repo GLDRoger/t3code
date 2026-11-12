@@ -10,13 +10,16 @@ import {
   kinStatementConfirm,
   kinStatementFailureText,
   kinStatementNeedsPassword,
+  kinStatementOpenSuggestions,
   kinStatementPasswordLines,
   kinStatementPick,
+  kinStatementRowNote,
   kinStatementSections,
   kinStatementSetAction,
   kinStatementStatusLines,
   kinStatementTargetLine,
   kinStatementToggle,
+  kinStatementUseSuggestions,
   type KinStatementPasswordView,
   type KinStatementReviewView,
   type KinStatementSectionId,
@@ -139,7 +142,11 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
     selection: KIN_STATEMENT_EMPTY_SELECTION,
   });
   const selection = held.hash === card.hash ? held.selection : KIN_STATEMENT_EMPTY_SELECTION;
-  const change = (next: KinStatementSelection) => setHeld({ hash: card.hash, selection: next });
+  const change = (update: (selection: KinStatementSelection) => KinStatementSelection) =>
+    setHeld((prev) => ({
+      hash: card.hash,
+      selection: update(prev.hash === card.hash ? prev.selection : KIN_STATEMENT_EMPTY_SELECTION),
+    }));
   const [pending, setPending] = useState<"apply" | "undo" | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const confirm = kinStatementConfirm(review, selection);
@@ -267,7 +274,7 @@ interface RowsProps {
   readonly shown: number;
   readonly selection: KinStatementSelection;
   readonly editable: boolean;
-  readonly onChange: (next: KinStatementSelection) => void;
+  readonly onChange: (update: (selection: KinStatementSelection) => KinStatementSelection) => void;
 }
 
 function MatchedRows(props: RowsProps) {
@@ -282,7 +289,9 @@ function MatchedRows(props: RowsProps) {
                 className="mt-0.5"
                 checked={ticked}
                 disabled={!props.editable}
-                onCheckedChange={() => props.onChange(kinStatementToggle(props.selection, one.row))}
+                onCheckedChange={() =>
+                  props.onChange((selection) => kinStatementToggle(selection, one.row))
+                }
               />
               <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                 <RowLine row={one} muted={!ticked} />
@@ -309,7 +318,7 @@ function ChooseRows(props: RowsProps) {
             <div
               role="group"
               aria-label={`Matches for ${one.text}`}
-              className="flex flex-col gap-1 pl-14"
+              className="flex flex-col gap-1 sm:pl-14"
             >
               {one.options.map((option) => (
                 <Button
@@ -319,15 +328,14 @@ function ChooseRows(props: RowsProps) {
                   aria-pressed={picked === option.option}
                   disabled={!props.editable}
                   onClick={() =>
-                    props.onChange(kinStatementPick(props.selection, one.row, option.option))
+                    props.onChange((selection) =>
+                      kinStatementPick(selection, one.row, option.option),
+                    )
                   }
                 >
                   {kinStatementTargetLine(option)}
                 </Button>
               ))}
-              {picked === undefined ? (
-                <span className="text-xs text-muted-foreground">Unpicked rows wait for later.</span>
-              ) : null}
             </div>
           </li>
         );
@@ -337,14 +345,29 @@ function ChooseRows(props: RowsProps) {
 }
 
 function UnmatchedRows(props: RowsProps) {
+  const open = kinStatementOpenSuggestions(props.card, props.selection);
   return (
     <ul className="flex flex-col gap-1.5">
+      {open === 0 || !props.editable ? null : (
+        <li>
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() =>
+              props.onChange((selection) => kinStatementUseSuggestions(props.card, selection))
+            }
+          >
+            Use Kin's suggestions for {open} {open === 1 ? "row" : "rows"}
+          </Button>
+        </li>
+      )}
       {props.card.unmatched.slice(0, props.shown).map((one) => {
         const action = kinStatementActionOf(props.selection, one);
+        const note = kinStatementRowNote(one, action);
         return (
           <li key={one.row} className="flex flex-col gap-1 py-1">
             <RowLine row={one} muted={action === "later"} />
-            <div className="flex flex-wrap items-center gap-1 pl-14">
+            <div className="flex flex-wrap items-center gap-1 sm:pl-14">
               <div
                 role="radiogroup"
                 aria-label={`What ${one.text} is`}
@@ -359,20 +382,16 @@ function UnmatchedRows(props: RowsProps) {
                     aria-checked={action === choice}
                     disabled={!props.editable}
                     onClick={() =>
-                      props.onChange(kinStatementSetAction(props.selection, one.row, choice))
+                      props.onChange((selection) =>
+                        kinStatementSetAction(selection, one.row, choice),
+                      )
                     }
                   >
                     {KIN_STATEMENT_ACTION_LABELS[choice]}
                   </Button>
                 ))}
               </div>
-              {action === "expense" && (one.vendor !== undefined || one.category !== undefined) ? (
-                <span className="text-xs text-muted-foreground">
-                  {[one.vendor, one.category].filter((part) => part !== undefined).join(", ")}
-                </span>
-              ) : one.why !== undefined && action === one.suggestion ? (
-                <span className="text-xs text-muted-foreground">{one.why}</span>
-              ) : null}
+              {note === null ? null : <span className="text-xs text-muted-foreground">{note}</span>}
             </div>
           </li>
         );

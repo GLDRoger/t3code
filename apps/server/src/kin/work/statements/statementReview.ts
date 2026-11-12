@@ -290,7 +290,7 @@ const target = (candidate: Candidate, option: number, currency: string): KinStat
 });
 
 const STATEMENT_REVIEW_TEXT =
-  "Kin read a bank statement and matched its rows. Open this chat in Kin to review and confirm them.";
+  "Kin read a bank statement and matched its rows. Review and confirm them on its card.";
 
 /** The review card: what the owner confirms, and the hash that binds a confirm to it. */
 export const reviewCard = (
@@ -543,7 +543,7 @@ export const saveRead = Effect.fn("KinStatements.saveRead")(function* (input: {
 });
 
 const PASSWORD_TEXT =
-  "This statement is password-protected. Open this chat in Kin to type its password on the card; never send it as a message.";
+  "This statement is password-protected. Type its password on its card, never in a message.";
 
 /** Asks the owner for a PDF's password on a card of its own. */
 export const askPassword = Effect.fn("KinStatements.askPassword")(function* (input: {

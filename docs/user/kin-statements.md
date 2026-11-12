@@ -25,8 +25,9 @@ One review card shows the statement in three groups:
   the invoice less 10% or 2% shows as paid with TDS deducted, and records the TDS as its own
   line. Untick any you want to leave.
 - **Pick a match**: rows that fit more than one entry. Pick one, or leave it for later.
-- **Not matched**: each row with Kin's suggestion. Make a debit a new expense, mark a row a
-  transfer between your own accounts, ignore it, or leave it for later.
+- **Not matched**: each row starts as left for later, with what Kin suggests beside it. Make a
+  debit a new expense, mark a row a transfer between your own accounts, or ignore it. **Use
+  Kin's suggestions** takes them all at once.
 
 **Confirm** records exactly what the card shows, all or nothing. If something changed since Kin
 read the statement, such as an invoice paid in the meantime, nothing is recorded and the card

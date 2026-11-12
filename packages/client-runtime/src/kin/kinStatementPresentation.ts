@@ -53,7 +53,7 @@ export interface KinStatementSelection {
   readonly unticked: ReadonlySet<number>;
   /** Rows with several candidates: the one picked, by index. Unpicked rows wait for later. */
   readonly picks: ReadonlyMap<number, number>;
-  /** Unmatched rows whose action the owner changed from Kin's suggestion. */
+  /** What the owner made of unmatched rows; one left alone waits for later. */
   readonly actions: ReadonlyMap<number, KinStatementRowChoice>;
 }
 
@@ -97,7 +97,27 @@ export const kinStatementSetAction = (
 export const kinStatementActionOf = (
   selection: KinStatementSelection,
   row: KinStatementReviewCard["unmatched"][number],
-): KinStatementRowChoice => selection.actions.get(row.row) ?? row.suggestion;
+): KinStatementRowChoice => selection.actions.get(row.row) ?? "later";
+
+/** Unmatched rows where Kin suggests something other than what the card now says. */
+export const kinStatementOpenSuggestions = (
+  card: KinStatementReviewCard,
+  selection: KinStatementSelection,
+) =>
+  card.unmatched.filter(
+    (one) => one.suggestion !== "later" && kinStatementActionOf(selection, one) !== one.suggestion,
+  ).length;
+
+/** Takes Kin's suggestion for every unmatched row: one tap instead of fifty. */
+export const kinStatementUseSuggestions = (
+  card: KinStatementReviewCard,
+  selection: KinStatementSelection,
+): KinStatementSelection => {
+  const actions = new Map(selection.actions);
+  for (const one of card.unmatched)
+    if (one.suggestion !== "later") actions.set(one.row, one.suggestion);
+  return { ...selection, actions };
+};
 
 /** The apply request for what the card shows with the owner's changes. */
 export function kinStatementApplyInput(
@@ -135,17 +155,14 @@ export function kinStatementApplyInput(
   };
 }
 
-/** How many rows Confirm records, and its label: "Confirm all 14" when nothing was held back. */
+/** How many rows Confirm records, and its label: "Confirm all 14" while every match is ticked. */
 export function kinStatementConfirm(
   view: KinStatementReviewView,
   selection: KinStatementSelection,
 ): { readonly count: number; readonly label: string } {
   const input = kinStatementApplyInput(view, selection);
   const count = input.matched.length + input.chosen.length + input.actions.length;
-  const all =
-    selection.unticked.size === 0 &&
-    input.chosen.length === view.card.choose.length &&
-    input.actions.length === view.card.unmatched.length;
+  const all = selection.unticked.size === 0 && view.card.matched.length > 0;
   return {
     count,
     label: count === 0 ? "Nothing to confirm" : all ? `Confirm all ${count}` : `Confirm ${count}`,
@@ -158,6 +175,21 @@ export const KIN_STATEMENT_ACTION_LABELS: Record<KinStatementRowChoice, string> 
   ignore: "Ignore",
   later: "Later",
 };
+/** The line under an unmatched row: what its new expense says, or what Kin suggests and why. */
+export function kinStatementRowNote(
+  row: KinStatementReviewCard["unmatched"][number],
+  action: KinStatementRowChoice,
+): string | null {
+  const expense = [row.vendor, row.category].filter((part) => part !== undefined).join(", ");
+  if (action === "expense") return expense === "" ? null : expense;
+  if (row.suggestion !== "later" && action !== row.suggestion) {
+    const what = KIN_STATEMENT_ACTION_LABELS[row.suggestion].toLowerCase();
+    const detail = row.suggestion === "expense" ? expense : (row.why ?? "");
+    return detail === "" ? `Kin suggests ${what}` : `Kin suggests ${what}: ${detail}`;
+  }
+  return row.why ?? null;
+}
+
 /** The actions a row offers: money in is never a new expense. */
 export const kinStatementActionsFor = (
   row: KinStatementReviewCard["unmatched"][number],
@@ -176,11 +208,13 @@ export const KIN_STATEMENT_SECTION_TITLES: Record<KinStatementSectionId, string>
 export const KIN_STATEMENT_PAGE = 25;
 
 /** The sections a card shows, with what needs the owner open first. */
+/** An applied card shows what it recorded, not rows to decide again. */
 export function kinStatementSections(card: KinStatementReviewCard): ReadonlyArray<{
   readonly id: KinStatementSectionId;
   readonly count: number;
   readonly openAtFirst: boolean;
 }> {
+  if (card.status === "applied") return [];
   const sections = [
     { id: "matched" as const, count: card.matched.length },
     { id: "choose" as const, count: card.choose.length },
@@ -198,15 +232,7 @@ export const kinStatementTargetLine = (target: KinStatementTarget) =>
   target.note === undefined ? target.label : `${target.label}, ${target.note.toLowerCase()}`;
 
 export function kinStatementStatusLines(card: KinStatementReviewCard): ReadonlyArray<string> {
-  if (card.status === "applied")
-    return [
-      ...(card.result ?? []),
-      ...(card.unexplained === undefined || card.unexplained === 0
-        ? []
-        : [
-            `${card.unexplained} row${card.unexplained === 1 ? " is" : "s are"} still unexplained in Bank transactions.`,
-          ]),
-    ];
+  if (card.status === "applied") return card.result ?? [];
   if (card.status === "undone")
     return ["Undone: nothing from this statement is recorded. Confirm again when it's right."];
   return [];

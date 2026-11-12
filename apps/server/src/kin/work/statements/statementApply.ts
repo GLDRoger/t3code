@@ -403,7 +403,16 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           : [`Added ${tally.created} new expense${tally.created === 1 ? "" : "s"}.`]),
         ...(tally.transfers + tally.ignored === 0
           ? []
-          : [`${tally.transfers} marked as transfers, ${tally.ignored} ignored.`]),
+          : [
+              [
+                ...(tally.transfers === 0
+                  ? []
+                  : [
+                      `${tally.transfers} marked as ${tally.transfers === 1 ? "a transfer" : "transfers"}`,
+                    ]),
+                ...(tally.ignored === 0 ? [] : [`${tally.ignored} ignored`]),
+              ].join(", ") + ".",
+            ]),
         unexplained === 0
           ? "Every row of this statement is explained."
           : `${unexplained} row${unexplained === 1 ? "" : "s"} left for later in Bank transactions, as Unexplained.`,

@@ -15,10 +15,13 @@ import {
   kinStatementApplyInput,
   kinStatementConfirm,
   kinStatementFailureText,
+  kinStatementOpenSuggestions,
   kinStatementPick,
+  kinStatementRowNote,
   kinStatementSections,
   kinStatementSetAction,
   kinStatementToggle,
+  kinStatementUseSuggestions,
   type KinStatementReviewView,
 } from "./kinStatementPresentation.ts";
 
@@ -61,23 +64,35 @@ const card: KinStatementReviewCard = {
 const view: KinStatementReviewView = { orgId, card };
 
 describe("statement review card", () => {
-  it("confirms what Kin proposed, with the owner's changes, and nothing else", () => {
+  it("confirms the ticked matches by default, and Kin's suggestions only when taken", () => {
     expect(kinStatementApplyInput(view, KIN_STATEMENT_EMPTY_SELECTION)).toEqual({
       orgId,
       statementId: "st_1",
       hash: card.hash,
       matched: [0, 1],
       chosen: [],
-      // A category the Expenses list doesn't have is left for the server's default.
-      actions: [
-        { row: 3, action: "expense", vendor: "Zomato", category: "food" },
-        { row: 4, action: "expense", vendor: "AWS" },
-        { row: 5, action: "transfer" },
-      ],
+      actions: [],
     });
-    expect(kinStatementConfirm(view, KIN_STATEMENT_EMPTY_SELECTION).label).toBe("Confirm 5");
+    expect(kinStatementConfirm(view, KIN_STATEMENT_EMPTY_SELECTION)).toEqual({
+      count: 2,
+      label: "Confirm all 2",
+    });
+    expect(kinStatementOpenSuggestions(card, KIN_STATEMENT_EMPTY_SELECTION)).toBe(3);
+    expect(kinStatementRowNote(card.unmatched[0]!, "later")).toBe(
+      "Kin suggests expense: Zomato, food",
+    );
+    expect(kinStatementRowNote(card.unmatched[0]!, "expense")).toBe("Zomato, food");
 
-    let selection = kinStatementToggle(KIN_STATEMENT_EMPTY_SELECTION, 1);
+    let selection = kinStatementUseSuggestions(card, KIN_STATEMENT_EMPTY_SELECTION);
+    expect(kinStatementOpenSuggestions(card, selection)).toBe(0);
+    // A category the Expenses list doesn't have is left for the server's default.
+    expect(kinStatementApplyInput(view, selection).actions).toEqual([
+      { row: 3, action: "expense", vendor: "Zomato", category: "food" },
+      { row: 4, action: "expense", vendor: "AWS" },
+      { row: 5, action: "transfer" },
+    ]);
+
+    selection = kinStatementToggle(selection, 1);
     selection = kinStatementPick(selection, 2, 1);
     selection = kinStatementSetAction(selection, 3, "ignore");
     selection = kinStatementSetAction(selection, 5, "later");
@@ -89,16 +104,14 @@ describe("statement review card", () => {
         { row: 4, action: "expense", vendor: "AWS" },
       ],
     });
+    expect(kinStatementConfirm(view, selection).label).toBe("Confirm 4");
     // Ticking again and picking the same candidate again undo those changes.
     selection = kinStatementPick(kinStatementToggle(selection, 1), 2, 1);
     expect(kinStatementApplyInput(view, selection)).toMatchObject({ matched: [0, 1], chosen: [] });
   });
 
-  it("says Confirm all only when every row is in", () => {
-    let selection = kinStatementPick(KIN_STATEMENT_EMPTY_SELECTION, 2, 0);
-    selection = kinStatementSetAction(selection, 6, "ignore");
-    expect(kinStatementConfirm(view, selection)).toEqual({ count: 7, label: "Confirm all 7" });
-    const none = { orgId, card: { ...card, matched: [], choose: [], unmatched: [] } };
+  it("has nothing to confirm when nothing is chosen", () => {
+    const none = { orgId, card: { ...card, matched: [] } };
     expect(kinStatementConfirm(none, KIN_STATEMENT_EMPTY_SELECTION)).toEqual({
       count: 0,
       label: "Nothing to confirm",
@@ -121,6 +134,7 @@ describe("statement review card", () => {
       ["unmatched", false],
     ]);
     expect(kinStatementSections(card).every((one) => one.openAtFirst)).toBe(true);
+    expect(kinStatementSections({ ...card, status: "applied" })).toEqual([]);
   });
 
   it("draws both statement cards from their widgets, and anything else as its own words", () => {

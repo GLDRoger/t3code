@@ -10,13 +10,16 @@ import {
   kinStatementConfirm,
   kinStatementFailureText,
   kinStatementNeedsPassword,
+  kinStatementOpenSuggestions,
   kinStatementPasswordLines,
   kinStatementPick,
+  kinStatementRowNote,
   kinStatementSections,
   kinStatementSetAction,
   kinStatementStatusLines,
   kinStatementTargetLine,
   kinStatementToggle,
+  kinStatementUseSuggestions,
   type KinStatementPasswordView,
   type KinStatementReviewView,
   type KinStatementSectionId,
@@ -160,7 +163,11 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
     selection: KIN_STATEMENT_EMPTY_SELECTION,
   });
   const selection = held.hash === card.hash ? held.selection : KIN_STATEMENT_EMPTY_SELECTION;
-  const change = (next: KinStatementSelection) => setHeld({ hash: card.hash, selection: next });
+  const change = (update: (selection: KinStatementSelection) => KinStatementSelection) =>
+    setHeld((prev) => ({
+      hash: card.hash,
+      selection: update(prev.hash === card.hash ? prev.selection : KIN_STATEMENT_EMPTY_SELECTION),
+    }));
   const [pending, setPending] = useState<"apply" | "undo" | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const confirm = kinStatementConfirm(review, selection);
@@ -283,7 +290,7 @@ interface RowsProps {
   readonly shown: number;
   readonly selection: KinStatementSelection;
   readonly editable: boolean;
-  readonly onChange: (next: KinStatementSelection) => void;
+  readonly onChange: (update: (selection: KinStatementSelection) => KinStatementSelection) => void;
 }
 
 function MatchedRows(props: RowsProps) {
@@ -298,7 +305,7 @@ function MatchedRows(props: RowsProps) {
             accessibilityState={{ checked: ticked, disabled: !props.editable }}
             accessibilityLabel={`${one.text}, ${one.amount}, to ${kinStatementTargetLine(one.target)}`}
             disabled={!props.editable}
-            onPress={() => props.onChange(kinStatementToggle(props.selection, one.row))}
+            onPress={() => props.onChange((selection) => kinStatementToggle(selection, one.row))}
             className="min-h-11 flex-row items-start gap-3 py-1.5 active:opacity-70"
           >
             <SymbolView
@@ -332,20 +339,18 @@ function ChooseRows(props: RowsProps) {
               {one.options.map((option) => (
                 <Chip
                   key={option.option}
+                  size="small"
                   label={kinStatementTargetLine(option)}
                   selected={picked === option.option}
                   disabled={!props.editable}
                   onPress={() =>
-                    props.onChange(kinStatementPick(props.selection, one.row, option.option))
+                    props.onChange((selection) =>
+                      kinStatementPick(selection, one.row, option.option),
+                    )
                   }
                 />
               ))}
             </View>
-            {picked === undefined ? (
-              <Text textRole="caption" className="text-foreground-muted">
-                Unpicked rows wait for later.
-              </Text>
-            ) : null}
           </View>
         );
       })}
@@ -354,16 +359,21 @@ function ChooseRows(props: RowsProps) {
 }
 
 function UnmatchedRows(props: RowsProps) {
+  const open = kinStatementOpenSuggestions(props.card, props.selection);
   return (
     <View className="gap-2">
+      {open === 0 || !props.editable ? null : (
+        <Button
+          size="compact"
+          label={`Use Kin's suggestions for ${open} ${open === 1 ? "row" : "rows"}`}
+          onPress={() =>
+            props.onChange((selection) => kinStatementUseSuggestions(props.card, selection))
+          }
+        />
+      )}
       {props.card.unmatched.slice(0, props.shown).map((one) => {
         const action = kinStatementActionOf(props.selection, one);
-        const note =
-          action === "expense" && (one.vendor !== undefined || one.category !== undefined)
-            ? [one.vendor, one.category].filter((part) => part !== undefined).join(", ")
-            : action === one.suggestion
-              ? one.why
-              : undefined;
+        const note = kinStatementRowNote(one, action);
         return (
           <View key={one.row} className="gap-1.5 py-1">
             <RowLine row={one} muted={action === "later"} />
@@ -377,12 +387,12 @@ function UnmatchedRows(props: RowsProps) {
                   selected={action === choice}
                   disabled={!props.editable}
                   onPress={() =>
-                    props.onChange(kinStatementSetAction(props.selection, one.row, choice))
+                    props.onChange((selection) => kinStatementSetAction(selection, one.row, choice))
                   }
                 />
               ))}
             </View>
-            {note === undefined ? null : (
+            {note === null ? null : (
               <Text textRole="caption" className="text-foreground-muted">
                 {note}
               </Text>
