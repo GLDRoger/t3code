@@ -569,7 +569,11 @@ const make = Effect.gen(function* () {
           LIMIT 1`;
         if (made.length > 0) return true;
         const shown = yield* sql`SELECT 1 FROM kin_doc_files
-          WHERE org_id = ${person.orgId} AND attachment_id = ${attachmentId} LIMIT 1`;
+          WHERE org_id = ${person.orgId} AND attachment_id = ${attachmentId}
+          UNION ALL SELECT 1 FROM kin_company_profile
+          WHERE org_id = ${person.orgId}
+            AND json_extract(profile_json, '$.logo.attachmentId') = ${attachmentId}
+          LIMIT 1`;
         return shown.length > 0 && (yield* isOrgOwner(person.orgId, person.personId));
       }),
     ).pipe(

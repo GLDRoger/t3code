@@ -19,6 +19,7 @@ import {
   LinkIcon,
   ListIcon,
   LockIcon,
+  LockOpenIcon,
   MessageCircleQuestionIcon,
   PencilLineIcon,
   ShareIcon,
@@ -41,6 +42,7 @@ import { downloadPlanAsTextFile } from "../proposedPlan";
 import { CardFrame } from "./KinCards";
 import { KinChart } from "./KinChart";
 import { KinVisual } from "./KinVisual";
+import { useKinDocLabel } from "./KinConfirm";
 import { KinDocFileCard } from "./KinInvoice";
 import { useNowMinuteMs } from "./useKinClock";
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
@@ -206,6 +208,7 @@ export function KinDocReader(
   const old = doc.version.version !== doc.latest.version;
   const previous = kinDocPrevious(doc.version);
   const privacy = kinDocPrivacy(doc);
+  const label = useKinDocLabel(props, doc);
   // The body opens with the doc's own name as its heading: say it once.
   const first = doc.outline.find((section) => section.id !== "top");
   const titled =
@@ -334,6 +337,12 @@ export function KinDocReader(
                     <ShareIcon />
                     {KIN_DOCS.export}
                   </MenuItem>
+                  {label.action === null ? null : (
+                    <MenuItem onClick={label.ask}>
+                      {label.action.sensitive ? <LockIcon /> : <LockOpenIcon />}
+                      {label.action.label}
+                    </MenuItem>
+                  )}
                 </MenuPopup>
               </Menu>
             </>,
@@ -364,6 +373,17 @@ export function KinDocReader(
                 </>
               )}
             </p>
+            {label.dialog}
+            {label.problem === null ? null : (
+              <Alert variant="error">
+                <AlertDescription>{label.problem}</AlertDescription>
+                <AlertAction>
+                  <Button size="xs" variant="ghost" onClick={label.dismiss}>
+                    Dismiss
+                  </Button>
+                </AlertAction>
+              </Alert>
+            )}
             {privacy === null ? null : (
               <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
                 <LockIcon aria-hidden className="size-3.5 shrink-0" />

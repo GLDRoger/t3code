@@ -309,7 +309,7 @@ async function shareFile(
   }
 }
 
-async function writePreview(file: {
+export async function kinWritePreview(file: {
   readonly name: string;
   readonly mimeType: string;
   readonly base64: string;
@@ -440,7 +440,7 @@ function MakeDocument(props: KinWorkTarget & { readonly itemKey: KinRecordKey })
       if (files !== null) setFailed(KIN_INVOICES.previewFailed);
       return;
     }
-    const written = await writePreview(file);
+    const written = await kinWritePreview(file);
     if (typeof written === "string") return setFailed(written);
     shown?.file.dispose();
     setShown({ file: written, name: file.name, mimeType: file.mimeType });

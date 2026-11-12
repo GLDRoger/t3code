@@ -72,6 +72,7 @@ import { ThreadMarkdownImage } from "../threads/ThreadMarkdownImage";
 import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
 import { KinDocFileRows } from "./KinInvoice";
 import { kinClient } from "./state/kinClient";
+import { useKinDocLabel } from "./state/useKinDocLabel";
 import { useKinDoc } from "./state/useKinDocs";
 import { kinHostConnected } from "./state/useKinHost";
 import { useKinInbox } from "./state/useKinInbox";
@@ -304,6 +305,7 @@ function KinDocBody(
   const old = doc.version.version !== doc.latest.version;
   const previous = kinDocPrevious(doc.version);
   const privacy = kinDocPrivacy(doc);
+  const label = useKinDocLabel(target, doc);
   const chats = inbox.state._tag === "ready" ? inbox.state.inbox.value.chats : [];
   const chat = kinDocChat(chats, doc, names.me);
   const first = doc.outline.find((section) => section.id !== "top");
@@ -383,6 +385,9 @@ function KinDocBody(
             navigation.navigate("KinDocHistory", { environmentId, orgId, doc: doc.key }),
         },
         { id: "export", title: KIN_DOCS.export, onPress: () => void share() },
+        ...(label.action === null
+          ? []
+          : [{ id: "label", title: label.action.label, onPress: label.ask }]),
       ],
     },
   ];
@@ -487,6 +492,9 @@ function KinDocBody(
                   {privacy}
                 </Text>
               </View>
+            )}
+            {label.problem === null ? null : (
+              <Notice tone="danger" message={label.problem} onDismiss={label.dismiss} />
             )}
             {props.stale ? <Notice message="Offline. Showing the last copy read." /> : null}
             {restore.problem === null ? null : (

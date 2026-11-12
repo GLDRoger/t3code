@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { kinHasNotesHistory } from "@t3tools/client-runtime/kin/kinTemplates";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_WORK_GONE,
@@ -52,6 +53,7 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { KIN_ONLY } from "../../lib/kinOnly";
 import { useOpenWorkspaceDetail } from "../layout/useOpenWorkspaceDetail";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
+import { KinNotesVersions } from "./KinNotesVersions";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
 import {
@@ -529,14 +531,23 @@ function KinWorkItemBody(props: ItemTarget) {
           )}
         </ListSection>
       )}
-      {view.notes === null ? null : (
+      {view.notes === null && !kinHasNotesHistory(item) ? null : (
         <View className="gap-2 px-2">
           <Text textRole="footnote" className="text-foreground-muted">
             Notes
           </Text>
-          <Text textRole="body" selectable className="text-foreground">
-            {view.notes}
-          </Text>
+          {view.notes === null ? null : (
+            <Text textRole="body" selectable className="text-foreground">
+              {view.notes}
+            </Text>
+          )}
+          <KinNotesVersions
+            item={item}
+            names={names}
+            now={now}
+            busy={saving}
+            onRestore={act === null ? null : (notes) => act({ type: "edit", notes })}
+          />
         </View>
       )}
       {view.links.length === 0 ? null : (

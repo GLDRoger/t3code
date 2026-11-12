@@ -901,6 +901,21 @@ export const kinClient = {
     tag: "kin.docs.render",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
   }),
+  undoRecipe: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:docs:undo-recipe",
+    tag: "kin.docs.undoRecipe",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.recipe}` },
+  }),
+  clearRecipeLabel: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:docs:clear-recipe-label",
+    tag: "kin.docs.clearRecipeLabel",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.recipe}` },
+  }),
+  docLabel: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:docs:label",
+    tag: "kin.docs.label",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+  }),
   memorySetVisibility: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:memory:set-visibility",
     tag: "kin.memory.setVisibility",

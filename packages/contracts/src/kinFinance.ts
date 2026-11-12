@@ -401,7 +401,7 @@ export const KinCompanyLogo = Schema.Struct({
 });
 export type KinCompanyLogo = typeof KinCompanyLogo.Type;
 /** Fonts every recipe can use: Typst's own and the open-licence ones Kin fetches. */
-const KIN_RECIPE_FONTS = [
+export const KIN_RECIPE_FONTS = [
   "Poppins",
   "Mukta",
   "Libertinus Serif",
