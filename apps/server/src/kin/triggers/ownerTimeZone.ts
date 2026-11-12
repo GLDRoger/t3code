@@ -58,15 +58,22 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   let attached: Routines.KinRoutines["Service"] | undefined;
 
-  const owner = Effect.fn("KinOwnerTimeZone.owner")(function* (
+  const member = Effect.fn("KinOwnerTimeZone.member")(function* (
     people: ReadonlyArray<PersonIdentity>,
     orgId: KinOrgId,
   ) {
     const person = people.find((candidate) => candidate.orgId === orgId);
     if (person === undefined) return yield* notFound;
-    const member =
+    const rows =
       yield* sql`SELECT 1 FROM kin_people WHERE org_id = ${orgId} AND person_id = ${person.personId} ORDER BY person_id`;
-    if (member.length === 0) return yield* notFound;
+    if (rows.length === 0) return yield* notFound;
+    return person;
+  });
+  const owner = Effect.fn("KinOwnerTimeZone.owner")(function* (
+    people: ReadonlyArray<PersonIdentity>,
+    orgId: KinOrgId,
+  ) {
+    const person = yield* member(people, orgId);
     const allowed = yield* isOrgOwner(orgId, person.personId).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
     );
@@ -80,8 +87,9 @@ const make = Effect.gen(function* () {
   });
 
   return KinOwnerTimeZone.of({
+    // Due times show in this zone for everyone; only the owner changes it.
     get: Effect.fn("KinOwnerTimeZone.get")(function* (people, input) {
-      yield* owner(people, input.orgId);
+      yield* member(people, input.orgId);
       return yield* read(input.orgId);
     }, Effect.mapError(mapError)),
     set: Effect.fn("KinOwnerTimeZone.set")(function* (people, input) {
