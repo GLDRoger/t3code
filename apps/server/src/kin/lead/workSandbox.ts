@@ -27,6 +27,7 @@ import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { makeConfiner, sessionEnvironment } from "../claudeConfinement.ts";
+import { toolDirectories } from "../gendocs/toolchain.ts";
 import { grantedHosts, noteBlocked, refusedHosts } from "./workNetwork.ts";
 import { type CheckResult, probe, type ShellPaths } from "./workSandboxProbe.ts";
 import { shellTools, type WorkSession } from "./workSession.ts";
@@ -44,16 +45,20 @@ const commandLimits = {
 };
 
 /** A shell child's environment; the check runs with exactly this, plus its fake model's address. */
-const childEnvironment = (env: NodeJS.ProcessEnv, tmp: string, runtimeBin: string | undefined) => {
+const childEnvironment = (
+  env: NodeJS.ProcessEnv,
+  tmp: string,
+  runtimeBin: string | undefined,
+  toolBins: ReadonlyArray<string> = [],
+) => {
   const session = sessionEnvironment(env);
+  const first = [...(runtimeBin === undefined ? [] : [runtimeBin]), ...toolBins];
   return {
     ...session,
     ...commandLimits,
     CLAUDE_CODE_TMPDIR: tmp,
-    // The server's own Node first: version-manager shims live in the home the shell can't read.
-    ...(runtimeBin === undefined
-      ? {}
-      : { PATH: [runtimeBin, session.PATH].filter(Boolean).join(":") }),
+    // The server's own Node and Kin's tools first: shims in the home the shell can't read fail.
+    ...(first.length === 0 ? {} : { PATH: [...first, session.PATH].filter(Boolean).join(":") }),
   };
 };
 
@@ -239,6 +244,8 @@ export const shellRoots = Effect.fn("KinWorkSandbox.shellRoots")(function* (inpu
   readonly providerHomes: ReadonlyArray<string>;
   readonly readPaths: ReadonlyArray<string>;
   readonly runtime: string | undefined;
+  /** Kin's own tools; one that is missing or would reopen private data is left out. */
+  readonly toolDirs?: ReadonlyArray<string>;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -276,21 +283,25 @@ export const shellRoots = Effect.fn("KinWorkSandbox.shellRoots")(function* (inpu
       [home, state, tmpRoot, ...resolved].filter((entry): entry is string => entry !== undefined),
     ),
   ];
-  const readable: Array<string> = [];
+  const reopens = (target: string) =>
+    denied.some((root) => isInside(target, root) || (root !== home && isInside(root, target)));
+  const tools: Array<string> = [];
+  for (const entry of input.toolDirs ?? []) {
+    const target = yield* real(entry);
+    if (target !== undefined && !reopens(target)) tools.push(target);
+  }
+  const readable: Array<string> = [...tools];
   for (const entry of [
     ...(input.runtime === undefined ? [] : [input.runtime]),
     ...input.readPaths,
   ]) {
     const target = yield* real(entry);
     if (target === undefined) continue;
-    const reopens = denied.some(
-      (root) => isInside(target, root) || (root !== home && isInside(root, target)),
-    );
-    if (reopens)
+    if (reopens(target))
       return yield* Effect.fail(`the readable path "${entry}" would reopen private data`);
     readable.push(target);
   }
-  return { denied, readable, tmpRoot };
+  return { denied, readable, tmpRoot, tools };
 });
 
 export type Prepared =
@@ -418,6 +429,7 @@ export const checkShell = Effect.fn("KinWorkSandbox.checkShell")(function* (inpu
   readonly readPaths: ReadonlyArray<string>;
   /** From the server's provider settings; see `configuredProviderHomes`. */
   readonly providerHomes: ReadonlyArray<string>;
+  readonly toolDirs?: ReadonlyArray<string>;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -435,9 +447,10 @@ export const checkShell = Effect.fn("KinWorkSandbox.checkShell")(function* (inpu
     providerHomes: input.providerHomes,
     readPaths: input.readPaths,
     runtime,
+    ...(input.toolDirs === undefined ? {} : { toolDirs: input.toolDirs }),
   }).pipe(Effect.result);
   if (roots._tag === "Failure") return { _tag: "unresolved", reason: roots.failure } as const;
-  const { denied, readable, tmpRoot } = roots.success;
+  const { denied, readable, tmpRoot, tools } = roots.success;
   const runtimeBin = runtime === undefined ? undefined : path.join(runtime, "bin");
   const paths = (worktree: string, tmp: string) =>
     gitCommonDir(worktree).pipe(
@@ -460,7 +473,7 @@ export const checkShell = Effect.fn("KinWorkSandbox.checkShell")(function* (inpu
     platform,
     paths,
     sandbox: (shellPaths, childEnv) => sandboxSettings(shellPaths, input.domains, childEnv),
-    childEnv: (tmp) => childEnvironment(env, tmp, runtimeBin),
+    childEnv: (tmp) => childEnvironment(env, tmp, runtimeBin, tools),
     session: input.session,
     confinement: (root) => confiner.hook({ root, tools: shellTools, mcp: false }),
     hostEnv,
@@ -482,7 +495,7 @@ export const checkShell = Effect.fn("KinWorkSandbox.checkShell")(function* (inpu
     result,
     paths,
     tmpRoot,
-    childEnv: (tmp: string) => childEnvironment(env, tmp, runtimeBin),
+    childEnv: (tmp: string) => childEnvironment(env, tmp, runtimeBin, tools),
     install: result.failed === undefined ? [] : yield* missing(env),
   } as const;
 });
@@ -491,7 +504,7 @@ export const layer = Layer.effect(
   KinWorkSandbox,
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const { stateDir } = yield* ServerConfig;
+    const { stateDir, baseDir } = yield* ServerConfig;
     const agentScope = yield* AgentScope;
     const settings = yield* Effect.serviceOption(ServerSettingsService);
     const context = yield* Effect.context<
@@ -558,6 +571,7 @@ export const layer = Layer.effect(
           domains,
           readPaths: host.readPaths,
           providerHomes: yield* configuredProviderHomes(settings),
+          toolDirs: toolDirectories(baseDir),
         });
         if (checked._tag === "unresolved") return yield* fileOnlyBecause(checked.reason);
         const { result, install } = checked;

@@ -80,6 +80,8 @@ import { KinLevelGate } from "./LevelGate.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
 import { localPublishNote, OWNER_DECLINED, WAITING_FOR_OWNER } from "./workerBrief.ts";
 import * as Publish from "./workerPublish.ts";
+import * as Toolchain from "../gendocs/toolchain.ts";
+import * as Workspace from "../gendocs/workspace.ts";
 import * as Workers from "./Workers.ts";
 import * as Tracker from "./WorkerTracker.ts";
 import { LOCAL_BUILD_ONLY, LOCAL_DIRECT_ONLY } from "./localWorkers.ts";
@@ -829,6 +831,9 @@ const run = <A, E>(
           // Connected on this host, with no project here: the owner's to reach, no one else's.
           Layer.succeed(KinGithubRepoScope, KinGithubRepoScope.of({ repos: ["GLDRoger/t3code"] })),
           ConfigProvider.layer(ConfigProvider.fromUnknown(hostConfig)),
+          // Document jobs have their own tests (`gendocs/`); these workers never make one.
+          Layer.mock(Workspace.KinWorkspace)({}),
+          Layer.mock(Toolchain.KinToolchain)({}),
         ),
       ),
       Layer.provide(Layer.succeedContext(ctx.services)),
@@ -4013,7 +4018,7 @@ const upgradedFromK058 = (sql: SqlClient.SqlClient) =>
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 59`;
     assert.deepStrictEqual(
       (yield* runKinMigrations()).map(([id]) => id),
-      [59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71],
+      [59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72],
     );
   }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
 const attemptRows = (sql: SqlClient.SqlClient, workerId: KinWorkerId) =>

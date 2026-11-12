@@ -222,6 +222,8 @@ it.effect(
         `${base}/codex-relocated`,
         `${base}/claude-instance`,
         `${base}/opt/go`,
+        `${home}/kin-tools/typst`,
+        `${state}/kin-tools/typst`,
       ])
         yield* fs.makeDirectory(directory, { recursive: true });
       // Logins kept outside the home, reached through links directly under it.
@@ -235,8 +237,15 @@ it.effect(
           providerHomes: [`${base}/claude-instance`],
           readPaths,
           runtime: `${home}/.local/share/node`,
+          toolDirs: [
+            `${home}/kin-tools/typst`,
+            `${state}/kin-tools/typst`,
+            `${home}/kin-tools/gone`,
+          ],
         });
       const open = yield* roots([`${base}/opt/go`]);
+      // Kin's tools open up, unless one sits in a closed place; a missing one is just left out.
+      assert.deepStrictEqual(open.tools, [`${home}/kin-tools/typst`]);
       for (const login of [
         home,
         state,
@@ -246,7 +255,11 @@ it.effect(
         `${base}/claude-instance`,
       ])
         assert.include(open.denied, login);
-      assert.deepStrictEqual(open.readable, [`${home}/.local/share/node`, `${base}/opt/go`]);
+      assert.deepStrictEqual(open.readable, [
+        `${home}/kin-tools/typst`,
+        `${home}/.local/share/node`,
+        `${base}/opt/go`,
+      ]);
       // A read path that resolves into, or holds, a login turns the shell off.
       for (const reopen of [
         `${home}/.codex/sessions`,

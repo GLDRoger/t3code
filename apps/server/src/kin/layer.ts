@@ -26,6 +26,8 @@ export { KinServer } from "./KinServer.ts";
 import type * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as KinMcp from "./mcp/layer.ts";
+import * as Workspace from "./gendocs/workspace.ts";
+import * as Vcs from "../vcs/VcsProcess.ts";
 import * as GithubWebhooks from "./triggers/githubWebhooks.ts";
 
 const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
@@ -58,6 +60,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
               LevelControl.layer,
               MemoryChanges.layer,
               KinRecords.layer,
+              Workspace.layer.pipe(Layer.provide(Vcs.layer)),
               ApprovalCards.layer,
               RetiredActions.layer,
             ).pipe(

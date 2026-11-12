@@ -9,6 +9,7 @@ import * as Schema from "effect/Schema";
 import { Command, Flag, GlobalFlag } from "effect/cli";
 
 import { authLocationFlags, resolveCliAuthConfig } from "../../cli/config.ts";
+import { toolDirectories } from "../gendocs/toolchain.ts";
 import { DEFAULT_WORKER_HOSTS } from "../lead/workerNetwork.ts";
 import { checkShell, hostShell, readStatus } from "../lead/workSandbox.ts";
 
@@ -27,6 +28,7 @@ export class KinWorkerShellCheckError extends Schema.TaggedError<KinWorkerShellC
  */
 const runCheck = Effect.fn("KinWorkerShellCli.check")(function* (input: {
   readonly stateDir: string;
+  readonly baseDir: string;
   readonly claude: string | undefined;
   readonly json: boolean;
 }) {
@@ -37,6 +39,7 @@ const runCheck = Effect.fn("KinWorkerShellCli.check")(function* (input: {
     return yield* new KinWorkerShellCheckError({ message: "No claude on PATH; pass --claude." });
   const checked = yield* checkShell({
     stateDir: input.stateDir,
+    toolDirs: toolDirectories(input.baseDir),
     session: {
       options: {
         model: "claude-haiku-4-5",
@@ -111,6 +114,7 @@ export const workerShellCommand = Command.make("worker-shell", {
       if (flags.check)
         return yield* runCheck({
           stateDir: config.stateDir,
+          baseDir: config.baseDir,
           claude: Option.getOrUndefined(flags.claude),
           json: flags.json,
         });

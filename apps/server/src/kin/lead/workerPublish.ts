@@ -172,7 +172,7 @@ const decodePull = Schema.decodeUnknownOption(
 const refuse = (reason: string) => new KinWorkerPublishRefused({ reason });
 
 // Kin's git sees only the git and ssh settings it sets, none from the server's environment.
-const scrubbedEnv = (): NodeJS.ProcessEnv =>
+export const scrubbedEnv = (): NodeJS.ProcessEnv =>
   Object.fromEntries(
     Object.keys(process.env)
       .filter((name) => /^(GIT_|SSH_)/i.test(name))

@@ -391,12 +391,13 @@ it.effect(
         yield* Effect.flip(LeadMoney.profile(scopeOf(lead), {})),
       ];
       for (const error of refused) assert.include(error, { reason: "not_allowed" });
-      // Every Work method: the clients, contacts and projects ones, lists, money and the profile.
+      // Every Work method: the clients, contacts and projects ones, lists, money, the profile,
+      // and issuing and voiding numbered entries.
       const methods = [
         ...Object.values(KIN_WORK_WS_METHODS),
         ...KinFinanceRpcs.map((rpc) => rpc._tag),
       ];
-      assert.lengthOf(methods, 28);
+      assert.lengthOf(methods, 30);
       for (const method of methods)
         assert.isTrue(
           (yield* Effect.exit(authorizeRpc([AuthKinChatScope], method, { orgId })))._tag ===
