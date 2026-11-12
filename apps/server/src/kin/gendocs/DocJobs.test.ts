@@ -163,6 +163,7 @@ const renderer = Layer.effect(
     const real = yield* Render.KinDocRenderer;
     return Render.KinDocRenderer.of({
       store: real.store,
+      drawable: real.drawable,
       render: (request) => {
         if (failing.reason !== undefined)
           return Effect.succeed({ _tag: "failed", reason: failing.reason });
@@ -204,6 +205,7 @@ const renderer = Layer.effect(
 const toolchain = Layer.succeed(KinToolchain, {
   ensure: () =>
     Effect.fail(new KinChatError({ reason: "unavailable", message: "no Typst in these tests" })),
+  present: () => Effect.undefined,
   fonts: () => Effect.undefined,
 });
 // Follow-up passes Kin sent recipe writers, by thread.

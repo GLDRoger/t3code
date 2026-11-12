@@ -114,6 +114,8 @@ export class KinToolchain extends Context.Service<
   {
     /** The pinned Typst's path on this host, fetched first if need be, or why there is none. */
     readonly ensure: () => Effect.Effect<string, KinChatError>;
+    /** The pinned Typst's path when this host already has it; never fetches. */
+    readonly present: () => Effect.Effect<string | undefined>;
     /** The folder of Kin's pinned fonts, fetched first if need be; `undefined` when it can't be. */
     readonly fonts: () => Effect.Effect<string | undefined>;
   }
@@ -328,6 +330,14 @@ export const layer = Layer.effect(
         ),
       );
     });
-    return KinToolchain.of({ ensure, fonts });
+    const present: KinToolchain["Service"]["present"] = Effect.fn("KinToolchain.present")(
+      function* () {
+        const release =
+          TYPST_RELEASES[`${yield* HostProcess.Platform}-${yield* HostProcess.Architecture}`];
+        return release !== undefined && (yield* installed(release.sha256)) ? binary : undefined;
+      },
+      lock.withPermits(1),
+    );
+    return KinToolchain.of({ ensure, present, fonts });
   }),
 );

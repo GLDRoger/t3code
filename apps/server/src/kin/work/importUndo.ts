@@ -96,7 +96,7 @@ export const removeChunk = Effect.fn("KinImport.removeChunk")(function* (
                 WHERE c.org_id = ${orgId} AND c.via <> 'import' AND c.record_id IN ${asked}`
           }`).map((one) => one.id),
       );
-      const refs = yield* usersOf(sql, orgId, asked);
+      const refs = yield* usersOf(sql, orgId, sql`${asked}`);
       let moved = true;
       while (moved) {
         moved = false;
