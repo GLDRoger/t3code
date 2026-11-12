@@ -33,9 +33,11 @@ import * as Docs from "../work/docs.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import type { RecordRow } from "../work/recordRows.ts";
 import { listDef } from "../work/registers.ts";
+import { turnSensitive } from "../work/workerAttempts.ts";
 import { entrySensitive } from "./facts.ts";
-import { canonical, turnSensitive } from "./make.ts";
-import type { Recipe, Value } from "./recipe.ts";
+import { canonical } from "./make.ts";
+import type { Value } from "./recipe.ts";
+import { labelChange, verifySample } from "./recipeLabels.ts";
 import { KinDocRenderer } from "./render.ts";
 import { RETURN_CAPS, takeOutputs } from "./returnPath.ts";
 import { jobWorktree, KinWorkspace, type StoredRecipe } from "./workspace.ts";
@@ -233,27 +235,6 @@ template.typ reads #let d = json("/inputs.json"): every input and computed field
 A table recipe's sheets each have a name, the table input they show, a CSV file name, columns (header and field, amount.currency for a money column's currency) and leaveOutOfTotals; workbook names the XLSX.
 sample.json holds invented values for every input, as Kin would give them: money as {"minor": <integer>, "currency": "INR"}, days as 2026-11-12.
 The body after the front matter is notes for the agent on when and how to use it.`;
-
-const SAMPLE_DAY = "2026-01-01";
-/** A recipe's sample.json as its inputs: each declared input's value, or null. */
-export const sampleInputs = (
-  recipe: Recipe,
-  sample: string | undefined,
-): Readonly<Record<string, Value>> | string => {
-  if (sample === undefined)
-    return "it has no sample.json: invented values for every input, so Kin can render it";
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(sample);
-  } catch {
-    return "its sample.json isn't JSON";
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
-    return "its sample.json isn't an object of inputs";
-  return Object.fromEntries(
-    recipe.inputs.map((input) => [input.name, (Reflect.get(parsed, input.name) ?? null) as Value]),
-  );
-};
 
 export type JobRow = {
   readonly orgId: KinOrgId;
@@ -476,22 +457,10 @@ export const makeCollectorLayer = (options: { readonly sweepPage?: number } = {}
             workerId: job.workerId,
             recipe: job.recipe,
             agentId: job.agentId,
-            verify: Effect.fn("KinDocCollector.verify")(
-              function* ({ commit, recipe, sample }) {
-                const inputs = sampleInputs(recipe, sample);
-                if (typeof inputs === "string") return inputs;
-                const rendered = yield* renderer.render({
-                  orgId,
-                  recipe,
-                  commit,
-                  inputs,
-                  day: typeof inputs.today === "string" ? inputs.today : SAMPLE_DAY,
-                });
-                return rendered._tag === "made" ? undefined : rendered.reason;
-              },
-              Effect.catch((error) => Effect.succeed(error.message)),
-            ),
+            verify: verifySample(renderer, orgId),
           });
+          if (change._tag === "committed")
+            yield* labelChange(orgId, job.recipe, change, job.sensitive === 1);
           const left =
             change._tag === "refused" || change.left.length === 0
               ? []

@@ -11,7 +11,7 @@ import * as Layer from "effect/Layer";
 
 import { ServerConfig } from "../../config.ts";
 import * as Vcs from "../../vcs/VcsProcess.ts";
-import { sampleInputs } from "./DocJobs.ts";
+import { sampleInputs } from "./recipeLabels.ts";
 import * as Render from "./render.ts";
 import { STARTER_FILES } from "./starter.ts";
 import { KinToolchain } from "./toolchain.ts";

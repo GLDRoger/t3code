@@ -9,6 +9,7 @@ import { admitted, askedBy, type Lead, leadTool, sourceOf, writerFor } from "../
 import type { DocumentInput } from "./DocJobs.ts";
 import { canonical, makeDocument, remakeForEntry, type Requester } from "./make.ts";
 import * as Numbers from "./numbering.ts";
+import { recipeLabelled, undoRecipe as undoLabelled } from "./recipeLabels.ts";
 import { KinWorkspace } from "./workspace.ts";
 
 /** `kin_recipes`, `kin_issue`, `kin_recipe_undo`, and `kin_document` with a recipe, made in the call. */
@@ -44,15 +45,16 @@ export const recipes = leadTool("KinDocuments.recipes", (lead, _input: Record<st
   Effect.gen(function* () {
     yield* admitted(lead, "kin_recipes", {});
     const stored = yield* (yield* KinWorkspace).recipes(lead.orgId);
+    const labelled = yield* Effect.forEach(stored, (recipe) => recipeLabelled(lead.orgId, recipe));
     return {
-      recipes: stored.map((recipe) => ({
+      recipes: stored.map((recipe, index) => ({
         name: recipe.name,
         title: recipe.title,
         description: recipe.description,
         kind: recipe.kind,
         list: recipe.list,
         numbered: recipe.numbered,
-        confidential: recipe.sensitive,
+        confidential: recipe.sensitive || labelled[index] === true,
         inputs: recipe.inputs.map((input) => ({
           name: input.name,
           type: input.type,
@@ -169,14 +171,16 @@ export const issue = leadTool("KinDocuments.issue", (lead, input: typeof IssueIn
       input.void === true
         ? yield* Numbers.voidEntry(lead.orgId, writer, input.entry)
         : yield* Numbers.issue(lead.orgId, writer, input.entry);
-    const remade = result.issued
-      ? yield* remakeForEntry({
-          orgId: lead.orgId,
-          entryKey: result.key,
-          requester: yield* requesterOf(lead, input.sourceEventId),
-          admit: stillAdmitted(lead, "kin_issue", input),
-        })
-      : { documents: [], written: [], problems: [] };
+    // Asked again, it makes any of its documents that don't carry the number yet.
+    const remade =
+      input.void !== true && result.number !== null && result.state !== "dropped"
+        ? yield* remakeForEntry({
+            orgId: lead.orgId,
+            entryKey: result.key,
+            requester: yield* requesterOf(lead, input.sourceEventId),
+            admit: stillAdmitted(lead, "kin_issue", input),
+          })
+        : { documents: [], written: [], problems: [] };
     for (const written of remade.written) yield* shown(lead, written, true);
     return {
       entry: result.key,
@@ -212,7 +216,7 @@ export const undoRecipe = leadTool(
     Effect.gen(function* () {
       yield* admitted(lead, "kin_recipe_undo", input);
       yield* sourceOf(lead, input.sourceEventId);
-      const undone = yield* (yield* KinWorkspace).undoRecipe(lead.orgId, input.recipe, {
+      const undone = yield* undoLabelled(lead.orgId, input.recipe, {
         _tag: "agent",
         agentId: lead.agentId,
       });

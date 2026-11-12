@@ -4,11 +4,14 @@ import {
   type KinDocDiffInput,
   type KinDocGetInput,
   type KinDocHistoryInput,
+  type KinDocLabelInput,
   type KinDocRestoreInput,
   type KinDocRenderInput,
   type KinDocRenderResult,
   type KinDocsListInput,
   type KinOrgId,
+  type KinRecipeClearLabelInput,
+  type KinRecipeClearLabelResult,
   type KinRecipesInput,
   type KinRecipesResult,
   type KinRecipeUndoInput,
@@ -24,6 +27,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { makeDocument } from "../gendocs/make.ts";
+import { clearLabel, recipeLabelled, undoRecipe as undoLabelled } from "../gendocs/recipeLabels.ts";
 import { KinWorkspace } from "../gendocs/workspace.ts";
 import { changedSections, outlineOf, patchOf } from "./docBody.ts";
 import * as Docs from "./docs.ts";
@@ -288,8 +292,9 @@ export const recipes = Effect.fn("KinDocs.recipes")(function* (
 ) {
   yield* theOwner(people, input.orgId);
   const stored = yield* (yield* KinWorkspace).recipes(input.orgId);
+  const labelled = yield* Effect.forEach(stored, (recipe) => recipeLabelled(input.orgId, recipe));
   return {
-    recipes: stored.map((recipe) => ({
+    recipes: stored.map((recipe, index) => ({
       name: recipe.name,
       title: recipe.title,
       description: recipe.description,
@@ -304,12 +309,13 @@ export const recipes = Effect.fn("KinDocs.recipes")(function* (
       list: recipe.list,
       numbered: recipe.numbered,
       sensitive: recipe.sensitive,
+      ...(labelled[index] === true ? { labelled: true as const } : {}),
       changedAt: recipe.changedAt === null ? null : iso(recipe.changedAt),
       changedBy: recipe.changed,
       commit: recipe.commit,
     })),
   } satisfies KinRecipesResult;
-});
+}, workFailure);
 
 const PREVIEW_BYTES = 5 * 1024 * 1024;
 
@@ -366,7 +372,7 @@ export const undoRecipe = Effect.fn("KinDocs.undoRecipe")(function* (
   input: KinRecipeUndoInput,
 ) {
   const person = yield* theOwner(people, input.orgId);
-  const undone = yield* (yield* KinWorkspace).undoRecipe(input.orgId, input.recipe, {
+  const undone = yield* undoLabelled(input.orgId, input.recipe, {
     _tag: "owner",
     personId: person.personId,
   });
@@ -380,4 +386,34 @@ export const undoRecipe = Effect.fn("KinDocs.undoRecipe")(function* (
     commit: undone.commit,
     removed: undone.removed,
   } satisfies KinRecipeUndoResult;
+}, workFailure);
+
+/** The owner's label on a doc: raising or lowering it, which only a person may do. */
+export const label = Effect.fn("KinDocs.label")(
+  function* (people: ReadonlyArray<PersonIdentity>, input: KinDocLabelInput) {
+    const person = yield* theOwner(people, input.orgId);
+    yield* Docs.move(
+      input.orgId,
+      ownerWriter(person),
+      { key: input.key },
+      {
+        sensitive: input.sensitive,
+      },
+    );
+    return yield* detailOf(input.orgId, { key: input.key });
+  },
+  Effect.catchTags({ SqlError: () => unavailable }),
+);
+
+/** The owner clears the label a recipe has from being written after a sensitive read. */
+export const clearRecipeLabel = Effect.fn("KinDocs.clearRecipeLabel")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinRecipeClearLabelInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  return (yield* clearLabel(
+    input.orgId,
+    input.recipe,
+    person.personId,
+  )) satisfies KinRecipeClearLabelResult;
 }, workFailure);

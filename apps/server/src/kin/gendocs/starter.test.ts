@@ -4,7 +4,7 @@ import * as NodeZlib from "node:zlib";
 import { assert, describe, it } from "@effect/vitest";
 
 import { computeData } from "./compute.ts";
-import { sampleInputs } from "./DocJobs.ts";
+import { sampleInputs } from "./recipeLabels.ts";
 import { assembleInputs, parseRecipe, type Recipe, type Value } from "./recipe.ts";
 import { typeMismatch } from "./returnPath.ts";
 import { STARTER_FILES } from "./starter.ts";

@@ -277,6 +277,8 @@ export const KinRecipe = Schema.Struct({
   list: Schema.NullOr(TrimmedNonEmptyString),
   numbered: Schema.Boolean,
   sensitive: Schema.Boolean,
+  /** Written in a turn that read something sensitive: its documents are labelled until cleared. */
+  labelled: Schema.optional(Schema.Literal(true)),
   changedAt: Schema.NullOr(IsoDateTime),
   /** Kin's starter, the agent whose worker changed it last, or the owner who undid a change. */
   changedBy: Schema.Union([
@@ -348,6 +350,23 @@ export const KinRecipeUndoResult = Schema.Struct({
   removed: Schema.Boolean,
 });
 export type KinRecipeUndoResult = typeof KinRecipeUndoResult.Type;
+
+/** The owner's label on a doc; only a person lowers one, so this is how a doc stops being sensitive. */
+export const KinDocLabelInput = Schema.Struct({
+  orgId: KinOrgId,
+  key: KinRecordKey,
+  sensitive: Schema.Boolean,
+});
+export type KinDocLabelInput = typeof KinDocLabelInput.Type;
+
+/** Clears the label a recipe got from being written after a sensitive read. */
+export const KinRecipeClearLabelInput = KinRecipeUndoInput;
+export type KinRecipeClearLabelInput = typeof KinRecipeClearLabelInput.Type;
+export const KinRecipeClearLabelResult = Schema.Struct({
+  recipe: TrimmedNonEmptyString,
+  commit: TrimmedNonEmptyString,
+});
+export type KinRecipeClearLabelResult = typeof KinRecipeClearLabelResult.Type;
 
 export const KinDocsSubscribeInput = Schema.Struct({ orgId: KinOrgId });
 export type KinDocsSubscribeInput = typeof KinDocsSubscribeInput.Type;
@@ -426,6 +445,8 @@ const KIN_DOCS_WS_METHODS = {
   recipes: "kin.docs.recipes",
   render: "kin.docs.render",
   undoRecipe: "kin.docs.undoRecipe",
+  label: "kin.docs.label",
+  clearRecipeLabel: "kin.docs.clearRecipeLabel",
 } as const;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -474,6 +495,12 @@ export const KinDocsRpcs = [
     success: KinRecipeUndoResult,
     error,
   }),
+  Rpc.make(KIN_DOCS_WS_METHODS.label, { payload: KinDocLabelInput, success: KinDocDetail, error }),
+  Rpc.make(KIN_DOCS_WS_METHODS.clearRecipeLabel, {
+    payload: KinRecipeClearLabelInput,
+    success: KinRecipeClearLabelResult,
+    error,
+  }),
 ] as const;
 
 export const KIN_DOCS_RPC_SCOPES = {
@@ -489,4 +516,7 @@ export const KIN_DOCS_RPC_SCOPES = {
   // Files a version, as restore does; it starts no agent work.
   [KIN_DOCS_WS_METHODS.render]: AuthOrchestrationOperateScope,
   [KIN_DOCS_WS_METHODS.undoRecipe]: AuthOrchestrationOperateScope,
+  // Lowers what an agent may show others: the owner's call, as the entry labels beside it are.
+  [KIN_DOCS_WS_METHODS.label]: AuthOrchestrationOperateScope,
+  [KIN_DOCS_WS_METHODS.clearRecipeLabel]: AuthOrchestrationOperateScope,
 } as const;

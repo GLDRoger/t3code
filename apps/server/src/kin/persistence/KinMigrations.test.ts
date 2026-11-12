@@ -17,6 +17,7 @@ import K072GeneratedDocuments from "./migrations/K072_GeneratedDocuments.ts";
 import K073KeyPushes from "./migrations/K073_KeyPushes.ts";
 import K074DocJobCleanup from "./migrations/K074_DocJobCleanup.ts";
 import K075ServerRenderedDocuments from "./migrations/K075_ServerRenderedDocuments.ts";
+import K076DocumentLabels from "./migrations/K076_DocumentLabels.ts";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
@@ -3071,6 +3072,28 @@ it.effect("K075 keeps what a rendered document was asked with, and reruns cleanl
       yield* sql`SELECT given_json AS "givenJson", title, asked_by_person_id AS "by"
         FROM kin_doc_jobs`,
       [{ givenJson: "{}", title: "Invoice", by: "person-1" }],
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("K076 adds recipe labels and request fingerprints, and reruns cleanly", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runKinMigrations();
+    yield* sql`INSERT INTO kin_orgs VALUES ('org', 'Invented Co', '2026-11-12T00:00:00.000Z')`;
+    yield* sql`INSERT INTO kin_recipe_labels (org_id, recipe, commit_sha, sensitive, labelled_at)
+      VALUES ('org', 'invoice', 'c1', 1, 1)`;
+    yield* sql`INSERT INTO kin_doc_jobs (org_id, worker_id, agent_id, wakeup_id, mode,
+        recipe_commit, inputs_sha256, sensitive, doc_origin, worktree_path, branch, audience,
+        created_at, request_sha256)
+      VALUES ('org', 'rd-1', '', '', 'document', 'c', 'h', 0, 'o', '', '', 'owner_only', 1, 'f')`;
+    yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 76`;
+    assert.deepStrictEqual(yield* runKinMigrations(), [[76, "DocumentLabels"]]);
+    yield* K076DocumentLabels;
+    assert.deepStrictEqual(
+      yield* sql`SELECT l.sensitive, j.request_sha256 AS "request" FROM kin_recipe_labels l
+        JOIN kin_doc_jobs j ON j.org_id = l.org_id`,
+      [{ sensitive: 1, request: "f" }],
     );
   }).pipe(Effect.provide(layer)),
 );

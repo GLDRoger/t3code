@@ -243,14 +243,15 @@ export const issue = Effect.fn("KinMoney.issue")(function* (
   const person = yield* theOwner(people, input.orgId);
   const writer = ownerWriter(person);
   const issued = yield* Numbers.issue(input.orgId, writer, input.key);
-  const remade = issued.issued
-    ? yield* remakeForEntry({
-        orgId: input.orgId,
-        entryKey: issued.key,
-        requester: { _tag: "owner", personId: person.personId, writer },
-        admit: Effect.void,
-      })
-    : { documents: [], problems: [] };
+  const remade =
+    issued.number !== null && issued.state !== "dropped"
+      ? yield* remakeForEntry({
+          orgId: input.orgId,
+          entryKey: issued.key,
+          requester: { _tag: "owner", personId: person.personId, writer },
+          admit: Effect.void,
+        })
+      : { documents: [], problems: [] };
   return {
     ...issued,
     documents: remade.documents.map((doc) => ({
