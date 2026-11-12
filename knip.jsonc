@@ -66,7 +66,11 @@
       // The Vite+ web build prerequisite.
       // Native and disk-loaded provider packages stay external to the bundle; the
       // CLI archive and desktop sidecar stage them from this manifest.
+      // Kin serves the prebuilt echarts, mermaid and d3 files to its visuals from disk.
       "ignoreDependencies": [
+        "d3",
+        "echarts",
+        "mermaid",
         "@effect/platform-node-shared",
         "@t3tools/web",
         "@napi-rs/keyring",

@@ -59,6 +59,7 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
 import { KinInviteDialog, type KinInviteDialogState } from "./KinInviteDialog";
+import { KinVisualHosts } from "./KinVisualHosts";
 import { kinClient } from "./kinClient";
 import { kinProfileRequestAtom, kinTeamAddRequestAtom } from "./kinTeamForm";
 import { useKinHostAt } from "./useKinHost";
@@ -293,6 +294,7 @@ function KinTeamBody(
             ))}
           </ul>
         )}
+        <KinVisualHosts environmentId={environmentId} orgId={orgId} />
       </div>
       {open === null ? null : (
         <KinTeammateSheet

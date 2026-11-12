@@ -59,6 +59,7 @@ import * as Hub from "./KinChatHub.ts";
 import * as Repository from "./KinChatRepository.ts";
 import * as Identity from "./KinIdentity.ts";
 import * as Service from "./KinChatService.ts";
+import * as VisualHosts from "./KinVisualHosts.ts";
 import * as Presence from "../reply/KinPresence.ts";
 
 const decodeKinOrgId = Schema.decodeSync(KinOrgId);
@@ -1018,6 +1019,164 @@ describe("KinChatService", () => {
           { reason: "invalid_state" },
         );
       }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "keeps a visual's page as a file of its chat, once per retry, readable only as the chat is, and refuses a bad one with the fix",
+    () =>
+      Effect.gen(function* () {
+        const { repo, service, person, agent, chat } = yield* seed();
+        const sql = yield* SqlClient.SqlClient;
+        const photo = (yield* service.send(person, {
+          chatId: chat.chatId,
+          body: "",
+          clientMessageId: "photo",
+          attachments: [yield* uploadPhoto("logo.png")],
+          uploader: TEST_UPLOAD_OWNER,
+        })).attachments![0]!.id;
+        const input = {
+          chatId: chat.chatId,
+          clientMessageId: "visual-1",
+          intent: "answer" as const,
+          title: "  Signup\nfunnel ",
+          html: `<h1>Funnel</h1><img src="kin-file:${photo}"><script>fetch("https://example.com")</script>`,
+        };
+        const card = yield* service.visual(agent, input);
+        assert.include(card, { type: "visual", revision: 1 });
+        assert.strictEqual(String(card.widgetId), `visual:${card.messageId}`);
+        assert.deepStrictEqual(card.awaiting, []);
+        const state = card.state as { attachmentId: string };
+        assert.deepInclude(card.state, { title: "Signup funnel", height: 360 });
+        assert.match(state.attachmentId, /^kin-chat-[0-9a-f-]+-html$/);
+        // Stored as written: nothing in the page is judged, the frame it is served in seals it.
+        const config = yield* ServerConfig.ServerConfig;
+        const stored = NodePath.join(config.attachmentsDir, `${state.attachmentId}.html`);
+        assert.strictEqual(NodeFS.readFileSync(stored, "utf8"), input.html);
+        assert.deepStrictEqual(
+          yield* sql`SELECT chat_id, message_id FROM kin_message_attachments WHERE attachment_id = ${state.attachmentId}`,
+          [{ chat_id: chat.chatId, message_id: card.messageId }],
+        );
+        // A retry returns the same card and leaves no second file behind.
+        assert.deepStrictEqual(yield* service.visual(agent, input), card);
+        assert.lengthOf(
+          (yield* storedFiles).filter((name) => name.endsWith(".html")),
+          1,
+        );
+        assert.isTrue(yield* service.attachmentReadable(person, state.attachmentId));
+        assert.deepStrictEqual(
+          Option.getOrThrow(yield* service.visualSources(state.attachmentId)),
+          {
+            orgId: person.orgId,
+            files: [{ attachmentId: photo, mimeType: "image/png" }],
+          },
+        );
+
+        const refusal = (change: object) =>
+          service
+            .visual(agent, { ...input, clientMessageId: "visual-2", ...change })
+            .pipe(Effect.flip);
+        for (const [change, fix] of [
+          [{ title: " " }, "needs a title"],
+          [{ title: "x".repeat(121) }, "120 or fewer"],
+          [{ html: "  " }, "page is empty"],
+          [{ html: "x".repeat(5 * 1024 * 1024 + 1) }, "the limit is 5 MiB"],
+          [{ html: '<img src="kin-file:kin-chat-not-here">' }, "is not a file in this chat"],
+        ] as const) {
+          const refused = yield* refusal(change);
+          assert.include(refused, { reason: "invalid_state" });
+          assert.include(String(refused.message), fix);
+        }
+        assert.lengthOf(
+          (yield* storedFiles).filter((name) => name.endsWith(".html")),
+          1,
+        );
+
+        assert.include(
+          yield* service
+            .upsertWidget(agent, {
+              chatId: chat.chatId,
+              widgetId: card.widgetId,
+              revision: 1,
+              type: "visual",
+              state: card.state,
+            })
+            .pipe(Effect.flip),
+          { reason: "not_allowed" },
+        );
+        assert.include(
+          yield* service
+            .act(person, {
+              widgetId: card.widgetId,
+              revision: 1,
+              actionId: "open",
+              clientActionId: "tap-visual",
+            })
+            .pipe(Effect.flip),
+          { reason: "invalid_state" },
+        );
+        assert.deepStrictEqual(yield* repo.listOpenWaiting(person), []);
+      }).pipe(Effect.provide(attachmentLayer)),
+  );
+
+  it.effect(
+    "lets only the owner choose where visuals load from, as bare hosts, and serves exactly that list",
+    () =>
+      Effect.gen(function* () {
+        const { repo, person } = yield* seed();
+        const hosts = yield* VisualHosts.KinVisualHosts;
+        const orgId = person.orgId;
+        assert.deepStrictEqual(yield* hosts.list([person], { orgId }), { orgId, hosts: [] });
+        assert.deepStrictEqual(yield* hosts.served(orgId), []);
+        assert.deepStrictEqual(
+          yield* hosts.allow([person], { orgId, host: " https://Tiles.Example.com/v1/ " }),
+          { orgId, hosts: ["tiles.example.com"] },
+        );
+        // Allowing a host twice keeps one row.
+        yield* hosts.allow([person], { orgId, host: "tiles.example.com" });
+        yield* hosts.allow([person], { orgId, host: "fonts.example.com" });
+        assert.deepStrictEqual(yield* hosts.served(orgId), [
+          "fonts.example.com",
+          "tiles.example.com",
+        ]);
+        for (const host of ["*", "10.0.0.1", "localhost", "example.com; script-src *", "a.b:8443"])
+          assert.include(yield* hosts.allow([person], { orgId, host }).pipe(Effect.flip), {
+            reason: "invalid_state",
+          });
+
+        const teammate = { ...person, personId: decodeKinPersonId("teammate") };
+        yield* repo.insertPerson({
+          ...teammate,
+          handle: "suraj",
+          displayName: "Suraj",
+          githubLogin: null,
+          createdAt: timestamp,
+        });
+        for (const refused of [
+          hosts.list([teammate], { orgId }),
+          hosts.allow([teammate], { orgId, host: "evil.example.com" }),
+          hosts.remove([teammate], { orgId, host: "tiles.example.com" }),
+        ])
+          assert.include(yield* refused.pipe(Effect.flip), { reason: "not_allowed" });
+        // Someone outside the org learns nothing, not even that it exists.
+        assert.include(yield* hosts.list([], { orgId }).pipe(Effect.flip), { reason: "not_found" });
+        assert.deepStrictEqual(yield* hosts.served(orgId), [
+          "fonts.example.com",
+          "tiles.example.com",
+        ]);
+
+        assert.deepStrictEqual(
+          yield* hosts.remove([person], { orgId, host: "Tiles.example.com" }),
+          {
+            orgId,
+            hosts: ["fonts.example.com"],
+          },
+        );
+        // A row that is not a bare host never reaches a policy, however it got there.
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_visual_hosts (org_id, host, added_by, created_at)
+          VALUES (${orgId}, ${"x.example.com; script-src *"}, ${person.personId}, 0)`;
+        assert.deepStrictEqual(yield* hosts.served(orgId), ["fonts.example.com"]);
+      }).pipe(Effect.provide(Layer.provideMerge(VisualHosts.layer, layer))),
   );
 
   it.effect(

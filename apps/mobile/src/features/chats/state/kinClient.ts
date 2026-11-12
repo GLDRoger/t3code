@@ -18,6 +18,10 @@ import {
   type KinApprovalsOrgInput,
   type KinChatHistoryInput,
   type KinChatMembersInput,
+  type KinDocDiffInput,
+  type KinDocGetInput,
+  type KinDocsListInput,
+  type KinDocsSubscribeInput,
   type KinPeopleListInput,
   type KinChatId,
   type KinChatsSubscribeInput,
@@ -53,6 +57,7 @@ import {
   type KinSynced,
 } from "@t3tools/client-runtime/kin/kinStreams";
 import type { KinChatState } from "@t3tools/client-runtime/kin/kinInboxModel";
+import { KIN_DOCS_LABEL, kinDocsLiveStream } from "@t3tools/client-runtime/kin/kinDocsStream";
 import { KIN_WORK_LABEL, kinWorkLiveStream } from "@t3tools/client-runtime/kin/kinWorkStream";
 
 export type { KinSynced } from "@t3tools/client-runtime/kin/kinStreams";
@@ -181,6 +186,21 @@ const workProjectRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   tag: "kin.work.project",
 });
 const readWorkProject = guardedRead(workProjectRead);
+const docsListRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:docs:list:read",
+  tag: "kin.docs.list",
+});
+const readDocsList = guardedRead(docsListRead);
+const docRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:docs:doc:read",
+  tag: "kin.docs.get",
+});
+const readDoc = guardedRead(docRead);
+const docDiffRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:docs:diff:read",
+  tag: "kin.docs.diff",
+});
+const readDocDiff = guardedRead(docDiffRead);
 const workHistoryRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "kin:work:history:read",
   tag: "kin.work.history",
@@ -469,6 +489,12 @@ export const kinClient = {
       key: ({ input }) => `${input.messageId}|${input.emoji}`,
     },
   }),
+  /** Owner-only: lets every visual in the org load from one more host. */
+  visualHostAllow: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:visual-host:allow",
+    tag: "kin.visuals.hosts.allow",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.host}` },
+  }),
   /** Owner-only Undo of one line on a memory change card. */
   memoryUndo: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:memory:undo",
@@ -486,6 +512,56 @@ export const kinClient = {
     }),
     staleTimeMs: 60_000,
     refreshTrigger: sessionGeneration,
+  }),
+  /** Docs are never saved on the device either: a doc may be private to the owner. */
+  docsLive: createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {
+    label: KIN_DOCS_LABEL,
+    subscribe: (input: KinDocsSubscribeInput) => kinDocsLiveStream(input),
+  }),
+  /** One page of docs; the list's controller decides when. Its `permissionAtom` gates Docs. */
+  docsList: docsListRead,
+  /** The docs linked to one client or one project, on that client's or project's page. */
+  docsUnder: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:docs:under",
+    execute: Effect.fn("KinClient.docsUnder")(function* (input: KinDocsListInput) {
+      return yield* readDocsList(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: sessionGeneration,
+  }),
+  /** A doc at one version, with its outline. */
+  doc: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:docs:doc",
+    execute: Effect.fn("KinClient.doc")(function* (input: KinDocGetInput) {
+      return yield* readDoc(input);
+    }),
+    staleTimeMs: 30_000,
+    // Read again on reconnecting; between those, the reader's watch reads only when it changed.
+    refreshTrigger: sessionGeneration,
+  }),
+  /** What differs between two versions, as a patch. Versions never change, so neither does this. */
+  docDiff: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:docs:diff",
+    execute: Effect.fn("KinClient.docDiff")(function* (input: KinDocDiffInput) {
+      return yield* readDocDiff(input);
+    }),
+    staleTimeMs: 5 * 60_000,
+    refreshTrigger: sessionGeneration,
+  }),
+  /** A page of a doc's versions, newest first. */
+  docHistory: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:docs:history:read",
+    tag: "kin.docs.history",
+  }),
+  docRestore: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:docs:restore",
+    tag: "kin.docs.restore",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+  }),
+  /** One search over tasks, clients, contacts, projects and docs. */
+  search: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:search",
+    tag: "kin.search",
   }),
   /** Work is never saved on the device: it is the owner's alone, and old counts would mislead. */
   workLive,

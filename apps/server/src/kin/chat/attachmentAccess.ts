@@ -15,6 +15,7 @@ import { KinServer } from "../KinServer.ts";
 import { KIN_ATTACHMENT_ID_PREFIX } from "./KinAttachmentStore.ts";
 import { KinChatService } from "./KinChatService.ts";
 import { KinIdentity } from "./KinIdentity.ts";
+import { KinVisualHosts } from "./KinVisualHosts.ts";
 
 type AttachmentResource = Extract<AssetResource, { readonly _tag: "attachment" }>;
 
@@ -86,4 +87,41 @@ export const authorizeAttachmentServe = Effect.fn("Kin.authorizeAttachmentServe"
     Effect.as(true),
     Effect.orElseSucceed(() => false),
   );
+});
+
+export interface KinVisualSources {
+  /** Outside hosts the org's owner allowed; the served policy lists exactly these. */
+  readonly hosts: ReadonlyArray<string>;
+  /** The chat's other files, which the page may show by id. */
+  readonly files: ReadonlyArray<{
+    readonly attachmentId: string;
+    readonly mimeType: string | null;
+  }>;
+}
+
+const NO_SOURCES: KinVisualSources = { hosts: [], files: [] };
+
+/**
+ * What a chat's page may load besides itself. A failed lookup yields nothing, so the page is
+ * then served with no outside host and no chat file.
+ */
+export const kinVisualSources = Effect.fn("Kin.visualSources")(function* (attachmentId: string) {
+  const kin = yield* Effect.serviceOption(KinServer);
+  const services = Option.flatMap(kin, (server) => server.services);
+  if (Option.isNone(services)) return NO_SOURCES;
+  return yield* Context.get(services.value, KinChatService)
+    .visualSources(attachmentId.toLowerCase())
+    .pipe(
+      Effect.flatMap((sources) =>
+        Option.isNone(sources)
+          ? Effect.succeed(NO_SOURCES)
+          : Context.get(services.value, KinVisualHosts)
+              .served(sources.value.orgId)
+              .pipe(Effect.map((hosts) => ({ hosts, files: sources.value.files }))),
+      ),
+      Effect.tapError((cause) =>
+        Effect.logWarning("Kin could not read a visual's sources.", cause),
+      ),
+      Effect.orElseSucceed(() => NO_SOURCES),
+    );
 });

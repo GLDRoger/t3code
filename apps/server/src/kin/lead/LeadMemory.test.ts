@@ -371,6 +371,7 @@ it.live(
           "kin_hand_off",
           "kin_ask",
           "kin_chart",
+          "kin_visual",
           "kin_react",
           "memory_search",
           "memory_read",
