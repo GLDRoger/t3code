@@ -3,6 +3,7 @@ import * as NodeCrypto from "node:crypto";
 
 import {
   AuthKinChatScope,
+  KIN_APPROVER_ENROLMENT_VERSION,
   KinApprovalError,
   type AuthSessionId,
   type KinActionId,
@@ -231,6 +232,13 @@ const make = Effect.gen(function* () {
 
   const registerKey = Effect.fn("ApproverKeys.registerKey")(
     function* (caller: KinKeyCaller, input: KinApprovalsRegisterKeyInput) {
+      // Older apps expect a code back and discard their key without one. They show the host's
+      // text only for `unavailable`, up to 200 characters.
+      if (input.enrolmentVersion !== KIN_APPROVER_ENROLMENT_VERSION)
+        return yield* fail(
+          "unavailable",
+          "This version of the Kin app can't set up approvals any more. Please update the Kin app, then try again.",
+        );
       // Answered early here; the write below checks again against the rows it commits with.
       yield* ownerIn(caller, input.orgId);
       const thumbprint = computeDpopJwkThumbprint(input.publicJwk) as KinKeyThumbprint;
