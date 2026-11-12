@@ -582,6 +582,17 @@ export const sensitiveShown = Effect.fn("KinWorkerAttempts.sensitiveShown")(func
     VALUES (${input.orgId}, ${input.wakeupId}, ${at}) ON CONFLICT (org_id, wakeup_id) DO NOTHING`;
 });
 
+/** Whether the turn has shown the agent anything sensitive: what it writes now may carry it. */
+export const turnSensitive = Effect.fn("KinWorkerAttempts.turnSensitive")(function* (
+  orgId: KinOrgId,
+  wakeupId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql`SELECT 1 FROM kin_wakeup_sensitive_reads
+    WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} LIMIT 1`;
+  return rows.length > 0;
+});
+
 /** A refusal that quotes something sensitive, so the tool marks the turn as a result would. */
 export class SensitiveRefusal extends KinChatError {}
 // @effect-diagnostics-next-line instanceOfSchema:off -- the subclass, not the schema, marks it.

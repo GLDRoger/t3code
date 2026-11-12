@@ -234,8 +234,6 @@ it.effect(
         `${base}/sys/etc/aws`,
         `${base}/data/vault`,
         `${base}/homes`,
-        `${home}/kin-tools/typst`,
-        `${state}/kin-tools/typst`,
       ])
         yield* fs.makeDirectory(directory, { recursive: true });
       // Logins kept outside the home, reached through links directly under it.
@@ -257,20 +255,9 @@ it.effect(
           providerHomes: [`${base}/codex-relocated`, `${base}/claude-instance`, ...laterHomes],
           readPaths,
           runtime: `${home}/.local/share/node`,
-          toolDirs: [
-            `${home}/kin-tools/typst`,
-            `${state}/kin-tools/typst`,
-            `${home}/kin-tools/gone`,
-          ],
         });
       const open = yield* roots([]);
-      // Kin's tools open up, unless one sits in a closed place; a missing one is just left out.
-      assert.deepStrictEqual(open.tools, [`${home}/kin-tools/typst`]);
-      assert.deepStrictEqual(open.readable, [
-        `${base}/sys`,
-        `${home}/kin-tools/typst`,
-        `${home}/.local/share/node`,
-      ]);
+      assert.deepStrictEqual(open.readable, [`${base}/sys`, `${home}/.local/share/node`]);
       // Denied inside the system root: what the links lead to, and a home made later.
       for (const inside of [
         `${base}/sys/etc/aws/credentials`,
@@ -344,7 +331,6 @@ it.effect(
         `${tree}/bin`,
         `${tree}/certs`,
         `${base}/node/bin`,
-        `${base}/tools/typst`,
         `${base}/claude`,
         `${base}/owner/bin`,
         `${base}/certs`,
@@ -366,7 +352,6 @@ it.effect(
           SSL_CERT_DIR: `${base}/linked-certs`,
         },
         claude: `${base}/claude/claude`,
-        toolDirs: [`${base}/tools/typst`, `${base}/tools/gone`],
         ownerPath: [
           `${tree}/bin`,
           base,
@@ -378,12 +363,8 @@ it.effect(
         writable: [tree],
       }).pipe(Effect.provideService(HostProcess.ExecutablePath, `${base}/node/bin/node`));
       const path = (built.env.PATH ?? "").split(":");
-      // Kin's own first, then the fixed system directories, then what the owner added.
-      assert.deepStrictEqual(path.slice(0, 3), [
-        `${base}/node/bin`,
-        `${base}/tools/typst`,
-        `${base}/claude`,
-      ]);
+      // The server's Node and Claude Code first, then the fixed system directories, then the owner's.
+      assert.deepStrictEqual(path.slice(0, 2), [`${base}/node/bin`, `${base}/claude`]);
       assert.strictEqual(path.at(-1), `${base}/owner/bin`);
       const system = [
         "/usr/local/sbin",
@@ -400,7 +381,6 @@ it.effect(
       // Nothing of the provider's PATH, and no shell, CA or temp path a worker can write.
       assert.isFalse(path.some((entry) => entry.startsWith(tree) || !entry.startsWith("/")));
       // Kin's own tool that isn't installed yet is skipped quietly.
-      assert.notInclude(path, `${base}/tools/gone`);
       assert.notInclude(built.dropped.join("\n"), "gone");
       assert.strictEqual(built.env.SHELL, yield* fs.realPath("/bin/bash"));
       assert.strictEqual(built.env.SSL_CERT_FILE, `${base}/ca.pem`);
@@ -490,8 +470,9 @@ const prepared = Effect.fn("WorkSandboxTest.prepared")(function* (
   executable: string,
   envFor: NodeJS.ProcessEnv | ((tree: string) => NodeJS.ProcessEnv),
   credentials: WorkerCredentials = { _tag: "resolved", credentials: {} },
+  at?: string,
 ) {
-  const tree = yield* worktree();
+  const tree = at ?? (yield* worktree());
   const env = typeof envFor === "function" ? envFor(tree) : envFor;
   const sandbox = yield* WorkSandbox.KinWorkSandbox;
   const { stateDir } = yield* ServerConfig;
@@ -585,6 +566,29 @@ it.live("a child whose sandbox can't start gets file tools only, and the owner c
         assert.isNull(status.value.limits);
         assert.include(status.value.limitsNote ?? "", "no systemd user manager");
       }
+    }),
+  ),
+);
+
+it.live("a document job's worker gets file tools only, whatever the host could give it", () =>
+  live(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const { worktreesDir } = yield* ServerConfig;
+      const job = `${worktreesDir}/kin-documents/wk-sandbox-test`;
+      yield* fs.makeDirectory(job, { recursive: true });
+      const { result, status } = yield* prepared(
+        "/nonexistent/claude",
+        { PATH },
+        undefined,
+        yield* fs.realPath(job),
+      );
+      assert.deepStrictEqual(
+        [result._tag, result._tag === "file-only" ? result.reason : ""],
+        ["file-only", "a document job writes its files with file tools only"],
+      );
+      // No check ran, so what the owner sees about this host's shells is unchanged.
+      assert.isTrue(Option.isNone(status));
     }),
   ),
 );

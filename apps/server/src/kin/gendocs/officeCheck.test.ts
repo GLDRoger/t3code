@@ -152,7 +152,15 @@ it("takes plain Office files, the starter pack's workbook and web or email hyper
         ],
       ),
     ],
+    [
+      "web, mail and bookmark hyperlink fields, their address split over runs",
+      "docx",
+      docxBody(
+        `${field(" HYPER", 'LINK "https://example.invalid/pay" \\o "Say \\"pay\\""')}${field(' HYPERLINK \\l "_Toc1" ')}<w:fldSimple w:instr=' HYPERLINK mailto:a@example.invalid \\n '/>`,
+      ),
+    ],
     ["a SUM formula", "xlsx", xlsx("SUM(A2:A9)*2")],
+    ["a HYPERLINK formula to another sheet", "xlsx", xlsx(`HYPERLINK("#'Sheet 2'!A1","Go")`)],
     [
       "a web HYPERLINK formula",
       "xlsx",
@@ -528,6 +536,42 @@ it("refuses Office files that run, embed or load anything, and ZIPs it can't tru
       "has a field whose name another field writes (in word/document.xml)",
     ],
     [
+      "a file hyperlink as a simple field",
+      "docx",
+      docxBody('<w:fldSimple w:instr=" HYPERLINK &quot;file:///invented/launch.command&quot; "/>'),
+      "has a hyperlink that isn't a web or email address in a field (in word/document.xml)",
+    ],
+    [
+      "an unquoted file hyperlink split over runs",
+      "docx",
+      docxBody(field(" HYPER", "LINK file:///invented/launch.command ")),
+      "has a hyperlink that isn't a web or email address in a field (in word/document.xml)",
+    ],
+    [
+      "a hyperlink field carrying a password",
+      "docx",
+      docxBody(field(' HYPERLINK "https://user:secret@example.invalid/" \\l "a" ')),
+      "has a web link that carries a user name or password in a field (in word/document.xml)",
+    ],
+    [
+      "a hyperlink field whose address a nested field writes",
+      "docx",
+      docxBody(field(' HYPERLINK "', field('QUOTE "https://example.invalid"'), '" ')),
+      "has a hyperlink field whose address another field writes (in word/document.xml)",
+    ],
+    [
+      "a hyperlink field with an escape in its address",
+      "docx",
+      docxBody(field(' HYPERLINK "https://example.invalid/\\"x" ')),
+      "has a hyperlink field whose address Kin can't read (in word/document.xml)",
+    ],
+    [
+      "a hyperlink field with its quote left open",
+      "docx",
+      docxBody("<w:fldSimple w:instr=' HYPERLINK \"https://example.invalid '/>"),
+      "has a hyperlink field whose address Kin can't read (in word/document.xml)",
+    ],
+    [
       "a foreign instr shadowing the real one",
       "docx",
       docxBody(`<w:fldSimple xmlns:e="urn:evil" w:instr="PAGE" e:instr="INCLUDETEXT x"/>`),
@@ -609,6 +653,12 @@ it("refuses Office files that run, embed or load anything, and ZIPs it can't tru
       "has a hyperlink that isn't a web or email address in a formula (in xl/worksheets/sheet1.xml)",
     ],
     [
+      "a file HYPERLINK formula behind a future-function prefix",
+      "xlsx",
+      xlsx('_xlfn.HYPERLINK("file:///etc/passwd","x")'),
+      "has a hyperlink that isn't a web or email address in a formula (in xl/worksheets/sheet1.xml)",
+    ],
+    [
       "a HYPERLINK formula with a computed address",
       "xlsx",
       xlsx('HYPERLINK(A2&"x")'),
@@ -669,4 +719,34 @@ it("streams a sheet of real size, and refuses a part or a file past the budget",
     await officeProblem("xlsx", book, { ...OFFICE_CAPS, inflatedBytes: 40 * mib }),
     "has more XML than Kin checks in one file",
   );
+  // No one value is held whole past what a real file has: a tag, a formula, a run of text.
+  let seed = 7;
+  const noise = (length: number) =>
+    Array.from({ length }, () => {
+      seed = (seed * 48_271) % 2_147_483_647;
+      return "abcdefghijklmnopqrstuvwxyz0123456789"[seed % 36];
+    }).join("");
+  for (const [kind, bytes, reason] of [
+    [
+      "docx",
+      docxBody(`<w:fldSimple w:instr="${noise(2 * mib)}"/>`),
+      "has a single value larger than any real document holds (in word/document.xml)",
+    ],
+    [
+      "xlsx",
+      xlsx(`LEN("${noise(2 * mib)}")`),
+      "has a formula larger than any real document's (in xl/worksheets/sheet1.xml)",
+    ],
+    [
+      "docx",
+      docxBody(field(" PAGE ", noise(mib), noise(mib))),
+      "has a field instruction larger than any real document's (in word/document.xml)",
+    ],
+    [
+      "docx",
+      docxBody(`<w:r><w:t>${noise(17 * mib)}</w:t></w:r>`),
+      "has a single value larger than any real document holds (in word/document.xml)",
+    ],
+  ] as const)
+    assert.strictEqual(await officeProblem(kind, bytes), reason);
 });

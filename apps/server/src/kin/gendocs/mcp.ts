@@ -66,7 +66,7 @@ export const KinDocumentToolkit = Toolkit.make(
   Tool.make("kin_issue", {
     ...shared,
     description:
-      "Issue a draft entry of a numbered list, such as an invoice: Kin gives it the next number in its series for this financial year, dates it today if it had no date, marks it issued, and makes its documents again with the number, as new versions of the same docs. The number is for good: asking again returns it, and a voided entry keeps it. void: true voids it instead. Only when the owner asked, in a turn only the owner is in.",
+      "Issue a draft entry of a numbered list, such as an invoice: Kin gives it the next number in its series for this financial year, dates it today if it had no date, marks it issued, and makes its documents again with the number, as new versions of the same docs. The number is for good: asking again returns it and makes again any of its documents that don't carry it yet, and a voided entry keeps it. void: true voids it instead. Only when the owner asked, in a turn only the owner is in.",
     parameters: Documents.IssueInput,
     success: Documents.IssueResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

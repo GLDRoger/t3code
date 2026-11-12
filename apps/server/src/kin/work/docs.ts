@@ -30,7 +30,7 @@ import { KinRecords, type Writer } from "./KinRecords.ts";
 import { listOf } from "./lists.ts";
 import { actorOf, iso, principal, type RecordRow, toRecord, unavailable } from "./recordRows.ts";
 import { indexRecord } from "./searchIndex.ts";
-import { SensitiveRefusal } from "./workerAttempts.ts";
+import { SensitiveRefusal, turnSensitive } from "./workerAttempts.ts";
 
 /**
  * Docs over the records engine: a doc is a `docs` entry, so owner, client, project, label, links
@@ -294,6 +294,18 @@ const settle = Effect.fn("KinDocs.settle")(function* (orgId: KinOrgId, recordId:
   return { row, version };
 });
 
+/**
+ * An agent writing in a turn that was shown something sensitive: the text may carry it, so the doc
+ * is labelled whatever the agent said. Only a person lowers the label again.
+ */
+const carriesSensitive = Effect.fn("KinDocs.carriesSensitive")(function* (
+  orgId: KinOrgId,
+  writer: Writer,
+) {
+  if (writer.actor._tag !== "agent" || writer.wakeupId === undefined) return false;
+  return yield* turnSensitive(orgId, writer.wakeupId);
+});
+
 export const create = Effect.fn("KinDocs.create")(function* (
   orgId: KinOrgId,
   writer: Writer,
@@ -315,6 +327,7 @@ export const create = Effect.fn("KinDocs.create")(function* (
   return yield* transaction(
     Effect.gen(function* () {
       const records = yield* KinRecords;
+      const sensitive = input.sensitive === true || (yield* carriesSensitive(orgId, writer));
       const { row, created } = yield* records.create(orgId, writer, {
         list: "docs",
         originKey: input.originKey,
@@ -322,7 +335,7 @@ export const create = Effect.fn("KinDocs.create")(function* (
         owner: input.owner,
         ...(input.partyId === undefined ? {} : { partyId: input.partyId }),
         ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
-        ...(input.sensitive === true ? { sensitive: true } : {}),
+        ...(sensitive ? { sensitive: true } : {}),
         ...(input.source === undefined ? {} : { source: input.source }),
       });
       if (listOf(row.registerId) !== "docs") return yield* unavailable;
@@ -366,6 +379,7 @@ const revise = Effect.fn("KinDocs.revise")(function* (
   const records = yield* KinRecords;
   const now = yield* Clock.currentTimeMillis;
   const version = current.version + 1;
+  const labelled = row.sensitive === 0 && (yield* carriesSensitive(orgId, writer));
   yield* insertVersion(orgId, row.recordId, writer, provenance, {
     ...next,
     version,
@@ -376,7 +390,10 @@ const revise = Effect.fn("KinDocs.revise")(function* (
     orgId,
     writer,
     row.key,
-    next.title === row.title ? {} : { title: next.title },
+    {
+      ...(next.title === row.title ? {} : { title: next.title }),
+      ...(labelled ? { sensitive: true } : {}),
+    },
     undefined,
     [{ field: "version", from: String(current.version), to: String(version) }],
   );

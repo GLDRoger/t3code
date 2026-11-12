@@ -302,6 +302,8 @@ export const KIN_RPC_AGGREGATES = {
   "kin.docs.recipes": "kin-docs",
   "kin.docs.render": "kin-docs",
   "kin.docs.undoRecipe": "kin-docs",
+  "kin.docs.label": "kin-docs",
+  "kin.docs.clearRecipeLabel": "kin-docs",
   "kin.work.summary": "kin-work",
   "kin.work.list": "kin-work",
   "kin.work.get": "kin-work",

@@ -12,7 +12,6 @@ import { Command, Flag, GlobalFlag } from "effect/cli";
 
 import { authLocationFlags, resolveCliAuthConfig } from "../../cli/config.ts";
 import { managedAuth, ownerAuth, resolveWorkerCredentials } from "../claudeConfinement.ts";
-import { toolDirectories } from "../gendocs/toolchain.ts";
 import { DEFAULT_WORKER_HOSTS } from "../lead/workerNetwork.ts";
 import {
   type CheckLine,
@@ -84,7 +83,6 @@ const runCheck = Effect.fn("KinWorkerShellCli.check")(function* (input: {
   const paths = yield* workerPaths({
     providerEnv: env,
     claude,
-    toolDirs: toolDirectories(input.baseDir),
     ownerPath: ownerPath(env),
     writable: workerWritable({ worktree: undefined, worktreesDir, stateDir: input.stateDir }),
   });
@@ -136,7 +134,6 @@ const runCheck = Effect.fn("KinWorkerShellCli.check")(function* (input: {
           paths: paths.env,
           domains: [...DEFAULT_WORKER_HOSTS, ...(host._tag === "on" ? host.domains : [])],
           readPaths: host._tag === "on" ? host.readPaths : [],
-          toolDirs: toolDirectories(input.baseDir),
           providerHomes: homes,
         });
   const platform = yield* HostProcess.Platform;

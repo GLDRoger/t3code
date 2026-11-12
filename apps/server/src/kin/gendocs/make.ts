@@ -17,9 +17,11 @@ import * as Docs from "../work/docs.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone, type RecordRow } from "../work/recordRows.ts";
+import { turnSensitive } from "../work/workerAttempts.ts";
 import { gatherFacts, jobSensitive } from "./facts.ts";
 import { issuedNumber } from "./numbering.ts";
 import { assembleInputs, needsEntry, type Value } from "./recipe.ts";
+import { recipeLabelled } from "./recipeLabels.ts";
 import { KinDocRenderer } from "./render.ts";
 import type { Taken } from "./returnPath.ts";
 import { KinWorkspace, type StoredRecipe } from "./workspace.ts";
@@ -111,17 +113,6 @@ const decodeGiven = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
 );
 
-/** Whether the turn has shown the agent anything sensitive: what it writes now may carry it. */
-export const turnSensitive = Effect.fn("KinDocMaker.turnSensitive")(function* (
-  orgId: KinOrgId,
-  wakeupId: string,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql`SELECT 1 FROM kin_wakeup_sensitive_reads
-    WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} LIMIT 1`;
-  return rows.length > 0;
-});
-
 type Plan = {
   readonly entry: RecordRow | undefined;
   readonly inputs: Readonly<Record<string, Value>>;
@@ -163,7 +154,10 @@ const plan = Effect.fn("KinDocMaker.plan")(function* (request: MakeRequest, reci
     inputsHash,
     number: recipe.numbered ? gathered.number : null,
     draft: recipe.numbered && gathered.number === null,
-    sensitive: fromTurn || jobSensitive(recipe, assembled.inputs, gathered),
+    sensitive:
+      fromTurn ||
+      jobSensitive(recipe, assembled.inputs, gathered) ||
+      (yield* recipeLabelled(request.orgId, recipe)),
     docOrigin:
       entry === undefined
         ? `recipe:${recipe.name}:${inputsHash}`
@@ -176,14 +170,33 @@ export const makeDocument = Effect.fn("KinDocMaker.make")(function* (request: Ma
   const workspace = yield* KinWorkspace;
   const renderer = yield* KinDocRenderer;
   const jobId = KinWorkerId.make(`rd-${sha256(`${request.orgId}:${request.jobKey}`).slice(0, 32)}`);
-  const [done] = yield* sql<{
-    outcomeJson: string | null;
-    recipe: string;
-    number: string | null;
-    sensitive: number;
-  }>`
-    SELECT outcome_json AS "outcomeJson", recipe, number, sensitive FROM kin_doc_jobs
-    WHERE org_id = ${request.orgId} AND worker_id = ${jobId} ORDER BY worker_id`;
+  const fingerprint = sha256(
+    canonical({
+      recipe: request.recipe,
+      entry: request.entry ?? null,
+      given: request.given,
+      title: request.title,
+      preview: request.preview === true,
+    }),
+  );
+  // A preview files nothing, so it neither takes a request id nor finds what one made.
+  const [done] =
+    request.preview === true
+      ? []
+      : yield* sql<{
+          outcomeJson: string | null;
+          recipe: string;
+          number: string | null;
+          sensitive: number;
+          request: string | null;
+        }>`
+    SELECT outcome_json AS "outcomeJson", recipe, number, sensitive, request_sha256 AS request
+    FROM kin_doc_jobs WHERE org_id = ${request.orgId} AND worker_id = ${jobId} ORDER BY worker_id`;
+  if (done?.request != null && done.request !== fingerprint)
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message: `${NOTHING} This request id was already used to ask for a different document; ask with a new one.`,
+    });
   const stored = done?.outcomeJson == null ? undefined : decodeStored(done.outcomeJson);
   if (done !== undefined && stored?._tag === "Some")
     return {
@@ -247,7 +260,7 @@ export const makeDocument = Effect.fn("KinDocMaker.make")(function* (request: Ma
           mode, recipe, recipe_commit, entry_record_id, inputs_sha256, number, sensitive,
           doc_origin, worktree_path, branch, chat_id, audience, answered_message_id,
           answered_author_kind, answered_author_id, created_at, removed_at, given_json, title,
-          asked_by_person_id)
+          asked_by_person_id, request_sha256)
         VALUES (${request.orgId}, ${jobId}, ${agentId ?? ""},
           ${requester._tag === "agent" ? requester.wakeupId : ""}, 'document', ${recipe.name},
           ${recipe.commit}, ${final.entry?.recordId ?? null}, ${final.inputsHash}, ${final.number},
@@ -257,7 +270,7 @@ export const makeDocument = Effect.fn("KinDocMaker.make")(function* (request: Ma
           ${requester._tag === "agent" && requester.answered !== null ? "person" : null},
           ${requester._tag === "agent" ? (requester.answered?.personId ?? null) : null},
           ${now}, ${now}, ${canonical(request.given)}, ${request.title},
-          ${requester._tag === "owner" ? requester.personId : null})
+          ${requester._tag === "owner" ? requester.personId : null}, ${fingerprint})
         ON CONFLICT (org_id, worker_id) DO NOTHING RETURNING worker_id`;
       if (inserted.length === 0)
         return yield* invalid(`${NOTHING} This request is already being made; ask again.`);
@@ -341,8 +354,9 @@ export const makeDocument = Effect.fn("KinDocMaker.make")(function* (request: Ma
 });
 
 /**
- * After an entry is issued: each document made for it from a recipe is made again, in place,
- * with what was asked for it last time, so the doc gets a new version that carries the number.
+ * After an entry is issued: each document made for it from a recipe that doesn't carry its number
+ * yet is made again, in place, with what was asked for it last time, so the doc gets a new version
+ * that does. Asking again after one failed makes only that one again.
  */
 export const remakeForEntry = Effect.fn("KinDocMaker.remake")(function* (input: {
   readonly orgId: KinOrgId;
@@ -367,8 +381,11 @@ export const remakeForEntry = Effect.fn("KinDocMaker.remake")(function* (input: 
         PARTITION BY doc_origin ORDER BY created_at DESC, worker_id DESC) AS latest
       FROM kin_doc_jobs
       WHERE org_id = ${input.orgId} AND entry_record_id = ${entry.recordId}
-        AND given_json IS NOT NULL AND recipe IS NOT NULL AND outcome_json IS NOT NULL)
-    WHERE latest = 1 ORDER BY doc_origin LIMIT 20`;
+        AND given_json IS NOT NULL AND recipe IS NOT NULL AND outcome_json IS NOT NULL) made
+    WHERE latest = 1 AND NOT EXISTS (SELECT 1 FROM kin_doc_jobs done
+      WHERE done.org_id = ${input.orgId} AND done.doc_origin = made.doc_origin
+        AND done.number = ${number} AND done.outcome_json IS NOT NULL)
+    ORDER BY doc_origin LIMIT 20`;
   const documents: Array<MadeDocument> = [];
   const written: Array<Docs.Written> = [];
   const problems: Array<string> = [];

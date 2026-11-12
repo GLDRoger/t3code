@@ -571,6 +571,91 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect(
+  "what an agent writes after a sensitive read is labelled, and only the owner lowers it",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* turn();
+      const sql = yield* SqlClient.SqlClient;
+      const label = (key: string) =>
+        Docs.docRow(orgId, { key }).pipe(Effect.map((row) => row.sensitive));
+      const write = (title: string) =>
+        LeadDocs.create(scopeOf(lead), { sourceEventId: "ask-event", title, body: plan });
+      const edited = yield* write("Invented edited plan");
+      const rewritten = yield* write("Invented rewritten plan");
+      const restored = yield* write("Invented restored plan");
+      yield* LeadDocs.edit(scopeOf(lead), {
+        key: restored.key,
+        sourceEventId: "ask-event",
+        summary: "Moved the launch",
+        operations: [{ op: "replace_phrase", find: "the 10th", replace: "the 12th" }],
+      });
+      assert.strictEqual(yield* label(edited.key), 0);
+      yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
+        VALUES (${orgId}, 'wake', 0)`;
+      const made = yield* LeadDocs.create(scopeOf(lead), {
+        sourceEventId: "ask-event",
+        title: "Invented private note",
+        body: "Invented confidential detail",
+      });
+      assert.strictEqual((yield* Docs.docRow(orgId, { key: made.key })).sensitive, 1);
+      assert.isTrue(made.sensitive);
+      // Every write that adds text in that turn labels its doc, whatever the agent passed.
+      yield* LeadDocs.edit(scopeOf(lead), {
+        key: edited.key,
+        sourceEventId: "ask-event",
+        summary: "Added a note",
+        operations: [{ op: "append", text: "Invented detail." }],
+      });
+      yield* LeadDocs.rewrite(scopeOf(lead), {
+        key: rewritten.key,
+        sourceEventId: "ask-event",
+        baseVersion: 1,
+        body: plan.replace("Intro for the invented launch.", "A new invented intro."),
+        summary: "Rewrote the intro",
+      });
+      yield* LeadDocs.restore(scopeOf(lead), {
+        key: restored.key,
+        sourceEventId: "ask-event",
+        version: 1,
+        latest: 2,
+      });
+      assert.deepStrictEqual(
+        [yield* label(edited.key), yield* label(rewritten.key), yield* label(restored.key)],
+        [1, 1, 1],
+      );
+      // The owner lowers it; a later write in a clean turn leaves the owner's call either way.
+      assert.isFalse(
+        (yield* OwnerDocs.label([owner], { orgId, key: edited.key, sensitive: false })).sensitive,
+      );
+      yield* OwnerDocs.label([owner], { orgId, key: made.key, sensitive: true });
+      yield* sql`DELETE FROM kin_wakeup_sensitive_reads`;
+      for (const key of [edited.key, made.key])
+        yield* LeadDocs.edit(scopeOf(lead), {
+          key,
+          sourceEventId: "ask-event",
+          summary: "Added another note",
+          operations: [{ op: "append", text: "Invented later detail." }],
+        });
+      assert.deepStrictEqual([yield* label(edited.key), yield* label(made.key)], [0, 1]);
+      // Only the owner: anyone else is refused, and the label stays.
+      assert.strictEqual(
+        reasonOf(
+          yield* Effect.flip(
+            OwnerDocs.label([{ _tag: "person", orgId, personId: mateId }], {
+              orgId,
+              key: made.key,
+              sensitive: false,
+            }),
+          ),
+        ),
+        "not_allowed",
+      );
+      assert.strictEqual(yield* label(made.key), 1);
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect("another org's doc, by key or id, looks like no doc at all", () =>
   Effect.gen(function* () {
     yield* seed;

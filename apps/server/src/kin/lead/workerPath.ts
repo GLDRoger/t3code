@@ -22,14 +22,13 @@ const overlaps = (a: string, b: string) => inside(a, b) || inside(b, a);
 
 /**
  * A worker's `PATH`, `SHELL` and the paths it loads, none from the provider's `PATH`: the server's
- * Node, Kin's tools, Claude Code's directory, the system's, then the owner's. Each is used by its
+ * Node, Claude Code's directory, the system's, then the owner's. Each is used by its
  * real path, and left out, named in `dropped`, when it is relative, missing, or inside, equal to
  * or above a place in `writable`. Claude Code's own process runs what `PATH` finds, unsandboxed.
  */
 export const workerPaths = Effect.fn("KinWorkSandbox.workerPaths")(function* (input: {
   readonly providerEnv: NodeJS.ProcessEnv;
   readonly claude: string | undefined;
-  readonly toolDirs: ReadonlyArray<string>;
   readonly ownerPath: ReadonlyArray<string>;
   /** Every place a worker or another task's worker can write. */
   readonly writable: ReadonlyArray<string>;
@@ -77,7 +76,6 @@ export const workerPaths = Effect.fn("KinWorkSandbox.workerPaths")(function* (in
   const entries: Array<string> = [];
   for (const entry of [
     ...(node === undefined ? [] : [path.dirname(node)]),
-    ...(yield* present(input.toolDirs)),
     ...(input.claude?.startsWith("/") === true ? [path.dirname(input.claude)] : []),
     ...(yield* present(systemPath)),
     ...input.ownerPath,

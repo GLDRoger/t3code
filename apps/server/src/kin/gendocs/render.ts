@@ -4,6 +4,7 @@ import * as NodeCrypto from "node:crypto";
 
 import { KinChatError, type KinOrgId } from "@t3tools/contracts";
 import { AgentScope } from "@t3tools/shared/AgentScope";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -22,13 +23,22 @@ import { KinWorkspace } from "./workspace.ts";
 
 // Makes a recipe's files on the server, with no worker and no model. The template is agent-written,
 // so it runs as untrusted code: a fresh root holding only a copy of the recipe and the inputs, no
-// packages or network, an empty environment, and caps on time, output and (under systemd) memory.
+// packages or network, an empty environment, its own process group, and caps on time, output and
+// processor time everywhere, memory under systemd, and address space where Linux has no systemd.
 
 export const RENDER_LIMITS: {
   readonly timeoutMs: number;
   readonly pdfBytes: number;
   readonly memory: string;
-} = { timeoutMs: 20_000, pdfBytes: 50 * 1024 * 1024, memory: "1G" };
+  readonly cpuSeconds: number;
+  readonly addressSpaceKiB: number;
+} = {
+  timeoutMs: 20_000,
+  pdfBytes: 50 * 1024 * 1024,
+  memory: "1G",
+  cpuSeconds: 60,
+  addressSpaceKiB: 4 * 1024 * 1024,
+};
 const STDERR_BYTES = 64 * 1024;
 
 export type Rendered =
@@ -102,6 +112,7 @@ type Run =
   | {
       readonly _tag: "exited";
       readonly code: number;
+      readonly signal: NodeJS.Signals | null;
       readonly stdout: Uint8Array;
       readonly stderr: string;
     }
@@ -109,7 +120,30 @@ type Run =
   | { readonly _tag: "tooLarge" }
   | { readonly _tag: "notStarted"; readonly message: string };
 
-/** One child, killed at the time or output cap, or when the caller is interrupted. */
+/**
+ * Runs `command` with processor time capped, and, with no systemd scope to hold its memory, its
+ * address space too. Each is the host's to refuse: macOS refuses an address-space limit, so there
+ * the wall-clock and output caps and the processor-time limit are all that bound a render.
+ */
+export const limitedCommand = (
+  command: string,
+  args: ReadonlyArray<string>,
+  limits: { readonly cpuSeconds: number; readonly addressSpaceKiB: number | undefined },
+) => ({
+  command: "/bin/sh",
+  args: [
+    "-c",
+    `ulimit -t ${limits.cpuSeconds} 2>/dev/null; ${limits.addressSpaceKiB === undefined ? "" : `ulimit -v ${limits.addressSpaceKiB} 2>/dev/null; `}exec "$@"`,
+    "kin-render",
+    command,
+    ...args,
+  ],
+});
+
+/**
+ * One child in its own process group, the whole group killed at the time or output cap, or when the
+ * caller is interrupted, so nothing it started outlives it holding its output open.
+ */
 export const runCapped = (input: {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
@@ -118,53 +152,66 @@ export const runCapped = (input: {
   readonly timeoutMs: number;
   readonly maxStdout: number;
 }) =>
-  Effect.callback<Run>((resume) => {
-    const child = NodeChildProcess.spawn(input.command, [...input.args], {
-      cwd: input.cwd,
-      env: { ...input.env },
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    const chunks: Array<Buffer> = [];
-    let size = 0;
-    let stderr = "";
-    let settled: Run | undefined;
-    const settle = (run: Run) => {
-      if (settled !== undefined) return;
-      settled = run;
-      if (run._tag !== "exited") child.kill("SIGKILL");
-    };
-    // @effect-diagnostics-next-line globalTimersInEffect:off -- a plain callback around a Node child, outside any fiber.
-    const timer = setTimeout(() => settle({ _tag: "timedOut" }), input.timeoutMs);
-    child.stdout.on("data", (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > input.maxStdout) return settle({ _tag: "tooLarge" });
-      chunks.push(chunk);
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      if (stderr.length < STDERR_BYTES) stderr += chunk.toString("utf8");
-    });
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      settle({ _tag: "notStarted", message: error.message });
-      resume(Effect.succeed(settled!));
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      settle({
-        _tag: "exited",
-        code: code ?? -1,
-        stdout: new Uint8Array(Buffer.concat(chunks, Math.min(size, input.maxStdout))),
-        stderr,
+  Effect.flatMap(HostProcess.Platform, (platform) =>
+    Effect.callback<Run>((resume) => {
+      const grouped = platform !== "win32";
+      const child = NodeChildProcess.spawn(input.command, [...input.args], {
+        cwd: input.cwd,
+        env: { ...input.env },
+        shell: false,
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+        detached: grouped,
       });
-      resume(Effect.succeed(settled!));
-    });
-    return Effect.sync(() => {
-      clearTimeout(timer);
-      child.kill("SIGKILL");
-    });
-  });
+      const killGroup = () => {
+        try {
+          if (child.pid !== undefined && grouped) process.kill(-child.pid, "SIGKILL");
+        } catch {
+          // The group is already gone.
+        }
+        child.kill("SIGKILL");
+      };
+      const chunks: Array<Buffer> = [];
+      let size = 0;
+      let stderr = "";
+      let settled: Run | undefined;
+      const settle = (run: Run) => {
+        if (settled !== undefined) return;
+        settled = run;
+        if (run._tag !== "exited") killGroup();
+      };
+      // @effect-diagnostics-next-line globalTimersInEffect:off -- a plain callback around a Node child, outside any fiber.
+      const timer = setTimeout(() => settle({ _tag: "timedOut" }), input.timeoutMs);
+      child.stdout.on("data", (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > input.maxStdout) return settle({ _tag: "tooLarge" });
+        chunks.push(chunk);
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        if (stderr.length < STDERR_BYTES) stderr += chunk.toString("utf8");
+      });
+      child.on("error", (error) => {
+        clearTimeout(timer);
+        settle({ _tag: "notStarted", message: error.message });
+        resume(Effect.succeed(settled!));
+      });
+      child.on("close", (code, signal) => {
+        clearTimeout(timer);
+        settle({
+          _tag: "exited",
+          code: code ?? -1,
+          signal,
+          stdout: new Uint8Array(Buffer.concat(chunks, Math.min(size, input.maxStdout))),
+          stderr,
+        });
+        resume(Effect.succeed(settled!));
+      });
+      return Effect.sync(() => {
+        clearTimeout(timer);
+        killGroup();
+      });
+    }),
+  );
 
 /** Typst's error text without the folder it ran in, for the agent and the owner. */
 const plainError = (stderr: string, root: string) =>
@@ -218,6 +265,22 @@ export const makeLayer = (limits: typeof RENDER_LIMITS = RENDER_LIMITS) =>
       const workspace = yield* KinWorkspace;
       const scopes = yield* AgentScope;
       const rendersDir = path.join(config.stateDir, "kin", "renders");
+      // A crash leaves its scratch folders, inputs and all; none is in use before this layer is.
+      // Only the folder's own entries go, and only when it is itself, not a link, in its place.
+      yield* Effect.gen(function* () {
+        if (!(yield* fs.exists(rendersDir))) return;
+        const linked = yield* fs.readLink(rendersDir).pipe(
+          Effect.as(true),
+          Effect.orElseSucceed(() => false),
+        );
+        const own = path.join(yield* fs.realPath(config.stateDir), "kin", "renders");
+        if (linked || (yield* fs.realPath(rendersDir)) !== own)
+          return yield* Effect.logWarning(
+            "Kin left its render folder: it isn't a plain folder in its own place",
+          );
+        for (const entry of yield* fs.readDirectory(rendersDir))
+          yield* fs.remove(path.join(rendersDir, entry), { recursive: true, force: true });
+      }).pipe(Effect.ignoreCause({ log: true }));
 
       /** Every file checked as the return path checks a worker's: type by its bytes. */
       const checked = Effect.fn("KinDocRenderer.check")(function* (files: ReadonlyArray<Taken>) {
@@ -253,25 +316,34 @@ export const makeLayer = (limits: typeof RENDER_LIMITS = RENDER_LIMITS) =>
               yield* fs.writeFileString(path.join(root, "inputs.json"), yield* encodeJson(data));
               const made: Array<Taken> = [];
               for (const output of request.recipe.outputs) {
-                const command = yield* scopes.wrap({
+                const args = typstArgs({
+                  root,
+                  output,
+                  creationTimestamp: Math.floor(Date.parse(`${request.day}T00:00:00Z`) / 1000),
+                });
+                const scoped = yield* scopes.wrap({
                   command: binary,
-                  args: typstArgs({
-                    root,
-                    output,
-                    creationTimestamp: Math.floor(Date.parse(`${request.day}T00:00:00Z`) / 1000),
-                  }),
+                  args,
                   name: "kin-render",
                   env: typstEnv(),
                   properties: [`MemoryMax=${limits.memory}`, "MemorySwapMax=0", "TasksMax=64"],
                 });
+                const limited = limitedCommand(scoped.command, scoped.args, {
+                  cpuSeconds: limits.cpuSeconds,
+                  addressSpaceKiB: scoped.unit === undefined ? limits.addressSpaceKiB : undefined,
+                });
                 const run = yield* runCapped({
-                  command: command.command,
-                  args: command.args,
+                  command: limited.command,
+                  args: limited.args,
                   env: typstEnv(),
                   cwd: root,
                   timeoutMs: limits.timeoutMs,
                   maxStdout: limits.pdfBytes,
-                });
+                }).pipe(
+                  Effect.ensuring(
+                    scoped.unit === undefined ? Effect.void : scopes.stop(scoped.unit),
+                  ),
+                );
                 switch (run._tag) {
                   case "notStarted":
                     return yield* new KinChatError({
@@ -287,6 +359,10 @@ export const makeLayer = (limits: typeof RENDER_LIMITS = RENDER_LIMITS) =>
                       `${output}: the template made more than ${limits.pdfBytes / 1048576} MB, so Kin stopped it`,
                     );
                   case "exited":
+                    if (run.signal === "SIGXCPU")
+                      return failed(
+                        `${output}: the template used over ${limits.cpuSeconds} seconds of processor time, so Kin stopped it`,
+                      );
                     if (run.code !== 0)
                       return failed(
                         /package not found|@preview\//.test(run.stderr)

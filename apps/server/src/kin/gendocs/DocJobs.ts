@@ -33,9 +33,11 @@ import * as Docs from "../work/docs.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import type { RecordRow } from "../work/recordRows.ts";
 import { listDef } from "../work/registers.ts";
+import { turnSensitive } from "../work/workerAttempts.ts";
 import { entrySensitive } from "./facts.ts";
-import { canonical, turnSensitive } from "./make.ts";
-import type { Recipe, Value } from "./recipe.ts";
+import { canonical } from "./make.ts";
+import type { Value } from "./recipe.ts";
+import { labelChange, verifySample } from "./recipeLabels.ts";
 import { KinDocRenderer } from "./render.ts";
 import { RETURN_CAPS, takeOutputs } from "./returnPath.ts";
 import { jobWorktree, KinWorkspace, type StoredRecipe } from "./workspace.ts";
@@ -228,32 +230,11 @@ export const docBrief = (plan: Plan, input: DocumentInput) => {
 const RECIPE_GUIDE = `A recipe is a folder: RECIPE.md, template.typ (for a PDF), sample.json and anything the template shows, such as a logo or a font. Kin renders it itself, with no worker; nothing in it runs but the template, in Typst 0.15 with no packages and no network.
 RECIPE.md starts with YAML front matter between --- lines: name (the folder's name), kind (typst, or table for CSVs and a workbook), title, description (one line the agent reads), list (when it is for one entry of a list, such as invoices), numbered (true when it shows the entry's issued number), sensitive (Kin labels a file confidential by where its inputs come from, such as amounts, bank details, tax ids or a sensitive entry; true here labels it so anyway), inputs, computed (typst), sheets and workbook (table), and outputs (for typst each PDF's name; for table each file's name, {month} for an input's value).
 Each input has a type (text, integer, decimal, money, date, boolean, month or table with columns), required (default true for stored values, false for the agent's), a description, and from: where Kin reads it. Leave from out for the agent's own words; otherwise one of entry.key|title|state|amount|tax|date|due|notes|number, entry.fields.<field>, client.name|address|gstin|placeOfSupply|terms, company.legalName|tradeName|address|gstin|pan|placeOfSupply|sac, company.bank.accountName|accountNumber|ifsc|bankName|branch|upi, system.number|draft|today, rows.<list> (a table of that list's entries in a month, with period naming a month input; columns from key, title, state, amount, tax, date, due, client, category, number, field_<field>), or payments (a table: invoice, client, amount, paidOn).
-Every figure the document shows that Kin doesn't store is a computed field, worked out by Kin in exact integers, in order, each one function: times [amount, factor], percent [amount, rate] (round: half-up, half-even, down or up), sum [amounts, or table.column], minus [a, b], first [values], each { rows: <table>, set: { <column>: <field> } }, words <amount>, date [<day>, "D MMM YYYY" | "D MMMM YYYY" | "DD/MM/YYYY" | "MMMM YYYY"], gst { taxable, total, recordedTax, rate, supplierGstin, supplierPlace, clientGstin, clientPlace, exportUnderLut } and markdown <text>. Arguments name inputs or earlier fields, or are literals.
+Every figure the document shows that Kin doesn't store is a computed field, worked out by Kin in exact integers, in order, each one function: times [amount, factor], percent [amount, rate] (round: half-up, half-even, down or up), sum [amounts, or table.column], minus [a, b], first [values], each { rows: <table>, set: { <column>: <field> } } (each column it sets is one value per row: text, a number or an amount, never a table), words <amount>, date [<day>, "D MMM YYYY" | "D MMMM YYYY" | "DD/MM/YYYY" | "MMMM YYYY"], gst { taxable, total, recordedTax, rate, supplierGstin, supplierPlace, clientGstin, clientPlace, exportUnderLut } and markdown <text>. Arguments name inputs or earlier fields, or are literals.
 template.typ reads #let d = json("/inputs.json"): every input and computed field, money as {minor, currency, text}; it shows money by its text and never does arithmetic on it. sys.inputs.output is the PDF being made. Put wording the owner may change in #let lines at its top.
 A table recipe's sheets each have a name, the table input they show, a CSV file name, columns (header and field, amount.currency for a money column's currency) and leaveOutOfTotals; workbook names the XLSX.
 sample.json holds invented values for every input, as Kin would give them: money as {"minor": <integer>, "currency": "INR"}, days as 2026-11-12.
 The body after the front matter is notes for the agent on when and how to use it.`;
-
-const SAMPLE_DAY = "2026-01-01";
-/** A recipe's sample.json as its inputs: each declared input's value, or null. */
-export const sampleInputs = (
-  recipe: Recipe,
-  sample: string | undefined,
-): Readonly<Record<string, Value>> | string => {
-  if (sample === undefined)
-    return "it has no sample.json: invented values for every input, so Kin can render it";
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(sample);
-  } catch {
-    return "its sample.json isn't JSON";
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
-    return "its sample.json isn't an object of inputs";
-  return Object.fromEntries(
-    recipe.inputs.map((input) => [input.name, (Reflect.get(parsed, input.name) ?? null) as Value]),
-  );
-};
 
 export type JobRow = {
   readonly orgId: KinOrgId;
@@ -476,22 +457,10 @@ export const makeCollectorLayer = (options: { readonly sweepPage?: number } = {}
             workerId: job.workerId,
             recipe: job.recipe,
             agentId: job.agentId,
-            verify: Effect.fn("KinDocCollector.verify")(
-              function* ({ commit, recipe, sample }) {
-                const inputs = sampleInputs(recipe, sample);
-                if (typeof inputs === "string") return inputs;
-                const rendered = yield* renderer.render({
-                  orgId,
-                  recipe,
-                  commit,
-                  inputs,
-                  day: typeof inputs.today === "string" ? inputs.today : SAMPLE_DAY,
-                });
-                return rendered._tag === "made" ? undefined : rendered.reason;
-              },
-              Effect.catch((error) => Effect.succeed(error.message)),
-            ),
+            verify: verifySample(renderer, orgId),
           });
+          if (change._tag === "committed")
+            yield* labelChange(orgId, job.recipe, change, job.sensitive === 1);
           const left =
             change._tag === "refused" || change.left.length === 0
               ? []

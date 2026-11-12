@@ -32,7 +32,7 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { resolveClaudeHomePath } from "../../provider/Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../../provider/Drivers/CodexHomeLayout.ts";
 import { makeConfiner, type WorkerCredentials } from "../claudeConfinement.ts";
-import { toolDirectories } from "../gendocs/toolchain.ts";
+import { documentWorktrees } from "../gendocs/workspace.ts";
 import { ownerPath, workerPaths } from "./workerPath.ts";
 import { grantedHosts, noteBlocked, refusedHosts } from "./workNetwork.ts";
 import { type CheckLine, type CheckResult, probe, type ShellPaths } from "./workSandboxProbe.ts";
@@ -364,8 +364,6 @@ export const shellRoots = Effect.fn("KinWorkSandbox.shellRoots")(function* (inpu
   readonly providerHomes: ReadonlyArray<string>;
   readonly readPaths: ReadonlyArray<string>;
   readonly runtime: string | undefined;
-  /** Kin's own tools; one that is missing or would reopen private data is left out. */
-  readonly toolDirs?: ReadonlyArray<string>;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -396,12 +394,7 @@ export const shellRoots = Effect.fn("KinWorkSandbox.shellRoots")(function* (inpu
     [home, ...privateRoots].find(
       (root) => isInside(target, root) || (root !== home && isInside(root, target)),
     );
-  const tools: Array<string> = [];
-  for (const entry of input.toolDirs ?? []) {
-    const target = yield* real(entry);
-    if (target !== undefined && holds(target) === undefined) tools.push(target);
-  }
-  const readable: Array<string> = [...tools];
+  const readable: Array<string> = [];
   for (const entry of [
     ...(input.runtime === undefined ? [] : [input.runtime]),
     ...input.readPaths,
@@ -423,7 +416,7 @@ export const shellRoots = Effect.fn("KinWorkSandbox.shellRoots")(function* (inpu
       return yield* Effect.fail(`${covered} would hide the system directory ${root}`);
   }
   // All of them: `sandboxSettings` keeps each one an allowed root holds, the worktree included.
-  return { denied: [home, ...privateRoots], readable: [...system, ...readable], tmpRoot, tools };
+  return { denied: [home, ...privateRoots], readable: [...system, ...readable], tmpRoot };
 });
 
 export type Prepared =
@@ -528,7 +521,6 @@ export const fileOnly = (reason: string, privateHome = "/nonexistent/kin-worker-
           const { env: paths } = yield* workerPaths({
             providerEnv,
             claude: input.session.options.pathToClaudeCodeExecutable,
-            toolDirs: [],
             ownerPath: [],
             writable: input.worktree === undefined ? [] : [input.worktree],
           });
@@ -626,7 +618,6 @@ export const checkShell = Effect.fn("KinWorkSandbox.checkShell")(function* (inpu
   readonly readPaths: ReadonlyArray<string>;
   /** Absolute, as each provider resolves them; see `providerHomes`. */
   readonly providerHomes: ReadonlyArray<string>;
-  readonly toolDirs?: ReadonlyArray<string>;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -644,7 +635,6 @@ export const checkShell = Effect.fn("KinWorkSandbox.checkShell")(function* (inpu
     providerHomes: input.providerHomes,
     readPaths: input.readPaths,
     runtime,
-    ...(input.toolDirs === undefined ? {} : { toolDirs: input.toolDirs }),
   }).pipe(Effect.result);
   if (roots._tag === "Failure") return { _tag: "unresolved", reason: roots.failure } as const;
   const { denied, readable, tmpRoot } = roots.success;
@@ -704,7 +694,7 @@ export const layer = Layer.effect(
   KinWorkSandbox,
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const { stateDir, baseDir, worktreesDir } = yield* ServerConfig;
+    const { stateDir, worktreesDir } = yield* ServerConfig;
     const agentScope = yield* AgentScope;
     const settings = yield* Effect.serviceOption(ServerSettingsService);
     const context = yield* Effect.context<
@@ -786,7 +776,6 @@ export const layer = Layer.effect(
         const built = yield* workerPaths({
           providerEnv,
           claude: input.session.options.pathToClaudeCodeExecutable,
-          toolDirs: toolDirectories(baseDir),
           ownerPath: ownerPath(serverEnv),
           writable: workerWritable({ worktree: input.worktree, worktreesDir, stateDir }),
         });
@@ -806,6 +795,21 @@ export const layer = Layer.effect(
             Effect.as({ _tag: "file-only", place, paths, reason } as const),
           );
         };
+        // A recipe or a one-off file is written with file tools, on every host: no shell, ever.
+        const documents = yield* fs
+          .realPath(documentWorktrees(worktreesDir))
+          .pipe(Effect.orElseSucceed(() => undefined));
+        if (
+          input.worktree !== undefined &&
+          documents !== undefined &&
+          isInside(documents, input.worktree)
+        )
+          return {
+            _tag: "file-only",
+            place,
+            paths,
+            reason: "a document job writes its files with file tools only",
+          } as const;
         const host = hostShell(serverEnv);
         if (host._tag === "off") return yield* fileOnlyBecause(host.reason);
         const platform = yield* HostProcess.Platform;
@@ -827,7 +831,6 @@ export const layer = Layer.effect(
           paths,
           domains,
           readPaths: host.readPaths,
-          toolDirs: toolDirectories(baseDir),
           providerHomes: homes,
         });
         if (checked._tag === "unresolved") return yield* fileOnlyBecause(checked.reason);
