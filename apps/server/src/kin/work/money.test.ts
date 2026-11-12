@@ -735,6 +735,22 @@ describe("invoices", () => {
         });
         assert.strictEqual(changed.state, state);
       }
+      // A state given with a new amount can't contradict the balance; Draft and Void still can be.
+      for (const [minor, given, outcome] of [
+        [8_000_000, "done", "₹20,000.00 owed"],
+        [6_000_000, "waiting", "fully paid"],
+        [8_000_000, "open", "open"],
+        [7_000_000, "waiting", "waiting"],
+      ] as const) {
+        const update = records.update(orgId, system, "INV-1", {
+          amount: { minor, currency: "INR" },
+          state: given,
+        });
+        if (outcome === given) assert.strictEqual((yield* update).state, outcome);
+        else assert.include((yield* Effect.flip(update)).message, outcome);
+      }
+      const kept = yield* records.get(orgId, "INV-1");
+      assert.deepStrictEqual([kept!.state, kept!.amountMinor], ["waiting", 7_000_000]);
 
       // A payment retried with any detail changed is refused, the currency included.
       const once = {
