@@ -4,6 +4,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { assert, it } from "@effect/vitest";
+import { vi } from "vitest";
 import * as Effect from "effect/Effect";
 
 import { takeOutputs, typeMismatch } from "./returnPath.ts";
@@ -128,6 +129,49 @@ it.effect("refuses everything when out/ is a link, and past the count and total 
       { name: "c.pdf", reason: "a job returns at most 2 files" },
       { name: "b.pdf", reason: "the job's files together are over the 0 MB cap" },
     ]);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("reads only the out/ it checked, even when out/ is swapped right after", () =>
+  Effect.gen(function* () {
+    const root = yield* worktree;
+    const out = NodePath.join(root, "job", "out");
+    const other = NodePath.join(root, "another-job");
+    NodeFS.mkdirSync(out, { recursive: true });
+    NodeFS.mkdirSync(other);
+    NodeFS.writeFileSync(NodePath.join(other, "secret.txt"), "private other-job input");
+    NodeFS.writeFileSync(NodePath.join(out, "mine.txt"), "mine");
+    const real = NodeFS.realpathSync(out);
+    let swapped = false;
+    const swap = (path: unknown) => {
+      if (swapped || String(path) !== real) return;
+      swapped = true;
+      NodeFS.renameSync(out, `${out}-old`);
+      NodeFS.symlinkSync(other, out);
+    };
+    // The swap lands right after Kin first looks at out/, before it reads the files in it.
+    const open = NodeFS.promises.open.bind(NodeFS.promises);
+    const realpath = NodeFS.promises.realpath.bind(NodeFS.promises);
+    using _open = vi.spyOn(NodeFS.promises, "open").mockImplementation(async (...args) => {
+      const handle = await open(...args);
+      swap(args[0]);
+      return handle;
+    });
+    using _realpath = vi.spyOn(NodeFS.promises, "realpath").mockImplementation(async (...args) => {
+      const resolved = await realpath(...args);
+      swap(args[0]);
+      return resolved;
+    });
+    const result = yield* takeOutputs({
+      worktree: NodePath.join(root, "job"),
+      named: ["secret.txt", "mine.txt"],
+    });
+    // Linux reads through the open directory and takes mine.txt; elsewhere the swap refuses all.
+    assert.notInclude(
+      result.taken.map((one) => Buffer.from(one.bytes).toString()),
+      "private other-job input",
+    );
+    assert.isTrue(result.refused.some((one) => one.name === "secret.txt"));
   }).pipe(Effect.scoped),
 );
 
