@@ -8,7 +8,7 @@ import {
   EnvironmentAuthorizationError,
 } from "./auth.ts";
 import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { KinChatError, KinOrgId, KinTrimmedText } from "./kinChat.ts";
+import { KinChatError, KinLabelText, KinOrgId, KinTrimmedText } from "./kinChat.ts";
 import {
   KinCurrency,
   KinDay,
@@ -43,7 +43,7 @@ export const KinListFieldType = Schema.Literals([
 ]);
 export type KinListFieldType = typeof KinListFieldType.Type;
 export { KinListFieldKey };
-const Label = KinTrimmedText.check(Schema.isMaxLength(60));
+const Label = KinLabelText.check(Schema.isMaxLength(60));
 
 /** One typed field of a list. A retired field keeps its values on entries and takes no new ones. */
 export const KinListField = Schema.Struct({

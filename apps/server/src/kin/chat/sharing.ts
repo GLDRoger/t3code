@@ -1,6 +1,7 @@
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import type * as SqlClient from "effect/sql/SqlClient";
+import type * as Statement from "effect/sql/Statement";
 
 /**
  * SQL over trusted column names: `person` is not the chat's owner, its `owner` member. Every
@@ -106,13 +107,16 @@ export const readableBy = (
   const joined = memberId === undefined ? undefined : joinedFrom(sql, orgId, memberId);
   const from =
     joined === undefined ? floor : floor === undefined ? joined : sql`MAX(${joined}, ${floor})`;
-  if (from === undefined) return sql`1 = 1`;
-  return sql`(kin_messages.seq >= ${from} AND (kin_messages.widget_id IS NULL OR NOT EXISTS (
+  return from === undefined ? sql`1 = 1` : readableFrom(sql, orgId, from);
+};
+
+/** `readableBy` from the seq `from` (SQL) on; a query's own member row can give it. */
+export const readableFrom = (sql: SqlClient.SqlClient, orgId: string, from: Statement.Fragment) =>
+  sql`(kin_messages.seq >= ${from} AND (kin_messages.widget_id IS NULL OR NOT EXISTS (
     SELECT 1 FROM kin_widgets card JOIN kin_messages anchor ON anchor.org_id = card.org_id
       AND anchor.message_id = card.message_id
     WHERE card.org_id = ${orgId} AND card.widget_id = kin_messages.widget_id
       AND anchor.seq < ${from})))`;
-};
 
 /** Whether `memberId` may read `messageId`, by `readableBy`; `floorOf` as there. */
 export const memberReads = Effect.fn("KinChatSharing.memberReads")(function* (

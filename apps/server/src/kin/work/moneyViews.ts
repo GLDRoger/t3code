@@ -11,7 +11,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { addUp, dayIn, financialYearOf, formatMoney, monthOf, shiftMonth } from "./money.ts";
-import { iso, ownerZone, type RecordRow, selectRecords, toRecord } from "./recordRows.ts";
+import { iso, moneyDay, ownerZone, type RecordRow, selectRecords, toRecord } from "./recordRows.ts";
 import { allLists, type ListDef, stateLabel } from "./registers.ts";
 
 /**
@@ -182,11 +182,10 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
     currency: string;
     category: string | null;
     at: number;
-  }>`SELECT amount_minor AS minor, currency, category, COALESCE(date_at, created_at) AS at
-    FROM kin_records
-    WHERE org_id = ${orgId} AND register_id = 'expenses' AND state = 'done'
-      AND amount_minor IS NOT NULL
-      AND COALESCE(date_at, created_at) >= ${monthStart(monthOf(since), zone)}
+  }>`SELECT r.amount_minor AS minor, r.currency, r.category, ${moneyDay(sql)} AS at
+    FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state = 'done'
+      AND r.amount_minor IS NOT NULL AND ${moneyDay(sql)} >= ${monthStart(monthOf(since), zone)}
     ORDER BY at, category`;
   const spentRows = expenses.map((one) => ({ ...one, day: dayIn(one.at, zone) }));
   const spentIn = (month: string) => {

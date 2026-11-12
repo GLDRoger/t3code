@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 
 import * as Kin from "./kinChat.ts";
 import { KinCheckRun } from "./kinApprovals.ts";
+import { KinListUpdateInput } from "./kinFinance.ts";
 import { KinPushRegisterDeviceInput } from "./kinPush.ts";
 
 const at = "2026-11-07T00:00:00.000Z";
@@ -149,6 +150,7 @@ type SchemaName = {
 const samples = {
   KinText: ["", "Hello\nworld", "  Markdown  "],
   KinTrimmedText: ["Kin", "Owner name"],
+  KinLabelText: ["GST", "Travel & stay"],
   KinOrgId: ["org-1"],
   KinPersonId: ["person-1"],
   KinAgentId: ["agent-1"],
@@ -416,6 +418,13 @@ describe("Kin chat contracts", () => {
         deviceLabel: "a\u0000b",
       },
     },
+    ...["a\u0000b", "a\nb", "a\tb", "a\u0007b", "a\u009fb"].flatMap((label) => [
+      { schema: KinListUpdateInput, value: { orgId: "org", list: "dates", rev: 1, name: label } },
+      {
+        schema: KinListUpdateInput,
+        value: { orgId: "org", list: "dates", rev: 1, categoryLabels: { gst: label } },
+      },
+    ]),
   ])("rejects NUL text %#", ({ schema, value }) => {
     const codec: Schema.Codec<unknown> = schema;
     expect(() => Schema.decodeSync(codec)(value)).toThrow();

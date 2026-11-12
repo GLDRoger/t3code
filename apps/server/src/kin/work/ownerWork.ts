@@ -19,6 +19,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { readableFrom } from "../chat/sharing.ts";
 import { summaryGroups } from "./crm.ts";
 import { KinRecords, type Patch, type Totals, type Writer } from "./KinRecords.ts";
 import { fieldList, LISTS, type ListName, parseFields } from "./lists.ts";
@@ -417,11 +418,13 @@ const ownFiles = Effect.fn("KinWork.ownFiles")(function* (
   if (added.length === 0) return;
   const sql = yield* SqlClient.SqlClient;
   const mine = yield* sql`SELECT a.attachment_id FROM kin_message_attachments a
-    JOIN kin_messages m ON m.org_id = a.org_id AND m.message_id = a.message_id
+    JOIN kin_messages ON kin_messages.org_id = a.org_id
+      AND kin_messages.message_id = a.message_id
     JOIN kin_chat_members c ON c.org_id = a.org_id AND c.chat_id = a.chat_id
       AND c.principal_kind = 'person' AND c.person_id = ${person.personId} AND c.left_at IS NULL
     WHERE a.org_id = ${person.orgId} AND a.attachment_id IN ${sql.in(added)}
-      AND m.status <> 'deleted'`;
+      AND kin_messages.status <> 'deleted'
+      AND ${readableFrom(sql, person.orgId, sql`COALESCE(c.joined_seq, 0)`)}`;
   if (mine.length !== added.length)
     return yield* new KinChatError({ reason: "not_found", message: "No such file in your chats." });
 });
