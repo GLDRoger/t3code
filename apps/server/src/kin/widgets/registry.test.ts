@@ -56,7 +56,8 @@ describe("Kin widget registry", () => {
         ["choice", { ...choice, options: choice.options.slice(0, 1) }],
         ["choice", { ...choice, question: "x".repeat(241) }],
         ["chart", { ...chart, labels: ["Mon"] }],
-        ["chart", { ...chart, html: "<b>hi</b>", chart: "pie" }],
+        ["chart", { ...chart, html: "<b>hi</b>", chart: "sankey" }],
+        ["chart", { ...chart, chart: "pie", series: [{ name: "Net", values: [12, -3] }] }],
         ["visual", { ...visual, attachmentId: "" }],
         ["visual", { ...visual, height: 20_000 }],
       ] as const) {

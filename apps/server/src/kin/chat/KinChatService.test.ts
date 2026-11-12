@@ -926,6 +926,33 @@ describe("KinChatService", () => {
         assert.deepStrictEqual(yield* service.chart(agent, input), card);
         assert.deepStrictEqual(yield* repo.listOpenWaiting(person), []);
 
+        // A scatter sends points in place of labels and series; x counts unless it says otherwise.
+        const scatter = yield* service.chart(agent, {
+          chatId: chat.chatId,
+          clientMessageId: "chart-scatter",
+          intent: "answer",
+          chart: "scatter",
+          title: "Spend against signups",
+          unit: { kind: "count" },
+          target: { name: " Goal ", value: 40 },
+          scatter: {
+            xName: " Ad  spend ",
+            yName: "Signups",
+            series: [{ name: "Campaigns", points: [{ x: 12, y: 40, label: " Diwali " }] }],
+          },
+        });
+        assert.deepInclude(scatter.state, {
+          labels: [],
+          series: [],
+          target: { name: "Goal", value: 40 },
+          scatter: {
+            xName: "Ad spend",
+            yName: "Signups",
+            xUnit: { kind: "count" },
+            series: [{ name: "Campaigns", points: [{ x: 12, y: 40, label: "Diwali" }] }],
+          },
+        });
+
         const refusal = (change: object) =>
           service
             .chart(agent, {
@@ -946,6 +973,22 @@ describe("KinChatService", () => {
           [{ unit: { kind: "money", currency: "ZZZ" } }, "not a currency code"],
           [{ labels: ["Mon", "Tue"] }, "one value per label"],
           [{ title: " " }, "needs a title"],
+          [{ chart: "pie", series: [{ name: "Net", values: [5, -2, 3] }] }, 'use chart "bar"'],
+          [{ chart: "scatter" }, "scatter: {xName"],
+          [
+            {
+              chart: "scatter",
+              labels: undefined,
+              series: undefined,
+              scatter: {
+                xName: "Spend",
+                yName: "Signups",
+                xUnit: { kind: "money", currency: "ZZZ" },
+                series: [{ name: "Campaigns", points: [{ x: 1, y: 2 }] }],
+              },
+            },
+            "not a currency code",
+          ],
         ] as const) {
           const refused = yield* refusal(change);
           assert.include(refused, { reason: "invalid_state" });

@@ -6,9 +6,13 @@ import {
   KinChatId,
   KinMessageId,
   KinPersonId,
+  KinAttachment,
   KinRecordId,
+  KinRepeatRule,
   ThreadId,
+  type KinFileRef,
   type KinOrgId,
+  type KinPayment,
   type KinRecord,
   type KinRecordCategory,
   type KinRecordChange,
@@ -21,7 +25,12 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+
+import { parseFields } from "./lists.ts";
+import { isBuiltIn } from "./registers.ts";
 
 /** The plain rows behind `KinRecords`: reads and the shapes they decode into. No writes here. */
 
@@ -69,6 +78,13 @@ export type RecordRow = {
   readonly projectTitle: string | null;
   /** Its client, its project or its project's client is labelled sensitive. */
   readonly inheritedSensitive: number;
+  readonly amountMinor: number | null;
+  readonly currency: string | null;
+  readonly dateAt: number | null;
+  readonly dateAllDay: number;
+  readonly repeatJson: string | null;
+  /** Payments not voided, in its own currency. */
+  readonly paid: number;
 };
 
 export const unavailable = new KinChatError({
@@ -78,6 +94,19 @@ export const unavailable = new KinChatError({
 export const notFound = (key: string) =>
   new KinChatError({ reason: "not_found", message: `No entry ${key.slice(0, 40)} in Work.` });
 
+const isChatError = Schema.is(KinChatError);
+/** A Work read or write that failed for any reason but a refusal: logged, and "unavailable". */
+export const workFailure = <A, E extends { readonly _tag: string }, R>(
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, KinChatError, R> =>
+  effect.pipe(
+    Effect.tapError((error) =>
+      isChatError(error)
+        ? Effect.void
+        : Effect.logWarning("Kin Work failed", { errorTag: error._tag }),
+    ),
+    Effect.mapError((error) => (isChatError(error) ? error : unavailable)),
+  );
 export const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 export const isClosed = (state: KinRecordState) => state === "done" || state === "dropped";
 export const principal = (kind: string | null, id: string | null): Principal | null =>
@@ -135,6 +164,10 @@ export const selectRecords = (sql: SqlClient.SqlClient) => sql`
     r.origin_key AS "originKey", r.created_at AS "createdAt", r.updated_at AS "updatedAt",
     r.closed_at AS "closedAt", r.party_id AS "partyId", r.project_id AS "projectId", r.repo,
     r.fields_json AS "fieldsJson",
+    r.amount_minor AS "amountMinor", r.currency, r.date_at AS "dateAt",
+    r.date_all_day AS "dateAllDay", r.repeat_json AS "repeatJson",
+    (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
+      WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid,
     pa.key AS "partyKey", pa.title AS "partyTitle", pj.key AS "projectKey",
     pj.title AS "projectTitle",
     ${inheritedSensitive(sql)} AS "inheritedSensitive",
@@ -208,8 +241,42 @@ export const toRecord = (row: RecordRow, now: number): KinRecord => {
     ...(project === undefined ? {} : { project }),
     ...(row.repo === null ? {} : { repo: row.repo }),
     ...(row.inheritedSensitive === 1 ? { sensitiveInherited: true as const } : {}),
+    ...moneyOf(row),
   };
 };
+
+/** Its amount, own date and repeat; in a defined list, the list, its category and a balance. */
+const moneyOf = (row: RecordRow) => {
+  const amount = amountOf(row);
+  const repeat = repeatOf(row.repeatJson);
+  return {
+    ...(isBuiltIn(row.registerId) ? {} : { list: row.registerId }),
+    ...(row.category === null || isBuiltIn(row.registerId) ? {} : { listCategory: row.category }),
+    ...(amount === undefined ? {} : { amount }),
+    ...(row.dateAt === null ? {} : { dateAt: iso(row.dateAt), dateAllDay: row.dateAllDay === 1 }),
+    ...(repeat === undefined ? {} : { repeat: repeat.rule }),
+    ...(amount === undefined || row.registerId !== "invoices"
+      ? {}
+      : { balance: { minor: Math.max(amount.minor - row.paid, 0), currency: amount.currency } }),
+  };
+};
+export const amountOf = (row: RecordRow) =>
+  row.amountMinor === null || row.currency === null
+    ? undefined
+    : { minor: row.amountMinor, currency: row.currency };
+
+/** A repeat rule as stored, with the day of the month each date keeps. */
+export const StoredRepeat = Schema.Struct({
+  rule: KinRepeatRule,
+  dueDay: Schema.optional(Schema.Int),
+  dateDay: Schema.optional(Schema.Int),
+});
+export type StoredRepeat = typeof StoredRepeat.Type;
+const RepeatJson = Schema.fromJsonString(StoredRepeat);
+const decodeRepeat = Schema.decodeUnknownOption(RepeatJson);
+export const encodeRepeat = Schema.encodeEffect(RepeatJson);
+export const repeatOf = (json: string | null) =>
+  json === null ? undefined : Option.getOrUndefined(decodeRepeat(json));
 
 type ChangeRow = {
   readonly seq: number;
@@ -338,7 +405,85 @@ export const toDetail = Effect.fn("KinRecords.toDetail")(function* (
     links: yield* linksOf(orgId, row.recordId),
     changes: yield* changesOf(orgId, row.recordId, changeLimit),
     seq: yield* recordSeq(orgId, row.recordId),
+    ...(isBuiltIn(row.registerId) ? {} : yield* definedDetail(row)),
   } satisfies KinRecordDetail;
+});
+
+const decodeAttachments = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Array(KinAttachment)),
+);
+/** A defined list's fields, the files they keep and an invoice's payments. */
+const definedDetail = Effect.fn("KinRecords.definedDetail")(function* (row: RecordRow) {
+  const sql = yield* SqlClient.SqlClient;
+  const orgId = row.orgId as KinOrgId;
+  const fields = parseFields(row.fieldsJson);
+  const ids = [
+    ...new Set(
+      Object.values(fields).flatMap((value) =>
+        Array.isArray(value) ? (value as ReadonlyArray<string>) : [],
+      ),
+    ),
+  ];
+  const stored =
+    ids.length === 0
+      ? []
+      : yield* sql<{ id: string; chatId: string; messageId: string; json: string | null }>`
+          SELECT a.attachment_id AS id, a.chat_id AS "chatId", a.message_id AS "messageId",
+            m.attachments_json AS json
+          FROM kin_message_attachments a
+          JOIN kin_messages m ON m.org_id = a.org_id AND m.message_id = a.message_id
+          WHERE a.org_id = ${orgId} AND a.attachment_id IN ${sql.in(ids)} AND m.status <> 'deleted'
+          ORDER BY a.attachment_id`;
+  const files = stored.flatMap((file): ReadonlyArray<KinFileRef> => {
+    const found = Option.getOrElse(decodeAttachments(file.json ?? "[]"), () => []).find(
+      (attachment) => attachment.id === file.id,
+    );
+    return found === undefined
+      ? []
+      : [
+          {
+            attachmentId: file.id,
+            name: found.name,
+            mimeType: found.mimeType,
+            chatId: KinChatId.make(file.chatId),
+            messageId: KinMessageId.make(file.messageId),
+          },
+        ];
+  });
+  const payments =
+    row.registerId === "invoices" ? yield* paymentsOf(orgId, row.recordId) : undefined;
+  return {
+    fields,
+    ...(files.length === 0 ? {} : { files }),
+    ...(payments === undefined ? {} : { payments }),
+  };
+});
+
+const paymentsOf = Effect.fn("KinRecords.paymentsOf")(function* (
+  orgId: KinOrgId,
+  recordId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    paymentId: string;
+    minor: number;
+    currency: string;
+    paidOn: string;
+    note: string;
+    createdAt: number;
+    voidedAt: number | null;
+  }>`SELECT payment_id AS "paymentId", amount_minor AS minor, currency, paid_on AS "paidOn",
+      note, created_at AS "createdAt", voided_at AS "voidedAt"
+    FROM kin_record_payments WHERE org_id = ${orgId} AND record_id = ${recordId}
+    ORDER BY paid_on DESC, created_at DESC, payment_id`;
+  return rows.map((payment): KinPayment => ({
+    paymentId: payment.paymentId,
+    amount: { minor: payment.minor, currency: payment.currency },
+    paidOn: payment.paidOn,
+    note: payment.note,
+    recordedAt: iso(payment.createdAt),
+    voidedAt: payment.voidedAt === null ? null : iso(payment.voidedAt),
+  }));
 });
 
 export const recordSeq = Effect.fn("KinRecords.recordSeq")(function* (

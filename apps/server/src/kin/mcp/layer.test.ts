@@ -328,9 +328,9 @@ it.effect.each([true, false])(
         // without a line is refused there, and the table names no tool that isn't served.
         assert.sameMembers(toolNames, Object.keys(SHARED_TOOLS));
         // Four Work tools joined the lead toolkit with slice 1 of Work (`work/mcp/tools.ts`),
-        // `kin_chart` and `kin_visual` after them, and nine doc tools with Docs
-        // (`work/mcp/docTools.ts`).
-        assert.lengthOf(toolNames, 39);
+        // `kin_chart` and `kin_visual` after them, nine doc tools with Docs
+        // (`work/mcp/docTools.ts`), and five list and money tools with slice 5.
+        assert.lengthOf(toolNames, 44);
         // A page runs on every reader's device, so a turn others can read never posts one.
         assert.strictEqual(SHARED_TOOLS.kin_visual, "refused");
         assert.isFalse(
