@@ -141,12 +141,23 @@ describe("resolveKinHost", () => {
       environmentId: c,
       connected: true,
     });
-    expect(resolve({ [b]: ready }, { savedHostId: c, offline: [c] })).toMatchObject({
+    expect(resolve({ [b]: pending }, { savedHostId: c, offline: [c] })).toMatchObject({
       _tag: "host",
       environmentId: c,
       connected: false,
       probe: pending,
     });
+  });
+
+  it("moves from an offline saved host to a connected one with an identity", () => {
+    const host = resolve({ [b]: ready }, { savedHostId: c, offline: [c] });
+    expect(host).toMatchObject({ environmentId: b, connected: true, probe: ready });
+    expect(kinHostIdToSave(host)).toBe(b);
+    const noIdentity: KinProbe = { _tag: "noIdentity", orgs: orgs([]) };
+    const flaky: KinProbe = { _tag: "error", message: "socket closed", transient: true };
+    expect(
+      resolve({ [a]: noIdentity, [b]: flaky }, { savedHostId: c, offline: [c] }),
+    ).toMatchObject({ environmentId: c, connected: false });
   });
 
   it.each([

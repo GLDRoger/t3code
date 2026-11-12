@@ -82,8 +82,9 @@ export type KinRouteHost = KinHost | { readonly _tag: "unpaired" };
 const isTransient = (probe: KinProbe) => probe._tag === "error" && probe.transient;
 
 /**
- * Saved host first, unless it isn't Kin or lacks an identity another host has; then the first
- * connected host with an identity, in catalog order; then one without. Earlier pending probes are
+ * Saved host first, unless it isn't Kin, lacks an identity another host has, or is offline while
+ * another connected host has an identity; then the first connected host with an identity, in
+ * catalog order; then one without. Earlier pending probes are
  * awaited so the choice stays stable. A transient failure never replaces or picks a host.
  */
 export function resolveKinHost(input: {
@@ -99,6 +100,18 @@ export function resolveKinHost(input: {
   let fallback: KinHost | null = null;
   if (saved !== undefined) {
     if (!saved.connected) {
+      // A live host with an identity beats the offline one's cache; otherwise the cache shows.
+      const live = input.candidates.find(
+        (c) => c.connected && input.probe(c.environmentId)._tag === "ready",
+      );
+      if (live !== undefined) {
+        return {
+          _tag: "host",
+          environmentId: live.environmentId,
+          connected: true,
+          probe: input.probe(live.environmentId),
+        };
+      }
       return {
         _tag: "host",
         environmentId: saved.environmentId,
