@@ -3428,6 +3428,14 @@ it.effect(
         const [reported] = yield* reports(ctx.sql, ctx.orgId);
         // Kin's record replaces what the worker says it was refused.
         assert.deepStrictEqual(reported!.event.report.blockedHosts, ["evil.example.com"]);
+        // Its grant goes when it ends; nothing of it stays in the state directory.
+        const left = yield* Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const directory = `${stateDir}/kin/work-network`;
+          const names = yield* fs.readDirectory(directory).pipe(Effect.orElseSucceed(() => []));
+          return names.filter((name) => name.startsWith(workerId));
+        }).pipe(Effect.provide(NodeServices.layer));
+        assert.deepStrictEqual(left, []);
         assert.isTrue(
           reported!.event.report.openQuestions.some((question) =>
             question.includes("refused network access to evil.example.com"),

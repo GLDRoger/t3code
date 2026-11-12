@@ -4,17 +4,29 @@ import * as Schema from "effect/Schema";
 import { AuthSettingsWriteScope, EnvironmentAuthorizationError } from "./auth.ts";
 import { KinChatError, KinOrgId } from "./kinChat.ts";
 
+const hostName = /^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+// Resolve to this machine, the LAN or the tailnet; the proxy refuses loopback only by address.
+const privateSuffixes = ["localhost", "local", "internal", "home.arpa", "ts.net"];
+
 /**
- * A host a worker's commands may reach through the sandbox's proxy: a lowercase host name, or one
- * `*.` wildcard. No address, port, scheme or `localhost`, which would open this machine's network.
+ * Why `host` can't be on a worker's network list, or `undefined` when it can: a lowercase host
+ * name or one `*.` wildcard, never an address, port, scheme or a name that stays inside.
  */
+export const workerHostProblem = (host: string): string | undefined => {
+  if (host.length > 253 || !hostName.test(host))
+    return "isn't a lowercase host name such as registry.npmjs.org or *.example.com";
+  const bare = host.startsWith("*.") ? host.slice(2) : host;
+  const suffix = privateSuffixes.find((entry) => bare === entry || bare.endsWith(`.${entry}`));
+  return suffix === undefined
+    ? undefined
+    : `ends in .${suffix}, which names this machine, its network or its tailnet`;
+};
+
+/** A host a worker's commands may reach through the sandbox's proxy; see `workerHostProblem`. */
 export const KinWorkerHost = Schema.String.check(
-  Schema.isMaxLength(253),
-  Schema.makeFilter(
-    (value: string) =>
-      /^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(value),
-    { expected: "a lowercase host name such as registry.npmjs.org or *.example.com" },
-  ),
+  Schema.makeFilter((value: string) => workerHostProblem(value), {
+    expected: "a public host name such as registry.npmjs.org or *.example.com",
+  }),
 );
 export type KinWorkerHost = typeof KinWorkerHost.Type;
 
@@ -38,6 +50,14 @@ export const KinWorkerSandboxInstall = Schema.Literals([
 ]);
 export type KinWorkerSandboxInstall = typeof KinWorkerSandboxInstall.Type;
 
+/** The cgroup limits each worker's own systemd scope gets; values in systemd's units. */
+export const KinWorkerLimits = Schema.Struct({
+  memoryMaxBytes: Schema.Number,
+  tasksMax: Schema.Number,
+  cpuWeight: Schema.Number,
+});
+export type KinWorkerLimits = typeof KinWorkerLimits.Type;
+
 export const KinWorkerSandboxStatus = Schema.Struct({
   state: Schema.Literals(["shell", "file_only", "unchecked"]),
   reason: Schema.String,
@@ -48,6 +68,8 @@ export const KinWorkerSandboxStatus = Schema.Struct({
   install: Schema.Array(KinWorkerSandboxInstall),
   /** Whether a refused command names its host to the worker, so its report can; null if unknown. */
   namesBlockedHosts: Schema.NullOr(Schema.Boolean),
+  /** Null where the host gives agents no systemd scope (macOS, no user manager), or unknown. */
+  limits: Schema.NullOr(KinWorkerLimits),
 });
 export type KinWorkerSandboxStatus = typeof KinWorkerSandboxStatus.Type;
 

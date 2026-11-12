@@ -544,6 +544,8 @@ export interface ClaudeAgentSdkQueryOpenInput {
   readonly options: ClaudeAgentSdkQueryOptions;
   readonly threadId: ThreadId;
   readonly providerSessionId: OrchestrationV2ProviderSession["id"];
+  /** systemd properties for the CLI's own scope, where this host gives it one. */
+  readonly scopeProperties?: ReadonlyArray<string> | undefined;
 }
 
 export interface ClaudeAgentSdkQuerySession {
@@ -1209,6 +1211,7 @@ export const layerQueryRunner: Layer.Layer<
                   name: "claude",
                   threadId: input.threadId,
                   env: queryOptions.env,
+                  properties: input.scopeProperties,
                 });
           const options =
             launch === undefined || launch.args.length === 0

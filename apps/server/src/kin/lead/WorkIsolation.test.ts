@@ -7,6 +7,7 @@ import {
   ProviderSessionId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -16,6 +17,7 @@ import * as ClaudeAdapterV2 from "../../orchestration-v2/Adapters/ClaudeAdapterV
 import { hookAllows, kinSecretVariables } from "../claudeConfinement.testkit.ts";
 import * as WorkIsolation from "./WorkIsolation.ts";
 import * as WorkSandbox from "./workSandbox.ts";
+import * as WorkSession from "./workSession.ts";
 
 // What T3 would hand any Claude thread, with every way to widen it the adapter knows.
 const options = ClaudeAdapterV2.makeClaudeQueryOptions({
@@ -35,6 +37,17 @@ const options = ClaudeAdapterV2.makeClaudeQueryOptions({
     permissions: { allow: ["Bash(curl:*)", "WebFetch"] },
     alwaysThinkingEnabled: true,
     sandbox: { enabled: false, allowUnsandboxedCommands: true, excludedCommands: ["*"] },
+    // Each of these runs or loads something outside the sandbox.
+    apiKeyHelper: "sh ./key-helper.sh",
+    awsAuthRefresh: "sh ./aws.sh",
+    awsCredentialExport: "sh ./aws.sh",
+    gcpAuthRefresh: "sh ./gcp.sh",
+    otelHeadersHelper: "sh ./otel.sh",
+    statusLine: { type: "command", command: "sh ./status.sh" },
+    fileSuggestion: { type: "command", command: "sh ./files.sh" },
+    outputStyle: "repo-style",
+    enabledPlugins: { "repo@market": true },
+    hooks: { SessionStart: [{ hooks: [{ type: "command", command: "sh ./hook.sh" }] }] },
   },
   mcpServers: {
     t3: { type: "http", url: "http://127.0.0.1/mcp" },
@@ -54,6 +67,7 @@ const opened = Effect.fn("WorkIsolationTest.opened")(function* (
     readonly env?: NodeJS.ProcessEnv;
     readonly hooks?: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions["hooks"];
     readonly sandbox?: Layer.Layer<WorkSandbox.KinWorkSandbox>;
+    readonly inputs?: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOpenInput>;
   },
 ) {
   const seen: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
@@ -62,9 +76,10 @@ const opened = Effect.fn("WorkIsolationTest.opened")(function* (
     ClaudeAdapterV2.ClaudeAgentSdkQueryRunner.of({
       allocateSessionId: Effect.succeed("session"),
       open: (input) =>
-        Effect.sync(() => seen.push(input.options)).pipe(
-          Effect.andThen(Effect.die("unused session")),
-        ),
+        Effect.sync(() => {
+          seen.push(input.options);
+          overrides.inputs?.push(input);
+        }).pipe(Effect.andThen(Effect.die("unused session"))),
       forkSession: () => Effect.die("unused fork"),
       subagentLaunchToolUseId: () => Effect.die("unused lookup"),
       assertComplete: Effect.void,
@@ -79,7 +94,8 @@ const opened = Effect.fn("WorkIsolationTest.opened")(function* (
         options: {
           ...options,
           cwd: overrides.cwd,
-          ...(overrides.env === undefined ? {} : { env: overrides.env }),
+          // Never the developer's own Claude settings, whose helper the wrapper would run.
+          env: overrides.env ?? { CLAUDE_CONFIG_DIR: "/nonexistent/kin-test-claude" },
           ...(overrides.hooks === undefined ? {} : { hooks: overrides.hooks }),
           sandbox: { enabled: false, allowUnsandboxedCommands: true },
         },
@@ -117,32 +133,47 @@ const worktree = Effect.fn("WorkIsolationTest.worktree")(function* () {
   return { root, main, tree };
 });
 
-it.effect(
-  "a work session has file tools in its worktree and no shell, subagent, web, MCP or settings file",
+it.live(
+  "a work session has file tools in its worktree and no shell, subagent, web, MCP, settings file or helper",
   () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const configDir = yield* fs.makeTempDirectoryScoped();
+      const home = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+      const { root, tree } = yield* worktree();
+      // A relative helper means the home's script to the server, never the worktree's.
+      yield* fs.writeFileString(`${home}/key-helper.sh`, "printf 'fixture-key\\n'\n");
+      yield* fs.writeFileString(`${tree}/key-helper.sh`, `touch '${root}/helper-ran'\n`);
       yield* fs.writeFileString(
         `${configDir}/settings.json`,
         JSON.stringify({
-          apiKeyHelper: "gateway-token",
+          apiKeyHelper: "sh ./key-helper.sh",
           env: { ANTHROPIC_BASE_URL: "https://gateway.test", NODE_OPTIONS: "--require /evil.js" },
           hooks: { PreToolUse: [] },
           permissions: { allow: ["Bash"] },
         }),
       );
-      const { tree } = yield* worktree();
       const env = {
         CLAUDE_CONFIG_DIR: configDir,
-        PATH: "/usr/bin",
+        PATH: ".:bin::/usr/bin",
+        // Claude Code runs, sources or loads what each of these names.
+        CLAUDE_CODE_SHELL_PREFIX: "/repo/wrap.sh",
+        CLAUDE_CODE_PROCESS_WRAPPER: "/repo/launch",
+        CLAUDE_CODE_SHELL: "/repo/bash",
+        CLAUDE_ENV_FILE: "/repo/env.sh",
+        CLAUDE_CODE_PLUGIN_DIRS: "/repo/plugins",
+        CLAUDE_CODE_PLUGIN_SEED_DIR: "/repo/seed",
+        CLAUDE_CODE_PLUGIN_CACHE_DIR: "/repo/cache",
+        CLAUDE_CODE_CLIENT_CERT: "./cert.pem",
         ...Object.fromEntries(kinSecretVariables.map((name) => [name, "secret"])),
       };
+      const inputs: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOpenInput> = [];
       const work = yield* opened("kin-work:wk-fixture", {
         cwd: tree,
         env,
         hooks: { PreToolUse: [{ hooks: [callerHook] }] },
-      });
+        inputs,
+      }).pipe(Effect.provideService(HostProcess.HomeDirectory, home));
       const other = yield* opened("thread-1", { cwd: tree, env });
 
       const setByWrapper = new Set([
@@ -159,7 +190,7 @@ it.effect(
       ]);
       assert.deepStrictEqual(
         Object.keys(work).filter(
-          (key) => !WorkIsolation.workOptionFields.has(key) && !setByWrapper.has(key),
+          (key) => !WorkSession.workOptionFields.has(key) && !setByWrapper.has(key),
         ),
         [],
       );
@@ -177,16 +208,27 @@ it.effect(
       assert.deepStrictEqual(work.systemPrompt, {
         type: "preset",
         preset: "claude_code",
-        append: WorkIsolation.workPreamble,
+        append: WorkSession.workPreamble,
       });
-      // The owner's model credentials only; no hooks, permissions or env from any settings file.
+      // The helper ran here, from the home, and only its key reaches the child, sent as a helper's
+      // would be; no hook, helper, plugin, style or env from any settings file.
       assert.deepStrictEqual(work.settings, {
         alwaysThinkingEnabled: true,
         showThinkingSummaries: true,
-        apiKeyHelper: "gateway-token",
-        env: { ANTHROPIC_BASE_URL: "https://gateway.test" },
+        env: {
+          ANTHROPIC_BASE_URL: "https://gateway.test",
+          ANTHROPIC_API_KEY: "fixture-key",
+          ANTHROPIC_AUTH_TOKEN: "fixture-key",
+        },
       });
+      assert.notInclude(JSON.stringify(work), "key-helper");
+      assert.isFalse(yield* fs.exists(`${root}/helper-ran`));
       assert.deepStrictEqual(work.env, { CLAUDE_CONFIG_DIR: configDir, PATH: "/usr/bin" });
+      // Its own systemd scope gets the worker's limits.
+      assert.deepStrictEqual(
+        inputs[0]?.scopeProperties,
+        WorkSandbox.workerScopeProperties(WorkSandbox.hostWorkerLimits),
+      );
       // The caller's hooks are dropped; the one left is the confinement hook, which blocks on error.
       assert.deepStrictEqual(Object.keys(work.hooks ?? {}), ["PreToolUse"]);
       assert.strictEqual(work.hooks?.PreToolUse?.length, 1);
@@ -381,7 +423,7 @@ it.effect(
       assert.deepStrictEqual(work.systemPrompt, {
         type: "preset",
         preset: "claude_code",
-        append: WorkIsolation.shellPreamble,
+        append: WorkSession.shellPreamble,
       });
       const allows = (tool: string, input: unknown) =>
         Effect.promise(() => hookAllows(work, tool, input));

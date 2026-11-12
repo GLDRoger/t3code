@@ -197,8 +197,18 @@ describe("AgentScope service", () => {
     () =>
       withFakeSystemd(({ scope, units, calls }) =>
         Effect.gen(function* () {
-          const agent = yield* scope.wrap({ command: "agent", args: [], name: "t", threadId: "a" });
+          const agent = yield* scope.wrap({
+            command: "agent",
+            args: [],
+            name: "t",
+            threadId: "a",
+            properties: ["MemoryMax=1073741824", "TasksMax=4096"],
+          });
           expect(agent.args).toContain("--property=OOMPolicy=stop");
+          // A caller's own limits apply to its scope alone, before the command.
+          const command = agent.args.indexOf("--");
+          expect(agent.args.indexOf("--property=MemoryMax=1073741824")).toBeLessThan(command);
+          expect(agent.args.indexOf("--property=TasksMax=4096")).toBeGreaterThan(-1);
           units.set(unitOf(agent), { activeState: "failed", result: "oom-kill" });
           expect(yield* scope.oomKilled("a")).toBe(true);
 

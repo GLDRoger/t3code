@@ -107,6 +107,14 @@ it("a host the owner adds is a host name, never an address, port, scheme or the 
     "Example.com",
     "example.com/path",
     "",
+    // Names that point at this machine, the LAN or the tailnet, which the proxy would reach.
+    "foo.localhost",
+    "*.localhost",
+    "printer.local",
+    "db.internal",
+    "nas.home.arpa",
+    "box.tail1234.ts.net",
+    "*.ts.net",
   ])
     assert.isTrue(Exit.isFailure(decode({ orgId, host })), host);
 });
