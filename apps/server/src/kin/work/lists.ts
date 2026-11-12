@@ -44,7 +44,7 @@ export const LISTS: Record<ListName, List> = {
     states: ["open", "dropped"],
     categories: ["client", "vendor"],
     // Tax ids are configuration for invoices; computing tax is not Kin's.
-    fields: ["terms", "gstin", "placeOfSupply"],
+    fields: ["terms", "address", "gstin", "placeOfSupply"],
   },
   contacts: {
     name: "Contacts",

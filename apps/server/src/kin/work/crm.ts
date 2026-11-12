@@ -398,6 +398,7 @@ export const partyDetail = Effect.fn("KinCrm.partyDetail")(function* (row: Recor
     ...counted!,
     notes: row.notes,
     terms: fieldText(fields, "terms"),
+    address: fieldText(fields, "address"),
     sensitiveFields: [...sensitiveFields("clients")],
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),

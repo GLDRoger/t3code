@@ -18,6 +18,8 @@ import * as TestClock from "effect/testing/TestClock";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { KinDocRenderer } from "../gendocs/render.ts";
+import { KinWorkspace } from "../gendocs/workspace.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -103,7 +105,9 @@ const gate = Layer.unwrap(
     }),
   ),
 );
-const layer = Layer.mergeAll(KinRecords.layer, identity, gate).pipe(
+// No documents were made for these entries, so issuing one renders nothing (`DocJobs.test.ts`).
+const documents = Layer.mergeAll(Layer.mock(KinDocRenderer)({}), Layer.mock(KinWorkspace)({}));
+const layer = Layer.mergeAll(KinRecords.layer, identity, gate, documents).pipe(
   Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),
   Layer.provideMerge(Sqlite.layerMemory),

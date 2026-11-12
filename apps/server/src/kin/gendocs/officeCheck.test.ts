@@ -1,13 +1,8 @@
-// @effect-diagnostics nodeBuiltinImport:off -- the starter script is run from a temporary folder, as a worker runs it.
-import * as NodeFS from "node:fs";
-import * as NodeOS from "node:os";
-import * as NodePath from "node:path";
-import * as NodeURL from "node:url";
-
 import { assert, it } from "@effect/vitest";
 
+import { OFFICE_CAPS, officeProblem } from "./officeCheck.ts";
 import { typeMismatch } from "./returnPath.ts";
-import { STARTER_FILES } from "./starter.ts";
+import { toXlsx } from "./tables.ts";
 import { type Part, relationship, rels, types, zip } from "./zip.testkit.ts";
 
 const DOCX_TYPE =
@@ -100,35 +95,19 @@ const patched = (bytes: Buffer, write: (bytes: Buffer) => void) => {
   return bytes;
 };
 
-/** The starter accountant pack's own workbook writer, run as a worker would run it. */
-const starterXlsx = async () => {
-  const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "kin-office-"));
-  try {
-    const script = NodePath.join(root, "build.mjs");
-    NodeFS.writeFileSync(script, STARTER_FILES["recipes/accountant-pack/build.mjs"]!);
-    const pack = await import(/* @vite-ignore */ NodeURL.pathToFileURL(script).href);
-    return {
-      book: pack.toXlsx([
-        {
-          name: "Invoices",
-          cells: [
-            [{ text: "Key" }, { text: "=1+1" }],
-            [{ text: "INV-1" }, { number: "10.00" }],
-          ],
-        },
-      ]) as Buffer,
-      toCsv: pack.toCsv as (cells: ReadonlyArray<ReadonlyArray<unknown>>) => string,
-    };
-  } finally {
-    NodeFS.rmSync(root, { recursive: true, force: true });
-  }
-};
-
 it("takes plain Office files, the starter pack's workbook and web or email hyperlinks included", async () => {
-  const { book } = await starterXlsx();
-  assert.isUndefined(typeMismatch("xlsx", book));
+  const book = toXlsx([
+    {
+      name: "Invoices",
+      cells: [
+        [{ text: "Key" }, { text: "=1+1" }],
+        [{ text: "INV-1" }, { number: "10.00", currency: "INR" }],
+      ],
+    },
+  ]);
+  assert.isUndefined(await typeMismatch("xlsx", book));
   assert.isUndefined(
-    typeMismatch(
+    await typeMismatch(
       "docx",
       docx([
         relationship("hyperlink", "https://example.invalid/pay", true),
@@ -140,7 +119,7 @@ it("takes plain Office files, the starter pack's workbook and web or email hyper
   const PPTX_TYPE =
     "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml";
   assert.isUndefined(
-    typeMismatch(
+    await typeMismatch(
       "pptx",
       zip([
         ["[Content_Types].xml", types("ppt/presentation.xml", PPTX_TYPE)],
@@ -197,10 +176,10 @@ it("takes plain Office files, the starter pack's workbook and web or email hyper
       ]),
     ],
   ] as const)
-    assert.isUndefined(typeMismatch(kind, bytes), what);
+    assert.isUndefined(await typeMismatch(kind, bytes), what);
 });
 
-it("refuses Office files that run, embed or load anything, and ZIPs it can't trust", () => {
+it("refuses Office files that run, embed or load anything, and ZIPs it can't trust", async () => {
   const refused: ReadonlyArray<readonly [string, "xlsx" | "docx" | "pptx", Buffer, string]> = [
     [
       "an external template",
@@ -350,10 +329,10 @@ it("refuses Office files that run, embed or load anything, and ZIPs it can't tru
       "more than 2000 parts",
     ],
     [
-      "a part too big to read",
+      "a part that unpacks far past its packed size",
       "docx",
       docx([], [["big/_rels/a.rels", " ".repeat(5 * 1024 * 1024)]]),
-      "has big/_rels/a.rels, which is too large for Kin to check",
+      "has big/_rels/a.rels, which unpacks to far more than any real document does",
     ],
     [
       "a foreign TargetMode shadowing the real one",
@@ -594,24 +573,6 @@ it("refuses Office files that run, embed or load anything, and ZIPs it can't tru
       "has word/media/image1.svg, an SVG with a url() to something outside the file",
     ],
     [
-      "a body part too big to check",
-      "docx",
-      docxBody(" ".repeat(5 * 1024 * 1024)),
-      "has word/document.xml, which is too large for Kin to check",
-    ],
-    [
-      "body parts too big to check together",
-      "docx",
-      docxBody(
-        "",
-        Array.from({ length: 5 }, (_, i): Part => [
-          `word/part${i}.xml`,
-          `<x>${" ".repeat(4_000_000)}</x>`,
-        ]),
-      ),
-      "has more XML than Kin checks in one file",
-    ],
-    [
       "WEBSERVICE",
       "xlsx",
       xlsx('_xlfn.WEBSERVICE("https://example.invalid/a")'),
@@ -680,8 +641,32 @@ it("refuses Office files that run, embed or load anything, and ZIPs it can't tru
   ];
   for (const [what, kind, bytes, reason] of refused)
     assert.strictEqual(
-      typeMismatch(kind, bytes),
-      `it's a ${kind.toUpperCase()} that ${reason}. Kin takes back Office files with no macros, embedded objects or outside links, plain web and email hyperlinks aside: make it again without them, or return a PDF`,
+      await typeMismatch(kind, bytes),
+      `it's a ${kind.toUpperCase()} that ${reason}`,
       what,
     );
+});
+
+it("streams a sheet of real size, and refuses a part or a file past the budget", async () => {
+  // Generated rows, about 40 MiB of sheet XML: a big month, still a plain workbook.
+  const rows: Array<string> = [];
+  let size = 0;
+  for (let n = 1; size < 40 * 1024 * 1024; n += 1) {
+    const row = `<row r="${n}"><c r="A${n}" t="inlineStr"><is><t>Invented row ${n}</t></is></c><c r="B${n}"><v>${n}.25</v></c></row>`;
+    rows.push(row);
+    size += row.length;
+  }
+  const sheet = `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${rows.join("")}</sheetData></worksheet>`;
+  const book = xlsx("1", [["xl/worksheets/sheet2.xml", sheet]]);
+  assert.isAbove(sheet.length, 40 * 1024 * 1024);
+  assert.isUndefined(await typeMismatch("xlsx", book));
+  const mib = 1024 * 1024;
+  assert.strictEqual(
+    await officeProblem("xlsx", book, { ...OFFICE_CAPS, partBytes: 32 * mib }),
+    "has xl/worksheets/sheet2.xml, which is too large for Kin to check",
+  );
+  assert.strictEqual(
+    await officeProblem("xlsx", book, { ...OFFICE_CAPS, inflatedBytes: 40 * mib }),
+    "has more XML than Kin checks in one file",
+  );
 });

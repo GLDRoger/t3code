@@ -37,7 +37,7 @@ it.effect("re-checks the installed Typst, and stops a download as it passes the 
     yield* fs.makeDirectory(directory!, { recursive: true });
     yield* fs.writeFileString(`${directory!}/typst`, "#!/bin/sh\necho tampered\n");
     yield* fs.writeFileString(`${directory!}/.sha256`, `${LINUX_X64}\n`);
-    const failed = yield* (yield* KinToolchain).ensure(["typst"]).pipe(Effect.flip);
+    const failed = yield* (yield* KinToolchain).ensure().pipe(Effect.flip);
     assert.strictEqual(requests, 1);
     assert.strictEqual(failed.message, "Typst's download was larger than expected.");
     assert.isAtMost(sent, 66 * MiB);

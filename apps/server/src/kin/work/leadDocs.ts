@@ -340,7 +340,7 @@ const ownerOf = (row: RecordRow): KinWorkPrincipal =>
     : { _tag: "person", personId: KinPersonId.make(row.ownerId) };
 
 /** The doc as a card in the turn's chat, built from the stored version; a retry finds the same one. */
-const shown = Effect.fn("KinDocTools.shown")(function* (
+export const shown = Effect.fn("KinDocTools.shown")(function* (
   lead: Lead,
   written: Docs.Written,
   card: boolean | undefined,

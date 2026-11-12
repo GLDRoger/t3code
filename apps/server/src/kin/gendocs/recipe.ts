@@ -3,11 +3,13 @@ import * as Schema from "effect/Schema";
 import { parseDocument } from "yaml";
 
 import { parseAmount } from "../work/money.ts";
+import { FUNCTIONS } from "./compute.ts";
 
 /**
- * A recipe is a folder in the workspace: `RECIPE.md`, whose front matter says what it makes and
- * the inputs it takes, and whose body tells the worker how. Each input is the agent's, or read
- * by Kin from a stored row named by `from`; the worker gets exactly the declared inputs.
+ * A recipe is a folder in the workspace: `RECIPE.md`, whose front matter says what it makes, the
+ * inputs it takes and the fields Kin computes from them, and a `template.typ` that lays them out
+ * (or, for `kind: table`, the sheets and columns Kin writes). Each input is the agent's, or read
+ * by Kin from a stored row named by `from`; the server renders exactly the declared inputs.
  */
 
 const ScalarType = Schema.Literals(["text", "integer", "decimal", "money", "date", "boolean"]);
@@ -24,17 +26,39 @@ const Declared = Schema.Struct({
   /** For `rows.*` and `payments`: the month input whose rows these are. */
   period: Schema.optional(Name),
 });
+const FileName = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9{][A-Za-z0-9 ._(){}-]{0,99}$/));
+const SheetDecl = Schema.Struct({
+  name: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(31)),
+  input: Name,
+  file: Schema.optional(FileName),
+  columns: Schema.Array(
+    Schema.Struct({
+      header: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(80)),
+      field: Schema.String.check(Schema.isPattern(/^[a-z][a-zA-Z0-9_]{0,39}(?:\.currency)?$/)),
+    }),
+  ).check(Schema.isMinLength(1), Schema.isMaxLength(60)),
+  leaveOutOfTotals: Schema.optional(
+    Schema.Struct({
+      field: Name,
+      values: Schema.Array(Schema.String).check(Schema.isMaxLength(20)),
+    }),
+  ),
+});
+export type Sheet = typeof SheetDecl.Type;
 const FrontMatter = Schema.Struct({
   name: Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9-]{1,39}$/)),
+  kind: Schema.optional(Schema.Literals(["typst", "table"])),
   title: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(60)),
   description: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(300)),
   list: Schema.optional(Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_]{1,39}$/))),
   numbered: Schema.optional(Schema.Boolean),
   sensitive: Schema.optional(Schema.Boolean),
-  tools: Schema.optional(Schema.Array(Schema.Literals(["typst"]))),
   inputs: Schema.optional(Schema.Record(Name, Declared)),
+  computed: Schema.optional(Schema.Record(Name, Schema.Unknown)),
+  workbook: Schema.optional(FileName),
+  sheets: Schema.optional(Schema.Array(SheetDecl).check(Schema.isMaxLength(20))),
   outputs: Schema.Array(
-    Schema.String.check(Schema.isPattern(/^[A-Za-z0-9*][A-Za-z0-9 ._()*-]{0,99}$/)),
+    Schema.String.check(Schema.isPattern(/^[A-Za-z0-9*{][A-Za-z0-9 ._()*{}-]{0,99}$/)),
   ).check(Schema.isMinLength(1), Schema.isMaxLength(20)),
 });
 const decodeFrontMatter = Schema.decodeUnknownExit(FrontMatter);
@@ -50,20 +74,25 @@ export type InputDecl = {
 };
 export type Recipe = {
   readonly name: string;
+  /** `typst`: `template.typ` makes each PDF output; `table`: Kin writes the declared sheets. */
+  readonly kind: "typst" | "table";
   readonly title: string;
   readonly description: string;
   readonly list: string | null;
   readonly numbered: boolean;
   readonly sensitive: boolean;
-  readonly tools: ReadonlyArray<"typst">;
   readonly inputs: ReadonlyArray<InputDecl>;
+  /** Fields Kin works out, in order, each `{ <function>: <arguments> }` (`compute.ts`). */
+  readonly computed: ReadonlyArray<readonly [string, unknown]>;
+  readonly sheets: ReadonlyArray<Sheet>;
+  readonly workbook: string | null;
   readonly outputs: ReadonlyArray<string>;
-  /** The body: how the worker makes it. */
+  /** The body: notes for an agent on when and how to use it. */
   readonly instructions: string;
 };
 
 const ENTRY_KEYS = ["key", "title", "state", "amount", "tax", "date", "due", "notes", "number"];
-const CLIENT_KEYS = ["name", "gstin", "placeOfSupply", "terms"];
+const CLIENT_KEYS = ["name", "address", "gstin", "placeOfSupply", "terms"];
 const COMPANY_KEYS = ["legalName", "tradeName", "address", "gstin", "pan", "placeOfSupply", "sac"];
 const BANK_KEYS = ["accountName", "accountNumber", "ifsc", "bankName", "branch", "upi"];
 const SYSTEM_KEYS = ["number", "draft", "today"];
@@ -127,7 +156,8 @@ export const parseRecipe = (text: string): Recipe | RecipeProblem => {
   if (match === null) return problem("RECIPE.md has no front matter between --- lines");
   const document = parseDocument(match[1]!, { uniqueKeys: true });
   if (document.errors.length > 0) return problem("RECIPE.md's front matter isn't valid YAML");
-  const decoded = decodeFrontMatter(document.toJS({ maxAliasCount: 0 }));
+  const raw: unknown = document.toJS({ maxAliasCount: 0 });
+  const decoded = decodeFrontMatter(raw);
   if (decoded._tag === "Failure")
     return problem("RECIPE.md's front matter is missing or has a wrong field");
   const front = decoded.value;
@@ -165,15 +195,52 @@ export const parseRecipe = (text: string): Recipe | RecipeProblem => {
       period: declared.period,
     });
   }
+  const kind = front.kind ?? "typst";
+  // In the order RECIPE.md writes them: a field may use any field before it.
+  const rawComputed: unknown =
+    typeof raw === "object" && raw !== null ? Reflect.get(raw, "computed") : undefined;
+  const computed = Object.entries(
+    typeof rawComputed === "object" && rawComputed !== null ? rawComputed : {},
+  );
+  for (const [name, spec] of computed) {
+    if (front.inputs?.[name] !== undefined)
+      return problem(`computed field ${name} has an input's name`);
+    const fn = typeof spec === "object" && spec !== null ? Object.keys(spec)[0] : undefined;
+    if (fn === undefined || !(FUNCTIONS as ReadonlyArray<string>).includes(fn))
+      return problem(`computed field ${name} names none of ${FUNCTIONS.join(", ")}`);
+  }
+  const sheets = front.sheets ?? [];
+  if (kind === "typst") {
+    if (sheets.length > 0 || front.workbook !== undefined)
+      return problem("sheets and workbook are for kind: table");
+    const bad = front.outputs.find((output) => !/^[^*{}]+\.pdf$/.test(output));
+    if (bad !== undefined)
+      return problem(`output ${bad}: a typst recipe names each PDF it makes, such as invoice.pdf`);
+  } else {
+    if (sheets.length === 0) return problem("a table recipe declares its sheets");
+    if (computed.length > 0) return problem("computed fields are for kind: typst");
+    for (const sheet of sheets) {
+      const input = inputs.find((one) => one.name === sheet.input);
+      if (input?.type !== "table") return problem(`sheet ${sheet.name} reads no table input`);
+      const missing = sheet.columns.find(
+        (column) => !Object.hasOwn(input.columns, column.field.split(".")[0]!),
+      );
+      if (missing !== undefined)
+        return problem(`sheet ${sheet.name}: ${sheet.input} has no column ${missing.field}`);
+    }
+  }
   return {
     name: front.name,
+    kind,
     title: front.title,
     description: front.description,
     list: front.list ?? null,
     numbered: front.numbered ?? false,
     sensitive: front.sensitive ?? false,
-    tools: front.tools ?? [],
     inputs,
+    computed,
+    sheets,
+    workbook: front.workbook ?? null,
     outputs: front.outputs,
     instructions: match[2]!.trim(),
   };

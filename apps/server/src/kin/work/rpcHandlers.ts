@@ -133,6 +133,12 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.docs.recipes": Effect.fn("KinDocs.rpc.recipes")(function* (input) {
         return yield* call((people) => Docs.recipes(people, input));
       }),
+      "kin.docs.render": Effect.fn("KinDocs.rpc.render")(function* (input) {
+        return yield* call((people) => Docs.render(people, input));
+      }),
+      "kin.docs.undoRecipe": Effect.fn("KinDocs.rpc.undoRecipe")(function* (input) {
+        return yield* call((people) => Docs.undoRecipe(people, input));
+      }),
       "kin.search": Effect.fn("KinDocs.rpc.search")(function* (input) {
         return yield* call((people) => Docs.search(people, input));
       }),
