@@ -8,7 +8,7 @@ import type {
   KinDigestRow,
 } from "@t3tools/client-runtime/kin/kinCardPresentation";
 
-/** A server-drawn list: the shadow summary or a routine. Plain text only; links open on a tap. */
+/** A server-drawn list: a routine. Plain text only; links open on a tap. */
 export const KinDigestCard = memo(function KinDigestCard(props: {
   readonly digest: KinDigestCardView;
   /** The screen's safe link handler. */
@@ -34,10 +34,10 @@ export const KinDigestCard = memo(function KinDigestCard(props: {
       }}
       className="gap-2.5 rounded-[20px] border border-border bg-card-alt p-4"
     >
-      <Text className="font-t3-bold text-2xs uppercase tracking-[1.1px] text-foreground-secondary">
+      <Text textRole="caption" className="font-t3-medium text-foreground-muted">
         {digest.eyebrow}
       </Text>
-      <Text textRole="headline" className="font-t3-bold text-foreground">
+      <Text textRole="body" className="font-t3-bold text-foreground">
         {digest.title}
       </Text>
       {digest.rows.map((row) => (

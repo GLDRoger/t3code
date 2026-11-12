@@ -129,12 +129,14 @@ export interface KinPresenceLine {
   readonly stalled: boolean;
   /** Short form for the header subtitle. */
   readonly subtitle: string;
-  /** Pulsing dots while the lead has only seen or is starting, a shimmer while it works. */
+  /** Pulsing dots while the lead is queued or starting, a shimmer while it works. */
   readonly motion: "dots" | "shimmer" | "still";
 }
 
-const MOTION: Record<KinPresenceState, KinPresenceLine["motion"]> = {
-  seen: "dots",
+// `seen` comes only from older servers; a lead's line then waits for its wake-up.
+type ShownState = Exclude<KinPresenceState, "seen">;
+
+const MOTION: Record<ShownState, KinPresenceLine["motion"]> = {
   starting: "dots",
   thinking: "shimmer",
   working: "shimmer",
@@ -152,8 +154,7 @@ const elapsed = (ms: number) => {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 };
 
-const DEFAULT_TEXT: Record<Exclude<KinPresenceState, "stalled">, string> = {
-  seen: "Seen",
+const DEFAULT_TEXT: Record<Exclude<ShownState, "stalled">, string> = {
   starting: "Starting…",
   thinking: "Thinking…",
   working: "Working…",
@@ -170,7 +171,7 @@ export function kinPresenceLine(
   presence: KinPresence | undefined,
   now: number,
 ): KinPresenceLine | null {
-  if (presence === undefined) return null;
+  if (presence === undefined || presence.state === "seen") return null;
   if (presence.state === "stalled") {
     const minutes = Math.max(2, Math.floor((now - Date.parse(presence.since)) / 60_000));
     return {
@@ -190,10 +191,10 @@ export function kinPresenceLine(
     subtitle: text,
     motion: MOTION[presence.state],
   };
-  if (presence.state !== "starting" || label) return line;
+  if (presence.state !== "starting") return line;
   const waited = now - Date.parse(presence.startedAt);
   return waited >= KIN_SLOW_START_AFTER_MS
-    ? { ...line, text: `Starting · ${elapsed(waited)}` }
+    ? { ...line, text: `${label ? clip(label) : "Starting"} · ${elapsed(waited)}` }
     : line;
 }
 
@@ -211,5 +212,5 @@ export function kinPresenceTimerStart(presence: KinPresence | undefined): string
 
 /** Whether the line reads differently as time passes, so it needs the clock. */
 export function kinPresenceNeedsClock(presence: KinPresence | undefined): boolean {
-  return presence?.state === "stalled" || (presence?.state === "starting" && !presence.label);
+  return presence?.state === "stalled" || presence?.state === "starting";
 }

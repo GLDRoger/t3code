@@ -28,6 +28,7 @@ import { PersistenceDecodeError, toPersistenceSqlError } from "../../persistence
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as Chat from "../chat/KinChatService.ts";
 import * as KinBudget from "../lead/KinBudget.ts";
+import type * as KinLevels from "../lead/KinLevels.ts";
 import * as LeadDelivery from "../lead/LeadDelivery.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
@@ -35,6 +36,7 @@ import { workersConfigured } from "../lead/workerEnvironment.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import { readGithubLinks } from "./deferralGithub.ts";
+import { cardChatFor } from "./deferralOrigin.ts";
 import {
   DeferralSnapshot,
   GRACE_MS,
@@ -158,7 +160,13 @@ const make = Effect.gen(function* () {
     readonly now: number;
     readonly timeZone: string;
     /** Set when a wake-up can run now. */
-    readonly lead: { readonly agentId: KinAgentId; readonly ownerChatId: KinChatId } | undefined;
+    readonly lead:
+      | {
+          readonly agentId: KinAgentId;
+          readonly ownerChatId: KinChatId;
+          readonly origin: KinLevels.KinOrigin | undefined;
+        }
+      | undefined;
     readonly leadName: string | undefined;
     readonly fallbackChat: KinChatId | null;
   }) {
@@ -170,7 +178,7 @@ const make = Effect.gen(function* () {
       status: "due",
     } as const satisfies KinReminderCard;
     const widgetId = KinWidgetId.make(kinReminderWidgetId(orgId, itemId, fireAt));
-    const fallbackBody = `Reminder: ${title}.${lateNote(fireAt, now, input.timeZone)} (${input.leadName ?? "Your lead"} couldn't write this one, so Kin sent it.)`;
+    const fallbackBody = `Reminder: ${title}.${lateNote(fireAt, now, input.timeZone)} (${input.leadName ?? "Your agent"} couldn't write this one, so Kin sent it.)`;
     if (input.lead !== undefined) {
       const dedupeKey = fire.fireId;
       const eventId = KinEventId.make(`reminder_${hex(`${orgId.length}:${orgId}${dedupeKey}`)}`);
@@ -184,6 +192,7 @@ const make = Effect.gen(function* () {
         dedupeKey,
         subject: { type: "reminder", itemId },
         lateByMs: Math.max(0, now - fireAt),
+        ...(input.lead.origin === undefined ? {} : { origin: input.lead.origin }),
       });
       yield* deliveries.handOff(event, {
         orgId,
@@ -229,15 +238,19 @@ const make = Effect.gen(function* () {
         MemoryDuplicateId: () => Effect.undefined,
       }),
     );
-  // The item's chat when it belongs to the org, else the owner's direct chat.
+  // The item's chat when it belongs to the org and was never shared, else an owner chat: the
+  // owner chat of the lead it fires with once that chat was shared, else the first lead's.
   const cardChat = Effect.fn("KinDeferralFlow.cardChat")(function* (
     orgId: KinOrgId,
     item: MemoryItemHead | undefined,
   ) {
     if (item?.chat !== undefined) {
-      const [own] = yield* sql`SELECT 1 FROM kin_chats
-        WHERE org_id = ${orgId} AND chat_id = ${item.chat} ORDER BY chat_id`;
-      if (own !== undefined) return KinChatId.make(item.chat);
+      const lead = yield* liveLead(sql, orgId, {
+        chatId: item.chat,
+        prefer: CHIEF_OF_STAFF_DOMAIN,
+      });
+      const chatId = yield* cardChatFor(sql, orgId, item.chat, lead?.ownerChatId ?? null);
+      if (chatId !== null) return chatId;
     }
     const lead = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
     return lead === undefined ? null : lead.ownerChatId;
@@ -311,8 +324,7 @@ const make = Effect.gen(function* () {
       if (!(yield* workersConfigured)) gates.push("workers can't launch yet");
     }
     // A reminder is the lead's to write when a wake-up can run; budget is read outside the writer.
-    const reminderLead =
-      onDue === "remind" ? yield* deferralLead(sql, orgId, item?.chat) : undefined;
+    const reminderLead = onDue === "remind" ? yield* deferralLead(sql, orgId, item) : undefined;
     const reminderAdmitted =
       reminderLead === undefined
         ? false
@@ -323,9 +335,7 @@ const make = Effect.gen(function* () {
     // No memory or GitHub I/O below: the memory lock can wait on this writer.
     return yield* sql.withTransaction(
       Effect.gen(function* () {
-        const pending = yield* sql`SELECT fire_id FROM kin_trigger_inbox WHERE org_id = ${orgId}
-          AND fire_id = ${fire.fireId} AND consumed_at IS NULL ORDER BY fire_id`;
-        if (pending.length === 0) return false;
+        if (!(yield* KinTriggerInbox.fireOpen(sql, orgId, fire.fireId))) return false;
         const reasons = [...gates];
         const current = yield* readRun(orgId, itemId);
         // Moved or handled since the reads above: classify again on the next tick.
@@ -366,9 +376,9 @@ const make = Effect.gen(function* () {
         });
 
         if (onDue === "start") {
-          const lead = yield* deferralLead(sql, orgId, item?.chat);
-          if (lead === undefined) reasons.push("there is no active lead");
-          else if (!startsAtLevel(lead.level)) reasons.push(`Kin is at ${lead.level}, below L2`);
+          const lead = yield* deferralLead(sql, orgId, item);
+          if (lead === undefined) reasons.push("there is no active agent");
+          else if (!startsAtLevel(lead.level)) reasons.push("starting work isn't open to me here");
         }
 
         if (step.kind === "heads_up") {
@@ -413,7 +423,7 @@ const make = Effect.gen(function* () {
               at: Date.parse(fire.firedAt),
               now,
               from: run.state,
-              chatId: item?.chat,
+              item,
             });
             if (!started) return false;
           }
@@ -468,6 +478,7 @@ const make = Effect.gen(function* () {
       orgId,
       chatId,
       messageId: KinMessageId.make(`deferral-failed:${orgId}:${fire.fireId}`),
+      audience: "owner",
       body: `I couldn't handle the deferral ${title} due ${ownerDateTime(dueAt, timeZone)}.`,
     });
   });

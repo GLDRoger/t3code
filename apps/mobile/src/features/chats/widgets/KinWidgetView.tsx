@@ -7,25 +7,29 @@ import { AppText as Text } from "../../../components/ui/AppText";
 import { environmentCatalog } from "../../../connection/catalog";
 import {
   KIN_MISSING_CARD_TEXT,
-  KIN_UNKNOWN_CARD_TEXT,
   kinCardView,
 } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { KinApprovalCard } from "./KinApprovalCard";
+import { KinChart } from "./KinChart";
 import { KinChoiceCard } from "./KinChoiceCard";
 import { KinDeferralCard } from "./KinDeferralCard";
 import { KinDigestCard } from "./KinDigestCard";
+import { KinDocCard } from "./KinDocCard";
 import { KinMemoryChangesCard } from "./KinMemoryChangesCard";
-import { KinPromotionCard } from "./KinPromotionCard";
-import { KinShadowReviewCard } from "./KinShadowReviewCard";
 import { KinTaskCard } from "./KinTaskCard";
+import { KinVisual } from "./KinVisual";
 
-/** The native card for a message's widget. Never falls back to HTML. */
+/** The native card for a message's widget. Only a `visual` card draws a page, in a sealed view. */
 export const KinWidgetView = memo(function KinWidgetView(props: {
   readonly widget: KinWidget | undefined;
   /** The environment hosting the chat. */
   readonly environmentId: EnvironmentId;
   readonly viewerPersonId: KinPersonId | null;
   readonly onOpenLink: (url: string) => void;
+  /** The card's agent by name when it is retired, so its reminders and schedules read as on hold. */
+  readonly heldFor?: string | null;
+  /** The chat's agents by id, for the doc card's "by Growth". */
+  readonly agentNames?: ReadonlyMap<string, string>;
 }) {
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
   // Before the catalog loads, assume the environment is known; the thread screen handles the rest.
@@ -33,6 +37,7 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
     props.widget,
     props.environmentId,
     (environmentId) => !catalog.isReady || catalog.entries.has(environmentId),
+    props.heldFor ?? null,
   );
   switch (view.kind) {
     case "task":
@@ -47,12 +52,18 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
           viewerPersonId={props.viewerPersonId}
         />
       );
+    case "chart":
+      return (
+        <View className="rounded-[20px] border border-border bg-card-alt p-4">
+          <KinChart view={view.chart} />
+        </View>
+      );
+    case "visual":
+      return (
+        <KinVisual environmentId={props.environmentId} orgId={view.orgId} visual={view.visual} />
+      );
     case "digest":
       return <KinDigestCard digest={view.digest} onOpenLink={props.onOpenLink} />;
-    case "shadow_review":
-      return <KinShadowReviewCard review={view.review} environmentId={props.environmentId} />;
-    case "promotion":
-      return <KinPromotionCard promotion={view.promotion} environmentId={props.environmentId} />;
     case "memory_changes":
       return <KinMemoryChangesCard changes={view.changes} environmentId={props.environmentId} />;
     case "approval":
@@ -63,12 +74,28 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
           revision={view.approval.revision}
         />
       );
+    case "doc":
+      return props.widget === undefined ? null : (
+        <KinDocCard
+          doc={view.doc}
+          environmentId={props.environmentId}
+          orgId={props.widget.orgId}
+          {...(props.agentNames === undefined ? {} : { agentNames: props.agentNames })}
+        />
+      );
     case "missing":
-    case "unknown":
       return (
         <View className="rounded-[20px] border border-border bg-card-alt px-4 py-3">
           <Text textRole="footnote" className="text-foreground-muted">
-            {view.kind === "missing" ? KIN_MISSING_CARD_TEXT : KIN_UNKNOWN_CARD_TEXT}
+            {KIN_MISSING_CARD_TEXT}
+          </Text>
+        </View>
+      );
+    case "unknown":
+      return view.text === null ? null : (
+        <View className="rounded-[20px] border border-border bg-card-alt px-4 py-3">
+          <Text textRole="footnote" className="text-foreground">
+            {view.text}
           </Text>
         </View>
       );

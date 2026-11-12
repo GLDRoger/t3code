@@ -202,9 +202,18 @@ it.effect.each(["disabled", "invalid", "failed"] as const)(
         const launcher = yield* ThreadLaunch.ThreadLaunchService;
         const management = yield* ThreadManagement.ThreadManagementService;
         if (mode !== "failed") {
-          assert.strictEqual(launcher.launch, launch);
-          assert.strictEqual(management.sendToThread, sendToThread);
+          // Kin off still wraps dispatch, but only to refuse Kin's own tasks.
           assert.strictEqual(yield* launcher.launch(input).pipe(Effect.flip), rejected);
+          const kinTask = ScheduledTaskId.make("scheduled-task:kin:schedule:org:sch-off");
+          const refused = yield* launcher
+            .launch({
+              ...input,
+              commandId: CommandId.make(`scheduled-task:${kinTask}:1:manual`),
+              initialMessage: { ...input.initialMessage!, scheduledTaskId: kinTask },
+            })
+            .pipe(Effect.flip);
+          assert.include(String(refused.cause), "Kin scheduled task refused");
+          assert.isDefined(management.sendToThread);
         } else {
           const failure = yield* launcher.launch(input).pipe(Effect.flip);
           assert.notStrictEqual(failure, rejected);

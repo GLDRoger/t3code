@@ -99,16 +99,8 @@ const inline = (label: string, rows: ReadonlyArray<RoutineRow>) =>
           rows.length > INLINE_ENTRIES ? `; +${rows.length - INLINE_ENTRIES} more` : ""
         }`,
       ];
-const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
 const late = (ms: number) =>
   ms < 3_600_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 3_600_000)} h`;
-const units = (value: number) =>
-  value >= 1_000_000
-    ? `${(value / 1_000_000).toFixed(1)}M`
-    : value >= 1_000
-      ? `${Math.round(value / 1_000)}k`
-      : `${Math.round(value)}`;
-
 function headerLines(routine: KinLeadRoutine, header: RoutineHeader) {
   const lateNote =
     header.lateByMs >= LATE_NOTE_MS && header.dueLabel !== null
@@ -156,25 +148,15 @@ function morningLines(facts: MorningFacts) {
                   .join("; ")})`
           }`,
         ]),
-    ...(facts.postponed === 0 && facts.yesterdayUnits === null
+    // Spend and memory upkeep are Kin's business; the owner hears only what was held back.
+    ...(facts.postponed === 0
       ? []
-      : [
-          `Budget: ${facts.postponed} postponed for budget${
-            facts.yesterdayUnits === null ? "" : `; yesterday ${units(facts.yesterdayUnits)} units`
-          }`,
-        ]),
-    ...inline("Past review date", facts.pastReview),
+      : [`Held over to stay within today's budget: ${facts.postponed}`]),
   ];
-  return lines.length === 0 ? ["Nothing due, overdue or waiting on you."] : lines;
+  return lines;
 }
 
 function eveningLines(facts: EveningFacts) {
-  const usage = [
-    facts.units === null ? undefined : `${units(facts.units)} units today`,
-    facts.cacheHitRate === null ? undefined : `cache hits ${Math.round(facts.cacheHitRate * 100)}%`,
-    facts.failedWakeups === 0 ? undefined : plural(facts.failedWakeups, "failed wake-up"),
-    facts.failedDreams === 0 ? undefined : plural(facts.failedDreams, "failed dream"),
-  ].filter((part) => part !== undefined);
   const lines = [
     ...inline("Done", facts.done),
     ...inline("Slipped or moved", facts.slipped),
@@ -185,9 +167,14 @@ function eveningLines(facts: EveningFacts) {
           `Open questions for you: ${facts.waiting.length}, oldest ${entry(facts.waiting[0] as RoutineRow)}`,
         ]),
     ...inline("Due tomorrow", facts.dueTomorrow),
-    ...(usage.length === 0 ? [] : [`Usage: ${usage.join("; ")}`]),
+    // A failed turn may have cost the owner an answer; usage, cache and dreams never do.
+    ...(facts.failedWakeups === 0
+      ? []
+      : [
+          `${facts.failedWakeups} ${facts.failedWakeups === 1 ? "reply" : "replies"} failed today; ask again if something went unanswered.`,
+        ]),
   ];
-  return lines.length === 0 ? ["Nothing done, slipped, promised or due tomorrow."] : lines;
+  return lines;
 }
 
 /** Keeps the body within the cap; the card still lists every row. */
@@ -220,11 +207,23 @@ const sections = (
         ["due_tomorrow", facts.dueTomorrow],
       ];
 
-/** The routine message: at most `ROUTINE_MAX_LINES` lines of body plus one card. */
+const NOTHING = {
+  morning_brief: "Nothing due, overdue or waiting on you.",
+  evening_summary: "Nothing done, slipped, promised or due tomorrow.",
+};
+
+/**
+ * The routine message: at most `ROUTINE_MAX_LINES` lines of body plus one card. `empty` when no
+ * fact needs the owner (what GitHub couldn't be read is not one): such a routine is not sent.
+ */
 export function renderRoutine(header: RoutineHeader, facts: MorningFacts | EveningFacts) {
+  const lines = facts.routine === "morning_brief" ? morningLines(facts) : eveningLines(facts);
+  const empty =
+    (facts.routine === "morning_brief" ? morningLines({ ...facts, github: [] }) : lines).length ===
+    0;
   const body = fitLines([
     ...headerLines(facts.routine, header),
-    ...(facts.routine === "morning_brief" ? morningLines(facts) : eveningLines(facts)),
+    ...(lines.length === 0 ? [NOTHING[facts.routine]] : lines),
   ]).join("\n");
   const card: KinRoutineCard = {
     routine: facts.routine,
@@ -242,5 +241,5 @@ export function renderRoutine(header: RoutineHeader, facts: MorningFacts | Eveni
       )
       .slice(0, CARD_ROWS),
   };
-  return { body, card };
+  return { body, card, empty };
 }

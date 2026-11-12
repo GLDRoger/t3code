@@ -7,6 +7,7 @@ import {
   KIN_CHAT_WS_METHODS,
   KinChatError,
   type EnvironmentId,
+  type KinOrgId,
   type KinChatHistoryInput,
   type KinChatHistoryResult,
   type KinChatId,
@@ -108,7 +109,7 @@ const sessionEnded = EnvironmentSupervisor.EnvironmentSupervisor.pipe(
  * That answer holds only for its session: when the session ends the stream shows `onSessionEnd`,
  * then resubscribes on the next connected session instead of ending.
  */
-function resubscribeWhenKinReturns<A, E, R>(
+export function resubscribeWhenKinReturns<A, E, R>(
   stream: Stream.Stream<A, E, R>,
   onDisabled: Stream.Stream<A>,
   onSessionEnd: Stream.Stream<A>,
@@ -141,7 +142,7 @@ function resubscribeWhenKinReturns<A, E, R>(
  * Resubscribes after `unavailable`: 1 s, doubling to 30 s, starting over once events flow again
  * or a new session comes up.
  */
-function retryWhileKinUnavailable<A, E, R>(stream: Stream.Stream<A, E, R>) {
+export function retryWhileKinUnavailable<A, E, R>(stream: Stream.Stream<A, E, R>) {
   let attempt = 0;
   const run = (): Stream.Stream<A, E, R | EnvironmentSupervisor.EnvironmentSupervisor> =>
     stream.pipe(
@@ -222,6 +223,34 @@ const throttledSave = Effect.fnUntraced(function* <A, R>(
     },
   };
 });
+
+/**
+ * Tells `reread` when the direct chats or the viewer's place in them change: being let message
+ * a lead adds its chat, and losing that leaves the chat read-only. The first snapshot is the
+ * starting point and says nothing.
+ */
+export const onKinDirectChatsChange =
+  (reread: (environmentId: EnvironmentId, orgIds: ReadonlyArray<KinOrgId>) => void) =>
+  <E, R>(stream: Stream.Stream<KinSynced<KinInboxState>, E, R>) =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        const environmentId = yield* currentEnvironmentId;
+        let seen: string | null = null;
+        return stream.pipe(
+          Stream.tap((view) =>
+            Effect.sync(() => {
+              const direct = view.value.chats.filter((chat) => chat.kind === "direct");
+              const key = direct
+                .map((chat) => `${chat.chatId}:${chat.members.map((m) => m.role).join(",")}`)
+                .join("|");
+              if (seen !== null && seen !== key)
+                reread(environmentId, [...new Set(direct.map((chat) => chat.orgId))]);
+              seen = key;
+            }),
+          ),
+        );
+      }),
+    );
 
 export function kinInboxStream(input: KinChatsSubscribeInput) {
   return Stream.unwrap(
@@ -328,6 +357,8 @@ export function makeKinChatStream<E, R>(readHistory: KinReadHistory<E, R>) {
         };
 
         const onEvent = Effect.fnUntraced(function* (event: KinChatStreamEvent) {
+          // A cleared chat's cached messages go too, even though the feed is empty for now.
+          if (event._tag === "reset" && event.cleared === true) savedMessages = false;
           const views = [...step(applyKinChatEvent(state, event))];
           if (state.left) {
             yield* forget;

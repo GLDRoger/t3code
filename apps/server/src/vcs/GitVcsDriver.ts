@@ -147,6 +147,8 @@ export interface CreateWorktreeOptions {
   readonly worktreesDirectory?: string;
   /** Clone the checkout from the macOS worktree checkout cache. */
   readonly fastCheckout?: boolean;
+  /** False runs none of the repository's git hooks, such as post-checkout; omitted runs them. */
+  readonly runHooks?: boolean;
 }
 
 export interface GitCommitProgress {

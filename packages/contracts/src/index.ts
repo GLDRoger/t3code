@@ -74,11 +74,20 @@ export * from "./secretReference.ts";
 export * from "./settingsSecretValue.ts";
 export * from "./clientRpcPermissions.ts";
 export * from "./kinChat.ts";
+export * from "./kinChart.ts";
+export * from "./kinVisual.ts";
 export * from "./kinLead.ts";
 export * from "./kinTriggers.ts";
 export * from "./kinApprovals.ts";
 export * from "./kinLevels.ts";
 export * from "./kinMemory.ts";
+export * from "./kinWork.ts";
+export * from "./kinDocs.ts";
+export * from "./kinMoney.ts";
+export * from "./kinFinance.ts";
 export * from "./kinPush.ts";
 
 export * from "./kinRpcs.ts";
+export * from "./kinWorkerNetwork.ts";
+
+export * from "./kinPeople.ts";

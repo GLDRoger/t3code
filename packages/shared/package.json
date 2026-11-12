@@ -139,6 +139,10 @@
       "types": "./src/htmlRender.ts",
       "import": "./src/htmlRender.ts"
     },
+    "./kinVisual": {
+      "types": "./src/kinVisual.ts",
+      "import": "./src/kinVisual.ts"
+    },
     "./favicon": {
       "types": "./src/favicon.ts",
       "import": "./src/favicon.ts"

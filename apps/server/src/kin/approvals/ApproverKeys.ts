@@ -1,14 +1,12 @@
-// @effect-diagnostics nodeBuiltinImport:off -- synchronous SHA-256 and constant-time compares.
+// @effect-diagnostics nodeBuiltinImport:off -- constant-time compares.
 import * as NodeCrypto from "node:crypto";
 
 import {
-  KinActionId,
-  KinActionTarget,
-  KinAgentId,
+  AuthKinChatScope,
+  KIN_APPROVER_ENROLMENT_VERSION,
   KinApprovalError,
-  KinEventId,
-  ThreadId,
   type AuthSessionId,
+  type KinActionId,
   type KinApprovalsKeyChallengeResult,
   type KinApprovalsKeyInput,
   type KinApprovalsListKeysResult,
@@ -16,6 +14,7 @@ import {
   type KinApprovalsRegisterKeyInput,
   type KinApprovalsRegisterKeyResult,
   type KinApproverKey,
+  type KinApproverKeyPlatform,
   type KinKeyThumbprint,
   type KinOrgId,
   type KinPersonId,
@@ -28,7 +27,8 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
+import * as PubSub from "effect/PubSub";
+import type * as Scope from "effect/Scope";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Base64Url from "effect/encoding/Base64Url";
 
@@ -36,39 +36,32 @@ import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { proofKeyRevoked } from "../auth/ProofKeySessions.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import {
+  MAX_ACTIVE_KEYS,
   internal,
   makeKeyStore,
-  pendingSealFields,
   sealFields,
   type KeyRef,
   type KeyRow,
 } from "./ApproverKeyStore.ts";
+import { KinAudit } from "./Audit.ts";
+import { KinKeyNotices, type KinKeyChange } from "./ExecutionNotices.ts";
+import { KinOrgRoles } from "./GrantPorts.ts";
 import { KinAttestationTrust } from "./attestation/AttestationTrust.ts";
 import {
   verifyAndroidKeyAttestation,
   verifyAppleAppAttest,
   type AttestationResult,
 } from "./attestation/verify.ts";
-import {
-  KIN_APPROVER_KEYS_REQUESTER,
-  KinPendingActions,
-  kinTargetDigest,
-} from "./PendingActions.ts";
+import { KinPendingActions } from "./PendingActions.ts";
 
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
+/** Why the phone-to-phone requests from before one-step set-up closed. */
+const PHONE_APPROVAL_RETIRED = "phone_approval_retired";
+const ACTIVITY_SHOWN = 5;
 
 export type KinKeyCaller = {
   readonly session: AuthenticatedSession;
   readonly people: ReadonlyArray<PersonIdentity>;
-};
-
-const decodeEventId = Schema.decodeEffect(KinEventId);
-const decodeTarget = Schema.decodeUnknownEffect(KinActionTarget);
-const isActionId = Schema.is(KinActionId);
-
-const SERVER_REQUESTER = {
-  agentId: Schema.decodeSync(KinAgentId)(KIN_APPROVER_KEYS_REQUESTER),
-  threadId: Schema.decodeSync(ThreadId)(KIN_APPROVER_KEYS_REQUESTER),
 };
 
 const fail = (reason: KinApprovalError["reason"], message: string) =>
@@ -80,10 +73,9 @@ const sameBytes = (a: string, b: string) => {
   return left.length === right.length && NodeCrypto.timingSafeEqual(left, right);
 };
 
-/** Spec section 4: six digits from `sha256(thumbprint ‖ serverNonce)`; the nonce is the challenge. */
-export const kinKeyConfirmationCode = (thumbprint: string, challenge: Uint8Array) => {
-  const digest = NodeCrypto.createHash("sha256").update(thumbprint).update(challenge).digest();
-  return String(digest.readUInt32BE(0) % 1_000_000).padStart(6, "0");
+const APP_NAME: Record<KinApproverKeyPlatform, string> = {
+  ios: "KIN_IOS_APP_ID",
+  android: "KIN_ANDROID_PACKAGE",
 };
 
 export class ApproverKeys extends Context.Service<
@@ -92,15 +84,17 @@ export class ApproverKeys extends Context.Service<
     readonly keyChallenge: (
       caller: KinKeyCaller,
     ) => Effect.Effect<KinApprovalsKeyChallengeResult, KinApprovalError>;
-    /** Stores the key `pending`; the host's `kin approvals confirm-key` CLI confirms the first. */
+    /** The owner's phone, proven genuine by attestation, can approve as soon as this returns. */
     readonly registerKey: (
       caller: KinKeyCaller,
       input: KinApprovalsRegisterKeyInput,
     ) => Effect.Effect<KinApprovalsRegisterKeyResult, KinApprovalError>;
+    /** Owner only: the keys that can approve, and the latest changes. */
     readonly listKeys: (
       caller: KinKeyCaller,
       input: KinApprovalsOrgInput,
     ) => Effect.Effect<KinApprovalsListKeysResult, KinApprovalError>;
+    /** Remove, from any of the owner's sessions. */
     readonly revokeKey: (
       caller: KinKeyCaller,
       input: KinApprovalsKeyInput,
@@ -109,8 +103,6 @@ export class ApproverKeys extends Context.Service<
     readonly get: (ref: KeyRef) => Effect.Effect<Option.Option<KinApproverKey>, KinApprovalError>;
     /** Grant check 2: an `active` key in the org, else `unknown_key` or `revoked_key`. */
     readonly requireActive: (ref: KeyRef) => Effect.Effect<KinApproverKey, KinApprovalError>;
-    /** The `register_approver_key` handler's step, only after a verified grant. */
-    readonly activateByGrant: (ref: KeyRef) => Effect.Effect<boolean, KinApprovalError>;
     /** Revokes keys whose T3 session was revoked. Returns how many. */
     /** One org, or every org at startup: sessions are environment-local (the `kin_auth_*` exception). */
     readonly reconcileSessions: (
@@ -120,26 +112,43 @@ export class ApproverKeys extends Context.Service<
     readonly activeApprovers: (
       orgId: KinOrgId,
     ) => Effect.Effect<ReadonlyArray<KinPersonId>, KinApprovalError>;
+    /** Each key change after it commits, owing its owner the push `kin_key_pushes` records. */
+    readonly changes: Effect.Effect<PubSub.Subscription<void>, never, Scope.Scope>;
   }
 >()("t3/kin/approvals/ApproverKeys") {}
 
 const make = Effect.gen(function* () {
   const trust = yield* KinAttestationTrust;
   const actions = yield* KinPendingActions;
+  const roles = yield* KinOrgRoles;
+  const audit = yield* KinAudit;
+  const notices = yield* KinKeyNotices;
   const store = yield* makeKeyStore;
-  const { sql, seal, toKey, select, hasActiveKey } = store;
+  const { sql, seal, toKey, select } = store;
   // Single-use, session-bound, short-lived: memory is enough, and a restart only means retrying.
+  const changed = yield* PubSub.unbounded<void>();
   const challenges = new Map<
     AuthSessionId,
     { readonly challenge: string; readonly expiresAt: number }
   >();
 
-  const personIn = (caller: KinKeyCaller, orgId: KinOrgId) => {
+  /**
+   * Approver keys are the owner's alone in phase 1 (spec section 3), checked against stored rows.
+   * Shared and guest sessions reach a person through the chat scope and never manage keys.
+   */
+  const ownerIn = Effect.fn("ApproverKeys.ownerIn")(function* (
+    caller: KinKeyCaller,
+    orgId: KinOrgId,
+  ) {
     const person = caller.people.find((candidate) => candidate.orgId === orgId);
-    return person === undefined
-      ? fail("not_owner", "Only a person in this org can manage its approver keys.")
-      : Effect.succeed(person);
-  };
+    if (
+      person === undefined ||
+      caller.session.scopes.includes(AuthKinChatScope) ||
+      !(yield* roles.isOwner(person))
+    )
+      return yield* fail("not_owner", "Only the owner chooses the phones that approve for Kin.");
+    return person;
+  });
 
   const reconcileSessions = Effect.fn("ApproverKeys.reconcileSessions")(
     function* (orgId: KinOrgId | undefined) {
@@ -176,6 +185,13 @@ const make = Effect.gen(function* () {
           (error) => new KinApprovalError({ reason: "unavailable", message: error.message }),
         ),
       );
+    const configured =
+      input.platform === "android" ? loaded.androidApps.length > 0 : loaded.appleAppIds.length > 0;
+    if (!configured)
+      return yield* fail(
+        "unattested",
+        `This Kin host can't recognise the Kin app yet, so it can't add phones. Set ${APP_NAME[input.platform]} in the host's service.env, restart Kin, then try again.`,
+      );
     const now = yield* Clock.currentTimeMillis;
     const common = { challenge, publicJwk: input.publicJwk, trust: loaded, now };
     return attestation.format === "android-key"
@@ -187,9 +203,55 @@ const make = Effect.gen(function* () {
         });
   });
 
+  /** A lost answer retried from the same session gets the stored key; anything else is refused. */
+  const retried = Effect.fn("ApproverKeys.retried")(function* (
+    caller: KinKeyCaller,
+    input: KinApprovalsRegisterKeyInput,
+    row: KeyRow,
+  ) {
+    if (
+      row.state === "active" &&
+      row.session_id === caller.session.sessionId &&
+      row.public_jwk_json === stableStringify(input.publicJwk) &&
+      row.device_label === input.deviceLabel &&
+      row.platform === input.platform
+    )
+      return row;
+    return yield* fail(
+      "invalid_state",
+      "This key is already registered. Tap Set up approvals again to make a new one.",
+    );
+  });
+
+  const notify = (row: KeyRow, change: KinKeyChange["change"], at: number, lastKey: boolean) =>
+    notices
+      .changed({
+        orgId: row.org_id as KinOrgId,
+        ownerPersonId: row.human_id as KinPersonId,
+        thumbprint: row.thumbprint as KinKeyThumbprint,
+        deviceLabel: row.device_label,
+        platform: row.platform,
+        change,
+        at,
+        lastKey,
+      })
+      .pipe(Effect.andThen(sql.afterCommit(PubSub.publish(changed, undefined))));
+
   const registerKey = Effect.fn("ApproverKeys.registerKey")(
     function* (caller: KinKeyCaller, input: KinApprovalsRegisterKeyInput) {
-      const person = yield* personIn(caller, input.orgId);
+      // Older apps expect a code back and discard their key without one. They show the host's
+      // text only for `unavailable`, up to 200 characters.
+      if (input.enrolmentVersion !== KIN_APPROVER_ENROLMENT_VERSION)
+        return yield* fail(
+          "unavailable",
+          "This version of the Kin app can't set up approvals any more. Please update the Kin app, then try again.",
+        );
+      // Answered early here; the write below checks again against the rows it commits with.
+      yield* ownerIn(caller, input.orgId);
+      const thumbprint = computeDpopJwkThumbprint(input.publicJwk) as KinKeyThumbprint;
+      const stored = yield* select({ orgId: input.orgId, thumbprint });
+      if (stored !== undefined) return { key: yield* toKey(yield* retried(caller, input, stored)) };
+
       const now = yield* Clock.currentTimeMillis;
       const issued = challenges.get(caller.session.sessionId);
       challenges.delete(caller.session.sessionId);
@@ -198,7 +260,7 @@ const make = Effect.gen(function* () {
         issued.expiresAt <= now ||
         !sameBytes(issued.challenge, input.challenge)
       )
-        return yield* fail("bad_challenge", "Ask for a new key challenge on this connection.");
+        return yield* fail("bad_challenge", "That took too long. Tap Set up approvals again.");
       const challenge = new Uint8Array(Buffer.from(input.challenge, "base64url"));
       yield* reconcileSessions(input.orgId);
       // Mobile keeps one DPoP key per install, so a repaired revocation must not lock it out.
@@ -210,120 +272,103 @@ const make = Effect.gen(function* () {
         if (seen?.revoked === 1)
           return yield* fail(
             "invalid_state",
-            "This phone was signed out. Ask the owner to restore it, then try again.",
+            "This phone was signed out of Kin. Pair it again, then set up approvals.",
           );
       }
 
-      const thumbprint = computeDpopJwkThumbprint(input.publicJwk) as KinKeyThumbprint;
+      // Only the genuine Kin app on a real device passes this, so nothing on the host can enrol.
       const result = yield* attest(input, challenge);
       if (!result.attested) {
-        yield* Effect.logWarning("Kin approver key isn't attested; it can't be activated.", {
+        yield* Effect.logWarning("Kin refused an approver key without trusted attestation.", {
           platform: input.platform,
           reason: result.reason,
         });
+        return yield* fail(
+          "unattested",
+          "Kin couldn't confirm this is the Kin app on a real phone, so it didn't add this phone. Approvals need the Kin app from the App Store or Google Play, on a phone with Face ID or a fingerprint set up.",
+        );
       }
-      const unsealed: KeyRow = {
-        thumbprint,
-        org_id: input.orgId,
-        public_jwk_json: stableStringify(input.publicJwk),
-        human_id: person.personId,
-        device_label: input.deviceLabel,
-        platform: input.platform,
-        hardware: result.attested ? result.hardware : "software",
-        attested: result.attested ? 1 : 0,
-        session_id: caller.session.sessionId,
-        // Relay sessions renew hourly under a new id; this DPoP key stays (spec section 4).
-        proof_key_thumbprint: caller.session.proofKeyThumbprint ?? null,
-        state: "pending",
-        created_at: now,
-        confirmed_at: null,
-        revoked_at: null,
-        seal: null,
-        pending_seal: null,
-      };
-      // Vouches for this verdict and holder, so a row written into SQLite can't pose as attested.
-      const row: KeyRow = result.attested
-        ? { ...unsealed, pending_seal: seal.pendingSeal(pendingSealFields(unsealed)) }
-        : unsealed;
-      const key = yield* toKey(row);
-      const code = kinKeyConfirmationCode(thumbprint, challenge);
-      const target = result.attested
-        ? yield* decodeTarget({
-            _tag: "device_key",
-            thumbprint,
-            hardware: result.hardware,
-            attested: true,
-          })
-        : undefined;
-      const source = yield* decodeEventId(`approver_key:${thumbprint}:${input.challenge}`);
-      const inserted = yield* sql.withTransaction(
+      const hardware = result.hardware;
+
+      const row = yield* sql.withTransaction(
         Effect.gen(function* () {
-          // An attestation is bound to the challenge given when the key was made, so a key never
-          // registers twice; refusing keeps anyone from rewriting a pending key's record.
-          const fresh = yield* sql`INSERT INTO kin_approver_keys ${sql.insert(row)}
-            ON CONFLICT (org_id, thumbprint) DO NOTHING RETURNING thumbprint`;
-          if (fresh.length === 0 || target === undefined) return fresh.length > 0;
-          // Only an attested key gets a code the host can confirm, first key or recovery.
-          yield* store.saveConfirmation({
-            row,
-            sessionId: caller.session.sessionId,
-            challenge,
-            code,
-            now,
-          });
-          if (!(yield* hasActiveKey(input.orgId))) return true;
-          // Later keys need a grant from an existing key (spec section 4, step 3).
-          yield* actions.create({
+          const person = yield* ownerIn(caller, input.orgId);
+          if ((yield* store.activeCount(input.orgId)) >= MAX_ACTIVE_KEYS)
+            return yield* fail(
+              "too_many_keys",
+              `${MAX_ACTIVE_KEYS} phones can already approve. Remove one in Settings, then Approvals, and try again.`,
+            );
+          const unsealed: KeyRow = {
+            thumbprint,
+            org_id: input.orgId,
+            public_jwk_json: stableStringify(input.publicJwk),
+            human_id: person.personId,
+            device_label: input.deviceLabel,
+            platform: input.platform,
+            hardware,
+            attested: 1,
+            session_id: caller.session.sessionId,
+            // Relay sessions renew hourly under a new id; this DPoP key stays (spec section 4).
+            proof_key_thumbprint: caller.session.proofKeyThumbprint ?? null,
+            state: "active",
+            created_at: now,
+            confirmed_at: now,
+            revoked_at: null,
+            seal: null,
+          };
+          const sealed: KeyRow = { ...unsealed, seal: seal.seal(sealFields(unsealed)) };
+          const [fresh] = yield* sql<KeyRow>`INSERT INTO kin_approver_keys ${sql.insert(sealed)}
+            ON CONFLICT (org_id, thumbprint) DO NOTHING RETURNING *`;
+          if (fresh === undefined) {
+            const raced = yield* select({ orgId: input.orgId, thumbprint });
+            if (raced === undefined)
+              return yield* fail("invalid_state", "This key was already used. Try again.");
+            return yield* retried(caller, input, raced);
+          }
+          yield* audit.append({
             orgId: input.orgId,
-            kind: "register_approver_key",
-            target,
-            resolved: { _tag: "none" },
-            targetDigest: kinTargetDigest("register_approver_key", target, { _tag: "none" }),
-            reason: `Add approver key for "${input.deviceLabel}".`,
-            requestedBy: SERVER_REQUESTER,
-            provenance: {
-              startedBy: { humanId: person.personId },
-              // `KinIdentity.resolve` yields only the org owner until CHAT-11 adds roles (spec, Interfaces).
-              startedByRole: "owner",
-              chain: [{ kind: "approver_key", id: thumbprint, authorRole: "owner" }],
-              ceilingBelowOwner: false,
-            },
-            source,
+            event: "key_registered",
+            keyThumbprint: thumbprint,
+            deviceLabel: input.deviceLabel,
+            sessionId: caller.session.sessionId,
+            result: "set up on the phone; can approve",
           });
-          return true;
+          yield* notify(fresh, "added", now, false);
+          return fresh;
         }),
       );
-      if (!inserted)
-        return yield* fail(
-          "invalid_state",
-          "This key is already registered; make a new key on the phone.",
-        );
-      return { key, code };
+      return { key: yield* toKey(row) };
     },
     Effect.catch(internal("ApproverKeys.registerKey")),
   );
 
   const listKeys = Effect.fn("ApproverKeys.listKeys")(
     function* (caller: KinKeyCaller, input: KinApprovalsOrgInput) {
-      yield* personIn(caller, input.orgId);
+      yield* ownerIn(caller, input.orgId);
       yield* reconcileSessions(input.orgId);
-      const rows = yield* sql<KeyRow>`SELECT * FROM kin_approver_keys
-        WHERE org_id = ${input.orgId} ORDER BY created_at, thumbprint`;
-      // A new phone's card: the owner's active phone approves it from its Approvals screen.
-      const pending = yield* sql<{ action_id: string; thumbprint: KinKeyThumbprint }>`
-        SELECT a.action_id, k.thumbprint FROM kin_pending_actions a
-        JOIN kin_approver_keys k ON k.org_id = a.org_id
-          AND k.thumbprint = json_extract(a.target_json, '$.thumbprint')
-        WHERE a.org_id = ${input.orgId} AND a.kind = 'register_approver_key'
-          AND a.state = 'awaiting_approval' AND k.state = 'pending'
-        ORDER BY a.created_at, a.action_id`;
+      const rows = yield* sql<KeyRow & { last_used_at: number | null }>`SELECT k.*,
+          (SELECT MAX(g.accepted_at) FROM kin_grants g
+            WHERE g.org_id = k.org_id AND g.key_thumbprint = k.thumbprint) AS last_used_at
+        FROM kin_approver_keys k
+        WHERE k.org_id = ${input.orgId} AND k.state = 'active'
+        ORDER BY k.confirmed_at, k.thumbprint`;
+      // Only keys that could approve: one closed before it ever could was never a change.
+      const activity = yield* sql<{
+        change: "added" | "removed";
+        at: number;
+        deviceLabel: string;
+        platform: KinApproverKeyPlatform;
+      }>`SELECT change, at, device_label AS "deviceLabel", platform FROM (
+          SELECT 'added' AS change, confirmed_at AS at, device_label, platform, thumbprint
+          FROM kin_approver_keys WHERE org_id = ${input.orgId} AND confirmed_at IS NOT NULL
+          UNION ALL
+          SELECT 'removed' AS change, revoked_at AS at, device_label, platform, thumbprint
+          FROM kin_approver_keys WHERE org_id = ${input.orgId} AND confirmed_at IS NOT NULL
+            AND revoked_at IS NOT NULL)
+        ORDER BY at DESC, change DESC, thumbprint LIMIT ${ACTIVITY_SHOWN}`;
       return {
-        keys: yield* Effect.forEach(rows, toKey),
-        enrolments: pending.flatMap((row) =>
-          isActionId(row.action_id)
-            ? [{ thumbprint: row.thumbprint, actionId: row.action_id }]
-            : [],
-        ),
+        keys: yield* Effect.forEach(rows, (row) => toKey(row, row.last_used_at)),
+        activity: activity.map((entry) => ({ ...entry, at: DateTime.makeUnsafe(entry.at) })),
       };
     },
     Effect.catch(internal("ApproverKeys.listKeys")),
@@ -331,13 +376,28 @@ const make = Effect.gen(function* () {
 
   const revokeKey = Effect.fn("ApproverKeys.revokeKey")(
     function* (caller: KinKeyCaller, input: KinApprovalsKeyInput) {
-      const person = yield* personIn(caller, input.orgId);
-      const row = yield* select(input);
-      if (row === undefined) return yield* fail("not_found", "No such approver key.");
-      if (row.human_id !== person.personId)
-        return yield* fail("not_owner", "Only the key's owner can revoke it.");
-      const revoked = yield* store.revokeRow(input, "key_revoked");
-      return yield* toKey(revoked ?? row);
+      const row = yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* ownerIn(caller, input.orgId);
+          const found = yield* select(input);
+          if (found === undefined) return yield* fail("not_found", "No such phone.");
+          if (found.state === "revoked") return found;
+          const revoked = yield* store.revokeRow(input, "key_revoked");
+          if (revoked === undefined) return found;
+          yield* audit.append({
+            orgId: input.orgId,
+            event: "key_revoked",
+            keyThumbprint: input.thumbprint,
+            deviceLabel: found.device_label,
+            sessionId: caller.session.sessionId,
+            result: "removed by the owner",
+          });
+          const lastKey = (yield* store.activeCount(input.orgId)) === 0;
+          yield* notify(revoked, "removed", revoked.revoked_at ?? 0, lastKey);
+          return revoked;
+        }),
+      );
+      return yield* toKey(row);
     },
     Effect.catch(internal("ApproverKeys.revokeKey")),
   );
@@ -353,28 +413,12 @@ const make = Effect.gen(function* () {
 
   const requireActive = Effect.fn("ApproverKeys.requireActive")(function* (ref: KeyRef) {
     const key = yield* get(ref);
-    if (Option.isNone(key) || key.value.state === "pending")
+    if (Option.isNone(key))
       return yield* fail("unknown_key", "No active approver key with this id.");
     if (key.value.state === "revoked")
       return yield* fail("revoked_key", "This approver key was revoked.");
     return key.value;
   });
-
-  const activateByGrant = Effect.fn("ApproverKeys.activateByGrant")(
-    function* (ref: KeyRef) {
-      yield* reconcileSessions(ref.orgId);
-      const now = yield* Clock.currentTimeMillis;
-      // `activate` checks the pending seal on the row this transaction read, then pins it.
-      return yield* sql.withTransaction(
-        Effect.gen(function* () {
-          const row = yield* select(ref);
-          if (row === undefined) return false;
-          return (yield* store.activate(row, now, false)) !== undefined;
-        }),
-      );
-    },
-    Effect.catch(internal("ApproverKeys.activateByGrant")),
-  );
 
   const activeApprovers = Effect.fn("ApproverKeys.activeApprovers")(
     function* (orgId: KinOrgId) {
@@ -412,6 +456,56 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  // A new phone used to be approved from another phone. Those requests close, audited, expired
+  // or not; none are made any more, so later starts find nothing.
+  const closePhoneApprovals = Effect.gen(function* () {
+    // A startup scan across orgs, like `reconcileSessions(undefined)`.
+    const rows = yield* sql<{ orgId: KinOrgId; actionId: KinActionId; revision: number }>`
+      SELECT org_id AS "orgId", action_id AS "actionId", revision FROM kin_pending_actions
+      WHERE kind = 'register_approver_key' AND state IN ('awaiting_approval', 'approved')
+      ORDER BY org_id, action_id`;
+    for (const row of rows) yield* actions.retire({ ...row, reason: PHONE_APPROVAL_RETIRED });
+  });
+  yield* closePhoneApprovals.pipe(
+    Effect.catchCause((cause) =>
+      Effect.logError("Kin couldn't close phone-to-phone key requests; retries next start.", cause),
+    ),
+  );
+
+  // A key still waiting to be allowed in Settings never activates now: it ran out, audited, and
+  // the phone simply sets up again. Later starts find nothing.
+  const runOutWaitingKeys = Effect.gen(function* () {
+    // A startup scan across orgs, like `reconcileSessions(undefined)`.
+    const rows = yield* sql<{ orgId: KinOrgId; thumbprint: KinKeyThumbprint }>`
+      SELECT org_id AS "orgId", thumbprint FROM kin_approver_keys WHERE state = 'pending'
+      ORDER BY org_id, created_at, thumbprint`;
+    for (const row of rows)
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis;
+          const [closed] = yield* sql<{ device_label: string }>`UPDATE kin_approver_keys
+            SET state = 'revoked', revoked_at = ${now}, seal = NULL
+            WHERE org_id = ${row.orgId} AND thumbprint = ${row.thumbprint} AND state = 'pending'
+            RETURNING device_label`;
+          if (closed === undefined) return;
+          yield* sql`DELETE FROM kin_approver_key_confirmations
+            WHERE org_id = ${row.orgId} AND thumbprint = ${row.thumbprint}`;
+          yield* audit.append({
+            orgId: row.orgId,
+            event: "key_revoked",
+            keyThumbprint: row.thumbprint,
+            deviceLabel: closed.device_label,
+            result: "ran out: it waited to be allowed and never was; set up again on the phone",
+          });
+        }),
+      );
+  });
+  yield* runOutWaitingKeys.pipe(
+    Effect.catchCause((cause) =>
+      Effect.logError("Kin couldn't close waiting approver keys; retries next start.", cause),
+    ),
+  );
+
   return ApproverKeys.of({
     keyChallenge,
     registerKey,
@@ -419,9 +513,9 @@ const make = Effect.gen(function* () {
     revokeKey,
     get,
     requireActive,
-    activateByGrant,
     reconcileSessions,
     activeApprovers,
+    changes: PubSub.subscribe(changed),
   });
 });
 

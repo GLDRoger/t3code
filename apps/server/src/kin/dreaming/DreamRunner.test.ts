@@ -29,6 +29,7 @@ import * as MemoryCache from "../memory/MemoryCache.ts";
 import { MemoryConfig } from "../memory/MemoryConfig.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import * as Scan from "../memory/secretScan.ts";
+import { hold } from "../memory/sensitivity.ts";
 import * as Persistence from "../persistence/KinPersistence.ts";
 import * as TriggerInbox from "../triggers/KinTriggerInbox.ts";
 import * as TriggerStore from "../triggers/KinTriggerStore.ts";
@@ -65,6 +66,7 @@ const newClaim = (body = "Invented report ships Friday.\n") =>
     source: ownerRef,
     said_by: "owner",
     trust: "owner",
+    quote: "ship the invented report on Friday",
     recorded_at: "2026-11-07T10:00:00.000Z",
     valid_from: "2026-11-07T10:00:00.000Z",
   }).replace("Invented fixture body.\n", body);
@@ -79,10 +81,11 @@ const dreamJson = (contradictions: ReadonlyArray<object> = []) =>
     contradictions,
   });
 
-/** Run inside the runner: before `deleteDreamBranch`, and after it removes a path. */
+/** Run inside the runner: before `deleteDreamBranch`, after it removes a path, and at the end of a good extract turn. */
 type RunnerHooks = {
   beforeDelete: Effect.Effect<void>;
   removed: (path: string) => Effect.Effect<void>;
+  extracted: (workspaceRoot: string) => Effect.Effect<void>;
 };
 
 const fixture = <A, E>(
@@ -107,6 +110,8 @@ const fixture = <A, E>(
     | FileSystem.FileSystem
     | Scope.Scope
   >,
+  /** More item files on the default branch before the night starts. */
+  seeded: Readonly<Record<string, string>> = {},
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -135,6 +140,12 @@ const fixture = <A, E>(
       fixtureItem({ id: "clm-001", kind: "claim", said_by: "owner" }),
     );
     yield* fs.writeFileString(`${source}/journal/2026/11-07.md`, "\n## 10:00 · wake-up\n");
+    for (const [file, text] of Object.entries(seeded)) {
+      yield* fs.makeDirectory(`${source}/${file.slice(0, file.lastIndexOf("/"))}`, {
+        recursive: true,
+      });
+      yield* fs.writeFileString(`${source}/${file}`, text);
+    }
     // Provider config a repo writer could plant; none of it may reach the dream checkout.
     yield* fs.makeDirectory(`${source}/.claude`);
     yield* fs.writeFileString(
@@ -161,7 +172,11 @@ const fixture = <A, E>(
 
     let behavior: Behavior = "good";
     let budgetAllowed = true;
-    const hooks: RunnerHooks = { beforeDelete: Effect.void, removed: () => Effect.void };
+    const hooks: RunnerHooks = {
+      beforeDelete: Effect.void,
+      removed: () => Effect.void,
+      extracted: () => Effect.void,
+    };
     const turns: Array<DreamSession.DreamTurn> = [];
     const turnThreads: Array<string | null> = [];
     const notices: Array<string> = [];
@@ -233,12 +248,14 @@ const fixture = <A, E>(
                 : [],
             ),
           );
+          yield* hooks.extracted(turn.workspaceRoot);
           return { threadId, status: "completed" as const };
         }).pipe(Effect.orDie),
     });
     const config = Layer.succeed(MemoryConfig, {
       baseDirectory: root,
       repositories: [{ orgId, repoUrl: remote, path: "state" }],
+      directMainPush: true,
     });
     const recovery = Layer.succeed(Memory.MemoryRecoveryHooks, {
       notify: (notice) => Effect.sync(() => void notices.push(notice.reason)),
@@ -357,6 +374,17 @@ const runRow = Effect.fn("test.runRow")(function* () {
       full, ended_at AS "endedAt" FROM kin_dream_runs WHERE org_id = ${orgId} ORDER BY owner_date`;
 });
 
+/** Something the owner said just now: new material for the next dream. */
+const ownerSays = Effect.fn("test.ownerSays")(function* (id: string) {
+  const sql = yield* SqlClient.SqlClient;
+  const at = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+  const [chat] = yield* sql<{
+    seq: number;
+  }>`UPDATE kin_chats SET last_seq = last_seq + 1 WHERE chat_id = 'owner-chat' RETURNING last_seq AS seq`;
+  yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id, author_member_id, author_role, kind, body, mentions_json, status, created_at)
+    VALUES (${id}, ${orgId}, 'owner-chat', ${chat!.seq}, 'human', 'owner', 'owner-member', 'owner', 'text', 'Another invented note.', '[]', 'posted', ${at})`;
+});
+
 const pending = Effect.fn("test.pending")(function* () {
   const sql = yield* SqlClient.SqlClient;
   return (yield* sql<{
@@ -439,6 +467,49 @@ it.live("a fixture dream pushes dream/<date> with its changes and records dream.
   ),
 );
 
+const hiddenQuote = "invented words from a message now gone";
+const statedItem = fixtureItem({
+  id: "clm-stated",
+  kind: "claim",
+  source: "kin:chat:owner-chat:message:gone-msg",
+  said_by: "owner",
+  trust: "owner",
+  quote: hiddenQuote,
+});
+
+it.live("a dream never sees a quote the owner can't open, and a stated item keeps it", () =>
+  fixture(
+    ({ git, remote, hooks }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const seen: Array<string> = [];
+        hooks.extracted = (workspace) =>
+          Effect.gen(function* () {
+            const shown = yield* fs.readFileString(`${workspace}/claims/stated.md`);
+            seen.push(shown, yield* fs.readFileString(`${workspace}/.kin-dream/material.json`));
+            // The model labels the item it was shown and returns that copy.
+            yield* fs.writeFileString(
+              `${workspace}/claims/stated.md`,
+              shown.replace("\n---\n", "\nsensitive: true\n---\n"),
+            );
+            const dream = JSON.parse(dreamJson());
+            dream.changes.push({ path: "claims/stated.md", sources: ["memory:claims/stated.md"] });
+            yield* fs.writeFileString(`${workspace}/.kin-dream/dream.json`, JSON.stringify(dream));
+          }).pipe(Effect.orDie);
+        const runner = yield* DreamRunner.DreamRunner;
+        const outcome = yield* runner.run(orgId, { full: false, ownerDate: "2026-11-08" });
+        expect(outcome._tag).toBe("succeeded");
+        if (outcome._tag !== "succeeded") return;
+        expect(seen).toHaveLength(2);
+        for (const text of seen) expect(text).not.toContain(hiddenQuote);
+        expect(
+          yield* git(remote, ["--git-dir", remote, "show", `${outcome.head}:claims/stated.md`]),
+        ).toBe(statedItem.replace("\n---\nInvented", "\nsensitive: true\n---\nInvented").trimEnd());
+      }),
+    { "claims/stated.md": statedItem },
+  ),
+);
+
 it.live("a dream clears scratch a crashed dream left and refuses a symlinked dreams folder", () =>
   fixture(({ root, turns }) =>
     Effect.gen(function* () {
@@ -456,6 +527,7 @@ it.live("a dream clears scratch a crashed dream left and refuses a symlinked dre
       yield* fs.makeDirectory(`${root}/outside/dream_20261108_victim`, { recursive: true });
       yield* fs.writeFileString(`${root}/outside/dream_20261108_victim/keep.md`, "Keep\n");
       yield* fs.symlink(`${root}/outside`, `${root}/state/dreams`);
+      yield* ownerSays("owner-msg-2");
       const refused = yield* runner.run(orgId, { full: false, ownerDate: "2026-11-09" });
       expect(refused._tag).toBe("failed");
       if (refused._tag === "failed")
@@ -519,7 +591,7 @@ it.live.each([
   { behavior: "failed-turn", failure: "The dream session failed" },
   { behavior: "paused", failure: "Kin was paused during the dream" },
 ] as const)(
-  "a $behavior dream fails, pushes nothing and tells the owner",
+  "a $behavior dream fails, pushes nothing and tells the owner nothing",
   ({ behavior, failure }) =>
     fixture(({ git, remote, root, main, behave, notices, turns, turnThreads }) =>
       Effect.gen(function* () {
@@ -534,9 +606,7 @@ it.live.each([
         expect(row?.status).toBe("failed");
         expect(row?.failure).toContain(failure);
         expect(row?.head).toBeNull();
-        expect(notices).toHaveLength(1);
-        expect(notices[0]).toContain("merged nothing");
-        expect(notices[0]).not.toContain("ghp_");
+        expect(notices).toEqual([]);
         // The stop switch's fan-out finds the running turn's thread.
         expect(turnThreads).toEqual(
           turns.map((turn) => DreamSession.dreamThreadId(turn.dreamId, turn.turn)),
@@ -619,7 +689,7 @@ it.live(
         expect(yield* git(root, ["ls-remote", "--heads", remote])).not.toContain(
           "dream/2026-01-01",
         );
-        expect(notices).toHaveLength(1);
+        expect(notices).toEqual([]);
         expect(yield* pending()).toEqual([]);
       }),
     ),
@@ -708,3 +778,104 @@ it.live("while a dream runs, a second run is busy and drain fails only stale row
     }),
   ),
 );
+
+it.live(
+  "the owner hears once, on the third failed night in a row, and again only after a success",
+  () =>
+    fixture(({ behave, notices, turns }) =>
+      Effect.gen(function* () {
+        const runner = yield* DreamRunner.DreamRunner;
+        const night = (day: number) =>
+          runner.run(orgId, { full: false, ownerDate: `2026-11-${String(day).padStart(2, "0")}` });
+        behave("failed-turn");
+        for (const day of [8, 9]) expect((yield* night(day))._tag).toBe("failed");
+        expect(notices).toEqual([]);
+        expect((yield* night(10))._tag).toBe("failed");
+        expect(notices).toHaveLength(1);
+        expect(notices[0]).toContain("Nothing is lost");
+        expect(notices[0]).not.toMatch(/dream|merge|branch|material/i);
+        // A failed night's material stays new, so each retry still runs.
+        expect(turns).toHaveLength(3);
+        expect((yield* night(11))._tag).toBe("failed");
+        expect(notices).toHaveLength(1);
+        behave("good");
+        expect((yield* night(12))._tag).toBe("succeeded");
+        behave("failed-turn");
+        yield* ownerSays("owner-msg-2");
+        for (const day of [13, 14]) expect((yield* night(day))._tag).toBe("failed");
+        expect(notices).toHaveLength(1);
+        expect((yield* night(15))._tag).toBe("failed");
+        expect(notices).toHaveLength(2);
+      }),
+    ),
+);
+
+it.live("a night with nothing new since the last good one runs no model and posts nothing", () =>
+  fixture(({ turns, notices, root, remote, git }) =>
+    Effect.gen(function* () {
+      const runner = yield* DreamRunner.DreamRunner;
+      const sql = yield* SqlClient.SqlClient;
+      expect((yield* runner.run(orgId, { full: false, ownerDate: "2026-11-08" }))._tag).toBe(
+        "succeeded",
+      );
+      expect(turns).toHaveLength(1);
+      // The item written before labels existed is labelled by that first night, for the owner
+      // alone since the dream left it unlabelled; with nothing left to label, no model runs again.
+      expect(
+        yield* sql`SELECT item_id, classified FROM kin_memory_labels WHERE org_id = ${orgId}`,
+      ).toEqual([{ item_id: "clm-001", classified: 1 }]);
+      const quiet = yield* runner.run(orgId, { full: false, ownerDate: "2026-11-09" });
+      expect(quiet._tag).toBe("succeeded");
+      expect(turns).toHaveLength(1);
+      expect(notices).toEqual([]);
+      expect((yield* runRow()).map((row) => row.status)).toEqual(["succeeded", "succeeded"]);
+      expect(yield* git(root, ["ls-remote", "--heads", remote])).not.toContain("dream/2026-11-09");
+    }),
+  ),
+);
+
+it.live("the night retires spent notes on the default branch and keeps everything else", () => {
+  const note = (id: string, fields: Record<string, unknown>) =>
+    fixtureItem({ id, kind: "claim", said_by: "owner", ...fields });
+  const followUp = "Get back to the owner after the 60-second pause";
+  return fixture(
+    ({ git, remote, root, notices }) =>
+      Effect.gen(function* () {
+        const runner = yield* DreamRunner.DreamRunner;
+        const sql = yield* SqlClient.SqlClient;
+        yield* hold(orgId, "clm-held").pipe(Effect.provideService(SqlClient.SqlClient, sql));
+        const outcome = yield* runner.run(orgId, { full: false, ownerDate: "2026-11-08" });
+        expect(outcome._tag).toBe("succeeded");
+        const onMain = (file: string) => git(root, ["--git-dir", remote, "show", `main:${file}`]);
+        // Marked no longer true, never deleted; the commit says who did it.
+        expect(yield* onMain("claims/followup.md")).toMatch(/invalid_at: "?20\d\d-/);
+        expect(yield* git(root, ["--git-dir", remote, "log", "--format=%s", "main"])).toContain(
+          "kin: nightly pass retires spent clm-followup",
+        );
+        // A lasting fact, a teammate's words, what the owner marked, and a kind the owner reviews.
+        for (const file of [
+          "claims/existing.md",
+          "claims/said.md",
+          "claims/held.md",
+          "decisions/todo.md",
+        ])
+          expect(yield* onMain(file)).toContain("invalid_at: null");
+        // The dream itself starts from memory as the retirement left it.
+        if (outcome._tag === "succeeded")
+          expect(
+            yield* git(root, ["--git-dir", remote, "show", `${outcome.head}:claims/followup.md`]),
+          ).not.toContain("invalid_at: null");
+        expect(notices).toEqual([]);
+      }),
+    {
+      "claims/followup.md": note("clm-followup", { title: followUp }),
+      "claims/said.md": note("clm-said", {
+        title: followUp,
+        trust: "member",
+        shared_from: { person: "priya", chat: "room", name: "Priya", chat_name: "Launch room" },
+      }),
+      "claims/held.md": note("clm-held", { title: followUp }),
+      "decisions/todo.md": note("dec-todo", { kind: "decision", title: followUp }),
+    },
+  );
+});

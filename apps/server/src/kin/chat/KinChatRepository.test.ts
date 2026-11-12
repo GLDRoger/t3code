@@ -64,6 +64,7 @@ const chat: KinChat = {
   lastMessageAt: null,
   createdAt: timestamp,
   archivedAt: null,
+  leadAgentId: null,
 };
 const owner: KinChatMember = {
   orgId,
@@ -91,6 +92,7 @@ const message = (id: string, overrides: Partial<Omit<KinMessage, "seq">> = {}) =
     caller,
     orgId,
     chatId,
+    audience: "chat",
     messageId: decodeMessageId(id),
     author: { _tag: "human", personId, memberId },
     authorRole: "owner",
@@ -108,6 +110,7 @@ const message = (id: string, overrides: Partial<Omit<KinMessage, "seq">> = {}) =
     ...overrides,
     clientMessageId: { kind: "send", id },
   }) satisfies Omit<KinMessage, "seq" | "clientMessageId"> & {
+    audience: "chat";
     caller: McpThreadCaller;
     clientMessageId: { kind: "send" | "act"; id: string };
   };
@@ -403,7 +406,7 @@ describe("KinChatRepository", () => {
           }),
           action,
         );
-        yield* repo.insertWidget(widget);
+        yield* repo.insertWidget({ ...widget, audience: "chat" });
         assert.deepStrictEqual(
           Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId })),
           widget,
@@ -413,7 +416,7 @@ describe("KinChatRepository", () => {
           widgetId: decodeWidgetId("server-revision"),
           revision: 99,
         };
-        yield* repo.insertWidget(suppliedRevision);
+        yield* repo.insertWidget({ ...suppliedRevision, audience: "chat" });
         assert.strictEqual(
           Option.getOrThrow(
             yield* repo.getWidget({ orgId, widgetId: decodeWidgetId("server-revision") }),
@@ -530,6 +533,71 @@ describe("KinChatRepository", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  // Review 15: words for the owner alone were written after someone else joined their chat.
+  it.effect.each(["insertMessage", "insertWidget", "updateWidget"] as const)(
+    "%s refuses the owner's words once anyone else reads the chat, checked in the write",
+    (write) =>
+      Effect.gen(function* () {
+        const repo = yield* seed;
+        const system = (id: string, audience: Repository.WriteAudience) => ({
+          ...message(id),
+          author: { _tag: "system" } as const,
+          kind: "system" as const,
+          mentions: [],
+          audience,
+        });
+        const card = (id: string, messageId: string) => ({
+          ...widget,
+          widgetId: decodeWidgetId(id),
+          messageId: decodeMessageId(messageId),
+          awaiting: [],
+        });
+        const attempt = (audience: Repository.WriteAudience) =>
+          write === "insertMessage"
+            ? repo.insertMessage(system(`late-${audience}`, audience))
+            : write === "insertWidget"
+              ? repo.insertWidget({ ...card(`card-${audience}`, `anchor-${audience}`), audience })
+              : repo.updateWidget({ ...card("card", "anchor"), audience, expectedRevision: 1 });
+        for (const id of ["anchor", "anchor-owner", "anchor-chat"])
+          yield* repo.insertMessage(system(id, "owner"));
+        yield* repo.insertWidget({ ...card("card", "anchor"), audience: "owner" });
+        const teammate = decodePersonId("teammate");
+        yield* repo.insertPerson({
+          orgId,
+          personId: teammate,
+          handle: "teammate",
+          displayName: "Teammate",
+          githubLogin: null,
+          createdAt: timestamp,
+        });
+        yield* repo.addMember({
+          ...owner,
+          memberId: decodeMemberId("teammate-member"),
+          principal: { _tag: "person", personId: teammate },
+          role: "member",
+          joinedAt: later,
+        });
+        assert.isTrue(Repository.isPrivateWriteRefused(yield* Effect.flip(attempt("owner"))));
+        yield* attempt("chat");
+        const sql = yield* SqlClient.SqlClient;
+        assert.deepStrictEqual(
+          yield* sql<{ id: string }>`SELECT message_id AS id FROM kin_messages
+            WHERE org_id = ${orgId} AND message_id LIKE 'late-%' ORDER BY seq`,
+          write === "insertMessage" ? [{ id: "late-chat" }] : [],
+        );
+        assert.deepStrictEqual(
+          yield* sql<{ id: string; revision: number }>`SELECT widget_id AS id, revision
+            FROM kin_widgets WHERE org_id = ${orgId} ORDER BY widget_id`,
+          write === "insertWidget"
+            ? [
+                { id: "card", revision: 1 },
+                { id: "card-chat", revision: 1 },
+              ]
+            : [{ id: "card", revision: write === "updateWidget" ? 2 : 1 }],
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("rejects left mentions and retired authors inside the post transaction", () =>
     Effect.gen(function* () {
       const repo = yield* seed;
@@ -590,7 +658,7 @@ describe("KinChatRepository", () => {
     Effect.gen(function* () {
       const repo = yield* seed;
       for (let i = 1; i <= 5; i++) {
-        if (i === 4) yield* repo.insertWidget(widget);
+        if (i === 4) yield* repo.insertWidget({ ...widget, audience: "chat" });
         yield* repo.insertMessage(
           message(
             i === 3 ? "first" : `message-${i}`,
@@ -661,7 +729,7 @@ describe("KinChatRepository", () => {
     Effect.gen(function* () {
       const repo = yield* seed;
       yield* repo.insertMessage(message("first"));
-      yield* repo.insertWidget(widget);
+      yield* repo.insertWidget({ ...widget, audience: "chat" });
       yield* repo.markRead({ ...scope, seq: 1, updatedAt: timestamp });
       yield* repo.addWaiting({
         orgId,
@@ -852,8 +920,13 @@ describe("KinChatRepository", () => {
         },
       ]) {
         for (const write of [
-          repo.insertWidget({ ...widget, widgetId: decodeWidgetId("invalid-widget"), ...refs }),
-          repo.updateWidget({ ...widget, expectedRevision: 1, ...refs }),
+          repo.insertWidget({
+            audience: "chat",
+            ...widget,
+            widgetId: decodeWidgetId("invalid-widget"),
+            ...refs,
+          }),
+          repo.updateWidget({ audience: "chat", ...widget, expectedRevision: 1, ...refs }),
         ]) {
           const failure = yield* Effect.flip(write);
           assert.strictEqual(failure._tag, "KinChatError");
@@ -880,6 +953,7 @@ describe("KinChatRepository", () => {
           })
           .pipe(Effect.asVoid),
         repo.insertWidget({
+          audience: "chat",
           ...widget,
           orgId: orgA,
           chatId: otherChat,
@@ -977,7 +1051,7 @@ describe("KinChatRepository", () => {
             ...refs,
           }),
         ),
-        repo.insertWidget({ ...widget, orgId: orgA }),
+        repo.insertWidget({ audience: "chat", ...widget, orgId: orgA }),
         repo.addMember({ ...owner, orgId: orgA }),
         repo.addWaiting({
           orgId: orgA,
@@ -993,7 +1067,7 @@ describe("KinChatRepository", () => {
         }),
         repo.createChat({ ...chat, orgId: orgA, directKey: "owner:lead" }),
         repo.markRead({ ...hidden, seq: 9, updatedAt: later }),
-        repo.updateWidget({ ...widget, orgId: orgA, expectedRevision: 1 }),
+        repo.updateWidget({ audience: "chat", ...widget, orgId: orgA, expectedRevision: 1 }),
         repo.insertMessage({ ...message("cross-org"), orgId: orgA }),
       ])
         assert.strictEqual((yield* Effect.flip(write))._tag, "KinChatError");
@@ -1313,6 +1387,11 @@ describe("KinChatRepository", () => {
         message("after-read", { author: agentAuthor, authorRole: "member" }),
       );
       assert.strictEqual(yield* repo.unreadCount(scope), 1);
+      yield* repo.insertMessage({
+        ...message("bookkeeping", { author: { _tag: "system" }, mentions: [] }),
+        silent: true,
+      });
+      assert.strictEqual(yield* repo.unreadCount(scope), 1);
       assert.deepStrictEqual(
         Option.getOrThrow(yield* repo.getMessage({ orgId, messageId: decodeMessageId("agent") }))
           .author,
@@ -1368,18 +1447,20 @@ describe("KinChatRepository", () => {
         { feed: { kind: "build", key: "bu\u0000ild-1" } },
       ]) {
         assert.strictEqual(
-          (yield* Effect.flip(repo.insertWidget({ ...widget, ...fields })))._tag,
+          (yield* Effect.flip(repo.insertWidget({ audience: "chat", ...widget, ...fields })))._tag,
           "PersistenceDecodeError",
         );
         assert.isTrue(Option.isNone(yield* repo.getWidget({ orgId, widgetId })));
       }
-      yield* repo.insertWidget(widget);
+      yield* repo.insertWidget({ ...widget, audience: "chat" });
       for (const feed of [
         { kind: "bu\u0000ild", key: "build-1" },
         { kind: "build", key: "bu\u0000ild-1" },
       ]) {
         assert.strictEqual(
-          (yield* Effect.flip(repo.updateWidget({ ...widget, feed, expectedRevision: 1 })))._tag,
+          (yield* Effect.flip(
+            repo.updateWidget({ audience: "chat", ...widget, feed, expectedRevision: 1 }),
+          ))._tag,
           "PersistenceDecodeError",
         );
         assert.strictEqual(
@@ -1398,7 +1479,7 @@ describe("KinChatRepository", () => {
         updatedAt: later,
       };
       assert.deepStrictEqual(
-        yield* repo.updateWidget({ ...updated, expectedRevision: 1 }),
+        yield* repo.updateWidget({ ...updated, audience: "chat", expectedRevision: 1 }),
         updated,
       );
       const identityChange = {
@@ -1410,10 +1491,13 @@ describe("KinChatRepository", () => {
         revision: 99,
       };
       assert.strictEqual(
-        (yield* repo.updateWidget({ ...identityChange, expectedRevision: 2 })).type,
+        (yield* repo.updateWidget({ audience: "chat", ...identityChange, expectedRevision: 2 }))
+          .type,
         "task",
       );
-      const stale = yield* Effect.flip(repo.updateWidget({ ...widget, expectedRevision: 1 }));
+      const stale = yield* Effect.flip(
+        repo.updateWidget({ audience: "chat", ...widget, expectedRevision: 1 }),
+      );
       assert.strictEqual(stale._tag, "KinChatError");
       if (stale._tag === "KinChatError") assert.strictEqual(stale.reason, "widget_changed");
       assert.deepStrictEqual(Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId })), {

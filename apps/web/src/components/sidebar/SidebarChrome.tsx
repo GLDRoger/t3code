@@ -33,6 +33,8 @@ import {
 } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { readPullRequestListPreferences } from "../pullRequest/pullRequestListPreferences";
+import { kinListAt } from "../../kin/kinListSwitch";
+import { isChatOnlySession } from "../../environments/primary";
 import { useKinListSwitch, type KinListSwitch } from "../../kin/useKinListSwitch";
 import { isSidebarUtilityPage, useNavigateToMainApp } from "./mainAppLocation";
 import { SidebarThreadUndoNotice } from "./SidebarThreadUndoNotice";
@@ -169,6 +171,14 @@ function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
     "relative z-10 ml-[var(--workspace-titlebar-content-left)] h-7 w-fit min-w-0 shrink-0 items-center overflow-hidden rounded-md outline-hidden ring-ring focus-visible:ring-2 focus-visible:ring-inset",
     onBackdrop ? "text-white" : "text-foreground",
   );
+  // A teammate's session has no coding threads to switch to or go home to.
+  if (isChatOnlySession()) {
+    return (
+      <span className={cn(className, "flex")}>
+        <SidebarBrandMark onBackdrop={onBackdrop} product="Kin" />
+      </span>
+    );
+  }
   if (kinSwitch !== null) {
     return (
       <SidebarBrandSwitch className={className} kinSwitch={kinSwitch} onBackdrop={onBackdrop} />
@@ -284,8 +294,10 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   const navigate = useNavigate();
   const navigateToMainApp = useNavigateToMainApp();
   const { isMobile, setOpenMobile } = useSidebar();
+  // Kin is a list of its own, left through the brand mark, so it keeps the everyday footer.
   const isOnUtilityPage = useLocation({
-    select: (location) => isSidebarUtilityPage(location.pathname),
+    select: (location) =>
+      isSidebarUtilityPage(location.pathname) && kinListAt(location.pathname) !== "kin",
   });
   const pullRequestsSupported = usePullRequestsSupported();
   const closeMobileSidebar = () => {

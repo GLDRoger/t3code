@@ -28,6 +28,9 @@ import * as KinBudget from "../lead/KinBudget.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
 import { isCheckoutPath } from "../memory/checkoutPaths.ts";
+import { spent } from "../memory/keeping.ts";
+import { isOwnerReviewedPath } from "../memory/lint.ts";
+import { readableFiles } from "../memory/quoteAccess.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
@@ -35,7 +38,9 @@ import * as SecretScan from "../memory/secretScan.ts";
 import { KinIssuedTokens } from "../mcp/KinIssuedTokens.ts";
 import * as KinTriggerInbox from "../triggers/KinTriggerInbox.ts";
 import * as KinTriggerStore from "../triggers/KinTriggerStore.ts";
+import { classify, storedLabels, suggest } from "../memory/sensitivity.ts";
 import { checkDream, DreamJson } from "./checkDream.ts";
+import { keepLabels } from "./labels.ts";
 import * as DreamSession from "./DreamSession.ts";
 import { collectMaterial, type DreamMaterial } from "./material.ts";
 
@@ -85,6 +90,10 @@ const decodeDream = Schema.decodeUnknownEffect(Schema.fromJsonString(DreamJson))
 const encodeDream = Schema.encodeEffect(Schema.fromJsonString(DreamJson));
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
+const FAILED_NIGHTS_NOTICE = 3;
+const stuckNotice =
+  "I haven't been able to tidy my notes for three nights in a row. Nothing is lost, and I'll keep trying each night. If it doesn't clear up, let whoever looks after Kin for you know.";
+const emptyDream: DreamJson = { changes: [], merges: [], supersessions: [], contradictions: [] };
 const zoned = (ms: number, timeZone: string) => DateTime.makeZonedUnsafe(ms, { timeZone });
 
 const extractPrompt = (input: { orgId: string; head: string; full: boolean }) =>
@@ -92,10 +101,12 @@ const extractPrompt = (input: { orgId: string; head: string; full: boolean }) =>
 
 Read ${scratch}/material.json. It lists every original since the last good dream${input.full ? ", plus every current item" : ""}. Cite entries by their "ref".
 
-1. Extract durable facts into item files under objectives/, commitments/, deferrals/, decisions/, people/ or claims/, and fold journal/ entries. Merge duplicates and mark replaced items with invalid_at and superseded_by.
+1. Extract durable facts, meaning only what will still matter weeks from now and could not be cheaply found again: lasting facts about the company, clients, people and projects, how the owner wants things done, decisions with their reasons, and promises with their dates. Never make an item of a to-do, a follow-up minutes or hours away, where work stands or what someone is waiting for, anything readable again from a repo, PR or check, or small talk; one item holds one thing. Put them into item files under objectives/, commitments/, deferrals/, decisions/, people/ or claims/, and fold journal/ entries. Merge duplicate items with trust agent or external and mark the replaced ones with invalid_at and superseded_by.
 2. Edit only item files and journal/. Never delete a file. Never edit rules.md or INDEX.md. Do not run git.
-3. A new item, or one whose source changes, takes source = the material ref, and said_by and trust = that entry's saidBy and trust.
-4. Write ${scratch}/dream.json:
+3. A new item, or one whose source changes, takes source = the material ref, and said_by and trust = that entry's saidBy and trust. When that entry is a chat message a person wrote, the item also takes quote = their exact words from it that say it, at most 400 characters. Never change an item's quote.
+4. An item with trust owner or member holds what a person said: leave it exactly as it is, and never supersede, close or move it. You may write your own item that cites it, as your own conclusion: source = its material ref, trust agent (external if that item's is), and no quote. The same goes for any item you make from another item, a reminder included.
+5. Give every item you create or change, and every material entry marked "unlabelled", a front-matter line "sensitive: true" or "sensitive: false". true is for the owner alone: access (credentials, where they are kept, who holds them, how to get in); money and commercial terms (what a client is charged, what people or suppliers are paid, discounts, margins, bank and billing details); an arrangement with a client or partner the team isn't meant to know, such as a client lending the company their subscription; and anything the owner asked to keep private. false is ordinary company knowledge the team can know, such as project status. When unsure, true. Never change true to false, never remove the line, and an item you merge others into is true if any of them was. Leave shared_by and shared_from alone, and never edit an item that has shared_from.
+6. Write ${scratch}/dream.json:
 {"changes":[{"path":"...","sources":["ref"]}],"merges":[{"into":"id","from":["id"],"sources":["ref"]}],"supersessions":[{"id":"...","invalid_at":"...","superseded_by":"id","sources":["ref"]}],"contradictions":[{"items":["id"],"summary":"...","sources":["ref"]}]}
 List every file you changed in "changes". Use empty arrays when there is nothing to report.`;
 
@@ -162,7 +173,7 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         // The org's memory is one repo, so one lead's models dream for all of them.
         const lead = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
-        if (lead === undefined) return yield* Effect.fail("No active lead for this organization");
+        if (lead === undefined) return yield* Effect.fail("No active agent for this organization");
         const [previous] = yield* sql<{
           until: number;
         }>`SELECT material_until AS until FROM kin_dream_runs
@@ -183,7 +194,14 @@ const make = Effect.gen(function* () {
               WHERE org_id = ${orgId} AND owner_date = ${ownerDate} AND status <> 'running'
               RETURNING dream_id`;
         if (replaced.length === 0) return undefined;
-        return { dreamId, branch, from, until: now, models: yield* decodeModels(lead.models) };
+        return {
+          dreamId,
+          branch,
+          from,
+          until: now,
+          owner: lead.ownerPersonId,
+          models: yield* decodeModels(lead.models),
+        };
       }),
     );
   });
@@ -215,21 +233,19 @@ const make = Effect.gen(function* () {
       failure = ${failure}, ended_at = ${now}
       WHERE org_id = ${orgId} AND dream_id = ${dreamId} AND status = 'running' RETURNING dream_id`;
     if (outcome._tag !== "failed") return;
-    const leaked = yield* scanner
-      .scan({
-        orgId,
-        files: [{ path: "dream-failure", content: new TextEncoder().encode(failure) }],
-      })
-      .pipe(
-        Effect.orElseSucceed(() => [{ path: "dream-failure", ruleId: "unavailable", line: 0 }]),
-      );
-    yield* notices.notify({
+    // A failed night retries itself with the same material, so the owner hears only of a streak.
+    yield* Effect.logWarning("Kin dream failed; the next one retries its material", {
       orgId,
-      branch,
-      reason: `Last night's dream failed and merged nothing; the next dream retries the same material.\n${
-        leaked.length > 0 ? "Details withheld: they did not pass the secret scan." : failure
-      }`,
+      dreamId,
+      failure,
     });
+    const recent = yield* sql<{ status: string }>`SELECT status FROM kin_dream_runs
+      WHERE org_id = ${orgId} AND status IN ('failed', 'succeeded')
+      ORDER BY owner_date DESC LIMIT ${FAILED_NIGHTS_NOTICE + 1}`;
+    const streak = recent.findIndex((row) => row.status !== "failed");
+    // Exactly the third failed night in a row: a longer streak was already told.
+    if ((streak === -1 ? recent.length : streak) === FAILED_NIGHTS_NOTICE)
+      yield* notices.notify({ orgId, branch, reason: stuckNotice, needsOwner: true });
   });
 
   const prepareCheckout = Effect.fn("DreamRunner.prepareCheckout")(function* (
@@ -294,6 +310,52 @@ const make = Effect.gen(function* () {
     return { tree, special, dreamJson };
   });
 
+  /**
+   * Retires notes that were never memory and whose moment has passed, on the default branch and
+   * without the owner: `spent` matches only obvious to-dos, follow-ups and progress. Left alone:
+   * a teammate's words, anything the owner chose who may know, and the kinds the owner reviews.
+   * Runs `reconcileSharing` first; a failure here never fails the dream.
+   */
+  const retireSpent = Effect.fn("DreamRunner.retireSpent")(
+    function* (orgId: KinOrgId, memoryWriter: Writer.MemoryWriter["Service"]) {
+      yield* memoryWriter.reconcileSharing(orgId).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin nightly pass could not reconcile retired memory's sharing", {
+            orgId,
+            cause,
+          }),
+        ),
+      );
+      const now = yield* Clock.currentTimeMillis;
+      const labels = yield* storedLabels(orgId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      const retired = [];
+      for (const item of yield* memory.items(orgId)) {
+        const { head } = item;
+        if (
+          head.shared_from !== undefined ||
+          head.shared_by !== undefined ||
+          labels.held.has(head.id) ||
+          labels.shared.has(head.id) ||
+          isOwnerReviewedPath(head.path) ||
+          !spent(item, now)
+        )
+          continue;
+        const result = yield* memoryWriter.retire(orgId, { itemId: head.id, by: "nightly" });
+        if (result.retired) retired.push(head.id);
+      }
+      if (retired.length > 0)
+        yield* Effect.logInfo("Kin nightly pass retired spent notes", { orgId, retired });
+    },
+    (effect, orgId) =>
+      effect.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin nightly pass could not retire spent notes", { orgId, cause }),
+        ),
+      ),
+  );
+
   const dream = Effect.fn("DreamRunner.dream")(function* (
     orgId: KinOrgId,
     claimed: NonNullable<Effect.Success<ReturnType<typeof claim>>>,
@@ -311,19 +373,53 @@ const make = Effect.gen(function* () {
     const paused = isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     const pausedFailure = "Kin was paused during the dream";
     if (Option.isNone(writer)) return failed(["The memory writer is not available"]);
+    yield* retireSpent(orgId, writer.value);
     const base = yield* writer.value.dreamBase(orgId);
     yield* sql`UPDATE kin_dream_runs SET base_head = ${base.head}
       WHERE org_id = ${orgId} AND dream_id = ${dreamId} AND status = 'running' RETURNING dream_id`;
-    const files = new Map([...base.files].filter(([file]) => isCheckoutPath(file)));
-    const baseText = new Map([...files].map(([file, bytes]) => [file, bytes.toString("utf8")]));
+    // `stored` is checked against and committed from, never shown: the model reads memory as
+    // the owner may with their own tools, without a quote of a message they can no longer open.
+    const stored = new Map(
+      [...base.files]
+        .filter(([file]) => isCheckoutPath(file))
+        .map(([file, bytes]) => [file, bytes.toString("utf8")]),
+    );
+    const hidden = yield* readableFiles(
+      orgId,
+      claimed.owner,
+      [...stored].map(([file, text]) => ({ path: file, text })),
+    ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    const shown = new Map([...stored].map(([file, text]) => [file, hidden.get(file) ?? text]));
+    const files = new Map(
+      [...base.files]
+        .filter(([file]) => isCheckoutPath(file))
+        .map(([file, bytes]) => {
+          const text = hidden.get(file);
+          return [file, text === undefined ? bytes : Buffer.from(text)];
+        }),
+    );
+    const labels = yield* storedLabels(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     const material = yield* collectMaterial({
       orgId,
       from: claimed.from,
       until: claimed.until,
       full,
       timeZone,
-      files: baseText,
+      files: shown,
+      classified: new Set(labels.classified.keys()),
     }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    // Current items alone are not new: with no original since the last good night, no model runs,
+    // unless some item is still unlabelled.
+    if (!material.entries.some((entry) => entry.kind !== "item" || entry.unlabelled === true)) {
+      yield* Effect.logInfo("Kin dream skipped: nothing new", { orgId, dreamId });
+      return {
+        _tag: "succeeded",
+        dreamId,
+        branch,
+        head: base.head,
+        dream: emptyDream,
+      } satisfies DreamOutcome;
+    }
     const root = yield* prepareCheckout(orgId, dreamId, files, material);
     return yield* Effect.gen(function* () {
       const turn = Effect.fn("DreamRunner.turn")(function* (
@@ -368,17 +464,26 @@ const make = Effect.gen(function* () {
       }
       const checked = yield* checkDream({
         orgId,
-        base: baseText,
+        base: shown,
+        stored,
         tree: checkout.tree,
         special: checkout.special,
         dreamJson: checkout.dreamJson,
         material: material.entries,
         requireResolutions: true,
       });
+      const { changes, classified, suggested } = yield* keepLabels({
+        orgId,
+        base: stored,
+        tree: checked.committed,
+        changes: checked.changes,
+        merges: checked.dream?.merges ?? [],
+        labels,
+      });
       const findings = yield* scanner.scan({
         orgId,
         files: [
-          ...[...checked.changes].map(([file, text]) => ({
+          ...[...changes].map(([file, text]) => ({
             path: file,
             content: new TextEncoder().encode(text),
           })),
@@ -393,7 +498,7 @@ const make = Effect.gen(function* () {
         ],
       });
       let credential = false;
-      for (const text of [...checked.changes.values(), checkout.dreamJson ?? ""])
+      for (const text of [...changes.values(), checkout.dreamJson ?? ""])
         if (yield* tokens.containsIssuedToken(text)) credential = true;
       const failures = [
         ...checked.failures,
@@ -404,11 +509,18 @@ const make = Effect.gen(function* () {
       const { commit } = yield* writer.value.commitDream(orgId, {
         branch,
         base: base.head,
-        files: checked.changes,
+        files: changes,
         message: `kin(dream): ${ownerDate}\n\nKin-Dream: ${dreamId}\nMaterial-Until: ${iso(claimed.until)}\n`,
       });
       // A pause during the checks or the push fails the dream, and settling deletes its branch.
       if (yield* paused) return failed([pausedFailure]);
+      // The branch waits for the owner, so who may know each item until then is kept here. What
+      // it would let the team know is only suggested: a reworded item stops reaching the team
+      // when its new words land, until the owner confirms them.
+      yield* Effect.gen(function* () {
+        yield* classify(orgId, classified);
+        for (const [itemId, content] of suggested) yield* suggest(orgId, itemId, content);
+      }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
       return {
         _tag: "succeeded",
         dreamId,

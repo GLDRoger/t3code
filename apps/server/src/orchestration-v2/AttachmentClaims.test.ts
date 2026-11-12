@@ -17,6 +17,11 @@ import {
   createPendingAttachmentId,
   parseThreadSegmentFromAttachmentId,
 } from "../attachmentStore.ts";
+import {
+  recordTestUploadOwner,
+  TEST_UPLOAD_OWNER,
+  withoutOwnerRecords,
+} from "../assets/AttachmentUpload.testkit.ts";
 import * as ServerConfig from "../config.ts";
 import {
   attachmentIsPendingUpload,
@@ -46,6 +51,7 @@ const stagePendingUpload = Effect.fn("test.stagePendingUpload")(function* (input
   yield* Effect.sync(() => {
     NodeFS.mkdirSync(config.attachmentsDir, { recursive: true });
     NodeFS.writeFileSync(NodePath.join(config.attachmentsDir, `${pendingId}.png`), input.bytes);
+    recordTestUploadOwner(config.attachmentsDir, pendingId!);
   });
   return attachment;
 });
@@ -58,7 +64,9 @@ describe("AttachmentClaims", () => {
       const path = NodePath.join(config.attachmentsDir, pendingId + ".docx");
       NodeFS.writeFileSync(path, "invalid document");
       NodeFS.writeFileSync(path + ".txt", "North calibration: 946");
+      recordTestUploadOwner(config.attachmentsDir, pendingId);
       const claimed = yield* claimPendingAttachments({
+        owner: TEST_UPLOAD_OWNER,
         threadId: "thread-document",
         attachments: [
           {
@@ -96,6 +104,7 @@ describe("AttachmentClaims", () => {
       }));
       const result = yield* Effect.exit(
         claimPendingAttachments({
+          owner: TEST_UPLOAD_OWNER,
           threadId: "thread-image-budget",
           attachments: [pending, ...images],
         }),
@@ -103,7 +112,7 @@ describe("AttachmentClaims", () => {
       expect(result._tag).toBe("Failure");
       if (result._tag === "Failure") expect(String(result.cause)).toContain("80 MiB");
       const config = yield* ServerConfig.ServerConfig;
-      expect(NodeFS.readdirSync(config.attachmentsDir)).toHaveLength(1);
+      expect(withoutOwnerRecords(NodeFS.readdirSync(config.attachmentsDir))).toHaveLength(1);
     }).pipe(Effect.provide(layerTest)),
   );
 
@@ -117,6 +126,7 @@ describe("AttachmentClaims", () => {
       const config = yield* ServerConfig.ServerConfig;
 
       const claimed = yield* claimPendingAttachments({
+        owner: TEST_UPLOAD_OWNER,
         threadId: "thread-claims-1",
         attachments: [pending],
       });
@@ -127,8 +137,8 @@ describe("AttachmentClaims", () => {
       expect(parseThreadSegmentFromAttachmentId(attachment.id)).toBe("thread-claims-1");
       expect(claimed.claimedPaths).toHaveLength(1);
       expect(NodeFS.existsSync(claimed.claimedPaths[0]!)).toBe(true);
-      const pendingFiles = NodeFS.readdirSync(config.attachmentsDir).filter((entry) =>
-        entry.startsWith("pending-"),
+      const pendingFiles = withoutOwnerRecords(NodeFS.readdirSync(config.attachmentsDir)).filter(
+        (entry) => entry.startsWith("pending-"),
       );
       expect(pendingFiles).toHaveLength(1);
     }).pipe(Effect.provide(layerTest)),
@@ -151,6 +161,7 @@ describe("AttachmentClaims", () => {
 
       const result = yield* Effect.exit(
         claimPendingAttachments({
+          owner: TEST_UPLOAD_OWNER,
           threadId: "thread-claims-4",
           attachments: [good, mismatched],
         }),
@@ -179,6 +190,7 @@ describe("AttachmentClaims", () => {
 
       const result = yield* Effect.exit(
         claimPendingAttachments({
+          owner: TEST_UPLOAD_OWNER,
           threadId: "thread-claims-dupe",
           attachments: [pending, pending],
         }),
@@ -194,7 +206,9 @@ describe("AttachmentClaims", () => {
         ),
       ).toHaveLength(0);
       expect(
-        NodeFS.readdirSync(config.attachmentsDir).filter((entry) => entry.startsWith("pending-")),
+        withoutOwnerRecords(NodeFS.readdirSync(config.attachmentsDir)).filter((entry) =>
+          entry.startsWith("pending-"),
+        ),
       ).toHaveLength(1);
     }).pipe(Effect.provide(layerTest)),
   );
@@ -222,6 +236,7 @@ describe("AttachmentClaims", () => {
       }) as FileSystem.FileSystem;
 
       const claimFiber = yield* claimPendingAttachments({
+        owner: TEST_UPLOAD_OWNER,
         threadId: "thread-claims-interrupt",
         attachments: [pending],
       }).pipe(Effect.provideService(FileSystem.FileSystem, gatedFileSystem), Effect.forkChild);
@@ -240,7 +255,9 @@ describe("AttachmentClaims", () => {
       expect(NodeFS.existsSync(claimedPath)).toBe(false);
       expect(NodeFS.existsSync(sourcePath)).toBe(true);
       expect(
-        NodeFS.readdirSync(config.attachmentsDir).filter((entry) => entry.startsWith("pending-")),
+        withoutOwnerRecords(NodeFS.readdirSync(config.attachmentsDir)).filter((entry) =>
+          entry.startsWith("pending-"),
+        ),
       ).toHaveLength(1);
     }).pipe(Effect.provide(layerTest)),
   );
@@ -256,6 +273,7 @@ describe("AttachmentClaims", () => {
       const publish = yield* Deferred.make<void>();
       const fileSystem = yield* FileSystem.FileSystem;
       const claimFiber = yield* claimPendingAttachments({
+        owner: TEST_UPLOAD_OWNER,
         threadId: "thread-extraction-interrupt",
         attachments: [pending],
       }).pipe(
@@ -281,7 +299,7 @@ describe("AttachmentClaims", () => {
       expect(NodeFS.existsSync(claimedPath)).toBe(false);
       expect(NodeFS.existsSync(claimedPath + ".txt")).toBe(false);
       const config = yield* ServerConfig.ServerConfig;
-      expect(NodeFS.readdirSync(config.attachmentsDir)).toHaveLength(1);
+      expect(withoutOwnerRecords(NodeFS.readdirSync(config.attachmentsDir))).toHaveLength(1);
     }).pipe(Effect.provide(layerTest)),
   );
 });

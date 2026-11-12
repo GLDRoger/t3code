@@ -122,6 +122,7 @@ interface NativeComposerEditorProps extends ViewProps {
   ) => void;
 }
 
+const NO_INLINE_TOKENS: ReturnType<typeof collectComposerInlineTokens> = [];
 const NativeView = requireNativeView<NativeComposerEditorProps>(NATIVE_MODULE_NAME);
 
 // A view command rejects with "Unable to find the view" when the composer's native view is
@@ -152,6 +153,7 @@ export function ComposerEditor({
   onSubmit,
   onContentSizeChange,
   contentInsetVertical = 0,
+  inlineTokens = true,
   readResetGeneration = NO_RESET,
   ...props
 }: ComposerEditorProps) {
@@ -176,6 +178,7 @@ export function ComposerEditor({
     });
     setConfirmedTokens({ value: props.value, tokens });
   }
+  if (!inlineTokens) tokens = NO_INLINE_TOKENS;
   const bodyText = useComposerTextRole();
   const theme = useUniwindTheme();
   const fontFamily = FONT_FAMILIES.regular;

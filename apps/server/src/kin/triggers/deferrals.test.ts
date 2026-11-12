@@ -8,6 +8,7 @@ import {
   KinEvent,
   KinEventId,
   KinMemberId,
+  KinMemoryItemId,
   KinMessageId,
   KinPersonId,
   KinWakeupId,
@@ -29,11 +30,13 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as Chat from "../chat/KinChatService.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
+import { turnAudience } from "../lead/Audience.ts";
 import * as Budget from "../lead/KinBudget.ts";
 import * as Queue from "../lead/KinEventQueue.ts";
 import * as LeadDelivery from "../lead/LeadDelivery.ts";
 import { leadWakeup } from "../lead/LeadDelivery.testkit.ts";
 import * as WorkerEnvironment from "../lead/workerEnvironment.ts";
+import { laneFor } from "../reply/KinReplyBridge.ts";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import { fakeRepository } from "../memory/__fixtures__/repository.ts";
 import * as Memory from "../memory/Memory.ts";
@@ -182,6 +185,7 @@ const tapOnce = Effect.fn("test.deferralTap")(function* (
   const at = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
   // Stands in for the gated dispatcher: chat act refuses deferral taps today.
   const message = yield* repo.insertMessage({
+    audience: "chat",
     orgId,
     chatId: KinChatId.make("chat-a"),
     messageId: KinMessageId.make(`tap-${actionId}-${label}`),
@@ -257,6 +261,7 @@ it.effect("applies verified owner taps on the confirm card and ignores forged on
     const real = Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId }));
     const forgedId = KinWidgetId.make("model-card");
     const anchor = yield* repo.insertMessage({
+      audience: "chat",
       orgId,
       chatId: real.chatId,
       messageId: KinMessageId.make(forgedId),
@@ -275,6 +280,7 @@ it.effect("applies verified owner taps on the confirm card and ignores forged on
       editedAt: null,
     });
     yield* repo.insertWidget({
+      audience: "chat",
       orgId,
       chatId: real.chatId,
       messageId: anchor.messageId,
@@ -401,7 +407,7 @@ it.effect("asks when the stop switch is on, and production defaults never start"
       "couldn't verify GitHub",
       "the stop switch is on",
       "workers can't launch yet",
-      "Kin is at L0, below L2",
+      "starting work isn't open to me here",
     ])
       assert.include(text, reason);
     assert.lengthOf(yield* starts(), 0);
@@ -412,6 +418,44 @@ it.effect("asks when the stop switch is on, and production defaults never start"
     Effect.provide(layerFor([stopped, linked])),
   );
 });
+
+it.effect(
+  "a deferral asked for in a chat that can't start work asks, and [Start now] refuses",
+  () => {
+    const asked = makeDeferral("def-1", { source_event: KinEventId.make("asked") });
+    return Effect.gen(function* () {
+      yield* setup();
+      const sql = yield* SqlClient.SqlClient;
+      const lead = `lead-${orgId}`;
+      // kin_defer's source event came from a group whose cap is below L2.
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+      VALUES ('team', ${orgId}, 'team_group', 0, '1970-01-01T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_chat_levels (org_id, agent_id, chat_id, level, level_since)
+      VALUES (${orgId}, ${lead}, 'team', 'L1', 0)`;
+      const event = {
+        _tag: "chat.message",
+        orgId,
+        agentId: lead,
+        eventId: "asked",
+        receivedAt: "1970-01-01T00:00:00.000Z",
+        dedupeKey: null,
+        provenance: { _tag: "human", personId: `owner-${orgId}`, memberId: "member" },
+        chatId: "team",
+        messageId: "message",
+      };
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state)
+      VALUES ('asked', ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(event)}, 0, 0, 'done')`;
+      yield* (yield* TriggerService.KinTriggerService).syncItem(asked);
+      yield* tick(headsUpAt);
+      assert.equal((yield* runOf("def-1"))?.state, "asked");
+      assert.include((yield* cardOf("def-1")).text, "starting work isn't open to me here");
+      const refused = yield* tap("start_now", "owner", []);
+      assert.equal(refused._tag === "Failure" && refused.failure.cause, "below_l2");
+      yield* tick(dueAt);
+      assert.lengthOf(yield* starts(), 0);
+    }).pipe(openGates(new Map()), Effect.provide(layerFor([asked])));
+  },
+);
 
 it.effect(
   "heads-up taps: [Monday] re-arms next Monday 09:00, [Cancel] cancels, [Start now] starts",
@@ -570,63 +614,88 @@ it.effect("drops queued fires for disarmed or moved deferrals", () => {
   }).pipe(openGates(new Map()), Effect.provide(layerFor(items)));
 });
 
-it.effect("an Undo disarms the reminder; a late or outsider Undo is refused", () => {
-  const undone = makeDeferral("def-u", { on_due: "remind" });
-  const late = makeDeferral("def-l", { on_due: "remind" });
-  return Effect.gen(function* () {
-    yield* setup();
-    const sql = yield* SqlClient.SqlClient;
-    const repo = yield* Repository.KinChatRepository;
-    const chat = yield* Chat.KinChatService;
-    const service = yield* TriggerService.KinTriggerService;
-    for (const entry of [undone, late]) yield* service.syncItem(entry);
-    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
-      VALUES ('outsider-a', ${orgId}, 'outsider', 'Outsider', 0)`;
-    const undo = (personId: string, itemId: string) =>
-      Effect.gen(function* () {
-        const widget = Option.getOrThrow(
-          yield* repo.getWidget({ orgId, widgetId: widgetFor(itemId) }),
+it.effect(
+  "an Undo or a lead's cancel disarms it before due; a late or outsider Undo is refused",
+  () => {
+    const undone = makeDeferral("def-u");
+    const late = makeDeferral("def-l");
+    const cancelled = makeDeferral("def-c", { on_due: "remind" });
+    const firing = makeDeferral("def-f", { on_due: "remind" });
+    const items = [undone, late, cancelled, firing];
+    return Effect.gen(function* () {
+      yield* setup();
+      const sql = yield* SqlClient.SqlClient;
+      const repo = yield* Repository.KinChatRepository;
+      const chat = yield* Chat.KinChatService;
+      const service = yield* TriggerService.KinTriggerService;
+      for (const entry of items) yield* service.syncItem(entry);
+      // A remind deferral posts no "Deferred to …" card: the lead's own reply says when.
+      assert.isTrue(Option.isNone(yield* repo.getWidget({ orgId, widgetId: widgetFor("def-c") })));
+      const cancel = (itemId: string) =>
+        sql.withTransaction(
+          TriggerService.cancelDeferralRun({
+            orgId,
+            itemId: KinMemoryItemId.make(itemId),
+            now: headsUpAt,
+          }),
         );
-        return yield* chat
-          .act(
-            { _tag: "person", orgId, personId: KinPersonId.make(personId) },
-            {
-              widgetId: widget.widgetId,
-              revision: widget.revision,
-              actionId: "undo",
-              value: itemId,
-              clientActionId: `undo-${personId}-${itemId}`,
-            },
-          )
-          .pipe(Effect.result);
-      });
-    const reason = (result: Effect.Success<ReturnType<typeof undo>>) =>
-      result._tag === "Failure" && result.failure._tag === "KinChatError"
-        ? result.failure.reason
-        : result._tag;
+      assert.isTrue(yield* cancel("def-c"));
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES ('outsider-a', ${orgId}, 'outsider', 'Outsider', 0)`;
+      const undo = (personId: string, itemId: string) =>
+        Effect.gen(function* () {
+          const widget = Option.getOrThrow(
+            yield* repo.getWidget({ orgId, widgetId: widgetFor(itemId) }),
+          );
+          return yield* chat
+            .act(
+              { _tag: "person", orgId, personId: KinPersonId.make(personId) },
+              {
+                widgetId: widget.widgetId,
+                revision: widget.revision,
+                actionId: "undo",
+                value: itemId,
+                clientActionId: `undo-${personId}-${itemId}`,
+              },
+            )
+            .pipe(Effect.result);
+        });
+      const reason = (result: Effect.Success<ReturnType<typeof undo>>) =>
+        result._tag === "Failure" && result.failure._tag === "KinChatError"
+          ? result.failure.reason
+          : result._tag;
 
-    assert.notEqual(reason(yield* undo("outsider-a", "def-u")), "Success");
-    assert.equal((yield* runOf("def-u"))?.state, "armed");
+      assert.notEqual(reason(yield* undo("outsider-a", "def-u")), "Success");
+      assert.equal((yield* runOf("def-u"))?.state, "armed");
 
-    assert.equal(reason(yield* undo("owner-a", "def-u")), "Success");
-    assert.equal((yield* runOf("def-u"))?.state, "undone");
-    assert.isNotNull(
-      Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId: widgetFor("def-u") })).closedAt,
-    );
-    // Memory still says open until the lead records the cancel; the Undo holds meanwhile.
-    assert.equal(yield* service.syncItem(undone), "unchanged");
+      assert.equal(reason(yield* undo("owner-a", "def-u")), "Success");
+      assert.equal((yield* runOf("def-u"))?.state, "undone");
+      assert.isNotNull(
+        Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId: widgetFor("def-u") })).closedAt,
+      );
+      // Memory still says open until the lead records the cancel; the Undo holds meanwhile.
+      assert.equal(yield* service.syncItem(undone), "unchanged");
+      assert.equal(yield* service.syncItem(cancelled), "unchanged");
 
-    yield* tick(dueAt);
-    assert.deepStrictEqual(
-      (yield* handedReminders()).map((row) => row.itemId),
-      ["def-l"],
-    );
-    assert.lengthOf(yield* pendingFires(), 0);
+      // def-f's fire is already queued when the lead cancels it: the drain drops it.
+      yield* TestClock.setTime(dueAt);
+      yield* (yield* TriggerScheduler.KinTriggerScheduler).runDue();
+      assert.isTrue(yield* cancel("def-f"));
+      yield* tick(dueAt);
+      assert.lengthOf(yield* handedReminders(), 0);
+      assert.lengthOf(yield* pendingFires(), 0);
+      assert.equal((yield* runOf("def-l"))?.state, "asked");
+      assert.isFalse(yield* cancel("def-l-missing"));
 
-    assert.equal(reason(yield* undo("owner-a", "def-l")), "invalid_state");
-    assert.equal((yield* runOf("def-l"))?.state, "reminded");
-  }).pipe(Effect.provide(layerFor([undone, late])));
-});
+      assert.equal(reason(yield* undo("owner-a", "def-l")), "invalid_state");
+      assert.equal((yield* runOf("def-l"))?.state, "asked");
+      // Once memory records the cancel, the run disarms and stays quiet.
+      assert.equal(yield* service.syncItem({ ...cancelled, status: "cancelled" }), "disarmed");
+      yield* tick(dueAt + 60 * 60_000);
+      assert.lengthOf(yield* handedReminders(), 0);
+    }).pipe(Effect.provide(layerFor(items)));
+  },
+);
 
 it.effect("remind, ask and chase act at due, noting lateness", () => {
   const remind = makeDeferral("def-r", { on_due: "remind" });
@@ -707,44 +776,160 @@ const reminderCard = Effect.fn("test.reminderCard")(function* (itemId: string, a
 });
 const owner = { _tag: "person", orgId, personId: KinPersonId.make("owner-a") } as const;
 
-it.effect("a due reminder wakes the lead, its message gets the card, and Snooze re-arms it", () => {
-  const remind = makeDeferral("def-r", { on_due: "remind" });
+it.effect(
+  "a due reminder is one message with its card; Snooze re-arms it and Done ends it without the lead",
+  () => {
+    const remind = makeDeferral("def-r", { on_due: "remind" });
+    return Effect.gen(function* () {
+      yield* setup();
+      const sql = yield* SqlClient.SqlClient;
+      const deliveries = yield* LeadDelivery.KinLeadDelivery;
+      yield* (yield* TriggerService.KinTriggerService).syncItem(remind);
+      yield* tick(dueAt);
+
+      const messageId = yield* leadWakeup({
+        orgId,
+        eventId: yield* reminderEvent(),
+        chatId: "chat-a",
+        body: "Still on for def-r: the invoice went out yesterday, so this is the follow-up.",
+      });
+      yield* deliveries.settle(orgId);
+      const card = yield* reminderCard("def-r", dueAt);
+      assert.equal(card.messageId, messageId);
+      assert.deepInclude(card.state, { status: "due", itemId: "def-r" });
+      // One reminder, one message: no "Deferred to …" row at arming and no Kin line at due.
+      const posted = yield* sql<{ messageId: string }>`SELECT message_id AS "messageId"
+      FROM kin_messages WHERE org_id = ${orgId} AND chat_id = 'chat-a' ORDER BY seq`;
+      assert.deepStrictEqual(
+        posted.map((row) => row.messageId),
+        [messageId],
+      );
+
+      const tappedAt = yield* Clock.currentTimeMillis;
+      yield* (yield* Chat.KinChatService).act(owner, {
+        widgetId: card.widgetId,
+        revision: card.revision,
+        actionId: "snooze_10m",
+        value: "def-r",
+        clientActionId: "snooze-def-r",
+      });
+      assert.equal((yield* runOf("def-r"))?.state, "snoozed");
+      assert.deepInclude((yield* reminderCard("def-r", dueAt)).state, { status: "snoozed" });
+      yield* tick(tappedAt + 5 * 60_000);
+      assert.lengthOf(yield* handedReminders(), 1);
+      yield* tick(tappedAt + 10 * 60_000);
+      assert.lengthOf(yield* handedReminders(), 2);
+      assert.equal((yield* runOf("def-r"))?.state, "reminded");
+
+      const chat = yield* Chat.KinChatService;
+      const snoozed = yield* reminderCard("def-r", dueAt);
+      const done = {
+        widgetId: snoozed.widgetId,
+        revision: snoozed.revision,
+        actionId: "done",
+        value: "def-r",
+        clientActionId: "done-def-r",
+      };
+      const tapped = yield* chat.act(owner, done);
+      // The server finished Done, so ChatWake raises no widget.action for the lead.
+      assert.deepInclude(JSON.parse(tapped.body), { actionId: "done", handled: true });
+      assert.equal((yield* runOf("def-r"))?.state, "done");
+      const finished = yield* reminderCard("def-r", dueAt);
+      assert.deepInclude(finished.state, { status: "done" });
+      // A double tap: the same tap returns the same message; a second one is refused.
+      assert.equal((yield* chat.act(owner, done)).messageId, tapped.messageId);
+      const again = yield* chat
+        .act(owner, { ...done, revision: finished.revision, clientActionId: "done-def-r-2" })
+        .pipe(Effect.flip);
+      assert.equal(again._tag === "KinChatError" && again.reason, "invalid_state");
+      yield* tick(tappedAt + 24 * 60 * 60_000);
+      assert.lengthOf(yield* handedReminders(), 2);
+    }).pipe(Effect.provide(layerFor([remind])));
+  },
+);
+
+// Fifth review of cfb0c8993b: a reminder an owner-only turn set stays the owner's after a join.
+it.effect("a reminder set privately in a group later shared fires into the owner's chat", () => {
+  const remind = makeDeferral("def-g", {
+    on_due: "remind",
+    chat: KinChatId.make("group-a"),
+    source_event: KinEventId.make("set-event"),
+  });
   return Effect.gen(function* () {
     yield* setup();
     const sql = yield* SqlClient.SqlClient;
-    const deliveries = yield* LeadDelivery.KinLeadDelivery;
+    const repo = yield* Repository.KinChatRepository;
+    const lead = KinAgentId.make(`lead-${orgId}`);
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at)
+      VALUES ('group-a', ${orgId}, 'team_group', 'Plans', 0, '1970-01-01T00:00:00.000Z')`;
+    const join = (
+      memberId: string,
+      principal: Parameters<typeof repo.addMember>[0]["principal"],
+      role: "owner" | "member" = "member",
+    ) =>
+      repo.addMember({
+        orgId,
+        chatId: KinChatId.make("group-a"),
+        memberId: KinMemberId.make(memberId),
+        principal,
+        role,
+        joinedAt: "1970-01-01T00:00:00.000Z",
+        leftAt: null,
+        mutedUntil: null,
+      });
+    yield* join(
+      "group-owner",
+      { _tag: "person", personId: KinPersonId.make(`owner-${orgId}`) },
+      "owner",
+    );
+    yield* join("group-lead", { _tag: "agent", agentId: lead });
+    // The owner asked for it in the group while only they read there: an owner-only turn.
+    yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status,
+        event_ids, audience) VALUES ('set-wake', ${orgId}, ${lead}, 'test', 0, 'completed',
+        '["set-event"]', 'owner_only')`;
+    const asked = {
+      _tag: "chat.message",
+      orgId,
+      agentId: lead,
+      eventId: "set-event",
+      receivedAt: "1970-01-01T00:00:00.000Z",
+      dedupeKey: null,
+      provenance: { _tag: "human", personId: `owner-${orgId}`, memberId: "group-owner" },
+      chatId: "group-a",
+      messageId: "set-message",
+    };
+    yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
+        queued_at, state, wakeup_id)
+      VALUES ('set-event', ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(asked)}, 0, 0,
+        'done', 'set-wake')`;
     yield* (yield* TriggerService.KinTriggerService).syncItem(remind);
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES ('teammate', ${orgId}, 'teammate', 'Teammate', '1970-01-01T00:00:00.000Z')`;
+    yield* join("group-teammate", { _tag: "person", personId: KinPersonId.make("teammate") });
     yield* tick(dueAt);
 
-    const messageId = yield* leadWakeup({
-      orgId,
-      eventId: yield* reminderEvent(),
-      chatId: "chat-a",
-      body: "Still on for def-r: the invoice went out yesterday, so this is the follow-up.",
+    const eventId = yield* reminderEvent();
+    const [due] = yield* sql<{
+      json: string;
+    }>`SELECT json FROM kin_events WHERE event_id = ${eventId}`;
+    assert.notProperty(JSON.parse(due!.json), "origin");
+    yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status,
+        event_ids) VALUES ('fire-wake', ${orgId}, ${lead}, 'test', 0, 'running', json_array(${eventId}))`;
+    yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = 'fire-wake' WHERE event_id = ${eventId}`;
+    const turn = { orgId, agentId: lead, wakeupId: KinWakeupId.make("fire-wake") };
+    assert.equal(yield* turnAudience(turn), "owner_only");
+    assert.deepInclude(Option.getOrThrow(yield* laneFor(turn)), {
+      chatId: KinChatId.make(`chat-${orgId}`),
     });
-    yield* deliveries.settle(orgId);
-    const card = yield* reminderCard("def-r", dueAt);
-    assert.equal(card.messageId, messageId);
-    assert.deepInclude(card.state, { status: "due", itemId: "def-r" });
-    const serverLines = yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${orgId}
-      AND kind = 'system' AND body LIKE 'Reminder:%' ORDER BY seq`;
-    assert.lengthOf(serverLines, 0);
-
-    const tappedAt = yield* Clock.currentTimeMillis;
-    yield* (yield* Chat.KinChatService).act(owner, {
-      widgetId: card.widgetId,
-      revision: card.revision,
-      actionId: "snooze_10m",
-      value: "def-r",
-      clientActionId: "snooze-def-r",
-    });
-    assert.equal((yield* runOf("def-r"))?.state, "snoozed");
-    assert.deepInclude((yield* reminderCard("def-r", dueAt)).state, { status: "snoozed" });
-    yield* tick(tappedAt + 5 * 60_000);
-    assert.lengthOf(yield* handedReminders(), 1);
-    yield* tick(tappedAt + 10 * 60_000);
-    assert.lengthOf(yield* handedReminders(), 2);
-    assert.equal((yield* runOf("def-r"))?.state, "reminded");
+    yield* sql`UPDATE kin_events SET state = 'queued', wakeup_id = NULL WHERE event_id = ${eventId}`;
+    yield* sql`DELETE FROM kin_wakeups WHERE wakeup_id = 'fire-wake'`;
+    yield* leadWakeup({ orgId, eventId, chatId: `chat-${orgId}`, body: "Your reminder." });
+    yield* (yield* LeadDelivery.KinLeadDelivery).settle(orgId);
+    assert.equal((yield* reminderCard("def-g", dueAt)).chatId, `chat-${orgId}`);
+    const inGroup =
+      yield* sql`SELECT 1 FROM kin_messages m JOIN kin_chats c ON c.chat_id = m.chat_id
+      WHERE m.chat_id = 'group-a' AND m.seq >= c.shared_from_seq`;
+    assert.lengthOf(inGroup, 0);
   }).pipe(Effect.provide(layerFor([remind])));
 });
 

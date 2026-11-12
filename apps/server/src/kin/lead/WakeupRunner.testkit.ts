@@ -1,5 +1,5 @@
 import * as ProviderSessionManager from "../../orchestration-v2/ProviderSessionManager.ts";
-import type { ThreadId } from "@t3tools/contracts";
+import type { ChatAttachment, KinAttachment, ThreadId } from "@t3tools/contracts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -47,10 +47,18 @@ import * as KinStop from "./KinStop.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinIssuedTokens from "../mcp/KinIssuedTokens.ts";
-import { KinLeadPrompt, type KinLeadPromptInput } from "./LeadPrompt.ts";
+import { recordAudience, turnAudience } from "./Audience.ts";
+import { KinLeadPrompt, KinLeadPromptError, type KinLeadPromptInput } from "./LeadPrompt.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
+import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
+import * as ProjectEnrichmentService from "../../project/ProjectEnrichmentService.ts";
+import * as ProjectFaviconResolver from "../../project/ProjectFaviconResolver.ts";
+import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
+import * as WorkspacePaths from "../../workspace/WorkspacePaths.ts";
+import * as RuntimeLayer from "../../orchestration-v2/runtimeLayer.ts";
+import * as ThreadCommandExecutor from "../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ProjectSetupScriptRunner from "../../project/ProjectSetupScriptRunner.ts";
 import * as ProjectCloneTracker from "../../project/ProjectCloneTracker.ts";
 import * as WorktreeSetupTracker from "../../project/WorktreeSetupTracker.ts";
@@ -122,12 +130,17 @@ type HarnessOptions = {
   readonly hold?: Deferred.Deferred<void>;
   readonly entered?: Deferred.Deferred<void>;
   readonly failed?: boolean;
+  /** The failed turn's failure code, as an adapter names it. */
+  readonly failureCode?: string;
   readonly writer?: Layer.Layer<Writer.MemoryWriter, never, SqlClient.SqlClient>;
   readonly piUsage?: boolean;
   readonly prepare?: Memory.Memory["Service"]["prepareWakeup"];
   /** Each turn opens a command approval and ends only once it is answered. */
   readonly approval?: Deferred.Deferred<ProviderApprovalDecision | undefined>;
   readonly runtimeModes?: Array<RuntimeMode>;
+  /** What the prompt names as this turn's files, and what each provider turn was handed. */
+  readonly attachments?: ReadonlyArray<KinAttachment>;
+  readonly turnAttachments?: Array<ReadonlyArray<ChatAttachment>>;
   /** `false` registers the fake provider as the default Codex instance instead of Claude. */
   readonly claude?: boolean;
   readonly settings?: Parameters<typeof ServerSettings.layerTest>[0];
@@ -143,17 +156,26 @@ type HarnessOptions = {
   readonly holdRunning?: Deferred.Deferred<void>;
   /** Messages the provider received as steers into a running turn. */
   readonly providerSteers?: Queue.Queue<{ readonly runId: string; readonly messageId: string }>;
+  /** Runs as the provider takes a steer; failing it fails the steer, as a rejecting provider would. */
+  readonly onSteer?: (input: {
+    readonly runId: string;
+    readonly providerTurnId: string;
+  }) => Effect.Effect<void, ProviderAdapter.ProviderAdapterV2Error>;
+  /** Building steer text fails, so no steer reaches the thread. */
+  readonly steerFails?: boolean;
   /** Completes when the runner builds steer text, under the lock its send holds. */
   readonly steering?: Deferred.Deferred<void>;
   /** Every prompt the runner builds, in order. */
   readonly prompts?: Array<KinLeadPromptInput>;
-  readonly snapshot?: Memory.Memory["Service"]["readPromptSnapshot"];
-  /** Every provider process the fake adapter opens. */
-  readonly opened?: Array<string>;
   /** Called on every `readyLeads` pass the runner makes. */
   readonly onReadyLeads?: () => void;
   /** The project id bootstrap returns, read on each call. */
   readonly projectId?: () => ProjectId;
+  /**
+   * The real project service on the harness database instead of one fixed project; each turn
+   * runs in its project's root, offered here when the turn resolves it.
+   */
+  readonly realProjects?: Queue.Queue<string | null>;
 };
 
 export function harness(options: HarnessOptions = {}) {
@@ -164,12 +186,6 @@ export function harness(options: HarnessOptions = {}) {
 export function orchestrationHarness(options: HarnessOptions = {}) {
   const { stack, kin, database } = parts(options);
   return Layer.mergeAll(kin, stack).pipe(Layer.provideMerge(database));
-}
-
-/** The fake-provider orchestration stack alone, for callers that bring Kin's own services. */
-export function orchestrationStack(options: HarnessOptions = {}) {
-  const { stack, database } = parts(options);
-  return stack.pipe(Layer.provideMerge(database));
 }
 
 function parts(options: HarnessOptions) {
@@ -185,7 +201,6 @@ function parts(options: HarnessOptions) {
     planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
     openSession: (session) =>
       Effect.gen(function* () {
-        options.opened?.push(session.providerSessionId);
         const now = yield* DateTime.now;
         const events = yield* PubSub.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
         const open = new Map<
@@ -231,6 +246,7 @@ function parts(options: HarnessOptions) {
           resumeThread: ({ providerThread }) => Effect.succeed(providerThread),
           startTurn: Effect.fn("test.startTurn")(function* (input) {
             options.runtimeModes?.push(input.runtimePolicy.runtimeMode);
+            options.turnAttachments?.push(input.message?.attachments ?? []);
             if (options.entered !== undefined) yield* Deferred.succeed(options.entered, undefined);
             if (options.hold !== undefined) yield* Deferred.await(options.hold);
             if (options.onTurn !== undefined) yield* options.onTurn({ threadId: input.threadId });
@@ -339,7 +355,7 @@ function parts(options: HarnessOptions) {
                       failure: {
                         class: "provider_error" as const,
                         message: "Fixture provider failure",
-                        code: null,
+                        code: options.failureCode ?? null,
                         retryable: false,
                       },
                     }
@@ -357,12 +373,19 @@ function parts(options: HarnessOptions) {
           }),
           compactThread: (input) => runtime.startTurn(input),
           steerTurn: (input) =>
-            options.providerSteers === undefined
-              ? Effect.void
-              : Queue.offer(options.providerSteers, {
-                  runId: input.runId,
-                  messageId: input.message.messageId,
-                }).pipe(Effect.asVoid),
+            (
+              options.onSteer?.({ runId: input.runId, providerTurnId: input.providerTurnId }) ??
+              Effect.void
+            ).pipe(
+              Effect.andThen(
+                options.providerSteers === undefined
+                  ? Effect.void
+                  : Queue.offer(options.providerSteers, {
+                      runId: input.runId,
+                      messageId: input.message.messageId,
+                    }).pipe(Effect.asVoid),
+              ),
+            ),
           interruptTurn: Effect.fn("test.interruptTurn")(function* ({ providerTurnId }) {
             const turn = open.get(providerTurnId);
             if (turn === undefined) return;
@@ -408,7 +431,15 @@ function parts(options: HarnessOptions) {
   const orchestration = ProviderReplayHarness.layerWithRegistry(
     { name: "kin-wakeup" },
     ProviderAdapterRegistry.layerFromAdapters([adapter]),
-    { databaseLayer: database },
+    {
+      databaseLayer: database,
+      ...(options.realProjects === undefined
+        ? {}
+        : {
+            projectCwd: (cwd: string | null) =>
+              Queue.offer(options.realProjects!, cwd).pipe(Effect.asVoid),
+          }),
+    },
   );
   const settings = ServerSettings.layerTest(options.settings);
   const receipts = CommandReceiptStore.layer.pipe(Layer.provide(database));
@@ -432,17 +463,42 @@ function parts(options: HarnessOptions) {
   );
   const current = () =>
     options.projectId === undefined ? project : { ...project, id: options.projectId() };
-  const projectLayer = Layer.mock(ProjectService.ProjectService)({
-    bootstrap: () => Effect.sync(() => ({ project: current(), created: true })),
-    getById: () => Effect.sync(() => Option.some(current())),
-    getByWorkspaceRoot: () => Effect.sync(() => Option.some(current())),
-  });
+  const projectLayer =
+    options.realProjects !== undefined
+      ? RuntimeLayer.layerProjectService.pipe(
+          Layer.provide(
+            ProjectEnrichmentService.layer.pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
+                    resolve: () => Effect.succeed(null),
+                  }),
+                  Layer.mock(ProjectFaviconResolver.ProjectFaviconResolver)({
+                    invalidate: () => Effect.void,
+                    resolvePath: () => Effect.succeed(null),
+                  }),
+                ),
+              ),
+            ),
+          ),
+          Layer.provide(
+            Layer.mergeAll(WorkspacePaths.layer, ThreadCommandExecutor.layer, settings, database),
+          ),
+          Layer.provide(NodeServices.layer),
+        )
+      : Layer.mock(ProjectService.ProjectService)({
+          bootstrap: () => Effect.sync(() => ({ project: current(), created: true })),
+          getById: () => Effect.sync(() => Option.some(current())),
+          getByWorkspaceRoot: () => Effect.sync(() => Option.some(current())),
+        });
   const external = Layer.mergeAll(
     projectLayer,
     WorktreeSetupTracker.layer,
     Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
     Layer.mock(TerminalManager.TerminalManager)({ close: () => Effect.void }),
     Layer.mock(GitWorkflow.GitWorkflowService)({}),
+    // Native schedules are exercised in triggers/scheduledTasks.test.ts.
+    Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
     Layer.mock(TextGeneration.TextGeneration)({}),
     Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
       runForThread: () => Effect.succeed({ status: "no-script" }),
@@ -501,17 +557,38 @@ function parts(options: HarnessOptions) {
         }),
       ),
     ),
-    Layer.succeed(KinLeadPrompt, {
-      build: (input) =>
-        Effect.sync(() => {
-          options.prompts?.push(input);
-          return "Wake up";
-        }),
-      steer: () =>
-        options.steering === undefined
-          ? Effect.succeed("Steered")
-          : Deferred.succeed(options.steering, undefined).pipe(Effect.as("Steered")),
-    }),
+    Layer.effect(
+      KinLeadPrompt,
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        return KinLeadPrompt.of({
+          // Records who reads the turn as the real builder does; the runner chooses its thread by it.
+          build: (input) =>
+            Effect.gen(function* () {
+              yield* recordAudience(input, yield* turnAudience(input));
+              options.prompts?.push(input);
+              return "Wake up";
+            }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie),
+          steer: (input) =>
+            (options.steering === undefined
+              ? Effect.void
+              : Deferred.succeed(options.steering, undefined).pipe(Effect.asVoid)
+            ).pipe(
+              Effect.andThen(
+                options.steerFails
+                  ? Effect.fail(
+                      new KinLeadPromptError({
+                        orgId: input.orgId,
+                        reason: "Fixture steer failure",
+                      }),
+                    )
+                  : Effect.succeed("Steered"),
+              ),
+            ),
+          attachments: () => Effect.succeed(options.attachments ?? []),
+        });
+      }),
+    ),
     Layer.mock(Memory.Memory)({
       prepareWakeup:
         options.prepare ??
@@ -522,8 +599,8 @@ function parts(options: HarnessOptions) {
             read: "/private/tmp",
           })),
       ensureCheckouts: () => Effect.succeed({ writer: "/private/tmp", read: "/private/tmp" }),
-      readPromptSnapshot:
-        options.snapshot ?? (() => Effect.succeed({ rules: "rules", index: "index" })),
+      readPromptSnapshot: () =>
+        Effect.succeed({ rules: "rules", index: "index", items: [], bodies: new Map() }),
     }),
   );
   const stack = Layer.mergeAll(

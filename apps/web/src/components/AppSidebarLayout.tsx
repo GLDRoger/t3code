@@ -39,6 +39,8 @@ import {
 } from "../panelAnimations";
 import { BackgroundThreadAnnouncer } from "./BackgroundThreadAnnouncer";
 import { HistorySwipeNavigation } from "./HistorySwipeNavigation";
+import { kinListShownAt } from "../kin/kinListSwitch";
+import { KinSidebar } from "../kin/KinSidebar";
 import ThreadSidebar from "./Sidebar";
 import { SidebarBrandWidthProbe } from "./sidebar/SidebarChrome";
 import { isAppModalPage } from "./sidebar/mainAppLocation";
@@ -408,9 +410,12 @@ function SidebarControl({ showSidebar }: { readonly showSidebar: boolean }) {
 export function AppSidebarLayout({
   children,
   showSidebar = true,
+  chatOnly = false,
 }: {
   children: ReactNode;
   showSidebar?: boolean;
+  /** A teammate's session: Kin's list is the only one, and no thread is ever loaded. */
+  chatOnly?: boolean;
 }) {
   const sidebarArea = workspaceAreaProps("sidebar", 0, "Threads");
   const [sidebarRouteReveal] = useState<SidebarRouteReveal>(() => ({
@@ -420,6 +425,7 @@ export function AppSidebarLayout({
   const { active: panelAnimationsActive, durationMs: panelAnimationDurationMs } =
     usePanelAnimationSettings();
   const pathname = useLocation({ select: (location) => location.pathname });
+  const kinListOpen = kinListShownAt(pathname) === "kin";
   const panelAnimationsSuppressed = usePanelNavigationSuppression(pathname);
   const routePanelAnimationsActive = panelAnimationsActive && !panelAnimationsSuppressed;
   const isMacosDesktop = isElectron && isMacPlatform(navigator.platform);
@@ -469,7 +475,7 @@ export function AppSidebarLayout({
               data-app-sidebar=""
               {...sidebarArea}
               role="navigation"
-              aria-label="Threads"
+              aria-label={kinListOpen ? "Kin chats" : "Threads"}
               resizable={{
                 maxWidth: sidebarMaximumWidth,
                 minWidth: sidebarMinimumWidth,
@@ -481,13 +487,19 @@ export function AppSidebarLayout({
               }}
               style={windowControlsInsetStyle}
             >
-              <ThreadSidebar routeReveal={sidebarRouteReveal} />
+              {/* Threads stay mounted under Kin's list, so switching back keeps their scroll and search. */}
+              {chatOnly ? null : (
+                <div className={kinListOpen ? "hidden" : "contents"}>
+                  <ThreadSidebar routeReveal={sidebarRouteReveal} />
+                </div>
+              )}
+              {kinListOpen || chatOnly ? <KinSidebar /> : null}
               <SidebarRail onDoubleClick={resetSidebarWidth} />
             </Sidebar>
           </>
         ) : null}
         {children}
-        <BackgroundThreadAnnouncer />
+        {chatOnly ? null : <BackgroundThreadAnnouncer />}
         <SidebarControl showSidebar={showSidebar} />
         {isElectron ? <HistorySwipeNavigation /> : null}
       </SidebarProvider>

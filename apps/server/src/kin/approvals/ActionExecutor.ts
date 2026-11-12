@@ -24,6 +24,7 @@ import {
   toPersistenceSqlError,
 } from "../../persistence/Errors.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
+import { RETIRED_ACTION_REASON } from "../lead/Retirement.ts";
 import {
   KinActionHandlers,
   KinExecError,
@@ -301,6 +302,7 @@ export const make = Effect.gen(function* () {
     handler: KinActionHandler,
   ) {
     let writeStartedAt: number | null = null;
+    let marked: "started" | "retired" | "closed" | null = null;
     const failed = (error: KinExecError) =>
       finish(action, "failed", {
         error: failureText(error),
@@ -336,10 +338,11 @@ export const make = Effect.gen(function* () {
       if (yield* paused(action.orgId).pipe(Effect.orElseSucceed(() => true)))
         return yield* new KinExecError({ reason: "paused" });
       const at = yield* Clock.currentTimeMillis;
-      const marked = yield* ledger
+      marked = yield* ledger
         .writeStarting({ ...refOf(action), at })
-        .pipe(Effect.orElseSucceed(() => false));
-      if (!marked) return yield* new KinExecError({ reason: "unavailable", detail: "ledger" });
+        .pipe(Effect.orElseSucceed(() => "closed" as const));
+      if (marked !== "started")
+        return yield* new KinExecError({ reason: "unavailable", detail: "ledger" });
       writeStartedAt = at;
       return yield* handler
         .run(action, { grant, payload: payloadOf(grant), pass })
@@ -353,6 +356,18 @@ export const make = Effect.gen(function* () {
     if (Result.isSuccess(result)) {
       yield* finish(action, "succeeded", result.success);
       return { _tag: "finished", outcome: "succeeded" } satisfies KinExecuteResult;
+    }
+    // The ledger already voided it, with its audit entry.
+    if (marked === "retired")
+      return { _tag: "voided", reason: RETIRED_ACTION_REASON } satisfies KinExecuteResult;
+    // Closed under it, as retiring voids a claim that hasn't started writing: report that.
+    if (marked === "closed") {
+      const now = yield* pending.get(refOf(action));
+      if (Option.isSome(now) && now.value.state === "voided")
+        return {
+          _tag: "voided",
+          reason: now.value.stateReason ?? RETIRED_ACTION_REASON,
+        } satisfies KinExecuteResult;
     }
     const error = result.failure;
     if (error.reason !== "unknown_outcome") return yield* failed(error);

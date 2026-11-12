@@ -24,6 +24,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import { ApproverKeys } from "../approvals/ApproverKeys.ts";
 import { KinPendingActions } from "../approvals/PendingActions.ts";
+import { memberReads } from "../chat/sharing.ts";
 import { MemoryCache } from "../memory/MemoryCache.ts";
 import { isQuiet, KIN_DEFAULT_QUIET_HOURS } from "../triggers/quietHours.ts";
 import { KinApnsTransport } from "./Apns.ts";
@@ -55,6 +56,8 @@ type Push = {
   readonly title: string;
   readonly body: string;
   readonly chatId: KinChatId | undefined;
+  /** The message, or card's anchor, it tells of: each send checks the recipient still reads it. */
+  readonly source: KinMessageId | undefined;
   /** Message pushes collapse per chat, so a busy chat shows one banner. */
   readonly collapseId?: string;
   readonly data: KinPushData;
@@ -100,7 +103,8 @@ const decodeQuietHours = Schema.decodeUnknownOption(
 
 /**
  * Whether a message concerns someone enough to ring their phone. A direct chat is theirs; in a
- * group only a mention of them or a reply to their message does (cards push on their own).
+ * group only a mention of them, a reply to their message, or a lead's answer to what they asked
+ * does (cards push on their own).
  */
 const kinPushConcerns = (input: {
   readonly direct: boolean;
@@ -120,7 +124,7 @@ const approvalPushText = (action: KinPendingAction) => {
     case "device_key":
       return "Adding an approver key is waiting on you";
     case "level":
-      return "A level change is waiting on you";
+      return "A permission change for an agent is waiting on you";
     case "content":
       return action.kind === "memory_purge"
         ? "A memory purge is waiting on you"
@@ -136,6 +140,8 @@ export class KinPushSender extends Context.Service<
     readonly notify: (
       notification: KinPushNotification,
     ) => Effect.Effect<Fiber.Fiber<KinPushOutcome>>;
+    /** Sends every push an approver key change still owes, then settles it. Returns how many. */
+    readonly flushKeyPushes: Effect.Effect<number>;
   }
 >()("t3/kin/push/KinPushSender") {}
 
@@ -163,8 +169,9 @@ const make = Effect.gen(function* () {
       person_id: KinPersonId;
       member_id: string;
       muted_until: string | null;
+      joined_seq: number;
     }>`
-      SELECT person_id, member_id, muted_until FROM kin_chat_members
+      SELECT person_id, member_id, muted_until, joined_seq FROM kin_chat_members
       WHERE org_id = ${orgId} AND chat_id = ${chatId} AND principal_kind = 'person'
         AND left_at IS NULL
       ORDER BY person_id`;
@@ -172,6 +179,7 @@ const make = Effect.gen(function* () {
       personId: row.person_id,
       memberId: row.member_id,
       muted: row.muted_until !== null && Date.parse(row.muted_until) > now,
+      joinedSeq: row.joined_seq,
     }));
   });
 
@@ -215,7 +223,7 @@ const make = Effect.gen(function* () {
           JOIN kin_messages m ON m.org_id = cm.org_id AND m.chat_id = cm.chat_id
           WHERE cm.org_id = ${orgId} AND cm.person_id = ${personId}
             AND cm.principal_kind = 'person' AND cm.left_at IS NULL
-            AND m.status = 'posted'
+            AND m.status = 'posted' AND m.silent = 0 AND m.seq >= cm.joined_seq
             AND (m.author_member_id IS NULL OR m.author_member_id != cm.member_id)
             AND m.seq > COALESCE((SELECT r.last_read_seq FROM kin_read_state r
               WHERE r.chat_id = cm.chat_id AND r.member_id = cm.member_id), 0)
@@ -246,6 +254,7 @@ const make = Effect.gen(function* () {
       title: lead?.display_name ?? "Approval needed",
       body: approvalPushText(action.value),
       chatId: undefined,
+      source: undefined,
       data: { kin: 1, orgId, pendingActionId: actionId, deepLink },
       recipients: approvers.map((personId) => ({ personId, silent: quiet })),
     } satisfies Push;
@@ -264,10 +273,12 @@ const make = Effect.gen(function* () {
       body: string;
       mentions_json: string;
       reply_author: KinPersonId | null;
+      asked_json: string;
       awaits_card: number;
       owner_timed: number;
+      seq: number;
     }>`
-      SELECT m.chat_id, m.author_kind, m.author_person_id, m.author_member_id, m.body,
+      SELECT m.chat_id, m.seq, m.author_kind, m.author_person_id, m.author_member_id, m.body,
         m.mentions_json,
         COALESCE(
           (SELECT display_name FROM kin_agents a
@@ -277,6 +288,14 @@ const make = Effect.gen(function* () {
         ) AS author_name,
         (SELECT r.author_person_id FROM kin_messages r
           WHERE r.org_id = m.org_id AND r.message_id = m.reply_to) AS reply_author,
+        -- Whose messages in this chat the lead's running wake-up answers.
+        (SELECT COALESCE(json_group_array(DISTINCT q.author_person_id), '[]') FROM kin_wakeups k
+          JOIN kin_events e ON e.org_id = k.org_id AND e.wakeup_id = k.wakeup_id
+            AND e.tag IN ('chat.message', 'widget.action')
+          JOIN kin_messages q ON q.org_id = e.org_id AND q.chat_id = m.chat_id
+            AND q.message_id = json_extract(e.json, '$.messageId') AND q.author_kind = 'human'
+          WHERE k.org_id = m.org_id AND k.agent_id = m.author_agent_id
+            AND k.status = 'running') AS asked_json,
         EXISTS (SELECT 1 FROM kin_widgets w WHERE w.org_id = m.org_id
           AND w.message_id = m.message_id AND w.closed_at IS NULL
           AND w.awaiting_json != '[]') AS awaits_card,
@@ -290,11 +309,15 @@ const make = Effect.gen(function* () {
               AND k.status = 'running')) AS owner_timed
       FROM kin_messages m
       WHERE m.org_id = ${orgId} AND m.message_id = ${messageId} AND m.status = 'posted'
-        AND m.kind != 'widget_action'`;
+        AND m.kind != 'widget_action' AND m.silent = 0
+        -- A key change's notice rings as that change's own push instead.
+        AND NOT EXISTS (SELECT 1 FROM kin_key_pushes p
+          WHERE p.org_id = m.org_id AND p.message_id = m.message_id)`;
     // A card that waits on someone announces itself through its widget push.
     if (row === undefined || row.awaits_card === 1) return undefined;
     const chat = yield* chatName(orgId, row.chat_id);
     const mentions = new Set<string>(yield* decodeIds(row.mentions_json));
+    const asked = new Set<string>(yield* decodeIds(row.asked_json));
     // Reminders and scheduled runs come at the time the owner chose, so quiet hours let them ring.
     const quiet = row.owner_timed === 1 ? false : yield* quietNow(orgId);
     const people = yield* chatPeople(orgId, row.chat_id);
@@ -308,6 +331,7 @@ const make = Effect.gen(function* () {
           : `${chat.name} · ${author}`,
       body: kinPushBody(row.body) || "New message",
       chatId: row.chat_id,
+      source: messageId,
       collapseId: kinPushCollapseId(orgId, row.chat_id),
       data: {
         kin: 1,
@@ -318,12 +342,13 @@ const make = Effect.gen(function* () {
       recipients: people
         .filter(
           (person) =>
+            person.joinedSeq <= row.seq &&
             person.personId !== row.author_person_id &&
             person.memberId !== row.author_member_id &&
             kinPushConcerns({
               direct: chat.direct,
               mentioned: mentions.has(person.memberId),
-              repliesToThem: row.reply_author === person.personId,
+              repliesToThem: row.reply_author === person.personId || asked.has(person.personId),
             }),
         )
         .map((person) => ({ personId: person.personId, silent: person.muted || quiet })),
@@ -340,8 +365,10 @@ const make = Effect.gen(function* () {
       revision: number;
       phase: unknown;
       awaiting_json: string;
+      seq: number;
+      message_id: KinMessageId;
     }>`SELECT w.chat_id, w.type, w.revision, json_extract(w.state_json, '$.phase') AS phase,
-        w.awaiting_json
+        w.awaiting_json, m.seq, m.message_id
       FROM kin_widgets w JOIN kin_messages m ON m.message_id = w.message_id
       WHERE w.org_id = ${orgId} AND w.widget_id = ${widgetId} AND w.closed_at IS NULL
         AND m.status = 'posted'`;
@@ -367,6 +394,7 @@ const make = Effect.gen(function* () {
       ...kind,
       title: chat.name,
       chatId: row.chat_id,
+      source: row.message_id,
       data: {
         kin: 1,
         orgId,
@@ -376,9 +404,35 @@ const make = Effect.gen(function* () {
         deepLink: chatLink(orgId, row.chat_id),
       },
       recipients: people
-        .filter((person) => awaiting.has(person.personId))
+        .filter((person) => person.joinedSeq <= row.seq && awaiting.has(person.personId))
         .map((person) => ({ personId: person.personId, silent: person.muted || quiet })),
     } satisfies Push;
+  });
+
+  /**
+   * Whether `personId` may still hear of `messageId`, from the rows as they are now: in its chat,
+   * the message still there (a clear deletes it), and one they may read (`readableBy`).
+   */
+  const stillReads = Effect.fn("KinPushSender.stillReads")(function* (
+    orgId: KinOrgId,
+    personId: KinPersonId,
+    chatId: KinChatId,
+    messageId: KinMessageId,
+  ) {
+    return yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const [member] = yield* sql<{ memberId: string }>`SELECT m.member_id AS "memberId"
+          FROM kin_chat_members m JOIN kin_messages msg ON msg.org_id = m.org_id
+            AND msg.chat_id = m.chat_id AND msg.message_id = ${messageId} AND msg.status = 'posted'
+          JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
+            AND msg.seq > c.cleared_seq
+          WHERE m.org_id = ${orgId} AND m.chat_id = ${chatId} AND m.principal_kind = 'person'
+            AND m.person_id = ${personId} AND m.left_at IS NULL
+          ORDER BY m.member_id LIMIT 1`;
+        if (member === undefined) return false;
+        return yield* memberReads(sql, { orgId, memberId: member.memberId, messageId });
+      }),
+    );
   });
 
   const sendTo = Effect.fn("KinPushSender.sendTo")(function* (
@@ -389,6 +443,13 @@ const make = Effect.gen(function* () {
   ) {
     if (push.chatId !== undefined && (yield* presence.isWatching(device.sessionId, push.chatId)))
       return "suppressed" as const;
+    // A send waits behind others; who may hear of it is decided now. One already sent stays sent.
+    if (
+      push.chatId !== undefined &&
+      (push.source === undefined ||
+        !(yield* stillReads(orgId, device.personId, push.chatId, push.source)))
+    )
+      return "dropped" as const;
     const result = yield* apns.send({
       token: device.token,
       environment: device.apsEnvironment,
@@ -494,7 +555,59 @@ const make = Effect.gen(function* () {
     return yield* Effect.forkIn(run(notification), scope);
   });
 
-  return KinPushSender.of({ status: apns.status, notify });
+  const flushKeyPushes = Effect.fn("KinPushSender.flushKeyPushes")(
+    function* () {
+      // A scan across orgs, at start and after each key change: whatever is still owed.
+      const owed = yield* sql<{
+        org_id: KinOrgId;
+        thumbprint: string;
+        change: string;
+        body: string;
+        human_id: KinPersonId;
+      }>`SELECT p.org_id, p.thumbprint, p.change, p.body, k.human_id FROM kin_key_pushes p
+        JOIN kin_approver_keys k ON k.org_id = p.org_id AND k.thumbprint = p.thumbprint
+        WHERE p.sent_at IS NULL ORDER BY p.owed_at, p.org_id, p.thumbprint, p.change`;
+      let settled = 0;
+      for (const row of owed) {
+        const sent = Effect.gen(function* () {
+          if (apns.status === "ready")
+            yield* deliver(row.org_id, {
+              category: "kin.message",
+              title: "Kin approvals",
+              // The server's own text, whole, so where to remove the phone is never cut off.
+              body: row.body,
+              chatId: undefined,
+              source: undefined,
+              data: {
+                kin: 1,
+                orgId: row.org_id,
+                deepLink: `/kin/${host}/${segment(row.org_id)}/approvals`,
+              },
+              // A phone that can approve came or went: it rings through quiet hours.
+              recipients: [{ personId: row.human_id, silent: false }],
+            });
+          yield* sql`UPDATE kin_key_pushes SET sent_at = ${yield* Clock.currentTimeMillis}
+            WHERE org_id = ${row.org_id} AND thumbprint = ${row.thumbprint}
+              AND change = ${row.change} AND sent_at IS NULL`;
+          settled++;
+        });
+        // Left owed, it goes again at the next key change or start.
+        yield* sent.pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("Kin key change push failed.", { error: error._tag }),
+          ),
+        );
+      }
+      return settled;
+    },
+    Effect.catch((error) =>
+      Effect.logWarning("Kin couldn't read owed key pushes.", { error: error._tag }).pipe(
+        Effect.as(0),
+      ),
+    ),
+  );
+
+  return KinPushSender.of({ status: apns.status, notify, flushKeyPushes: flushKeyPushes() });
 });
 
 export const layer = Layer.effect(KinPushSender, make);

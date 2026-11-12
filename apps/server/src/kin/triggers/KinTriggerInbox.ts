@@ -13,12 +13,14 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlSchema from "effect/sql/SqlSchema";
+import type * as Statement from "effect/sql/Statement";
 
 import {
   PersistenceDecodeError,
   PersistenceSqlError,
   toPersistenceSqlError,
 } from "../../persistence/Errors.ts";
+import { scheduleTaskId } from "./kinSchedules.ts";
 
 const encodeFire = Schema.encodeEffect(Schema.fromJsonString(KinTriggerFired));
 const decodeMillis = Schema.decodeEffect(NonNegativeInt);
@@ -53,6 +55,21 @@ const PendingRequest = Schema.Struct({
 /** The `github_recheck` request a `github` fire turns into: one per fire, in the webhook id space. */
 export const recheckFireId = (orgId: KinOrgId, sourceFireId: KinTriggerFireId) =>
   KinTriggerFireId.make(`gh:${orgId}:recheck:${sourceFireId.slice(`gh:${orgId}:`.length)}`);
+/**
+ * A pending fire whose timer retiring an agent held (`Retirement.retire`): it stays in the inbox,
+ * unconsumed and unread, until the restore lifts the hold. `inbox` names the inbox row's table.
+ */
+const retirementHeld = (sql: SqlClient.SqlClient, inbox: Statement.Fragment) =>
+  sql`EXISTS (SELECT 1 FROM kin_retirement_holds h WHERE h.org_id = ${inbox}.org_id
+    AND h.kind = 'trigger' AND h.target_id = json_extract(${inbox}.payload_json, '$.payload.triggerId'))`;
+
+/** In a consumer's write: the fire is still pending and no retirement holds it. */
+export const fireOpen = (sql: SqlClient.SqlClient, orgId: KinOrgId, fireId: KinTriggerFireId) =>
+  sql`SELECT fire_id FROM kin_trigger_inbox i WHERE i.org_id = ${orgId} AND i.fire_id = ${fireId}
+    AND i.consumed_at IS NULL AND NOT ${retirementHeld(sql, sql`i`)}`.pipe(
+    Effect.map((rows) => rows.length > 0),
+  );
+
 const InboxRow = Schema.Struct({ payload: Schema.fromJsonString(KinTriggerFired) });
 const decodeInboxRow = Schema.decodeUnknownEffect(InboxRow);
 
@@ -95,6 +112,7 @@ const make = Effect.gen(function* () {
     execute: ({ orgId, limit, routines, kinds }) => sql`
       SELECT payload_json AS payload FROM kin_trigger_inbox
       WHERE org_id = ${orgId} AND consumed_at IS NULL
+        AND NOT ${retirementHeld(sql, sql`kin_trigger_inbox`)}
         ${
           routines === undefined
             ? sql``
@@ -170,6 +188,27 @@ const make = Effect.gen(function* () {
               }
               return yield* insert;
             }
+            // A native schedule's run, which only the sink writes, for a schedule Kin has a row for.
+            if (
+              event.payload.kind === "time" &&
+              event.payload.subject.type === "scheduled_task" &&
+              event.payload.triggerId === `native:${event.payload.subject.itemId}`
+            ) {
+              const taskId = scheduleTaskId(event.orgId, event.payload.subject.itemId);
+              if (!event.fireId.startsWith(`ns:${taskId}:`))
+                return yield* new KinTriggerInboxConflict({
+                  orgId: event.orgId,
+                  reason: "invalid_fire_id",
+                });
+              const schedule = yield* sql`SELECT 1 FROM kin_schedules
+                WHERE org_id = ${event.orgId} AND task_id = ${taskId}`;
+              if (schedule.length === 0)
+                return yield* new KinTriggerInboxConflict({
+                  orgId: event.orgId,
+                  reason: "unknown_source",
+                });
+              return yield* insert;
+            }
             if (event.payload.kind !== "github") {
               return yield* new KinTriggerInboxConflict({
                 orgId: event.orgId,
@@ -219,6 +258,7 @@ const make = Effect.gen(function* () {
         yield* sql.withTransaction(sql`
         UPDATE kin_trigger_inbox SET consumed_at = ${now}
         WHERE org_id = ${orgId} AND ${sql.in("fire_id", ids)} AND consumed_at IS NULL
+          AND NOT ${retirementHeld(sql, sql`kin_trigger_inbox`)}
       `);
       },
       Effect.mapError(toInboxError("KinTriggerInbox.markConsumed")),

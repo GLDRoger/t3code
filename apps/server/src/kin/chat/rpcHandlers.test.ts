@@ -7,6 +7,8 @@ import * as Service from "./KinChatService.ts";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import {
+  type AuthEnvironmentScope,
+  AuthKinChatScope,
   AuthSessionId,
   AuthSettingsWriteScope,
   AuthOrchestrationOperateScope,
@@ -253,7 +255,7 @@ it.effect("serves real WS sends, subscriptions and afterSeq resume with org isol
         updatedAt: direct.createdAt,
       }),
     };
-    yield* repo.insertWidget(foreignWidget);
+    yield* repo.insertWidget({ ...foreignWidget, audience: "chat" });
     const orgs = yield* client["kin.orgs.list"]({});
     assert.deepStrictEqual(
       orgs.orgs.map(({ orgId }) => orgId),
@@ -371,11 +373,13 @@ it.effect(
       });
       assert.deepStrictEqual(yield* Queue.take(events), { _tag: "message", message: live });
       const delayed = yield* repo.insertMessage({
+        audience: "chat",
         ...live,
         messageId: KinMessageId.make("delayed"),
         clientMessageId: { kind: "send", id: "delayed" },
       });
       const later = yield* repo.insertMessage({
+        audience: "chat",
         ...live,
         messageId: KinMessageId.make("later"),
         clientMessageId: { kind: "send", id: "later" },
@@ -508,7 +512,7 @@ it.effect("resets large backlogs and bounds a resume to the current snapshot", (
           updatedAt: direct.createdAt,
         }),
       };
-      yield* repo.insertWidget(widget);
+      yield* repo.insertWidget({ ...widget, audience: "chat" });
       widgets.push(widget);
     }
     const [frozen] = yield* sql<{ seq: number; change: number }>`SELECT MAX(seq) AS seq,
@@ -758,6 +762,29 @@ it.effect(
         (yield* readOnly["kin.triggers.setTimeZone"](zone).pipe(Effect.flip))._tag,
         "EnvironmentAuthorizationError",
       );
+      // Where visuals may load from is the owner's alone: a teammate's session and a session
+      // without the settings grant are both refused, whatever they ask.
+      const host = { orgId: person.orgId, host: "tiles.example.com" };
+      assert.deepStrictEqual(yield* client["kin.visuals.hosts.allow"](host), {
+        orgId: person.orgId,
+        hosts: ["tiles.example.com"],
+      });
+      for (const call of [
+        memberClient["kin.visuals.hosts.list"]({ orgId: person.orgId }),
+        memberClient["kin.visuals.hosts.allow"]({ ...host, host: "evil.example.com" }),
+        memberClient["kin.visuals.hosts.remove"](host),
+      ])
+        assert.include(yield* call.pipe(Effect.flip), { reason: "not_allowed" });
+      for (const call of [
+        readOnly["kin.visuals.hosts.list"]({ orgId: person.orgId }),
+        readOnly["kin.visuals.hosts.allow"](host),
+        readOnly["kin.visuals.hosts.remove"](host),
+      ])
+        assert.strictEqual((yield* call.pipe(Effect.flip))._tag, "EnvironmentAuthorizationError");
+      assert.deepStrictEqual(yield* client["kin.visuals.hosts.remove"](host), {
+        orgId: person.orgId,
+        hosts: [],
+      });
     }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 
@@ -840,7 +867,7 @@ it.effect("creates many leads over RPC for the owner only, through the CLI's cre
     const { person, repo } = yield* seed;
     const clientFor = (
       handlers: Effect.Success<ReturnType<typeof makeKinHandlers>>,
-      scopes: ReadonlyArray<(typeof AuthStandardClientScopes)[number]> = AuthStandardClientScopes,
+      scopes: ReadonlyArray<AuthEnvironmentScope> = AuthStandardClientScopes,
     ) =>
       RpcTest.makeClient(group).pipe(
         Effect.provide(
@@ -929,12 +956,274 @@ it.effect("creates many leads over RPC for the owner only, through the CLI's cre
       (yield* operator["kin.lead.create"]({ ...input, domain: "finance" }).pipe(Effect.flip))._tag,
       "EnvironmentAuthorizationError",
     );
+
+    // The owner lists their leads and edits one; a member sees none and edits none.
+    const org = { orgId: person.orgId };
+    const listed = (yield* client["kin.leads.list"](org)).leads;
+    // Both were created in the same instant, so their order is the ids'.
+    assert.sameDeepMembers(
+      listed.map(({ agentId, name, ownerChatId }) => ({ agentId, name, ownerChatId })),
+      [growth, social].map(({ agentId, name, ownerChatId }) => ({ agentId, name, ownerChatId })),
+    );
+    // Leads are part of the chat list, so a session that can't chat can't list them.
+    assert.strictEqual(
+      (yield* operator["kin.leads.list"](org).pipe(Effect.flip))._tag,
+      "EnvironmentAuthorizationError",
+    );
+    assert.deepStrictEqual(yield* member["kin.leads.list"](org), { leads: [], contacts: [] });
+    assert.deepStrictEqual(yield* client["kin.leads.list"]({ orgId: KinOrgId.make("foreign") }), {
+      leads: [],
+      contacts: [],
+    });
+    const edit = { ...org, agentId: growth.agentId, charter: "Grow paid signups." };
+    assert.deepStrictEqual(yield* client["kin.lead.update"](edit), {
+      ...listed.find((lead) => lead.agentId === growth.agentId)!,
+      charter: "Grow paid signups.",
+    });
+    assert.include(yield* member["kin.lead.update"](edit).pipe(Effect.flip), {
+      reason: "not_allowed",
+    });
+    assert.strictEqual(
+      (yield* operator["kin.lead.update"](edit).pipe(Effect.flip))._tag,
+      "EnvironmentAuthorizationError",
+    );
+    assert.include(
+      yield* client["kin.lead.update"]({ ...edit, orgId: KinOrgId.make("foreign") }).pipe(
+        Effect.flip,
+      ),
+      { reason: "not_found" },
+    );
     const sql = yield* SqlClient.SqlClient;
     assert.deepStrictEqual(
       yield* sql`SELECT domain FROM kin_leads WHERE org_id = ${person.orgId} ORDER BY domain`,
       [{ domain: "growth" }, { domain: "social-media" }],
     );
+
+    // Retiring and restoring are the owner's: a member reads the agent as not there, and a
+    // session without the settings grant (a chat-only one included) never reaches the service.
+    const target = { ...org, agentId: social.agentId };
+    assert.include(yield* member["kin.lead.retire"](target).pipe(Effect.flip), {
+      reason: "not_found",
+    });
+    const chatOnly = yield* clientFor(handlers, [AuthKinChatScope]);
+    for (const caller of [operator, chatOnly])
+      for (const method of ["kin.lead.retire", "kin.lead.restore"] as const)
+        assert.strictEqual(
+          (yield* caller[method](target).pipe(Effect.flip))._tag,
+          "EnvironmentAuthorizationError",
+        );
+    const retired = yield* client["kin.lead.retire"](target);
+    assert.strictEqual(retired.retired?.byPersonId, person.personId);
+    assert.deepStrictEqual(
+      (yield* client["kin.leads.list"](org)).leads.map((lead) => lead.agentId),
+      [growth.agentId],
+    );
+    assert.deepStrictEqual(
+      (yield* client["kin.leads.list"]({ ...org, includeRetired: true })).leads.map((lead) => [
+        lead.agentId,
+        lead.retired !== undefined,
+      ]),
+      [
+        [growth.agentId, false],
+        [social.agentId, true],
+      ],
+    );
+    // The owner's last agent stays.
+    assert.include(
+      yield* client["kin.lead.retire"]({ ...org, agentId: growth.agentId }).pipe(Effect.flip),
+      { reason: "invalid_state" },
+    );
+    assert.include(yield* member["kin.lead.restore"](target).pipe(Effect.flip), {
+      reason: "not_found",
+    });
+    assert.isUndefined((yield* client["kin.lead.restore"](target)).retired);
   }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
+);
+
+it.effect(
+  "a teammate's chat-only session messages only the leads the owner allowed, in a chat outside the owner's list",
+  () =>
+    Effect.gen(function* () {
+      const { person, repo, direct } = yield* seed;
+      const settings = ServerSettings.layerTest();
+      const kin = yield* Kin.KinServer;
+      const services = Option.getOrThrow(kin.services);
+      const identity = Context.get(services, KinIdentity);
+      const clientFor = (
+        scopes: ReadonlyArray<AuthEnvironmentScope>,
+        as?: { readonly personId: KinPersonId },
+      ) =>
+        makeKinHandlers(session).pipe(
+          Effect.provide(settings),
+          Effect.provideService(Kin.KinServer, {
+            ...kin,
+            services: Option.some(
+              as === undefined
+                ? services
+                : Context.add(services, KinIdentity, {
+                    ...identity,
+                    resolve: () => Effect.succeed([{ _tag: "person", orgId: person.orgId, ...as }]),
+                  }),
+            ),
+          }),
+          Effect.flatMap((handlers) =>
+            RpcTest.makeClient(group).pipe(
+              Effect.provide(
+                Layer.merge(
+                  group.toLayer({ ...handlers, "server.probe": () => Effect.succeed({}) }),
+                  RpcAuthorization.layer(scopes),
+                ),
+              ),
+            ),
+          ),
+        );
+      const owner = yield* clientFor(AuthStandardClientScopes);
+      const people = [KinPersonId.make("priya"), KinPersonId.make("sam")] as const;
+      for (const personId of people)
+        yield* repo.insertPerson({
+          orgId: person.orgId,
+          personId,
+          handle: personId,
+          displayName: personId === "priya" ? "Priya" : "Sam",
+          githubLogin: null,
+          createdAt: "1970-01-01T00:00:00.000Z",
+        });
+      const [priyaId, samId] = people;
+      const priya = yield* clientFor([AuthKinChatScope], { personId: priyaId });
+      const sam = yield* clientFor([AuthKinChatScope], { personId: samId });
+      const claude = {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        model: "claude-opus-4-6",
+      };
+      const make = (name: string, domain: string) =>
+        owner["kin.lead.create"]({
+          orgId: person.orgId,
+          name,
+          domain,
+          charter: `Private to the owner: ${name}.`,
+          intro: `${name} questions.`,
+          models: { strong: claude, cheap: claude },
+        });
+      const finance = yield* make("Finance", "finance");
+      const growth = yield* make("Growth", "growth");
+      const org = { orgId: person.orgId };
+      const lead = { ...org, agentId: finance.agentId };
+      const send = (
+        client: typeof priya,
+        chatId: KinChatId,
+        clientMessageId: string,
+        body = "Is the invoice out?",
+      ) => client["kin.messages.send"]({ chatId, clientMessageId, body });
+      const page = (client: typeof priya, chatId: KinChatId) =>
+        client["kin.chat.history"]({ chatId, beforeSeq: 1000, limit: 50 });
+
+      // Who may message a lead is the owner's to read and change: a teammate's session never
+      // reaches the service, whichever lead or person it names.
+      const refused = <A>(attempt: Effect.Effect<A, { readonly _tag: string }>) =>
+        attempt.pipe(
+          Effect.flip,
+          Effect.map((error) => error._tag),
+        );
+      const unauthorized = "EnvironmentAuthorizationError";
+      assert.strictEqual(yield* refused(priya["kin.lead.access.list"](lead)), unauthorized);
+      assert.strictEqual(
+        yield* refused(priya["kin.lead.access.grant"]({ ...lead, personId: priyaId })),
+        unauthorized,
+      );
+      assert.strictEqual(
+        yield* refused(priya["kin.lead.access.revoke"]({ ...lead, personId: samId })),
+        unauthorized,
+      );
+      assert.strictEqual(
+        yield* refused(priya["kin.lead.update"]({ ...lead, intro: "Mine now." })),
+        unauthorized,
+      );
+      // Nothing is hers until the owner says so.
+      assert.deepStrictEqual(yield* priya["kin.leads.list"](org), { leads: [], contacts: [] });
+      assert.include(yield* priya["kin.chats.createDirect"](lead).pipe(Effect.flip), {
+        reason: "not_allowed",
+      });
+
+      assert.strictEqual(
+        (yield* owner["kin.leads.list"](org)).leads.find((held) => held.agentId === finance.agentId)
+          ?.intro,
+        "Finance questions.",
+      );
+      yield* owner["kin.lead.update"]({ ...lead, intro: "Handles invoices." });
+      assert.deepStrictEqual(
+        (yield* owner["kin.lead.access.grant"]({ ...lead, personId: priyaId })).people.map(
+          ({ personId, displayName }) => ({ personId, displayName }),
+        ),
+        [{ personId: priyaId, displayName: "Priya" }],
+      );
+      const chat = yield* priya["kin.chats.createDirect"](lead);
+      // All she is told about it: no charter, domain, model or work, and none of the owner's leads.
+      // She is told whose workspace it is, since that person can see the chat.
+      assert.deepStrictEqual(yield* priya["kin.leads.list"](org), {
+        leads: [],
+        contacts: [
+          {
+            ...lead,
+            name: "Finance",
+            intro: "Handles invoices.",
+            chatId: chat.chatId,
+            ownerName: "Owner",
+          },
+        ],
+      });
+      assert.strictEqual((yield* priya["kin.chats.createDirect"](lead)).chatId, chat.chatId);
+      yield* send(priya, chat.chatId, "hers-1");
+      assert.lengthOf((yield* page(priya, chat.chatId)).messages, 1);
+
+      // Her access is to that lead, in her own chat: not another lead, the owner's chats with
+      // either, or someone else's chat.
+      for (const attempt of [
+        priya["kin.chats.createDirect"]({ ...org, agentId: growth.agentId }),
+        priya["kin.chats.createDirect"]({ ...org, agentId: KinAgentId.make("lead") }),
+      ])
+        assert.include(yield* attempt.pipe(Effect.flip), { reason: "not_allowed" });
+      for (const chatId of [finance.ownerChatId, growth.ownerChatId, direct.chatId]) {
+        assert.include(yield* page(priya, chatId).pipe(Effect.flip), { reason: "not_found" });
+        assert.include(yield* send(priya, chatId, `into-${chatId}`).pipe(Effect.flip), {
+          reason: "not_found",
+        });
+        assert.include(
+          yield* priya["kin.chat.subscribe"]({ chatId }).pipe(Stream.runHead, Effect.flip),
+          { reason: "not_found" },
+        );
+      }
+      // Sam was not allowed, and Priya's chat is not his.
+      assert.include(yield* sam["kin.chats.createDirect"](lead).pipe(Effect.flip), {
+        reason: "not_allowed",
+      });
+      assert.include(yield* page(sam, chat.chatId).pipe(Effect.flip), { reason: "not_found" });
+      // Nor is it in the owner's Kin chats, though the owner can still see it on the machine.
+      assert.include(yield* page(owner, chat.chatId).pipe(Effect.flip), { reason: "not_found" });
+      assert.include(yield* send(owner, chat.chatId, "owner-in").pipe(Effect.flip), {
+        reason: "not_found",
+      });
+      assert.lengthOf((yield* owner["kin.lead.access.list"](lead)).people, 1);
+
+      // Taken away: she reads what was said and can add nothing, and can't start over.
+      assert.deepStrictEqual(
+        yield* owner["kin.lead.access.revoke"]({ ...lead, personId: priyaId }),
+        {
+          people: [],
+        },
+      );
+      assert.include(yield* send(priya, chat.chatId, "hers-2").pipe(Effect.flip), {
+        reason: "not_allowed",
+      });
+      assert.include(yield* priya["kin.chats.createDirect"](lead).pipe(Effect.flip), {
+        reason: "not_allowed",
+      });
+      assert.lengthOf((yield* page(priya, chat.chatId)).messages, 1);
+      assert.deepStrictEqual(yield* priya["kin.leads.list"](org), { leads: [], contacts: [] });
+      // Allowed again: the same chat.
+      yield* owner["kin.lead.access.grant"]({ ...lead, personId: priyaId });
+      yield* send(priya, chat.chatId, "hers-3");
+      assert.strictEqual((yield* priya["kin.leads.list"](org)).contacts?.[0]?.chatId, chat.chatId);
+    }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 
 it.effect("replays offline edits, deletions and widget revisions once with afterChangeSeq", () =>
@@ -958,6 +1247,7 @@ it.effect("replays offline edits, deletions and widget revisions once with after
     });
     const widgetId = KinWidgetId.make("offline-widget");
     yield* repo.insertWidget({
+      audience: "chat",
       ...person,
       chatId: direct.chatId,
       messageId: old.messageId,

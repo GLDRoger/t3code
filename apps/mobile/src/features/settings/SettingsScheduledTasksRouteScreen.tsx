@@ -1,3 +1,4 @@
+import { KIN_ONLY } from "../../lib/kinOnly";
 import * as Dialog from "../../components/ui/Dialog";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -417,15 +418,21 @@ export function SettingsScheduledTasksRouteScreen() {
   return (
     <SettingsScreen
       title="Scheduled tasks"
-      actions={[
-        {
-          accessibilityLabel: "New task",
-          icon: "plus",
-          disabled: visibleEnvironments.length === 0,
-          onPress: newTask,
-        },
-      ]}
-      menus={[environmentMenu]}
+      // In a Kin-only app schedules are made by asking an agent, and there are no projects to
+      // filter by; what exists can still be paused, run, edited and deleted here.
+      actions={
+        KIN_ONLY
+          ? undefined
+          : [
+              {
+                accessibilityLabel: "New task",
+                icon: "plus",
+                disabled: visibleEnvironments.length === 0,
+                onPress: newTask,
+              },
+            ]
+      }
+      menus={KIN_ONLY ? undefined : [environmentMenu]}
     >
       <ScrollView
         keyboardShouldPersistTaps="handled"
@@ -1516,7 +1523,10 @@ function EnvironmentTasks({
             <Menu
               actions={[
                 { id: "edit", title: "Edit" },
-                ...(task.threadId !== null && scheduledTaskThreadMode(task) !== "new_thread"
+                // A Kin-only app has no thread screen to open.
+                ...(!KIN_ONLY &&
+                task.threadId !== null &&
+                scheduledTaskThreadMode(task) !== "new_thread"
                   ? [{ id: "thread", title: "Open thread" }]
                   : []),
                 {

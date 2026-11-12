@@ -38,11 +38,13 @@ import { PersistenceSqlError, toPersistenceSqlError } from "../../persistence/Er
 import * as Hub from "../chat/KinChatHub.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
-import { KinPresence, syncSeen } from "../reply/KinPresence.ts";
+import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import type * as Routines from "../triggers/routines.ts";
 import * as Queue from "./KinEventQueue.ts";
+import { hashedEventId } from "./eventIds.ts";
 import { isOrgOwner, isOrgPaused, STOP_REASON } from "./orgState.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
+import { workThreadPrefix } from "./workThread.ts";
 
 /** A claim that races a pause returns its events for this long, so a paused org does not spin. */
 export const PAUSE_POLL_INTERVAL_MS = 5_000;
@@ -68,6 +70,8 @@ export type KinStopFanOut = {
     orgId: KinOrgId,
     wakeupId: KinWakeupId,
   ) => Effect.Effect<boolean, KinStopFanOutError>;
+  /** Stops a wake-up aborted for its audience, dropping its draft; its runner requeues its events. */
+  readonly abort?: (orgId: KinOrgId, wakeupId: KinWakeupId) => Effect.Effect<void>;
 };
 type StopError = KinChatError | PersistenceSqlError;
 
@@ -112,6 +116,14 @@ export class KinStop extends Context.Service<
       input: KinOrgResumeInput,
     ) => Effect.Effect<KinOrgState, StopError>;
     readonly attach: (fanOut: KinStopFanOut) => Effect.Effect<void, never, Scope.Scope>;
+    /**
+     * After the commit that marked them (`abortPrivateTurns`): stops each wake-up's run without
+     * showing anything. Its events wait for a fresh wake-up; no person's authority is involved.
+     */
+    readonly abortTurns: (
+      orgId: KinOrgId,
+      wakeupIds: ReadonlyArray<KinWakeupId>,
+    ) => Effect.Effect<void>;
     /** Owner only: the presence line's Stop on one wake-up. Its events are not retried. */
     readonly interrupt: (
       people: ReadonlyArray<PersonIdentity>,
@@ -196,6 +208,8 @@ const make = Effect.gen(function* () {
       chat.insertMessage({
         orgId,
         chatId: KinChatId.make(row.chatId),
+        // Fixed words; the switch never waits on who reads its notice.
+        audience: "chat",
         messageId: KinMessageId.make(`kin-${kind}:${now}:${row.chatId}`),
         author: { _tag: "system" },
         kind: "text",
@@ -307,7 +321,8 @@ const make = Effect.gen(function* () {
                 a.receivedAt - b.receivedAt ||
                 (a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0),
             );
-          const eventId = `resume:${cleared.pausedAt}:${lead.agentId}`;
+          const dedupeKey = `resume:${cleared.pausedAt}:${lead.agentId}`;
+          const eventId = hashedEventId("resume", dedupeKey);
           yield* queue.enqueue(
             yield* decodeEvent({
               _tag: "resume",
@@ -315,7 +330,7 @@ const make = Effect.gen(function* () {
               agentId: lead.agentId,
               eventId,
               receivedAt: iso(now),
-              dedupeKey: eventId,
+              dedupeKey,
               provenance: { _tag: "system" },
               pausedAt: iso(cleared.pausedAt),
               expired: {
@@ -334,11 +349,11 @@ const make = Effect.gen(function* () {
     );
     if (resumed !== undefined) {
       yield* publish(input.orgId, resumed);
-      // Messages the pause expired no longer wait, so their `seen` goes too.
+      // Messages the pause expired no longer wait, so their working line goes too.
       if (Option.isSome(presence))
         for (const lead of yield* sql<{ agentId: string }>`SELECT agent_id AS "agentId"
           FROM kin_leads WHERE org_id = ${input.orgId} ORDER BY agent_id`)
-          yield* syncSeen(presence.value, input.orgId, KinAgentId.make(lead.agentId)).pipe(
+          yield* syncQueued(presence.value, input.orgId, KinAgentId.make(lead.agentId)).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
           );
       if (attached !== undefined) yield* attached.resume(input.orgId);
@@ -356,6 +371,25 @@ const make = Effect.gen(function* () {
     }, Effect.mapError(mapError)),
     pause,
     resume,
+    abortTurns: Effect.fn("KinStop.abortTurns")(function* (orgId, wakeupIds) {
+      const abort = attached?.abort;
+      // Without the lead runtime nothing runs them; its recovery finds the mark.
+      if (abort === undefined) return;
+      yield* Effect.forEach(
+        wakeupIds,
+        (wakeupId) =>
+          abort(orgId, wakeupId).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Kin could not stop an aborted wake-up", {
+                orgId,
+                wakeupId,
+                cause,
+              }),
+            ),
+          ),
+        { discard: true },
+      );
+    }),
     interrupt: Effect.fn("KinStop.interrupt")(function* (people, input) {
       yield* owner(people, input.orgId);
       if (attached?.interrupt === undefined) return yield* unavailable;
@@ -437,7 +471,10 @@ const stopThreadTree = Effect.fn("KinWorkers.stopThreadTree")(function* (
   return active !== undefined;
 });
 
-/** The lead runtime's fan-out: lead and dream runs and their delegated tasks, the worker server, then routines. */
+/**
+ * The lead runtime's fan-out: lead, dream and local worker runs and their delegated tasks, the
+ * worker server, then routines.
+ */
 const isMissingThread = (error: { readonly _tag: string; readonly cause?: unknown }) =>
   error._tag === "OrchestratorProjectionError" &&
   typeof error.cause === "object" &&
@@ -464,6 +501,9 @@ export const makeFanOut = Effect.fn("KinStop.makeFanOut")(function* (
           SELECT thread_id AS "threadId" FROM kin_leads WHERE org_id = ${orgId} AND thread_id IS NOT NULL
           UNION SELECT thread_id FROM kin_dream_runs
             WHERE org_id = ${orgId} AND status = 'running' AND thread_id IS NOT NULL
+          UNION SELECT thread_id FROM kin_workers
+            WHERE org_id = ${orgId} AND ended_at IS NULL AND environment_id IS NULL
+              AND thread_id = ${workThreadPrefix} || worker_id
           ORDER BY 1`.pipe(Effect.mapError(failed), Effect.exit);
         if (Exit.isFailure(rows)) return [rows];
         return yield* Effect.forEach(

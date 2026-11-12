@@ -88,11 +88,11 @@ const leftEvent = {
 } as unknown as KinChatStreamEvent;
 
 const chatRowKey = queryPersistenceKey(KIN_CHAT_LABEL, { chatId });
-const encodeCachedChat = Schema.encodeSync(
-  Schema.fromJsonString(
-    Schema.toCodecJson(Schema.Struct({ chat: KinChatState, savedAt: Schema.String })),
-  ),
+const CachedChat = Schema.fromJsonString(
+  Schema.toCodecJson(Schema.Struct({ chat: KinChatState, savedAt: Schema.String })),
 );
+const encodeCachedChat = Schema.encodeSync(CachedChat);
+const decodeCachedChat = Schema.decodeSync(CachedChat);
 
 /** An in-memory device cache: rows keyed by query key, as a client's store would hold them. */
 function fakeCache(rows: Map<string, string>) {
@@ -277,9 +277,11 @@ describe("Kin streams", () => {
             contiguousSeq: 1,
             changeSeq: 0,
             reads: {},
+            memberChanges: 0,
             drafts: [],
             presence: [],
             needsHistoryReload: false,
+            clearedSeq: 0,
             left: false,
             closed: null,
           },
@@ -449,7 +451,9 @@ describe("Kin streams", () => {
             drafts: [],
             presence: [],
             reads: {},
+            memberChanges: 0,
             needsHistoryReload: false,
+            clearedSeq: 0,
             left: false,
             closed: null,
           },
@@ -539,6 +543,55 @@ describe("Kin streams", () => {
 
       expect((yield* Queue.take(inboxViews)).value.chats.map((c) => c.chatId)).toEqual(["c2"]);
       yield* Fiber.interrupt(inboxFiber);
+    }),
+  );
+  it.effect("forgets a cleared chat's cached messages when it comes back to it", () =>
+    Effect.gen(function* () {
+      const cached = {
+        messages: [message(1), message(2)],
+        widgets: [],
+        reactions: [],
+        contiguousSeq: 2,
+        changeSeq: 7,
+        drafts: [],
+        presence: [],
+        reads: {},
+        memberChanges: 0,
+        needsHistoryReload: false,
+        clearedSeq: 0,
+        left: false,
+        closed: null,
+      };
+      const rows = new Map([
+        [chatRowKey, encodeCachedChat({ chat: cached, savedAt: "cached-at" })],
+      ]);
+      const events = yield* Queue.unbounded<KinChatStreamEvent>();
+      const views = yield* Queue.unbounded<KinSynced<KinChatState>>();
+      const provide = yield* provider(
+        yield* SubscriptionRef.make<Option.Option<RpcSession>>(
+          Option.some(fakeSession({ chat: () => Stream.fromQueue(events), inbox: Stream.never })),
+        ),
+        rows,
+      );
+      const fiber = yield* makeKinChatStream(() =>
+        Effect.succeed({ messages: [], widgets: [], hasMore: false }),
+      )({ chatId }).pipe(
+        Stream.runForEach((view) => Queue.offer(views, view)),
+        provide,
+        Effect.forkChild,
+      );
+      expect((yield* Queue.take(views)).value.messages).toHaveLength(2);
+      // Cleared while this device was away: the host answers its old cursor with a reset.
+      yield* Queue.offer(events, { _tag: "reset", lastSeq: 2, lastChangeSeq: 9, cleared: true });
+      expect((yield* Queue.take(views)).value).toMatchObject({ messages: [], changeSeq: 9 });
+      expect((yield* Queue.take(views)).value.needsHistoryReload).toBe(false);
+      // Closing the stream writes what it holds: the next open starts from the empty chat.
+      yield* Fiber.interrupt(fiber);
+      expect(decodeCachedChat(rows.get(chatRowKey) ?? "").chat).toMatchObject({
+        messages: [],
+        contiguousSeq: 2,
+        changeSeq: 9,
+      });
     }),
   );
 });

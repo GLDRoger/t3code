@@ -2,8 +2,7 @@ import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 
 import {
-  AuthOrchestrationOperateScope,
-  AuthOrchestrationReadScope,
+  AuthKinChatScope,
   EnvironmentAuthorizationError,
   type AuthEnvironmentScope,
 } from "./auth.ts";
@@ -17,6 +16,11 @@ import {
   NodeId,
   TurnItemId,
 } from "./baseSchemas.ts";
+import {
+  ChatFileAttachment,
+  ChatImageAttachment,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+} from "./chatAttachment.ts";
 
 export const KinOrgId = TrimmedNonEmptyString.pipe(Schema.brand("KinOrgId"));
 export type KinOrgId = typeof KinOrgId.Type;
@@ -37,8 +41,9 @@ export type KinWaitingId = typeof KinWaitingId.Type;
 export const KinWakeupId = TrimmedNonEmptyString.pipe(Schema.brand("KinWakeupId"));
 export type KinWakeupId = typeof KinWakeupId.Type;
 
-// Markdown keeps its whitespace, so this checks non-blank without trimming.
-const isNonBlankBody = Schema.makeFilter((value: string) => value.trim().length > 0, {
+// Markdown keeps its whitespace, so this checks blank without trimming.
+const isBlankBody = (value: string) => value.trim().length === 0;
+const isNonBlankBody = Schema.makeFilter((value: string) => !isBlankBody(value), {
   expected: "a non-blank message body",
 });
 
@@ -48,6 +53,32 @@ const isNulFree = Schema.makeFilter((value: string) => !value.includes("\u0000")
 });
 export const KinText = Schema.String.check(isNulFree);
 export const KinTrimmedText = TrimmedNonEmptyString.check(isNulFree);
+const isPlainLine = Schema.makeFilter((value: string) => !/\p{Cc}/u.test(value), {
+  expected: "text without control characters",
+});
+/** A name or label shown to clients and in agents' prompts: one line, no control characters. */
+export const KinLabelText = KinTrimmedText.check(isPlainLine);
+
+/** A doc section's id: its heading as a slug, unique in the doc; `top` is the text before any. */
+export const KinDocSectionId = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,63}$/));
+export type KinDocSectionId = typeof KinDocSectionId.Type;
+// Docs' keys, such as `D-12`; `KinRecordKey` lives in kinWork, which imports this file.
+const KinRefKey = Schema.String.check(Schema.isPattern(/^[A-Z][A-Z0-9]{0,7}-[1-9]\d{0,8}$/));
+/** What a person points at from the composer: a doc, or one section of it, at a version. */
+export const KinMessageRefInput = Schema.TaggedStruct("doc", {
+  key: KinRefKey,
+  version: PositiveInt,
+  section: Schema.NullOr(KinDocSectionId),
+});
+export type KinMessageRefInput = typeof KinMessageRefInput.Type;
+/** A stored reference, with the titles the host read when it was sent, for the quote chip. */
+export const KinMessageRef = Schema.TaggedStruct("doc", {
+  ...KinMessageRefInput.fields,
+  title: KinTrimmedText,
+  sectionTitle: Schema.NullOr(KinText),
+});
+export type KinMessageRef = typeof KinMessageRef.Type;
+export const KIN_MESSAGE_REFS_CAP = 5;
 
 export const KinChatKind = Schema.Literals(["direct", "team_group", "project_group", "router"]);
 export type KinChatKind = typeof KinChatKind.Type;
@@ -74,6 +105,8 @@ export const KinChat = Schema.Struct({
   lastMessageAt: Schema.NullOr(IsoDateTime),
   createdAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime),
+  // A group's lead, who answers a message that names nobody. Absent from servers without groups.
+  leadAgentId: Schema.optional(Schema.NullOr(KinAgentId)),
 });
 export type KinChat = typeof KinChat.Type;
 
@@ -130,6 +163,18 @@ export const KinAuthor = Schema.Union([
 ]);
 export type KinAuthor = typeof KinAuthor.Type;
 
+const { source: _imageSource, ...kinImageAttachmentFields } = ChatImageAttachment.fields;
+const { source: _fileSource, ...kinFileAttachmentFields } = ChatFileAttachment.fields;
+/**
+ * A file stored by the thread composer's upload path. A message carries the reference and size,
+ * never the bytes; clients read it the way a thread reads its own attachments.
+ */
+export const KinAttachment = Schema.Union([
+  Schema.Struct(kinImageAttachmentFields),
+  Schema.Struct(kinFileAttachmentFields),
+]);
+export type KinAttachment = typeof KinAttachment.Type;
+
 export const KinAgentIntent = Schema.Literals([
   "answer",
   "evidence",
@@ -154,6 +199,10 @@ export const KinMessage = Schema.Struct({
   authorRole: KinRole,
   kind: KinMessageKind,
   body: KinText,
+  // Absent on a message without files, so those stay the size they were.
+  attachments: Schema.optional(Schema.Array(KinAttachment)),
+  // Absent on a message that points at nothing.
+  refs: Schema.optional(Schema.Array(KinMessageRef)),
   intent: Schema.NullOr(KinAgentIntent),
   mentions: Schema.Array(KinMemberId),
   replyTo: Schema.NullOr(KinMessageId),
@@ -181,12 +230,14 @@ export const KinNativeCardType = Schema.Literals([
 ]);
 export type KinNativeCardType = typeof KinNativeCardType.Type;
 
-/** The fixed reaction set: two yes, two no, two feelings. */
-/** What a lead may react with; people pick from the wider `KIN_REACTION_EMOJI`. */
-export const KIN_LEAD_REACTION_EMOJI = ["👍", "✅", "👎", "❌", "❤️", "👀"] as const;
-export const KinLeadReactionEmoji = Schema.Literals(KIN_LEAD_REACTION_EMOJI);
+/** The one reaction set: what a person's menu offers and what a lead may react with. */
 export const KIN_REACTION_EMOJI = [
-  ...KIN_LEAD_REACTION_EMOJI,
+  "👍",
+  "✅",
+  "👎",
+  "❌",
+  "❤️",
+  "👀",
   "😂",
   "🎉",
   "😮",
@@ -244,6 +295,7 @@ export const KinChoiceCardState = Schema.Struct({
 export type KinChoiceCardState = typeof KinChoiceCardState.Type;
 
 export const KinPresenceState = Schema.Literals([
+  // Older servers only; clients show no line for it.
   "seen",
   "starting",
   "thinking",
@@ -263,8 +315,8 @@ export const KinPresence = Schema.Struct({
   agentId: KinAgentId,
   wakeupId: Schema.NullOr(KinWakeupId),
   state: KinPresenceState,
-  // A fixed label ("Checking memory"), a short note from the agent, or a refusal
-  // ("Couldn't post: notice limit"), at most 60 characters.
+  // What the agent is doing, from the server's fixed table ("Reading memory", "Setting a
+  // reminder") or a refusal ("Couldn't post: limit"); never model or user text. At most 60.
   label: Schema.NullOr(KinText.check(Schema.isMaxLength(60))),
   startedAt: IsoDateTime,
   since: IsoDateTime,
@@ -314,6 +366,16 @@ export const KinTaskCardState = Schema.Struct({
   ]),
   pullRequests: Schema.Array(Schema.Struct({ url: Schema.String, number: Schema.Int })),
   lastError: Schema.NullOr(KinText),
+  /** The docs a document job filed; the card opens them once it is done. */
+  documents: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        recordId: TrimmedNonEmptyString,
+        key: TrimmedNonEmptyString,
+        title: KinTrimmedText,
+      }),
+    ),
+  ),
   updatedAt: IsoDateTime,
 });
 export type KinTaskCardState = typeof KinTaskCardState.Type;
@@ -341,8 +403,12 @@ export const KinWaitingItem = Schema.Struct({
 export type KinWaitingItem = typeof KinWaitingItem.Type;
 export const KinChatSummary = Schema.Struct({
   ...KinChat.fields,
+  // A direct chat's two members. A group's row carries only the viewer's own, with `leftAt` set
+  // once they are no longer in it; `kin.chat.members` lists the rest.
   members: Schema.Array(KinChatMember),
   lastMessage: Schema.NullOr(KinMessage),
+  // In a group, the person who wrote `lastMessage`, when it wasn't the viewer.
+  lastAuthorName: Schema.optional(KinTrimmedText),
   unread: NonNegativeInt,
   /** An agent in the chat is on a live wake-up. Absent from servers without it. */
   working: Schema.optional(Schema.Boolean),
@@ -365,6 +431,9 @@ export const KinChatStreamEvent = Schema.Union([
     widgets: Schema.Array(KinWidget),
     lastSeq: NonNegativeInt,
     lastChangeSeq: Schema.optional(NonNegativeInt),
+    // The chat's `lastSeq` when it was last cleared: no message is at or below it. Absent
+    // when it never was.
+    clearedSeq: Schema.optional(NonNegativeInt),
     // Live reactions on the backlog's messages; absent from servers without reactions.
     reactions: Schema.optional(Schema.Array(KinReaction)),
     presence: Schema.optional(Schema.Array(KinPresence)),
@@ -373,6 +442,9 @@ export const KinChatStreamEvent = Schema.Union([
   Schema.TaggedStruct("reset", {
     lastSeq: NonNegativeInt,
     lastChangeSeq: Schema.optional(NonNegativeInt),
+    // The chat was cleared: nothing held from before is kept, drafts and reactions included.
+    cleared: Schema.optional(Schema.Boolean),
+    clearedSeq: Schema.optional(NonNegativeInt),
   }),
   Schema.TaggedStruct("message", { message: KinMessage }),
   Schema.TaggedStruct("widget", { widget: KinWidget }),
@@ -417,6 +489,39 @@ export const KinChatsSubscribeInput = Schema.Struct({ orgId: Schema.optional(Kin
 export type KinChatsSubscribeInput = typeof KinChatsSubscribeInput.Type;
 export const KinChatsCreateDirectInput = Schema.Struct({ orgId: KinOrgId, agentId: KinAgentId });
 export type KinChatsCreateDirectInput = typeof KinChatsCreateDirectInput.Type;
+export const KIN_GROUP_TITLE_MAX_LENGTH = 60;
+export const KIN_GROUP_MAX_MEMBERS = 50;
+export const KinGroupTitle = KinTrimmedText.check(Schema.isMaxLength(KIN_GROUP_TITLE_MAX_LENGTH));
+/** A new group: its name and who is in it besides the owner. The first lead listed leads it. */
+export const KinChatsCreateGroupInput = Schema.Struct({
+  orgId: KinOrgId,
+  title: KinGroupTitle,
+  agentIds: Schema.Array(KinAgentId).check(Schema.isMaxLength(KIN_GROUP_MAX_MEMBERS)),
+  personIds: Schema.Array(KinPersonId).check(Schema.isMaxLength(KIN_GROUP_MAX_MEMBERS)),
+});
+export type KinChatsCreateGroupInput = typeof KinChatsCreateGroupInput.Type;
+export const KinChatMembersInput = Schema.Struct({ chatId: KinChatId });
+export type KinChatMembersInput = typeof KinChatMembersInput.Type;
+/** Who is in a chat, by name: what a group draws its authors, mentions and details from. */
+export const KinChatMembersResult = Schema.Struct({
+  chat: KinChat,
+  members: Schema.Array(Schema.Struct({ ...KinChatMember.fields, displayName: KinTrimmedText })),
+});
+export type KinChatMembersResult = typeof KinChatMembersResult.Type;
+export const KinGroupAddMemberInput = Schema.Struct({ chatId: KinChatId, principal: KinPrincipal });
+export type KinGroupAddMemberInput = typeof KinGroupAddMemberInput.Type;
+export const KinGroupRemoveMemberInput = Schema.Struct({
+  chatId: KinChatId,
+  memberId: KinMemberId,
+});
+export type KinGroupRemoveMemberInput = typeof KinGroupRemoveMemberInput.Type;
+export const KinGroupSetLeadInput = Schema.Struct({ chatId: KinChatId, agentId: KinAgentId });
+export type KinGroupSetLeadInput = typeof KinGroupSetLeadInput.Type;
+export const KinGroupRenameInput = Schema.Struct({ chatId: KinChatId, title: KinGroupTitle });
+export type KinGroupRenameInput = typeof KinGroupRenameInput.Type;
+export const KinGroupDeleteInput = Schema.Struct({ chatId: KinChatId });
+export type KinGroupDeleteInput = typeof KinGroupDeleteInput.Type;
+export const KinGroupDone = Schema.Struct({});
 export const KinChatSubscribeInput = Schema.Struct({
   chatId: KinChatId,
   afterSeq: Schema.optional(NonNegativeInt),
@@ -437,13 +542,36 @@ export const KinChatHistoryResult = Schema.Struct({
 });
 export type KinChatHistoryResult = typeof KinChatHistoryResult.Type;
 export const KIN_MESSAGE_BODY_MAX_LENGTH = 16_000;
+/** What an agent may post: text, always. Only a person's message can be files alone. */
+export const KinAgentMessageBody = KinText.check(
+  isNonBlankBody,
+  Schema.isMaxLength(KIN_MESSAGE_BODY_MAX_LENGTH),
+);
 export const KinMessagesSendInput = Schema.Struct({
   chatId: KinChatId,
   clientMessageId: TrimmedNonEmptyString,
-  body: KinText.check(isNonBlankBody, Schema.isMaxLength(KIN_MESSAGE_BODY_MAX_LENGTH)),
+  body: KinText.check(Schema.isMaxLength(KIN_MESSAGE_BODY_MAX_LENGTH)),
+  // Uploads still pending from `attachments.createUploadUrl`; the host claims them for the chat.
+  attachments: Schema.optional(
+    Schema.Array(KinAttachment).check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS)),
+  ),
   mentions: Schema.optional(Schema.Array(KinMemberId)),
   replyTo: Schema.optional(KinMessageId),
-});
+  /** Doc sections the message is about; the host quotes their text to the agent. Owner only. */
+  refs: Schema.optional(
+    Schema.Array(KinMessageRefInput).check(Schema.isMaxLength(KIN_MESSAGE_REFS_CAP)),
+  ),
+}).check(
+  Schema.makeFilter(
+    (input: {
+      readonly body: string;
+      readonly attachments?: ReadonlyArray<unknown> | undefined;
+    }) =>
+      isBlankBody(input.body) && (input.attachments?.length ?? 0) === 0
+        ? "a message needs text or an attachment"
+        : undefined,
+  ),
+);
 export type KinMessagesSendInput = typeof KinMessagesSendInput.Type;
 export const KinMessagesMarkReadInput = Schema.Struct({ chatId: KinChatId, seq: NonNegativeInt });
 export type KinMessagesMarkReadInput = typeof KinMessagesMarkReadInput.Type;
@@ -452,6 +580,14 @@ export const KinMessagesMarkReadResult = Schema.Struct({});
 export const KinChatsMuteInput = Schema.Struct({ chatId: KinChatId, muted: Schema.Boolean });
 export type KinChatsMuteInput = typeof KinChatsMuteInput.Type;
 export type KinMessagesMarkReadResult = typeof KinMessagesMarkReadResult.Type;
+/**
+ * Empties a chat for everyone in it, for good: its messages, cards, reactions and files. The chat,
+ * its members and what its leads remember stay. A group's owner, or the one person in a direct
+ * chat with a lead, may.
+ */
+export const KinChatsClearInput = Schema.Struct({ chatId: KinChatId });
+export type KinChatsClearInput = typeof KinChatsClearInput.Type;
+export const KinChatsClearResult = Schema.Struct({});
 export const KinWidgetsActInput = Schema.Struct({
   widgetId: KinWidgetId,
   revision: PositiveInt,
@@ -489,6 +625,8 @@ export class KinChatError extends Schema.TaggedError<KinChatError>()("KinChatErr
     "floor_not_granted",
     "floor_closed",
     "conflict",
+    // The org has no lead yet to copy models from, and the request named none.
+    "no_models",
   ]),
   message: Schema.String,
 }) {}
@@ -498,6 +636,8 @@ export const KIN_CHAT_WS_METHODS = {
   chatsSubscribe: "kin.chats.subscribe",
   chatsCreateDirect: "kin.chats.createDirect",
   chatsMute: "kin.chats.mute",
+  chatsClear: "kin.chats.clear",
+  chatMembers: "kin.chat.members",
   chatSubscribe: "kin.chat.subscribe",
   chatHistory: "kin.chat.history",
   messagesSend: "kin.messages.send",
@@ -526,6 +666,16 @@ export const KinChatRpcs = [
   Rpc.make(KIN_CHAT_WS_METHODS.chatsMute, {
     payload: KinChatsMuteInput,
     success: KinChatMember,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(KIN_CHAT_WS_METHODS.chatsClear, {
+    payload: KinChatsClearInput,
+    success: KinChatsClearResult,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(KIN_CHAT_WS_METHODS.chatMembers, {
+    payload: KinChatMembersInput,
+    success: KinChatMembersResult,
     error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
   }),
   Rpc.make(KIN_CHAT_WS_METHODS.chatSubscribe, {
@@ -561,22 +711,63 @@ export const KinChatRpcs = [
   }),
 ] as const;
 
+// Chat is what a member's `kin:chat`-only session may use; membership is checked per chat.
 export const KIN_CHAT_RPC_SCOPES = {
-  [KIN_CHAT_WS_METHODS.orgsList]: AuthOrchestrationReadScope,
-  [KIN_CHAT_WS_METHODS.chatsSubscribe]: AuthOrchestrationReadScope,
-  [KIN_CHAT_WS_METHODS.chatsCreateDirect]: AuthOrchestrationOperateScope,
+  [KIN_CHAT_WS_METHODS.orgsList]: AuthKinChatScope,
+  [KIN_CHAT_WS_METHODS.chatsSubscribe]: AuthKinChatScope,
+  [KIN_CHAT_WS_METHODS.chatsCreateDirect]: AuthKinChatScope,
   // Only quiets the caller's own pushes, like marking a chat read.
-  [KIN_CHAT_WS_METHODS.chatsMute]: AuthOrchestrationReadScope,
-  [KIN_CHAT_WS_METHODS.chatSubscribe]: AuthOrchestrationReadScope,
-  [KIN_CHAT_WS_METHODS.chatHistory]: AuthOrchestrationReadScope,
-  [KIN_CHAT_WS_METHODS.messagesSend]: AuthOrchestrationOperateScope,
-  [KIN_CHAT_WS_METHODS.messagesMarkRead]: AuthOrchestrationReadScope,
-  [KIN_CHAT_WS_METHODS.widgetsAct]: AuthOrchestrationOperateScope,
-  [KIN_CHAT_WS_METHODS.messagesReact]: AuthOrchestrationOperateScope,
+  [KIN_CHAT_WS_METHODS.chatsMute]: AuthKinChatScope,
+  // A teammate clears their own direct chat with a lead, so chat access reaches the method; the
+  // chat service decides per chat, and refuses a group to anyone but the owner.
+  [KIN_CHAT_WS_METHODS.chatsClear]: AuthKinChatScope,
+  // Names of the people and leads in a chat the caller is in.
+  [KIN_CHAT_WS_METHODS.chatMembers]: AuthKinChatScope,
+  [KIN_CHAT_WS_METHODS.chatSubscribe]: AuthKinChatScope,
+  [KIN_CHAT_WS_METHODS.chatHistory]: AuthKinChatScope,
+  [KIN_CHAT_WS_METHODS.messagesSend]: AuthKinChatScope,
+  [KIN_CHAT_WS_METHODS.messagesMarkRead]: AuthKinChatScope,
+  [KIN_CHAT_WS_METHODS.widgetsAct]: AuthKinChatScope,
+  [KIN_CHAT_WS_METHODS.messagesReact]: AuthKinChatScope,
 } as const satisfies Record<
   (typeof KIN_CHAT_WS_METHODS)[keyof typeof KIN_CHAT_WS_METHODS],
   AuthEnvironmentScope
 >;
+
+const KinGroupError = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
+/** Owner only: making a group and changing who is in it, who leads it and what it is called. */
+export const KinGroupRpcs = [
+  Rpc.make("kin.groups.create", {
+    payload: KinChatsCreateGroupInput,
+    success: KinChat,
+    error: KinGroupError,
+  }),
+  Rpc.make("kin.groups.addMember", {
+    payload: KinGroupAddMemberInput,
+    success: KinChatMember,
+    error: KinGroupError,
+  }),
+  Rpc.make("kin.groups.removeMember", {
+    payload: KinGroupRemoveMemberInput,
+    success: KinGroupDone,
+    error: KinGroupError,
+  }),
+  Rpc.make("kin.groups.setLead", {
+    payload: KinGroupSetLeadInput,
+    success: KinChat,
+    error: KinGroupError,
+  }),
+  Rpc.make("kin.groups.rename", {
+    payload: KinGroupRenameInput,
+    success: KinChat,
+    error: KinGroupError,
+  }),
+  Rpc.make("kin.groups.delete", {
+    payload: KinGroupDeleteInput,
+    success: KinGroupDone,
+    error: KinGroupError,
+  }),
+] as const;
 
 export const kinMessageLink = ({
   orgId,

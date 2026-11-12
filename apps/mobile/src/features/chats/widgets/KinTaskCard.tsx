@@ -4,9 +4,14 @@ import { Pressable, View } from "react-native";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { Chip } from "../../../components/ui/Chip";
 import { cn } from "../../../lib/cn";
+import { KIN_ONLY } from "../../../lib/kinOnly";
 import { useOpenWorkspaceDetail } from "../../layout/useOpenWorkspaceDetail";
 import { PullRequestGlyph } from "../../pull-requests/pullRequestGlyphs";
-import type { KinTaskCardView, KinTaskTone } from "@t3tools/client-runtime/kin/kinCardPresentation";
+import {
+  kinTaskCardWithoutThread,
+  type KinTaskCardView,
+  type KinTaskTone,
+} from "@t3tools/client-runtime/kin/kinCardPresentation";
 
 const TONE_CLASSES: Record<KinTaskTone, string> = {
   active: "text-foreground",
@@ -15,13 +20,17 @@ const TONE_CLASSES: Record<KinTaskTone, string> = {
   muted: "text-foreground-muted",
 };
 
-/** A delegated task. Tapping it opens the T3 thread doing the work; status updates in place. */
+/**
+ * A delegated task; status updates in place. Tapping it opens the T3 thread doing the work, except
+ * in a Kin-only app, which has no thread screen: there the card says how the work went and its
+ * pull requests are the way to look closer.
+ */
 export const KinTaskCard = memo(function KinTaskCard(props: {
   readonly task: KinTaskCardView;
   /** The screen's safe link handler (`useOpenPullRequest`). */
   readonly onOpenLink: (url: string) => void;
 }) {
-  const { task } = props;
+  const task = KIN_ONLY ? kinTaskCardWithoutThread(props.task) : props.task;
   const openDetail = useOpenWorkspaceDetail();
   const open = task.open;
   const openThread = open === null ? undefined : () => openDetail({ name: "Thread", params: open });

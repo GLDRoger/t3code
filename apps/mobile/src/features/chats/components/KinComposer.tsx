@@ -1,7 +1,34 @@
 import { useAtomValue } from "@effect/atom-react";
-import type { EnvironmentId, KinChatId } from "@t3tools/contracts";
+import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import {
+  AuthOrchestrationOperateScope,
+  type EnvironmentId,
+  type KinAttachment,
+  type KinChatId,
+} from "@t3tools/contracts";
+import { useNavigation } from "@react-navigation/native";
+import { AsyncResult } from "effect/reactivity";
 import { useState, type RefObject } from "react";
-import { Platform, View } from "react-native";
+import { Platform, Pressable, View } from "react-native";
+
+import { ComposerAttachmentStrip } from "../../../components/ComposerAttachmentStrip";
+import * as Dialog from "../../../components/ui/Dialog";
+import { FilePreviewModal, type FilePreviewSource } from "../../../components/ui/FilePreviewModal";
+import {
+  VideoPreviewModal,
+  type VideoPreviewSource,
+} from "../../../components/ui/VideoPreviewModal";
+import { prepareTurnAttachments } from "../../../lib/attachmentUpload";
+import { KIN_DRAFT_PREFIX } from "../../../lib/composerAttachmentUploadQueue";
+import {
+  composerAttachmentUploadBlockReason,
+  composerAttachmentUploadsAtom,
+  composerAttachmentsStillUploading,
+} from "../../../state/composer-attachment-uploads";
+import { useServerConfigs } from "../../../state/entities";
+import { useEnvironmentScope } from "../../../state/session";
+import { useComposerAttachmentActions } from "../../../state/use-composer-attachment-actions";
+import { ComposerAttachmentButton } from "../../threads/ComposerAttachmentButton";
 
 import { ComposerEditor, type ComposerEditorSelection } from "../../../components/ComposerEditor";
 import { AppText as Text } from "../../../components/ui/AppText";
@@ -23,18 +50,35 @@ import {
 import { useVoiceInputController } from "../../voice-input/useVoiceInputController";
 import { resolveVoiceComposerPresentation } from "../../voice-input/voiceInputPresentation";
 import {
+  appendComposerDraftAttachments,
   clearComposerDraftContent,
   composerDraftsAtom,
   getComposerDraftSnapshot,
+  removeComposerDraftAttachment,
+  scheduleUnusedComposerAttachmentCleanup,
   setComposerDraftText,
   useComposerDraft,
 } from "../../../state/use-composer-drafts";
+import {
+  kinApplyMention,
+  kinMentionQuery,
+  kinMentionsIn,
+  type KinMentionCandidate,
+} from "@t3tools/client-runtime/kin/kinGroups";
+import {
+  kinDocAskPlaceholder,
+  kinDocRefLabel,
+  kinPendingRefAtom,
+  kinPendingRefKey,
+} from "@t3tools/client-runtime/kin/kinDocs";
 import { KIN_MESSAGE_MAX_LENGTH } from "@t3tools/client-runtime/kin/kinOutbox";
+import { SymbolView } from "../../../components/ui/AppSymbol";
+import { Chip } from "../../../components/ui/Chip";
 import { deliverKinOutbox, kinOutbox } from "../state/kinOutboxDelivery";
 
 /** Every Kin host uses the same org id, so the environment keeps two hosts' drafts apart. */
 export const kinDraftKey = (environmentId: EnvironmentId, orgId: string, chatId: string) =>
-  `kin:${environmentId}:${orgId}:${chatId}`;
+  `${KIN_DRAFT_PREFIX}${environmentId}:${orgId}:${chatId}`;
 
 // The native editor has no intrinsic height: it grows with its text from one line to four.
 // iOS reports at most four lines of content, so a taller cap would never turn scrolling on.
@@ -43,6 +87,7 @@ const EDITOR_MAX_LINES = 4;
 const EDITOR_INSET = 6;
 
 const lengthFormat = new Intl.NumberFormat();
+const NO_MENTIONS: ReadonlyArray<KinMentionCandidate> = [];
 
 /** The space under the Send row while the keyboard is up, and the least it gets without one. */
 export const KIN_COMPOSER_GUTTER = 12;
@@ -72,13 +117,16 @@ export async function editKinOutboxEntry(draftKey: string, clientMessageId: stri
 /**
  * The chat's text box. The draft lives in the shared composer drafts, so it survives a restart;
  * a send goes to the outbox, which shows it at once and delivers it when the host is reachable.
- * Kin sends text only, so it takes no attachments or pasted context; dictation types into it.
+ * Attachments are the thread composer's: the same picker, strip, limits and upload queue. They
+ * sit beside the text, not in it, since a Kin message has no context chips.
  */
 export function KinComposer(props: {
   readonly orgId: string;
   readonly chatId: KinChatId;
   readonly environmentId: EnvironmentId;
   readonly recipient: string;
+  /** The host is reachable: uploads need it, though text alone can wait in the outbox. */
+  readonly connected: boolean;
   /** Space under the Send row: the bottom safe area, at least `KIN_COMPOSER_GUTTER`. */
   readonly bottomInset: number;
   /** Called once the message is in the outbox, so the feed can show the end. */
@@ -86,11 +134,15 @@ export function KinComposer(props: {
   readonly onFocusChange?: (focused: boolean) => void;
   /** Owned by the feed, so it can focus the editor after filling the draft. */
   readonly editorRef: RefObject<ComposerEditorHandle | null>;
+  /** The group's leads, offered on `@`; a message that names one is answered by it. */
+  readonly mentionable?: ReadonlyArray<KinMentionCandidate>;
 }) {
   const draftKey = kinDraftKey(props.environmentId, props.orgId, props.chatId);
   const draft = useComposerDraft(draftKey);
   const { editorRef } = props;
   const full = useAtomValue(kinOutbox.fullAtom(props.environmentId));
+  const pendingAtom = kinPendingRefAtom(kinPendingRefKey(props.environmentId, props.chatId));
+  const pending = useAtomValue(pendingAtom);
   const [contentHeight, setContentHeight] = useState(0);
   const { lineHeight } = useComposerTextRole();
   // The thread composer's sizing: larger controls on iPad and with the sidebar's tab picker.
@@ -115,29 +167,126 @@ export function KinComposer(props: {
   const voicePresentation = resolveVoiceComposerPresentation(voice.state, voice.elapsedSeconds);
   const showsDictation = voicePresentation.statusKind === "active";
   const controlSize = largeControls ? "large" : "regular";
+  const navigation = useNavigation();
+  const serverConfig = useServerConfigs().get(props.environmentId) ?? null;
+  // Uploading is the thread composer's permission; a session without it sees no attach control.
+  const canAttach =
+    useEnvironmentScope(props.environmentId, AuthOrchestrationOperateScope) &&
+    serverConfig !== null;
+  const [sending, setSending] = useState(false);
+  const [previewFile, setPreviewFile] = useState<FilePreviewSource | null>(null);
+  const [previewVideo, setPreviewVideo] = useState<VideoPreviewSource | null>(null);
+  const attach = useComposerAttachmentActions({
+    draftKey,
+    serverConfig,
+    locked: sending,
+    inlineReferences: false,
+  });
+  const uploadStates = useAtomValue(composerAttachmentUploadsAtom);
+  const hasAttachments = draft.attachments.length > 0;
+  const uploading =
+    hasAttachments &&
+    composerAttachmentsStillUploading({
+      environmentId: props.environmentId,
+      attachments: draft.attachments,
+      serverConfig,
+      states: uploadStates,
+    });
+  const uploadBlock = composerAttachmentUploadBlockReason({
+    environmentId: props.environmentId,
+    attachments: draft.attachments,
+    connected: props.connected,
+    serverConfig,
+    states: uploadStates,
+  });
+  const mentionable = props.mentionable ?? NO_MENTIONS;
+  const mention =
+    selection.start === selection.end
+      ? kinMentionQuery(draft.text, selection.end, mentionable)
+      : null;
   const length = draft.text.trim().length;
   const tooLong = length > KIN_MESSAGE_MAX_LENGTH;
-  const canSend = length > 0 && !tooLong && !full && !voice.blocksSubmission;
+  const canSend =
+    (length > 0 || hasAttachments) &&
+    !tooLong &&
+    !full &&
+    !voice.blocksSubmission &&
+    !sending &&
+    !uploading &&
+    uploadBlock === null &&
+    (!hasAttachments || props.connected);
   const hint = tooLong
     ? `Too long to send: ${lengthFormat.format(length)} of ${lengthFormat.format(KIN_MESSAGE_MAX_LENGTH)} characters.`
     : full
       ? "Too many unsent messages. Wait for them to go out."
-      : null;
+      : uploadBlock !== null
+        ? `${uploadBlock}.`
+        : hasAttachments && !props.connected
+          ? "Attachments send once the server is connected."
+          : null;
+
+  /** The uploads the host already holds for this draft, as the references a message carries. */
+  const uploadedAttachments = async (
+    attachments: ReturnType<typeof getComposerDraftSnapshot>["attachments"],
+  ): Promise<ReadonlyArray<KinAttachment> | null> => {
+    if (attachments.length === 0) return [];
+    setSending(true);
+    const prepared = await settlePromise(() =>
+      prepareTurnAttachments({
+        environmentId: props.environmentId,
+        attachments,
+        supportsImageUploads: true,
+      }),
+    );
+    setSending(false);
+    if (AsyncResult.isFailure(prepared)) {
+      const error = squashAtomCommandFailure(prepared);
+      Dialog.alert(
+        "Could not send attachments",
+        error instanceof Error ? error.message : "They are still in the message box. Try again.",
+      );
+      return null;
+    }
+    if (prepared.value.status !== "ready") return null;
+    const references = prepared.value.attachments.flatMap((uploaded): Array<KinAttachment> => {
+      if ("dataUrl" in uploaded) return [];
+      const { id, name, mimeType, sizeBytes } = uploaded;
+      return [{ type: uploaded.type, id, name, mimeType, sizeBytes }];
+    });
+    return references.length === attachments.length ? references : null;
+  };
 
   const send = async () => {
+    if (sending) return;
     await editorRef.current?.flushPendingInput();
-    const body = getComposerDraftSnapshot(draftKey).text.trim();
-    if (body.length === 0 || body.length > KIN_MESSAGE_MAX_LENGTH) return;
-    clearComposerDraftContent(draftKey);
+    const snapshot = getComposerDraftSnapshot(draftKey);
+    const body = snapshot.text.trim();
+    if (body.length === 0 && snapshot.attachments.length === 0) return;
+    if (body.length > KIN_MESSAGE_MAX_LENGTH) return;
+    const attachments = await uploadedAttachments(snapshot.attachments);
+    if (attachments === null) return;
+    // The outbox entry owns the uploads from here; only this device's copies are swept below.
+    clearComposerDraftContent(draftKey, { deferAttachmentCleanup: true });
+    const held = appAtomRegistry.get(pendingAtom);
     const queued = await kinOutbox.enqueue({
       environmentId: props.environmentId,
       chatId: props.chatId,
       body,
+      attachments,
+      mentions: kinMentionsIn(body, mentionable),
+      ...(held === null ? {} : { refs: [held.ref] }),
     });
     if (queued._tag !== "queued") {
       restoreDraft(draftKey, body);
+      appendComposerDraftAttachments(draftKey, snapshot.attachments);
       return;
     }
+    scheduleUnusedComposerAttachmentCleanup(
+      snapshot.attachments.map(
+        ({ uploadedAttachmentId: _id, uploadEnvironmentId: _environment, ...local }) => local,
+      ),
+    );
+    if (appAtomRegistry.get(pendingAtom) === held) appAtomRegistry.set(pendingAtom, null);
     props.onSend();
     await deliverKinOutbox();
   };
@@ -162,6 +311,45 @@ export function KinComposer(props: {
           {hint}
         </Text>
       )}
+      {mention === null || showsDictation ? null : (
+        <View
+          accessibilityRole="menu"
+          accessibilityLabel="Agents you can ask"
+          className="flex-row flex-wrap gap-2 px-1 pb-1"
+        >
+          {mention.matches.map((lead) => (
+            <Chip
+              key={lead.memberId}
+              label={`@${lead.name}`}
+              accessibilityLabel={`Ask ${lead.name}`}
+              onPress={() => {
+                const next = kinApplyMention(draft.text, mention.start, selection.end, lead.name);
+                setComposerDraftText(draftKey, next.text);
+                setSelection({ start: next.cursor, end: next.cursor });
+              }}
+            />
+          ))}
+        </View>
+      )}
+      {pending === null ? null : (
+        <View className="flex-row items-center gap-1 px-1 pb-1">
+          <Chip size="small" icon="doc.text" label={kinDocRefLabel(pending.ref)} />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Remove ${kinDocRefLabel(pending.ref)}`}
+            hitSlop={12}
+            onPress={() => appAtomRegistry.set(pendingAtom, null)}
+            className="h-8 w-8 items-center justify-center active:opacity-60"
+          >
+            <SymbolView
+              name="xmark"
+              size={12}
+              tintColorClassName="accent-icon-muted"
+              type="monochrome"
+            />
+          </Pressable>
+        </View>
+      )}
       <ComposerSurface
         animateLayout={false}
         style={{
@@ -175,6 +363,31 @@ export function KinComposer(props: {
           error={voice.state.phase === "error" ? voice.state.error : null}
           onDismiss={voice.cancel}
         />
+        {hasAttachments ? (
+          <View className="px-[14px] pb-1 pt-2.5">
+            <ComposerAttachmentStrip
+              environmentId={props.environmentId}
+              attachments={draft.attachments}
+              onRemove={(id) => {
+                if (!sending) removeComposerDraftAttachment(draftKey, id);
+              }}
+              onPressPreview={setPreviewFile}
+              onPressVideo={(attachment, sourceIdentifier) =>
+                setPreviewVideo({ type: "local", attachment, sourceIdentifier })
+              }
+              onPressDocument={(attachment) =>
+                navigation.navigate("ThreadAttachment", {
+                  environmentId: String(props.environmentId),
+                  attachmentId: attachment.id,
+                  name: attachment.name,
+                  mimeType: attachment.mimeType,
+                  sizeBytes: String(attachment.sizeBytes),
+                  draftKey,
+                })
+              }
+            />
+          </View>
+        ) : null}
         {showsDictation ? (
           <ComposerDictationToolbar showsDictation>
             <View className="min-h-11 flex-row items-center">
@@ -202,18 +415,33 @@ export function KinComposer(props: {
           </ComposerDictationToolbar>
         ) : (
           <View className="flex-row items-end">
-            <View className="min-h-11 flex-1 justify-center py-1 pl-4">
+            {canAttach ? (
+              <ComposerAttachmentButton
+                size={controlSize}
+                disabled={sending}
+                supportsFiles
+                onPickMedia={attach.onPickDraftMedia}
+                onPickFiles={attach.onPickDraftFiles}
+              />
+            ) : null}
+            <View className={`min-h-11 flex-1 justify-center py-1 ${canAttach ? "" : "pl-4"}`}>
               <ComposerEditor
                 ref={editorRef}
                 draftKey={draftKey}
                 pasteContext={false}
+                inlineTokens={false}
                 multiline
                 value={draft.text}
-                placeholder={`Message ${props.recipient}`}
-                readOnly={voice.freezesEditor}
+                placeholder={
+                  pending === null ? `Message ${props.recipient}` : kinDocAskPlaceholder(pending)
+                }
+                readOnly={voice.freezesEditor || sending}
                 selection={selection}
                 onSelectionChange={setSelection}
                 onSubmit={() => void send()}
+                onPasteImages={
+                  canAttach ? (uris) => void attach.onNativePasteImages(uris) : undefined
+                }
                 onChangeText={(text) => setComposerDraftText(draftKey, text)}
                 onFocus={() => props.onFocusChange?.(true)}
                 onBlur={() => props.onFocusChange?.(false)}
@@ -243,6 +471,8 @@ export function KinComposer(props: {
           </View>
         )}
       </ComposerSurface>
+      <FilePreviewModal source={previewFile} onRequestClose={() => setPreviewFile(null)} />
+      <VideoPreviewModal source={previewVideo} onRequestClose={() => setPreviewVideo(null)} />
     </View>
   );
 }

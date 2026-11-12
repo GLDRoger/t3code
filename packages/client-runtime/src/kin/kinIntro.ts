@@ -2,11 +2,10 @@ import type { KinMessage } from "@t3tools/contracts";
 
 /** Sample asks on the first-run intro. `send` posts as is; the rest open in the composer. */
 export const KIN_INTRO_PROMPTS: ReadonlyArray<{ readonly text: string; readonly send: boolean }> = [
+  // Every lead gets these, whatever its domain, so none of them names engineering work.
   { text: "What can you do?", send: true },
-  { text: "Remind me tomorrow at 9 to review PRs", send: true },
-  { text: "Remember that I prefer short replies", send: true },
-  // Sending a worker costs a real run, so the owner finishes this one before it goes.
-  { text: "Get a worker to ", send: false },
+  { text: "What are you working on?", send: true },
+  { text: "Remind me tomorrow at 9 to ", send: false },
 ];
 
 /**

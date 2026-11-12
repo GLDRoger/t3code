@@ -1,9 +1,12 @@
 import {
+  KinChartCardState,
   KinChatError,
   KinChoiceCardState,
+  KinDocCardState,
   KinDeferralCard,
   KinTaskCardState,
   KinOwnerCheckCard,
+  KinVisualCardState,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -13,6 +16,9 @@ const schemas = new Map<string, Schema.Codec<unknown>>([
   ["owner_check", KinOwnerCheckCard],
   ["deferral", KinDeferralCard],
   ["choice", KinChoiceCardState],
+  ["doc", KinDocCardState],
+  ["chart", KinChartCardState],
+  ["visual", KinVisualCardState],
 ]);
 
 export const validateState = Effect.fn("KinWidgetRegistry.validateState")(function* (

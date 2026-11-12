@@ -275,6 +275,7 @@ export const make = Effect.gen(function* () {
         orgId,
         chatId: lead.ownerChatId,
         messageId: KinMessageId.make(`kin-github-connect:${orgId}`),
+        audience: "chat",
         body: CONNECT_NOTICE,
       });
     return { status: "needs_connect" } as const;

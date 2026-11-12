@@ -1,7 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_MISSING_CARD_TEXT,
-  KIN_UNKNOWN_CARD_TEXT,
   kinCardView,
   type KinDigestCardView,
   type KinTaskCardView,
@@ -31,16 +30,12 @@ import {
   KIN_APPROVAL_STATE_TEXT,
   type KinApprovalWidgetView,
 } from "@t3tools/client-runtime/kin/kinApprovalPresentation";
-import type { KinLevelsCardView } from "@t3tools/client-runtime/kin/kinLevelsPresentation";
 import {
   kinMemoryUndoFailureText,
   type KinMemoryChangeItemView,
   type KinMemoryChangesCardView,
 } from "@t3tools/client-runtime/kin/kinMemoryChangesPresentation";
-import {
-  KIN_REACTION_HINT,
-  KIN_REACTION_HINT_LABEL,
-} from "@t3tools/client-runtime/kin/kinReactions";
+import { kinDocCardLine, KIN_DOCS, type KinDocCardView } from "@t3tools/client-runtime/kin/kinDocs";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, KinPersonId, KinWidget } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
@@ -54,9 +49,13 @@ import { cn, randomUUID } from "../lib/utils";
 import { useAtomCommand } from "../state/use-atom-command";
 import { Button } from "../components/ui/button";
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
+import { KinChart } from "./KinChart";
+import { KinVisual } from "./KinVisual";
 import { kinClient } from "./kinClient";
+import { useKinHostAt } from "./useKinHost";
 
-const CANT_ACT_TEXT = "This browser can't answer Kin cards. Pair it again from the Mac.";
+const CANT_ACT_TEXT =
+  "This browser can't answer here. Pair it again with the server that runs Kin.";
 
 function CardFrame(props: {
   readonly eyebrow?: string;
@@ -106,17 +105,23 @@ function useWidgetPost(environmentId: EnvironmentId) {
   };
 }
 
-/** The card for a message's widget, drawn from the shared presentation. Never renders HTML. */
+/**
+ * The card for a message's widget, drawn from the shared presentation. Never renders HTML of
+ * its own: a visual's page stays in a sealed frame (`KinVisual`).
+ */
 export const KinCard = memo(function KinCard(props: {
   readonly widget: KinWidget | undefined;
   readonly environmentId: EnvironmentId;
+  readonly orgId: string;
   readonly viewerPersonId: KinPersonId | null;
+  readonly heldFor: string | null;
 }) {
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
   const view = kinCardView(
     props.widget,
     props.environmentId,
     (environmentId) => !catalog.isReady || catalog.entries.has(environmentId),
+    props.heldFor,
   );
   switch (view.kind) {
     case "task":
@@ -131,22 +136,36 @@ export const KinCard = memo(function KinCard(props: {
           viewerPersonId={props.viewerPersonId}
         />
       );
+    case "chart":
+      return (
+        <CardFrame>
+          <KinChart view={view.chart} />
+        </CardFrame>
+      );
+    case "visual":
+      return (
+        <CardFrame label={view.visual.title}>
+          <KinVisual environmentId={props.environmentId} orgId={view.orgId} visual={view.visual} />
+        </CardFrame>
+      );
     case "digest":
       return <KinDigestCard digest={view.digest} />;
     case "memory_changes":
       return <KinMemoryChangesCard changes={view.changes} environmentId={props.environmentId} />;
-    case "shadow_review":
-    case "promotion":
-      return <KinLevelsCard view={view} />;
     case "approval":
       return <KinApprovalCard approval={view.approval} />;
+    case "doc":
+      return <KinDocCard doc={view.doc} environmentId={props.environmentId} orgId={props.orgId} />;
     case "missing":
-    case "unknown":
       return (
         <CardFrame>
-          <p className="text-muted-foreground">
-            {view.kind === "missing" ? KIN_MISSING_CARD_TEXT : KIN_UNKNOWN_CARD_TEXT}
-          </p>
+          <p className="text-muted-foreground">{KIN_MISSING_CARD_TEXT}</p>
+        </CardFrame>
+      );
+    case "unknown":
+      return view.text === null ? null : (
+        <CardFrame>
+          <p>{view.text}</p>
         </CardFrame>
       );
   }
@@ -165,12 +184,6 @@ function KinTaskCard(props: { readonly task: KinTaskCardView }) {
     <CardFrame eyebrow="Task" label={task.accessibilityLabel}>
       <p className="font-medium text-foreground">{task.title}</p>
       <p className={cn("text-xs font-medium", TONE_CLASSES[task.tone])}>{task.statusLabel}</p>
-      {task.working ? (
-        // Static on purpose: a bar that animates for the whole task would repaint for minutes.
-        <div aria-hidden className="h-1 overflow-hidden rounded-full bg-primary/20">
-          <div className="h-1 w-1/3 rounded-full bg-primary/60" />
-        </div>
-      ) : null}
       {task.detail === null ? null : (
         <p className="line-clamp-4 text-xs text-muted-foreground">{task.detail}</p>
       )}
@@ -214,6 +227,59 @@ function KinTaskCard(props: { readonly task: KinTaskCardView }) {
           )}
         </div>
       )}
+    </CardFrame>
+  );
+}
+
+/** A doc an agent wrote or changed: what it is, what changed, and the way to read either. */
+function KinDocCard(props: {
+  readonly doc: KinDocCardView;
+  readonly environmentId: EnvironmentId;
+  readonly orgId: string;
+}) {
+  const { doc } = props;
+  const nowMs = useNowMinuteMs();
+  const host = useKinHostAt(props.environmentId);
+  const agents =
+    host._tag === "host" && host.probe._tag === "ready"
+      ? (host.probe.orgs.orgs.find((org) => org.orgId === props.orgId)?.agents ?? [])
+      : [];
+  const line = kinDocCardLine(
+    doc,
+    new Map(agents.map((agent) => [agent.agentId, agent.displayName])),
+    new Date(nowMs),
+  );
+  const params = { environmentId: props.environmentId, orgId: props.orgId };
+  return (
+    <CardFrame eyebrow="Doc" label={`Doc: ${doc.title}. ${line.text}`}>
+      <p className="font-medium text-foreground">{doc.title}</p>
+      <p className="text-xs text-muted-foreground">{line.text}</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          size="xs"
+          variant="outline"
+          render={
+            <Link to="/kin/$environmentId/$orgId/work" params={params} search={{ doc: doc.key }} />
+          }
+        >
+          Open
+        </Button>
+        {doc.previousVersion === null ? null : (
+          <Button
+            size="xs"
+            variant="ghost"
+            render={
+              <Link
+                to="/kin/$environmentId/$orgId/work"
+                params={params}
+                search={{ doc: doc.key, changes: doc.version, from: doc.previousVersion }}
+              />
+            }
+          >
+            {KIN_DOCS.changes}
+          </Button>
+        )}
+      </div>
     </CardFrame>
   );
 }
@@ -330,11 +396,6 @@ function KinChoiceCard(props: {
               </Button>
             ))}
           </div>
-          {choice.takesReaction ? (
-            <p className="text-xs text-muted-foreground" aria-label={KIN_REACTION_HINT_LABEL}>
-              {KIN_REACTION_HINT}
-            </p>
-          ) : null}
         </>
       )}
     </CardFrame>
@@ -495,30 +556,6 @@ function KinMemoryChangesCard(props: {
       {changes.more === null ? null : (
         <p className="text-xs text-muted-foreground">{changes.more}</p>
       )}
-    </CardFrame>
-  );
-}
-
-/**
- * Levels reviews and raises are answered on the phone: raising a level is signed with its device
- * key, so this browser only shows what the card asks.
- */
-function KinLevelsCard(props: { readonly view: KinLevelsCardView }) {
-  const { view } = props;
-  const title = view.kind === "promotion" ? view.promotion.title : view.review.title;
-  const eyebrow = view.kind === "promotion" ? view.promotion.eyebrow : "Shadow review";
-  const lines = view.kind === "promotion" ? view.promotion.lines : [view.review.summary];
-  const closed =
-    view.kind === "promotion" ? view.promotion.status === "closed" : view.review.closed;
-  return (
-    <CardFrame eyebrow={eyebrow} label={`${eyebrow}. ${title}`}>
-      <p className="font-medium text-foreground">{title}</p>
-      {lines.map((line) => (
-        <p key={line} className="text-xs text-muted-foreground">
-          {line}
-        </p>
-      ))}
-      {closed ? null : <ApproveOnPhone />}
     </CardFrame>
   );
 }

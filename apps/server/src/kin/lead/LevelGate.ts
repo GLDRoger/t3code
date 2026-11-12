@@ -1,51 +1,49 @@
 import {
-  KIN_HIDDEN_CHARACTER,
   KinChatError,
-  KinChatId,
-  KinMessageId,
-  KinShadowSummaryCard,
-  KinWidgetId,
-  type KinAgentId,
   type KinAgentIntent,
-  type KinLevel,
+  KinChatId,
   type KinMessage,
+  KinMessageId,
   type KinMessagesSendInput,
-  type KinOrgId,
   type KinReaction,
   type KinReactionEmoji,
-  type KinShadowResult,
   type KinWidget,
+  KinAgentId,
+  KinOrgId,
 } from "@t3tools/contracts";
-import { stableStringify } from "@t3tools/shared/relaySigning";
-import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
-import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as SqlError from "effect/sql/SqlError";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
-import * as Hub from "../chat/KinChatHub.ts";
-import * as Repository from "../chat/KinChatRepository.ts";
-import { KinChatService, mayWrite } from "../chat/KinChatService.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
 import type { AgentIdentity } from "../chat/KinIdentity.ts";
-import * as Floor from "../floor/KinFloor.ts";
-import * as MemoryCache from "../memory/MemoryCache.ts";
+import {
+  AUDIENCE_MOVED,
+  PRIVATE_DESTINATION,
+  SHARED_ELSEWHERE,
+  SHARED_OTHER_CHAT,
+  SHARED_REFUSAL,
+  aborted,
+  askedIn,
+  destination,
+  effectiveAudience,
+} from "./Audience.ts";
 import * as KinLevels from "./KinLevels.ts";
 
-type PostInput = KinMessagesSendInput & {
-  readonly intent: KinAgentIntent;
-  // The shadow entry's tool: the reply bridge records its natural text as "reply".
-  readonly tool?: "kin_chat_post" | "reply";
-};
+type PostInput = KinMessagesSendInput & { readonly intent: KinAgentIntent };
 type WidgetInput = Parameters<KinChatService["Service"]["upsertWidget"]>[1];
 type AskInput = Parameters<KinChatService["Service"]["ask"]>[1];
+type ChartInput = Parameters<KinChatService["Service"]["chart"]>[1];
+type VisualInput = Parameters<KinChatService["Service"]["visual"]>[1];
+type ReadInput = Parameters<KinChatService["Service"]["read"]>[1];
 
 /**
- * `kin_chat_post` behind the lead's level: below L1 it records a shadow entry and posts nothing,
- * except in the lead's direct chat with its owner, which posts as at L1.
+ * A lead's posts, cards, questions and reactions behind its permission in the chat: below L1 it
+ * is refused, except in its own direct chat with its owner, where it always talks.
  */
 export class KinLevelGate extends Context.Service<
   KinLevelGate,
@@ -53,16 +51,35 @@ export class KinLevelGate extends Context.Service<
     readonly post: (
       agent: AgentIdentity,
       input: PostInput,
-    ) => Effect.Effect<KinMessage | KinShadowResult, KinChatError>;
+    ) => Effect.Effect<KinMessage, KinChatError>;
     readonly upsertWidget: (
       agent: AgentIdentity,
       input: WidgetInput,
     ) => Effect.Effect<KinWidget, KinChatError>;
-    /** `kin_ask`'s choice card, gated like a post: it is the lead's reply too. */
+    /**
+     * `kin_ask`'s choice card, gated like a post: it is the lead's reply too. `bind` runs in the
+     * card's own transaction, so no tap reaches the card before what it answers knows it.
+     */
     readonly ask: (
       agent: AgentIdentity,
       input: AskInput,
-    ) => Effect.Effect<KinWidget | KinShadowResult, KinChatError>;
+      bind?: (widget: KinWidget) => Effect.Effect<void, SqlError.SqlError>,
+    ) => Effect.Effect<KinWidget, KinChatError>;
+    /** A doc card, gated like a post. */
+    readonly showCard: (
+      agent: AgentIdentity,
+      input: Parameters<KinChatService["Service"]["showCard"]>[1],
+    ) => Effect.Effect<KinWidget, KinChatError>;
+    /** `kin_chart`'s chart card, gated like a post: it says what the reply could have in text. */
+    readonly chart: (
+      agent: AgentIdentity,
+      input: ChartInput,
+    ) => Effect.Effect<KinWidget, KinChatError>;
+    /** `kin_visual`'s card, gated like a post. */
+    readonly visual: (
+      agent: AgentIdentity,
+      input: VisualInput,
+    ) => Effect.Effect<KinWidget, KinChatError>;
     /** `kin_react`: the lead's reaction, gated like a post since it can stand for its reply. */
     readonly react: (
       agent: AgentIdentity,
@@ -71,265 +88,29 @@ export class KinLevelGate extends Context.Service<
         readonly messageId: KinMessageId;
         readonly emoji: KinReactionEmoji;
       },
-    ) => Effect.Effect<KinReaction | KinShadowResult, KinChatError>;
+    ) => Effect.Effect<KinReaction, KinChatError>;
+    /** `kin_chat_read`: a turn someone besides the owner reads reads only the chat it was asked in. */
+    readonly read: (
+      agent: AgentIdentity,
+      input: ReadInput,
+    ) => Effect.Effect<ReadonlyArray<KinMessage>, KinChatError>;
   }
 >()("t3/kin/lead/LevelGate/KinLevelGate") {}
 
-const SUMMARY_ENTRIES = 50;
-const PREVIEW_MAX = 280;
-const summaryWidgetId = (agentId: KinAgentId, day: string) =>
-  KinWidgetId.make(`shadow-summary:${agentId}:${day}`);
-const decodeCard = Schema.decodeUnknownEffect(KinShadowSummaryCard);
-const encodeCard = Schema.encodeEffect(KinShadowSummaryCard);
-const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
-
-const field = (value: unknown, key: string): unknown =>
-  typeof value === "object" && value !== null ? (value as Record<string, unknown>)[key] : undefined;
-const text = (value: unknown) => (typeof value === "string" ? value : "");
-const lines = (...parts: ReadonlyArray<string>) => parts.filter((part) => part !== "").join("\n");
-const labelled = (label: string, value: string) => (value === "" ? "" : `${label}: ${value}`);
-const targetText = (target: unknown) => {
-  const repo = text(field(target, "repo"));
-  switch (field(target, "_tag")) {
-    case "pull_request":
-      return `${repo}#${String(field(target, "number"))}, merge method ${text(field(target, "mergeMethod"))}${field(target, "deleteBranchAfter") === true ? ", then delete the branch" : ""}`;
-    case "branch":
-      return `${repo} branch ${text(field(target, "ref"))}`;
-    default:
-      return target === undefined ? "" : stableStringify(target);
-  }
-};
-const modelText = (model: unknown) =>
-  typeof model === "string" || model === undefined
-    ? text(model)
-    : `${text(field(model, "model"))} (${text(field(model, "instanceId"))})`;
-const isStrings = (value: unknown): value is ReadonlyArray<string> =>
-  Array.isArray(value) && value.every((item) => typeof item === "string");
-/** The whole action as text; `complete` is false when a field it holds can't be shown. */
-const fullText = (tool: string, input: unknown) => {
-  let complete = true;
-  const optional = (key: string) => {
-    const value = field(input, key);
-    if (value === undefined || value === null || typeof value === "string") return text(value);
-    complete = false;
-    return "";
-  };
-  const list = (key: string) => {
-    const value = field(input, key);
-    if (value === undefined || value === null) return "";
-    if (isStrings(value)) return value.join(", ");
-    complete = false;
-    return "";
-  };
-  const quoted = () => {
-    const value = field(input, "quoted");
-    if (value === undefined) return [];
-    if (!Array.isArray(value)) {
-      complete = false;
-      return [];
-    }
-    return value.map((item: unknown) => {
-      const parts = ["role", "name", "text"].map((key) => field(item, key));
-      if (!isStrings(parts)) {
-        complete = false;
-        return "";
-      }
-      const [role, name, said] = parts;
-      return `Quoted (${name === "" ? role : `${role}, ${name}`}): ${said}`;
-    });
-  };
-  const shown = (() => {
-    switch (tool) {
-      case "kin_chat_post":
-      case "reply":
-        return lines(
-          text(field(input, "body")),
-          labelled("Intent", optional("intent")),
-          labelled("Mentions", list("mentions")),
-          labelled("Reply to", optional("replyTo")),
-        );
-      case "kin_delegate":
-        return lines(
-          `${text(field(input, "kind"))}: ${text(field(input, "title"))}`,
-          labelled("Project", text(field(input, "projectId"))),
-          labelled("Base", optional("baseRef")),
-          labelled("Model", modelText(field(input, "model"))),
-          labelled("Reviews", optional("reviewOf")),
-          labelled("Goal", text(field(input, "goal"))),
-          labelled("Brief", text(field(input, "brief"))),
-          labelled("Memory", list("memoryItemIds")),
-          ...quoted(),
-        );
-      case "kin_follow_up":
-        return lines(
-          labelled("Worker", text(field(input, "workerId"))),
-          labelled("Brief", text(field(input, "brief"))),
-          ...quoted(),
-        );
-      case "kin_ask": {
-        const options = field(input, "options");
-        const labels = Array.isArray(options)
-          ? options.map((option: unknown) => text(field(option, "label")))
-          : [];
-        return lines(
-          text(field(input, "question")),
-          labelled("Detail", optional("detail")),
-          labelled("Options", labels.join(" / ")),
-        );
-      }
-      case "kin_react":
-        return `Reacted ${text(field(input, "emoji"))} to message ${text(field(input, "messageId"))}`;
-      case "request_action":
-        return lines(
-          `${text(field(input, "kind"))}: ${targetText(field(input, "target"))}`,
-          labelled("Reason", text(field(input, "reason"))),
-        );
-      default:
-        return tool;
-    }
-  })();
-  return { text: shown, complete };
-};
-const HIDDEN = new RegExp(KIN_HIDDEN_CHARACTER.source, "gu");
-/** Lead-written text with direction overrides and invisible characters spelled out. */
-export const plainText = (value: string) =>
-  value.replace(HIDDEN, (char) =>
-    char === "\n" || char === "\t"
-      ? char
-      : `[U+${(char.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}]`,
-  );
-/** Plain text of what the entry would have done; the input is the lead's own, so never trusted. */
-export const describe = (tool: string, input: unknown, max: number) => {
-  const full = fullText(tool, input);
-  const shown = plainText(full.text);
-  return shown.length <= max
-    ? { text: shown, truncated: !full.complete }
-    : { text: `${shown.slice(0, max - 1)}…`, truncated: true };
-};
-const preview = (tool: string, input: unknown) => describe(tool, input, PREVIEW_MAX).text;
+const isChatError = Schema.is(KinChatError);
+type Turn = { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly wakeupId: string };
+/** An owner-only turn tried to write where someone else reads; nothing is written there. */
+class PrivateDestination extends Schema.TaggedError<PrivateDestination>()("PrivateDestination", {
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+  wakeupId: Schema.String,
+}) {}
+const isPrivateDestination = Schema.is(PrivateDestination);
+const isLevelRefused = Schema.is(KinLevels.KinLevelRefused);
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const chat = yield* KinChatService;
-  const repo = yield* Repository.KinChatRepository;
-  const hub = yield* Hub.KinChatHub;
-  const cache = yield* MemoryCache.MemoryCache;
-  const floor = yield* Floor.KinFloor;
-
-  // The runner's summary of the owner-local day; best effort, so a failed refresh never undoes
-  // the shadow entry it reports (the next entry or wake-up rebuilds it).
-  const refresh = Effect.fn("KinShadowSummary.refresh")(
-    function* (input: { readonly orgId: KinOrgId; readonly agentId: KinAgentId }) {
-      const { orgId, agentId } = input;
-      const zone = yield* cache.ownerTimeZone(orgId);
-      const now = yield* Clock.currentTimeMillis;
-      const local = DateTime.makeZonedUnsafe(now, { timeZone: zone });
-      const start = DateTime.startOf(local, "day");
-      const from = DateTime.toEpochMillis(start);
-      const until = DateTime.toEpochMillis(DateTime.add(start, { days: 1 }));
-      const day = DateTime.formatIsoDate(local);
-      yield* sql.withTransaction(
-        Effect.gen(function* () {
-          // The card goes only to a direct chat, whatever kin_leads names: it previews every entry.
-          const [lead] = yield* sql<{ name: string; ownerChatId: string }>`
-            SELECT l.name, l.owner_chat_id AS "ownerChatId" FROM kin_leads l
-            JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
-            JOIN kin_chats c ON c.org_id = l.org_id AND c.chat_id = l.owner_chat_id
-              AND c.kind = 'direct'
-            WHERE l.org_id = ${orgId} AND l.agent_id = ${agentId}
-              AND a.role = 'lead' AND a.retired_at IS NULL
-            ORDER BY l.agent_id`;
-          if (lead === undefined) return;
-          const [count] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_shadow_entries
-            WHERE org_id = ${orgId} AND agent_id = ${agentId}
-              AND created_at >= ${from} AND created_at < ${until}
-            ORDER BY n`;
-          if ((count?.n ?? 0) === 0) return;
-          const rows = yield* sql<{
-            entryId: string;
-            tool: string;
-            level: string;
-            unlocksLevel: string;
-            wouldTarget: string;
-            json: string;
-            createdAt: number;
-          }>`SELECT entry_id AS "entryId", tool, level, unlocks_level AS "unlocksLevel",
-              would_target AS "wouldTarget", input_json AS json, created_at AS "createdAt"
-            FROM kin_shadow_entries
-            WHERE org_id = ${orgId} AND agent_id = ${agentId}
-              AND created_at >= ${from} AND created_at < ${until}
-            ORDER BY created_at DESC, entry_id DESC LIMIT ${SUMMARY_ENTRIES}`;
-          const title = `What ${lead.name} would have done today`;
-          const card = yield* decodeCard({
-            agentId,
-            title,
-            day,
-            total: count?.n ?? 0,
-            entries: yield* Effect.forEach(rows.toReversed(), (row) =>
-              Effect.map(decodeJson(row.json), (parsed) => {
-                // Only request_action stores the server's provenance; other inputs are the lead's.
-                const ceiling =
-                  row.tool === "request_action"
-                    ? field(field(parsed, "provenance"), "ceilingBelowOwner")
-                    : undefined;
-                return {
-                  entryId: row.entryId,
-                  tool: row.tool,
-                  level: row.level,
-                  unlocksLevel: row.unlocksLevel,
-                  wouldTarget: plainText(row.wouldTarget),
-                  preview: preview(row.tool, parsed),
-                  ...(typeof ceiling === "boolean" ? { ceilingBelowOwner: ceiling } : {}),
-                  createdAt: DateTime.formatIso(DateTime.makeUnsafe(row.createdAt)),
-                };
-              }),
-            ),
-          });
-          const state = yield* encodeCard(card);
-          const widgetId = summaryWidgetId(agentId, day);
-          const updatedAt = DateTime.formatIso(DateTime.makeUnsafe(now));
-          const existing = yield* repo.getWidget({ orgId, widgetId });
-          if (Option.isNone(existing)) {
-            const { message } = yield* chat.notice({
-              orgId,
-              chatId: KinChatId.make(lead.ownerChatId),
-              messageId: KinMessageId.make(widgetId),
-              body: title,
-            });
-            const widget: KinWidget = {
-              orgId,
-              chatId: message.chatId,
-              widgetId,
-              messageId: message.messageId,
-              widgetClass: "native",
-              type: "shadow_summary",
-              revision: 1,
-              state,
-              source: null,
-              feed: null,
-              awaiting: [],
-              pinnedAt: null,
-              closedAt: null,
-              updatedAt,
-            };
-            yield* repo.insertWidget(widget);
-            yield* sql.afterCommit(hub.publish({ type: "widget.updated", orgId, widget }));
-            return;
-          }
-          if (existing.value.type !== "shadow_summary") return;
-          if (stableStringify(existing.value.state) === stableStringify(state)) return;
-          const widget = yield* repo.updateWidget({
-            ...existing.value,
-            state,
-            expectedRevision: existing.value.revision,
-            updatedAt,
-          });
-          yield* sql.afterCommit(hub.publish({ type: "widget.updated", orgId, widget }));
-        }),
-      );
-    },
-    Effect.catchCause((cause) => Effect.logWarning("Kin shadow summary refresh failed", { cause })),
-  );
 
   // The lead's own direct chat with its owner, read from stored rows only.
   const isOwnerChat = Effect.fn("KinLevelGate.isOwnerChat")(
@@ -347,271 +128,202 @@ const make = Effect.gen(function* () {
     Effect.mapError(toPersistenceSqlError("KinLevelGate.isOwnerChat")),
   );
 
-  const refused = (message: string, reason: KinChatError["reason"] = "not_allowed") =>
-    new KinChatError({ reason, message });
-  // Below L1, outside the owner's direct chat: what the post would have been, for review.
-  const shadow = Effect.fn("KinLevelGate.shadow")(function* (
-    agent: AgentIdentity,
-    level: KinLevel,
-    tool: "kin_chat_post" | "reply" | "kin_ask" | "kin_react",
-    input: {
-      readonly chatId: KinChatId;
-      readonly clientMessageId: string;
-      readonly intent: KinAgentIntent;
-      readonly fields: Record<string, unknown>;
+  // The running wake-up of the calling lead thread; the reply bridge names its own.
+  const turnOf = Effect.fn("KinLevelGate.turnOf")(
+    function* (agent: AgentIdentity) {
+      if (agent.wakeupId !== undefined)
+        return { orgId: agent.orgId, agentId: agent.agentId, wakeupId: agent.wakeupId };
+      const [row] = yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId"
+        FROM kin_wakeups WHERE org_id = ${agent.orgId} AND agent_id = ${agent.agentId}
+          AND thread_id = ${agent.threadId} AND status = 'running'
+        ORDER BY wakeup_id`;
+      return row === undefined
+        ? undefined
+        : { orgId: agent.orgId, agentId: agent.agentId, wakeupId: row.wakeupId };
     },
-  ) {
-    // A shadow entry only names a chat the lead is an active member of, in its own org.
-    const member = yield* repo.activeMember({
-      orgId: agent.orgId,
-      chatId: input.chatId,
-      principal: { _tag: "agent", agentId: agent.agentId },
-    });
-    if (Option.isNone(member))
-      return yield* new KinChatError({
-        reason: "not_found",
-        message: "Kin record not found.",
-      });
-    // The real post's cheap refusals come first, so the review holds only posts L1 would make.
-    if (!mayWrite(member.value, true, yield* Clock.currentTimeMillis))
-      return yield* refused("Chat operation not allowed.");
-    const notice = yield* floor.noticeOnly(agent);
-    // Shadowed notices count toward the hourly limit as the posts they stand for. The reply
-    // path's floor check is not repeated: it consumes the grant it checks.
-    const admit = Effect.gen(function* () {
-      if (!notice) return;
-      const since = (yield* Clock.currentTimeMillis) - Floor.NOTICE_WINDOW_MS;
-      const [shadowed] = yield* sql<{ n: number }>`
-              SELECT COUNT(*) AS n FROM kin_shadow_entries
-              WHERE org_id = ${agent.orgId} AND agent_id = ${agent.agentId} AND created_at > ${since}
-                AND tool IN ('kin_chat_post', 'reply', 'kin_ask', 'kin_react') AND would_target = ${input.chatId}
-                AND json_extract(input_json, '$.notice') = 1
-              ORDER BY n`.pipe(
-        Effect.mapError(toPersistenceSqlError("KinLevelGate.shadowedNotices")),
-      );
-      yield* floor.admitNotice(agent, {
-        chatId: input.chatId,
-        intent: input.intent,
-        earlier: shadowed?.n ?? 0,
-      });
-    });
-    return yield* KinLevels.recordShadow(
-      {
-        orgId: agent.orgId,
-        agentId: agent.agentId,
-        threadId: agent.threadId,
-        level,
-        unlocksLevel: "L1",
-        tool,
-        // Keyed like a real post: the same clientMessageId with other content is refused.
-        key: { chatId: input.chatId, clientMessageId: input.clientMessageId },
-        input: {
-          chatId: input.chatId,
-          clientMessageId: input.clientMessageId,
-          ...input.fields,
-          ...(notice ? { notice: true } : {}),
-        },
-        wouldTarget: input.chatId,
-      },
-      admit,
-    );
+    Effect.mapError(toPersistenceSqlError("KinLevelGate.turnOf")),
+  );
+
+  const notAllowed = new KinChatError({
+    reason: "not_allowed",
+    message: "You can't post in this chat. Nothing was sent.",
   });
-  const post = Effect.fn("KinLevelGate.post")(
-    function* (agent: AgentIdentity, input: PostInput) {
-      const result = yield* sql.withTransaction(
-        Effect.gen(function* () {
-          const level = yield* KinLevels.effectiveLevel({
-            orgId: agent.orgId,
-            agentId: agent.agentId,
-            chatId: input.chatId,
-          });
-          // At L0 the owner still talks to the lead in their direct chat, through the real floor.
-          if (KinLevels.atLeast(level, "L1") || (yield* isOwnerChat(agent, input.chatId)))
-            return yield* chat.send(agent, input);
-          return yield* shadow(agent, level, input.tool ?? "kin_chat_post", {
-            chatId: input.chatId,
-            clientMessageId: input.clientMessageId,
-            intent: input.intent,
-            fields: {
-              body: input.body,
-              intent: input.intent,
-              mentions: input.mentions ?? [],
-              replyTo: input.replyTo ?? null,
-            },
-          });
-        }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
-      );
-      if (!("shadowed" in result)) return result;
-      if (result.created) yield* refresh({ orgId: agent.orgId, agentId: agent.agentId });
-      return { shadowed: true as const, entryId: result.entryId };
+
+  // Said once per wake-up in the lead's owner chat, so a routine's lost post isn't silent.
+  const tellOwner = Effect.fn("KinLevelGate.tellOwner")(
+    function* (turn: Turn, chatId: KinChatId) {
+      const [row] = yield* sql<{ ownerChatId: string; name: string; title: string | null }>`
+        SELECT l.owner_chat_id AS "ownerChatId", l.name, c.title FROM kin_leads l
+        JOIN kin_chats c ON c.org_id = l.org_id AND c.chat_id = ${chatId}
+        WHERE l.org_id = ${turn.orgId} AND l.agent_id = ${turn.agentId}
+        ORDER BY l.agent_id`;
+      if (row === undefined) return;
+      yield* chat.notice({
+        orgId: turn.orgId,
+        chatId: KinChatId.make(row.ownerChatId),
+        messageId: KinMessageId.make(`kin-private-destination:${turn.wakeupId}`),
+        audience: "owner",
+        body: `${row.name} couldn't post in ${row.title ?? "a group"}: other people are in it.`,
+      });
     },
-    Effect.catch((error) =>
-      error._tag === "KinChatError"
-        ? Effect.fail(error)
-        : error._tag === "KinLevelRefused"
-          ? Effect.fail(
-              refused(
-                error.reason === "not_running"
-                  ? "Kin wake-up is not running."
-                  : error.reason === "conflict"
-                    ? "This clientMessageId was already used for a different post."
-                    : error.reason === "limit"
-                      ? KinLevels.SHADOW_LIMIT_MESSAGE
-                      : "Chat operation not allowed.",
-                error.reason === "limit" ? "limit" : "not_allowed",
-              ),
-            )
-          : Effect.logError("Kin level-gated post failed", error).pipe(
-              Effect.andThen(
-                Effect.fail(
-                  new KinChatError({ reason: "unavailable", message: "Kin is unavailable." }),
-                ),
-              ),
-            ),
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin could not tell the owner about a withheld post", { cause }),
     ),
   );
 
-  // Below L1 a lead edits cards only in its owner's direct chat, like its posts.
-  const upsertWidget = Effect.fn("KinLevelGate.upsertWidget")(
-    function* (agent: AgentIdentity, input: WidgetInput) {
-      return yield* sql.withTransaction(
-        Effect.gen(function* () {
-          const level = yield* KinLevels.effectiveLevel({
-            orgId: agent.orgId,
-            agentId: agent.agentId,
-            chatId: input.chatId,
-          });
-          if (!KinLevels.atLeast(level, "L1") && !(yield* isOwnerChat(agent, input.chatId)))
-            return yield* refused("Below L1 the lead can't change cards in this chat.");
-          return yield* chat.upsertWidget(agent, input);
-        }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
-      );
-    },
-    Effect.catch((error) =>
-      error._tag === "KinChatError"
-        ? Effect.fail(error)
-        : error._tag === "KinLevelRefused"
-          ? Effect.fail(refused("Chat operation not allowed."))
-          : Effect.logError("Kin level-gated widget upsert failed", error).pipe(
-              Effect.andThen(
-                Effect.fail(
-                  new KinChatError({ reason: "unavailable", message: "Kin is unavailable." }),
-                ),
-              ),
+  /**
+   * Runs `allowed` in one transaction with the check; refuses below L1 outside the owner's DM.
+   * The level is the lower of the target chat's and the asking wake-up's, so a chat can't post
+   * through the lead where it couldn't itself.
+   */
+  const gated = <A, E>(
+    operation: string,
+    agent: AgentIdentity,
+    chatId: KinChatId,
+    allowed: Effect.Effect<A, E>,
+  ): Effect.Effect<A, KinChatError> =>
+    // A turn found shared stays shared: settled before the write's transaction, which a
+    // refusal rolls back. The destination is checked again inside it.
+    turnOf(agent).pipe(
+      Effect.flatMap((turn) =>
+        turn === undefined
+          ? Effect.void
+          : effectiveAudience(turn).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+      ),
+      Effect.ignore,
+      Effect.andThen(
+        sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const target = yield* KinLevels.effectiveLevel({
+                orgId: agent.orgId,
+                agentId: agent.agentId,
+                chatId,
+              }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+              const level =
+                agent.wakeupId === undefined
+                  ? target
+                  : KinLevels.lowest(
+                      target,
+                      yield* KinLevels.wakeupLevel({
+                        orgId: agent.orgId,
+                        agentId: agent.agentId,
+                        wakeupId: agent.wakeupId,
+                      }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+                    );
+              if (!KinLevels.atLeast(level, "L1") && !(yield* isOwnerChat(agent, chatId)))
+                return yield* notAllowed;
+              // Authorised against the destination chat, in this transaction: a shared turn speaks
+              // only in its own chat, an owner-only prompt only where every human is the owner.
+              const turn = yield* turnOf(agent);
+              if (turn === undefined) return yield* notAllowed;
+              const where = yield* destination(turn, chatId).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              );
+              if (where === "moved" || where === "aborted")
+                return yield* new KinChatError({
+                  reason: "not_allowed",
+                  message: AUDIENCE_MOVED,
+                });
+              if (where === "elsewhere")
+                return yield* new KinChatError({
+                  reason: "not_allowed",
+                  message: SHARED_ELSEWHERE,
+                });
+              if (where === "private") return yield* new PrivateDestination(turn);
+              return yield* allowed;
+            }),
+          )
+          .pipe(
+            Effect.catch((error) =>
+              isPrivateDestination(error)
+                ? tellOwner(error, chatId).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new KinChatError({ reason: "not_allowed", message: PRIVATE_DESTINATION }),
+                      ),
+                    ),
+                  )
+                : isChatError(error)
+                  ? Effect.fail(error)
+                  : isLevelRefused(error)
+                    ? Effect.fail(notAllowed)
+                    : Effect.logError(`Kin ${operation} failed`, error).pipe(
+                        Effect.andThen(
+                          Effect.fail(
+                            new KinChatError({
+                              reason: "unavailable",
+                              message: "Kin is unavailable.",
+                            }),
+                          ),
+                        ),
+                      ),
             ),
+          ),
+      ),
+    );
+
+  const read = Effect.fn("KinLevelGate.read")(
+    function* (agent: AgentIdentity, input: ReadInput) {
+      const turn = yield* turnOf(agent);
+      if (turn === undefined) return yield* notAllowed;
+      if (yield* aborted(turn).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
+        return yield* new KinChatError({ reason: "not_allowed", message: SHARED_REFUSAL });
+      const shared =
+        (yield* effectiveAudience(turn).pipe(Effect.provideService(SqlClient.SqlClient, sql))) ===
+        "shared";
+      if (
+        shared &&
+        !(yield* askedIn(turn, input.chatId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError(toPersistenceSqlError("KinLevelGate.read")),
+        ))
+      )
+        return yield* new KinChatError({ reason: "not_allowed", message: SHARED_OTHER_CHAT });
+      return yield* chat.read(agent, input);
+    },
+    Effect.catchIf(
+      (error) => !isChatError(error),
+      (error) =>
+        Effect.logError("Kin gated read failed", error).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new KinChatError({ reason: "unavailable", message: "Kin is unavailable." }),
+            ),
+          ),
+        ),
     ),
   );
 
-  const ask = Effect.fn("KinLevelGate.ask")(
-    function* (agent: AgentIdentity, input: AskInput) {
-      const result = yield* sql.withTransaction(
-        Effect.gen(function* () {
-          const level = yield* KinLevels.effectiveLevel({
-            orgId: agent.orgId,
-            agentId: agent.agentId,
-            chatId: input.chatId,
-          });
-          if (KinLevels.atLeast(level, "L1") || (yield* isOwnerChat(agent, input.chatId)))
-            return yield* chat.ask(agent, input);
-          return yield* shadow(agent, level, "kin_ask", {
-            chatId: input.chatId,
-            clientMessageId: input.clientMessageId,
-            intent: "question",
-            fields: {
-              question: input.question,
-              detail: input.detail ?? null,
-              options: input.options,
-            },
-          });
-        }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
-      );
-      if (!("shadowed" in result)) return result;
-      if (result.created) yield* refresh({ orgId: agent.orgId, agentId: agent.agentId });
-      return { shadowed: true as const, entryId: result.entryId };
-    },
-    Effect.catch((error) =>
-      error._tag === "KinChatError"
-        ? Effect.fail(error)
-        : error._tag === "KinLevelRefused"
-          ? Effect.fail(
-              refused(
-                error.reason === "not_running"
-                  ? "Kin wake-up is not running."
-                  : error.reason === "conflict"
-                    ? "This question was already asked with different content."
-                    : error.reason === "limit"
-                      ? KinLevels.SHADOW_LIMIT_MESSAGE
-                      : "Chat operation not allowed.",
-                error.reason === "limit" ? "limit" : "not_allowed",
-              ),
-            )
-          : Effect.logError("Kin level-gated ask failed", error).pipe(
-              Effect.andThen(
-                Effect.fail(
-                  new KinChatError({ reason: "unavailable", message: "Kin is unavailable." }),
-                ),
-              ),
-            ),
+  return KinLevelGate.of({
+    read,
+    post: Effect.fn("KinLevelGate.post")((agent, input) =>
+      gated("gated post", agent, input.chatId, chat.send(agent, input)),
     ),
-  );
-
-  const react = Effect.fn("KinLevelGate.react")(
-    function* (agent: AgentIdentity, input: Parameters<KinLevelGate["Service"]["react"]>[1]) {
-      const result = yield* sql.withTransaction(
-        Effect.gen(function* () {
-          const level = yield* KinLevels.effectiveLevel({
-            orgId: agent.orgId,
-            agentId: agent.agentId,
-            chatId: input.chatId,
-          });
-          if (KinLevels.atLeast(level, "L1") || (yield* isOwnerChat(agent, input.chatId)))
-            return yield* chat.react(agent, { ...input, on: true });
-          return yield* shadow(agent, level, "kin_react", {
-            chatId: input.chatId,
-            clientMessageId: `react:${input.messageId}:${input.emoji}`,
-            intent: "evidence",
-            fields: { messageId: input.messageId, emoji: input.emoji },
-          });
-        }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
-      );
-      if (!("shadowed" in result)) return result;
-      if (result.created) yield* refresh({ orgId: agent.orgId, agentId: agent.agentId });
-      return { shadowed: true as const, entryId: result.entryId };
-    },
-    Effect.catch((error) =>
-      error._tag === "KinChatError"
-        ? Effect.fail(error)
-        : error._tag === "KinLevelRefused"
-          ? Effect.fail(
-              refused(
-                error.reason === "not_running"
-                  ? "Kin wake-up is not running."
-                  : error.reason === "limit"
-                    ? KinLevels.SHADOW_LIMIT_MESSAGE
-                    : "Chat operation not allowed.",
-                error.reason === "limit" ? "limit" : "not_allowed",
-              ),
-            )
-          : Effect.logError("Kin level-gated reaction failed", error).pipe(
-              Effect.andThen(
-                Effect.fail(
-                  new KinChatError({ reason: "unavailable", message: "Kin is unavailable." }),
-                ),
-              ),
-            ),
+    upsertWidget: Effect.fn("KinLevelGate.upsertWidget")((agent, input) =>
+      gated("gated widget upsert", agent, input.chatId, chat.upsertWidget(agent, input)),
     ),
-  );
-
-  return {
-    gate: KinLevelGate.of({ post, upsertWidget, ask, react }),
-    summary: KinLevels.KinShadowSummary.of({ refresh }),
-  };
+    ask: Effect.fn("KinLevelGate.ask")((agent, input, bind) =>
+      gated(
+        "gated ask",
+        agent,
+        input.chatId,
+        bind === undefined ? chat.ask(agent, input) : chat.ask(agent, input).pipe(Effect.tap(bind)),
+      ),
+    ),
+    showCard: Effect.fn("KinLevelGate.showCard")((agent, input) =>
+      gated("gated card", agent, input.chatId, chat.showCard(agent, input)),
+    ),
+    chart: Effect.fn("KinLevelGate.chart")((agent, input) =>
+      gated("gated chart", agent, input.chatId, chat.chart(agent, input)),
+    ),
+    visual: Effect.fn("KinLevelGate.visual")((agent, input) =>
+      gated("gated visual", agent, input.chatId, chat.visual(agent, input)),
+    ),
+    react: Effect.fn("KinLevelGate.react")((agent, input) =>
+      gated("gated reaction", agent, input.chatId, chat.react(agent, { ...input, on: true })),
+    ),
+  });
 });
 
-export const layer = Layer.effectContext(
-  make.pipe(
-    Effect.map(({ gate, summary }) =>
-      Context.make(KinLevelGate, gate).pipe(Context.add(KinLevels.KinShadowSummary, summary)),
-    ),
-  ),
-).pipe(Layer.provide(Layer.merge(MemoryCache.layer, Floor.layer)));
+export const layer = Layer.effect(KinLevelGate, make);

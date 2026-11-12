@@ -1,3 +1,4 @@
+import type { PendingUploadOwner } from "../../assets/AttachmentUpload.ts";
 import * as Floor from "../floor/KinFloor.ts";
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
@@ -12,6 +13,10 @@ import {
   KinWidgetId,
   KinOwnerCheckCard,
   KinDeferralCard,
+  KIN_MEMORY_CHANGES_CARD,
+  KIN_DOC_CARD,
+  type KinMessageRefInput,
+  KIN_WORKER_PUBLISH_CARD,
   KinMessagesReactInput,
   KinMessagesSendInput,
   KinWidgetsActInput,
@@ -34,9 +39,11 @@ import {
   type KinChatHistoryResult,
   type KinChatMember,
   type KinChatsCreateDirectInput,
+  type KinAttachment,
   type KinMessage,
   type KinMessagesMarkReadInput,
   type KinChatsMuteInput,
+  type KinChatsClearInput,
   type KinPersonId,
   type KinOrgId,
   type KinReaction,
@@ -44,6 +51,11 @@ import {
   type KinWaitingItem,
   type KinWidget,
 } from "@t3tools/contracts";
+import {
+  KIN_VISUAL_CARD_TYPE,
+  KIN_VISUAL_FILE_SCHEME,
+  kinVisualFileReferences,
+} from "@t3tools/shared/kinVisual";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -51,6 +63,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -59,15 +72,27 @@ import * as SecureRandom from "effect/crypto/SecureRandom";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { validateState } from "../widgets/registry.ts";
 import { deferralCardActions, deferralCardActionsReady } from "../widgets/deferralCard.ts";
+import * as ChartCard from "../widgets/chartCard.ts";
+import * as VisualCard from "../widgets/visualCard.ts";
 import * as ChoiceCard from "../widgets/choiceCard.ts";
 import { undoDeferral } from "../triggers/KinTriggerService.ts";
 import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
+import * as PublishCard from "../widgets/workerPublishCard.ts";
+import { answerChange } from "../work/companyProfile.ts";
+import { docsForViewer } from "./privateDocs.ts";
 import * as Hub from "./KinChatHub.ts";
-import { KinPresence } from "../reply/KinPresence.ts";
+import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
+import { effectiveAudience } from "../lead/Audience.ts";
+import { KinStop } from "../lead/KinStop.ts";
+import { isOrgOwner } from "../lead/orgState.ts";
 import * as Repository from "./KinChatRepository.ts";
+import type { WriteAudience } from "./KinChatRepository.ts";
+import { KinAttachmentStore } from "./KinAttachmentStore.ts";
 import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
 import * as Reactions from "./reactions.ts";
+import * as LeadAccess from "../lead/LeadAccess.ts";
+import { memberReads } from "./sharing.ts";
 
 type Identity = PersonIdentity | AgentIdentity;
 type Viewers = ReadonlyArray<PersonIdentity>;
@@ -77,6 +102,8 @@ type ServiceError = Repository.RepositoryError;
 type SendInput = KinMessagesSendInput & {
   readonly intent?: KinAgentIntent;
   readonly floorGrant?: string | undefined;
+  /** The authenticated session sending, set by the transport; only its own uploads are claimed. */
+  readonly uploader?: PendingUploadOwner;
 };
 type WidgetUpsertInput = {
   readonly chatId: KinChatId;
@@ -102,6 +129,8 @@ export class KinChatService extends Context.Service<
       readonly chatId: KinChatId;
       readonly body: string;
       readonly waitingFor?: KinPersonId;
+      /** Who `body` is for (`WriteAudience`), checked against the chat in the write's transaction. */
+      readonly audience: WriteAudience;
     }) => Effect.Effect<
       { readonly message: KinMessage; readonly waiting: KinWaitingItem | null },
       ServiceError
@@ -126,6 +155,15 @@ export class KinChatService extends Context.Service<
       identity: PersonCaller,
       input: KinChatsMuteInput,
     ) => Effect.Effect<KinChatMember, ServiceError>;
+    /**
+     * Empties a chat for everyone in it, for good; memory, members and settings stay. The
+     * organisation's owner clears a group; a direct chat with a lead is cleared by the one
+     * person in it. A lead's turn answering a deleted message stops without a reply.
+     */
+    readonly clear: (
+      identity: PersonCaller,
+      input: KinChatsClearInput,
+    ) => Effect.Effect<void, ServiceError>;
     readonly leaveChat: (
       identity: PersonIdentity,
       input: { readonly chatId: KinChatId; readonly memberId: KinMemberId },
@@ -135,6 +173,11 @@ export class KinChatService extends Context.Service<
       input: KinChatsCreateDirectInput,
     ) => Effect.Effect<KinChat, ServiceError>;
     readonly send: (identity: Caller, input: SendInput) => Effect.Effect<KinMessage, ServiceError>;
+    /** Whether this person is in the chat whose message carries the stored file. */
+    readonly attachmentReadable: (
+      caller: PersonCaller,
+      attachmentId: string,
+    ) => Effect.Effect<boolean, ServiceError>;
     readonly read: (
       identity: AgentIdentity,
       input: {
@@ -158,6 +201,7 @@ export class KinChatService extends Context.Service<
     readonly createTaskCard: (input: {
       readonly orgId: KinOrgId;
       readonly chatId: KinChatId;
+      readonly audience: WriteAudience;
       readonly authorAgentId: KinAgentId;
       readonly threadId: ThreadId;
       readonly title: string;
@@ -172,6 +216,7 @@ export class KinChatService extends Context.Service<
     readonly setTaskCardClosed: (input: {
       readonly orgId: KinOrgId;
       readonly chatId: KinChatId;
+      readonly audience: WriteAudience;
       readonly threadId: ThreadId;
       readonly closed: boolean;
     }) => Effect.Effect<KinWidget, ServiceError>;
@@ -179,8 +224,17 @@ export class KinChatService extends Context.Service<
     readonly setTaskCardState: (input: {
       readonly orgId: KinOrgId;
       readonly chatId: KinChatId;
+      readonly audience: WriteAudience;
       readonly threadId: ThreadId;
       readonly state: Pick<KinTaskCardState, "status" | "pullRequests" | "lastError">;
+    }) => Effect.Effect<KinWidget, ServiceError>;
+    /** The docs a document job made, from the job's stored row; on this server's own cards. */
+    readonly setTaskCardDocuments: (input: {
+      readonly orgId: KinOrgId;
+      readonly chatId: KinChatId;
+      readonly threadId: ThreadId;
+      readonly documents: NonNullable<KinTaskCardState["documents"]>;
+      readonly lastError: string | null;
     }) => Effect.Effect<KinWidget, ServiceError>;
     readonly act: (
       identity: PersonCaller,
@@ -204,6 +258,46 @@ export class KinChatService extends Context.Service<
         readonly clientMessageId: string;
       },
     ) => Effect.Effect<KinWidget, ServiceError>;
+    /** A card Kin fills from stored rows, such as a doc card; no tap answers it. */
+    readonly showCard: (
+      identity: AgentIdentity,
+      input: {
+        readonly chatId: KinChatId;
+        readonly clientMessageId: string;
+        readonly type: typeof KIN_DOC_CARD;
+        readonly state: unknown;
+      },
+    ) => Effect.Effect<KinWidget, ServiceError>;
+    /** `kin_chart`'s card: the agent's own message in that chat, limited like any other post. */
+    readonly chart: (
+      identity: AgentIdentity,
+      input: ChartCard.ChartInput & {
+        readonly chatId: KinChatId;
+        readonly clientMessageId: string;
+        /** The intent the turn's text reply carries: an answer, or evidence when nobody asked. */
+        readonly intent: "answer" | "evidence";
+      },
+    ) => Effect.Effect<KinWidget, ServiceError>;
+    /** `kin_visual`'s card: the page is kept as a file of that chat and the card points at it. */
+    readonly visual: (
+      identity: AgentIdentity,
+      input: VisualCard.VisualInput & {
+        readonly chatId: KinChatId;
+        readonly clientMessageId: string;
+        readonly intent: "answer" | "evidence";
+      },
+    ) => Effect.Effect<KinWidget, ServiceError>;
+    /** What the route serving a chat's page needs: the org it belongs to and that chat's files. */
+    readonly visualSources: (attachmentId: string) => Effect.Effect<
+      Option.Option<{
+        readonly orgId: KinOrgId;
+        readonly files: ReadonlyArray<{
+          readonly attachmentId: string;
+          readonly mimeType: string | null;
+        }>;
+      }>,
+      ServiceError
+    >;
     readonly addWaiting: (
       identity: Identity,
       input: WaitingInput,
@@ -254,12 +348,15 @@ const isKinChatError = Schema.is(KinChatError);
 // resume's 200-message reset cap.
 const checkpointEvery = 100;
 /** The flood bound on one wake-up's posts in one chat, natural replies and kin_chat_post alike. */
+const PREVIEW_LOOKBACK = 20;
+const BOOKKEEPING_TEXT = /^(?:(?:Remembered|Forgot|Updated|Replaced|Memory): |Deferred to )/;
+const deferralCardOption = Schema.decodeUnknownOption(KinDeferralCard);
 export const KIN_WAKEUP_MESSAGE_LIMIT = 8;
 export const KIN_WAKEUP_CHAR_LIMIT = 32_000;
 /** A person's mute with no end: it lasts until they unmute. */
 const KIN_MUTED_FOREVER = "9999-12-31T23:59:59.999Z";
 /** Guests never write; a muted agent stays silent until its mute ends. */
-export const mayWrite = (member: KinChatMember, agent: boolean, now: number) =>
+const mayWrite = (member: KinChatMember, agent: boolean, now: number) =>
   member.role !== "guest" &&
   !(agent && member.mutedUntil !== null && Date.parse(member.mutedUntil) > now);
 const notAllowed = new KinChatError({
@@ -302,6 +399,11 @@ const make = Effect.gen(function* () {
   const repo = yield* Repository.KinChatRepository;
   const hub = yield* Hub.KinChatHub;
   const presence = yield* Effect.serviceOption(KinPresence);
+  // Absent where no attachments directory exists; a send with files is then refused.
+  const attachmentStore = yield* Effect.serviceOption(KinAttachmentStore);
+  const stop = yield* Effect.serviceOption(KinStop);
+  /** For a stream event; left out of a chat that was never cleared. */
+  const clearedAt = (clearedSeq: number) => (clearedSeq > 0 ? { clearedSeq } : {});
   const sql = yield* SqlClient.SqlClient;
   const transaction = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     sql
@@ -377,6 +479,61 @@ const make = Effect.gen(function* () {
     }
     return member;
   });
+  /**
+   * Another person's direct chat with a lead: the lead reads it only on a turn that person's
+   * message there woke, never on its owner's. Stored rows decide.
+   */
+  const leadMayRead = Effect.fn("KinChatService.leadMayRead")(
+    function* (agent: AgentIdentity, chatId: KinChatId) {
+      const rows = yield* sql`SELECT 1 FROM kin_chats c
+        WHERE c.org_id = ${agent.orgId} AND c.chat_id = ${chatId} AND c.kind = 'direct'
+          AND c.direct_key <> ${LeadAccess.directKey(agent.ownerPersonId, agent.agentId)}
+        LIMIT 1`;
+      if (rows.length === 0) return true;
+      const asked = yield* sql`SELECT 1 FROM kin_events e
+        JOIN kin_wakeups w ON w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id
+          AND w.agent_id = e.agent_id AND w.status = 'running'
+        WHERE e.org_id = ${agent.orgId} AND e.agent_id = ${agent.agentId}
+          AND (w.wakeup_id = ${agent.wakeupId ?? null}
+            OR (${agent.wakeupId ?? null} IS NULL AND w.thread_id = ${agent.threadId}))
+          AND e.tag IN ('chat.message', 'widget.action')
+          AND json_extract(e.json, '$.chatId') = ${chatId}
+        LIMIT 1`;
+      return asked.length > 0;
+    },
+    Effect.mapError(toPersistenceSqlError("KinChatService.leadMayRead")),
+  );
+  /** Whether the calling lead's running turn is shared (`effectiveAudience`); none found is. */
+  const sharedTurn = Effect.fn("KinChatService.sharedTurn")(
+    function* (agent: AgentIdentity) {
+      const [row] =
+        agent.wakeupId !== undefined
+          ? [{ wakeupId: agent.wakeupId }]
+          : yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId" FROM kin_wakeups
+              WHERE org_id = ${agent.orgId} AND agent_id = ${agent.agentId}
+                AND thread_id = ${agent.threadId} AND status = 'running'
+              ORDER BY wakeup_id`;
+      if (row === undefined) return true;
+      const turn = { orgId: agent.orgId, agentId: agent.agentId, wakeupId: row.wakeupId };
+      return (
+        (yield* effectiveAudience(turn).pipe(Effect.provideService(SqlClient.SqlClient, sql))) ===
+        "shared"
+      );
+    },
+    Effect.mapError(toPersistenceSqlError("KinChatService.sharedTurn")),
+  );
+  /** Who reads a doc a message points at: a person, or a lead's turn by its stored audience. */
+  const docViewer = (identity: Identity) =>
+    identity._tag === "agent"
+      ? sharedTurn(identity).pipe(Effect.map((shared) => ({ sharedTurn: shared })))
+      : Effect.succeed(identity);
+  /** A person's words are the chat's; a lead's are the owner's alone on an owner-only turn. */
+  const authorAudience = (identity: Identity) =>
+    identity._tag === "agent"
+      ? sharedTurn(identity).pipe(
+          Effect.map((shared): WriteAudience => (shared ? "chat" : "owner")),
+        )
+      : Effect.succeed<WriteAudience>("chat");
   const authorFor = (identity: Identity, member: KinChatMember): KinAuthor =>
     identity._tag === "person"
       ? { _tag: "human", personId: identity.personId, memberId: member.memberId }
@@ -393,6 +550,34 @@ const make = Effect.gen(function* () {
   ) {
     if (!mayWrite(member, identity._tag === "agent", yield* Clock.currentTimeMillis))
       return yield* notAllowed;
+  });
+  /** A generated doc's file is the owner's alone: the person whose agent's job made it. */
+  const docFileReadable = (caller: PersonCaller, attachmentId: string) =>
+    Effect.forEach("_tag" in caller ? [caller] : caller, (person) =>
+      sql`SELECT 1 FROM kin_doc_versions v
+        JOIN kin_doc_jobs j ON j.org_id = v.org_id AND j.worker_id = v.worker_id
+        JOIN kin_agents a ON a.org_id = j.org_id AND a.agent_id = j.agent_id
+        WHERE v.org_id = ${person.orgId} AND v.file_attachment_id = ${attachmentId}
+          AND a.owner_person_id = ${person.personId}
+        LIMIT 1`.pipe(Effect.map((rows) => rows.length > 0)),
+    ).pipe(
+      Effect.map((found) => found.some(Boolean)),
+      Effect.mapError(toPersistenceSqlError("KinChatService.docFileReadable")),
+    );
+  /** Whether the member may read the message: nothing from before they joined. */
+  const readable = (member: KinChatMember, messageId: string, floorOf?: string) =>
+    memberReads(sql, { orgId: member.orgId, memberId: member.memberId, messageId, floorOf }).pipe(
+      Effect.mapError(toPersistenceSqlError("KinChatService.readable")),
+    );
+  /** `readable`, and for a shared turn nothing below the chat's history floor, as `read` gives it. */
+  const callerReads = Effect.fn("KinChatService.callerReads")(function* (
+    identity: Identity,
+    member: KinChatMember,
+    messageId: string,
+  ) {
+    const floorOf =
+      identity._tag === "agent" && (yield* sharedTurn(identity)) ? member.chatId : undefined;
+    return yield* readable(member, messageId, floorOf);
   });
   const resolve = Effect.fn("KinChatService.resolve")(function* (
     item: KinWaitingItem,
@@ -436,6 +621,8 @@ const make = Effect.gen(function* () {
     input: {
       readonly chatId: KinChatId;
       readonly body: string;
+      readonly attachments?: ReadonlyArray<KinAttachment> | undefined;
+      readonly refs?: ReadonlyArray<KinMessageRefInput> | undefined;
       readonly intent: KinAgentIntent | null;
       readonly mentions: ReadonlyArray<KinMemberId>;
       readonly replyTo: KinMessageId | null;
@@ -446,9 +633,17 @@ const make = Effect.gen(function* () {
       readonly clientId: { readonly kind: "send" | "act"; readonly id: string } | null;
     },
   ) {
+    // A reply the caller names must be one it may read; a hidden one reads as missing.
+    if (
+      input.kind === "text" &&
+      input.replyTo !== null &&
+      !(yield* callerReads(identity, member, input.replyTo))
+    )
+      return yield* notFound;
     const messageId = yield* decodeMessageId(SecureRandom.uuidV4Unsafe()).pipe(Effect.orDie);
     const message = yield* repo.insertMessage({
       orgId: identity.orgId,
+      audience: yield* authorAudience(identity),
       caller: identity._tag === "agent" ? identity.caller : undefined,
       wakeupId: identity._tag === "agent" ? identity.wakeupId : undefined,
       chatId: input.chatId,
@@ -456,6 +651,10 @@ const make = Effect.gen(function* () {
       author: authorFor(identity, member),
       kind: input.kind,
       body: input.body,
+      ...(input.attachments === undefined || input.attachments.length === 0
+        ? {}
+        : { attachments: input.attachments }),
+      ...(input.refs === undefined || input.refs.length === 0 ? {} : { refs: input.refs }),
       intent: input.intent,
       mentions: input.mentions,
       replyTo: input.replyTo,
@@ -508,6 +707,7 @@ const make = Effect.gen(function* () {
     request: KinWidgetsActInput,
     reaction: { readonly emoji: KinReactionEmoji } | null,
   ) {
+    if (widget.type === "chart" || widget.type === KIN_VISUAL_CARD_TYPE) return yield* invalidState;
     const choice = widget.type === "choice" ? yield* ChoiceCard.readChoice(widget, request) : null;
     const reminder =
       widget.type === "reminder"
@@ -515,9 +715,17 @@ const make = Effect.gen(function* () {
         : null;
     const scheduled =
       widget.type === "scheduled_task"
-        ? yield* ScheduledTasks.describeScheduledTaskTap(widget, request.actionId, request.value)
+        ? yield* ScheduledTasks.describeScheduledTaskTap(
+            widget,
+            request.actionId,
+            request.value,
+          ).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(cardTapError))
         : null;
-    const tap = choice ?? reminder ?? scheduled;
+    const publishTap =
+      widget.type === KIN_WORKER_PUBLISH_CARD
+        ? yield* PublishCard.describePublishTap(widget, request.actionId, request.value)
+        : null;
+    const tap = choice ?? reminder ?? scheduled ?? publishTap;
     const body = yield* encodeAction({
       widgetId: request.widgetId,
       revision: request.revision,
@@ -525,7 +733,7 @@ const make = Effect.gen(function* () {
       ...(request.value === undefined ? {} : { value: request.value }),
       ...(tap === null ? {} : { text: tap.text }),
       // The server finished this tap itself, so it doesn't wake the lead.
-      ...((reminder ?? scheduled)?.wake === false ? { handled: true } : {}),
+      ...((reminder ?? scheduled ?? publishTap)?.wake === false ? { handled: true } : {}),
     }).pipe(Effect.mapError(() => invalidState));
     const previous = yield* repo.findClientMessage({
       ...member,
@@ -570,6 +778,8 @@ const make = Effect.gen(function* () {
       const at = yield* now;
       const closed = yield* repo.updateWidget({
         ...widget,
+        // A tap's results are the card's own words, shown to whoever may tap it.
+        audience: "chat",
         expectedRevision: widget.revision,
         closedAt: at,
         updatedAt: at,
@@ -578,9 +788,15 @@ const make = Effect.gen(function* () {
         hub.publish({ type: "widget.updated", orgId: identity.orgId, widget: closed }),
       );
     }
-    if (reminder !== null || scheduled !== null) {
+    if (reminder !== null || scheduled !== null || publishTap !== null) {
       const nowMs = yield* Clock.currentTimeMillis;
       let applied: { readonly state: unknown; readonly closed: boolean } | null = null;
+      // The owner's decision binds to the commit and title the card shows; the follower publishes.
+      if (publishTap !== null)
+        applied = yield* PublishCard.applyPublishTap(widget, publishTap, identity.personId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError(cardTapError),
+        );
       if (reminder !== null) {
         const state = yield* ReminderCard.applyReminderTap(widget, reminder, nowMs).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
@@ -596,7 +812,10 @@ const make = Effect.gen(function* () {
         const at = yield* now;
         const updated = yield* repo.updateWidget({
           ...widget,
+          // A publish card quotes the lead's title, so only the owner's chat may hold it.
+          audience: publishTap === null ? "chat" : "owner",
           state: applied.state,
+          ...(publishTap === null ? {} : { awaiting: [] }),
           expectedRevision: widget.revision,
           closedAt: applied.closed ? at : widget.closedAt,
           updatedAt: at,
@@ -614,6 +833,16 @@ const make = Effect.gen(function* () {
             now: yield* Clock.currentTimeMillis,
             emoji: reaction?.emoji ?? null,
           });
+    // A profile change a lead asked for lands only here, from the owner's own answer on its card.
+    if (choice !== null)
+      yield* answerChange({
+        orgId: identity.orgId,
+        widgetId: widget.widgetId,
+        personId: identity.personId,
+        confirmed: choice.option.kind === "yes",
+        via: reaction === null ? "tap" : "reaction",
+        now: yield* Clock.currentTimeMillis,
+      }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(cardTapError));
     const message = yield* post(identity, member, {
       chatId: widget.chatId,
       kind: "widget_action",
@@ -630,6 +859,7 @@ const make = Effect.gen(function* () {
       // Compare-and-set on the revision the tap saw: the first answer settles the card.
       const answered = yield* repo.updateWidget({
         ...widget,
+        audience: "chat",
         state: answer,
         awaiting: [],
         expectedRevision: widget.revision,
@@ -655,28 +885,67 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toPersistenceSqlError("KinChatService.isLatestLeadMessage")),
   );
+  // Earlier versions posted Kin's own notes (a memory change, a reminder it set) as system rows.
+  // No feed draws them, so none is a chat's last line.
+  const isBookkeeping = Effect.fn("KinChatService.isBookkeeping")(function* (message: KinMessage) {
+    if (message.author._tag !== "system") return false;
+    if (message.widgetId === null) return BOOKKEEPING_TEXT.test(message.body);
+    const widget = yield* repo.getWidget({ orgId: message.orgId, widgetId: message.widgetId });
+    if (Option.isNone(widget)) return false;
+    if (widget.value.type === KIN_MEMORY_CHANGES_CARD) return true;
+    if (widget.value.type !== "deferral") return false;
+    const phase = Option.getOrUndefined(deferralCardOption(widget.value.state))?.phase;
+    // A card still asking the owner something is theirs to see.
+    return !(widget.value.closedAt === null && (phase === "heads_up" || phase === "asked"));
+  });
   const summary = Effect.fn("KinChatService.summary")(function* (
     identity: PersonIdentity,
     chatId: KinChatId,
   ): Effect.fn.Return<KinChatSummary, ServiceError> {
     const member = yield* memberFor(identity, chatId);
     const chat = yield* requireRecord(repo.getChat({ orgId: identity.orgId, chatId }));
+    // Owners' history keeps dismissed messages, which no feed draws; the preview skips them.
     const history = yield* repo.history({
       ...chat,
       beforeSeq: chat.lastSeq + 1,
-      limit: 1,
+      limit: PREVIEW_LOOKBACK,
       viewerMemberId: member.memberId,
     });
+    let lastMessage: KinMessage | null = null;
+    for (const message of history.messages.toReversed()) {
+      if (message.status === "dismissed" || (yield* isBookkeeping(message))) continue;
+      lastMessage = message;
+      break;
+    }
+    const group = chat.kind !== "direct";
+    const author =
+      group &&
+      lastMessage?.author._tag === "human" &&
+      lastMessage.author.memberId !== member.memberId
+        ? yield* repo.getPerson({ orgId: chat.orgId, personId: lastMessage.author.personId })
+        : Option.none();
+    const shown =
+      lastMessage === null
+        ? null
+        : (yield* docsForViewer(identity.orgId, identity, {
+            messages: [lastMessage],
+            widgets: [],
+          }).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.mapError(toPersistenceSqlError("KinChatService.privateDocs")),
+          )).messages[0]!;
     return {
       ...chat,
-      members: yield* repo.listMembers(chat),
-      lastMessage: history.messages[0] ?? null,
+      // A list row never carries a group's member list; `kin.chat.members` does.
+      members: group ? [member] : yield* repo.listMembers(chat),
+      lastMessage: shown,
+      ...(Option.isSome(author) ? { lastAuthorName: author.value.displayName } : {}),
       unread: yield* repo.unreadCount(member),
       working:
         Option.isSome(presence) &&
         presence.value
-          .snapshot(identity.orgId, chatId)
-          .presence.some((line) => WORKING_PRESENCE.has(line.state)),
+          .lines(identity.orgId, chatId)
+          .some((line) => WORKING_PRESENCE.has(line.state)),
     };
   });
   const snapshot = Effect.fn("KinChatService.snapshot")(
@@ -697,6 +966,185 @@ const make = Effect.gen(function* () {
     },
     (effect) => transaction(effect).pipe(NodeSqliteClient.readOnly),
   );
+  // The message itself, once any files are claimed: one transaction, no file work inside it.
+  const sendClaimed = Effect.fn("KinChatService.sendClaimed")(function* (
+    caller: Caller,
+    input: SendInput,
+    attachments: ReadonlyArray<KinAttachment>,
+  ) {
+    const identity = yield* identityFor(caller, input);
+    const request = yield* decodeSend(input).pipe(Effect.mapError(() => invalidState));
+    const member = yield* memberFor(identity, request.chatId);
+    yield* canWrite(identity, member);
+    // A lead posts text; only a person's message can be files alone, or point at a doc.
+    if (identity._tag === "agent" && request.body.trim().length === 0) return yield* invalidState;
+    if (identity._tag === "agent" && (request.refs?.length ?? 0) > 0) return yield* invalidState;
+    if (request.mentions !== undefined && request.mentions.length > 100) return yield* invalidState;
+    if (
+      (identity._tag === "agent" && input.intent === undefined) ||
+      (identity._tag === "person" && input.intent !== undefined)
+    )
+      return yield* invalidState;
+    const intent =
+      input.intent === undefined
+        ? null
+        : yield* decodeIntent(input.intent).pipe(Effect.mapError(() => invalidState));
+    const existing = yield* repo.findClientMessage({
+      orgId: identity.orgId,
+      chatId: request.chatId,
+      memberId: member.memberId,
+      kind: "send",
+      clientId: request.clientMessageId,
+    });
+    if (
+      Option.isSome(existing) &&
+      !(yield* callerReads(identity, member, existing.value.messageId))
+    )
+      return yield* notFound;
+    const chat = yield* requireRecord(repo.getChat(member));
+    if (identity._tag === "agent" && Option.isNone(existing)) {
+      const used = yield* repo.wakeupPosts({
+        orgId: identity.orgId,
+        chatId: request.chatId,
+        agentId: identity.agentId,
+        threadId: identity.threadId,
+      });
+      if (
+        used.messages >= KIN_WAKEUP_MESSAGE_LIMIT ||
+        used.chars + request.body.length > KIN_WAKEUP_CHAR_LIMIT
+      )
+        return yield* new KinChatError({
+          reason: "limit",
+          message: "This wake-up has posted all it may in this chat.",
+        });
+    }
+    const authorization =
+      identity._tag === "agent" && Option.isNone(existing)
+        ? yield* floor.authorize(identity, chat, intent ?? "answer", input.floorGrant)
+        : { runId: null };
+    const message = yield* post(identity, member, {
+      ...request,
+      // Never the request's own: those name uploads, these the files kept for the chat.
+      attachments,
+      kind: "text",
+      intent,
+      floorRunId: authorization.runId,
+      mentions: request.mentions ?? [],
+      replyTo: request.replyTo ?? null,
+      widgetId: null,
+      clientId: { kind: "send", id: request.clientMessageId },
+    });
+    if (Option.isNone(existing) && identity._tag === "agent" && authorization.runId === null)
+      yield* floor.recordNotice(identity, message);
+    return message;
+  }, transaction);
+  // An agent's card that is its own message: `kin_ask`'s question and `kin_chart`'s chart.
+  const postCard = Effect.fn("KinChatService.postCard")(function* (
+    identity: AgentIdentity,
+    input: {
+      readonly chatId: KinChatId;
+      readonly clientMessageId: string;
+      readonly type: "choice" | "chart" | typeof KIN_DOC_CARD | typeof KIN_VISUAL_CARD_TYPE;
+      readonly intent: KinAgentIntent;
+      readonly state: Effect.Effect<unknown, KinChatError>;
+      /** A stored file the card draws; read under the same rule as the message. */
+      readonly file?: string;
+    },
+  ) {
+    const member = yield* memberFor(identity, input.chatId);
+    yield* canWrite(identity, member);
+    const state = yield* input.state;
+    const existing = yield* repo.findClientMessage({
+      orgId: identity.orgId,
+      chatId: input.chatId,
+      memberId: member.memberId,
+      kind: "send",
+      clientId: input.clientMessageId,
+    });
+    if (Option.isSome(existing)) {
+      const widget =
+        existing.value.widgetId === null
+          ? Option.none<KinWidget>()
+          : yield* repo.getWidget({ orgId: identity.orgId, widgetId: existing.value.widgetId });
+      if (Option.isNone(widget) || widget.value.type !== input.type) return yield* notAllowed;
+      return widget.value;
+    }
+    const chat = yield* requireRecord(repo.getChat(member));
+    const used = yield* repo.wakeupPosts({
+      orgId: identity.orgId,
+      chatId: input.chatId,
+      agentId: identity.agentId,
+      threadId: identity.threadId,
+    });
+    if (used.messages >= KIN_WAKEUP_MESSAGE_LIMIT)
+      return yield* new KinChatError({
+        reason: "limit",
+        message: "This wake-up has posted all it may in this chat.",
+      });
+    const authorization = yield* floor.authorize(identity, chat, input.intent);
+    const message = yield* post(identity, member, {
+      chatId: input.chatId,
+      body: "",
+      intent: input.intent,
+      kind: "text",
+      mentions: [],
+      replyTo: null,
+      widgetId: null,
+      floorRunId: authorization.runId,
+      clientId: { kind: "send", id: input.clientMessageId },
+      publish: false,
+    });
+    if (authorization.runId === null) yield* floor.recordNotice(identity, message);
+    // Only a question waits on the people in the chat.
+    const awaiting = (input.type === "choice" ? yield* repo.listMembers(member) : []).flatMap(
+      (row) =>
+        row.leftAt === null && row.role !== "guest" && row.principal._tag === "person"
+          ? [row.principal.personId]
+          : [],
+    );
+    const widget: KinWidget = {
+      orgId: identity.orgId,
+      chatId: input.chatId,
+      widgetId: yield* decodeWidgetId(`${input.type}:${message.messageId}`).pipe(Effect.orDie),
+      messageId: message.messageId,
+      widgetClass: "native",
+      type: input.type,
+      revision: 1,
+      state,
+      source: null,
+      feed: null,
+      awaiting,
+      pinnedAt: null,
+      closedAt: null,
+      updatedAt: yield* now,
+    };
+    yield* repo.insertWidget({ ...widget, audience: yield* authorAudience(identity) });
+    if (input.file !== undefined)
+      yield* repo.attachCardFile({
+        orgId: identity.orgId,
+        chatId: input.chatId,
+        messageId: message.messageId,
+        attachmentId: input.file,
+      });
+    const anchor = yield* requireRecord(
+      repo.getMessage({ orgId: identity.orgId, messageId: message.messageId }),
+    );
+    for (const personId of new Set(awaiting))
+      yield* add(identity, {
+        chatId: widget.chatId,
+        personId,
+        messageId: widget.messageId,
+        widgetId: widget.widgetId,
+        reason: "question",
+      });
+    yield* sql.afterCommit(
+      Effect.andThen(
+        hub.publish({ type: "message.posted", orgId: identity.orgId, message: anchor }),
+        hub.publish({ type: "widget.updated", orgId: identity.orgId, widget }),
+      ),
+    );
+    return widget;
+  });
   return KinChatService.of({
     // Trusted server callers only; deliberately absent from RPC and MCP.
     notice: Effect.fn("KinChatService.notice")(function* (input) {
@@ -743,6 +1191,7 @@ const make = Effect.gen(function* () {
         chatId: input.chatId,
         messageId,
         author: { _tag: "system" },
+        audience: input.audience,
         kind: "system",
         body: input.body,
         intent: null,
@@ -793,13 +1242,31 @@ const make = Effect.gen(function* () {
         Effect.fn("KinChatService.org")(function* (identity) {
           const org = yield* requireRecord(repo.getOrg(identity));
           const agents = yield* repo.listAgents(identity);
+          // Only the agents this person owns (the owner owns every one), may message, or shares
+          // a chat with: a teammate does not learn the rest exist.
+          const visible = yield* sql<{ agentId: string }>`SELECT a.agent_id AS "agentId"
+            FROM kin_agents a WHERE a.org_id = ${identity.orgId} AND (
+              a.owner_person_id = ${identity.personId}
+              OR EXISTS (SELECT 1 FROM kin_lead_access x WHERE x.org_id = a.org_id
+                AND x.agent_id = a.agent_id AND x.person_id = ${identity.personId}
+                AND x.revoked_at IS NULL)
+              OR EXISTS (SELECT 1 FROM kin_chat_members p JOIN kin_chat_members m
+                ON m.org_id = p.org_id AND m.chat_id = p.chat_id AND m.principal_kind = 'agent'
+                  AND m.agent_id = a.agent_id AND m.left_at IS NULL
+                WHERE p.org_id = a.org_id AND p.principal_kind = 'person'
+                  AND p.person_id = ${identity.personId} AND p.left_at IS NULL))`.pipe(
+            Effect.map((rows) => new Set(rows.map((row) => row.agentId))),
+            Effect.mapError(toPersistenceSqlError("KinChatService.org")),
+          );
           return {
             ...org,
-            agents: agents.map(({ agentId, displayName, retiredAt }) => ({
-              agentId,
-              displayName,
-              retired: retiredAt !== null,
-            })),
+            agents: agents
+              .filter(({ agentId }) => visible.has(agentId))
+              .map(({ agentId, displayName, retiredAt }) => ({
+                agentId,
+                displayName,
+                retired: retiredAt !== null,
+              })),
           };
         }),
       );
@@ -818,6 +1285,73 @@ const make = Effect.gen(function* () {
         member: updated,
       });
       return updated;
+    }, transaction),
+    clear: Effect.fn("KinChatService.clear")(function* (caller, input) {
+      const identity = yield* personFor(caller, input);
+      const member = yield* memberFor(identity, input.chatId);
+      const chat = yield* requireRecord(repo.getChat(member));
+      if (chat.archivedAt !== null) return yield* notFound;
+      const people = (yield* repo.listMembers(chat)).filter(
+        (row) => row.leftAt === null && row.principal._tag === "person",
+      );
+      // Read from stored rows: a direct chat is its one person's, a group the organisation
+      // owner's. Being in a chat with others is never enough.
+      const allowed =
+        chat.kind === "direct"
+          ? people.length === 1
+          : member.role === "owner" &&
+            (yield* isOrgOwner(identity.orgId, identity.personId).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.mapError(toPersistenceSqlError("KinChatService.clear")),
+            ));
+      if (!allowed)
+        return yield* new KinChatError({
+          reason: "not_allowed",
+          message: "Only the owner can clear this chat.",
+        });
+      const clearedAtMs = yield* Clock.currentTimeMillis;
+      const cleared = yield* repo.clearChat({
+        orgId: chat.orgId,
+        chatId: chat.chatId,
+        clearedAt: DateTime.formatIso(DateTime.makeUnsafe(clearedAtMs)),
+        clearedAtMs,
+      });
+      for (const item of cleared.waiting)
+        yield* hub.publish({ type: "waiting.updated", orgId: chat.orgId, item });
+      yield* hub.publish({
+        type: "chat.cleared",
+        orgId: chat.orgId,
+        chatId: chat.chatId,
+        lastSeq: cleared.lastSeq,
+        lastChangeSeq: cleared.lastChangeSeq,
+      });
+      // Nothing below can undo the clear, so none of it may fail it.
+      yield* sql.afterCommit(
+        Effect.gen(function* () {
+          for (const card of cleared.taskCards) {
+            const task = yield* TaskCard.decodeTaskCardEffect(card.state).pipe(Effect.option);
+            if (Option.isSome(task) && task.value.threadId !== null)
+              yield* cards.untrack(task.value.threadId, card.widgetId);
+          }
+          if (Option.isSome(stop))
+            yield* stop.value.abortTurns(chat.orgId, cleared.abortedWakeupIds);
+          if (Option.isSome(presence))
+            for (const agentId of cleared.agentIds)
+              yield* syncQueued(presence.value, chat.orgId, agentId).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              );
+          if (Option.isSome(attachmentStore))
+            yield* attachmentStore.value.remove(cleared.attachmentIds);
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin clear chat follow-up failed", {
+              orgId: chat.orgId,
+              chatId: chat.chatId,
+              cause,
+            }),
+          ),
+        ),
+      );
     }, transaction),
     leaveChat: Effect.fn("KinChatService.leaveChat")(function* (identity, input) {
       const caller = yield* memberFor(identity, input.chatId);
@@ -838,26 +1372,50 @@ const make = Effect.gen(function* () {
           const identity = yield* personFor(caller, input);
           const live = yield* hub.subscribeForViewer(identity);
           const member = yield* memberFor(identity, input.chatId);
-          const resumed = yield* repo.resume({
-            ...member,
-            afterSeq: input.afterSeq ?? 0,
-            afterChangeSeq: input.afterChangeSeq,
+          const viewed = Effect.fn("KinChatService.viewed")(function* <
+            T extends {
+              readonly messages: ReadonlyArray<KinMessage>;
+              readonly widgets: ReadonlyArray<KinWidget>;
+            },
+          >(page: T) {
+            return {
+              ...page,
+              ...(yield* docsForViewer(identity.orgId, identity, page).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.mapError(toPersistenceSqlError("KinChatService.privateDocs")),
+              )),
+            };
           });
+          const resumed = yield* viewed(
+            yield* repo.resume({
+              ...member,
+              afterSeq: input.afterSeq ?? 0,
+              afterChangeSeq: input.afterChangeSeq,
+            }),
+          );
           const backlog: KinChatStreamEvent = resumed.reset
-            ? { _tag: "reset", lastSeq: resumed.lastSeq, lastChangeSeq: resumed.lastChangeSeq }
+            ? {
+                _tag: "reset",
+                lastSeq: resumed.lastSeq,
+                lastChangeSeq: resumed.lastChangeSeq,
+                ...(resumed.cleared === true ? { cleared: true } : {}),
+                ...clearedAt(resumed.clearedSeq),
+              }
             : {
                 _tag: "backlog",
                 lastSeq: resumed.lastSeq,
                 lastChangeSeq: resumed.lastChangeSeq,
+                ...clearedAt(resumed.clearedSeq),
                 messages: resumed.messages,
                 widgets: resumed.widgets,
                 // The chat's live reactions in full, so a resumed client drops withdrawn ones.
                 reactions: yield* Reactions.liveReactions({
                   orgId: identity.orgId,
                   chatId: input.chatId,
+                  viewerMemberId: member.memberId,
                 }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
                 ...(Option.isSome(presence)
-                  ? presence.value.snapshot(identity.orgId, input.chatId)
+                  ? yield* presence.value.snapshot(identity.orgId, input.chatId)
                   : {}),
               };
           const messageChanges = new Map<string, number>();
@@ -867,14 +1425,26 @@ const make = Effect.gen(function* () {
           let cursor = { lastSeq: resumed.lastSeq, lastChangeSeq: resumed.lastChangeSeq };
           let delivered = 0;
           const checkpoint = Effect.fn("KinChatService.subscribeCheckpoint")(function* () {
-            const next = yield* repo.resume({
-              ...member,
-              afterSeq: cursor.lastSeq,
-              afterChangeSeq: cursor.lastChangeSeq,
-            });
+            const next = yield* viewed(
+              yield* repo.resume({
+                ...member,
+                afterSeq: cursor.lastSeq,
+                afterChangeSeq: cursor.lastChangeSeq,
+              }),
+            );
             cursor = { lastSeq: next.lastSeq, lastChangeSeq: next.lastChangeSeq };
             delivered = 0;
-            if (next.reset) return { _tag: "reset", ...cursor } satisfies KinChatStreamEvent;
+            if (next.cleared === true) {
+              messageChanges.clear();
+              revisions.clear();
+            }
+            if (next.reset)
+              return {
+                _tag: "reset",
+                ...cursor,
+                ...(next.cleared === true ? { cleared: true } : {}),
+                ...clearedAt(next.clearedSeq),
+              } satisfies KinChatStreamEvent;
             // The client already holds rows and widgets at the versions this stream delivered.
             const messages = next.messages.filter(
               (m) => (m.changeSeq ?? m.seq) !== messageChanges.get(m.messageId),
@@ -917,6 +1487,24 @@ const make = Effect.gen(function* () {
                       widget: event.widget,
                     });
                   }
+                  case "chat.cleared": {
+                    // One already behind this stream's start was answered by its first event.
+                    if (
+                      event.chatId !== input.chatId ||
+                      event.lastChangeSeq <= cursor.lastChangeSeq
+                    )
+                      return Option.none();
+                    cursor = { lastSeq: event.lastSeq, lastChangeSeq: event.lastChangeSeq };
+                    delivered = 0;
+                    messageChanges.clear();
+                    revisions.clear();
+                    return Option.some<KinChatStreamEvent>({
+                      _tag: "reset",
+                      ...cursor,
+                      cleared: true,
+                      ...clearedAt(event.lastSeq),
+                    });
+                  }
                   case "member.removed":
                   case "member.updated":
                     return event.member.chatId === input.chatId
@@ -955,6 +1543,20 @@ const make = Effect.gen(function* () {
               }),
               Stream.filter(Option.isSome),
               Stream.map((event) => event.value),
+              Stream.mapEffect((event) =>
+                event._tag === "message" || event._tag === "widget"
+                  ? viewed({
+                      messages: event._tag === "message" ? [event.message] : [],
+                      widgets: event._tag === "widget" ? [event.widget] : [],
+                    }).pipe(
+                      Effect.map((page): KinChatStreamEvent =>
+                        event._tag === "message"
+                          ? { ...event, message: page.messages[0]! }
+                          : { ...event, widget: page.widgets[0]! },
+                      ),
+                    )
+                  : Effect.succeed(event),
+              ),
               // Widget writes bump their anchor's change_seq, so they count toward the refresh too.
               // The dedupe state above is updated per event; the hub delivers one event per chunk.
               Stream.mapEffect((event) =>
@@ -971,7 +1573,13 @@ const make = Effect.gen(function* () {
                   : Effect.succeed([event]),
               ),
               Stream.flattenIterable,
-              Stream.takeUntil((event) => event._tag === "member" && event.member.leftAt !== null),
+              // Only the viewer's own leaving ends their stream; the others stay in the chat.
+              Stream.takeUntil(
+                (event) =>
+                  event._tag === "member" &&
+                  event.member.leftAt !== null &&
+                  event.member.memberId === member.memberId,
+              ),
             ),
           );
         }),
@@ -1008,6 +1616,14 @@ const make = Effect.gen(function* () {
                   return yield* requireRecord(repo.getWaiting(event.item)).pipe(
                     Effect.map((item) => ({ _tag: "waiting" as const, item })),
                   );
+                // The viewer was taken out, or the group ended: the row leaves their list.
+                if (event.type === "member.removed") {
+                  const chat = yield* requireRecord(repo.getChat(event.member));
+                  return {
+                    _tag: "chat" as const,
+                    chat: { ...chat, members: [event.member], lastMessage: null, unread: 0 },
+                  };
+                }
                 const chatId =
                   event.type === "chat.created"
                     ? event.chat.chatId
@@ -1015,9 +1631,7 @@ const make = Effect.gen(function* () {
                       ? event.message.chatId
                       : event.type === "widget.updated"
                         ? event.widget.chatId
-                        : event.type === "member.removed"
-                          ? event.member.chatId
-                          : event.chatId;
+                        : event.chatId;
                 return yield* summary(viewer, chatId).pipe(
                   Effect.map((chat) => ({ _tag: "chat" as const, chat })),
                 );
@@ -1059,22 +1673,59 @@ const make = Effect.gen(function* () {
       if (identity.orgId !== input.orgId) return yield* notFound;
       const person = yield* requireRecord(repo.getPerson(identity));
       const agent = yield* requireRecord(repo.getAgent(input));
-      if (agent.ownerPersonId !== person.personId || agent.retiredAt !== null)
+      if (agent.retiredAt !== null) return yield* notAllowed;
+      const own = agent.ownerPersonId === person.personId;
+      // Someone else's lead: only while its owner lets this person message it.
+      if (
+        !own &&
+        !(yield* LeadAccess.allowed({ ...input, personId: person.personId }).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError(toPersistenceSqlError("KinChatService.createDirect")),
+        ))
+      )
         return yield* notAllowed;
       const chatId = yield* decodeChatId(SecureRandom.uuidV4Unsafe()).pipe(Effect.orDie);
       const chat = yield* repo.createChat({
         orgId: identity.orgId,
         chatId,
         kind: "direct",
-        directKey: `${person.personId}:${agent.agentId}`,
+        directKey: LeadAccess.directKey(person.personId, agent.agentId),
         title: null,
         teamId: null,
         lastMessageAt: null,
         createdAt: yield* now,
         archivedAt: null,
       });
+      // The chat's owner role carries the lead's owner's rights, so a teammate is a member.
+      const role = own ? "owner" : "member";
       if (chat.chatId !== chatId) {
-        yield* memberFor(identity, chat.chatId);
+        if (own) {
+          yield* memberFor(identity, chat.chatId);
+          return chat;
+        }
+        // Allowed again after being taken out: the same chat, open for writing once more.
+        const mine = (yield* repo.listMembers(chat)).find(
+          (member) =>
+            member.principal._tag === "person" && member.principal.personId === person.personId,
+        );
+        if (mine === undefined) return yield* notFound;
+        if (mine.leftAt === null && mine.role === "member") return chat;
+        const back =
+          mine.leftAt === null
+            ? yield* requireRecord(repo.setRole({ ...mine, role: "member" }))
+            : yield* repo.addMember({
+                ...mine,
+                role: "member",
+                joinedAt: yield* now,
+                leftAt: null,
+                mutedUntil: null,
+              });
+        yield* hub.publish({
+          type: "member.updated",
+          orgId: chat.orgId,
+          chatId: chat.chatId,
+          member: back,
+        });
         return chat;
       }
       for (const principal of [
@@ -1086,7 +1737,7 @@ const make = Effect.gen(function* () {
           chatId: chat.chatId,
           memberId: yield* decodeMemberId(SecureRandom.uuidV4Unsafe()).pipe(Effect.orDie),
           principal,
-          role: principal._tag === "person" ? "owner" : "member",
+          role: principal._tag === "person" ? role : "member",
           joinedAt: chat.createdAt,
           leftAt: null,
           mutedUntil: null,
@@ -1095,84 +1746,104 @@ const make = Effect.gen(function* () {
       yield* hub.publish({ type: "chat.created", orgId: identity.orgId, chat });
       return chat;
     }, transaction),
-    send: Effect.fn("KinChatService.send")(function* (identity, input) {
-      identity = yield* identityFor(identity, input);
-      const request = yield* decodeSend(input).pipe(Effect.mapError(() => invalidState));
-      const member = yield* memberFor(identity, request.chatId);
+    attachmentReadable: Effect.fn("KinChatService.attachmentReadable")(
+      function* (caller, attachmentId) {
+        const owner = yield* repo.attachmentChat(attachmentId);
+        if (Option.isNone(owner)) return yield* docFileReadable(caller, attachmentId);
+        const identity =
+          "_tag" in caller ? caller : caller.find((viewer) => viewer.orgId === owner.value.orgId);
+        if (identity === undefined || identity.orgId !== owner.value.orgId) return false;
+        const members = yield* repo.listMembers(owner.value);
+        const member = members.find(
+          (member) =>
+            member.leftAt === null &&
+            member.principal._tag === "person" &&
+            member.principal.personId === identity.personId,
+        );
+        // A file on a message from before they joined is not theirs to fetch.
+        return member !== undefined && (yield* readable(member, owner.value.messageId));
+      },
+    ),
+    send: Effect.fn("KinChatService.send")(function* (caller, input) {
+      const requested = input.attachments ?? [];
+      if (requested.length === 0) return yield* sendClaimed(caller, input, []);
+      // Files are copied before the message's transaction, never inside it.
+      const identity = yield* identityFor(caller, input);
+      if (identity._tag !== "person") return yield* invalidState;
+      const member = yield* memberFor(identity, input.chatId);
       yield* canWrite(identity, member);
-      if (request.mentions !== undefined && request.mentions.length > 100)
-        return yield* invalidState;
-      if (
-        (identity._tag === "agent" && input.intent === undefined) ||
-        (identity._tag === "person" && input.intent !== undefined)
-      )
-        return yield* invalidState;
-      const intent =
-        input.intent === undefined
-          ? null
-          : yield* decodeIntent(input.intent).pipe(Effect.mapError(() => invalidState));
-      const existing = yield* repo.findClientMessage({
+      const sent = repo.findClientMessage({
         orgId: identity.orgId,
-        chatId: request.chatId,
+        chatId: input.chatId,
         memberId: member.memberId,
         kind: "send",
-        clientId: request.clientMessageId,
+        clientId: input.clientMessageId,
       });
-      const chat = yield* requireRecord(repo.getChat(member));
-      if (identity._tag === "agent" && Option.isNone(existing)) {
-        const used = yield* repo.wakeupPosts({
-          orgId: identity.orgId,
-          chatId: request.chatId,
-          agentId: identity.agentId,
-          threadId: identity.threadId,
+      const existing = yield* sent;
+      // A resend finds its message and its files already kept.
+      if (Option.isSome(existing))
+        return yield* sendClaimed(identity, input, existing.value.attachments ?? []);
+      if (Option.isNone(attachmentStore))
+        return yield* new KinChatError({
+          reason: "unavailable",
+          message: "Attachments are unavailable.",
         });
-        if (
-          used.messages >= KIN_WAKEUP_MESSAGE_LIMIT ||
-          used.chars + request.body.length > KIN_WAKEUP_CHAR_LIMIT
-        )
-          return yield* new KinChatError({
-            reason: "limit",
-            message: "This wake-up has posted all it may in this chat.",
-          });
-      }
-      const authorization =
-        identity._tag === "agent" && Option.isNone(existing)
-          ? yield* floor.authorize(identity, chat, intent ?? "answer", input.floorGrant)
-          : { runId: null };
-      const message = yield* post(identity, member, {
-        ...request,
-        kind: "text",
-        intent,
-        floorRunId: authorization.runId,
-        mentions: request.mentions ?? [],
-        replyTo: request.replyTo ?? null,
-        widgetId: null,
-        clientId: { kind: "send", id: request.clientMessageId },
-      });
-      if (Option.isNone(existing) && identity._tag === "agent" && authorization.runId === null)
-        yield* floor.recordNotice(identity, message);
-      return message;
-    }, transaction),
+      if (input.uploader === undefined) return yield* invalidState;
+      const store = attachmentStore.value;
+      const claimed = yield* store.claim(requested, input.uploader);
+      return yield* sendClaimed(identity, input, claimed.attachments).pipe(
+        Effect.tap((message) =>
+          message.attachments?.[0]?.id === claimed.attachments[0]?.id
+            ? store.discardPending(requested)
+            : store.release(claimed),
+        ),
+        // An interrupted send may still have committed; its files go only if no message has them.
+        Effect.onError(() =>
+          sent.pipe(
+            Effect.flatMap((written) =>
+              Option.isNone(written) ? store.release(claimed) : Effect.void,
+            ),
+            Effect.ignore,
+          ),
+        ),
+      );
+    }),
     read: Effect.fn("KinChatService.read")(function* (identity, input) {
       const request = yield* decodeRead(input).pipe(Effect.mapError(() => invalidState));
       const member = yield* memberFor(identity, request.chatId);
-      return yield* repo.messagesAfter({
+      if (identity._tag === "agent" && !(yield* leadMayRead(identity, request.chatId)))
+        return yield* notFound;
+      const viewer = yield* docViewer(identity);
+      const messages = yield* repo.messagesAfter({
         orgId: identity.orgId,
         chatId: request.chatId,
         afterSeq: request.afterSeq ?? 0,
         limit: request.limit ?? 50,
         viewerMemberId: member.memberId,
+        // Whatever page it asks for, a shared turn sees nothing below the chat's history floor.
+        fromHistoryFloor: "sharedTurn" in viewer && viewer.sharedTurn,
       });
+      return (yield* docsForViewer(identity.orgId, viewer, { messages, widgets: [] }).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.mapError(toPersistenceSqlError("KinChatService.privateDocs")),
+      )).messages;
     }, transaction),
     history: Effect.fn("KinChatService.history")(
       function* (identity, input) {
         identity = yield* identityFor(identity, input);
         const member = yield* memberFor(identity, input.chatId);
-        const page = yield* repo.history({
+        const stored = yield* repo.history({
           ...input,
           orgId: identity.orgId,
           viewerMemberId: member.memberId,
         });
+        const page = {
+          ...stored,
+          ...(yield* docsForViewer(identity.orgId, yield* docViewer(identity), stored).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.mapError(toPersistenceSqlError("KinChatService.privateDocs")),
+          )),
+        };
         return {
           ...page,
           reactions: yield* Reactions.liveReactions({
@@ -1260,6 +1931,7 @@ const make = Effect.gen(function* () {
       const message = yield* repo.insertMessage({
         orgId: input.orgId,
         chatId: input.chatId,
+        audience: input.audience,
         messageId: KinMessageId.make(SecureRandom.uuidV4Unsafe()),
         author: {
           _tag: "agent",
@@ -1298,7 +1970,7 @@ const make = Effect.gen(function* () {
         closedAt: null,
         updatedAt,
       };
-      yield* repo.insertWidget(widget);
+      yield* repo.insertWidget({ ...widget, audience: input.audience });
       const anchor = yield* requireRecord(
         repo.getMessage({ ...input, messageId: message.messageId }),
       );
@@ -1315,6 +1987,7 @@ const make = Effect.gen(function* () {
       if ((existing.closedAt !== null) === input.closed) return existing;
       const widget = yield* repo.updateWidget({
         ...existing,
+        audience: input.audience,
         awaiting: input.closed ? [] : existing.awaiting,
         expectedRevision: existing.revision,
         closedAt: input.closed ? yield* now : null,
@@ -1341,6 +2014,33 @@ const make = Effect.gen(function* () {
       const updatedAt = yield* now;
       const widget = yield* repo.updateWidget({
         ...existing,
+        audience: input.audience,
+        state: { ...next, updatedAt },
+        expectedRevision: existing.revision,
+        updatedAt,
+      });
+      yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
+      return widget;
+    }, transaction),
+    setTaskCardDocuments: Effect.fn("KinChatService.setTaskCardDocuments")(function* (input) {
+      const existing = yield* requireRecord(
+        repo.getWidget({ orgId: input.orgId, widgetId: yield* taskCardWidgetId(input) }),
+      );
+      if (existing.type !== "task" || existing.chatId !== input.chatId) return yield* notFound;
+      const previous = yield* TaskCard.decodeTaskCardEffect(existing.state).pipe(
+        Effect.mapError(() => invalidState),
+      );
+      if (previous.remoteEnvironmentId !== null) return yield* invalidState;
+      const next = {
+        ...previous,
+        documents: input.documents,
+        ...(input.lastError === null ? {} : { lastError: input.lastError }),
+      };
+      if (TaskCard.taskCardEquivalent(next, previous)) return existing;
+      const updatedAt = yield* now;
+      const widget = yield* repo.updateWidget({
+        ...existing,
+        audience: "owner",
         state: { ...next, updatedAt },
         expectedRevision: existing.revision,
         updatedAt,
@@ -1359,12 +2059,21 @@ const make = Effect.gen(function* () {
       if (
         input.type === "owner_check" ||
         input.type === "deferral" ||
+        // Only Kin's publish gate writes one, from its own git and GitHub.
+        input.type === KIN_WORKER_PUBLISH_CARD ||
         // Only kin_ask posts one, and only a tap answers it.
         input.type === "choice" ||
+        // Only the doc tools post one, from the stored doc.
+        input.type === KIN_DOC_CARD ||
+        // Only kin_chart posts one, and it never changes.
+        input.type === "chart" ||
+        // Only kin_visual posts one, and its page is stored once.
+        input.type === KIN_VISUAL_CARD_TYPE ||
         (input.type === "task" && input.widgetId === undefined)
       )
         return yield* notAllowed;
       let state = yield* validateState(input.type, input.state);
+      const audience = yield* authorAudience(identity);
       let widget: KinWidget;
       if (input.widgetId === undefined) {
         if (input.revision !== undefined) return yield* invalidState;
@@ -1395,7 +2104,7 @@ const make = Effect.gen(function* () {
           closedAt: input.closed === true ? yield* now : null,
           updatedAt: yield* now,
         };
-        yield* repo.insertWidget(widget);
+        yield* repo.insertWidget({ ...widget, audience });
         const anchor = yield* requireRecord(
           repo.getMessage({ orgId: identity.orgId, messageId: message.messageId }),
         );
@@ -1411,6 +2120,8 @@ const make = Effect.gen(function* () {
           );
           if (anchor.author._tag !== "agent" || anchor.author.memberId !== member.memberId)
             return yield* notAllowed;
+          // Its server-held fields come back to the caller, so a shared turn reads it first.
+          if (!(yield* callerReads(identity, member, existing.messageId))) return yield* notFound;
         }
         if (
           existing.type !== input.type ||
@@ -1452,6 +2163,7 @@ const make = Effect.gen(function* () {
         }
         widget = yield* repo.updateWidget({
           ...existing,
+          audience,
           state,
           awaiting,
           expectedRevision: input.revision,
@@ -1485,13 +2197,12 @@ const make = Effect.gen(function* () {
       );
       const member = yield* memberFor(identity, widget.chatId);
       yield* canWrite(identity, member);
+      if (!(yield* readable(member, widget.messageId))) return yield* notFound;
       if (widget.type === "approval")
         return yield* new KinChatError({
           reason: "use_approvals",
           message: "Use the signed approvals service.",
         });
-      // Verdicts and raises go to the owner-only kin.levels methods, never the lead's queue.
-      if (widget.type === "shadow_review" || widget.type === "promotion") return yield* notAllowed;
       if (widget.type === "owner_check") {
         if (member.role !== "owner") return yield* notAllowed;
         const card = yield* decodeOwnerCheckCard(widget.state).pipe(
@@ -1505,7 +2216,9 @@ const make = Effect.gen(function* () {
       }
       // Reminders and scheduled tasks act for the owner, so only the owner taps them.
       if (
-        (widget.type === "reminder" || widget.type === "scheduled_task") &&
+        (widget.type === "reminder" ||
+          widget.type === "scheduled_task" ||
+          widget.type === KIN_WORKER_PUBLISH_CARD) &&
         member.role !== "owner"
       )
         return yield* notAllowed;
@@ -1543,6 +2256,7 @@ const make = Effect.gen(function* () {
       // Membership of the message's own chat: a non-member, or another org's caller, gets not_found.
       const member = yield* memberFor(identity, message.chatId);
       yield* canWrite(identity, member);
+      if (!(yield* callerReads(identity, member, message.messageId))) return yield* notFound;
       if (message.status !== "posted") return yield* notAllowed;
       const widget =
         message.widgetId === null
@@ -1613,23 +2327,36 @@ const make = Effect.gen(function* () {
       const chat = yield* requireRecord(repo.getChat(member));
       const withSql = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
         effect.pipe(Effect.provideService(SqlClient.SqlClient, sql));
-      // In the owner's direct chat, a yes/no on the lead's latest question answers it and a 👎
-      // anywhere else asks what was wrong, once per message. Every other reaction is feedback
-      // the lead reads on its next wake-up.
-      const woke =
-        request.on &&
+      // In the owner's direct chat, a yes/no on the lead's latest message and a 👎 anywhere wake
+      // the lead once. A changed answer on the message that last woke it (a yes withdrawn, or yes
+      // to no and back) wakes it again, past the cooldown, a few times at most. Every other
+      // reaction is feedback it reads on its next wake-up.
+      const eligible =
         !answered &&
         identity._tag === "person" &&
         member.role === "owner" &&
         chat.kind === "direct" &&
         message.author._tag === "agent" &&
-        nowMs - Date.parse(message.createdAt) < SOFT_REPLY_WINDOW_MS &&
-        (request.emoji === Reactions.KIN_CLARIFY_REACTION ||
-          (Reactions.reactionAnswer(request.emoji) !== null &&
-            Reactions.asksQuestion(message.body) &&
-            (yield* isLatestLeadMessage(message)))) &&
-        !(yield* withSql(Reactions.wokeOnMessage(message))) &&
-        !(yield* withSql(Reactions.recentlyWoke({ ...key, now: nowMs })));
+        nowMs - Date.parse(message.createdAt) < SOFT_REPLY_WINDOW_MS;
+      const answer = Reactions.reactionAnswer(request.emoji);
+      const past = eligible ? yield* withSql(Reactions.reactionWake(message)) : undefined;
+      const woke =
+        eligible &&
+        (past === undefined
+          ? request.on &&
+            (request.emoji === Reactions.KIN_CLARIFY_REACTION ||
+              (answer !== null && (yield* isLatestLeadMessage(message)))) &&
+            !(yield* withSql(Reactions.recentlyWoke({ ...key, now: nowMs })))
+          : past.latest &&
+            past.wakes < Reactions.KIN_REACTION_WAKES_PER_MESSAGE &&
+            (request.on
+              ? answer !== null && answer !== past.answer
+              : answer === "yes" && past.answer === "yes"));
+      if (woke)
+        yield* withSql(
+          Reactions.recordWake({ ...key, answer: request.on ? answer : null, now: nowMs }),
+        );
+      const changedFrom = woke && past !== undefined && request.on ? past.emoji : undefined;
       if (woke && identity._tag === "person")
         // The lead answers this turn under its own floor run, as it would a message.
         yield* floor.open(
@@ -1663,96 +2390,102 @@ const make = Effect.gen(function* () {
           chatId: message.chatId,
           reaction,
           woke,
+          ...(changedFrom === undefined ? {} : { changedFrom }),
           by,
         });
       return reaction;
     }, transaction),
-    ask: Effect.fn("KinChatService.ask")(function* (identity, input) {
+    ask: Effect.fn("KinChatService.ask")(
+      (identity, input) =>
+        postCard(identity, {
+          chatId: input.chatId,
+          clientMessageId: input.clientMessageId,
+          type: "choice",
+          intent: "question",
+          state: validateState("choice", ChoiceCard.choiceCardState(input)),
+        }),
+      transaction,
+    ),
+    chart: Effect.fn("KinChatService.chart")(
+      (identity, input) =>
+        postCard(identity, {
+          chatId: input.chatId,
+          clientMessageId: input.clientMessageId,
+          type: "chart",
+          intent: input.intent,
+          state: ChartCard.chartCardState(input).pipe(
+            Effect.flatMap((state) => validateState("chart", state)),
+          ),
+        }),
+      transaction,
+    ),
+    visual: Effect.fn("KinChatService.visual")(function* (identity, input) {
+      const page = yield* VisualCard.visualPage(input);
       const member = yield* memberFor(identity, input.chatId);
       yield* canWrite(identity, member);
-      const state = yield* validateState("choice", ChoiceCard.choiceCardState(input));
-      const existing = yield* repo.findClientMessage({
-        orgId: identity.orgId,
-        chatId: input.chatId,
-        memberId: member.memberId,
-        kind: "send",
-        clientId: input.clientMessageId,
-      });
-      if (Option.isSome(existing)) {
-        const widget =
-          existing.value.widgetId === null
-            ? Option.none<KinWidget>()
-            : yield* repo.getWidget({ orgId: identity.orgId, widgetId: existing.value.widgetId });
-        if (Option.isNone(widget) || widget.value.type !== "choice") return yield* notAllowed;
-        return widget.value;
+      const wanted = kinVisualFileReferences(page.html);
+      if (wanted.length > 0) {
+        const files = new Set((yield* repo.chatFiles(member)).map((file) => file.attachmentId));
+        const missing = wanted.find((id) => !files.has(id));
+        if (missing !== undefined)
+          return yield* new KinChatError({
+            reason: "invalid_state",
+            message: `${KIN_VISUAL_FILE_SCHEME}${missing} is not a file in this chat. Use the id of an image, audio or video already sent here, or put your own image in the page as a data: URL.`,
+          });
       }
-      const chat = yield* requireRecord(repo.getChat(member));
-      const used = yield* repo.wakeupPosts({
-        orgId: identity.orgId,
-        chatId: input.chatId,
-        agentId: identity.agentId,
-        threadId: identity.threadId,
-      });
-      if (used.messages >= KIN_WAKEUP_MESSAGE_LIMIT)
+      if (Option.isNone(attachmentStore))
         return yield* new KinChatError({
-          reason: "limit",
-          message: "This wake-up has posted all it may in this chat.",
+          reason: "unavailable",
+          message: "Attachments are unavailable.",
         });
-      const authorization = yield* floor.authorize(identity, chat, "question");
-      const message = yield* post(identity, member, {
-        chatId: input.chatId,
-        body: "",
-        intent: "question",
-        kind: "text",
-        mentions: [],
-        replyTo: null,
-        widgetId: null,
-        floorRunId: authorization.runId,
-        clientId: { kind: "send", id: input.clientMessageId },
-        publish: false,
-      });
-      if (authorization.runId === null) yield* floor.recordNotice(identity, message);
-      const awaiting = (yield* repo.listMembers(member)).flatMap((row) =>
-        row.leftAt === null && row.role !== "guest" && row.principal._tag === "person"
-          ? [row.principal.personId]
-          : [],
+      const store = attachmentStore.value;
+      // The file is written before the transaction and dropped unless this call's card keeps it.
+      const attachmentId = yield* store.storePage(page.html);
+      const kept = (widget: KinWidget) =>
+        Predicate.hasProperty(widget.state, "attachmentId") &&
+        widget.state.attachmentId === attachmentId;
+      return yield* transaction(
+        postCard(identity, {
+          chatId: input.chatId,
+          clientMessageId: input.clientMessageId,
+          type: KIN_VISUAL_CARD_TYPE,
+          intent: input.intent,
+          state: validateState(KIN_VISUAL_CARD_TYPE, {
+            title: page.title,
+            attachmentId,
+            height: page.height,
+          }),
+          file: attachmentId,
+        }),
+      ).pipe(
+        Effect.tap((widget) => (kept(widget) ? Effect.void : store.remove([attachmentId]))),
+        Effect.onError(() => store.remove([attachmentId])),
       );
-      const widget: KinWidget = {
-        orgId: identity.orgId,
-        chatId: input.chatId,
-        widgetId: yield* decodeWidgetId(`choice:${message.messageId}`).pipe(Effect.orDie),
-        messageId: message.messageId,
-        widgetClass: "native",
-        type: "choice",
-        revision: 1,
-        state,
-        source: null,
-        feed: null,
-        awaiting,
-        pinnedAt: null,
-        closedAt: null,
-        updatedAt: yield* now,
-      };
-      yield* repo.insertWidget(widget);
-      const anchor = yield* requireRecord(
-        repo.getMessage({ orgId: identity.orgId, messageId: message.messageId }),
-      );
-      for (const personId of new Set(awaiting))
-        yield* add(identity, {
-          chatId: widget.chatId,
-          personId,
-          messageId: widget.messageId,
-          widgetId: widget.widgetId,
-          reason: "question",
-        });
-      yield* sql.afterCommit(
-        Effect.andThen(
-          hub.publish({ type: "message.posted", orgId: identity.orgId, message: anchor }),
-          hub.publish({ type: "widget.updated", orgId: identity.orgId, widget }),
+    }),
+    visualSources: Effect.fn("KinChatService.visualSources")(function* (attachmentId) {
+      const owner = yield* repo.attachmentChat(attachmentId);
+      if (Option.isNone(owner)) return Option.none();
+      const files = yield* repo.chatFiles(owner.value);
+      return Option.some({
+        orgId: owner.value.orgId,
+        files: files.flatMap((file) =>
+          file.attachmentId === attachmentId
+            ? []
+            : [{ attachmentId: file.attachmentId, mimeType: file.mimeType }],
         ),
-      );
-      return widget;
-    }, transaction),
+      });
+    }),
+    showCard: Effect.fn("KinChatService.showCard")(
+      (identity, input) =>
+        postCard(identity, {
+          chatId: input.chatId,
+          clientMessageId: input.clientMessageId,
+          type: input.type,
+          intent: "answer",
+          state: validateState(input.type, input.state),
+        }),
+      transaction,
+    ),
     addWaiting: Effect.fn("KinChatService.addWaiting")(function* (identity, input) {
       yield* memberFor(identity, input.chatId);
       if (input.reason === "approval") return yield* notAllowed;

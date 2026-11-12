@@ -254,6 +254,21 @@ export function mapRemoteEnvironmentError(
   }
 }
 
+export const KIN_JOIN_LINK_SPENT =
+  "This link has already been used or has expired. Ask your team for a new one.";
+
+/** The host answers 400 for a used, expired or revoked invite alike, so one sentence covers them. */
+export function mapKinInviteError(error: RemoteEnvironmentAuthError): ConnectionAttemptError {
+  if (error._tag === "RemoteEnvironmentAuthUndeclaredStatusError" && error.status === 400) {
+    return new ConnectionBlockedError({
+      reason: "authentication",
+      detail: KIN_JOIN_LINK_SPENT,
+      hop: "server",
+    });
+  }
+  return mapRemoteEnvironmentError(error);
+}
+
 /**
  * An older environment server reports a DPoP clock failure as the same generic
  * invalid-credential response as other failures, so keep the compatibility hint

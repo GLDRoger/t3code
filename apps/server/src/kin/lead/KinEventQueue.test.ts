@@ -112,6 +112,24 @@ const finish = Effect.fn("test.finish")(function* (wakeupId: string, org = "a") 
   });
 });
 
+/** The stored post behind a chat event: steering reads its author from here, never the event. */
+const stored = Effect.fn("test.stored")(function* (
+  id: string,
+  chatId: string,
+  personId = "person-lead-a",
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+    SELECT ${`${chatId}-${personId}`}, 'a', ${chatId}, 'person', ${personId}, 'member', '2026-11-07T00:00:00.000Z'
+    WHERE NOT EXISTS (SELECT 1 FROM kin_chat_members WHERE chat_id = ${chatId} AND person_id = ${personId})`;
+  yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+      author_person_id, author_member_id, author_role, kind, body, mentions_json, status, created_at)
+    VALUES (${id}, 'a', ${chatId},
+      (SELECT COALESCE(MAX(seq), 0) + 1 FROM kin_messages WHERE chat_id = ${chatId}), 'human',
+      ${personId}, (SELECT member_id FROM kin_chat_members WHERE chat_id = ${chatId} AND person_id = ${personId}),
+      'member', 'text', 'Invented', '[]', 'posted', '2026-11-07T00:00:00.000Z')`;
+});
+
 describe("KinEventQueue", () => {
   it.effect("coalesces a quiet window and leaves later arrivals for a new batch", () =>
     Effect.gen(function* () {
@@ -302,6 +320,24 @@ describe("KinEventQueue", () => {
       assert.deepStrictEqual(
         (yield* queue.readyLeads(orgId)).map((lead) => lead.agentId),
         ["lead-a"],
+      );
+
+      // An event queued before a retirement is never claimed after it, even before anything
+      // expires it: the claim waits, and takes it only once the lead is restored.
+      yield* sql`UPDATE kin_agents SET retired_at = NULL WHERE agent_id = 'lead-a2'`;
+      yield* queue.enqueue(yield* event("before", "routine", "a", "lead-a2"));
+      yield* sql`UPDATE kin_agents SET retired_at = '2026-11-07T00:00:00.000Z' WHERE agent_id = 'lead-a2'`;
+      const claim = yield* Effect.scoped(queue.claim(input("after-retire", "a", "lead-a2"))).pipe(
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust("2 minutes");
+      assert.deepStrictEqual(yield* sql`SELECT wakeup_id FROM kin_wakeups ORDER BY wakeup_id`, []);
+      yield* sql`UPDATE kin_agents SET retired_at = NULL WHERE agent_id = 'lead-a2'`;
+      yield* queue.enqueue(yield* event("restored", "routine", "a", "lead-a2"));
+      yield* TestClock.adjust("20 seconds");
+      assert.deepStrictEqual(
+        (yield* Fiber.join(claim)).map((entry) => entry.eventId),
+        ["before", "restored"],
       );
     }).pipe(Effect.provide(layer)),
   );
@@ -535,10 +571,10 @@ describe("KinEventQueue", () => {
       yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
         VALUES ('teammate-member', 'a', 'chat-lead-a', 'person', 'teammate', 'member', '2026-11-07T00:00:00.000Z')`;
       const message = (id: string, chatId: string) =>
-        Effect.map(event(id, "chat.message"), (base) => ({
-          ...base,
-          chatId: KinChatId.make(chatId),
-        }));
+        stored(id, chatId).pipe(
+          Effect.andThen(event(id, "chat.message")),
+          Effect.map((base) => ({ ...base, chatId: KinChatId.make(chatId) })),
+        );
       const ids = (events: ReadonlyArray<{ readonly eventId: string }>) =>
         events.map((entry) => entry.eventId);
       yield* queue.enqueue(yield* message("owner-ask", "chat-lead-a"));
@@ -551,8 +587,9 @@ describe("KinEventQueue", () => {
       assert.deepStrictEqual(yield* queue.steer(first), [], "nothing to steer before the run");
       yield* sql`UPDATE kin_wakeups SET run_id = 'run' WHERE wakeup_id = 'lane-a'`;
       yield* queue.enqueue(yield* message("owner-again", "chat-lead-a"));
+      yield* stored("member-again", "chat-lead-a", "teammate");
       const member = {
-        ...(yield* message("member-again", "chat-lead-a")),
+        ...(yield* event("member-again", "chat.message")),
         provenance: {
           _tag: "human" as const,
           personId: KinPersonId.make("teammate"),
@@ -563,15 +600,13 @@ describe("KinEventQueue", () => {
       yield* queue.enqueue(yield* message("other-again", "chat-other"));
       yield* queue.enqueue(yield* event("later-push"));
       const steered = yield* queue.steer(first);
-      assert.deepStrictEqual(ids(steered), ["member-again", "owner-again"]);
-      // Steering adds no authority: the member's event is stored and claimed as it came in.
-      const memberSteered = steered.find((entry) => entry.eventId === "member-again");
-      assert.deepStrictEqual(memberSteered?.provenance, member.provenance);
-      assert.strictEqual(memberSteered?.priority, "P2");
-      assert.strictEqual(steered.find((entry) => entry.eventId === "owner-again")?.priority, "P0");
+      // Only the owner asked this turn, so a teammate's message would lower what it runs as: it
+      // waits for a wake-up of its own.
+      assert.deepStrictEqual(ids(steered), ["owner-again"]);
+      assert.strictEqual(steered[0]?.priority, "P0");
       assert.deepStrictEqual(
         yield* sql`SELECT event_ids FROM kin_wakeups WHERE wakeup_id = 'lane-a'`,
-        [{ event_ids: '["owner-ask","push","member-again","owner-again"]' }],
+        [{ event_ids: '["owner-ask","push","owner-again"]' }],
       );
       assert.deepStrictEqual(yield* queue.steer(first), []);
       yield* finish("lane-a");
@@ -581,10 +616,72 @@ describe("KinEventQueue", () => {
         "other-again",
       ]);
       yield* finish("lane-b");
-      assert.deepStrictEqual(ids(yield* Effect.scoped(queue.claim(input("lane-c")))), [
-        "later-push",
-      ]);
+      const later = yield* Effect.scoped(queue.claim(input("lane-c")));
+      assert.deepStrictEqual(ids(later), ["later-push", "member-again"]);
+      // The member's event is claimed as it came in: a later wake-up adds no authority.
+      const memberClaimed = later.find((entry) => entry.eventId === "member-again");
+      assert.deepStrictEqual(memberClaimed?.provenance, member.provenance);
+      assert.strictEqual(memberClaimed?.priority, "P2");
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "steers a teammate only into a turn a teammate asked, and nothing into an aborted one",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('teammate', 'a', 'teammate', 'Teammate', '2026-11-07T00:00:00.000Z')`;
+        const ids = (events: ReadonlyArray<{ readonly eventId: string }>) =>
+          events.map((entry) => entry.eventId);
+        const says = (id: string, personId: string) =>
+          stored(id, "chat-lead-a", personId).pipe(
+            Effect.andThen(event(id, "chat.message")),
+            Effect.map((base) => ({
+              ...base,
+              provenance: {
+                _tag: "human" as const,
+                personId: KinPersonId.make(personId),
+                memberId: KinMemberId.make(`member-${personId}`),
+              },
+            })),
+          );
+        yield* queue.enqueue(yield* says("teammate-ask", "teammate"));
+        yield* TestClock.adjust("20 seconds");
+        const turn = input("shared");
+        assert.deepStrictEqual(ids(yield* Effect.scoped(queue.claim(turn))), ["teammate-ask"]);
+        yield* sql`UPDATE kin_wakeups SET run_id = 'run' WHERE wakeup_id = 'shared'`;
+        yield* queue.enqueue(yield* says("teammate-again", "teammate"));
+        yield* queue.enqueue(yield* says("owner-adds", "person-lead-a"));
+        // A passed-on request keeps its own origin, and a message no longer stored was cleared.
+        const relayed = yield* says("relayed", "person-lead-a");
+        if (relayed._tag !== "chat.message") return assert.fail("expected a chat message");
+        yield* queue.enqueue({
+          ...relayed,
+          origin: { agentId: KinAgentId.make("lead-a"), chatId: KinChatId.make("chat-lead-a") },
+        });
+        yield* queue.enqueue(yield* event("unstored", "chat.message"));
+        // The turn already runs at the teammate's level: neither message lowers it.
+        assert.deepStrictEqual(ids(yield* queue.steer(turn)), ["owner-adds", "teammate-again"]);
+        // Once the lead called kin_end it has answered; a later message waits for its own turn.
+        yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash)
+          VALUES ('a', 'shared', 'end', 'hash')`;
+        yield* queue.enqueue(yield* says("after-end", "person-lead-a"));
+        assert.deepStrictEqual(yield* queue.steer(turn), []);
+        yield* sql`DELETE FROM kin_lead_tool_calls WHERE wakeup_id = 'shared'`;
+        yield* sql`UPDATE kin_wakeups SET aborted_at = 1 WHERE wakeup_id = 'shared'`;
+        yield* queue.enqueue(yield* says("after-join", "person-lead-a"));
+        assert.deepStrictEqual(yield* queue.steer(turn), []);
+        assert.deepStrictEqual(
+          yield* sql`SELECT event_id, state FROM kin_events WHERE state = 'queued' ORDER BY event_id`,
+          ["after-end", "after-join", "relayed", "unstored"].map((id) => ({
+            event_id: id,
+            state: "queued",
+          })),
+        );
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect.each(["nothing", "a post"] as const)(

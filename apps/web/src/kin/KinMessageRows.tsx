@@ -4,22 +4,28 @@ import {
   kinPlainText,
   type KinFeedRow,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
+import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
+import { kinCardDraws } from "@t3tools/client-runtime/kin/kinCardPresentation";
+import { kinDocRefLabel } from "@t3tools/client-runtime/kin/kinDocs";
 import type { KinOutboxEntry } from "@t3tools/client-runtime/kin/kinOutbox";
+import { KIN_REACTION_NAMES, type KinReactionChip } from "@t3tools/client-runtime/kin/kinReactions";
+import { kinAuthorAvatar } from "@t3tools/client-runtime/kin/kinGroups";
 import {
-  KIN_REACTION_HINT,
-  KIN_REACTION_HINT_LABEL,
-  KIN_REACTION_NAMES,
-  type KinReactionChip,
-} from "@t3tools/client-runtime/kin/kinReactions";
-import { kinSentences } from "@t3tools/client-runtime/kin/kinScreenState";
+  kinAgentAvatar,
+  kinSentences,
+  type KinAvatarView,
+} from "@t3tools/client-runtime/kin/kinScreenState";
+import { KinAvatar } from "./KinAvatar";
 import {
   KIN_REACTION_EMOJI,
   type EnvironmentId,
+  type KinMessageRef,
   type KinPersonId,
   type KinReactionEmoji,
   type KinWidget,
 } from "@t3tools/contracts";
-import { SmilePlusIcon } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import { FileTextIcon, SmilePlusIcon } from "lucide-react";
 
 import ChatMarkdown from "../components/ChatMarkdown";
 import { WorkGroupHeader } from "../components/chat/TimelineWorkGroupRows";
@@ -27,21 +33,35 @@ import { Button } from "../components/ui/button";
 import { Menu, MenuCheckboxItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { cn } from "../lib/utils";
 import { KinCard } from "./KinCards";
+import { KinMessageAttachments } from "./KinMessageAttachments";
 
 type MessageRow = Extract<KinFeedRow, { readonly type: "message" }>;
 type DraftRow = Extract<KinFeedRow, { readonly type: "draft" }>;
 type FoldRow = Extract<KinFeedRow, { readonly type: "fold" }>;
 
 const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
-const formatTime = (iso: string) => timeFormat.format(new Date(iso));
+export const formatKinMessageTime = (iso: string) => timeFormat.format(new Date(iso));
+const formatTime = formatKinMessageTime;
 
-const ROW = "mx-auto flex w-full max-w-3xl flex-col gap-1 px-4 pb-1.5";
-const BUBBLE = "min-w-0 max-w-[85%] rounded-2xl px-3.5 py-2 text-sm";
+const ROW = "mx-auto flex w-full max-w-3xl flex-col gap-1 px-4";
+// Tight inside one author's run, a clear step between authors.
+const rowSpacing = (continues: boolean) => (continues ? "pt-0.5" : "pt-3");
+// The viewer's message in the thread's user bubble; everyone else's on a quieter surface.
+const BUBBLE =
+  "min-w-0 max-w-[85%] rounded-2xl bg-message px-3.5 py-2 text-sm text-message-foreground";
+// Dark accent is a 4% hover wash that vanishes on the black canvas, so dark takes the raised tone.
+const OTHER_BUBBLE =
+  "min-w-0 max-w-[85%] rounded-2xl bg-accent px-3.5 py-2 text-sm text-foreground dark:bg-card";
 
-function AuthorLine(props: { readonly label: string; readonly at: string }) {
+/** Who and when, over the first bubble of a group. The bubble's own label reads both aloud. */
+function HeadLine(props: { readonly label: string; readonly avatar?: KinAvatarView | null }) {
   return (
-    <p aria-hidden className="px-1 pt-2 text-xs font-medium text-muted-foreground">
-      {props.label} · {formatTime(props.at)}
+    <p
+      aria-hidden
+      className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground tabular-nums"
+    >
+      {props.avatar == null ? null : <KinAvatar avatar={props.avatar} size="xs" />}
+      {props.label}
     </p>
   );
 }
@@ -57,40 +77,121 @@ function KinBody(props: { readonly markdown: string; readonly environmentId: Env
   );
 }
 
-/** One message: the viewer's own sit right; others sit left under an author line. */
+/** What a message is about, by name: "Launch plan › Pricing". */
+export function KinDocRefMark(props: { readonly label: string }) {
+  return (
+    <span className="inline-flex min-w-0 items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-xs text-foreground">
+      <FileTextIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="truncate">{props.label}</span>
+    </span>
+  );
+}
+
+/** The doc sections a message points at; each opens the doc there. */
+function KinDocRefs(props: {
+  readonly refs: ReadonlyArray<KinMessageRef>;
+  readonly environmentId: EnvironmentId;
+  readonly orgId: string;
+}) {
+  return (
+    <div className="flex max-w-[85%] flex-wrap gap-1">
+      {props.refs.map((ref) => {
+        const label = kinDocRefLabel(ref);
+        return (
+          <Link
+            key={`${ref.key}:${ref.section ?? ""}`}
+            to="/kin/$environmentId/$orgId/work"
+            params={{ environmentId: props.environmentId, orgId: props.orgId }}
+            search={{ doc: ref.key, ...(ref.section === null ? {} : { section: ref.section }) }}
+            aria-label={`Open ${label}`}
+            className="min-w-0 rounded-md outline-none ring-ring hover:opacity-80 focus-visible:ring-2 focus-visible:ring-inset"
+          >
+            <KinDocRefMark label={label} />
+          </Link>
+        );
+      })}
+    </div>
+  );
+}
+
+/** One message: the viewer's own sit right, others left; `head` names who and when over a group. */
 export function KinMessageRow(props: {
   readonly row: MessageRow;
+  readonly head: string | null;
+  /** A direct chat names nobody over a bubble, so it draws no author's face either. */
+  readonly direct: boolean;
   readonly widget: KinWidget | undefined;
   readonly environmentId: EnvironmentId;
+  readonly orgId: string;
   readonly viewerPersonId: KinPersonId | null;
+  /** The card's agent by name when it is retired, so its reminders and schedules read as on hold. */
+  readonly heldFor: string | null;
   readonly reactions: ReadonlyArray<KinReactionChip>;
   /** Toggles the viewer's reaction; null where they can't react, such as a privileged card. */
   readonly onReact: ((emoji: KinReactionEmoji) => void) | null;
-  readonly showReplyHint: boolean;
+  readonly previewKey: string;
 }) {
   const { row, onReact } = props;
   const { message } = row;
   const deleted = message.status === "deleted";
   const suggested = message.status === "suggested";
   const hasBody = !deleted && message.body.trim().length > 0;
-  const hasCard = !deleted && message.widgetId !== null;
-  const hasBubble = !hasCard || hasBody || suggested || message.editedAt !== null;
+  const hasCard =
+    !deleted &&
+    message.widgetId !== null &&
+    kinCardDraws(props.widget, props.environmentId, hasBody);
+  const attachments = deleted ? [] : (message.attachments ?? []);
+  const refs = deleted ? [] : (message.refs ?? []);
+  // Files alone need no bubble; a deleted or edited message still says so in one.
+  const hasBubble =
+    hasBody ||
+    suggested ||
+    message.editedAt !== null ||
+    (!hasCard && (deleted || attachments.length === 0));
   const mine = new Set(props.reactions.flatMap((chip) => (chip.mine ? [chip.emoji] : [])));
   const canReact = onReact !== null && !deleted;
 
   return (
-    <div className={cn(ROW, "group/kin-message", row.own ? "items-end" : "items-start")}>
-      {row.showAuthor ? <AuthorLine label={row.authorLabel} at={message.createdAt} /> : null}
+    <div
+      className={cn(
+        ROW,
+        rowSpacing(row.continues),
+        "group/kin-message",
+        row.own ? "items-end" : "items-start",
+      )}
+    >
+      {props.head === null ? null : (
+        <HeadLine
+          label={props.head}
+          avatar={
+            row.showAuthor && !props.direct && message.author._tag !== "system"
+              ? kinAuthorAvatar(message.author)
+              : null
+          }
+        />
+      )}
+      {attachments.length === 0 ? null : (
+        <div
+          role={hasBubble ? undefined : "article"}
+          aria-label={hasBubble ? undefined : kinMessageLabel(row, formatTime(message.createdAt))}
+        >
+          <KinMessageAttachments
+            environmentId={props.environmentId}
+            attachments={attachments}
+            previewKey={props.previewKey}
+            clientMessageId={message.clientMessageId}
+          />
+        </div>
+      )}
+      {refs.length === 0 ? null : (
+        <KinDocRefs refs={refs} environmentId={props.environmentId} orgId={props.orgId} />
+      )}
       <div className={cn("flex w-full items-center gap-1", row.own && "flex-row-reverse")}>
         {hasBubble ? (
           <div
             role="article"
             aria-label={kinMessageLabel(row, formatTime(message.createdAt))}
-            className={cn(
-              BUBBLE,
-              row.own ? "bg-message text-message-foreground" : "bg-muted text-foreground",
-              suggested && "border border-dashed border-border",
-            )}
+            className={row.own ? BUBBLE : OTHER_BUBBLE}
           >
             {hasBody ? (
               <KinBody markdown={message.body} environmentId={props.environmentId} />
@@ -104,15 +205,22 @@ export function KinMessageRow(props: {
             ) : null}
           </div>
         ) : null}
-        {canReact && hasBubble ? <KinReactMenu mine={mine} onReact={onReact} /> : null}
+        {canReact && (hasBubble || !hasCard) ? (
+          <KinReactMenu mine={mine} onReact={onReact} />
+        ) : null}
       </div>
       {hasCard ? (
-        <div className="w-full max-w-[85%]">
-          <KinCard
-            widget={props.widget}
-            environmentId={props.environmentId}
-            viewerPersonId={props.viewerPersonId}
-          />
+        <div className="flex w-full items-start gap-1">
+          <div className="min-w-0 max-w-[85%] flex-1">
+            <KinCard
+              widget={props.widget}
+              environmentId={props.environmentId}
+              orgId={props.orgId}
+              viewerPersonId={props.viewerPersonId}
+              heldFor={props.heldFor}
+            />
+          </div>
+          {canReact && !hasBubble ? <KinReactMenu mine={mine} onReact={onReact} /> : null}
         </div>
       ) : null}
       {props.reactions.length > 0 ? (
@@ -134,15 +242,7 @@ export function KinMessageRow(props: {
               {chip.emoji} {chip.count}
             </Button>
           ))}
-          {canReact && !hasBubble ? <KinReactMenu mine={mine} onReact={onReact} /> : null}
         </div>
-      ) : canReact && !hasBubble ? (
-        <KinReactMenu mine={mine} onReact={onReact} />
-      ) : null}
-      {props.showReplyHint ? (
-        <p className="px-1 text-xs text-muted-foreground" aria-label={KIN_REACTION_HINT_LABEL}>
-          {KIN_REACTION_HINT}
-        </p>
       ) : null}
     </div>
   );
@@ -178,11 +278,15 @@ function KinReactMenu(props: {
 export function KinDraftRow(props: {
   readonly row: DraftRow;
   readonly environmentId: EnvironmentId;
+  /** A direct chat has one lead, so its reply needs no name. */
+  readonly direct: boolean;
 }) {
   const { row } = props;
   return (
-    <div className={cn(ROW, "items-start")}>
-      {row.showAuthor ? <AuthorLine label={row.authorLabel} at={row.draft.startedAt} /> : null}
+    <div className={cn(ROW, rowSpacing(row.continues), "items-start")}>
+      {row.showAuthor && !props.direct ? (
+        <HeadLine label={row.authorLabel} avatar={kinAgentAvatar(row.draft.agentId)} />
+      ) : null}
       <div
         role="article"
         aria-label={kinSentences([
@@ -190,7 +294,7 @@ export function KinDraftRow(props: {
           kinPlainText(row.draft.text),
           "Still writing",
         ])}
-        className={cn(BUBBLE, "bg-muted text-foreground")}
+        className={OTHER_BUBBLE}
       >
         <KinBody markdown={row.draft.text} environmentId={props.environmentId} />
       </div>
@@ -198,14 +302,14 @@ export function KinDraftRow(props: {
   );
 }
 
-/** A line from Kin itself, such as a member joining. */
+/** A line from Kin itself, such as a reply that failed: muted, centred, never a bubble. */
 export function KinSystemRow(props: {
   readonly body: string;
   /** Sends the owner's unanswered message again; null shows the line alone. */
   readonly onRetry: (() => void) | null;
 }) {
   return (
-    <div className="mx-auto flex max-w-3xl items-center justify-center gap-2 px-8 py-2">
+    <div className="mx-auto flex max-w-3xl items-center justify-center gap-2 px-8 py-1">
       <p className="text-center text-xs text-muted-foreground">{props.body}</p>
       {props.onRetry === null ? null : (
         <Button size="xs" variant="outline" onClick={props.onRetry}>
@@ -220,7 +324,7 @@ export function KinDayRow(props: { readonly label: string }) {
   return (
     <p
       role="separator"
-      className="mx-auto max-w-3xl px-4 pb-1 pt-4 text-center text-xs font-medium text-muted-foreground"
+      className="mx-auto max-w-3xl px-4 pt-4 text-center text-xs font-medium text-muted-foreground"
     >
       {props.label}
     </p>
@@ -263,6 +367,11 @@ export function KinFoldRow(props: { readonly row: FoldRow; readonly onToggle: ()
 export function KinPendingRow(props: {
   readonly entry: KinOutboxEntry;
   readonly connected: boolean;
+  readonly environmentId: EnvironmentId;
+  readonly orgId: string;
+  readonly previewKey: string;
+  /** The row above is the viewer's own bubble. */
+  readonly continues: boolean;
   /** Puts the body back in the composer and drops the refused send. */
   readonly onEdit: () => void;
   readonly onDiscard: () => void;
@@ -274,19 +383,38 @@ export function KinPendingRow(props: {
     : props.connected || entry.state === "sending"
       ? "Sending…"
       : "Waiting for connection";
+  const attachments = entry.attachments ?? [];
+  const hasBody = entry.body.trim().length > 0;
+  const label = kinSentences([`You: ${kinPlainText(kinMessageSummary(entry))}`, status]);
   return (
-    <div className={cn(ROW, "items-end")}>
-      <div
-        role="article"
-        aria-label={kinSentences([`You: ${kinPlainText(entry.body)}`, status])}
-        className={cn(
-          BUBBLE,
-          "whitespace-pre-wrap bg-message text-message-foreground",
-          !failed && "opacity-70",
-        )}
-      >
-        {entry.body}
-      </div>
+    <div className={cn(ROW, rowSpacing(props.continues), "items-end")}>
+      {attachments.length === 0 ? null : (
+        <div
+          role={hasBody ? undefined : "article"}
+          aria-label={hasBody ? undefined : label}
+          className={cn(!failed && "opacity-70")}
+        >
+          <KinMessageAttachments
+            environmentId={props.environmentId}
+            attachments={attachments}
+            previewKey={props.previewKey}
+            clientMessageId={entry.clientMessageId}
+            unposted
+          />
+        </div>
+      )}
+      {entry.refs === undefined ? null : (
+        <KinDocRefs refs={entry.refs} environmentId={props.environmentId} orgId={props.orgId} />
+      )}
+      {hasBody ? (
+        <div
+          role="article"
+          aria-label={label}
+          className={cn(BUBBLE, "whitespace-pre-wrap", !failed && "opacity-70")}
+        >
+          {entry.body}
+        </div>
+      ) : null}
       <div className="flex items-center gap-1 px-1">
         <span
           role={failed ? "alert" : undefined}
@@ -299,9 +427,11 @@ export function KinPendingRow(props: {
         </span>
         {failed ? (
           <>
-            <Button size="micro" variant="ghost" onClick={props.onEdit}>
-              Edit
-            </Button>
+            {hasBody ? (
+              <Button size="micro" variant="ghost" onClick={props.onEdit}>
+                Edit
+              </Button>
+            ) : null}
             <Button size="micro" variant="ghost-destructive" onClick={props.onDiscard}>
               Delete
             </Button>

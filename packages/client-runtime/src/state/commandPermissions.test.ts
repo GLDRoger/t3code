@@ -8,6 +8,8 @@ import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import {
   AuthAccessReadScope,
+  AuthKinChatScope,
+  KIN_PEOPLE_WS_METHODS,
   AuthAccessWriteScope,
   AuthEnvironmentMaintainScope,
   AuthOrchestrationOperateScope,
@@ -22,6 +24,7 @@ import {
   KIN_CHAT_WS_METHODS,
   KIN_LEVEL_WS_METHODS,
   KIN_PUSH_WS_METHODS,
+  KIN_WORK_WS_METHODS,
   ORCHESTRATION_V2_WS_METHODS,
   ScheduledTaskId,
   WS_METHODS,
@@ -73,38 +76,53 @@ const setup = Effect.gen(function* () {
 });
 
 describe("command permissions", () => {
-  it.effect.each(["kin.budget.set", "kin.triggers.setTimeZone", "kin.lead.create"] as const)(
-    "guards the Kin owner setting %s with the destination settings grant",
-    (method) =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const registry = yield* setup;
-          const permissions = createCommandPermissions(runtime, method);
-          registry.set(sessions(env), AsyncResult.success(grant(true)));
-          expect(registry.get(permissions.permissionAtom(env))).toBe(false);
-          expect((yield* permissions.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
-            "EnvironmentAuthorizationError",
-          );
-          registry.set(
-            sessions(env),
-            AsyncResult.success({
-              ...grant(false),
-              scopes: [AuthSettingsWriteScope],
-              permissions: [AuthSettingsWriteScope],
-            }),
-          );
-          expect(registry.get(permissions.permissionAtom(env))).toBe(true);
-          yield* permissions.authorize(registry, env);
-          registry.set(sessions(other), AsyncResult.success(grant(false)));
-          expect(registry.get(permissions.permissionAtom(other))).toBe(false);
-          expect((yield* permissions.authorize(registry, other).pipe(Effect.flip))._tag).toBe(
-            "EnvironmentAuthorizationError",
-          );
-        }),
-      ),
+  it.effect.each([
+    "kin.budget.set",
+    "kin.triggers.setTimeZone",
+    "kin.visuals.hosts.list",
+    "kin.visuals.hosts.allow",
+    "kin.visuals.hosts.remove",
+    "kin.lead.create",
+    "kin.lead.update",
+    "kin.lead.retire",
+    "kin.lead.restore",
+    "kin.memory.list",
+    "kin.memory.setVisibility",
+    "kin.memory.confirmSuggestions",
+    "kin.memory.forget",
+    "kin.workers.network.get",
+    "kin.workers.network.allow",
+    "kin.workers.network.remove",
+  ] as const)("guards the Kin owner setting %s with the destination settings grant", (method) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        const permissions = createCommandPermissions(runtime, method);
+        registry.set(sessions(env), AsyncResult.success(grant(true)));
+        expect(registry.get(permissions.permissionAtom(env))).toBe(false);
+        expect((yield* permissions.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
+          "EnvironmentAuthorizationError",
+        );
+        registry.set(
+          sessions(env),
+          AsyncResult.success({
+            ...grant(false),
+            scopes: [AuthSettingsWriteScope],
+            permissions: [AuthSettingsWriteScope],
+          }),
+        );
+        expect(registry.get(permissions.permissionAtom(env))).toBe(true);
+        yield* permissions.authorize(registry, env);
+        registry.set(sessions(other), AsyncResult.success(grant(false)));
+        expect(registry.get(permissions.permissionAtom(other))).toBe(false);
+        expect((yield* permissions.authorize(registry, other).pipe(Effect.flip))._tag).toBe(
+          "EnvironmentAuthorizationError",
+        );
+      }),
+    ),
   );
   it.effect.each(Object.values(KIN_PUSH_WS_METHODS))(
-    "requires the destination read grant for %s",
+    "requires the destination chat grant for %s",
     (method) =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -116,8 +134,8 @@ describe("command permissions", () => {
             sessions(env),
             AsyncResult.success({
               ...grant(false),
-              scopes: [AuthOrchestrationReadScope],
-              permissions: [AuthOrchestrationReadScope],
+              scopes: [AuthKinChatScope],
+              permissions: [AuthKinChatScope],
             }),
           );
           expect(registry.get(push.permissionAtom(env))).toBe(true);
@@ -131,13 +149,18 @@ describe("command permissions", () => {
   );
   it.effect.each([
     // Muting quiets only the caller's own pushes, so reading the chat is enough.
-    [KIN_CHAT_WS_METHODS.chatsMute, AuthOrchestrationReadScope],
+    [KIN_CHAT_WS_METHODS.chatsMute, AuthKinChatScope],
+    // A person's own leads are part of their chat list.
+    ["kin.leads.list", AuthKinChatScope],
+    [KIN_PEOPLE_WS_METHODS.peopleCreateInvite, AuthAccessWriteScope],
+    [KIN_PEOPLE_WS_METHODS.peopleRevokeDevice, AuthAccessWriteScope],
+    [KIN_PEOPLE_WS_METHODS.peopleRevokeInvite, AuthAccessWriteScope],
+    // Signing a teammate out everywhere is the owner's, like handing access out.
+    [KIN_PEOPLE_WS_METHODS.peopleRemoveAccess, AuthAccessWriteScope],
+    [KIN_PEOPLE_WS_METHODS.peopleSetGithubLogin, AuthKinChatScope],
     [KIN_LEVEL_WS_METHODS.get, AuthOrchestrationReadScope],
-    [KIN_LEVEL_WS_METHODS.review, AuthOrchestrationOperateScope],
-    [KIN_LEVEL_WS_METHODS.deferPromotion, AuthOrchestrationOperateScope],
     [KIN_LEVEL_WS_METHODS.lower, AuthSettingsWriteScope],
     [KIN_LEVEL_WS_METHODS.raise, AuthSettingsWriteScope],
-    [KIN_LEVEL_WS_METHODS.shadowMemory, AuthSettingsWriteScope],
     // Approving needs operate on the host that holds the action; key setup needs access:write.
     [KIN_APPROVAL_WS_METHODS.get, AuthOrchestrationReadScope],
     [KIN_APPROVAL_WS_METHODS.challenge, AuthOrchestrationOperateScope],
@@ -147,6 +170,12 @@ describe("command permissions", () => {
     [KIN_APPROVAL_WS_METHODS.registerKey, AuthAccessWriteScope],
     [KIN_APPROVAL_WS_METHODS.listKeys, AuthAccessWriteScope],
     [KIN_APPROVAL_WS_METHODS.revokeKey, AuthAccessWriteScope],
+    // Changing Work can wake a lead on the owner's budget, as giving it work does.
+    [KIN_WORK_WS_METHODS.get, AuthOrchestrationReadScope],
+    [KIN_WORK_WS_METHODS.assign, AuthOrchestrationOperateScope],
+    [KIN_WORK_WS_METHODS.update, AuthOrchestrationOperateScope],
+    [KIN_WORK_WS_METHODS.confirm, AuthOrchestrationOperateScope],
+    [KIN_WORK_WS_METHODS.decline, AuthOrchestrationOperateScope],
   ] as const)("guards %s with the destination %s grant", ([method, scope]) =>
     Effect.scoped(
       Effect.gen(function* () {

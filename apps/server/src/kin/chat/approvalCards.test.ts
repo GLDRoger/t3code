@@ -20,7 +20,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Audit from "../approvals/Audit.ts";
 import * as PendingActions from "../approvals/PendingActions.ts";
-import { KIN_PROMOTION_REQUESTER } from "../approvals/PendingActions.ts";
+import { KIN_LEVEL_REQUESTER } from "../approvals/PendingActions.ts";
 import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import * as ApprovalCards from "./approvalCards.ts";
 import * as Chat from "./layer.ts";
@@ -88,8 +88,8 @@ const seed = Effect.gen(function* () {
     targetDigest: PendingActions.kinTargetDigest("set_level", target, { _tag: "none" }),
     reason: "Raise the lead.",
     requestedBy: {
-      agentId: KinAgentId.make(KIN_PROMOTION_REQUESTER),
-      threadId: ThreadId.make(KIN_PROMOTION_REQUESTER),
+      agentId: KinAgentId.make(KIN_LEVEL_REQUESTER),
+      threadId: ThreadId.make(KIN_LEVEL_REQUESTER),
     },
     provenance: {
       startedBy: { humanId: owner.personId },

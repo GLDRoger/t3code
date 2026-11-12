@@ -67,7 +67,7 @@ describe("paging", () => {
     const pageSizes: number[] = [];
     for (;;) {
       const merged = mergeKinFeed(live, earlier);
-      const request = kinEarlierPage(KIN_FIXTURE_CHAT_ID, merged.messages, exhausted);
+      const request = kinEarlierPage(KIN_FIXTURE_CHAT_ID, merged.messages, exhausted, 0);
       if (request === null) break;
       expect(request.beforeSeq).toBe(merged.messages[0]!.seq);
       const page = readKinFixtureHistory(all, request);
@@ -80,8 +80,13 @@ describe("paging", () => {
   });
 
   it("stops when the server says there is nothing older, even above seq 1", () => {
-    expect(kinEarlierPage(KIN_FIXTURE_CHAT_ID, all.slice(10), true)).toBeNull();
-    expect(kinEarlierPage(KIN_FIXTURE_CHAT_ID, [], false)).toBeNull();
+    expect(kinEarlierPage(KIN_FIXTURE_CHAT_ID, all.slice(10), true, 0)).toBeNull();
+    expect(kinEarlierPage(KIN_FIXTURE_CHAT_ID, [], false, 0)).toBeNull();
+    // Seqs keep counting through a clear, so the first message after one is the oldest there is.
+    expect(kinEarlierPage(KIN_FIXTURE_CHAT_ID, all.slice(10), false, 10)).toBeNull();
+    expect(kinEarlierPage(KIN_FIXTURE_CHAT_ID, all.slice(11), false, 10)?.beforeSeq).toBe(
+      all[11]!.seq,
+    );
   });
 
   it("prefers the stream's copy of a message an earlier page also holds", () => {
@@ -95,7 +100,7 @@ describe("paging", () => {
     const live = feed(all.slice(-KIN_HISTORY_PAGE_SIZE));
     const page = readKinFixtureHistory(
       all,
-      kinEarlierPage(KIN_FIXTURE_CHAT_ID, live.messages, false)!,
+      kinEarlierPage(KIN_FIXTURE_CHAT_ID, live.messages, false, 0)!,
     );
     const paging = {
       ...initialKinPaging,
@@ -112,7 +117,7 @@ describe("paging", () => {
     // The reloaded latest page starts past where the earlier pages were read.
     const reloaded = feed(all.slice(-10));
     expect(kinActivePaging(paging, reloaded)).toBe(initialKinPaging);
-    expect(kinEarlierPage(KIN_FIXTURE_CHAT_ID, reloaded.messages, false)?.beforeSeq).toBe(491);
+    expect(kinEarlierPage(KIN_FIXTURE_CHAT_ID, reloaded.messages, false, 0)?.beforeSeq).toBe(491);
   });
 });
 
@@ -240,34 +245,60 @@ describe("rows", () => {
       viewer,
       new Set(),
     );
-    expect(rows.map((row) => row.type === "message" && [row.own, row.showAuthor])).toEqual([
-      [true, false],
-      [false, true],
-      [false, false],
-      [true, false],
-      [false, true],
+    expect(
+      rows.map((row) => row.type === "message" && [row.own, row.showAuthor, row.continues]),
+    ).toEqual([
+      [true, false, false],
+      [false, true, false],
+      [false, false, true],
+      [true, false, false],
+      [false, true, false],
     ]);
+    // In a group a teammate's line carries their name once the members are known.
+    const teammate = {
+      ...ownMessage(1),
+      author: { ...ownMessage(1).author, personId: "ravi", memberId: "m-ravi" },
+      authorRole: "member",
+    } as KinMessage;
+    const label = (names?: ReadonlyMap<string, string>) =>
+      messageRows(
+        [teammate],
+        names === undefined ? viewer : { ...viewer, memberNames: names },
+        new Set(),
+      ).map((row) => row.type === "message" && row.authorLabel);
+    expect(label()).toEqual(["Member"]);
+    expect(label(new Map([["m-ravi", "Ravi"]]))).toEqual(["Ravi"]);
   });
 
-  it("shows a choice tap as the owner's words instead of its JSON and card", () => {
-    const tap = {
-      ...all.find((m) => m.author._tag === "human")!,
-      kind: "widget_action",
-      widgetId: "choice:card",
-      body: JSON.stringify({
-        actionId: "choose",
-        value: "option-1",
-        text: 'Chose "Ship it" on "Ship?"',
-      }),
-    } as KinMessage;
-    const other = { ...tap, messageId: "other-tap", body: '{"actionId":"keep"}' } as KinMessage;
-    const [shown, kept] = messageRows([tap, other], viewer, new Set());
-    expect(shown).toMatchObject({
-      message: { body: 'Chose "Ship it" on "Ship?"', widgetId: null },
-    });
-    expect(kept).toMatchObject({
-      message: { body: '{"actionId":"keep"}', widgetId: "choice:card" },
-    });
+  it("shows a card tap as the button's label, never its JSON or card", () => {
+    const tap = (messageId: string, body: string) =>
+      ({
+        ...all.find((m) => m.author._tag === "human")!,
+        messageId,
+        kind: "widget_action",
+        widgetId: "choice:card",
+        body,
+      }) as KinMessage;
+    const rows = messageRows(
+      [
+        tap("choice", JSON.stringify({ actionId: "choose", text: 'Chose "Ship it" on "Ship?"' })),
+        tap(
+          "reminder",
+          JSON.stringify({ text: 'Tapped "Done" on the reminder "Say "hi" to Sam"' }),
+        ),
+        tap("no-text", '{"actionId":"start_now"}'),
+        tap("not-json", "{broken"),
+      ],
+      viewer,
+      new Set(),
+    );
+    expect(rows.map((row) => row.type === "message" && row.message.body)).toEqual([
+      "Ship it",
+      "Done",
+      "Start now",
+      "Tapped a button",
+    ]);
+    expect(rows.every((row) => row.type === "message" && row.message.widgetId === null)).toBe(true);
   });
 
   it("hides dismissed suggestions and draws system messages as their own rows", () => {
@@ -326,14 +357,26 @@ describe("rows", () => {
       ]),
     ).toMatchObject([{ text: "Tech lead didn't reply.", retry: null }]);
     expect(systemRows([notice(6, "kin-no-reply:w1")])).toMatchObject([{ retry: null }]);
-    // The host's own retry answering ends "trying again"; giving up keeps Retry.
+    // A picture with no words can't be resent by its words.
+    expect(systemRows([{ ...asked, body: "" }, notice(6, "kin-failed:w1")])).toMatchObject([
+      { retry: null },
+    ]);
+    // The host's own retry answering ends "trying again".
+    expect(systemRows([asked, notice(6, "kin-retrying:w1"), agentMessage(7)])).toMatchObject([
+      { key: "kin-retrying:w1", retry: null },
+    ]);
+    // Giving up replaces the "trying again" lines before it and is the one that offers Retry.
     expect(
       systemRows([
         asked,
         notice(6, "kin-retrying:w1"),
-        notice(7, "kin-failed:w2"),
-        agentMessage(8),
+        notice(7, "kin-retrying:w2"),
+        notice(8, "kin-failed:w3"),
+        agentMessage(9),
       ]),
+    ).toMatchObject([{ key: "kin-failed:w3", retry: "Is the deploy green?" }]);
+    expect(
+      systemRows([asked, notice(6, "kin-no-reply:w1"), notice(7, "kin-no-reply:w2")]),
     ).toMatchObject([{ retry: null }, { retry: "Is the deploy green?" }]);
   });
 
@@ -471,6 +514,8 @@ describe("kinPresenceLine", () => {
     );
     expect(text(presence({ state: "working", label: "x".repeat(80) }), 0)).toHaveLength(60);
     expect(kinPresenceNeedsClock(presence({ state: "working" }))).toBe(false);
+    // Older servers' `seen` shows nothing: the line starts with the wake-up's own state.
+    expect(kinPresenceLine(presence({ state: "seen", wakeupId: null }), start)).toBeNull();
   });
 
   it("shows a slow start's wait after 20 s, announcing it once", () => {
@@ -482,6 +527,11 @@ describe("kinPresenceLine", () => {
       kinPresenceLine(starting, start + 35_000)?.announcement,
     );
     expect(kinPresenceNeedsClock(starting)).toBe(true);
+    const queued = presence({ state: "starting", label: "Queued", wakeupId: null });
+    expect(text(queued, KIN_SLOW_START_AFTER_MS - 1)).toBe("Queued");
+    expect(text(queued, 65_000)).toBe("Queued · 1:05");
+    expect(kinPresenceLine(queued, start + 65_000)?.announcement).toBe("Queued");
+    expect(kinPresenceNeedsClock(queued)).toBe(true);
   });
 
   it("counts a stall's minutes from the last output, never under 2", () => {

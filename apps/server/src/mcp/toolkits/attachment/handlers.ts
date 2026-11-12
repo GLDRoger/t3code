@@ -1,10 +1,4 @@
-import {
-  ATTACHMENT_UPLOAD_URL_TTL_MS,
-  type ChatAttachment,
-  MessageId,
-  OrchestratorMcpFailure,
-} from "@t3tools/contracts";
-import * as Clock from "effect/Clock";
+import { type ChatAttachment, MessageId, OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as AssetSigner from "../../../assets/AssetSigner.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -35,48 +29,41 @@ export function resolveAttachmentReferences(
   });
 }
 
-/** The 24-hour sweep starts at upload completion, possibly one upload-URL lifetime after issue. */
-const UPLOAD_OWNER_TTL_MS = 24 * 60 * 60 * 1000 + ATTACHMENT_UPLOAD_URL_TTL_MS;
-
-const uploadOwner = McpInvocationContext.McpInvocationContext.pipe(
-  Effect.map((scope) => scope.thread?.threadId ?? scope.requestNamespace),
+export const mcpCallerUploadOwner = McpInvocationContext.McpInvocationContext.pipe(
+  Effect.map((scope) => Upload.mcpUploadOwner(scope.thread?.threadId ?? scope.requestNamespace)),
 );
 
 export const layer = McpToolAccess.toLayer(
   AttachmentToolkit,
   Effect.gen(function* () {
     const assetSigner = yield* AssetSigner.AssetSigner;
-    const uploadOwners = new Map<string, { readonly owner: string; readonly issuedAt: number }>();
     return {
       // A pending upload belongs to its caller until a send claims it, so
       // linked callers may stage the uploads their own sends need.
       t3_attachment_prepare_upload: McpToolAccess.writes(
         (input) =>
           Effect.gen(function* () {
-            const result = yield* Upload.issueAttachmentUploadUrl(input.upload).pipe(
+            return yield* Upload.issueAttachmentUploadUrl(
+              input.upload,
+              yield* mcpCallerUploadOwner,
+            ).pipe(
               Effect.provideService(AssetSigner.AssetSigner, assetSigner),
               Effect.mapError(unavailable),
             );
-            const now = yield* Clock.currentTimeMillis;
-            for (const [id, entry] of uploadOwners) {
-              if (now - entry.issuedAt > UPLOAD_OWNER_TTL_MS) uploadOwners.delete(id);
-            }
-            uploadOwners.set(result.attachmentId, { owner: yield* uploadOwner, issuedAt: now });
-            return result;
           }),
         { linkedCallers: "allowed" },
       ),
       t3_attachment_discard: McpToolAccess.writes(
         (input) =>
           Effect.gen(function* () {
-            if (uploadOwners.get(input.attachmentId)?.owner !== (yield* uploadOwner)) {
+            const owner = yield* mcpCallerUploadOwner;
+            if (!(yield* Upload.ownsPendingUpload(input.attachmentId, owner))) {
               return yield* new OrchestratorMcpFailure({
                 code: "invalid_request",
                 message: "Only the caller that prepared a pending upload can discard it.",
               });
             }
-            yield* Upload.deletePendingAttachment(input.attachmentId);
-            uploadOwners.delete(input.attachmentId);
+            yield* Upload.deletePendingAttachment(input.attachmentId, owner);
             return {};
           }),
         { linkedCallers: "allowed" },
@@ -97,18 +84,21 @@ export const layer = McpToolAccess.toLayer(
             );
             const commandId = yield* newCommandId();
             const messageId = MessageId.make(commandId);
-            const result = yield* ThreadMessageIntake.sendToThread({
-              projectId: projection.thread.projectId,
-              threadId: projection.thread.id,
-              commandId,
-              messageId,
-              ...(caller === undefined ? {} : { senderThreadId: caller.id }),
-              text: input.message ?? "",
-              attachments,
-              mode: "auto",
-              createdBy: "agent",
-              creationSource: "mcp",
-            }).pipe(
+            const result = yield* ThreadMessageIntake.sendToThread(
+              {
+                projectId: projection.thread.projectId,
+                threadId: projection.thread.id,
+                commandId,
+                messageId,
+                ...(caller === undefined ? {} : { senderThreadId: caller.id }),
+                text: input.message ?? "",
+                attachments,
+                mode: "auto",
+                createdBy: "agent",
+                creationSource: "mcp",
+              },
+              yield* mcpCallerUploadOwner,
+            ).pipe(
               Effect.mapError((error) =>
                 error._tag === "AttachmentClaimError"
                   ? new OrchestratorMcpFailure({

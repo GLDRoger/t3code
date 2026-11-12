@@ -2,21 +2,14 @@ import { KinChatError, type EnvironmentId, type KinWidget } from "@t3tools/contr
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  kinCardDraws,
   kinCardView,
+  kinIsBookkeeping,
   kinReminderCardView,
   kinScheduledTaskCardView,
 } from "./kinCardPresentation.ts";
 import { kinChoiceAnswerText, kinChoicePhase } from "./kinChoicePresentation.ts";
-import {
-  KIN_SEND_FAILED_TEXT,
-  kinCardStatusAfter,
-  kinDeferralCountdown,
-} from "./kinDeferralPresentation.ts";
-import {
-  kinLevelsFailureText,
-  kinLevelsScreenView,
-  kinShownVerdict,
-} from "./kinLevelsPresentation.ts";
+import { kinCardStatusAfter, kinDeferralCountdown } from "./kinDeferralPresentation.ts";
 import { kinMemoryUndoFailureText } from "./kinMemoryChangesPresentation.ts";
 
 const taskState = (overrides: Record<string, unknown> = {}) => ({
@@ -75,7 +68,34 @@ describe("kinCardView", () => {
     expect(
       kinCardView(widget({ state: taskState({ status: "paused" }) }), HOST, known()).kind,
     ).toBe("unknown");
-    expect(kinCardView(widget({ state: { title: "no ids" } }), HOST, known()).kind).toBe("unknown");
+    // A card this build can't draw says what it would have, never something about the app.
+    const poll = widget({ type: "poll", state: { title: "  Lunch on\nFriday? ", options: [] } });
+    expect(kinCardView(poll, HOST, known())).toEqual({ kind: "unknown", text: "Lunch on Friday?" });
+    expect(kinCardView(widget({ type: "poll", state: { options: [] } }), HOST, known())).toEqual({
+      kind: "unknown",
+      text: null,
+    });
+    // A chart from a newer host, of a kind this build can't draw, still says its title.
+    const pie = widget({ type: "chart", state: { chart: "pie", title: "Spend by team" } });
+    expect(kinCardView(pie, HOST, known())).toEqual({ kind: "unknown", text: "Spend by team" });
+    // A visual holds no markup, only where its page is; one this build can't read says its title.
+    const visual = { title: "Signup funnel", attachmentId: "kin-chat-1-html", height: 360 };
+    expect(kinCardView(widget({ type: "visual", state: visual }), HOST, known())).toMatchObject({
+      kind: "visual",
+      visual,
+    });
+    expect(
+      kinCardView(
+        widget({ type: "visual", state: { ...visual, attachmentId: "", html: "<b>x</b>" } }),
+        HOST,
+        known(),
+      ),
+    ).toEqual({ kind: "unknown", text: "Signup funnel" });
+    // Beside the message's own text the card adds nothing; with no words at all it isn't drawn.
+    expect(kinCardDraws(poll, HOST, false)).toBe(true);
+    expect(kinCardDraws(poll, HOST, true)).toBe(false);
+    expect(kinCardDraws(widget({ type: "poll", state: {} }), HOST, false)).toBe(false);
+    expect(kinCardDraws(widget(), HOST, true)).toBe(true);
     expect(kinCardView(widget({ type: "deferral" }), HOST, known()).kind).toBe("unknown");
     const deferral = {
       itemId: "def-1",
@@ -366,6 +386,23 @@ describe("reminder and scheduled task cards", () => {
     expect(deleted).toMatchObject({ lines: ["Deleted."], actions: [] });
   });
 
+  it("puts a retired agent's reminder and schedule on hold, with nothing to tap", () => {
+    const held = (card: ReturnType<typeof scheduled>) => {
+      const view = kinCardView(card, "env" as EnvironmentId, () => true, "Finance");
+      return view.kind === "deferral" ? view.deferral : null;
+    };
+    // The schedule stays; "Next run" and "Paused" give way to the one line that is true.
+    const active = held(scheduled({}));
+    expect(active).toMatchObject({ countdown: null, actions: [] });
+    expect(active?.lines.slice(1)).toEqual(["On hold while Finance is retired."]);
+    expect(held(scheduled({ status: "paused", nextRunAt: null }))?.lines.slice(1)).toEqual([
+      "On hold while Finance is retired.",
+    ]);
+    expect(held(reminder({ status: "due" }))).toMatchObject({ countdown: null, actions: [] });
+    // What is already over says so, as before.
+    expect(held(scheduled({ status: "deleted", nextRunAt: null }))?.lines).toEqual(["Deleted."]);
+  });
+
   it("counts down to the next run and says what Kin did after a tap", () => {
     expect(kinDeferralCountdown(3 * 60 * 60_000, 0, "run")).toBe("Next run in 3 h");
     expect(kinCardStatusAfter({ status: "sent" }, "snooze_1h", 2)).toEqual({
@@ -377,29 +414,59 @@ describe("reminder and scheduled task cards", () => {
   });
 });
 
-describe("digest cards", () => {
-  const entry = (overrides: Record<string, unknown> = {}) => ({
-    entryId: "e1",
-    tool: "kin_chat_post",
-    level: "L0",
-    unlocksLevel: "L1",
-    wouldTarget: "#payments",
-    preview: "Payments test fixed, PR 212 ready.",
-    createdAt: "2026-11-09T09:00:00.000Z",
-    ...overrides,
+describe("worker publish card", () => {
+  const text = "Kin is holding a worker's changes until you choose to publish them.";
+  const state = {
+    text,
+    workerId: "wk-1",
+    sha: "a".repeat(40),
+    repository: "acme/app",
+    why: ["public_repository", "sensitive_work"],
+    branch: "kin/worker/wk-1",
+    pullRequestTitle: "Fix the flaky test",
+    files: [
+      { path: "src/flaky.test.ts", added: 3, removed: 1 },
+      { path: "logo.png", added: null, removed: null },
+    ],
+    moreFiles: 2,
+    status: "waiting",
+  };
+  const card = (overrides: Record<string, unknown> = {}, closedAt: string | null = null) =>
+    widget({ type: "worker_publish", state: { ...state, ...overrides }, closedAt });
+
+  it("asks once, quoting the lead's title, and posts the commit it shows", () => {
+    const view = kinCardView(card(), HOST, known());
+    if (view.kind !== "deferral") throw new Error(`expected a deferral view, got ${view.kind}`);
+    expect(view.deferral).toMatchObject({ title: "Publish to acme/app?", itemId: "a".repeat(40) });
+    expect(view.deferral.lines).toEqual([
+      "The repository is public: anyone can read what Kin pushes.",
+      "This work involves something marked sensitive in Work.",
+      "Branch kin/worker/wk-1, commit aaaaaaa.",
+      'Pull request title, from your agent (unchecked): "Fix the flaky test"',
+      "src/flaky.test.ts +3 −1",
+      "logo.png (binary)",
+      "and 2 more files.",
+    ]);
+    expect(view.deferral.actions.map((action) => action.id)).toEqual(["publish", "dont_publish"]);
+    for (const [status, line] of [
+      ["publishing", "Publishing."],
+      ["declined", "Not published. The changes stay on the host."],
+      ["stopped", "The work was stopped, so nothing was published."],
+    ] as const) {
+      const settled = kinCardView(card({ status }), HOST, known());
+      expect(settled).toMatchObject({ deferral: { lines: [line], actions: [] } });
+    }
   });
-  const shadow = (overrides: Record<string, unknown> = {}) =>
-    widget({
-      type: "shadow_summary",
-      state: {
-        agentId: "agent-1",
-        title: "What tech-lead would have done today",
-        day: "2026-11-09",
-        total: 4,
-        entries: [entry(), entry({ entryId: "e2", preview: "  ", wouldTarget: "" })],
-        ...overrides,
-      },
+
+  it("reads as its fixed line on a build that doesn't know the card", () => {
+    expect(kinCardView(widget({ type: "worker_publish_next", state }), HOST, known())).toEqual({
+      kind: "unknown",
+      text,
     });
+  });
+});
+
+describe("digest cards", () => {
   const row = (overrides: Record<string, unknown> = {}) => ({
     section: "overdue",
     title: "Rotate the staging key",
@@ -413,26 +480,17 @@ describe("digest cards", () => {
     return view.digest;
   };
 
-  it("shows the shadow summary as plain rows, counting the entries it leaves out", () => {
-    const view = digest(shadow());
-    expect(view.title).toBe("What tech-lead would have done today");
-    expect(view.rows.map((r) => [r.text, r.note])).toEqual([
-      ["Payments test fixed, PR 212 ready.", "#payments"],
-      ["kin_chat_post", null],
-    ]);
-    expect(view.more).toBe("2 more today");
-    expect(view.accessibilityLabel).toBe(
-      "Shadow week. What tech-lead would have done today. Payments test fixed, PR 212 ready. #payments. kin_chat_post. 2 more today.",
-    );
-    expect(digest(shadow({ total: 2 })).more).toBeNull();
-  });
-
   it("heads each routine section once, in the server's order", () => {
     const view = digest(
       routine([row(), row({ title: "Renew the cert" }), row({ section: "ci_red", title: "main" })]),
     );
     expect(view.eyebrow).toBe("Morning brief");
     expect(view.rows.map((r) => r.heading)).toEqual(["Overdue", null, "CI failing"]);
+  });
+
+  it("reads a raw timestamp in a note as a time", () => {
+    const [noted] = digest(routine([row({ note: "review by 2026-11-09T16:09:12.531Z" })])).rows;
+    expect(noted!.note).toMatch(/^review by \w{3} \d+ Nov, \d+:\d{2}$/);
   });
 
   it.each([
@@ -446,231 +504,7 @@ describe("digest cards", () => {
   });
 
   it("falls back on a digest whose state doesn't decode", () => {
-    expect(kinCardView(shadow({ total: -1 }), HOST, known()).kind).toBe("unknown");
     expect(kinCardView(routine([row({ section: "someday" })]), HOST, known()).kind).toBe("unknown");
-    expect(kinCardView(widget({ type: "shadow_review" }), HOST, known()).kind).toBe("unknown");
-  });
-});
-
-describe("levels cards", () => {
-  const stats = (overrides: Record<string, unknown> = {}) => ({
-    from: "L0",
-    to: "L1",
-    daysAtLevel: 3,
-    reviewed: 12,
-    fine: 10,
-    harmful: 0,
-    unreviewed: 2,
-    eligible: false,
-    rule: { minDays: 7, minReviewed: 20, minFineShare: 0.8 },
-    ...overrides,
-  });
-  const entry = (overrides: Record<string, unknown> = {}) => ({
-    entryId: "e1",
-    tool: "kin_chat_post",
-    level: "L0",
-    unlocksLevel: "L1",
-    wouldTarget: "#payments",
-    preview: "Payments test fixed.\n\n**PR 212** ready.",
-    truncated: false,
-    createdAt: "2026-11-09T09:00:00.000Z",
-    verdict: null,
-    ...overrides,
-  });
-  const reviewWidget = (overrides: Record<string, unknown> = {}) =>
-    widget({
-      type: "shadow_review",
-      revision: 3,
-      state: {
-        agentId: "agent-1",
-        title: "Review tech-lead's trial day",
-        day: "2026-11-09",
-        total: 5,
-        unreviewed: 2,
-        entries: [entry(), entry({ entryId: "e2", tool: "kin_delegate", truncated: true })],
-        promotion: stats(),
-        ...overrides,
-      },
-    });
-  const review = (w: KinWidget) => {
-    const view = kinCardView(w, HOST, known());
-    if (view.kind !== "shadow_review") throw new Error(`expected a review card, got ${view.kind}`);
-    return view.review;
-  };
-  const promotionWidget = (overrides: Record<string, unknown> = {}) =>
-    widget({
-      type: "promotion",
-      state: {
-        agentId: "agent-1",
-        title:
-          "tech-lead is ready for L1: 17 of 20 reviewed would have gone out unchanged, none harmful, none unreviewed.",
-        stats: stats({ eligible: true }),
-        status: "ready",
-        actionId: null,
-        deferredUntil: null,
-        shadowMemory: null,
-        shadowChanges: null,
-        ...overrides,
-      },
-    });
-  const promotion = (w: KinWidget) => {
-    const view = kinCardView(w, HOST, known());
-    if (view.kind !== "promotion") throw new Error(`expected a promotion card, got ${view.kind}`);
-    return view.promotion;
-  };
-
-  it("shows review entries as plain text, with the trial's counts", () => {
-    const view = review(reviewWidget());
-    expect(view.summary).toBe("2 of 5 still need a verdict.");
-    expect(view.more).toBe("3 more after these.");
-    expect(view.entries.map((e) => [e.heading, e.target, e.truncated])).toEqual([
-      ["Post at L0", "#payments", false],
-      ["Delegation at L0", "#payments", true],
-    ]);
-    expect(view.entries[0]!.preview).toBe("Payments test fixed.\n\n**PR 212** ready.");
-    expect(view.trial).toEqual([
-      "Day 3 of 7 at L0.",
-      "12 of 20 reviewed, 10 fine as is, none harmful, 2 unreviewed.",
-      "L1 needs 7 days, 20 reviewed, 80% fine as is, none harmful and none unreviewed.",
-    ]);
-    expect(
-      kinCardView(reviewWidget({ entries: [entry({ verdict: "maybe" })] }), HOST, known()).kind,
-    ).toBe("unknown");
-  });
-
-  it("keeps the owner's verdict until the server's next revision", () => {
-    const local = { revision: 3, verdicts: new Map([["e1", "fine" as const]]) };
-    expect(kinShownVerdict({ entryId: "e1", verdict: null }, 3, local)).toBe("fine");
-    expect(kinShownVerdict({ entryId: "e1", verdict: "wrong" }, 4, local)).toBe("wrong");
-    expect(kinShownVerdict({ entryId: "e2", verdict: null }, 3, local)).toBeNull();
-  });
-
-  it.each([
-    [
-      "ready",
-      {},
-      [
-        ["raise", "Raise to L1", false],
-        ["defer", "Another week", false],
-      ],
-    ],
-    ["deferred", { status: "deferred" }, [["raise", "Raise to L1", false]]],
-    ["awaiting approval", { status: "awaiting_approval", actionId: "act-1" }, []],
-    ["raised, nothing pending", { status: "raised" }, []],
-    ["raised, kept", { status: "raised", shadowMemory: "kept" }, []],
-    [
-      "raised, Kin's own folders",
-      {
-        status: "raised",
-        shadowMemory: "pending",
-        shadowChanges: { paths: ["deferrals/a.md"], truncated: false, ownerReviewed: [] },
-      },
-      [
-        ["keep", "Keep shadow memory", false],
-        ["discard", "Start clean", false],
-      ],
-    ],
-    [
-      "raised, owner-reviewed paths",
-      {
-        status: "raised",
-        shadowMemory: "pending",
-        shadowChanges: {
-          paths: ["decisions/x.md"],
-          truncated: false,
-          ownerReviewed: ["decisions/x.md"],
-        },
-      },
-      [
-        ["keep", "Keep shadow memory", true],
-        ["discard", "Start clean", false],
-      ],
-    ],
-    [
-      "raised, not listed yet",
-      { status: "raised", shadowMemory: "pending" },
-      [
-        ["keep", "Keep shadow memory", true],
-        ["discard", "Start clean", false],
-      ],
-    ],
-    ["closed", { status: "closed" }, []],
-    ["top level", { stats: stats({ from: "L3", to: null }), status: "deferred" }, []],
-  ])("offers the promotion buttons for %s", (_name, overrides, actions) => {
-    expect(
-      promotion(promotionWidget(overrides)).actions.map((a) => [a.id, a.label, a.disabled]),
-    ).toEqual(actions);
-  });
-
-  it("says where a raise stands", () => {
-    expect(promotion(promotionWidget({ status: "awaiting_approval" })).lines).toEqual([
-      "Raise to L1 is waiting for your signed approval. It applies once you sign it.",
-    ]);
-    expect(
-      promotion(
-        promotionWidget({
-          status: "raised",
-          shadowMemory: "pending",
-          shadowChanges: {
-            paths: ["deferrals/a.md", "claims/b.md"],
-            truncated: true,
-            ownerReviewed: [],
-          },
-        }),
-      ).lines,
-    ).toEqual(["Raised to L1.", "Keep commits 2 files from the shadow week (list cut short):"]);
-    expect(
-      promotion(promotionWidget({ status: "raised", shadowMemory: "discarded" })).lines,
-    ).toEqual(["Raised to L1.", "Started clean."]);
-  });
-
-  it("offers the owner one level down, one signed raise up, and a chat back to the lead's level", () => {
-    const view = kinLevelsScreenView(
-      {
-        orgId: "org",
-        agentId: "agent-1",
-        level: "L1",
-        levelSince: "2026-11-02T09:00:00.000Z",
-        chats: [
-          { chatId: "c0", level: "L0", levelSince: "2026-11-03T09:00:00.000Z" },
-          { chatId: "c1", level: "L1", levelSince: "2026-11-03T09:00:00.000Z" },
-          // Kept from before the lead was lowered, so the lead's L1 applies.
-          { chatId: "c2", level: "L2", levelSince: "2026-11-01T09:00:00.000Z" },
-        ],
-        promotion: stats({ from: "L1", to: "L2", eligible: true }),
-        pendingRaises: [
-          { actionId: "act-1", chatId: "c0", level: "L1", state: "awaiting_approval" },
-        ],
-      } as never,
-      (chatId) => `Chat ${chatId}`,
-    );
-    const changes = (row: { changes: ReadonlyArray<{ label: string; blocked: string | null }> }) =>
-      row.changes.map((c) => [c.label, c.blocked]);
-    expect(changes(view.lead)).toEqual([
-      ["Raise to L2", null],
-      ["Lower to L0", null],
-    ]);
-    expect(view.chats.map(changes)).toEqual([
-      [["Raise to L1", "A raise is already waiting."]],
-      [["Lower to L0", null]],
-      [["Lower to L0", null]],
-    ]);
-    expect(view.chats.map((row) => row.level)).toEqual(["L0", "L1", "L1"]);
-    expect(view.pending.map((p) => p.text)).toEqual([
-      "Chat c0 to L1: waiting for your signed approval.",
-    ]);
-  });
-
-  it("shows the server's refusal and hides transport details", () => {
-    const refusal = new KinChatError({
-      reason: "invalid_state",
-      message: "The lead isn't eligible for the next level yet.",
-    });
-    expect(kinLevelsFailureText(refusal)).toBe("The lead isn't eligible for the next level yet.");
-    expect(kinLevelsFailureText(new KinChatError({ reason: "conflict", message: "row 7" }))).toBe(
-      KIN_SEND_FAILED_TEXT,
-    );
-    expect(kinLevelsFailureText(new Error("socket closed"))).toBe(KIN_SEND_FAILED_TEXT);
   });
 });
 
@@ -683,22 +517,28 @@ describe("memory change card", () => {
       change,
       undo,
     });
-    const view = kinCardView(
-      widget({
-        type: "memory_changes",
-        state: {
-          agentId: "lead",
-          wakeupId: "wake-1",
-          branch: "kin/shadow/lead",
-          base: "a".repeat(40),
-          commit: "b".repeat(40),
-          items: [item("short", "created", null), item("repo", "updated", "stale")],
-          more: 1,
-        },
-      }),
-      HOST,
-      known(),
-    );
+    const changes = widget({
+      type: "memory_changes",
+      state: {
+        agentId: "lead",
+        wakeupId: "wake-1",
+        branch: "kin/shadow/lead",
+        base: "a".repeat(40),
+        commit: "b".repeat(40),
+        items: [item("short", "created", null), item("repo", "updated", "stale")],
+        more: 1,
+      },
+    });
+    const view = kinCardView(changes, HOST, known());
+    const note = (body: string, widgetId: string | null, tag = "system") =>
+      ({ author: { _tag: tag }, status: "posted", widgetId, body }) as never;
+    expect(kinIsBookkeeping(note("", changes.widgetId), changes)).toBe(true);
+    expect(kinIsBookkeeping(note("Forgot: the old office address", null), undefined)).toBe(true);
+    // What the owner must know, and what a lead wrote, always shows.
+    expect(kinIsBookkeeping(note("Tech lead stopped partway.", null), undefined)).toBe(false);
+    expect(kinIsBookkeeping(note("Forgot: to say hi", null, "agent"), undefined)).toBe(false);
+    const task = widget({ type: "task", state: taskState() });
+    expect(kinIsBookkeeping(note("", task.widgetId), task)).toBe(false);
     if (view.kind !== "memory_changes")
       throw new Error(`expected memory changes, got ${view.kind}`);
     expect(view.changes.items.map(({ line, undo }) => [line, undo])).toEqual([

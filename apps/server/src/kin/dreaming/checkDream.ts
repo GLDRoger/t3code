@@ -1,10 +1,12 @@
-import type { KinOrgId } from "@t3tools/contracts";
+import type { KinOrgId, MemoryTrust } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { isCheckoutPath, isItemPath } from "../memory/checkoutPaths.ts";
-import { parseFrontMatter } from "../memory/frontMatter.ts";
+import { changedKeys, parseFrontMatter } from "../memory/frontMatter.ts";
+import { QUOTE_MISSING, quoteRefusal } from "../memory/keeping.ts";
 import { kinShapeFailure } from "../memory/lint.ts";
+import { withLabel } from "./labels.ts";
 import type { MaterialEntry } from "./material.ts";
 
 const Sources = Schema.Array(Schema.String).check(Schema.isMinLength(1));
@@ -40,14 +42,17 @@ export const DreamJson = Schema.Struct({
 });
 export type DreamJson = typeof DreamJson.Type;
 const decodeDream = Schema.decodeUnknownEffect(Schema.fromJsonString(DreamJson));
-
+const rank = (trust: MemoryTrust) => ["external", "agent", "member", "owner"].indexOf(trust);
 /**
- * The code checks a dream must pass before anything is committed. `tree` is what the
- * model left in its checkout; `special` lists paths that were not regular files.
+ * The code checks a dream must pass before anything is committed. `base` is the checkout as the
+ * model was shown it, `stored` the same files as they are on the branch, never shown to it;
+ * `tree` is what the model left in its checkout; `special` lists paths that were not regular
+ * files. `changes` is what to write, and `committed` every file as the branch will hold it.
  */
 export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
   readonly orgId: KinOrgId;
   readonly base: ReadonlyMap<string, string>;
+  readonly stored: ReadonlyMap<string, string>;
   readonly tree: ReadonlyMap<string, string>;
   readonly special: ReadonlyArray<string>;
   readonly dreamJson: string | undefined;
@@ -93,6 +98,9 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
       continue;
     }
     const fm = parsed.success.frontMatter;
+    // `keepLabels` settles the label after this check, so either one must be writable.
+    if (withLabel(text, true) === undefined || withLabel(text, false) === undefined)
+      failures.push(`${path} can't be labelled as it is formatted`);
     const folder = fm.kind === "person" ? "people" : `${fm.kind}s`;
     if (!path.startsWith(`${folder}/`))
       failures.push(`${path} kind ${fm.kind} is in the wrong folder`);
@@ -101,17 +109,97 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
       before === undefined
         ? undefined
         : yield* parseFrontMatter(input.orgId, path, before).pipe(Effect.option);
+    const earlier = previous?._tag === "Some" ? previous.value.frontMatter : undefined;
+    // What a teammate's chat left stays theirs as written, and only the owner clears an item.
+    if (earlier?.shared_from !== undefined || fm.shared_from !== undefined)
+      failures.push(`${path} came from a chat other people read and is not a dream's to change`);
+    if (
+      earlier?.shared_by?.person !== fm.shared_by?.person ||
+      earlier?.shared_by?.at !== fm.shared_by?.at
+    )
+      failures.push(`${path} changes who let the team know it`);
+    // What a person stated stays exactly as stored until a person changes it. The dream may
+    // only label it, and `keepLabels` decides that label; its own copy is never written back.
+    if (earlier !== undefined && (earlier.trust === "owner" || earlier.trust === "member")) {
+      const changed = changedKeys(earlier, fm).filter((key) => key !== "sensitive");
+      if (previous?._tag === "Some" && previous.value.body !== parsed.success.body)
+        changed.push("body");
+      for (const field of changed)
+        failures.push(`${path} holds what a person stated, so a dream may not change its ${field}`);
+      const stored = input.stored.get(path);
+      if (changed.length > 0 || stored === undefined) continue;
+      if (fm.sensitive === undefined || fm.sensitive === earlier.sensitive) changes.delete(path);
+      else {
+        const labelled = withLabel(stored, fm.sensitive);
+        if (labelled === undefined) failures.push(`${path} can't be labelled as it is formatted`);
+        else changes.set(path, labelled);
+      }
+      continue;
+    }
     const kept =
       previous?._tag === "Some" &&
       previous.value.frontMatter.trust === fm.trust &&
       previous.value.frontMatter.said_by === fm.said_by &&
       previous.value.frontMatter.source === fm.source;
-    if (kept) continue;
+    if (kept) {
+      if (earlier?.quote !== fm.quote) failures.push(`${path} changes its quote`);
+      continue;
+    }
     const author = material.get(fm.source);
-    if (author === undefined) failures.push(`${path} source ${fm.source} is not in the material`);
-    else if (author.trust !== fm.trust || author.saidBy !== fm.said_by)
+    if (author === undefined) {
+      failures.push(`${path} source ${fm.source} is not in the material`);
+      continue;
+    }
+    // What a dream makes from memory is its own conclusion, whoever said the item it cites.
+    if (author.kind === "item") {
+      if (
+        author.saidBy !== fm.said_by ||
+        rank(fm.trust) > Math.min(rank(author.trust), rank("agent"))
+      )
+        failures.push(
+          `${path} claims ${fm.trust} from ${fm.source}; what is made from a memory item is at most agent`,
+        );
+      if (fm.quote !== undefined)
+        failures.push(
+          `${path} quote: an item made from a memory item is the agent's own and carries no quote`,
+        );
+      continue;
+    }
+    if (author.trust !== fm.trust || author.saidBy !== fm.said_by)
       failures.push(
         `${path} claims ${fm.trust} from ${fm.said_by}; the source was ${author.trust} from ${author.saidBy}`,
+      );
+    // As for an agent's write: what a person said holds their words from that message.
+    if (fm.kind !== "deferral") {
+      const refusal =
+        fm.quote !== undefined
+          ? quoteRefusal(fm.quote, author.text)
+          : author.kind === "chat" && author.trust !== "agent"
+            ? QUOTE_MISSING
+            : undefined;
+      if (refusal !== undefined) failures.push(`${path} quote: ${refusal}`);
+    }
+  }
+
+  // Two files with one id leave neither readable by it, so no file may take an id another holds.
+  // Read as `Memory` reads items, over the whole result, so file order decides nothing.
+  const idOf = Effect.fnUntraced(function* (path: string, text: string | undefined) {
+    if (text === undefined || !isItemPath(path)) return undefined;
+    const item = yield* parseFrontMatter(input.orgId, path, text, false, true).pipe(Effect.option);
+    return item._tag === "Some" ? item.value.frontMatter.id : undefined;
+  });
+  const holders = new Map<string, Array<{ readonly path: string; readonly kept: boolean }>>();
+  for (const [path, text] of input.tree) {
+    const id = yield* idOf(path, text);
+    if (id === undefined) continue;
+    const kept = (yield* idOf(path, input.base.get(path))) === id;
+    holders.set(id, [...(holders.get(id) ?? []), { path, kept }]);
+  }
+  for (const held of holders.values()) {
+    if (held.length < 2) continue;
+    for (const taker of held.filter((file) => !file.kept))
+      failures.push(
+        `${taker.path} takes the id of ${held.find((file) => file.path !== taker.path)!.path}`,
       );
   }
 
@@ -129,5 +217,11 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
         if (!contradiction.resolution && !contradiction.question)
           failures.push(`contradiction ${index + 1} has no resolution or question`);
   }
-  return { failures, changes, dream: report };
+  const committed = new Map(
+    [...input.tree.keys()].map((path) => [
+      path,
+      changes.get(path) ?? input.stored.get(path) ?? input.tree.get(path)!,
+    ]),
+  );
+  return { failures, changes, committed, dream: report };
 });

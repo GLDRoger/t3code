@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# `kin <command>` in a kin shell: the current build's Kin CLI against kin's own ~/.t3, the way
+# the server runs. setup.sh installs it as ~kin/.local/bin/kin. Example: kin lead list
+set -euo pipefail
+exec env KIN_ENABLED=true T3CODE_HOME="$HOME/.t3" node "$HOME/kin-current/apps/server/dist/bin.mjs" kin "$@"

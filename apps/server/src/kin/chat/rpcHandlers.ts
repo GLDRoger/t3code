@@ -1,3 +1,4 @@
+import { sessionUploadOwner } from "../../assets/AttachmentUpload.ts";
 import { KinChatAndBudgetRpcs, KinChatError } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -12,10 +13,12 @@ import * as LeadProvision from "../lead/KinLeadProvision.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { KinStop } from "../lead/KinStop.ts";
 import { KinOwnerTimeZone } from "../triggers/ownerTimeZone.ts";
-import { KinIdentity } from "./KinIdentity.ts";
+import { KinIdentity, type PersonIdentity } from "./KinIdentity.ts";
 import { KinChatService } from "./KinChatService.ts";
+import { KinGroups } from "./KinGroups.ts";
+import { KinVisualHosts } from "./KinVisualHosts.ts";
 
-const group = RpcGroup.make(...KinChatAndBudgetRpcs);
+const rpcs = RpcGroup.make(...KinChatAndBudgetRpcs);
 const unavailable = new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
 const disabled = new KinChatError({
   reason: "disabled",
@@ -26,11 +29,12 @@ const leadRefusal = Schema.is(LeadProvision.KinLeadProvisionError);
 const leadReasons = {
   not_owner: "not_allowed",
   unknown_project: "invalid_state",
-  no_models: "invalid_state",
+  no_models: "no_models",
   not_claude: "invalid_state",
   not_found: "not_found",
   retired: "not_found",
   conflict: "conflict",
+  last_agent: "invalid_state",
 } as const satisfies Record<LeadProvision.KinLeadProvisionError["reason"], KinChatError["reason"]>;
 const toLeadError = (error: unknown) =>
   leadRefusal(error)
@@ -56,13 +60,44 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
       stop: Context.get(kin.value.services.value, KinStop),
       timeZone: Context.get(kin.value.services.value, KinOwnerTimeZone),
       chat: Context.get(kin.value.services.value, KinChatService),
+      groups: Context.get(kin.value.services.value, KinGroups),
+      visualHosts: Context.get(kin.value.services.value, KinVisualHosts),
     };
   });
+  // Every group method: who the session is, then the one service call that decides.
+  const group = <A, E>(
+    run: (
+      groups: KinGroups["Service"],
+      people: ReadonlyArray<PersonIdentity>,
+    ) => Effect.Effect<A, E>,
+  ) =>
+    services.pipe(
+      Effect.flatMap(({ identity, groups }) =>
+        identity.resolve(session).pipe(Effect.flatMap((people) => run(groups, people))),
+      ),
+      Effect.tapError(logInfra),
+      Effect.mapError(mapError),
+      Effect.catchDefect(defect),
+    );
+  const visualHosts = <A, E>(
+    run: (
+      hosts: KinVisualHosts["Service"],
+      people: ReadonlyArray<PersonIdentity>,
+    ) => Effect.Effect<A, E>,
+  ) =>
+    services.pipe(
+      Effect.flatMap(({ identity, visualHosts }) =>
+        identity.resolve(session).pipe(Effect.flatMap((people) => run(visualHosts, people))),
+      ),
+      Effect.tapError(logInfra),
+      Effect.mapError(mapError),
+      Effect.catchDefect(defect),
+    );
   const viewer = Effect.gen(function* () {
     const { identity, chat } = yield* services;
     return { chat, people: yield* identity.resolve(session) };
   });
-  return group.of({
+  return rpcs.of({
     "kin.budget.get": (input) =>
       services.pipe(
         Effect.flatMap(({ identity, budget }) =>
@@ -130,6 +165,11 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
         Effect.mapError(mapError),
         Effect.catchDefect(defect),
       ),
+    "kin.visuals.hosts.list": (input) => visualHosts((hosts, people) => hosts.list(people, input)),
+    "kin.visuals.hosts.allow": (input) =>
+      visualHosts((hosts, people) => hosts.allow(people, input)),
+    "kin.visuals.hosts.remove": (input) =>
+      visualHosts((hosts, people) => hosts.remove(people, input)),
     "kin.orgs.list": () =>
       services.pipe(
         Effect.flatMap(({ identity, chat }) =>
@@ -175,6 +215,23 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
         Effect.mapError(mapError),
         Effect.catchDefect(defect),
       ),
+    "kin.chats.clear": (input) =>
+      viewer.pipe(
+        Effect.flatMap(({ chat, people }) => chat.clear(people, input)),
+        Effect.as({}),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.chat.members": (input) => group((groups, people) => groups.members(people, input)),
+    "kin.groups.create": (input) => group((groups, people) => groups.create(people, input)),
+    "kin.groups.addMember": (input) => group((groups, people) => groups.addMember(people, input)),
+    "kin.groups.removeMember": (input) =>
+      group((groups, people) => groups.removeMember(people, input).pipe(Effect.as({}))),
+    "kin.groups.setLead": (input) => group((groups, people) => groups.setLead(people, input)),
+    "kin.groups.rename": (input) => group((groups, people) => groups.rename(people, input)),
+    "kin.groups.delete": (input) =>
+      group((groups, people) => groups.remove(people, input).pipe(Effect.as({}))),
     "kin.chat.history": (input) =>
       viewer.pipe(
         Effect.flatMap(({ chat, people }) => chat.history(people, input)),
@@ -184,7 +241,9 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
       ),
     "kin.messages.send": (input) =>
       viewer.pipe(
-        Effect.flatMap(({ chat, people }) => chat.send(people, input)),
+        Effect.flatMap(({ chat, people }) =>
+          chat.send(people, { ...input, uploader: sessionUploadOwner(session) }),
+        ),
         Effect.tapError(logInfra),
         Effect.mapError(mapError),
         Effect.catchDefect(defect),
@@ -222,13 +281,14 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
             if (!people.some((person) => person.orgId === input.orgId))
               return yield* new KinChatError({
                 reason: "not_allowed",
-                message: "Only the owner can create leads.",
+                message: "Only the owner can create agents.",
               });
             const { _tag, lead } = yield* LeadProvision.create({
               creator: { _tag: "session", session },
               name: input.name,
               domain: input.domain,
               charter: input.charter,
+              intro: input.intro,
               models: input.models,
               workerProjects: input.workerProjects ?? [],
             }).pipe(
@@ -245,6 +305,127 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
               ownerChatId: lead.ownerChatId,
               createdByPersonId: lead.createdByPersonId ?? lead.ownerPersonId,
             };
+          }),
+        ),
+        Effect.mapError(toLeadError),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.leads.list": (input) =>
+      services.pipe(
+        Effect.flatMap(({ identity }) =>
+          Effect.gen(function* () {
+            if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+            const person = (yield* identity.resolve(session)).find(
+              (entry) => entry.orgId === input.orgId,
+            );
+            // An org the session's person isn't in has no leads to show them.
+            if (person === undefined) return { leads: [], contacts: [] };
+            return yield* Effect.all({
+              leads: LeadProvision.profiles(person, { includeRetired: input.includeRetired }),
+              contacts: LeadProvision.contacts(person),
+            }).pipe(Effect.provideContext(kin.value.services.value));
+          }),
+        ),
+        Effect.mapError(toLeadError),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.lead.update": ({ orgId, agentId, ...fields }) =>
+      services.pipe(
+        Effect.flatMap(() =>
+          Effect.gen(function* () {
+            if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+            return yield* LeadProvision.update({
+              editor: { _tag: "session", session },
+              orgId,
+              agentId,
+              fields,
+            }).pipe(Effect.provideContext(kin.value.services.value));
+          }),
+        ),
+        Effect.mapError(toLeadError),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.lead.retire": (input) =>
+      services.pipe(
+        Effect.flatMap(() =>
+          Effect.gen(function* () {
+            if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+            const result = yield* LeadProvision.retire({
+              ...input,
+              by: { _tag: "session", session },
+            }).pipe(Effect.provideContext(kin.value.services.value));
+            return result.profile;
+          }),
+        ),
+        Effect.mapError(toLeadError),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.lead.restore": (input) =>
+      services.pipe(
+        Effect.flatMap(() =>
+          Effect.gen(function* () {
+            if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+            const result = yield* LeadProvision.restore({
+              ...input,
+              by: { _tag: "session", session },
+            }).pipe(Effect.provideContext(kin.value.services.value));
+            return result.profile;
+          }),
+        ),
+        Effect.mapError(toLeadError),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.lead.access.list": (input) =>
+      services.pipe(
+        Effect.flatMap(() =>
+          Effect.gen(function* () {
+            if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+            return yield* LeadProvision.access({
+              ...input,
+              editor: { _tag: "session", session },
+            }).pipe(Effect.provideContext(kin.value.services.value));
+          }),
+        ),
+        Effect.mapError(toLeadError),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.lead.access.grant": (input) =>
+      services.pipe(
+        Effect.flatMap(() =>
+          Effect.gen(function* () {
+            if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+            return yield* LeadProvision.allow({
+              ...input,
+              editor: { _tag: "session", session },
+            }).pipe(Effect.provideContext(kin.value.services.value));
+          }),
+        ),
+        Effect.mapError(toLeadError),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.lead.access.revoke": (input) =>
+      services.pipe(
+        Effect.flatMap(() =>
+          Effect.gen(function* () {
+            if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+            return yield* LeadProvision.disallow({
+              ...input,
+              editor: { _tag: "session", session },
+            }).pipe(Effect.provideContext(kin.value.services.value));
           }),
         ),
         Effect.mapError(toLeadError),

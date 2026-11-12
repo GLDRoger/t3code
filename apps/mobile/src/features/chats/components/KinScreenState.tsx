@@ -1,3 +1,5 @@
+import { KIN_ONLY } from "../../../lib/kinOnly";
+import { KIN_ONLY_NO_HOST, KIN_ONLY_UNAUTHORIZED } from "../kinOnlyCopy";
 import { useNavigation } from "@react-navigation/native";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { ReactNode } from "react";
@@ -18,6 +20,7 @@ import {
   type KinReconnectStatus,
   type KinStaleNotice,
 } from "@t3tools/client-runtime/kin/kinScreenState";
+import { useKinAppShell } from "../state/kinChatOnly";
 import { useKinHost } from "../state/useKinHost";
 import { useKinReconnect } from "../state/useKinReconnect";
 
@@ -55,6 +58,8 @@ export function KinScreenState(props: {
   readonly children: (ready: KinReadyState) => ReactNode;
 }) {
   const navigation = useNavigation();
+  // A teammate has no computer to pair or environments to open, so each dead end says what they can do.
+  const teammate = useKinAppShell() === "chatOnly";
   const { state } = props;
   switch (state._tag) {
     case "loading":
@@ -72,29 +77,57 @@ export function KinScreenState(props: {
     case "offline":
       return <KinInboxOfflineState />;
     case "noHost":
-      return (
+      return teammate ? (
         <EmptyState
           variant="plain"
-          title="Kin isn't set up on this environment"
-          detail="Connect this phone to a T3 server that runs Kin."
-          actionLabel="Open environments"
-          onAction={() => navigation.navigate("SettingsEnvironments")}
+          title="Your team's Kin isn't available"
+          detail="Try again in a bit. If it stays this way, ask your team whether something changed."
+        />
+      ) : (
+        <EmptyState
+          variant="plain"
+          {...(KIN_ONLY
+            ? { ...KIN_ONLY_NO_HOST, onAction: () => navigation.navigate("SettingsEnvironmentNew") }
+            : {
+                title: "No server with Kin yet",
+                detail: "Connect this phone to a T3 Code server that has Kin turned on.",
+                actionLabel: "Open environments",
+                onAction: () => navigation.navigate("SettingsEnvironments"),
+              })}
         />
       );
     case "unauthorized":
-      return (
+      return teammate ? (
         <EmptyState
           variant="plain"
-          title="This device can't read Kin chats"
-          detail="Pair it again from the Mac."
+          title="You no longer have access"
+          detail="Ask your team for a new join link to get back in."
+          actionLabel="Join with a new link"
+          onAction={() => navigation.navigate("KinJoin")}
+        />
+      ) : (
+        <EmptyState
+          variant="plain"
+          {...(KIN_ONLY
+            ? KIN_ONLY_UNAUTHORIZED
+            : {
+                title: "This phone can't read Kin chats",
+                detail: "Pair it again with the computer that runs T3 Code.",
+              })}
         />
       );
     case "noIdentity":
-      return (
+      return teammate ? (
         <EmptyState
           variant="plain"
-          title="Kin doesn't know who you are on this server yet"
-          detail="Ask whoever runs Kin here to add you, then come back."
+          title="You're not on this team yet"
+          detail="Ask your team to add you, then come back."
+        />
+      ) : (
+        <EmptyState
+          variant="plain"
+          title="You're not in Kin on this server yet"
+          detail="Ask whoever runs it to add you, then come back."
         />
       );
     case "error":
@@ -133,11 +166,16 @@ export function KinOfflineState(props: {
   readonly resource: string;
 }) {
   const { status, reconnect } = useKinReconnect(props.environmentId);
+  const teammate = useKinAppShell() === "chatOnly";
   return (
     <EmptyState
       variant="plain"
       title={status === "failed" ? "Couldn't reconnect to Kin" : "Kin is offline"}
-      detail={`${props.resource} when the Kin environment reconnects.`}
+      detail={
+        teammate
+          ? `${props.resource} when you're back online.`
+          : `${props.resource} when the Kin environment reconnects.`
+      }
       {...(reconnect === null
         ? {}
         : {

@@ -21,9 +21,13 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
 import { PersistenceSqlError, toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Chat from "../chat/KinChatService.ts";
+import type { WriteAudience } from "../chat/KinChatRepository.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as Cache from "../memory/MemoryCache.ts";
+import { chatShared } from "../chat/sharing.ts";
+import { reaches, storedLabels } from "../memory/sensitivity.ts";
 import { isQuiet, KIN_DEFAULT_QUIET_HOURS } from "./quietHours.ts";
+import { retiredOwnerChat } from "../lead/Retirement.ts";
 
 const text = Schema.String.check(
   Schema.isTrimmed(),
@@ -53,7 +57,7 @@ const missing = new KinChatError({ reason: "not_found", message: "Kin record not
 const conflict = new KinChatError({ reason: "not_allowed", message: "Ping retry conflict." });
 const ownerMismatch = new KinChatError({
   reason: "not_allowed",
-  message: "Ping owner does not match the active lead.",
+  message: "Ping owner does not match the active agent.",
 });
 const invalid = new KinChatError({ reason: "invalid_state", message: "Invalid ping input." });
 type Error =
@@ -71,6 +75,7 @@ export class KinPings extends Context.Service<
   }
 >()("t3/kin/triggers/pings/KinPings") {}
 
+type Audience = { readonly audience: WriteAudience };
 type Row = {
   person: string;
   item_id: string;
@@ -216,6 +221,7 @@ const make = Effect.gen(function* () {
         const candidates: Array<{
           row: Row;
           request: Request;
+          item: Cache.MemoryItem | null;
           closed: boolean;
           handle: string;
           quiet: boolean;
@@ -238,6 +244,7 @@ const make = Effect.gen(function* () {
             return {
               row,
               request: r,
+              item,
               closed: item === null || item.head.status !== "open" || item.head.invalid_at !== null,
               handle: person[0]?.handle ?? "member",
               quiet: isQuiet(
@@ -269,7 +276,12 @@ const make = Effect.gen(function* () {
         if (candidates.length === 0) return;
         yield* transaction(
           Effect.gen(function* () {
-            const batches = new Map<string, typeof candidates>();
+            // A chase quotes its item: who reads its chat, and what the team may know, are read
+            // here, in the transaction that posts it, never before (a join may commit meanwhile).
+            const labels = yield* Effect.cached(
+              storedLabels(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+            );
+            const batches = new Map<string, Array<(typeof candidates)[number] & Audience>>();
             for (const candidate of candidates) {
               const { row, request: r, closed } = candidate;
               const current =
@@ -291,6 +303,8 @@ const make = Effect.gen(function* () {
                 yield* stop(r, now, closed);
                 continue;
               }
+              // Its agent was retired: held, not stopped, so restoring it brings the chase back.
+              if ((yield* retiredOwnerChat(sql, orgId, r.ownerChatId)).length > 0) continue;
               const valid = yield* checkOwner(r).pipe(Effect.andThen(validate(r)), Effect.result);
               if (valid._tag === "Failure") {
                 if (valid.failure._tag === "KinChatError") yield* stop(r, now, false, "closed");
@@ -299,6 +313,18 @@ const make = Effect.gen(function* () {
                   person: r.person,
                   itemId: r.itemId,
                   reason: valid.failure._tag,
+                });
+                continue;
+              }
+              const shared = yield* chatShared(sql, { orgId, chatId: r.chatId });
+              if (
+                shared &&
+                (candidate.item === null || !reaches("shared", candidate.item, yield* labels))
+              ) {
+                yield* stop(r, now, false, "closed");
+                yield* Effect.logInfo("Kin ping withheld: the team may not know its item", {
+                  orgId,
+                  itemId: r.itemId,
                 });
                 continue;
               }
@@ -313,7 +339,7 @@ const make = Effect.gen(function* () {
                 });
                 continue;
               }
-              batch.push(candidate);
+              batch.push({ ...candidate, audience: shared ? "chat" : "owner" });
               batches.set(r.person, batch);
             }
             for (const candidates of batches.values()) {
@@ -327,7 +353,13 @@ const make = Effect.gen(function* () {
                 let escalatedAt: number | null = null;
                 const escalation =
                   yield* sql`SELECT waiting_id FROM kin_ping_escalations WHERE org_id = ${orgId} AND item_id = ${r.itemId} ORDER BY item_id`;
-                if (row.first_day !== null && row.first_day < day && !escalation.length) {
+                // The escalation quotes the item to the owner: never where anyone else reads.
+                if (
+                  row.first_day !== null &&
+                  row.first_day < day &&
+                  !escalation.length &&
+                  !(yield* chatShared(sql, { orgId, chatId: r.ownerChatId }))
+                ) {
                   const notice = yield* chat.notice({
                     messageId: yield* decodeMessageId(SecureRandom.uuidV4Unsafe()).pipe(
                       Effect.orDie,
@@ -335,6 +367,7 @@ const make = Effect.gen(function* () {
                     orgId,
                     chatId: r.ownerChatId,
                     waitingFor: r.owner,
+                    audience: "owner",
                     body: `Waiting for a reply: next step below.\n${quoted(`${handle}: ${r.itemId}: ${r.nextStep}`)}`,
                   });
                   if (!notice.waiting) return yield* invalid;
@@ -357,6 +390,7 @@ const make = Effect.gen(function* () {
                 messageId: yield* decodeMessageId(SecureRandom.uuidV4Unsafe()).pipe(Effect.orDie),
                 orgId,
                 chatId: first.request.chatId,
+                audience: first.audience,
                 body,
               });
               for (const { request: r, escalatedAt } of batch) {

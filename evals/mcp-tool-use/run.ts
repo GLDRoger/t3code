@@ -51,8 +51,14 @@ import { buildCodexAdditionalContext } from "../../apps/server/src/provider/Code
 import { makeSideChatContext } from "../../apps/server/src/orchestration-v2/ContextHandoffService.ts";
 import { withInlineContext } from "../../apps/server/src/orchestration-v2/ContextHandoffDelivery.ts";
 import { instructions as kinLeadInstructions } from "../../apps/server/src/kin/lead/instructions.ts";
+import { leadTools } from "../../apps/server/src/kin/lead/LeadIsolation.ts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
 import { KinChatToolkit } from "../../apps/server/src/kin/mcp/KinChatToolkit.ts";
+import { KinWorkToolkit } from "../../apps/server/src/kin/work/mcp/tools.ts";
+import { KinDocsToolkit } from "../../apps/server/src/kin/work/mcp/docTools.ts";
+import { KinDocumentToolkit } from "../../apps/server/src/kin/gendocs/mcp.ts";
+import { WITHDRAWN_WORK, WORK_RULE } from "../../apps/server/src/kin/work/workPrompt.ts";
+import { OWNER_DECLINED, WAITING_FOR_OWNER } from "../../apps/server/src/kin/lead/workerBrief.ts";
 import { KinApprovalsToolkit } from "../../apps/server/src/kin/approvals/mcp.ts";
 import { AttachmentToolkit } from "../../apps/server/src/mcp/toolkits/attachment/tools.ts";
 import { DeviceToolkit } from "../../apps/server/src/mcp/toolkits/device/tools.ts";
@@ -443,6 +449,9 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   KinChatToolkit,
   KinApprovalsToolkit,
   KinLeadToolkit,
+  KinWorkToolkit,
+  KinDocsToolkit,
+  KinDocumentToolkit,
 ].flatMap((toolkit): ReadonlyArray<Tool.Any> => Object.values(toolkit.tools));
 // McpHttpServer decodes arguments with each tool's JSON codec, which drops undeclared keys.
 const t3InputDecoders = new Map(
@@ -503,10 +512,18 @@ const visibleT3Tools = (options: {
             (name) => tool.name === `${T3_PREFIX}${name}`,
           ) ||
           (options.kinLead === true &&
-            Object.keys(KinLeadToolkit.tools).some((name) => tool.name === `${T3_PREFIX}${name}`))
+            [
+              ...Object.keys(KinLeadToolkit.tools),
+              ...Object.keys(KinWorkToolkit.tools),
+              ...Object.keys(KinDocsToolkit.tools),
+              ...Object.keys(KinDocumentToolkit.tools),
+            ].some((name) => tool.name === `${T3_PREFIX}${name}`))
         : ![
             ...Object.keys(KinChatToolkit.tools),
             ...Object.keys(KinLeadToolkit.tools),
+            ...Object.keys(KinWorkToolkit.tools),
+            ...Object.keys(KinDocsToolkit.tools),
+            ...Object.keys(KinDocumentToolkit.tools),
             ...Object.keys(KinApprovalsToolkit.tools),
           ].some((name) => tool.name === `${T3_PREFIX}${name}`)) &&
       (options.links === true || !hiddenWhileLinksOff.has(tool.name)) &&
@@ -675,17 +692,31 @@ export const buildBase = (
   const open = { type: "object", additionalProperties: true };
   const nativeSchema = (name: string) =>
     NATIVE_SCHEMAS[name] ?? { description: name, input_schema: open };
+  const environment = {
+    cwd: anonymize(cwd),
+    platform: /Platform: (\w+)/.exec(joined)?.[1] ?? "linux",
+    date: /Today's date is ([\d-]+)/.exec(reminders.join("\n"))?.[1],
+  };
+  // LeadIsolation: a lead's instructions are its whole system prompt, its only native tools are
+  // the read-only ones, and every Kin tool loads upfront.
+  if (options.kinLead === true)
+    return {
+      model,
+      system: [text(kinLeadInstructions)],
+      reminders: [],
+      gitStatusAt: undefined,
+      environment,
+      nativeTools: [...template.tools.filter((tool) => leadTools.includes(tool.name)), ...t3],
+      t3,
+      deferred: [],
+    };
   return {
     model,
     system: system.map(text),
     reminders: reminders.filter((_, i) => i !== gitStatusAt).map((value) => text(anonymize(value))),
     gitStatusAt: gitStatusAt === -1 ? reminders.length : gitStatusAt,
     /** The shell simulator's cwd and OS follow the template's environment section. */
-    environment: {
-      cwd: anonymize(cwd),
-      platform: /Platform: (\w+)/.exec(joined)?.[1] ?? "linux",
-      date: /Today's date is ([\d-]+)/.exec(reminders.join("\n"))?.[1],
-    },
+    environment,
     nativeTools: [
       ...template.tools.filter((tool) => !isT3Name(tool.name)),
       ...t3.filter((tool) => alwaysLoaded.has(tool.name)),
@@ -1004,7 +1035,11 @@ export const buildMessages = (sample: Sample) => {
       : undefined,
     context,
   ];
-  const reminders = base.reminders.toSpliced(base.gitStatusAt, 0, reminder(gitStatus(testCase)));
+  // A lead's cwd is its memory checkout, so its turn carries no git status.
+  const reminders =
+    base.gitStatusAt === undefined
+      ? base.reminders
+      : base.reminders.toSpliced(base.gitStatusAt, 0, reminder(gitStatus(testCase)));
   push("user", ...reminders, ...notes.flatMap((note) => (note ? [reminder(note)] : [])));
   const toolSearch = findTool(base, "ToolSearch")?.name ?? "ToolSearch";
   let nextId = 0;
@@ -1039,15 +1074,24 @@ export const buildMessages = (sample: Sample) => {
     }
     if (turn.text) push(turn.role, text(turn.text));
   }
+  // A lead case writes `{{WORK_RULE}}`, `{{WITHDRAWN_WORK}}` and the publish lines where Kin puts
+  // them, so it tests the current text.
+  const casePrompt = testCase.prompt
+    .replaceAll("{{WORK_RULE}}", WORK_RULE)
+    .replaceAll("{{WITHDRAWN_WORK}}", WITHDRAWN_WORK)
+    .replaceAll("{{WAITING_FOR_OWNER}}", JSON.stringify(WAITING_FOR_OWNER).slice(1, -1))
+    .replaceAll("{{OWNER_DECLINED}}", JSON.stringify(OWNER_DECLINED).slice(1, -1));
   const userText =
     testCase.promptContext === undefined
-      ? testCase.prompt
-      : projectComposerContextForProvider({ text: testCase.prompt, ...testCase.promptContext });
+      ? casePrompt
+      : projectComposerContextForProvider({ text: casePrompt, ...testCase.promptContext });
   const inline =
     sideChatContext === undefined ? userText : withInlineContext(sideChatContext, userText);
-  // A Kin lead's wake-up prompt opens with its instructions, as LeadPrompt's does.
+  // Codex has no lead session to carry the instructions, so its prompt opens with them.
   const prompt =
-    testCase.setup.world?.kinLead === true ? `${kinLeadInstructions}\n\n${inline}` : inline;
+    testCase.setup.world?.kinLead === true && base.codex !== undefined
+      ? `${kinLeadInstructions}\n\n${inline}`
+      : inline;
   const childPrompt = () => taskPrompt({ task: prompt, role: delegateRole });
   if (testCase.prompt !== "")
     push("user", text(role === "delegated-child" ? childPrompt() : prompt));

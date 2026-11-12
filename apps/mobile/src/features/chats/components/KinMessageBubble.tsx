@@ -1,6 +1,7 @@
 import {
   KIN_REACTION_EMOJI,
   type EnvironmentId,
+  type KinAttachment,
   type KinPersonId,
   type KinReactionEmoji,
   type KinWidget,
@@ -8,6 +9,7 @@ import {
 import { Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../../components/ui/AppText";
+import type { FilePreviewSource } from "../../../components/ui/FilePreviewModal";
 import { Chip } from "../../../components/ui/Chip";
 import * as Dialog from "../../../components/ui/Dialog";
 import * as Haptics from "expo-haptics";
@@ -30,14 +32,22 @@ import {
 } from "@t3tools/client-runtime/kin/kinChatFeed";
 import type { KinOutboxEntry } from "@t3tools/client-runtime/kin/kinOutbox";
 import {
-  KIN_REACTION_HINT,
-  KIN_REACTION_HINT_LABEL,
   KIN_PICKER_REACTIONS,
   KIN_REACTION_NAMES,
   type KinReactionChip,
 } from "@t3tools/client-runtime/kin/kinReactions";
-import { kinSentences } from "@t3tools/client-runtime/kin/kinScreenState";
+import {
+  kinAgentAvatar,
+  kinSentences,
+  type KinAvatarView,
+} from "@t3tools/client-runtime/kin/kinScreenState";
+import { kinAuthorAvatar } from "@t3tools/client-runtime/kin/kinGroups";
+import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
+import { kinCardDraws } from "@t3tools/client-runtime/kin/kinCardPresentation";
+import { MessageAttachmentList } from "../../threads/ThreadFeed";
 import { KinWidgetView } from "../widgets/KinWidgetView";
+import { KinAvatar } from "./KinAvatar";
+import { KinDocRefs } from "./KinDocRefs";
 
 type MessageRow = Extract<KinFeedRow, { readonly type: "message" }>;
 type SystemRow = Extract<KinFeedRow, { readonly type: "system" }>;
@@ -47,18 +57,65 @@ type DraftRow = Extract<KinFeedRow, { readonly type: "draft" }>;
 const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 const formatTime = (iso: string) => timeFormat.format(new Date(iso));
 
+// The viewer's message in the thread feed's user bubble; everyone else's on a quieter surface.
+// The width cap sits on the wrapper, so the long-press target is exactly the bubble.
+const OWN_WIDTH_CLASS_NAME = "max-w-[85%]";
+const OTHER_WIDTH_CLASS_NAME = "max-w-[88%]";
+const OWN_BUBBLE_CLASS_NAME = "rounded-[20px] bg-user-bubble px-4 py-2.5";
+const OTHER_BUBBLE_CLASS_NAME = "rounded-[20px] bg-grouped-card px-4 py-2.5";
+// Tight inside one author's run, a clear step between authors.
+const rowSpacing = (continues: boolean) => (continues ? "pt-0.5" : "pt-3");
+
 const renderImageAsText: MarkdownImageRenderer = (image) => (
   <Text textRole="body" className="italic text-foreground-muted">
     {kinImageText(image)}
   </Text>
 );
 
-/** One message. The owner's own sit right in the brand colour; others sit left on grey. */
+const NO_PLAYBACK = () => undefined;
+
+/** A message's files, drawn by the thread feed's own attachment views at a bubble's width. */
+function KinAttachments(props: {
+  readonly attachments: ReadonlyArray<KinAttachment>;
+  readonly environmentId: EnvironmentId;
+  readonly onPressPreview: (source: FilePreviewSource) => void;
+  readonly unposted?: boolean;
+}) {
+  return (
+    <View className="w-[280px] max-w-full">
+      <MessageAttachmentList
+        {...(props.unposted === true ? { unposted: true } : {})}
+        attachments={props.attachments}
+        environmentId={props.environmentId}
+        onPressPreview={props.onPressPreview}
+        onPlaybackStart={NO_PLAYBACK}
+      />
+    </View>
+  );
+}
+
+/** Who wrote the messages under it, in a chat with more than one other author. */
+function KinAuthorLine(props: { readonly label: string; readonly avatar: KinAvatarView }) {
+  return (
+    <View
+      className="flex-row items-center gap-1.5 px-1"
+      importantForAccessibility="no-hide-descendants"
+      accessibilityElementsHidden
+    >
+      <KinAvatar avatar={props.avatar} size="mini" />
+      <Text textRole="caption" className="font-t3-medium text-foreground-muted">
+        {props.label}
+      </Text>
+    </View>
+  );
+}
+
+/** One message: the viewer's own in the user bubble on the right, everyone else's in a bubble on the left. */
 export function KinMessageBubble(props: {
   readonly row: MessageRow;
   /** `useMarkdownPreviewStyles().nativeTextStyle`, read once by the screen. */
   readonly markdownStyle: NativeMarkdownTextStyle;
-  /** The same, recoloured for text on the brand-coloured bubble. */
+  /** The same, recoloured for text on the user bubble. */
   readonly ownMarkdownStyle: NativeMarkdownTextStyle;
   /** Gets any link the author wrote; the screen opens web links only (`kinLinkToOpen`). */
   readonly onLinkPress: (href: string) => void;
@@ -67,6 +124,10 @@ export function KinMessageBubble(props: {
   /** The environment hosting the chat. */
   readonly environmentId: EnvironmentId;
   readonly viewerPersonId: KinPersonId | null;
+  /** The card's agent by name when it is retired. */
+  readonly heldFor?: string | null;
+  /** The chat's agents by id, for a doc card's "by Growth". */
+  readonly agentNames?: ReadonlyMap<string, string>;
   readonly reactions: ReadonlyArray<KinReactionChip>;
   /** Toggles the viewer's reaction; null where they can't react, such as a privileged card. */
   readonly onReact: ((emoji: KinReactionEmoji) => void) | null;
@@ -74,8 +135,8 @@ export function KinMessageBubble(props: {
   readonly onOpenActions: (() => void) | null;
   /** A direct chat has one other author, so it shows no author lines. */
   readonly direct: boolean;
-  /** "React 👍/👎 to answer" on the lead's latest message, for its owner. */
-  readonly showReplyHint: boolean;
+  /** Opens an attached image or PDF full screen. */
+  readonly onPressPreview: (source: FilePreviewSource) => void;
 }) {
   const { row, onReact, onOpenActions } = props;
   const { message } = row;
@@ -84,8 +145,15 @@ export function KinMessageBubble(props: {
   const hasBody = !deleted && message.body.trim().length > 0;
   // The bubble reads as one element, so its links are reachable as VoiceOver actions.
   const links = hasBody ? kinMessageLinks(message.body) : [];
-  const hasCard = !deleted && message.widgetId !== null;
-  const hasBubble = !hasCard || hasBody || suggested || message.editedAt !== null;
+  const hasCard =
+    !deleted &&
+    message.widgetId !== null &&
+    kinCardDraws(props.widget, props.environmentId, hasBody);
+  const attachments = deleted ? [] : (message.attachments ?? []);
+  const refs = deleted ? [] : (message.refs ?? []);
+  // Files alone need no empty bubble under them.
+  const hasBubble =
+    (!hasCard && attachments.length === 0) || hasBody || suggested || message.editedAt !== null;
   const mine = new Set(props.reactions.flatMap((chip) => (chip.mine ? [chip.emoji] : [])));
   // The sheet's actions, reachable without the long press.
   const sheetActions = [
@@ -120,13 +188,7 @@ export function KinMessageBubble(props: {
         const link = links[Number(name.slice("link-".length))];
         if (link !== undefined) props.onLinkPress(link.href);
       }}
-      className={cn(
-        "gap-1 rounded-[22px]",
-        row.own
-          ? "max-w-[85%] bg-primary px-4 py-2.5"
-          : "max-w-[92%] bg-composer-surface px-4 py-3",
-        suggested && "border border-dashed border-border",
-      )}
+      className={cn("gap-1", row.own ? OWN_BUBBLE_CLASS_NAME : OTHER_BUBBLE_CLASS_NAME)}
     >
       {hasBody ? (
         <SelectableMarkdownText
@@ -135,6 +197,7 @@ export function KinMessageBubble(props: {
           // A long press opens the sheet, whose Select text offers selection instead.
           selectable={onOpenActions === null}
           preserveSoftBreaks
+          inlineWebLinks
           onLinkPress={props.onLinkPress}
           renderImage={renderImageAsText}
           resolveImageSource={kinImageSource}
@@ -142,7 +205,10 @@ export function KinMessageBubble(props: {
       ) : deleted ? (
         <Text
           textRole="body"
-          className={cn("italic", row.own ? "text-primary-foreground" : "text-foreground-muted")}
+          className={cn(
+            "italic",
+            row.own ? "text-user-bubble-foreground-muted" : "text-foreground-muted",
+          )}
         >
           Message deleted
         </Text>
@@ -150,7 +216,7 @@ export function KinMessageBubble(props: {
       {suggested || message.editedAt !== null ? (
         <Text
           textRole="caption"
-          className={row.own ? "text-primary-foreground opacity-80" : "text-foreground-muted"}
+          className={row.own ? "text-user-bubble-foreground-muted" : "text-foreground-muted"}
         >
           {suggested ? "Suggestion, not sent yet" : "Edited"}
         </Text>
@@ -159,19 +225,29 @@ export function KinMessageBubble(props: {
   ) : null;
 
   return (
-    <View className={cn("gap-1 px-4 pb-2", row.own ? "items-end" : "items-start")}>
-      {row.showAuthor && !props.direct ? (
-        <Text
-          textRole="caption"
-          className="px-1 pt-2 font-t3-medium text-foreground-muted"
-          importantForAccessibility="no"
-          accessibilityElementsHidden
-        >
-          {row.authorLabel}
-        </Text>
+    <View
+      className={cn("gap-1 px-4", rowSpacing(row.continues), row.own ? "items-end" : "items-start")}
+    >
+      {row.showAuthor && !props.direct && message.author._tag !== "system" ? (
+        <KinAuthorLine label={row.authorLabel} avatar={kinAuthorAvatar(message.author)} />
       ) : null}
+      {attachments.length > 0 ? (
+        <KinAttachments
+          attachments={attachments}
+          environmentId={props.environmentId}
+          onPressPreview={props.onPressPreview}
+        />
+      ) : null}
+      {refs.length === 0 ? null : (
+        <KinDocRefs
+          refs={refs}
+          environmentId={props.environmentId}
+          orgId={message.orgId}
+          own={row.own}
+        />
+      )}
       {bubble === null ? null : onOpenActions === null ? (
-        bubble
+        <View className={row.own ? OWN_WIDTH_CLASS_NAME : OTHER_WIDTH_CLASS_NAME}>{bubble}</View>
       ) : (
         // The bubble inside stays the VoiceOver element; this only takes the long press.
         <Pressable
@@ -180,7 +256,10 @@ export function KinMessageBubble(props: {
             void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
             onOpenActions();
           }}
-          className={cn("w-full", row.own ? "items-end" : "items-start")}
+          className={cn(
+            "active:opacity-60",
+            row.own ? OWN_WIDTH_CLASS_NAME : OTHER_WIDTH_CLASS_NAME,
+          )}
         >
           {bubble}
         </Pressable>
@@ -192,6 +271,8 @@ export function KinMessageBubble(props: {
             environmentId={props.environmentId}
             viewerPersonId={props.viewerPersonId}
             onOpenLink={props.onLinkPress}
+            heldFor={props.heldFor ?? null}
+            {...(props.agentNames === undefined ? {} : { agentNames: props.agentNames })}
           />
         </View>
       ) : null}
@@ -214,15 +295,6 @@ export function KinMessageBubble(props: {
           ))}
         </View>
       ) : null}
-      {props.showReplyHint ? (
-        <Text
-          textRole="caption"
-          className="px-1 text-foreground-muted"
-          accessibilityLabel={KIN_REACTION_HINT_LABEL}
-        >
-          {KIN_REACTION_HINT}
-        </Text>
-      ) : null}
     </View>
   );
 }
@@ -239,16 +311,9 @@ export function KinDraftBubble(props: {
 }) {
   const { row } = props;
   return (
-    <View className="items-start gap-1 px-4 pb-2">
+    <View className={cn("items-start gap-1 px-4", rowSpacing(row.continues))}>
       {row.showAuthor && !props.direct ? (
-        <Text
-          textRole="caption"
-          className="px-1 pt-2 font-t3-medium text-foreground-muted"
-          importantForAccessibility="no"
-          accessibilityElementsHidden
-        >
-          {row.authorLabel}
-        </Text>
+        <KinAuthorLine label={row.authorLabel} avatar={kinAgentAvatar(row.draft.agentId)} />
       ) : null}
       <View
         accessible
@@ -257,7 +322,7 @@ export function KinDraftBubble(props: {
           kinPlainText(row.draft.text),
           "Still writing",
         ])}
-        className="max-w-[92%] gap-1 rounded-[22px] bg-composer-surface px-4 py-3"
+        className={cn("gap-1", OTHER_WIDTH_CLASS_NAME, OTHER_BUBBLE_CLASS_NAME)}
       >
         <SelectableMarkdownText
           markdown={kinBodyMarkdown(row.draft.text)}
@@ -272,7 +337,7 @@ export function KinDraftBubble(props: {
   );
 }
 
-/** A line from Kin itself, such as a member joining. */
+/** A line from Kin itself, such as a reply that failed. */
 export function KinSystemLine(props: {
   readonly row: SystemRow;
   /** Sends the owner's unanswered message again; null shows the line alone. */
@@ -299,7 +364,12 @@ export function KinSystemLine(props: {
 /** The owner's message before the host has it: sending, waiting for a connection, or refused. */
 export function KinPendingBubble(props: {
   readonly entry: KinOutboxEntry;
+  readonly environmentId: EnvironmentId;
+  readonly orgId: string;
+  readonly onPressPreview: (source: FilePreviewSource) => void;
   readonly connected: boolean;
+  /** The row above is the viewer's own bubble. */
+  readonly continues: boolean;
   /** Puts the body back in the draft and drops the refused send. */
   readonly onEdit: () => void;
   readonly onDiscard: () => void;
@@ -311,36 +381,56 @@ export function KinPendingBubble(props: {
     : props.connected || entry.state === "sending"
       ? "Sending…"
       : "Waiting for connection";
+  const attachments = entry.attachments ?? [];
+  const refs = entry.refs ?? [];
+  const hasBody = entry.body.trim().length > 0;
+  const remove = () =>
+    Dialog.confirm({
+      title: "Delete this message?",
+      message: "It was never sent.",
+      confirmText: "Delete",
+      destructive: true,
+      onConfirm: props.onDiscard,
+    });
   return (
-    <View className="items-end gap-1 px-4 pb-2">
-      <Pressable
-        disabled={!failed}
-        onPress={props.onEdit}
-        onLongPress={
-          failed
-            ? () =>
-                Dialog.confirm({
-                  title: "Delete this message?",
-                  message: "It was never sent.",
-                  confirmText: "Delete",
-                  destructive: true,
-                  onConfirm: props.onDiscard,
-                })
-            : undefined
-        }
-        accessibilityRole={failed ? "button" : undefined}
-        accessibilityLabel={kinSentences([`You: ${kinPlainText(entry.body)}`, status])}
-        accessibilityHint={failed ? "Edit it in the message box." : undefined}
-        className={cn("max-w-[85%] rounded-[22px] bg-primary px-4 py-2.5", !failed && "opacity-70")}
-      >
-        <Text textRole="body" className="text-primary-foreground">
-          {entry.body}
-        </Text>
-      </Pressable>
+    <View className={cn("items-end gap-1 px-4", rowSpacing(props.continues))}>
+      {attachments.length > 0 ? (
+        <View className={failed ? undefined : "opacity-70"}>
+          <KinAttachments
+            attachments={attachments}
+            environmentId={props.environmentId}
+            onPressPreview={props.onPressPreview}
+            unposted
+          />
+        </View>
+      ) : null}
+      {refs.length === 0 ? null : (
+        <KinDocRefs refs={refs} environmentId={props.environmentId} orgId={props.orgId} own />
+      )}
+      {hasBody ? (
+        <Pressable
+          disabled={!failed}
+          onPress={props.onEdit}
+          onLongPress={failed ? remove : undefined}
+          accessibilityRole={failed ? "button" : undefined}
+          accessibilityLabel={kinSentences([`You: ${kinPlainText(entry.body)}`, status])}
+          accessibilityHint={failed ? "Edit it in the message box." : undefined}
+          className={cn(OWN_WIDTH_CLASS_NAME, OWN_BUBBLE_CLASS_NAME, !failed && "opacity-70")}
+        >
+          <Text textRole="body" className="text-user-bubble-foreground">
+            {entry.body}
+          </Text>
+        </Pressable>
+      ) : null}
+      {/* The text bubble reads the status aloud; files alone leave that to this line. */}
       <View
         className="flex-row items-center gap-2 px-1"
-        importantForAccessibility="no-hide-descendants"
-        accessibilityElementsHidden
+        accessible={!hasBody}
+        accessibilityLabel={
+          hasBody ? undefined : kinSentences([`You: ${kinMessageSummary(entry)}`, status])
+        }
+        importantForAccessibility={hasBody ? "no-hide-descendants" : "yes"}
+        accessibilityElementsHidden={hasBody}
       >
         <Text
           textRole="caption"
@@ -348,10 +438,17 @@ export function KinPendingBubble(props: {
         >
           {status}
         </Text>
-        {failed ? (
+        {failed && hasBody ? (
           <Pressable onPress={props.onEdit} hitSlop={12}>
             <Text textRole="caption" className="font-t3-medium text-foreground">
               Edit
+            </Text>
+          </Pressable>
+        ) : null}
+        {failed && !hasBody ? (
+          <Pressable onPress={remove} hitSlop={12}>
+            <Text textRole="caption" className="font-t3-medium text-foreground">
+              Delete
             </Text>
           </Pressable>
         ) : null}
@@ -367,7 +464,7 @@ export function KinDayLine(props: { readonly row: DayRow }) {
       accessible
       accessibilityRole="header"
       accessibilityLabel={props.row.label}
-      className="items-center px-8 pb-2 pt-5"
+      className="items-center px-8 pt-5"
     >
       <Text textRole="caption" className="text-foreground-muted">
         {props.row.label}

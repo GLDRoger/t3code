@@ -66,6 +66,36 @@ it("matches the bounded index golden, independently of input order, and fades on
   );
 });
 
+it("drops reminders that went out and anything cancelled, done or replaced", () => {
+  const every = { at: "09:00", days: [1, 2, 3, 4, 5] };
+  const index = buildIndex(
+    [
+      item("fired", { kind: "deferral", on_due: "remind", due: "2026-11-08T03:00:00.000Z" }),
+      item("fired-default", { kind: "deferral", due: "2026-11-07" }),
+      item("cancelled", { kind: "deferral", due: "2026-11-09", status: "cancelled" }),
+      item("done", { kind: "deferral", due: "2026-11-07", status: "done" }),
+      item("replaced", {
+        kind: "deferral",
+        due: "2026-11-09",
+        superseded_by: KinMemoryItemId.make("coming"),
+      }),
+      item("stopped-task", { kind: "deferral", every, status: "cancelled" }),
+      item("coming", { kind: "deferral", on_due: "remind", due: "2026-11-09" }),
+      item("asked", { kind: "deferral", on_due: "ask", due: "2026-11-07" }),
+      item("task", { kind: "deferral", every }),
+      item("promise", { kind: "commitment", due: "2026-11-07" }),
+    ],
+    {},
+    now,
+    "Asia/Kolkata",
+  );
+  expect(index.match(/Invented [\w-]+/g)).toEqual([
+    "Invented asked",
+    "Invented coming",
+    "Invented task",
+  ]);
+});
+
 it.each([
   { zone: "UTC", now: "2026-11-08T23:30:00Z", due: "2026-11-16T00:00:00Z", soon: false },
   { zone: "Asia/Kolkata", now: "2026-11-08T23:30:00Z", due: "2026-11-16T00:00:00Z", soon: true },

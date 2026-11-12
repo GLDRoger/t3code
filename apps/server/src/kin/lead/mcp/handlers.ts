@@ -2,22 +2,35 @@
 import * as NodeCrypto from "node:crypto";
 import { KinChatError, KinWakeupId } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
+import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
+import { KinRepoReads } from "../../github/KinRepoReads.ts";
 import { laneFor } from "../../reply/KinReplyBridge.ts";
+import { KinHandoff } from "../Handoff.ts";
 import { KinLevelGate } from "../LevelGate.ts";
+import { quote } from "../LeadPrompt.ts";
 import { LeadMemory, resolveLead } from "../LeadMemory.ts";
 import { KinWorkers } from "../Workers.ts";
 import { KinLeadToolkit } from "./tools.ts";
+
+// Off until the host says so: a page can still reach the network through WebRTC and preconnect,
+// which no browser lets a policy close (see docs/kin/specs/chat.md, "Visuals").
+const visualsOn = Config.Boolean("KIN_VISUALS").pipe(
+  Config.withDefault(false),
+  Effect.orElseSucceed(() => false),
+);
 
 const isKinChatError = Schema.is(KinChatError);
 const failure = (error: unknown) =>
   isKinChatError(error)
     ? error
     : new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
+
+const githubQuote = (value: unknown) => ({ quoted: quote("GitHub data (untrusted)", value, true) });
 
 // Kin's service checks the persisted lead and wake-up, rather than T3 thread-control grants.
 export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
@@ -34,6 +47,16 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
   kin_worker_stop: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.workerStop")(function* (input) {
       return yield* (yield* KinWorkers).stop(yield* McpInvocationContext, input);
+    }),
+  ),
+  kin_leads: McpToolAccess.reads(
+    Effect.fn("KinLeadToolkit.leads")(function* () {
+      return yield* (yield* KinHandoff).leads(yield* McpInvocationContext);
+    }),
+  ),
+  kin_hand_off: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.handOff")(function* (input) {
+      return yield* (yield* KinHandoff).handOff(yield* McpInvocationContext, input);
     }),
   ),
   kin_ask: McpToolAccess.actsAsCaller(
@@ -53,9 +76,55 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
           clientMessageId: `kin-ask:${wakeupId}:${key.slice(0, 32)}`,
         },
       );
-      return "shadowed" in result
-        ? result
-        : { widgetId: result.widgetId, messageId: result.messageId };
+      return { widgetId: result.widgetId, messageId: result.messageId };
+    }, Effect.mapError(failure)),
+  ),
+  kin_chart: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.chart")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      const wakeupId = KinWakeupId.make(lead.wakeupId);
+      const lane = yield* laneFor({ orgId: lead.orgId, agentId: lead.agentId, wakeupId });
+      if (Option.isNone(lane))
+        return yield* new KinChatError({ reason: "not_found", message: "Kin record not found." });
+      // An identical call in the same wake-up is a retry and returns the same card.
+      const key = NodeCrypto.createHash("sha256").update(stableStringify(input)).digest("hex");
+      const result = yield* (yield* KinLevelGate).chart(
+        { ...lead, wakeupId },
+        {
+          ...input,
+          chatId: lane.value.chatId,
+          clientMessageId: `kin-chart:${wakeupId}:${key.slice(0, 32)}`,
+          intent: lane.value.mode === "reply" ? "answer" : "evidence",
+        },
+      );
+      return { widgetId: result.widgetId, messageId: result.messageId };
+    }, Effect.mapError(failure)),
+  ),
+  kin_visual: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.visual")(function* (input) {
+      if (!(yield* visualsOn))
+        return yield* new KinChatError({
+          reason: "unavailable",
+          message:
+            "Visuals are not switched on for this server yet. Send a kin_chart if one of its kinds fits, or say it in text.",
+        });
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      const wakeupId = KinWakeupId.make(lead.wakeupId);
+      const lane = yield* laneFor({ orgId: lead.orgId, agentId: lead.agentId, wakeupId });
+      if (Option.isNone(lane))
+        return yield* new KinChatError({ reason: "not_found", message: "Kin record not found." });
+      // An identical call in the same wake-up is a retry and returns the same card.
+      const key = NodeCrypto.createHash("sha256").update(stableStringify(input)).digest("hex");
+      const result = yield* (yield* KinLevelGate).visual(
+        { ...lead, wakeupId },
+        {
+          ...input,
+          chatId: lane.value.chatId,
+          clientMessageId: `kin-visual:${wakeupId}:${key.slice(0, 32)}`,
+          intent: lane.value.mode === "reply" ? "answer" : "evidence",
+        },
+      );
+      return { widgetId: result.widgetId, messageId: result.messageId };
     }, Effect.mapError(failure)),
   ),
   kin_react: McpToolAccess.actsAsCaller(
@@ -86,6 +155,11 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       return yield* (yield* LeadMemory).write(yield* McpInvocationContext, input);
     }),
   ),
+  memory_label: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.label")(function* (input) {
+      return yield* (yield* LeadMemory).label(yield* McpInvocationContext, input);
+    }),
+  ),
   kin_defer: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.defer")(function* (input) {
       return yield* (yield* LeadMemory).defer(yield* McpInvocationContext, input);
@@ -96,10 +170,39 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       return yield* (yield* LeadMemory).schedule(yield* McpInvocationContext, input);
     }),
   ),
+  kin_cancel: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.cancel")(function* (input) {
+      return yield* (yield* LeadMemory).cancel(yield* McpInvocationContext, input);
+    }),
+  ),
   kin_journal: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.journal")(function* (input) {
       return yield* (yield* LeadMemory).journal(yield* McpInvocationContext, input);
     }),
+  ),
+  kin_github_repos: McpToolAccess.reads(
+    Effect.fn("KinLeadToolkit.githubRepos")(function* () {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      return yield* (yield* KinRepoReads).repos(lead);
+    }, Effect.mapError(failure)),
+  ),
+  kin_github_prs: McpToolAccess.reads(
+    Effect.fn("KinLeadToolkit.githubPrs")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      return githubQuote(yield* (yield* KinRepoReads).pulls(lead, input));
+    }, Effect.mapError(failure)),
+  ),
+  kin_github_pr: McpToolAccess.reads(
+    Effect.fn("KinLeadToolkit.githubPr")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      return githubQuote(yield* (yield* KinRepoReads).pull(lead, input));
+    }, Effect.mapError(failure)),
+  ),
+  kin_github_runs: McpToolAccess.reads(
+    Effect.fn("KinLeadToolkit.githubRuns")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      return githubQuote(yield* (yield* KinRepoReads).runs(lead, input));
+    }, Effect.mapError(failure)),
   ),
   kin_end: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.end")(function* (input) {

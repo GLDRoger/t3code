@@ -130,12 +130,14 @@ export function AppBar(props: AppBarProps) {
                 headerSearchBarOptions: compactSearch
                   ? undefined
                   : {
-                      allowToolbarIntegration: true,
-                      ...(duoBottomSearch
-                        ? { placement: "integrated" as const }
-                        : NATIVE_MAIL_SEARCH_TOOLBAR_SUPPORTED && search.mode === "inline"
-                          ? { placement: "integratedButton" as const }
-                          : undefined),
+                      allowToolbarIntegration: search.placement !== "top",
+                      ...(search.placement === "top"
+                        ? { placement: "stacked" as const, hideWhenScrolling: false }
+                        : duoBottomSearch
+                          ? { placement: "integrated" as const }
+                          : NATIVE_MAIL_SEARCH_TOOLBAR_SUPPORTED && search.mode === "inline"
+                            ? { placement: "integratedButton" as const }
+                            : undefined),
                       autoCapitalize: "none",
                       hideNavigationBar: false,
                       ...(search.mode === "inline" || duoBottomSearch

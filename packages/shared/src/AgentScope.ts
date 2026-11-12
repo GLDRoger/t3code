@@ -15,6 +15,8 @@ export interface AgentScopeShape {
      * Falls back to ordinary scope behavior on older systemd.
      */
     readonly shared?: boolean | undefined;
+    /** systemd properties for this scope alone, such as `MemoryMax=8G`; dropped without one. */
+    readonly properties?: ReadonlyArray<string> | undefined;
   }) => Effect.Effect<AgentScopeCommand>;
   readonly oomKilled: (threadId: string) => Effect.Effect<boolean>;
   /**
@@ -29,6 +31,11 @@ export interface AgentScopeShape {
    */
   readonly kill: (threadId: string) => Effect.Effect<boolean>;
   /**
+   * Kills the thread's own scope and succeeds with true once no process is left in it. False
+   * when the thread has no scope of its own here, or its end can't be confirmed.
+   */
+  readonly reap: (threadId: string) => Effect.Effect<boolean>;
+  /**
    * Forgets the thread's scope. The session manager calls it before it opens
    * a provider session, so a scope only answers for the session that launched
    * it, even when the next session runs without one (Cursor, OpenCode).
@@ -41,6 +48,8 @@ export interface AgentScopeCommand {
   readonly args: ReadonlyArray<string>;
   /** The systemd scope the command runs in, for `stop`. */
   readonly unit?: string | undefined;
+  /** Asked-for properties this systemd refuses; the scope starts without them. */
+  readonly refusedProperties?: ReadonlyArray<string> | undefined;
 }
 
 export const AgentScope = Context.Reference<AgentScopeShape>("@t3tools/shared/AgentScope", {
@@ -49,6 +58,7 @@ export const AgentScope = Context.Reference<AgentScopeShape>("@t3tools/shared/Ag
     oomKilled: () => Effect.succeed(false),
     stop: () => Effect.void,
     kill: () => Effect.succeed(false),
+    reap: () => Effect.succeed(false),
     clear: () => Effect.void,
   }),
 });

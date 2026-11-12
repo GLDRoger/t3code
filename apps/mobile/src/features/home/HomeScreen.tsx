@@ -38,6 +38,7 @@ import {
   deriveCenteredContentHorizontalPadding,
 } from "../../lib/layout";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { Button } from "../../components/ui/Button";
 import { FloatingActionButton } from "../../components/ui/FloatingActionButton";
 import type { WorkspaceEnvironment, WorkspaceState } from "../../state/workspaceModel";
 import type { SavedRemoteConnection } from "../../lib/connection";
@@ -90,7 +91,6 @@ import { SwipeableScrollGateProvider, useSwipeableScrollGate } from "./thread-sw
 import { useFabScroll } from "./FabScrollContext";
 import { useWorkspaceTabs } from "../layout/workspace/WorkspaceTabsContext";
 import { ThreadListFilters } from "./ThreadListFilters";
-import { KinHomeEntry } from "../chats/KinHomeEntry";
 
 interface HomeScreenProps {
   readonly projects: ReadonlyArray<EnvironmentProject>;
@@ -110,6 +110,7 @@ interface HomeScreenProps {
   readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
   readonly onProjectChange: (projectKey: string | null) => void;
   readonly onAddConnection: () => void;
+  readonly onJoinKin: () => void;
   readonly onOpenSettings: () => void;
   readonly onStartNewTask: () => void;
   readonly onSelectThread: (thread: EnvironmentThreadShell) => void;
@@ -161,8 +162,9 @@ function deriveEmptyState(props: {
 
   if (!catalogState.hasConnections) {
     return {
-      title: "No environments connected",
-      detail: "Add an environment to load projects and start coding sessions.",
+      title: "Get started",
+      detail:
+        "Joining a team? Use the link they sent you. Running your own Kin? Connect the computer it runs on.",
       loading: false,
     };
   }
@@ -692,7 +694,6 @@ export function HomeScreen(props: HomeScreenProps) {
             }}
           >
             <View className="w-full max-w-[430px]">
-              <KinHomeEntry />
               <EmptyState
                 title={emptyState.title}
                 detail={emptyState.detail}
@@ -703,7 +704,16 @@ export function HomeScreen(props: HomeScreenProps) {
                   !props.catalogState.hasReadyEnvironment ? props.onAddConnection : undefined
                 }
                 action={
-                  Platform.OS === "android" && !props.catalogState.hasReadyEnvironment ? (
+                  !props.catalogState.isLoadingConnections && !props.catalogState.hasConnections ? (
+                    <View className="items-center gap-3">
+                      <Button tone="primary" label="I have a join link" onPress={props.onJoinKin} />
+                      <Button
+                        tone="secondary"
+                        label="Set up my own Kin"
+                        onPress={props.onAddConnection}
+                      />
+                    </View>
+                  ) : Platform.OS === "android" && !props.catalogState.hasReadyEnvironment ? (
                     <FloatingActionButton
                       label="Add environment"
                       icon="plus"
@@ -732,7 +742,6 @@ export function HomeScreen(props: HomeScreenProps) {
   const v2ListHeader = (
     <>
       {listHeader}
-      <KinHomeEntry />
       {Platform.OS === "ios" && workspace ? (
         <ThreadListFilters
           gutter={sidebarSurface ? 8 : 0}

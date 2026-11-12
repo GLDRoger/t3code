@@ -234,7 +234,7 @@ export const KinApproverPublicJwk = Schema.Struct({
 });
 export type KinApproverPublicJwk = typeof KinApproverPublicJwk.Type;
 
-export const KinApproverKeyState = Schema.Literals(["pending", "active", "revoked"]);
+export const KinApproverKeyState = Schema.Literals(["active", "revoked"]);
 export type KinApproverKeyState = typeof KinApproverKeyState.Type;
 export const KinApproverKeyPlatform = Schema.Literals(["ios", "android"]);
 export type KinApproverKeyPlatform = typeof KinApproverKeyPlatform.Type;
@@ -260,6 +260,8 @@ export const KinApproverKey = Schema.Struct({
   createdAt: CanonicalUtcTimestamp,
   confirmedAt: Schema.optional(CanonicalUtcTimestamp),
   revokedAt: Schema.optional(CanonicalUtcTimestamp),
+  /** When it last signed an approval the server accepted; `listKeys` only. */
+  lastUsedAt: Schema.optional(CanonicalUtcTimestamp),
 });
 export type KinApproverKey = typeof KinApproverKey.Type;
 
@@ -498,20 +500,20 @@ export const KinApproverKeyAttestation = Schema.Union([
   }),
 ]);
 export type KinApproverKeyAttestation = typeof KinApproverKeyAttestation.Type;
+/** Sent by apps that set up in one step; older ones are refused with an ask to update. */
+export const KIN_APPROVER_ENROLMENT_VERSION = 2;
 export const KinApprovalsRegisterKeyInput = Schema.Struct({
+  enrolmentVersion: Schema.optional(Schema.Literal(KIN_APPROVER_ENROLMENT_VERSION)),
   orgId: KinOrgId,
   publicJwk: KinApproverPublicJwk,
   platform: KinApproverKeyPlatform,
   challenge: Base64UrlString,
-  // Without one the key is stored unattested and can never be activated. The server derives `hardware`.
+  // Without a trusted one the key is refused and nothing is stored. The server derives `hardware`.
   attestation: Schema.optional(KinApproverKeyAttestation),
   deviceLabel: KinTrimmedText.check(Schema.isMaxLength(80)),
 });
 export type KinApprovalsRegisterKeyInput = typeof KinApprovalsRegisterKeyInput.Type;
-export const KinApprovalsRegisterKeyResult = Schema.Struct({
-  key: KinApproverKey,
-  code: pattern(/^\d{6}$/, "a 6-digit code"),
-});
+export const KinApprovalsRegisterKeyResult = Schema.Struct({ key: KinApproverKey });
 export type KinApprovalsRegisterKeyResult = typeof KinApprovalsRegisterKeyResult.Type;
 export const KinApprovalsKeyInput = Schema.Struct({
   orgId: KinOrgId,
@@ -520,12 +522,18 @@ export const KinApprovalsKeyInput = Schema.Struct({
 export type KinApprovalsKeyInput = typeof KinApprovalsKeyInput.Type;
 export const KinApprovalsOrgInput = Schema.Struct({ orgId: KinOrgId });
 export type KinApprovalsOrgInput = typeof KinApprovalsOrgInput.Type;
+/** A phone that started or stopped being able to approve, newest first in `listKeys`. */
+export const KinApproverKeyActivity = Schema.Struct({
+  change: Schema.Literals(["added", "removed"]),
+  at: CanonicalUtcTimestamp,
+  deviceLabel: KinApproverKey.fields.deviceLabel,
+  platform: KinApproverKeyPlatform,
+});
+export type KinApproverKeyActivity = typeof KinApproverKeyActivity.Type;
 export const KinApprovalsListKeysResult = Schema.Struct({
+  /** The keys that can approve now. */
   keys: Schema.Array(KinApproverKey),
-  /** Pending `register_approver_key` actions: a new phone an active one has to approve. */
-  enrolments: Schema.optional(
-    Schema.Array(Schema.Struct({ thumbprint: KinKeyThumbprint, actionId: KinActionId })),
-  ),
+  activity: Schema.Array(KinApproverKeyActivity),
 });
 export type KinApprovalsListKeysResult = typeof KinApprovalsListKeysResult.Type;
 
@@ -564,8 +572,8 @@ export class KinApprovalError extends Schema.TaggedError<KinApprovalError>()("Ki
       "unsupported_kind",
       "not_a_lead",
       "bad_challenge",
-      "bad_code",
       "unattested",
+      "too_many_keys",
     ]),
   ]),
   message: Schema.String,

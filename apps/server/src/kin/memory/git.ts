@@ -13,7 +13,7 @@ export class MemoryGitMissingRepository extends Schema.TaggedError<MemoryGitMiss
 ) {}
 
 const repositoryFree = new Set(["clone", "ls-remote"]);
-// These run under the writer lock, so a hung remote must not hold up a reply for long.
+// Some of these run under the writer lock, so a hung remote must not hold up a reply for long.
 const network = new Set(["ls-remote", "fetch", "push"]);
 
 const formats = new Map<string, "sha1" | "sha256">();

@@ -34,7 +34,9 @@ export type SettingsPath =
   | "/settings/worktrees"
   | "/settings/connections"
   | "/settings/access"
+  | "/settings/approvals"
   | "/settings/secrets"
+  | "/settings/company"
   | "/settings/maintenance"
   | "/settings/labs"
   | "/settings/about"
@@ -111,13 +113,18 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/worktrees": "Worktrees",
   "/settings/connections": "Environments",
   "/settings/access": "Sharing & access",
+  "/settings/approvals": "Approvals",
   "/settings/secrets": "Secrets",
+  "/settings/company": "Company details",
   "/settings/maintenance": "Maintenance",
   "/settings/labs": "Labs",
   "/settings/about": "About",
   "/settings/voice": "Voice",
   "/settings/archived": "Archive",
 };
+
+/** Pages that exist only while a connected host runs Kin. */
+export const KIN_ONLY_SETTINGS_PATHS: ReadonlySet<SettingsPath> = new Set(["/settings/approvals"]);
 
 /** Sidebar order. A group without a heading is set apart by space alone. */
 export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
@@ -155,8 +162,13 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
     paths: [
       "/settings/connections",
       "/settings/access",
+      "/settings/approvals",
       ...(isSecretsFeatureEnabled ? (["/settings/secrets"] as const) : []),
     ],
+  },
+  {
+    heading: "Kin",
+    paths: ["/settings/company"],
   },
   {
     heading: null,
@@ -424,6 +436,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "composer-context",
     title: "Composer context",
     to: "/settings/appearance",
+  },
+  {
+    id: "approval-phones",
+    kinOnly: true,
+    title: "Phones that can approve",
+    to: "/settings/approvals",
+    searchTerms: [
+      "kin approvals approve phone face id set up remove key device lost new recent changes",
+    ],
   },
   {
     id: "kin-start-list",
@@ -1213,6 +1234,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     desktopOnly: true,
   },
   {
+    id: "company-details",
+    title: "Company details",
+    to: "/settings/company",
+    searchTerms: ["kin legal name address gstin pan tax bank account ifsc upi invoice"],
+  },
+  {
     id: "network-access",
     title: "Network access",
     to: "/settings/access",
@@ -1353,7 +1380,9 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/worktrees": "project-defaults",
   "/settings/connections": "connections",
   "/settings/access": "connections",
+  "/settings/approvals": null,
   "/settings/secrets": null,
+  "/settings/company": null,
   "/settings/scheduled-tasks": null,
   "/settings/maintenance": null,
   "/settings/labs": null,

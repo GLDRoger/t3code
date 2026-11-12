@@ -6,6 +6,8 @@ import {
   KinEvent,
   KinMemoryItemId,
   KinOrgId,
+  KinPersonId,
+  KinRecordKey,
   KinWorkerId,
   ModelSelection,
   type OrchestratorMcpFailure,
@@ -15,7 +17,6 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
   WorkerReport,
-  type KinLevel,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
@@ -35,19 +36,50 @@ import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
-import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as Memory from "../memory/Memory.ts";
+import { configuredRepositories } from "../memory/MemoryConfig.ts";
+import { sourceControlDefinitions } from "../../sourceControl/sourceControlDefinitions.ts";
+import { KinGithubRepoScope } from "../triggers/githubEvents.ts";
 import { KinBudget } from "./KinBudget.ts";
 import * as KinLevels from "./KinLevels.ts";
+import { SHARED_REFUSAL, destination, effectiveAudience, turnChat } from "./Audience.ts";
+import { workerChat } from "./ChatSharing.ts";
+import { KinRecords } from "../work/KinRecords.ts";
+import {
+  attemptBegun,
+  noteSensitivity,
+  stopAttempt,
+  workerMayResume,
+} from "../work/workerAttempts.ts";
+import { WORK_NOT_YOURS, workMayStart, workerStarted } from "../work/workerEntries.ts";
+import { sharedTurnMayTouch, toolAdmitted } from "./SharedTools.ts";
 import { isOrgPaused, STOP_REASON } from "./orgState.ts";
 import { resolveLead } from "./LeadMemory.ts";
+import { RETIRED_WORKER_REASON } from "./Retirement.ts";
 import { quote } from "./LeadPrompt.ts";
+import type { DocumentInput, DocumentResult } from "../gendocs/DocJobs.ts";
+import { LOCAL_BUILD_ONLY, makeLocalDelegate } from "./localWorkers.ts";
 import { buildBrief, publishNote, Quoted, reportFormat } from "./workerBrief.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
+import {
+  labelOf,
+  reachableKeys,
+  resolveProject,
+  type Checkout,
+  type HostProject,
+} from "./workerProjects.ts";
 import { publishBranch } from "./workerPublish.ts";
-import { endedStatuses, launchRequestId, unboundThreadId, WorkerTracker } from "./WorkerTracker.ts";
+import { localThreadId } from "./workThread.ts";
+import {
+  endedStatuses,
+  launchRequestId,
+  STOPPED_BEFORE_START,
+  unboundThreadId,
+  WITHDRAWN_REASON,
+  WorkerTracker,
+} from "./WorkerTracker.ts";
 
 const text = (max: number) => Schema.String.check(Schema.isMaxLength(max));
 
@@ -61,11 +93,18 @@ export const DelegateInput = Schema.Struct({
   goal: TrimmedNonEmptyString.check(Schema.isMaxLength(8_000)),
   brief: text(100_000),
   quoted: Schema.optional(Quoted),
-  projectId: ProjectId,
+  project: TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
+    description:
+      "Where the work happens, in plain words: a project or repository name such as t3code, or owner/name. Never an id you were not given.",
+  }),
   baseRef: Schema.optional(TrimmedNonEmptyString),
   model: Schema.optional(WorkerModel),
   memoryItemIds: Schema.optional(Schema.Array(KinMemoryItemId).check(Schema.isMaxLength(20))),
   reviewOf: Schema.optional(KinWorkerId),
+  entry: Schema.optional(KinRecordKey).annotate({
+    description:
+      "The Work entry this works on, such as W-12. Without one, Kin tracks the worker as a new entry of yours.",
+  }),
   sourceEventId: TrimmedNonEmptyString,
 });
 export const FollowUpInput = Schema.Struct({
@@ -78,10 +117,12 @@ export const StopInput = Schema.Struct({
   workerId: KinWorkerId,
   reason: Schema.optional(text(2_000)),
 });
-export const DelegateResult = Schema.Union([
-  Schema.Struct({ workerId: KinWorkerId, threadLink: Schema.String }),
-  Schema.Struct({ shadowed: Schema.Literal(true), entryId: TrimmedNonEmptyString }),
-]);
+export const DelegateResult = Schema.Struct({
+  workerId: KinWorkerId,
+  threadLink: Schema.String,
+  /** The repository or project the name resolved to, as the owner would call it. */
+  project: Schema.optional(Schema.String),
+});
 export const StopResult = Schema.Struct({ workerId: KinWorkerId, stopped: Schema.Boolean });
 
 const supportedDrivers = new Set([
@@ -90,9 +131,34 @@ const supportedDrivers = new Set([
 ]);
 const denied = (message = "Worker operation is not allowed.") =>
   new KinChatError({ reason: "not_allowed", message });
+// Below L2 in a chat the work touches: nothing starts, and the lead hears it in plain words.
+const NOT_OPEN =
+  "Starting work isn't open to you in this chat. Nothing started; tell the owner what you would do.";
+// What a lead hears when work can't start: what is true, that nothing started, and what it can
+// still do. None of it blames the lead's own setup or sends the owner to reconfigure it.
+const STILL =
+  "Nothing started. Say so once, in one line, and don't ask the owner to change your setup. You can still read repos, pull requests and CI yourself, or answer from memory.";
+const NO_ENVIRONMENT = `Coding work can't start yet: this host's worker environment isn't set up. That is a one-time step on the host, not a fault in you or in this request. ${STILL}`;
+const PAUSED = `Kin is paused by the owner, so no new work starts until they resume it. ${STILL}`;
+const OVER_BUDGET = `Today's budget for coding work is used up, so this waits for the daily reset or a higher limit. ${STILL}`;
+const NOT_HERE = `Work can't start in that project from this chat. ${STILL}`;
+const NO_MEMORY_CONFIG = `Coding work can't start right now: Kin couldn't read which repository holds its memory on this host, and no worker may ever work in that one. That is a step on the host, not a fault in you or in this request. ${STILL}`;
+const REVIEW_ELSEWHERE =
+  "A review runs in the same repository as the work it reviews. Nothing started. Call again naming that repository as the project.";
+const noCheckout = (label: string) =>
+  new KinChatError({
+    reason: "unavailable",
+    message: `${label} has no checkout in the worker environment yet, so work can't start in it. That is a step on the host, not a fault in you or in this request. ${STILL}`,
+  });
+const RETRY = "Nothing started. Call again with one of those names, or ask which one is meant.";
 const missing = () => new KinChatError({ reason: "not_found", message: "Kin record not found." });
 const unavailable = () =>
   new KinChatError({ reason: "unavailable", message: "Kin workers are unavailable." });
+const unending = () =>
+  new KinChatError({
+    reason: "unavailable",
+    message: `The worker environment's project list didn't end, so Kin couldn't find the project. ${STILL}`,
+  });
 const isChatError = Schema.is(KinChatError);
 const toolFailure = (label: string) => (error: unknown) =>
   isChatError(error)
@@ -109,6 +175,8 @@ const LeadRow = Schema.Struct({
   models: Schema.fromJsonString(Schema.Struct({ strong: ModelSelection, cheap: ModelSelection })),
   projects: Schema.fromJsonString(Schema.Array(ProjectId)),
   ownerChatId: KinChatId,
+  ownerPersonId: KinPersonId,
+  createdBy: Schema.NullOr(KinPersonId),
 });
 const WorkerRow = Schema.Struct({
   workerId: KinWorkerId,
@@ -122,11 +190,23 @@ const WorkerRow = Schema.Struct({
   report: Schema.NullOr(Schema.fromJsonString(WorkerReport)),
   environmentId: Schema.NullOr(EnvironmentId),
   projectId: Schema.NullOr(ProjectId),
+  repositoryKey: Schema.NullOr(Schema.String),
   startedAt: Schema.Number,
 });
+const PasserRow = Schema.Struct({
+  projects: Schema.fromJsonString(Schema.Array(ProjectId)),
+  ownerPersonId: KinPersonId,
+  createdBy: Schema.NullOr(KinPersonId),
+});
 const decodeLead = Schema.decodeUnknownEffect(LeadRow);
+const decodePasser = Schema.decodeUnknownEffect(PasserRow);
 const decodeWorker = Schema.decodeUnknownEffect(WorkerRow);
 const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(KinEvent));
+/** The chat that asked; other events answer in the owner chat, as the reply bridge does. */
+const askingChat = (event: KinEvent, ownerChatId: KinChatId) =>
+  event._tag === "chat.message" || event._tag === "widget.action" || event._tag === "chat.reaction"
+    ? event.chatId
+    : ownerChatId;
 const decodeSelection = Schema.decodeUnknownEffect(ModelSelection);
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
@@ -151,6 +231,11 @@ export class KinWorkers extends Context.Service<
       scope: McpInvocationScope,
       input: typeof StopInput.Type,
     ) => Effect.Effect<typeof StopResult.Type, KinChatError>;
+    /** A file made, or a recipe written, by a worker on this server (`gendocs/DocJobs.ts`). */
+    readonly document: (
+      scope: McpInvocationScope,
+      input: DocumentInput,
+    ) => Effect.Effect<typeof DocumentResult.Type, KinChatError>;
   }
 >()("t3/kin/lead/Workers/KinWorkers") {}
 
@@ -161,12 +246,31 @@ const make = Effect.gen(function* () {
   const budget = yield* KinBudget;
   const memory = yield* Memory.Memory;
   const projects = yield* ProjectService.ProjectService;
-  const repositories = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
+  const connected = yield* KinGithubRepoScope;
+  // Org memory is never a place for a worker, whoever checked it out there, on any host. Read by
+  // the key the worker environment reports; unreadable, no work starts anywhere.
+  const memoryRepos = yield* configuredRepositories.pipe(
+    Effect.map(
+      (repositories) =>
+        new Set(
+          repositories.map(({ repoUrl }) =>
+            sourceControlDefinitions.repositoryKeyFromRemote(repoUrl).toLowerCase(),
+          ),
+        ),
+    ),
+    Effect.tapError(() =>
+      Effect.logWarning("Kin memory repositories are unreadable; no work starts"),
+    ),
+    Effect.option,
+  );
+  const memoryKeys = Effect.fromOption(memoryRepos).pipe(
+    Effect.mapError(() => new KinChatError({ reason: "unavailable", message: NO_MEMORY_CONFIG })),
+  );
   const env = yield* WorkerEnvironment.KinWorkerEnvironment;
   const tracker = yield* WorkerTracker;
+  const records = yield* KinRecords;
   const environment = yield* ServerEnvironment;
   const orchestrator = yield* OrchestratorV2;
-  const summary = yield* KinLevels.KinShadowSummary;
   const digest = yield* Digest.Digest;
   const hash = Effect.fn("KinWorkers.hash")((value: unknown) =>
     digest
@@ -179,9 +283,11 @@ const make = Effect.gen(function* () {
       Effect.provideService(SqlClient.SqlClient, sql),
     );
   const leadConfig = Effect.fn("KinWorkers.leadConfig")(function* (ctx: Lead) {
-    const [row] = yield* sql`SELECT models_json AS models, worker_projects_json AS projects,
-      owner_chat_id AS "ownerChatId" FROM kin_leads
-      WHERE org_id = ${ctx.orgId} AND agent_id = ${ctx.agentId} ORDER BY agent_id`;
+    const [row] = yield* sql`SELECT l.models_json AS models, l.worker_projects_json AS projects,
+      l.owner_chat_id AS "ownerChatId", a.owner_person_id AS "ownerPersonId",
+      l.created_by_person_id AS "createdBy"
+      FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+      WHERE l.org_id = ${ctx.orgId} AND l.agent_id = ${ctx.agentId} ORDER BY l.agent_id`;
     if (row === undefined) return yield* denied();
     return yield* decodeLead(row);
   });
@@ -197,70 +303,90 @@ const make = Effect.gen(function* () {
     const [row] = yield* sql`SELECT worker_id AS "workerId", kind, agent_id AS "agentId",
       wakeup_id AS "wakeupId", thread_id AS "threadId", title, chat_id AS "chatId",
       model_json AS model, report_json AS report, environment_id AS "environmentId",
-      project_id AS "projectId", started_at AS "startedAt"
+      project_id AS "projectId", repository_key AS "repositoryKey", started_at AS "startedAt"
       FROM kin_workers WHERE org_id = ${ctx.orgId} AND agent_id = ${ctx.agentId}
         AND worker_id = ${workerId} ORDER BY worker_id`;
     if (row === undefined) return yield* missing();
     return yield* decodeWorker(row);
   });
-  // The level of the chat the worker's card lives in, so a chat's own cap holds there too.
-  const levelOf = (ctx: Lead, chatId: KinChatId | null) =>
-    KinLevels.effectiveLevel({
-      orgId: ctx.orgId,
-      agentId: ctx.agentId,
-      chatId: chatId ?? undefined,
-    }).pipe(
-      Effect.provideService(SqlClient.SqlClient, sql),
-      Effect.catchTags({ KinLevelRefused: () => Effect.fail(denied()) }),
-    );
-  // Below L2 the lead's worker calls become shadow entries for the owner's daily summary.
-  const shadow = Effect.fn("KinWorkers.shadow")(function* (
+  /**
+   * Whether every chat the work touches is open to it: the chat that asked, the chats its due
+   * deferrals were asked from, and the chats of the workers it reaches. A chat's own cap holds
+   * there, and a weaker chat can't reach a worker placed in a stronger one.
+   */
+  const open = Effect.fn("KinWorkers.open")(function* (
     ctx: Lead,
-    level: KinLevel,
-    tool: string,
-    input: unknown,
-    target: string,
+    chats: ReadonlyArray<KinChatId | null>,
   ) {
-    const entry = yield* KinLevels.recordShadow({
-      orgId: ctx.orgId,
-      agentId: ctx.agentId,
-      threadId: ctx.threadId,
-      level,
-      unlocksLevel: "L2",
-      tool,
-      input,
-      wouldTarget: target,
-    }).pipe(
+    const cap = yield* KinLevels.originCap(ctx).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
-      Effect.catchTags({
-        KinLevelRefused: (error) =>
-          Effect.fail(
-            error.reason === "limit"
-              ? new KinChatError({
-                  reason: "limit",
-                  message: KinLevels.SHADOW_LIMIT_MESSAGE,
-                })
-              : denied(),
-          ),
-      }),
     );
-    if (entry.created) yield* summary.refresh({ orgId: ctx.orgId, agentId: ctx.agentId });
-    return { shadowed: true as const, entryId: entry.entryId };
+    if (cap !== undefined && !KinLevels.atLeast(cap, "L2")) return false;
+    for (const chatId of chats) {
+      const level = yield* KinLevels.effectiveLevel({
+        orgId: ctx.orgId,
+        agentId: ctx.agentId,
+        chatId: chatId ?? undefined,
+      }).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.catchTags({ KinLevelRefused: () => Effect.fail(denied()) }),
+      );
+      if (!KinLevels.atLeast(level, "L2")) return false;
+    }
+    return true;
   });
+  /** What another lead brings to a request it passed on: its own reach rules, read the same way. */
+  const passer = Effect.fn("KinWorkers.passer")(function* (orgId: KinOrgId, agentId: KinAgentId) {
+    const [row] = yield* sql`SELECT l.worker_projects_json AS projects,
+        a.owner_person_id AS "ownerPersonId", l.created_by_person_id AS "createdBy"
+      FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+      WHERE l.org_id = ${orgId} AND l.agent_id = ${agentId}
+        AND a.role = 'lead' AND a.retired_at IS NULL ORDER BY l.agent_id`;
+    return row === undefined ? undefined : yield* decodePasser(row);
+  });
+  /**
+   * `all`, the owner's reach, needs this lead and any that passed the request on to be the host
+   * owner's own, placed by the owner in every chat the work touches or it was first asked in.
+   * Else `listed`: the projects on every such lead's list, so no chat or hand-off gains reach.
+   */
+  const reach = Effect.fn("KinWorkers.reach")(
+    function* (ctx: Lead, config: typeof LeadRow.Type, chats: ReadonlyArray<KinChatId | null>) {
+      const { owner } = identity;
+      const origins = yield* KinLevels.origins(ctx);
+      const passers = yield* Effect.forEach(
+        [...new Set(origins.map((origin) => origin.agentId))].filter((id) => id !== ctx.agentId),
+        (agentId) => passer(ctx.orgId, agentId),
+      );
+      const projects = passers.reduce<ReadonlyArray<ProjectId>>(
+        (held, other) =>
+          other === undefined ? [] : held.filter((id) => other.projects.includes(id)),
+        config.projects,
+      );
+      const listed = { _tag: "listed" as const, projects };
+      const ownersOwn = (lead: typeof PasserRow.Type | undefined) =>
+        lead !== undefined &&
+        lead.ownerPersonId === owner.personId &&
+        (lead.createdBy === null || lead.createdBy === owner.personId);
+      if (ctx.orgId !== owner.orgId || ![config, ...passers].every(ownersOwn)) return listed;
+      // The owner's reach is for what the owner asked; a teammate's message never borrows it.
+      if (!(yield* KinLevels.ownerAlone(ctx))) return listed;
+      const asked = [...chats.map((chatId) => ({ agentId: ctx.agentId, chatId })), ...origins];
+      for (const { agentId, chatId } of asked)
+        if (chatId === null || !(yield* KinLevels.ownerPlaced(ctx.orgId, { agentId, chatId })))
+          return listed;
+      return { _tag: "all" as const };
+    },
+    Effect.provideService(SqlClient.SqlClient, sql),
+  );
   /** Where new work may start; workers never run on this server. */
   const admit = Effect.fn("KinWorkers.admit")(function* (orgId: KinOrgId) {
+    // Not a permission: nothing the lead or the owner's chat settings can change.
     if (Option.isNone(env.environmentId))
-      return yield* denied(
-        "This Kin host has no worker environment, so workers can't start. Tell the owner.",
-      );
+      return yield* new KinChatError({ reason: "unavailable", message: NO_ENVIRONMENT });
     if (yield* isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
-      return yield* denied("Kin is paused by the owner. Nothing new starts until they resume.");
+      return yield* denied(PAUSED);
     if (!(yield* budget.admitWorker(orgId)))
-      return yield* new KinChatError({
-        reason: "limit",
-        message:
-          "Today's worker budget is used up. Tell the owner; workers can start again after the daily reset or a higher limit.",
-      });
+      return yield* new KinChatError({ reason: "limit", message: OVER_BUDGET });
     return env.environmentId.value;
   });
   /** The worker environment refused or could not be reached; its message says which. */
@@ -303,44 +429,111 @@ const make = Effect.gen(function* () {
     if (instance === undefined || !supportedDrivers.has(instance.driverKind))
       return yield* denied("Kin workers run on an enabled Claude Code or Codex provider only.");
   });
-  /** The worker environment's project for the same repository as this host's worker project. */
-  const projectThere = Effect.fn("KinWorkers.projectThere")(function* (
-    environmentId: EnvironmentId,
-    projectId: ProjectId,
-  ) {
-    const here = yield* projects.getById(projectId).pipe(
-      Effect.map(Option.getOrUndefined),
-      Effect.orElseSucceed(() => undefined),
-    );
-    const key =
-      here === undefined
-        ? undefined
-        : (yield* repositories.resolve(here.workspaceRoot))?.canonicalKey;
-    if (key === undefined)
-      return yield* denied(
-        "That worker project has no repository Kin can match in the worker environment.",
-      );
-    const matches: Array<ProjectId> = [];
+  /** The worker environment's projects that have a repository, read a bounded number of pages. */
+  const checkouts = Effect.fn("KinWorkers.checkouts")(function* (environmentId: EnvironmentId) {
+    const memory = yield* memoryKeys;
+    const found: Array<Checkout> = [];
     let cursor: number | null = 0;
     for (let page = 0; cursor !== null; page++) {
-      if (page === WorkerEnvironment.MAX_PAGES)
-        return yield* denied("The worker environment's project list didn't end. Tell the owner.");
+      if (page === WorkerEnvironment.MAX_PAGES) return yield* unending();
       const listed: Tool.Success<typeof WorkerEnvironment.tools.projects> = yield* env
         .call(environmentId, WorkerEnvironment.tools.projects, { cursor, limit: 100 })
         .pipe(there("The worker could not start."));
-      for (const project of listed.projects)
-        if (project.repositoryIdentity?.canonicalKey === key) matches.push(project.id);
-      if (listed.nextCursor !== null && listed.nextCursor <= cursor)
-        return yield* denied("The worker environment's project list didn't end. Tell the owner.");
+      for (const project of listed.projects) {
+        const repository = project.repositoryIdentity;
+        if (
+          repository == null ||
+          [repository.canonicalKey, repository.origin?.canonicalKey].some(
+            (key) => key !== undefined && memory.has(key.toLowerCase()),
+          )
+        )
+          continue;
+        found.push({
+          projectId: project.id,
+          title: project.title,
+          repositoryKey: repository.canonicalKey,
+          slug:
+            repository.owner === undefined || repository.name === undefined
+              ? undefined
+              : `${repository.owner}/${repository.name}`,
+        });
+      }
+      if (listed.nextCursor !== null && listed.nextCursor <= cursor) return yield* unending();
       cursor = listed.nextCursor;
     }
-    if (matches.length !== 1)
-      return yield* denied(
-        matches.length === 0
-          ? "The worker environment has no project for this repository. Tell the owner."
-          : "The worker environment has several projects for this repository. Tell the owner.",
-      );
-    return { projectId: matches[0]!, repositoryKey: key };
+    return found;
+  });
+  /** This host's projects, which a lead may name and a list names. Unreadable reads as none. */
+  const hostProjects = Effect.fn("KinWorkers.hostProjects")(
+    function* () {
+      const found: Array<HostProject> = [];
+      let cursor: number | null = 0;
+      for (let page = 0; cursor !== null && page < WorkerEnvironment.MAX_PAGES; page++) {
+        const listed: Effect.Success<ReturnType<typeof projects.listPage>> =
+          yield* projects.listPage({
+            cursor,
+            limit: 100,
+          });
+        for (const project of listed.projects)
+          found.push({
+            projectId: project.id,
+            title: project.title,
+            repositoryKey: project.repositoryIdentity?.canonicalKey,
+            root: project.workspaceRoot,
+          });
+        cursor =
+          listed.nextCursor !== null && listed.nextCursor > cursor ? listed.nextCursor : null;
+      }
+      return found;
+    },
+    Effect.orElseSucceed((): Array<HostProject> => []),
+  );
+  const reachable = Effect.fn("KinWorkers.reachable")(function* (
+    allowed: ReadonlyArray<ProjectId> | undefined,
+  ) {
+    return reachableKeys({
+      hostProjects: yield* hostProjects(),
+      connectedRepos: connected.repos,
+      allowed,
+    });
+  });
+  /**
+   * The checkout a plainly named project or repository means, among those the request reaches:
+   * the owner's for `allowed` undefined, else the repositories of those host projects.
+   */
+  const locate = Effect.fn("KinWorkers.locate")(function* (
+    environmentId: EnvironmentId,
+    named: string,
+    allowed: ReadonlyArray<ProjectId> | undefined,
+  ) {
+    const found = resolveProject({
+      named,
+      checkouts: yield* checkouts(environmentId),
+      hostProjects: yield* hostProjects(),
+      connectedRepos: connected.repos,
+      allowed,
+    });
+    const said = `"${named.slice(0, 80).replaceAll('"', "'")}"`;
+    switch (found._tag) {
+      case "resolved":
+        return found;
+      case "outside":
+        return yield* denied(NOT_HERE);
+      case "no_checkout":
+        return yield* noCheckout(found.label);
+      case "ambiguous":
+        return yield* new KinChatError({
+          reason: "invalid_state",
+          message: `${said} fits several here: ${found.labels.join(", ")}. ${RETRY}`,
+        });
+      case "unknown":
+        return yield* found.labels.length === 0
+          ? noCheckout("No repository")
+          : new KinChatError({
+              reason: "not_found",
+              message: `No project or repository here is called ${said}. Work can start in: ${found.labels.join(", ")}. ${RETRY}`,
+            });
+    }
   });
   /**
    * The stop fan-out misses a run that starts during its pass; a pause seen after the launch or
@@ -366,68 +559,142 @@ const make = Effect.gen(function* () {
       ),
     );
   });
+  /** The chat a worker answers in now (`workerChat`), or `fallback` for a row it can't read. */
+  const cardChat = Effect.fn("KinWorkers.cardChat")(function* (
+    orgId: KinOrgId,
+    workerId: KinWorkerId,
+    fallback: KinChatId | null,
+  ) {
+    const route = yield* workerChat({ orgId, workerId }).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+    return route === undefined
+      ? fallback
+      : route.chatId === null
+        ? null
+        : KinChatId.make(route.chatId);
+  });
   const threadLink = (environmentId: EnvironmentId, threadId: ThreadId) =>
     formatThreadLink({ environmentId, threadId });
   // Cards are best effort: a launched worker must not fail because its card could not be shown.
   const showCard = Effect.fn("KinWorkers.showCard")(
-    function* (input: {
-      readonly orgId: KinOrgId;
-      readonly chatId: KinChatId;
-      readonly agentId: KinAgentId;
-      readonly threadId: ThreadId;
-      readonly environmentId: EnvironmentId;
-      readonly title: string;
-      readonly model: string;
-      /** A closed card reopens only for a worker that is running again. */
-      readonly reopen: boolean;
-    }) {
-      const card = yield* chat
-        .createTaskCard({
-          orgId: input.orgId,
-          chatId: input.chatId,
-          authorAgentId: input.agentId,
-          threadId: input.threadId,
-          title: input.title,
-          model: input.model,
-          remote: { environmentId: input.environmentId, status: "working" },
-        })
-        .pipe(
-          Effect.provideService(OrchestratorV2, orchestrator),
-          Effect.provideService(ServerEnvironment, environment),
-        );
-      if (card.closedAt !== null && input.reopen)
-        yield* chat.setTaskCardClosed({
-          orgId: input.orgId,
-          chatId: input.chatId,
-          threadId: input.threadId,
-          closed: false,
-        });
+    function* (
+      turn: Lead,
+      input: {
+        readonly orgId: KinOrgId;
+        readonly workerId: KinWorkerId;
+        /** The worker's own chat, for a row `workerChat` can't read. */
+        readonly fallback: KinChatId | null;
+        readonly agentId: KinAgentId;
+        readonly threadId: ThreadId;
+        readonly environmentId: EnvironmentId;
+        readonly title: string;
+        readonly model: string;
+        /** A closed card reopens only for a worker that is running again. */
+        readonly reopen: boolean;
+      },
+    ) {
+      // The lead's words on a card are a post: authorised against the chat in the card's write,
+      // and routed there too, as a join during the remote call may have moved the worker.
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const chatId = yield* cardChat(input.orgId, input.workerId, input.fallback);
+          if (chatId === null) return;
+          const route = yield* workerChat({ orgId: input.orgId, workerId: input.workerId }).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
+          const audience = route?.audience ?? "owner";
+          const where = yield* destination(turn, chatId).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
+          if (where !== "allowed") return yield* denied(SHARED_REFUSAL);
+          const card = yield* chat
+            .createTaskCard({
+              orgId: input.orgId,
+              chatId,
+              audience,
+              authorAgentId: input.agentId,
+              threadId: input.threadId,
+              title: input.title,
+              model: input.model,
+              remote: { environmentId: input.environmentId, status: "working" },
+            })
+            .pipe(
+              Effect.provideService(OrchestratorV2, orchestrator),
+              Effect.provideService(ServerEnvironment, environment),
+            );
+          if (card.closedAt !== null && input.reopen)
+            yield* chat.setTaskCardClosed({
+              orgId: input.orgId,
+              chatId,
+              audience,
+              threadId: input.threadId,
+              closed: false,
+            });
+        }),
+      );
     },
     Effect.catchCause((cause) => Effect.logWarning("Kin worker task card unavailable", { cause })),
   );
+
+  // With no worker environment named, work runs on this server, under `localWorkers.ts`' rules.
+  const shared = guarded("KinWorkers.local");
+  const local = yield* makeLocalDelegate({
+    lead: (scope) => shared(lead(scope)),
+    leadConfig: (ctx) => shared(leadConfig(ctx)),
+    sourceEvent: (ctx, eventId) => shared(sourceEvent(ctx, eventId)),
+    open: (ctx, chats) => shared(open(ctx, chats)),
+    pick: (model, configured) => shared(pick(model, configured)),
+    hash: (value) => shared(hash(value)),
+    memoryKeys,
+    hostProjects,
+    connectedRepos: connected.repos,
+    memoryItem: (ctx, id) =>
+      memory.readItemQuietly(ctx.orgId, id, { lead: ctx.agentId }).pipe(
+        Effect.map((item) => ({ id, title: item.head.title, body: item.body })),
+        Effect.mapError(() => missing()),
+      ),
+  });
 
   const delegate = Effect.fn("KinWorkers.delegate")(function* (
     scope: McpInvocationScope,
     input: typeof DelegateInput.Type,
   ) {
+    if (Option.isNone(env.environmentId)) return yield* local.delegate(scope, input);
     const ctx = yield* lead(scope);
     const plan = yield* sql.withTransaction(
       Effect.gen(function* () {
+        const audience = yield* effectiveAudience(ctx).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        );
+        // The owner's notes never go to work started where someone else reads, and such a turn
+        // reads the report of only a worker it may touch.
+        if (
+          audience !== "owner_only" &&
+          ((input.memoryItemIds?.length ?? 0) > 0 ||
+            (input.reviewOf !== undefined &&
+              !(yield* sharedTurnMayTouch(ctx, input.reviewOf).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              ))))
+        )
+          return yield* denied(SHARED_REFUSAL);
         const config = yield* leadConfig(ctx);
         const event = yield* sourceEvent(ctx, input.sourceEventId);
-        if (!config.projects.includes(input.projectId))
-          return yield* denied("Workers may only run in this lead's worker projects.");
         if ((input.kind === "review") !== (input.reviewOf !== undefined))
           return yield* denied("Review workers need reviewOf, and only review workers take it.");
         const author =
           input.reviewOf === undefined ? undefined : yield* worker(ctx, input.reviewOf);
-        const chatId =
-          event._tag === "chat.message" ||
-          event._tag === "widget.action" ||
-          event._tag === "chat.reaction"
-            ? event.chatId
-            : config.ownerChatId;
-        return { config, event, author, chatId, level: yield* levelOf(ctx, chatId) };
+        const chatId = askingChat(event, config.ownerChatId);
+        const chats = author === undefined ? [chatId] : [chatId, author.chatId];
+        return {
+          config,
+          event,
+          author,
+          chatId,
+          chats,
+          open: yield* open(ctx, chats),
+          reach: yield* reach(ctx, config, chats),
+        };
       }),
     );
     const modelSelection = yield* pick(input.model, plan.config.models);
@@ -446,11 +713,22 @@ const make = Effect.gen(function* () {
       if (reviewRefs.length === 0)
         return yield* denied("The author worker has not reported a PR or commit to review yet.");
     }
-    if (!KinLevels.atLeast(plan.level, "L2"))
-      return yield* shadow(ctx, plan.level, "kin_delegate", input, input.projectId);
+    if (!plan.open) return yield* denied(NOT_OPEN);
+    // The host's state comes first: a lead told "not that project" on a host where nothing can
+    // start asks the owner to fix something that was never the cause.
     const environmentId = yield* admit(ctx.orgId);
     yield* supported(environmentId, modelSelection);
-    const { projectId, repositoryKey } = yield* projectThere(environmentId, input.projectId);
+    const target = yield* locate(
+      environmentId,
+      input.project,
+      plan.reach._tag === "all" ? undefined : plan.reach.projects,
+    );
+    const { projectId, repositoryKey } = target.checkout;
+    // The author's repository passes the same reach as the request by being the same repository.
+    const sameRepository = (author: typeof WorkerRow.Type) =>
+      author.repositoryKey?.toLowerCase() === repositoryKey.toLowerCase();
+    if (plan.author !== undefined && !sameRepository(plan.author))
+      return yield* denied(REVIEW_ELSEWHERE);
     const items =
       reviewRefs !== undefined
         ? []
@@ -476,30 +754,116 @@ const make = Effect.gen(function* () {
           });
     const chatId = plan.chatId;
     // The row exists before the launch there, so a crash between them is found at the next start.
-    yield* sql.withTransaction(
+    const startedAt = yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* lead(scope);
-        if (input.reviewOf !== undefined) yield* worker(ctx, input.reviewOf);
+        // The gate's check again where the row is written: a join may have aborted the turn.
+        if (
+          !(yield* toolAdmitted(ctx, "kin_delegate", input).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          ))
+        )
+          return yield* denied(SHARED_REFUSAL);
+        if (input.reviewOf !== undefined && !sameRepository(yield* worker(ctx, input.reviewOf)))
+          return yield* denied(REVIEW_ELSEWHERE);
+        // Who the work is for, decided here before anything is sent: an owner-only turn's work
+        // stays private wherever its chat goes, and only private work carries the owner's notes.
+        const context =
+          (yield* effectiveAudience(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql))) ===
+          "owner_only"
+            ? "private"
+            : "shared";
+        if (items.length > 0 && context !== "private") return yield* denied(SHARED_REFUSAL);
+        // What was checked before the calls there still holds as the row is written.
+        const config = yield* leadConfig(ctx);
+        if (!(yield* open(ctx, plan.chats))) return yield* denied(NOT_OPEN);
+        const still = yield* reach(ctx, config, plan.chats);
+        if (
+          still._tag !== plan.reach._tag ||
+          (still._tag === "listed" &&
+            (target.hostProjectId === null || !still.projects.includes(target.hostProjectId)))
+        )
+          return yield* denied(NOT_HERE);
+        // Here, not before: the owner may have closed or taken back the work since.
+        if (
+          !(yield* workMayStart({
+            orgId: ctx.orgId,
+            agentId: ctx.agentId,
+            ownerPersonId: config.ownerPersonId,
+            wakeupId: ctx.wakeupId,
+            event: plan.event,
+            ...(input.entry === undefined ? {} : { entryKey: input.entry }),
+          }).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
+        )
+          return yield* denied(WORK_NOT_YOURS);
         const startedAt = yield* Clock.currentTimeMillis;
         // The environment is written now, so a launch whose reply is lost can be found there.
         const inserted = yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id,
           kind, thread_id, review_of, model_json, provenance_json, status, report_json, started_at,
-          ended_at, title, chat_id, project_id, environment_id, remote_project_id, repository_key)
+          ended_at, title, chat_id, project_id, environment_id, remote_project_id, repository_key,
+          context)
           VALUES (${workerId}, ${ctx.orgId}, ${ctx.agentId}, ${ctx.wakeupId}, ${input.kind},
           ${unboundThreadId(workerId)}, ${input.reviewOf ?? null},
           ${yield* encodeJson(modelSelection)}, ${yield* encodeJson(plan.event.provenance)}, 'queued',
-          NULL, ${startedAt}, NULL, ${input.title}, ${chatId}, ${input.projectId}, ${environmentId},
-          ${projectId}, ${repositoryKey})
+          NULL, ${startedAt}, NULL, ${input.title}, ${chatId}, ${target.hostProjectId}, ${environmentId},
+          ${projectId}, ${repositoryKey}, ${context})
           ON CONFLICT (worker_id) DO NOTHING RETURNING worker_id`;
+        if (inserted.length > 0)
+          yield* attemptBegun({
+            orgId: ctx.orgId,
+            workerId,
+            startedAt,
+            agentId: ctx.agentId,
+            sourceEventId: input.sourceEventId,
+          }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+        if (inserted.length > 0)
+          yield* workerStarted({
+            orgId: ctx.orgId,
+            agentId: ctx.agentId,
+            workerId,
+            wakeupId: ctx.wakeupId,
+            title: input.title,
+            reviewOf: input.reviewOf ?? null,
+            event: plan.event,
+            ...(input.entry === undefined ? {} : { entryKey: input.entry }),
+          }).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.provideService(KinRecords, records),
+          );
+        // The entry it now serves may be sensitive; that sticks to the attempt.
+        if (inserted.length > 0)
+          yield* noteSensitivity({ orgId: ctx.orgId, workerId, startedAt }).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
         if (inserted.length === 0) {
           const stored = yield* worker(ctx, workerId);
           if (stored.wakeupId !== ctx.wakeupId) return yield* denied();
-          yield* sql`UPDATE kin_workers SET status = 'queued', started_at = ${startedAt}, ended_at = NULL,
+          // A retry restarts the same worker, which the owner may have withdrawn since.
+          if (
+            !(yield* workerMayResume({ orgId: ctx.orgId, agentId: ctx.agentId, workerId }).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            ))
+          )
+            return yield* denied(WORK_NOT_YOURS);
+          const retried =
+            yield* sql`UPDATE kin_workers SET status = 'queued', started_at = ${startedAt}, ended_at = NULL,
               remote_project_id = ${projectId}, repository_key = ${repositoryKey},
+              context = CASE WHEN context = 'private' THEN 'private' ELSE ${context} END,
               environment_id = CASE WHEN thread_id = ${unboundThreadId(workerId)}
                 THEN ${environmentId} ELSE environment_id END
-            WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId} AND status = 'failed'`;
+            WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId} AND status = 'failed'
+            RETURNING worker_id`;
+          if (retried.length === 0) return stored.startedAt;
+          yield* attemptBegun({
+            orgId: ctx.orgId,
+            workerId,
+            startedAt,
+            agentId: ctx.agentId,
+            sourceEventId: input.sourceEventId,
+          }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+          return startedAt;
         }
+        return startedAt;
       }),
     );
     // The same request id there makes a retry return the thread the first launch started.
@@ -518,7 +882,7 @@ const make = Effect.gen(function* () {
       message: brief,
       clientRequestId: launchRequestId(workerId),
     });
-    const launched = yield* launch.pipe(
+    const launchBound = launch.pipe(
       // A lost reply or a timeout may follow a launch that happened; asking again finds it.
       Effect.catchIf(isAmbiguous, () => launch),
       Effect.catchIf(isAmbiguous, (error) =>
@@ -552,19 +916,36 @@ const make = Effect.gen(function* () {
             there("The worker could not start. Retry the same call or tell the owner."),
           ),
       }),
+      Effect.tap(
+        (launched) =>
+          sql`UPDATE kin_workers SET thread_id = ${launched.threadId}
+          WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId}`,
+      ),
     );
+    // A stop that came first means no launch; one during it reaches the thread as it returns.
+    const admitted = yield* tracker
+      .launch({ orgId: ctx.orgId, workerId, startedAt }, launchBound)
+      .pipe(
+        Effect.catchTags({
+          OrchestratorMcpFailure: (error) =>
+            Effect.fail(error).pipe(
+              there("The worker could not start. Retry the same call or tell the owner."),
+            ),
+        }),
+      );
+    if (Option.isNone(admitted)) return yield* denied(STOPPED_BEFORE_START);
+    const launched = admitted.value;
     const threadId = launched.threadId;
-    yield* sql`UPDATE kin_workers SET thread_id = ${threadId}
-      WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId}`;
     yield* stopIfPaused(ctx.orgId, {
       environmentId,
       threadId,
       key: `kin-stop-launch:${workerId}:${launched.runId ?? "idle"}`,
     });
     const live = launched.status === null || !endedStatuses.has(launched.status);
-    yield* showCard({
+    yield* showCard(ctx, {
       orgId: ctx.orgId,
-      chatId,
+      workerId,
+      fallback: chatId,
       agentId: ctx.agentId,
       threadId,
       environmentId,
@@ -573,37 +954,91 @@ const make = Effect.gen(function* () {
       reopen: live,
     });
     yield* tracker.track(ctx.orgId, workerId);
-    return { workerId, threadLink: threadLink(environmentId, threadId) };
+    return {
+      workerId,
+      threadLink: threadLink(environmentId, threadId),
+      project: labelOf(target.checkout),
+    };
   }, guarded("KinWorkers.delegate"));
 
   const followUp = Effect.fn("KinWorkers.followUp")(function* (
     scope: McpInvocationScope,
     input: typeof FollowUpInput.Type,
   ) {
+    if (Option.isNone(env.environmentId)) return yield* denied(LOCAL_BUILD_ONLY);
     const ctx = yield* lead(scope);
     const plan = yield* sql.withTransaction(
       Effect.gen(function* () {
         const config = yield* leadConfig(ctx);
-        yield* sourceEvent(ctx, input.sourceEventId);
+        const event = yield* sourceEvent(ctx, input.sourceEventId);
         const stored = yield* worker(ctx, input.workerId);
         // A reviewer sees only the author's refs; more lead text would end that isolation.
         if (stored.kind === "review")
           return yield* denied(
             "Review workers take no follow-ups. Start a new review with kin_delegate.",
           );
-        return { config, worker: stored, level: yield* levelOf(ctx, stored.chatId) };
+        const chats = [askingChat(event, config.ownerChatId), stored.chatId];
+        return {
+          config,
+          event,
+          worker: stored,
+          open: yield* open(ctx, chats),
+          reach: yield* reach(ctx, config, chats),
+        };
       }),
     );
-    if (!KinLevels.atLeast(plan.level, "L2"))
-      return yield* shadow(ctx, plan.level, "kin_follow_up", input, input.workerId);
+    if (!plan.open) return yield* denied(NOT_OPEN);
     yield* admit(ctx.orgId);
-    if (plan.worker.projectId === null || !plan.config.projects.includes(plan.worker.projectId))
-      return yield* denied("Workers may only run in this lead's worker projects.");
+    // The rule a new worker there would pass, applied to the repository it was started in.
+    const key = plan.worker.repositoryKey?.toLowerCase();
+    if (
+      key === undefined ||
+      (yield* memoryKeys).has(key) ||
+      !(yield* reachable(plan.reach._tag === "all" ? undefined : plan.reach.projects)).has(key)
+    )
+      return yield* denied(NOT_HERE);
     // A worker runs where it was launched, even after the host names another environment.
     if (plan.worker.environmentId === null || !bound(plan.worker))
       return yield* denied("That worker never started. Start a new one with kin_delegate.");
     const environmentId = plan.worker.environmentId;
-    const key = (yield* hash({ wakeupId: ctx.wakeupId, input })).slice(0, 32);
+    const workerChatId = plan.worker.chatId;
+    // Never restarts work the owner withdrew, nor work on an entry that is no longer this lead's.
+    const mayFollowUp = workMayStart({
+      orgId: ctx.orgId,
+      agentId: ctx.agentId,
+      ownerPersonId: plan.config.ownerPersonId,
+      wakeupId: ctx.wakeupId,
+      event: plan.event,
+      followsUp: input.workerId,
+    }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    // Last before the send: the gate's check again, and what a follow-up brings back lands in
+    // the worker's chat, so the turn must be one that may write there.
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* lead(scope);
+        const audience = yield* effectiveAudience(ctx).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        );
+        // Where its answer lands now: its chat, or the owner's once private work's chat was shared.
+        const answersIn = yield* cardChat(ctx.orgId, input.workerId, workerChatId);
+        if (
+          !(yield* toolAdmitted(ctx, "kin_follow_up", input).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          )) ||
+          (answersIn !== null &&
+            (yield* destination(ctx, answersIn).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            )) !== "allowed")
+        )
+          return yield* denied(SHARED_REFUSAL);
+        if (!(yield* mayFollowUp)) return yield* denied(WORK_NOT_YOURS);
+        // Before the send: an owner-only turn's brief makes the work private, for good.
+        if (audience === "owner_only")
+          yield* sql`UPDATE kin_workers SET context = 'private'
+            WHERE org_id = ${ctx.orgId} AND worker_id = ${input.workerId}`;
+      }),
+    );
+    const requestKey = (yield* hash({ wakeupId: ctx.wakeupId, input })).slice(0, 32);
     const sent = yield* env
       .call(environmentId, WorkerEnvironment.tools.send, {
         threadId: plan.worker.threadId,
@@ -615,29 +1050,90 @@ const make = Effect.gen(function* () {
           reportFormat,
         ].join("\n\n"),
         mode: "queue",
-        clientRequestId: `kin-follow-up:${key}`,
+        clientRequestId: `kin-follow-up:${requestKey}`,
       })
       .pipe(there("The follow-up could not be sent. Retry the same call or tell the owner."));
     // A new started_at marks newer work, so a follower still reporting the last run can't close it.
-    yield* sql`UPDATE kin_workers SET status = 'queued', ended_at = NULL,
-      started_at = ${yield* Clock.currentTimeMillis}
-      WHERE org_id = ${ctx.orgId} AND worker_id = ${input.workerId}`;
+    const startedAt = yield* Clock.currentTimeMillis;
+    const stop = yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* sql`UPDATE kin_workers SET status = 'queued', ended_at = NULL,
+          started_at = ${startedAt}
+          WHERE org_id = ${ctx.orgId} AND worker_id = ${input.workerId}`;
+        yield* attemptBegun({
+          orgId: ctx.orgId,
+          workerId: input.workerId,
+          startedAt,
+          agentId: ctx.agentId,
+          sourceEventId: input.sourceEventId,
+        }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+        // Retired (even if restored since) or withdrawn during the send, which no stop then
+        // covered: the attempt begins stopped here, so nothing of it publishes before the stop
+        // reaches its thread. A join's abort doesn't stop it; its answer moves to `cardChat`.
+        const [live] = yield* sql`SELECT 1 FROM kin_agents a WHERE a.org_id = ${ctx.orgId}
+          AND a.agent_id = ${ctx.agentId} AND a.retired_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM kin_wakeups w WHERE w.org_id = a.org_id
+            AND w.wakeup_id = ${ctx.wakeupId} AND w.retired_at IS NOT NULL)`;
+        const why =
+          live === undefined
+            ? { tag: "retired", reason: RETIRED_WORKER_REASON }
+            : (yield* mayFollowUp)
+              ? undefined
+              : { tag: "withdrawn", reason: WITHDRAWN_REASON };
+        if (why === undefined) return undefined;
+        const taken = {
+          reason: why.reason,
+          key: `kin-follow-up-${why.tag}:${input.workerId}:${startedAt}`,
+          withdrawn: why.tag === "withdrawn",
+        };
+        yield* stopAttempt({
+          orgId: ctx.orgId,
+          agentId: ctx.agentId,
+          workerId: input.workerId,
+          startedAt,
+          reason: taken.reason,
+          key: taken.key,
+          at: startedAt,
+        }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+        return taken;
+      }),
+    );
+    if (stop !== undefined) {
+      yield* tracker
+        .stop({
+          orgId: ctx.orgId,
+          agentId: ctx.agentId,
+          workerId: input.workerId,
+          startedAt,
+          reason: stop.reason,
+          key: stop.key,
+        })
+        .pipe(
+          Effect.catchTags({
+            OrchestratorMcpFailure: (error) =>
+              Effect.fail(error).pipe(
+                there("The worker could not be stopped. Retry or tell the owner."),
+              ),
+          }),
+        );
+      return yield* stop.withdrawn ? denied(WORK_NOT_YOURS) : denied();
+    }
     yield* stopIfPaused(ctx.orgId, {
       environmentId,
       threadId: plan.worker.threadId,
       key: `kin-stop-launch:${input.workerId}:${sent.runId}`,
     });
-    if (plan.worker.chatId !== null)
-      yield* showCard({
-        orgId: ctx.orgId,
-        chatId: plan.worker.chatId,
-        agentId: plan.worker.agentId,
-        threadId: plan.worker.threadId,
-        environmentId,
-        title: plan.worker.title ?? "Worker",
-        model: plan.worker.model.model,
-        reopen: true,
-      });
+    yield* showCard(ctx, {
+      orgId: ctx.orgId,
+      workerId: input.workerId,
+      fallback: plan.worker.chatId,
+      agentId: plan.worker.agentId,
+      threadId: plan.worker.threadId,
+      environmentId,
+      title: plan.worker.title ?? "Worker",
+      model: plan.worker.model.model,
+      reopen: true,
+    });
     yield* tracker.track(ctx.orgId, input.workerId);
     return {
       workerId: input.workerId,
@@ -650,22 +1146,63 @@ const make = Effect.gen(function* () {
     input: typeof StopInput.Type,
   ) {
     const ctx = yield* lead(scope);
-    const record = yield* sql.withTransaction(worker(ctx, input.workerId));
-    if (record.environmentId === null || !bound(record))
-      return { workerId: input.workerId, stopped: false };
-    const environmentId = record.environmentId;
-    // A follow-up in the same wake-up starts a new run, which a second stop must still reach.
-    const stopped = yield* WorkerEnvironment.stopThere(env, {
-      environmentId,
-      threadId: record.threadId,
-      key: `kin-worker-stop:${input.workerId}:${ctx.wakeupId}:${record.startedAt}`,
-      reason: input.reason ?? "Stopped by the Kin lead.",
-    }).pipe(there("The worker could not be stopped. Retry or tell the owner."));
+    const record = yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const stored = yield* worker(ctx, input.workerId);
+        // Its own lead stops it, from an owner-only turn or from the chat it answers in.
+        const here = yield* turnChat(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+        const answersIn = yield* cardChat(ctx.orgId, input.workerId, stored.chatId);
+        if (
+          answersIn !== here?.chatId &&
+          (yield* effectiveAudience(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql))) !==
+            "owner_only"
+        )
+          return yield* missing();
+        // The gate's check again: a join may have shared the turn since.
+        if (
+          !(yield* toolAdmitted(ctx, "kin_worker_stop", input).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          ))
+        )
+          return yield* denied(SHARED_REFUSAL);
+        return { ...stored, chatId: answersIn };
+      }),
+    );
+    const key = `kin-worker-stop:${input.workerId}:${ctx.wakeupId}:${record.startedAt}`;
+    const reason = input.reason ?? "Stopped by the Kin agent.";
+    // A worker on this server: T3 interrupts its thread and its follower records the end.
+    if (record.environmentId === null && record.threadId === localThreadId(input.workerId))
+      return {
+        workerId: input.workerId,
+        stopped: (yield* tracker.stop({
+          orgId: ctx.orgId,
+          agentId: ctx.agentId,
+          workerId: input.workerId,
+          reason,
+          key,
+        })).stopped,
+      };
+    if (Option.isNone(env.environmentId)) return yield* denied(LOCAL_BUILD_ONLY);
+    if (record.environmentId === null) return { workerId: input.workerId, stopped: false };
+    // Through the tracker, so a run that ends meanwhile publishes nothing; an unconfirmed launch
+    // is stopped once its follower finds the thread. A follow-up's run gets a new key.
+    const stopped = yield* tracker
+      .stop({ orgId: ctx.orgId, agentId: ctx.agentId, workerId: input.workerId, reason, key })
+      .pipe(
+        Effect.catchTags({
+          OrchestratorMcpFailure: (error) =>
+            Effect.fail(error).pipe(
+              there("The worker could not be stopped. Retry or tell the owner."),
+            ),
+        }),
+      );
     if (record.chatId !== null)
       yield* chat
         .setTaskCardClosed({
           orgId: ctx.orgId,
           chatId: record.chatId,
+          // Closing writes no words.
+          audience: "chat",
           threadId: record.threadId,
           closed: true,
         })
@@ -674,10 +1211,18 @@ const make = Effect.gen(function* () {
             Effect.logWarning("Kin worker task card could not close", { cause }),
           ),
         );
-    return { workerId: input.workerId, stopped: stopped.status === "interrupt_requested" };
+    return { workerId: input.workerId, stopped: stopped.stopped };
   }, guarded("KinWorkers.stop"));
 
-  return KinWorkers.of({ delegate, followUp, stop });
+  // Documents always run here, beside the org's workspace, whatever worker environment is named.
+  const document = Effect.fn("KinWorkers.document")(function* (
+    scope: McpInvocationScope,
+    input: DocumentInput,
+  ) {
+    return yield* local.document(scope, input);
+  }, guarded("KinWorkers.document"));
+
+  return KinWorkers.of({ delegate, followUp, stop, document });
 });
 
 export const layer = Layer.effect(KinWorkers, make);

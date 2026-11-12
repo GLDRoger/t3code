@@ -4,6 +4,7 @@ import * as NodePath from "node:path";
 
 import { assert, describe, it } from "@effect/vitest";
 import {
+  KinAgentId,
   KinEventId,
   KinOrgId,
   type KinActionTarget,
@@ -44,8 +45,9 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as ActionExecutor from "./ActionExecutor.ts";
 import * as ActionHandlers from "./ActionHandlers.ts";
 import * as Audit from "./Audit.ts";
+import { makeKeyStore } from "./ApproverKeyStore.ts";
 import * as CredentialHygiene from "./CredentialHygiene.ts";
-import { KinExecutionNotices } from "./ExecutionNotices.ts";
+import { KinExecutionNotices, KinKeyNotices } from "./ExecutionNotices.ts";
 import { BOOTSTRAP_OWNER, KinOrgRoles } from "./GrantPorts.ts";
 import {
   insertActiveKey,
@@ -58,6 +60,8 @@ import * as ApprovalsLayer from "./layer.ts";
 import { makeDeleteBranchHandler } from "./handlers/deleteBranch.ts";
 import { makeMergePullRequestHandler } from "./handlers/mergePullRequest.ts";
 import * as PendingActions from "./PendingActions.ts";
+import * as RetiredActions from "./retiredActions.ts";
+import { KinRetiredActions, RETIRED_ACTION_REASON } from "../lead/Retirement.ts";
 
 const NOW = Date.parse("2026-11-08T00:00:00Z");
 const DAY = 24 * 60 * 60 * 1000;
@@ -531,7 +535,10 @@ const claim = <Ref extends PendingActions.ActionRef>(ref: Ref, wrote: boolean) =
     );
     assert.isTrue(yield* ledger.claim({ ...ref, revision: 0, grantId: found!.grant.id }));
     if (wrote)
-      assert.isTrue(yield* ledger.writeStarting({ ...ref, at: yield* Clock.currentTimeMillis }));
+      assert.strictEqual(
+        yield* ledger.writeStarting({ ...ref, at: yield* Clock.currentTimeMillis }),
+        "started",
+      );
     return ref;
   });
 
@@ -926,6 +933,60 @@ describe("KinActionExecutor", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect(
+    "an agent retired after the claim, while its checks run, never has its action sent, even once restored",
+    () => {
+      const { requests, checks, notices, layer } = harness();
+      return Effect.gen(function* () {
+        const { sql } = yield* seed;
+        const executor = yield* ActionExecutor.KinActionExecutor;
+        yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+          VALUES ('lead', 'org_01', 'Lead', 'lead', ${owner}, '2026-11-07T00:00:00.000Z')`;
+        const ref = yield* approvedMerge("webhook-1");
+        const reached = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        // Check 1 runs before the claim, check 2 right after it: held there while it retires.
+        checks.during = (count) =>
+          count === 2
+            ? Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(release)))
+            : Effect.void;
+        const running = yield* executor.execute(ref).pipe(Effect.forkChild);
+        yield* Deferred.await(reached);
+        assert.deepInclude(yield* stateOf(ref), { state: "executing" });
+        // Claimed but not yet sending: retiring voids it there and then.
+        yield* sql`UPDATE kin_agents SET retired_at = '2026-11-08T00:00:00.000Z'
+          WHERE agent_id = 'lead'`;
+        yield* Effect.gen(function* () {
+          yield* (yield* KinRetiredActions).close({ orgId, agentId: KinAgentId.make("lead") });
+        }).pipe(Effect.provide(RetiredActions.layer));
+        assert.deepStrictEqual(yield* stateOf(ref), {
+          state: "voided",
+          reason: RETIRED_ACTION_REASON,
+        });
+        // A restore before the executor reaches the write doesn't bring the signed action back.
+        yield* sql`UPDATE kin_agents SET retired_at = NULL WHERE agent_id = 'lead'`;
+        yield* Deferred.succeed(release, undefined);
+        assert.deepStrictEqual(yield* Fiber.join(running), {
+          _tag: "voided",
+          reason: RETIRED_ACTION_REASON,
+        });
+        assert.deepStrictEqual(writes(requests), []);
+        assert.deepStrictEqual(yield* stateOf(ref), {
+          state: "voided",
+          reason: RETIRED_ACTION_REASON,
+        });
+        const voided = (yield* auditEntries).filter((entry) => entry.event === "action_voided");
+        assert.lengthOf(voided, 1);
+        assert.deepInclude(voided[0], { actionId: ref.actionId, result: RETIRED_ACTION_REASON });
+        assert.deepInclude((yield* auditEntries).at(-1), { event: "action_voided" });
+        assert.deepInclude((yield* executions)[0], { action_id: ref.actionId, outcome: "failed" });
+        // Nothing is left `executing` for a restart to reconcile, and the owner hears nothing new.
+        assert.deepStrictEqual(yield* executor.pickup, { approved: [], orphaned: [] });
+        assert.deepStrictEqual(notices, []);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
   it.effect("holds an approved action while the credential check fails, audited once", () => {
     const { requests, checks, layer } = harness();
     return Effect.gen(function* () {
@@ -1036,6 +1097,35 @@ describe("KinActionExecutor", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("removing a key after its last read fences an unstarted write", () =>
+    Effect.gen(function* () {
+      // The removal itself, and a stop that closes no claim (a key stopped, not yet reconciled).
+      for (const how of ["removed", "stopped"] as const) {
+        const { requests, roleChecks, layer } = harness();
+        yield* Effect.gen(function* () {
+          const { sql } = yield* seed;
+          const store = yield* makeKeyStore;
+          const stop =
+            how === "removed"
+              ? store.revokeRow({ orgId, thumbprint: kid }, "key_revoked").pipe(Effect.asVoid)
+              : sql`UPDATE kin_approver_keys SET state = 'revoked' WHERE thumbprint = ${kid}`.pipe(
+                  Effect.asVoid,
+                );
+          const executor = yield* ActionExecutor.KinActionExecutor;
+          const ref = yield* approvedMerge("removed-mid-run");
+          // The second owner check runs after the executor's key read, before the write starts.
+          roleChecks.during = (count) => (count === 2 ? Effect.orDie(stop) : Effect.void);
+          assert.deepStrictEqual(yield* executor.execute(ref), {
+            _tag: "voided",
+            reason: "key_revoked",
+          });
+          assert.deepStrictEqual(writes(requests), []);
+          assert.deepStrictEqual(yield* stateOf(ref), { state: "voided", reason: "key_revoked" });
+        }).pipe(Effect.provide(layer));
+      }
+    }),
+  );
+
   it.effect(
     "a restart mid-merge reconciles to succeeded or interrupted, with no merge call",
     () => {
@@ -1134,9 +1224,12 @@ describe("KinActionExecutor", () => {
       const ref = yield* claimedThenCrashed("restart-late-write", false);
       yield* TestClock.adjust("100 seconds");
       const ledger = yield* PendingActions.KinExecutionLedger;
-      assert.isTrue(yield* ledger.writeStarting({ ...ref, at: yield* Clock.currentTimeMillis }));
+      assert.strictEqual(
+        yield* ledger.writeStarting({ ...ref, at: yield* Clock.currentTimeMillis }),
+        "started",
+      );
       // Written once: a second mark can't move the window.
-      assert.isFalse(yield* ledger.writeStarting({ ...ref, at: NOW }));
+      assert.strictEqual(yield* ledger.writeStarting({ ...ref, at: NOW }), "closed");
       yield* TestClock.adjust("30 seconds");
       assert.deepStrictEqual(yield* executor.reconcile(ref), { _tag: "unknown" });
       yield* TestClock.adjust("90 seconds");
@@ -1553,6 +1646,7 @@ describe("KinActionExecutor", () => {
               lapsed: ({ holdReason }) => Effect.sync(() => void lapses.push(holdReason)),
             }),
           ),
+          Layer.succeed(KinKeyNotices, KinKeyNotices.of({ changed: () => Effect.void })),
           ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })),
           // The hygiene check reads the server's environment; this one sets nothing.
           Layer.succeed(HostProcess.Environment, {}),
@@ -1602,44 +1696,31 @@ describe("KinActionExecutor", () => {
     },
   );
 
-  it.effect(
-    "a second phone activates once the first signs, with the credential check failing",
-    () => {
-      const lapses: Array<string> = [];
-      return Effect.gen(function* () {
-        yield* TestClock.setTime(NOW);
-        const context = yield* Layer.build(production(ApprovalsLayer.executorLayer, lapses));
-        yield* Effect.gen(function* () {
-          const { sql } = yield* seed;
-          const enrol = (key: ReturnType<typeof makeApprovalKey>, source: string) =>
-            approved({
-              kind: "register_approver_key",
-              target: { _tag: "device_key", thumbprint: key.kid, hardware: "tee", attested: true },
-              resolved: { _tag: "none" },
-              source,
-            });
-          const stateOfKey = (key: ReturnType<typeof makeApprovalKey>) =>
-            sql<{ state: string; sealed: number }>`SELECT state, seal IS NOT NULL AS sealed
-            FROM kin_approver_keys WHERE thumbprint = ${key.kid}`;
-          const phone = makeApprovalKey();
-          yield* insertPendingKey({ key: phone, orgId, humanId: owner });
-          // A row written into SQLite with no pending seal, and a card for it the owner signs.
-          const forged = makeApprovalKey();
-          yield* insertPendingKey({ key: forged, orgId, humanId: owner, sealed: false });
-          const ref = yield* enrol(phone, "second-phone");
-          const forgedRef = yield* enrol(forged, "forged-phone");
-          yield* TestClock.adjust("1 second");
-          assert.deepInclude(yield* stateOf(ref), { state: "succeeded" });
-          assert.deepStrictEqual(yield* stateOfKey(phone), [{ state: "active", sealed: 1 }]);
-          assert.deepInclude(yield* stateOf(forgedRef), { state: "failed" });
-          assert.deepStrictEqual(yield* stateOfKey(forged), [{ state: "pending", sealed: 0 }]);
-          assert.isEmpty(
-            (yield* auditEntries).filter((entry) => entry.event === "credential_check_failed"),
-          );
-        }).pipe(Effect.provide(context));
-      }).pipe(Effect.scoped);
-    },
-  );
+  it.effect("a phone-to-phone approval from before is voided and never activates its key", () => {
+    const lapses: Array<string> = [];
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const context = yield* Layer.build(production(ApprovalsLayer.executorLayer, lapses));
+      yield* Effect.gen(function* () {
+        const { sql } = yield* seed;
+        const phone = makeApprovalKey();
+        yield* insertPendingKey({ key: phone, orgId, humanId: owner });
+        const ref = yield* approved({
+          kind: "register_approver_key",
+          target: { _tag: "device_key", thumbprint: phone.kid, hardware: "tee", attested: true },
+          resolved: { _tag: "none" },
+          source: "second-phone",
+        });
+        yield* TestClock.adjust("1 second");
+        assert.deepInclude(yield* stateOf(ref), { state: "voided", reason: "unsupported_kind" });
+        assert.deepStrictEqual(
+          yield* sql<{ state: string }>`SELECT state FROM kin_approver_keys
+            WHERE thumbprint = ${phone.kid}`,
+          [{ state: "pending" }],
+        );
+      }).pipe(Effect.provide(context));
+    }).pipe(Effect.scoped);
+  });
 
   it.effect("a configured host holds GitHub kinds on the missing identity probe", () => {
     const lapses: Array<string> = [];
@@ -1770,6 +1851,11 @@ describe("KinActionExecutor", () => {
         ],
       ],
       ["outboundHttp.ts", ["const requireUndici = NodeModule.createRequire(import.meta.url);"]],
+      // Only resolves where a chart library's file is on disk; nothing is loaded into the server.
+      [
+        "kin/visualLibraries.ts",
+        ["const requireFromHere = NodeModule.createRequire(import.meta.url);"],
+      ],
       [
         "policy/ManagedPolicy.ts",
         ["const requireForFfi = NodeModule.createRequire(import.meta.url);"],
@@ -1912,9 +1998,10 @@ describe("KinActionExecutor", () => {
     // nothing, since no shared context holds it (the production layer test checks the output).
     assert.notInclude(source("kin/KinServer.ts"), "KinActionExecutor");
 
-    // Leads are the owner's: the `kin lead` CLI, and the owner-only `kin.lead.create` RPC for
-    // creation. Nothing else the server runs (MCP, agent toolkits, routes, schedules) reaches
-    // the provisioning module or that CLI.
+    // Leads are the owner's: the `kin lead` CLI, and RPCs that check the caller owns the lead
+    // (`create`, `update`, `retire`, `restore`, `access`, `allow`, `disallow`) or read only what's
+    // the caller's (`profiles`, `contacts`). Nothing else the server runs (MCP, agent toolkits,
+    // routes, schedules) reaches this module, and no RPC reaches what the CLI does unchecked.
     assert.deepStrictEqual(importers("kin/lead/KinLeadProvision.ts"), [
       "kin/chat/rpcHandlers.ts",
       "kin/cli/lead.ts",
@@ -1922,7 +2009,7 @@ describe("KinActionExecutor", () => {
     assert.deepStrictEqual(importers("kin/chat/rpcHandlers.ts"), ["kin/rpcHandlers.ts"]);
     assert.notMatch(
       source("kin/chat/rpcHandlers.ts"),
-      /\bLeadProvision\.(?!create\b|KinLeadProvisionError\b|ts\b)\w+/,
+      /\bLeadProvision\.(?!create\b|update\b|retire\b|restore\b|profiles\b|contacts\b|access\b|allow\b|disallow\b|KinLeadProvisionError\b|ts\b)\w+/,
     );
     assert.deepStrictEqual(importers("kin/cli/lead.ts"), ["binCli.ts"]);
     const served = new Set<string>();

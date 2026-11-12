@@ -54,8 +54,8 @@ const snoozeEnd = (
       : tomorrowAtNine(now, timeZone);
 
 /**
- * What a tap on a reminder card says, before anything changes: the lead reads `text`, and `wake`
- * is false for a snooze, which the server finishes alone.
+ * What a tap on a reminder card says, before anything changes: the lead reads `text`. Only
+ * Change wakes the lead, since it needs a new time; the server finishes Done and Snooze alone.
  */
 export const describeReminderTap = Effect.fn("KinReminderCard.describe")(function* (
   widget: KinWidget,
@@ -75,13 +75,13 @@ export const describeReminderTap = Effect.fn("KinReminderCard.describe")(functio
     card,
     action: actionId,
     text: `Tapped "${LABELS[actionId]}" on the reminder "${card.title}"`,
-    wake: actionId === "done" || actionId === "change",
+    wake: actionId === "change",
   };
 });
 
 /**
  * Applies a described tap in the tap's transaction. Done and Snooze change the deferral run
- * here, so they hold before the lead hears of them. Returns the card's next state, or null.
+ * here and finish there. Returns the card's next state, or null.
  */
 export const applyReminderTap = Effect.fn("KinReminderCard.apply")(function* (
   widget: KinWidget,

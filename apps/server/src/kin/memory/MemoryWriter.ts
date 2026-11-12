@@ -1,6 +1,7 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Supersession fingerprints compare in-process strings synchronously.
 import * as NodeCrypto from "node:crypto";
-import type { PersistenceSqlError } from "../../persistence/Errors.ts";
+import { toPersistenceSqlError, type PersistenceSqlError } from "../../persistence/Errors.ts";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import { readFiles, readCommit, readTree, objectHash, verifyTree } from "./objects.ts";
@@ -8,13 +9,12 @@ import { buildIndex } from "./buildIndex.ts";
 import { isCheckoutPath } from "./checkoutPaths.ts";
 import * as MemoryCache from "./MemoryCache.ts";
 import {
-  KIN_HIDDEN_CHARACTER,
-  KIN_MEMORY_CHANGE_TITLE_MAX,
   MemoryItemFrontMatter,
   RepoSlug,
   type KinAgentId,
-  type KinMemoryChangeKind,
   type KinMemoryItemId,
+  type KinPersonId,
+  type MemoryItemHead,
   type KinOrgId,
   type MemoryTrust,
 } from "@t3tools/contracts";
@@ -24,6 +24,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
+import * as SqlClient from "effect/sql/SqlClient";
 import { stringify } from "yaml";
 import { memoryGit as runMemoryGit } from "./git.ts";
 import { VcsProcess } from "../../vcs/VcsProcess.ts";
@@ -40,18 +41,17 @@ import {
   MemoryDuplicateId,
   shadowBranch,
 } from "./Memory.ts";
-import { parseFrontMatter, MemoryItemError, schemaKeyFailure } from "./frontMatter.ts";
+import { changedKeys, parseFrontMatter, MemoryItemError, schemaKeyFailure } from "./frontMatter.ts";
 import { journalEntry, MemoryJournalError, type JournalContext } from "./journal.ts";
-import { mergeMemoryFiles } from "./merge.ts";
+import { QUOTE_MISSING, quoteRefusal } from "./keeping.ts";
 import { isOwnerReviewedPath, kinShapeFailure } from "./lint.ts";
 import { KinSecretScan, KinSecretScanError } from "./secretScan.ts";
-import {
-  MemoryPullRequests,
-  REVIEW_BRANCH_SUFFIX,
-  WRITE_BRANCH_PREFIX,
-} from "./MemoryPullRequests.ts";
+import { deletedQuotes } from "./quoteAccess.ts";
+import { retireLabels } from "./sensitivity.ts";
+import * as MemoryLander from "./MemoryLander.ts";
+import { MemoryPullRequests } from "./MemoryPullRequests.ts";
 
-export const LEAD_ENDED_WITHOUT_KIN_END = "Lead ended without calling kin_end.";
+export const LEAD_ENDED_WITHOUT_KIN_END = "Agent ended without calling kin_end.";
 
 export interface WakeupContext extends JournalContext {
   readonly orgId: KinOrgId;
@@ -60,7 +60,13 @@ export interface WakeupContext extends JournalContext {
   readonly stagedReceipts?: boolean;
   readonly sources: ReadonlyMap<
     string,
-    { readonly saidBy: string; readonly trust: MemoryTrust; readonly source: string } & (
+    {
+      readonly saidBy: string;
+      readonly trust: MemoryTrust;
+      readonly source: string;
+      /** A message's own words, which a new item's `quote` must be taken from. */
+      readonly text?: string | undefined;
+    } & (
       | { readonly kind?: undefined }
       | {
           readonly kind: "owner_check";
@@ -87,12 +93,6 @@ export class MemoryWriterAuthority extends Context.Service<
     ) => Effect.Effect<WakeupContext, MemoryWriteRejected | PersistenceSqlError>;
   }
 >()("t3/kin/memory/MemoryWriter/MemoryWriterAuthority") {}
-export type ShadowChoice =
-  | { readonly _tag: "preview" }
-  | { readonly _tag: "discard" }
-  /** `paths` is the list the owner was shown; Keep refuses when the changes differ from it. */
-  | { readonly _tag: "keep"; readonly paths: ReadonlyArray<string> };
-
 export class MemoryWriteRejected extends Schema.TaggedError<MemoryWriteRejected>()(
   "MemoryWriteRejected",
   {
@@ -132,27 +132,6 @@ export class MemoryWriterHooks extends Context.Service<
     readonly notify: (notice: WriterNotice) => Effect.Effect<void>;
   }
 >()("t3/kin/memory/MemoryWriter/MemoryWriterHooks") {}
-/** The items one wake-up's commit changed, for the owner's change card. */
-export interface WakeupMemoryChanges {
-  readonly orgId: KinOrgId;
-  readonly agentId: KinAgentId;
-  readonly wakeupId: string;
-  readonly branch: string;
-  /** The branch head the commit was made on, which Undo restores from. */
-  readonly base: string;
-  readonly commit: string;
-  readonly items: ReadonlyArray<{
-    readonly itemId: KinMemoryItemId;
-    readonly path: string;
-    readonly title: string;
-    readonly change: KinMemoryChangeKind;
-  }>;
-}
-/** Optional: told once per committed wake-up that changed items, never for journal-only ones. */
-export class MemoryChangeHooks extends Context.Service<
-  MemoryChangeHooks,
-  { readonly committed: (changes: WakeupMemoryChanges) => Effect.Effect<void> }
->()("t3/kin/memory/MemoryWriter/MemoryChangeHooks") {}
 export interface MemoryUndo {
   readonly agentId: KinAgentId;
   readonly itemId: KinMemoryItemId;
@@ -165,20 +144,16 @@ export type MemoryUndoResult =
   | { readonly _tag: "undone"; readonly commit: string }
   /** The item changed after `commit`, or that history is gone. */
   | { readonly _tag: "stale" };
-const hiddenCharacters = new RegExp(KIN_HIDDEN_CHARACTER.source, "gu");
-/** One plain line from lead-written front matter: no hidden characters, capped. */
-const changeTitle = (title: string, what: string | undefined) => {
-  const line = (text: string) => text.replace(hiddenCharacters, " ").replace(/\s+/g, " ").trim();
-  const text = line(title) || line(what ?? "") || "Untitled item";
-  return text.length > KIN_MEMORY_CHANGE_TITLE_MAX
-    ? `${text.slice(0, KIN_MEMORY_CHANGE_TITLE_MAX - 1).trimEnd()}…`
-    : text;
-};
 export interface MemoryChange {
   readonly path: string;
   readonly content: string;
   readonly sourceEventId?: string;
   readonly supersedes?: string;
+  /**
+   * Only who may know the item changes (`LeadMemory.label`), so who asked doesn't have to outrank
+   * who first said it. `share` is the owner letting the team know it; nothing else unmarks one.
+   */
+  readonly label?: "keep" | "share";
 }
 type Failure =
   | PersistenceSqlError
@@ -208,6 +183,8 @@ export class MemoryWriter extends Context.Service<
       wakeupId: string,
       lines: ReadonlyArray<string>,
     ) => Effect.Effect<void, Failure>;
+    /** Whether the wake-up has staged an item or a journal line that a commit would save. */
+    readonly staged: (orgId: KinOrgId, wakeupId: string) => Effect.Effect<boolean, Failure>;
     readonly discard: (orgId: KinOrgId, wakeupId: string) => Effect.Effect<void, Failure>;
     readonly commitWakeup: (
       orgId: KinOrgId,
@@ -229,16 +206,6 @@ export class MemoryWriter extends Context.Service<
     ) => Effect.Effect<{ commit: string }, Failure>;
     readonly deleteDreamBranch: (orgId: KinOrgId, branch: string) => Effect.Effect<void, Failure>;
     /**
-     * The owner's choice once a lead leaves L0: `keep` commits the shadow branch's changes onto
-     * the default branch; either way `kin/shadow/<agentId>` then restarts from the default branch.
-     * `preview` only lists the changed paths.
-     */
-    readonly settleShadow: (
-      orgId: KinOrgId,
-      agentId: KinAgentId,
-      choice: ShadowChoice,
-    ) => Effect.Effect<{ readonly kept: number; readonly paths: ReadonlyArray<string> }, Failure>;
-    /**
      * The owner's Undo of one item a wake-up changed: a new commit on the same branch that
      * restores the item from `base`, or invalidates it if the wake-up created it. Compare-and-set:
      * `stale` when the item differs from what `commit` wrote.
@@ -247,23 +214,67 @@ export class MemoryWriter extends Context.Service<
       orgId: KinOrgId,
       input: MemoryUndo,
     ) => Effect.Effect<MemoryUndoResult, Failure>;
-    /** Closes `kin/write/*` PRs no write waits on (TRIG-15) and tells the owner about review PRs. */
-    readonly sweepPullRequests: (orgId: KinOrgId) => Effect.Effect<void, Failure>;
+    /**
+     * The owner's own choice of who may know an item, outside any wake-up: one commit on the
+     * default branch that sets its label and, when the team may now know it, who decided and when.
+     */
+    readonly relabel: (
+      orgId: KinOrgId,
+      input: {
+        readonly itemId: KinMemoryItemId;
+        readonly sensitive: boolean;
+        readonly person: KinPersonId;
+      },
+    ) => Effect.Effect<{ readonly head: MemoryItemHead }, Failure>;
+    /**
+     * Marks one default-branch item no longer true, outside a wake-up: the owner forgot it, or
+     * the nightly pass found it spent. The file and its history stay; `retired` is false when
+     * it was already so.
+     */
+    readonly retire: (
+      orgId: KinOrgId,
+      input: { readonly itemId: KinMemoryItemId; readonly by: "owner" | "nightly" },
+    ) => Effect.Effect<{ readonly retired: boolean }, Failure>;
+    /**
+     * Ends who may know every item the default branch holds retired, whatever retired it: a
+     * GitHub merge, a promoted shadow branch, or a grant older than retirement clearing one.
+     */
+    readonly reconcileSharing: (orgId: KinOrgId) => Effect.Effect<void, Failure>;
+    /**
+     * Drops the quote from the current version of every item that quotes a deleted message, on
+     * the default branch and each lead's shadow branch; the items stay. It reads what is stored,
+     * so it runs after a clear and at every sync, which also finishes one a crash cut short.
+     */
+    readonly stripQuotes: (orgId: KinOrgId) => Effect.Effect<void, Failure>;
   }
 >()("t3/kin/memory/MemoryWriter") {}
 const isRepoSlug = Schema.is(RepoSlug);
 const dreamBranch = /^dream\/\d{4}-\d{2}-\d{2}$/;
 const folders = ["objectives", "commitments", "deferrals", "decisions", "people", "claims"];
 const render = (fields: object, body: string) => `---\n${stringify(fields)}---\n${body}`;
+const retired = (head: {
+  readonly invalid_at: string | null;
+  readonly superseded_by: string | null;
+}) => head.invalid_at !== null || head.superseded_by !== null;
 const make = Effect.gen(function* () {
   const memory = yield* Memory;
+  const sql = yield* SqlClient.SqlClient;
+  /** Ends who may know items as they stop being true, before the commit that retires them. */
+  const endSharing = (orgId: KinOrgId, itemIds: ReadonlyArray<string>) =>
+    retireLabels(orgId, itemIds).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.mapError(toPersistenceSqlError("MemoryWriter.endSharing")),
+    );
+  // The default-branch head `reconcileSharing` last swept, so an unchanged branch costs one read.
+  const reconciledHeads = new Map<KinOrgId, string>();
+  // Each branch head `stripQuotes` found clean, with how many clears had run by then.
+  const unquotedHeads = new Map<string, string>();
   const recovery = yield* MemoryRecoveryHooks;
-  const reportedOpen = new Set<string>();
   // Shadow branches whose last push was refused; the owner hears once until a push lands.
   const unpushedShadows = new Set<string>();
   const authority = yield* MemoryWriterAuthority;
   const hooks = yield* MemoryWriterHooks;
-  const changeHooks = yield* Effect.serviceOption(MemoryChangeHooks);
+  const lander = yield* MemoryLander.MemoryLander;
   const scanner = yield* KinSecretScan;
   const fs = yield* FileSystem.FileSystem;
   const vcs = yield* VcsProcess;
@@ -662,169 +673,87 @@ const make = Effect.gen(function* () {
       return yield* new MemoryConfigError({ orgId, operation: "writer", reason: "Unknown org" });
     return repo;
   });
+  // Checked before committing: a commit no PR could ever land would only sit on this server.
+  const refuseOffGitHub = Effect.fn("MemoryWriter.refuseOffGitHub")(function* (orgId: KinOrgId) {
+    const repo = yield* repoFor(orgId);
+    if (repo.githubRepo === undefined || !isRepoSlug(repo.githubRepo))
+      return yield* new MemorySyncConflict({
+        orgId,
+        operation: "push",
+        reason: "The memory repo is not on GitHub, so Kin cannot open its PR",
+      });
+  });
   const refuseMainWrite = Effect.fn("MemoryWriter.refuseMainWrite")(function* (orgId: KinOrgId) {
     const reason =
       "Memory writes to the default branch need the Kin GitHub App (TRIG-15); this one was not committed";
     yield* recovery.notify({ orgId, branch: config.defaultBranch ?? "main", reason });
     return yield* new MemorySyncConflict({ orgId, operation: "push", reason });
   });
-  /**
-   * Lands Kin's commits through PRs (TRIG-15). The local default branch moves only after GitHub
-   * merged, and then to the remote head, so a refused PR leaves it where it was.
-   */
-  const landOnMain = Effect.fn("MemoryWriter.landOnMain")(function* (
+  /** Items changed by the owner or Kin outside a wake-up, committed and landed as a wake-up's are. */
+  const ownerCommit = Effect.fn("MemoryWriter.ownerCommit")(function* (
     orgId: KinOrgId,
-    writer: string,
     input: {
-      readonly agentId: string;
-      readonly id: string;
-      readonly base: string;
-      readonly commit: string;
+      readonly writer: string;
+      readonly repoUrl: string;
+      readonly branch: string;
+      readonly head: string;
+      readonly headFiles: ReadonlyMap<string, Buffer>;
+      readonly files: ReadonlyMap<string, string>;
       readonly message: string;
-      readonly review?: { readonly commit: string; readonly message: string };
     },
   ) {
-    if (Option.isNone(pullRequests)) return yield* refuseMainWrite(orgId);
-    const repo = yield* repoFor(orgId);
-    const main = config.defaultBranch ?? "main";
-    const conflict = (reason: string) =>
-      new MemorySyncConflict({ orgId, operation: "push", reason });
-    if (repo.githubRepo === undefined || !isRepoSlug(repo.githubRepo))
-      return yield* conflict("The memory repo is not on GitHub, so Kin cannot open its PR");
-    const github = repo.githubRepo;
-    const open = Effect.fn("MemoryWriter.openPullRequest")(function* (
-      branch: string,
-      commit: string,
-      message: string,
-      ownerReview: boolean,
-    ) {
+    const { writer, branch, head, headFiles } = input;
+    const onMain = branch === (config.defaultBranch ?? "main");
+    const changes = new Map(
+      [...input.files].map(([path, content]) => [path, Buffer.from(content)] as const),
+    );
+    const regular = yield* regularPaths(orgId, writer, head);
+    const combined = new Map(
+      [...headFiles, ...changes]
+        .filter(([path]) => regular.has(path) || changes.has(path))
+        .map(([path, bytes]) => [path, bytes.toString("utf8")]),
+    );
+    changes.set("INDEX.md", Buffer.from(yield* indexFor(orgId, combined)));
+    const findings = yield* scanner.scan({
+      orgId,
+      files: [...changes].map(([path, content]) => ({ path, content })),
+    });
+    if (findings.length) return yield* new MemorySecretBlocked({ orgId, findings });
+    const commit = yield* writeCommit(orgId, writer, head, headFiles, changes, input.message);
+    if (onMain && mainWrites === "pull_request") {
+      yield* git(orgId, writer, ["update-ref", `refs/heads/${branch}`, commit, head]);
+      yield* memory.record(orgId, branch, head, commit);
+      yield* lander.signal(orgId);
+    } else {
+      // Push first, so a rejected push leaves the local branch where it was.
       yield* git(orgId, writer, [
         "push",
         "--",
-        repo.repoUrl,
-        `+${commit}:refs/heads/${branch}`,
-      ]).pipe(Effect.mapError(() => conflict("Memory PR branch push rejected")));
-      return yield* pullRequests.value.land({
-        orgId,
-        repo: github,
-        branch,
-        base: main,
-        sha: commit,
-        title: message.split("\n")[0] ?? message,
-        message,
-        ownerReview,
-      });
-    });
-    // Each attempt's commit is fresh, so a retry gets its own branch; `land` refuses reused ones.
-    const branch = `${WRITE_BRANCH_PREFIX}${input.agentId}/${input.id}-${input.commit.slice(0, 12)}`;
-    const landed = yield* open(branch, input.commit, input.message, false).pipe(
-      Effect.tapError((error) =>
-        recovery.notify({
+        input.repoUrl,
+        `${commit}:refs/heads/${branch}`,
+      ]).pipe(
+        Effect.mapError(
+          () =>
+            new MemorySyncConflict({
+              orgId,
+              operation: "push",
+              reason: "Push rejected; retry or reconcile remote",
+            }),
+        ),
+      );
+      yield* git(orgId, writer, ["update-ref", `refs/heads/${branch}`, commit, head]);
+      yield* memory.record(orgId, branch, head, commit);
+    }
+    yield* memory.rebuildCache(orgId).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("Could not refresh memory cache after an owner change", {
           orgId,
-          branch,
-          reason: `Memory write not merged: ${error.reason}${error._tag === "MemoryPullRequestRefused" && error.url ? ` (${error.url})` : ""}`,
+          errorTag: error._tag,
         }),
       ),
-      Effect.mapError((error) =>
-        error._tag === "MemoryPullRequestRefused" ? conflict(error.reason) : error,
-      ),
     );
-    if (landed._tag !== "merged") return yield* conflict("The memory PR was not merged");
-    // Opened only once the rest merged, so a refused write never leaves a lone review PR.
-    if (input.review !== undefined) {
-      const review = input.review;
-      const reviewBranch = `${branch}${REVIEW_BRANCH_SUFFIX}`;
-      yield* open(reviewBranch, review.commit, review.message, true).pipe(
-        Effect.flatMap((opened) =>
-          recovery.notify({
-            orgId,
-            branch: reviewBranch,
-            reason: `Memory changes on paths you review wait in ${opened.url}. Kin pushed \`${review.commit}\`; if the PR's head differs, close it`,
-          }),
-        ),
-        Effect.catch((error) =>
-          recovery.notify({
-            orgId,
-            branch: reviewBranch,
-            reason: `Memory changes on paths you review were not opened as a PR: ${error.reason}`,
-          }),
-        ),
-      );
-    }
-    const advertised = yield* git(orgId, writer, [
-      "ls-remote",
-      "--",
-      repo.repoUrl,
-      `refs/heads/${main}`,
-    ]);
-    const [head, name] = advertised.split(/\s+/);
-    if (!head || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(head) || name !== `refs/heads/${main}`)
-      return yield* conflict("The default branch is missing after the merge");
-    yield* git(orgId, writer, ["fetch", "--", repo.repoUrl, head]);
-    const ancestor = (older: string, newer: string) =>
-      git(orgId, writer, ["merge-base", "--is-ancestor", older, newer]).pipe(
-        Effect.as(true),
-        Effect.catchTags({ MemoryError: () => Effect.succeed(false) }),
-      );
-    if (!(yield* ancestor(landed.commit, head)) || !(yield* ancestor(input.base, landed.commit)))
-      return yield* conflict("The merged memory commit is not on the default branch");
-    const [parent, mergedTree, ownTree] = [
-      yield* git(orgId, writer, ["rev-parse", `${landed.commit}^`]),
-      yield* git(orgId, writer, ["rev-parse", `${landed.commit}^{tree}`]),
-      yield* git(orgId, writer, ["rev-parse", `${input.commit}^{tree}`]),
-    ];
-    if (parent === input.base && mergedTree !== ownTree)
-      return yield* conflict("GitHub merged a different tree than Kin pushed");
-    yield* filesAt(orgId, writer, head);
-    yield* git(orgId, writer, ["update-ref", `refs/heads/${main}`, head, input.base]);
-    yield* memory.record(orgId, main, input.base, head);
-    yield* git(orgId, writer, ["push", "--", repo.repoUrl, `:refs/heads/${branch}`]).pipe(
-      Effect.catch(() =>
-        Effect.logWarning("Could not delete a merged memory PR branch", { orgId }),
-      ),
-    );
-    return head;
+    return commit;
   });
-  const itemChanges = Effect.fn("MemoryWriter.itemChanges")(function* (
-    orgId: KinOrgId,
-    before: ReadonlyMap<string, Buffer>,
-    after: ReadonlyMap<string, Buffer>,
-  ) {
-    const items: Array<WakeupMemoryChanges["items"][number]> = [];
-    for (const [path, bytes] of after) {
-      if (!folders.some((folder) => path.startsWith(`${folder}/`))) continue;
-      const prior = before.get(path);
-      if (prior?.equals(bytes)) continue;
-      const next = yield* parseFrontMatter(orgId, path, bytes.toString("utf8")).pipe(Effect.option);
-      if (Option.isNone(next)) continue;
-      const fm = next.value.frontMatter;
-      const old =
-        prior === undefined
-          ? undefined
-          : Option.getOrUndefined(
-              yield* parseFrontMatter(orgId, path, prior.toString("utf8")).pipe(Effect.option),
-            )?.frontMatter;
-      const change: KinMemoryChangeKind =
-        old === undefined
-          ? "created"
-          : fm.status === "superseded" && old.status !== "superseded"
-            ? "superseded"
-            : (fm.invalid_at !== null && old.invalid_at === null) ||
-                (fm.status === "cancelled" && old.status !== "cancelled")
-              ? "invalidated"
-              : "updated";
-      items.push({ itemId: fm.id, path, title: changeTitle(fm.title, fm.what), change });
-    }
-    return items.toSorted((a, b) => a.path.localeCompare(b.path));
-  });
-  const announce = (changes: WakeupMemoryChanges) =>
-    Option.isNone(changeHooks) || changes.items.length === 0
-      ? Effect.void
-      : changeHooks.value
-          .committed(changes)
-          .pipe(
-            Effect.catchCause((cause) => Effect.logWarning("Memory change card failed", cause)),
-          );
   const stageChange = Effect.fn("MemoryWriter.stageChange")(function* (
     orgId: KinOrgId,
     wakeupId: string,
@@ -903,6 +832,16 @@ const make = Effect.gen(function* () {
       else items[index] = head;
       bodies.set(file, staged.body);
     }
+    const labelled = items.find((item) => item.id === fm.id);
+    if (
+      labelled !== undefined &&
+      labelled.sensitive !== false &&
+      fm.sensitive === false &&
+      change.label !== "share"
+    )
+      return yield* new MemoryWriteRejected({
+        reason: "Only the owner lets the team know an item",
+      });
     const superseded =
       change.supersedes === undefined
         ? undefined
@@ -940,7 +879,7 @@ const make = Effect.gen(function* () {
         const rank = (trust: string) => ["external", "agent", "member", "owner"].indexOf(trust);
         if (
           item.id === fm.id &&
-          (rank(source.trust) < rank(item.trust) ||
+          ((change.label === undefined && rank(source.trust) < rank(item.trust)) ||
             (fm.status !== item.status &&
               !(item.status === "open" && ["done", "cancelled"].includes(fm.status))))
         )
@@ -948,18 +887,21 @@ const make = Effect.gen(function* () {
         if (body !== parsed.body || item.title !== fm.title)
           return yield* new MemoryConflict({ existingId: item.id });
         if (item.id === fm.id) {
-          const proposed = new Map(Object.entries(fm));
           const mutable = new Set([
             "orgId",
             "path",
             "duplicate",
             "status",
-            "invalid_at",
             "trust",
             "said_by",
             "source",
             "source_event",
+            "quote",
+            "sensitive",
+            "shared_by",
           ]);
+          // What is no longer true stays so: no write, nor its replay at commit, brings it back.
+          if (item.invalid_at === null) mutable.add("invalid_at");
           if (
             source.kind === "owner_check" &&
             source.itemId === item.id &&
@@ -982,14 +924,7 @@ const make = Effect.gen(function* () {
             fm.due === source.due
           )
             mutable.add("due");
-          const existing = new Map(Object.entries(item));
-          if (
-            [...new Set([...existing.keys(), ...proposed.keys()])].some(
-              (key) =>
-                !mutable.has(key) &&
-                JSON.stringify(existing.get(key)) !== JSON.stringify(proposed.get(key)),
-            )
-          )
+          if (changedKeys(item, fm).some((key) => !mutable.has(key)))
             return yield* new MemoryConflict({ existingId: item.id });
         }
       }
@@ -1015,14 +950,27 @@ const make = Effect.gen(function* () {
       review_by: fm.review_by,
     };
     const existing = items.find((item) => item.id === fm.id);
+    // A new item that says what someone said holds their words from the cited message; an
+    // existing item keeps the quote, like the rest of its provenance, from when it was saved.
+    if (!existing && fm.kind !== "deferral") {
+      const refusal =
+        fm.quote !== undefined
+          ? quoteRefusal(fm.quote, "text" in source ? source.text : undefined)
+          : fields.trust === "owner" || fields.trust === "member"
+            ? QUOTE_MISSING
+            : undefined;
+      if (refusal !== undefined) return yield* new MemoryWriteRejected({ reason: refusal });
+    }
+    const { quote: _quote, ...unquoted } = fields;
     const text = render(
       existing
         ? {
-            ...fields,
+            ...unquoted,
             trust: existing.trust,
             said_by: existing.said_by,
             source: existing.source,
             source_event: existing.source_event,
+            ...(existing.quote === undefined ? {} : { quote: existing.quote }),
           }
         : fields,
       parsed.body,
@@ -1069,6 +1017,15 @@ const make = Effect.gen(function* () {
         }),
       ),
     ),
+    staged: Effect.fn("MemoryWriter.staged")((orgId, wakeupId) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const { state } = yield* session(orgId, wakeupId);
+          return state.files.size + state.lines.length > 0;
+        }),
+      ),
+    ),
     discard: Effect.fn("MemoryWriter.discard")((orgId, wakeupId) =>
       locked(
         orgId,
@@ -1099,6 +1056,7 @@ const make = Effect.gen(function* () {
             const onMain = branch === (config.defaultBranch ?? "main");
             if (onMain && mainWrites === "refused") return yield* refuseMainWrite(orgId);
             const viaPullRequest = onMain && mainWrites === "pull_request";
+            if (viaPullRequest) yield* refuseOffGitHub(orgId);
             const recorded = yield* branchHead(orgId, writer, branch);
             const unpushedKey = `${orgId}\u0000${branch}`;
             const push = (sha: string) =>
@@ -1113,7 +1071,7 @@ const make = Effect.gen(function* () {
                           recovery.notify({
                             orgId,
                             branch,
-                            reason: `The memory repo refused ${branch}, so this lead's shadow memory is only on this server. Kin pushes it again with the next commit; check that the memory deploy key can push kin/shadow/*`,
+                            reason: `The memory repo refused ${branch}, so this agent's shadow memory is only on this server. Kin pushes it again with the next commit; check that the memory deploy key can push kin/shadow/*`,
                           }),
                         ),
                       ),
@@ -1152,8 +1110,8 @@ const make = Effect.gen(function* () {
                     !body.includes(`Kin-Request: ${fingerprint}`))
                 )
                   return yield* new MemoryWriteRejected({ reason: "Different wake-up retry" });
-                // Through PRs the default branch only ever holds what GitHub already merged.
-                if (!viaPullRequest) yield* push(recorded);
+                if (viaPullRequest) yield* lander.signal(orgId);
+                else yield* push(recorded);
                 return { commit: own };
               }
               if (outcome === "failed") state.files.clear();
@@ -1214,70 +1172,44 @@ const make = Effect.gen(function* () {
                 ]),
               );
               const message = `${subject}\n\nEvents: ${ctx.eventIds.join(", ")}\nKin-Outcome: ${outcome}\nKin-Request: ${fingerprint}\n`;
-              if (viaPullRequest) {
-                const review = new Map([...changes].filter(([file]) => reviewed(file)));
-                const commit = yield* writeCommit(
-                  orgId,
-                  writer,
-                  recorded,
-                  recordedFiles,
-                  new Map([...changes].filter(([file]) => !reviewed(file))),
-                  message,
-                );
-                const reviewMessage = `kin(${ctx.agentId}): review wake-up ${wakeupId}\n\nEvents: ${ctx.eventIds.join(", ")}\n`;
-                const head = yield* landOnMain(orgId, writer, {
-                  agentId: ctx.agentId,
-                  id: wakeupId,
-                  base: recorded,
-                  commit,
-                  message,
-                  ...(review.size === 0
-                    ? {}
-                    : {
-                        review: {
-                          commit: yield* writeCommit(
-                            orgId,
-                            writer,
-                            recorded,
-                            recordedFiles,
-                            review,
-                            reviewMessage,
-                          ),
-                          message: reviewMessage,
-                        },
-                      }),
-                });
-                yield* memory.rebuildCache(orgId).pipe(
-                  Effect.catch((error) =>
-                    Effect.logWarning("Could not refresh memory cache after commit", {
-                      orgId,
-                      errorTag: error._tag,
-                    }),
-                  ),
-                );
-                yield* announce({
-                  orgId,
-                  agentId: ctx.agentId,
-                  wakeupId,
-                  branch,
-                  base: recorded,
-                  commit: head,
-                  items: yield* itemChanges(
-                    orgId,
-                    recordedFiles,
-                    new Map([...changes].filter(([file]) => !reviewed(file))),
-                  ),
-                });
-                return { commit: head };
-              }
+              // Paths the owner reviews stay off the default branch; the lander opens their PR.
               const commit = yield* writeCommit(
                 orgId,
                 writer,
                 recorded,
                 recordedFiles,
-                changes,
+                viaPullRequest
+                  ? new Map([...changes].filter(([file]) => !reviewed(file)))
+                  : changes,
                 message,
               );
+              const review = new Map([...changes].filter(([file]) => reviewed(file)));
+              if (onMain) {
+                const ending = [];
+                for (const [path, text] of state.files) {
+                  if (reviewed(path) || !folders.some((folder) => path.startsWith(`${folder}/`)))
+                    continue;
+                  const { frontMatter } = yield* parseFrontMatter(orgId, path, text);
+                  if (retired(frontMatter)) ending.push(frontMatter.id);
+                }
+                yield* endSharing(orgId, ending);
+              }
+              if (review.size > 0) {
+                const reviewCommit = yield* writeCommit(
+                  orgId,
+                  writer,
+                  recorded,
+                  recordedFiles,
+                  review,
+                  `kin(${ctx.agentId}): review wake-up ${wakeupId}\n\nEvents: ${ctx.eventIds.join(", ")}\n`,
+                );
+                yield* git(orgId, writer, [
+                  "update-ref",
+                  `${MemoryLander.REVIEW_REF_PREFIX}${ctx.agentId}/${wakeupId}-${commit.slice(0, 12)}`,
+                  reviewCommit,
+                  "0".repeat(reviewCommit.length),
+                ]);
+              }
               yield* git(orgId, writer, ["update-ref", `refs/heads/${branch}`, commit, recorded]);
               yield* memory.record(orgId, branch, recorded, commit);
               // Arms deferrals from the commit now, not at the next wake-up; shadow commits too.
@@ -1289,16 +1221,9 @@ const make = Effect.gen(function* () {
                   }),
                 ),
               );
-              yield* push(commit);
-              yield* announce({
-                orgId,
-                agentId: ctx.agentId,
-                wakeupId,
-                branch,
-                base: recorded,
-                commit,
-                items: yield* itemChanges(orgId, recordedFiles, changes),
-              });
+              // The wake-up is done once its commit is here; GitHub gets it in the background.
+              if (viaPullRequest) yield* lander.signal(orgId);
+              else yield* push(commit);
               return { commit };
             }).pipe(
               Effect.ensuring(Effect.sync(() => sessions.delete(sessionKey(orgId, wakeupId)))),
@@ -1321,65 +1246,73 @@ const make = Effect.gen(function* () {
         }),
       ),
     ),
+    // The push runs outside the writer lock, under the landing lock so no purge starts meanwhile.
     commitDream: Effect.fn("MemoryWriter.commitDream")((orgId, input) =>
       report(
         orgId,
         input.branch,
-        locked(
+        memory.withLandingLock(
           orgId,
           Effect.gen(function* () {
-            if (!dreamBranch.test(input.branch))
-              return yield* new MemoryWriteRejected({ reason: "Invalid dream branch" });
-            const { writer } = yield* validate(orgId);
-            yield* refuseDuringPurge(orgId);
-            const repo = yield* repoFor(orgId);
-            // A purge's reclone drops the old history, so a dream started before it has no base here.
-            if (
-              !/^[a-f0-9]{40}([a-f0-9]{24})?$/.test(input.base) ||
-              (yield* git(orgId, writer, ["cat-file", "-e", `${input.base}^{commit}`]).pipe(
-                Effect.result,
-              ))._tag === "Failure"
-            )
-              return yield* new MemorySyncConflict({
-                orgId,
-                operation: "push",
-                reason: "The dream's base is no longer in memory history",
-              });
-            const baseFiles = yield* filesAt(orgId, writer, input.base);
-            const regular = yield* regularPaths(orgId, writer, input.base);
-            const combined = new Map(
-              [...baseFiles]
-                .filter(([path]) => regular.has(path))
-                .map(([path, bytes]) => [path, bytes.toString("utf8")]),
-            );
-            for (const [path, text] of input.files) {
-              if (path === "INDEX.md")
-                return yield* new MemoryWriteRejected({ reason: "INDEX.md is built by code" });
-              yield* safePath(orgId, writer, path);
-              if (!path.startsWith("journal/")) {
-                const { frontMatter } = yield* parseFrontMatter(orgId, path, text);
-                const folder = frontMatter.kind === "person" ? "people" : `${frontMatter.kind}s`;
-                if (!path.startsWith(`${folder}/`))
-                  return yield* new MemoryWriteRejected({ reason: "Kind does not match path" });
-              }
-              combined.set(path, text);
-            }
-            const changes = new Map(
-              [...input.files].map(([path, text]) => [path, Buffer.from(text)]),
-            );
-            changes.set("INDEX.md", Buffer.from(yield* indexFor(orgId, combined)));
-            const findings = yield* scanner.scan({
+            const { writer, repo, commit } = yield* locked(
               orgId,
-              files: [...changes].map(([path, content]) => ({ path, content })),
-            });
-            if (findings.length) return yield* new MemorySecretBlocked({ orgId, findings });
-            const commit = yield* writeCommit(
-              orgId,
-              writer,
-              input.base,
-              baseFiles,
-              changes,
-              input.message,
+              Effect.gen(function* () {
+                if (!dreamBranch.test(input.branch))
+                  return yield* new MemoryWriteRejected({ reason: "Invalid dream branch" });
+                const { writer } = yield* validate(orgId);
+                yield* refuseDuringPurge(orgId);
+                const repo = yield* repoFor(orgId);
+                // A purge's reclone drops the old history, so a dream started before it has no base here.
+                if (
+                  !/^[a-f0-9]{40}([a-f0-9]{24})?$/.test(input.base) ||
+                  (yield* git(orgId, writer, ["cat-file", "-e", `${input.base}^{commit}`]).pipe(
+                    Effect.result,
+                  ))._tag === "Failure"
+                )
+                  return yield* new MemorySyncConflict({
+                    orgId,
+                    operation: "push",
+                    reason: "The dream's base is no longer in memory history",
+                  });
+                const baseFiles = yield* filesAt(orgId, writer, input.base);
+                const regular = yield* regularPaths(orgId, writer, input.base);
+                const combined = new Map(
+                  [...baseFiles]
+                    .filter(([path]) => regular.has(path))
+                    .map(([path, bytes]) => [path, bytes.toString("utf8")]),
+                );
+                for (const [path, text] of input.files) {
+                  if (path === "INDEX.md")
+                    return yield* new MemoryWriteRejected({ reason: "INDEX.md is built by code" });
+                  yield* safePath(orgId, writer, path);
+                  if (!path.startsWith("journal/")) {
+                    const { frontMatter } = yield* parseFrontMatter(orgId, path, text);
+                    const folder =
+                      frontMatter.kind === "person" ? "people" : `${frontMatter.kind}s`;
+                    if (!path.startsWith(`${folder}/`))
+                      return yield* new MemoryWriteRejected({ reason: "Kind does not match path" });
+                  }
+                  combined.set(path, text);
+                }
+                const changes = new Map(
+                  [...input.files].map(([path, text]) => [path, Buffer.from(text)]),
+                );
+                changes.set("INDEX.md", Buffer.from(yield* indexFor(orgId, combined)));
+                const findings = yield* scanner.scan({
+                  orgId,
+                  files: [...changes].map(([path, content]) => ({ path, content })),
+                });
+                if (findings.length) return yield* new MemorySecretBlocked({ orgId, findings });
+                const commit = yield* writeCommit(
+                  orgId,
+                  writer,
+                  input.base,
+                  baseFiles,
+                  changes,
+                  input.message,
+                );
+                return { writer, repo, commit };
+              }),
             );
             yield* git(orgId, writer, [
               "push",
@@ -1403,14 +1336,19 @@ const make = Effect.gen(function* () {
       ),
     ),
     deleteDreamBranch: Effect.fn("MemoryWriter.deleteDreamBranch")((orgId, branch) =>
-      locked(
+      memory.withLandingLock(
         orgId,
         Effect.gen(function* () {
           if (!dreamBranch.test(branch))
             return yield* new MemoryWriteRejected({ reason: "Invalid dream branch" });
-          const { writer } = yield* validate(orgId);
-          yield* refuseDuringPurge(orgId);
-          const repo = yield* repoFor(orgId);
+          const { writer, repo } = yield* locked(
+            orgId,
+            Effect.gen(function* () {
+              const { writer } = yield* validate(orgId);
+              yield* refuseDuringPurge(orgId);
+              return { writer, repo: yield* repoFor(orgId) };
+            }),
+          );
           const advertised = yield* git(orgId, writer, [
             "ls-remote",
             "--",
@@ -1419,141 +1357,6 @@ const make = Effect.gen(function* () {
           ]);
           if (advertised)
             yield* git(orgId, writer, ["push", "--", repo.repoUrl, `:refs/heads/${branch}`]);
-        }),
-      ),
-    ),
-    settleShadow: Effect.fn("MemoryWriter.settleShadow")((orgId, agentId, choice) =>
-      locked(
-        orgId,
-        Effect.gen(function* () {
-          if (!/^[a-zA-Z0-9_-]+$/.test(agentId))
-            return yield* new MemoryWriteRejected({ reason: "Invalid agent id" });
-          const { writer } = yield* validate(orgId);
-          yield* refuseDuringPurge(orgId);
-          const repo = yield* repoFor(orgId);
-          const main = config.defaultBranch ?? "main";
-          const shadow = shadowBranch(agentId);
-          const mainHead = yield* branchHead(orgId, writer, main);
-          const shadowHead = yield* branchHead(orgId, writer, shadow);
-          const conflict = (reason: string) =>
-            new MemorySyncConflict({ orgId, operation: "push", reason });
-          const shadowChanges = Effect.gen(function* () {
-            const mainFiles = yield* filesAt(orgId, writer, mainHead);
-            if (shadowHead === mainHead) return { mainFiles, changes: new Map<string, Buffer>() };
-            const base = yield* git(orgId, writer, ["merge-base", mainHead, shadowHead]).pipe(
-              Effect.mapError(() => conflict("The shadow branch shares no history with main")),
-            );
-            const entries = (commit: string) =>
-              readTree(orgId, writer, commit).pipe(
-                Effect.provideService(FileSystem.FileSystem, fs),
-                Effect.provideService(VcsProcess, vcs),
-                Effect.map((all) => new Map(all.map((entry) => [entry.relative, entry]))),
-              );
-            const merged = mergeMemoryFiles(
-              yield* filesAt(orgId, writer, base),
-              yield* filesAt(orgId, writer, shadowHead),
-              mainFiles,
-              yield* entries(base),
-              yield* entries(shadowHead),
-              yield* entries(mainHead),
-            );
-            if (merged === undefined)
-              return yield* conflict("Shadow memory conflicts with the default branch");
-            // The writer never deletes, so a deletion means the shadow branch was edited by hand.
-            if ([...mainFiles.keys()].some((file) => !merged.files.has(file)))
-              return yield* conflict("Shadow memory deletes files on the default branch");
-            const changes = new Map(
-              [...merged.files].filter(
-                ([file, bytes]) => file !== "INDEX.md" && !mainFiles.get(file)?.equals(bytes),
-              ),
-            );
-            return { mainFiles, changes };
-          });
-          if (choice._tag === "preview")
-            return { kept: 0, paths: [...(yield* shadowChanges).changes.keys()].toSorted() };
-          let head = mainHead;
-          let kept = 0;
-          let paths: ReadonlyArray<string> = [];
-          if (choice._tag === "keep") {
-            const { mainFiles, changes } = yield* shadowChanges;
-            paths = [...changes.keys()].toSorted();
-            const shown = choice.paths.toSorted();
-            if (shown.length !== paths.length || paths.some((path, i) => path !== shown[i]))
-              return yield* conflict("Shadow memory changed since its paths were listed");
-            // Outside Kin's own folders the owner reviews every change in a PR (TRIG-15).
-            const reviewed = paths.filter(isOwnerReviewedPath);
-            if (reviewed.length > 0)
-              return yield* conflict(
-                `It changes paths you review in a pull request (${reviewed.slice(0, 5).join(", ")}${reviewed.length > 5 ? ", …" : ""}); start clean instead`,
-              );
-            if (changes.size > 0) {
-              if (mainWrites === "refused") return yield* refuseMainWrite(orgId);
-              kept = changes.size;
-              const regular = yield* regularPaths(orgId, writer, mainHead);
-              const combined = new Map(
-                [...mainFiles, ...changes]
-                  .filter(([path]) => regular.has(path) || changes.has(path))
-                  .map(([path, bytes]) => [path, bytes.toString("utf8")]),
-              );
-              changes.set("INDEX.md", Buffer.from(yield* indexFor(orgId, combined)));
-              const findings = yield* scanner.scan({
-                orgId,
-                files: [...changes].map(([path, content]) => ({ path, content })),
-              });
-              if (findings.length) return yield* new MemorySecretBlocked({ orgId, findings });
-              const message = `kin(${agentId}): keep shadow memory\n\nKin-Shadow: ${shadowHead}\n`;
-              const commit = yield* writeCommit(
-                orgId,
-                writer,
-                mainHead,
-                mainFiles,
-                changes,
-                message,
-              );
-              if (mainWrites === "pull_request") {
-                head = yield* landOnMain(orgId, writer, {
-                  agentId,
-                  id: `keep-${shadowHead.slice(0, 12)}`,
-                  base: mainHead,
-                  commit,
-                  message,
-                });
-              } else {
-                // Push first, so a rejected push leaves the local default branch where it was.
-                yield* git(orgId, writer, [
-                  "push",
-                  "--",
-                  repo.repoUrl,
-                  `${commit}:refs/heads/${main}`,
-                ]).pipe(
-                  Effect.mapError(() => conflict("Push rejected; retry or reconcile remote")),
-                );
-                yield* git(orgId, writer, ["update-ref", `refs/heads/${main}`, commit, mainHead]);
-                yield* memory.record(orgId, main, mainHead, commit);
-                head = commit;
-              }
-              yield* memory.rebuildCache(orgId).pipe(
-                Effect.catch((error) =>
-                  Effect.logWarning("Could not refresh memory cache after commit", {
-                    orgId,
-                    errorTag: error._tag,
-                  }),
-                ),
-              );
-            }
-          }
-          // A later trial at L0 starts from what the lead reads at L1, not the old shadow week.
-          if (shadowHead !== head) {
-            yield* git(orgId, writer, ["update-ref", `refs/heads/${shadow}`, head, shadowHead]);
-            yield* memory.record(orgId, shadow, shadowHead, head);
-            yield* git(orgId, writer, [
-              "push",
-              "--",
-              repo.repoUrl,
-              `+${head}:refs/heads/${shadow}`,
-            ]).pipe(Effect.mapError(() => conflict("Shadow branch push rejected")));
-          }
-          return { kept, paths };
         }),
       ),
     ),
@@ -1573,6 +1376,7 @@ const make = Effect.gen(function* () {
           const repo = yield* repoFor(orgId);
           const onMain = input.branch === main;
           if (onMain && mainWrites === "refused") return yield* refuseMainWrite(orgId);
+          if (onMain && mainWrites === "pull_request") yield* refuseOffGitHub(orgId);
           const stale = { _tag: "stale" } as const;
           // A purge rewrites history, so the wake-up's commits may be gone.
           for (const sha of [input.base, input.commit])
@@ -1606,85 +1410,211 @@ const make = Effect.gen(function* () {
           const { frontMatter } = yield* parseFrontMatter(orgId, input.path, restored);
           if (frontMatter.id !== input.itemId)
             return yield* new MemoryWriteRejected({ reason: "Invalid undo target" });
-          const changes = new Map([[input.path, Buffer.from(restored)]]);
-          const regular = yield* regularPaths(orgId, writer, head);
-          const combined = new Map(
-            [...headFiles, ...changes]
-              .filter(([path]) => regular.has(path) || changes.has(path))
-              .map(([path, bytes]) => [path, bytes.toString("utf8")]),
-          );
-          changes.set("INDEX.md", Buffer.from(yield* indexFor(orgId, combined)));
-          const findings = yield* scanner.scan({
-            orgId,
-            files: [...changes].map(([path, content]) => ({ path, content })),
+          // Whatever retired it on the way, the restored words reach no one until the owner says.
+          yield* endSharing(orgId, [input.itemId]);
+          const commit = yield* ownerCommit(orgId, {
+            writer,
+            repoUrl: repo.repoUrl,
+            branch: input.branch,
+            head,
+            headFiles,
+            files: new Map([[input.path, restored]]),
+            message: `kin(${input.agentId}): owner undo ${input.itemId}\n\nKin-Undo: ${input.commit}\n`,
           });
-          if (findings.length) return yield* new MemorySecretBlocked({ orgId, findings });
-          const message = `kin(${input.agentId}): owner undo ${input.itemId}\n\nKin-Undo: ${input.commit}\n`;
-          const commit = yield* writeCommit(orgId, writer, head, headFiles, changes, message);
-          const conflict = (reason: string) =>
-            new MemorySyncConflict({ orgId, operation: "push", reason });
-          let landed = commit;
-          if (onMain && mainWrites === "pull_request") {
-            landed = yield* landOnMain(orgId, writer, {
-              agentId: input.agentId,
-              id: `undo-${input.commit.slice(0, 12)}`,
-              base: head,
-              commit,
-              message,
-            });
-          } else {
-            // Push first, so a rejected push leaves the local branch where it was.
-            yield* git(orgId, writer, [
-              "push",
-              "--",
-              repo.repoUrl,
-              `${commit}:refs/heads/${input.branch}`,
-            ]).pipe(Effect.mapError(() => conflict("Push rejected; retry or reconcile remote")));
-            yield* git(orgId, writer, ["update-ref", `refs/heads/${input.branch}`, commit, head]);
-            yield* memory.record(orgId, input.branch, head, commit);
-          }
-          yield* memory.rebuildCache(orgId).pipe(
-            Effect.catch((error) =>
-              Effect.logWarning("Could not refresh memory cache after undo", {
-                orgId,
-                errorTag: error._tag,
-              }),
-            ),
-          );
-          return { _tag: "undone", commit: landed } as const;
+          return { _tag: "undone", commit } as const;
         }),
       ),
     ),
-    sweepPullRequests: Effect.fn("MemoryWriter.sweepPullRequests")((orgId) =>
+    relabel: Effect.fn("MemoryWriter.relabel")((orgId, input) =>
       locked(
         orgId,
         Effect.gen(function* () {
-          if (Option.isNone(pullRequests)) return;
+          const main = config.defaultBranch ?? "main";
+          const { writer } = yield* validate(orgId);
+          yield* refuseDuringPurge(orgId);
           const repo = yield* repoFor(orgId);
-          if (repo.githubRepo === undefined || !isRepoSlug(repo.githubRepo)) return;
-          const moved = yield* pullRequests.value
-            .sweep({ orgId, repo: repo.githubRepo, base: config.defaultBranch ?? "main" })
-            .pipe(
-              Effect.mapError(
-                (error) =>
-                  new MemorySyncConflict({ orgId, operation: "sweep", reason: error.reason }),
+          if (mainWrites === "refused") return yield* refuseMainWrite(orgId);
+          if (mainWrites === "pull_request") yield* refuseOffGitHub(orgId);
+          const item = yield* memory.readItemQuietly(orgId, input.itemId);
+          const head = yield* branchHead(orgId, writer, main);
+          const headFiles = yield* filesAt(orgId, writer, head);
+          const current = headFiles.get(item.head.path);
+          if (current === undefined) return yield* new MemoryNotFound({ orgId, id: input.itemId });
+          const { frontMatter, body } = yield* parseFrontMatter(
+            orgId,
+            item.head.path,
+            current.toString("utf8"),
+          );
+          if (frontMatter.id !== input.itemId)
+            return yield* new MemoryNotFound({ orgId, id: input.itemId });
+          const { shared_by: _before, ...kept } = frontMatter;
+          const next = input.sensitive
+            ? { ...kept, sensitive: true }
+            : {
+                ...kept,
+                sensitive: false,
+                shared_by: {
+                  person: input.person,
+                  at: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
+                },
+              };
+          const labelled = { ...next, orgId, path: item.head.path };
+          if (frontMatter.sensitive === input.sensitive) return { head: labelled };
+          yield* ownerCommit(orgId, {
+            writer,
+            repoUrl: repo.repoUrl,
+            branch: main,
+            head,
+            headFiles,
+            files: new Map([[item.head.path, render(next, body)]]),
+            message: `kin: owner ${input.sensitive ? "keeps" : "shares"} ${input.itemId}\n`,
+          });
+          return { head: labelled };
+        }),
+      ),
+    ),
+    retire: Effect.fn("MemoryWriter.retire")((orgId, input) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const main = config.defaultBranch ?? "main";
+          const { writer } = yield* validate(orgId);
+          yield* refuseDuringPurge(orgId);
+          const repo = yield* repoFor(orgId);
+          // The nightly pass tells the owner nothing: it tries again the next night.
+          if (mainWrites === "refused")
+            return yield* input.by === "owner"
+              ? refuseMainWrite(orgId)
+              : new MemorySyncConflict({
+                  orgId,
+                  operation: "push",
+                  reason: "Memory writes to the default branch are refused",
+                });
+          if (mainWrites === "pull_request") yield* refuseOffGitHub(orgId);
+          const item = yield* memory.readItemQuietly(orgId, input.itemId);
+          const head = yield* branchHead(orgId, writer, main);
+          const headFiles = yield* filesAt(orgId, writer, head);
+          const current = headFiles.get(item.head.path);
+          if (current === undefined) return yield* new MemoryNotFound({ orgId, id: input.itemId });
+          const { frontMatter, body } = yield* parseFrontMatter(
+            orgId,
+            item.head.path,
+            current.toString("utf8"),
+          );
+          if (frontMatter.id !== input.itemId)
+            return yield* new MemoryNotFound({ orgId, id: input.itemId });
+          // First, so the team stops knowing it whatever the commit below does.
+          yield* endSharing(orgId, [input.itemId]);
+          if (frontMatter.invalid_at !== null) return { retired: false };
+          const invalidAt = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+          yield* ownerCommit(orgId, {
+            writer,
+            repoUrl: repo.repoUrl,
+            branch: main,
+            head,
+            headFiles,
+            files: new Map([
+              [item.head.path, render({ ...frontMatter, invalid_at: invalidAt }, body)],
+            ]),
+            message:
+              input.by === "owner"
+                ? `kin: owner forgets ${input.itemId}\n`
+                : `kin: nightly pass retires spent ${input.itemId}\n`,
+          });
+          return { retired: true };
+        }),
+      ),
+    ),
+    reconcileSharing: Effect.fn("MemoryWriter.reconcileSharing")((orgId) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const main = config.defaultBranch ?? "main";
+          const { writer } = yield* validate(orgId);
+          const head = yield* branchHead(orgId, writer, main);
+          if (reconciledHeads.get(orgId) === head) return;
+          const ending = [];
+          for (const [path, bytes] of yield* filesAt(orgId, writer, head)) {
+            if (!folders.some((folder) => path.startsWith(`${folder}/`))) continue;
+            const parsed = yield* parseFrontMatter(orgId, path, bytes.toString("utf8")).pipe(
+              Effect.option,
+            );
+            if (Option.isSome(parsed) && retired(parsed.value.frontMatter))
+              ending.push(parsed.value.frontMatter.id);
+          }
+          yield* endSharing(orgId, ending);
+          reconciledHeads.set(orgId, head);
+        }),
+      ),
+    ),
+    stripQuotes: Effect.fn("MemoryWriter.stripQuotes")((orgId) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const main = config.defaultBranch ?? "main";
+          const { writer } = yield* validate(orgId);
+          yield* refuseDuringPurge(orgId);
+          const repo = yield* repoFor(orgId);
+          const shadows = (yield* git(orgId, writer, [
+            "for-each-ref",
+            "--format=%(refname:strip=2)",
+            "refs/heads/kin/shadow/",
+          ]))
+            .split("\n")
+            .filter((branch) => branch !== "");
+          // The nightly sync tells the owner nothing when the default branch refuses writes.
+          const mainWritable =
+            mainWrites === "direct" ||
+            (mainWrites === "pull_request" &&
+              (yield* refuseOffGitHub(orgId).pipe(Effect.result))._tag === "Success");
+          const [clears] = yield* sql<{ mark: number }>`SELECT
+              COALESCE(SUM(cleared_change_seq), 0) AS mark FROM kin_chats WHERE org_id = ${orgId}`.pipe(
+            Effect.mapError(toPersistenceSqlError("MemoryWriter.stripQuotes")),
+          );
+          // A branch that fails is logged and left unmarked, so the next sweep retries it.
+          for (const branch of [...(mainWritable ? [main] : []), ...shadows.toSorted()])
+            yield* Effect.gen(function* () {
+              const head = yield* branchHead(orgId, writer, branch);
+              const swept = `${head}\u0000${clears?.mark ?? 0}`;
+              if (unquotedHeads.get(`${orgId}\u0000${branch}`) === swept) return;
+              const headFiles = yield* filesAt(orgId, writer, head);
+              const stripped = yield* deletedQuotes(
+                orgId,
+                new Map([...headFiles].map(([path, bytes]) => [path, bytes.toString("utf8")])),
+              ).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.mapError(toPersistenceSqlError("MemoryWriter.stripQuotes")),
+              );
+              if (stripped.size === 0) {
+                unquotedHeads.set(`${orgId}\u0000${branch}`, swept);
+                return;
+              }
+              yield* ownerCommit(orgId, {
+                writer,
+                repoUrl: repo.repoUrl,
+                branch,
+                head,
+                headFiles,
+                files: stripped,
+                message: "kin: drop quotes of deleted messages\n",
+              });
+            }).pipe(
+              Effect.catchCauseIf(
+                (cause) => !Cause.hasInterruptsOnly(cause),
+                (cause) =>
+                  Effect.logWarning("Kin could not drop deleted messages' quotes on a branch", {
+                    orgId,
+                    branch,
+                    cause,
+                  }),
               ),
             );
-          for (const pull of moved) {
-            // A PR GitHub keeps refusing to close is reported once per process, not every sweep.
-            if (!pull.closed && reportedOpen.has(pull.url)) continue;
-            if (!pull.closed) reportedOpen.add(pull.url);
-            yield* recovery.notify({
-              orgId,
-              branch: pull.branch,
-              reason: pull.closed
-                ? `Kin closed ${pull.url}, the memory PR for paths you review: ${pull.reason}`
-                : `Kin could not close ${pull.url}, the memory PR for paths you review, and it is still open. Close it without merging: ${pull.reason}`,
-            });
-          }
         }),
       ),
     ),
   });
 });
-export const layer = Layer.effect(MemoryWriter, make).pipe(Layer.provide(MemoryCache.layer));
+export const layer = Layer.effect(MemoryWriter, make).pipe(
+  Layer.provide(MemoryCache.layer),
+  Layer.provideMerge(MemoryLander.layer),
+);

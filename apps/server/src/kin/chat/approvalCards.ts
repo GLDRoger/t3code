@@ -19,6 +19,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -52,7 +53,7 @@ const noticeBody = (action: KinPendingAction) => {
     case "pull_request":
       return `Approval needed: merge ${action.target.repo} #${action.target.number}.`;
     case "level":
-      return `Approval needed: raise to ${action.target.level}.`;
+      return "Approval needed: change what an agent may do.";
     default:
       return "Approval needed.";
   }
@@ -102,6 +103,7 @@ export const make = Effect.gen(function* () {
       orgId: action.orgId,
       chatId: KinChatId.make(owner.chatId),
       messageId: KinMessageId.make(widgetId),
+      audience: "owner",
       body: noticeBody(action),
     });
     const widget: KinWidget = {
@@ -120,7 +122,7 @@ export const make = Effect.gen(function* () {
       closedAt: null,
       updatedAt,
     };
-    yield* repo.insertWidget(widget);
+    yield* repo.insertWidget({ ...widget, audience: "owner" });
     const item = {
       waitingId: yield* decodeWaitingId(SecureRandom.uuidV4Unsafe()),
       orgId: action.orgId,
@@ -166,6 +168,7 @@ export const make = Effect.gen(function* () {
     const now = iso(yield* Clock.currentTimeMillis);
     const widget = yield* repo.updateWidget({
       ...current,
+      audience: "owner",
       state,
       awaiting: settled ? [] : current.awaiting,
       closedAt: settled ? (current.closedAt ?? now) : null,
@@ -247,7 +250,13 @@ export const make = Effect.gen(function* () {
     ),
   );
 
-  return { changes, sync, startup };
+  // A clear takes the cards with the chat; an action still waiting on the owner gets its card back.
+  const cleared = (yield* hub.subscribeAll).pipe(
+    Stream.filter((event) => event.type === "chat.cleared"),
+    Stream.runForEach((event) => reconcileOrg(event.orgId)),
+  );
+
+  return { changes, sync, startup, cleared };
 });
 
 export const layer = Layer.effectDiscard(
@@ -258,6 +267,7 @@ export const layer = Layer.effectDiscard(
       Effect.forever,
       Effect.forkScoped,
     );
+    yield* cards.cleared.pipe(Effect.forkScoped);
     yield* cards.startup().pipe(Effect.forkScoped);
   }),
 );

@@ -5042,6 +5042,36 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    it.effect("runs no repository hook for a worktree created with runHooks false", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const marker = path.join(yield* makeTmpDir(), "hooks-ran");
+        for (const hook of ["post-checkout", "reference-transaction"]) {
+          const file = path.join(cwd, ".git", "hooks", hook);
+          yield* fs.writeFileString(file, `#!/bin/sh\necho ${hook} >> "${marker}"\n`);
+          yield* fs.chmod(file, 0o755);
+        }
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* driver.createWorktree(
+          { cwd, path: null, refName: initialBranch, newRefName: "kin/worker/wk-hooks" },
+          { runHooks: false },
+        );
+        assert.isFalse(yield* fs.exists(marker));
+
+        yield* driver.createWorktree({
+          cwd,
+          path: null,
+          refName: initialBranch,
+          newRefName: "feature/hooks",
+        });
+        assert.include(yield* fs.readFileString(marker), "post-checkout");
+      }),
+    );
+
     it.effect("creates worktrees under the configured worktrees directory", () =>
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;

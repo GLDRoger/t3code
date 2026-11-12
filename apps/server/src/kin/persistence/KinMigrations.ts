@@ -1,3 +1,38 @@
+import PeopleInvites from "./migrations/K038_PeopleInvites.ts";
+import LeadHandoffs from "./migrations/K039_LeadHandoffs.ts";
+import MessageAttachments from "./migrations/K040_MessageAttachments.ts";
+import GroupLead from "./migrations/K041_GroupLead.ts";
+import ReactionWakes from "./migrations/K042_ReactionWakes.ts";
+import WakeupAudience from "./migrations/K043_WakeupAudience.ts";
+import WakeupSharedSince from "./migrations/K044_WakeupSharedSince.ts";
+import WakeupAudienceAbort from "./migrations/K045_WakeupAudienceAbort.ts";
+import ChatCleared from "./migrations/K046_ChatCleared.ts";
+import SilentMessages from "./migrations/K047_SilentMessages.ts";
+import LeadAccess from "./migrations/K050_LeadAccess.ts";
+import ChatSharing from "./migrations/K051_ChatSharing.ts";
+import MemoryLabels from "./migrations/K052_MemoryLabels.ts";
+import MemorySharing from "./migrations/K053_MemorySharing.ts";
+import SharedProjection from "./migrations/K054_SharedProjection.ts";
+import ChatGrantsLapse from "./migrations/K055_ChatGrantsLapse.ts";
+import SuggestionsByVersion from "./migrations/K056_SuggestionsByVersion.ts";
+import Schedules from "./migrations/K057_Schedules.ts";
+import Work from "./migrations/K058_Work.ts";
+import WorkerWithdrawals from "./migrations/K059_WorkerWithdrawals.ts";
+import WorkClients from "./migrations/K060_WorkClients.ts";
+import WorkerAttempts from "./migrations/K061_WorkerAttempts.ts";
+import WorkerPublishApproval from "./migrations/K062_WorkerPublishApproval.ts";
+import LegacyWorkerAttempts from "./migrations/K063_LegacyWorkerAttempts.ts";
+import AgentRetirement from "./migrations/K064_AgentRetirement.ts";
+import WakeupRetired from "./migrations/K065_WakeupRetired.ts";
+import WakeupsUnretiredIndex from "./migrations/K066_WakeupsUnretiredIndex.ts";
+import Docs from "./migrations/K067_Docs.ts";
+import WorkMoney from "./migrations/K068_WorkMoney.ts";
+import WorkerNetwork from "./migrations/K069_WorkerNetwork.ts";
+import VisualHosts from "./migrations/K070_VisualHosts.ts";
+import OwnerAnswerCards from "./migrations/K071_OwnerAnswerCards.ts";
+import GeneratedDocuments from "./migrations/K072_GeneratedDocuments.ts";
+import KeyPushes from "./migrations/K073_KeyPushes.ts";
+import DocJobCleanup from "./migrations/K074_DocJobCleanup.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -36,6 +71,7 @@ import LeadDeliveries from "./migrations/K031_LeadDeliveries.ts";
 import WorkerEnvironment from "./migrations/K032_WorkerEnvironment.ts";
 import ApproverKeyConfirmations from "./migrations/K033_ApproverKeyConfirmations.ts";
 import PerLeadWakeups from "./migrations/K034_PerLeadWakeups.ts";
+import RetireLevelCards from "./migrations/K035_RetireLevelCards.ts";
 
 const table = "kin_sql_migrations";
 const run = Migrator.make({});
@@ -74,6 +110,42 @@ const loader = Migrator.fromRecord({
   "32_WorkerEnvironment": WorkerEnvironment,
   "33_ApproverKeyConfirmations": ApproverKeyConfirmations,
   "34_PerLeadWakeups": PerLeadWakeups,
+  "35_RetireLevelCards": RetireLevelCards,
+  "38_PeopleInvites": PeopleInvites,
+  "39_LeadHandoffs": LeadHandoffs,
+  "40_MessageAttachments": MessageAttachments,
+  "41_GroupLead": GroupLead,
+  "42_ReactionWakes": ReactionWakes,
+  "43_WakeupAudience": WakeupAudience,
+  "44_WakeupSharedSince": WakeupSharedSince,
+  "45_WakeupAudienceAbort": WakeupAudienceAbort,
+  "46_ChatCleared": ChatCleared,
+  "47_SilentMessages": SilentMessages,
+  "50_LeadAccess": LeadAccess,
+  "51_ChatSharing": ChatSharing,
+  "52_MemoryLabels": MemoryLabels,
+  "53_MemorySharing": MemorySharing,
+  "54_SharedProjection": SharedProjection,
+  "55_ChatGrantsLapse": ChatGrantsLapse,
+  "56_SuggestionsByVersion": SuggestionsByVersion,
+  "57_Schedules": Schedules,
+  "58_Work": Work,
+  "59_WorkerWithdrawals": WorkerWithdrawals,
+  "60_WorkClients": WorkClients,
+  "61_WorkerAttempts": WorkerAttempts,
+  "62_WorkerPublishApproval": WorkerPublishApproval,
+  "63_LegacyWorkerAttempts": LegacyWorkerAttempts,
+  "64_AgentRetirement": AgentRetirement,
+  "65_WakeupRetired": WakeupRetired,
+  "66_WakeupsUnretiredIndex": WakeupsUnretiredIndex,
+  "67_Docs": Docs,
+  "68_WorkMoney": WorkMoney,
+  "69_WorkerNetwork": WorkerNetwork,
+  "70_VisualHosts": VisualHosts,
+  "71_OwnerAnswerCards": OwnerAnswerCards,
+  "72_GeneratedDocuments": GeneratedDocuments,
+  "73_KeyPushes": KeyPushes,
+  "74_DocJobCleanup": DocJobCleanup,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

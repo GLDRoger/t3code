@@ -10,6 +10,7 @@ import {
   authScopeResponse,
   AuthSessionState,
   sessionGrantsScope,
+  sessionIsChatOnly,
 } from "./auth.ts";
 
 describe("authorization grants", () => {
@@ -72,6 +73,20 @@ describe("authorization grants", () => {
     expect(session.permissions).toEqual([]);
     expect(sessionGrantsScope(session, "orchestration:operate")).toBe(false);
     expect(sessionGrantsScope(session, "settings:write")).toBe(false);
+  });
+
+  it("calls a session chat-only when it reaches Kin chats and none of the coding app", () => {
+    const granted = (permissions: ReadonlyArray<AuthEnvironmentScope>) => ({
+      authenticated: true,
+      permissions,
+      auth: { serverUpdateScope: "environment:maintain" },
+    });
+    expect(sessionIsChatOnly(granted(["kin:chat"]))).toBe(true);
+    expect(sessionIsChatOnly(granted(["kin:chat", "orchestration:read"]))).toBe(false);
+    // An owner's standard session reaches chat through its other grants, never as chat-only.
+    expect(sessionIsChatOnly(granted([...AuthStandardClientScopes]))).toBe(false);
+    expect(sessionIsChatOnly(granted([]))).toBe(false);
+    expect(sessionIsChatOnly({ ...granted(["kin:chat"]), authenticated: false })).toBe(false);
   });
 
   it.each([

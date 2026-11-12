@@ -2,26 +2,30 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { memoryGit } from "./git.ts";
 import * as NodeZlib from "node:zlib";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { expect, it } from "@effect/vitest";
+import { assert, expect, it } from "@effect/vitest";
 import {
   KinAgentId,
+  KinChatId,
   KinMemoryItemId,
   KinOrgId,
   type MemoryItemHead,
   VcsProcessSpawnError,
 } from "@t3tools/contracts";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Persistence from "../persistence/KinPersistence.ts";
+import * as Repository from "../chat/KinChatRepository.ts";
 import * as Vcs from "../../vcs/VcsProcess.ts";
 import * as Memory from "./Memory.ts";
 import { MemoryConfig } from "./MemoryConfig.ts";
 import * as Writer from "./MemoryWriter.ts";
 import * as Scan from "./secretScan.ts";
 import { journalEntry } from "./journal.ts";
-import { fixtureItem } from "./__fixtures__/items.ts";
+import { FIXTURE_QUOTE, FIXTURE_SAID, fixtureItem } from "./__fixtures__/items.ts";
+import { authorise, fingerprint, reaches, storedLabels, suggest } from "./sensitivity.ts";
 
 const orgId = KinOrgId.make("fixture-org");
 const agentId = KinAgentId.make("fixture-lead");
@@ -29,7 +33,7 @@ const gitLayer = Vcs.layer.pipe(Layer.provide(NodeServices.layer));
 it.live.each([
   "supersede-retry",
   "update-provenance",
-  "change-card",
+  "undo-created",
   "undo",
   "recovered-no-end",
   "lost-session-retry",
@@ -61,9 +65,6 @@ it.live.each([
   "P8-lost-writer",
   "P9-shadow",
   "P11-unpushed-shadow",
-  "shadow-merge",
-  "shadow-discard",
-  "shadow-owner-path",
   "P10-lost-git-dir",
   "sha256",
   "owner-keep",
@@ -308,6 +309,7 @@ it.live.each([
                           saidBy: "fixture-owner",
                           trust: "owner",
                           source: "fixture-owner-message",
+                          text: FIXTURE_SAID,
                           kind: "owner_check",
                           itemId: scenario === "owner-other-item-keep" ? "other-item" : "def-001",
                           action: scenario === "owner-drop-keep" ? "drop" : "keep",
@@ -317,6 +319,7 @@ it.live.each([
                             saidBy: "fixture-owner",
                             trust: "owner",
                             source: "fixture-owner-message",
+                            text: FIXTURE_SAID,
                             kind: "deferral_card",
                             itemId: "def-001",
                             action: "monday",
@@ -328,6 +331,7 @@ it.live.each([
                               saidBy: "fixture-owner",
                               trust: "owner",
                               source: "fixture-owner-message",
+                              text: FIXTURE_SAID,
                               kind: "deferral_card",
                               itemId:
                                 scenario === "deferral-card-other-item" ? "other-item" : "def-001",
@@ -337,6 +341,7 @@ it.live.each([
                               saidBy: "fixture-owner",
                               trust: "owner",
                               source: "fixture-owner-message",
+                              text: FIXTURE_SAID,
                             },
                   ],
                   [
@@ -345,19 +350,15 @@ it.live.each([
                       saidBy: "fixture-member",
                       trust: "member",
                       source: "fixture-member-message",
+                      text: FIXTURE_SAID,
                     },
                   ],
                 ]),
               }),
       ),
     });
-    const cards: Writer.WakeupMemoryChanges[] = [];
-    const changeHooks = Layer.succeed(Writer.MemoryChangeHooks, {
-      committed: (changes) => Effect.sync(() => void cards.push(changes)),
-    });
     const scan = Scan.layer;
     const layer = Writer.layer.pipe(
-      Layer.provide(changeHooks),
       Layer.provideMerge(memoryLayer),
       Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
       Layer.provide(config),
@@ -377,12 +378,24 @@ it.live.each([
         const one = {
           path: "claims/one.md",
           sourceEventId: "owner",
-          content: fixtureItem({ id: "one", kind: "claim", title: "First claim", links: [] }),
+          content: fixtureItem({
+            quote: FIXTURE_QUOTE,
+            id: "one",
+            kind: "claim",
+            title: "First claim",
+            links: [],
+          }),
         };
         const two = {
           path: "claims/two.md",
           sourceEventId: "owner",
-          content: fixtureItem({ id: "two", kind: "claim", title: "Second claim", links: [] }),
+          content: fixtureItem({
+            quote: FIXTURE_QUOTE,
+            id: "two",
+            kind: "claim",
+            title: "Second claim",
+            links: [],
+          }),
         };
         yield* writer.stage(orgId, "wake1", one);
         // The second lead stages and journals while the first wake-up is still open.
@@ -416,19 +429,30 @@ it.live.each([
         ]);
         expect(journal).toContain("First lead note.");
         expect(journal).toContain("Second lead note.");
-        expect(cards.map((card) => card.wakeupId)).toEqual(["wake1", "wake2"]);
         return;
       }
       if (scenario === "two-leads-same-path" || scenario === "two-leads-same-id") {
         const first = {
           path: scenario === "two-leads-same-id" ? "claims/first.md" : "claims/shared.md",
           sourceEventId: "owner",
-          content: fixtureItem({ id: "shared", kind: "claim", title: "First title", links: [] }),
+          content: fixtureItem({
+            quote: FIXTURE_QUOTE,
+            id: "shared",
+            kind: "claim",
+            title: "First title",
+            links: [],
+          }),
         };
         const second = {
           path: "claims/shared.md",
           sourceEventId: "owner",
-          content: fixtureItem({ id: "shared", kind: "claim", title: "Second title", links: [] }),
+          content: fixtureItem({
+            quote: FIXTURE_QUOTE,
+            id: "shared",
+            kind: "claim",
+            title: "Second title",
+            links: [],
+          }),
         };
         yield* writer.stage(orgId, "wake1", first);
         yield* writer.stage(orgId, "wake2", second);
@@ -451,19 +475,31 @@ it.live.each([
         yield* writer.stage(orgId, "wake1", {
           path: "claims/one.md",
           sourceEventId: "owner",
-          content: fixtureItem({ id: "one", kind: "claim", title: "First claim", links: [] }),
+          content: fixtureItem({
+            quote: FIXTURE_QUOTE,
+            id: "one",
+            kind: "claim",
+            title: "First claim",
+            links: [],
+          }),
         });
         const first = yield* writer.commitWakeup(orgId, "wake1", "completed");
         yield* writer.stage(orgId, "wake2", {
           path: "claims/two.md",
           sourceEventId: "owner",
-          content: fixtureItem({ id: "two", kind: "claim", title: "Second claim", links: [] }),
+          content: fixtureItem({
+            quote: FIXTURE_QUOTE,
+            id: "two",
+            kind: "claim",
+            title: "Second claim",
+            links: [],
+          }),
         });
         const second = yield* writer.commitWakeup(orgId, "wake2", "completed");
         // A restart now recovers wake1 with only its receipts: its commit is in history,
         // just no longer at the branch head, so nothing is recommitted or reported lost.
         restarted = true;
-        yield* writer.appendJournal(orgId, "wake1", ["Lead ended without calling kin_end."]);
+        yield* writer.appendJournal(orgId, "wake1", ["Agent ended without calling kin_end."]);
         expect(yield* writer.commitWakeup(orgId, "wake1", "completed")).toEqual(first);
         expect(yield* git(paths.writer, ["rev-parse", "HEAD"])).toBe(second.commit);
         const journal = yield* git(paths.writer, [
@@ -471,7 +507,7 @@ it.live.each([
           `${second.commit}:journal/2026/11-08.md`,
         ]);
         expect(journal).not.toContain("lost on restart");
-        expect(journal).not.toContain("Lead ended without calling kin_end.");
+        expect(journal).not.toContain("Agent ended without calling kin_end.");
         return;
       }
       if (scenario === "prompt-snapshot-stale-head") {
@@ -479,7 +515,13 @@ it.live.each([
         yield* writer.stage(orgId, "wake2", {
           path: "claims/two.md",
           sourceEventId: "owner",
-          content: fixtureItem({ id: "two", kind: "claim", title: "Second claim", links: [] }),
+          content: fixtureItem({
+            quote: FIXTURE_QUOTE,
+            id: "two",
+            kind: "claim",
+            title: "Second claim",
+            links: [],
+          }),
         });
         yield* writer.commitWakeup(orgId, "wake2", "completed");
         // The other lead's commit moved the head; wake1's prompt still reads its own pin.
@@ -502,11 +544,11 @@ it.live.each([
       if (scenario === "recovered-no-end") {
         const committed = yield* writer.commitWakeup(orgId, "wake1", "completed");
         yield* writer.discard(orgId, "wake1");
-        yield* writer.appendJournal(orgId, "wake1", ["Lead ended without calling kin_end."]);
+        yield* writer.appendJournal(orgId, "wake1", ["Agent ended without calling kin_end."]);
         expect(yield* writer.commitWakeup(orgId, "wake1", "completed")).toEqual(committed);
         return;
       }
-      if (scenario === "change-card" || scenario === "undo") {
+      if (scenario === "undo-created" || scenario === "undo") {
         const sql = yield* SqlClient.SqlClient;
         const at = "2026-11-08T00:00:00.000Z";
         yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Org', ${at})`;
@@ -519,38 +561,35 @@ it.live.each([
           memory.readItem(orgId, KinMemoryItemId.make(id), { lead: agentId });
         yield* writer.appendJournal(orgId, "wake0", ["Only a note."]);
         yield* writer.commitWakeup(orgId, "wake0", "completed");
-        expect(cards).toEqual([]);
-        if (scenario === "change-card") {
+        if (scenario === "undo-created") {
           yield* writer.stage(orgId, "wake1", {
             path: "claims/short.md",
             sourceEventId: "owner",
-            content: fixtureItem({ id: "short", kind: "claim", title: "You prefer short replies" }),
+            content: fixtureItem({
+              quote: FIXTURE_QUOTE,
+              id: "short",
+              kind: "claim",
+              title: "You prefer short replies",
+            }),
           });
         } else {
           yield* writer.stage(orgId, "wake1", {
             path: "claims/existing.md",
             sourceEventId: "owner",
-            content: fixtureItem({ kind: "claim", status: "done" }),
+            content: fixtureItem({ quote: FIXTURE_QUOTE, kind: "claim", status: "done" }),
           });
         }
+        const branch = Memory.shadowBranch(agentId);
+        const base = yield* git(paths.writer, ["rev-parse", `refs/heads/${branch}`]);
         const { commit: written } = yield* writer.commitWakeup(orgId, "wake1", "completed");
-        expect(cards).toHaveLength(1);
-        const [card] = cards;
-        expect(card).toMatchObject({
-          wakeupId: "wake1",
-          branch: Memory.shadowBranch(agentId),
-          commit: written,
-          items: [
-            scenario === "change-card"
-              ? { itemId: "short", title: "You prefer short replies", change: "created" }
-              : { itemId: "def-001", title: "Invented service maintenance", change: "updated" },
-          ],
-        });
-        const item = card!.items[0]!;
-        const undo = { ...card!, agentId, itemId: item.itemId, path: item.path };
+        const item =
+          scenario === "undo-created"
+            ? { itemId: KinMemoryItemId.make("short"), path: "claims/short.md" }
+            : { itemId: KinMemoryItemId.make("def-001"), path: "claims/existing.md" };
+        const undo = { agentId, branch, base, commit: written, ...item };
         expect((yield* writer.undoChange(orgId, undo))._tag).toBe("undone");
         const after = yield* read(item.itemId);
-        if (scenario === "change-card") expect(after.head.invalid_at).not.toBeNull();
+        if (scenario === "undo-created") expect(after.head.invalid_at).not.toBeNull();
         else expect(after.head.status).toBe("open");
         // The undo changed the item again, so a second tap is stale.
         expect(yield* writer.undoChange(orgId, undo)).toEqual({ _tag: "stale" });
@@ -565,6 +604,7 @@ it.live.each([
                 sourceEventId: "owner",
                 content: fixtureItem({
                   id: "replacement",
+                  quote: FIXTURE_QUOTE,
                   kind: "claim",
                   recorded_at: "2026-11-08T00:00:00.000Z",
                 }),
@@ -572,7 +612,7 @@ it.live.each([
             : {
                 path: "claims/existing.md",
                 sourceEventId: "owner",
-                content: fixtureItem({ kind: "claim", status: "done" }),
+                content: fixtureItem({ quote: FIXTURE_QUOTE, kind: "claim", status: "done" }),
               };
         yield* writer.stage(orgId, "wake1", change);
         yield* writer.stage(orgId, "wake1", change);
@@ -592,6 +632,12 @@ it.live.each([
         expect(existing).toContain(
           scenario === "supersede-retry" ? "status: superseded" : "status: done",
         );
+        // An item saved before quotes stays as it is: a later write never gives it one.
+        expect(existing).not.toContain("quote:");
+        if (scenario === "supersede-retry")
+          expect(
+            yield* git(paths.writer, ["show", `${committed.commit}:claims/replacement.md`]),
+          ).toContain(`quote: ${FIXTURE_QUOTE}`);
         return;
       }
       if (scenario === "M4-modes") {
@@ -739,100 +785,6 @@ it.live.each([
             _tag: "MemoryCheckoutInvalid",
             operation: "validate",
           });
-        return;
-      }
-      if (scenario.startsWith("shadow-")) {
-        const remoteHead = (branch: string) =>
-          git(root, [`--git-dir=${remote}`, "rev-parse", `refs/heads/${branch}`]);
-        for (const bad of ["x/../../main", "a b"]) {
-          const refused = yield* writer
-            .settleShadow(orgId, KinAgentId.make(bad), { _tag: "discard" })
-            .pipe(Effect.flip);
-          expect(refused).toMatchObject({
-            _tag: "MemoryWriteRejected",
-            reason: "Invalid agent id",
-          });
-        }
-        yield* writer.stage(orgId, "wake1", {
-          path: "deferrals/def-001.md",
-          content: fixtureItem(),
-          sourceEventId: "owner",
-        });
-        if (scenario === "shadow-owner-path")
-          yield* writer.stage(orgId, "wake1", {
-            path: "decisions/dec-001.md",
-            content: fixtureItem({ id: "dec-001", kind: "decision" }),
-            sourceEventId: "owner",
-          });
-        const shadowed = yield* writer.commitWakeup(orgId, "wake1", "completed");
-        const main = yield* remoteHead("main");
-        expect(yield* remoteHead(`kin/shadow/${agentId}`)).toBe(shadowed.commit);
-        const { paths } = yield* writer.settleShadow(orgId, agentId, { _tag: "preview" });
-        // Previewing writes nothing.
-        expect(yield* remoteHead("main")).toBe(main);
-        expect(yield* remoteHead(`kin/shadow/${agentId}`)).toBe(shadowed.commit);
-        if (scenario === "shadow-owner-path") {
-          expect(paths).toContain("decisions/dec-001.md");
-          const refused = yield* writer
-            .settleShadow(orgId, agentId, { _tag: "keep", paths })
-            .pipe(Effect.flip);
-          expect(refused._tag).toBe("MemorySyncConflict");
-          expect(refused._tag === "MemorySyncConflict" && refused.reason).toContain(
-            "decisions/dec-001.md",
-          );
-          expect(yield* remoteHead("main")).toBe(main);
-          expect(yield* remoteHead(`kin/shadow/${agentId}`)).toBe(shadowed.commit);
-          // Start clean stays available.
-          yield* writer.settleShadow(orgId, agentId, { _tag: "discard" });
-          expect(yield* remoteHead(`kin/shadow/${agentId}`)).toBe(main);
-          return;
-        }
-        expect(paths).toHaveLength(2);
-        const keep = scenario === "shadow-merge";
-        if (keep) {
-          // Keep commits only the list the owner was shown.
-          const stale = yield* writer
-            .settleShadow(orgId, agentId, { _tag: "keep", paths: paths.slice(1) })
-            .pipe(Effect.flip);
-          expect(stale._tag).toBe("MemorySyncConflict");
-          expect(yield* remoteHead("main")).toBe(main);
-        }
-        expect(
-          yield* writer.settleShadow(
-            orgId,
-            agentId,
-            keep ? { _tag: "keep", paths } : { _tag: "discard" },
-          ),
-        ).toEqual({ kept: keep ? 2 : 0, paths: keep ? paths : [] });
-        const settled = yield* remoteHead("main");
-        expect(settled === main).toBe(!keep);
-        // Either way the next L0 trial starts from main, not the old shadow week.
-        expect(yield* remoteHead(`kin/shadow/${agentId}`)).toBe(settled);
-        const files = yield* git(root, [
-          `--git-dir=${remote}`,
-          "ls-tree",
-          "-r",
-          "--name-only",
-          settled,
-        ]);
-        expect(files.includes("deferrals/def-001.md")).toBe(keep);
-        if (keep) {
-          expect(
-            yield* git(root, [`--git-dir=${remote}`, "log", "-1", "--format=%B", settled]),
-          ).toContain(`Kin-Shadow: ${shadowed.commit}`);
-          expect(yield* git(root, [`--git-dir=${remote}`, "show", `${settled}:rules.md`])).toBe(
-            "Invented rules",
-          );
-        }
-        // Settling again changes nothing.
-        expect(
-          yield* writer.settleShadow(
-            orgId,
-            agentId,
-            keep ? { _tag: "keep", paths: [] } : { _tag: "discard" },
-          ),
-        ).toEqual({ kept: 0, paths: [] });
-        expect(yield* remoteHead("main")).toBe(settled);
         return;
       }
       if (scenario === "P11-unpushed-shadow") {
@@ -1098,6 +1050,21 @@ it.live.each([
           })
           .pipe(Effect.result);
         expect(result._tag).toBe("Failure");
+        if (scenario === "B6-owner-open") {
+          expect(result._tag === "Failure" && result.failure._tag).toBe("MemoryConflict");
+          // What the lead inferred never retires what the owner stated.
+          const retired = yield* writer
+            .stage(orgId, "wake1", {
+              path: "claims/existing.md",
+              content: fixtureItem({
+                kind: "claim",
+                title: "Invented service maintenance",
+                invalid_at: "2026-11-08T00:00:00.000Z",
+              }),
+            })
+            .pipe(Effect.flip);
+          expect(retired._tag).toBe("MemoryConflict");
+        }
         return;
       }
       const marker = `${root}/executed`;
@@ -1167,7 +1134,12 @@ it.live.each([
           yield* writer.stage(orgId, "wake1", {
             path: `claims/${sourceEventId}.md`,
             sourceEventId,
-            content: fixtureItem({ id: sourceEventId, kind: "claim", links: [] }),
+            content: fixtureItem({
+              id: sourceEventId,
+              kind: "claim",
+              links: [],
+              quote: FIXTURE_QUOTE,
+            }),
           });
         }
         yield* fs.writeFileString(`${paths.writer}/rules.md`, "Ambient forged edit");
@@ -1335,4 +1307,470 @@ it.effect.each([
     expect(result._tag).toBe("Failure");
     if (result._tag === "Failure") expect(result.failure._tag).toBe("MemoryJournalError");
   }),
+);
+
+// Review of 69b673e063: a staged write replayed at commit cleared `invalid_at` on an item the
+// owner had forgotten, and its old authorisation made it team-readable again.
+it.effect.each(["owner", "nightly", "lead"] as const)(
+  "a retired item stays retired and its authorisation ends with it: %s",
+  (by) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const vcs = yield* Vcs.VcsProcess;
+      const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+      const source = `${root}/seed`;
+      const remote = `${root}/remote.git`;
+      const git = (cwd: string, args: ReadonlyArray<string>) =>
+        vcs
+          .run({ operation: "test.writer", command: "git", cwd, args })
+          .pipe(Effect.map((r) => r.stdout.trim()));
+      const known = fixtureItem({ id: "known", kind: "claim", title: "Invented known", links: [] });
+      yield* fs.makeDirectory(`${source}/claims`, { recursive: true });
+      yield* fs.writeFileString(`${source}/rules.md`, "Invented rules\n");
+      yield* fs.writeFileString(`${source}/claims/known.md`, known);
+      yield* git(source, ["init", "-b", "main"]);
+      yield* git(source, ["add", "--", "."]);
+      yield* git(source, [
+        "-c",
+        "user.name=Fixture Bot",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "-m",
+        "fixture",
+      ]);
+      yield* git(root, ["clone", "--bare", "--", source, remote]);
+      const config = Layer.succeed(MemoryConfig, {
+        baseDirectory: root,
+        directMainPush: true,
+        repositories: [{ orgId, repoUrl: remote, path: "state" }],
+      });
+      const owner = {
+        saidBy: "fixture-owner",
+        trust: "owner" as const,
+        source: "fixture-owner-message",
+        text: FIXTURE_SAID,
+      };
+      const layer = Writer.layer.pipe(
+        Layer.provideMerge(
+          Memory.layer.pipe(
+            Layer.provide(config),
+            Layer.provide(Layer.succeed(Memory.MemorySyncHooks, { syncItems: () => Effect.void })),
+          ),
+        ),
+        Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
+        Layer.provide(config),
+        Layer.provide(Layer.succeed(Writer.MemoryWriterHooks, { notify: () => Effect.void })),
+        Layer.provide(
+          Layer.succeed(Writer.MemoryWriterAuthority, {
+            resolve: (_org: KinOrgId, wakeupId: string) =>
+              Effect.succeed({
+                orgId,
+                wakeupId,
+                agentId,
+                level: "L1" as const,
+                timeZone: "UTC",
+                startedAt: "2026-11-08T00:00:00.000Z",
+                eventIds: [],
+                sources: new Map([["owner", owner]]),
+              }),
+          }),
+        ),
+        Layer.provide(Scan.layer),
+      );
+      yield* Effect.gen(function* () {
+        const memory = yield* Memory.Memory;
+        const writer = yield* Writer.MemoryWriter;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_orgs (org_id, name, created_at)
+          VALUES (${orgId}, 'Fixture', '2026-11-08T00:00:00.000Z')`;
+        const paths = yield* memory.ensureCheckouts(orgId);
+        yield* memory.prepareWakeup(orgId);
+        const id = KinMemoryItemId.make("known");
+        const before = yield* memory.readItemQuietly(orgId, id);
+        yield* authorise(orgId, id, fingerprint(before), "owner_setting");
+        yield* suggest(orgId, id, fingerprint({ ...before, body: "Invented other words.\n" }));
+        assert(reaches("shared", before, yield* storedLabels(orgId)));
+        // A lead stages a write to the item as it reads now, still true.
+        yield* writer.stage(orgId, "wake1", {
+          path: "claims/known.md",
+          content: known,
+          sourceEventId: "owner",
+        });
+        if (by === "lead") {
+          yield* writer.stage(orgId, "wake0", {
+            path: "claims/known.md",
+            content: fixtureItem({
+              id: "known",
+              kind: "claim",
+              title: "Invented known",
+              links: [],
+              invalid_at: "2026-11-08T00:00:00.000Z",
+            }),
+            sourceEventId: "owner",
+          });
+          yield* writer.commitWakeup(orgId, "wake0", "completed");
+        } else expect(yield* writer.retire(orgId, { itemId: id, by })).toEqual({ retired: true });
+        const labels = yield* storedLabels(orgId);
+        expect([labels.shared.has(id), labels.suggested.has(id)]).toEqual([false, false]);
+        const replay = yield* writer.commitWakeup(orgId, "wake1", "completed").pipe(Effect.flip);
+        expect(replay._tag).toBe("MemorySyncConflict");
+        const after = yield* memory.readItemQuietly(orgId, id);
+        expect(after.head.invalid_at).not.toBeNull();
+        expect(yield* git(paths.writer, ["show", "main:claims/known.md"])).toContain("invalid_at");
+        expect(yield* git(paths.writer, ["show", "main:claims/known.md"])).not.toContain(
+          "invalid_at: null",
+        );
+        // Even as its old words, with the switch on, no shared turn reads it.
+        expect(
+          reaches(
+            "shared",
+            { ...after, head: { ...after.head, invalid_at: null } },
+            yield* storedLabels(orgId),
+          ),
+        ).toBe(false);
+      }).pipe(Effect.provide(layer));
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          gitLayer,
+          NodeServices.layer,
+          Persistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
+          ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_TEAM_MEMORY: "on" })),
+        ),
+      ),
+      Effect.scoped,
+    ),
+);
+
+// Review 14: an item retired by a path that left its grant (an older build, an L0 lead's shadow
+// branch, a dream branch merged on GitHub) came back team-readable through the owner's Undo.
+it.effect.each(["legacy", "shadow", "github"] as const)(
+  "however an item was retired, nothing it was shared as reaches a shared turn again: %s",
+  (path) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const vcs = yield* Vcs.VcsProcess;
+      const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+      const source = `${root}/seed`;
+      const remote = `${root}/remote.git`;
+      const git = (cwd: string, args: ReadonlyArray<string>) =>
+        vcs
+          .run({ operation: "test.writer", command: "git", cwd, args })
+          .pipe(Effect.map((r) => r.stdout.trim()));
+      const commit = (cwd: string, message: string) =>
+        git(cwd, [
+          "-c",
+          "user.name=Fixture Bot",
+          "-c",
+          "user.email=fixture@example.invalid",
+          "commit",
+          "-m",
+          message,
+        ]);
+      const fields = { id: "known", kind: "claim", title: "Invented known", links: [] };
+      const known = fixtureItem(fields);
+      const retiredText = fixtureItem({ ...fields, invalid_at: "2026-11-08T00:00:00.000Z" });
+      yield* fs.makeDirectory(`${source}/claims`, { recursive: true });
+      yield* fs.writeFileString(`${source}/rules.md`, "Invented rules\n");
+      yield* fs.writeFileString(`${source}/claims/known.md`, known);
+      yield* git(source, ["init", "-b", "main"]);
+      yield* git(source, ["add", "--", "."]);
+      yield* commit(source, "fixture");
+      yield* git(root, ["clone", "--bare", "--", source, remote]);
+      const config = Layer.succeed(MemoryConfig, {
+        baseDirectory: root,
+        directMainPush: true,
+        repositories: [{ orgId, repoUrl: remote, path: "state" }],
+      });
+      const owner = {
+        saidBy: "fixture-owner",
+        trust: "owner" as const,
+        source: "fixture-owner-message",
+        text: FIXTURE_SAID,
+      };
+      const level = path === "shadow" ? ("L0" as const) : ("L1" as const);
+      const layer = Writer.layer.pipe(
+        Layer.provideMerge(
+          Memory.layer.pipe(
+            Layer.provide(config),
+            Layer.provide(Layer.succeed(Memory.MemorySyncHooks, { syncItems: () => Effect.void })),
+          ),
+        ),
+        Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
+        Layer.provide(config),
+        Layer.provide(Layer.succeed(Writer.MemoryWriterHooks, { notify: () => Effect.void })),
+        Layer.provide(
+          Layer.succeed(Writer.MemoryWriterAuthority, {
+            resolve: (_org: KinOrgId, wakeupId: string) =>
+              Effect.succeed({
+                orgId,
+                wakeupId,
+                agentId,
+                level,
+                timeZone: "UTC",
+                startedAt: "2026-11-08T00:00:00.000Z",
+                eventIds: [],
+                sources: new Map([["owner", owner]]),
+              }),
+          }),
+        ),
+        Layer.provide(Scan.layer),
+      );
+      yield* Effect.gen(function* () {
+        const memory = yield* Memory.Memory;
+        const writer = yield* Writer.MemoryWriter;
+        const sql = yield* SqlClient.SqlClient;
+        const at = "2026-11-08T00:00:00.000Z";
+        yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Org', ${at})`;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('owner', ${orgId}, 'owner', 'Owner', ${at})`;
+        yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at) VALUES (${agentId}, ${orgId}, 'Lead', 'lead', 'owner', ${at})`;
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES ('owner-chat', ${orgId}, 'team_group', 0, ${at})`;
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, models_json, worker_projects_json, owner_chat_id)
+          VALUES (${agentId}, ${orgId}, 'Lead', ${level}, 0, '{}', '[]', 'owner-chat')`;
+        yield* memory.ensureCheckouts(orgId);
+        yield* memory.prepareWakeup(orgId);
+        const id = KinMemoryItemId.make("known");
+        const before = yield* memory.readItemQuietly(orgId, id);
+        const share = authorise(orgId, id, fingerprint(before), "owner_setting");
+        yield* share;
+        assert(reaches("shared", before, yield* storedLabels(orgId)));
+        const ended = Effect.gen(function* () {
+          const labels = yield* storedLabels(orgId);
+          return !labels.shared.has(id) && !labels.suggested.has(id);
+        });
+
+        if (path === "github") {
+          // The owner merges a dream branch that retires it on GitHub; Kin only syncs.
+          const outside = `${root}/outside`;
+          yield* git(root, ["clone", "--", remote, outside]);
+          yield* git(outside, ["checkout", "-b", "dream/2026-11-09"]);
+          yield* fs.writeFileString(`${outside}/claims/known.md`, retiredText);
+          yield* git(outside, ["add", "--", "."]);
+          yield* commit(outside, "dream: retire known");
+          yield* git(outside, ["checkout", "main"]);
+          yield* git(outside, [
+            "-c",
+            "user.name=Fixture Bot",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "merge",
+            "--no-ff",
+            "-m",
+            "Merge dream/2026-11-09",
+            "dream/2026-11-09",
+          ]);
+          yield* git(outside, ["push", "origin", "main"]);
+          yield* memory.syncCheckout(orgId);
+          yield* writer.reconcileSharing(orgId);
+          assert(yield* ended);
+          const after = yield* memory.readItemQuietly(orgId, id);
+          // Even as its old words, unretired, nothing lets the team read it.
+          assert.isFalse(
+            reaches(
+              "shared",
+              { ...after, head: { ...after.head, invalid_at: null } },
+              yield* storedLabels(orgId),
+            ),
+          );
+          return;
+        }
+
+        // A wake-up retires it: on the default branch (legacy) or the L0 lead's shadow branch.
+        yield* writer.appendJournal(orgId, "wake0", ["Only a note."]);
+        yield* writer.commitWakeup(orgId, "wake0", "completed");
+        const branch = path === "shadow" ? Memory.shadowBranch(agentId) : "main";
+        const { writer: writerPath } = yield* memory.ensureCheckouts(orgId);
+        const base = yield* git(writerPath, ["rev-parse", `refs/heads/${branch}`]);
+        yield* writer.stage(orgId, "wake1", {
+          path: "claims/known.md",
+          sourceEventId: "owner",
+          content: retiredText,
+        });
+        const { commit: written } = yield* writer.commitWakeup(orgId, "wake1", "completed");
+        if (path === "legacy") {
+          // A grant left behind by a build whose retirement never cleared one.
+          yield* share;
+          yield* writer.reconcileSharing(orgId);
+          assert(yield* ended);
+          yield* share;
+        } else assert.isFalse(yield* ended);
+        const undo = {
+          agentId,
+          branch,
+          base,
+          commit: written,
+          itemId: id,
+          path: "claims/known.md",
+        };
+        expect((yield* writer.undoChange(orgId, undo))._tag).toBe("undone");
+        const restored = yield* memory.readItemQuietly(orgId, id, { lead: agentId });
+        expect(restored.head.invalid_at).toBeNull();
+        expect(fingerprint(restored)).toBe(fingerprint(before));
+        assert(yield* ended);
+        assert.isFalse(reaches("shared", restored, yield* storedLabels(orgId)));
+      }).pipe(Effect.provide(layer));
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          gitLayer,
+          NodeServices.layer,
+          Persistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
+          ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_TEAM_MEMORY: "on" })),
+        ),
+      ),
+      Effect.scoped,
+    ),
+);
+
+// Clearing a chat deleted its messages and once left their words quoted in memory.
+it.effect(
+  "a cleared chat's words leave every item quoting them, branch by branch, and the items stay",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const vcs = yield* Vcs.VcsProcess;
+      const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+      const source = `${root}/seed`;
+      const remote = `${root}/remote.git`;
+      const git = (cwd: string, args: ReadonlyArray<string>) =>
+        vcs
+          .run({ operation: "test.writer", command: "git", cwd, args })
+          .pipe(Effect.map((r) => r.stdout.trim()));
+      const cleared = "kin:chat:cleared-chat:message:m-cleared";
+      const item = (id: string, fields: Record<string, unknown>) =>
+        fixtureItem({ id, kind: "claim", title: `Invented ${id}`, due: null, ...fields });
+      yield* fs.makeDirectory(`${source}/claims`, { recursive: true });
+      yield* fs.writeFileString(`${source}/rules.md`, "Invented rules\n");
+      yield* fs.writeFileString(
+        `${source}/claims/said.md`,
+        item("said", { source: cleared, quote: FIXTURE_QUOTE }),
+      );
+      yield* fs.writeFileString(
+        `${source}/claims/kept.md`,
+        item("kept", { source: "kin:chat:kept-chat:message:m-kept", quote: FIXTURE_QUOTE }),
+      );
+      yield* git(source, ["init", "-b", "main"]);
+      yield* git(source, ["add", "--", "."]);
+      yield* git(source, [
+        "-c",
+        "user.name=Fixture Bot",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "-m",
+        "fixture",
+      ]);
+      yield* git(root, ["clone", "--bare", "--", source, remote]);
+      const config = Layer.succeed(MemoryConfig, {
+        baseDirectory: root,
+        directMainPush: true,
+        repositories: [{ orgId, repoUrl: remote, path: "state" }],
+      });
+      const layer = Writer.layer.pipe(
+        Layer.provideMerge(
+          Memory.layer.pipe(
+            Layer.provide(config),
+            Layer.provide(Layer.succeed(Memory.MemorySyncHooks, { syncItems: () => Effect.void })),
+          ),
+        ),
+        Layer.provideMerge(Repository.layer),
+        Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
+        Layer.provide(config),
+        Layer.provide(Layer.succeed(Writer.MemoryWriterHooks, { notify: () => Effect.void })),
+        Layer.provide(
+          Layer.succeed(Writer.MemoryWriterAuthority, {
+            resolve: (_org: KinOrgId, wakeupId: string) =>
+              Effect.succeed({
+                orgId,
+                wakeupId,
+                agentId,
+                level: "L0" as const,
+                timeZone: "UTC",
+                startedAt: "2026-11-08T00:00:00.000Z",
+                eventIds: [],
+                sources: new Map(),
+              }),
+          }),
+        ),
+        Layer.provide(Scan.layer),
+      );
+      yield* Effect.gen(function* () {
+        const memory = yield* Memory.Memory;
+        const writer = yield* Writer.MemoryWriter;
+        const chats = yield* Repository.KinChatRepository;
+        const sql = yield* SqlClient.SqlClient;
+        const at = "2026-11-08T00:00:00.000Z";
+        yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Org', ${at})`;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('owner', ${orgId}, 'owner', 'Owner', ${at})`;
+        yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at) VALUES (${agentId}, ${orgId}, 'Lead', 'lead', 'owner', ${at})`;
+        for (const [chat, message] of [
+          ["cleared-chat", "m-cleared"],
+          ["kept-chat", "m-kept"],
+        ] as const) {
+          yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES (${chat}, ${orgId}, 'team_group', 1, ${at})`;
+          yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at) VALUES (${`owner-${chat}`}, ${orgId}, ${chat}, 'person', 'owner', 'owner', ${at})`;
+          yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+            author_member_id, author_role, kind, body, mentions_json, status, created_at)
+          VALUES (${message}, ${orgId}, ${chat}, 1, 'human', 'owner', ${`owner-${chat}`}, 'owner',
+            'text', ${FIXTURE_SAID}, '[]', 'posted', ${at})`;
+        }
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, models_json, worker_projects_json, owner_chat_id)
+        VALUES (${agentId}, ${orgId}, 'Lead', 'L0', 0, '{}', '[]', 'kept-chat')`;
+        yield* memory.ensureCheckouts(orgId);
+        yield* memory.prepareWakeup(orgId);
+        // An L0 lead's wake-up leaves the same items on its shadow branch.
+        yield* writer.appendJournal(orgId, "wake0", ["Only a note."]);
+        yield* writer.commitWakeup(orgId, "wake0", "completed");
+        const shadow = Memory.shadowBranch(agentId);
+        const bare = (args: ReadonlyArray<string>) => git(root, [`--git-dir=${remote}`, ...args]);
+        const show = (branch: string, path: string) => bare(["show", `${branch}:${path}`]);
+        const heads = Effect.all([bare(["rev-parse", "main"]), bare(["rev-parse", shadow])]);
+
+        // Nothing was deleted yet, so the sweep each sync runs changes nothing.
+        const untouched = yield* heads;
+        yield* writer.stripQuotes(orgId);
+        assert.deepStrictEqual(yield* heads, untouched);
+
+        yield* chats.clearChat({
+          orgId,
+          chatId: KinChatId.make("cleared-chat"),
+          clearedAt: at,
+          clearedAtMs: Date.parse(at),
+        });
+        // The remote refuses the default branch: the shadow branch is still stripped, and the
+        // next sweep retries the default branch.
+        const hook = `${remote}/hooks/pre-receive`;
+        yield* fs.writeFileString(
+          hook,
+          '#!/bin/sh\nwhile read old new ref; do [ "$ref" = refs/heads/main ] && exit 1; done\nexit 0\n',
+        );
+        yield* fs.chmod(hook, 0o755);
+        // Whether a clear's own event ran it or, after a crash, the sync at startup does.
+        yield* writer.stripQuotes(orgId);
+        assert.include(yield* show("main", "claims/said.md"), "quote:");
+        assert.notInclude(yield* show(shadow, "claims/said.md"), "quote:");
+        yield* fs.remove(hook);
+        yield* writer.stripQuotes(orgId);
+        for (const branch of ["main", shadow]) {
+          const text = yield* show(branch, "claims/said.md");
+          assert.notInclude(text, "quote:", branch);
+          assert.include(text, "Invented fixture body.", branch);
+          assert.include(text, `title: "Invented `, branch);
+          assert.include(yield* show(branch, "claims/kept.md"), `quote: "${FIXTURE_QUOTE}"`);
+        }
+        const done = yield* heads;
+        yield* writer.stripQuotes(orgId);
+        assert.deepStrictEqual(yield* heads, done);
+      }).pipe(Effect.provide(layer));
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          gitLayer,
+          NodeServices.layer,
+          Persistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
+        ),
+      ),
+      Effect.scoped,
+    ),
 );

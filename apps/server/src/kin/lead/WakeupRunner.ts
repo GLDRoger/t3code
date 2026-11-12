@@ -1,13 +1,11 @@
 import {
   CommandId,
   KinAgentId,
-  KinChatId,
-  type KinEvent,
   KinLead,
-  type KinLevel,
   KinMessageId,
   KinOrgId,
   KinWakeupId,
+  type KinWorkerId,
   MessageId,
   ModelSelection,
   ProjectId,
@@ -30,9 +28,7 @@ import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
-import { modelSelectionsEqual } from "@t3tools/shared/model";
 
-import * as ProviderSessionManager from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
@@ -47,14 +43,23 @@ import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinBudget from "./KinBudget.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
+import {
+  SHARED_THREAD_PREFIX,
+  aborted,
+  audienceChanged,
+  effectiveAudience,
+  recordedAudience,
+} from "./Audience.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import { nonClaudeLeadModel } from "./leadModels.ts";
 import * as RoutineContent from "./RoutineContent.ts";
 import * as LeadDelivery from "./LeadDelivery.ts";
 import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
 import { isOrgPaused } from "./orgState.ts";
-import { KinPromotion } from "../levels/Promotion.ts";
 import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
+import { RETIRED_WORKER_REASON, retiredWorkerKey } from "./Retirement.ts";
+import { WorkerTracker } from "./WorkerTracker.ts";
+import { setupFailureIn, type SetupFailure } from "../reply/classify.ts";
 
 /** How long one wake-up may run before it is interrupted. */
 const WAKEUP_DEADLINE_MS = 900_000;
@@ -77,24 +82,6 @@ const orgLoopWaitMs = (
   const next = ready.find((candidate) => !active.has(candidate.agentId));
   return next === undefined ? 60_000 : Math.min(60_000, Math.max(1, next.readyAt - now));
 };
-/** A direct chat keeps its provider session for this long idle, for at most this many wake-ups. */
-const WARM_IDLE_MS = 600_000;
-const WARM_MAX_WAKEUPS = 10;
-type WarmSession = {
-  readonly threadId: ThreadId;
-  readonly chatId: KinChatId;
-  readonly level: KinLevel;
-  readonly model: ModelSelection;
-  readonly wakeups: number;
-  readonly endedAt: number;
-  readonly rules: string;
-  readonly index: string;
-  readonly chatSeq: number;
-};
-const chatOf = (event: KinEvent) =>
-  event._tag === "chat.message" || event._tag === "widget.action" || event._tag === "chat.reaction"
-    ? event.chatId
-    : undefined;
 
 export class KinWakeupError extends Schema.TaggedError<KinWakeupError>()("KinWakeupError", {
   orgId: KinOrgId,
@@ -113,6 +100,8 @@ export class WakeupRunner extends Context.Service<
   WakeupRunner,
   {
     readonly runOnce: (orgId: KinOrgId, agentId: KinAgentId) => Effect.Effect<void, KinWakeupError>;
+    /** Stops a wake-up `abortPrivateTurns` marked: its line and draft go, then its run. */
+    readonly abort: (orgId: KinOrgId, wakeupId: KinWakeupId) => Effect.Effect<void>;
     readonly recover: Effect.Effect<void, KinWakeupError>;
     readonly start: Effect.Effect<void, never, Scope.Scope>;
   }
@@ -155,8 +144,8 @@ const ulid = Effect.gen(function* () {
 
 const make = Effect.gen(function* () {
   const ownerCheck = yield* Effect.serviceOption(OwnerCheck.OwnerCheck);
-  const promotion = yield* Effect.serviceOption(KinPromotion);
   const bridge = yield* Effect.serviceOption(KinReplyBridge);
+  const tracker = yield* Effect.serviceOption(WorkerTracker);
   const endReply = (row: {
     readonly orgId: KinOrgId;
     readonly agentId: KinAgentId;
@@ -165,6 +154,7 @@ const make = Effect.gen(function* () {
   const finishWakeup = Effect.fn("WakeupRunner.finishWakeup")(function* (
     row: typeof RunningRow.Type,
     status: "completed" | "failed" | "timed_out",
+    setup: SetupFailure | null = null,
   ) {
     // Read first: finishing returns retried events to the queue, which drops their lane.
     const lane =
@@ -180,11 +170,13 @@ const make = Effect.gen(function* () {
         ? "partway"
         : lane.value.mode !== "reply"
           ? undefined
-          : finished.failedEventIds.length > 0
-            ? "gave_up"
-            : finished.retried > 0
-              ? "retrying"
-              : undefined;
+          : setup !== null
+            ? setup
+            : finished.failedEventIds.length > 0
+              ? "gave_up"
+              : finished.retried > 0
+                ? "retrying"
+                : undefined;
     if (outcome !== undefined)
       yield* bridge.value.failed({
         orgId: row.orgId,
@@ -208,9 +200,19 @@ const make = Effect.gen(function* () {
   const launch = yield* ThreadLaunchService.ThreadLaunchService;
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const settings = yield* ServerSettingsService;
-  const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
   const paused = (orgId: KinOrgId) =>
     isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+  const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
+  const sharedTurn = (row: typeof RunningRow.Type) =>
+    effectiveAudience(row).pipe(
+      provideSql,
+      Effect.map((audience) => audience === "shared"),
+    );
+  const isAborted = (row: {
+    readonly orgId: KinOrgId;
+    readonly agentId: KinAgentId;
+    readonly wakeupId: KinWakeupId;
+  }) => aborted(row).pipe(provideSql);
   const threadActivity = Effect.fn("WakeupRunner.threadActivity")(function* (orgId: KinOrgId) {
     const rows = yield* sql<{
       threadId: string;
@@ -234,47 +236,43 @@ const make = Effect.gen(function* () {
       JOIN kin_orgs o ON o.org_id = l.org_id WHERE l.org_id = ${orgId} AND l.agent_id = ${agentId}`;
     return yield* decodeLead(row);
   });
-  const retired = new Set<KinAgentId>();
-  // In memory on purpose: after a restart the first wake-up is fresh, which is always safe.
-  const warm = new Map<string, WarmSession>();
-  const warmKey = (orgId: KinOrgId, agentId: KinAgentId) => `${orgId}\u0000${agentId}`;
-  // A process whose cwd was removed can't run; the next run resumes the conversation in a new one.
-  const releaseProcess = Effect.fn("WakeupRunner.releaseProcess")(function* (threadId: ThreadId) {
-    const own = (yield* threads.getThreadProjection(threadId)).providerThreads.filter(
-      (providerThread) => providerThread.appThreadId === threadId,
-    );
-    let released = true;
-    for (const providerSessionId of new Set(own.map((thread) => thread.providerSessionId)))
-      if (providerSessionId !== null && (yield* sessions.isLive(providerSessionId)))
-        released &&= yield* sessions.releaseUnlessBusy({
-          providerSessionId,
-          ownProviderThreadIds: own.map((thread) => thread.id),
-          reason: "idle_timeout",
-          detail: "Kin wake-up ended",
-        });
-    return released;
-  });
-  /** The direct chat every event of this wake-up came from, if there is exactly one. */
-  const directChat = Effect.fn("WakeupRunner.directChat")(function* (
-    orgId: KinOrgId,
-    events: ReadonlyArray<KinEvent>,
-  ) {
-    const chats = new Set(events.map(chatOf));
-    const [chatId] = chats;
-    if (chats.size !== 1 || chatId === undefined) return undefined;
-    const direct =
-      yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${orgId} AND chat_id = ${chatId} AND kind = 'direct' AND archived_at IS NULL`;
-    return direct.length > 0 ? chatId : undefined;
-  });
+  // One pass per retirement; a lead restored and retired again gets another.
+  const retired = new Set<string>();
   const retire = Effect.fn("WakeupRunner.retire")(function* (record: typeof LeadRow.Type) {
-    if (retired.has(record.agentId)) return;
+    if (record.retiredAt === null) return;
+    const pass = `${record.agentId}:${record.retiredAt}`;
+    if (retired.has(pass)) return;
     yield* queue.expireAgent(record.orgId, record.agentId);
+    // Their stops were stored when it was retired (`Retirement.retire`); this sends them.
+    if (Option.isSome(tracker))
+      for (const worker of yield* sql<{ workerId: KinWorkerId; startedAt: number }>`
+          SELECT worker_id AS "workerId", started_at AS "startedAt" FROM kin_workers
+          WHERE org_id = ${record.orgId} AND agent_id = ${record.agentId} AND ended_at IS NULL
+          ORDER BY worker_id`)
+        yield* tracker.value
+          .stop({
+            orgId: record.orgId,
+            agentId: record.agentId,
+            workerId: worker.workerId,
+            startedAt: worker.startedAt,
+            reason: RETIRED_WORKER_REASON,
+            key: retiredWorkerKey(worker.workerId, record.retiredAt),
+          })
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Kin could not stop a retired agent's worker", {
+                orgId: record.orgId,
+                workerId: worker.workerId,
+                cause,
+              }),
+            ),
+          );
     if (record.threadId !== null) {
       const stopped = yield* threads.forceStopThread({ threadId: record.threadId });
       if (stopped.outcome === "releasing") return;
       yield* identity.endAgentThread({ orgId: record.orgId, threadId: record.threadId });
     }
-    retired.add(record.agentId);
+    retired.add(pass);
   });
   const capture = Effect.fn("WakeupRunner.capture")(function* (row: typeof RunningRow.Type) {
     if (row.threadId === null || row.runId === null) return;
@@ -338,11 +336,29 @@ const make = Effect.gen(function* () {
           events = events.filter((event) => event.priority !== priority);
         }
         if (events.length === 0) return;
+        // An owner-only turn takes no message that would let someone else read its reply, and a
+        // turn a join or clear aborted after the claim takes none: those wait for the next
+        // wake-up, and this one stops taking more.
+        if (
+          (yield* isAborted(row)) ||
+          (yield* audienceChanged({ orgId, agentId, wakeupId }).pipe(provideSql))
+        ) {
+          steering.open = false;
+          yield* queue.release({
+            orgId,
+            wakeupId,
+            eventIds: events.map((event) => event.eventId),
+            notBefore: yield* Clock.currentTimeMillis,
+            countAttempt: false,
+          });
+          return;
+        }
         steering.steers++;
         const n = steering.steers;
         const messageId = MessageId.make(KinIdentity.steerMessageId(wakeupId, n));
         const deliver = Effect.gen(function* () {
           const text = yield* prompt.steer({ orgId, agentId, events });
+          const attachments = yield* prompt.attachments({ orgId, events });
           const claimed = yield* sql<{ messageId: string }>`
             SELECT json_extract(json, '$.messageId') AS "messageId" FROM kin_events
             WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND state = 'claimed'
@@ -361,7 +377,7 @@ const make = Effect.gen(function* () {
               threadId,
               messageId,
               text,
-              attachments: [],
+              attachments,
               mode,
               createdBy: "system",
               creationSource: "server",
@@ -424,16 +440,19 @@ const make = Effect.gen(function* () {
           Effect.gen(function* () {
             const projection = yield* threads.getThreadProjection(threadId);
             const after = projection.runs.find((run) => run.id === current)?.ordinal ?? 0;
-            const adopted = result.timedOut
-              ? undefined
-              : projection.runs
-                  .filter(
-                    (run) =>
-                      run.ordinal > after &&
-                      isSteerRun(wakeupId, run) &&
-                      (run.status === "queued" || ThreadManagementService.isActiveRun(run)),
-                  )
-                  .toSorted((a, b) => a.ordinal - b.ordinal)[0];
+            const adopted =
+              result.timedOut || (yield* isAborted(row))
+                ? undefined
+                : projection.runs
+                    .filter(
+                      (run) =>
+                        run.ordinal > after &&
+                        isSteerRun(wakeupId, run) &&
+                        // A provider failure holds the queue: a held run never starts by itself.
+                        ((run.status === "queued" && run.queueHeld !== true) ||
+                          ThreadManagementService.isActiveRun(run)),
+                    )
+                    .toSorted((a, b) => a.ordinal - b.ordinal)[0];
             if (adopted === undefined) steering.open = false;
             return adopted;
           }),
@@ -442,13 +461,35 @@ const make = Effect.gen(function* () {
         current = next.id;
       }
       yield* Fiber.interrupt(steerer);
+      // Its steers still queued would start with no wake-up to own them, or hold the lead's
+      // queue for good; they go, and their messages return with the rest of its events.
+      const final = yield* threads.getThreadProjection(threadId);
+      for (const leftover of final.runs) {
+        if (leftover.status !== "queued" || !isSteerRun(wakeupId, leftover)) continue;
+        yield* threads
+          .dispatch({
+            type: "queued-run.cancel",
+            commandId: CommandId.make(`kin-steer-cancel:${wakeupId}:${leftover.id}`),
+            threadId,
+            runId: leftover.id,
+          })
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Kin could not cancel a queued steer", { orgId, wakeupId, cause }),
+            ),
+          );
+      }
       const status = result.timedOut
         ? "timed_out"
         : result.run?.status === "completed"
           ? "completed"
           : "failed";
+      const setup = status === "failed" ? setupFailureIn(final, runId) : null;
       // The stop switch interrupted this run: hand its events back without spending an attempt.
       const stopped = status === "failed" && (yield* paused(row.orgId));
+      // Someone besides the owner joined while it worked: it says nothing more, and a fresh
+      // wake-up answers its events (`KinEventQueue.finish`).
+      let abandoned = yield* isAborted(row);
       yield* Effect.gen(function* () {
         if (result.timedOut) {
           yield* threads.interruptThread({
@@ -471,7 +512,7 @@ const make = Effect.gen(function* () {
             });
         }
         // The reply lands before memory commits, while the wake-up still owns its lane.
-        if (Option.isSome(bridge) && !stopped)
+        if (Option.isSome(bridge) && !stopped && !abandoned)
           yield* bridge.value.complete({
             orgId: row.orgId,
             wakeupId: row.wakeupId,
@@ -479,10 +520,30 @@ const make = Effect.gen(function* () {
             rootRunId: runId,
             rescueUntil: status === "completed" ? deadline() : null,
           });
-        if (Option.isSome(writer)) {
+        // Settled unless a join aborted it first; a join after this has nothing to abort.
+        if (!abandoned)
+          abandoned =
+            (yield* sql`UPDATE kin_wakeups SET settled_at = ${yield* Clock.currentTimeMillis}
+              WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId} AND aborted_at IS NULL
+              RETURNING wakeup_id`).length === 0;
+        if (abandoned) yield* Effect.logInfo("Kin wake-up aborted for its audience", row);
+        // A turn someone else could read keeps only what it saved as the team's (`LeadMemory`),
+        // and only when its prompt was built for them: one that turned shared midway, or was
+        // aborted, leaves nothing. With nothing saved it leaves no journal entry either.
+        const shared = Option.isSome(writer) && !abandoned && (yield* sharedTurn(row));
+        const keeps =
+          shared &&
+          Option.isSome(writer) &&
+          (yield* recordedAudience(row).pipe(provideSql)) === "shared" &&
+          (yield* writer.value
+            .staged(row.orgId, row.wakeupId)
+            .pipe(Effect.orElseSucceed(() => false)));
+        if (Option.isSome(writer) && (abandoned || (shared && !keeps)))
+          yield* writer.value.discard(row.orgId, row.wakeupId);
+        else if (Option.isSome(writer)) {
           const ended =
             yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId} AND call_key = 'end'`;
-          if (ended.length === 0)
+          if (ended.length === 0 && !shared)
             yield* writer.value.appendJournal(row.orgId, row.wakeupId, [
               Writer.LEAD_ENDED_WITHOUT_KIN_END,
             ]);
@@ -501,7 +562,7 @@ const make = Effect.gen(function* () {
             countAttempt: false,
             notBefore: (yield* Clock.currentTimeMillis) + PAUSE_POLL_INTERVAL_MS,
           });
-        else yield* finishWakeup(row, status);
+        else yield* finishWakeup(row, status, setup);
       }).pipe(
         Effect.onExit((exit) =>
           result.timedOut && Exit.isFailure(exit)
@@ -511,7 +572,7 @@ const make = Effect.gen(function* () {
             : Effect.void,
         ),
       );
-      if (status === "completed")
+      if (status === "completed" && !abandoned)
         yield* threads.settleThread({
           threadId: row.threadId,
           commandId: CommandId.make(`kin-settle:${row.wakeupId}`),
@@ -584,10 +645,9 @@ const make = Effect.gen(function* () {
         launchedAt: number | null;
         firstTokenAt: number | null;
         postedAt: number | null;
-        resumed: number | null;
       }>`SELECT status, enqueued_at AS "enqueuedAt", started_at AS "claimedAt",
           prepared_at AS "preparedAt", launched_at AS "launchedAt",
-          first_token_at AS "firstTokenAt", posted_at AS "postedAt", resumed
+          first_token_at AS "firstTokenAt", posted_at AS "postedAt"
         FROM kin_wakeups WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}
         ORDER BY wakeup_id`.pipe(Effect.mapError(toPersistenceSqlError("WakeupRunner.logLatency")));
       const enqueuedAt = row?.enqueuedAt;
@@ -597,7 +657,6 @@ const make = Effect.gen(function* () {
         orgId,
         wakeupId,
         status: row.status,
-        warm: row.resumed === 1,
         claimedMs: since(row.claimedAt),
         preparedMs: since(row.preparedAt),
         launchedMs: since(row.launchedAt),
@@ -733,6 +792,14 @@ const make = Effect.gen(function* () {
             const lane = Option.isSome(bridge)
               ? Option.getOrUndefined(yield* bridge.value.lane({ orgId, agentId, wakeupId }))
               : undefined;
+            if (Option.isSome(bridge) && lane !== undefined)
+              yield* bridge.value.preparing({
+                orgId,
+                agentId,
+                wakeupId,
+                lane,
+                startedAt: row.startedAt,
+              });
             const pinned = yield* memory.prepareWakeup(orgId, wakeupId, { lead: agentId }).pipe(
               Effect.tapError((error) =>
                 Effect.logError("Kin memory preparation failed", {
@@ -748,9 +815,6 @@ const make = Effect.gen(function* () {
               ),
             );
             const preparedAt = yield* Clock.currentTimeMillis;
-            const eveningRun = events.some(
-              (event) => event._tag === "routine" && event.routine === "evening_summary",
-            );
             if (Option.isSome(ownerCheck)) {
               for (const event of events) {
                 if (event._tag === "routine" && event.routine === "owner_check")
@@ -814,9 +878,6 @@ const make = Effect.gen(function* () {
                 if (prepared !== null) routineFacts.set(event.eventId, prepared.body);
               }
             }
-            // The review and promotion cards are server-drawn, never the lead's.
-            if (eveningRun && Option.isSome(promotion))
-              yield* promotion.value.evening({ orgId, agentId });
             if (Option.isSome(routineContent)) {
               events = events.filter(
                 (event) =>
@@ -827,6 +888,21 @@ const make = Effect.gen(function* () {
                 return;
               }
             }
+            const text = yield* prompt.build({
+              orgId,
+              agentId,
+              wakeupId,
+              events,
+              memoryHead: pinned.head,
+              budgetContext,
+              routineFacts,
+              ...(lane === undefined ? {} : { lane }),
+            });
+            // What the people in the chat attached to the messages this turn answers.
+            const attachments = yield* prompt.attachments({ orgId, events });
+            // The prompt recorded who reads this turn; a shared one runs without file tools.
+            const shared =
+              (yield* recordedAudience({ orgId, wakeupId }).pipe(provideSql)) === "shared";
             // A project per lead, since its root is the provider's cwd: the lead's own checkout.
             const { project } = yield* projects.bootstrap({
               commandId: CommandId.make(`kin-project:${orgId}:${agentId}`),
@@ -835,13 +911,27 @@ const make = Effect.gen(function* () {
               title: `Kin · ${record.orgName} · ${record.name}`,
             });
             let existingThreadId = current.threadId;
+            // Retiring ended its thread, which can't be registered again: a restored lead
+            // launches a fresh one.
+            if (
+              existingThreadId !== null &&
+              (yield* sql`SELECT 1 FROM kin_agent_threads WHERE org_id = ${orgId}
+                AND thread_id = ${existingThreadId} AND ended_at IS NOT NULL`).length > 0
+            ) {
+              yield* sql`UPDATE kin_leads SET thread_id = NULL WHERE org_id = ${orgId} AND agent_id = ${agentId} AND thread_id = ${existingThreadId}`;
+              existingThreadId = null;
+            }
             if (existingThreadId !== null) {
               const existing = yield* threads
                 .getThreadProjection(existingThreadId)
                 .pipe(Effect.option);
-              // A thread launched under the old shared-checkout project keeps that cwd; end it
-              // so this wake-up launches one in this lead's own checkout instead.
-              if (Option.isSome(existing) && existing.value.thread.projectId !== project.id) {
+              // A thread keeps its cwd and its tools: one from another project, or made for the
+              // other audience, ends so this wake-up launches its own.
+              if (
+                Option.isSome(existing) &&
+                (existing.value.thread.projectId !== project.id ||
+                  existingThreadId.startsWith(SHARED_THREAD_PREFIX) !== shared)
+              ) {
                 yield* identity.endAgentThread({ orgId, threadId: existingThreadId });
                 yield* sql`UPDATE kin_leads SET thread_id = NULL WHERE org_id = ${orgId} AND agent_id = ${agentId} AND thread_id = ${existingThreadId}`;
                 existingThreadId = null;
@@ -853,49 +943,14 @@ const make = Effect.gen(function* () {
               !cheapOnly && (urgent.length > 0 || events.some((event) => event._tag === "routine"))
                 ? current.models.strong
                 : current.models.cheap;
-            // A warm session is one chat's, at one level and model; anything else starts fresh.
-            const previous = warm.get(warmKey(orgId, agentId));
-            warm.delete(warmKey(orgId, agentId));
-            const direct = yield* directChat(orgId, events);
-            const seen =
-              direct === undefined
-                ? undefined
-                : yield* memory.readPromptSnapshot(orgId, pinned.head, { lead: agentId });
-            const resumable =
-              previous !== undefined &&
-              seen !== undefined &&
-              previous.chatId === direct &&
-              previous.threadId === existingThreadId &&
-              previous.level === current.level &&
-              modelSelectionsEqual(previous.model, modelSelection) &&
-              previous.wakeups < WARM_MAX_WAKEUPS &&
-              row.startedAt - previous.endedAt < WARM_IDLE_MS &&
-              // New standing rules are a new contract, so they get a fresh session.
-              previous.rules === seen.rules;
-            // Prepare swapped in a new read checkout, so a warm session resumes in a new process.
-            const resumes =
-              resumable &&
-              (yield* releaseProcess(previous.threadId).pipe(
-                Effect.catchCause((cause) =>
-                  Effect.logWarning("Kin lead process release failed", {
-                    orgId,
-                    wakeupId,
-                    cause,
-                  }).pipe(Effect.as(false)),
-                ),
-              ));
-            const text = yield* prompt.build({
-              orgId,
-              agentId,
-              wakeupId,
-              events,
-              memoryHead: pinned.head,
-              budgetContext,
-              routineFacts,
-              ...(lane === undefined ? {} : { lane }),
-              ...(resumes ? { since: { index: previous.index, chatSeq: previous.chatSeq } } : {}),
-            });
-            const threadId = existingThreadId ?? ThreadId.make(`kin:${yield* ulid}`);
+            // A join aborted it while it prepared: nothing launches, a fresh wake-up answers.
+            if (yield* isAborted(row)) {
+              yield* queue.finish({ orgId, wakeupId, status: "failed" });
+              return;
+            }
+            const threadId =
+              existingThreadId ??
+              ThreadId.make(`${shared ? SHARED_THREAD_PREFIX : "kin:"}${yield* ulid}`);
             row = { ...row, threadId };
             yield* sql.withTransaction(
               Effect.gen(function* () {
@@ -932,6 +987,7 @@ const make = Effect.gen(function* () {
                 wakeupId,
                 threadId,
                 startedAt: row.startedAt,
+                attachments: attachments.length > 0,
               });
             const commandId = CommandId.make(`kin-wakeup:${wakeupId}`);
             const messageId = MessageId.make(KinIdentity.wakeupMessageId(wakeupId));
@@ -946,7 +1002,7 @@ const make = Effect.gen(function* () {
                     runtimeMode: "full-access",
                     interactionMode: "default",
                     workspaceStrategy: { type: "root" },
-                    initialMessage: { messageId, text, attachments: [] },
+                    initialMessage: { messageId, text, attachments },
                     createdBy: "system",
                     creationSource: "server",
                   })).projection
@@ -956,10 +1012,9 @@ const make = Effect.gen(function* () {
                     threadId,
                     messageId,
                     text,
-                    attachments: [],
+                    attachments,
                     mode: "queue",
-                    // Without a fresh context the run continues the same provider conversation.
-                    ...(resumes ? {} : { freshContext: true }),
+                    freshContext: true,
                     modelSelection,
                     createdBy: "system",
                     creationSource: "server",
@@ -968,33 +1023,17 @@ const make = Effect.gen(function* () {
             if (run === undefined)
               return yield* new KinWakeupError({ orgId, agentId, cause: "missing_run" });
             row = { ...row, runId: run.id };
-            yield* sql`UPDATE kin_wakeups SET run_id = ${run.id}, launched_at = ${yield* Clock.currentTimeMillis},
-              resumed = ${resumes ? 1 : 0}
+            yield* sql`UPDATE kin_wakeups SET run_id = ${run.id}, launched_at = ${yield* Clock.currentTimeMillis}
               WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND agent_id = ${agentId} AND status = 'running'`;
-            // A pause that landed during launch found no run to stop; stop it here instead.
-            if (yield* paused(orgId))
+            // A pause or a join that landed during launch found no run to stop; stop it here.
+            if ((yield* paused(orgId)) || (yield* isAborted(row)))
               yield* threads.interruptThread({
                 projectId: project.id,
                 threadId,
                 runId: run.id,
                 commandId: CommandId.make(`kin-stop-launch:${wakeupId}`),
               });
-            const status = yield* wait(row, project.id);
-            if (status !== "completed" || direct === undefined || seen === undefined) return;
-            const [chat] = yield* sql<{
-              lastSeq: number;
-            }>`SELECT last_seq AS "lastSeq" FROM kin_chats WHERE org_id = ${orgId} AND chat_id = ${direct}`;
-            warm.set(warmKey(orgId, agentId), {
-              threadId,
-              chatId: direct,
-              level: current.level,
-              model: modelSelection,
-              wakeups: resumes ? previous.wakeups + 1 : 1,
-              endedAt: yield* Clock.currentTimeMillis,
-              rules: seen.rules,
-              index: seen.index,
-              chatSeq: chat?.lastSeq ?? 0,
-            });
+            yield* wait(row, project.id);
           }).pipe(
             Effect.onExit((exit) =>
               Exit.isFailure(exit)
@@ -1023,6 +1062,31 @@ const make = Effect.gen(function* () {
       effect.pipe(
         Effect.mapError(
           (cause) => new KinWakeupError({ orgId, agentId, cause: runnerCause(cause) }),
+        ),
+      ),
+  );
+  const abort = Effect.fn("WakeupRunner.abort")(
+    function* (orgId: KinOrgId, wakeupId: KinWakeupId) {
+      const [row] = yield* sql<{ agentId: KinAgentId; threadId: ThreadId | null }>`
+        SELECT agent_id AS "agentId", thread_id AS "threadId" FROM kin_wakeups
+        WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND status = 'running'
+          AND aborted_at IS NOT NULL ORDER BY wakeup_id`;
+      if (row === undefined) return;
+      if (Option.isSome(bridge)) yield* bridge.value.abort(orgId, wakeupId);
+      // Not launched yet: the runner finds the mark before or right after its launch.
+      if (row.threadId === null) return;
+      const projection = yield* threads.getThreadProjection(row.threadId);
+      // The stop switch's interrupt, without settling its events: `wait` sees the mark.
+      yield* threads.interruptThread({
+        projectId: projection.thread.projectId,
+        threadId: row.threadId,
+        commandId: CommandId.make(`kin-audience:${wakeupId}`),
+      });
+    },
+    (effect, orgId, wakeupId) =>
+      effect.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin could not stop an aborted wake-up", { orgId, wakeupId, cause }),
         ),
       ),
   );
@@ -1067,7 +1131,9 @@ const make = Effect.gen(function* () {
             if (projection === undefined || run === undefined) {
               const receipts =
                 yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId} LIMIT 1`;
-              if (receipts.length > 0 && Option.isSome(writer)) {
+              if (receipts.length > 0 && Option.isSome(writer) && (yield* sharedTurn(row)))
+                yield* writer.value.discard(row.orgId, row.wakeupId);
+              else if (receipts.length > 0 && Option.isSome(writer)) {
                 yield* writer.value.commitWakeup(row.orgId, row.wakeupId, "failed").pipe(
                   Effect.tap(
                     ({ commit }) =>
@@ -1257,7 +1323,7 @@ const make = Effect.gen(function* () {
       Effect.forkScoped,
     );
   }).pipe(Effect.catchCause((cause) => Effect.logError("Kin runner unavailable", { cause })));
-  return WakeupRunner.of({ runOnce, recover, start });
+  return WakeupRunner.of({ runOnce, abort, recover, start });
 });
 
 export const layer = Layer.effect(WakeupRunner, make).pipe(Layer.provide(Floor.layer));

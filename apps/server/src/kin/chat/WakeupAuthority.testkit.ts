@@ -10,11 +10,13 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  type KinReactionEmoji,
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as TestClock from "effect/testing/TestClock";
 import * as SecureRandom from "effect/crypto/SecureRandom";
+import { recordAudience, turnAudience } from "../lead/Audience.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Effect from "effect/Effect";
@@ -89,6 +91,10 @@ export const startAgentWakeup = Effect.fn("test.startAgentWakeup")(function* (in
   readonly agentId: KinAgentId;
   readonly threadId: ThreadId;
   readonly message?: KinMessage;
+  /** Wakes on this reaction to `message` instead of the message itself. */
+  readonly reaction?: KinReactionEmoji;
+  /** Marks the reaction as a changed answer, from this emoji. */
+  readonly changedFrom?: KinReactionEmoji;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
@@ -127,18 +133,28 @@ export const startAgentWakeup = Effect.fn("test.startAgentWakeup")(function* (in
       ? { ...base, _tag: "routine", provenance: { _tag: "system" }, routine: "morning_brief" }
       : {
           ...base,
-          _tag: "chat.message",
+          ...(input.reaction === undefined
+            ? { _tag: "chat.message" }
+            : {
+                _tag: "chat.reaction",
+                emoji: input.reaction,
+                ...(input.changedFrom === undefined ? {} : { changedFrom: input.changedFrom }),
+              }),
           provenance: input.message.author,
           chatId: input.message.chatId,
           messageId: input.message.messageId,
         };
   yield* queue.enqueue(event);
-  yield* TestClock.adjust(input.message === undefined ? 20_000 : 2_000);
+  // The owner's message is claimed after its short burst window; anyone else's waits the full one.
+  yield* TestClock.adjust(input.message?.authorRole === "owner" ? 2_000 : 20_000);
   yield* Effect.scoped(
     queue.claim({ orgId: input.orgId, agentId: input.agentId, wakeupId, model: "test" }),
   );
   const run = yield* startWakeupRun(input.threadId, wakeupId);
   yield* sql`UPDATE kin_wakeups SET thread_id = ${input.threadId}, run_id = ${run.id}
     WHERE org_id = ${input.orgId} AND wakeup_id = ${wakeupId}`;
+  // What building its prompt records, before any tool runs.
+  const turn = { orgId: input.orgId, agentId: input.agentId, wakeupId };
+  yield* recordAudience(turn, yield* turnAudience(turn));
   return wakeupId;
 }, Effect.provide(KinEventQueue.layer));

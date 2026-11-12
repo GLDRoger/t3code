@@ -13,6 +13,7 @@ import {
   AssetWorkspacePathValidationError,
   AssetWorkspaceResolutionError,
   AssetWorkspaceRootNormalizationError,
+  AuthSessionId,
   SOURCE_CONTROL_MEDIA_ASSET,
   ThreadId,
   ToolActivityNativeAppReference,
@@ -30,6 +31,11 @@ import {
   readImageDimensions,
   type ImageDimensions,
 } from "@t3tools/shared/imageDimensions";
+import {
+  kinVisualFileReferences,
+  kinVisualPageDocument,
+  resolveKinVisualFileReferences,
+} from "@t3tools/shared/kinVisual";
 import { MCP_APP_MAX_HTML_BYTES } from "@t3tools/shared/mcpApp";
 import {
   isProjectFaviconPath,
@@ -50,7 +56,16 @@ import * as Stream from "effect/Stream";
 import { base64UrlDecodeUtf8, base64UrlEncode } from "../auth/utils.ts";
 import * as AssetSigner from "./AssetSigner.ts";
 import { makeIsServerInternalPath } from "../auth/serverInternalPaths.ts";
-import { parseAttachmentFileExtension, resolveAttachmentPathById } from "../attachmentStore.ts";
+import {
+  isKinAttachmentId,
+  parseAttachmentFileExtension,
+  resolveAttachmentPathById,
+} from "../attachmentStore.ts";
+import {
+  authorizeAttachmentServe,
+  kinVisualSources,
+  type KinVisualSources,
+} from "../kin/chat/attachmentAccess.ts";
 import * as ServerConfig from "../config.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
@@ -130,6 +145,8 @@ const AssetClaimsSchema = Schema.Union([
     version: Schema.Literal(1),
     kind: Schema.Literal("attachment"),
     attachmentId: Schema.String,
+    /** The session a Kin chat file's URL was minted for; each request re-checks it. */
+    reader: Schema.optionalKey(AuthSessionId),
     download: Schema.optionalKey(Schema.Boolean),
     fileName: Schema.optionalKey(Schema.String),
     mimeType: Schema.optionalKey(Schema.String),
@@ -188,6 +205,10 @@ export type ResolvedAsset =
       readonly mimeType?: string;
       readonly file?: OpenMediaFile;
       readonly renderIntent?: "mcp-app";
+      /** Authority is checked per request, so no cache may answer for it. */
+      readonly noStore?: boolean;
+      /** A Kin chat's HTML: served sealed, with only these sources and for this reader. */
+      readonly kinVisual?: KinVisualSources & { readonly reader: AuthSessionId };
     }
   | {
       readonly kind: "bytes";
@@ -232,6 +253,43 @@ export const readMcpAppHtml = Effect.fn("AssetAccess.readMcpAppHtml")(function* 
     position += chunk.byteLength;
   }
   return bytes;
+});
+
+/** The agent's page as served: chat files it names become this reader's URLs for them. */
+export const readKinVisualPage = Effect.fn("AssetAccess.readKinVisualPage")(function* (
+  filePath: string,
+  visual: KinVisualSources & { readonly reader: AuthSessionId },
+) {
+  const bytes = yield* readMcpAppHtml(filePath);
+  if (bytes === null) return null;
+  const html = new TextDecoder().decode(bytes);
+  const urls: Record<string, string> = {};
+  const signer = yield* AssetSigner.AssetSigner;
+  const expiresAt = (yield* Clock.currentTimeMillis) + ASSET_TOKEN_TTL_MS;
+  for (const id of kinVisualFileReferences(html)) {
+    const attachmentId = id.toLowerCase();
+    const file = visual.files.find((candidate) => candidate.attachmentId === attachmentId);
+    const mimeType = file?.mimeType?.split(";", 1)[0]?.trim() ?? "";
+    // Pictures, sound and video only: a page never loads a chat's other files.
+    const media = /^(?:audio|video)\/[\w!#$&^.+-]+$/i.test(mimeType);
+    if (file === undefined || !(media || parseAttachmentFileExtension(attachmentId) === null))
+      continue;
+    // Each URL names the reader, who is checked against the chat again when it is fetched.
+    const encodedPayload = base64UrlEncode(
+      encodeAssetClaims({
+        version: 1,
+        kind: "attachment",
+        attachmentId,
+        reader: visual.reader,
+        ...(media ? { mimeType } : {}),
+        expiresAt,
+      }),
+    );
+    const signature = yield* signer.sign(encodedPayload).pipe(Effect.option);
+    if (Option.isSome(signature))
+      urls[id] = `${ASSET_ROUTE_PREFIX}/${encodedPayload}.${signature.value}/file`;
+  }
+  return kinVisualPageDocument(resolveKinVisualFileReferences(html, urls));
 });
 
 const readToolOutputImage = Effect.fn("AssetAccess.readToolOutputImage")(function* (input: {
@@ -531,6 +589,8 @@ const finalizeWorkspaceFileAsset = Effect.fn("AssetAccess.finalizeWorkspaceFileA
 
 export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (input: {
   readonly resource: AssetResource;
+  /** The authenticated session asking; a Kin chat file's URL works only for it. */
+  readonly reader?: AuthSessionId;
   readonly workspaceRoot?: string;
   readonly projectFaviconPath?: string;
   /** Where a cloned project's checkout stands, while the clone tracker still knows it. */
@@ -651,6 +711,10 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
           resource: input.resource,
         });
       }
+      const reader = isKinAttachmentId(input.resource.attachmentId) ? input.reader : undefined;
+      if (isKinAttachmentId(input.resource.attachmentId) && reader === undefined) {
+        return yield* new AssetAttachmentNotFoundError({ resource: input.resource });
+      }
       const extension = parseAttachmentFileExtension(input.resource.attachmentId);
       const isGenericFile = extension !== null;
       const videoMimeType = input.resource.mimeType?.split(";", 1)[0]?.trim() ?? "";
@@ -669,6 +733,7 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
         version: 1,
         kind: "attachment",
         attachmentId: input.resource.attachmentId,
+        ...(reader !== undefined ? { reader } : {}),
         ...(isGenericFile && !isVideo && inlinePreviewMimeType === undefined
           ? { download: true }
           : {}),
@@ -893,6 +958,11 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
   if (!claims || claims.expiresAt <= (yield* Clock.currentTimeMillis)) return null;
 
   if (claims.kind === "attachment") {
+    const kinFile = isKinAttachmentId(claims.attachmentId);
+    // A refusal reads exactly as a missing file.
+    if (kinFile && !(yield* authorizeAttachmentServe(claims.reader, claims.attachmentId))) {
+      return null;
+    }
     const config = yield* ServerConfig.ServerConfig;
     const attachmentPath = resolveAttachmentPathById({
       attachmentsDir: config.attachmentsDir,
@@ -912,14 +982,21 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
       ),
       Effect.orElseSucceed(() => Option.none()),
     );
+    // Every HTML file of a Kin chat takes this path, so none is ever served under T3's policy.
+    const kinVisual =
+      kinFile && claims.reader !== undefined && !claims.download && /\.html?$/i.test(attachmentPath)
+        ? { ...(yield* kinVisualSources(claims.attachmentId)), reader: claims.reader }
+        : undefined;
     return Option.isSome(info) && info.value.type === "File"
       ? ({
           kind: "file",
           path: attachmentPath,
+          ...(kinVisual === undefined ? {} : { kinVisual }),
           ...(claims.download ? { download: true } : {}),
           ...(claims.fileName !== undefined ? { fileName: claims.fileName } : {}),
           ...(claims.mimeType !== undefined ? { mimeType: claims.mimeType } : {}),
           ...(claims.renderIntent === "mcp-app" ? { renderIntent: "mcp-app" as const } : {}),
+          ...(kinFile ? { noStore: true } : {}),
         } satisfies ResolvedAsset)
       : null;
   }

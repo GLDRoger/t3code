@@ -1,3 +1,4 @@
+import { KIN_ONLY } from "../../lib/kinOnly";
 import { ListRow } from "../../components/ui/ListRow";
 import * as Dialog from "../../components/ui/Dialog";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
@@ -23,6 +24,7 @@ import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { AppText as Text, AppTextInput, type AppTextInputProps } from "../../components/ui/AppText";
 import { FrostedCutout } from "../../components/ui/FrostedCutout";
 import { buildPairingUrl, extractPairingUrlFromQrPayload, parsePairingUrl } from "./pairing";
+import { readKinJoinLink } from "@t3tools/shared/remote";
 import { useRemoteConnections } from "../../state/use-remote-environment-registry";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { hasCloudPublicConfig } from "../cloud/publicConfig";
@@ -131,6 +133,13 @@ function PairingForm({
 
     try {
       const pairingUrl = extractPairingUrlFromQrPayload(data);
+      const joinLink = readKinJoinLink(pairingUrl);
+      if (joinLink !== null) {
+        // A teammate's link has its own screen, which says what joining does before it is spent.
+        setScannerLocked(false);
+        navigation.dispatch(StackActions.replace("KinJoin", { link: joinLink }));
+        return;
+      }
       const { host, code } = parsePairingUrl(pairingUrl);
       setHostInput(host);
       setCodeInput(code);
@@ -150,6 +159,11 @@ function PairingForm({
   };
 
   const handleSubmit = async () => {
+    const joinLink = codeInput.trim() === "" ? readKinJoinLink(hostInput) : null;
+    if (joinLink !== null) {
+      navigation.dispatch(StackActions.replace("KinJoin", { link: joinLink }));
+      return;
+    }
     const pairingUrl = buildPairingUrl(hostInput, codeInput);
     setOwnAttempt(true);
     setSubmitError(null);
@@ -169,17 +183,19 @@ function PairingForm({
         navigation.dispatch(StackActions.replace("Home"));
       } else {
         // Added from the Settings list, the new environment shows on Environments.
-        leaveSettingsPage(navigation, workspaceHasColumns(), "SettingsEnvironments");
+        // A Kin-only app has no Environments page to land on.
+        if (KIN_ONLY) navigation.goBack();
+        else leaveSettingsPage(navigation, workspaceHasColumns(), "SettingsEnvironments");
       }
     }
   };
 
   return (
     <SettingsScreen
-      title="Add environment"
+      title={KIN_ONLY ? "Connect to your Kin" : "Add environment"}
       actions={[
         {
-          accessibilityLabel: connecting ? "Connecting" : "Add environment",
+          accessibilityLabel: connecting ? "Connecting" : KIN_ONLY ? "Connect" : "Add environment",
           loading: connecting,
           icon: "checkmark",
           tintColor: headerIconColor,
@@ -204,6 +220,7 @@ function PairingForm({
       >
         <View collapsable={false} className="gap-6.5">
           <PairingScanCard
+            {...(KIN_ONLY ? { caption: "Scan the code the computer running your Kin shows" } : {})}
             cameraActive={cameraPermission?.granted === true && screenFocused && !scanComplete}
             onScan={handleQrScan}
             onScanPress={() => {
@@ -247,11 +264,13 @@ function PairingForm({
               )}
             >
               {pairingConnectionError ??
-                "For machines on your local network or tailnet. The machine keeps its own provider credentials."}
+                (KIN_ONLY
+                  ? "The address and code come from the computer your Kin runs on."
+                  : "For machines on your local network or tailnet. The machine keeps its own provider credentials.")}
             </Text>
           </View>
 
-          {hasCloudPublicConfig() ? <T3ConnectSection /> : null}
+          {hasCloudPublicConfig() && !KIN_ONLY ? <T3ConnectSection /> : null}
         </View>
       </ScrollView>
     </SettingsScreen>
@@ -263,7 +282,8 @@ const SCAN_RETICLE_SIZE = 150;
 const SCAN_RETICLE_TOP = 36;
 const SCAN_RETICLE_RADIUS = 28;
 
-function PairingScanCard(props: {
+export function PairingScanCard(props: {
+  readonly caption?: string;
   readonly cameraActive: boolean;
   readonly onScan: (result: { readonly data: string }) => void;
   readonly onScanPress: () => void;
@@ -343,7 +363,7 @@ function PairingScanCard(props: {
           )}
         </View>
         <Text className={cn("text-center text-sm", light ? "text-black/70" : "text-white/80")}>
-          Scan the code from t3 pair or desktop Connections settings
+          {props.caption ?? "Scan the code from t3 pair or desktop Connections settings"}
         </Text>
       </View>
     </Pressable>

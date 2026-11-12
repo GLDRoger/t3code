@@ -4,8 +4,16 @@ import {
   KinBudget,
   KinBudgetGetInput,
   KinBudgetSetInput,
+  KinLeadAccessChangeInput,
+  KinLeadAccessInput,
+  KinLeadAccessResult,
   KinLeadCreated,
   KinLeadCreateInput,
+  KinLeadProfile,
+  KinLeadRetireInput,
+  KinLeadsListInput,
+  KinLeadsListResult,
+  KinLeadUpdateInput,
   KinOrgGetInput,
   KinOrgPauseInput,
   KinOrgResumeInput,
@@ -14,14 +22,21 @@ import {
 import { KinApprovalRpcs, KIN_APPROVAL_RPC_SCOPES } from "./kinApprovals.ts";
 import { KinLevelRpcs, KIN_LEVEL_RPC_SCOPES } from "./kinLevels.ts";
 import { KinMemoryRpcs, KIN_MEMORY_RPC_SCOPES } from "./kinMemory.ts";
+import { KinWorkRpcs, KIN_WORK_RPC_SCOPES } from "./kinWork.ts";
+import { KinDocsRpcs, KIN_DOCS_RPC_SCOPES } from "./kinDocs.ts";
+import { KinFinanceRpcs, KIN_FINANCE_RPC_SCOPES } from "./kinFinance.ts";
 import {
   KinChatError,
   KinChatRpcs,
+  KinGroupRpcs,
   KinLeadInterruptInput,
   KinLeadInterruptResult,
   KIN_CHAT_RPC_SCOPES,
 } from "./kinChat.ts";
 import { KinPushRpcs, KIN_PUSH_RPC_SCOPES } from "./kinPush.ts";
+import { KinPeopleRpcs, KIN_PEOPLE_RPC_SCOPES } from "./kinPeople.ts";
+import { KinVisualRpcs, KIN_VISUAL_RPC_SCOPES } from "./kinVisual.ts";
+import { KinWorkerNetworkRpcs, KIN_WORKER_NETWORK_RPC_SCOPES } from "./kinWorkerNetwork.ts";
 import {
   KinGithubWebhookOrgInput,
   KinGithubWebhookSecretInput,
@@ -36,6 +51,7 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthSettingsWriteScope,
+  AuthKinChatScope,
 } from "./auth.ts";
 
 const KinError = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -53,9 +69,46 @@ const KinOrgRpcs = [
     error: KinError,
   }),
 ] as const;
-// Owner-only: interrupt stops one wake-up, never the org; kin.org.pause is the stop switch.
-// create adds a lead at L0 with its direct chat to its creator, as `kin lead create` does.
+// Owner-only, but for list: a person's own live leads and the leads of others they may message.
+// interrupt stops one wake-up, never the org; create adds a lead at L0 with its creator's chat.
+// access is who else may message a lead.
 const KinLeadRpcs = [
+  Rpc.make("kin.lead.access.list", {
+    payload: KinLeadAccessInput,
+    success: KinLeadAccessResult,
+    error: KinError,
+  }),
+  Rpc.make("kin.lead.access.grant", {
+    payload: KinLeadAccessChangeInput,
+    success: KinLeadAccessResult,
+    error: KinError,
+  }),
+  Rpc.make("kin.lead.access.revoke", {
+    payload: KinLeadAccessChangeInput,
+    success: KinLeadAccessResult,
+    error: KinError,
+  }),
+  Rpc.make("kin.leads.list", {
+    payload: KinLeadsListInput,
+    success: KinLeadsListResult,
+    error: KinError,
+  }),
+  Rpc.make("kin.lead.update", {
+    payload: KinLeadUpdateInput,
+    success: KinLeadProfile,
+    error: KinError,
+  }),
+  // Retire keeps everything the agent has said and done; restore brings it back.
+  Rpc.make("kin.lead.retire", {
+    payload: KinLeadRetireInput,
+    success: KinLeadProfile,
+    error: KinError,
+  }),
+  Rpc.make("kin.lead.restore", {
+    payload: KinLeadRetireInput,
+    success: KinLeadProfile,
+    error: KinError,
+  }),
   Rpc.make("kin.lead.interrupt", {
     payload: KinLeadInterruptInput,
     success: KinLeadInterruptResult,
@@ -109,25 +162,38 @@ const KinTimeZoneRpcs = [
 ] as const;
 export const KinChatAndBudgetRpcs = [
   ...KinChatRpcs,
+  ...KinGroupRpcs,
   ...KinBudgetRpcs,
   ...KinOrgRpcs,
   ...KinLeadRpcs,
   ...KinTimeZoneRpcs,
+  ...KinVisualRpcs,
 ] as const;
 export const KinRpcs = [
   ...KinChatAndBudgetRpcs,
   ...KinApprovalRpcs,
   ...KinLevelRpcs,
   ...KinMemoryRpcs,
+  ...KinWorkRpcs,
+  ...KinDocsRpcs,
+  ...KinFinanceRpcs,
   ...KinGithubWebhookRpcs,
   ...KinPushRpcs,
+  ...KinPeopleRpcs,
+  ...KinWorkerNetworkRpcs,
 ] as const;
 export const KIN_RPC_SCOPES = {
   ...KIN_CHAT_RPC_SCOPES,
   ...KIN_APPROVAL_RPC_SCOPES,
   ...KIN_LEVEL_RPC_SCOPES,
   ...KIN_MEMORY_RPC_SCOPES,
+  ...KIN_WORK_RPC_SCOPES,
+  ...KIN_DOCS_RPC_SCOPES,
+  ...KIN_FINANCE_RPC_SCOPES,
   ...KIN_PUSH_RPC_SCOPES,
+  ...KIN_PEOPLE_RPC_SCOPES,
+  ...KIN_VISUAL_RPC_SCOPES,
+  ...KIN_WORKER_NETWORK_RPC_SCOPES,
   "kin.budget.get": AuthOrchestrationReadScope,
   "kin.budget.set": AuthSettingsWriteScope,
   "kin.org.get": AuthOrchestrationReadScope,
@@ -137,6 +203,24 @@ export const KIN_RPC_SCOPES = {
   "kin.lead.interrupt": AuthOrchestrationOperateScope,
   // A new lead is an owner setting, like the budget, and spends from the same budget.
   "kin.lead.create": AuthSettingsWriteScope,
+  // Part of the chat list: a person sees their own leads and the ones they may message.
+  "kin.leads.list": AuthKinChatScope,
+  // Who may message a lead decides who spends its owner's budget: an owner setting.
+  "kin.lead.access.list": AuthSettingsWriteScope,
+  "kin.lead.access.grant": AuthSettingsWriteScope,
+  "kin.lead.access.revoke": AuthSettingsWriteScope,
+  // What a lead is for is an owner setting, as creating it is.
+  "kin.lead.update": AuthSettingsWriteScope,
+  // Retiring stops an agent's work and restoring starts it again: owner settings, as create is.
+  "kin.lead.retire": AuthSettingsWriteScope,
+  "kin.lead.restore": AuthSettingsWriteScope,
+  // Who is in a group decides who its leads listen to: an owner setting, never a teammate's.
+  "kin.groups.create": AuthSettingsWriteScope,
+  "kin.groups.addMember": AuthSettingsWriteScope,
+  "kin.groups.removeMember": AuthSettingsWriteScope,
+  "kin.groups.setLead": AuthSettingsWriteScope,
+  "kin.groups.rename": AuthSettingsWriteScope,
+  "kin.groups.delete": AuthSettingsWriteScope,
   "kin.triggers.getTimeZone": AuthOrchestrationReadScope,
   "kin.triggers.setTimeZone": AuthSettingsWriteScope,
   "kin.webhooks.github.setup": AuthSettingsWriteScope,
@@ -148,6 +232,15 @@ export const KIN_RPC_SCOPES = {
 } as const;
 
 export const KIN_RPC_AGGREGATES = {
+  "kin.people.listInvites": "kin-people",
+  "kin.people.revokeInvite": "kin-people",
+  "kin.people.list": "kin-people",
+  "kin.people.createInvite": "kin-people",
+  "kin.people.listDevices": "kin-people",
+  "kin.people.revokeDevice": "kin-people",
+  "kin.people.removeAccess": "kin-people",
+  "kin.people.setGithubLogin": "kin-people",
+
   "kin.budget.get": "kin-budget",
   "kin.budget.set": "kin-budget",
   "kin.org.get": "kin-org",
@@ -155,10 +248,25 @@ export const KIN_RPC_AGGREGATES = {
   "kin.org.resume": "kin-org",
   "kin.lead.interrupt": "kin-org",
   "kin.lead.create": "kin-chat",
+  "kin.leads.list": "kin-chat",
+  "kin.lead.update": "kin-chat",
+  "kin.lead.retire": "kin-chat",
+  "kin.lead.restore": "kin-chat",
+  "kin.lead.access.list": "kin-chat",
+  "kin.lead.access.grant": "kin-chat",
+  "kin.lead.access.revoke": "kin-chat",
   "kin.orgs.list": "kin-chat",
   "kin.chats.subscribe": "kin-chat",
   "kin.chats.createDirect": "kin-chat",
   "kin.chats.mute": "kin-chat",
+  "kin.chats.clear": "kin-chat",
+  "kin.chat.members": "kin-chat",
+  "kin.groups.create": "kin-chat",
+  "kin.groups.addMember": "kin-chat",
+  "kin.groups.removeMember": "kin-chat",
+  "kin.groups.setLead": "kin-chat",
+  "kin.groups.rename": "kin-chat",
+  "kin.groups.delete": "kin-chat",
   "kin.chat.subscribe": "kin-chat",
   "kin.chat.history": "kin-chat",
   "kin.messages.send": "kin-chat",
@@ -177,15 +285,58 @@ export const KIN_RPC_AGGREGATES = {
   "kin.audit.list": "kin-approvals",
   "kin.audit.verify": "kin-approvals",
   "kin.levels.get": "kin-levels",
-  "kin.levels.review": "kin-levels",
   "kin.levels.lower": "kin-levels",
   "kin.levels.raise": "kin-levels",
-  "kin.levels.deferPromotion": "kin-levels",
-  "kin.levels.shadowMemory": "kin-levels",
   "kin.memory.undo": "kin-memory",
+  "kin.memory.list": "kin-memory",
+  "kin.memory.setVisibility": "kin-memory",
+  "kin.memory.confirmSuggestions": "kin-memory",
+  "kin.memory.forget": "kin-memory",
+  "kin.docs.list": "kin-docs",
+  "kin.docs.get": "kin-docs",
+  "kin.docs.history": "kin-docs",
+  "kin.docs.diff": "kin-docs",
+  "kin.docs.restore": "kin-docs",
+  "kin.docs.subscribe": "kin-docs",
+  "kin.search": "kin-docs",
+  "kin.docs.recipes": "kin-docs",
+  "kin.work.summary": "kin-work",
+  "kin.work.list": "kin-work",
+  "kin.work.get": "kin-work",
+  "kin.work.subscribe": "kin-work",
+  "kin.work.create": "kin-work",
+  "kin.work.assign": "kin-work",
+  "kin.work.update": "kin-work",
+  "kin.work.confirm": "kin-work",
+  "kin.work.decline": "kin-work",
+  "kin.work.parties": "kin-work",
+  "kin.work.party": "kin-work",
+  "kin.work.projects": "kin-work",
+  "kin.work.project": "kin-work",
+  "kin.work.history": "kin-work",
+  "kin.work.createParty": "kin-work",
+  "kin.work.updateParty": "kin-work",
+  "kin.work.createContact": "kin-work",
+  "kin.work.updateContact": "kin-work",
+  "kin.work.createProject": "kin-work",
+  "kin.work.updateProject": "kin-work",
+  "kin.work.lists": "kin-work",
+  "kin.work.updateList": "kin-work",
+  "kin.work.dates": "kin-work",
+  "kin.work.money": "kin-work",
+  "kin.work.recordPayment": "kin-work",
+  "kin.work.voidPayment": "kin-work",
+  "kin.work.files": "kin-work",
+  "kin.work.companyProfile": "kin-work",
+  "kin.work.setCompanyProfile": "kin-work",
+  "kin.work.issue": "kin-work",
+  "kin.work.void": "kin-work",
   "kin.push.registerDevice": "kin-push",
   "kin.push.unregisterDevice": "kin-push",
   "kin.push.watch": "kin-push",
+  "kin.visuals.hosts.list": "kin-chat",
+  "kin.visuals.hosts.allow": "kin-chat",
+  "kin.visuals.hosts.remove": "kin-chat",
   "kin.triggers.getTimeZone": "kin-triggers",
   "kin.triggers.setTimeZone": "kin-triggers",
   "kin.webhooks.github.setup": "kin-webhooks",
@@ -193,4 +344,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.webhooks.github.rotate": "kin-webhooks",
   "kin.webhooks.github.remove": "kin-webhooks",
   "kin.webhooks.github.status": "kin-webhooks",
+  "kin.workers.network.get": "kin-workers",
+  "kin.workers.network.allow": "kin-workers",
+  "kin.workers.network.remove": "kin-workers",
 } as const;

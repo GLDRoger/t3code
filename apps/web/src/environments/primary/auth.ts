@@ -6,7 +6,11 @@ import type {
   AuthSessionId,
   AuthSessionState,
 } from "@t3tools/contracts";
-import { EnvironmentHttpCommonError, PRIMARY_LOCAL_ENVIRONMENT_ID } from "@t3tools/contracts";
+import {
+  EnvironmentHttpCommonError,
+  PRIMARY_LOCAL_ENVIRONMENT_ID,
+  sessionIsChatOnly,
+} from "@t3tools/contracts";
 import type { EnvironmentHttpCommonError as EnvironmentHttpCommonErrorType } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -126,7 +130,8 @@ export interface ServerClientSessionRecord {
 }
 
 type ServerAuthGateState =
-  | { status: "authenticated" }
+  // chatOnly: a teammate's session, which reaches Kin chats and nothing else in the app.
+  | { status: "authenticated"; chatOnly?: true }
   | {
       status: "requires-auth";
       auth: AuthSessionState["auth"];
@@ -304,7 +309,9 @@ function isTransientBootstrapError(error: unknown): boolean {
 async function bootstrapServerAuth(urlCredential: string | null): Promise<ServerAuthGateState> {
   const currentSession = await fetchSessionState();
   if (currentSession.authenticated && !urlCredential) {
-    return { status: "authenticated" };
+    return sessionIsChatOnly(currentSession)
+      ? { status: "authenticated", chatOnly: true }
+      : { status: "authenticated" };
   }
 
   const bootstrapCredential = urlCredential ?? getDesktopBootstrapCredential();
@@ -392,6 +399,17 @@ export async function resolveInitialServerAuthGateState(): Promise<ServerAuthGat
         bootstrapPromise = null;
       }
     });
+}
+
+/**
+ * A teammate's session, which reaches Kin chats and nothing else. Read after the root route
+ * loads; it only changes across a full page load, since signing in reloads.
+ */
+export function isChatOnlySession(): boolean {
+  return (
+    resolvedAuthenticatedGateState?.status === "authenticated" &&
+    resolvedAuthenticatedGateState.chatOnly === true
+  );
 }
 
 export function __resetServerAuthBootstrapForTests() {

@@ -1,3 +1,4 @@
+import { kinOwnsDirectChat } from "@t3tools/client-runtime/kin/kinClearChat";
 import { useAtomValue } from "@effect/atom-react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import {
@@ -18,6 +19,7 @@ import {
   type KinFeedViewer,
   type KinPaging,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
+import { kinFeedMessages } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import {
   initialKinFeedFollow,
   kinFollowsEnd,
@@ -32,6 +34,19 @@ import {
 } from "@t3tools/client-runtime/kin/kinInboxModel";
 import { KIN_INTRO_PROMPTS, kinIntroVisible } from "@t3tools/client-runtime/kin/kinIntro";
 import {
+  kinAgentGroups,
+  kinHeldCardAgent,
+  kinRetiredChatLine,
+  kinRetiredDirectAgentId,
+  kinRetiredEmptyChat,
+  kinRetiredGroupAnswerer,
+  kinRetiredGroupLine,
+} from "@t3tools/client-runtime/kin/kinAgentRetire";
+import {
+  kinChatReadOnly,
+  kinChatReadOnlyLine,
+} from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import {
   kinPresenceLine,
   kinPresenceNeedsClock,
   kinPresenceTimerStart,
@@ -44,21 +59,32 @@ import {
 import {
   kinReactionChips,
   kinReactionToggle,
-  kinSoftReplyMessageId,
   kinViewerMemberId,
 } from "@t3tools/client-runtime/kin/kinReactions";
 import {
+  kinAgentAvatar,
+  kinAvatarView,
+  kinChatMuted,
   kinChatTitle,
   kinDirectAgentName,
-  kinLevelsAgentId,
+  kinOwnedLeadAgentId,
+  type KinAvatarView,
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import type { KinSynced } from "@t3tools/client-runtime/kin/kinStreams";
 import {
-  KIN_NO_REACTIONS,
-  KIN_YES_REACTIONS,
+  kinDocAskPlaceholder,
+  kinDocRefLabel,
+  kinPendingRefAtom,
+  kinPendingRefKey,
+} from "@t3tools/client-runtime/kin/kinDocs";
+import {
   KinChatId,
   type EnvironmentId,
+  type KinAttachment,
   type KinChatMember,
+  type KinChatMembersResult,
+  type KinLeadsListResult,
+  type KinMessageRef,
   type KinPresence,
   type KinReactionEmoji,
   type KinWakeupId,
@@ -67,10 +93,20 @@ import { Link } from "@tanstack/react-router";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { Atom, type AsyncResult } from "effect/reactivity";
-import { ArrowDownIcon, ArrowLeftIcon, ChevronUpIcon } from "lucide-react";
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { AsyncResult, Atom } from "effect/reactivity";
+import { ArrowDownIcon, ArrowLeftIcon, ChevronUpIcon, XIcon } from "lucide-react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type DragEvent,
+  type KeyboardEvent,
+} from "react";
 
+import { ComposerAttachButton } from "../components/chat/ComposerAttachmentStrip";
+import { shouldHandleComposerAttachmentPaste } from "../components/chat/composerAttachmentFiles";
+import { ExpandedImageDialogHost } from "../components/chat/ExpandedImageDialog";
 import {
   ComposerPrimaryActions,
   StopGenerationButton,
@@ -87,13 +123,35 @@ import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import { Spinner } from "../components/ui/spinner";
-import { Textarea } from "../components/ui/textarea";
+import { isElectron } from "../env";
+import { cn } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
-import { kinClient } from "./kinClient";
-import { deliverKinOutbox, kinOutbox, startKinOutbox } from "./kinOutbox";
+import { KinAvatar } from "./KinAvatar";
 import {
+  KinComposerAttachmentStrip,
+  kinPreviewKey,
+  useKinComposerAttachments,
+} from "./KinComposerAttachments";
+import { KinRestoreAgent, type KinAgentTarget } from "./KinAgentRetire";
+import { kinClient } from "./kinClient";
+import { KinGroupSheet } from "./KinGroupSheet";
+import { kinProfileRequestAtom } from "./kinTeamForm";
+import { KinLeadSheet, type KinLeadAbout } from "./KinLeadSheet";
+import {
+  kinApplyMention,
+  kinMemberNames,
+  kinMentionCandidates,
+  kinMentionQuery,
+  kinMentionsIn,
+  type KinMentionCandidate,
+} from "@t3tools/client-runtime/kin/kinGroups";
+import { deliverKinOutbox, kinLocalPreviews, kinOutbox, startKinOutbox } from "./kinOutbox";
+import { kinFeedDisplay } from "./kinFeedDisplay";
+import {
+  formatKinMessageTime,
   KinDayRow,
+  KinDocRefMark,
   KinDraftRow,
   KinFoldRow,
   KinMessageRow,
@@ -105,13 +163,17 @@ import { useKinHostAt } from "./useKinHost";
 
 type ChatResult = AsyncResult.AsyncResult<KinSynced<KinChatState>, unknown> | null;
 type InboxResult = AsyncResult.AsyncResult<KinSynced<KinInboxState>, unknown> | null;
+const NO_RETIRED_AGENTS: ReadonlySet<string> = new Set();
+type LeadsResult = AsyncResult.AsyncResult<KinLeadsListResult, unknown> | null;
+const noLeadsAtom: Atom.Atom<LeadsResult> = Atom.make<LeadsResult>(null);
+type GroupResult = AsyncResult.AsyncResult<KinChatMembersResult, unknown> | null;
+const noGroupAtom: Atom.Atom<GroupResult> = Atom.make<GroupResult>(null);
 const noChatAtom: Atom.Atom<ChatResult> = Atom.make<ChatResult>(null);
 const noInboxAtom: Atom.Atom<InboxResult> = Atom.make<InboxResult>(null);
 const decodeChatId = Schema.decodeUnknownOption(KinChatId);
 
 // Mirrors the host's reactable cards; the host still refuses the rest.
 const REACTABLE_WIDGETS = new Set(["choice", "task", "routine"]);
-const YES_NO = new Set<string>([...KIN_YES_REACTIONS, ...KIN_NO_REACTIONS]);
 
 /** Every Kin host uses the same org id, so the environment keeps two hosts' drafts apart. */
 const kinDraftAtom = Atom.family((_key: string) =>
@@ -120,11 +182,31 @@ const kinDraftAtom = Atom.family((_key: string) =>
 const kinDraftKey = (environmentId: EnvironmentId, orgId: string, chatId: string) =>
   `${environmentId}:${orgId}:${chatId}`;
 
+/** Readies a message in a chat's box for the owner to send, unless it is already there. */
+export function prefillKinDraft(
+  environmentId: EnvironmentId,
+  orgId: string,
+  chatId: string,
+  body: string,
+) {
+  const key = kinDraftKey(environmentId, orgId, chatId);
+  if (!appAtomRegistry.get(kinDraftAtom(key)).includes(body)) restoreDraft(key, body);
+}
+
 /** Puts an unsent body back in the draft, ahead of anything typed since. */
 function restoreDraft(key: string, body: string) {
   const atom = kinDraftAtom(key);
   const typed = appAtomRegistry.get(atom);
   appAtomRegistry.set(atom, typed.trim().length === 0 ? body : `${body}\n\n${typed}`);
+}
+
+/** A lead's charter as the empty chat's opening lines: whole when short, else cut at a word. */
+function kinIntroCharter(charter: string): string | null {
+  const text = charter.trim();
+  if (text === "") return null;
+  if (text.length <= 240) return text;
+  const cut = text.slice(0, 240);
+  return `${cut.slice(0, Math.max(cut.lastIndexOf(" "), 120)).replace(/[\s.,;:]+$/, "")}…`;
 }
 
 /** One Kin chat, from the route's environment, org and chat. */
@@ -157,8 +239,79 @@ export function KinChatView(props: {
     inbox?._tag === "Success"
       ? inbox.value.value.chats.find((chat) => chat.chatId === chatId)
       : undefined;
-  const ownedAgentId = summary === undefined ? null : kinLevelsAgentId(summary, viewer.personId);
+  const ownedAgentId = summary === undefined ? null : kinOwnedLeadAgentId(summary, viewer.personId);
+  const canRestore = useAtomValue(kinClient.leadRestore.permissionAtom(props.environmentId));
+  // A direct chat's lead has details to open: the viewer's own, or one they were let message.
+  // The owner's list carries their retired agents too, so a retired one still has details.
+  const leadsAtom: Atom.Atom<LeadsResult> =
+    environmentId === null || summary === undefined || summary.kind !== "direct"
+      ? noLeadsAtom
+      : canRestore
+        ? kinClient.agents({ environmentId, orgId: summary.orgId })
+        : kinClient.leads({ environmentId, input: { orgId: summary.orgId } });
+  const leads = useAtomValue(leadsAtom);
+  const lead =
+    leads?._tag === "Success" && ownedAgentId !== null
+      ? (leads.value.leads.find((held) => held.agentId === ownedAgentId) ?? null)
+      : null;
+  const contact =
+    leads?._tag === "Success" && ownedAgentId === null
+      ? (leads.value.contacts?.find((held) => held.chatId === chatId) ?? null)
+      : null;
+  const about: KinLeadAbout | null =
+    lead !== null ? { kind: "own", lead } : contact !== null ? { kind: "contact", contact } : null;
+  const readOnly = kinChatReadOnly(summary, viewer.personId);
+  const activeAgents =
+    leads?._tag === "Success" ? kinAgentGroups(leads.value.leads).active.length : 0;
+  // The profile is read after a retire or restore; the directory says it for everyone else.
+  const retiredAgentId =
+    lead !== null
+      ? lead.retired === undefined
+        ? null
+        : lead.agentId
+      : kinRetiredDirectAgentId(summary, viewer.retiredAgents ?? NO_RETIRED_AGENTS);
+  const retiredName =
+    retiredAgentId === null
+      ? null
+      : (lead?.name ?? viewer.agentNames.get(retiredAgentId) ?? "This agent");
+  const restorable: KinAgentTarget | null =
+    lead === null || lead.retired === undefined || environmentId === null || !canRestore
+      ? null
+      : { environmentId, orgId: lead.orgId, agentId: lead.agentId, name: lead.name };
+  // A group's row carries only the viewer's own member; who else is in it is read by name.
+  const isGroup = summary !== undefined && summary.kind !== "direct";
+  const groupAtom: Atom.Atom<GroupResult> =
+    environmentId === null || chatId === null || !isGroup
+      ? noGroupAtom
+      : kinClient.chatMembers({ environmentId, input: { chatId } });
+  const groupResult = useAtomValue(groupAtom);
+  // What was last read stays up while a change is read again.
+  const group = groupResult === null ? null : Option.getOrNull(AsyncResult.value(groupResult));
+  const mentionable = kinMentionCandidates(group?.members ?? null, viewer.retiredAgents);
+  const silentAnswerer = kinRetiredGroupAnswerer(group, viewer.retiredAgents);
+  const [profileHeld, setProfileHeld] = useState(false);
+  // A teammate's row on the Team page leads here with the lead's details already open.
+  const profileRequested = useAtomValue(kinProfileRequestAtom) === chatId && chatId !== null;
+  const profileOpen = profileHeld || profileRequested;
+  const setProfileOpen = (open: boolean) => {
+    setProfileHeld(open);
+    if (!open && profileRequested) appAtomRegistry.set(kinProfileRequestAtom, null);
+  };
+  const nowMs = useNowMinuteMs();
+  const muted =
+    summary !== undefined &&
+    viewer.personId !== null &&
+    kinChatMuted(summary, new Set([viewer.personId]), nowMs);
   const title = summary === undefined ? "Chat" : kinChatTitle(summary, viewer.agentNames);
+  const avatar =
+    summary === undefined
+      ? null
+      : kinAvatarView(
+          summary,
+          summary.members.find(
+            (member) => member.leftAt === null && member.principal._tag === "agent",
+          ) ?? null,
+        );
 
   const retry = () => {
     if (environmentId === null) return;
@@ -177,7 +330,42 @@ export function KinChatView(props: {
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <KinChatHeader title={title} presence={presence} tasks={tasks} />
+      <KinChatHeader
+        title={title}
+        avatar={avatar}
+        tasks={tasks}
+        muted={muted}
+        onOpenProfile={about === null && group === null ? null : () => setProfileOpen(true)}
+      />
+      {group === null || environmentId === null || summary === undefined ? null : (
+        <KinGroupSheet
+          open={profileOpen}
+          onOpenChange={setProfileOpen}
+          group={group}
+          environmentId={environmentId}
+          orgId={summary.orgId}
+          personId={viewer.personId}
+          muted={muted}
+          retiredAgents={viewer.retiredAgents ?? NO_RETIRED_AGENTS}
+        />
+      )}
+      {about === null || avatar === null || environmentId === null || chatId === null ? null : (
+        <KinLeadSheet
+          open={profileOpen}
+          onOpenChange={setProfileOpen}
+          about={about}
+          avatar={avatar}
+          environmentId={environmentId}
+          chatId={chatId}
+          personId={viewer.personId}
+          muted={muted}
+          activeAgents={activeAgents}
+          ownsChat={
+            summary !== undefined &&
+            kinOwnsDirectChat(summary.kind, summary.members, viewer.personId)
+          }
+        />
+      )}
       {state._tag === "ready" ? (
         <KinChatFeed
           // Paging, folds and follow belong to one chat.
@@ -191,11 +379,14 @@ export function KinChatView(props: {
           connected={state.connected}
           error={state.error}
           onRetry={retry}
-          viewer={viewer}
+          viewer={
+            isGroup ? { ...viewer, memberNames: kinMemberNames(group?.members ?? null) } : viewer
+          }
+          mentionable={mentionable}
           unread={summary?.unread ?? null}
           presence={presence}
           stopLead={
-            summary === undefined || ownedAgentId === null || !canInterrupt
+            summary === undefined || ownedAgentId === null || !canInterrupt || retiredName !== null
               ? null
               : (wakeupId) =>
                   kinClient.leadInterrupt
@@ -205,9 +396,16 @@ export function KinChatView(props: {
                     })
                     .then((result) => result._tag === "Success")
           }
-          members={summary?.members ?? []}
+          charter={lead === null ? null : kinIntroCharter(lead.charter)}
+          members={group?.members ?? summary?.members ?? []}
           direct={summary?.kind === "direct"}
           ownsLead={ownedAgentId !== null}
+          about={contact === null || contact.intro.trim() === "" ? null : contact.intro}
+          readOnly={readOnly}
+          retired={retiredName === null ? null : { name: retiredName, restorable }}
+          groupNotice={
+            silentAnswerer === null ? null : kinRetiredGroupLine(silentAnswerer, canRestore)
+          }
         />
       ) : (
         <KinChatStateView state={state} onRetry={retry} />
@@ -216,16 +414,30 @@ export function KinChatView(props: {
   );
 }
 
-/** The chat's title, with presence while the lead works and open tasks otherwise. */
+/** Who the chat is with, and their open tasks. What the lead is doing right now reads under the feed. */
 function KinChatHeader(props: {
   readonly title: string;
-  readonly presence: KinPresence | undefined;
+  readonly avatar: KinAvatarView | null;
   readonly tasks: string | null;
+  readonly muted: boolean;
+  /** Opens the lead's profile; null for a chat that has none to show. */
+  readonly onOpenProfile: (() => void) | null;
 }) {
-  const now = useKinPresenceNow(kinPresenceNeedsClock(props.presence));
-  const subtitle = kinPresenceLine(props.presence, now)?.subtitle ?? props.tasks;
+  const subtitle = props.tasks;
+  const identity = (
+    <>
+      {props.avatar === null ? null : <KinAvatar avatar={props.avatar} size="sm" />}
+      <WorkspaceBreadcrumb ariaLabel="Chat" className="shrink">
+        <WorkspaceBreadcrumbItem current>
+          <h1 className="min-w-0">
+            <WorkspaceBreadcrumbText>{props.title}</WorkspaceBreadcrumbText>
+          </h1>
+        </WorkspaceBreadcrumbItem>
+      </WorkspaceBreadcrumb>
+    </>
+  );
   return (
-    <WorkspacePageHeader titlebarInset={false} className="border-b border-border">
+    <WorkspacePageHeader electron={isElectron}>
       <Button
         size="icon-sm"
         variant="ghost"
@@ -235,13 +447,19 @@ function KinChatHeader(props: {
       >
         <ArrowLeftIcon />
       </Button>
-      <WorkspaceBreadcrumb ariaLabel="Chat" className="shrink">
-        <WorkspaceBreadcrumbItem current>
-          <h2 className="min-w-0">
-            <WorkspaceBreadcrumbText>{props.title}</WorkspaceBreadcrumbText>
-          </h2>
-        </WorkspaceBreadcrumbItem>
-      </WorkspaceBreadcrumb>
+      {props.onOpenProfile === null ? (
+        identity
+      ) : (
+        <button
+          type="button"
+          aria-label={`${props.title}: open details`}
+          className="-mx-1.5 flex min-w-0 shrink items-center gap-3 rounded-md px-1.5 py-1 outline-none ring-ring [-webkit-app-region:no-drag] hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
+          onClick={props.onOpenProfile}
+        >
+          {identity}
+        </button>
+      )}
+      {props.muted ? <span className="sr-only">Muted</span> : null}
       {subtitle === null ? null : (
         <p className="min-w-0 flex-1 truncate text-sm text-muted-foreground">{subtitle}</p>
       )}
@@ -262,12 +480,12 @@ const STATE_COPY: Record<
     detail: "Connect to a T3 server that runs Kin.",
   },
   unpaired: {
-    title: "This browser isn't paired with that Mac",
-    detail: "Pair it again to open this chat.",
+    title: "This browser isn't connected to that server",
+    detail: "Pair it with the server that runs Kin to open this chat.",
   },
   unauthorized: {
     title: "This browser can't read Kin chats",
-    detail: "Pair it again from the Mac.",
+    detail: "Pair it again with the server that runs Kin.",
   },
   noIdentity: {
     title: "Kin doesn't know who you are on this server yet",
@@ -332,7 +550,12 @@ const offlineTime = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute
 
 type KinChatRow =
   | KinFeedRow
-  | { readonly type: "pending"; readonly key: string; readonly entry: KinOutboxEntry };
+  | {
+      readonly type: "pending";
+      readonly key: string;
+      readonly entry: KinOutboxEntry;
+      readonly continues: boolean;
+    };
 
 type StopState = "idle" | "stopping" | "failed";
 
@@ -350,9 +573,21 @@ function KinChatFeed(props: {
   readonly unread: number | null;
   readonly presence: KinPresence | undefined;
   readonly stopLead: ((wakeupId: string) => Promise<boolean>) | null;
+  /** What the owner wrote this lead is for; the intro shows it before the first message. */
+  readonly charter: string | null;
   readonly members: ReadonlyArray<KinChatMember>;
+  /** A group's leads, which the composer offers on `@`. */
+  readonly mentionable: ReadonlyArray<KinMentionCandidate>;
   readonly direct: boolean;
   readonly ownsLead: boolean;
+  /** What the owner of someone else's lead wrote for the people it talks to. */
+  readonly about: string | null;
+  /** The viewer reads this chat and can no longer write in it. */
+  readonly readOnly: boolean;
+  /** This direct chat's agent is retired: its history stays, with Restore where the owner may. */
+  readonly retired: { readonly name: string; readonly restorable: KinAgentTarget | null } | null;
+  /** Said over the composer of a group whose answering agent is retired. */
+  readonly groupNotice: string | null;
 }) {
   const listRef = useRef<LegendListRef | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
@@ -362,6 +597,7 @@ function KinChatFeed(props: {
   const lastRequest = useRef(0);
   const nowMs = useNowMinuteMs();
   const draftKey = kinDraftKey(props.environmentId, props.orgId, props.chatId);
+  const previewKey = kinPreviewKey(draftKey);
   const [heldPaging, setPaging] = useState<KinPaging>(initialKinPaging);
   const [expandedRuns, setExpandedRuns] = useState<ReadonlySet<string>>(new Set());
   const [follow, setFollow] = useState(() =>
@@ -391,34 +627,42 @@ function KinChatFeed(props: {
     canReactHere &&
     viewerMemberId !== null &&
     props.members.some((member) => member.memberId === viewerMemberId && member.role !== "guest");
-  const softReplyId = kinSoftReplyMessageId(
-    streamed.messages,
-    props.members,
-    props.viewer.personId,
-    props.direct,
-    nowMs,
-  );
   const reactorName = (memberId: string) => {
     const member = props.members.find((candidate) => candidate.memberId === memberId);
     if (member === undefined) return null;
     return member.principal._tag === "agent"
-      ? (props.viewer.agentNames.get(member.principal.agentId) ?? "Lead")
-      : member.role === "owner"
-        ? "Owner"
-        : "Member";
+      ? (props.viewer.agentNames.get(member.principal.agentId) ?? "Agent")
+      : (props.viewer.memberNames?.get(memberId) ?? (member.role === "owner" ? "Owner" : "Member"));
   };
   const dayStart = new Date(nowMs);
   dayStart.setHours(0, 0, 0, 0);
-  const feedRows = buildKinFeedRows(messages, props.viewer, expandedRuns, dayStart, live.drafts);
+  const feedRows = buildKinFeedRows(
+    kinFeedMessages(messages, widgets),
+    props.viewer,
+    expandedRuns,
+    dayStart,
+    live.drafts,
+  );
+  const display = kinFeedDisplay({
+    rows: feedRows,
+    direct: props.direct,
+    formatTime: formatKinMessageTime,
+  });
+  const shownRows = feedRows.some((row) => display.get(row.key)?.hidden === true)
+    ? feedRows.filter((row) => display.get(row.key)?.hidden !== true)
+    : feedRows;
+  const lastShownRow = shownRows.at(-1);
+  const endsOnOwn = lastShownRow?.type === "message" && lastShownRow.own;
   const rows: ReadonlyArray<KinChatRow> =
     pending.length === 0
-      ? feedRows
+      ? shownRows
       : [
-          ...feedRows,
-          ...pending.map((entry) => ({
+          ...shownRows,
+          ...pending.map((entry, index) => ({
             type: "pending" as const,
             key: `pending:${entry.clientMessageId}`,
             entry,
+            continues: index > 0 || endsOnOwn,
           })),
         ];
 
@@ -442,11 +686,12 @@ function KinChatFeed(props: {
   const followsEnd = kinFollowsEnd(follow);
   const unseen = followsEnd ? 0 : kinUnseenCount(messages, follow.seenSeq, props.viewer.personId);
   const loading = paging.request !== null;
-  const earlierPage = kinEarlierPage(props.chatId, messages, paging.exhausted);
+  const earlierPage = kinEarlierPage(props.chatId, messages, paging.exhausted, live.clearedSeq);
   const canLoadEarlier = props.connected && earlierPage !== null;
   const latestSeq = latestKinSeq(messages);
   const showIntro = kinIntroVisible({
-    ownsLead: props.ownsLead,
+    // Nobody is there to greet in a retired agent's chat.
+    ownsLead: props.ownsLead && props.retired === null,
     agentName: props.agentName,
     viewerPersonId: props.viewer.personId,
     messages,
@@ -557,13 +802,26 @@ function KinChatFeed(props: {
     });
   };
 
-  const sendText = async (body: string) => {
+  const sendText = async (
+    body: string,
+    attachments: ReadonlyArray<KinAttachment> = [],
+    images: ReadonlyArray<Blob> = [],
+    refs: ReadonlyArray<KinMessageRef> = [],
+  ) => {
     const queued = await kinOutbox.enqueue({
       environmentId: props.environmentId,
       chatId: props.chatId,
       body,
+      ...(attachments.length > 0 ? { attachments } : {}),
+      // Read from the text, so a resent message asks the lead it named the first time.
+      mentions: kinMentionsIn(body, props.mentionable),
+      ...(refs.length > 0 ? { refs } : {}),
     });
     if (queued._tag !== "queued") return false;
+    kinLocalPreviews.remember(
+      queued.entry.clientMessageId,
+      images.map((image) => URL.createObjectURL(image)),
+    );
     jumpToEnd();
     void deliverKinOutbox();
     return true;
@@ -573,6 +831,7 @@ function KinChatFeed(props: {
     switch (item.type) {
       case "message": {
         const { message } = item;
+        const shown = display.get(item.key);
         const widget = message.widgetId === null ? undefined : widgets.get(message.widgetId);
         const chips = kinReactionChips(
           streamed.reactions,
@@ -580,7 +839,7 @@ function KinChatFeed(props: {
           viewerMemberId,
           reactorName,
         );
-        // The host refuses reactions on approval, level, review and deferral cards.
+        // The host refuses reactions on approval and deferral cards.
         const reactable =
           canReact &&
           message.status === "posted" &&
@@ -589,9 +848,13 @@ function KinChatFeed(props: {
         return (
           <KinMessageRow
             row={item}
+            head={shown?.head ?? null}
+            direct={props.direct}
             widget={widget}
             environmentId={props.environmentId}
             viewerPersonId={props.viewer.personId}
+            heldFor={kinHeldCardAgent(message.author, props.viewer, props.retired?.name ?? null)}
+            orgId={props.orgId}
             reactions={chips}
             onReact={
               reactable
@@ -602,12 +865,7 @@ function KinChatFeed(props: {
                     })
                 : null
             }
-            showReplyHint={
-              canReact &&
-              message.messageId === softReplyId &&
-              message.widgetId === null &&
-              !chips.some((chip) => chip.mine && YES_NO.has(chip.emoji))
-            }
+            previewKey={previewKey}
           />
         );
       }
@@ -628,20 +886,29 @@ function KinChatFeed(props: {
           <KinPendingRow
             entry={item.entry}
             connected={props.connected}
+            environmentId={props.environmentId}
+            orgId={props.orgId}
+            previewKey={previewKey}
+            continues={item.continues}
             onEdit={() =>
               void kinOutbox.discard(item.entry.clientMessageId).then((body) => {
                 if (body === null) return;
+                kinLocalPreviews.forget(item.entry.clientMessageId);
                 restoreDraft(draftKey, body);
                 composerRef.current?.focus();
               })
             }
-            onDiscard={() => void kinOutbox.discard(item.entry.clientMessageId)}
+            onDiscard={() =>
+              void kinOutbox.discard(item.entry.clientMessageId).then((body) => {
+                if (body !== null) kinLocalPreviews.forget(item.entry.clientMessageId);
+              })
+            }
           />
         );
       case "day":
         return <KinDayRow label={item.label} />;
       case "draft":
-        return <KinDraftRow row={item} environmentId={props.environmentId} />;
+        return <KinDraftRow row={item} environmentId={props.environmentId} direct={props.direct} />;
     }
   };
 
@@ -654,6 +921,7 @@ function KinChatFeed(props: {
     showIntro && props.agentName !== null ? (
       <KinIntro
         agentName={props.agentName}
+        charter={props.charter}
         onSend={(text) => void sendText(text)}
         onStart={(text) => {
           appAtomRegistry.set(kinDraftAtom(draftKey), text);
@@ -700,6 +968,7 @@ function KinChatFeed(props: {
     </div>
   );
 
+  const retiredEmpty = props.retired === null ? null : kinRetiredEmptyChat(props.retired.name);
   // After a reset the feed is empty until the latest page reloads; that's not an empty chat.
   const empty =
     rows.length === 0 && earlierPage === null && !live.needsHistoryReload
@@ -707,12 +976,18 @@ function KinChatFeed(props: {
           <Empty size="compact">
             <EmptyHeader>
               <EmptyTitle>
-                {props.agentName === null ? "No messages yet" : `Say hello to ${props.agentName}.`}
+                {retiredEmpty !== null
+                  ? retiredEmpty.title
+                  : props.agentName === null
+                    ? "No messages yet"
+                    : `Say hello to ${props.agentName}`}
               </EmptyTitle>
               <EmptyDescription>
-                {props.agentName === null
-                  ? "Messages in this chat show up here."
-                  : "It reads every message here."}
+                {retiredEmpty !== null
+                  ? retiredEmpty.detail
+                  : props.agentName === null
+                    ? "Messages in this chat show up here."
+                    : (props.about ?? "Your first message starts the chat.")}
               </EmptyDescription>
             </EmptyHeader>
           </Empty>
@@ -737,7 +1012,7 @@ function KinChatFeed(props: {
         }
         renderItem={renderItem}
         // Both reach rows only through renderItem, which the list doesn't watch.
-        extraData={[streamed.widgets, streamed.reactions, softReplyId, canReact]}
+        extraData={[streamed.widgets, streamed.reactions, canReact, display]}
         estimatedItemSize={72}
         recycleItems={false}
         alignItemsAtEnd
@@ -776,14 +1051,37 @@ function KinChatFeed(props: {
             {notice}
           </p>
         )}
-        <KinComposer
-          draftKey={draftKey}
-          environmentId={props.environmentId}
-          recipient={props.title}
-          textareaRef={composerRef}
-          onSend={sendText}
-        />
+        {props.groupNotice === null ? null : (
+          <p role="status" className="pb-2 text-center text-xs text-muted-foreground">
+            {props.groupNotice}
+          </p>
+        )}
+        {props.retired !== null ? (
+          <div role="status" className="flex flex-col items-center gap-2 py-3">
+            <p className="text-center text-sm text-muted-foreground">
+              {kinRetiredChatLine(props.retired.name, props.retired.restorable !== null)}
+            </p>
+            {props.retired.restorable === null ? null : (
+              <KinRestoreAgent agent={props.retired.restorable} />
+            )}
+          </div>
+        ) : props.readOnly ? (
+          <p role="status" className="py-3 text-center text-sm text-muted-foreground">
+            {kinChatReadOnlyLine(props.agentName)}
+          </p>
+        ) : (
+          <KinComposer
+            draftKey={draftKey}
+            environmentId={props.environmentId}
+            pendingRefKey={kinPendingRefKey(props.environmentId, props.chatId)}
+            recipient={props.title}
+            textareaRef={composerRef}
+            onSend={sendText}
+            mentionable={props.mentionable}
+          />
+        )}
       </div>
+      <ExpandedImageDialogHost threadKey={previewKey} />
     </div>
   );
 }
@@ -836,16 +1134,17 @@ function KinPresenceLine(props: {
 /** First run in the owner's chat with their lead: what it does and a few asks to start with. */
 function KinIntro(props: {
   readonly agentName: string;
+  readonly charter: string | null;
   readonly onSend: (text: string) => void;
   readonly onStart: (text: string) => void;
 }) {
   return (
     <Empty size="compact">
       <EmptyHeader>
-        <EmptyTitle>What {props.agentName} does</EmptyTitle>
+        <EmptyTitle>Say hello to {props.agentName}</EmptyTitle>
         <EmptyDescription>
-          Tell it what you need in plain words. It answers, remembers what you ask it to, sets
-          reminders and hands bigger jobs to workers. When it needs a decision, it asks you here.
+          {props.charter ??
+            `Ask for what you need in plain words. ${props.agentName} replies here, and asks you when a decision is yours.`}
         </EmptyDescription>
       </EmptyHeader>
       <div className="flex flex-wrap justify-center gap-2">
@@ -889,29 +1188,103 @@ function KinComposer(props: {
   readonly environmentId: EnvironmentId;
   readonly recipient: string;
   readonly textareaRef: React.RefObject<HTMLTextAreaElement | null>;
-  readonly onSend: (body: string) => Promise<boolean>;
+  readonly onSend: (
+    body: string,
+    attachments: ReadonlyArray<KinAttachment>,
+    images: ReadonlyArray<Blob>,
+    refs: ReadonlyArray<KinMessageRef>,
+  ) => Promise<boolean>;
+  /** Where a doc section pointed at for this chat waits until it is sent. */
+  readonly pendingRefKey: string;
+  /** The group's leads, offered on `@`; a message that names one is answered by it. */
+  readonly mentionable: ReadonlyArray<KinMentionCandidate>;
 }) {
   const { draftKey, environmentId, recipient, textareaRef, onSend } = props;
+  // Where the caret is, and the text the suggestions were last dismissed for.
+  const [caret, setCaret] = useState(0);
+  const [dismissed, setDismissed] = useState<string | null>(null);
   const atom = kinDraftAtom(draftKey);
   const text = useAtomValue(atom);
+  const pendingAtom = kinPendingRefAtom(props.pendingRefKey);
+  const pending = useAtomValue(pendingAtom);
   const full = useAtomValue(kinOutbox.fullAtom(environmentId));
+  const files = useKinComposerAttachments({ environmentId, draftKey });
+  const [sending, setSending] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
   const length = text.trim().length;
   const tooLong = length > KIN_MESSAGE_MAX_LENGTH;
-  const canSend = length > 0 && !tooLong && !full;
+  const hasContent = length > 0 || files.count > 0;
+  const canSend = hasContent && !tooLong && !full && files.blockReason === null && !sending;
   const hint = tooLong
     ? `Too long to send: ${lengthFormat.format(length)} of ${lengthFormat.format(KIN_MESSAGE_MAX_LENGTH)} characters.`
     : full
       ? "Too many unsent messages. Wait for them to go out."
-      : null;
+      : files.blockReason;
+  const notice = hint ?? files.refusal;
 
   const send = async () => {
-    const body = appAtomRegistry.get(atom).trim();
-    if (body.length === 0 || body.length > KIN_MESSAGE_MAX_LENGTH) return;
-    appAtomRegistry.set(atom, "");
-    if (!(await onSend(body))) restoreDraft(draftKey, body);
+    const drafted = appAtomRegistry.get(atom);
+    const body = drafted.trim();
+    if (body.length > KIN_MESSAGE_MAX_LENGTH) return;
+    setSending(true);
+    // `deliver` rejects only if a rejection escapes the outbox; the button must come back either way.
+    await deliver(drafted, body).catch(() => undefined);
+    setSending(false);
+  };
+
+  const deliver = async (drafted: string, body: string) => {
+    // The text stays in the box while files upload, so a failed upload loses nothing.
+    const settled = await files.settle();
+    if (settled._tag === "blocked") return;
+    if (body.length === 0 && settled.attachments.length === 0) return;
+    const held = appAtomRegistry.get(pendingAtom);
+    if (!(await onSend(body, settled.attachments, settled.images, held === null ? [] : [held.ref])))
+      return;
+    if (appAtomRegistry.get(pendingAtom) === held) appAtomRegistry.set(pendingAtom, null);
+    // Keeps anything typed while the files were uploading.
+    const typed = appAtomRegistry.get(atom);
+    appAtomRegistry.set(atom, typed.startsWith(drafted) ? typed.slice(drafted.length) : typed);
+    files.clear();
+  };
+
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const pasted = Array.from(event.clipboardData.files);
+    if (!files.canAttach || pasted.length === 0) return;
+    const plainText = event.clipboardData.getData("text/plain");
+    if (!shouldHandleComposerAttachmentPaste({ files: pasted, plainText })) return;
+    event.preventDefault();
+    void files.add(pasted);
+  };
+
+  const dropsFiles = (event: DragEvent<HTMLFormElement>) =>
+    files.canAttach && event.dataTransfer.types.includes("Files");
+
+  const mention = dismissed === text ? null : kinMentionQuery(text, caret, props.mentionable);
+  const pickMention = (name: string) => {
+    if (mention === null) return;
+    const next = kinApplyMention(text, mention.start, caret, name);
+    appAtomRegistry.set(atom, next.text);
+    setCaret(next.cursor);
+    // The caret moves once React has written the new text into the box.
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(next.cursor, next.cursor);
+    });
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (mention !== null && !event.nativeEvent.isComposing) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setDismissed(text);
+        return;
+      }
+      if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey)) {
+        event.preventDefault();
+        pickMention(mention.matches[0]!.name);
+        return;
+      }
+    }
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
     event.preventDefault();
     if (canSend) void send();
@@ -919,44 +1292,117 @@ function KinComposer(props: {
 
   return (
     <div className="flex flex-col gap-1">
-      {hint === null ? null : (
+      {notice === null ? null : (
         <p role="alert" className="px-1 text-xs text-destructive-foreground">
-          {hint}
+          {notice}
         </p>
+      )}
+      {mention === null ? null : (
+        <div role="listbox" aria-label="Agents you can ask" className="flex flex-wrap gap-1.5 px-1">
+          {mention.matches.map((lead, index) => (
+            <Button
+              key={lead.memberId}
+              role="option"
+              aria-selected={index === 0}
+              size="xs"
+              variant={index === 0 ? "outline" : "ghost"}
+              // Keeps the caret in the box, so the name lands where it was typed.
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => pickMention(lead.name)}
+            >
+              <KinAvatar avatar={kinAgentAvatar(lead.agentId)} size="xs" />
+              {lead.name}
+            </Button>
+          ))}
+        </div>
+      )}
+      {pending === null ? null : (
+        <div className="flex items-center gap-1 px-1">
+          <KinDocRefMark label={kinDocRefLabel(pending.ref)} />
+          <Button
+            size="icon-xs"
+            variant="ghost-muted"
+            aria-label={`Remove ${kinDocRefLabel(pending.ref)}`}
+            onClick={() => appAtomRegistry.set(pendingAtom, null)}
+          >
+            <XIcon />
+          </Button>
+        </div>
       )}
       <ComposerSurface.Shell>
         <ComposerSurface.Host>
           <ComposerSurface.Main>
             <form
+              className={cn(
+                dragOver && "rounded-[inherit] bg-accent/45 ring-1 ring-inset ring-primary/70",
+              )}
               onSubmit={(event) => {
                 event.preventDefault();
                 if (canSend) void send();
               }}
+              onDragOver={(event) => {
+                if (!dropsFiles(event)) return;
+                event.preventDefault();
+                setDragOver(true);
+              }}
+              onDragLeave={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+                  setDragOver(false);
+              }}
+              onDrop={(event) => {
+                if (!dropsFiles(event)) return;
+                event.preventDefault();
+                setDragOver(false);
+                void files.add(Array.from(event.dataTransfer.files));
+                textareaRef.current?.focus();
+              }}
             >
-              <div className="px-1 pt-2.5 sm:pt-3">
-                <Textarea
-                  unstyled
+              <KinComposerAttachmentStrip
+                environmentId={environmentId}
+                draftKey={draftKey}
+                state={files}
+              />
+              {/* The thread composer's editor box, so both composers are one size. */}
+              <div className="px-4 pt-3.5 pb-2 sm:pt-4">
+                <textarea
+                  className="-m-1 block field-sizing-content max-h-52 min-h-[calc(2lh+--spacing(2))] w-[calc(100%+--spacing(2))] resize-none overflow-y-auto bg-transparent p-1 text-sm leading-relaxed wrap-break-word text-foreground outline-none placeholder:text-placeholder"
                   ref={textareaRef}
-                  rows={2}
+                  // Arriving from a doc with a section in hand, the next thing is to type.
+                  autoFocus={pending !== null}
                   value={text}
                   aria-label={`Message ${recipient}`}
-                  placeholder={`Message ${recipient}`}
-                  onChange={(event) => appAtomRegistry.set(atom, event.target.value)}
+                  placeholder={
+                    pending === null ? `Message ${recipient}` : kinDocAskPlaceholder(pending)
+                  }
+                  onChange={(event) => {
+                    appAtomRegistry.set(atom, event.target.value);
+                    setCaret(event.target.selectionStart);
+                  }}
+                  onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
                   onKeyDown={onKeyDown}
+                  onPaste={onPaste}
                 />
               </div>
-              <div className="flex items-center justify-end px-2 pb-2">
+              <div className="flex items-center justify-between px-2 pb-2">
+                <div className="flex items-center">
+                  {files.canAttach ? (
+                    <ComposerAttachButton
+                      addComposerAttachments={(picked) => files.add(picked)}
+                      focusComposer={() => textareaRef.current?.focus()}
+                    />
+                  ) : null}
+                </div>
                 <ComposerPrimaryActions
                   compact={false}
                   canOperateThread
                   pendingAction={null}
                   isRunning={false}
                   canInterrupt={false}
-                  isSendBusy={false}
+                  isSendBusy={sending}
                   sendDisabledReason={hint}
                   isEnvironmentUnavailable={false}
                   isPreparingWorktree={false}
-                  hasSendableContent={length > 0}
+                  hasSendableContent={hasContent}
                   onPreviousPendingQuestion={noop}
                   onInterrupt={noop}
                 />

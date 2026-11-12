@@ -26,6 +26,7 @@ import { KinChatHub } from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
+import { type DeferralSource, firingOrigin } from "./deferralOrigin.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { workersConfigured } from "../lead/workerEnvironment.ts";
 import * as Memory from "../memory/Memory.ts";
@@ -214,17 +215,24 @@ export const KinDeferralStopSwitch = Context.Reference<{
 /** The lead level work may start at; an owner tap is not a level grant. */
 export const startsAtLevel = (level: string) => level === "L2" || level === "L3";
 
+/** What a deferral's due work is traced back by: the chat it names and the event it came from. */
+
+const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
+const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
+
 /**
  * The lead a deferral's due work goes to: its chat's lead, else the chief of staff, else the first
- * lead. Its level is the one in its owner's direct chat, where a `deferral.due` wake-up runs.
+ * lead. Its level is the one in its owner's direct chat, where a `deferral.due` wake-up runs,
+ * capped by the chat the deferral was asked from.
  */
 export const deferralLead = Effect.fn("Deferrals.lead")(function* (
   sql: SqlClient.SqlClient,
   orgId: KinOrgId,
-  chatId: string | null | undefined,
+  item: DeferralSource | undefined,
 ) {
-  const lead = yield* liveLead(sql, orgId, { chatId, prefer: CHIEF_OF_STAFF_DOMAIN });
+  const lead = yield* liveLead(sql, orgId, { chatId: item?.chat, prefer: CHIEF_OF_STAFF_DOMAIN });
   if (lead === undefined) return undefined;
+  const origin = yield* firingOrigin(sql, orgId, item, lead);
   const level = yield* KinLevels.effectiveLevel({
     orgId,
     agentId: lead.agentId,
@@ -233,11 +241,15 @@ export const deferralLead = Effect.fn("Deferrals.lead")(function* (
     Effect.provideService(SqlClient.SqlClient, sql),
     Effect.catchTags({ KinLevelRefused: () => Effect.undefined }),
   );
-  return level === undefined ? undefined : { ...lead, level };
+  if (level === undefined) return undefined;
+  const asked =
+    origin === undefined
+      ? level
+      : yield* KinLevels.originLevel(orgId, origin).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        );
+  return { ...lead, origin, level: KinLevels.lowest(level, asked) };
 });
-
-const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
-const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
 
 /** Code posts deferral cards, never the model. */
 export const makeDeferralCards = Effect.gen(function* () {
@@ -262,6 +274,7 @@ export const makeDeferralCards = Effect.gen(function* () {
     if (Option.isSome(existing)) {
       const widget = yield* repo.updateWidget({
         ...existing.value,
+        audience: "owner",
         expectedRevision: existing.value.revision,
         state,
         closedAt: null,
@@ -274,6 +287,7 @@ export const makeDeferralCards = Effect.gen(function* () {
     const message = yield* repo.insertMessage({
       orgId,
       chatId: input.chatId,
+      audience: "owner",
       messageId: KinMessageId.make(widgetId),
       author: { _tag: "system" },
       kind: "system",
@@ -304,7 +318,7 @@ export const makeDeferralCards = Effect.gen(function* () {
       closedAt: null,
       updatedAt: at,
     };
-    yield* repo.insertWidget(widget);
+    yield* repo.insertWidget({ ...widget, audience: "owner" });
     // The insert links the message to the card; clients only attach a card through that link.
     yield* publish({ type: "message.posted", orgId, message: { ...message, widgetId } });
     yield* publish({ type: "widget.updated", orgId, widget: { ...widget, revision: 1 } });
@@ -338,15 +352,16 @@ export const makeDeferralStarter = Effect.gen(function* () {
     readonly now: number;
     /** The run state the caller read in this transaction. */
     readonly from: string;
-    /** The item's chat, whose lead gets the work. */
-    readonly chatId: string | null | undefined;
+    /** The item: its chat's lead gets the work, capped by where it was asked from. */
+    readonly item: DeferralSource | undefined;
   }) {
     const { orgId, itemId, dueAt, at, now } = input;
     const lead = yield* liveLead(sql, orgId, {
-      chatId: input.chatId,
+      chatId: input.item?.chat,
       prefer: CHIEF_OF_STAFF_DOMAIN,
     });
     if (lead === undefined) return false;
+    const origin = yield* firingOrigin(sql, orgId, input.item, lead);
     const moved = yield* sql`UPDATE kin_deferral_runs SET state = 'started', updated_at = ${now}
       WHERE org_id = ${orgId} AND item_id = ${itemId} AND due_at = ${dueAt}
         AND state = ${input.from} RETURNING item_id`;
@@ -364,6 +379,7 @@ export const makeDeferralStarter = Effect.gen(function* () {
           dedupeKey,
           subject: { type: "deferral", itemId, phase: "due" },
           lateByMs: Math.max(0, at - dueAt),
+          ...(origin === undefined ? {} : { origin }),
         }),
       )
       .pipe(
@@ -496,7 +512,7 @@ const make = Effect.gen(function* () {
             if (yield* (yield* KinDeferralStopSwitch).isStopped(orgId))
               return yield* Effect.fail("stopped" as const);
             if (!(yield* workersConfigured)) return yield* Effect.fail("workers_blocked" as const);
-            const lead = yield* deferralLead(sql, orgId, item.head.chat);
+            const lead = yield* deferralLead(sql, orgId, item.head);
             if (lead === undefined || !startsAtLevel(lead.level))
               return yield* Effect.fail("below_l2" as const);
             const now = yield* Clock.currentTimeMillis;
@@ -516,7 +532,7 @@ const make = Effect.gen(function* () {
                   at: now,
                   now,
                   from: run.state,
-                  chatId: item.head.chat,
+                  item: item.head,
                 });
               }),
             );

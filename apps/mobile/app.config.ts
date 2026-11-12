@@ -12,6 +12,12 @@ process.env.EXPO_NO_TYPESCRIPT_SETUP = "1";
 
 const APP_VARIANT = resolveAppVariant(repoEnv.APP_VARIANT);
 const isIosPersonalTeamBuild = repoEnv.T3CODE_IOS_PERSONAL_TEAM === "1";
+// Kin and nothing else: no coding threads, tabs or settings. The Kin build's branding step
+// rewrites this literal, here and in src/lib/kinOnly.ts (branding/rules.yaml).
+const KIN_ONLY_BUILD: string = "kin-only:off";
+const isKinOnly = KIN_ONLY_BUILD === "kin-only:on" || repoEnv.EXPO_PUBLIC_KIN_ONLY === "1";
+// The share extension and the widgets feed coding threads, so a Kin-only app ships neither.
+const shipsCodingExtensions = !isIosPersonalTeamBuild && !isKinOnly;
 const kinApprovalKeyOptions = {
   appAttestEnvironment: isIosPersonalTeamBuild
     ? null
@@ -218,7 +224,7 @@ const sharingPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
   {
     ios: {
       // Personal Teams cannot sign App Groups or extension targets; keep local builds usable.
-      enabled: !isIosPersonalTeamBuild,
+      enabled: shipsCodingExtensions,
       extensionBundleIdentifier: `${iosBundleIdentifier}.sharing`,
       appGroupId: `group.${iosBundleIdentifier}`,
       activationRule: {
@@ -230,7 +236,7 @@ const sharingPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
       },
     },
     android: {
-      enabled: true,
+      enabled: !isKinOnly,
       singleShareMimeTypes: ["*/*"],
       multipleShareMimeTypes: ["*/*"],
     },
@@ -359,9 +365,9 @@ const config: ExpoConfig = {
     ],
     "expo-secure-store",
     "expo-sqlite",
-    ...(isIosPersonalTeamBuild
-      ? [sharingPlugin]
-      : ["./plugins/withShareExtensionDisplayName.cjs", sharingPlugin]),
+    ...(shipsCodingExtensions
+      ? ["./plugins/withShareExtensionDisplayName.cjs", sharingPlugin]
+      : [sharingPlugin]),
     [
       "expo-notifications",
       {
@@ -457,7 +463,7 @@ const config: ExpoConfig = {
     // Compile out the unused pedometer to avoid an iOS motion purpose string.
     ["expo-sensors", { motionPermission: false }],
     // Mods run in reverse order; expo-widgets must create and wipe the target before assets are added.
-    ...(!isIosPersonalTeamBuild ? ["./plugins/withWidgetLogoAsset.cjs", widgetsPlugin] : []),
+    ...(shipsCodingExtensions ? ["./plugins/withWidgetLogoAsset.cjs", widgetsPlugin] : []),
     "./plugins/withAndroidNetworkSecurityConfig.cjs",
     "./plugins/withAndroidGradleHeap.cjs",
     "./plugins/withAndroidInputBackground.cjs",

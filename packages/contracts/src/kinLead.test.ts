@@ -96,6 +96,15 @@ const eventSamples = {
   routine: { ...event, _tag: "routine", routine: "morning_brief" },
   watchdog: { ...event, _tag: "watchdog", finding: "Stale", itemIds: ["item-1"] },
   "worker.report": { ...event, _tag: "worker.report", workerId: "worker-1", report },
+  "record.changed": {
+    ...event,
+    _tag: "record.changed",
+    recordId: "rec-1",
+    key: "W-12",
+    seq: 3,
+    reason: "assigned",
+    provenance: { _tag: "human", personId: "person-1", memberId: "member-1" },
+  },
   "action.resolved": {
     ...event,
     _tag: "action.resolved",

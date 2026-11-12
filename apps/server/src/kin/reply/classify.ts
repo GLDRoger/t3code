@@ -1,4 +1,39 @@
-import type { OrchestrationV2TurnItem } from "@t3tools/contracts";
+import type {
+  OrchestrationV2ProviderFailure,
+  OrchestrationV2ThreadProjection,
+  OrchestrationV2TurnItem,
+  RunId,
+} from "@t3tools/contracts";
+
+/**
+ * A failure no retry fixes: the model account needs signing in again (`signin`) or cannot use
+ * the lead's model (`access`). The codes are the adapters'.
+ */
+export type SetupFailure = "signin" | "access";
+export function setupFailure(failure: OrchestrationV2ProviderFailure): SetupFailure | null {
+  if (failure.code === "authentication_failed" || failure.code === "api_error_401") return "signin";
+  if (failure.code === "api_error_403" || failure.class === "permission_error") return "access";
+  return null;
+}
+/** The setup failure that ended a run from `rootRunId` on, if one did. */
+export function setupFailureIn(
+  projection: Pick<OrchestrationV2ThreadProjection, "runs" | "turnItems">,
+  rootRunId: RunId,
+): SetupFailure | null {
+  const root = projection.runs.find((run) => run.id === rootRunId);
+  if (root === undefined) return null;
+  const runs = new Set(
+    projection.runs.filter((run) => run.ordinal >= root.ordinal).map((run) => run.id),
+  );
+  for (const item of projection.turnItems) {
+    // A retry the provider recovered from leaves its error item `completed`: it ended nothing.
+    if (item.type !== "error" || item.status !== "failed") continue;
+    if (item.runId === null || !runs.has(item.runId)) continue;
+    const found = setupFailure(item.failure);
+    if (found !== null) return found;
+  }
+  return null;
+}
 
 /** A pre-tool segment up to this long, in one paragraph, is a status note, not a message. */
 export const NOTE_MAX_CHARS = 160;
@@ -96,16 +131,47 @@ const TOOL_TYPES: ReadonlySet<OrchestrationV2TurnItem["type"]> = new Set([
   "subagent",
 ]);
 export const isToolItem = (item: OrchestrationV2TurnItem) => TOOL_TYPES.has(item.type);
+/** The lead's `kin_end` call: the text before it is its reply, and it has nothing more to say. */
+export const isEndCall = (item: OrchestrationV2TurnItem) =>
+  item.type === "dynamic_tool" && /(?:^|__|\.)kin_end$/.test(item.toolName ?? "");
 
-// Labels come from this table, never from the model's own words about what it is doing.
-const LABELS: ReadonlyArray<readonly [RegExp, string]> = [
-  [/(?:^|__|\.)(?:memory_search|memory_read|Read|Grep|Glob)$/, "Checking memory"],
+// The presence line's only words, as a colleague would say them: fixed text, never tool
+// arguments or model text, and never a tool's name or how Kin works inside.
+export const PHASE_LABELS = {
+  queued: "Finishing something else",
+  preparing: "Catching up",
+  thinking: "Thinking",
+  writing: "Writing",
+  tool: "Working",
+  attachments: "Looking at what you sent",
+} as const;
+// Null leaves the line as it was: the call is bookkeeping, not work the owner waits on.
+const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
+  [/(?:^|__|\.)(?:memory_search|memory_read|Read|Grep|Glob)$/, "Checking my notes"],
+  [/(?:^|__|\.)memory_\w+$/, "Making a note"],
   [/(?:^|__|\.)kin_defer$/, "Setting a reminder"],
-  [/(?:^|__|\.)kin_delegate$/, "Starting a worker"],
-  [/(?:^|__|\.)request_action$/, "Preparing a request"],
+  [/(?:^|__|\.)kin_delegate$/, "Getting the work started"],
+  [/(?:^|__|\.)kin_follow_up$/, "Following up on the work"],
+  [/(?:^|__|\.)kin_worker_stop$/, "Stopping the work"],
+  [/(?:^|__|\.)kin_leads$/, "Checking who handles this"],
+  [/(?:^|__|\.)kin_hand_off$/, "Passing this on"],
+  [/(?:^|__|\.)kin_ask$/, "Writing a question"],
+  [/(?:^|__|\.)kin_chart$/, "Drawing a chart"],
+  [/(?:^|__|\.)kin_visual$/, "Putting a visual together"],
+  [/(?:^|__|\.)kin_schedule$/, "Setting up a schedule"],
+  [/(?:^|__|\.)kin_cancel$/, "Cancelling it"],
+  [/(?:^|__|\.)kin_github_repos$/, "Checking your repos"],
+  [/(?:^|__|\.)kin_github_prs?$/, "Checking pull requests"],
+  [/(?:^|__|\.)kin_github_runs$/, "Checking the builds"],
+  [/(?:^|__|\.)kin_github_\w+$/, "Checking GitHub"],
+  [/(?:^|__|\.)kin_chat_read$/, "Reading the chat"],
+  [/(?:^|__|\.)kin_chat_post$/, "Writing"],
+  [/(?:^|__|\.)request_action$/, "Asking for your approval"],
+  [/(?:^|__|\.)(?:kin_react|kin_journal|kin_end)$/, null],
 ];
-export function toolLabel(item: OrchestrationV2TurnItem): string {
-  if (item.type === "file_search") return "Checking memory";
+export function toolLabel(item: OrchestrationV2TurnItem): string | null {
+  if (item.type === "file_search") return "Checking my notes";
   const name = item.type === "dynamic_tool" ? (item.toolName ?? "") : (item.title ?? "");
-  return LABELS.find(([pattern]) => pattern.test(name))?.[1] ?? "Working";
+  const found = TOOL_LABELS.find(([pattern]) => pattern.test(name));
+  return found === undefined ? PHASE_LABELS.tool : found[1];
 }

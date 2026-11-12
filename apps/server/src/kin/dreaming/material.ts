@@ -3,11 +3,14 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as Statement from "effect/sql/Statement";
 import { isSqlError } from "effect/sql/SqlError";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { itemFolders } from "../memory/checkoutPaths.ts";
 import { parseFrontMatter } from "../memory/frontMatter.ts";
+import { SHARED_THREAD_PREFIX } from "../lead/Audience.ts";
+import { askedWhereOthersRead } from "../triggers/deferralOrigin.ts";
 
 /** One original the dream may cite. `saidBy` and `trust` come from server records, never the model. */
 export interface MaterialEntry {
@@ -17,9 +20,18 @@ export interface MaterialEntry {
   readonly trust: MemoryTrust;
   readonly at: string;
   readonly text: string;
+  /** A reminder or scheduled task: what it says was never a statement, whoever asked for it. */
+  readonly reminder?: true;
+  /** An item nobody has said who may know: the dream labels it (`DreamRunner`). */
+  readonly unlabelled?: true;
 }
 
 const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(KinEvent));
+
+/** No person but the owner was ever in the chat: anyone who was can have read or steered it. */
+const ownerOnlyChat = (sql: SqlClient.SqlClient, chatId: Statement.Fragment) =>
+  sql`NOT EXISTS (SELECT 1 FROM kin_chat_members cm WHERE cm.chat_id = ${chatId}
+    AND cm.principal_kind = 'person' AND cm.role <> 'owner')`;
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const ownerDate = (ms: number, timeZone: string) =>
@@ -52,7 +64,9 @@ const journalEntries = (text: string) => {
 
 /**
  * Originals in `(from, until]`: journal files, chat messages, worker reports and GitHub events.
- * Briefs, summaries and earlier dream output are never material. `full` adds every item.
+ * Briefs, summaries and earlier dream output are never material. `full` adds every item, and
+ * every night adds the items still unlabelled. What a chat other people read left in memory is
+ * never material: it stays that person's claim, and no dream folds it into the owner's notes.
  */
 export const collectMaterial = Effect.fn("DreamMaterial.collect")(
   function* (input: {
@@ -62,6 +76,8 @@ export const collectMaterial = Effect.fn("DreamMaterial.collect")(
     readonly full: boolean;
     readonly timeZone: string;
     readonly files: ReadonlyMap<string, string>;
+    /** Items the nightly pass has already labelled (`kin_memory_labels`). */
+    readonly classified?: ReadonlySet<string>;
   }) {
     const sql = yield* SqlClient.SqlClient;
     const { orgId, from, until } = input;
@@ -71,13 +87,20 @@ export const collectMaterial = Effect.fn("DreamMaterial.collect")(
       (yield* sql<{ agentId: string }>`SELECT agent_id AS "agentId" FROM kin_leads
         WHERE org_id = ${orgId} ORDER BY agent_id`).map((row) => row.agentId),
     );
+    // A turn someone besides the owner could read left no journal entry; older ones are skipped.
+    const sharedWakeups = new Set(
+      (yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId" FROM kin_wakeups
+        WHERE org_id = ${orgId} AND (audience IS NOT 'owner_only' OR shared_since IS NOT NULL)
+        ORDER BY wakeup_id`).map((row) => row.wakeupId),
+    );
     const firstDay = from === 0 ? "" : ownerDate(from, input.timeZone);
     const lastDay = ownerDate(until, input.timeZone);
     for (const [path, text] of [...input.files].toSorted(([a], [b]) => (a < b ? -1 : 1))) {
       const day = journalDate(path);
       if (day === undefined || day < firstDay || day > lastDay) continue;
       const parts = journalEntries(text);
-      for (const [index, part] of parts.entries())
+      for (const [index, part] of parts.entries()) {
+        if (part.wakeupId !== undefined && sharedWakeups.has(part.wakeupId)) continue;
         entries.push({
           ref:
             parts.length === 1
@@ -89,6 +112,7 @@ export const collectMaterial = Effect.fn("DreamMaterial.collect")(
           at: `${day}T00:00:00.000Z`,
           text: parts.length === 1 ? text : part.text,
         });
+      }
     }
     const messages = yield* sql<{
       chatId: string;
@@ -107,6 +131,13 @@ export const collectMaterial = Effect.fn("DreamMaterial.collect")(
         AND m.author_kind IN ('human', 'agent')
         AND CAST(unixepoch(m.created_at, 'subsec') * 1000 AS INTEGER) > ${from}
         AND CAST(unixepoch(m.created_at, 'subsec') * 1000 AS INTEGER) <= ${until}
+        AND ${ownerOnlyChat(sql, sql`m.chat_id`)}
+        AND (m.author_kind = 'human' OR (m.author_thread_id NOT LIKE ${`${SHARED_THREAD_PREFIX}%`}
+          AND NOT EXISTS (SELECT 1 FROM kin_wakeups w
+            WHERE w.org_id = m.org_id AND w.thread_id = m.author_thread_id
+              AND (w.audience IS NOT 'owner_only' OR w.shared_since IS NOT NULL)
+              AND CAST(unixepoch(m.created_at, 'subsec') * 1000 AS INTEGER)
+                BETWEEN w.started_at AND COALESCE(w.ended_at, ${until}))))
       ORDER BY m.created_at, m.chat_id, m.seq`;
     for (const message of messages) {
       const human = message.authorKind === "human";
@@ -127,8 +158,12 @@ export const collectMaterial = Effect.fn("DreamMaterial.collect")(
     }
     const events = yield* sql<{
       json: string;
-    }>`SELECT json FROM kin_events WHERE org_id = ${orgId} AND tag IN ('github', 'worker.report')
-      AND received_at > ${from} AND received_at <= ${until} ORDER BY received_at, event_id`;
+    }>`SELECT e.json FROM kin_events e WHERE e.org_id = ${orgId} AND e.tag IN ('github', 'worker.report')
+      AND e.received_at > ${from} AND e.received_at <= ${until}
+      AND (e.tag = 'github' OR NOT EXISTS (SELECT 1 FROM kin_workers k
+        WHERE k.org_id = e.org_id AND k.worker_id = json_extract(e.json, '$.workerId')
+          AND k.chat_id IS NOT NULL AND NOT ${ownerOnlyChat(sql, sql`k.chat_id`)}))
+      ORDER BY e.received_at, e.event_id`;
     for (const row of events) {
       const event = yield* decodeEvent(row.json);
       if (event._tag !== "github" && event._tag !== "worker.report") continue;
@@ -145,20 +180,28 @@ export const collectMaterial = Effect.fn("DreamMaterial.collect")(
             : yield* encodeJson(event.report),
       });
     }
-    if (input.full)
-      for (const [path, text] of [...input.files].toSorted(([a], [b]) => (a < b ? -1 : 1))) {
-        if (!itemFolders.some((folder) => path.startsWith(`${folder}/`))) continue;
-        const parsed = yield* parseFrontMatter(orgId, path, text).pipe(Effect.option);
-        if (parsed._tag === "None") continue;
-        entries.push({
-          ref: `memory:${path}`,
-          kind: "item",
-          saidBy: parsed.value.frontMatter.said_by,
-          trust: parsed.value.frontMatter.trust,
-          at: parsed.value.frontMatter.recorded_at,
-          text,
-        });
-      }
+    for (const [path, text] of [...input.files].toSorted(([a], [b]) => (a < b ? -1 : 1))) {
+      if (!itemFolders.some((folder) => path.startsWith(`${folder}/`))) continue;
+      const parsed = yield* parseFrontMatter(orgId, path, text).pipe(Effect.option);
+      if (parsed._tag === "None") continue;
+      const unlabelled =
+        parsed.value.frontMatter.sensitive === undefined &&
+        input.classified?.has(parsed.value.frontMatter.id) !== true;
+      if (parsed.value.frontMatter.shared_from !== undefined || !(input.full || unlabelled))
+        continue;
+      // The owner's index leaves these out (`LeadPrompt`); so does a dream.
+      if (yield* askedWhereOthersRead(sql, orgId, parsed.value.frontMatter)) continue;
+      entries.push({
+        ref: `memory:${path}`,
+        kind: "item",
+        saidBy: parsed.value.frontMatter.said_by,
+        trust: parsed.value.frontMatter.trust,
+        at: parsed.value.frontMatter.recorded_at,
+        text,
+        ...(parsed.value.frontMatter.kind === "deferral" ? { reminder: true as const } : {}),
+        ...(unlabelled ? { unlabelled: true as const } : {}),
+      });
+    }
     return { from: from === 0 ? null : iso(from), until: iso(until), entries };
   },
   Effect.mapError((cause) =>

@@ -10,6 +10,21 @@ export const uniqueMergeBase = (
   return candidates.size === 1 ? [...candidates][0] : undefined;
 };
 
+/** Where the first line that differs starts, with the blank line that opens its journal entry. */
+const unlandedFrom = (journal: Buffer, differs: number, floor: number) => {
+  let start = differs;
+  while (start > floor && journal[start - 1] !== 10) start--;
+  return start > floor && journal.subarray(start - 1, start + 3).toString("latin1") === "\n## "
+    ? start - 1
+    : start;
+};
+
+const headings = (text: Buffer) =>
+  text
+    .toString("utf8")
+    .split("\n")
+    .filter((line) => line.startsWith("## "));
+
 export const mergeMemoryFiles = (
   base: ReadonlyMap<string, Buffer>,
   local: ReadonlyMap<string, Buffer>,
@@ -30,6 +45,8 @@ export const mergeMemoryFiles = (
     const original = base.get(file) ?? Buffer.alloc(0);
     const bytes = local.get(file);
     const journal = file.startsWith("journal/");
+    // Both sides made this change, as when the remote squash-merged a batch of local commits.
+    if (same(remote.get(file), bytes) && after?.mode === modes.get(file)) continue;
     if (journal && (!bytes || !bytes.subarray(0, original.length).equals(original)))
       return undefined;
     if (same(remote.get(file), base.get(file)) && before?.mode === modes.get(file)) {
@@ -46,7 +63,24 @@ export const mergeMemoryFiles = (
       after?.mode === modes.get(file) &&
       remote.get(file)?.subarray(0, original.length).equals(original)
     ) {
-      files.set(file, Buffer.concat([remote.get(file)!, bytes!.subarray(original.length)]));
+      const theirs = remote.get(file)!;
+      const ours = bytes!;
+      // Entries both sides hold are kept once, even when the base predates them: a landed batch
+      // comes back in GitHub's copy, and only what follows it here is still unlanded.
+      let shared = original.length;
+      while (shared < ours.length && ours[shared] === theirs[shared]) shared++;
+      if (shared === theirs.length) files.set(file, ours);
+      else if (shared < ours.length) {
+        const from = unlandedFrom(ours, shared, original.length);
+        // Text both sides hold that differs inside an entry, or an entry under one heading on
+        // both sides, was edited rather than added: refuse instead of keeping both versions.
+        const atEntry =
+          from === original.length || ours.subarray(from, from + 4).toString("latin1") === "\n## ";
+        const unlanded = new Set(headings(ours.subarray(from)));
+        if (!atEntry || headings(theirs.subarray(from)).some((heading) => unlanded.has(heading)))
+          return undefined;
+        files.set(file, Buffer.concat([theirs, ours.subarray(from)]));
+      }
     } else return undefined;
   }
   return { files, modes };

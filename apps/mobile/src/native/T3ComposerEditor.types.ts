@@ -38,6 +38,8 @@ export interface ComposerEditorProps {
       readonly html: string;
     },
   ) => void;
+  /** False keeps `@name` and `$skill` as typed text, for composers that send words only. */
+  readonly inlineTokens?: boolean;
   readonly skills?: ReadonlyArray<
     Pick<
       ServerProviderSkill,

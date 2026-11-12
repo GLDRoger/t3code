@@ -3,6 +3,7 @@ import {
   KinDeferralCard,
   type KinReminderCardAction,
   type KinScheduledTaskCardAction,
+  type KinWorkerPublishCardAction,
   type KinWidget,
   type KinWidgetsActInput,
 } from "@t3tools/contracts";
@@ -12,8 +13,8 @@ import * as Schema from "effect/Schema";
 import { kinSentences } from "./kinScreenState.ts";
 
 export const KIN_STALE_CARD_TEXT = "This card changed. Check it again.";
-export const KIN_SENT_CARD_TEXT = "Sent. Your lead will update this card.";
-export const KIN_CHANGE_SENT_TEXT = "Sent. Your lead will ask what to change.";
+export const KIN_SENT_CARD_TEXT = "Sent. Your agent will update this card.";
+export const KIN_CHANGE_SENT_TEXT = "Sent. Your agent will ask what to change.";
 export const KIN_SEND_FAILED_TEXT = "Couldn't send that. Try again.";
 const KIN_UNDONE_TEXT = "Undone. Kin won't act on this.";
 export const KIN_UNDO_TOO_LATE_TEXT = "Too late to undo: Kin already acted on this.";
@@ -27,7 +28,8 @@ export type KinDeferralActionId =
   | "monday"
   | "cancel"
   | KinReminderCardAction
-  | KinScheduledTaskCardAction;
+  | KinScheduledTaskCardAction
+  | KinWorkerPublishCardAction;
 export type KinDeferralPhase =
   | "confirmed"
   | "heads_up"
@@ -71,13 +73,13 @@ export const KIN_DEFERRAL_ACTIONS: Record<KinDeferralActionId, KinDeferralAction
   undo: {
     id: "undo",
     label: "Undo",
-    accessibilityLabel: "Undo this deferral",
+    accessibilityLabel: "Undo this",
     tone: "secondary",
   },
   change: {
     id: "change",
     label: "Change",
-    accessibilityLabel: "Change this deferral with your lead",
+    accessibilityLabel: "Change this with your agent",
     tone: "secondary",
   },
   remind: {
@@ -101,7 +103,7 @@ export const KIN_DEFERRAL_ACTIONS: Record<KinDeferralActionId, KinDeferralAction
   cancel: {
     id: "cancel",
     label: "Cancel",
-    accessibilityLabel: "Cancel this deferral",
+    accessibilityLabel: "Cancel this",
     tone: "secondary",
   },
   done: {
@@ -149,13 +151,25 @@ export const KIN_DEFERRAL_ACTIONS: Record<KinDeferralActionId, KinDeferralAction
   edit: {
     id: "edit",
     label: "Edit",
-    accessibilityLabel: "Edit this scheduled task with your lead",
+    accessibilityLabel: "Edit this scheduled task with your agent",
     tone: "secondary",
   },
   delete: {
     id: "delete",
     label: "Delete",
     accessibilityLabel: "Delete this scheduled task",
+    tone: "secondary",
+  },
+  publish: {
+    id: "publish",
+    label: "Publish",
+    accessibilityLabel: "Publish these changes to GitHub",
+    tone: "secondary",
+  },
+  dont_publish: {
+    id: "dont_publish",
+    label: "Don't publish",
+    accessibilityLabel: "Don't publish these changes",
     tone: "secondary",
   },
 };
@@ -248,15 +262,16 @@ function cardBody(card: KinDeferralCard, timeZone: string | undefined): CardBody
   const dueMs = Date.parse(card.dueAt);
   // The host writes `text` in the owner's zone; show it only when it adds to the local lines.
   const text = clamp(card.text, 280);
+  // Older hosts wrote "Deferred to …" as the text, which the local line already says.
   const withText = (lines: ReadonlyArray<string>) =>
-    text === "" || lines.includes(text) ? lines : [...lines, text];
+    text === "" || lines.includes(text) || text.startsWith("Deferred to ")
+      ? lines
+      : [...lines, text];
   switch (card.phase) {
     case undefined:
       return {
         phase: "confirmed",
-        lines: withText([
-          `Deferred to ${formatKinDeferralTime(dueMs, timeZone)}. ${then[card.onDue]}`,
-        ]),
+        lines: withText([`Set for ${formatKinDeferralTime(dueMs, timeZone)}. ${then[card.onDue]}`]),
         countdown: { to: dueMs, kind: "due" },
         // The host takes only Undo here until its owner-tap dispatcher lands for Change and Just remind me.
         actions: [KIN_DEFERRAL_ACTIONS.undo],
@@ -302,20 +317,34 @@ export function kinDeferralCardView(
   const decoded = decodeDeferral(widget.state);
   if (Option.isNone(decoded)) return null;
   const card = decoded.value;
-  const title = clamp(card.title, 200) || "This deferral";
+  const title = clamp(card.title, 200) || (card.onDue === "remind" ? "Reminder" : "Scheduled work");
   const body: CardBody =
     widget.closedAt === null
       ? cardBody(card, timeZone)
       : { phase: "closed", lines: ["Closed."], countdown: null, actions: [] };
+  // "Deferral" is Kin's word, not the owner's: they asked for a reminder or for work to wait.
+  const kind = card.onDue === "remind" ? "Reminder" : "Scheduled";
+  const eyebrow = body.phase === "asked" ? "Needs your decision" : kind;
   return {
     widgetId: widget.widgetId,
     revision: widget.revision,
     itemId: card.itemId,
-    eyebrow: body.phase === "asked" ? "Needs your decision" : "Deferral",
+    eyebrow,
     title,
     ...body,
-    accessibilityLabel: kinSentences([`Deferral: ${title}`, ...body.lines]),
+    accessibilityLabel: kinSentences([`${kind}: ${title}`, ...body.lines]),
   };
+}
+
+/**
+ * Kin's own note that it set something for later. False while the card asks for a decision,
+ * which still needs its buttons.
+ */
+export function kinDeferralIsBookkeeping(widget: KinWidget): boolean {
+  const decoded = decodeDeferral(widget.state);
+  if (Option.isNone(decoded)) return false;
+  const { phase } = decoded.value;
+  return !(widget.closedAt === null && (phase === "heads_up" || phase === "asked"));
 }
 
 type KinCardTarget = Pick<KinDeferralCardView, "widgetId" | "revision" | "itemId">;
@@ -354,7 +383,7 @@ export function kinActionFailureNotice(
     case "not_allowed":
       return {
         kind: "error",
-        text: "Kin didn't take that answer. Tell your lead in the chat instead.",
+        text: "Kin didn't take that answer. Tell your agent in the chat instead.",
       };
     case "invalid_state":
       return { kind: "error", text: "This card can't take that answer any more." };
@@ -365,9 +394,9 @@ export function kinActionFailureNotice(
 
 /** Why the host may refuse [Start now] (TRIG-8's `Deferrals.act`), in the owner's words. */
 export const KIN_START_NOW_REFUSALS = {
-  stopped: "Starts are paused for now. Ask your lead in the chat.",
+  stopped: "Starts are paused for now. Ask your agent in the chat.",
   workers_blocked: "Kin can't start new work right now. Try again soon.",
-  below_l2: "Your lead can't start work on its own yet. Ask it in the chat.",
+  below_l2: "Your agent can't start work from here. Ask it in the chat.",
 } as const satisfies Record<string, string>;
 
 export function kinStartNowRefusalNotice(
@@ -449,6 +478,8 @@ const SERVER_DONE: Partial<Record<KinDeferralActionId, string>> = {
   pause: "Paused.",
   resume: "Resumed.",
   delete: "Deleted.",
+  publish: "Publishing.",
+  dont_publish: "Kin won't publish it.",
 };
 
 /**

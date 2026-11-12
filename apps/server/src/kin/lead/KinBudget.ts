@@ -16,6 +16,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { isSqlError } from "effect/sql/SqlError";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -184,25 +185,33 @@ const make = Effect.gen(function* () {
       leads.length < 2 || total <= 0
         ? ""
         : ` Used today: ${leads.map((row) => `${row.name} ${Math.round((row.leadUnits / total) * 100)}%`).join(", ")}.`;
-    const message = yield* chat.insertMessage({
-      orgId,
-      chatId: lead.ownerChatId,
-      messageId: KinMessageId.make(`kin-budget:${orgId}:${day}`),
-      author: { _tag: "system" },
-      kind: "text",
-      body: `Today's Kin lead budget is exhausted for all your leads. Only urgent owner messages will run, on the cheap model.${used} Raise the limits in settings to resume other work.`,
-      intent: null,
-      mentions: [],
-      replyTo: null,
-      widgetId: null,
-      floorRunId: null,
-      status: "posted",
-      sentBy: null,
-      clientMessageId: null,
-      createdAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
-      editedAt: null,
-    });
-    yield* hub.publish({ type: "message.posted", orgId, message });
+    const posted = yield* chat
+      .insertMessage({
+        orgId,
+        chatId: lead.ownerChatId,
+        audience: "owner",
+        messageId: KinMessageId.make(`kin-budget:${orgId}:${day}`),
+        author: { _tag: "system" },
+        kind: "text",
+        body: `Today's Kin agent budget is exhausted for all your agents. Only urgent owner messages will run, on the cheap model.${used} Raise the limits in settings to resume other work.`,
+        intent: null,
+        mentions: [],
+        replyTo: null,
+        widgetId: null,
+        floorRunId: null,
+        status: "posted",
+        sentBy: null,
+        clientMessageId: null,
+        createdAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
+        editedAt: null,
+      })
+      .pipe(
+        // Never fails admission: the notice is dropped rather than said where others read.
+        Effect.asSome,
+        Effect.catchIf(Chat.isPrivateWriteRefused, () => Effect.succeedNone),
+      );
+    if (Option.isSome(posted))
+      yield* hub.publish({ type: "message.posted", orgId, message: posted.value });
   });
   const measure = Effect.fn("KinBudget.measure")(function* (
     usage: ReadonlyArray<Usage>,

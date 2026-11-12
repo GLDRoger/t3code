@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 
 import * as Kin from "./kinChat.ts";
 import { KinCheckRun } from "./kinApprovals.ts";
+import { KinListUpdateInput } from "./kinFinance.ts";
 import { KinPushRegisterDeviceInput } from "./kinPush.ts";
 
 const at = "2026-11-07T00:00:00.000Z";
@@ -149,6 +150,7 @@ type SchemaName = {
 const samples = {
   KinText: ["", "Hello\nworld", "  Markdown  "],
   KinTrimmedText: ["Kin", "Owner name"],
+  KinLabelText: ["GST", "Travel & stay"],
   KinOrgId: ["org-1"],
   KinPersonId: ["person-1"],
   KinAgentId: ["agent-1"],
@@ -168,7 +170,6 @@ const samples = {
   KinNativeCardType: Kin.KinNativeCardType.literals,
   KinWaitingReason: Kin.KinWaitingReason.literals,
   KinReactionEmoji: Kin.KinReactionEmoji.literals,
-  KinLeadReactionEmoji: Kin.KinLeadReactionEmoji.literals,
   KinReaction: [reaction, { ...reaction, emoji: "❤️", removedAt: at }],
   KinChoiceOption: [...choiceOptions, { optionId: "later", label: "Later" }],
   KinChoiceCardState: [
@@ -272,6 +273,27 @@ const samples = {
   ],
   KinChatsSubscribeInput: [{}, { orgId: "org-1" }],
   KinChatsCreateDirectInput: [{ orgId: "org-1", agentId: "agent-1" }],
+  KinGroupTitle: ["Launch"],
+  KinChatsCreateGroupInput: [
+    { orgId: "org-1", title: "Launch", agentIds: ["agent-1"], personIds: ["person-2"] },
+    { orgId: "org-1", title: "Leads", agentIds: ["agent-1", "agent-2"], personIds: [] },
+  ],
+  KinChatMembersInput: [{ chatId: "chat-1" }],
+  KinChatMembersResult: [
+    {
+      chat: { ...chat, kind: "team_group", title: "Launch", leadAgentId: "agent-1" },
+      members: [{ ...member, displayName: "Priya" }],
+    },
+  ],
+  KinGroupAddMemberInput: [
+    { chatId: "chat-1", principal: { _tag: "agent", agentId: "agent-2" } },
+    { chatId: "chat-1", principal: { _tag: "person", personId: "person-2" } },
+  ],
+  KinGroupRemoveMemberInput: [{ chatId: "chat-1", memberId: "member-2" }],
+  KinGroupSetLeadInput: [{ chatId: "chat-1", agentId: "agent-2" }],
+  KinGroupRenameInput: [{ chatId: "chat-1", title: "Launch week" }],
+  KinGroupDeleteInput: [{ chatId: "chat-1" }],
+  KinGroupDone: [{}],
   KinChatSubscribeInput: [
     { chatId: "chat-1" },
     { chatId: "chat-1", afterSeq: 0 },
@@ -302,6 +324,36 @@ const samples = {
   KinChatsMuteInput: [
     { chatId: "chat-1", muted: true },
     { chatId: "chat-1", muted: false },
+  ],
+  KinChatsClearInput: [{ chatId: "chat-1" }],
+  KinChatsClearResult: [{}],
+  KinAgentMessageBody: ["Hello"],
+  KinAttachment: [
+    { type: "image", id: "kin-chat-1", name: "kite.png", mimeType: "image/png", sizeBytes: 12 },
+    { type: "file", id: "kin-chat-2", name: "list.txt", mimeType: "text/plain", sizeBytes: 3 },
+  ],
+  KinDocSectionId: ["top", "pricing", "launch-plan-2"],
+  KinMessageRefInput: [
+    { _tag: "doc", key: "D-3", version: 2, section: "pricing" },
+    { _tag: "doc", key: "D-3", version: 1, section: null },
+  ],
+  KinMessageRef: [
+    {
+      _tag: "doc",
+      key: "D-3",
+      version: 2,
+      section: "pricing",
+      title: "Launch plan",
+      sectionTitle: "Pricing",
+    },
+    {
+      _tag: "doc",
+      key: "D-3",
+      version: 1,
+      section: null,
+      title: "Launch plan",
+      sectionTitle: null,
+    },
   ],
   KinLeadInterruptInput: [{ orgId: "org-1", wakeupId: "wakeup-1" }],
   KinLeadInterruptResult: [{ interrupted: true }, { interrupted: false }],
@@ -366,6 +418,13 @@ describe("Kin chat contracts", () => {
         deviceLabel: "a\u0000b",
       },
     },
+    ...["a\u0000b", "a\nb", "a\tb", "a\u0007b", "a\u009fb"].flatMap((label) => [
+      { schema: KinListUpdateInput, value: { orgId: "org", list: "dates", rev: 1, name: label } },
+      {
+        schema: KinListUpdateInput,
+        value: { orgId: "org", list: "dates", rev: 1, categoryLabels: { gst: label } },
+      },
+    ]),
   ])("rejects NUL text %#", ({ schema, value }) => {
     const codec: Schema.Codec<unknown> = schema;
     expect(() => Schema.decodeSync(codec)(value)).toThrow();
@@ -373,7 +432,6 @@ describe("Kin chat contracts", () => {
 
   it.each([
     { schema: Kin.KinMessagesReactInput, value: { messageId: "m", emoji: "🦄", on: true } },
-    { schema: Kin.KinLeadReactionEmoji, value: "🎉" },
     { schema: Kin.KinChoiceCardState, value: { ...choice, options: choiceOptions.slice(0, 1) } },
     {
       schema: Kin.KinChoiceCardState,

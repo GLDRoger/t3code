@@ -57,7 +57,11 @@ import {
   ArrowLeftIcon,
   BugIcon,
   ChartNoAxesColumnIcon,
+  FileTextIcon,
   MessagesSquareIcon,
+  BrainIcon,
+  UsersIcon,
+  UserRoundPlusIcon,
   CheckIcon,
   ChevronRightIcon,
   CornerLeftUpIcon,
@@ -67,6 +71,9 @@ import {
   FolderPlusIcon,
   MessageSquareDashedIcon,
   LinkIcon,
+  ContactRoundIcon,
+  FolderKanbanIcon,
+  ListChecksIcon,
   MessageSquareIcon,
   PaletteIcon,
   RotateCcwIcon,
@@ -78,6 +85,9 @@ import {
   SquarePenIcon,
   TextSearchIcon,
   UserPlusIcon,
+  WalletIcon,
+  ListIcon,
+  CalendarDaysIcon,
 } from "lucide-react";
 import { openThreadFind } from "./chat/threadFindStore";
 import {
@@ -95,6 +105,16 @@ import { useAtomValue } from "@effect/atom-react";
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { kinSearchHit } from "@t3tools/client-runtime/kin/kinDocs";
+import { kinClient } from "../kin/kinClient";
+import { kinListSwitchHref } from "../kin/kinListSwitch";
+import {
+  kinNewLeadTarget,
+  noKinLeadPermissionAtom,
+  openKinLeadForm,
+} from "../kin/KinNewLeadButton";
+import { useKinPaletteHits } from "../kin/useKinDocs";
+import { useKinHost } from "../kin/useKinHost";
 import { useKinListSwitch } from "../kin/useKinListSwitch";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
 import { copyThreadReference } from "../lib/copyThreadReference";
@@ -274,6 +294,14 @@ const ADD_PROJECT_ENTRY_GROUP = "add-project";
 const NEW_THREAD_IN_GROUP = "projects";
 
 /** The submenu an open intent starts in; its groups resolve while rendering. */
+// The address says "client"; reading it by name keeps it apart from an RPC client in lint's eyes.
+const KIN_CLIENT_PARAM = "client";
+/** What Kin is asked for: nothing for a command filter or a single letter. */
+const kinPaletteQuery = (query: string) => {
+  const text = query.trim();
+  return query.startsWith(">") || text.length < 2 ? "" : text;
+};
+
 function openIntentView(intent: CommandPaletteOpenIntent | null): CommandPaletteView | null {
   switch (intent?.kind) {
     case "add-project":
@@ -405,6 +433,27 @@ function OpenCommandPaletteDialog(props: {
   const navigate = useNavigate();
   const pathname = useLocation({ select: (location) => location.pathname });
   const kinListSwitch = useKinListSwitch();
+  const kinNewLead = kinNewLeadTarget(useKinHost());
+  const canCreateKinLead = useAtomValue(
+    kinNewLead === null
+      ? noKinLeadPermissionAtom
+      : kinClient.leadCreate.permissionAtom(kinNewLead.environmentId),
+  );
+  const canOpenKinMemory = useAtomValue(
+    kinNewLead === null
+      ? noKinLeadPermissionAtom
+      : kinClient.memorySetVisibility.permissionAtom(kinNewLead.environmentId),
+  );
+  const canOpenKinWork = useAtomValue(
+    kinNewLead === null
+      ? noKinLeadPermissionAtom
+      : kinClient.workRead.permissionAtom(kinNewLead.environmentId),
+  );
+  const canManageKinTeam = useAtomValue(
+    kinNewLead === null
+      ? noKinLeadPermissionAtom
+      : kinClient.inviteCreate.permissionAtom(kinNewLead.environmentId),
+  );
   const { openChildSearch, setOpen } = props;
   // Keyed by palette session: the intent and restored search only seed this
   // mount, and closing must not change what the closing palette shows.
@@ -431,6 +480,10 @@ function OpenCommandPaletteDialog(props: {
   const setQuery = (query: string) => dispatchSearch({ type: "query", query });
   const deferredQuery = useDeferredValue(query);
   const isActionsOnly = deferredQuery.startsWith(">");
+  const kinHits = useKinPaletteHits(
+    canOpenKinWork ? kinNewLead : null,
+    kinPaletteQuery(deferredQuery),
+  );
   const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
   const resultListRef = useRef<LegendListRef | null>(null);
   // A pushed view drops the typed highlight until the user moves it again.
@@ -1651,12 +1704,186 @@ function OpenCommandPaletteDialog(props: {
     actionItems.push({
       kind: "action",
       value: "action:kin-switch-list",
-      searchTerms: ["kin", "chats", "leads", "coding", "threads", "switch", "list"],
+      searchTerms: ["kin", "chats", "agents", "leads", "coding", "threads", "switch", "list"],
       title: kinListSwitch.title,
       icon: <MessagesSquareIcon className={ITEM_ICON_CLASS} />,
       shortcutCommand: "kin.switchList",
       run: async () => {
         kinListSwitch.switchList();
+      },
+    });
+  }
+
+  if (kinNewLead !== null && canCreateKinLead) {
+    actionItems.push({
+      kind: "action",
+      value: "action:kin-new-lead",
+      searchTerms: ["kin", "agent", "lead", "new", "create", "add", "teammate"],
+      title: "New agent",
+      icon: <UserRoundPlusIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        // The form lives on Kin's page, so it opens there.
+        await navigate({ href: kinListSwitchHref("threads") });
+        openKinLeadForm(kinNewLead);
+      },
+    });
+  }
+
+  if (kinNewLead !== null && canOpenKinWork) {
+    actionItems.push({
+      kind: "action",
+      value: "action:kin-work",
+      searchTerms: [
+        "kin",
+        "work",
+        "tasks",
+        "tracker",
+        "tickets",
+        "assign",
+        "late",
+        "due",
+        "agents",
+        "leads",
+      ],
+      title: "Work: what's open and who has it",
+      icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await navigate({
+          to: "/kin/$environmentId/$orgId/work",
+          params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
+        });
+      },
+    });
+  }
+
+  // A host from before clients and projects answers these with a plain note, not an error.
+  if (kinNewLead !== null && canOpenKinWork) {
+    actionItems.push(
+      {
+        kind: "action",
+        value: "action:kin-clients",
+        searchTerms: ["kin", "clients", "vendors", "crm", "contacts", "owe", "obligations"],
+        title: "Clients: what you owe them and what they owe you",
+        icon: <ContactRoundIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          await navigate({
+            to: "/kin/$environmentId/$orgId/work",
+            params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
+            search: { show: "clients" },
+          });
+        },
+      },
+      {
+        kind: "action",
+        value: "action:kin-projects",
+        searchTerms: ["kin", "projects", "status", "health", "blocked", "at risk", "late"],
+        title: "Projects: how each one is going",
+        icon: <FolderKanbanIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          await navigate({
+            to: "/kin/$environmentId/$orgId/work",
+            params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
+            search: { show: "projects" },
+          });
+        },
+      },
+      {
+        kind: "action",
+        value: "action:kin-docs",
+        searchTerms: ["kin", "docs", "documents", "notes", "plans", "proposals", "writing"],
+        title: "Docs: what your agents have written up",
+        icon: <FileTextIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          await navigate({
+            to: "/kin/$environmentId/$orgId/work",
+            params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
+            search: { show: "docs" },
+          });
+        },
+      },
+      {
+        kind: "action",
+        value: "action:kin-money",
+        searchTerms: [
+          "kin",
+          "money",
+          "invoices",
+          "expenses",
+          "owed",
+          "overdue",
+          "received",
+          "spent",
+          "receivables",
+        ],
+        title: "Money: who owes you, what came in and what went out",
+        icon: <WalletIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          await navigate({
+            to: "/kin/$environmentId/$orgId/work",
+            params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
+            search: { show: "money" },
+          });
+        },
+      },
+      {
+        kind: "action",
+        value: "action:kin-lists",
+        searchTerms: ["kin", "lists", "expenses", "invoices", "renewals", "tracking", "register"],
+        title: "Lists: everything your agents keep track of",
+        icon: <ListIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          await navigate({
+            to: "/kin/$environmentId/$orgId/work",
+            params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
+            search: { show: "lists" },
+          });
+        },
+      },
+      {
+        kind: "action",
+        value: "action:kin-dates",
+        searchTerms: ["kin", "dates", "calendar", "due", "agenda", "renewals", "gst", "filing"],
+        title: "Dates: everything due, across every list",
+        icon: <CalendarDaysIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          await navigate({
+            to: "/kin/$environmentId/$orgId/work",
+            params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
+            search: { show: "dates" },
+          });
+        },
+      },
+    );
+  }
+
+  if (kinNewLead !== null && canOpenKinMemory) {
+    actionItems.push({
+      kind: "action",
+      value: "action:kin-memory",
+      searchTerms: ["kin", "memory", "remember", "agents", "leads", "team", "share"],
+      title: "What your agents remember",
+      icon: <BrainIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await navigate({
+          to: "/kin/$environmentId/$orgId/memory",
+          params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
+        });
+      },
+    });
+  }
+
+  if (kinNewLead !== null && canManageKinTeam) {
+    actionItems.push({
+      kind: "action",
+      value: "action:kin-team",
+      searchTerms: ["kin", "team", "people", "teammate", "invite", "add", "person", "link"],
+      title: "Team: add or invite a teammate",
+      icon: <UsersIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await navigate({
+          to: "/kin/$environmentId/$orgId/team",
+          params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
+        });
       },
     });
   }
@@ -1808,6 +2035,40 @@ function OpenCommandPaletteDialog(props: {
       : {}),
     projectSearchItems: projectSearchItems,
     settingsSearchItems,
+    kinItems:
+      kinNewLead === null || currentView !== null
+        ? []
+        : kinHits.map((raw) => {
+            const hit = kinSearchHit(raw);
+            const Icon = hit.kind === "docs" ? FileTextIcon : ListChecksIcon;
+            return {
+              kind: "action" as const,
+              value: `kin-hit:${hit.id}`,
+              searchTerms: [hit.title],
+              title: hit.title,
+              description: [hit.kindLabel, hit.section?.title, hit.snippet, hit.closed]
+                .filter((part) => part !== null && part !== undefined)
+                .join(" · "),
+              icon: <Icon className={ITEM_ICON_CLASS} />,
+              run: async () => {
+                await navigate({
+                  to: "/kin/$environmentId/$orgId/work",
+                  params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
+                  search:
+                    hit.kind === "docs"
+                      ? {
+                          doc: raw.key,
+                          ...(hit.section === null ? {} : { section: hit.section.id }),
+                        }
+                      : hit.kind === "clients"
+                        ? { [KIN_CLIENT_PARAM]: raw.key }
+                        : hit.kind === "projects"
+                          ? { project: raw.key }
+                          : { task: raw.key },
+                });
+              },
+            };
+          }),
     threadSearchItems:
       isLinkedThreadSearch && linkedThreadSearch?.linkedThreads
         ? buildLinkedThreadActionItems({

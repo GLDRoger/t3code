@@ -1,25 +1,20 @@
 import { Blobatar } from "@blobatar/react";
 import type { KinAvatarView } from "@t3tools/client-runtime/kin/kinScreenState";
 
-import { cn } from "../lib/utils";
-
-/**
- * The frame says what it is (DESIGN 8.7): an agent is an outlined square, a person a filled
- * circle, a group a filled square. The blobatar inside says which one. Static, so nothing repaints.
- */
-export function KinAvatar(props: { readonly avatar: KinAvatarView }) {
-  const { kind, seed } = props.avatar;
+/** Who a chat is with: the blobatar for their stable id, with nothing drawn around it. */
+export function KinAvatar(props: {
+  readonly avatar: KinAvatarView;
+  /** `sm` sits in a header beside the chat's title; `xs` leads an author line. */
+  readonly size?: "md" | "sm" | "xs";
+}) {
   return (
-    <span
-      aria-hidden
-      className={cn(
-        "flex size-9 shrink-0 items-center justify-center overflow-hidden",
-        kind === "agent" && "rounded-lg border-2 border-primary",
-        kind === "person" && "rounded-full border bg-secondary",
-        kind === "group" && "rounded-lg border bg-secondary",
-      )}
-    >
-      <Blobatar name={seed} size={32} alt="" draggable={false} />
+    <span aria-hidden className="flex shrink-0">
+      <Blobatar
+        name={props.avatar.seed}
+        size={props.size === "xs" ? 16 : props.size === "sm" ? 24 : 32}
+        alt=""
+        draggable={false}
+      />
     </span>
   );
 }

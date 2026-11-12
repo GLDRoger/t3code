@@ -150,6 +150,15 @@ ensure_dir 0755 "$KIN_HOME/.config/systemd"
 ensure_dir 0755 "$UNIT_DIR"
 ensure_dir 0700 "$CONFIG_DIR"
 
+# `kin <command>` in a kin shell (README, "A kin shell").
+ensure_dir 0755 "$KIN_HOME/.local"
+ensure_dir 0755 "$KIN_HOME/.local/bin"
+if [ -f "$KIN_HOME/.local/bin/kin" ] && cmp -s "$SCRIPT_DIR/kin" "$KIN_HOME/.local/bin/kin"; then
+  say "kin command is current."
+else
+  run install -m 0755 -o "$KIN_USER" -g "$KIN_USER" "$SCRIPT_DIR/kin" "$KIN_HOME/.local/bin/kin"
+fi
+
 UNIT_CHANGED=0
 for unit in kin-server.service kin-backup.service kin-backup.timer; do
   if [ -f "$UNIT_DIR/$unit" ] && cmp -s "$SCRIPT_DIR/$unit" "$UNIT_DIR/$unit"; then
@@ -222,6 +231,7 @@ check "Codex CLI" as_kin codex --version
 check "clone at $CHECKOUT on branch kin" as_kin sh -c "[ \"\$(git -C '$CHECKOUT' branch --show-current)\" = kin ]"
 check "clone has .env (T3 Connect build config)" test -f "$CHECKOUT/.env"
 check "a build is current ($CURRENT)" test -f "$CURRENT/apps/server/dist/bin.mjs"
+check "kin command on kin's PATH" as_kin sh -c 'command -v kin'
 check "linger on" sh -c "loginctl show-user '$KIN_USER' -p Linger | grep -q 'Linger=yes'"
 check "sleep targets masked" sh -c "[ \"\$(systemctl is-enabled sleep.target suspend.target hibernate.target hybrid-sleep.target | sort -u)\" = masked ]"
 check "kin-server enabled" as_kin systemctl --user is-enabled kin-server.service

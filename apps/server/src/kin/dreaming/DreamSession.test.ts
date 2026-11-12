@@ -1,4 +1,5 @@
 import { assert, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   ProviderDriverKind,
   ProviderInstanceId,
@@ -10,9 +11,11 @@ import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
+import * as Queue from "effect/Queue";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
@@ -49,6 +52,38 @@ it.effect.each([
     ),
     provideDeterministicTestRuntime,
   ),
+);
+
+it.effect("each night's dream runs in its own folder after the last one's is removed", () =>
+  Effect.gen(function* () {
+    const cwds = yield* Queue.unbounded<string | null>();
+    return yield* Effect.gen(function* () {
+      const session = yield* DreamSession.DreamSession;
+      const fs = yield* FileSystem.FileSystem;
+      const night = Effect.fn(function* (dreamId: string) {
+        const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "kin-dream-" });
+        const fiber = yield* session
+          .run({ ...turn, dreamId, workspaceRoot })
+          .pipe(Effect.forkScoped);
+        // Taken before the join: a turn sent to a missing folder retries on the clock forever.
+        assert.strictEqual(yield* Queue.take(cwds), workspaceRoot);
+        assert.strictEqual((yield* Fiber.join(fiber)).status, "completed");
+        for (const cwd of yield* Queue.clear(cwds)) assert.strictEqual(cwd, workspaceRoot);
+        return workspaceRoot;
+      });
+      yield* fs.remove(yield* night("dream_20261110_first"), { recursive: true });
+      yield* night("dream_20261111_second");
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          DreamSession.layer.pipe(
+            Layer.provideMerge(orchestrationHarness({ claude: true, realProjects: cwds })),
+          ),
+          NodeServices.layer,
+        ),
+      ),
+    );
+  }).pipe(provideDeterministicTestRuntime),
 );
 
 it.effect("interrupting a dream turn interrupts its provider run", () =>

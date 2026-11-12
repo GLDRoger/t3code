@@ -2,6 +2,7 @@ import type {
   KinAgentId,
   KinAuthor,
   KinReaction,
+  KinReactionEmoji,
   KinChat,
   KinChatId,
   KinChatStreamEvent,
@@ -10,7 +11,9 @@ import type {
   KinChatMember,
   KinMessage,
   KinOrgId,
+  KinPersonId,
   KinWaitingItem,
+  KinWakeupId,
   KinWidget,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -19,6 +22,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { messageForViewer } from "./messageView.ts";
+import { memberReads } from "./sharing.ts";
 import * as Repository from "./KinChatRepository.ts";
 import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
 import * as PubSub from "effect/PubSub";
@@ -31,6 +35,13 @@ type ChatEvent =
   | { readonly type: "widget.updated"; readonly widget: KinWidget }
   | { readonly type: "waiting.updated"; readonly item: KinWaitingItem }
   | { readonly type: "member.removed"; readonly member: KinChatMember }
+  // Everything said in the chat was deleted; the cursors are the chat's after the clear.
+  | {
+      readonly type: "chat.cleared";
+      readonly chatId: KinChatId;
+      readonly lastSeq: number;
+      readonly lastChangeSeq: number;
+    }
   // A change to an active member's row, such as a mute; every member of the chat sees it.
   | { readonly type: "member.updated"; readonly chatId: KinChatId; readonly member: KinChatMember }
   | {
@@ -43,8 +54,10 @@ type ChatEvent =
       readonly type: "reaction.updated";
       readonly chatId: KinChatId;
       readonly reaction: KinReaction;
-      // An owner's soft reply that should wake the lead; `by` is the reacting member.
+      // An owner's soft reply that should wake the lead; `by` is the reacting member. On a removed
+      // reaction, `woke` withdraws a go-ahead; `changedFrom` is the emoji of the wake it reverses.
       readonly woke: boolean;
+      readonly changedFrom?: KinReactionEmoji;
       readonly by: KinAuthor;
     }
   // Live only: never persisted, never in a checkpoint.
@@ -58,6 +71,10 @@ type ChatEvent =
       readonly type: "draft.updated";
       readonly chatId: KinChatId;
       readonly draft: Omit<Extract<KinChatStreamEvent, { _tag: "draft" }>, "_tag">;
+      // Server only. Text goes nowhere once its wake-up is aborted, checked as each viewer
+      // takes it; `personId` limits a withheld draft's end to the one person who saw it.
+      readonly wakeupId?: KinWakeupId;
+      readonly personId?: KinPersonId;
     };
 export type KinChatHubEvent = ChatEvent & { readonly orgId: KinOrgId };
 
@@ -140,6 +157,23 @@ const make = Effect.gen(function* () {
             )
               return false;
             if (event.type === "waiting.updated" && event.item.resolvedAt !== null) return true;
+            if (event.type === "draft.updated") {
+              if (
+                event.personId !== undefined &&
+                (identity._tag !== "person" || identity.personId !== event.personId)
+              )
+                return false;
+              // Read after the viewer's join committed, and the join aborts in the same commit.
+              if (
+                event.wakeupId !== undefined &&
+                event.draft.text !== "" &&
+                (yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${event.orgId}
+                  AND wakeup_id = ${event.wakeupId} AND aborted_at IS NOT NULL LIMIT 1`.pipe(
+                  Effect.orElseSucceed(() => [undefined]),
+                )).length > 0
+              )
+                return false;
+            }
             const memberOption = yield* repo.activeMember({
               orgId: identity.orgId,
               chatId,
@@ -147,6 +181,27 @@ const make = Effect.gen(function* () {
             });
             if (Option.isNone(memberOption)) return false;
             const member = memberOption.value;
+            // A person reads nothing from before they joined: no message, card, tap or reaction.
+            const about =
+              event.type === "message.posted"
+                ? event.message.messageId
+                : event.type === "widget.updated"
+                  ? event.widget.messageId
+                  : event.type === "reaction.updated"
+                    ? event.reaction.messageId
+                    : event.type === "waiting.updated"
+                      ? event.item.messageId
+                      : null;
+            if (
+              identity._tag === "person" &&
+              about !== null &&
+              !(yield* memberReads(sql, {
+                orgId: identity.orgId,
+                memberId: member.memberId,
+                messageId: about,
+              }).pipe(Effect.orElseSucceed(() => false)))
+            )
+              return false;
             const messageId =
               event.type === "widget.updated"
                 ? event.widget.messageId

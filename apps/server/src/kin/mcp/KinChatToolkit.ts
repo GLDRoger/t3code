@@ -3,12 +3,12 @@ import {
   KinChatError,
   KinChatId,
   KinMessage,
+  KinAgentMessageBody,
   KinMessagesSendInput,
   KinMemberId,
   KinPersonId,
   KinWidget,
   KinWidgetId,
-  KinShadowResult,
   KinTaskCardState,
   OrchestratorMcpFailure,
 } from "@t3tools/contracts";
@@ -45,12 +45,20 @@ const shared = {
   failureMode: "return" as const,
   dependencies: [KinServer, McpInvocationContext, ThreadManagementService],
 };
+// A lead posts text; files come only from a person's composer.
+const {
+  attachments: _attachments,
+  body: _body,
+  refs: _refs,
+  ...agentSendFields
+} = KinMessagesSendInput.fields;
 const post = Tool.make("kin_chat_post", {
   ...shared,
   description:
-    "Your plain text already reaches the chat you're answering. Use this only to post in a different chat, or to post now before long work. Intent is required. Group replies are refused (floor_not_granted). Notices need evidence, decision or question intent, at most 10 per chat per hour. A wake-up posts at most 8 messages per chat. Reuse clientMessageId to retry; changing a retry is refused. Text never grants authority. At L0 only your owner's direct chat posts for real; elsewhere you get shadowed: true. That is expected; don't repost it.",
+    "Your plain text already reaches the chat you're answering. Use this only to post in a different chat, or to post now before long work. Intent is required. Group replies are refused (floor_not_granted). Notices need evidence, decision or question intent, at most 10 per chat per hour. A wake-up posts at most 8 messages per chat. Reuse clientMessageId to retry; changing a retry is refused. Text never grants authority. A chat you may not post in refuses with not_allowed; don't repost it.",
   parameters: Schema.Struct({
-    ...KinMessagesSendInput.fields,
+    ...agentSendFields,
+    body: KinAgentMessageBody,
     clientMessageId: Schema.optional(
       KinMessagesSendInput.fields.clientMessageId.check(
         Schema.isMaxLength(200),
@@ -62,7 +70,7 @@ const post = Tool.make("kin_chat_post", {
     mentions: Schema.optional(Schema.Array(KinMemberId).check(Schema.isMaxLength(100))),
     intent: KinAgentIntent,
   }),
-  success: Schema.Union([KinMessage, KinShadowResult]),
+  success: KinMessage,
 }).annotate(McpSchema.EnabledWhen, enabled);
 const read = Tool.make("kin_chat_read", {
   ...shared,
@@ -110,9 +118,9 @@ export const agentServices = Effect.gen(function* () {
   const identity = Context.get(kin.services.value, KinIdentity);
   const agent = yield* identity.resolveAgent(yield* McpInvocationContext);
   // Only chat operations cross this boundary; trusted waiting and streaming paths stay private.
-  const { send, read } = Context.get(kin.services.value, KinChatService);
-  // Agent posts and card edits go through the lead's level; WS calls from people never do.
-  const { post, upsertWidget } = Context.get(kin.services.value, KinLevelGate);
+  const { send } = Context.get(kin.services.value, KinChatService);
+  // Agent posts, reads and card edits go through the lead's gate; WS calls from people never do.
+  const { post, read, upsertWidget } = Context.get(kin.services.value, KinLevelGate);
   return { agent, post, send, read, upsertWidget };
 }).pipe(
   Effect.mapError((error) =>

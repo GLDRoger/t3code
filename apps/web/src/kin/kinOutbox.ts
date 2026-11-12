@@ -3,6 +3,8 @@ import {
   createKinOutbox,
   type KinOutboxStorage,
 } from "@t3tools/client-runtime/kin/kinOutbox";
+import { createKinLocalPreviews } from "@t3tools/client-runtime/kin/kinAttachments";
+import { kinDocRefInput } from "@t3tools/client-runtime/kin/kinDocs";
 import { createKinOutboxRetry } from "@t3tools/client-runtime/kin/kinOutboxRetry";
 import { environmentSessionGenerationAtom } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -31,6 +33,9 @@ const localStorageOutbox: KinOutboxStorage = {
   },
 };
 
+/** Blob copies of the images this tab sent, until their posted message's own copies load. */
+export const kinLocalPreviews = createKinLocalPreviews((url) => URL.revokeObjectURL(url));
+
 export const kinOutbox = createKinOutbox({
   registry: appAtomRegistry,
   storage: localStorageOutbox,
@@ -38,7 +43,14 @@ export const kinOutbox = createKinOutbox({
   send: async (record) => {
     const result = await kinClient.send.run(appAtomRegistry, {
       environmentId: record.environmentId,
-      input: { chatId: record.chatId, clientMessageId: record.clientMessageId, body: record.body },
+      input: {
+        chatId: record.chatId,
+        clientMessageId: record.clientMessageId,
+        body: record.body,
+        ...(record.attachments === undefined ? {} : { attachments: record.attachments }),
+        ...(record.mentions === undefined ? {} : { mentions: record.mentions }),
+        ...(record.refs === undefined ? {} : { refs: record.refs.map(kinDocRefInput) }),
+      },
     });
     return result._tag === "Success"
       ? { _tag: "sent", message: result.value }

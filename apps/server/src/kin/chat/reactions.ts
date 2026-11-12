@@ -16,9 +16,12 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlSchema from "effect/sql/SqlSchema";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { readableBy } from "./sharing.ts";
 
-/** An owner reaction wakes the lead at most this often per chat. */
+/** A first owner reaction wakes the lead at most this often per chat; a changed answer skips it. */
 const KIN_REACTION_COOLDOWN_MS = 30_000;
+/** Reactions on one message wake the lead at most this many times; after that they are feedback. */
+export const KIN_REACTION_WAKES_PER_MESSAGE = 3;
 /** The backlog carries a chat's newest live reactions, at most this many. */
 const BACKLOG_REACTIONS = 1_000;
 
@@ -48,7 +51,7 @@ type Key = {
   readonly emoji: KinReactionEmoji;
 };
 
-/** 👍 ✅ read as yes, 👎 ❌ as no; ❤️ 👀 are feelings and answer nothing. */
+/** 👍 ✅ read as yes, 👎 ❌ as no; every other reaction is a feeling and answers nothing. */
 export const reactionAnswer = (emoji: KinReactionEmoji): "yes" | "no" | null =>
   (KIN_YES_REACTIONS as ReadonlyArray<string>).includes(emoji)
     ? "yes"
@@ -65,9 +68,6 @@ export const reactionOption = (card: KinChoiceCardState, emoji: KinReactionEmoji
   if (yes.length !== 1 || no.length !== 1) return undefined;
   return answer === "yes" ? yes[0] : no[0];
 };
-
-/** A lead message that asks something, so a yes/no reaction can answer it. */
-export const asksQuestion = (body: string) => body.includes("?");
 
 /** The reaction that asks the lead what was wrong with an ordinary message. */
 export const KIN_CLARIFY_REACTION = "👎" satisfies KinReactionEmoji;
@@ -131,7 +131,7 @@ export const recentlyWoke = Effect.fn("KinReactions.recentlyWoke")(
     readonly now: number;
   }) {
     const sql = yield* SqlClient.SqlClient;
-    const rows = yield* sql`SELECT 1 FROM kin_reactions
+    const rows = yield* sql`SELECT 1 FROM kin_reaction_wakes
       WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}
         AND woke_at > ${input.now - KIN_REACTION_COOLDOWN_MS}
       ORDER BY woke_at DESC LIMIT 1`;
@@ -140,16 +140,60 @@ export const recentlyWoke = Effect.fn("KinReactions.recentlyWoke")(
   Effect.mapError(toPersistenceSqlError("KinReactions.recentlyWoke")),
 );
 
-/** Whether any reaction on the message already woke the lead: one wake per message. */
-export const wokeOnMessage = Effect.fn("KinReactions.wokeOnMessage")(
-  function* (input: { readonly orgId: KinOrgId; readonly messageId: KinMessageId }) {
+const WakeRow = Schema.Struct({
+  emoji: KinReactionEmoji,
+  answer: Schema.NullOr(Schema.Literals(["yes", "no"])),
+  wakes: Schema.Number,
+  latest: Schema.Number,
+});
+
+/**
+ * The owner reactions that woke the lead on a message: the emoji and answer the last wake carried,
+ * how many there were, and whether this message is the one a reaction last woke the chat for.
+ */
+export const reactionWake = Effect.fn("KinReactions.wake")(
+  function* (input: {
+    readonly orgId: KinOrgId;
+    readonly chatId: KinChatId;
+    readonly messageId: KinMessageId;
+  }) {
     const sql = yield* SqlClient.SqlClient;
-    const rows = yield* sql`SELECT 1 FROM kin_reactions
-      WHERE org_id = ${input.orgId} AND message_id = ${input.messageId} AND woke_at IS NOT NULL
-      ORDER BY 1 LIMIT 1`;
-    return rows.length > 0;
+    const [row] = yield* SqlSchema.findAll({
+      Request: Schema.Unknown,
+      Result: WakeRow,
+      execute: () => sql`SELECT w.emoji, w.answer, w.wakes,
+          w.message_id = (SELECT l.message_id FROM kin_reaction_wakes l
+            WHERE l.org_id = w.org_id AND l.chat_id = w.chat_id
+            ORDER BY l.woke_at DESC, l.message_id LIMIT 1) AS latest
+        FROM kin_reaction_wakes w
+        WHERE w.org_id = ${input.orgId} AND w.chat_id = ${input.chatId}
+          AND w.message_id = ${input.messageId}
+        ORDER BY w.message_id LIMIT 1`,
+    })(input);
+    return row === undefined ? undefined : { ...row, latest: row.latest === 1 };
   },
-  Effect.mapError(toPersistenceSqlError("KinReactions.wokeOnMessage")),
+  Effect.mapError(toPersistenceSqlError("KinReactions.wake")),
+);
+
+/** Records a reaction wake on the message: `answer` is null for a withdrawn yes. */
+export const recordWake = Effect.fn("KinReactions.recordWake")(
+  function* (input: {
+    readonly orgId: KinOrgId;
+    readonly chatId: KinChatId;
+    readonly messageId: KinMessageId;
+    readonly emoji: KinReactionEmoji;
+    readonly answer: "yes" | "no" | null;
+    readonly now: number;
+  }) {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_reaction_wakes
+        (org_id, chat_id, message_id, emoji, answer, wakes, woke_at)
+      VALUES (${input.orgId}, ${input.chatId}, ${input.messageId}, ${input.emoji}, ${input.answer},
+        1, ${input.now})
+      ON CONFLICT (org_id, message_id) DO UPDATE SET emoji = excluded.emoji,
+        answer = excluded.answer, wakes = kin_reaction_wakes.wakes + 1, woke_at = excluded.woke_at`;
+  },
+  Effect.mapError(toPersistenceSqlError("KinReactions.recordWake")),
 );
 
 /** Live reactions in a chat, newest first; with `messageIds`, only on those messages. */
@@ -158,6 +202,8 @@ export const liveReactions = Effect.fn("KinReactions.live")(
     readonly orgId: KinOrgId;
     readonly chatId: KinChatId;
     readonly messageIds?: ReadonlyArray<KinMessageId>;
+    /** Only reactions on messages this member may read (`readableBy`). */
+    readonly viewerMemberId?: string;
   }) {
     const sql = yield* SqlClient.SqlClient;
     if (input.messageIds !== undefined && input.messageIds.length === 0) return [];
@@ -167,6 +213,7 @@ export const liveReactions = Effect.fn("KinReactions.live")(
       execute: () => sql`SELECT ${sql.literal(columns)} FROM kin_reactions
         WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND removed_at IS NULL
           ${input.messageIds === undefined ? sql`` : sql`AND message_id IN ${sql.in(input.messageIds)}`}
+          ${input.viewerMemberId === undefined ? sql`` : sql`AND message_id IN (SELECT kin_messages.message_id FROM kin_messages WHERE kin_messages.org_id = ${input.orgId} AND kin_messages.chat_id = ${input.chatId} AND ${readableBy(sql, input.orgId, input.viewerMemberId)})`}
         ORDER BY created_at DESC, message_id, member_id, emoji LIMIT ${BACKLOG_REACTIONS}`,
     })(input);
     return rows.map(toReaction);

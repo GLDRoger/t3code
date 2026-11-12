@@ -192,6 +192,13 @@ describe("kin inbox", () => {
     state = applyKinInboxEvent(state, { _tag: "left", chatId: "a" as KinChatId });
     expect(state.chats.map((c) => c.chatId)).toEqual(["b"]);
     expect(state.waiting.map((w) => w.waitingId)).toEqual(["w2"]);
+    // The host's row for a group the viewer was taken out of does the same; a mute does not.
+    const group = (leftAt: string | null) =>
+      chat("b", { kind: "team_group", members: [member(leftAt)] });
+    state = applyKinInboxEvent(state, { _tag: "chat", chat: group(null) });
+    expect(state.chats).toHaveLength(1);
+    state = applyKinInboxEvent(state, { _tag: "chat", chat: group(at(4)) });
+    expect(state).toEqual(emptyKinInbox);
   });
 
   it("replaces everything with a reconnect's fresh snapshot", () => {
@@ -302,6 +309,14 @@ describe("kin chat feed", () => {
     expect(state.widgets.map((w) => w.revision)).toEqual([3]);
   });
 
+  it("shows a card whose notice arrived first, as an approval's does", () => {
+    const notice = message(1, { widgetId: null });
+    let state = applyKinChatEvent(emptyKinChat, backlog([], 0));
+    state = applyKinChatEvent(state, { _tag: "message", message: notice });
+    state = applyKinChatEvent(state, { _tag: "widget", widget: widget("w", 1) });
+    expect(state.messages.map((m) => m.widgetId)).toEqual(["w"]);
+  });
+
   it("asks for a history reload after a reset and clears it once a page lands", () => {
     let state = applyKinChatEvent(emptyKinChat, backlog([message(1)], 1, [widget("w", 1)]));
     state = applyKinChatEvent(state, { _tag: "reset", lastSeq: 400, lastChangeSeq: 412 });
@@ -322,9 +337,39 @@ describe("kin chat feed", () => {
     expect(state.contiguousSeq).toBe(400);
   });
 
+  it("drops a cleared chat's reactions and drafts with its messages", () => {
+    const held = {
+      ...applyKinChatEvent(emptyKinChat, backlog([message(1)], 1)),
+      reactions: [{ messageId: "m1", memberId: "me", emoji: "👍" }],
+      drafts: [{ draftId: "d", agentId: "lead", text: "Half a reply", startedAt: at(0) }],
+    } as unknown as KinChatState;
+    // A gap reset keeps them: the page that refills the feed still holds their messages.
+    expect(applyKinChatEvent(held, { _tag: "reset", lastSeq: 1 })).toMatchObject({
+      reactions: held.reactions,
+      drafts: held.drafts,
+    });
+    expect(
+      applyKinChatEvent(held, {
+        _tag: "reset",
+        lastSeq: 1,
+        lastChangeSeq: 3,
+        cleared: true,
+        clearedSeq: 1,
+      }),
+    ).toMatchObject({ messages: [], reactions: [], drafts: [], changeSeq: 3, clearedSeq: 1 });
+    // A client that opens the chat later learns it from the backlog.
+    expect(applyKinChatEvent(emptyKinChat, { ...backlog([], 4), clearedSeq: 4 }).clearedSeq).toBe(
+      4,
+    );
+  });
+
   it("marks the chat left only for a member event with leftAt", () => {
     const state = applyKinChatEvent(emptyKinChat, backlog([], 0));
-    expect(applyKinChatEvent(state, { _tag: "member", member: member(null) }).left).toBe(false);
+    // Anyone else's change counts up, so the chat's details read its members again.
+    expect(applyKinChatEvent(state, { _tag: "member", member: member(null) })).toMatchObject({
+      left: false,
+      memberChanges: 1,
+    });
     expect(applyKinChatEvent(state, { _tag: "member", member: member(at(4)) }).left).toBe(true);
   });
 

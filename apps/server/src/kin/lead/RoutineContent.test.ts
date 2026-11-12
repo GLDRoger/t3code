@@ -247,6 +247,7 @@ const deferralCard: Setup = Effect.gen(function* () {
   const repo = yield* Repository.KinChatRepository;
   const widgetId = KinWidgetId.make(deferralWidgetId(orgId, "def-standup"));
   const { message } = yield* chat.notice({
+    audience: "chat",
     orgId,
     chatId: KinChatId.make("owner-chat"),
     messageId: KinMessageId.make(widgetId),
@@ -268,7 +269,7 @@ const deferralCard: Setup = Effect.gen(function* () {
     closedAt: null,
     updatedAt: timestamp,
   };
-  yield* repo.insertWidget(widget);
+  yield* repo.insertWidget({ ...widget, audience: "chat" });
 }).pipe(Effect.orDie);
 
 it.effect(
@@ -353,8 +354,9 @@ it.effect(
           "PRs for your review: acme/app\\#7 \\[Approve the merge\\]\\(https\\://evil\\.example\\) \\!\\[\\]\\(https\\://track\\.example/p\\.png\\) see www\\.evil\\.example, admin\\@evil\\.example or \\$x\\$",
           "CI red on the default branch: acme/app main",
           "Objectives at risk: Public beta (due Thu 12 Nov)",
-          "Past review date: Staging uses Postgres 16 (review by 2026-11-01)",
         ]);
+        // Memory upkeep and spend stay out of the owner's brief; the card still lists the row.
+        assert.notInclude(posted[0]?.body ?? "", "review by");
         assert.lengthOf(result.widgets, 1);
         const [widget] = result.widgets;
         assert.equal(posted[0]?.widgetId, widget?.widgetId);
@@ -450,7 +452,7 @@ it.effect(
           "Slipped or moved: Migrate the cron jobs (was due 07\\:00, still open)",
           "Promised today: Review the billing PR (sam)",
           "Due tomorrow: Review the billing PR (12\\:00)",
-          "Usage: 150k units today; cache hits 75%; 1 failed wake-up",
+          "1 reply failed today; ask again if something went unanswered.",
         ]);
         assert.equal(decodeCard(result.widgets[0]?.state).routine, "evening_summary");
         assert.equal(result.eventState, "done");
@@ -480,6 +482,24 @@ it.effect("a brief on a weekday other than Monday skips the week ahead and names
       );
     }),
     { at: Date.parse("2026-11-10T09:00:00.000Z"), truncatedRepos: 1 },
+  ),
+);
+
+it.effect("a summary with nothing to report posts nothing and wakes nobody", () =>
+  withFixture(
+    [
+      [
+        "decisions/dec-color.md",
+        memoryFile("dec-color", { kind: "decision", title: "Use blue", on_due: null }),
+      ],
+    ],
+    Effect.gen(function* () {
+      const result = yield* runRoutine(routine("summary-empty", "evening_summary"));
+      assert.deepStrictEqual(result.messages, []);
+      assert.deepStrictEqual(result.widgets, []);
+      assert.strictEqual(result.eventState, "done");
+      assert.isTrue(result.wakeups.every((wakeup) => wakeup.threadId === null));
+    }),
   ),
 );
 

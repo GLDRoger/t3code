@@ -4,6 +4,7 @@ import {
   AuthSessionId,
   AuthStandardClientScopes,
   KinActionId,
+  KinKeyThumbprint,
   KinOrgId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -31,6 +32,13 @@ it.effect("key and grant methods refuse as disabled when Kin is off", () =>
     assert.include(yield* handlers["kin.approvals.keyChallenge"]().pipe(Effect.flip), {
       reason: "disabled",
     });
+    assert.include(
+      yield* handlers["kin.approvals.revokeKey"]({
+        orgId,
+        thumbprint: KinKeyThumbprint.make("NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs"),
+      }).pipe(Effect.flip),
+      { reason: "disabled" },
+    );
     const actionId = KinActionId.make("act_01");
     assert.include(yield* handlers["kin.approvals.challenge"]({ actionId }).pipe(Effect.flip), {
       reason: "disabled",

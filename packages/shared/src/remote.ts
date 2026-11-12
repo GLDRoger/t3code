@@ -135,7 +135,12 @@ export interface ResolvedRemotePairingTarget {
   readonly credential: string;
   readonly httpBaseUrl: string;
   readonly wsBaseUrl: string;
+  /** The credential is a Kin teammate's invite, redeemed for a chat-only session. */
+  readonly kinInvite?: true;
 }
+
+/** The page a Kin teammate's invite link names; its fragment is the single-use secret. */
+export const KIN_INVITE_LINK_PATH = "/kin/invite";
 
 export interface HostedPairingRequest {
   readonly host: string;
@@ -200,6 +205,43 @@ export const readPairingAppLink = (value: string): string | null => {
   return url.searchParams.get(PAIRING_APP_LINK_PARAM)?.trim() || null;
 };
 
+const KIN_JOIN_APP_LINK_PARAM = "link";
+
+const kinInviteSecret = (url: URL): string =>
+  url.pathname === KIN_INVITE_LINK_PATH && getPairingTokenFromUrl(url) === null
+    ? url.hash.slice(1).trim()
+    : "";
+
+/**
+ * Wraps a join link in the `<scheme>://kin/join` link a phone's browser hands to the app. The
+ * host names the scheme: the web build it serves is shared with apps that register other ones.
+ */
+export const buildKinJoinAppLink = (scheme: string, joinLink: string): string =>
+  `${scheme}://kin/join?${new URLSearchParams([[KIN_JOIN_APP_LINK_PARAM, joinLink]])}`;
+
+/**
+ * The teammate's join link in pasted text, a scanned code or an app link, or null when there is
+ * none. People paste whole messages, so the link may sit among other words.
+ */
+export const readKinJoinLink = (text: string): string | null => {
+  for (const word of text.split(/\s+/)) {
+    const candidate = word.replace(/^[<("']+|[>)"',.;]+$/g, "");
+    if (!URL.canParse(candidate)) continue;
+    const url = new URL(candidate);
+    if (APP_LINK_PROTOCOL.test(url.protocol)) {
+      const wrapped = url.searchParams.get(KIN_JOIN_APP_LINK_PARAM);
+      const inner =
+        url.host === "kin" && url.pathname === "/join" && wrapped ? readKinJoinLink(wrapped) : null;
+      if (inner !== null) return inner;
+      continue;
+    }
+    if ((url.protocol === "https:" || url.protocol === "http:") && kinInviteSecret(url) !== "") {
+      return url.toString();
+    }
+  }
+  return null;
+};
+
 export const resolveRemotePairingTarget = (input: {
   readonly pairingUrl?: string;
   readonly host?: string;
@@ -232,6 +274,16 @@ export const resolveRemotePairingTarget = (input: {
     }
 
     const credential = getPairingTokenFromUrl(url) ?? "";
+    const inviteSecret = kinInviteSecret(url);
+    if (inviteSecret) {
+      const origin = new URL(url.origin);
+      return {
+        credential: decodeURIComponent(inviteSecret),
+        httpBaseUrl: toHttpBaseUrl(origin),
+        wsBaseUrl: toWsBaseUrl(origin),
+        kinInvite: true,
+      };
+    }
     if (!credential) {
       throw new RemotePairingTokenMissingError({ host: url.host });
     }

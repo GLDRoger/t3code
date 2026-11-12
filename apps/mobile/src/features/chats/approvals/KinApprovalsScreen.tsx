@@ -1,7 +1,17 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { EnvironmentId, KinOrgId } from "@t3tools/contracts";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import {
+  EnvironmentId,
+  KinApprovalError,
+  KinOrgId,
+  type KinApproverKey,
+  type KinApproverKeyActivity,
+  type KinKeyThumbprint,
+} from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
+import { AsyncResult } from "effect/reactivity";
 import * as Device from "expo-device";
 import * as Schema from "effect/Schema";
 import { useState, type ReactNode } from "react";
@@ -15,23 +25,31 @@ import { EmptyState } from "../../../components/ui/EmptyState";
 import { ErrorBanner } from "../../../components/ui/ErrorBanner";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
+import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
-import { KinApprovalCard } from "../widgets/KinApprovalCard";
 import { useEnrolApproverKey, useKinApproverKey } from "./useKinApproverKey";
 
 type KinApprovalsParams = { readonly environmentId: string; readonly orgId: string };
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
+const isApprovalError = Schema.is(KinApprovalError);
 
 const HARDWARE: Record<string, string> = {
-  secure_enclave: "Secure Enclave",
+  secure_enclave: "the Secure Enclave",
   strongbox: "StrongBox",
   tee: "secure hardware",
-  software: "software",
 };
+const PLATFORM: Record<string, string> = { ios: "iPhone", android: "Android" };
+const dayFormat = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+});
+const on = (at: DateTime.Utc) => dayFormat.format(DateTime.toEpochMillis(at));
 
-/** Sets up this phone to approve Kin's requests: one hardware key, behind Face ID every time. */
+/** Sets up this phone to approve Kin's requests, and lists the phones that can. */
 export function KinApprovalsScreen({ route }: StaticScreenProps<KinApprovalsParams>) {
   const navigation = useNavigation();
   const environmentId = Option.getOrNull(decodeEnvironmentId(route.params.environmentId));
@@ -60,36 +78,41 @@ export function KinApprovalsScreen({ route }: StaticScreenProps<KinApprovalsPara
   );
 }
 
+function Section(props: {
+  readonly title: string;
+  readonly lines?: ReadonlyArray<string>;
+  readonly children?: ReactNode;
+}) {
+  return (
+    <View className="gap-2 rounded-[20px] border border-border bg-card-alt p-4">
+      <Text textRole="headline" className="font-t3-bold text-foreground">
+        {props.title}
+      </Text>
+      {(props.lines ?? []).map((line) => (
+        <Text key={line} textRole="footnote" className="text-foreground-secondary">
+          {line}
+        </Text>
+      ))}
+      {props.children}
+    </View>
+  );
+}
+
 function ApprovalsBody(props: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId }) {
   const { environmentId, orgId } = props;
   const { status, refresh } = useKinApproverKey(environmentId, orgId);
   const enrol = useEnrolApproverKey();
+  const revokeKey = useAtomCommand(kinClient.revokeKey, { reportFailure: false });
   const canChallenge = useAtomValue(kinClient.keyChallenge.permissionAtom(environmentId));
   const canRegister = useAtomValue(kinClient.registerKey.permissionAtom(environmentId));
+  const canRemove = useAtomValue(kinClient.revokeKey.permissionAtom(environmentId));
   const canEnrol = canChallenge && canRegister;
   const [working, setWorking] = useState(false);
+  const [removing, setRemoving] = useState<KinKeyThumbprint | null>(null);
   const [problem, setProblem] = useState<{
     readonly text: string;
     readonly keyExists: boolean;
   } | null>(null);
-
-  const start = async (replace: boolean) => {
-    if (working || !canEnrol) return;
-    setWorking(true);
-    setProblem(null);
-    const result = await enrol({ environmentId, orgId, replace });
-    setWorking(false);
-    if (result !== null && !result.ok) setProblem(result);
-  };
-  const confirmReplace = () =>
-    Alert.alert(
-      "Replace this phone's key?",
-      "Kin stops accepting approvals from the old key. You confirm the new one like the first.",
-      [
-        { text: "Cancel", style: "cancel" },
-        { text: "Replace key", style: "destructive", onPress: () => void start(true) },
-      ],
-    );
 
   if (status._tag === "loading")
     return (
@@ -107,167 +130,164 @@ function ApprovalsBody(props: { readonly environmentId: EnvironmentId; readonly 
       </View>
     );
 
-  const section = (title: string, lines: ReadonlyArray<string>, extra?: ReactNode) => (
-    <View className="gap-2 rounded-[20px] border border-border bg-card-alt p-4">
-      <Text textRole="headline" className="font-t3-bold text-foreground">
-        {title}
-      </Text>
-      {lines.map((line) => (
-        <Text key={line} textRole="footnote" className="text-foreground-secondary">
-          {line}
-        </Text>
-      ))}
-      {extra}
-    </View>
-  );
+  const start = async (replace: boolean) => {
+    if (working || !canEnrol) return;
+    setWorking(true);
+    setProblem(null);
+    const result = await enrol({ environmentId, orgId, replace });
+    setWorking(false);
+    if (result !== null && !result.ok) setProblem(result);
+  };
+  const replaceKey = problem?.keyExists === true || status.staleKey;
+  const setUp = () =>
+    replaceKey
+      ? Alert.alert(
+          "Set up this phone again?",
+          "It makes a new approval key. The old one on this phone stops working.",
+          [
+            { text: "Cancel", style: "cancel" },
+            { text: "Set up again", onPress: () => void start(true) },
+          ],
+        )
+      : void start(false);
+
+  const remove = async (key: KinApproverKey) => {
+    if (removing !== null) return;
+    setRemoving(key.thumbprint);
+    setProblem(null);
+    const result = await revokeKey({
+      environmentId,
+      input: { orgId, thumbprint: key.thumbprint },
+    });
+    setRemoving(null);
+    refresh();
+    if (AsyncResult.isFailure(result)) {
+      const cause = squashAtomCommandFailure(result);
+      setProblem({
+        text:
+          isApprovalError(cause) && cause.reason !== "unavailable"
+            ? cause.message
+            : "Kin didn't answer. Try again.",
+        keyExists: false,
+      });
+    }
+  };
+  const confirmRemove = (key: KinApproverKey) =>
+    Alert.alert(
+      `Remove ${key.deviceLabel}?`,
+      status.keys.length === 1
+        ? "It's the only phone that can approve. Once it's removed, nothing that needs approval can happen until you set up a phone again."
+        : "It stops approving for Kin, and anything it approved that hasn't run yet is cancelled.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Remove phone", style: "destructive", onPress: () => void remove(key) },
+      ],
+    );
+
   const problemLine =
     problem === null ? null : (
       <Text textRole="footnote" accessibilityRole="alert" className="text-danger-foreground">
         {problem.text}
       </Text>
     );
-  const actions = (primary: ReactNode) => (
-    <View className="flex-row flex-wrap gap-2 pt-1">{primary}</View>
-  );
-  const cantEnrolLine = canEnrol ? null : (
-    <Text textRole="footnote" className="text-foreground-muted">
-      This device can't set up approvals. Pair it again from the Kin host.
-    </Text>
-  );
-  const remake = (label: string) =>
-    actions(
-      <Button
-        label={label}
-        tone="primary"
-        loading={working}
-        disabled={!canEnrol}
-        onPress={confirmReplace}
-      />,
-    );
-  const keyLine = (thumbprint: string) => (
-    <Text selectable textRole="caption" className="font-mono text-foreground-muted">
-      {`Key ${thumbprint}`}
-    </Text>
-  );
-  const codeLine = (code: string) => (
-    <Text
-      selectable
-      accessibilityLabel={`Code ${code.split("").join(" ")}`}
-      className="py-2 font-mono text-[34px] tracking-[6px] text-foreground"
-    >
-      {`${code.slice(0, 3)} ${code.slice(3)}`}
-    </Text>
-  );
 
-  switch (status._tag) {
-    case "none":
-      // Simulators refuse biometric Secure Enclave keys (LocalAuthentication -1020).
-      if (!Device.isDevice)
-        return section("This simulator can't approve", [
-          "Approval keys need the secure hardware and Face ID of a real phone. Set up approvals on your iPhone.",
-        ]);
-      return section(
-        "Approve from this phone",
-        [
-          "Kin asks before it merges a pull request or raises a lead's level. You approve with Face ID, and the phone signs exactly what the card shows.",
-          "The key stays in this phone's secure hardware and never leaves it.",
-        ],
-        <>
+  return (
+    <>
+      {status.own !== null ? (
+        <Section
+          title="This phone can approve"
+          lines={[
+            `Its key is in ${HARDWARE[status.own.hardware] ?? "secure hardware"}. Kin asks before it merges a pull request or changes what an agent may do, and every approval asks for Face ID.`,
+          ]}
+        />
+      ) : !Device.isDevice ? (
+        // Simulators refuse biometric Secure Enclave keys (LocalAuthentication -1020).
+        <Section
+          title="This simulator can't approve"
+          lines={[
+            "Approvals need the secure hardware and Face ID of a real phone. Set up approvals on your phone.",
+          ]}
+        />
+      ) : (
+        <Section
+          title="Set up approvals on this phone"
+          lines={[
+            "Kin asks before it merges a pull request or changes what an agent may do. You approve with Face ID, and the phone signs exactly what the card shows.",
+            "The key stays in this phone's secure hardware and never leaves it.",
+          ]}
+        >
           {problemLine}
-          {cantEnrolLine}
-          {actions(
-            problem?.keyExists === true || status.staleKey ? (
-              <Button
-                label="Replace this phone's key"
-                tone="primary"
-                loading={working}
-                onPress={confirmReplace}
-                disabled={!canEnrol}
-              />
-            ) : (
-              <Button
-                label="Set up approvals"
-                tone="primary"
-                loading={working}
-                disabled={!canEnrol}
-                onPress={() => void start(false)}
-              />
-            ),
+          {canEnrol ? null : (
+            <Text textRole="footnote" className="text-foreground-muted">
+              This device can't set up approvals. Pair it again from the Kin host.
+            </Text>
           )}
-        </>,
-      );
-    case "pending":
-      return section(
-        status.first
-          ? "Confirm this phone on the Kin host"
-          : "Approve this phone from your other one",
-        status.code === null
-          ? ["The code expired. Make a new key to get another."]
-          : status.first
-            ? [
-                "In a shell on the Kin host, run t3 kin approvals confirm-key, pick this key, and type this code. It works for 10 minutes.",
-              ]
-            : [
-                "On the phone that already approves, open Approvals and approve this key with Face ID.",
-                "Lost that phone? Run t3 kin approvals confirm-key --recover on the Kin host and type this code instead.",
-              ],
-        <>
-          {status.code === null ? null : codeLine(status.code)}
-          {keyLine(status.thumbprint)}
-          {problemLine}
-          {cantEnrolLine}
-          {actions(
-            status.code === null ? (
-              <Button
-                label="Make a new key"
-                tone="primary"
-                loading={working}
-                disabled={!canEnrol}
-                onPress={confirmReplace}
-              />
-            ) : (
-              <Button label="Check again" tone="primary" onPress={refresh} />
-            ),
-          )}
-        </>,
-      );
-    case "unattested":
-      return section(
-        "This phone can't approve",
-        [
-          "It couldn't prove to Apple that its key is in secure hardware, so Kin won't accept it. Simulators and some older phones can't.",
-        ],
-        <>
-          {problemLine}
-          {cantEnrolLine}
-          {remake("Make a new key")}
-        </>,
-      );
-    case "revoked":
-      return section(
-        "This phone's key was revoked",
-        ["Kin no longer accepts approvals from it. Make a new key to approve from this phone."],
-        <>
-          {problemLine}
-          {cantEnrolLine}
-          {remake("Make a new key")}
-        </>,
-      );
-    case "active":
-      return (
-        <>
-          {section("This phone approves for Kin", [
-            `Its key is in ${HARDWARE[status.key.hardware] ?? "secure hardware"}. Every approval asks for Face ID.`,
-          ])}
-          {status.enrolments.map((enrolment) => (
-            <KinApprovalCard
-              key={enrolment.actionId}
-              environmentId={environmentId}
-              actionId={enrolment.actionId}
-              revision={0}
+          <View className="flex-row flex-wrap gap-2 pt-1">
+            <Button
+              label="Set up approvals on this phone"
+              tone="primary"
+              loading={working}
+              disabled={!canEnrol}
+              onPress={setUp}
+            />
+          </View>
+        </Section>
+      )}
+
+      <Section title="Phones that can approve">
+        {status.own === null ? null : problemLine}
+        {status.keys.length === 0 ? (
+          <Text textRole="footnote" className="text-foreground-secondary">
+            None yet, so nothing that needs approval can happen.
+          </Text>
+        ) : (
+          status.keys.map((key) => (
+            <View key={key.thumbprint} className="flex-row items-center gap-3 py-1">
+              <View className="min-w-0 flex-1">
+                <Text textRole="body" className="text-foreground" numberOfLines={2}>
+                  {key.thumbprint === status.own?.thumbprint
+                    ? `${key.deviceLabel} (this phone)`
+                    : key.deviceLabel}
+                </Text>
+                <Text textRole="caption" className="text-foreground-muted">
+                  {`${PLATFORM[key.platform] ?? "Phone"}, added ${on(key.confirmedAt ?? key.createdAt)}${key.lastUsedAt === undefined ? "" : `. Last approved ${on(key.lastUsedAt)}`}`}
+                </Text>
+              </View>
+              {canRemove ? (
+                <Button
+                  label="Remove"
+                  tone="secondary"
+                  size="compact"
+                  loading={removing === key.thumbprint}
+                  disabled={removing !== null}
+                  accessibilityLabel={`Remove ${key.deviceLabel}`}
+                  onPress={() => confirmRemove(key)}
+                />
+              ) : null}
+            </View>
+          ))
+        )}
+      </Section>
+
+      {status.activity.length === 0 ? null : (
+        <Section title="Recent changes">
+          {status.activity.map((entry) => (
+            <ActivityLine
+              key={`${entry.change}:${DateTime.toEpochMillis(entry.at)}:${entry.deviceLabel}`}
+              entry={entry}
             />
           ))}
-        </>
-      );
-  }
+        </Section>
+      )}
+    </>
+  );
+}
+
+function ActivityLine(props: { readonly entry: KinApproverKeyActivity }) {
+  const { entry } = props;
+  return (
+    <Text textRole="footnote" className="text-foreground-secondary">
+      {`${entry.deviceLabel} (${PLATFORM[entry.platform] ?? "Phone"}) ${entry.change === "added" ? "was set up" : "was removed"} on ${on(entry.at)}.`}
+    </Text>
+  );
 }

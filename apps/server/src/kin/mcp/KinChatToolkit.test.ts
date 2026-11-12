@@ -12,6 +12,7 @@ import {
   AuthSessionId,
   AuthStandardClientScopes,
   EnvironmentId,
+  KIN_REACTION_EMOJI,
   KinAgentId,
   KinChatId,
   KinMessageId,
@@ -26,6 +27,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, McpServer } from "effect/ai";
@@ -33,15 +35,25 @@ import * as ThreadManagement from "../../orchestration-v2/ThreadManagementServic
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as McpSessions from "../../mcp/McpSessionRegistry.ts";
 import * as KinMcp from "./layer.ts";
+import { KinLeadToolkit } from "../lead/mcp/tools.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { HttpRouter, HttpServerRequest } from "effect/http";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Kin from "../layer.ts";
-import * as KinLevels from "../lead/KinLevels.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
+import { KinGroups } from "../chat/KinGroups.ts";
+import {
+  AUDIENCE_MOVED,
+  PRIVATE_DESTINATION,
+  SHARED_ELSEWHERE,
+  SHARED_OTHER_CHAT,
+  SHARED_REFUSAL,
+} from "../lead/Audience.ts";
+import * as KinToolGate from "./KinToolGate.ts";
+import { toolAdmitted } from "../lead/SharedTools.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { KinChatToolkit, handlers, agentServices } from "./KinChatToolkit.ts";
 
@@ -119,6 +131,16 @@ const layer = Layer.merge(registration, KinMcp.registry(fakeRegistry)).pipe(
   Layer.provideMerge(authorityLayer),
   Layer.provideMerge(liveThreads),
 );
+/** The same toolkit behind the Kin endpoint's gate, which every tool call passes first. */
+const gatedLayer = Layer.mergeAll(
+  registration,
+  KinToolGate.layer.pipe(Layer.provide(McpHttpServer.layerInProcessMcpServer)),
+  KinMcp.registry(fakeRegistry),
+).pipe(
+  Layer.provideMerge(runtime({ KIN_ENABLED: true })),
+  Layer.provideMerge(authorityLayer),
+  Layer.provideMerge(liveThreads),
+);
 const visible = Effect.gen(function* () {
   const server = yield* McpServer.McpServer;
   return yield* Effect.sync(() =>
@@ -148,7 +170,7 @@ const errorOf = (result: McpSchema.CallToolResult) => {
   const error: unknown = JSON.parse(text);
   return error;
 };
-// L1 by default: these tests post for real. An L0 lead's posts become shadow entries.
+// L1 by default: these tests post for real. An L0 lead posts only where its owner placed it.
 const seed = Effect.fn("test.seed")(function* (notice = false, level = "L1") {
   const kin = yield* Kin.KinServer;
   const services = Option.getOrThrow(kin.services);
@@ -279,6 +301,253 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect(
+  "a teammate joining mid-turn withholds the owner-only reply, and a shared turn reads only its own chat",
+  () =>
+    Effect.gen(function* () {
+      const { chat: direct, person, chatService, sql } = yield* seed();
+      const at = "1970-01-01T00:00:00.000Z";
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+        VALUES ('room', ${person.orgId}, 'team_group', 0, ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('room-owner', ${person.orgId}, 'room', 'person', ${person.personId}, 'owner', ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+        VALUES ('room-lead', ${person.orgId}, 'room', 'agent', ${agentId}, 'member', ${at})`;
+      const asked = yield* chatService.send(person, {
+        chatId: KinChatId.make("room"),
+        body: "Owner question in the group",
+        clientMessageId: "room-question",
+      });
+      yield* startAgentWakeup({ orgId: person.orgId, agentId, threadId, message: asked });
+      // The owner alone reads the group: the lead reads its other chats too.
+      assert.isFalse((yield* call("kin_chat_read", { chatId: direct.chatId })).isError);
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('teammate', ${person.orgId}, 'teammate', 'Teammate', ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('room-teammate', ${person.orgId}, 'room', 'person', 'teammate', 'member', ${at})`;
+      assert.include(errorOf(yield* call("kin_chat_read", { chatId: direct.chatId })), {
+        reason: "not_allowed",
+        message: SHARED_OTHER_CHAT,
+      });
+      assert.isFalse((yield* call("kin_chat_read", { chatId: "room" })).isError);
+      // Built for the owner alone, it now says nothing where it was asked, nor anywhere else.
+      for (const [chatId, message] of [
+        ["room", AUDIENCE_MOVED],
+        [direct.chatId, SHARED_ELSEWHERE],
+      ] as const)
+        assert.include(
+          errorOf(
+            yield* call("kin_chat_post", {
+              chatId,
+              body: "Built for the owner alone",
+              intent: "evidence",
+            }),
+          ),
+          { reason: "not_allowed", message },
+        );
+      // Shared once, shared until it ends: the teammate leaving opens nothing back up.
+      yield* sql`UPDATE kin_chat_members SET left_at = ${at} WHERE member_id = 'room-teammate'`;
+      assert.include(errorOf(yield* call("kin_chat_read", { chatId: direct.chatId })), {
+        reason: "not_allowed",
+        message: SHARED_OTHER_CHAT,
+      });
+    }).pipe(Effect.provide(layer)),
+);
+
+// Review of 0a2a431b26: an owner-only routine turn could post a notice into a group a teammate
+// reads, with whatever the owner's context put in it.
+it.effect("an owner-only turn posts nothing where a teammate reads, and the owner hears once", () =>
+  Effect.gen(function* () {
+    const { chat: direct, person, sql } = yield* seed(true);
+    const at = "1970-01-01T00:00:00.000Z";
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES ('teammate', ${person.orgId}, 'teammate', 'Teammate', ${at})`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at)
+      VALUES ('room', ${person.orgId}, 'team_group', 'Launch', 0, ${at})`;
+    for (const [member, kind, principal, role] of [
+      ["room-owner", "person", person.personId, "owner"],
+      ["room-teammate", "person", "teammate", "member"],
+      ["room-lead", "agent", agentId, "member"],
+    ] as const)
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, agent_id, role, joined_at)
+        VALUES (${member}, ${person.orgId}, 'room', ${kind}, ${kind === "person" ? principal : null},
+          ${kind === "agent" ? principal : null}, ${role}, ${at})`;
+    for (const clientMessageId of ["routine-1", "routine-2"])
+      assert.include(
+        errorOf(
+          yield* call("kin_chat_post", {
+            chatId: "room",
+            body: "Invented private brief",
+            intent: "evidence",
+            clientMessageId,
+          }),
+        ),
+        { reason: "not_allowed", message: PRIVATE_DESTINATION },
+      );
+    assert.deepStrictEqual(
+      yield* sql`SELECT body FROM kin_messages WHERE chat_id = 'room' ORDER BY seq`,
+      [],
+    );
+    assert.deepStrictEqual(
+      yield* sql`SELECT body FROM kin_messages WHERE chat_id = ${direct.chatId}
+        AND author_kind = 'system' ORDER BY seq`,
+      [{ body: "Lead couldn't post in Launch: other people are in it." }],
+    );
+    // Its own direct chat with the owner still gets the post.
+    assert.isFalse(
+      (yield* call("kin_chat_post", {
+        chatId: direct.chatId,
+        body: "Invented brief",
+        intent: "evidence",
+      })).isError,
+    );
+    // Nor where a teammate once read: a group stays shared after everyone else leaves.
+    const groups = Context.get(Option.getOrThrow((yield* Kin.KinServer).services), KinGroups);
+    const past = yield* groups.create([person], {
+      orgId: person.orgId,
+      title: "Past",
+      agentIds: [agentId],
+      personIds: [KinPersonId.make("teammate")],
+    });
+    const [left] = yield* sql<{ memberId: string }>`SELECT member_id AS "memberId"
+      FROM kin_chat_members WHERE chat_id = ${past.chatId} AND person_id = 'teammate'`;
+    yield* groups.removeMember([person], {
+      chatId: past.chatId,
+      memberId: KinMemberId.make(left!.memberId),
+    });
+    assert.include(
+      errorOf(
+        yield* call("kin_chat_post", {
+          chatId: past.chatId,
+          body: "Invented private brief",
+          intent: "evidence",
+          clientMessageId: "routine-3",
+        }),
+      ),
+      { reason: "not_allowed", message: PRIVATE_DESTINATION },
+    );
+    assert.deepStrictEqual(
+      yield* sql`SELECT body FROM kin_messages WHERE chat_id = ${past.chatId}
+        AND author_kind = 'agent' ORDER BY seq`,
+      [],
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("every tool call passes the gate, which holds a turn a teammate reads to its list", () =>
+  Effect.gen(function* () {
+    const { chat: direct, person, chatService, sql } = yield* seed();
+    const kin = yield* Kin.KinServer;
+    const at = "1970-01-01T00:00:00.000Z";
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES ('teammate', ${person.orgId}, 'teammate', 'Teammate', ${at})`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+      VALUES ('room', ${person.orgId}, 'team_group', 0, ${at})`;
+    for (const [member, kind, principal, role] of [
+      ["room-owner", "person", person.personId, "owner"],
+      ["room-teammate", "person", "teammate", "member"],
+      ["room-lead", "agent", agentId, "member"],
+    ] as const)
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, agent_id, role, joined_at)
+        VALUES (${member}, ${person.orgId}, 'room', ${kind}, ${kind === "person" ? principal : null},
+          ${kind === "agent" ? principal : null}, ${role}, ${at})`;
+    const gated = (name: string, args: Record<string, unknown>) =>
+      call(name, args).pipe(Effect.provideService(Kin.KinServer, kin));
+    // The owner alone reads its direct chat: everything passes.
+    assert.isFalse((yield* gated("kin_chat_read", { chatId: "room" })).isError);
+    const asked = yield* chatService.send(person, {
+      chatId: KinChatId.make("room"),
+      body: "Owner question with a teammate listening",
+      clientMessageId: "room-ask",
+    });
+    yield* startAgentWakeup({ orgId: person.orgId, agentId, threadId, message: asked });
+    assert.isFalse((yield* gated("kin_chat_read", { chatId: "room" })).isError);
+    for (const [name, args] of [
+      ["kin_chat_read", { chatId: direct.chatId }],
+      ["kin_chat_post", { chatId: direct.chatId, body: "Invented", intent: "evidence" }],
+    ] as const)
+      assert.strictEqual((yield* gated(name, args).pipe(Effect.flip)).message, SHARED_REFUSAL);
+    assert.deepStrictEqual(
+      yield* sql`SELECT body FROM kin_messages WHERE chat_id = ${direct.chatId}
+        AND author_kind = 'agent' ORDER BY seq`,
+      [],
+    );
+  }).pipe(Effect.provide(gatedLayer)),
+);
+
+// A turn built with the owner's notes in mind can't go on once a teammate can read its chat.
+it.effect("a teammate joining aborts the owner-only turn, and leaving reopens nothing", () =>
+  Effect.gen(function* () {
+    const { person, chatService, sql } = yield* seed();
+    const kin = yield* Kin.KinServer;
+    const groups = Context.get(Option.getOrThrow(kin.services), KinGroups);
+    const at = "1970-01-01T00:00:00.000Z";
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES ('teammate', ${person.orgId}, 'teammate', 'Teammate', ${at})`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at)
+      VALUES ('room', ${person.orgId}, 'team_group', 'Launch', 0, ${at})`;
+    for (const [member, kind, principal, role] of [
+      ["room-owner", "person", person.personId, "owner"],
+      ["room-lead", "agent", agentId, "member"],
+    ] as const)
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, agent_id, role, joined_at)
+        VALUES (${member}, ${person.orgId}, 'room', ${kind}, ${kind === "person" ? principal : null},
+          ${kind === "agent" ? principal : null}, ${role}, ${at})`;
+    const asked = yield* chatService.send(person, {
+      chatId: KinChatId.make("room"),
+      body: "Owner question in the group",
+      clientMessageId: "room-ask",
+    });
+    yield* startAgentWakeup({ orgId: person.orgId, agentId, threadId, message: asked });
+    const gated = (name: string, args: Record<string, unknown>) =>
+      call(name, args).pipe(Effect.provideService(Kin.KinServer, kin));
+    const abortedAt = sql<{ abortedAt: number | null }>`SELECT aborted_at AS "abortedAt"
+      FROM kin_wakeups WHERE agent_id = ${agentId} AND status = 'running' ORDER BY wakeup_id`;
+    assert.deepStrictEqual(yield* abortedAt, [{ abortedAt: null }]);
+    const mate = yield* groups.addMember([person], {
+      chatId: KinChatId.make("room"),
+      principal: { _tag: "person", personId: KinPersonId.make("teammate") },
+    });
+    assert.isNotNull((yield* abortedAt)[0]?.abortedAt);
+    const calls = [
+      ["kin_delegate", { kind: "build", title: "Invented", brief: "Invented", memoryItemIds: [] }],
+      ["kin_follow_up", { workerId: "worker", brief: "Invented" }],
+      ["kin_chat_post", { chatId: "room", body: "Invented", intent: "evidence" }],
+      ["kin_widget_upsert", { chatId: "room", type: "task", state: taskState }],
+      ["kin_hand_off", { toAgentId: "other", brief: "Invented" }],
+      ["request_action", { kind: "merge", summary: "Invented" }],
+      ["kin_defer", { title: "Invented", due: "2026-12-01T09:00:00Z" }],
+    ] as const;
+    // Only the chat tools are registered here; the gate asks `toolAdmitted` the same for all.
+    const [wake] = yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId" FROM kin_wakeups
+      WHERE agent_id = ${agentId} AND status = 'running' ORDER BY wakeup_id`;
+    const turn = { orgId: person.orgId, agentId, wakeupId: wake!.wakeupId };
+    for (const [name, args] of calls)
+      if (name === "kin_chat_post" || name === "kin_widget_upsert")
+        assert.strictEqual((yield* gated(name, args).pipe(Effect.flip)).message, SHARED_REFUSAL);
+      else assert.isFalse(yield* toolAdmitted(turn, name, args), name);
+    // The teammate leaving between two calls opens nothing back up.
+    yield* groups.removeMember([person], {
+      chatId: KinChatId.make("room"),
+      memberId: mate.memberId,
+    });
+    assert.strictEqual(
+      (yield* gated("kin_chat_post", calls[2][1]).pipe(Effect.flip)).message,
+      SHARED_REFUSAL,
+    );
+    assert.isNotNull((yield* abortedAt)[0]?.abortedAt);
+    assert.deepStrictEqual(
+      yield* sql`SELECT body FROM kin_messages WHERE chat_id = 'room' AND author_kind = 'agent'
+        ORDER BY seq`,
+      [],
+    );
+    assert.deepStrictEqual(
+      yield* sql`SELECT widget_id FROM kin_widgets WHERE chat_id = 'room' ORDER BY widget_id`,
+      [],
+    );
+  }).pipe(Effect.provide(gatedLayer)),
+);
+
 it.effect.each(["ordinary", "subagent", "ended", "retired", "muted"] as const)(
   "refuses %s callers",
   (mode) =>
@@ -361,108 +630,52 @@ const resultOf = (result: McpSchema.CallToolResult) => {
   const value: unknown = JSON.parse(text);
   return value;
 };
-// Chats the lead is in besides its owner's direct chat: a team group and another direct chat.
-const otherChats = (sql: SqlClient.SqlClient, orgId: KinOrgId) =>
+// Chats the lead is in besides its owner's direct chat: a team group nobody placed it in, another
+// direct chat, and a group the lead's owner owns.
+const otherChats = (sql: SqlClient.SqlClient, orgId: KinOrgId, ownerId: string) =>
   Effect.gen(function* () {
     const at = "1970-01-01T00:00:00.000Z";
-    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, team_id, direct_key, last_seq, last_message_at, created_at, archived_at) VALUES ('group-1', ${orgId}, 'team_group', 'Team', NULL, NULL, 0, NULL, ${at}, NULL), ('other-direct', ${orgId}, 'direct', NULL, NULL, 'other-key', 0, NULL, ${at}, NULL)`;
-    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at) VALUES ('group-lead', ${orgId}, 'group-1', 'agent', ${agentId}, 'member', ${at}), ('other-lead', ${orgId}, 'other-direct', 'agent', ${agentId}, 'member', ${at})`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, team_id, direct_key, last_seq, last_message_at, created_at, archived_at) VALUES ('group-1', ${orgId}, 'team_group', 'Team', NULL, NULL, 0, NULL, ${at}, NULL), ('other-direct', ${orgId}, 'direct', NULL, NULL, 'other-key', 0, NULL, ${at}, NULL), ('owner-group', ${orgId}, 'team_group', 'Owner team', NULL, NULL, 0, NULL, ${at}, NULL)`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at) VALUES ('group-lead', ${orgId}, 'group-1', 'agent', ${agentId}, 'member', ${at}), ('other-lead', ${orgId}, 'other-direct', 'agent', ${agentId}, 'member', ${at}), ('owner-group-lead', ${orgId}, 'owner-group', 'agent', ${agentId}, 'member', ${at})`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at) VALUES ('owner-group-owner', ${orgId}, 'owner-group', 'person', ${ownerId}, 'owner', ${at})`;
   });
+const NOT_ALLOWED = {
+  reason: "not_allowed",
+  message: "You can't post in this chat. Nothing was sent.",
+} as const;
 
-// Lead spec acceptance: "at L0, kin_chat_post to a group returns shadowed: true, posts nothing,
-// and adds a shadow entry; the owner's summary widget updates."
-it.effect("at L0 kin_chat_post posts nothing, records a shadow entry and updates the summary", () =>
-  Effect.gen(function* () {
-    const { chat, person, chatService, sql } = yield* seed(false, "L0");
-    yield* otherChats(sql, person.orgId);
-    const agentMessages = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_messages
+it.effect(
+  "at L0 kin_chat_post is refused outside chats its owner placed it in, and records nothing",
+  () =>
+    Effect.gen(function* () {
+      const { person, sql } = yield* seed(false, "L0");
+      yield* otherChats(sql, person.orgId, person.personId);
+      const agentMessages = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_messages
       WHERE org_id = ${person.orgId} AND author_kind = 'agent' ORDER BY n`;
-    const entries = sql<{ tool: string; level: string; unlocks: string; target: string }>`
-      SELECT tool, level, unlocks_level AS unlocks, would_target AS target FROM kin_shadow_entries
-      WHERE org_id = ${person.orgId} ORDER BY created_at, entry_id`;
-    const card = sql<{ chatId: string; revision: number; state: string }>`
-      SELECT chat_id AS "chatId", revision, state_json AS state FROM kin_widgets
-      WHERE org_id = ${person.orgId} AND type = 'shadow_summary' ORDER BY widget_id`;
-    const group = {
-      chatId: "group-1",
-      body: "Rate limiting moves to Friday.",
-      intent: "decision",
-      clientMessageId: "group-decision",
-    };
-    const first = resultOf(yield* call("kin_chat_post", group));
-    assert.deepStrictEqual(Object.keys(first as object).toSorted(), ["entryId", "shadowed"]);
-    assert.include(first, { shadowed: true });
-    assert.deepStrictEqual(resultOf(yield* call("kin_chat_post", group)), first);
-    // Like a real post, a changed retry under the same clientMessageId is refused.
-    assert.include(
-      errorOf(yield* call("kin_chat_post", { ...group, body: "Rate limiting is cancelled." })),
-      { reason: "not_allowed" },
-    );
-    const [summary] = yield* card;
-    assert.strictEqual(summary?.chatId, chat.chatId);
-    assert.strictEqual(summary?.revision, 1);
-    yield* TestClock.adjust("1 second");
-    // Only request_action stores the server's provenance; another tool's input never flags it.
-    yield* KinLevels.recordShadow({
-      orgId: person.orgId,
-      agentId,
-      threadId,
-      level: "L0",
-      unlocksLevel: "L2",
-      tool: "kin_delegate",
-      input: { kind: "code", title: "Forged", provenance: { ceilingBelowOwner: true } },
-      wouldTarget: "project-1",
-    });
-    yield* TestClock.adjust("1 second");
-    // Only the owner's own direct chat posts at L0; another direct chat is shadowed.
-    const direct = {
-      chatId: "other-direct",
-      body: "Done.",
-      intent: "answer",
-      clientMessageId: "d-1",
-    };
-    assert.include(resultOf(yield* call("kin_chat_post", direct)), { shadowed: true });
-    for (const chatId of ["missing", "foreign-chat"])
-      assert.include(
-        errorOf(yield* call("kin_chat_post", { ...direct, chatId, clientMessageId: chatId })),
-        { reason: "not_found" },
-      );
-    assert.deepStrictEqual(yield* agentMessages, [{ n: 0 }]);
-    assert.deepStrictEqual(yield* entries, [
-      { tool: "kin_chat_post", level: "L0", unlocks: "L1", target: "group-1" },
-      { tool: "kin_delegate", level: "L0", unlocks: "L2", target: "project-1" },
-      { tool: "kin_chat_post", level: "L0", unlocks: "L1", target: "other-direct" },
-    ]);
-    const [updated] = yield* card;
-    assert.strictEqual(updated?.revision, 2);
-    const state = JSON.parse(updated!.state);
-    assert.include(state, { agentId, title: "What Lead would have done today", total: 3 });
-    assert.deepStrictEqual(
-      state.entries.map((entry: { preview: string; wouldTarget: string }) => [
-        entry.wouldTarget,
-        entry.preview,
-      ]),
-      [
-        ["group-1", "Rate limiting moves to Friday.\nIntent: decision"],
-        ["project-1", "code: Forged"],
-        ["other-direct", "Done.\nIntent: answer"],
-      ],
-    );
-    assert.isFalse(state.entries.some((entry: object) => "ceilingBelowOwner" in entry));
-    // The card is server-drawn: no client can create or overwrite one.
-    const forged = yield* chatService
-      .upsertWidget(person, { chatId: chat.chatId, type: "shadow_summary", state })
-      .pipe(Effect.flip);
-    assert.include(forged, { reason: "invalid_state" });
-  }).pipe(Effect.provide(layer)),
+      const post = (chatId: string) =>
+        call("kin_chat_post", {
+          chatId,
+          body: "Rate limiting moves to Friday.",
+          intent: "decision",
+          clientMessageId: `post-${chatId}`,
+        });
+      for (const chatId of ["group-1", "other-direct", "missing", "foreign-chat"])
+        assert.deepInclude(errorOf(yield* post(chatId)), NOT_ALLOWED);
+      // The owner's own group passes the gate and meets the floor, as any group reply does.
+      assert.include(errorOf(yield* post("owner-group")), { reason: "floor_not_granted" });
+      assert.deepStrictEqual(yield* agentMessages, [{ n: 0 }]);
+      assert.deepStrictEqual(yield* sql`SELECT COUNT(*) AS n FROM kin_shadow_entries ORDER BY n`, [
+        { n: 0 },
+      ]);
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect(
-  "at L0 a kin_ask card and a kin_react land only in the owner's direct chat and are shadowed elsewhere",
+  "at L0 a kin_ask card and a kin_react land in the owner's direct chat and are refused elsewhere",
   () =>
     Effect.gen(function* () {
       const { chat, person, sql } = yield* seed(false, "L0");
-      yield* otherChats(sql, person.orgId);
+      yield* otherChats(sql, person.orgId, person.personId);
       const services = Option.getOrThrow((yield* Kin.KinServer).services);
       const agent = yield* Context.get(services, KinIdentity).resolveAgent(scope);
       const gate = Context.get(services, KinLevelGate);
@@ -473,19 +686,45 @@ it.effect(
           question: "Ship today?",
           options: [{ label: "Yes" }, { label: "No" }],
         });
-      assert.include(yield* ask("group-1"), { shadowed: true });
-      assert.include(yield* ask("other-direct"), { shadowed: true });
+      assert.deepInclude(yield* ask("group-1").pipe(Effect.flip), NOT_ALLOWED);
+      assert.deepInclude(yield* ask("other-direct").pipe(Effect.flip), NOT_ALLOWED);
       const card = yield* ask(chat.chatId);
       assert.include(card, { type: "choice", chatId: chat.chatId });
       assert.ok("messageId" in card);
+      const chart = (chatId: string) =>
+        gate.chart(agent, {
+          chatId: KinChatId.make(chatId),
+          clientMessageId: `chart-${chatId}`,
+          intent: "answer",
+          chart: "bar",
+          title: "Signups",
+          unit: { kind: "count" },
+          labels: ["Mon", "Tue", "Wed"],
+          series: [{ name: "This week", values: [12, 9, 14] }],
+        });
+      // A chart goes where a message could, and nowhere a message couldn't.
+      assert.deepInclude(yield* chart("group-1").pipe(Effect.flip), NOT_ALLOWED);
+      assert.deepInclude(yield* chart("other-direct").pipe(Effect.flip), NOT_ALLOWED);
+      assert.include(yield* chart(chat.chatId), { type: "chart", chatId: chat.chatId });
       const react = (chatId: string) =>
         gate.react(agent, {
           chatId: KinChatId.make(chatId),
           messageId: card.messageId,
           emoji: "👍",
         });
-      assert.include(yield* react("group-1"), { shadowed: true });
+      assert.deepInclude(yield* react("group-1").pipe(Effect.flip), NOT_ALLOWED);
       assert.include(yield* react(chat.chatId), { emoji: "👍", chatId: chat.chatId });
+      // The tool takes every emoji a person's menu offers, not a narrower set of its own.
+      const reactInput = Schema.decodeUnknownEffect(
+        KinLeadToolkit.tools.kin_react.parametersSchema,
+      );
+      const accepted = yield* Effect.forEach(KIN_REACTION_EMOJI, (emoji) =>
+        reactInput({ messageId: card.messageId, emoji }),
+      );
+      assert.deepStrictEqual(
+        accepted.map((input) => input.emoji),
+        [...KIN_REACTION_EMOJI],
+      );
       assert.deepStrictEqual(
         yield* sql<{
           chatId: string;
@@ -494,30 +733,21 @@ it.effect(
         WHERE org_id = ${person.orgId} AND type = 'choice' ORDER BY widget_id`,
         [{ chatId: chat.chatId, type: "choice" }],
       );
-      assert.deepStrictEqual(
-        yield* sql<{ tool: string; target: string }>`SELECT tool, would_target AS target
-        FROM kin_shadow_entries WHERE org_id = ${person.orgId} ORDER BY created_at, would_target`,
-        [
-          { tool: "kin_ask", target: "group-1" },
-          { tool: "kin_react", target: "group-1" },
-          { tool: "kin_ask", target: "other-direct" },
-        ],
-      );
     }).pipe(Effect.provide(layer)),
 );
 
 it.effect("a chat's own level caps the lead's: min(lead, chat), from stored rows only", () =>
   Effect.gen(function* () {
     const { chat, person, sql } = yield* seed(false, "L1");
-    yield* otherChats(sql, person.orgId);
+    yield* otherChats(sql, person.orgId, person.personId);
     const post = (chatId: string, clientMessageId: string) =>
       call("kin_chat_post", { chatId, body: "Answer", intent: "answer", clientMessageId });
     yield* sql`INSERT INTO kin_chat_levels (org_id, agent_id, chat_id, level, level_since) VALUES (${person.orgId}, ${agentId}, 'group-1', 'L0', 0), (${person.orgId}, ${agentId}, ${chat.chatId}, 'L0', 0)`;
-    assert.include(resultOf(yield* post("group-1", "capped")), { shadowed: true });
+    assert.deepInclude(errorOf(yield* post("group-1", "capped")), NOT_ALLOWED);
     // The owner's direct chat posts at L0, whichever level makes it L0.
     assert.include(resultOf(yield* post(chat.chatId, "owner")), { authorRole: "member" });
     // Cards follow the same cap: a capped group's cards are refused before any lookup.
-    const capped = "Below L1 the lead can't change cards in this chat.";
+    const capped = NOT_ALLOWED.message;
     const card = (chatId: string) =>
       call("kin_widget_upsert", {
         chatId,
@@ -531,10 +761,10 @@ it.effect("a chat's own level caps the lead's: min(lead, chat), from stored rows
     // A chat level above the lead's never raises it.
     yield* sql`UPDATE kin_leads SET level = 'L0' WHERE agent_id = ${agentId}`;
     yield* sql`UPDATE kin_chat_levels SET level = 'L3' WHERE agent_id = ${agentId}`;
-    assert.include(resultOf(yield* post("group-1", "still-l0")), { shadowed: true });
+    assert.deepInclude(errorOf(yield* post("group-1", "still-l0")), NOT_ALLOWED);
     // Only a direct chat counts as the owner's, whatever kin_leads names.
     yield* sql`UPDATE kin_leads SET owner_chat_id = 'group-1' WHERE agent_id = ${agentId}`;
-    assert.include(resultOf(yield* post("group-1", "not-direct")), { shadowed: true });
+    assert.deepInclude(errorOf(yield* post("group-1", "not-direct")), NOT_ALLOWED);
     yield* sql`UPDATE kin_leads SET owner_chat_id = ${chat.chatId} WHERE agent_id = ${agentId}`;
     yield* sql`UPDATE kin_leads SET level = 'L1' WHERE agent_id = ${agentId}`;
     yield* sql`DELETE FROM kin_chat_levels WHERE agent_id = ${agentId}`;
@@ -558,59 +788,10 @@ it.effect.each(["L0", "L1"] as const)(
         floorRunId: (reply as { floorRunId: string }).floorRunId,
       });
       assert.deepStrictEqual(
-        yield* sql`SELECT COUNT(*) AS n FROM kin_shadow_entries WHERE org_id = ${person.orgId} ORDER BY n`,
-        [{ n: 0 }],
-      );
-      assert.deepStrictEqual(
         yield* sql`SELECT COUNT(*) AS n FROM kin_messages WHERE org_id = ${person.orgId} AND author_kind = 'agent' ORDER BY n`,
         [{ n: 2 }],
       );
     }).pipe(Effect.provide(layer)),
-);
-
-it.effect("the shadow summary goes only to a direct chat, whatever kin_leads names", () =>
-  Effect.gen(function* () {
-    const { person, sql } = yield* seed(false, "L0");
-    yield* otherChats(sql, person.orgId);
-    yield* sql`UPDATE kin_leads SET owner_chat_id = 'group-1' WHERE agent_id = ${agentId}`;
-    const result = yield* call("kin_chat_post", {
-      chatId: "group-1",
-      body: "Draft for the team",
-      intent: "answer",
-      clientMessageId: "draft",
-    });
-    assert.include(resultOf(result), { shadowed: true });
-    assert.deepStrictEqual(
-      yield* sql`SELECT COUNT(*) AS n FROM kin_widgets WHERE type = 'shadow_summary' ORDER BY n`,
-      [{ n: 0 }],
-    );
-  }).pipe(Effect.provide(layer)),
-);
-
-it.effect("at L0 a post L1 would refuse is refused, not recorded for review", () =>
-  Effect.gen(function* () {
-    const { person, sql } = yield* seed(true, "L0");
-    yield* otherChats(sql, person.orgId);
-    const notice = (clientMessageId: string, intent = "evidence") =>
-      call("kin_chat_post", { chatId: "group-1", body: "Notice", intent, clientMessageId });
-    const entries = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_shadow_entries
-      WHERE org_id = ${person.orgId} ORDER BY n`;
-    const first = resultOf(yield* notice("notice-0"));
-    assert.include(first, { shadowed: true });
-    for (let n = 1; n < 10; n++)
-      assert.include(resultOf(yield* notice(`notice-${n}`)), { shadowed: true });
-    // Shadowed notices count toward the hourly limit; a retry is not charged.
-    assert.deepStrictEqual(resultOf(yield* notice("notice-0")), first);
-    assert.include(errorOf(yield* notice("limited")), { reason: "limit" });
-    // A notice-only wake-up takes notice intents only, as a real post does.
-    assert.include(errorOf(yield* notice("reply", "answer")), { reason: "invalid_state" });
-    yield* TestClock.adjust(3_600_000);
-    yield* sql`UPDATE kin_chat_members SET muted_until = '2100-01-01T00:00:00.000Z' WHERE agent_id = ${agentId}`;
-    assert.include(errorOf(yield* notice("muted")), { reason: "not_allowed" });
-    assert.deepStrictEqual(yield* entries, [{ n: 10 }]);
-    yield* sql`UPDATE kin_chat_members SET muted_until = NULL WHERE agent_id = ${agentId}`;
-    assert.include(resultOf(yield* notice("new-hour")), { shadowed: true });
-  }).pipe(Effect.provide(layer)),
 );
 
 it.effect.each([{}, { KIN_ENABLED: false }, { KIN_ENABLED: "maybe" }])(
@@ -840,9 +1021,13 @@ it.effect(
         assert.strictEqual(failureOf(yield* sendFloor(post))._tag, "PersistenceSqlError");
         yield* sql`UPDATE kin_floor_runs SET mention_queue = ${before!.mention_queue}, last_speaker = NULL WHERE run_id = ${grant.run_id}`;
       }
-      yield* sql`UPDATE kin_floor_runs SET agent_turns = 1, last_speaker = 'other' WHERE run_id = ${grant.run_id}`;
+      // Once another agent has spoken, only an agent the message still owes a turn answers it.
+      const [owed] = yield* sql<{
+        mention_queue: string;
+      }>`SELECT mention_queue FROM kin_floor_runs WHERE run_id = ${grant.run_id}`;
+      yield* sql`UPDATE kin_floor_runs SET agent_turns = 1, last_speaker = 'other', mention_queue = '[]' WHERE run_id = ${grant.run_id}`;
       assert.include(failureOf(yield* sendFloor(post)), { reason: "invalid_state" });
-      yield* sql`UPDATE kin_floor_runs SET agent_turns = 0, last_speaker = NULL WHERE run_id = ${grant.run_id}`;
+      yield* sql`UPDATE kin_floor_runs SET agent_turns = 0, last_speaker = NULL, mention_queue = ${owed!.mention_queue} WHERE run_id = ${grant.run_id}`;
       const first = yield* sendFloor(post);
       assert.isTrue(Result.isSuccess(first));
       assert.deepStrictEqual(yield* sendFloor(post), first);
@@ -1046,6 +1231,7 @@ it.effect(
         reason: "limit",
       });
       yield* chatService.notice({
+        audience: "chat",
         orgId: person.orgId,
         chatId: chat.chatId,
         messageId: KinMessageId.make("server-notice"),
@@ -1063,7 +1249,7 @@ it.effect(
 );
 
 it.effect(
-  "requires explicit group grants and keeps the six-turn door closed until a human speaks",
+  "grants each agent a group message names one reply, and keeps the six-turn door closed until a human speaks",
   () =>
     Effect.gen(function* () {
       const { chat, person, chatService, sql } = yield* seed();
@@ -1087,7 +1273,7 @@ it.effect(
       const [grant] = yield* sql<{
         token: string;
         run_id: string;
-      }>`SELECT token, run_id FROM kin_floor_grants WHERE org_id = ${person.orgId} AND chat_id = ${chat.chatId} ORDER BY token`;
+      }>`SELECT token, run_id FROM kin_floor_grants WHERE org_id = ${person.orgId} AND chat_id = ${chat.chatId} AND agent_id = ${agentId} ORDER BY token`;
       assert.isDefined(grant);
       const post = {
         chatId: chat.chatId,
@@ -1095,11 +1281,11 @@ it.effect(
         intent: "answer",
         clientMessageId: "group-answer",
       } as const;
-      assert.include(failureOf(yield* sendFloor(post)), { reason: "floor_not_granted" });
-      assert.include(errorOf(yield* call("kin_chat_post", { ...post, floorGrant: grant.token })), {
+      // The grant is the agent's own row: a token that isn't its grant's opens nothing.
+      assert.include(failureOf(yield* sendFloor({ ...post, floorGrant: "forged" })), {
         reason: "floor_not_granted",
       });
-      const first = yield* sendFloor({ ...post, floorGrant: grant.token });
+      const first = yield* sendFloor(post);
       assert.isTrue(Result.isSuccess(first));
       assert.deepStrictEqual(
         yield* sql`SELECT agent_id FROM kin_floor_grants
@@ -1137,7 +1323,7 @@ it.effect(
       });
       const [fresh] = yield* sql<{
         token: string;
-      }>`SELECT token FROM kin_floor_grants WHERE org_id = ${person.orgId} AND run_id != ${grant.run_id} ORDER BY token`;
+      }>`SELECT token FROM kin_floor_grants WHERE org_id = ${person.orgId} AND run_id != ${grant.run_id} AND agent_id = ${agentId} ORDER BY token`;
       assert.isDefined(fresh);
       assert.isFalse(
         (yield* sendFloor({

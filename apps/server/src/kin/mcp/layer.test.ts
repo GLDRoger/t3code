@@ -1,4 +1,6 @@
 import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import { FetchHttpClient } from "effect/http";
+import { ProcessRunner } from "../../processRunner.ts";
 import { ProviderInstanceRegistry } from "../../provider/ProviderInstanceRegistry.ts";
 import { authorityLayerWithDatabase, startAgentWakeup } from "../chat/WakeupAuthority.testkit.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -18,6 +20,7 @@ import {
 import { McpServer } from "effect/ai";
 import { KinAgentSessions } from "./layer.ts";
 import * as KinIssuedTokens from "./KinIssuedTokens.ts";
+import { SHARED_TOOLS, sharedToolAllowed } from "../lead/SharedTools.ts";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
 import * as KinApprovalsMcp from "../approvals/mcp.ts";
 import budget from "./agentContextBudget.json" with { type: "json" };
@@ -112,7 +115,9 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ProjectCloneTracker)({}),
   Layer.mock(ProjectService)({}),
   Layer.mock(ProjectSetupScriptRunner)({}),
+  Layer.mock(ProcessRunner)({}),
   Layer.mock(ProjectStoreV2)({}),
+  FetchHttpClient.layer,
   Layer.mock(ProviderAdapterRegistryV2)({}),
   Layer.mock(ProviderInstanceRegistry)({}),
   Layer.mock(ProviderRegistry)({}),
@@ -208,8 +213,8 @@ it.effect.each([true, false])(
           ),
         );
         const http = yield* HttpRouter.toHttpEffect(routes);
-        // The wake-up runner, the chat wake bridge and the worker tracker.
-        assert.strictEqual(runnerStarts, enabled ? 3 : 0);
+        // The wake-up runner, the chat wake bridge, the worker tracker and the Work import.
+        assert.strictEqual(runnerStarts, enabled ? 4 : 0);
         const services = yield* Deferred.await(ready);
         const kin = Context.get(services, Kin.KinServer);
         const registry = Context.get(services, McpSessions.McpSessionRegistry);
@@ -338,6 +343,23 @@ it.effect.each([true, false])(
         ]);
         for (const name of ["schedule_task", "t3_thread_launch", "create_threads"])
           assert.notInclude(toolNames, name);
+        // Every tool a lead can call says what it may do where others read; a tool added later
+        // without a line is refused there, and the table names no tool that isn't served.
+        assert.sameMembers(toolNames, Object.keys(SHARED_TOOLS));
+        // Four Work tools joined the lead toolkit with slice 1 of Work (`work/mcp/tools.ts`),
+        // `kin_chart` and `kin_visual` after them, nine doc tools with Docs
+        // (`work/mcp/docTools.ts`), five list and money tools with slice 5, and three for
+        // generated files (`gendocs/mcp.ts`).
+        assert.lengthOf(toolNames, 47);
+        // A page runs on every reader's device, so a turn others can read never posts one.
+        assert.strictEqual(SHARED_TOOLS.kin_visual, "refused");
+        assert.isFalse(
+          yield* sharedToolAllowed(
+            { orgId: person.orgId, agentId, wakeupId: "any" },
+            "kin_tool_added_later",
+            {},
+          ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+        );
         assert.strictEqual(
           (yield* request("/mcp", issued.config.authorizationHeader, "initialize", initialize))
             .status,
@@ -365,16 +387,23 @@ it.effect.each([true, false])(
           threadId: ThreadId.make("kin-dream:dream_20260101_abc:extract"),
           providerInstanceId: ProviderInstanceId.make("codex"),
         });
-        for (const path of ["/mcp", "/kin/mcp"])
-          assert.strictEqual(
-            (yield* request(path, dream.config.authorizationHeader, "initialize", initialize))
-              .status,
-            401,
-          );
+        // A worker on this server reads untrusted repository text: no T3 or Kin tools either.
+        const work = yield* registry.issue({
+          threadId: ThreadId.make("kin-work:wk-fixture"),
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        });
+        for (const untrusted of [dream, work])
+          for (const path of ["/mcp", "/kin/mcp"])
+            assert.strictEqual(
+              (yield* request(path, untrusted.config.authorizationHeader, "initialize", initialize))
+                .status,
+              401,
+            );
         const tokens = Context.get(services, KinIssuedTokens.KinIssuedTokens);
         const leak = (header: string) => tokens.containsIssuedToken(`argv: "${header}"`);
         assert.isTrue(yield* leak(ordinary.config.authorizationHeader));
         assert.isFalse(yield* leak(dream.config.authorizationHeader));
+        assert.isFalse(yield* leak(work.config.authorizationHeader));
         yield* registry.revokeThread(ThreadId.make("ordinary-thread"));
         assert.isFalse(yield* leak(ordinary.config.authorizationHeader));
         const result = yield* request(
@@ -396,6 +425,17 @@ it.effect.each([true, false])(
         const text = yield* Effect.promise(() => HttpServerResponse.toWeb(result).text());
         assert.include(text, "Production composition");
         assert.notInclude(text, '"isError":true');
+        // Off unless the host switches it on: the page a visual draws is not fully sealed yet.
+        const visual = yield* request(
+          "/kin/mcp",
+          issued.config.authorizationHeader,
+          "tools/call",
+          { name: "kin_visual", arguments: { title: "Flow", html: "<p>Flow</p>" } },
+          initialized.headers["mcp-session-id"],
+        );
+        const refusal = yield* Effect.promise(() => HttpServerResponse.toWeb(visual).text());
+        assert.include(refusal, "not switched on");
+        assert.include(refusal, '"isError":true');
         const agentSessions = Context.get(services, KinAgentSessions);
         assert.isUndefined(yield* registry.resolve(issued.config.authorizationHeader.slice(7)));
         const caller = yield* agentSessions.resolveAgent(

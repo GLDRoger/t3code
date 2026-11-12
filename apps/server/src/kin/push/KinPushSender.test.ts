@@ -19,6 +19,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import type { SqlError } from "effect/sql/SqlError";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -29,6 +30,8 @@ import * as ApproverKeys from "../approvals/ApproverKeys.ts";
 import * as KeySeal from "../approvals/KeySeal.ts";
 import * as Audit from "../approvals/Audit.ts";
 import { KinAttestationTrust } from "../approvals/attestation/AttestationTrust.ts";
+import { KinKeyNotices } from "../approvals/ExecutionNotices.ts";
+import * as GrantPorts from "../approvals/GrantPorts.ts";
 import * as PendingActions from "../approvals/PendingActions.ts";
 import { layerKinAuthTest, repairProofKey } from "../auth/ProofKeySessions.testkit.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
@@ -94,6 +97,12 @@ const buildOn = <A, E, R>(apns: ReturnType<typeof makeApns>, database: Layer.Lay
     Layer.provideMerge(Audit.layer),
     Layer.provide(Layer.succeed(KinAttestationTrust, { load: () => Effect.die("unused") })),
     Layer.provide(KeySeal.layerTest()),
+    Layer.provide(
+      Layer.mergeAll(
+        GrantPorts.orgRolesLayer,
+        Layer.succeed(KinKeyNotices, { changed: () => Effect.void }),
+      ),
+    ),
     Layer.provide(
       Layer.mock(ServerEnvironment.ServerEnvironment)({
         getEnvironmentId: Effect.succeed(EnvironmentId.make("env_kin")),
@@ -201,6 +210,7 @@ const postMessage = (
     readonly body?: string;
     readonly mentions?: ReadonlyArray<string>;
     readonly replyTo?: KinMessageId;
+    readonly silent?: boolean;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -211,13 +221,14 @@ const postMessage = (
     const agent = typeof author === "object" && "agentMemberId" in author;
     yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
         author_person_id, author_agent_id, author_owner_person_id, author_thread_id,
-        author_member_id, author_role, kind, body, mentions_json, reply_to, status, created_at)
+        author_member_id, author_role, kind, body, mentions_json, reply_to, status, created_at, silent)
       VALUES (${messageId}, 'org_01', ${options.chatId ?? "chat_team"}, ${seq},
         ${human ? "human" : agent ? "agent" : "system"}, ${human ? author.personId : null},
         ${agent ? "lead_fin" : null}, ${agent ? owner : null}, ${agent ? "thread-fin" : null},
         ${human ? author.memberId : agent ? author.agentMemberId : null}, 'member', 'text',
         ${options.body ?? "Ship it before Friday, the secret is hunter2"},
-        ${JSON.stringify(options.mentions ?? [])}, ${options.replyTo ?? null}, ${status}, ${T})`;
+        ${JSON.stringify(options.mentions ?? [])}, ${options.replyTo ?? null}, ${status}, ${T},
+        ${options.silent === true ? 1 : 0})`;
     return messageId;
   });
 
@@ -392,6 +403,22 @@ describe("KinPushSender", () => {
       });
       assert.isUndefined(apns.sent[0]?.collapseId);
 
+      // Kin's publish card rings with fixed words only, never the lead's title or the files.
+      apns.sent.length = 0;
+      const held = yield* postWidget(
+        sql,
+        "worker_publish",
+        { pullRequestTitle: "Invented client terms", files: [{ path: "acme-terms.md" }] },
+        [member],
+      );
+      yield* notify({ _tag: "widget", orgId, widgetId: held });
+      assert.lengthOf(apns.sent, 1);
+      assert.deepStrictEqual(alerts(apns.sent), [
+        { title: "Payments team", body: "A card is waiting on you" },
+      ]);
+      assert.notInclude(JSON.stringify(apns.sent), "Invented client terms");
+      assert.notInclude(JSON.stringify(apns.sent), "acme-terms");
+
       // A card that waits on someone rings as a card, not again as its message.
       const card = yield* postWidget(sql, "task", { status: "needs_decision" }, [member]);
       const [{ messageId: carded }] = (yield* sql<{ messageId: KinMessageId }>`
@@ -472,6 +499,25 @@ describe("KinPushSender", () => {
       // Cut at a word, under the banner's length, and marked as cut.
       assert.isAtMost(Array.from(first?.body ?? "").length, 160);
       assert.match(first?.body ?? "", /^Payroll for November is ready to review\. .*ledger\.…$/);
+
+      // The lead's answer in the group rings whoever it is answering, named or not.
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json,
+          worker_projects_json, owner_chat_id)
+        VALUES ('lead_fin', 'org_01', 'Finance', 0, '[]', '[]', 'chat_dm')`;
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status,
+          event_ids)
+        VALUES ('wk_answer', 'org_01', 'lead_fin', 'opus', ${NOW}, 'running', '["ev_answer"]')`;
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+          received_at, queued_at, state, wakeup_id)
+        VALUES ('ev_answer', 'org_01', 'lead_fin', 'chat.message', 'P2',
+          ${JSON.stringify({ chatId: "chat_team", messageId: priyaSaid })}, ${NOW}, ${NOW},
+          'claimed', 'wk_answer')`;
+      apns.sent.length = 0;
+      yield* notify({ _tag: "message", orgId, messageId: yield* postMessage(sql, fin, "posted") });
+      assert.deepStrictEqual(
+        apns.sent.map((push) => push.token),
+        [memberPhone],
+      );
     }).pipe(Effect.provide(build(apns)));
   });
 
@@ -495,7 +541,15 @@ describe("KinPushSender", () => {
         yield* sql`INSERT INTO kin_waiting (waiting_id, org_id, person_id, chat_id, reason,
             created_at, resolved_at)
           VALUES (${waitingId}, 'org_01', ${owner}, 'chat_team', 'question', ${T}, ${resolvedAt})`;
+      // Kin's silent bookkeeping rings nobody and never counts.
       apns.sent.length = 0;
+      const silent = { chatId: "chat_dm", silent: true } as const;
+      yield* notify({
+        _tag: "message",
+        orgId,
+        messageId: yield* postMessage(sql, "system", "posted", silent),
+      });
+      assert.deepStrictEqual(apns.sent, []);
       const messageId = yield* postMessage(sql, dm, "posted", { chatId: "chat_dm" });
       yield* notify({ _tag: "message", orgId, messageId });
       // Two unread in the group, one in the DM, one open waiting item.
@@ -709,6 +763,133 @@ describe("KinPushSender", () => {
       assert.deepStrictEqual(outcome, { status: "ready", sent: 6, suppressed: 0, failed: 0 });
       assert.strictEqual(peak, 4);
       assert.strictEqual(started.length, 6);
+    }).pipe(Effect.provide(build(apns)));
+  });
+
+  // Review of 422a82327b: a send waits behind slow ones, and who may hear of it changes meanwhile.
+  it.effect(
+    "drops a waiting send to someone removed, re-added after the message, or whose chat was cleared",
+    () => {
+      // Each round, the first four sends hold every slot until released.
+      let round = {
+        parked: 0,
+        full: Deferred.makeUnsafe<void>(),
+        release: Deferred.makeUnsafe<void>(),
+      };
+      const apns = makeApns("ready", () =>
+        Effect.gen(function* () {
+          const current = round;
+          if (current.parked >= 4) return;
+          current.parked += 1;
+          if (current.parked === 4) yield* Deferred.succeed(current.full, undefined);
+          yield* Deferred.await(current.release);
+        }),
+      );
+      return Effect.gen(function* () {
+        const { sql, devices, sender } = yield* seed;
+        // Two more owner devices fill the four slots; Yan and Zed sort after the owner.
+        for (const fill of ["d", "e"])
+          yield* devices.register(caller("sess-owner-phone", owner), {
+            orgId,
+            token: token(fill),
+            platform: "ios",
+            apsEnvironment: "production",
+          });
+        for (const [person, memberId, fill] of [
+          [KinPersonId.make("h_yan"), "m_yan", "7"],
+          [KinPersonId.make("h_zed"), "m_zed", "8"],
+        ] as const) {
+          yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+            VALUES (${person}, 'org_01', ${memberId}, ${memberId}, ${T})`;
+          yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+              person_id, role, joined_at)
+            VALUES (${memberId}, 'org_01', 'chat_team', 'person', ${person}, 'member', ${T})`;
+          yield* devices.register(caller("sess-member", person), {
+            orgId,
+            token: token(fill),
+            platform: "ios",
+            apsEnvironment: "production",
+          });
+        }
+        const ownerDevices = [ownerPhone, ownerTablet, token("d"), token("e")];
+        /** Sends Priya's message, changes the rows while the owner's sends hold the slots. */
+        const parkedSend = (change: (messageId: KinMessageId) => Effect.Effect<void, SqlError>) =>
+          Effect.gen(function* () {
+            round = { parked: 0, full: Deferred.makeUnsafe(), release: Deferred.makeUnsafe() };
+            apns.sent.length = 0;
+            const messageId = yield* postMessage(
+              sql,
+              { personId: member, memberId: "m_priya" },
+              "posted",
+              { mentions: ["m_owner", "m_yan", "m_zed"] },
+            );
+            const sending = yield* sender.notify({ _tag: "message", orgId, messageId });
+            yield* Deferred.await(round.full);
+            yield* change(messageId);
+            yield* Deferred.succeed(round.release, undefined);
+            yield* Fiber.join(sending);
+            return apns.sent.map((push) => push.token);
+          });
+        // Zed is removed, and Yan removed and added back after the message.
+        assert.sameMembers(
+          yield* parkedSend(() =>
+            Effect.gen(function* () {
+              yield* sql`UPDATE kin_chat_members SET left_at = ${T} WHERE member_id = 'm_zed'`;
+              yield* sql`UPDATE kin_chat_members SET joined_seq = 99 WHERE member_id = 'm_yan'`;
+            }),
+          ),
+          ownerDevices,
+        );
+        yield* sql`UPDATE kin_chat_members SET left_at = NULL, joined_seq = 0
+          WHERE member_id IN ('m_yan', 'm_zed')`;
+        // A clear deletes the chat's messages before the waiting sends reach them.
+        assert.sameMembers(
+          yield* parkedSend((messageId) =>
+            Effect.gen(function* () {
+              yield* sql`DELETE FROM kin_messages WHERE message_id = ${messageId}`;
+              yield* sql`UPDATE kin_chats SET cleared_seq = 99 WHERE chat_id = 'chat_team'`;
+            }),
+          ),
+          ownerDevices,
+        );
+      }).pipe(Effect.provide(build(apns)));
+    },
+  );
+
+  it.effect("sends what a key change owes from its stored row to the owner, loud, and once", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { sender, notify, sql } = yield* seed;
+      const notice = yield* postMessage(sql, "system", "posted", { chatId: "chat_dm" });
+      const body = `"Phone" (iOS) can now approve for Kin. It was set up on Sun 8 Nov, 00:00 UTC. ${"x".repeat(120)} If that wasn't you, remove it in Settings, then Approvals.`;
+      // As a key change's transaction leaves them: one with its chat notice, one with none.
+      yield* sql`INSERT INTO kin_key_pushes (org_id, thumbprint, change, body, message_id, owed_at)
+        VALUES ('org_01', ${"k".repeat(43)}, 'added', ${body}, ${notice}, ${NOW}),
+          ('org_01', ${"k".repeat(43)}, 'removed', 'Removed.', NULL, ${NOW + 1})`;
+      // The notice doesn't ring for itself: its key push says the same.
+      assert.strictEqual((yield* notify({ _tag: "message", orgId, messageId: notice })).sent, 0);
+
+      // 22:00 in New York: quiet hours, which a key change rings through.
+      yield* TestClock.setTime(NOW + 3 * 60 * 60 * 1000);
+      assert.strictEqual(yield* sender.flushKeyPushes, 2);
+      assert.deepStrictEqual(
+        apns.sent.map((push) => push.token),
+        [ownerPhone, ownerTablet, ownerPhone, ownerTablet],
+      );
+      assert.deepStrictEqual(alerts(apns.sent), [
+        { title: "Kin approvals", body },
+        { title: "Kin approvals", body },
+        { title: "Kin approvals", body: "Removed." },
+        { title: "Kin approvals", body: "Removed." },
+      ]);
+      assert.deepStrictEqual((apns.sent[0]!.payload as { body: unknown }).body, {
+        kin: 1,
+        orgId,
+        deepLink: "/kin/env_kin/org_01/approvals",
+      });
+      // Settled once sent, so the next start's pass sends nothing again.
+      assert.strictEqual(yield* sender.flushKeyPushes, 0);
+      assert.strictEqual(apns.sent.length, 4);
     }).pipe(Effect.provide(build(apns)));
   });
 

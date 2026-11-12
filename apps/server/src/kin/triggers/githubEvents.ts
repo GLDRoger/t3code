@@ -37,6 +37,8 @@ import * as Memory from "../memory/Memory.ts";
 import { relevant } from "./githubInterest.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import { isPermanent } from "./routines.ts";
+import { KinRecords } from "../work/KinRecords.ts";
+import { pullRequestMerged } from "../work/workerEntries.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RETRY_FIRST_MS = 60_000;
@@ -277,6 +279,7 @@ const make = Effect.gen(function* () {
     return KinGithubEvents.of({ drain: Effect.fn("KinGithubEvents.drain")(() => Effect.void) });
   const tasks = scheduledTasks.value;
   const memory = yield* Memory.Memory;
+  const records = yield* KinRecords;
   const scope = yield* KinGithubRepoScope;
   const ticks = yield* Scheduler.Scheduler;
 
@@ -344,6 +347,21 @@ const make = Effect.gen(function* () {
     if (outcome._tag === "recheck") {
       yield* putRecheck(orgId, fire, outcome.reason, now);
     } else if (outcome._tag === "event") {
+      const { event: merge } = outcome;
+      // A merge closes its Work entries by code, whether or not a lead wakes for it.
+      if (
+        merge.event === "pull_request" &&
+        merge.action === "closed" &&
+        outcome.merged === true &&
+        merge.number !== null
+      )
+        yield* pullRequestMerged({ orgId, repo: merge.repo, number: merge.number }).pipe(
+          Effect.provideService(KinRecords, records),
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin couldn't close Work entries for a merge", { cause }),
+          ),
+        );
       const lead = yield* liveLead(sql, orgId, { prefer: ENGINEERING_DOMAIN });
       if (lead === undefined) {
         yield* Effect.logWarning("Kin GitHub event dropped: no active lead", {

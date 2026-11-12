@@ -19,6 +19,7 @@ import {
   kinStartNowRefusalNotice,
   visibleKinCardStatus,
   type KinDeferralActionId,
+  kinDeferralIsBookkeeping,
 } from "./kinDeferralPresentation.ts";
 
 const DUE = "2026-11-13T09:00:00.000Z";
@@ -60,14 +61,16 @@ describe("kinDeferralCardView", () => {
     const confirmed = view(deferral());
     expect(confirmed.phase).toBe("confirmed");
     expect(confirmed.title).toBe("Rate limiting");
-    expect(confirmed.lines).toEqual(["Deferred to Fri 13 Nov, 9:00. I'll start then."]);
-    expect(confirmed.eyebrow).toBe("Deferral");
+    // The host's own "Deferred to …" text repeats the local line, so it is dropped.
+    expect(confirmed.lines).toEqual(["Set for Fri 13 Nov, 9:00. I'll start then."]);
+    expect(confirmed.eyebrow).toBe("Scheduled");
+    expect(view(deferral({ onDue: "remind" })).eyebrow).toBe("Reminder");
     expect(confirmed.countdown).toEqual({ to: Date.parse(DUE), kind: "due" });
     expect(view(deferral({ onDue: "remind", text: "" })).lines).toEqual([
-      "Deferred to Fri 13 Nov, 9:00. I'll remind you then.",
+      "Set for Fri 13 Nov, 9:00. I'll remind you then.",
     ]);
     expect(view(deferral({ text: "Waiting on the API review." })).lines).toEqual([
-      "Deferred to Fri 13 Nov, 9:00. I'll start then.",
+      "Set for Fri 13 Nov, 9:00. I'll start then.",
       "Waiting on the API review.",
     ]);
 
@@ -134,10 +137,18 @@ describe("kinDeferralCardView", () => {
   it("titles a decision card, and reads each line once", () => {
     const asked = view(deferral({ phase: "asked", text: "Due at 9:00. Start it?" }));
     expect(asked.eyebrow).toBe("Needs your decision");
-    expect(asked.accessibilityLabel).toBe("Deferral: Rate limiting. Due at 9:00. Start it?");
+    expect(asked.accessibilityLabel).toBe("Scheduled: Rate limiting. Due at 9:00. Start it?");
     expect(view(deferral({ text: "Waiting on lane A…" })).accessibilityLabel).toBe(
-      "Deferral: Rate limiting. Deferred to Fri 13 Nov, 9:00. I'll start then. Waiting on lane A…",
+      "Scheduled: Rate limiting. Set for Fri 13 Nov, 9:00. I'll start then. Waiting on lane A…",
     );
+  });
+
+  it("treats Kin's own note as bookkeeping, but not a card that needs a decision", () => {
+    expect(kinDeferralIsBookkeeping(deferral({ onDue: "remind" }))).toBe(true);
+    expect(kinDeferralIsBookkeeping(deferral({ phase: "started" }))).toBe(true);
+    expect(kinDeferralIsBookkeeping(deferral({ phase: "asked" }))).toBe(false);
+    expect(kinDeferralIsBookkeeping(deferral({ phase: "heads_up" }))).toBe(false);
+    expect(kinDeferralIsBookkeeping(deferral({ phase: "asked" }, { closedAt: DUE }))).toBe(true);
   });
 
   it("refuses state that isn't a deferral card", () => {
@@ -326,7 +337,7 @@ describe("createKinCardActions", () => {
       status: "failed",
       notice: {
         kind: "error",
-        text: "Kin didn't take that answer. Tell your lead in the chat instead.",
+        text: "Kin didn't take that answer. Tell your agent in the chat instead.",
       },
     });
     const lost = setup(dropped);

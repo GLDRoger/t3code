@@ -35,20 +35,31 @@ import {
   KIN_WAKEUP_CHAR_LIMIT,
   KIN_WAKEUP_MESSAGE_LIMIT,
 } from "../chat/KinChatService.ts";
-import { KinIdentity, rescueMessageId, type AgentIdentity } from "../chat/KinIdentity.ts";
+import { isPrivateWriteRefused } from "../chat/KinChatRepository.ts";
+import {
+  KinIdentity,
+  isSteerMessage,
+  rescueMessageId,
+  type AgentIdentity,
+} from "../chat/KinIdentity.ts";
+import { AUDIENCE_MOVED, CHAT_ANSWER_TAGS, aborted, ownerOnlyChat } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import {
   classifySegment,
   cutLabel,
   draftReplyText,
+  isEndCall,
   isToolItem,
   NOTE_MAX_CHARS,
+  PHASE_LABELS,
+  setupFailureIn,
   stripTrailingSilenceMarker,
   toolLabel,
   type SegmentNext,
+  type SetupFailure,
 } from "./classify.ts";
-import { KinPresence, syncSeen } from "./KinPresence.ts";
+import { KinPresence, syncQueued } from "./KinPresence.ts";
 
 /** One rescue turn asks for the reply the run owed; its text is posted like any other. */
 const RESCUE_PROMPT =
@@ -59,11 +70,12 @@ const STALL_MS = 120_000;
 /** A streaming segment this old becomes a visible draft even while still short. */
 const DRAFT_AFTER_MS = 1_000;
 const RESCUE_TIMEOUT_MS = 120_000;
-const OVERFLOW_SUFFIX = "\n\n…more in the lead's thread";
+const OVERFLOW_SUFFIX = "\n\n…more in the agent's thread";
 
 /**
  * Where a wake-up's text goes. One wake-up answers one chat: the chat of its highest-priority
- * human message or card tap, else (a notice wake-up) the lead's direct chat with its owner.
+ * human message, card tap or reported work, else (a notice wake-up) the lead's direct chat with
+ * its owner.
  */
 export type Lane = {
   readonly chatId: KinChatId;
@@ -71,9 +83,12 @@ export type Lane = {
   readonly leadName: string;
 };
 
-export type FailedOutcome = "partway" | "retrying" | "gave_up";
+export type FailedOutcome = "partway" | "retrying" | "gave_up" | SetupFailure;
 // Plain words with the lead's name: the inbox shows this as the chat's latest line.
-const failedNotices: Record<FailedOutcome, { prefix: string; body: (lead: string) => string }> = {
+const failedNotices: Record<
+  Exclude<FailedOutcome, SetupFailure>,
+  { prefix: string; body: (lead: string) => string }
+> = {
   partway: { prefix: "kin-partway", body: (lead) => `${lead} stopped partway.` },
   retrying: {
     prefix: "kin-retrying",
@@ -84,8 +99,15 @@ const failedNotices: Record<FailedOutcome, { prefix: string; body: (lead: string
     body: (lead) => `${lead} couldn't start. It won't try again on its own.`,
   },
 };
+/** Only the owner can fix the account, so only the owner's own chat hears how. */
+const setupNotice = (lead: string, failure: SetupFailure, ownerOnly: boolean) =>
+  !ownerOnly
+    ? `${lead} is unavailable right now.`
+    : failure === "signin"
+      ? `${lead} couldn't start: its model account needs signing in again on the server.`
+      : `${lead} couldn't start: its model account can't use its model. Check the account on the server.`;
 
-type Outcome = "posted" | "note" | "silent" | "empty" | "withheld" | "overflow";
+type Outcome = "posted" | "note" | "silent" | "empty" | "withheld" | "overflow" | "dropped";
 type Segment = {
   readonly id: TurnItemId;
   ordinal: number;
@@ -111,13 +133,24 @@ type Wake = {
   readonly overflow: Array<string>;
   posted: number;
   chars: number;
-  // A post, shadow entry or withheld segment answered the lane, or nothing could have.
+  // A segment of this wake-up reached the chat, or will with the overflow.
+  replied: boolean;
+  // Ordinal of the first kin_end call.
+  endedAt: number | null;
+  // A post or withheld segment answered the lane, or nothing could have.
   answered: boolean;
+  movedNoticed: boolean;
   lastOutputAt: number;
   state: KinPresenceState;
   label: string | null;
+  // What a stall interrupted, so the line returns to it when output resumes.
+  live: { readonly state: KinPresenceState; readonly label: string | null };
+  // The highest item ordinal seen live: only the latest tool's end turns the line to Thinking.
+  latest: number;
   since: number;
   stall: Fiber.Fiber<void> | undefined;
+  // What the line reads once the model has the turn: its files, when the message brought some.
+  readonly opening: string;
   // What the line's timer counts from: the wake-up's start, then each posted reply.
   timerFrom: number;
   // The reply is settled or the wake-up ended: nothing may show a line for it again.
@@ -135,6 +168,14 @@ export class KinReplyBridge extends Context.Service<
       readonly agentId: KinAgentId;
       readonly wakeupId: KinWakeupId;
     }) => Effect.Effect<Option.Option<Lane>>;
+    /** A wake-up claimed its events and is preparing: its lane reads "Catching up". */
+    readonly preparing: (input: {
+      readonly orgId: KinOrgId;
+      readonly agentId: KinAgentId;
+      readonly wakeupId: KinWakeupId;
+      readonly lane: Lane;
+      readonly startedAt: number;
+    }) => Effect.Effect<void>;
     /** Starts mirroring the wake-up's thread into its lane. Call before its run starts. */
     readonly begin: (input: {
       readonly orgId: KinOrgId;
@@ -142,6 +183,8 @@ export class KinReplyBridge extends Context.Service<
       readonly wakeupId: KinWakeupId;
       readonly threadId: ThreadId;
       readonly startedAt: number;
+      /** The messages it answers brought files: the line says it is looking at them. */
+      readonly attachments?: boolean;
     }) => Effect.Effect<void>;
     /**
      * After the wake-up's run ends: posts what the live stream did not, then, when the lane
@@ -167,7 +210,12 @@ export class KinReplyBridge extends Context.Service<
       readonly lane: Lane;
       readonly outcome: FailedOutcome;
     }) => Effect.Effect<void>;
-    /** Clears the wake-up's line; `seen` stays, or comes back, where a message still waits. */
+    /**
+     * The wake-up was aborted for its audience: its line goes and its drafts end without the
+     * rest of their text, and nothing it streams shows again.
+     */
+    readonly abort: (orgId: KinOrgId, wakeupId: KinWakeupId) => Effect.Effect<void>;
+    /** Clears the wake-up's line; a queue line stays, or comes back, where a message still waits. */
     readonly end: (input: {
       readonly orgId: KinOrgId;
       readonly agentId: KinAgentId;
@@ -200,17 +248,22 @@ export const laneFor = Effect.fn("KinReplyBridge.lane")(
     const [lead] = yield* sql<{ ownerChatId: string; name: string }>`
       SELECT owner_chat_id AS "ownerChatId", name FROM kin_leads
       WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} ORDER BY agent_id`;
-    const [human] = yield* sql<{ chatId: string | null }>`
-      SELECT json_extract(json, '$.chatId') AS "chatId" FROM kin_events
+    // A worker's report answers where its work was asked for, as a notice: it owes no reply.
+    const [first] = yield* sql<{ chatId: string; asked: number }>`
+      SELECT json_extract(json, '$.chatId') AS "chatId",
+        EXISTS (SELECT 1 FROM kin_events h WHERE h.org_id = e.org_id AND h.agent_id = e.agent_id
+          AND h.wakeup_id = e.wakeup_id
+          AND h.tag IN ('chat.message', 'widget.action', 'chat.reaction')) AS asked
+      FROM kin_events e
       WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND wakeup_id = ${input.wakeupId}
-        AND tag IN ('chat.message', 'widget.action', 'chat.reaction')
+        AND tag IN ${sql.in(CHAT_ANSWER_TAGS)} AND json_extract(json, '$.chatId') IS NOT NULL
       ORDER BY priority, received_at, event_id LIMIT 1`;
-    const chatId = human?.chatId ?? lead?.ownerChatId;
-    if (chatId === undefined || chatId === null) return Option.none<Lane>();
+    const chatId = first?.chatId ?? lead?.ownerChatId;
+    if (chatId === undefined) return Option.none<Lane>();
     return Option.some<Lane>({
       chatId: KinChatId.make(chatId),
-      mode: human?.chatId === undefined || human.chatId === null ? "notice" : "reply",
-      leadName: lead?.name ?? "Lead",
+      mode: first !== undefined && first.asked === 1 ? "reply" : "notice",
+      leadName: lead?.name ?? "Agent",
     });
   },
   Effect.catchCause((cause) =>
@@ -229,6 +282,11 @@ const make = Effect.gen(function* () {
   const scope = yield* Effect.scope;
   const wakes = new Map<ThreadId, Wake>();
   const byWakeup = new Map<KinWakeupId, Wake>();
+  // Wake-ups between their claim and `begin`, and the chat whose line they hold.
+  const prepared = new Map<
+    KinWakeupId,
+    { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly chatId: KinChatId }
+  >();
 
   const iso = (millis: number) => DateTime.formatIso(DateTime.makeUnsafe(millis));
   const stamp = Effect.fn("KinReplyBridge.stamp")(
@@ -260,6 +318,7 @@ const make = Effect.gen(function* () {
     if (wake.state === state && wake.label === label && since === undefined) return;
     wake.state = state;
     wake.label = label;
+    if (state !== "stalled") wake.live = { state, label };
     wake.since = since ?? (yield* Clock.currentTimeMillis);
     yield* presence.set(wake.orgId, wake.lane.chatId, {
       agentId: wake.agentId,
@@ -301,23 +360,23 @@ const make = Effect.gen(function* () {
     body: string,
   ) {
     const lead = yield* agent(wake);
-    if (lead === undefined) return { _tag: "withheld" as const, reason: "wake-up ended" };
+    if (lead === undefined)
+      return { _tag: "withheld" as const, reason: "wake-up ended", moved: false };
     return yield* gate
       .post(lead, {
         chatId: wake.lane.chatId,
         clientMessageId,
         body: capBody(body),
         intent: wake.lane.mode === "reply" ? "answer" : "evidence",
-        tool: "reply",
       })
       .pipe(
-        Effect.map((result) =>
-          "shadowed" in result
-            ? { _tag: "shadowed" as const }
-            : { _tag: "posted" as const, messageId: result.messageId },
-        ),
+        Effect.map((result) => ({ _tag: "posted" as const, messageId: result.messageId })),
         Effect.catch((error) =>
-          Effect.succeed({ _tag: "withheld" as const, reason: error.reason }),
+          Effect.succeed({
+            _tag: "withheld" as const,
+            reason: error.reason,
+            moved: error.message === AUDIENCE_MOVED,
+          }),
         ),
       );
   });
@@ -331,6 +390,7 @@ const make = Effect.gen(function* () {
     if (yield* alreadySaid(wake, text).pipe(Effect.orElseSucceed(() => false))) {
       segment.outcome = "posted";
       wake.answered = true;
+      wake.replied = true;
       return yield* end(null);
     }
     // The last allowed message carries everything past the bound, joined at the run's end.
@@ -339,6 +399,7 @@ const make = Effect.gen(function* () {
       wake.chars + text.length > KIN_WAKEUP_CHAR_LIMIT
     ) {
       segment.outcome = "overflow";
+      wake.replied = true;
       wake.overflow.push(text);
       return yield* end(null);
     }
@@ -349,21 +410,36 @@ const make = Effect.gen(function* () {
         wake.posted++;
         wake.chars += text.length;
         wake.answered = true;
+        wake.replied = true;
         // Work after a reply is new work: its timer doesn't count against the answered message.
         wake.timerFrom = yield* Clock.currentTimeMillis;
         yield* stamp(wake, "posted_at");
         return yield* end(result.messageId);
-      case "shadowed":
-        segment.outcome = "posted";
-        wake.answered = true;
-        yield* stamp(wake, "posted_at");
-        return yield* end(null);
       case "withheld":
         segment.outcome = "withheld";
         // Nothing it writes can land, so a rescue would not help either.
         wake.answered = true;
         yield* end(null);
         yield* journal(wake, [`Withheld (${result.reason}): ${cutLabel(text)}`]);
+        // Lost, not refused: the owner hears it once and can ask again, now as a shared chat.
+        // An aborted turn says nothing: a fresh wake-up answers instead.
+        if (
+          result.moved &&
+          !wake.movedNoticed &&
+          !(yield* aborted(wake).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.orElseSucceed(() => true),
+          ))
+        ) {
+          wake.movedNoticed = true;
+          yield* chat.notice({
+            messageId: KinMessageId.make(`kin-audience-moved:${wake.wakeupId}`),
+            orgId: wake.orgId,
+            chatId: wake.lane.chatId,
+            audience: "chat",
+            body: `${wake.lane.leadName} didn't reply: someone joined while it was working. Send it again.`,
+          });
+        }
         if (result.reason === "limit")
           yield* show(
             wake,
@@ -379,7 +455,7 @@ const make = Effect.gen(function* () {
     next: SegmentNext | null,
   ) {
     if (segment.outcome !== null || !segment.complete) return;
-    const decision = classifySegment(segment.text, next);
+    const decision = afterReply(wake, segment) ? "dropped" : classifySegment(segment.text, next);
     if (decision === null) return;
     if (decision === "post" || decision === "note")
       segment.text = stripTrailingSilenceMarker(segment.text);
@@ -395,11 +471,33 @@ const make = Effect.gen(function* () {
         return;
       case "silent":
       case "empty":
+      case "dropped":
         segment.outcome = decision;
+        if (decision === "dropped")
+          yield* journal(wake, [`Dropped after kin_end: ${cutLabel(segment.text)}`]);
         if (segment.drafting)
           yield* presence.endDraft(wake.orgId, wake.lane.chatId, segment.id, null);
     }
   });
+
+  // A lead that replied and then called kin_end is done: text after it would answer twice.
+  const afterReply = (wake: Wake, segment: Segment) =>
+    wake.replied && wake.endedAt !== null && segment.ordinal > wake.endedAt;
+  // A message steered in after kin_end asks something new: the text answering it is a reply.
+  const reopen = (wake: Wake, item: OrchestrationV2TurnItem) => {
+    if (
+      item.type === "user_message" &&
+      wake.endedAt !== null &&
+      item.ordinal > wake.endedAt &&
+      isSteerMessage(wake.wakeupId, item.messageId)
+    )
+      wake.endedAt = null;
+  };
+  const nextAfter = (wake: Wake, ordinal: number): SegmentNext | null => {
+    const tool = Math.min(...wake.tools.filter((tool) => tool > ordinal));
+    if (tool === Infinity) return null;
+    return tool === wake.endedAt ? "end" : "tool";
+  };
 
   const segmentFor = (wake: Wake, id: TurnItemId, ordinal: number, now: number) => {
     let segment = wake.segments.get(id);
@@ -428,15 +526,22 @@ const make = Effect.gen(function* () {
   const onItem = Effect.fnUntraced(function* (wake: Wake, item: OrchestrationV2TurnItem) {
     const now = yield* Clock.currentTimeMillis;
     wake.lastOutputAt = now;
+    wake.latest = Math.max(wake.latest, item.ordinal);
+    reopen(wake, item);
     if (item.type === "assistant_message") {
       const segment = segmentFor(wake, item.id, item.ordinal, now);
       for (const earlier of pendingBefore(wake, item.ordinal)) yield* decide(wake, earlier, "text");
       if (segment.outcome !== null) return;
       segment.text = textOf(item);
       segment.ordinal = item.ordinal;
+      // Held back from its first token, so it never shows as a draft or a writing line.
+      if (afterReply(wake, segment)) {
+        segment.complete = !item.streaming;
+        return yield* decide(wake, segment, null);
+      }
       if (segment.text.trim() !== "") yield* stamp(wake, "first_token_at");
       if (item.streaming) {
-        yield* show(wake, "writing", null);
+        yield* show(wake, "writing", PHASE_LABELS.writing);
         // Drafts are append-only, so a marker shown here could not be taken back at the end.
         const draft = draftReplyText(segment.text);
         if (
@@ -449,29 +554,29 @@ const make = Effect.gen(function* () {
           yield* presence.draft(wake.orgId, wake.lane.chatId, {
             draftId: segment.id,
             agentId: wake.agentId,
+            wakeupId: wake.wakeupId,
             text: draft,
           });
         }
         return;
       }
       segment.complete = true;
-      const later = wake.tools.some((ordinal) => ordinal > segment.ordinal) ? "tool" : null;
-      return yield* decide(wake, segment, later);
+      return yield* decide(wake, segment, nextAfter(wake, segment.ordinal));
     }
-    if (item.type === "reasoning") return yield* show(wake, "thinking", null);
+    if (item.type === "reasoning") return yield* show(wake, "thinking", PHASE_LABELS.thinking);
     if (!isToolItem(item)) return;
-    const previousTool = Math.max(-1, ...wake.tools.filter((ordinal) => ordinal < item.ordinal));
     if (!wake.tools.includes(item.ordinal)) wake.tools.push(item.ordinal);
-    for (const earlier of pendingBefore(wake, item.ordinal)) yield* decide(wake, earlier, "tool");
-    // A note written right before this call is its label; otherwise the fixed table's.
-    const note = wake.notes.at(-1);
-    yield* show(
-      wake,
-      "working",
-      note !== undefined && note.ordinal > previousTool && note.ordinal < item.ordinal
-        ? cutLabel(note.text)
-        : toolLabel(item),
-    );
+    if (isEndCall(item)) wake.endedAt = Math.min(wake.endedAt ?? item.ordinal, item.ordinal);
+    for (const earlier of pendingBefore(wake, item.ordinal))
+      yield* decide(wake, earlier, isEndCall(item) ? "end" : "tool");
+    if (item.ordinal < wake.latest) return;
+    if (item.status === "pending" || item.status === "running" || item.status === "waiting") {
+      const label = toolLabel(item);
+      if (label !== null) yield* show(wake, "working", label);
+      return;
+    }
+    // The latest call ended: the model is deciding what comes next.
+    yield* show(wake, "thinking", PHASE_LABELS.thinking);
   });
 
   const onEvent = Effect.fnUntraced(function* (event: OrchestrationV2DomainEvent) {
@@ -485,8 +590,15 @@ const make = Effect.gen(function* () {
           if (event.type === "turn-item.updated") return yield* onItem(wake, event.payload);
           if (event.type === "provider-turn.updated" || event.type === "run.updated") {
             wake.lastOutputAt = yield* Clock.currentTimeMillis;
-            if (wake.state === "stalled") yield* show(wake, "working", null);
+            if (wake.state === "stalled") yield* show(wake, wake.live.state, wake.live.label);
           }
+          // The provider has the turn: the model is running.
+          if (
+            event.type === "provider-turn.updated" &&
+            event.payload.status === "running" &&
+            wake.live.state === "starting"
+          )
+            yield* show(wake, "thinking", wake.opening);
         }),
       )
       .pipe(
@@ -511,6 +623,17 @@ const make = Effect.gen(function* () {
     const projection = yield* threads.getThreadProjection(wake.threadId);
     const root = projection.runs.find((run) => run.id === rootRunId);
     if (root === undefined) return;
+    // What a run that could not sign in "said" is the provider's, never the lead's.
+    if (setupFailureIn(projection, rootRunId) !== null) {
+      wake.notes.length = 0;
+      for (const segment of wake.segments.values()) {
+        if (segment.outcome !== null) continue;
+        segment.outcome = "dropped";
+        if (segment.drafting)
+          yield* presence.endDraft(wake.orgId, wake.lane.chatId, segment.id, null);
+      }
+      return;
+    }
     const runs = new Set(
       projection.runs.filter((run) => run.ordinal >= root.ordinal).map((run) => run.id),
     );
@@ -519,6 +642,8 @@ const make = Effect.gen(function* () {
       .toSorted((a, b) => a.ordinal - b.ordinal);
     const now = yield* Clock.currentTimeMillis;
     for (const [index, item] of items.entries()) {
+      reopen(wake, item);
+      if (isEndCall(item)) wake.endedAt = Math.min(wake.endedAt ?? item.ordinal, item.ordinal);
       if (item.type !== "assistant_message" || item.streaming) continue;
       const segment = segmentFor(wake, item.id, item.ordinal, now);
       if (segment.outcome !== null) continue;
@@ -530,7 +655,11 @@ const make = Effect.gen(function* () {
       yield* decide(
         wake,
         segment,
-        following === undefined ? "end" : following.type === "assistant_message" ? "text" : "tool",
+        following === undefined || isEndCall(following)
+          ? "end"
+          : following.type === "assistant_message"
+            ? "text"
+            : "tool",
       );
     }
   });
@@ -540,6 +669,17 @@ const make = Effect.gen(function* () {
   // "thanks, that's all" can take a 👍; a question, a card tap or a reaction still needs words.
   const answered = Effect.fn("KinReplyBridge.answered")(function* (wake: Wake) {
     if (wake.answered || wake.lane.mode === "notice") return true;
+    // A turn only reactions started may end on NO_REPLY: a 👍 on a statement needs no answer.
+    // A changed or withdrawn answer does: the owner wants to hear what was stopped.
+    if ([...wake.segments.values()].some((segment) => segment.outcome === "silent")) {
+      const spoken = yield* sql`SELECT 1 FROM kin_events
+        WHERE org_id = ${wake.orgId} AND wakeup_id = ${wake.wakeupId}
+          AND (tag IN ('chat.message', 'widget.action') OR (tag = 'chat.reaction'
+            AND (json_extract(json, '$.changedFrom') IS NOT NULL
+              OR json_extract(json, '$.withdrawn') = 1)))
+        LIMIT 1`;
+      if (spoken.length === 0) return true;
+    }
     const owed = sql`SELECT e.event_id, e.tag, e.priority, q.body FROM kin_events e
       LEFT JOIN kin_messages q ON q.org_id = e.org_id
         AND q.message_id = json_extract(e.json, '$.messageId') AND q.chat_id = ${wake.lane.chatId}
@@ -549,8 +689,6 @@ const make = Effect.gen(function* () {
         WHERE org_id = ${wake.orgId} AND chat_id = ${wake.lane.chatId} AND author_kind = 'agent'
           AND author_agent_id = ${wake.agentId} AND author_thread_id = ${wake.threadId}
           AND created_at >= ${iso(wake.startedAt)}
-      UNION ALL SELECT 1 FROM kin_shadow_entries
-        WHERE org_id = ${wake.orgId} AND wakeup_id = ${wake.wakeupId} AND would_target = ${wake.lane.chatId}
       UNION ALL SELECT 1 FROM kin_reactions r
         JOIN kin_chat_members m ON m.org_id = r.org_id AND m.chat_id = r.chat_id
           AND m.member_id = r.member_id AND m.principal_kind = 'agent' AND m.agent_id = ${wake.agentId}
@@ -596,7 +734,7 @@ const make = Effect.gen(function* () {
       creationSource: "server",
     });
     const run = sent.run;
-    yield* wake.lock.withPermits(1)(show(wake, "thinking", null));
+    yield* wake.lock.withPermits(1)(show(wake, "thinking", PHASE_LABELS.thinking));
     const timeoutMs = Math.max(
       0,
       Math.min(RESCUE_TIMEOUT_MS, until - (yield* Clock.currentTimeMillis)),
@@ -616,7 +754,7 @@ const make = Effect.gen(function* () {
       });
   });
 
-  // Ends the wake-up's line and drafts for good; `seen` lines are the queue's, not the wake-up's.
+  // Ends the wake-up's line and drafts for good; queue lines are the queue's, not the wake-up's.
   const settleLine = (wake: Wake) =>
     wake.lock.withPermits(1)(
       Effect.gen(function* () {
@@ -666,6 +804,7 @@ const make = Effect.gen(function* () {
         messageId: KinMessageId.make(`kin-no-reply:${wake.wakeupId}`),
         orgId: wake.orgId,
         chatId: wake.lane.chatId,
+        audience: "chat",
         body: `${wake.lane.leadName} didn't reply.`,
       });
     },
@@ -691,16 +830,52 @@ const make = Effect.gen(function* () {
       readonly lane: Lane;
       readonly outcome: FailedOutcome;
     }) {
+      if (input.outcome === "signin" || input.outcome === "access")
+        return yield* setupFailed({ ...input, outcome: input.outcome });
       const notice = failedNotices[input.outcome];
       yield* chat.notice({
         messageId: KinMessageId.make(`${notice.prefix}:${input.wakeupId}`),
         orgId: input.orgId,
         chatId: input.lane.chatId,
+        audience: "chat",
         body: notice.body(input.lane.leadName),
       });
     },
     Effect.catchCause((cause) => Effect.logWarning("Kin failure notice failed", { cause })),
   );
+
+  // Once per burst: a line this lead already left in the chat, with nobody writing since, stands.
+  const setupFailed = Effect.fn("KinReplyBridge.setupFailed")(function* (input: {
+    readonly orgId: KinOrgId;
+    readonly wakeupId: KinWakeupId;
+    readonly lane: Lane;
+    readonly outcome: SetupFailure;
+  }) {
+    const { orgId, wakeupId, lane } = input;
+    const [wakeup] = yield* sql<{ agentId: KinAgentId }>`SELECT agent_id AS "agentId"
+      FROM kin_wakeups WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} ORDER BY wakeup_id`;
+    if (wakeup === undefined) return;
+    const standing = yield* sql`SELECT 1 FROM kin_messages n
+      JOIN kin_wakeups w ON w.org_id = n.org_id AND n.message_id = 'kin-setup:' || w.wakeup_id
+      WHERE n.org_id = ${orgId} AND n.chat_id = ${lane.chatId} AND w.agent_id = ${wakeup.agentId}
+        AND NOT EXISTS (SELECT 1 FROM kin_messages h WHERE h.org_id = n.org_id
+          AND h.chat_id = n.chat_id AND h.author_kind = 'human' AND h.seq > n.seq)
+      LIMIT 1`;
+    if (standing.length > 0) return;
+    const ownerOnly = yield* ownerOnlyChat({ orgId, agentId: wakeup.agentId }, lane.chatId).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+    const setup = (ownerOnly: boolean) =>
+      chat.notice({
+        messageId: KinMessageId.make(`kin-setup:${wakeupId}`),
+        orgId,
+        chatId: lane.chatId,
+        audience: ownerOnly ? "owner" : "chat",
+        body: setupNotice(lane.leadName, input.outcome, ownerOnly),
+      });
+    // Someone may join after `ownerOnly` was read: then they get the line anyone may read.
+    yield* setup(ownerOnly).pipe(Effect.catchIf(isPrivateWriteRefused, () => setup(false)));
+  });
 
   const end = Effect.fn("KinReplyBridge.end")(function* (input: {
     readonly orgId: KinOrgId;
@@ -708,14 +883,61 @@ const make = Effect.gen(function* () {
     readonly wakeupId: KinWakeupId;
   }) {
     const { orgId, agentId, wakeupId } = input;
+    const held = prepared.get(wakeupId);
+    if (held !== undefined && held.orgId === orgId) {
+      prepared.delete(wakeupId);
+      if (byWakeup.get(wakeupId) === undefined)
+        yield* presence.clear(orgId, held.chatId, held.agentId);
+    }
     const wake = byWakeup.get(wakeupId);
     if (wake !== undefined && wake.orgId === orgId) {
       byWakeup.delete(wakeupId);
       if (wakes.get(wake.threadId) === wake) wakes.delete(wake.threadId);
       yield* settleLine(wake);
     }
-    yield* syncSeen(presence, orgId, agentId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    yield* syncQueued(presence, orgId, agentId).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
   });
+
+  const abort = Effect.fn("KinReplyBridge.abort")(function* (
+    orgId: KinOrgId,
+    wakeupId: KinWakeupId,
+  ) {
+    const held = prepared.get(wakeupId);
+    if (held !== undefined && held.orgId === orgId && byWakeup.get(wakeupId) === undefined)
+      yield* presence.clear(orgId, held.chatId, held.agentId);
+    const wake = byWakeup.get(wakeupId);
+    // Presence refuses the drafts' tails itself: the mark is already committed.
+    if (wake !== undefined && wake.orgId === orgId) yield* settleLine(wake);
+  });
+
+  const preparing = Effect.fn("KinReplyBridge.preparing")(
+    function* (input: {
+      readonly orgId: KinOrgId;
+      readonly agentId: KinAgentId;
+      readonly wakeupId: KinWakeupId;
+      readonly lane: Lane;
+      readonly startedAt: number;
+    }) {
+      if (byWakeup.has(input.wakeupId) || prepared.has(input.wakeupId)) return;
+      const { orgId, agentId, wakeupId, lane, startedAt } = input;
+      prepared.set(wakeupId, { orgId, agentId, chatId: lane.chatId });
+      yield* presence.set(orgId, lane.chatId, {
+        agentId,
+        wakeupId,
+        state: "starting",
+        label: PHASE_LABELS.preparing,
+        startedAt: iso(startedAt),
+        since: iso(startedAt),
+      });
+      // Messages in other chats now wait behind this wake-up.
+      yield* syncQueued(presence, orgId, agentId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+    },
+    Effect.catchCause((cause) => Effect.logWarning("Kin preparing line failed", { cause })),
+  );
 
   const begin = Effect.fn("KinReplyBridge.begin")(
     function* (input: {
@@ -724,6 +946,7 @@ const make = Effect.gen(function* () {
       readonly wakeupId: KinWakeupId;
       readonly threadId: ThreadId;
       readonly startedAt: number;
+      readonly attachments?: boolean;
     }) {
       if (byWakeup.has(input.wakeupId)) return;
       const found = yield* lane(input);
@@ -739,12 +962,18 @@ const make = Effect.gen(function* () {
         overflow: [],
         posted: 0,
         chars: 0,
+        replied: false,
+        endedAt: null,
         answered: false,
+        movedNoticed: false,
         lastOutputAt: now,
         state: "starting",
-        label: null,
+        label: PHASE_LABELS.preparing,
+        live: { state: "starting", label: PHASE_LABELS.preparing },
+        latest: -1,
         since: input.startedAt,
         stall: undefined,
+        opening: input.attachments === true ? PHASE_LABELS.attachments : PHASE_LABELS.thinking,
         timerFrom: input.startedAt,
         done: false,
         stamped: new Set(),
@@ -753,7 +982,8 @@ const make = Effect.gen(function* () {
       if (previous !== undefined) yield* end(previous);
       wakes.set(input.threadId, wake);
       byWakeup.set(input.wakeupId, wake);
-      yield* show(wake, "starting", null, input.startedAt);
+      prepared.delete(input.wakeupId);
+      yield* show(wake, "starting", PHASE_LABELS.preparing, input.startedAt);
       wake.stall = yield* watchStall(wake).pipe(Effect.forkIn(scope));
     },
     Effect.catchCause((cause) => Effect.logWarning("Kin reply bridge could not start", { cause })),
@@ -768,10 +998,12 @@ const make = Effect.gen(function* () {
 
   return KinReplyBridge.of({
     lane,
+    preparing,
     begin,
     complete,
     steered,
     failed,
+    abort,
     end,
   });
 });

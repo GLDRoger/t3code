@@ -15,6 +15,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 
+import { kinAttachmentSummary } from "./kinAttachments.ts";
 import type { KinRouteHost } from "./kinHost.ts";
 import {
   applyKinChatHistory,
@@ -22,7 +23,7 @@ import {
   type KinChatClosedReason,
   type KinChatState,
 } from "./kinInboxModel.ts";
-import { kinTapText } from "./kinChoicePresentation.ts";
+import { kinTapText } from "./kinTap.ts";
 import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks.ts";
 import { kinReplyKey, type KinHeldDraft } from "./kinLive.ts";
 import { kinSentences } from "./kinScreenState.ts";
@@ -105,9 +106,11 @@ export function kinEarlierPage(
   chatId: KinChatId,
   messages: ReadonlyArray<KinMessage>,
   exhausted: boolean,
+  /** The chat's seq at its last clear, 0 when it never was: its first message is the next. */
+  clearedSeq: number,
 ): KinChatHistoryInput | null {
   const oldest = messages[0];
-  if (exhausted || oldest === undefined || oldest.seq <= 1) return null;
+  if (exhausted || oldest === undefined || oldest.seq <= clearedSeq + 1) return null;
   return { chatId, beforeSeq: oldest.seq, limit: KIN_HISTORY_PAGE_SIZE };
 }
 
@@ -159,6 +162,10 @@ export function mergeKinFeed(live: KinChatState, earlier: KinChatState): KinChat
 export interface KinFeedViewer {
   readonly personId: KinPersonId | null;
   readonly agentNames: ReadonlyMap<string, string>;
+  /** Agents the host marks retired; absent reads as none. */
+  readonly retiredAgents?: ReadonlySet<string>;
+  /** People by member id, in a group whose members are loaded; a role stands in without it. */
+  readonly memberNames?: ReadonlyMap<string, string>;
 }
 
 export type KinFeedRow =
@@ -171,6 +178,8 @@ export type KinFeedRow =
       readonly authorLabel: string;
       readonly authorKind: "agent" | "person";
       readonly showAuthor: boolean;
+      /** The row above is a bubble by the same author, so this one sits tight under it. */
+      readonly continues: boolean;
     }
   /** A reply still streaming. Its key is its durable message's, so the bubble stays in place. */
   | {
@@ -179,6 +188,7 @@ export type KinFeedRow =
       readonly draft: KinHeldDraft;
       readonly authorLabel: string;
       readonly showAuthor: boolean;
+      readonly continues: boolean;
     }
   | {
       readonly type: "system";
@@ -212,7 +222,8 @@ const ROLE_LABELS = { owner: "Owner", member: "Member", guest: "Guest" } as cons
 function kinAuthorLabel(message: KinMessage, viewer: KinFeedViewer): string {
   const { author } = message;
   if (author._tag === "agent") return viewer.agentNames.get(author.agentId) ?? "Agent";
-  if (author._tag === "human") return ROLE_LABELS[message.authorRole];
+  if (author._tag === "human")
+    return viewer.memberNames?.get(author.memberId) ?? ROLE_LABELS[message.authorRole];
   return "Kin";
 }
 
@@ -242,13 +253,12 @@ const messageRowKey = (message: KinMessage) =>
     ? message.clientMessageId
     : message.messageId;
 
-// A choice tap shows as the owner's words, not its JSON, and never repeats the card it answered.
+// A card tap shows as the button's label, never its JSON, and never repeats the card it answered.
 const shownMessage = (message: KinMessage): KinMessage => {
   // A host card's body is its inbox summary; the card says the same, so it isn't repeated.
   if (isSystem(message)) return message.body === "" ? message : { ...message, body: "" };
   if (message.kind !== "widget_action") return message;
-  const text = kinTapText(message.body);
-  return text === null ? message : { ...message, body: text, widgetId: null };
+  return { ...message, body: kinTapText(message.body), widgetId: null };
 };
 
 // Rows for unchanged messages keep their identity, so one new message doesn't redraw every bubble.
@@ -261,7 +271,8 @@ function messageRow(message: KinMessage, fields: Omit<MessageRow, "type" | "key"
     held.own === fields.own &&
     held.authorLabel === fields.authorLabel &&
     held.authorKind === fields.authorKind &&
-    held.showAuthor === fields.showAuthor
+    held.showAuthor === fields.showAuthor &&
+    held.continues === fields.continues
   ) {
     return held;
   }
@@ -343,12 +354,22 @@ export function buildKinFeedRows(
     }
   };
 
+  // "Trying again" lines since anyone last spoke. The next notice is the latest word on the same
+  // unanswered message, so it replaces them and is the only one that offers Retry.
+  let retryingRows: number[] = [];
+  const superseded = new Set<number>();
+
   const pushMessage = (message: KinMessage) => {
     startDay(message);
-    // Host cards (memory changes, levels, routines) arrive as system messages carrying a widget.
+    // Host cards (memory changes, routines) arrive as system messages carrying a widget.
     if (isSystem(message) && message.widgetId === null) {
       const notice = retryNotice(message);
       const retry = notice ? lastOwnText : null;
+      if (notice) {
+        for (const index of retryingRows) superseded.add(index);
+        retryingRows = hostRetrying(message) ? [rows.length] : [];
+        closeRetries(() => true);
+      }
       if (retry !== null) openRetries.push(rows.length);
       rows.push({
         type: "system",
@@ -361,9 +382,11 @@ export function buildKinFeedRows(
       previousAuthor = null;
       return;
     }
+    retryingRows = [];
     const own = message.author._tag === "human" && message.author.personId === viewer.personId;
     if (own && message.kind === "text" && message.status === "posted") {
-      lastOwnText = message.body;
+      // Retry resends words, and the host brings back their files; a picture alone has none.
+      lastOwnText = message.body.trim() === "" ? null : message.body;
       // Writing again answers the notice, so it stops offering to resend.
       closeRetries(() => true);
     }
@@ -375,6 +398,7 @@ export function buildKinFeedRows(
         authorLabel: kinAuthorLabel(message, viewer),
         authorKind: message.author._tag === "agent" ? "agent" : "person",
         showAuthor: !own && previousAuthor !== author,
+        continues: previousAuthor === author,
       }),
     );
     previousAuthor = author;
@@ -440,10 +464,11 @@ export function buildKinFeedRows(
       draft,
       authorLabel: viewer.agentNames.get(draft.agentId) ?? "Agent",
       showAuthor: previousAuthor !== author,
+      continues: previousAuthor === author,
     });
     previousAuthor = author;
   }
-  return rows;
+  return superseded.size === 0 ? rows : rows.filter((_, index) => !superseded.has(index));
 }
 
 /** The local calendar day of an ISO time, as `2026-11-08`. */
@@ -568,6 +593,7 @@ export function kinMessageLabel(row: MessageRow, time: string): string {
   if (deleted) parts.push("Message deleted");
   else {
     parts.push(kinPlainText(message.body));
+    if (message.attachments !== undefined) parts.push(kinAttachmentSummary(message.attachments));
   }
   parts.push(time);
   if (message.status === "suggested") parts.push("Suggestion, not sent yet");
@@ -659,5 +685,8 @@ export function kinFeedViewer(orgs: KinOrgsListResult | null, orgId: string | nu
   return {
     personId: me?.personId ?? null,
     agentNames: new Map(org?.agents.map((agent) => [agent.agentId, agent.displayName]) ?? []),
+    retiredAgents: new Set(
+      org?.agents.flatMap((agent) => (agent.retired ? [agent.agentId] : [])) ?? [],
+    ),
   };
 }

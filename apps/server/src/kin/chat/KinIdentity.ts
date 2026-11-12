@@ -1,5 +1,6 @@
 import {
   AuthStandardClientScopes,
+  AuthKinChatScope,
   type AuthSessionId,
   KinChatError,
   TrimmedNonEmptyString,
@@ -55,8 +56,10 @@ export const wakeupMessageId = (wakeupId: KinWakeupId) => `kin-wakeup-msg:${wake
 export const steerMessageId = (wakeupId: KinWakeupId, n: number) =>
   `kin-steer-msg:${wakeupId}:${n}`;
 export const rescueMessageId = (wakeupId: KinWakeupId) => `kin-rescue-msg:${wakeupId}`;
+export const isSteerMessage = (wakeupId: KinWakeupId, messageId: string) =>
+  messageId.startsWith(`kin-steer-msg:${wakeupId}:`);
 export const isAdoptedRunMessage = (wakeupId: KinWakeupId, messageId: string) =>
-  messageId === rescueMessageId(wakeupId) || messageId.startsWith(`kin-steer-msg:${wakeupId}:`);
+  messageId === rescueMessageId(wakeupId) || isSteerMessage(wakeupId, messageId);
 export type PersonIdentity = {
   readonly _tag: "person";
   readonly orgId: KinOrgId;
@@ -145,6 +148,28 @@ export class KinIdentity extends Context.Service<
       return KinIdentity.of({
         owner: { _tag: "person", orgId: owner.orgId, personId: owner.personId },
         resolve: Effect.fn("KinIdentity.resolve")(function* (session) {
+          if (session.scopes.includes(AuthKinChatScope)) {
+            const bindings = yield* sql<{
+              person_id: string;
+            }>`SELECT b.person_id FROM kin_session_bindings b
+              JOIN kin_people p ON p.org_id = b.org_id AND p.person_id = b.person_id
+              WHERE b.org_id = ${owner.orgId} AND b.session_id = ${session.sessionId}
+              AND b.revoked_at IS NULL ORDER BY b.person_id`.pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning(
+                  "Kin could not read member bindings; treating the session as no person.",
+                  toPersistenceSqlError("KinIdentity.resolve")(cause),
+                ).pipe(Effect.as([])),
+              ),
+            );
+            if (bindings.length > 0)
+              return bindings.map((b) => ({
+                _tag: "person" as const,
+                orgId: owner.orgId,
+                personId: KinPersonId.make(b.person_id),
+              }));
+            return [];
+          }
           if (!AuthStandardClientScopes.every((scope) => session.scopes.includes(scope))) return [];
           if (!(yield* isPaired(session.sessionId))) return [];
           return [{ _tag: "person", orgId: owner.orgId, personId: owner.personId }];

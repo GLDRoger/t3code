@@ -1,5 +1,7 @@
 import {
   CLIENT_GUARDED_RPC_SCOPES,
+  AuthKinChatScope,
+  sessionGrantsScope,
   type DeviceListInput,
   clientRpcRequiredScopes,
   authScopeRequiredResponse,
@@ -31,9 +33,11 @@ import {
   WsRpcGroup,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import type * as RpcGroup from "effect/rpc/RpcGroup";
+import { isChatOnly } from "./chatOnlyConfig.ts";
 
 type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 
@@ -252,6 +256,7 @@ const requiredScopesForSettingsUpdate = (payload: unknown) => {
 
 const decodeProjectMutation = Schema.decodeUnknownSync(ProjectMutation);
 const decodeAssetCreateUrlInput = Schema.decodeUnknownSync(AssetCreateUrlInput);
+const decodeAssetCreateUrlOption = Schema.decodeUnknownOption(AssetCreateUrlInput);
 
 const requiredScopesForRpcCall = (
   method: string,
@@ -280,6 +285,40 @@ const requiredScopesForRpcCall = (
 };
 
 /**
+ * The thread attachment calls a chat-only session may make, for the files on Kin messages.
+ * Uploads land in the pending pool under an unguessable id and belong to no chat until a send
+ * the chat service authorizes claims them; a read is checked against chat membership by the
+ * handler (`authorizeAttachmentRead`), which gives such a session no file outside its chats.
+ */
+const kinChatMayCall = (method: string, payload: unknown) =>
+  // Connecting needs a config snapshot; the handler sends such a session an empty one.
+  method === WS_METHODS.subscribeServerConfig ||
+  method === WS_METHODS.attachmentsCreateUploadUrl ||
+  method === WS_METHODS.attachmentsDelete ||
+  (method === WS_METHODS.assetsCreateUrl &&
+    Option.exists(
+      decodeAssetCreateUrlOption(payload),
+      ({ resource }) => resource._tag === "attachment",
+    ));
+
+export const authorizeRpc = (
+  scopes: ReadonlyArray<AuthEnvironmentScope>,
+  method: string,
+  payload: unknown,
+) => {
+  const coarse = requiredScopeForRpcMethod(method);
+  if (scopes.every((scope) => scope === AuthKinChatScope) && coarse !== AuthKinChatScope) {
+    return isChatOnly(scopes) && kinChatMayCall(method, payload)
+      ? Effect.void
+      : Effect.fail(rpcAuthorizationError(coarse));
+  }
+  const missing = requiredScopesForRpcCall(method, payload).find(
+    (scope) => !sessionGrantsScope({ authenticated: true, permissions: scopes }, scope),
+  );
+  return missing === undefined ? Effect.void : Effect.fail(rpcAuthorizationError(missing));
+};
+
+/**
  * `onAuthorized` runs once after an authorized request succeeds; for a stream
  * RPC, that is when the stream completes. Every RPC passes through here, so it
  * is the one place to observe requests without wrapping each handler.
@@ -289,12 +328,13 @@ export const layer = (
   onAuthorized?: (method: string, payload: unknown) => Effect.Effect<void>,
 ) =>
   Layer.succeed(RpcScopeAuthorization)((effect, { rpc, payload }) => {
-    const requiredScopes = requiredScopesForRpcCall(rpc._tag, payload);
-    const requiredScope = requiredScopes.find((scope) => !scopes.includes(scope));
-    if (requiredScope !== undefined) return Effect.fail(rpcAuthorizationError(requiredScope));
-    return onAuthorized === undefined
-      ? effect
-      : Effect.tap(effect, () => onAuthorized(rpc._tag, payload));
+    return authorizeRpc(scopes, rpc._tag, payload).pipe(
+      Effect.andThen(
+        onAuthorized === undefined
+          ? effect
+          : Effect.tap(effect, () => onAuthorized(rpc._tag, payload)),
+      ),
+    );
   });
 
 /** Retrying can install or restart tools even though ordinary listing is readable. */

@@ -129,9 +129,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("SessionStore.lay
         );
       yield* TestClock.adjust(Duration.minutes(59));
       expect(yield* Deferred.isDone(invalidated)).toBe(false);
+      expect(Option.isSome(yield* sessions.getActive(client.sessionId))).toBe(true);
       yield* TestClock.adjust(Duration.minutes(1));
       yield* Fiber.join(watcher);
       yield* sessions.awaitInvalidation(client.sessionId);
+      // Still connected, but past its deadline: nothing served for it counts it as active.
+      expect(Option.isNone(yield* sessions.getActive(client.sessionId))).toBe(true);
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(layerSessionStore(), TestClock.layer()))),
   );
 
@@ -560,7 +563,14 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("SessionStore.lay
 
       yield* sessions.markConnected(client.sessionId);
       const beforeRevoke = yield* sessions.listActive();
+      expect(Option.getOrNull(yield* sessions.getActive(client.sessionId))).toEqual({
+        sessionId: client.sessionId,
+        subject: "one-time-token",
+        method: client.method,
+        scopes: ["orchestration:read"],
+      });
       const revokedCount = yield* sessions.revokeAllExcept(administrative.sessionId);
+      expect(Option.isNone(yield* sessions.getActive(client.sessionId))).toBe(true);
       const afterRevoke = yield* sessions.listActive();
       const revokedClient = yield* Effect.flip(sessions.verify(client.token));
       const revokedClientWebSocket = yield* Effect.flip(

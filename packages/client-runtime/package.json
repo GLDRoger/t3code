@@ -555,6 +555,30 @@
       "types": "./src/kinPush.ts",
       "default": "./src/kinPush.ts"
     },
+    "./kin/kinAgentRetire": {
+      "types": "./src/kin/kinAgentRetire.ts",
+      "default": "./src/kin/kinAgentRetire.ts"
+    },
+    "./kin/kinAttachments": {
+      "types": "./src/kin/kinAttachments.ts",
+      "default": "./src/kin/kinAttachments.ts"
+    },
+    "./kin/kinClearChat": {
+      "types": "./src/kin/kinClearChat.ts",
+      "default": "./src/kin/kinClearChat.ts"
+    },
+    "./kin/kinGroups": {
+      "types": "./src/kin/kinGroups.ts",
+      "default": "./src/kin/kinGroups.ts"
+    },
+    "./kin/kinJoin": {
+      "types": "./src/kin/kinJoin.ts",
+      "default": "./src/kin/kinJoin.ts"
+    },
+    "./kin/kinTeam": {
+      "types": "./src/kin/kinTeam.ts",
+      "default": "./src/kin/kinTeam.ts"
+    },
     "./kin/kinListSwitch": {
       "types": "./src/kin/kinListSwitch.ts",
       "default": "./src/kin/kinListSwitch.ts"
@@ -574,6 +598,14 @@
     "./kin/kinIntro": {
       "types": "./src/kin/kinIntro.ts",
       "default": "./src/kin/kinIntro.ts"
+    },
+    "./kin/kinLeadPresentation": {
+      "types": "./src/kin/kinLeadPresentation.ts",
+      "default": "./src/kin/kinLeadPresentation.ts"
+    },
+    "./kin/kinChatListRows": {
+      "types": "./src/kin/kinChatListRows.ts",
+      "default": "./src/kin/kinChatListRows.ts"
     },
     "./kin/kinScreenState": {
       "types": "./src/kin/kinScreenState.ts",
@@ -615,6 +647,14 @@
       "types": "./src/kin/kinCardPresentation.ts",
       "default": "./src/kin/kinCardPresentation.ts"
     },
+    "./kin/kinChart": {
+      "types": "./src/kin/kinChart.ts",
+      "default": "./src/kin/kinChart.ts"
+    },
+    "./kin/kinChartLayout": {
+      "types": "./src/kin/kinChartLayout.ts",
+      "default": "./src/kin/kinChartLayout.ts"
+    },
     "./kin/kinChoicePresentation": {
       "types": "./src/kin/kinChoicePresentation.ts",
       "default": "./src/kin/kinChoicePresentation.ts"
@@ -623,6 +663,62 @@
       "types": "./src/kin/kinDeferralPresentation.ts",
       "default": "./src/kin/kinDeferralPresentation.ts"
     },
+    "./kin/kinLists": {
+      "types": "./src/kin/kinLists.ts",
+      "default": "./src/kin/kinLists.ts"
+    },
+    "./kin/kinMoney": {
+      "types": "./src/kin/kinMoney.ts",
+      "default": "./src/kin/kinMoney.ts"
+    },
+    "./kin/kinDates": {
+      "types": "./src/kin/kinDates.ts",
+      "default": "./src/kin/kinDates.ts"
+    },
+    "./kin/kinCompanyProfile": {
+      "types": "./src/kin/kinCompanyProfile.ts",
+      "default": "./src/kin/kinCompanyProfile.ts"
+    },
+    "./kin/kinWork": {
+      "types": "./src/kin/kinWork.ts",
+      "default": "./src/kin/kinWork.ts"
+    },
+    "./kin/kinWorkChanges": {
+      "types": "./src/kin/kinWorkChanges.ts",
+      "default": "./src/kin/kinWorkChanges.ts"
+    },
+    "./kin/kinWorkList": {
+      "types": "./src/kin/kinWorkList.ts",
+      "default": "./src/kin/kinWorkList.ts"
+    },
+    "./kin/kinWorkClients": {
+      "types": "./src/kin/kinWorkClients.ts",
+      "default": "./src/kin/kinWorkClients.ts"
+    },
+    "./kin/kinWorkForms": {
+      "types": "./src/kin/kinWorkForms.ts",
+      "default": "./src/kin/kinWorkForms.ts"
+    },
+    "./kin/kinDocs": {
+      "types": "./src/kin/kinDocs.ts",
+      "default": "./src/kin/kinDocs.ts"
+    },
+    "./kin/kinDocChanges": {
+      "types": "./src/kin/kinDocChanges.ts",
+      "default": "./src/kin/kinDocChanges.ts"
+    },
+    "./kin/kinDocsStream": {
+      "types": "./src/kin/kinDocsStream.ts",
+      "default": "./src/kin/kinDocsStream.ts"
+    },
+    "./kin/kinWorkStream": {
+      "types": "./src/kin/kinWorkStream.ts",
+      "default": "./src/kin/kinWorkStream.ts"
+    },
+    "./kin/kinMemoryScreen": {
+      "types": "./src/kin/kinMemoryScreen.ts",
+      "default": "./src/kin/kinMemoryScreen.ts"
+    },
     "./kin/kinMemoryChangesPresentation": {
       "types": "./src/kin/kinMemoryChangesPresentation.ts",
       "default": "./src/kin/kinMemoryChangesPresentation.ts"
@@ -630,10 +726,6 @@
     "./kin/kinApprovalPresentation": {
       "types": "./src/kin/kinApprovalPresentation.ts",
       "default": "./src/kin/kinApprovalPresentation.ts"
-    },
-    "./kin/kinLevelsPresentation": {
-      "types": "./src/kin/kinLevelsPresentation.ts",
-      "default": "./src/kin/kinLevelsPresentation.ts"
     }
   },
   "scripts": {

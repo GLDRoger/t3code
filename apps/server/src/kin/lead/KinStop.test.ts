@@ -150,9 +150,15 @@ describe("KinStop", () => {
           yield* launchThread(dreamThread);
           yield* sql`INSERT INTO kin_dream_runs (org_id, owner_date, dream_id, full, status, branch, material_from, material_until, started_at, thread_id)
             VALUES (${orgId}, '2026-11-08', 'dream-stop-test', 0, 'running', 'dream/2026-11-08', 0, 0, 0, ${dreamThread})`;
+          // A worker on this server is a thread here, stopped with the lead's.
+          const localThread = ThreadId.make("kin-work:local");
+          yield* launchThread(localThread);
+          yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id, model_json, provenance_json, status, started_at)
+            VALUES ('local', ${orgId}, ${agentId}, ${running!.wakeupId}, 'build', ${localThread}, '{}', '{"_tag":"system"}', 'queued', 0)`;
           yield* worker.drain();
           const live = lastRunStatus;
           assert.include(ThreadManagement.ACTIVE_RUN_STATUSES, yield* live(dreamThread));
+          assert.include(ThreadManagement.ACTIVE_RUN_STATUSES, yield* live(localThread));
 
           const paused = yield* stop.pause(owner, { orgId, reason: "Testing" });
           assert.include(paused, { paused: true, pausedBy: owner[0]!.personId, reason: "Testing" });
@@ -161,7 +167,8 @@ describe("KinStop", () => {
 
           assert.strictEqual(yield* live(leadThread), "interrupted");
           assert.strictEqual(yield* live(dreamThread), "interrupted");
-          assert.sameMembers(delegated, [leadThread, dreamThread]);
+          assert.strictEqual(yield* live(localThread), "interrupted");
+          assert.sameMembers(delegated, [leadThread, dreamThread, localThread]);
           assert.deepStrictEqual(
             stops.map(({ tool, threadId, stop }) => ({ tool, threadId, stop })),
             [{ tool: "t3_thread_interrupt", threadId: "remote-worker", stop: true }],
@@ -313,6 +320,7 @@ describe("KinStop", () => {
       }>`SELECT json, priority FROM kin_events WHERE org_id = ${orgId} AND tag = 'resume' ORDER BY event_id`;
       assert.lengthOf(resumes, 1);
       assert.strictEqual(resumes[0]!.priority, "P0");
+      assert.match(JSON.parse(resumes[0]!.json).eventId, /^resume-[a-f0-9]{32}$/);
       assert.isTrue(paused.paused);
       assert.include(JSON.parse(resumes[0]!.json), {
         _tag: "resume",

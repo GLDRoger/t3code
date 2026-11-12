@@ -6,6 +6,7 @@ import * as TerminalManager from "../terminal/Manager.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as FileSystem from "effect/FileSystem";
 import * as ServerConfig from "../config.ts";
+import { recordTestUploadOwner, TEST_UPLOAD_OWNER } from "../assets/AttachmentUpload.testkit.ts";
 import { createPendingAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
 import * as ThreadMessageIntake from "./ThreadMessageIntake.ts";
 import { assert, it, vi } from "@effect/vitest";
@@ -1177,6 +1178,35 @@ it.effect("fetches the origin base from the remote it already resolved", () => {
   }).pipe(Effect.provide(harness.layer));
 });
 
+it.effect.each([
+  { thread: "kin-work:wk-hooks", runHooks: false },
+  { thread: "thread:launch:hooks", runHooks: undefined },
+])("creates the worktree for $thread with runHooks $runHooks", ({ thread, runHooks }) => {
+  type Options = GitVcsDriver.CreateWorktreeOptions | undefined;
+  let created: Deferred.Deferred<Options> | null = null;
+  const harness = makeHarness({
+    createWorktree: (input, options) =>
+      Deferred.succeed(created!, options).pipe(
+        Effect.as({
+          worktree: { path: "/repo-worktrees/feature", refName: input.newRefName, headSha: "abc" },
+        } as never),
+      ),
+  });
+  return Effect.gen(function* () {
+    const deferred = yield* Deferred.make<Options>();
+    created = deferred;
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    yield* launches.launch(
+      launchInput({
+        command: `command:${thread}`,
+        thread,
+        workspace: { type: "worktree", baseRef: "main", branch: "feature" },
+      }),
+    );
+    assert.strictEqual((yield* Deferred.await(deferred))?.runHooks, runHooks);
+  }).pipe(Effect.provide(harness.layer));
+});
+
 it.effect("shows the fetch diagnosis when preparing a worktree from origin fails", () => {
   const detail =
     "Git could not authenticate with the remote. Check Git credentials or SSH access on the server, then retry.";
@@ -2013,6 +2043,7 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
     assert.isNotNull(pendingPath);
     yield* fs.makeDirectory(config.attachmentsDir, { recursive: true });
     yield* fs.writeFile(pendingPath, new Uint8Array([1, 2, 3, 4]));
+    recordTestUploadOwner(config.attachmentsDir, pendingId);
     const input = {
       ...launchInput({ command: "intake-launch", thread: "intake-thread" }),
       initialMessage: {
@@ -2036,7 +2067,7 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
         attachments: [attachment],
       },
     };
-    const failed = yield* ThreadMessageIntake.launchThread(input).pipe(
+    const failed = yield* ThreadMessageIntake.launchThread(input, TEST_UPLOAD_OWNER).pipe(
       Effect.provideService(ThreadLaunch.ThreadLaunchService, {
         launch: (request) =>
           launches.launch(request).pipe(
@@ -2078,7 +2109,7 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
     assert.deepEqual(yield* fs.readFile(storedPath), new Uint8Array([1, 2, 3, 4]));
     assert.deepEqual(yield* fs.readFile(pendingPath), new Uint8Array([1, 2, 3, 4]));
 
-    const replayed = yield* ThreadMessageIntake.launchThread(input);
+    const replayed = yield* ThreadMessageIntake.launchThread(input, TEST_UPLOAD_OWNER);
     assert.equal(replayed.projection.messages[0]?.id, stored.id);
     assert.deepEqual(replayed.projection.messages[0]?.attachments, stored.attachments);
     const claimedFiles = Effect.map(fs.readDirectory(config.attachmentsDir), (files) =>
@@ -2086,11 +2117,14 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
     );
     assert.equal((yield* claimedFiles).length, 1);
 
-    const duplicate = yield* ThreadMessageIntake.launchThread({
-      ...input,
-      commandId: CommandId.make("intake-duplicate-create"),
-      initialMessage: { ...input.initialMessage, messageId: MessageId.make("intake-duplicate") },
-    }).pipe(Effect.result);
+    const duplicate = yield* ThreadMessageIntake.launchThread(
+      {
+        ...input,
+        commandId: CommandId.make("intake-duplicate-create"),
+        initialMessage: { ...input.initialMessage, messageId: MessageId.make("intake-duplicate") },
+      },
+      TEST_UPLOAD_OWNER,
+    ).pipe(Effect.result);
     assert.ok(Result.isFailure(duplicate));
     assert.ok(duplicate.failure._tag === "ThreadLaunchError");
     assert.equal(duplicate.failure.operation, "create-thread");
@@ -2099,38 +2133,47 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
     assert.deepEqual(yield* fs.readFile(storedPath), new Uint8Array([1, 2, 3, 4]));
     assert.deepEqual(yield* fs.readFile(pendingPath), new Uint8Array([1, 2, 3, 4]));
 
-    const missingProject = yield* ThreadMessageIntake.launchThread({
-      ...input,
-      commandId: CommandId.make("intake-no-project"),
-      projectId: ProjectId.make("missing-project"),
-    }).pipe(Effect.flip);
+    const missingProject = yield* ThreadMessageIntake.launchThread(
+      {
+        ...input,
+        commandId: CommandId.make("intake-no-project"),
+        projectId: ProjectId.make("missing-project"),
+      },
+      TEST_UPLOAD_OWNER,
+    ).pipe(Effect.flip);
     assert.equal(missingProject._tag, "ThreadLaunchError");
     assert.equal((yield* claimedFiles).length, 1);
-    const missingThread = yield* ThreadMessageIntake.dispatchCommand({
-      type: "message.dispatch",
-      commandId: CommandId.make("intake-no-thread"),
-      threadId: ThreadId.make("missing-thread"),
-      messageId: MessageId.make("intake-missing"),
-      text: "Missing",
-      attachments: [attachment],
-      dispatchMode: { type: "start_immediately" },
-      createdBy: "user",
-      creationSource: "web",
-    }).pipe(Effect.flip);
+    const missingThread = yield* ThreadMessageIntake.dispatchCommand(
+      {
+        type: "message.dispatch",
+        commandId: CommandId.make("intake-no-thread"),
+        threadId: ThreadId.make("missing-thread"),
+        messageId: MessageId.make("intake-missing"),
+        text: "Missing",
+        attachments: [attachment],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      },
+      TEST_UPLOAD_OWNER,
+    ).pipe(Effect.flip);
     assert.equal(missingThread._tag, "OrchestratorProjectionError");
     assert.equal((yield* claimedFiles).length, 1);
 
-    const dispatch = ThreadMessageIntake.dispatchCommand({
-      type: "message.dispatch",
-      commandId: CommandId.make("intake-dispatch"),
-      threadId: input.threadId,
-      messageId: MessageId.make("intake-second"),
-      text: "Second",
-      attachments: [attachment],
-      dispatchMode: { type: "queue_after_active" },
-      createdBy: "user",
-      creationSource: "web",
-    });
+    const dispatch = ThreadMessageIntake.dispatchCommand(
+      {
+        type: "message.dispatch",
+        commandId: CommandId.make("intake-dispatch"),
+        threadId: input.threadId,
+        messageId: MessageId.make("intake-second"),
+        text: "Second",
+        attachments: [attachment],
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "user",
+        creationSource: "web",
+      },
+      TEST_UPLOAD_OWNER,
+    );
     yield* dispatch;
     yield* dispatch;
     const queuedProjection = yield* threads.getThreadProjection(input.threadId);
@@ -2156,14 +2199,18 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
     });
     assert.isNotNull(filePath);
     yield* fs.writeFile(filePath, new Uint8Array([5, 6, 7, 8]));
-    const edit = ThreadMessageIntake.dispatchCommand({
-      type: "queued-run.edit",
-      commandId: CommandId.make("intake-edit"),
-      threadId: input.threadId,
-      runId: queuedRun.id,
-      text: "Edited with a file",
-      attachments: [...queuedMessage.attachments, file],
-    });
+    recordTestUploadOwner(config.attachmentsDir, file.id);
+    const edit = ThreadMessageIntake.dispatchCommand(
+      {
+        type: "queued-run.edit",
+        commandId: CommandId.make("intake-edit"),
+        threadId: input.threadId,
+        runId: queuedRun.id,
+        text: "Edited with a file",
+        attachments: [...queuedMessage.attachments, file],
+      },
+      TEST_UPLOAD_OWNER,
+    );
     yield* edit;
     yield* edit;
     const editedProjection = yield* threads.getThreadProjection(input.threadId);
@@ -2182,28 +2229,34 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
     assert.deepEqual(yield* fs.readFile(durableFilePath), new Uint8Array([5, 6, 7, 8]));
     assert.deepEqual(yield* fs.readFile(filePath), new Uint8Array([5, 6, 7, 8]));
     const beforeRejectedEdit = (yield* claimedFiles).length;
-    const rejectedEdit = yield* ThreadMessageIntake.dispatchCommand({
-      type: "queued-run.edit",
-      commandId: CommandId.make("intake-edit-rejected"),
-      threadId: input.threadId,
-      runId: queuedRun.id,
-      text: "",
-      attachments: [file],
-    }).pipe(Effect.flip);
+    const rejectedEdit = yield* ThreadMessageIntake.dispatchCommand(
+      {
+        type: "queued-run.edit",
+        commandId: CommandId.make("intake-edit-rejected"),
+        threadId: input.threadId,
+        runId: queuedRun.id,
+        text: "",
+        attachments: [file],
+      },
+      TEST_UPLOAD_OWNER,
+    ).pipe(Effect.flip);
     assert.equal(rejectedEdit._tag, "OrchestratorCommandRejectedError");
     assert.equal((yield* claimedFiles).length, beforeRejectedEdit);
     assert.deepEqual(yield* fs.readFile(filePath), new Uint8Array([5, 6, 7, 8]));
-    const send = ThreadMessageIntake.sendToThread({
-      commandId: CommandId.make("intake-send"),
-      projectId,
-      threadId: input.threadId,
-      messageId: MessageId.make("intake-third"),
-      text: "Third",
-      attachments: [attachment],
-      mode: "queue",
-      createdBy: "agent",
-      creationSource: "mcp",
-    });
+    const send = ThreadMessageIntake.sendToThread(
+      {
+        commandId: CommandId.make("intake-send"),
+        projectId,
+        threadId: input.threadId,
+        messageId: MessageId.make("intake-third"),
+        text: "Third",
+        attachments: [attachment],
+        mode: "queue",
+        createdBy: "agent",
+        creationSource: "mcp",
+      },
+      TEST_UPLOAD_OWNER,
+    );
     yield* send;
     yield* send;
     assert.equal((yield* claimedFiles).length, 4);
@@ -2217,6 +2270,74 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
       assert.isNotNull(path);
       assert.deepEqual(yield* fs.readFile(path), new Uint8Array([1, 2, 3, 4]));
     }
+  }).pipe(Effect.provide(Layer.mergeAll(harness.layer, layerFiles)));
+});
+
+it.effect("shared intake refuses a Kin chat's file on a launch or a send, by any name", () => {
+  const harness = makeHarness();
+  const layerFiles = ServerConfig.layerTest(process.cwd(), { prefix: "t3-kin-intake-" }).pipe(
+    Layer.provideMerge(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+  );
+  return Effect.gen(function* () {
+    const config = yield* ServerConfig.ServerConfig;
+    const fs = yield* FileSystem.FileSystem;
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const kinFile: ChatAttachment = {
+      type: "image",
+      id: ChatAttachmentId.make("kin-chat-00000000-0000-4000-8000-0000000000aa"),
+      name: "whiteboard.png",
+      mimeType: "image/png",
+      sizeBytes: 3,
+    };
+    yield* fs.makeDirectory(config.attachmentsDir, { recursive: true });
+    const kinPath = resolveAttachmentPath({
+      attachmentsDir: config.attachmentsDir,
+      attachment: kinFile,
+    });
+    assert.isNotNull(kinPath);
+    yield* fs.writeFile(kinPath, new Uint8Array([1, 2, 3]));
+    const existing = yield* launches.launch(
+      launchInput({ command: "kin-intake-existing", thread: "kin-intake-existing" }),
+    );
+    const names = [kinFile.id, kinFile.id.toUpperCase()];
+    for (const [index, name] of names.entries()) {
+      const attachment = { ...kinFile, id: ChatAttachmentId.make(name) };
+      const launch = yield* ThreadMessageIntake.launchThread(
+        {
+          ...launchInput({ command: `kin-intake-launch-${index}`, thread: `kin-intake-${index}` }),
+          initialMessage: { text: "Look", attachments: [attachment] },
+        },
+        TEST_UPLOAD_OWNER,
+      ).pipe(Effect.flip);
+      assert.equal(launch._tag, "AttachmentClaimError");
+      const send = yield* ThreadMessageIntake.sendToThread(
+        {
+          commandId: CommandId.make(`kin-intake-send-${index}`),
+          projectId,
+          threadId: existing.projection.thread.id,
+          messageId: MessageId.make(`kin-intake-send-${index}`),
+          text: "Look",
+          attachments: [attachment],
+          mode: "queue",
+          createdBy: "agent",
+          creationSource: "mcp",
+        },
+        TEST_UPLOAD_OWNER,
+      ).pipe(Effect.flip);
+      assert.equal(send._tag, "AttachmentClaimError");
+      assert.isFalse(
+        yield* threads.getThreadProjection(ThreadId.make(`kin-intake-${index}`)).pipe(
+          Effect.as(true),
+          Effect.orElseSucceed(() => false),
+        ),
+      );
+    }
+    const projection = yield* threads.getThreadProjection(existing.projection.thread.id);
+    assert.deepEqual(
+      projection.messages.flatMap((message) => message.attachments),
+      [],
+    );
   }).pipe(Effect.provide(Layer.mergeAll(harness.layer, layerFiles)));
 });
 
@@ -2480,7 +2601,7 @@ it.effect("replays an accepted send after the project disables the instance", ()
       createdBy: "user" as const,
       creationSource: "web" as const,
     };
-    const first = yield* ThreadMessageIntake.sendToThread(sendInput);
+    const first = yield* ThreadMessageIntake.sendToThread(sendInput, TEST_UPLOAD_OWNER);
 
     yield* settings.updateSettings({
       projectSettingsOverrides: {
@@ -2488,14 +2609,17 @@ it.effect("replays an accepted send after the project disables the instance", ()
       },
     });
 
-    const retry = yield* ThreadMessageIntake.sendToThread(sendInput);
+    const retry = yield* ThreadMessageIntake.sendToThread(sendInput, TEST_UPLOAD_OWNER);
     assert.equal(retry.message.id, first.message.id);
 
-    const fresh = yield* ThreadMessageIntake.sendToThread({
-      ...sendInput,
-      commandId: CommandId.make("command:send:fresh-after-disable"),
-      messageId: MessageId.make("message:send:fresh-after-disable"),
-    }).pipe(Effect.flip);
+    const fresh = yield* ThreadMessageIntake.sendToThread(
+      {
+        ...sendInput,
+        commandId: CommandId.make("command:send:fresh-after-disable"),
+        messageId: MessageId.make("message:send:fresh-after-disable"),
+      },
+      TEST_UPLOAD_OWNER,
+    ).pipe(Effect.flip);
     if (fresh._tag !== "ThreadManagementProviderInstanceDisabledError") {
       assert.fail(`expected ThreadManagementProviderInstanceDisabledError, got ${fresh._tag}`);
     }

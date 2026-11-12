@@ -40,10 +40,16 @@ export const reportFormat = [
 export const publishNote = (branch: string) =>
   `Commit your work on the branch \`${branch}\` in this worktree. Don't push or open a pull request: you have no GitHub write access. When your run ends, Kin pushes \`${branch}\` and opens a draft PR. Changes under .github/workflows are never published.`;
 
+/** What a build worker on this server hears: it can't reach its git metadata, so Kin commits. */
+export const localPublishNote = (branch: string) =>
+  `Leave your changes as edits in this worktree, which is on the branch \`${branch}\`. When your run ends, Kin commits them and opens a draft PR. Changes under .github are never published.`;
+
 export const buildBrief = (input: {
   readonly goal: string;
   /** A build worker's branch, which Kin publishes. */
   readonly branch?: string;
+  /** The worker runs on this server and can't commit, so Kin commits for it. */
+  readonly local?: boolean;
   readonly brief?: string;
   readonly quoted?: typeof Quoted.Type;
   readonly memory?: ReadonlyArray<{
@@ -65,7 +71,9 @@ export const buildBrief = (input: {
           "Review the work below independently. You get only its references, not how it was briefed.",
           quote("work to review", input.reviewRefs, true),
         ]),
-    ...(input.branch === undefined ? [] : [publishNote(input.branch)]),
+    ...(input.branch === undefined
+      ? []
+      : [input.local === true ? localPublishNote(input.branch) : publishNote(input.branch)]),
     reportFormat,
   ].join("\n\n");
 
@@ -81,3 +89,10 @@ export const parseReport = (reply: string) => {
     return undefined;
   }
 };
+
+/** The lead's line while Kin holds a finished worker's commit for the owner. */
+export const WAITING_FOR_OWNER =
+  "Kin is holding this work until the owner publishes it: nothing was pushed and no pull request exists yet. Tell the owner it is waiting for them to publish it from Kin's card. Don't say it was published, and don't ask them to approve it in chat: only their tap on that card publishes it.";
+/** The lead's line once the owner chose not to publish. */
+export const OWNER_DECLINED =
+  "The owner chose not to publish this work: Kin pushed nothing and opened no pull request, and the changes stay on the host. Don't publish, push or restart it unless the owner asks.";

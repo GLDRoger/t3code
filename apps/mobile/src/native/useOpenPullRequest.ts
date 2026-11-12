@@ -1,3 +1,4 @@
+import { KIN_ONLY } from "../lib/kinOnly";
 import { useNavigation, useRoute, StackActions } from "@react-navigation/native";
 import { nativePullRequestDestination } from "../lib/pullRequestNavigation";
 import { Platform } from "react-native";
@@ -18,6 +19,8 @@ export function useNavigateToPullRequest(options?: { readonly replace?: boolean 
   const projects = useProjects();
   const replace = options?.replace;
   return async (url: string, context: PullRequestContext | null) => {
+    // A Kin-only app has no pull request screen; the link opens where the pull request lives.
+    if (KIN_ONLY) return tryOpenExternalUrl(url, "pull-request");
     // Read at press time so a config push does not hand every link a new handler.
     const serverConfigs = appAtomRegistry.get(environmentServerConfigsAtom);
     const destination = nativePullRequestDestination(url, context, projects, (environmentId) =>

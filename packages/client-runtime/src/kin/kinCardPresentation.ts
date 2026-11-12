@@ -1,19 +1,27 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import {
+  KIN_DOC_CARD,
   KIN_MEMORY_CHANGES_CARD,
+  KIN_WORKER_PUBLISH_CARD,
+  KinWorkerPublishCard,
   KinReminderCard,
   KinRoutineCard,
   KinScheduledTaskCard,
-  KinShadowSummaryCard,
   KinTaskCardState,
+  KinVisualCardState,
   type EnvironmentId,
+  type KinMessage,
+  type KinOrgId,
   type KinRoutineSection,
   type KinWidget,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { kinHeldLine } from "./kinAgentRetire.ts";
 import { kinApprovalWidgetView, type KinApprovalWidgetView } from "./kinApprovalPresentation.ts";
+import { kinChartCardView, type KinChartView } from "./kinChart.ts";
+import { kinDocCardView, type KinDocCardView } from "./kinDocs.ts";
 import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks.ts";
 import { kinSentences } from "./kinScreenState.ts";
 import { kinChoiceCardView, type KinChoiceCardView } from "./kinChoicePresentation.ts";
@@ -21,15 +29,14 @@ import {
   formatKinDeferralTime,
   KIN_DEFERRAL_ACTIONS,
   kinDeferralCardView,
+  kinDeferralIsBookkeeping,
   type KinDeferralCardView,
 } from "./kinDeferralPresentation.ts";
-import { kinLevelsCardView, type KinLevelsCardView } from "./kinLevelsPresentation.ts";
 import {
   kinMemoryChangesView,
   type KinMemoryChangesCardView,
 } from "./kinMemoryChangesPresentation.ts";
 
-export const KIN_UNKNOWN_CARD_TEXT = "This card can't be shown here yet.";
 export const KIN_MISSING_CARD_TEXT = "This card hasn't loaded yet.";
 
 type TaskStatus = KinTaskCardState["status"];
@@ -56,12 +63,15 @@ export type KinCardView =
   | { readonly kind: "task"; readonly task: KinTaskCardView }
   | { readonly kind: "deferral"; readonly deferral: KinDeferralCardView }
   | { readonly kind: "choice"; readonly choice: KinChoiceCardView }
+  | { readonly kind: "chart"; readonly chart: KinChartView }
+  | { readonly kind: "visual"; readonly orgId: KinOrgId; readonly visual: KinVisualCardState }
   | { readonly kind: "digest"; readonly digest: KinDigestCardView }
-  | KinLevelsCardView
   | { readonly kind: "memory_changes"; readonly changes: KinMemoryChangesCardView }
   | { readonly kind: "approval"; readonly approval: KinApprovalWidgetView }
+  | { readonly kind: "doc"; readonly doc: KinDocCardView }
   | { readonly kind: "missing" }
-  | { readonly kind: "unknown" };
+  /** A card this build can't draw: its own plain words, or nothing when it has none. */
+  | { readonly kind: "unknown"; readonly text: string | null };
 
 const STATUS: Record<TaskStatus, { readonly label: string; readonly tone: KinTaskTone }> = {
   working: { label: "Working", tone: "active" },
@@ -74,16 +84,29 @@ const STATUS: Record<TaskStatus, { readonly label: string; readonly tone: KinTas
 };
 
 const decodeTaskState = Schema.decodeUnknownOption(KinTaskCardState);
-const decodeShadowSummary = Schema.decodeUnknownOption(KinShadowSummaryCard);
 const decodeRoutine = Schema.decodeUnknownOption(KinRoutineCard);
+const decodeVisual = Schema.decodeUnknownOption(KinVisualCardState);
 const decodeReminder = Schema.decodeUnknownOption(KinReminderCard);
 const decodeScheduledTask = Schema.decodeUnknownOption(KinScheduledTaskCard);
+const decodeWorkerPublish = Schema.decodeUnknownOption(KinWorkerPublishCard);
 
 // Agents write widget state, so every string is clamped and shown as plain text.
 const clamp = (text: string, max: number) => {
   const chars = Array.from(text.replace(/\s+/g, " ").trim());
   return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : chars.join("");
 };
+
+const OPENS_THREAD = "Opens the thread";
+
+/** The task card in an app with no coding threads: nothing to open, and nothing said of one. */
+export function kinTaskCardWithoutThread(task: KinTaskCardView): KinTaskCardView {
+  return {
+    ...task,
+    open: null,
+    unknownEnvironment: false,
+    accessibilityLabel: task.accessibilityLabel.replace(` ${OPENS_THREAD}.`, ""),
+  };
+}
 
 function kinTaskCardView(
   state: KinTaskCardState,
@@ -114,7 +137,7 @@ function kinTaskCardView(
     detail,
     model,
     ...pullRequests.map((pr) => pr.label),
-    open === null ? null : "Opens the thread",
+    open === null ? null : OPENS_THREAD,
   ];
   return {
     title,
@@ -145,7 +168,7 @@ export interface KinDigestRow {
   } | null;
 }
 
-/** A server-drawn list card (shadow summary, morning brief, evening summary), as plain text. */
+/** A server-drawn list card (morning brief, evening summary), as plain text. */
 export interface KinDigestCardView {
   readonly eyebrow: string;
   readonly title: string;
@@ -162,8 +185,8 @@ const ROUTINE_SECTIONS: Record<KinRoutineSection, string> = {
   review_requested: "Review requested",
   ci_red: "CI failing",
   objective_at_risk: "Objective at risk",
-  worker: "Workers",
-  past_review: "Past review",
+  worker: "In progress",
+  past_review: "Overdue for a check",
   done: "Done",
   slipped: "Slipped",
   promised: "Promised",
@@ -191,21 +214,13 @@ function digestView(card: Omit<KinDigestCardView, "accessibilityLabel">): KinDig
   return { ...card, accessibilityLabel: kinSentences(parts) };
 }
 
-function kinShadowSummaryView(card: KinShadowSummaryCard): KinDigestCardView {
-  const hidden = card.total - card.entries.length;
-  return digestView({
-    eyebrow: "Shadow week",
-    title: clamp(card.title, 200),
-    rows: card.entries.map((entry) => ({
-      key: entry.entryId,
-      heading: null,
-      text: clamp(entry.preview, 280) || clamp(entry.tool, 60),
-      note: clamp(entry.wouldTarget, 120) || null,
-      link: null,
-    })),
-    more: hidden > 0 ? `${hidden} more today` : null,
+// Hosts write some notes with a raw timestamp ("review by 2026-11-09T16:09:12.531Z").
+const ISO_TIME = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})/g;
+const readableTimes = (text: string) =>
+  text.replace(ISO_TIME, (iso) => {
+    const ms = Date.parse(iso);
+    return Number.isNaN(ms) ? iso : formatKinDeferralTime(ms);
   });
-}
 
 function kinRoutineView(card: KinRoutineCard): KinDigestCardView {
   return digestView({
@@ -222,7 +237,7 @@ function kinRoutineView(card: KinRoutineCard): KinDigestCardView {
             ? null
             : ROUTINE_SECTIONS[row.section],
         text,
-        note: row.note === undefined ? null : clamp(row.note, 280) || null,
+        note: row.note === undefined ? null : clamp(readableTimes(row.note), 280) || null,
         link:
           url === null
             ? null
@@ -358,14 +373,168 @@ export function kinScheduledTaskCardView(
   };
 }
 
+const PUBLISH_WHY: Record<KinWorkerPublishCard["why"][number], string> = {
+  public_repository: "The repository is public: anyone can read what Kin pushes.",
+  visibility_unknown: "Kin couldn't confirm the repository is private, so it treats it as public.",
+  sensitive_work: "This work involves something marked sensitive in Work.",
+};
+const PUBLISH_END: Record<
+  Exclude<KinWorkerPublishCard["status"], "waiting" | "publishing" | "published">,
+  string
+> = {
+  declined: "Not published. The changes stay on the host.",
+  replaced: "This card is out of date: a newer one asks about the latest changes.",
+  stopped: "The work was stopped, so nothing was published.",
+  failed: "Kin couldn't publish it. Your agent says why.",
+};
+const fileLine = (file: KinWorkerPublishCard["files"][number]) =>
+  `${clamp(file.path, 200)} ${
+    file.added === null || file.removed === null ? "(binary)" : `+${file.added} −${file.removed}`
+  }`;
+
+/**
+ * Kin's card asking the owner to publish a worker's commit. Every fact is Kin's own except the
+ * pull request title, which the lead wrote and is shown quoted.
+ */
+function kinWorkerPublishCardView(widget: KinWidget): KinDeferralCardView | null {
+  const decoded = decodeWorkerPublish(widget.state);
+  if (Option.isNone(decoded)) return null;
+  const card = decoded.value;
+  const repository = clamp(card.repository, 200) || "GitHub";
+  const open = widget.closedAt === null && card.status === "waiting";
+  const lines = open
+    ? [
+        ...card.why.map((why) => PUBLISH_WHY[why]),
+        `Branch ${clamp(card.branch, 200)}, commit ${card.sha.slice(0, 7)}.`,
+        `Pull request title, from your agent (unchecked): "${clamp(card.pullRequestTitle, 200)}"`,
+        ...card.files.map(fileLine),
+        ...(card.moreFiles > 0
+          ? [`and ${card.moreFiles} more file${card.moreFiles === 1 ? "" : "s"}.`]
+          : []),
+      ]
+    : card.status === "publishing"
+      ? ["Publishing."]
+      : card.status === "published"
+        ? [
+            card.pullRequestUrl === undefined
+              ? "Published."
+              : `Published as ${clamp(card.pullRequestUrl, 280)}.`,
+          ]
+        : card.status === "waiting"
+          ? ["Closed."]
+          : [PUBLISH_END[card.status]];
+  const title = `Publish to ${repository}?`;
+  return {
+    widgetId: widget.widgetId,
+    revision: widget.revision,
+    itemId: card.sha,
+    phase: open ? "asked" : "closed",
+    eyebrow: open ? "Needs your decision" : "Worker changes",
+    title,
+    lines,
+    countdown: null,
+    actions: open ? [KIN_DEFERRAL_ACTIONS.publish, KIN_DEFERRAL_ACTIONS.dont_publish] : [],
+    accessibilityLabel: kinSentences([title, ...lines]),
+  };
+}
+
+const BOOKKEEPING_TEXT = /^(?:(?:Remembered|Forgot|Updated|Replaced|Memory): |Deferred to )/;
+
+/**
+ * Kin's own notes from older hosts: a memory change, or a reminder it set. Bookkeeping is silent,
+ * so no feed draws these rows. Never a failure notice, nor a card the owner acts on or reads.
+ */
+export function kinIsBookkeeping(
+  message: Pick<KinMessage, "author" | "status" | "widgetId" | "body">,
+  widget: KinWidget | undefined,
+): boolean {
+  if (message.author._tag !== "system" || message.status === "deleted") return false;
+  if (message.widgetId === null) return BOOKKEEPING_TEXT.test(message.body);
+  if (widget === undefined || widget.widgetClass !== "native") return false;
+  if (widget.type === "deferral") return kinDeferralIsBookkeeping(widget);
+  return widget.type === KIN_MEMORY_CHANGES_CARD && kinMemoryChangesView(widget) !== null;
+}
+
+/** The messages a feed draws: everything but Kin's bookkeeping. */
+export const kinFeedMessages = (
+  messages: ReadonlyArray<KinMessage>,
+  widgets: ReadonlyMap<string, KinWidget>,
+): ReadonlyArray<KinMessage> =>
+  messages.filter(
+    (message) =>
+      !kinIsBookkeeping(
+        message,
+        message.widgetId === null ? undefined : widgets.get(message.widgetId),
+      ),
+  );
+
+const PLAIN_FIELDS = ["title", "text", "summary", "body"] as const;
+
+// The first plain words a card's state carries, whatever its kind: what it would have said.
+function unknown(widget: KinWidget): KinCardView {
+  const state: unknown = widget.state;
+  if (typeof state !== "object" || state === null) return { kind: "unknown", text: null };
+  for (const field of PLAIN_FIELDS) {
+    const value: unknown = Reflect.get(state, field);
+    const text = typeof value === "string" ? clamp(value, 280) : "";
+    if (text !== "") return { kind: "unknown", text };
+  }
+  return { kind: "unknown", text: null };
+}
+
+/**
+ * Whether a message's card draws anything. A card this build can't read is never an apology
+ * about the app: the message's own text stands for it, or the card's plain words when the
+ * message has none.
+ */
+export function kinCardDraws(
+  widget: KinWidget | undefined,
+  hostEnvironmentId: EnvironmentId,
+  hasBody: boolean,
+): boolean {
+  const view = kinCardView(widget, hostEnvironmentId, () => true);
+  return view.kind !== "unknown" || (!hasBody && view.text !== null);
+}
+
 /** What a message's card draws. Anything this build can't read falls back to plain text. */
 export function kinCardView(
   widget: KinWidget | undefined,
   hostEnvironmentId: EnvironmentId,
   isKnownEnvironment: (environmentId: EnvironmentId) => boolean,
+  /** The card's agent by name when it is retired: its reminders and schedules are on hold. */
+  heldFor: string | null = null,
+): KinCardView {
+  const view = kinLiveCardView(widget, hostEnvironmentId, isKnownEnvironment);
+  if (heldFor === null || view.kind !== "deferral" || !HELD_TYPES.has(widget?.type ?? ""))
+    return view;
+  const { deferral } = view;
+  if (deferral.phase === "closed" || deferral.actions.length === 0) return view;
+  // Nothing fires while its agent is retired, so no countdown and nothing to tap.
+  const lines = [
+    ...deferral.lines.filter((line) => !/^(Next run|Paused)\b/.test(line)),
+    kinHeldLine(heldFor),
+  ];
+  return {
+    kind: "deferral",
+    deferral: {
+      ...deferral,
+      lines,
+      countdown: null,
+      actions: [],
+      accessibilityLabel: kinSentences([`${deferral.eyebrow}: ${deferral.title}`, ...lines]),
+    },
+  };
+}
+
+const HELD_TYPES: ReadonlySet<string> = new Set(["deferral", "reminder", "scheduled_task"]);
+
+function kinLiveCardView(
+  widget: KinWidget | undefined,
+  hostEnvironmentId: EnvironmentId,
+  isKnownEnvironment: (environmentId: EnvironmentId) => boolean,
 ): KinCardView {
   if (widget === undefined) return { kind: "missing" };
-  if (widget.widgetClass !== "native") return { kind: "unknown" };
+  if (widget.widgetClass !== "native") return unknown(widget);
   switch (widget.type) {
     case "task": {
       const state = decodeTaskState(widget.state);
@@ -374,48 +543,57 @@ export function kinCardView(
             kind: "task",
             task: kinTaskCardView(state.value, hostEnvironmentId, isKnownEnvironment),
           }
-        : { kind: "unknown" };
+        : unknown(widget);
     }
     case "deferral": {
       const deferral = kinDeferralCardView(widget);
-      return deferral === null ? { kind: "unknown" } : { kind: "deferral", deferral };
+      return deferral === null ? unknown(widget) : { kind: "deferral", deferral };
     }
     case "reminder": {
       const deferral = kinReminderCardView(widget);
-      return deferral === null ? { kind: "unknown" } : { kind: "deferral", deferral };
+      return deferral === null ? unknown(widget) : { kind: "deferral", deferral };
     }
     case "scheduled_task": {
       const deferral = kinScheduledTaskCardView(widget);
-      return deferral === null ? { kind: "unknown" } : { kind: "deferral", deferral };
+      return deferral === null ? unknown(widget) : { kind: "deferral", deferral };
     }
     case "choice": {
       const choice = kinChoiceCardView(widget);
-      return choice === null ? { kind: "unknown" } : { kind: "choice", choice };
+      return choice === null ? unknown(widget) : { kind: "choice", choice };
     }
-    case "shadow_summary": {
-      const card = decodeShadowSummary(widget.state);
-      return Option.isSome(card)
-        ? { kind: "digest", digest: kinShadowSummaryView(card.value) }
-        : { kind: "unknown" };
+    case "chart": {
+      const chart = kinChartCardView(widget);
+      return chart === null ? unknown(widget) : { kind: "chart", chart };
+    }
+    case "visual": {
+      const visual = decodeVisual(widget.state);
+      return Option.isSome(visual)
+        ? { kind: "visual", orgId: widget.orgId, visual: visual.value }
+        : unknown(widget);
     }
     case "routine": {
       const card = decodeRoutine(widget.state);
       return Option.isSome(card)
         ? { kind: "digest", digest: kinRoutineView(card.value) }
-        : { kind: "unknown" };
+        : unknown(widget);
     }
-    case "shadow_review":
-    case "promotion":
-      return kinLevelsCardView(widget) ?? { kind: "unknown" };
     case "approval": {
       const approval = kinApprovalWidgetView(widget);
-      return approval === null ? { kind: "unknown" } : { kind: "approval", approval };
+      return approval === null ? unknown(widget) : { kind: "approval", approval };
+    }
+    case KIN_WORKER_PUBLISH_CARD: {
+      const deferral = kinWorkerPublishCardView(widget);
+      return deferral === null ? unknown(widget) : { kind: "deferral", deferral };
+    }
+    case KIN_DOC_CARD: {
+      const doc = kinDocCardView(widget);
+      return doc === null ? unknown(widget) : { kind: "doc", doc };
     }
     case KIN_MEMORY_CHANGES_CARD: {
       const changes = kinMemoryChangesView(widget);
-      return changes === null ? { kind: "unknown" } : { kind: "memory_changes", changes };
+      return changes === null ? unknown(widget) : { kind: "memory_changes", changes };
     }
     default:
-      return { kind: "unknown" };
+      return unknown(widget);
   }
 }

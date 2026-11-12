@@ -25,6 +25,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import type * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
@@ -37,6 +38,7 @@ import { VcsProcess } from "../../vcs/VcsProcess.ts";
 import * as MemoryCache from "./MemoryCache.ts";
 import { mergeMemoryFiles, uniqueMergeBase } from "./merge.ts";
 import { buildIndex, indexIsStale } from "./buildIndex.ts";
+import { leadOwner, readableFiles } from "./quoteAccess.ts";
 import { MemoryConfig } from "./MemoryConfig.ts";
 import {
   MemoryItemError,
@@ -119,6 +121,13 @@ export interface MemoryPaths {
 export type LeadView = { readonly lead: KinAgentId };
 export type MemoryView = LeadView | "triggers";
 export const shadowBranch = (agentId: string) => `kin/shadow/${agentId}`;
+/**
+ * The lander's record of its last merged batch: a commit whose parents are GitHub's squash and the
+ * local commit whose tree that squash carries. It lives in the writer and goes when a purge reclones.
+ */
+export const LANDED_REF = "refs/kin/landed";
+/** How far down GitHub's history a landed squash is looked for, past the owner's own commits. */
+export const LANDED_SEARCH_DEPTH = 200;
 
 export interface MemoryQuery {
   readonly kind?: MemoryItemKind;
@@ -140,6 +149,8 @@ export class MemoryRecoveryHooks extends Context.Service<
       branch: string;
       reason: string;
       conflictBranch?: string;
+      /** The owner must act or has lost something; anything else is logged and posted silently. */
+      needsOwner?: true;
     }) => Effect.Effect<void>;
   }
 >()("t3/kin/memory/Memory/MemoryRecoveryHooks") {}
@@ -158,6 +169,8 @@ export class MemorySyncHooks extends Context.Reference<{
 }) {}
 
 export interface MemoryHistoryRewrite {
+  /** Whether the default branch here holds memory the remote lacks; a reclone would drop it. */
+  readonly unlanded: () => Effect.Effect<boolean, MemoryFailure>;
   /** Writes the durable marker, then deletes the writer and read checkouts that hold the old history. */
   readonly quarantine: (marker: string) => Effect.Effect<void, MemoryFailure>;
   /** Clones fresh, records the remote heads without preserving old anchors, rebuilds, then clears the marker. */
@@ -171,6 +184,36 @@ export class Memory extends Context.Service<
       orgId: KinOrgId,
       effect: Effect.Effect<A, E>,
     ) => Effect.Effect<A, E>;
+    /**
+     * Serializes landing local commits on the remote with history rewrites. Taken before the
+     * writer lock, never inside it; holding it never blocks a lead.
+     */
+    readonly withLandingLock: <A, E>(
+      orgId: KinOrgId,
+      effect: Effect.Effect<A, E>,
+    ) => Effect.Effect<A, E>;
+    /**
+     * Server-only, for the lander: syncs the writer with the remote under the writer lock and
+     * returns both default-branch heads. `undefined` before the first clone or during a purge.
+     */
+    readonly landingState: (orgId: KinOrgId) => Effect.Effect<
+      | {
+          readonly writer: string;
+          readonly local: string;
+          /** Absent when the remote could not be reached. */
+          readonly remote:
+            | {
+                readonly head: string;
+                /** `local` holds memory the remote lacks (INDEX.md aside). */
+                readonly pending: boolean;
+                /** `local` descends from the remote head, so it can land on top of it. */
+                readonly descends: boolean;
+              }
+            | undefined;
+        }
+      | undefined,
+      MemoryFailure
+    >;
     readonly anchor: (
       orgId: KinOrgId,
       branch: string,
@@ -206,27 +249,48 @@ export class Memory extends Context.Service<
     ) => Effect.Effect<{ head: string; indexAsOf: DateTime.Utc; read: string }, MemoryFailure>;
     /**
      * The writer's integrity check (`git fsck`) and default-branch sync with the remote, off the
-     * reply path. Skips an organization with no clone yet, or whose last sync failed: its next
-     * wake-up re-runs the sync and refuses to start until it passes.
+     * reply path; it reads the remote before taking the writer lock. Skips an organization with no
+     * clone yet, or whose last sync failed: its next wake-up re-runs the sync and refuses to start
+     * until it passes.
      */
     readonly syncCheckout: (orgId: KinOrgId) => Effect.Effect<void, MemoryFailure>;
     readonly readPromptSnapshot: (
       orgId: KinOrgId,
       expectedHead: string,
       view?: LeadView,
-    ) => Effect.Effect<{ readonly rules: string; readonly index: string }, MemoryFailure>;
+    ) => Effect.Effect<
+      {
+        readonly rules: string;
+        readonly index: string;
+        /** Every item at that head, for a prompt that may carry only some of them. */
+        readonly items: ReadonlyArray<MemoryItemHead>;
+        /** Each of those items' bodies, by path. */
+        readonly bodies: ReadonlyMap<string, string>;
+      },
+      MemoryFailure
+    >;
     readonly readIndex: (orgId: KinOrgId) => Effect.Effect<string, MemoryFailure>;
     readonly readRules: (orgId: KinOrgId) => Effect.Effect<string, MemoryFailure>;
+    /**
+     * With `admit`, only the items it admits exist: they are judged and returned from one
+     * snapshot, so what was checked is what is returned, and what it hides changes nothing.
+     */
     readonly readItem: (
       orgId: KinOrgId,
       id: KinMemoryItemId,
       view?: MemoryView,
+      admit?: (item: MemoryCache.MemoryItem) => boolean,
     ) => Effect.Effect<MemoryCache.MemoryItem, MemoryFailure | MemoryNotFound | MemoryDuplicateId>;
     readonly readItemQuietly: (
       orgId: KinOrgId,
       id: KinMemoryItemId,
       view?: MemoryView,
     ) => Effect.Effect<MemoryCache.MemoryItem, MemoryFailure | MemoryNotFound | MemoryDuplicateId>;
+    /** Every current item with its body, without recording a read. */
+    readonly items: (
+      orgId: KinOrgId,
+      view?: MemoryView,
+    ) => Effect.Effect<ReadonlyArray<MemoryCache.MemoryItem>, MemoryFailure>;
     readonly query: (
       orgId: KinOrgId,
       query: MemoryQuery,
@@ -282,17 +346,22 @@ const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const sql = yield* SqlClient.SqlClient;
   const writerLocks = new Map<KinOrgId, Semaphore.Semaphore>();
+  const landingLocks = new Map<KinOrgId, Semaphore.Semaphore>();
   const pinnedHeads = new Map<KinOrgId, string>();
   const skipWarnedHeads = new Map<KinOrgId, string>();
   const hooks = yield* MemorySyncHooks;
-  const withWriterLock = <A, E>(orgId: KinOrgId, effect: Effect.Effect<A, E>) => {
-    let lock = writerLocks.get(orgId);
-    if (!lock) {
-      lock = Semaphore.makeUnsafe(1);
-      writerLocks.set(orgId, lock);
-    }
-    return lock.withPermits(1)(effect);
-  };
+  const lockIn =
+    (locks: Map<KinOrgId, Semaphore.Semaphore>) =>
+    <A, E>(orgId: KinOrgId, effect: Effect.Effect<A, E>) => {
+      let lock = locks.get(orgId);
+      if (!lock) {
+        lock = Semaphore.makeUnsafe(1);
+        locks.set(orgId, lock);
+      }
+      return lock.withPermits(1)(effect);
+    };
+  const withWriterLock = lockIn(writerLocks);
+  const withLandingLock = lockIn(landingLocks);
   const persistence = <A, E>(orgId: KinOrgId, effect: Effect.Effect<A, E>) =>
     effect.pipe(
       Effect.mapError(toPersistenceSqlError("Memory.anchor")),
@@ -584,6 +653,7 @@ const make = Effect.gen(function* () {
           orgId,
           branch,
           reason: "Reset tampered branch to anchor; unpushed work at the replaced tip is lost",
+          needsOwner: true,
         });
       }
     }).pipe(
@@ -777,7 +847,7 @@ const make = Effect.gen(function* () {
       files.set(relative, text);
       if (!itemFolders.some((folder) => relative.startsWith(`${folder}/`))) return;
       if (!parsedBlobs.has(sha)) {
-        const parsed = yield* parseFrontMatter(orgId, relative, text).pipe(
+        const parsed = yield* parseFrontMatter(orgId, relative, text, false, true).pipe(
           Effect.catchTags({
             MemoryItemError: (error) =>
               Effect.logWarning("Skipping malformed memory item", {
@@ -1026,9 +1096,10 @@ const make = Effect.gen(function* () {
     id: KinMemoryItemId,
     recordRead: boolean,
     view?: MemoryView,
+    admit?: (item: MemoryCache.MemoryItem) => boolean,
   ) {
     const { items } = yield* load(orgId, false, view);
-    const matches = items.filter((item) => item.head.id === id);
+    const matches = items.filter((item) => item.head.id === id && (admit?.(item) ?? true));
     const item = matches[0];
     if (!item) return yield* new MemoryNotFound({ orgId, id });
     if (matches.length > 1) return yield* new MemoryDuplicateId({ orgId, id });
@@ -1107,6 +1178,8 @@ const make = Effect.gen(function* () {
   });
 
   let conflictSequence = 0;
+  // Local and remote heads whose content conflict the owner already heard about.
+  const conflictNotices = new Set<string>();
   const preserve = Effect.fn("Memory.preserve")(function* (
     orgId: KinOrgId,
     writer: string,
@@ -1212,6 +1285,24 @@ const make = Effect.gen(function* () {
         head: string;
       }>`SELECT branch, head FROM kin_memory_heads WHERE org_id = ${orgId} ORDER BY branch`,
     );
+    // Local commits on the default branch land in the background, so the anchored head can be
+    // ahead of the remote or beside its squash commits. Kept while sync can still merge the two;
+    // unrelated histories fall back to the remote, with the old anchor preserved below.
+    const anchoredMain = rows.find((row) => row.branch === mainBranch)?.head;
+    const keptMain =
+      exists &&
+      anchoredMain !== undefined &&
+      anchoredMain !== main &&
+      (yield* readFiles(orgId, paths.writer, anchoredMain).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(VcsProcess, vcs),
+        Effect.result,
+      ))._tag === "Success" &&
+      uniqueMergeBase(
+        yield* walkAncestors(orgId, paths.writer, anchoredMain),
+        yield* walkAncestors(orgId, paths.writer, main),
+      ) !== undefined;
+    if (keptMain && anchoredMain !== undefined) targets.set(mainBranch, anchoredMain);
     // An anchored shadow head the remote lacks may be the lead's only copy: keep it and push it.
     const unpushed = new Set<string>();
     for (const row of rows) {
@@ -1237,7 +1328,8 @@ const make = Effect.gen(function* () {
           yield* notify({
             orgId,
             branch: row.branch,
-            reason: `Shadow memory at ${row.head} never reached the remote and is gone from this server; the lead's shadow memory restarts from the default branch`,
+            reason: `Shadow memory at ${row.head} never reached the remote and is gone from this server; the agent's shadow memory restarts from the default branch`,
+            needsOwner: true,
           });
       }
     }
@@ -1298,6 +1390,14 @@ const make = Effect.gen(function* () {
         local._tag === "Success" ? local.success.trim() : "0".repeat(head.length),
       ]);
       if (old !== head) yield* record(orgId, branch, old, head);
+      if (keptMain && branch === mainBranch) {
+        yield* notify({
+          orgId,
+          branch,
+          reason: "Kept this server's memory; Kin lands what GitHub lacks in the background",
+        });
+        continue;
+      }
       if (!unpushed.has(branch)) {
         yield* notify({ orgId, branch, reason: "Recovered from remote head" });
         continue;
@@ -1338,24 +1438,96 @@ const make = Effect.gen(function* () {
     }
   });
 
-  // Callers have run `ensureCheckouts`.
-  const sync = Effect.fn("Memory.sync")(function* (orgId: KinOrgId, wakeupId?: string) {
+  type Fetched = Result.Result<string, MemoryFailure>;
+  /** The remote's default-branch head, fetched with no lock held: fetching only adds objects. */
+  const fetchRemote = (orgId: KinOrgId, writer: string, url: string): Effect.Effect<Fetched> =>
+    advertisedHead(orgId, writer, url, mainBranch).pipe(Effect.result);
+  /** `fetchRemote` for a caller about to take the writer lock; nothing before the first clone. */
+  const prefetch = Effect.fn("Memory.prefetch")(function* (orgId: KinOrgId) {
+    const { writer, repo } = yield* pathsFor(orgId);
+    if (!(yield* io(orgId, "exists", fs.exists(writer)))) return undefined;
+    const generation = historyGenerations.get(orgId) ?? 0;
+    return { generation, fetched: yield* fetchRemote(orgId, writer, repo.repoUrl) };
+  });
+  // A purge that ran since the fetch dropped the checkout its objects went to.
+  const stillFetched = (
+    orgId: KinOrgId,
+    prefetched: Effect.Success<ReturnType<typeof prefetch>>,
+  ) =>
+    prefetched?.generation === (historyGenerations.get(orgId) ?? 0)
+      ? prefetched.fetched
+      : undefined;
+
+  /**
+   * The local commit whose tree GitHub's newest unmerged squash of this server's memory carries:
+   * the merge base, since squashes never link the two in git's ancestry. The owner may have
+   * committed on top, so the squash is sought down GitHub's first parents, newest first;
+   * `exhausted` means the search stopped before it could tell whether one exists.
+   */
+  const landedBase = Effect.fn("Memory.landedBase")(function* (
+    orgId: KinOrgId,
+    writer: string,
+    local: ReadonlyMap<string, ReadonlyArray<string>>,
+    remote: ReadonlyMap<string, ReadonlyArray<string>>,
+    remoteHead: string,
+  ) {
+    const commitAt = (sha: string) =>
+      readCommit(orgId, writer, sha).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(VcsProcess, vcs),
+      );
+    const recorded = yield* git(orgId, writer, [
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      LANDED_REF,
+    ]).pipe(
+      Effect.flatMap((sha) => commitAt(sha.trim())),
+      Effect.map(({ parents: [theirs, ours] }) =>
+        theirs && ours && local.has(ours) ? { theirs, ours } : undefined,
+      ),
+      Effect.orElseSucceed(() => undefined),
+    );
+    const absent = { _tag: "absent" } as const;
+    let sha: string | undefined = remoteHead;
+    for (let depth = 0; sha !== undefined && depth < LANDED_SEARCH_DEPTH; depth++) {
+      // Merged in here already: git's own merge base is at least as new.
+      if (local.has(sha)) return absent;
+      if (sha === recorded?.theirs) return { _tag: "found", commit: recorded.ours } as const;
+      // The record is written after GitHub merges. If the server stopped in between, the squash
+      // still names its commit, and an identical tree proves the pair without trusting that line.
+      const squash = yield* commitAt(sha);
+      const named = /^Kin-Local: ([a-f0-9]{40}(?:[a-f0-9]{24})?)$/m.exec(squash.message)?.[1];
+      if (named !== undefined && local.has(named) && (yield* commitAt(named)).tree === squash.tree)
+        return { _tag: "found", commit: named } as const;
+      sha = remote.get(sha)?.[0];
+    }
+    return sha === undefined ? absent : ({ _tag: "exhausted" } as const);
+  });
+
+  // Callers have run `ensureCheckouts`. A head fetched before the lock was taken is merged as it
+  // is; the lander skips `fsck`, which the periodic sync and a wake-up's own sync still run.
+  const sync = Effect.fn("Memory.sync")(function* (
+    orgId: KinOrgId,
+    prefetched: Fetched | undefined,
+    options: { readonly wakeupId?: string; readonly fsck: boolean },
+  ) {
+    const { wakeupId } = options;
     const paths = yield* pathsFor(orgId);
     yield* validateWriter(orgId, paths);
-    yield* git(orgId, paths.writer, [
-      "fsck",
-      "--full",
-      "--strict",
-      "--no-reflogs",
-      yield* anchor(orgId, config.defaultBranch ?? "main"),
-    ]);
+    if (options.fsck)
+      yield* git(orgId, paths.writer, [
+        "fsck",
+        "--full",
+        "--strict",
+        "--no-reflogs",
+        yield* anchor(orgId, config.defaultBranch ?? "main"),
+      ]);
     yield* refuseUnfinishedOperation(orgId, paths.writer);
     const { repo } = yield* pathsFor(orgId);
     const branch = config.defaultBranch ?? "main";
     let head = yield* anchor(orgId, branch);
-    const fetched = yield* advertisedHead(orgId, paths.writer, repo.repoUrl, branch).pipe(
-      Effect.result,
-    );
+    const fetched = prefetched ?? (yield* fetchRemote(orgId, paths.writer, repo.repoUrl));
     if (fetched._tag === "Failure" && fetched.failure._tag === "MemoryCheckoutInvalid")
       return yield* fetched.failure;
     if (fetched._tag === "Success") {
@@ -1367,7 +1539,17 @@ const make = Effect.gen(function* () {
           const localAncestors = yield* walkAncestors(orgId, paths.writer, head);
           if (localAncestors.has(remote)) next = head;
           else {
-            const mergeBase = uniqueMergeBase(localAncestors, remoteAncestors);
+            const landed = yield* landedBase(
+              orgId,
+              paths.writer,
+              localAncestors,
+              remoteAncestors,
+              remote,
+            );
+            const mergeBase =
+              landed._tag === "found"
+                ? landed.commit
+                : uniqueMergeBase(localAncestors, remoteAncestors);
             if (!mergeBase) {
               const conflictBranch = yield* preserve(
                 orgId,
@@ -1408,29 +1590,31 @@ const make = Effect.gen(function* () {
                 );
                 metadata.set(sha, new Map(entries.map((entry) => [entry.relative, entry])));
               }
-              const merged = mergeMemoryFiles(
-                base,
-                local,
-                remoteFiles,
-                metadata.get(parent)!,
-                metadata.get(commit)!,
-                metadata.get(next)!,
-              );
+              // Past the search, an older base would bring back journal entries that already landed.
+              const merged =
+                landed._tag === "exhausted"
+                  ? undefined
+                  : mergeMemoryFiles(
+                      base,
+                      local,
+                      remoteFiles,
+                      metadata.get(parent)!,
+                      metadata.get(commit)!,
+                      metadata.get(next)!,
+                    );
               if (!merged) {
-                const conflictBranch = yield* preserve(
-                  orgId,
-                  paths.writer,
-                  repo.repoUrl,
-                  head,
-                  wakeupId,
-                );
-                next = remote;
-                yield* notify({
-                  orgId,
-                  branch,
-                  reason: "Content conflict preserved",
-                  conflictBranch,
-                });
+                // This server's copy stays as it is: it may hold commits GitHub never got.
+                next = head;
+                const key = `${orgId}\u0000${head}\u0000${remote}`;
+                if (!conflictNotices.has(key)) {
+                  conflictNotices.add(key);
+                  yield* notify({
+                    orgId,
+                    branch,
+                    reason:
+                      "Memory write not merged: memory on GitHub changed in a way Kin could not combine with this server's. Memory is still saved on this server; the GitHub copy stays behind until the two are reconciled",
+                  });
+                }
               } else {
                 const { files: mergedFiles, modes } = merged;
                 const remoteOriginal = new Map(remoteFiles);
@@ -1542,21 +1726,18 @@ const make = Effect.gen(function* () {
                 );
               }
             }
-            if (next !== remote || tree) {
-              if (!tree || !/^[0-9a-f]{40,64}$/.test(tree))
+            if (tree) {
+              if (!/^[0-9a-f]{40,64}$/.test(tree))
                 return yield* new MemorySyncConflict({
                   orgId,
                   operation: "sync",
                   reason: "Invalid merge tree",
                 });
-              const { message } = yield* readCommit(orgId, paths.writer, commit).pipe(
-                Effect.provideService(FileSystem.FileSystem, fs),
-                Effect.provideService(VcsProcess, vcs),
-              );
+              // Its own subject, so a wake-up's commit search never mistakes a merge for it.
               next = (yield* memoryGit(
                 paths.writer,
                 ["commit-tree", tree, "-p", remote, "-p", head],
-                message,
+                `kin: merge GitHub's memory at ${remote}\n`,
                 {
                   GIT_AUTHOR_NAME: config.botName ?? "Kin Memory Bot",
                   GIT_AUTHOR_EMAIL: config.botEmail ?? "kin-memory@localhost",
@@ -1569,39 +1750,83 @@ const make = Effect.gen(function* () {
             }
           }
         }
+        // Never pushed: the lander takes merged and local-only commits to the remote.
         if (next !== head) {
-          if (next !== remote) {
-            yield* refuseDuringPurge(orgId, "merge");
-            yield* git(orgId, paths.writer, [
-              "push",
-              "--",
-              repo.repoUrl,
-              `${next}:refs/heads/${branch}`,
-            ]);
-          }
+          if (next !== remote) yield* refuseDuringPurge(orgId, "merge");
           yield* git(orgId, paths.writer, ["update-ref", `refs/heads/${branch}`, next, head]);
           yield* record(orgId, branch, head, next);
           head = next;
         }
       }
+      return remote;
     }
+    return undefined;
   });
-  const checkedSync = (orgId: KinOrgId, wakeupId?: string) =>
-    sync(orgId, wakeupId).pipe(
-      Effect.tap(() => Effect.sync(() => synced.set(orgId, true))),
-      Effect.tapError(() => Effect.sync(() => synced.set(orgId, false))),
+  const checkedSync = (...args: Parameters<typeof sync>) =>
+    sync(...args).pipe(
+      Effect.tap(() => Effect.sync(() => synced.set(args[0], true))),
+      Effect.tapError(() => Effect.sync(() => synced.set(args[0], false))),
     );
+
+  const isAncestor = (orgId: KinOrgId, writer: string, older: string, newer: string) =>
+    git(orgId, writer, ["merge-base", "--is-ancestor", older, newer]).pipe(
+      Effect.as(true),
+      Effect.catchTags({ MemoryError: () => Effect.succeed(false) }),
+    );
+  /** Whether `local` holds memory `remote` lacks. INDEX.md is rebuilt on every commit, so it never counts. */
+  const holdsMore = Effect.fn("Memory.holdsMore")(function* (
+    orgId: KinOrgId,
+    writer: string,
+    local: string,
+    remote: string,
+  ) {
+    if (local === remote || (yield* isAncestor(orgId, writer, local, remote))) return false;
+    const changed = yield* git(orgId, writer, [
+      "diff-tree",
+      "-r",
+      "--no-renames",
+      "--name-only",
+      remote,
+      local,
+    ]);
+    return changed.split("\n").some((path) => path !== "" && path !== "INDEX.md");
+  });
+
+  const landingState = Effect.fn("Memory.landingState")(function* (
+    orgId: KinOrgId,
+    fetched: Fetched,
+  ) {
+    yield* ensureCheckouts(orgId);
+    const { writer } = yield* pathsFor(orgId);
+    const remote = yield* checkedSync(orgId, fetched, { fsck: false });
+    const local = yield* anchor(orgId, mainBranch);
+    if (remote === undefined) return { writer, local, remote };
+    return {
+      writer,
+      local,
+      remote: {
+        head: remote,
+        pending: yield* holdsMore(orgId, writer, local, remote),
+        descends: yield* isAncestor(orgId, writer, remote, local),
+      },
+    };
+  });
 
   const prepare = Effect.fn("Memory.prepare")(function* (
     orgId: KinOrgId,
     wakeupId?: string,
     view?: LeadView,
+    prefetched?: Fetched,
   ) {
     const paths = yield* ensureCheckouts(orgId);
     if (synced.get(orgId) === true) {
       yield* validateWriter(orgId, yield* pathsFor(orgId));
       yield* refuseUnfinishedOperation(orgId, paths.writer);
-    } else yield* checkedSync(orgId, wakeupId);
+    } else
+      yield* checkedSync(orgId, prefetched, {
+        fsck: true,
+        ...(wakeupId === undefined ? {} : { wakeupId }),
+      });
     const branch = config.defaultBranch ?? "main";
     const head = yield* anchor(orgId, branch);
     // The read checkout holds the waking lead's view: its shadow branch at L0.
@@ -1659,6 +1884,27 @@ const make = Effect.gen(function* () {
           Effect.provideService(VcsProcess, vcs),
         )),
       );
+    // The lead reads these with its own tools, so they hold a quote only as its owner may read it.
+    const withSql = Effect.provideService(SqlClient.SqlClient, sql);
+    const owner =
+      view === undefined ? undefined : yield* sqlRead(orgId, withSql(leadOwner(orgId, view.lead)));
+    const unquoted = yield* sqlRead(
+      orgId,
+      withSql(
+        readableFiles(
+          orgId,
+          owner,
+          kept.map(({ relative }, index) => ({
+            path: relative,
+            text: blobs[index]!.toString("utf8"),
+          })),
+        ),
+      ),
+    );
+    for (const [index, { relative }] of kept.entries()) {
+      const text = unquoted.get(relative);
+      if (text !== undefined) blobs[index] = Buffer.from(text);
+    }
     const readTarget = readDirFor(paths, view);
     yield* io(
       orgId,
@@ -1739,6 +1985,18 @@ const make = Effect.gen(function* () {
     return paths;
   });
   const historyRewrite = (orgId: KinOrgId): MemoryHistoryRewrite => ({
+    unlanded: Effect.fn("Memory.unlanded")(() =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const paths = yield* pathsFor(orgId);
+          if (!(yield* io(orgId, "exists", fs.exists(paths.writer)))) return false;
+          const local = yield* anchor(orgId, mainBranch);
+          const remote = yield* advertisedHead(orgId, paths.writer, paths.repo.repoUrl, mainBranch);
+          return yield* holdsMore(orgId, paths.writer, local, remote);
+        }),
+      ),
+    ),
     quarantine: Effect.fn("Memory.quarantine")((marker: string) =>
       locked(
         orgId,
@@ -1766,13 +2024,23 @@ const make = Effect.gen(function* () {
     ),
   });
 
+  // The landing lock first, so no batch is mid-landing on the history being rewritten.
   const withHistoryRewrite = <A, E>(
     orgId: KinOrgId,
     body: (rewrite: MemoryHistoryRewrite) => Effect.Effect<A, E>,
-  ) => withWriterLock(orgId, body(historyRewrite(orgId)));
+  ) => withLandingLock(orgId, withWriterLock(orgId, body(historyRewrite(orgId))));
 
   return Memory.of({
     withWriterLock,
+    withLandingLock,
+    landingState: Effect.fn("Memory.landingStateLocked")(function* (orgId) {
+      const { writer, repo } = yield* pathsFor(orgId);
+      if (!(yield* io(orgId, "exists", fs.exists(writer)))) return undefined;
+      if ((yield* purgeInFlight(orgId)) !== undefined) return undefined;
+      // The network part, outside the writer lock; the lock covers only the local merge.
+      const fetched = yield* fetchRemote(orgId, writer, repo.repoUrl);
+      return yield* withWriterLock(orgId, locked(orgId, landingState(orgId, fetched)));
+    }),
     withHistoryRewrite,
     purgeInFlight: Effect.fn("Memory.purgeInFlightLocked")((orgId) =>
       locked(orgId, purgeInFlight(orgId)),
@@ -1788,11 +2056,23 @@ const make = Effect.gen(function* () {
     ensureCheckouts: Effect.fn("Memory.ensureCheckoutsLocked")((orgId) =>
       locked(orgId, ensureCheckouts(orgId, true)),
     ),
-    prepareWakeup: Effect.fn("Memory.prepareWakeup")((orgId, wakeupId, view) =>
-      withWriterLock(orgId, locked(orgId, prepare(orgId, wakeupId, view))),
-    ),
-    syncCheckout: Effect.fn("Memory.syncCheckout")((orgId) =>
-      withWriterLock(
+    prepareWakeup: Effect.fn("Memory.prepareWakeup")(function* (orgId, wakeupId, view) {
+      // A wake-up that has to sync reads GitHub before it takes the writer lock, like the lander.
+      const prefetched = synced.get(orgId) === true ? undefined : yield* prefetch(orgId);
+      return yield* withWriterLock(
+        orgId,
+        locked(
+          orgId,
+          Effect.suspend(() => prepare(orgId, wakeupId, view, stillFetched(orgId, prefetched))),
+        ),
+      );
+    }),
+    syncCheckout: Effect.fn("Memory.syncCheckout")(function* (orgId) {
+      if (synced.get(orgId) === false) return;
+      // The network part, outside the writer lock, so a slow GitHub never holds up a lead.
+      const prefetched = yield* prefetch(orgId);
+      if (prefetched === undefined) return;
+      yield* withWriterLock(
         orgId,
         locked(
           orgId,
@@ -1801,11 +2081,11 @@ const make = Effect.gen(function* () {
             const { writer } = yield* pathsFor(orgId);
             if (!(yield* io(orgId, "exists", fs.exists(writer)))) return;
             yield* ensureCheckouts(orgId);
-            yield* checkedSync(orgId);
+            yield* checkedSync(orgId, stillFetched(orgId, prefetched), { fsck: true });
           }),
         ),
-      ),
-    ),
+      );
+    }),
     readPromptSnapshot: Effect.fn("Memory.readPromptSnapshot")((orgId, expectedHead, view) =>
       locked(
         orgId,
@@ -1823,17 +2103,25 @@ const make = Effect.gen(function* () {
               operation: "promptSnapshot",
               reason: "Missing committed prompt rules",
             });
-          return { rules, index };
+          return {
+            rules,
+            index,
+            items: snapshot.items.map((item) => item.head),
+            bodies: new Map(snapshot.items.map((item) => [item.head.path, item.body])),
+          };
         }),
       ),
     ),
     readIndex: Effect.fn("Memory.readIndex")((orgId) => locked(orgId, readFile(orgId, "INDEX.md"))),
     readRules: Effect.fn("Memory.readRules")((orgId) => locked(orgId, readFile(orgId, "rules.md"))),
+    items: Effect.fn("Memory.items")((orgId, view) =>
+      locked(orgId, load(orgId, false, view).pipe(Effect.map((snapshot) => snapshot.items))),
+    ),
     query: Effect.fn("Memory.queryLocked")((orgId, q, view) =>
       locked(orgId, query(orgId, q, view)),
     ),
-    readItem: Effect.fn("Memory.readItemLocked")((orgId, id, view) =>
-      locked(orgId, readItem(orgId, id, true, view)),
+    readItem: Effect.fn("Memory.readItemLocked")((orgId, id, view, admit) =>
+      locked(orgId, readItem(orgId, id, true, view, admit)),
     ),
     readItemQuietly: Effect.fn("Memory.readItemQuietly")((orgId, id, view) =>
       locked(orgId, readItem(orgId, id, false, view)),

@@ -1,4 +1,20 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import { createPendingAttachmentId } from "../../attachmentStore.ts";
+import { deletePendingAttachment } from "../../assets/AttachmentUpload.ts";
+import {
+  recordTestUploadOwner,
+  TEST_UPLOAD_OWNER,
+  testUploadOwner,
+  withoutOwnerRecords,
+} from "../../assets/AttachmentUpload.testkit.ts";
+import * as ServerConfig from "../../config.ts";
+import * as DocumentText from "../../provider/DocumentText.ts";
+import * as AttachmentStore from "./KinAttachmentStore.ts";
+import { authorizeAttachmentRead } from "./attachmentAccess.ts";
 import { environment } from "./TaskCard.testkit.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import { CommandId } from "@t3tools/contracts";
@@ -6,22 +22,30 @@ import { startWakeupRun, authorityLayer, startAgentWakeup } from "./WakeupAuthor
 import { assert, describe, it } from "@effect/vitest";
 import {
   AuthSessionId,
+  AuthKinChatScope,
   AuthStandardClientScopes,
   EnvironmentId,
   KinAgentId,
   KinChatId,
+  KinKeyThumbprint,
   KinMemberId,
   KinMessageId,
   KinMessagesSendInput,
   KinOrgId,
   KinPersonId,
+  type KinReactionEmoji,
   KinTaskCardState,
   KinWaitingId,
+  KinWakeupId,
   KinWidgetId,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
+import * as FileSystem from "effect/FileSystem";
+import * as Ref from "effect/Ref";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -32,11 +56,16 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
+import { KinKeyNotices } from "../approvals/ExecutionNotices.ts";
+import { keyNoticeBody, keyNoticesLayer } from "./executionNotices.ts";
 import * as Hub from "./KinChatHub.ts";
 import * as Repository from "./KinChatRepository.ts";
 import * as Identity from "./KinIdentity.ts";
 import * as Service from "./KinChatService.ts";
+import * as VisualHosts from "./KinVisualHosts.ts";
 import * as Presence from "../reply/KinPresence.ts";
+import * as LevelGate from "../lead/LevelGate.ts";
+import { attachChangeCard, proposeChange, readProfile } from "../work/companyProfile.ts";
 
 const decodeKinOrgId = Schema.decodeSync(KinOrgId);
 const decodeKinPersonId = Schema.decodeSync(KinPersonId);
@@ -50,10 +79,98 @@ const database = authorityLayer;
 const repositories = Layer.provideMerge(Repository.layer, database);
 const dependencies = Layer.provideMerge(Hub.layer, repositories);
 const layer = Layer.provideMerge(Service.layer, dependencies).pipe(Layer.provideMerge(environment));
+const attachmentLayer = Layer.provideMerge(
+  Service.layer,
+  Layer.provideMerge(
+    AttachmentStore.layer.pipe(
+      Layer.provideMerge(DocumentText.layer),
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-kin-attachments-" })),
+      Layer.provideMerge(NodeServices.layer),
+    ),
+    dependencies,
+  ),
+).pipe(Layer.provideMerge(environment));
+// Two claims of one upload both reach its size check before either goes on, as racing sends can.
+const pendingStatsMeet = Layer.effect(
+  FileSystem.FileSystem,
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const arrived = yield* Ref.make(0);
+    const both = yield* Deferred.make<void>();
+    return {
+      ...fileSystem,
+      stat: (path: string) =>
+        NodePath.basename(path).startsWith("pending-")
+          ? Ref.updateAndGet(arrived, (count) => count + 1).pipe(
+              Effect.flatMap((count) =>
+                count === 2 ? Deferred.succeed(both, undefined) : Effect.void,
+              ),
+              Effect.andThen(Deferred.await(both)),
+              Effect.andThen(fileSystem.stat(path)),
+            )
+          : fileSystem.stat(path),
+    };
+  }),
+);
+const racingAttachmentLayer = Layer.provideMerge(
+  Service.layer,
+  Layer.provideMerge(
+    AttachmentStore.layer.pipe(
+      Layer.provide(pendingStatsMeet),
+      Layer.provideMerge(DocumentText.layer),
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-kin-race-" })),
+      Layer.provideMerge(NodeServices.layer),
+    ),
+    dependencies,
+  ),
+).pipe(Layer.provideMerge(environment));
+// A one-pixel PNG is not needed: the store checks size and name, never pixels.
+const PHOTO_BYTES = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+const uploadPhoto = Effect.fn("test.uploadPhoto")(function* (
+  name: string,
+  owner = TEST_UPLOAD_OWNER,
+) {
+  const config = yield* ServerConfig.ServerConfig;
+  const id = createPendingAttachmentId();
+  NodeFS.writeFileSync(NodePath.join(config.attachmentsDir, `${id}.png`), PHOTO_BYTES);
+  recordTestUploadOwner(config.attachmentsDir, id, owner);
+  return {
+    type: "image" as const,
+    id,
+    name,
+    mimeType: "image/png",
+    sizeBytes: PHOTO_BYTES.byteLength,
+  };
+});
+const storedFiles = Effect.gen(function* () {
+  const config = yield* ServerConfig.ServerConfig;
+  return withoutOwnerRecords(NodeFS.readdirSync(config.attachmentsDir)).toSorted();
+});
 const presenceLayer = Layer.provideMerge(
   Service.layer,
   Layer.provideMerge(Presence.layer, dependencies),
 ).pipe(Layer.provideMerge(environment));
+const clearLayer = Layer.provideMerge(
+  Service.layer,
+  Layer.provideMerge(
+    AttachmentStore.layer.pipe(
+      Layer.provideMerge(DocumentText.layer),
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-kin-clear-" })),
+      Layer.provideMerge(NodeServices.layer),
+    ),
+    Layer.provideMerge(Presence.layer, dependencies),
+  ),
+).pipe(Layer.provideMerge(environment));
+/** Row counts of every Kin table, to show what an operation touched and what it left alone. */
+const kinRowCounts = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const tables = yield* sql<{ name: string }>`SELECT name FROM sqlite_master
+    WHERE type = 'table' AND name LIKE 'kin_%' ORDER BY name`;
+  const counts: Record<string, number> = {};
+  for (const { name } of tables)
+    counts[name] = (yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM ${sql(name)}`)[0]!.n;
+  return counts;
+});
 const identityLayer = Identity.KinIdentity.layer.pipe(
   Layer.provide(
     Layer.succeed(Identity.KinIdentityConfig, {
@@ -135,6 +252,417 @@ const seed = Effect.fn("test.seed")(function* (notice = false) {
 });
 
 describe("KinChatService", () => {
+  it.effect("keeps a person's uploads with the message and takes them from nobody else", () =>
+    Effect.gen(function* () {
+      const { repo, service, person, agent, chat } = yield* seed();
+      const sql = yield* SqlClient.SqlClient;
+      const photo = yield* uploadPhoto("whiteboard.png");
+      const send = {
+        chatId: chat.chatId,
+        body: "",
+        clientMessageId: "photo",
+        attachments: [photo],
+        uploader: TEST_UPLOAD_OWNER,
+      };
+      const message = yield* service.send(person, send);
+      const [stored] = message.attachments ?? [];
+      assert.deepStrictEqual(message.attachments, [{ ...photo, id: stored!.id }]);
+      assert.match(stored!.id, /^kin-chat-/);
+      assert.deepStrictEqual(yield* storedFiles, [`${stored!.id}.png`]);
+      assert.deepStrictEqual(
+        yield* sql`SELECT chat_id, message_id FROM kin_message_attachments WHERE attachment_id = ${stored!.id}`,
+        [{ chat_id: chat.chatId, message_id: message.messageId }],
+      );
+      // A resend after a lost reply finds the message; the upload it named is already gone.
+      assert.deepStrictEqual(yield* service.send(person, send), message);
+      assert.deepStrictEqual(
+        (yield* service.history(person, {
+          chatId: chat.chatId,
+          beforeSeq: message.seq + 1,
+          limit: 1,
+        })).messages[0]?.attachments,
+        message.attachments,
+      );
+
+      const refusals = [
+        // A file some message already holds is never attached again, here or in another chat.
+        [person, { ...send, clientMessageId: "again", attachments: [stored!] }, "invalid_state"],
+        [agent, { ...send, clientMessageId: "agent", intent: "answer" as const }, "invalid_state"],
+        [person, { ...send, clientMessageId: "empty", attachments: [] }, "invalid_state"],
+      ] as const;
+      for (const [sender, input, reason] of refusals)
+        assert.include(yield* service.send(sender, input).pipe(Effect.flip), { reason });
+
+      const outsider = { ...person, personId: decodeKinPersonId("outsider") };
+      yield* repo.insertPerson({
+        ...outsider,
+        handle: "outsider",
+        displayName: "Outsider",
+        githubLogin: null,
+        createdAt: timestamp,
+      });
+      const theirs = yield* uploadPhoto("theirs.png");
+      assert.include(
+        yield* service
+          .send(outsider, { ...send, clientMessageId: "outsider", attachments: [theirs] })
+          .pipe(Effect.flip),
+        { reason: "not_found" },
+      );
+      // Nothing of the outsider's was copied into the chat's keeping.
+      assert.deepStrictEqual(
+        yield* storedFiles,
+        [`${theirs.id}.png`, `${stored!.id}.png`].toSorted(),
+      );
+    }).pipe(Effect.provide(attachmentLayer)),
+  );
+
+  it.effect("claims and deletes only the sender's own uploads", () =>
+    Effect.gen(function* () {
+      const { repo, service, identity, person, chat } = yield* seed();
+      const sql = yield* SqlClient.SqlClient;
+      const memberId = KinPersonId.make("suraj");
+      const memberSession = {
+        ...session,
+        sessionId: AuthSessionId.make("member-session"),
+        scopes: [AuthKinChatScope],
+      };
+      yield* repo.insertPerson({
+        orgId: person.orgId,
+        personId: memberId,
+        handle: "suraj",
+        displayName: "Suraj",
+        githubLogin: null,
+        createdAt: timestamp,
+      });
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at) VALUES (${memberSession.sessionId}, ${person.orgId}, ${memberId}, 0)`;
+      const members = yield* identity.resolve(memberSession);
+      yield* repo.insertAgent({
+        orgId: person.orgId,
+        agentId: KinAgentId.make("suraj-lead"),
+        ownerPersonId: memberId,
+        displayName: "Suraj lead",
+        role: "lead",
+        createdAt: timestamp,
+      });
+      const own = yield* service.createDirect(members, {
+        orgId: person.orgId,
+        agentId: KinAgentId.make("suraj-lead"),
+      });
+      const ownersUpload = yield* uploadPhoto("owner.png", testUploadOwner(session.sessionId));
+      const membersOwner = testUploadOwner(memberSession.sessionId);
+      assert.include(
+        yield* service
+          .send(members, {
+            chatId: own.chatId,
+            body: "",
+            clientMessageId: "taken",
+            attachments: [ownersUpload],
+            uploader: membersOwner,
+          })
+          .pipe(Effect.flip),
+        { reason: "invalid_state" },
+      );
+      yield* deletePendingAttachment(ownersUpload.id, membersOwner);
+      assert.deepStrictEqual(yield* storedFiles, [`${ownersUpload.id}.png`]);
+      const kept = yield* service.send(person, {
+        chatId: chat.chatId,
+        body: "",
+        clientMessageId: "kept",
+        attachments: [ownersUpload],
+        uploader: testUploadOwner(session.sessionId),
+      });
+      assert.match(kept.attachments![0]!.id, /^kin-chat-/);
+    }).pipe(Effect.provide(attachmentLayer)),
+  );
+
+  it.effect("lands one upload in at most one message when two sends race for it", () =>
+    Effect.gen(function* () {
+      const { service, person, chat } = yield* seed();
+      const sql = yield* SqlClient.SqlClient;
+      const upload = yield* uploadPhoto("race.png");
+      const send = (clientMessageId: string) =>
+        service.send(person, {
+          chatId: chat.chatId,
+          body: "",
+          clientMessageId,
+          attachments: [upload],
+          uploader: TEST_UPLOAD_OWNER,
+        });
+      const results = yield* Effect.forEach(
+        ["first", "second"],
+        (clientMessageId) => Effect.result(send(clientMessageId)),
+        { concurrency: "unbounded" },
+      );
+      assert.strictEqual(results.filter((result) => result._tag === "Success").length, 1);
+      const rows = yield* sql<{
+        attachment_id: string;
+      }>`SELECT attachment_id FROM kin_message_attachments`;
+      assert.strictEqual(rows.length, 1);
+      assert.deepStrictEqual(yield* storedFiles, [`${rows[0]!.attachment_id}.png`]);
+    }).pipe(Effect.provide(racingAttachmentLayer)),
+  );
+
+  it.effect("hands a stored file only to people in its chat", () =>
+    Effect.gen(function* () {
+      const { repo, service, identity, person, chat } = yield* seed();
+      const sql = yield* SqlClient.SqlClient;
+      const memberId = KinPersonId.make("suraj");
+      const memberSession = {
+        ...session,
+        sessionId: AuthSessionId.make("member-session"),
+        scopes: [AuthKinChatScope],
+      };
+      yield* repo.insertPerson({
+        orgId: person.orgId,
+        personId: memberId,
+        handle: "suraj",
+        displayName: "Suraj",
+        githubLogin: null,
+        createdAt: timestamp,
+      });
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at) VALUES (${memberSession.sessionId}, ${person.orgId}, ${memberId}, 0)`;
+      const members = yield* identity.resolve(memberSession);
+      const ownAgent = KinAgentId.make("suraj-lead");
+      yield* repo.insertAgent({
+        orgId: person.orgId,
+        agentId: ownAgent,
+        ownerPersonId: memberId,
+        displayName: "Suraj lead",
+        role: "lead",
+        createdAt: timestamp,
+      });
+      const own = yield* service.createDirect(members, { orgId: person.orgId, agentId: ownAgent });
+      const send = { body: "", clientMessageId: "photo", uploader: TEST_UPLOAD_OWNER };
+      const ownersFile = (yield* service.send(person, {
+        ...send,
+        chatId: chat.chatId,
+        attachments: [yield* uploadPhoto("owner.png")],
+      })).attachments![0]!.id;
+      const membersMessage = yield* service.send(members, {
+        ...send,
+        chatId: own.chatId,
+        attachments: [yield* uploadPhoto("member.png")],
+      });
+      const membersFile = membersMessage.attachments![0]!.id;
+      const pending = (yield* uploadPhoto("pending.png")).id;
+
+      const kin = Option.some(
+        Context.make(Identity.KinIdentity, identity).pipe(
+          Context.add(Service.KinChatService, service),
+        ),
+      );
+      const read = (reader: AuthenticatedSession, attachmentId: string, host = kin) =>
+        authorizeAttachmentRead(reader, { _tag: "attachment", attachmentId }, host).pipe(
+          Effect.as("served"),
+          Effect.catchTags({ AssetAttachmentNotFoundError: () => Effect.succeed("refused") }),
+        );
+      // The same file under the names a path or a case-blind disk would still resolve.
+      const aliases = (id: string) => [
+        id,
+        id.toUpperCase(),
+        `./${id}`,
+        `/${id}`,
+        `x/../${id}`,
+        id.replace("kin", "\u212Ain"),
+      ];
+      const cases = [
+        [session, [ownersFile], "served"],
+        [memberSession, [membersFile], "served"],
+        // The teammate reaches nothing of the owner's chat, by any name for it.
+        [memberSession, aliases(ownersFile), "refused"],
+        // Holding every other scope does not put the owner in the teammate's chat.
+        [session, aliases(membersFile), "refused"],
+        // A Kin id no message holds, and an upload no message has claimed.
+        [session, ["kin-chat-00000000-0000-4000-8000-000000000000"], "refused"],
+        [memberSession, ["kin-chat-00000000-0000-4000-8000-000000000000", pending], "refused"],
+        // Thread attachments stay with sessions that may read threads.
+        [session, [pending], "served"],
+      ] as const;
+      for (const [reader, ids, expected] of cases)
+        for (const id of ids) assert.strictEqual(yield* read(reader, id), expected, id);
+      assert.strictEqual(yield* read(session, ownersFile, Option.none()), "refused");
+
+      yield* sql`UPDATE kin_chat_members SET left_at = ${timestamp} WHERE chat_id = ${own.chatId} AND person_id = ${memberId}`;
+      assert.strictEqual(yield* read(memberSession, membersFile), "refused");
+
+      // Added to a group later, they get its files from their join on, never one from before.
+      const group = KinChatId.make("files-group");
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at)
+        VALUES (${group}, ${person.orgId}, 'team_group', 'Files', 0, ${timestamp})`;
+      const joinGroup = (id: string, personId: KinPersonId, role: "owner" | "member") =>
+        repo.addMember({
+          orgId: person.orgId,
+          chatId: group,
+          memberId: KinMemberId.make(id),
+          principal: { _tag: "person", personId },
+          role,
+          joinedAt: timestamp,
+          leftAt: null,
+          mutedUntil: null,
+        });
+      yield* joinGroup("files-owner", person.personId, "owner");
+      const groupFile = (name: string) =>
+        Effect.gen(function* () {
+          const sent = yield* service.send(person, {
+            ...send,
+            clientMessageId: name,
+            chatId: group,
+            attachments: [yield* uploadPhoto(name)],
+          });
+          return sent.attachments![0]!.id;
+        });
+      const before = yield* groupFile("before.png");
+      yield* joinGroup("files-suraj", memberId, "member");
+      const after = yield* groupFile("after.png");
+      assert.strictEqual(yield* read(memberSession, before), "refused");
+      assert.strictEqual(yield* read(memberSession, after), "served");
+      assert.strictEqual(yield* read(session, before), "served");
+    }).pipe(Effect.provide(attachmentLayer)),
+  );
+
+  it.effect("a lead reads another person's direct chat only on a turn that person woke", () =>
+    Effect.gen(function* () {
+      const { repo, service, person, agent, chat } = yield* seed();
+      const sql = yield* SqlClient.SqlClient;
+      const mateId = KinPersonId.make("mate");
+      yield* repo.insertPerson({
+        orgId: person.orgId,
+        personId: mateId,
+        handle: "mate",
+        displayName: "Mate",
+        githubLogin: null,
+        createdAt: timestamp,
+      });
+      const mate = { _tag: "person", orgId: person.orgId, personId: mateId } as const;
+      const lead = { orgId: person.orgId, agentId };
+      // Not hers to start until the owner allows it.
+      assert.include(yield* service.createDirect(mate, lead).pipe(Effect.flip), {
+        reason: "not_allowed",
+      });
+      yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
+        VALUES (${person.orgId}, ${agentId}, ${mateId}, ${person.personId}, 0)`;
+      const theirs = yield* service.createDirect(mate, lead);
+      // Someone besides the owner reads it from the start, so it is shared from its first seq.
+      assert.deepStrictEqual(
+        yield* sql`SELECT chat_id, shared_at IS NOT NULL AS shared, shared_from_seq FROM kin_chats
+          WHERE chat_id IN (${theirs.chatId}, ${chat.chatId}) ORDER BY chat_id = ${chat.chatId}`,
+        [
+          { chat_id: theirs.chatId, shared: 1, shared_from_seq: 1 },
+          { chat_id: chat.chatId, shared: 0, shared_from_seq: null },
+        ],
+      );
+      const said = yield* service.send(mate, {
+        chatId: theirs.chatId,
+        body: "Between us",
+        clientMessageId: "mate-1",
+      });
+      // The running turn answers the owner, who is not in that chat: it reads its own, not hers.
+      assert.lengthOf(yield* service.read(agent, { chatId: chat.chatId }), 1);
+      assert.include(yield* service.read(agent, { chatId: theirs.chatId }).pipe(Effect.flip), {
+        reason: "not_found",
+      });
+      assert.include(
+        yield* service
+          .history(person, { chatId: theirs.chatId, beforeSeq: 99, limit: 10 })
+          .pipe(Effect.flip),
+        { reason: "not_found" },
+      );
+      // Her message wakes the lead: that turn reads her chat.
+      yield* startAgentWakeup({ orgId: person.orgId, agentId, threadId, message: said });
+      assert.deepStrictEqual(
+        (yield* service.read(agent, { chatId: theirs.chatId })).map((message) => message.body),
+        ["Between us"],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("bound chat-only members can use their own chats but not the owner's chat", () =>
+    Effect.gen(function* () {
+      const { repo, service, identity, person, chat } = yield* seed();
+      const memberId = KinPersonId.make("suraj");
+      const memberSession = {
+        ...session,
+        sessionId: AuthSessionId.make("member-session"),
+        scopes: [AuthKinChatScope],
+      };
+      yield* repo.insertPerson({
+        orgId: person.orgId,
+        personId: memberId,
+        handle: "suraj",
+        displayName: "Suraj",
+        githubLogin: null,
+        createdAt: timestamp,
+      });
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at) VALUES (${memberSession.sessionId}, ${person.orgId}, ${memberId}, 0)`;
+      const members = yield* identity.resolve(memberSession);
+      const me = members[0]!;
+      const ownAgent = KinAgentId.make("suraj-lead");
+      yield* repo.insertAgent({
+        orgId: person.orgId,
+        agentId: ownAgent,
+        ownerPersonId: memberId,
+        displayName: "Suraj lead",
+        role: "lead",
+        createdAt: timestamp,
+      });
+      const own = yield* service.createDirect(members, { orgId: person.orgId, agentId: ownAgent });
+      const sent = yield* service.send(members, {
+        chatId: own.chatId,
+        body: "Hello",
+        clientMessageId: "member-send",
+      });
+      assert.equal(sent.author._tag, "human");
+      yield* service.history(members, { chatId: own.chatId, beforeSeq: 100, limit: 50 });
+      yield* service.markRead(members, { chatId: own.chatId, seq: sent.seq });
+      yield* service.mute(members, { chatId: own.chatId, muted: true });
+      yield* service
+        .subscribe(members, { chatId: own.chatId })
+        .pipe(Stream.take(1), Stream.runDrain);
+      yield* service.subscribeChats(members, {}).pipe(Stream.take(1), Stream.runDrain);
+      assert.equal((yield* service.orgs(members)).me[0]!.personId, me.personId);
+      // A teammate sees only the agents they own, may message, or share a chat with.
+      const seen = Effect.map(service.orgs(members), (result) =>
+        result.orgs[0]!.agents.map((agent) => agent.agentId),
+      );
+      assert.deepStrictEqual(yield* seen, [ownAgent]);
+      yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
+        VALUES (${person.orgId}, ${agentId}, ${memberId}, ${person.personId}, 0)`;
+      assert.deepStrictEqual(yield* seen, [agentId, ownAgent]);
+      yield* sql`UPDATE kin_lead_access SET revoked_at = 1 WHERE person_id = ${memberId}`;
+      assert.deepStrictEqual(yield* seen, [ownAgent]);
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+        VALUES ('shared-group', ${person.orgId}, 'team_group', 0, ${timestamp})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, agent_id, role, joined_at)
+        VALUES ('suraj-in-group', ${person.orgId}, 'shared-group', 'person', ${memberId}, NULL, 'member', ${timestamp}),
+          ('lead-in-group', ${person.orgId}, 'shared-group', 'agent', NULL, ${agentId}, 'member', ${timestamp})`;
+      assert.deepStrictEqual(yield* seen, [agentId, ownAgent]);
+      // Once the lead leaves that group, sharing it no longer shows the lead.
+      yield* sql`UPDATE kin_chat_members SET left_at = ${timestamp} WHERE member_id = 'lead-in-group'`;
+      assert.deepStrictEqual(yield* seen, [ownAgent]);
+      assert.include(
+        yield* service
+          .history(members, { chatId: chat.chatId, beforeSeq: 100, limit: 50 })
+          .pipe(Effect.flip),
+        {
+          reason: "not_found",
+        },
+      );
+      assert.include(
+        yield* service
+          .send(members, { chatId: chat.chatId, body: "Hostile", clientMessageId: "hostile" })
+          .pipe(Effect.flip),
+        { reason: "not_found" },
+      );
+      assert.include(
+        yield* service
+          .subscribe(members, { chatId: chat.chatId })
+          .pipe(Stream.runDrain, Effect.flip),
+        { reason: "not_found" },
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect(
     "creates exactly two members, derives authors from identity, and deduplicates sends",
     () =>
@@ -237,6 +765,7 @@ describe("KinChatService", () => {
           [postedForPerson],
         );
         const widget = yield* service.createTaskCard({
+          audience: "chat",
           orgId: person.orgId,
           chatId: chat.chatId,
           authorAgentId: agent.agentId,
@@ -337,8 +866,9 @@ describe("KinChatService", () => {
           leftAt: null,
           mutedUntil: null,
         });
+        // Joined after the card was posted: it is not theirs to read, let alone answer.
         assert.include(yield* service.act(outsider, tap("member")).pipe(Effect.flip), {
-          reason: "not_allowed",
+          reason: "not_found",
         });
         assert.include(
           yield* service.act(person, { ...tap("bad"), value: "option-9" }).pipe(Effect.flip),
@@ -374,12 +904,293 @@ describe("KinChatService", () => {
   );
 
   it.effect(
-    "takes reactions as replies: 👍 answers a yes/no card once, wakes on the lead's latest question or a 👎, one per person per message, refuses privileged cards",
+    "posts a chart as the agent's own card once per retry, says how to fix a bad one, and never changes or takes a tap",
+    () =>
+      Effect.gen(function* () {
+        const { repo, service, person, agent, chat } = yield* seed();
+        const input = {
+          chatId: chat.chatId,
+          clientMessageId: "chart-1",
+          intent: "answer" as const,
+          chart: "line" as const,
+          title: "  Signups\nthis week ",
+          unit: { kind: "count" as const },
+          labels: ["Mon", "Tue", "Wed"],
+          series: [{ name: "This week", values: [12, null, 0] }],
+          comparison: { name: "Last week", values: [9, 14, -2] },
+        };
+        const card = yield* service.chart(agent, input);
+        assert.include(card, { type: "chart", revision: 1 });
+        assert.strictEqual(String(card.widgetId), `chart:${card.messageId}`);
+        assert.deepStrictEqual(card.awaiting, []);
+        assert.deepInclude(card.state, {
+          title: "Signups this week",
+          caption: null,
+          labelType: "category",
+        });
+        assert.deepStrictEqual(yield* service.chart(agent, input), card);
+        assert.deepStrictEqual(yield* repo.listOpenWaiting(person), []);
+
+        // A scatter sends points in place of labels and series; x counts unless it says otherwise.
+        const scatter = yield* service.chart(agent, {
+          chatId: chat.chatId,
+          clientMessageId: "chart-scatter",
+          intent: "answer",
+          chart: "scatter",
+          title: "Spend against signups",
+          unit: { kind: "count" },
+          target: { name: " Goal ", value: 40 },
+          scatter: {
+            xName: " Ad  spend ",
+            yName: "Signups",
+            series: [{ name: "Campaigns", points: [{ x: 12, y: 40, label: " Diwali " }] }],
+          },
+        });
+        assert.deepInclude(scatter.state, {
+          labels: [],
+          series: [],
+          target: { name: "Goal", value: 40 },
+          scatter: {
+            xName: "Ad spend",
+            yName: "Signups",
+            xUnit: { kind: "count" },
+            series: [{ name: "Campaigns", points: [{ x: 12, y: 40, label: "Diwali" }] }],
+          },
+        });
+
+        const refusal = (change: object) =>
+          service
+            .chart(agent, {
+              ...input,
+              clientMessageId: "chart-2",
+              comparison: undefined,
+              ...change,
+            })
+            .pipe(Effect.flip);
+        for (const [change, fix] of [
+          [
+            {
+              unit: { kind: "money", currency: "INR" },
+              series: [{ name: "Spend", values: [1299.5, 1, 2] }],
+            },
+            "whole minor units",
+          ],
+          [{ unit: { kind: "money", currency: "ZZZ" } }, "not a currency code"],
+          [{ labels: ["Mon", "Tue"] }, "one value per label"],
+          [{ title: " " }, "needs a title"],
+          [{ chart: "pie", series: [{ name: "Net", values: [5, -2, 3] }] }, 'use chart "bar"'],
+          [{ chart: "scatter" }, "scatter: {xName"],
+          [
+            {
+              chart: "scatter",
+              labels: undefined,
+              series: undefined,
+              scatter: {
+                xName: "Spend",
+                yName: "Signups",
+                xUnit: { kind: "money", currency: "ZZZ" },
+                series: [{ name: "Campaigns", points: [{ x: 1, y: 2 }] }],
+              },
+            },
+            "not a currency code",
+          ],
+        ] as const) {
+          const refused = yield* refusal(change);
+          assert.include(refused, { reason: "invalid_state" });
+          assert.include(String(refused.message), fix);
+        }
+
+        assert.include(
+          yield* service
+            .upsertWidget(agent, {
+              chatId: chat.chatId,
+              widgetId: card.widgetId,
+              revision: 1,
+              type: "chart",
+              state: card.state,
+            })
+            .pipe(Effect.flip),
+          { reason: "not_allowed" },
+        );
+        assert.include(
+          yield* service
+            .act(person, {
+              widgetId: card.widgetId,
+              revision: 1,
+              actionId: "open",
+              clientActionId: "tap-chart",
+            })
+            .pipe(Effect.flip),
+          { reason: "invalid_state" },
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "keeps a visual's page as a file of its chat, once per retry, readable only as the chat is, and refuses a bad one with the fix",
     () =>
       Effect.gen(function* () {
         const { repo, service, person, agent, chat } = yield* seed();
         const sql = yield* SqlClient.SqlClient;
-        const react = (messageId: KinMessageId, emoji: "👍" | "✅" | "❤️" | "👎", on = true) =>
+        const photo = (yield* service.send(person, {
+          chatId: chat.chatId,
+          body: "",
+          clientMessageId: "photo",
+          attachments: [yield* uploadPhoto("logo.png")],
+          uploader: TEST_UPLOAD_OWNER,
+        })).attachments![0]!.id;
+        const input = {
+          chatId: chat.chatId,
+          clientMessageId: "visual-1",
+          intent: "answer" as const,
+          title: "  Signup\nfunnel ",
+          html: `<h1>Funnel</h1><img src="kin-file:${photo}"><script>fetch("https://example.com")</script>`,
+        };
+        const card = yield* service.visual(agent, input);
+        assert.include(card, { type: "visual", revision: 1 });
+        assert.strictEqual(String(card.widgetId), `visual:${card.messageId}`);
+        assert.deepStrictEqual(card.awaiting, []);
+        const state = card.state as { attachmentId: string };
+        assert.deepInclude(card.state, { title: "Signup funnel", height: 360 });
+        assert.match(state.attachmentId, /^kin-chat-[0-9a-f-]+-html$/);
+        // Stored as written: nothing in the page is judged, the frame it is served in seals it.
+        const config = yield* ServerConfig.ServerConfig;
+        const stored = NodePath.join(config.attachmentsDir, `${state.attachmentId}.html`);
+        assert.strictEqual(NodeFS.readFileSync(stored, "utf8"), input.html);
+        assert.deepStrictEqual(
+          yield* sql`SELECT chat_id, message_id FROM kin_message_attachments WHERE attachment_id = ${state.attachmentId}`,
+          [{ chat_id: chat.chatId, message_id: card.messageId }],
+        );
+        // A retry returns the same card and leaves no second file behind.
+        assert.deepStrictEqual(yield* service.visual(agent, input), card);
+        assert.lengthOf(
+          (yield* storedFiles).filter((name) => name.endsWith(".html")),
+          1,
+        );
+        assert.isTrue(yield* service.attachmentReadable(person, state.attachmentId));
+        assert.deepStrictEqual(
+          Option.getOrThrow(yield* service.visualSources(state.attachmentId)),
+          {
+            orgId: person.orgId,
+            files: [{ attachmentId: photo, mimeType: "image/png" }],
+          },
+        );
+
+        const refusal = (change: object) =>
+          service
+            .visual(agent, { ...input, clientMessageId: "visual-2", ...change })
+            .pipe(Effect.flip);
+        for (const [change, fix] of [
+          [{ title: " " }, "needs a title"],
+          [{ title: "x".repeat(121) }, "120 or fewer"],
+          [{ html: "  " }, "page is empty"],
+          [{ html: "x".repeat(5 * 1024 * 1024 + 1) }, "the limit is 5 MiB"],
+          [{ html: '<img src="kin-file:kin-chat-not-here">' }, "is not a file in this chat"],
+        ] as const) {
+          const refused = yield* refusal(change);
+          assert.include(refused, { reason: "invalid_state" });
+          assert.include(String(refused.message), fix);
+        }
+        assert.lengthOf(
+          (yield* storedFiles).filter((name) => name.endsWith(".html")),
+          1,
+        );
+
+        assert.include(
+          yield* service
+            .upsertWidget(agent, {
+              chatId: chat.chatId,
+              widgetId: card.widgetId,
+              revision: 1,
+              type: "visual",
+              state: card.state,
+            })
+            .pipe(Effect.flip),
+          { reason: "not_allowed" },
+        );
+        assert.include(
+          yield* service
+            .act(person, {
+              widgetId: card.widgetId,
+              revision: 1,
+              actionId: "open",
+              clientActionId: "tap-visual",
+            })
+            .pipe(Effect.flip),
+          { reason: "invalid_state" },
+        );
+        assert.deepStrictEqual(yield* repo.listOpenWaiting(person), []);
+      }).pipe(Effect.provide(attachmentLayer)),
+  );
+
+  it.effect(
+    "lets only the owner choose where visuals load from, as bare hosts, and serves exactly that list",
+    () =>
+      Effect.gen(function* () {
+        const { repo, person } = yield* seed();
+        const hosts = yield* VisualHosts.KinVisualHosts;
+        const orgId = person.orgId;
+        assert.deepStrictEqual(yield* hosts.list([person], { orgId }), { orgId, hosts: [] });
+        assert.deepStrictEqual(yield* hosts.served(orgId), []);
+        assert.deepStrictEqual(
+          yield* hosts.allow([person], { orgId, host: " https://Tiles.Example.com/v1/ " }),
+          { orgId, hosts: ["tiles.example.com"] },
+        );
+        // Allowing a host twice keeps one row.
+        yield* hosts.allow([person], { orgId, host: "tiles.example.com" });
+        yield* hosts.allow([person], { orgId, host: "fonts.example.com" });
+        assert.deepStrictEqual(yield* hosts.served(orgId), [
+          "fonts.example.com",
+          "tiles.example.com",
+        ]);
+        for (const host of ["*", "10.0.0.1", "localhost", "example.com; script-src *", "a.b:8443"])
+          assert.include(yield* hosts.allow([person], { orgId, host }).pipe(Effect.flip), {
+            reason: "invalid_state",
+          });
+
+        const teammate = { ...person, personId: decodeKinPersonId("teammate") };
+        yield* repo.insertPerson({
+          ...teammate,
+          handle: "suraj",
+          displayName: "Suraj",
+          githubLogin: null,
+          createdAt: timestamp,
+        });
+        for (const refused of [
+          hosts.list([teammate], { orgId }),
+          hosts.allow([teammate], { orgId, host: "evil.example.com" }),
+          hosts.remove([teammate], { orgId, host: "tiles.example.com" }),
+        ])
+          assert.include(yield* refused.pipe(Effect.flip), { reason: "not_allowed" });
+        // Someone outside the org learns nothing, not even that it exists.
+        assert.include(yield* hosts.list([], { orgId }).pipe(Effect.flip), { reason: "not_found" });
+        assert.deepStrictEqual(yield* hosts.served(orgId), [
+          "fonts.example.com",
+          "tiles.example.com",
+        ]);
+
+        assert.deepStrictEqual(
+          yield* hosts.remove([person], { orgId, host: "Tiles.example.com" }),
+          {
+            orgId,
+            hosts: ["fonts.example.com"],
+          },
+        );
+        // A row that is not a bare host never reaches a policy, however it got there.
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_visual_hosts (org_id, host, added_by, created_at)
+          VALUES (${orgId}, ${"x.example.com; script-src *"}, ${person.personId}, 0)`;
+        assert.deepStrictEqual(yield* hosts.served(orgId), ["fonts.example.com"]);
+      }).pipe(Effect.provide(Layer.provideMerge(VisualHosts.layer, layer))),
+  );
+
+  it.effect(
+    "takes reactions as replies: 👍 answers a yes/no card once, wakes on a yes/no to the lead's latest message or a 👎, one per person per message, refuses privileged cards",
+    () =>
+      Effect.gen(function* () {
+        const { repo, service, person, agent, chat } = yield* seed();
+        const sql = yield* SqlClient.SqlClient;
+        const react = (messageId: KinMessageId, emoji: KinReactionEmoji, on = true) =>
           service.react(person, { messageId, emoji, on });
         const card = yield* service.ask(agent, {
           chatId: chat.chatId,
@@ -428,7 +1239,7 @@ describe("KinChatService", () => {
         const latest = yield* service.send(agent, {
           chatId: chat.chatId,
           clientMessageId: "lead-latest",
-          body: "Merged. Anything else?",
+          body: "Merged. I can tag the release too if you want.",
           intent: "answer",
         });
         const mine = (messageId: KinMessageId, kind: "person" | "agent" = "person") =>
@@ -437,11 +1248,12 @@ describe("KinChatService", () => {
               AND m.member_id = r.member_id AND m.principal_kind = ${kind}
             WHERE r.org_id = ${person.orgId} AND r.message_id = ${messageId}
               AND r.removed_at IS NULL ORDER BY r.emoji`;
-        // Feedback: a 👍 on an older message and a ❤️ on the latest wake nothing.
+        // Feedback: a 👍 on an older message, and a 🎉 or ❤️ on the latest question, wake nothing.
         yield* react(older.messageId, "👍");
+        yield* react(latest.messageId, "🎉");
         yield* react(latest.messageId, "❤️");
         assert.deepStrictEqual(yield* woke(), []);
-        // A yes on the latest question answers it, replacing the person's ❤️.
+        // A yes on the latest message answers it, question mark or not, replacing the ❤️.
         yield* react(latest.messageId, "👍");
         assert.deepStrictEqual(yield* mine(latest.messageId), [{ emoji: "👍" }]);
         assert.deepStrictEqual(yield* woke(), [{ messageId: latest.messageId, emoji: "👍" }]);
@@ -450,15 +1262,39 @@ describe("KinChatService", () => {
             WHERE org_id = ${person.orgId} AND opened_by = ${latest.messageId} AND state = 'open'`,
           [{ opened: 1 }],
         );
-        // Another yes replaces it without a second wake; the same one again turns it off.
+        // The same answer again, or a feeling in its place, wakes nothing more.
+        const wakes = (messageId: KinMessageId) =>
+          sql<{ emoji: string; answer: string | null; wakes: number }>`SELECT emoji, answer, wakes
+            FROM kin_reaction_wakes WHERE org_id = ${person.orgId} AND message_id = ${messageId}
+            ORDER BY message_id`;
         yield* react(latest.messageId, "✅");
         assert.deepStrictEqual(yield* mine(latest.messageId), [{ emoji: "✅" }]);
+        yield* react(latest.messageId, "❤️");
+        yield* react(latest.messageId, "👍");
+        assert.deepStrictEqual(yield* wakes(latest.messageId), [
+          { emoji: "👍", answer: "yes", wakes: 1 },
+        ]);
+        // Changing the answer wakes it again inside the cooldown: no, then yes, then the cap.
+        yield* react(latest.messageId, "👎");
+        assert.deepStrictEqual(yield* wakes(latest.messageId), [
+          { emoji: "👎", answer: "no", wakes: 2 },
+        ]);
+        yield* react(latest.messageId, "👍");
+        yield* react(latest.messageId, "👎");
+        assert.deepStrictEqual(yield* wakes(latest.messageId), [
+          { emoji: "👍", answer: "yes", wakes: 3 },
+        ]);
+        assert.deepStrictEqual(yield* woke(), [
+          { messageId: latest.messageId, emoji: "👍" },
+          { messageId: latest.messageId, emoji: "👎" },
+        ]);
+        yield* react(latest.messageId, "✅");
         yield* react(latest.messageId, "✅", false);
         assert.deepStrictEqual(yield* mine(latest.messageId), []);
-        yield* TestClock.adjust("30 seconds");
+        // Past the cap, a yes is feedback.
         yield* react(latest.messageId, "✅");
-        // One wake per message, even after the person withdrew and reacted again.
-        assert.deepStrictEqual(yield* woke(), [{ messageId: latest.messageId, emoji: "👍" }]);
+        assert.strictEqual((yield* wakes(latest.messageId))[0]!.wakes, 3);
+        yield* TestClock.adjust("30 seconds");
         // A 👎 on an ordinary lead message asks what was wrong, once.
         const plain = yield* service.send(agent, {
           chatId: chat.chatId,
@@ -467,19 +1303,23 @@ describe("KinChatService", () => {
           intent: "answer",
         });
         yield* react(plain.messageId, "❤️");
-        assert.lengthOf(yield* woke(), 1);
+        assert.lengthOf(yield* woke(), 2);
         yield* react(plain.messageId, "👎");
         assert.deepStrictEqual(yield* mine(plain.messageId), [{ emoji: "👎" }]);
         assert.deepStrictEqual((yield* woke()).at(-1), { messageId: plain.messageId, emoji: "👎" });
         yield* TestClock.adjust("30 seconds");
         yield* react(plain.messageId, "👎", false);
         yield* react(plain.messageId, "👎");
-        assert.lengthOf(yield* woke(), 2);
+        assert.lengthOf(yield* woke(), 3);
         // The lead's own kin_react follows the same rule.
         yield* service.react(agent, { messageId: older.messageId, emoji: "👍", on: true });
-        yield* service.react(agent, { messageId: older.messageId, emoji: "👀", on: true });
-        assert.deepStrictEqual(yield* mine(older.messageId, "agent"), [{ emoji: "👀" }]);
+        yield* service.react(agent, { messageId: older.messageId, emoji: "🎉", on: true });
+        assert.deepStrictEqual(yield* mine(older.messageId, "agent"), [{ emoji: "🎉" }]);
         assert.deepStrictEqual(yield* mine(older.messageId), [{ emoji: "👍" }]);
+        // A 👎 on an older message still asks what was wrong.
+        yield* TestClock.adjust("30 seconds");
+        yield* react(older.messageId, "👎");
+        assert.deepStrictEqual((yield* woke()).at(-1), { messageId: older.messageId, emoji: "👎" });
         const history = yield* service.history(person, {
           chatId: chat.chatId,
           beforeSeq: plain.seq + 1,
@@ -494,12 +1334,14 @@ describe("KinChatService", () => {
 
         // Approval and other privileged cards refuse; so do non-members and unknown emoji.
         const notice = yield* service.notice({
+          audience: "chat",
           orgId: person.orgId,
           chatId: chat.chatId,
           messageId: KinMessageId.make("approval-anchor"),
           body: "Approve the merge?",
         });
         yield* repo.insertWidget({
+          audience: "chat",
           ...card,
           widgetId: KinWidgetId.make("approval-card"),
           messageId: notice.message.messageId,
@@ -548,10 +1390,56 @@ describe("KinChatService", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect(
+    "takes a withdrawn yes as a changed answer, once, and only on the message a reaction last woke the lead for",
+    () =>
+      Effect.gen(function* () {
+        const { service, person, agent, chat } = yield* seed();
+        const sql = yield* SqlClient.SqlClient;
+        const react = (messageId: KinMessageId, emoji: KinReactionEmoji, on = true) =>
+          service.react(person, { messageId, emoji, on });
+        const wakes = () =>
+          sql<{ messageId: string; emoji: string; answer: string | null; wakes: number }>`
+            SELECT message_id AS "messageId", emoji, answer, wakes FROM kin_reaction_wakes
+            WHERE org_id = ${person.orgId} ORDER BY woke_at, message_id`;
+        const offer = yield* service.send(agent, {
+          chatId: chat.chatId,
+          clientMessageId: "lead-offer",
+          body: "I can tag the release too if you want.",
+          intent: "answer",
+        });
+        yield* react(offer.messageId, "👍");
+        yield* react(offer.messageId, "👍", false);
+        assert.deepStrictEqual(yield* wakes(), [
+          { messageId: offer.messageId, emoji: "👍", answer: null, wakes: 2 },
+        ]);
+        // Nothing is left to withdraw, so a 👍 back is a yes again; removing a feeling is nothing.
+        yield* react(offer.messageId, "❤️");
+        yield* react(offer.messageId, "❤️", false);
+        assert.lengthOf(yield* wakes(), 1);
+        assert.strictEqual((yield* wakes())[0]!.wakes, 2);
+        // Once another message woke the lead, the first one's reactions are feedback again.
+        const next = yield* service.send(agent, {
+          chatId: chat.chatId,
+          clientMessageId: "lead-next",
+          body: "Release notes are posted.",
+          intent: "answer",
+        });
+        yield* TestClock.adjust("30 seconds");
+        yield* react(next.messageId, "👎");
+        yield* react(offer.messageId, "👍");
+        assert.deepStrictEqual(yield* wakes(), [
+          { messageId: offer.messageId, emoji: "👍", answer: null, wakes: 2 },
+          { messageId: next.messageId, emoji: "👎", answer: "no", wakes: 1 },
+        ]);
+      }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("hides foreign org ids on every method and checks active membership and roles", () =>
     Effect.gen(function* () {
       const { repo, service, person, agent, chat } = yield* seed();
       const widget = yield* service.createTaskCard({
+        audience: "chat",
         orgId: person.orgId,
         chatId: chat.chatId,
         authorAgentId: agent.agentId,
@@ -737,13 +1625,18 @@ describe("KinChatService", () => {
         { chatId: KinChatId.make("missing") },
         { authorAgentId: KinAgentId.make("missing") },
       ])
-        assert.include(yield* service.createTaskCard({ ...input, ...patch }).pipe(Effect.flip), {
-          reason: "not_found",
-        });
-      const widget = yield* service.createTaskCard(input);
-      assert.deepStrictEqual(yield* service.createTaskCard(input), widget);
+        assert.include(
+          yield* service.createTaskCard({ audience: "chat", ...input, ...patch }).pipe(Effect.flip),
+          {
+            reason: "not_found",
+          },
+        );
+      const widget = yield* service.createTaskCard({ ...input, audience: "chat" });
+      assert.deepStrictEqual(yield* service.createTaskCard({ ...input, audience: "chat" }), widget);
       assert.include(
-        yield* service.createTaskCard({ ...input, title: "Changed" }).pipe(Effect.flip),
+        yield* service
+          .createTaskCard({ audience: "chat", ...input, title: "Changed" })
+          .pipe(Effect.flip),
         { reason: "not_allowed" },
       );
       assert.strictEqual(
@@ -864,7 +1757,7 @@ describe("KinChatService", () => {
         closed: true,
       });
       assert.isNotNull(closed.closedAt);
-      assert.deepStrictEqual(yield* service.createTaskCard(input), closed);
+      assert.deepStrictEqual(yield* service.createTaskCard({ ...input, audience: "chat" }), closed);
       const reopened = yield* service.upsertWidget(agent, {
         chatId: chat.chatId,
         widgetId: widget.widgetId,
@@ -874,7 +1767,10 @@ describe("KinChatService", () => {
         closed: false,
       });
       assert.isNull(reopened.closedAt);
-      assert.deepStrictEqual(yield* service.createTaskCard(input), reopened);
+      assert.deepStrictEqual(
+        yield* service.createTaskCard({ ...input, audience: "chat" }),
+        reopened,
+      );
       assert.include(
         yield* service
           .upsertWidget(agent, {
@@ -891,7 +1787,8 @@ describe("KinChatService", () => {
       const serverThread = ThreadId.make("server-only");
       yield* startWakeupRun(serverThread, "server-only");
       assert.strictEqual(
-        (yield* service.createTaskCard({ ...input, threadId: serverThread })).revision,
+        (yield* service.createTaskCard({ audience: "chat", ...input, threadId: serverThread }))
+          .revision,
         1,
       );
     }).pipe(Effect.provide(layer)),
@@ -943,6 +1840,7 @@ describe("KinChatService", () => {
         assert.include(read, { type: "read.updated", seq: 2 });
         assert.isTrue(Option.isNone(yield* Queue.poll(events)));
         const approvalWidget = yield* service.createTaskCard({
+          audience: "chat",
           orgId: person.orgId,
           chatId: chat.chatId,
           authorAgentId: agent.agentId,
@@ -995,6 +1893,7 @@ describe("KinChatService", () => {
         const secondaryThread = ThreadId.make("secondary");
         yield* startWakeupRun(secondaryThread, "secondary");
         const secondaryAnchor = yield* service.createTaskCard({
+          audience: "chat",
           orgId: person.orgId,
           chatId: chat.chatId,
           authorAgentId: agent.agentId,
@@ -1003,6 +1902,7 @@ describe("KinChatService", () => {
           model: state.model,
         });
         yield* repo.insertWidget({
+          audience: "chat",
           ...secondaryAnchor,
           widgetId: KinWidgetId.make("secondary-approval"),
           type: "approval",
@@ -1093,6 +1993,7 @@ describe("KinChatService", () => {
         intent: "evidence",
       });
       const widget = yield* service.createTaskCard({
+        audience: "chat",
         orgId: person.orgId,
         chatId: other.chatId,
         authorAgentId: agent.agentId,
@@ -1294,6 +2195,64 @@ describe("KinChatService", () => {
         assert.deepStrictEqual(yield* repo.listOpenWaiting(other), []);
       }).pipe(Effect.provide(layer)),
   );
+  it.effect(
+    "previews a chat by its latest message the feed still shows, never a dismissed one",
+    () =>
+      Effect.gen(function* () {
+        const { service, person, chat } = yield* seed();
+        const sql = yield* SqlClient.SqlClient;
+        const hello = yield* service.send(person, {
+          chatId: chat.chatId,
+          body: "Hello",
+          clientMessageId: "hello",
+        });
+        const notice = yield* service.notice({
+          audience: "chat",
+          orgId: person.orgId,
+          chatId: chat.chatId,
+          messageId: KinMessageId.make("retired-notice"),
+          body: "A retired notice",
+        });
+        yield* sql`UPDATE kin_messages SET status = 'dismissed'
+        WHERE message_id = ${notice.message.messageId}`;
+        // Kin's own notes from earlier versions: a plain row, and a card about a memory change.
+        yield* service.notice({
+          audience: "chat",
+          orgId: person.orgId,
+          chatId: chat.chatId,
+          messageId: KinMessageId.make("old-note"),
+          body: "Forgot: the old office address",
+        });
+        const saved = yield* service.notice({
+          audience: "chat",
+          orgId: person.orgId,
+          chatId: chat.chatId,
+          messageId: KinMessageId.make("old-card"),
+          body: "Memory: 1 change",
+        });
+        const repo = yield* Repository.KinChatRepository;
+        yield* repo.insertWidget({
+          audience: "chat",
+          orgId: person.orgId,
+          chatId: chat.chatId,
+          widgetId: KinWidgetId.make("memory-changes:lead:1"),
+          messageId: saved.message.messageId,
+          widgetClass: "native",
+          type: "memory_changes",
+          state: { items: [], more: 0 },
+          source: null,
+          feed: null,
+          awaiting: [],
+          pinnedAt: null,
+          closedAt: null,
+          updatedAt: saved.message.createdAt,
+        });
+        const list = Option.getOrThrow(yield* Stream.runHead(service.subscribeChats([person], {})));
+        if (list._tag !== "snapshot") return assert.fail("Expected snapshot");
+        const row = list.chats.find((candidate) => candidate.chatId === chat.chatId);
+        assert.strictEqual(row?.lastMessage?.messageId, hello.messageId);
+      }).pipe(Effect.provide(layer)),
+  );
   it.effect("mutes and unmutes a chat for the caller only, live in their list", () =>
     Effect.gen(function* () {
       const { service, person, chat } = yield* seed();
@@ -1320,7 +2279,6 @@ describe("KinChatService", () => {
       assert.deepStrictEqual(yield* mine, { person: null, agent: null });
     }).pipe(Effect.provide(presenceLayer)),
   );
-
   it.effect("marks a chat working in the list while its agent's run is live", () =>
     Effect.gen(function* () {
       const { service, person, chat } = yield* seed();
@@ -1336,12 +2294,478 @@ describe("KinChatService", () => {
       const working = Effect.map(Queue.take(updates), (event) =>
         event._tag === "chat" ? event.chat.working : event._tag,
       );
-      // "seen" leaves the row as it was, so the list sends nothing for it.
-      yield* presence.set(person.orgId, chat.chatId, { ...line, state: "seen" });
+      // "paused" leaves the row as it was, so the list sends nothing for it.
+      yield* presence.set(person.orgId, chat.chatId, { ...line, state: "paused" });
       yield* presence.set(person.orgId, chat.chatId, { ...line, state: "thinking" });
       assert.strictEqual(yield* working, true);
       yield* presence.clear(person.orgId, chat.chatId, agentId);
       assert.strictEqual(yield* working, false);
     }).pipe(Effect.provide(presenceLayer)),
+  );
+  it.effect(
+    "clears a chat for good: messages, cards, reactions and files go; the chat, its members, memory and seq stay",
+    () =>
+      Effect.gen(function* () {
+        const { repo, service, person, agent, chat } = yield* seed();
+        const sql = yield* SqlClient.SqlClient;
+        const presence = yield* Presence.KinPresence;
+        const [turn] = yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId"
+          FROM kin_wakeups WHERE org_id = ${person.orgId} AND status = 'running'`;
+        const photo = yield* service.send(person, {
+          chatId: chat.chatId,
+          body: "The launch code is tangerine",
+          clientMessageId: "photo",
+          attachments: [yield* uploadPhoto("whiteboard.png")],
+          uploader: TEST_UPLOAD_OWNER,
+        });
+        const answer = yield* service.send(agent, {
+          chatId: chat.chatId,
+          clientMessageId: "lead-answer",
+          body: "Noted. Shall I ship it?",
+          intent: "question",
+        });
+        yield* service.react(person, { messageId: answer.messageId, emoji: "👍", on: true });
+        const card = yield* service.createTaskCard({
+          audience: "chat",
+          orgId: person.orgId,
+          chatId: chat.chatId,
+          authorAgentId: agent.agentId,
+          threadId: state.threadId!,
+          title: state.title,
+          model: state.model,
+        });
+        yield* service.notice({
+          audience: "chat",
+          orgId: person.orgId,
+          chatId: chat.chatId,
+          messageId: KinMessageId.make("needs-owner"),
+          body: "A run failed",
+          waitingFor: person.personId,
+        });
+        yield* service.markRead(person, { chatId: chat.chatId, seq: answer.seq });
+        const muted = yield* service.mute(person, { chatId: chat.chatId, muted: true });
+        // What a clear must leave alone: what the lead remembers and what it is due to do.
+        yield* sql`INSERT INTO kin_memory_heads (org_id, branch, head) VALUES (${person.orgId}, 'main', 'head')`;
+        yield* sql`INSERT INTO kin_scheduled_tasks (org_id, item_id, chat_id, state, paused, recorded_at, updated_at)
+          VALUES (${person.orgId}, 'weekly-digest', ${chat.chatId}, 'active', 0, ${timestamp}, 0)`;
+        // The lead is mid-reply to the owner's first message, its draft already on screen.
+        yield* presence.draft(person.orgId, chat.chatId, {
+          draftId: "draft",
+          agentId,
+          wakeupId: KinWakeupId.make(turn!.wakeupId),
+          text: "Half a reply",
+        });
+        assert.lengthOf((yield* presence.snapshot(person.orgId, chat.chatId)).drafts, 1);
+        const before = yield* kinRowCounts;
+        const held = yield* repo.getChat(chat);
+        assert.isTrue(Option.isSome(held));
+        if (Option.isNone(held)) return;
+        const feed = yield* Stream.toQueue(service.subscribe(person, { chatId: chat.chatId }), {
+          capacity: "unbounded",
+        });
+        const opened = yield* Queue.take(feed);
+        assert.strictEqual(opened._tag, "backlog");
+        if (opened._tag !== "backlog") return;
+        const list = yield* Stream.toQueue(service.subscribeChats([person], {}), {
+          capacity: "unbounded",
+        });
+        assert.strictEqual((yield* Queue.take(list))._tag, "snapshot");
+
+        yield* service.clear(person, { chatId: chat.chatId });
+
+        const after = yield* kinRowCounts;
+        assert.deepStrictEqual(
+          Object.keys(before).filter((table) => before[table] !== after[table]),
+          [
+            "kin_floor_grants",
+            "kin_floor_runs",
+            "kin_message_attachments",
+            "kin_messages",
+            "kin_reaction_wakes",
+            "kin_reactions",
+            "kin_widgets",
+          ],
+        );
+        for (const table of ["kin_messages", "kin_widgets", "kin_reactions"])
+          assert.strictEqual(after[table], 0, table);
+        assert.deepStrictEqual(yield* storedFiles, []);
+        assert.isFalse(yield* service.attachmentReadable(person, photo.attachments![0]!.id));
+        // The chat is as empty as a new one, and still the same chat.
+        const cleared = yield* repo.getChat(chat);
+        assert.deepInclude(Option.getOrThrow(cleared), {
+          lastSeq: held.value.lastSeq,
+          lastMessageAt: null,
+        });
+        assert.deepStrictEqual(
+          yield* service.history(person, {
+            chatId: chat.chatId,
+            beforeSeq: held.value.lastSeq + 1,
+            limit: 50,
+          }),
+          { messages: [], widgets: [], hasMore: false, reactions: [] },
+        );
+        // The list hears each closed waiting item (the lead's question, the notice), then the row.
+        for (const _ of [1, 2]) {
+          const closed = yield* Queue.take(list);
+          assert.strictEqual(closed._tag, "waiting");
+          if (closed._tag !== "waiting") return;
+          assert.deepInclude(closed.item, { messageId: null, widgetId: null });
+          assert.isNotNull(closed.item.resolvedAt);
+        }
+        const row = yield* Queue.take(list);
+        assert.strictEqual(row._tag, "chat");
+        if (row._tag !== "chat") return;
+        assert.deepInclude(row.chat, { lastMessage: null, unread: 0 });
+        assert.strictEqual(
+          row.chat.members.find((member) => member.principal._tag === "person")?.mutedUntil,
+          muted.mutedUntil,
+        );
+        // The open feed empties at once; a client that was away learns it from its old cursor.
+        const reset = yield* Queue.take(feed);
+        // `clearedSeq` tells clients nothing older is left to page in, since seqs keep counting.
+        assert.deepInclude(reset, {
+          _tag: "reset",
+          cleared: true,
+          lastSeq: held.value.lastSeq,
+          clearedSeq: held.value.lastSeq,
+        });
+        if (reset._tag !== "reset") return;
+        const resume = (afterChangeSeq: number | undefined) =>
+          service
+            .subscribe(person, { chatId: chat.chatId, afterSeq: opened.lastSeq, afterChangeSeq })
+            .pipe(Stream.take(1), Stream.runHead, Effect.map(Option.getOrThrow));
+        assert.deepInclude(yield* resume(opened.lastChangeSeq), { _tag: "reset", cleared: true });
+        assert.deepInclude(yield* resume(reset.lastChangeSeq), {
+          _tag: "backlog",
+          messages: [],
+          clearedSeq: held.value.lastSeq,
+        });
+        // Nothing waits on the owner, and the turn that was answering a deleted message is over:
+        // marked aborted, its draft withheld, its message never handed to a later wake-up.
+        assert.deepStrictEqual(yield* repo.listOpenWaiting(person), []);
+        assert.deepStrictEqual(
+          yield* sql`SELECT w.aborted_at IS NOT NULL AS aborted, e.state FROM kin_wakeups w
+            JOIN kin_events e ON e.org_id = w.org_id AND e.wakeup_id = w.wakeup_id
+            WHERE w.org_id = ${person.orgId} AND w.wakeup_id = ${turn!.wakeupId}`,
+          [{ aborted: 1, state: "expired" }],
+        );
+        assert.deepStrictEqual((yield* presence.snapshot(person.orgId, chat.chatId)).drafts, []);
+        // Seqs keep counting, and a worker still running gets its card back when it next reports.
+        const next = yield* service.send(person, {
+          chatId: chat.chatId,
+          body: "Fresh start",
+          clientMessageId: "fresh",
+        });
+        assert.strictEqual(next.seq, held.value.lastSeq + 1);
+        const again = yield* service.createTaskCard({
+          audience: "chat",
+          orgId: person.orgId,
+          chatId: chat.chatId,
+          authorAgentId: agent.agentId,
+          threadId: state.threadId!,
+          title: state.title,
+          model: state.model,
+        });
+        assert.strictEqual(again.widgetId, card.widgetId);
+        assert.notStrictEqual(again.messageId, card.messageId);
+      }).pipe(Effect.provide(clearLayer)),
+  );
+
+  it.effect(
+    "lets the owner clear a group and their own chat with a lead, and a teammate only their own chat with a lead",
+    () =>
+      Effect.gen(function* () {
+        const { repo, service, person, chat } = yield* seed();
+        const sql = yield* SqlClient.SqlClient;
+        const teammate = (id: string) =>
+          Effect.gen(function* () {
+            const identity = { ...person, personId: decodeKinPersonId(id) };
+            yield* repo.insertPerson({
+              ...identity,
+              handle: id,
+              displayName: id,
+              githubLogin: null,
+              createdAt: timestamp,
+            });
+            return identity;
+          });
+        const join = (
+          chatId: KinChatId,
+          principal:
+            | { _tag: "person"; personId: KinPersonId }
+            | { _tag: "agent"; agentId: KinAgentId },
+          role: "owner" | "member" | "guest",
+        ) =>
+          repo.addMember({
+            orgId: person.orgId,
+            chatId,
+            memberId: decodeKinMemberId(
+              `${chatId}:${principal._tag === "person" ? principal.personId : principal.agentId}`,
+            ),
+            principal,
+            role,
+            joinedAt: timestamp,
+            leftAt: null,
+            mutedUntil: null,
+          });
+        // A teammate's own chat with the owner's lead: the teammate and the lead, nobody else.
+        const directWith = Effect.fn("test.directWith")(function* (identity: typeof person) {
+          const direct = yield* repo.createChat({
+            orgId: person.orgId,
+            chatId: decodeKinChatId(`direct-${identity.personId}`),
+            kind: "direct",
+            directKey: `${identity.personId}:${agentId}`,
+            title: null,
+            teamId: null,
+            lastMessageAt: null,
+            createdAt: timestamp,
+            archivedAt: null,
+          });
+          yield* join(direct.chatId, { _tag: "person", personId: identity.personId }, "member");
+          yield* join(direct.chatId, { _tag: "agent", agentId }, "member");
+          return direct;
+        });
+        const suraj = yield* teammate("suraj");
+        const mira = yield* teammate("mira");
+        const surajs = yield* directWith(suraj);
+        const miras = yield* directWith(mira);
+        const group = yield* repo.createChat({
+          orgId: person.orgId,
+          chatId: decodeKinChatId("group"),
+          kind: "team_group",
+          directKey: null,
+          title: "Launch",
+          teamId: null,
+          lastMessageAt: null,
+          createdAt: timestamp,
+          archivedAt: null,
+        });
+        yield* join(group.chatId, { _tag: "person", personId: person.personId }, "owner");
+        yield* join(group.chatId, { _tag: "agent", agentId }, "member");
+        yield* join(group.chatId, { _tag: "person", personId: suraj.personId }, "member");
+        const say = (who: typeof person, chatId: KinChatId) =>
+          service.send(who, { chatId, body: "Junk", clientMessageId: `${who.personId}:${chatId}` });
+        yield* say(suraj, surajs.chatId);
+        yield* say(mira, miras.chatId);
+        yield* say(suraj, group.chatId);
+        yield* sql`INSERT INTO kin_memory_heads (org_id, branch, head) VALUES (${person.orgId}, 'main', 'head')`;
+        const messages = () =>
+          sql<{ chatId: string; n: number }>`SELECT chat_id AS "chatId", COUNT(*) AS n
+            FROM kin_messages WHERE org_id = ${person.orgId} GROUP BY chat_id ORDER BY chat_id`;
+        const full = yield* messages();
+        const refused = [
+          // Being in a group is not owning it.
+          [suraj, group.chatId, "not_allowed"],
+          // A chat the caller is not in does not exist for them, whoever they are.
+          [suraj, chat.chatId, "not_found"],
+          [suraj, miras.chatId, "not_found"],
+          [person, surajs.chatId, "not_found"],
+        ] as const;
+        for (const [who, chatId, reason] of refused)
+          assert.include(yield* service.clear([who], { chatId }).pipe(Effect.flip), { reason });
+        assert.deepStrictEqual(yield* messages(), full);
+
+        // Their own conversation stays theirs to clear after they may no longer write in it.
+        yield* sql`UPDATE kin_chat_members SET role = 'guest'
+          WHERE chat_id = ${surajs.chatId} AND person_id = ${suraj.personId}`;
+        const before = yield* kinRowCounts;
+        yield* service.clear([suraj], { chatId: surajs.chatId });
+        const after = yield* kinRowCounts;
+        assert.deepStrictEqual(
+          Object.keys(before).filter((table) => before[table] !== after[table]),
+          ["kin_floor_grants", "kin_floor_runs", "kin_messages"],
+        );
+        assert.strictEqual(after.kin_memory_heads, 1);
+        yield* service.clear([person], { chatId: group.chatId });
+        yield* service.clear([person], { chatId: chat.chatId });
+        assert.deepStrictEqual(yield* messages(), [{ chatId: miras.chatId, n: 1 }]);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "every key change owes the owner a push, and only a chat the owner alone reads gets the notice",
+    () =>
+      Effect.gen(function* () {
+        const { person } = yield* seed(true);
+        const sql = yield* SqlClient.SqlClient;
+        const notices = yield* KinKeyNotices;
+        const first = KinKeyThumbprint.make("NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs");
+        const second = KinKeyThumbprint.make("aZ3kLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9X");
+        const change = (thumbprint: KinKeyThumbprint, kind: "added" | "removed", at: number) => ({
+          orgId: person.orgId,
+          ownerPersonId: person.personId,
+          thumbprint,
+          deviceLabel: "Owner's phone",
+          platform: "ios",
+          change: kind,
+          at,
+          lastKey: kind === "removed",
+        });
+        const owed = sql<{ thumbprint: string; change: string; body: string; messageId: unknown }>`
+          SELECT thumbprint, change, body, message_id AS "messageId" FROM kin_key_pushes
+          WHERE org_id = ${person.orgId} AND sent_at IS NULL ORDER BY owed_at, change`;
+        const notified = sql<{ chatId: string; body: string }>`SELECT chat_id AS "chatId", body
+          FROM kin_messages WHERE message_id LIKE 'kin-key-%' ORDER BY seq`;
+
+        // The push is owed in the change's transaction, so a rolled back change owes nothing.
+        yield* sql
+          .withTransaction(
+            notices.changed(change(first, "added", 1)).pipe(Effect.andThen(Effect.fail("undo"))),
+          )
+          .pipe(Effect.ignore);
+        assert.deepStrictEqual(yield* owed, []);
+        yield* sql.withTransaction(notices.changed(change(first, "added", 1)));
+        // With every chat shared, nobody else may read it: the change commits, owing its push.
+        yield* sql`UPDATE kin_chats SET shared_at = 1 WHERE org_id = ${person.orgId}`;
+        yield* sql.withTransaction(notices.changed(change(second, "removed", 2)));
+        // An identical retry owes nothing more.
+        yield* sql.withTransaction(notices.changed(change(first, "added", 1)));
+        assert.deepStrictEqual(yield* owed, [
+          {
+            thumbprint: first,
+            change: "added",
+            body: keyNoticeBody(change(first, "added", 1), "UTC"),
+            messageId: `kin-key-added:${first}`,
+          },
+          {
+            thumbprint: second,
+            change: "removed",
+            body: keyNoticeBody(change(second, "removed", 2), "UTC"),
+            messageId: null,
+          },
+        ]);
+        assert.deepStrictEqual(
+          (yield* notified).map((message) => message.body),
+          [keyNoticeBody(change(first, "added", 1), "UTC")],
+        );
+      }).pipe(Effect.provide(Layer.provideMerge(keyNoticesLayer, layer))),
+  );
+  it.effect(
+    "shows a doc labelled sensitive since as private to teammates and to shared turns",
+    () =>
+      Effect.gen(function* () {
+        const { repo, service, person, agent, chat } = yield* seed();
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${person.orgId}, 'docs', 'Docs', 'D', 1, 0)`;
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+          owner_id, sensitive, created_by_kind, origin_key, created_at, updated_at)
+        VALUES (${person.orgId}, 'probe-doc', 'docs', 'D-1', 'Secret plan', 'agent', ${agentId},
+          0, 'agent', 'probe-doc', 0, 0)`;
+        const message = yield* service.send(person, {
+          chatId: chat.chatId,
+          body: "Look here",
+          clientMessageId: "probe-ref",
+        });
+        const refs = [
+          {
+            _tag: "doc",
+            key: "D-1",
+            version: 1,
+            section: "pricing",
+            title: "Secret plan",
+            sectionTitle: "Secret pricing",
+          },
+        ];
+        yield* sql`UPDATE kin_messages SET refs_json = ${JSON.stringify(refs)}
+        WHERE message_id = ${message.messageId}`;
+        yield* sql`UPDATE kin_records SET sensitive = 1 WHERE record_id = 'probe-doc'`;
+        const page = { chatId: chat.chatId, beforeSeq: 999, limit: 100 };
+        // The seed's turn is the owner's alone: it sees the doc as it was pointed at.
+        assert.include(
+          JSON.stringify(yield* service.read(agent, { chatId: chat.chatId })),
+          "Secret plan",
+        );
+        assert.include(JSON.stringify(yield* service.history(agent, page)), "Secret pricing");
+
+        const mate = { ...person, personId: decodeKinPersonId("probe-mate") };
+        yield* repo.insertPerson({
+          ...mate,
+          handle: "probe-mate",
+          displayName: "Mate",
+          githubLogin: null,
+          createdAt: timestamp,
+        });
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+          person_id, role, joined_at) VALUES ('probe-mate-member', ${person.orgId}, ${chat.chatId},
+          'person', ${mate.personId}, 'member', ${timestamp})`;
+        yield* sql`UPDATE kin_chats SET shared_at = ${timestamp}, shared_from_seq = 1
+        WHERE chat_id = ${chat.chatId}`;
+        const backlog = Option.getOrThrow(
+          yield* Stream.runHead(service.subscribe(mate, { chatId: chat.chatId })),
+        );
+        assert.strictEqual(backlog._tag, "backlog");
+        // A turn others read gets the same private document a teammate does.
+        yield* startAgentWakeup({ orgId: person.orgId, agentId, threadId, message });
+        for (const seen of [
+          backlog,
+          yield* service.history(mate, page),
+          yield* service.read(agent, { chatId: chat.chatId }),
+          yield* service.history(agent, page),
+        ]) {
+          assert.include(JSON.stringify(seen), "a private document");
+          assert.notInclude(JSON.stringify(seen), "Secret plan");
+          assert.notInclude(JSON.stringify(seen), "Secret pricing");
+        }
+      }).pipe(Effect.provide(layer)),
+  );
+  it.effect(
+    "binds a profile card to its change in the card's own commit; only a tap confirms",
+    () =>
+      Effect.gen(function* () {
+        const { service, person, agent, chat } = yield* seed();
+        const sql = yield* SqlClient.SqlClient;
+        const gate = yield* LevelGate.KinLevelGate;
+        const changeId = "pc_race";
+        yield* proposeChange({
+          orgId: person.orgId,
+          changeId,
+          agentId,
+          wakeupId: "probe",
+          patch: { bank: { accountNumber: "9999999999" } },
+          baseRev: 0,
+          now: 0,
+        });
+        const ask = {
+          chatId: chat.chatId,
+          clientMessageId: `kin-profile:${changeId}`,
+          question: "Change the company profile?",
+          detail: "Bank account number: none → 9999999999",
+          options: [
+            { label: "Confirm", kind: "yes" as const },
+            { label: "Cancel", kind: "no" as const },
+          ],
+        };
+        // A bind that fails takes its card with it: no card exists that its change doesn't know.
+        yield* gate
+          .ask(agent, ask, () => sql`INSERT INTO kin_no_such_table VALUES (1)`.pipe(Effect.asVoid))
+          .pipe(Effect.flip);
+        const cards = sql`SELECT widget_id FROM kin_widgets WHERE type = 'choice'`;
+        assert.deepStrictEqual(yield* cards, []);
+        const card = yield* gate.ask(agent, ask, (widget) =>
+          attachChangeCard(person.orgId, changeId, widget.widgetId).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          ),
+        );
+        const profile = () =>
+          readProfile(person.orgId).pipe(Effect.map((one) => one.bank.accountNumber));
+        // A 👍 on the card is not a Confirm.
+        assert.include(
+          yield* service
+            .react(person, { messageId: card.messageId, emoji: "👍", on: true })
+            .pipe(Effect.flip),
+          { reason: "not_allowed" },
+        );
+        assert.isNull(yield* profile());
+        // The owner's first possible tap already finds the change.
+        yield* service.act(person, {
+          widgetId: card.widgetId,
+          revision: card.revision,
+          actionId: "choose",
+          value: "option-1",
+          clientActionId: "fast-confirm",
+        });
+        assert.strictEqual(yield* profile(), "9999999999");
+      }).pipe(Effect.provide(Layer.provideMerge(LevelGate.layer, layer))),
   );
 });

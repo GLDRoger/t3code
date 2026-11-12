@@ -9,7 +9,7 @@ import { useLocation, useNavigate } from "@tanstack/react-router";
 
 import {
   kinInboxAttentionAtom,
-  kinListAt,
+  kinListShownAt,
   kinListSwitchHref,
   noAttentionAtom,
   threadsAttentionAtom,
@@ -28,7 +28,7 @@ export interface KinListSwitch {
 export function useKinListSwitch(): KinListSwitch | null {
   const host = useKinHost();
   const navigate = useNavigate();
-  const current = useLocation({ select: (location) => kinListAt(location.pathname) });
+  const current = useLocation({ select: (location) => kinListShownAt(location.pathname) });
   const hosted = host._tag === "host";
   // Each side is read only while it is the other list, so the dot costs nothing it doesn't show.
   const kin = useAtomValue(

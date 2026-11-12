@@ -11,12 +11,14 @@ import {
   KinMessageId,
   KinOrgId,
 } from "@t3tools/contracts";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Hub from "../chat/KinChatHub.ts";
@@ -25,6 +27,7 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Presence from "../reply/KinPresence.ts";
 import * as ChatWake from "./ChatWake.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
+import { retiredAgentNotice, retiredNoticeId } from "./Retirement.ts";
 
 const decodeMessage = Schema.decodeUnknownSync(KinMessage);
 const decodeEventJson = Schema.decodeEffect(Schema.fromJsonString(KinEvent));
@@ -66,6 +69,7 @@ const message = (
     readonly agent?: boolean;
     readonly tap?: string;
     readonly chat?: string;
+    readonly mentions?: ReadonlyArray<string>;
   } = {},
 ) =>
   decodeMessage({
@@ -90,7 +94,7 @@ const message = (
         ? "Can you check the release?"
         : JSON.stringify({ widgetId: "widget", revision: 1, actionId: options.tap }),
     intent: options.agent === true ? "answer" : null,
-    mentions: [],
+    mentions: options.mentions ?? [],
     replyTo: null,
     widgetId: null,
     floorRunId: null,
@@ -110,7 +114,8 @@ const storeMessage = Effect.fn("test.storeMessage")(function* (row: KinMessage) 
     VALUES (${row.messageId}, ${row.orgId}, ${row.chatId}, ${row.seq}, ${row.author._tag},
       ${human?.personId ?? null}, ${agent?.agentId ?? null}, ${agent?.ownerPersonId ?? null},
       ${agent?.threadId ?? null}, ${agent?.memberId ?? human?.memberId ?? null}, ${row.authorRole},
-      ${row.kind}, ${row.body}, ${row.intent}, '[]', ${row.status}, ${row.createdAt})`;
+      ${row.kind}, ${row.body}, ${row.intent}, ${JSON.stringify(row.mentions)}, ${row.status},
+      ${row.createdAt})`;
 });
 
 // Records every enqueue attempt and result. `settle` publishes a post the bridge ignores and waits
@@ -219,13 +224,13 @@ describe("ChatWake", () => {
           results.map((result) => result.duplicate),
           [false, true, false, false],
         );
-        // The owner sees `seen` as soon as the message is queued, before any wake-up claims it.
+        // The working line shows as soon as the message is queued, before any wake-up claims it.
         const presence = yield* Presence.KinPresence;
         assert.deepStrictEqual(
           presence
-            .snapshot(KinOrgId.make("a"), KinChatId.make("chat-a"))
-            .presence.map((line) => [line.agentId, line.state, line.wakeupId]),
-          [["lead-a", "seen", null]],
+            .lines(KinOrgId.make("a"), KinChatId.make("chat-a"))
+            .map((line) => [line.agentId, line.state, line.label, line.wakeupId]),
+          [["lead-a", "starting", "Catching up", null]],
         );
         const stored = yield* storedEvents();
         assert.deepStrictEqual(
@@ -259,41 +264,95 @@ describe("ChatWake", () => {
       }).pipe(Effect.provide(services)),
   );
 
-  it.effect("shows `seen` for a waking reaction and drops it once the reaction is withdrawn", () =>
-    Effect.gen(function* () {
-      yield* seed("a");
-      yield* storeMessage(message("a", "lead-latest", { seq: 1, agent: true }));
-      const { settle } = yield* start();
-      const hub = yield* Hub.KinChatHub;
-      const presence = yield* Presence.KinPresence;
-      const lines = () =>
-        presence
-          .snapshot(KinOrgId.make("a"), KinChatId.make("chat-a"))
-          .presence.map((line) => line.state);
-      const reaction = (removedAt: string | null) =>
-        hub.publish({
-          type: "reaction.updated",
-          orgId: KinOrgId.make("a"),
-          chatId: KinChatId.make("chat-a"),
-          reaction: {
+  it.effect(
+    "shows Queued for a waking reaction behind a running wake-up, gone once withdrawn",
+    () =>
+      Effect.gen(function* () {
+        yield* seed("a");
+        yield* storeMessage(message("a", "lead-latest", { seq: 1, agent: true }));
+        const { settle } = yield* start();
+        const hub = yield* Hub.KinChatHub;
+        const presence = yield* Presence.KinPresence;
+        const lines = () =>
+          presence
+            .lines(KinOrgId.make("a"), KinChatId.make("chat-a"))
+            .map((line) => [line.state, line.label]);
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
+        VALUES ('running', 'a', 'lead-a', 'fixture', 0, 'running', '[]')`;
+        const reaction = (removedAt: string | null) =>
+          hub.publish({
+            type: "reaction.updated",
             orgId: KinOrgId.make("a"),
             chatId: KinChatId.make("chat-a"),
-            messageId: KinMessageId.make("lead-latest"),
-            memberId: KinMemberId.make("owner-member-a"),
-            emoji: "👎",
-            createdAt,
-            removedAt,
-          },
-          woke: removedAt === null,
-          by: message("a", "m1").author,
-        });
-      yield* reaction(null);
-      yield* settle;
-      assert.deepStrictEqual(lines(), ["seen"]);
-      yield* reaction(createdAt);
-      yield* settle;
-      assert.deepStrictEqual(lines(), []);
-    }).pipe(Effect.provide(services)),
+            reaction: {
+              orgId: KinOrgId.make("a"),
+              chatId: KinChatId.make("chat-a"),
+              messageId: KinMessageId.make("lead-latest"),
+              memberId: KinMemberId.make("owner-member-a"),
+              emoji: "👎",
+              createdAt,
+              removedAt,
+            },
+            woke: removedAt === null,
+            by: message("a", "m1").author,
+          });
+        yield* reaction(null);
+        yield* settle;
+        assert.deepStrictEqual(lines(), [["starting", "Finishing something else"]]);
+        yield* reaction(createdAt);
+        yield* settle;
+        assert.deepStrictEqual(lines(), []);
+      }).pipe(Effect.provide(services)),
+  );
+
+  it.effect(
+    "wakes the lead on a withdrawn yes it already took up, and only cancels one still queued",
+    () =>
+      Effect.gen(function* () {
+        yield* seed("a");
+        yield* storeMessage(message("a", "lead-latest", { seq: 1, agent: true }));
+        const { settle } = yield* start();
+        const hub = yield* Hub.KinChatHub;
+        const sql = yield* SqlClient.SqlClient;
+        const later = "1970-01-01T00:00:05.000Z";
+        const reaction = (at: string, removedAt: string | null) =>
+          hub.publish({
+            type: "reaction.updated",
+            orgId: KinOrgId.make("a"),
+            chatId: KinChatId.make("chat-a"),
+            reaction: {
+              orgId: KinOrgId.make("a"),
+              chatId: KinChatId.make("chat-a"),
+              messageId: KinMessageId.make("lead-latest"),
+              memberId: KinMemberId.make("owner-member-a"),
+              emoji: "👍",
+              createdAt: at,
+              removedAt,
+            },
+            woke: true,
+            by: message("a", "m1").author,
+          });
+        const rows = () =>
+          sql<{ state: string; withdrawn: number | null }>`SELECT state,
+              json_extract(json, '$.withdrawn') AS withdrawn
+            FROM kin_events WHERE org_id = 'a' ORDER BY received_at, event_id`;
+        // Still queued: withdrawing it only cancels it.
+        yield* reaction(createdAt, null);
+        yield* reaction(createdAt, later);
+        yield* settle;
+        assert.deepStrictEqual(yield* rows(), [{ state: "expired", withdrawn: null }]);
+        // Already taken up: the lead hears it was withdrawn.
+        yield* reaction(later, null);
+        yield* sql`UPDATE kin_events SET state = 'claimed' WHERE org_id = 'a' AND state = 'queued'`;
+        yield* reaction(later, "1970-01-01T00:00:09.000Z");
+        yield* settle;
+        assert.deepStrictEqual(yield* rows(), [
+          { state: "expired", withdrawn: null },
+          { state: "claimed", withdrawn: null },
+          { state: "queued", withdrawn: 1 },
+        ]);
+      }).pipe(Effect.provide(services)),
   );
 
   it.effect("never wakes a lead for its own posts or after retirement, live or on catch-up", () =>
@@ -303,6 +362,8 @@ describe("ChatWake", () => {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`UPDATE kin_agents SET retired_at = ${createdAt} WHERE agent_id = 'lead-b'`;
       yield* storeMessage(message("b", "missed-by-retired"));
+      // Messages stored here pick their own seq; Kin's notices take the chat's next.
+      yield* sql`UPDATE kin_chats SET last_seq = 10 WHERE chat_id = 'chat-b'`;
       const { attempts, settle } = yield* start();
       yield* post("a", "reply", { agent: true });
       // The bridge itself skips retired leads; the queue's own refusal is a second line.
@@ -313,20 +374,69 @@ describe("ChatWake", () => {
       assert.deepStrictEqual(keys((yield* storedEvents()).map(({ event }) => event)), [
         "chat-message:wake:lead-a",
       ]);
+      // Writing to it got Kin's fixed line, once per message, and no turn.
+      yield* storeMessage(message("b", "while-retired", { seq: 3 }));
+      yield* post("b", "while-retired", { seq: 3 });
+      yield* post("b", "while-retired", { seq: 3 });
+      yield* settle;
+      const notices = sql`SELECT message_id, chat_id, kind, body FROM kin_messages
+        WHERE org_id = 'b' AND author_kind = 'system' ORDER BY message_id`;
+      const line = { chat_id: "chat-b", kind: "system", body: retiredAgentNotice("Lead") };
+      assert.deepStrictEqual(yield* notices, [
+        { message_id: retiredNoticeId(KinMessageId.make("to-retired")), ...line },
+        { message_id: retiredNoticeId(KinMessageId.make("while-retired")), ...line },
+      ]);
+      assert.deepStrictEqual(keys(attempts), ["chat-message:wake:lead-a"]);
+      // Restored, catch-up takes up what it missed while down, never what Kin already answered.
+      yield* sql`UPDATE kin_agents SET retired_at = NULL WHERE agent_id = 'lead-b'`;
+      const restarted = yield* start();
+      yield* restarted.settle;
+      assert.deepStrictEqual(keys(restarted.attempts), ["chat-message:missed-by-retired:lead-b"]);
     }).pipe(Effect.provide(services)),
   );
 
-  it.effect("never wakes a lead for group posts, live or on catch-up, until CHAT-11", () =>
-    Effect.gen(function* () {
-      yield* seed("a");
-      yield* seed("g", "team_group");
-      yield* storeMessage(message("g", "missed-group"));
-      const { attempts, settle } = yield* start();
-      yield* post("g", "group", { seq: 2 });
-      yield* settle;
-      assert.deepStrictEqual(attempts, []);
-      assert.deepStrictEqual(yield* storedEvents(), []);
-    }).pipe(Effect.provide(services)),
+  it.effect(
+    "in a group, wakes the leads a message names, else the group's lead, live and on catch-up",
+    () =>
+      Effect.gen(function* () {
+        yield* seed("a");
+        yield* seed("g", "team_group");
+        const sql = yield* SqlClient.SqlClient;
+        // A second lead in the group, and one who left it.
+        for (const [id, leftAt] of [
+          ["growth", null],
+          ["gone", createdAt],
+        ] as const) {
+          yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+            VALUES (${id}, 'g', ${id}, 'lead', 'owner-g', ${createdAt})`;
+          yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at, left_at)
+            VALUES (${`${id}-member`}, 'g', 'chat-g', 'agent', ${id}, 'member', ${createdAt}, ${leftAt})`;
+          yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+            VALUES (${id}, 'g', ${id}, 0, '{}', '[]', 'chat-g')`;
+        }
+        yield* storeMessage(message("g", "missed", { mentions: ["growth-member"] }));
+        const { attempts, settle } = yield* start();
+        yield* post("g", "unnamed", { seq: 2 });
+        yield* post("g", "named", { seq: 3, mentions: ["growth-member"] });
+        yield* post("g", "both", { seq: 4, mentions: ["lead-member-g", "growth-member"] });
+        // A lead's own post names another lead and wakes nobody; nor does naming one who left.
+        yield* post("g", "from-lead", { seq: 5, agent: true, mentions: ["growth-member"] });
+        yield* post("g", "left", { seq: 6, mentions: ["gone-member"] });
+        yield* settle;
+        yield* sql`UPDATE kin_chats SET lead_agent_id = 'growth' WHERE chat_id = 'chat-g'`;
+        yield* post("g", "new-lead", { seq: 7 });
+        yield* settle;
+        assert.deepStrictEqual(keys(attempts), [
+          "chat-message:missed:growth",
+          "chat-message:unnamed:lead-g",
+          "chat-message:named:growth",
+          "chat-message:both:lead-g",
+          "chat-message:both:growth",
+          // Nobody it names is here, so the group's lead takes it.
+          "chat-message:left:lead-g",
+          "chat-message:new-lead:growth",
+        ]);
+      }).pipe(Effect.provide(services)),
   );
 
   it.effect("catches up on owner messages the lead has not answered since its last post", () =>
@@ -372,11 +482,16 @@ describe("ChatWake", () => {
     Effect.gen(function* () {
       yield* seed("a");
       const sql = yield* SqlClient.SqlClient;
-      // A group the lead is in, and a retired lead's direct chat, each busier than the limit.
+      // A group where every post names another lead, and a retired lead's direct chat, each
+      // busier than the limit.
       yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
         VALUES ('group-a', 'a', 'team_group', 0, ${createdAt})`;
       yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
         VALUES ('lead-group-member', 'a', 'group-a', 'agent', 'lead-a', 'member', ${createdAt})`;
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+        VALUES ('other-a', 'a', 'Other', 'lead', 'owner-a', ${createdAt})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+        VALUES ('other-group-member', 'a', 'group-a', 'agent', 'other-a', 'member', ${createdAt})`;
       yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at, retired_at)
         VALUES ('old-a', 'a', 'Old', 'lead', 'owner-a', ${createdAt}, ${createdAt})`;
       yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
@@ -388,7 +503,9 @@ describe("ChatWake", () => {
       // Their ids sort above the direct post, so either one counted would push it out.
       for (let seq = 1; seq <= 200; seq++) {
         const n = String(seq).padStart(3, "0");
-        yield* storeMessage(message("a", `z-group-${n}`, { seq, chat: "group-a" }));
+        yield* storeMessage(
+          message("a", `z-group-${n}`, { seq, chat: "group-a", mentions: ["other-group-member"] }),
+        );
         yield* storeMessage(message("a", `y-retired-${n}`, { seq, chat: "old-chat" }));
       }
       yield* storeMessage(message("a", "a-direct"));
@@ -428,8 +545,158 @@ describe("ChatWake", () => {
       .toSorted();
     assert.deepStrictEqual(readers, [
       "kin/chat/KinChatHub.ts",
+      "kin/chat/approvalCards.ts",
       "kin/lead/ChatWake.ts",
+      "kin/lead/WorkerTracker.ts",
+      "kin/lead/layer.ts",
       "kin/push/KinPushDispatch.ts",
     ]);
   });
+  it.effect(
+    "wakes a lead for another person's direct message only while its owner allows it, a bounded number of times a day",
+    () =>
+      Effect.gen(function* () {
+        yield* seed("a");
+        const sql = yield* SqlClient.SqlClient;
+        const hub = yield* Hub.KinChatHub;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('mate', 'a', 'mate', 'Mate', ${createdAt})`;
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+          VALUES ('mate-chat', 'a', 'direct', 'mate:lead-a', 0, ${createdAt})`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+          VALUES ('mate-member', 'a', 'mate-chat', 'person', 'mate', 'member', ${createdAt})`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+          VALUES ('lead-in-mate-chat', 'a', 'mate-chat', 'agent', 'lead-a', 'member', ${createdAt})`;
+        const { attempts, settle } = yield* start();
+        const say = (messageId: string, seq: number) =>
+          hub.publish({
+            type: "message.posted",
+            orgId: KinOrgId.make("a"),
+            message: decodeMessage({
+              ...message("a", messageId, { chat: "mate-chat", seq }),
+              author: { _tag: "human", personId: "mate", memberId: "mate-member" },
+              authorRole: "member",
+            }),
+          });
+        const notices = sql<{ body: string }>`SELECT body FROM kin_messages
+          WHERE org_id = 'a' AND chat_id = 'mate-chat' AND author_kind = 'system' ORDER BY seq`;
+
+        // Being in the chat is not enough: the owner has not allowed it.
+        yield* say("uninvited", 1);
+        yield* settle;
+        assert.deepStrictEqual(keys(attempts), []);
+
+        yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
+          VALUES ('a', 'lead-a', 'mate', 'owner-a', 0)`;
+        for (const [index, id] of ["first", "second", "third", "fourth"].entries())
+          yield* say(id, index + 2);
+        // The owner's own chat is never counted.
+        yield* post("a", "owners", { seq: 2 });
+        yield* settle;
+        assert.deepStrictEqual(keys(attempts), [
+          "chat-message:first:lead-a",
+          "chat-message:second:lead-a",
+          "chat-message:owners:lead-a",
+        ]);
+        // Told once, however many more arrive.
+        assert.deepStrictEqual(yield* notices, [
+          {
+            body: "Lead has answered as much as it can for you today and didn't see your last message. Send it again later.",
+          },
+        ]);
+
+        // The turns age out a day after they were asked for.
+        yield* TestClock.adjust("25 hours");
+        yield* say("next-day", 6);
+        yield* settle;
+        assert.include(keys(attempts), "chat-message:next-day:lead-a");
+
+        yield* sql`UPDATE kin_lead_access SET revoked_at = 1 WHERE person_id = 'mate'`;
+        yield* say("after", 7);
+        yield* settle;
+        assert.notInclude(keys(attempts), "chat-message:after:lead-a");
+        assert.lengthOf(yield* notices, 1);
+      }).pipe(
+        Effect.provide(
+          Layer.merge(
+            services,
+            ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_TEAMMATE_DAILY_TURNS: 2 })),
+          ),
+        ),
+      ),
+  );
+  it.effect("counts a teammate's group messages and taps toward the same daily cap", () =>
+    Effect.gen(function* () {
+      yield* seed("a");
+      const sql = yield* SqlClient.SqlClient;
+      const hub = yield* Hub.KinChatHub;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('mate', 'a', 'mate', 'Mate', ${createdAt})`;
+      yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
+        VALUES ('a', 'lead-a', 'mate', 'owner-a', 0)`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+        VALUES ('mate-chat', 'a', 'direct', 'mate:lead-a', 0, ${createdAt}),
+          ('group', 'a', 'team_group', NULL, 0, ${createdAt})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, agent_id, role, joined_at)
+        VALUES ('mate-member', 'a', 'mate-chat', 'person', 'mate', NULL, 'member', ${createdAt}),
+          ('lead-in-mate-chat', 'a', 'mate-chat', 'agent', NULL, 'lead-a', 'member', ${createdAt}),
+          ('mate-in-group', 'a', 'group', 'person', 'mate', NULL, 'member', ${createdAt}),
+          ('owner-in-group', 'a', 'group', 'person', 'owner-a', NULL, 'owner', ${createdAt}),
+          ('lead-in-group', 'a', 'group', 'agent', NULL, 'lead-a', 'member', ${createdAt})`;
+      const { attempts, settle } = yield* start();
+      const say = (messageId: string, seq: number, chat: string, tap?: string) =>
+        hub.publish({
+          type: "message.posted",
+          orgId: KinOrgId.make("a"),
+          message: decodeMessage({
+            ...message("a", messageId, { chat, seq, ...(tap === undefined ? {} : { tap }) }),
+            author: {
+              _tag: "human",
+              personId: "mate",
+              memberId: chat === "group" ? "mate-in-group" : "mate-member",
+            },
+            authorRole: "member",
+          }),
+        });
+      const notices = sql<{ chat: string; body: string }>`SELECT chat_id AS chat, body
+        FROM kin_messages WHERE org_id = 'a' AND author_kind = 'system' ORDER BY chat_id`;
+
+      yield* say("group-first", 1, "group");
+      yield* say("group-tap", 2, "group", "approve");
+      // The day's turns are used up in the group, so the direct chat and the group both stop.
+      yield* say("direct-after", 1, "mate-chat");
+      yield* say("group-after", 3, "group");
+      yield* hub.publish({
+        type: "message.posted",
+        orgId: KinOrgId.make("a"),
+        message: decodeMessage({
+          ...message("a", "owner-in-group", { chat: "group", seq: 4 }),
+          author: { _tag: "human", personId: "owner-a", memberId: "owner-in-group" },
+        }),
+      });
+      yield* settle;
+      assert.deepStrictEqual(keys(attempts), [
+        "chat-message:group-first:lead-a",
+        "widget-action:group-tap:lead-a",
+        "chat-message:owner-in-group:lead-a",
+      ]);
+      assert.deepStrictEqual(yield* notices, [
+        {
+          chat: "group",
+          body: "Lead has answered as much as it can for Mate today and didn't see their last message. Mate can send it again later.",
+        },
+        {
+          chat: "mate-chat",
+          body: "Lead has answered as much as it can for you today and didn't see your last message. Send it again later.",
+        },
+      ]);
+    }).pipe(
+      Effect.provide(
+        Layer.merge(
+          services,
+          ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_TEAMMATE_DAILY_TURNS: 2 })),
+        ),
+      ),
+    ),
+  );
 });

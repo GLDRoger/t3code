@@ -7,19 +7,25 @@ import { SymbolView } from "../../../components/ui/AppSymbol";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { RowPressable } from "../../../components/ui/RowPressable";
 import { cn } from "../../../lib/cn";
-import type { KinChatRowView } from "@t3tools/client-runtime/kin/kinScreenState";
+import { KIN_RETIRED_LABEL } from "@t3tools/client-runtime/kin/kinAgentRetire";
+import type { KinChatListRow } from "@t3tools/client-runtime/kin/kinChatListRows";
 import { KinAvatar } from "./KinAvatar";
 
-const ROW_CLASS_NAME = "min-h-[72px] flex-row items-center gap-3 px-4 py-3";
+// The thread list row's insets (`THREAD_LIST_V2_ROW_CONTENT_CLASS_NAME`).
+const ROW_CLASS_NAME = "min-h-16 flex-row items-center gap-3 px-5 py-2.5";
 
-/** One chat. Unread shows as a number and a bolder title, never as a highlight (DESIGN 8.1). */
+/**
+ * One chat, as in any messenger: who, the last line, when, and on the right what wants a look.
+ * While the lead works, the last line gives way to "Working…".
+ */
 export function KinChatRow(props: {
-  readonly view: KinChatRowView;
+  readonly row: KinChatListRow;
   readonly accessibilityLabel: string;
   /** Unset in static previews. */
   readonly onPress?: () => void;
 }) {
-  const { view } = props;
+  const { row } = props;
+  const { view } = row;
   const unread = view.unread > 0;
   const content = (
     <>
@@ -30,12 +36,47 @@ export function KinChatRow(props: {
             textRole="body"
             numberOfLines={1}
             className={cn(
-              "min-w-0 flex-1 text-foreground",
+              "min-w-0 flex-1",
+              row.retired ? "text-foreground-muted" : "text-foreground",
               unread ? "font-t3-bold" : "font-t3-medium",
             )}
           >
             {view.title}
           </Text>
+          {view.sentAt === null ? null : (
+            <Text textRole="caption" className="text-foreground-muted">
+              <RelativeTime timestamp={view.sentAt} />
+            </Text>
+          )}
+        </View>
+        <View className="flex-row items-center gap-2">
+          {row.retired ? (
+            // A retired agent's chat is kept to read; its last line would look like a live one.
+            <Text
+              textRole="footnote"
+              numberOfLines={1}
+              className="min-w-0 flex-1 text-foreground-muted"
+            >
+              {KIN_RETIRED_LABEL}
+            </Text>
+          ) : row.working ? (
+            <Text
+              textRole="footnote"
+              numberOfLines={1}
+              className="min-w-0 flex-1 font-t3-medium text-primary"
+            >
+              Working…
+            </Text>
+          ) : (
+            <Text
+              textRole="footnote"
+              numberOfLines={2}
+              className={cn("min-w-0 flex-1", unread ? "text-foreground" : "text-foreground-muted")}
+            >
+              {row.author === null ? null : `${row.author}: `}
+              {row.preview}
+            </Text>
+          )}
           {view.muted ? (
             <SymbolView
               name="bell.slash"
@@ -44,26 +85,14 @@ export function KinChatRow(props: {
               type="monochrome"
             />
           ) : null}
-          {view.sentAt === null ? null : (
-            <Text textRole="caption" className="text-foreground-muted">
-              <RelativeTime timestamp={view.sentAt} />
+          {row.needsYou ? (
+            <Text textRole="caption" className="font-t3-bold text-warning-foreground">
+              Needs you
             </Text>
-          )}
-        </View>
-        <View className="flex-row items-center gap-2">
-          <Text
-            textRole="footnote"
-            numberOfLines={2}
-            className={cn("min-w-0 flex-1", unread ? "text-foreground" : "text-foreground-muted")}
-          >
-            {view.author === null ? null : (
-              <Text className="font-t3-medium">{`${view.author}: `}</Text>
-            )}
-            {view.preview}
-          </Text>
+          ) : null}
           {unread ? (
-            <View className="min-w-5 items-center rounded-full bg-subtle-strong px-1.5 py-0.5">
-              <Text textRole="caption" className="font-t3-bold text-foreground">
+            <View className="min-w-5 items-center rounded-full bg-primary px-1.5 py-0.5">
+              <Text textRole="caption" className="font-t3-bold text-primary-foreground">
                 {view.unread}
               </Text>
             </View>
@@ -112,65 +141,6 @@ function KinPressableRow(props: {
   );
 }
 
-/** A fold's title over its chats: "Needs you 2". Quiet text, so only the banner stands out. */
-export function KinInboxFoldHeader(props: {
-  readonly title: string;
-  readonly count: number;
-  readonly accessibilityLabel: string;
-}) {
-  return (
-    <View
-      accessible
-      accessibilityRole="header"
-      accessibilityLabel={props.accessibilityLabel}
-      className="flex-row items-baseline gap-1.5 px-4 pb-1 pt-4"
-    >
-      <Text textRole="footnote" className="font-t3-medium text-foreground-muted">
-        {props.title}
-      </Text>
-      <Text textRole="footnote" className="text-foreground-muted">
-        {props.count}
-      </Text>
-    </View>
-  );
-}
-
-/** "Ask anything. It goes to the right team." In phase 1 it opens the lead's direct chat. */
-export function KinAskRow(props: { readonly onPress?: () => void }) {
-  const content = (
-    <View className="flex-row items-center gap-3 rounded-full border border-border px-4 py-3">
-      <SymbolView
-        name="bubble.left"
-        size={16}
-        tintColorClassName="accent-icon-muted"
-        type="monochrome"
-      />
-      <Text textRole="footnote" className="min-w-0 flex-1 text-foreground-muted">
-        Ask anything. It goes to the right team.
-      </Text>
-    </View>
-  );
-  return (
-    <View className="px-4 pb-6 pt-4">
-      {props.onPress === undefined ? (
-        <View accessible accessibilityLabel="Ask anything. It goes to the right team.">
-          {content}
-        </View>
-      ) : (
-        <RowPressable
-          accessibilityRole="button"
-          accessibilityLabel="Ask anything. It goes to the right team."
-          accessibilityHint="Opens your chat with the lead"
-          onPress={props.onPress}
-          className="rounded-full"
-        >
-          {content}
-        </RowPressable>
-      )}
-    </View>
-  );
-}
-
 /** Six static placeholder rows while the first inbox loads. No shimmer, so nothing repaints. */
 export function KinChatRowSkeletons() {
   return (
@@ -181,12 +151,7 @@ export function KinChatRowSkeletons() {
           importantForAccessibility="no-hide-descendants"
           className={ROW_CLASS_NAME}
         >
-          <View
-            className={cn(
-              "size-10 bg-subtle-strong",
-              index === 0 ? "rounded-[12px]" : "rounded-full",
-            )}
-          />
+          <View className="size-10 rounded-[12px] bg-subtle-strong" />
           <View className="flex-1 gap-2">
             <View
               className="h-3.5 rounded bg-subtle-strong"

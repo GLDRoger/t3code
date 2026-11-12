@@ -10,14 +10,17 @@ import * as Layer from "effect/Layer";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as Option from "effect/Option";
 import * as KinChat from "./chat/layer.ts";
+import * as KinAttachmentStore from "./chat/KinAttachmentStore.ts";
 import * as KinApprovals from "./approvals/layer.ts";
+import * as RetiredActions from "./approvals/retiredActions.ts";
 import * as KeySeal from "./approvals/KeySeal.ts";
 import * as T3GitHubCredential from "./approvals/T3GitHubCredential.ts";
 import * as ApprovalCards from "./chat/approvalCards.ts";
 import * as ExecutionNotices from "./chat/executionNotices.ts";
 import * as KinPush from "./push/layer.ts";
-import * as Promotion from "./levels/Promotion.ts";
+import * as LevelControl from "./levels/LevelControl.ts";
 import * as MemoryChanges from "./memory/MemoryChanges.ts";
+import * as KinRecords from "./work/KinRecords.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
 
 import { KinServer, type Services } from "./KinServer.ts";
@@ -25,6 +28,8 @@ export { KinServer } from "./KinServer.ts";
 import type * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as KinMcp from "./mcp/layer.ts";
+import * as Workspace from "./gendocs/workspace.ts";
+import * as Vcs from "../vcs/VcsProcess.ts";
 import * as GithubWebhooks from "./triggers/githubWebhooks.ts";
 
 const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
@@ -52,17 +57,24 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
   ).pipe(
     Layer.provide(
       Layer.mergeAll(
-        // On top of Promotion and approvals: the executor takes approvals from their pending
-        // actions instance, and a raise redraws Promotion's card.
+        // On top of level control and approvals: the executor takes approvals from their
+        // pending actions instance.
         KinApprovals.executorLayer.pipe(
           Layer.provide(ExecutionNotices.layer),
           Layer.provideMerge(
             Layer.mergeAll(
               KinPush.layer,
-              Promotion.layer,
+              LevelControl.layer,
               MemoryChanges.layer,
+              KinRecords.layer,
+              Workspace.layer.pipe(Layer.provide(Vcs.layer)),
               ApprovalCards.layer,
-            ).pipe(Layer.provideMerge(KinApprovals.layer)),
+              RetiredActions.layer,
+            ).pipe(
+              Layer.provideMerge(
+                KinApprovals.layer.pipe(Layer.provide(ExecutionNotices.keyNoticesLayer)),
+              ),
+            ),
           ),
         ),
         GithubWebhooks.lockLayer,
@@ -172,5 +184,7 @@ export const mcpRegistryLayer = <E, R>(
 ) =>
   KinMcp.registry(base).pipe(
     Layer.provideMerge(layer),
+    // The chat service takes this optionally, so the running server names it here.
+    Layer.provide(KinAttachmentStore.layer),
     Layer.provide(SqlitePersistence.layerConfig),
   );
