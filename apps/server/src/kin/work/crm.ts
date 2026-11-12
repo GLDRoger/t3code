@@ -21,7 +21,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { fieldList, fieldText, listOf, parseFields, sensitiveFields } from "./lists.ts";
+import { fieldList, fieldText, listOf, parseFields, sensitiveFields, workListOf } from "./lists.ts";
 import {
   actorOf,
   iso,
@@ -464,6 +464,8 @@ export const history = Effect.fn("KinCrm.history")(function* (
   const filter = sql.and([
     sql`r.org_id = ${orgId}`,
     sql`(r.record_id = ${anchor.recordId} OR ${pointing})`,
+    // A doc's history is its versions (`kin.docs.history`); clients older than Docs can't read it.
+    sql`r.register_id != 'docs'`,
     ...(input.beforeSeq === undefined ? [] : [sql`c.seq < ${input.beforeSeq}`]),
     ...(input.sinceAt === undefined ? [] : [sql`c.at >= ${input.sinceAt}`]),
   ]);
@@ -492,7 +494,7 @@ export const history = Effect.fn("KinCrm.history")(function* (
     via: row.via,
     kind: row.kind,
     fields: parseChanges(row.fieldsJson).filter((change) => change.field.trim() !== ""),
-    record: { ...ref(row.recordId, row.key, row.title), list: listOf(row.registerId) },
+    record: { ...ref(row.recordId, row.key, row.title), list: workListOf(row.registerId) },
   }));
   const total =
     input.sinceAt === undefined

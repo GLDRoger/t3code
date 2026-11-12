@@ -1,4 +1,4 @@
-import { KinChatError, KinWorkRpcs } from "@t3tools/contracts";
+import { KinChatError, KinDocsRpcs, KinWorkRpcs } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -9,9 +9,10 @@ import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinServer } from "../KinServer.ts";
 import * as Clients from "./ownerClients.ts";
+import * as Docs from "./ownerDocs.ts";
 import * as Work from "./ownerWork.ts";
 
-const group = RpcGroup.make(...KinWorkRpcs);
+const group = RpcGroup.make(...KinWorkRpcs, ...KinDocsRpcs);
 const disabled = new KinChatError({
   reason: "disabled",
   message: "Kin is not running on this host.",
@@ -23,7 +24,7 @@ const defect = (cause: unknown) =>
     ),
   );
 
-/** Thin transport: resolve the session's people, then one owner-checked Work call. */
+/** Thin transport: resolve the session's people, then one owner-checked Work or Docs call. */
 export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
   session: AuthenticatedSession,
 ) {
@@ -38,6 +39,19 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
     const people = yield* Context.get(services, KinIdentity).resolve(session);
     return yield* run(people).pipe(Effect.provideContext(services as Context.Context<R>));
   }, Effect.catchDefect(defect));
+  const stream = <A, E, R>(
+    run: (
+      people: Effect.Success<ReturnType<KinIdentity["Service"]["resolve"]>>,
+    ) => Stream.Stream<A, E, R>,
+  ) =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* disabled;
+        const services = kin.value.services.value;
+        const people = yield* Context.get(services, KinIdentity).resolve(session);
+        return run(people).pipe(Stream.provideContext(services as Context.Context<R>));
+      }),
+    );
   return group.of({
     "kin.work.summary": Effect.fn("KinWork.rpc.summary")(function* (input) {
       return yield* call((people) => Work.summary(people, input));
@@ -48,15 +62,7 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
     "kin.work.get": Effect.fn("KinWork.rpc.get")(function* (input) {
       return yield* call((people) => Work.get(people, input));
     }),
-    "kin.work.subscribe": (input) =>
-      Stream.unwrap(
-        Effect.gen(function* () {
-          if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* disabled;
-          const services = kin.value.services.value;
-          const people = yield* Context.get(services, KinIdentity).resolve(session);
-          return Work.subscribe(people, input).pipe(Stream.provideContext(services));
-        }),
-      ),
+    "kin.work.subscribe": (input) => stream((people) => Work.subscribe(people, input)),
     "kin.work.create": Effect.fn("KinWork.rpc.create")(function* (input) {
       return yield* call((people) => Work.create(people, input));
     }),
@@ -104,6 +110,25 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
     }),
     "kin.work.updateProject": Effect.fn("KinWork.rpc.updateProject")(function* (input) {
       return yield* call((people) => Clients.updateProject(people, input));
+    }),
+    "kin.docs.list": Effect.fn("KinDocs.rpc.list")(function* (input) {
+      return yield* call((people) => Docs.list(people, input));
+    }),
+    "kin.docs.get": Effect.fn("KinDocs.rpc.get")(function* (input) {
+      return yield* call((people) => Docs.get(people, input));
+    }),
+    "kin.docs.history": Effect.fn("KinDocs.rpc.history")(function* (input) {
+      return yield* call((people) => Docs.history(people, input));
+    }),
+    "kin.docs.diff": Effect.fn("KinDocs.rpc.diff")(function* (input) {
+      return yield* call((people) => Docs.diff(people, input));
+    }),
+    "kin.docs.restore": Effect.fn("KinDocs.rpc.restore")(function* (input) {
+      return yield* call((people) => Docs.restore(people, input));
+    }),
+    "kin.docs.subscribe": (input) => stream((people) => Docs.subscribe(people, input)),
+    "kin.search": Effect.fn("KinDocs.rpc.search")(function* (input) {
+      return yield* call((people) => Docs.search(people, input));
     }),
   });
 });
