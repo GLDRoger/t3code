@@ -13,7 +13,7 @@ import Constants from "expo-constants";
 import * as Notifications from "expo-notifications";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { Platform } from "react-native";
+import { Linking, Platform } from "react-native";
 
 import { connectionAtomRuntime } from "../../../connection/runtime";
 import { appAtomRegistry } from "../../../state/atom-registry";
@@ -24,7 +24,7 @@ import { kinClient } from "../state/kinClient";
 import { kinHostAtom } from "../state/useKinHost";
 import { KIN_NOTIFICATION_CATEGORIES } from "./kinCategories";
 import { kinActionDelivery, kinNotificationRoute } from "./kinPushPayload";
-import { createKinPushRefusals } from "./kinPushRegistration";
+import { createKinPushRefusals, kinPushPermissionStep } from "./kinPushRegistration";
 
 // A refusal is final for this response; anything else (a dropped socket) waits for a connect.
 const isFinalRefusal = Schema.is(Schema.Union([KinChatError, EnvironmentAuthorizationError]));
@@ -100,6 +100,36 @@ function createActionDelivery() {
   };
 }
 
+// Set by a Kin moment that explains the prompt; until then a connect only registers a granted phone.
+let permissionWanted = false;
+let syncRegistration: (() => void) | null = null;
+
+const askPermission = () =>
+  Effect.runPromise(
+    requestAgentNotificationPermission.pipe(
+      Effect.orElseSucceed(() => ({ type: "unsupported" }) as const),
+    ),
+  );
+
+/** A Kin chat is open: the moment to ask for Kin's notifications, once, if the phone hasn't said. */
+export function askForKinNotifications(): void {
+  if (permissionWanted) return;
+  permissionWanted = true;
+  syncRegistration?.();
+}
+
+/** The Kin notifications row: asks when the phone hasn't decided, otherwise opens the OS settings. */
+export async function openKinNotificationSettings(): Promise<void> {
+  const existing = await Notifications.getPermissionsAsync().catch(() => null);
+  if (existing !== null && !existing.granted && existing.canAskAgain) {
+    permissionWanted = true;
+    await askPermission();
+    syncRegistration?.();
+    return;
+  }
+  await Linking.openSettings();
+}
+
 /** Registers the APNs token with the Kin host on every connect, for each org the viewer is in. */
 function createTokenRegistration() {
   if (Platform.OS !== "ios") return () => {};
@@ -117,19 +147,18 @@ function createTokenRegistration() {
     if (host._tag !== "host" || !host.connected || host.probe._tag !== "ready") return;
     const { environmentId } = host;
     if (token === null) {
-      if (permissionAsked) return;
-      permissionAsked = true;
-      // The shared prompt: the OS shows it at most once, and a refusal stays a refusal.
-      const permission = await Effect.runPromise(
-        requestAgentNotificationPermission.pipe(
-          Effect.orElseSucceed(() => ({ type: "unsupported" }) as const),
-        ),
-      );
-      if (permission.type !== "granted") return;
-      const device = await Notifications.getDevicePushTokenAsync().catch((cause: unknown) => {
-        permissionAsked = false;
-        throw cause;
+      const existing = await Notifications.getPermissionsAsync();
+      const step = kinPushPermissionStep(existing, {
+        wanted: permissionWanted,
+        asked: permissionAsked,
       });
+      if (step === "wait") return;
+      if (step === "ask") {
+        permissionAsked = true;
+        // The shared prompt: the OS shows it at most once, and a refusal stays a refusal.
+        if ((await askPermission()).type !== "granted") return;
+      }
+      const device = await Notifications.getDevicePushTokenAsync();
       token = String(device.data).toLowerCase();
     }
     const generation = appAtomRegistry.get(
@@ -165,6 +194,7 @@ function createTokenRegistration() {
     void sync().catch((cause: unknown) => console.warn("Kin push registration failed", cause));
   };
 
+  syncRegistration = run;
   const unsubscribeHost = appAtomRegistry.subscribe(kinHostAtom, run, { immediate: true });
   const tokenSubscription = Notifications.addPushTokenListener((next) => {
     if (typeof next.data !== "string") return;
@@ -172,6 +202,7 @@ function createTokenRegistration() {
     run();
   });
   return () => {
+    syncRegistration = null;
     unsubscribeHost();
     tokenSubscription.remove();
   };

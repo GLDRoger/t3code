@@ -8,7 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { useNavigation } from "@react-navigation/native";
 import { AsyncResult } from "effect/reactivity";
-import { useState, type RefObject } from "react";
+import { useImperativeHandle, useState, type Ref, type RefObject } from "react";
 import { Platform, View } from "react-native";
 
 import { ComposerAttachmentStrip } from "../../../components/ComposerAttachmentStrip";
@@ -96,15 +96,17 @@ const KIN_SEND: ComposerSendPresentation = {
 };
 
 /** Puts an unsent body back in the draft, ahead of anything typed since. */
-function restoreDraft(draftKey: string, body: string) {
+function restoredDraft(draftKey: string, body: string) {
   const typed = getComposerDraftSnapshot(draftKey).text;
-  setComposerDraftText(draftKey, typed.trim().length === 0 ? body : `${body}\n\n${typed}`);
+  return typed.trim().length === 0 ? body : `${body}\n\n${typed}`;
 }
 
-/** Moves a refused send back into the chat's draft and drops it from the outbox. */
-export async function editKinOutboxEntry(draftKey: string, clientMessageId: string) {
-  const body = await kinOutbox.discard(clientMessageId);
-  if (body !== null) restoreDraft(draftKey, body);
+/** How the feed writes into the composer; each call leaves the caret after what it wrote. */
+export interface KinComposerHandle {
+  /** Replaces the draft and focuses the editor. */
+  readonly fill: (text: string) => void;
+  /** Moves an unsent message back into the draft; false once it is already going out. */
+  readonly edit: (clientMessageId: string) => Promise<boolean>;
 }
 
 /**
@@ -113,7 +115,10 @@ export async function editKinOutboxEntry(draftKey: string, clientMessageId: stri
  * Attachments are the thread composer's: the same picker, strip, limits and upload queue. They
  * sit beside the text, not in it, since a Kin message has no context chips.
  */
-export function KinComposer(props: {
+export function KinComposer({
+  ref,
+  ...props
+}: {
   readonly orgId: string;
   readonly chatId: KinChatId;
   readonly environmentId: EnvironmentId;
@@ -125,8 +130,9 @@ export function KinComposer(props: {
   /** Called once the message is in the outbox, so the feed can show the end. */
   readonly onSend: () => void;
   readonly onFocusChange?: (focused: boolean) => void;
-  /** Owned by the feed, so it can focus the editor after filling the draft. */
+  /** Owned by the feed, which writes into the composer through `ref`. */
   readonly editorRef: RefObject<ComposerEditorHandle | null>;
+  readonly ref?: Ref<KinComposerHandle>;
   /** The group's leads, offered on `@`; a message that names one is answered by it. */
   readonly mentionable?: ReadonlyArray<KinMentionCandidate>;
 }) {
@@ -145,6 +151,21 @@ export function KinComposer(props: {
     Math.ceil(Math.min(maxContentHeight, contentHeight)) + 2 * EDITOR_INSET,
   );
   const [selection, setSelection] = useState<ComposerEditorSelection>({ start: 0, end: 0 });
+  // Text and caret land in one render, so the native editor never keeps a caret at 0.
+  const write = (text: string, caret: number) => {
+    setComposerDraftText(draftKey, text);
+    setSelection({ start: caret, end: caret });
+    editorRef.current?.focus();
+  };
+  useImperativeHandle(ref, () => ({
+    fill: (text) => write(text, text.length),
+    edit: async (clientMessageId) => {
+      const body = await kinOutbox.discard(clientMessageId);
+      if (body === null) return false;
+      write(restoredDraft(draftKey, body), body.length);
+      return true;
+    },
+  }));
   // T3's dictation: it writes into this chat's draft at the cursor, as in the thread composer.
   const voice = useVoiceInputController({
     ownerKey: draftKey,
@@ -266,7 +287,7 @@ export function KinComposer(props: {
       mentions: kinMentionsIn(body, mentionable),
     });
     if (queued._tag !== "queued") {
-      restoreDraft(draftKey, body);
+      setComposerDraftText(draftKey, restoredDraft(draftKey, body));
       appendComposerDraftAttachments(draftKey, snapshot.attachments);
       return;
     }

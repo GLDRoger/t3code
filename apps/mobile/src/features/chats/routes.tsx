@@ -12,6 +12,7 @@ import { KinLeadFormScreen } from "./KinLeadFormScreen";
 import { KinLeadScreen } from "./KinLeadScreen";
 import { KinMemoryScreen } from "./KinMemoryScreen";
 import { KinProjectScreen } from "./KinProjectScreen";
+import { KinSettingsScreen } from "./KinSettings";
 import { KinInviteScreen } from "./KinInviteScreen";
 import { KinJoinScreen } from "./KinJoinScreen";
 import { KinTeamScreen } from "./KinTeamScreen";
@@ -33,6 +34,11 @@ export const KIN_SCREENS = {
   KinChats: createNativeStackScreen({
     screen: KinChatsScreen,
     linking: "kin",
+    options: pageRoute({ title: "Kin" }),
+  }),
+  KinSettings: createNativeStackScreen({
+    screen: KinSettingsScreen,
+    linking: "kin/settings",
     options: pageRoute({ title: "Kin" }),
   }),
   KinWaiting: createNativeStackScreen({

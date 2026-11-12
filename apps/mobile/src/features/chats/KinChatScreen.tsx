@@ -63,22 +63,22 @@ import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { HeaderItemsWidthContext } from "../../native/header-items-width";
 import { useNativeFontScale } from "../settings/appearance/useScaledTextRole";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
-import type { ComposerEditorHandle } from "../../native/T3ComposerEditor.types";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { AppText } from "../../components/ui/AppText";
-import { setComposerDraftText } from "../../state/use-composer-drafts";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useMarkdownPreviewStyles } from "../files/FileMarkdownPreview";
 import { useResolveClassNames } from "uniwind";
 import type { NativeMarkdownTextStyle } from "../../native/SelectableMarkdownText";
+import type { ComposerEditorHandle } from "../../native/T3ComposerEditor.types";
 import {
-  editKinOutboxEntry,
   KIN_COMPOSER_COLLAPSED_HEIGHT,
   KIN_COMPOSER_GUTTER,
   KinComposer,
-  kinDraftKey,
+  type KinComposerHandle,
 } from "./components/KinComposer";
 import { KinFoldLine } from "./components/KinFoldLine";
+import { askForKinNotifications } from "./notifications/installKinNotifications";
+import { kinWithoutChoiceEchoes } from "./state/kinChoiceEcho";
 import { KinMessageSheet } from "./components/KinMessageSheet";
 import { KinChatTitle } from "./components/KinChatTitle";
 import { KinOfflineState, KinStaleNoticeView } from "./components/KinScreenState";
@@ -248,6 +248,8 @@ function KinLiveChat(props: {
 }) {
   // The route's host, not the saved one: every Kin host uses the same org id.
   const host = useKinHostAt(props.environmentId);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- asks the OS for Kin's notifications once a Kin chat is on screen, the moment that explains them
+  useEffect(() => askForKinNotifications(), []);
   const chatId = Option.getOrNull(decodeChatId(props.chatId));
   const environmentId = host._tag === "host" ? host.environmentId : null;
   const chatAtom: Atom.Atom<ChatResult> =
@@ -843,6 +845,10 @@ function KinChatStateView(props: {
 const offlineTime = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 // A row counts as seen once half of it shows, or once it fills half the screen: a message taller
 // than two screens never shows half of itself. A row peeking under the edge still lights the pill.
+/** The outbox had already handed the message to the host when the reader asked to take it back. */
+const alreadySending = () =>
+  Dialog.alert("Already sending", "This message went out before it could be changed.");
+
 const SEEN_ROW_CONFIGS = [
   { id: "kin-seen-row", itemVisiblePercentThreshold: 50 },
   { id: "kin-seen-area", viewAreaCoveragePercentThreshold: 50 },
@@ -888,6 +894,10 @@ function KinChatFeed(props: {
 }) {
   const listRef = useRef<LegendListRef>(null);
   const editorRef = useRef<ComposerEditorHandle>(null);
+  const composerRef = useRef<KinComposerHandle>(null);
+  // Set by the reader's own send: the list keeps following the end until they drag, so a scroll
+  // event read while a tall new bubble lays out can't turn following off.
+  const pinnedToEnd = useRef(false);
   const markedSeq = useRef(0);
   const attemptedSeq = useRef(0);
   const marking = useRef(false);
@@ -980,7 +990,7 @@ function KinChatFeed(props: {
       : (props.viewer.memberNames?.get(memberId) ?? (member.role === "owner" ? "Owner" : "Member"));
   };
   const feedRows = buildKinFeedRows(
-    kinFeedMessages(messages, widgets),
+    kinWithoutChoiceEchoes(kinFeedMessages(messages, widgets), widgets),
     props.viewer,
     expandedRuns,
     new Date(dayStartMs),
@@ -1115,6 +1125,7 @@ function KinChatFeed(props: {
 
   const checkEnd = () => {
     const isAtEnd = listRef.current?.getState().isAtEnd ?? true;
+    if (!isAtEnd && pinnedToEnd.current) return;
     if (isAtEnd !== follow.atEnd) transition({ type: "end-check", isAtEnd });
   };
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- onScroll can read isAtEnd before the list re-pins, leaving follow off at the end; the list's own signal restores it
@@ -1148,6 +1159,11 @@ function KinChatFeed(props: {
     void list.scrollToOffset({ offset: contentLength - scrollLength, animated: !reduceMotion });
   };
 
+  const followOwnSend = () => {
+    pinnedToEnd.current = true;
+    jumpToEnd();
+  };
+
   const toggleRun = (runId: string) => {
     setExpandedRuns((current) => {
       const next = new Set(current);
@@ -1175,7 +1191,7 @@ function KinChatFeed(props: {
       })
       .then((queued) => {
         if (queued._tag !== "queued") return;
-        jumpToEnd();
+        followOwnSend();
         void deliverKinOutbox();
       })
       .finally(() => {
@@ -1249,13 +1265,18 @@ function KinChatFeed(props: {
             onPressPreview={setPreviewFile}
             connected={props.connected}
             continues={item.continues}
-            onEdit={() =>
-              void editKinOutboxEntry(
-                kinDraftKey(props.environmentId, props.orgId, props.chatId),
-                item.entry.clientMessageId,
-              )
+            onEdit={() => {
+              const composer = composerRef.current;
+              if (composer === null) return;
+              void composer.edit(item.entry.clientMessageId).then((edited) => {
+                if (!edited) alreadySending();
+              });
+            }}
+            onDiscard={() =>
+              void kinOutbox.discard(item.entry.clientMessageId).then((body) => {
+                if (body === null) alreadySending();
+              })
             }
-            onDiscard={() => void kinOutbox.discard(item.entry.clientMessageId)}
           />
         );
       case "day":
@@ -1301,17 +1322,15 @@ function KinChatFeed(props: {
       recipient={props.title}
       connected={props.connected}
       bottomInset={composerInset}
-      onSend={jumpToEnd}
+      onSend={followOwnSend}
       onFocusChange={onComposerFocus}
       editorRef={editorRef}
+      ref={composerRef}
       mentionable={props.mentionable}
     />
   );
 
-  const startSample = (body: string) => {
-    setComposerDraftText(kinDraftKey(props.environmentId, props.orgId, props.chatId), body);
-    editorRef.current?.focus();
-  };
+  const startSample = (body: string) => composerRef.current?.fill(body);
   const intro =
     showIntro && props.agentName !== null ? (
       <KinIntro
@@ -1466,7 +1485,10 @@ function KinChatFeed(props: {
         maintainVisibleContentPosition={followsEnd ? false : { data: true, size: true }}
         onScroll={checkEnd}
         viewabilityConfigCallbackPairs={seenPairs}
-        onScrollBeginDrag={() => transition({ type: "drag-begin" })}
+        onScrollBeginDrag={() => {
+          pinnedToEnd.current = false;
+          transition({ type: "drag-begin" });
+        }}
         onScrollEndDrag={checkEnd}
         onMomentumScrollEnd={checkEnd}
         scrollEventThrottle={32}

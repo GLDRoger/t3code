@@ -358,11 +358,37 @@ describe("kinOutbox", () => {
   });
 
   it("drops a discarded send from memory and disk", async () => {
-    const { disk, outbox, chat } = setup();
+    const { host, disk, outbox, chat } = setup();
     await outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "Never mind" });
-    await outbox.discard("client-1");
+    expect(await outbox.discard("client-1")).toBe("Never mind");
     expect(chat()).toEqual([]);
     expect(disk.saved()).toEqual([]);
+    // A queued message deleted before the host came back never goes out.
+    host.setOnline(true);
+    await outbox.deliver(ENV);
+    expect(host.calls).toEqual([]);
+  });
+
+  it("refuses to discard a send already in flight, which still settles as sent", async () => {
+    const host = makeHost();
+    host.setOnline(true);
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let started = () => {};
+    const inFlight = new Promise<void>((resolve) => (started = resolve));
+    const { outbox, chat } = setup(host, makeStorage(), (record) => {
+      started();
+      return gate.then(() => host.send(record));
+    });
+    await outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "Racing" });
+    const delivering = outbox.deliver(ENV);
+    await inFlight;
+    expect(chat()[0]?.state).toBe("sending");
+    expect(await outbox.discard("client-1")).toBeNull();
+    release();
+    await delivering;
+    expect([...host.rows.values()].map((row) => row.body)).toEqual(["Racing"]);
+    expect(chat().map((entry) => entry.state)).toEqual(["sent"]);
   });
 
   it("delivers in the order written and keeps pending bubbles in that order", async () => {
