@@ -18,6 +18,7 @@ import type { DocumentInput } from "./DocJobs.ts";
 import { canonical, makeDocument, remakeForEntry, type Requester } from "./make.ts";
 import * as Numbers from "./numbering.ts";
 import { makeReceipt } from "./receipts.ts";
+import { defaultRecipes } from "./recipeDefaults.ts";
 import { recipeLabelled, undoRecipe as undoLabelled } from "./recipeLabels.ts";
 import { KinWorkspace } from "./workspace.ts";
 
@@ -60,6 +61,7 @@ export const recipes = leadTool("KinDocuments.recipes", (lead, _input: Record<st
     yield* admitted(lead, "kin_recipes", {});
     const stored = yield* (yield* KinWorkspace).recipes(lead.orgId);
     const labelled = yield* Effect.forEach(stored, (recipe) => recipeLabelled(lead.orgId, recipe));
+    const defaults = yield* defaultRecipes(lead.orgId, stored);
     return {
       recipes: stored.map((recipe, index) => ({
         name: recipe.name,
@@ -79,7 +81,7 @@ export const recipes = leadTool("KinDocuments.recipes", (lead, _input: Record<st
         })),
         computed: recipe.computed.map(([name]) => name),
         outputs: [...recipe.outputs],
-        ...(recipe.default ? { default: true as const } : {}),
+        ...(defaults.has(recipe.name) ? { default: true as const } : {}),
       })),
     };
   }),

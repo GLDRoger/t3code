@@ -405,6 +405,8 @@ export const partyDetail = Effect.fn("KinCrm.partyDetail")(function* (row: Recor
     notes: row.notes,
     terms: fieldText(fields, "terms"),
     address: fieldText(fields, "address"),
+    gstin: fieldText(fields, "gstin"),
+    placeOfSupply: fieldText(fields, "placeOfSupply"),
     sensitiveFields: [...sensitiveFields("clients")],
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),

@@ -442,6 +442,7 @@ export interface KinPreviewFile {
 export function useKinMoneyActions({ environmentId, orgId }: KinWorkTarget) {
   const issue = useAtomCommand(kinClient.workIssue, { reportFailure: false });
   const voidIt = useAtomCommand(kinClient.workVoid, { reportFailure: false });
+  const unvoid = useAtomCommand(kinClient.workUnvoid, { reportFailure: false });
   const receipt = useAtomCommand(kinClient.makeReceipt, { reportFailure: false });
   const render = useAtomCommand(kinClient.docRender, { reportFailure: false });
   const [busy, setBusy] = useState(false);
@@ -487,6 +488,12 @@ export function useKinMoneyActions({ environmentId, orgId }: KinWorkTarget) {
     void: (key: KinRecordKey) =>
       run(
         () => voidIt({ environmentId, input: { orgId, key } }),
+        key,
+        () => null,
+      ),
+    unvoid: (key: KinRecordKey) =>
+      run(
+        () => unvoid({ environmentId, input: { orgId, key } }),
         key,
         () => null,
       ),

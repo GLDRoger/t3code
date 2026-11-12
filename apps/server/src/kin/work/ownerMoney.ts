@@ -280,6 +280,28 @@ export const voidEntry = Effect.fn("KinMoney.void")(function* (
   };
 }, workFailure);
 
+/** The owner's Undo void: back to owed, or paid, with the number it had. */
+export const unvoidEntry = Effect.fn("KinMoney.unvoid")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinVoidInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  return {
+    ...(yield* Numbers.unvoidEntry(input.orgId, ownerWriter(person), input.key)),
+    documents: [],
+    problems: [],
+  };
+}, workFailure);
+
+/** What Issue's confirmation shows: the number it would give now, which a concurrent issue may take. */
+export const nextNumber = Effect.fn("KinMoney.nextNumber")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinIssueInput,
+) {
+  yield* theOwner(people, input.orgId);
+  return { number: yield* Numbers.nextNumber(input.orgId, input.key) };
+}, workFailure);
+
 export const recordPayment = Effect.fn("KinMoney.recordPayment")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinPaymentInput,

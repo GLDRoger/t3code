@@ -648,7 +648,7 @@ export function KinListEntry(
               def={def}
               actions={money}
               busy={busy}
-              onUnvoid={(state) => void changes.update(item.rev, { state })}
+              party={item.party ?? null}
             />
           )}
           <KinMoneyActionNotice actions={money} />

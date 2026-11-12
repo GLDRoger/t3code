@@ -45,6 +45,12 @@ export const KIN_INVOICES = {
     prefix === null
       ? "It gets the next number in its series, for good, and counts as owed."
       : `It gets the next ${prefix} number, for good, and counts as owed.`,
+  issueNumber: (number: string) =>
+    `It will be ${number}. The number is given when you issue, so if another invoice is issued first, this one gets the one after.`,
+  missingClient: (client: string) =>
+    `${client} has no GSTIN or state yet, so Kin can't tell which GST applies. Add one, then make the invoice.`,
+  editClient: (client: string) => `Edit ${client}`,
+  readingNumber: "Checking the next number…",
   issued: (number: string | null) => (number === null ? "Issued." : `Issued as ${number}.`),
   issuedProblems: "The number stands, but Kin couldn't make its PDF again:",
   voidAction: "Void",
@@ -242,7 +248,6 @@ export function kinInvoiceActions(
   allowed: {
     readonly render: boolean;
     readonly issue: boolean;
-    readonly change: boolean;
     readonly receipt: boolean;
   },
 ) {
@@ -251,14 +256,22 @@ export function kinInvoiceActions(
     make: allowed.render && !view.void,
     issue: allowed.issue && numbered && !view.void && view.number === null,
     void: allowed.issue && numbered && !view.void && def?.states.includes("dropped") === true,
-    unvoid: allowed.change && view.void,
+    unvoid: allowed.issue && view.void,
     receipt: allowed.receipt && !view.void,
   };
 }
 
-/** The state an undone void goes back to: owed again once it has its number, else a draft. */
-export const kinInvoiceUnvoidState = (view: Pick<KinInvoiceView, "number">) =>
-  view.number === null ? ("open" as const) : ("waiting" as const);
+/**
+ * When Make invoice failed for a detail the invoice's client is missing, which client to open:
+ * the server says so in its reason, and the client is the invoice's own.
+ */
+export const kinInvoiceMissingClient = (
+  problem: string | null,
+  party: { readonly key: string; readonly title: string } | null | undefined,
+) =>
+  problem !== null && party != null && /the client has no place of supply/.test(problem)
+    ? { key: party.key as KinRecordKey, name: party.title }
+    : null;
 
 /** The templates that make documents for `list`. */
 export const kinTemplatesFor = (recipes: ReadonlyArray<KinRecipe>, list: string) =>

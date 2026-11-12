@@ -381,6 +381,20 @@ function KinClientBody(
           </Text>
         </View>
       )}
+      {view.vendor && view.tax === null ? null : (
+        <View className="gap-2 px-2">
+          <Text textRole="footnote" className="text-foreground-muted">
+            {KIN_CLIENTS.tax}
+          </Text>
+          <Text
+            textRole="body"
+            selectable
+            className={view.tax === null ? "text-foreground-muted" : "text-foreground"}
+          >
+            {view.tax ?? KIN_CLIENTS.noTax}
+          </Text>
+        </View>
+      )}
       <View className="gap-2 px-2">
         <View className="flex-row items-center justify-between">
           <Text textRole="footnote" className="text-foreground-muted">

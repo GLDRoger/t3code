@@ -203,12 +203,13 @@ export const undoRecipe = Effect.fn("KinRecipeLabels.undo")(function* (
   return undone;
 });
 
-/** The owner clears a recipe's label as they saw it; later changes start from that. */
-export const clearLabel = Effect.fn("KinRecipeLabels.clear")(function* (
+/** The owner raises or clears a recipe's label as they saw it; later changes start from that. */
+export const setLabel = Effect.fn("KinRecipeLabels.set")(function* (
   orgId: KinOrgId,
   name: string,
   personId: KinPersonId,
   seen: string,
+  sensitive: boolean,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const recipe = (yield* (yield* KinWorkspace).recipes(orgId)).find((one) => one.name === name);
@@ -217,13 +218,14 @@ export const clearLabel = Effect.fn("KinRecipeLabels.clear")(function* (
   if (recipe.commit !== seen)
     return yield* new KinChatError({
       reason: "invalid_state",
-      message: `The ${name} recipe changed after you looked at it. Look at it again, then clear its label.`,
+      message: `The ${name} recipe changed after you looked at it. Look at it again, then change its label.`,
     });
   const now = yield* Clock.currentTimeMillis;
+  const cleared = sensitive ? null : personId;
   yield* sql`INSERT INTO kin_recipe_labels (org_id, recipe, commit_sha, sensitive,
       cleared_by_person_id, labelled_at)
-    VALUES (${orgId}, ${name}, ${recipe.commit}, 0, ${personId}, ${now})
-    ON CONFLICT (org_id, recipe, commit_sha) DO UPDATE SET sensitive = 0,
+    VALUES (${orgId}, ${name}, ${recipe.commit}, ${sensitive ? 1 : 0}, ${cleared}, ${now})
+    ON CONFLICT (org_id, recipe, commit_sha) DO UPDATE SET sensitive = excluded.sensitive,
       cleared_by_person_id = excluded.cleared_by_person_id, labelled_at = excluded.labelled_at`;
   return { recipe: name, commit: recipe.commit };
 });
