@@ -12,9 +12,9 @@ the lists it needs. Each line after it is a client, a project or an entry, and m
 lines above it:
 
 ```jsonl
-{"format":"kin-import","version":1,"batch":"oldbooks","source":"Old Books","asOf":"2026-08-10","lists":[{"list":"invoices","template":"invoices"}]}
+{"format":"kin-import","version":1,"batch":"oldbooks","source":"Old Books","asOf":"2026-07-31","lists":[{"list":"invoices","template":"invoices"}]}
 {"client":{"source":"c1","name":"Acme","createdAt":"2026-04-02"}}
-{"entry":{"source":"i1","list":"invoices","title":"April retainer","state":"waiting","client":"c1","date":"2026-04-30","amount":"50000.00","number":"INV/26-27/004","payments":[{"source":"p1","amount":"50000.00","paidOn":"2026-05-20"}]}}
+{"entry":{"source":"i1","list":"invoices","title":"April retainer","state":"waiting","client":"c1","date":"2026-04-30","amount":"48250.00","number":"INV/26-27/004","payments":[{"source":"p1","amount":"48250.00","paidOn":"2026-05-20"}]}}
 {"entry":{"source":"t1","list":"work","title":"Renew the domain","due":"2026-07-01"}}
 ```
 

@@ -52,12 +52,12 @@ const header = {
   version: 1,
   batch: "oldbooks",
   source: "Old Books",
-  asOf: "2026-08-10",
+  asOf: "2026-07-31",
   lists: [
     {
       list: "invoices",
       template: "invoices",
-      numbering: { prefix: "QST", series: "financial_year", width: 3 },
+      numbering: { prefix: "OBK", series: "financial_year", width: 3 },
     },
     {
       list: "expenses",
@@ -113,9 +113,9 @@ const rows = [
       client: "c1",
       date: "2026-04-30",
       due: "2026-05-30",
-      amount: "50000",
-      number: "QST/2026-27/004",
-      payments: [{ source: "pay1", amount: "50000", paidOn: "2026-05-20" }],
+      amount: "61234",
+      number: "OBK/2026-27/004",
+      payments: [{ source: "pay1", amount: "61234", paidOn: "2026-05-20" }],
     },
   },
   {
@@ -126,8 +126,8 @@ const rows = [
       state: "waiting",
       client: "c1",
       date: "2026-05-31",
-      amount: "40000",
-      number: "QST/26-27/002",
+      amount: "38765",
+      number: "OBK/26-27/002",
     },
   },
 ];
@@ -219,8 +219,8 @@ describe("KinImport", () => {
         {
           list: "invoices",
           entries: 2,
-          total: { minor: 9000000, currency: "INR" },
-          paid: { minor: 5000000, currency: "INR" },
+          total: { minor: 9999900, currency: "INR" },
+          paid: { minor: 6123400, currency: "INR" },
         },
       ]);
       assert.deepStrictEqual(applied.stale, [
@@ -232,7 +232,7 @@ describe("KinImport", () => {
       const done = (yield* recordOf("t1"))!;
       assert.strictEqual(done.createdAt, Date.parse("2026-04-04T18:30:00.000Z"));
       assert.strictEqual(done.closedAt, Date.parse("2026-04-09T18:29:59.999Z"));
-      assert.include((yield* recordOf("t2"))!.notes, "last kept up on 2026-08-10");
+      assert.include((yield* recordOf("t2"))!.notes, "last kept up on 2026-07-31");
       assert.notInclude(done.notes, "last kept up");
       const paid = (yield* recordOf("i1"))!;
       assert.deepStrictEqual(
@@ -258,7 +258,7 @@ describe("KinImport", () => {
         state: "open",
         amount: { minor: 100, currency: "INR" },
       });
-      assert.strictEqual((yield* Numbers.issue(orgId, owner, draft.key)).number, "QST/26-27/005");
+      assert.strictEqual((yield* Numbers.issue(orgId, owner, draft.key)).number, "OBK/26-27/005");
 
       const again = yield* imports.apply(orgId, ownerId, books());
       assert.deepStrictEqual(
@@ -290,7 +290,7 @@ describe("KinImport", () => {
           ? {
               entry: {
                 ...one.entry,
-                payments: [{ source: "pay2", amount: "40000", paidOn: "2026-06-30" }],
+                payments: [{ source: "pay2", amount: "38765", paidOn: "2026-06-30" }],
               },
             }
           : one,
@@ -432,7 +432,7 @@ describe("KinImport", () => {
         state: "open",
         amount: { minor: 100, currency: "INR" },
       });
-      assert.strictEqual((yield* Numbers.issue(orgId, owner, draft.key)).number, "QST/26-27/005");
+      assert.strictEqual((yield* Numbers.issue(orgId, owner, draft.key)).number, "OBK/26-27/005");
 
       const undone = yield* imports.undo(orgId, ownerId, "oldbooks", {
         apply: true,
@@ -464,7 +464,7 @@ describe("KinImport", () => {
         state: "open",
         amount: { minor: 100, currency: "INR" },
       });
-      assert.strictEqual((yield* Numbers.issue(orgId, owner, next.key)).number, "QST/26-27/006");
+      assert.strictEqual((yield* Numbers.issue(orgId, owner, next.key)).number, "OBK/26-27/006");
 
       const all = yield* imports.undo(orgId, ownerId, "oldbooks", {
         apply: true,
@@ -548,14 +548,14 @@ describe("KinImport", () => {
   );
 
   it.each([
-    ["QST/2026-27/013", { series: "QST|26-27", seq: 13 }],
-    ["QST/26-27/013", { series: "QST|26-27", seq: 13 }],
-    ["QST-2026-27-007", { series: "QST|26-27", seq: 7 }],
-    ["QST/2026-28/001", { series: "imported|QST/2026-28/001", seq: 1 }],
-    ["QST-RN/2026-27/001", { series: "imported|QST-RN/2026-27/001", seq: 1 }],
+    ["OBK/2026-27/013", { series: "OBK|26-27", seq: 13 }],
+    ["OBK/26-27/013", { series: "OBK|26-27", seq: 13 }],
+    ["OBK-2026-27-007", { series: "OBK|26-27", seq: 7 }],
+    ["OBK/2026-28/001", { series: "imported|OBK/2026-28/001", seq: 1 }],
+    ["OBK-RN/2026-27/001", { series: "imported|OBK-RN/2026-27/001", seq: 1 }],
   ] as const)("places %s in its series", (number, expected) => {
     assert.deepStrictEqual(
-      KinImport.seriesOf({ prefix: "QST", series: "financial_year", width: 3 }, number),
+      KinImport.seriesOf({ prefix: "OBK", series: "financial_year", width: 3 }, number),
       expected,
     );
   });

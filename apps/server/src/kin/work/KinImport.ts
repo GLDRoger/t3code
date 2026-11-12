@@ -119,8 +119,8 @@ export type Lines = Stream.Stream<string, KinChatError>;
 export type Progress = (done: number, of: number) => Effect.Effect<void>;
 
 /**
- * Where an issued number sits: `QST/2026-27/013` and `QST/26-27/013` in the list's series for
- * 26-27, `QST/13` in a running one, anything else in a series of its own Kin never continues.
+ * Where an issued number sits: `OBK/2026-27/013` and `OBK/26-27/013` in the list's series for
+ * 26-27, `OBK/13` in a running one, anything else in a series of its own Kin never continues.
  */
 export const seriesOf = (rule: KinNumberingRule, number: string) => {
   const prefix = rule.prefix.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
