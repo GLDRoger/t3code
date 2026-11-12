@@ -634,6 +634,7 @@ leaks:
       leak: t3-home
       files:
         - ops/kin/host/backup.sh
+        - ops/kin/host/kin
         - ops/kin/host/kin-server.service
         - ops/kin/host/kin-worker.sh
         - ops/kin/host/update.sh
