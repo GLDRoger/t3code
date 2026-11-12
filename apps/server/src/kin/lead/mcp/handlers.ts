@@ -71,6 +71,27 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       return { widgetId: result.widgetId, messageId: result.messageId };
     }, Effect.mapError(failure)),
   ),
+  kin_chart: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.chart")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      const wakeupId = KinWakeupId.make(lead.wakeupId);
+      const lane = yield* laneFor({ orgId: lead.orgId, agentId: lead.agentId, wakeupId });
+      if (Option.isNone(lane))
+        return yield* new KinChatError({ reason: "not_found", message: "Kin record not found." });
+      // An identical call in the same wake-up is a retry and returns the same card.
+      const key = NodeCrypto.createHash("sha256").update(stableStringify(input)).digest("hex");
+      const result = yield* (yield* KinLevelGate).chart(
+        { ...lead, wakeupId },
+        {
+          ...input,
+          chatId: lane.value.chatId,
+          clientMessageId: `kin-chart:${wakeupId}:${key.slice(0, 32)}`,
+          intent: lane.value.mode === "reply" ? "answer" : "evidence",
+        },
+      );
+      return { widgetId: result.widgetId, messageId: result.messageId };
+    }, Effect.mapError(failure)),
+  ),
   kin_react: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.react")(function* (input) {
       const lead = yield* resolveLead(yield* McpInvocationContext);

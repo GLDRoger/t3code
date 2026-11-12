@@ -75,6 +75,9 @@ describe("kinCardView", () => {
       kind: "unknown",
       text: null,
     });
+    // A chart from a newer host, of a kind this build can't draw, still says its title.
+    const pie = widget({ type: "chart", state: { chart: "pie", title: "Spend by team" } });
+    expect(kinCardView(pie, HOST, known())).toEqual({ kind: "unknown", text: "Spend by team" });
     // Beside the message's own text the card adds nothing; with no words at all it isn't drawn.
     expect(kinCardDraws(poll, HOST, false)).toBe(true);
     expect(kinCardDraws(poll, HOST, true)).toBe(false);

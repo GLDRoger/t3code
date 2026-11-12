@@ -103,9 +103,11 @@ const ownerDelegates: Condition = Effect.fnUntraced(function* (turn, args) {
 export const SHARED_TOOLS = {
   kin_chat_post: inTurnChat,
   kin_widget_upsert: inTurnChat,
-  // These two take no chat: they go to the turn's own chat, and `destination` checks it.
+  // These three take no chat: they go to the turn's own chat, and `destination` checks it.
   kin_ask: "allowed",
   kin_react: "allowed",
+  // Numbers the agent supplies, which it could have written in that chat as text; it reads nothing.
+  kin_chart: "allowed",
   kin_chat_read: inAskedChat,
   // Lists only the names of the leads in the asked chat (`KinHandoff.leads`).
   kin_leads: "allowed",

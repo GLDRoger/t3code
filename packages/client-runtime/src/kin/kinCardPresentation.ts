@@ -17,6 +17,7 @@ import * as Schema from "effect/Schema";
 
 import { kinHeldLine } from "./kinAgentRetire.ts";
 import { kinApprovalWidgetView, type KinApprovalWidgetView } from "./kinApprovalPresentation.ts";
+import { kinChartCardView, type KinChartView } from "./kinChart.ts";
 import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks.ts";
 import { kinSentences } from "./kinScreenState.ts";
 import { kinChoiceCardView, type KinChoiceCardView } from "./kinChoicePresentation.ts";
@@ -58,6 +59,7 @@ export type KinCardView =
   | { readonly kind: "task"; readonly task: KinTaskCardView }
   | { readonly kind: "deferral"; readonly deferral: KinDeferralCardView }
   | { readonly kind: "choice"; readonly choice: KinChoiceCardView }
+  | { readonly kind: "chart"; readonly chart: KinChartView }
   | { readonly kind: "digest"; readonly digest: KinDigestCardView }
   | { readonly kind: "memory_changes"; readonly changes: KinMemoryChangesCardView }
   | { readonly kind: "approval"; readonly approval: KinApprovalWidgetView }
@@ -551,6 +553,10 @@ function kinLiveCardView(
     case "choice": {
       const choice = kinChoiceCardView(widget);
       return choice === null ? unknown(widget) : { kind: "choice", choice };
+    }
+    case "chart": {
+      const chart = kinChartCardView(widget);
+      return chart === null ? unknown(widget) : { kind: "chart", chart };
     }
     case "routine": {
       const card = decodeRoutine(widget.state);
