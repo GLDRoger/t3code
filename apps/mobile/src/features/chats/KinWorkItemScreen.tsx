@@ -200,7 +200,7 @@ function KinWorkItemBody(props: ItemTarget) {
     );
   }
   const { item } = state;
-  const { orgs, people, names } = directory;
+  const { orgs, people, joined, names } = directory;
   const view = kinWorkItemView(
     kinWorkApplied(item, changed),
     names,
@@ -215,7 +215,14 @@ function KinWorkItemBody(props: ItemTarget) {
     canChange && view.editable
       ? (action: Parameters<typeof changes.run>[1]) => void changes.run(item, action, names)
       : null;
-  const waitingOn = kinWorkAssignees({ orgs, orgId, people, names, current: view.waitingOn });
+  const waitingOn = kinWorkAssignees({
+    orgs,
+    orgId,
+    people,
+    joined,
+    names,
+    current: view.waitingOn,
+  });
   const openChat = (chatId: KinChatId) => {
     navigation.goBack();
     navigation.navigate("KinChat", { environmentId, orgId, chatId });

@@ -98,7 +98,7 @@ function KinWorkAssignBody(props: ItemTarget) {
   const { environmentId, orgId, itemKey } = props;
   const itemAtom = kinClient.workItem({ environmentId, input: { orgId, key: itemKey } });
   const state = kinWorkItemState(useAtomValue(itemAtom), useKinWorkAnswer(props, itemKey));
-  const { orgs, people, names } = useKinWorkDirectory(props, true);
+  const { orgs, people, joined, names } = useKinWorkDirectory(props, true);
   const create = useAtomCommand(kinClient.workCreate, { reportFailure: false });
   const assign = useAtomCommand(kinClient.workAssign, { reportFailure: false });
   const [actions] = useState(() =>
@@ -151,7 +151,14 @@ function KinWorkAssignBody(props: ItemTarget) {
     appAtomRegistry.refresh(itemAtom);
     navigation.goBack();
   };
-  const assignees = kinWorkAssignees({ orgs, orgId, people, names, current: state.item.owner });
+  const assignees = kinWorkAssignees({
+    orgs,
+    orgId,
+    people,
+    joined,
+    names,
+    current: state.item.owner,
+  });
   const rows = (list: ReadonlyArray<KinWorkAssignee>) =>
     list.map((to, index) => (
       <ListChoiceRow

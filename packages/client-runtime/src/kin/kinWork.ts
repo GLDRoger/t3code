@@ -1100,6 +1100,8 @@ export function kinWorkAssignees(input: {
   readonly people: ReadonlyArray<KinPerson> | null;
   readonly names: KinWorkNames;
   readonly current: KinWorkPrincipal | null;
+  /** People whose device still opens Kin; when given, others are offered only if they hold it now. */
+  readonly joined?: ReadonlyArray<KinPersonId> | null;
 }): {
   readonly leads: ReadonlyArray<KinWorkAssignee>;
   readonly people: ReadonlyArray<KinWorkAssignee>;
@@ -1114,8 +1116,15 @@ export function kinWorkAssignees(input: {
   });
   const org = input.orgs?.orgs.find((held) => held.orgId === input.orgId);
   const me = input.orgs?.me.find((held) => held.orgId === input.orgId)?.personId;
+  const joined = input.joined == null ? null : new Set(input.joined);
   const others = (input.people ?? [])
     .filter((person) => person.personId !== me)
+    .filter(
+      (person) =>
+        joined === null ||
+        joined.has(person.personId) ||
+        kinWorkSamePrincipal({ _tag: "person", personId: person.personId }, current),
+    )
     .map((person) => view({ _tag: "person", personId: person.personId }));
   return {
     leads: (org?.agents ?? [])

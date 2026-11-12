@@ -107,7 +107,8 @@ export function useKinWorkDirectory({ environmentId, orgId }: KinWorkTarget, ena
   const result = useAtomValue(
     enabled ? kinClient.people({ environmentId, input: { orgId } }) : noPeopleAtom,
   );
-  const people = Option.getOrNull(AsyncResult.value(result))?.people ?? null;
+  const listed = Option.getOrNull(AsyncResult.value(result));
+  const people = listed?.people ?? null;
   const zone =
     Option.getOrNull(
       AsyncResult.value(
@@ -116,7 +117,12 @@ export function useKinWorkDirectory({ environmentId, orgId }: KinWorkTarget, ena
         ),
       ),
     )?.timeZone ?? null;
-  return { orgs, people, names: kinWorkNames({ orgs, orgId, people, zone }) };
+  return {
+    orgs,
+    people,
+    joined: listed?.joined ?? null,
+    names: kinWorkNames({ orgs, orgId, people, zone }),
+  };
 }
 
 export type KinWorkDirectory = ReturnType<typeof useKinWorkDirectory>;
