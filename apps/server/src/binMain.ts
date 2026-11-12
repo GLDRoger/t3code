@@ -22,6 +22,9 @@ export async function runCliCommand() {
   } else if (command === "__kin-statement") {
     const { runStatementWorker } = await import("./kin/work/statements/statementWorker.ts");
     await runStatementWorker();
+  } else if (command === "__kin-statement-check") {
+    const { runStatementCheck } = await import("./kin/work/statements/statementCheck.ts");
+    await runStatementCheck(process.argv[3]!);
   } else if (command === "__managed-chatgpt-token") {
     const { runManagedChatGptTokenCli } = await import("./cli/managedChatGptToken.ts");
     await runManagedChatGptTokenCli(process.argv.slice(3));
