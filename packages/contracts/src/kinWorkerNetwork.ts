@@ -13,13 +13,15 @@ const privateSuffixes = ["localhost", "local", "internal", "home.arpa", "ts.net"
  * name or one `*.` wildcard, never an address, port, scheme or a name that stays inside.
  */
 export const workerHostProblem = (host: string): string | undefined => {
-  if (host.length > 253 || !hostName.test(host))
-    return "isn't a lowercase host name such as registry.npmjs.org or *.example.com";
   const bare = host.startsWith("*.") ? host.slice(2) : host;
   const suffix = privateSuffixes.find((entry) => bare === entry || bare.endsWith(`.${entry}`));
-  return suffix === undefined
-    ? undefined
-    : `ends in .${suffix}, which names this machine, its network or its tailnet`;
+  if (suffix !== undefined)
+    return `ends in .${suffix}, a name for this machine, its network or its tailnet`;
+  if (/^[a-z0-9-]+$/.test(host))
+    return "is a single-label name, which resolves only on this machine's network";
+  if (host.length > 253 || !hostName.test(host))
+    return "isn't a lowercase host name such as registry.npmjs.org or *.example.com";
+  return undefined;
 };
 
 /** A host a worker's commands may reach through the sandbox's proxy; see `workerHostProblem`. */
