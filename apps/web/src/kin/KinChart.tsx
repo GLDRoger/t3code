@@ -146,12 +146,7 @@ function KinChartPlot(props: { readonly view: KinChartView; readonly width: numb
   });
   const scrolls = layout.axis.width + layout.width > width;
   return (
-    <div
-      role="img"
-      aria-label={view.summary}
-      className="flex max-w-full"
-      style={{ height: layout.height }}
-    >
+    <div role="img" aria-label={view.summary} className="flex max-w-full items-start">
       {layout.axis.width === 0 ? null : (
         <svg
           aria-hidden
@@ -169,7 +164,10 @@ function KinChartPlot(props: { readonly view: KinChartView; readonly width: numb
           if (element !== null && layout.startAtEnd) element.scrollLeft = element.scrollWidth;
         }}
         tabIndex={scrolls ? 0 : undefined}
-        className={cn("min-w-0", scrolls && "overflow-x-auto overscroll-x-contain")}
+        className={cn(
+          "min-w-0",
+          scrolls && "overflow-x-auto overflow-y-hidden overscroll-x-contain",
+        )}
       >
         <svg
           aria-hidden
@@ -232,14 +230,17 @@ function KinChartFigure(props: { readonly view: KinChartView }) {
       )}
       {width === 0 ? (
         <div style={{ height: kinChartHeight(0) }} />
-      ) : (
+      ) : view.scatter === null ? (
         <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
           <KinChartPlot view={view} width={width} />
           <KinChartLegend view={view} />
         </div>
-      )}
-      {view.scatter === null ? null : (
-        <p className="text-right text-3xs text-muted-foreground">{view.scatter.xName}</p>
+      ) : (
+        <>
+          <KinChartPlot view={view} width={width} />
+          <p className="text-right text-3xs text-muted-foreground">{view.scatter.xName}</p>
+          <KinChartLegend view={view} />
+        </>
       )}
     </div>
   );

@@ -185,11 +185,10 @@ function KinChartPlot(props: { readonly view: KinChartView; readonly width: numb
   );
 }
 
-const MARKS: Record<KinChartMark, string> = {
+const MARKS: Record<Exclude<KinChartMark, "dashed">, string> = {
   box: "size-2 rounded-xs",
   dot: "size-2 rounded-full",
   line: "h-0.5 w-3 rounded-full",
-  dashed: "h-0.5 w-3 rounded-full",
 };
 
 function KinChartLegend(props: { readonly view: KinChartView }) {
@@ -205,10 +204,17 @@ function KinChartLegend(props: { readonly view: KinChartView }) {
     >
       {view.legend.map((item) => (
         <View key={item.key} className="shrink flex-row items-center gap-1.5">
-          <View
-            className={cn(MARKS[item.mark], COLORS[item.tone.color].swatch)}
-            style={{ opacity: strength(item.tone) }}
-          />
+          {item.mark === "dashed" ? (
+            <View className="flex-row gap-0.5" style={{ opacity: strength(item.tone) }}>
+              <View className={cn("h-0.5 w-1.5", COLORS[item.tone.color].swatch)} />
+              <View className={cn("h-0.5 w-1.5", COLORS[item.tone.color].swatch)} />
+            </View>
+          ) : (
+            <View
+              className={cn(MARKS[item.mark], COLORS[item.tone.color].swatch)}
+              style={{ opacity: strength(item.tone) }}
+            />
+          )}
           <Text textRole="caption" numberOfLines={1} className="shrink text-foreground-muted">
             {item.name}
           </Text>
@@ -237,14 +243,19 @@ function KinChartFigure(props: { readonly view: KinChartView; readonly width: nu
           {view.scatter.yName}
         </Text>
       )}
-      <View className="flex-row flex-wrap items-center gap-x-5 gap-y-2.5">
-        <KinChartPlot view={view} width={width} />
-        <KinChartLegend view={view} />
-      </View>
-      {view.scatter === null ? null : (
-        <Text textRole="caption" className="text-right text-foreground-muted">
-          {view.scatter.xName}
-        </Text>
+      {view.scatter === null ? (
+        <View className="flex-row flex-wrap items-center gap-x-5 gap-y-2.5">
+          <KinChartPlot view={view} width={width} />
+          <KinChartLegend view={view} />
+        </View>
+      ) : (
+        <>
+          <KinChartPlot view={view} width={width} />
+          <Text textRole="caption" className="text-right text-foreground-muted">
+            {view.scatter.xName}
+          </Text>
+          <KinChartLegend view={view} />
+        </>
       )}
     </View>
   );

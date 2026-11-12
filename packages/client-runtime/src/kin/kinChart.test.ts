@@ -89,7 +89,7 @@ describe("kinChartView", () => {
         unit: inr,
         labels: ["Rent", "Salaries", "Cloud", "Travel"],
         series: [{ name: "Spend", values: [5000000, 15000000, null, 0] }],
-        colors: [null, "red", null, null],
+        colors: [null, "accent", null, null],
       }),
     );
     expect(view.table.columns.map((column) => column.name)).toEqual(["Spend", "Share"]);
@@ -102,8 +102,9 @@ describe("kinChartView", () => {
     ]);
     expect(view.total).toBe("₹2L");
     expect(view.legend.map((item) => [item.name, item.tone.color, item.detail])).toEqual([
-      ["Rent", "accent", "₹50,000 · 25%"],
-      ["Salaries", "red", "₹1,50,000 · 75%"],
+      // A slice left to the default never takes the colour another slice asked for.
+      ["Rent", "amber", "₹50,000 · 25%"],
+      ["Salaries", "accent", "₹1,50,000 · 75%"],
       ["Travel", "green", "₹0 · 0%"],
     ]);
     expect(view.summary).toBe(
@@ -163,6 +164,7 @@ describe("kinChartView", () => {
     expect(view.legend.map((item) => [item.name, item.tone.color, item.mark])).toEqual([
       ["Search", "accent", "dot"],
       ["Social", "purple", "dot"],
+      ["Goal 50", "grey", "dashed"],
     ]);
     expect(view.summary).toBe(
       "Scatter chart: Signups. Signups against Ad spend. Search: 2 points, Ad spend ₹30,000.50 to ₹1,20,000.00, Signups 12 to 40. Social: 1 point, Ad spend ₹5,000.00, Signups 3. Goal: 50.",

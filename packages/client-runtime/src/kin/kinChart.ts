@@ -203,12 +203,25 @@ const label = (spec: KinChartSpec, text: string) => {
 // Strong colours first, red last so it is never a default by accident; then each one soft.
 const COLORS = ["accent", "amber", "green", "purple", "grey", "red"] as const;
 const PREVIOUS: KinChartTone = { color: "grey", soft: true };
-const toneAt = (index: number): KinChartTone => ({
-  color: COLORS[index % COLORS.length]!,
-  soft: Math.floor(index / COLORS.length) % 2 === 1,
-});
-const tone = (color: KinChartColor | null | undefined, index: number): KinChartTone =>
-  color === null || color === undefined ? toneAt(index) : { color, soft: false };
+const CYCLE: ReadonlyArray<KinChartTone> = [false, true].flatMap((soft) =>
+  COLORS.map((color) => ({ color, soft })),
+);
+
+/**
+ * A tone for each series or slice: the colour it asked for, or the next default nobody asked for,
+ * so a series left to the default never matches one that was given a meaning.
+ */
+function tonesFor(colors: ReadonlyArray<KinChartColor | null | undefined>) {
+  const asked = new Set(colors);
+  const free = CYCLE.filter((tone) => tone.soft || !asked.has(tone.color));
+  const defaults = free.length === 0 ? CYCLE : free;
+  let next = 0;
+  return colors.map((color): KinChartTone =>
+    color === null || color === undefined
+      ? defaults[next++ % defaults.length]!
+      : { color, soft: false },
+  );
+}
 
 const KIND_NAMES: Record<KinChartKind, string> = {
   line: "Line chart",
@@ -277,10 +290,11 @@ function scatterView(spec: KinChartSpec, scatter: NonNullable<KinChartSpec["scat
   );
   const sayX = (value: number) => formatKinChartValue(scatter.xUnit, value, "full", keepX);
   const sayY = (value: number) => formatKinChartValue(spec.unit, value, "full", keepY);
+  const tones = tonesFor(scatter.series.map((one) => one.color));
   const series = scatter.series.map((one, index) => ({
     key: `series-${index}`,
     name: one.name,
-    tone: tone(one.color, index),
+    tone: tones[index]!,
     points: one.points.flatMap((point, at) => {
       if (point.x === null || point.y === null) return [];
       const name = point.label ?? (many ? `${one.name} ${at + 1}` : `Point ${at + 1}`);
@@ -357,6 +371,19 @@ export function kinChartView(spec: KinChartSpec): KinChartView {
     target,
     valueLabels: spec.valueLabels === true,
   };
+  // The key names a target: written on its line it would sit on the bars and points it judges.
+  const targetKey =
+    target === null
+      ? []
+      : [
+          {
+            key: "target",
+            name: `${target.name} ${formatKinChartValue(spec.unit, target.value, "compact")}`,
+            tone: PREVIOUS,
+            mark: "dashed" as const,
+            detail: null,
+          },
+        ];
   const targetSaid = (keepMinor: boolean) =>
     target === null
       ? null
@@ -370,15 +397,17 @@ export function kinChartView(spec: KinChartSpec): KinChartView {
       ...EMPTY,
       ...head,
       ...scatter,
+      legend: [...scatter.legend, ...targetKey],
       summary: summary([...described, targetSaid(false)]),
     };
   }
 
   const labels = spec.labels.map((text) => label(spec, text));
+  const tones = tonesFor(spec.series.map((series) => series.color));
   const current = spec.series.map((series, index): KinChartSeriesView => ({
     key: `series-${index}`,
     name: series.name,
-    tone: tone(series.color, index),
+    tone: tones[index]!,
     previous: false,
     values: series.values,
   }));
@@ -423,11 +452,12 @@ export function kinChartView(spec: KinChartSpec): KinChartView {
             .sort((a, b) => a.index - b.index);
     const rest = all.length - kept.length;
     const detail = (value: number) => `${full(value)} · ${share(value, total)}`;
+    const sliceTones = tonesFor(kept.map((slice) => spec.colors?.[slice.index]));
     const slices: ReadonlyArray<KinChartSliceView> = [
-      ...kept.map((slice) => ({
+      ...kept.map((slice, index) => ({
         key: `slice-${slice.index}`,
         name: slice.name,
-        tone: tone(spec.colors?.[slice.index], kept.indexOf(slice)),
+        tone: sliceTones[index]!,
         value: slice.value,
         detail: detail(slice.value),
       })),
@@ -502,17 +532,21 @@ export function kinChartView(spec: KinChartSpec): KinChartView {
     labels,
     dated: spec.labelType !== "category",
     series: [...previous, ...current],
-    labelTones: colored ? spec.colors.map((color) => tone(color, 0)) : null,
-    legend:
-      read.length > 1
+    labelTones: colored
+      ? spec.colors.map((color) => (color === null ? current[0]!.tone : { color, soft: false }))
+      : null,
+    legend: [
+      ...(read.length > 1
         ? read.map(({ key, name, tone, previous }) => ({
             key,
             name,
             tone,
-            mark: previous && MARKS[kind] === "line" ? "dashed" : MARKS[kind],
+            mark: previous && MARKS[kind] === "line" ? ("dashed" as const) : MARKS[kind],
             detail: null,
           }))
-        : [],
+        : []),
+      ...targetKey,
+    ],
     table: {
       columns: read.map(({ key, name }) => ({ key, name })),
       rows: labels.map((one, index) => ({

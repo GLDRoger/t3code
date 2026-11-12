@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Fixtures build ISO dates from a fixed day.
 import type { KinChartSpec } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -204,21 +205,24 @@ describe("kinChartLayout", () => {
     expect(stacked.areas[1]!.path).toContain(`${paid!.path}L${freeEnd}`);
   });
 
-  it("lays horizontal bars a row per label, long names cut in the gutter, values at bar ends", () => {
-    const layout = draw({
-      chart: "horizontal_bar",
+  it("lays horizontal bars a row per label, long names above them on a phone, values at bar ends", () => {
+    const change = {
+      chart: "horizontal_bar" as const,
       labels: ["Enterprise annual contracts renewed", "Self-serve", "Refunds"],
       series: [{ name: "Net", values: [900, 300, -150] }],
-      colors: [null, null, "red"],
+      colors: [null, null, "red" as const],
       valueLabels: true,
       target: { name: "Goal", value: 600 },
-    });
-    expect(layout.axis.width).toBeLessThanOrEqual(320 * 0.38);
-    expect(layout.axis.texts.map((text) => text.text)).toEqual([
-      "Enterprise annual…",
-      "Self-serve",
-      "Refunds",
-    ]);
+    };
+    const layout = draw(change);
+    // A name too long to sit beside its bar is written whole above it, and the bars get the width.
+    expect(layout.axis).toEqual({ width: 0, texts: [] });
+    expect(keyed(layout.texts, "y-").map((text) => text.text)).toEqual(change.labels);
+    expect(keyed(layout.texts, "y-")[0]!.y).toBeLessThan(layout.bars[0]!.y);
+    // With room to spare the names go beside the bars, uncut.
+    const wide = draw(change, { width: 700 });
+    expect(wide.axis.texts.map((text) => text.text)).toEqual(change.labels);
+    expect(wide.axis.width + wide.width).toBe(700);
     const [first, second, refunds] = layout.bars;
     expect(second!.y).toBeGreaterThan(first!.y + first!.height);
     expect(first!.width).toBeCloseTo(second!.width * 3, 0);
@@ -235,7 +239,6 @@ describe("kinChartLayout", () => {
       expect(text.anchor === "start" ? text.x + wide : text.x).toBeLessThanOrEqual(layout.width);
     }
     expect(layout.rules.find((rule) => rule.key === "target")).toMatchObject({ dashed: true });
-    expect(layout.texts.find((text) => text.key === "target")!.text).toBe("Goal 600");
     // Sixty rows is as tall as a card grows.
     const tall = draw({
       chart: "horizontal_bar",

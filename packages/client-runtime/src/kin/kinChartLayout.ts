@@ -156,11 +156,6 @@ const titleFor = (view: KinChartView) => {
     `${view.labels[index]!.full}: ${many ? `${series.name} ` : ""}${formatKinChartValue(view.unit, value)}`;
 };
 
-const targetText = (view: KinChartView) =>
-  view.target === null
-    ? ""
-    : `${view.target.name} ${formatKinChartValue(view.unit, view.target.value, "compact")}`;
-
 interface Frame {
   readonly charWidth: number;
   readonly fontSize: number;
@@ -205,15 +200,19 @@ function vertical(view: KinChartView, width: number, frame: Frame): KinChartLayo
   const barGap = columns > 1 ? (columns > 4 ? 1 : 2) : 0;
   const inset = 6;
   const least = lined
-    ? Math.max(3, valueWidth)
-    : Math.max(columns * 3 + barGap * (columns - 1), columns * valueWidth) / 0.72;
+    ? Math.max(2, valueWidth)
+    : Math.max(
+        (columns * 3 + barGap * (columns - 1)) / 0.72,
+        // One bar's value may overhang into the gap beside it; bars side by side may not.
+        columns === 1 ? valueWidth : (columns * valueWidth) / 0.72,
+      );
   const needed = lined ? inset * 2 + (count - 1) * least : count * least;
   const plotWidth = Math.round(clamp(needed + 6, room, MAX_PLOT_WIDTH));
 
   const plot = {
     left: 0,
     right: plotWidth - 6,
-    top: 8 + (labelled || view.target !== null ? fontSize + 2 : 0),
+    top: 8 + (labelled ? fontSize + 2 : 0),
     bottom: height - 20,
   };
   const plotHeight = Math.max(1, plot.bottom - plot.top);
@@ -227,7 +226,7 @@ function vertical(view: KinChartView, width: number, frame: Frame): KinChartLayo
     );
   // A plot squeezed to its widest may have no room left for the values it was asked to write.
   const writes =
-    labelled && (lined ? spacing : band * 0.72) >= (lined ? 1 : columns) * valueWidth - 1;
+    labelled && (lined || columns === 1 ? spacing : (band * 0.72) / columns) >= valueWidth - 1;
 
   // A category keeps its label under its own bar, cut to the room it has; dates thin out instead.
   const gap = 10;
@@ -255,6 +254,11 @@ function vertical(view: KinChartView, width: number, frame: Frame): KinChartLayo
     ];
   });
 
+  // A value centred over the first or last point is nudged in, so the plot's edge never cuts it.
+  const inside = (x: number, text: string) => {
+    const half = (text.length * charWidth) / 2;
+    return round(clamp(x, half, Math.max(half, plotWidth - half)));
+  };
   const title = titleFor(view);
   const bars: Array<KinChartLayout["bars"][number]> = [];
   const areas: Array<KinChartLayout["areas"][number]> = [];
@@ -300,7 +304,7 @@ function vertical(view: KinChartView, width: number, frame: Frame): KinChartLayo
         if (writes && !stacked)
           texts.push({
             key: `v-${series.key}-${index}`,
-            x: round(x + barWidth / 2),
+            x: inside(x + barWidth / 2, compact(value)),
             y: value < 0 ? round(y + tall + fontSize) : y - 3,
             text: compact(value),
             anchor: "middle",
@@ -314,7 +318,7 @@ function vertical(view: KinChartView, width: number, frame: Frame): KinChartLayo
       )
         texts.push({
           key: `v-total-${index}`,
-          x: toX(index),
+          x: inside(toX(index), compact(stackTotal(view, index))),
           y: toY(up) - 3,
           text: compact(stackTotal(view, index)),
           anchor: "middle",
@@ -384,7 +388,7 @@ function vertical(view: KinChartView, width: number, frame: Frame): KinChartLayo
         const y = toY(value);
         texts.push({
           key: `v-${index}`,
-          x: clamp(toX(index), valueWidth / 2, plotWidth - valueWidth / 2),
+          x: inside(toX(index), compact(value)),
           y: y - 6 < plot.top - fontSize ? y + fontSize + 4 : y - 6,
           text: compact(value),
           anchor: "middle",
@@ -407,14 +411,6 @@ function vertical(view: KinChartView, width: number, frame: Frame): KinChartLayo
       path: hLine(y, plot.left, plot.right),
       strong: true,
       dashed: true,
-    });
-    texts.push({
-      key: "target",
-      x: startAtEnd ? plot.right : plot.left + 2,
-      y: y - 4,
-      text: targetText(view),
-      anchor: startAtEnd ? "end" : "start",
-      strong: true,
     });
   }
 
@@ -453,9 +449,12 @@ function horizontal(view: KinChartView, width: number, frame: Frame): KinChartLa
   const scale = scaleFor(all, view.unit, { fromZero: true, ticks: width < 420 ? 3 : TICKS });
 
   const longest = Math.max(...view.labels.map((one) => Array.from(one.short).length));
-  const axisWidth = Math.floor(Math.min(longest * charWidth + 10, width * 0.38));
-  const labelRoom = Math.max(MIN_LABEL_CHARS, Math.floor((axisWidth - 10) / charWidth));
+  // Names that would be cut beside their bars are written in full above them instead.
+  const above = longest * charWidth + 10 > width * 0.38;
+  const axisWidth = above ? 0 : Math.ceil(longest * charWidth + 10);
   const plotWidth = Math.max(40, width - axisWidth);
+  const labelRoom = Math.max(MIN_LABEL_CHARS, Math.floor(plotWidth / charWidth));
+  const nameHeight = above ? fontSize + 5 : 0;
 
   const valueTexts = !view.valueLabels
     ? []
@@ -477,8 +476,8 @@ function horizontal(view: KinChartView, width: number, frame: Frame): KinChartLa
 
   const thick = columns === 1 ? 14 : columns <= 3 ? 9 : 6;
   const barGap = columns > 1 ? (columns > 4 ? 1 : 2) : 0;
-  const rowHeight = thick * columns + barGap * (columns - 1) + 10;
-  const top = view.target === null ? 4 : fontSize + 6;
+  const rowHeight = nameHeight + thick * columns + barGap * (columns - 1) + 10;
+  const top = 4;
   const bottom = top + rowHeight * count;
   const height = bottom + 20;
 
@@ -508,7 +507,16 @@ function horizontal(view: KinChartView, width: number, frame: Frame): KinChartLa
   const bars: Array<KinChartLayout["bars"][number]> = [];
   const zero = toX(0);
   for (let index = 0; index < count; index++) {
-    const rowTop = top + rowHeight * index + 5;
+    const rowTop = top + rowHeight * index + 5 + nameHeight;
+    if (above)
+      texts.push({
+        key: `y-${index}`,
+        x: 0,
+        y: rowTop - 5,
+        text: cut(view.labels[index]!.short, labelRoom),
+        anchor: "start",
+        strong: false,
+      });
     let up = 0;
     let down = 0;
     view.series.forEach((series, column) => {
@@ -553,24 +561,26 @@ function horizontal(view: KinChartView, width: number, frame: Frame): KinChartLa
       });
   }
 
+  // With names written above the bars, a rule runs only beside the bars, never through a name.
+  const barsHeight = rowHeight - nameHeight - 10;
+  const rule = (x: number) =>
+    above
+      ? view.labels
+          .map((_, index) => {
+            const from = top + rowHeight * index + nameHeight + 3;
+            return vLine(x, from, from + barsHeight + 4);
+          })
+          .join("")
+      : vLine(x, top, bottom);
   const rules: Array<KinChartLayout["rules"][number]> = scale.ticks.map((tick) => ({
     key: `x-${tick}`,
-    path: vLine(toX(tick), top, bottom),
+    path: rule(toX(tick)),
     strong: tick === 0 && scale.low < 0 && scale.high > 0,
     dashed: false,
   }));
   if (view.target !== null) {
     const x = toX(view.target.value);
-    const left = x > plotWidth / 2;
-    rules.push({ key: "target", path: vLine(x, top - 2, bottom), strong: true, dashed: true });
-    texts.push({
-      key: "target",
-      x: left ? x + 2 : x - 2,
-      y: fontSize,
-      text: targetText(view),
-      anchor: left ? "end" : "start",
-      strong: true,
-    });
+    rules.push({ key: "target", path: rule(x), strong: true, dashed: true });
   }
 
   return {
@@ -578,14 +588,16 @@ function horizontal(view: KinChartView, width: number, frame: Frame): KinChartLa
     height,
     axis: {
       width: axisWidth,
-      texts: view.labels.map((one, index) => ({
-        key: `y-${index}`,
-        x: axisWidth - 8,
-        y: middle(top + rowHeight * (index + 0.5)),
-        text: cut(one.short, labelRoom),
-        anchor: "end",
-        strong: false,
-      })),
+      texts: above
+        ? []
+        : view.labels.map((one, index) => ({
+            key: `y-${index}`,
+            x: axisWidth - 8,
+            y: middle(top + rowHeight * (index + 0.5)),
+            text: one.short,
+            anchor: "end" as const,
+            strong: false,
+          })),
     },
     startAtEnd: false,
     rules,
@@ -672,11 +684,11 @@ function pie(view: KinChartView, width: number, frame: Frame): KinChartLayout {
 function radar(view: KinChartView, width: number, frame: Frame): KinChartLayout {
   const { charWidth, fontSize, middle } = frame;
   const count = view.labels.length;
-  const size = Math.min(width, 340);
-  const labelRoom = clamp(Math.floor((size * 0.26) / charWidth), 5, 14);
+  const size = Math.min(width, 420);
+  const labelRoom = clamp(Math.floor((size * 0.26) / charWidth), 5, 18);
   const short = view.labels.map((one) => cut(one.short, labelRoom));
   const side = Math.max(...short.map((text) => text.length)) * charWidth + 10;
-  const radius = Math.round(clamp(size / 2 - side, 36, 104));
+  const radius = Math.round(clamp(size / 2 - side, 36, 120));
   const height = radius * 2 + (fontSize + 12) * 2;
   const cx = size / 2;
   const cy = height / 2;
@@ -723,15 +735,16 @@ function radar(view: KinChartView, width: number, frame: Frame): KinChartLayout 
       dashed: false,
     },
   ];
+  // One number says the scale: the outer ring's, beside the top axis.
   const texts: Array<KinChartText> = [
-    ...rings.map((tick) => ({
-      key: `ring-${tick}`,
-      x: cx + 3,
-      y: spot(0, tick).y + fontSize,
-      text: formatKinChartValue(view.unit, tick, "compact"),
-      anchor: "start" as const,
+    {
+      key: "ring-max",
+      x: cx - 4,
+      y: cy - radius + fontSize + 1,
+      text: formatKinChartValue(view.unit, scale.high, "compact"),
+      anchor: "end",
       strong: false,
-    })),
+    },
     ...short.map((text, index) => {
       const angle = (index / count) * Math.PI * 2;
       const across = Math.sin(angle);
@@ -755,14 +768,6 @@ function radar(view: KinChartView, width: number, frame: Frame): KinChartLayout 
   ];
   if (view.target !== null) {
     rules.push({ key: "target", path: ringAt(view.target.value), strong: true, dashed: true });
-    texts.push({
-      key: "target",
-      x: cx - 4,
-      y: spot(0, view.target.value).y - 3,
-      text: targetText(view),
-      anchor: "end",
-      strong: true,
-    });
   }
 
   const title = titleFor(view);
@@ -848,7 +853,7 @@ function scatter(view: KinChartView, width: number, frame: Frame): KinChartLayou
   const plot = {
     left: 6,
     right: plotWidth - 10,
-    top: 8 + (view.target === null ? 0 : fontSize + 2),
+    top: 8,
     bottom: height - 20,
   };
   const toX = (value: number) =>
@@ -881,8 +886,17 @@ function scatter(view: KinChartView, width: number, frame: Frame): KinChartLayou
     ];
   });
 
-  // A name is written beside its point only where it covers no other name; the table has all.
-  const taken: Array<{ left: number; right: number; top: number; bottom: number }> = [];
+  // A name is written beside its point only where it covers no other name or point; the table
+  // has all.
+  const taken: Array<{ left: number; right: number; top: number; bottom: number }> = series.flatMap(
+    (one) =>
+      one.points.map((point) => ({
+        left: toX(point.x) - 4,
+        right: toX(point.x) + 4,
+        top: toY(point.y) - 4,
+        bottom: toY(point.y) + 4,
+      })),
+  );
   for (const one of series)
     for (const point of one.points) {
       if (point.label === null) continue;
@@ -942,14 +956,6 @@ function scatter(view: KinChartView, width: number, frame: Frame): KinChartLayou
   if (view.target !== null) {
     const y = toY(view.target.value);
     rules.push({ key: "target", path: hLine(y, 0, plot.right), strong: true, dashed: true });
-    texts.push({
-      key: "target",
-      x: 2,
-      y: y - 4,
-      text: targetText(view),
-      anchor: "start",
-      strong: true,
-    });
   }
 
   return {
