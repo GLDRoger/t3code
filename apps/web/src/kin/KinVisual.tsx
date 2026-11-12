@@ -68,7 +68,11 @@ function KinVisualFrame(props: {
       else if (message.type === "blocked") onBlockedHost?.(message.host);
       // A page can post this by script, so it only ever asks: the reader's tap in the frame
       // raises the question, and their tap on the answer opens the link.
-      else if (document.activeElement === frame && navigator.userActivation?.isActive !== false)
+      else if (
+        message.type === "link" &&
+        document.activeElement === frame &&
+        navigator.userActivation?.isActive !== false
+      )
         setLink(message.url);
     };
     window.addEventListener("message", onMessage);

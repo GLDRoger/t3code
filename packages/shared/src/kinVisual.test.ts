@@ -108,7 +108,7 @@ describe("chat file references", () => {
 });
 
 describe("readKinVisualMessage", () => {
-  it("reads only a height, a web link or a host, and only from the outer document's envelope", () => {
+  it("reads only a height, a web link, a host or a file to save, and only from the outer document's envelope", () => {
     expect(readKinVisualMessage({ kinVisual: true, type: "height", height: 412.4 })).toEqual({
       type: "height",
       height: 412.4,
@@ -119,7 +119,13 @@ describe("readKinVisualMessage", () => {
     expect(
       readKinVisualMessage({ kinVisual: true, type: "blocked", host: "CDN.example.com" }),
     ).toEqual({ type: "blocked", host: "cdn.example.com" });
+    const save = { type: "save", name: "rows.csv", mimeType: "text/csv", data: "YSxiCjEsMgo=" };
+    expect(readKinVisualMessage({ kinVisual: true, ...save })).toEqual(save);
     for (const forged of [
+      { kinVisual: true, ...save, mimeType: "text/html; x" },
+      { kinVisual: true, ...save, name: "" },
+      { kinVisual: true, ...save, data: "not base64!" },
+      { kinVisual: true, ...save, data: "A".repeat(12 * 1024 * 1024) },
       { type: "height", height: 10 },
       { kinVisual: true, type: "height", height: -1 },
       { kinVisual: true, type: "link", url: "javascript:alert(1)" },

@@ -301,8 +301,13 @@ kin.mermaid().then(function () {
         .end(inner ? kinVisualPageDocument(page) : KIN_VISUAL_OUTER_DOCUMENT);
     });
     yield* Effect.acquireRelease(
-      Effect.callback<void>((resume) => server.listen(0, "127.0.0.1", () => resume(Effect.void))),
-      () => Effect.sync(() => server.close()),
+      Effect.callback<void>((resume) => {
+        server.listen(0, "127.0.0.1", () => resume(Effect.void));
+      }),
+      () =>
+        Effect.sync(() => {
+          server.close();
+        }),
     );
     const { port } = server.address() as NodeNet.AddressInfo;
     const browser = yield* Effect.acquireRelease(
@@ -352,8 +357,13 @@ it.live("no cookie of the app's rides along on what the page loads from Kin", (c
         .end(inner ? kinVisualPageDocument(page) : KIN_VISUAL_OUTER_DOCUMENT);
     });
     yield* Effect.acquireRelease(
-      Effect.callback<void>((resume) => server.listen(0, "127.0.0.1", () => resume(Effect.void))),
-      () => Effect.sync(() => server.close()),
+      Effect.callback<void>((resume) => {
+        server.listen(0, "127.0.0.1", () => resume(Effect.void));
+      }),
+      () =>
+        Effect.sync(() => {
+          server.close();
+        }),
     );
     const { port } = server.address() as NodeNet.AddressInfo;
     const browser = yield* Effect.acquireRelease(

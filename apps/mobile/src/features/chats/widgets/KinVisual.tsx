@@ -7,7 +7,11 @@ import {
   htmlRenderThemeMessage,
   type HtmlRenderTheme,
 } from "@t3tools/shared/htmlRender";
-import { type KinVisualMessage, readKinVisualMessage } from "@t3tools/shared/kinVisual";
+import {
+  KIN_VISUAL_PRELUDE,
+  type KinVisualMessage,
+  readKinVisualMessage,
+} from "@t3tools/shared/kinVisual";
 import { AsyncResult } from "effect/reactivity";
 import { memo, useEffect, useRef, useState } from "react";
 import { Modal, Pressable, View } from "react-native";
@@ -17,6 +21,7 @@ import { WebView } from "react-native-webview";
 import { AppActivityIndicator } from "../../../components/ui/AppActivityIndicator";
 import { AppText as Text } from "../../../components/ui/AppText";
 import * as Dialog from "../../../components/ui/Dialog";
+import { shareGeneratedAttachment } from "../../../lib/attachmentDownload";
 import { tryOpenExternalUrl } from "../../../lib/openExternalUrl";
 import { useAssetUrlState, useRefreshAssetUrl } from "../../../state/assets";
 import { useAtomCommand } from "../../../state/use-atom-command";
@@ -81,6 +86,29 @@ function KinVisualWebView(props: {
     setLoaded(false);
     setGeneration((value) => value + 1);
   };
+  // A save counts only after the reader's own touch, like a link; the share sheet is their choice.
+  const save = (file: Extract<KinVisualMessage, { readonly type: "save" }>) => {
+    const touched = touchedAt.current;
+    if (touched === null || performance.now() - touched > TOUCH_WINDOW_MS) return;
+    touchedAt.current = null;
+    let bytes: Uint8Array;
+    try {
+      bytes = Uint8Array.from(atob(file.data), (char) => char.charCodeAt(0));
+    } catch {
+      return;
+    }
+    void shareGeneratedAttachment({
+      bytes,
+      attachment: { name: file.name, mimeType: file.mimeType },
+      signal: new AbortController().signal,
+    }).then(
+      (shared) => {
+        if (!shared)
+          Dialog.alert("Couldn't save this file", "Sharing is unavailable on this device.");
+      },
+      () => Dialog.alert("Couldn't save this file", "Try again."),
+    );
+  };
   const askToOpen = (url: string) => {
     // Any frame can post a message, so a link counts only right after the reader's own touch,
     // and even then it only asks: their tap on the answer is what opens it.
@@ -122,6 +150,10 @@ function KinVisualWebView(props: {
           location(request.url) === location(props.uri) ||
           (request.isTopFrame === false && request.url.startsWith("about:"))
         }
+        // The server puts the same prelude first in the page; this runs it in every frame too.
+        injectedJavaScriptBeforeContentLoaded={`${KIN_VISUAL_PRELUDE}true;`}
+        injectedJavaScriptBeforeContentLoadedForMainFrameOnly={false}
+        mediaCapturePermissionGrantType="deny"
         allowsInlineMediaPlayback
         mediaPlaybackRequiresUserAction
         allowsLinkPreview={false}
@@ -142,6 +174,7 @@ function KinVisualWebView(props: {
           if (message === undefined) return;
           if (message.type === "height") props.onHeight?.(message.height);
           else if (message.type === "blocked") props.onBlockedHost?.(message.host);
+          else if (message.type === "save") save(message);
           else askToOpen(message.url);
         }}
         onLoadEnd={() => {
