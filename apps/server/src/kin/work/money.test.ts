@@ -1234,9 +1234,12 @@ describe("the owner's taps", () => {
         prefix: "JOB",
         amount: true,
         states: ["open", "doing", "done", "dropped"],
+        fields: [{ label: "Site\tcode", type: "text" }],
       });
       const lists = yield* OwnerMoney.lists(people, { orgId });
       const jobs = lists.lists.find((one) => one.list === "jobs")!;
+      // A label is one line, however a lead wrote it.
+      assert.strictEqual(jobs.fields.find((one) => one.key === "siteCode")?.label, "Site code");
       yield* OwnerMoney.updateList(people, { orgId, list: "jobs", rev: jobs.rev, payments: true });
       const asked = yield* turn(3, "A job under way");
       yield* LeadWork.create(scope, {

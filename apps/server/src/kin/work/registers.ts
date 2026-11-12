@@ -60,8 +60,8 @@ export const StoredDefinition = Schema.Struct({
 export type StoredDefinition = typeof StoredDefinition.Type;
 const DefinitionJson = Schema.fromJsonString(StoredDefinition);
 const decodeStored = Schema.decodeUnknownOption(StoredDefinition);
-// Labels stored before control characters were refused read without them.
-const plain = (text: string) => text.replace(/\p{Cc}/gu, " ").trim();
+/** A label as one line; ones stored before control characters were refused read so too. */
+export const plain = (text: string) => text.replace(/\p{Cc}/gu, " ").trim();
 const decodeDefinition = (json: string) =>
   Option.flatMap(
     Option.liftThrowable(() =>
