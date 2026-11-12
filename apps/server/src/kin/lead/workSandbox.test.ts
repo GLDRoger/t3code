@@ -1,7 +1,7 @@
 import type { HookCallbackMatcher } from "@anthropic-ai/claude-agent-sdk";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { ClaudeSettings, ProviderInstanceId } from "@t3tools/contracts";
+import { ClaudeSettings, ProviderInstanceConfigMap, ProviderInstanceId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
@@ -16,6 +16,8 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import { ServerConfig } from "../../config.ts";
 import * as ClaudeAdapterV2 from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import type { WorkerCredentials } from "../claudeConfinement.ts";
+import * as WorkerPath from "./workerPath.ts";
 import * as WorkNetwork from "./workNetwork.ts";
 import * as WorkSandbox from "./workSandbox.ts";
 import * as WorkSandboxProbe from "./workSandboxProbe.ts";
@@ -53,27 +55,16 @@ it("the shell's network and readable paths come from the host's own settings, ch
   }
 });
 
-it("a shell's sandbox is closed: no fallback, no widening, every secret variable unset", () => {
+it("a shell's sandbox is closed: no fallback, no widening, every read denied but its roots", () => {
   const settings = WorkSandbox.sandboxSettings(
     {
       worktree: "/home/kin/.t3/worktrees/app/wk",
       gitCommonDir: "/home/kin/code/app/.git",
       tmp: "/tmp/kin-abc123",
-      denied: ["/home/kin", "/tmp", "/run"],
-      readable: ["/home/kin/.local/share/node"],
+      denied: ["/opt/claude-home"],
+      readable: ["/usr", "/etc", "/opt", "/home/kin/.local/share/node"],
     },
     ["registry.npmjs.org"],
-    {
-      PATH: "/usr/bin",
-      HOME: "/home/kin",
-      HTTPS_PROXY: "http://proxy",
-      LC_ALL: "C",
-      ANTHROPIC_API_KEY: "x",
-      CLAUDE_CODE_OAUTH_TOKEN: "x",
-      AWS_SECRET_ACCESS_KEY: "x",
-      DBUS_SESSION_BUS_ADDRESS: "x",
-      XDG_RUNTIME_DIR: "x",
-    },
   );
   assert.deepStrictEqual(settings, {
     enabled: true,
@@ -86,10 +77,13 @@ it("a shell's sandbox is closed: no fallback, no widening, every secret variable
     allowAppleEvents: false,
     excludedCommands: [],
     filesystem: {
-      denyRead: ["/home/kin", "/tmp", "/run", "/home/kin/code/app/.git"],
+      denyRead: ["/", "/opt/claude-home", "/home/kin/code/app/.git"],
       allowRead: [
         "/home/kin/.t3/worktrees/app/wk",
         "/tmp/kin-abc123",
+        "/usr",
+        "/etc",
+        "/opt",
         "/home/kin/.local/share/node",
       ],
       allowWrite: ["/tmp/kin-abc123"],
@@ -103,28 +97,15 @@ it("a shell's sandbox is closed: no fallback, no widening, every secret variable
       allowLocalBinding: false,
       allowMachLookup: [],
     },
-    credentials: {
-      envVars: [
-        "ANTHROPIC_API_KEY",
-        "AWS_SECRET_ACCESS_KEY",
-        "CLAUDE_CODE_OAUTH_TOKEN",
-        "DBUS_SESSION_BUS_ADDRESS",
-        "XDG_RUNTIME_DIR",
-      ].map((name) => ({ name, mode: "deny" as const })),
-    },
   });
 });
 
 const noClaudeSettings = Schema.decodeSync(ClaudeSettings)({});
+const decodeInstances = Schema.decodeEffect(ProviderInstanceConfigMap);
 
-it("the check runs the real session's options: only the model endpoint, key and thread differ", () => {
+it("the check runs the real session's options: only the model endpoint, key, home and thread differ", () => {
   const hook: HookCallbackMatcher = { hooks: [() => Promise.resolve({})] };
-  const env = {
-    PATH: "/usr/bin",
-    HOME: "/home/kin",
-    ANTHROPIC_BASE_URL: "https://gw",
-    AWS_REGION: "x",
-  };
+  const env = { PATH: "/usr/bin:relative", HOME: "/home/kin", LANG: "C.UTF-8", AWS_REGION: "x" };
   const session = {
     options: {
       ...ClaudeAdapterV2.makeClaudeQueryOptions({
@@ -150,19 +131,20 @@ it("the check runs the real session's options: only the model endpoint, key and 
     },
     confinement: hook,
     environment: env,
+    place: { home: "/home/kin/.t3/kin/worker-home", configDir: "/home/kin/.claude" },
+    paths: { PATH: "/opt/node/bin:/usr/bin" },
     shell: {
       sandbox: WorkSandbox.sandboxSettings(
         {
           worktree: "/home/kin/.t3/worktrees/app/wk",
           gitCommonDir: "/home/kin/code/app/.git",
           tmp: "/tmp/kin-1",
-          denied: ["/home/kin"],
-          readable: [],
+          denied: [],
+          readable: ["/usr"],
         },
         ["registry.npmjs.org"],
-        env,
       ),
-      env,
+      tmp: "/tmp/kin-1",
     },
   };
   const real = WorkSession.workSessionOptions(session);
@@ -194,20 +176,47 @@ it("the check runs the real session's options: only the model endpoint, key and 
     "settingSources",
   ] as const)
     assert.deepStrictEqual(real[key], checked[key], key);
-  const modelAccess = /^(?:ANTHROPIC_|AWS_)/;
-  for (const name of keys(real.env).filter((name) => !modelAccess.test(name)))
-    assert.property(checked.env, name);
-  // The check's key is unset for its commands as the real one is.
+  // The same builder makes both environments: only the Claude home differs, and the check's
+  // own switch for the CLI's background traffic.
+  const { CLAUDE_CONFIG_DIR: realHome, ...realEnv } = real.env ?? {};
+  const {
+    CLAUDE_CONFIG_DIR: checkedHome,
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: quiet,
+    ...checkedEnv
+  } = checked.env ?? {};
+  assert.deepStrictEqual(checkedEnv, realEnv);
+  assert.deepStrictEqual(
+    [realHome, checkedHome, quiet],
+    ["/home/kin/.claude", "/state/kin/probe-1/claude", "1"],
+  );
+  assert.deepStrictEqual(realEnv, {
+    LANG: "C.UTF-8",
+    PATH: "/opt/node/bin:/usr/bin",
+    HOME: "/home/kin/.t3/kin/worker-home",
+    ...WorkSession.commandLimits,
+    CLAUDE_CODE_TMPDIR: "/tmp/kin-1",
+  });
+  // Commands keep the basics; everything else, and each credential, is unset for them.
   const denied = (options: typeof real) =>
     (options.sandbox?.credentials?.envVars ?? []).map((entry) => entry.name);
-  assert.include(denied(real), "ANTHROPIC_AUTH_TOKEN");
+  assert.deepStrictEqual(denied(real), [
+    "BASH_DEFAULT_TIMEOUT_MS",
+    "BASH_MAX_OUTPUT_LENGTH",
+    "BASH_MAX_TIMEOUT_MS",
+    "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS",
+    "CLAUDE_CODE_TMPDIR",
+    "CLAUDE_CONFIG_DIR",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+  ]);
   assert.include(denied(checked), "ANTHROPIC_API_KEY");
   // Neither carries a helper.
   assert.notInclude(JSON.stringify([real.settings, checked.settings]), "apiKeyHelper");
 });
 
 it.effect(
-  "a shell can't read a provider login wherever it really lives, and no read path reopens one",
+  "a shell reads only its roots: no login wherever it lives or links to, and no read path reopens one",
   () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -217,11 +226,14 @@ it.effect(
       for (const directory of [
         state,
         `${home}/.local/share/node`,
+        `${home}/.aws/profiles/work`,
         `${base}/dotfiles/codex`,
         `${base}/dotfiles/ssh`,
         `${base}/codex-relocated`,
         `${base}/claude-instance`,
-        `${base}/opt/go`,
+        `${base}/sys/etc/aws`,
+        `${base}/data/vault`,
+        `${base}/homes`,
         `${home}/kin-tools/typst`,
         `${state}/kin-tools/typst`,
       ])
@@ -229,12 +241,20 @@ it.effect(
       // Logins kept outside the home, reached through links directly under it.
       yield* fs.symlink(`${base}/dotfiles/codex`, `${home}/.codex`);
       yield* fs.symlink(`${base}/dotfiles/ssh`, `${home}/.ssh`);
+      // Credential files linked out from deep inside a credential directory: into a system root,
+      // into a directory an owner might list, and to a file that doesn't exist yet.
+      yield* fs.writeFileString(`${base}/sys/etc/aws/credentials`, "secret\n");
+      yield* fs.symlink(`${base}/sys/etc/aws/credentials`, `${home}/.aws/profiles/work/creds`);
+      yield* fs.symlink(`${base}/data/vault`, `${home}/.aws/profiles/vault`);
+      yield* fs.symlink(`${base}/sys/etc/later`, `${home}/.aws/profiles/later`);
+      // Configured provider homes that don't exist yet, one inside a system root.
+      const laterHomes = [`${base}/sys/claude-later`, `${base}/homes/codex-later`];
       const roots = (readPaths: ReadonlyArray<string>) =>
         WorkSandbox.shellRoots({
           home,
           stateDir: state,
-          env: { CODEX_HOME: `${base}/codex-relocated` },
-          providerHomes: [`${base}/claude-instance`],
+          system: [`${base}/sys`],
+          providerHomes: [`${base}/codex-relocated`, `${base}/claude-instance`, ...laterHomes],
           readPaths,
           runtime: `${home}/.local/share/node`,
           toolDirs: [
@@ -243,36 +263,196 @@ it.effect(
             `${home}/kin-tools/gone`,
           ],
         });
-      const open = yield* roots([`${base}/opt/go`]);
+      const open = yield* roots([]);
       // Kin's tools open up, unless one sits in a closed place; a missing one is just left out.
       assert.deepStrictEqual(open.tools, [`${home}/kin-tools/typst`]);
-      for (const login of [
-        home,
-        state,
-        `${base}/dotfiles/codex`,
-        `${base}/dotfiles/ssh`,
-        `${base}/codex-relocated`,
-        `${base}/claude-instance`,
-      ])
-        assert.include(open.denied, login);
       assert.deepStrictEqual(open.readable, [
+        `${base}/sys`,
         `${home}/kin-tools/typst`,
         `${home}/.local/share/node`,
-        `${base}/opt/go`,
       ]);
-      // A read path that resolves into, or holds, a login turns the shell off.
+      // Denied inside the system root: what the links lead to, and a home made later.
+      for (const inside of [
+        `${base}/sys/etc/aws/credentials`,
+        `${base}/sys/etc/later`,
+        `${base}/sys/claude-later`,
+      ])
+        assert.include(open.denied, inside);
+      // A read path that resolves into, or holds, a login or a link's target turns the shell off.
       for (const reopen of [
         `${home}/.codex/sessions`,
         `${base}/dotfiles`,
         `${base}/codex-relocated`,
         `${base}/claude-instance/projects`,
         `${home}/.t3/userdata`,
+        `${base}/data/vault/inner`,
+        `${base}/data`,
+        `${base}/homes`,
       ]) {
         yield* fs.makeDirectory(reopen, { recursive: true });
         const result = yield* roots([reopen]).pipe(Effect.result);
         assert.isTrue(result._tag === "Failure", reopen);
       }
+      // A credential directory that can't be read through can't be cleared.
+      yield* fs.makeDirectory(`${home}/.config/locked`, { recursive: true });
+      yield* fs.chmod(`${home}/.config/locked`, 0o000);
+      const locked = yield* roots([]).pipe(Effect.result);
+      yield* fs.chmod(`${home}/.config/locked`, 0o700);
+      assert.isTrue(locked._tag === "Failure" && locked.failure.includes("can't be listed"));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("a private place inside any readable root stays denied, the worktree included", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const base = yield* fs.realPath(yield* fs.makeTempDirectoryScoped({ prefix: "kin-nested-" }));
+    for (const directory of ["home", "state", "tree/provider"])
+      yield* fs.makeDirectory(`${base}/${directory}`, { recursive: true });
+    yield* fs.writeFileString(`${base}/tree/provider/.credentials.json`, "fixture-login-only");
+    const roots = yield* WorkSandbox.shellRoots({
+      home: `${base}/home`,
+      stateDir: `${base}/state`,
+      system: ["/usr", "/bin", "/etc", "/opt"],
+      providerHomes: [`${base}/tree/provider`],
+      readPaths: [],
+      runtime: undefined,
+    });
+    const policy = WorkSandbox.sandboxSettings(
+      {
+        worktree: `${base}/tree`,
+        tmp: `${base}/task-tmp`,
+        gitCommonDir: `${base}/git`,
+        denied: roots.denied,
+        readable: roots.readable,
+      },
+      [],
+    );
+    assert.include(policy.filesystem?.denyRead ?? [], `${base}/tree/provider`);
+    // A private place no readable root holds is already shut by the denial of `/`.
+    assert.notInclude(policy.filesystem?.denyRead ?? [], `${base}/state`);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "a worker's PATH and the paths it loads are built here, and nothing a worker writes is on them",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const base = yield* fs.realPath(yield* fs.makeTempDirectoryScoped({ prefix: "kin-path-" }));
+      const tree = `${base}/tree`;
+      for (const directory of [
+        `${tree}/bin`,
+        `${tree}/certs`,
+        `${base}/node/bin`,
+        `${base}/tools/typst`,
+        `${base}/claude`,
+        `${base}/owner/bin`,
+        `${base}/certs`,
+      ])
+        yield* fs.makeDirectory(directory, { recursive: true });
+      yield* fs.writeFileString(`${base}/node/bin/node`, "");
+      yield* fs.writeFileString(`${base}/claude/claude`, "");
+      yield* fs.writeFileString(`${tree}/ca.pem`, "");
+      yield* fs.writeFileString(`${base}/ca.pem`, "");
+      yield* fs.symlink(`${tree}/bin`, `${base}/linked-bin`);
+      yield* fs.symlink(`${tree}/certs`, `${base}/linked-certs`);
+      const built = yield* WorkerPath.workerPaths({
+        providerEnv: {
+          PATH: `${tree}/bin:/usr/bin:relative`,
+          SHELL: `${tree}/bin/bash`,
+          TMPDIR: `${tree}/bin`,
+          NODE_EXTRA_CA_CERTS: `${tree}/ca.pem`,
+          SSL_CERT_FILE: `${base}/ca.pem`,
+          SSL_CERT_DIR: `${base}/linked-certs`,
+        },
+        claude: `${base}/claude/claude`,
+        toolDirs: [`${base}/tools/typst`, `${base}/tools/gone`],
+        ownerPath: [
+          `${tree}/bin`,
+          base,
+          `${base}/linked-bin`,
+          "relative/bin",
+          `${base}/missing`,
+          `${base}/owner/bin`,
+        ],
+        writable: [tree],
+      }).pipe(Effect.provideService(HostProcess.ExecutablePath, `${base}/node/bin/node`));
+      const path = (built.env.PATH ?? "").split(":");
+      // Kin's own first, then the fixed system directories, then what the owner added.
+      assert.deepStrictEqual(path.slice(0, 3), [
+        `${base}/node/bin`,
+        `${base}/tools/typst`,
+        `${base}/claude`,
+      ]);
+      assert.strictEqual(path.at(-1), `${base}/owner/bin`);
+      const system = [
+        "/usr/local/sbin",
+        "/usr/local/bin",
+        "/usr/sbin",
+        "/usr/bin",
+        "/sbin",
+        "/bin",
+      ];
+      const real = yield* Effect.forEach(system, (entry) =>
+        fs.realPath(entry).pipe(Effect.orElseSucceed(() => entry)),
+      );
+      for (const entry of path.slice(3, -1)) assert.include(real, entry);
+      // Nothing of the provider's PATH, and no shell, CA or temp path a worker can write.
+      assert.isFalse(path.some((entry) => entry.startsWith(tree) || !entry.startsWith("/")));
+      // Kin's own tool that isn't installed yet is skipped quietly.
+      assert.notInclude(path, `${base}/tools/gone`);
+      assert.notInclude(built.dropped.join("\n"), "gone");
+      assert.strictEqual(built.env.SHELL, yield* fs.realPath("/bin/bash"));
+      assert.strictEqual(built.env.SSL_CERT_FILE, `${base}/ca.pem`);
+      for (const name of ["TMPDIR", "NODE_EXTRA_CA_CERTS", "SSL_CERT_DIR"])
+        assert.notProperty(built.env, name);
+      // Each left out is named: a worktree child, its parent, a link into it, relative, missing.
+      const dropped = built.dropped.join("\n");
+      for (const entry of [
+        `${tree}/bin`,
+        base,
+        `${base}/linked-bin`,
+        "relative/bin",
+        `${base}/missing`,
+        "TMPDIR",
+        "NODE_EXTRA_CA_CERTS",
+        "SSL_CERT_DIR",
+      ])
+        assert.include(dropped, entry, entry);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "each provider home is resolved as its provider resolves it, relative ones included",
+  () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const providerInstances = yield* decodeInstances({
+        claudeWork: { driver: "claudeAgent", config: { homePath: "relative-claude" } },
+        claudeEnv: {
+          driver: "claudeAgent",
+          environment: [{ name: "CLAUDE_CONFIG_DIR", value: "env-claude" }],
+        },
+        codexShadow: {
+          driver: "codex",
+          config: { homePath: "~/codex-shared", shadowHomePath: "relative-shadow" },
+        },
+      });
+      const homes = yield* WorkSandbox.providerHomes(
+        { providerInstances },
+        { CODEX_HOME: "relative-codex" },
+      ).pipe(Effect.provideService(HostProcess.HomeDirectory, "/home/kin"));
+      for (const home of [
+        "/home/kin/.claude",
+        path.resolve("relative-codex"),
+        path.resolve("relative-claude"),
+        path.resolve("env-claude"),
+        "/home/kin/codex-shared",
+        path.resolve("relative-shadow"),
+      ])
+        assert.include(homes, home);
+      assert.notInclude(homes, "/home/kin/relative-claude");
+    }).pipe(Effect.provide(NodeServices.layer)),
 );
 
 /** A worktree as T3 makes one, of a real repository. */
@@ -308,9 +488,11 @@ const worktree = Effect.fn("WorkSandboxTest.worktree")(function* () {
 
 const prepared = Effect.fn("WorkSandboxTest.prepared")(function* (
   executable: string,
-  env: NodeJS.ProcessEnv,
+  envFor: NodeJS.ProcessEnv | ((tree: string) => NodeJS.ProcessEnv),
+  credentials: WorkerCredentials = { _tag: "resolved", credentials: {} },
 ) {
   const tree = yield* worktree();
+  const env = typeof envFor === "function" ? envFor(tree) : envFor;
   const sandbox = yield* WorkSandbox.KinWorkSandbox;
   const { stateDir } = yield* ServerConfig;
   // What the server grants the worker when it starts; nothing else sets the network.
@@ -331,6 +513,7 @@ const prepared = Effect.fn("WorkSandboxTest.prepared")(function* (
       credentials: {},
       environment: env,
     },
+    credentials,
   });
   const status = yield* WorkSandbox.readStatus(stateDir);
   return { result, status };
@@ -350,6 +533,7 @@ const live = <A, E>(
     | ChildProcessSpawner.ChildProcessSpawner
     | Scope.Scope
   >,
+  host: NodeJS.ProcessEnv = hostEnv,
 ) =>
   effect.pipe(
     Effect.provide(
@@ -360,10 +544,33 @@ const live = <A, E>(
     ),
     // The probe's own Linux-only checks run wherever the test does; nothing else differs.
     Effect.provideService(HostProcess.Platform, "linux"),
-    Effect.provideService(HostProcess.Environment, hostEnv),
+    Effect.provideService(HostProcess.Environment, host),
     Effect.scoped,
     Effect.provide(NodeServices.layer),
   );
+
+it.live(
+  "a worktree that holds, is, or sits in a protected place starts no worker, shell or not",
+  () =>
+    Effect.gen(function* () {
+      for (const [host, configDir] of [
+        [hostEnv, (tree: string) => `${tree}/provider`],
+        [hostEnv, (tree: string) => tree],
+        [{ ...hostEnv, KIN_WORKER_SHELL: "off" }, (tree: string) => `${tree}/provider`],
+        [{ ...hostEnv, KIN_WORKER_SHELL: "off" }, (tree: string) => `${tree}/..`],
+      ] as const) {
+        const { result, status } = yield* live(
+          prepared("/nonexistent/claude", (tree) => ({ PATH, CLAUDE_CONFIG_DIR: configDir(tree) })),
+          host,
+        );
+        assert.strictEqual(result._tag, "refused");
+        const reason = result._tag === "refused" ? result.reason : "";
+        assert.include(reason, "overlaps");
+        assert.isTrue(Option.getOrUndefined(status)?.refused);
+        assert.strictEqual(Option.getOrUndefined(status)?.reason, reason);
+      }
+    }),
+);
 
 it.live("a child whose sandbox can't start gets file tools only, and the owner can see why", () =>
   live(
@@ -374,6 +581,9 @@ it.live("a child whose sandbox can't start gets file tools only, and the owner c
       if (Option.isSome(status)) {
         assert.isFalse(status.value.shell);
         assert.strictEqual(result._tag === "file-only" ? result.reason : "", status.value.reason);
+        // Linux with no systemd user manager: limits are off, and the status says so.
+        assert.isNull(status.value.limits);
+        assert.include(status.value.limitsNote ?? "", "no systemd user manager");
       }
     }),
   ),
@@ -417,8 +627,8 @@ it.live(
           assert.isTrue(Option.getOrUndefined(status)?.namesBlockedHosts);
           yield* result.release;
           assert.deepStrictEqual(result.sandbox.network?.allowedDomains, ["registry.npmjs.org"]);
-          assert.isTrue(result.sandbox.filesystem?.denyRead?.includes(HOME ?? "/"));
-          assert.match(result.env.CLAUDE_CODE_TMPDIR ?? "", /\/kin-[^/]+$/);
+          assert.strictEqual(result.sandbox.filesystem?.denyRead?.[0], "/");
+          assert.match(result.tmp, /\/kin-[^/]+$/);
           // What `kin worker-shell --check` prints: every gate passed, each process line included.
           const { stateDir } = yield* ServerConfig;
           const checked = yield* WorkSandbox.checkShell({
@@ -435,6 +645,8 @@ it.live(
               credentials: {},
               environment: { PATH, HOME },
             },
+            place: result.place,
+            paths: result.paths,
             domains: ["registry.npmjs.org"],
             readPaths: [],
             providerHomes: [],
@@ -450,6 +662,9 @@ it.live(
             "setsid, nohup and double-forked processes end with their command",
             "no process outlives the session",
             "the repository's key helper never runs",
+            "commands find no model key in their environment or any process's they can see",
+            "commands find no Claude login in their environment or any process's they can see",
+            "commands find no key or login in their temp or config directory",
           ])
             assert.isTrue(
               lines.some((line) => line.label === label),

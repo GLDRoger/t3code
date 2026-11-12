@@ -25,6 +25,7 @@ import type {
   KinMoneySummary,
   KinRecord,
   KinRecordKey,
+  KinWorkFile,
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import * as Option from "effect/Option";
@@ -261,22 +262,79 @@ export function useKinEntryChanges({ environmentId, orgId }: KinWorkTarget, key:
     // The entry is read again either way: the answer, or what it became meanwhile.
     appAtomRegistry.refresh(item);
     appAtomRegistry.refresh(moneyAtom({ environmentId, orgId }));
+    return outcome;
+  };
+  const shown = async <A>(send: () => Promise<AsyncResult.AsyncResult<A, unknown>>) => {
+    const outcome = await run(send);
     if (!outcome.ok) setProblem(outcome.problem);
     return outcome.ok;
   };
+  type Patch = Omit<Parameters<typeof update>[0]["input"], "orgId" | "key" | "rev">;
   return {
     busy,
     problem,
     dismiss: () => setProblem(null),
-    update: (
-      rev: number,
-      patch: Omit<Parameters<typeof update>[0]["input"], "orgId" | "key" | "rev">,
-    ) => run(() => update({ environmentId, input: { orgId, key, rev, ...patch } })),
+    update: (rev: number, patch: Patch) =>
+      shown(() => update({ environmentId, input: { orgId, key, rev, ...patch } })),
+    /** For a box that shows its own problem beside what was typed: the reason, or null once saved. */
+    edit: async (rev: number, patch: Patch) => {
+      const outcome = await run(() =>
+        update({ environmentId, input: { orgId, key, rev, ...patch } }),
+      );
+      return outcome.ok ? null : outcome.problem;
+    },
     pay: (input: Omit<Parameters<typeof pay>[0]["input"], "orgId" | "key">) =>
-      run(() => pay({ environmentId, input: { orgId, key, ...input } })),
+      shown(() => pay({ environmentId, input: { orgId, key, ...input } })),
     takeBack: (paymentId: string) =>
-      run(() => takeBack({ environmentId, input: { orgId, key, paymentId } })),
+      shown(() => takeBack({ environmentId, input: { orgId, key, paymentId } })),
   };
+}
+
+export type KinWorkFilesState =
+  | { readonly _tag: "loading" }
+  | { readonly _tag: "failed" }
+  | { readonly _tag: "ready"; readonly files: ReadonlyArray<KinWorkFile> };
+
+/** The newest files in the owner's chats whose names match `text`, read as it is typed. */
+export function useKinWorkFiles({ environmentId, orgId }: KinWorkTarget, text: string) {
+  const [held, setHeld] = useState<{
+    readonly request: string;
+    readonly files: ReadonlyArray<KinWorkFile> | null;
+  } | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const words = text.trim();
+  const request = `${environmentId}:${orgId}:${words}:${attempt}`;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the matching files from the host, a moment after typing stops
+  useEffect(() => {
+    let current = true;
+    const cancel = schedule(
+      () =>
+        void kinClient.workFiles
+          .run(appAtomRegistry, {
+            environmentId,
+            input: { orgId, limit: 50, ...(words === "" ? {} : { text: words }) },
+          })
+          .then((result) => {
+            if (current)
+              setHeld({
+                request,
+                files: AsyncResult.isSuccess(result) ? result.value.files : null,
+              });
+          }),
+      words === "" ? 0 : 250,
+    );
+    return () => {
+      current = false;
+      cancel();
+    };
+  }, [environmentId, orgId, words, request]);
+  const state: KinWorkFilesState =
+    held === null || held.request !== request
+      ? { _tag: "loading" }
+      : held.files === null
+        ? { _tag: "failed" }
+        : { _tag: "ready", files: held.files };
+  return { state, retry: () => setAttempt((count) => count + 1) };
 }
 
 /** The owner's changes to a list itself: its names, its fields, and putting it away. */

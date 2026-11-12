@@ -35,6 +35,7 @@ import {
   isBuiltIn,
   keyFor,
   listDef,
+  plain,
   PRESET_IDS,
   PRESETS,
   prefixFor,
@@ -168,13 +169,14 @@ const shownFields = (fields: ReadonlyArray<FieldDef>) =>
 const fieldDefs = (fields: ReadonlyArray<typeof FieldInput.Type>) => {
   const defs: Array<FieldDef> = [];
   for (const one of fields) {
-    const key = keyFor(one.label);
+    const label = plain(one.label);
+    const key = keyFor(label);
     if (key === undefined) return invalid(`${one.label} needs a name made of letters.`);
     defs.push({
       key,
-      label: one.label,
+      label,
       type: one.type,
-      ...(one.choices === undefined ? {} : { choices: one.choices }),
+      ...(one.choices === undefined ? {} : { choices: one.choices.map(plain) }),
       ...(one.link === undefined ? {} : { link: one.link }),
       sensitive: one.type === "money" || one.type === "file" || one.sensitive === true,
     });

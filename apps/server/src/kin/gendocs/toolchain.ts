@@ -10,6 +10,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 
 import { ServerConfig } from "../../config.ts";
 import { ProcessRunner } from "../../processRunner.ts";
@@ -42,6 +43,33 @@ const TYPST_RELEASES: Readonly<
   },
 };
 const MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024;
+const MAX_UNPACKED_BYTES = 256 * 1024 * 1024;
+const MAX_MEMBERS = 200;
+
+/**
+ * Why a Typst archive's listing isn't one Kin trusts: every member a plain file or folder inside
+ * `root`, no absolute or climbing name, no link. `verbose` is `tar -tv` for the same members.
+ */
+export const tarProblem = (
+  names: ReadonlyArray<string>,
+  verbose: ReadonlyArray<string>,
+  root: string,
+): string | undefined => {
+  if (names.length === 0 || names.length > MAX_MEMBERS || names.length !== verbose.length)
+    return "a listing that doesn't add up";
+  for (const [index, name] of names.entries()) {
+    const line = verbose[index]!;
+    if (
+      name.startsWith("/") ||
+      name.split("/").includes("..") ||
+      (name !== root && name !== `${root}/` && !name.startsWith(`${root}/`))
+    )
+      return `a member named ${name}`;
+    if (!/^[-d]/.test(line) || line.includes(" -> ") || line.includes(" link to "))
+      return `a link at ${name}`;
+  }
+  return undefined;
+};
 
 const toolsRoot = (baseDir: string) => `${baseDir}/kin-tools`;
 /** The directories a worker's shell reads and finds on its PATH; one per pinned tool. */
@@ -73,9 +101,18 @@ export const layer = Layer.effect(
     const [directory] = toolDirectories(baseDir);
     const binary = `${directory!}/typst`;
 
-    const installed = fs.readFileString(`${directory!}/.sha256`).pipe(
-      Effect.map((stamp) => stamp.trim()),
-      Effect.orElseSucceed(() => ""),
+    const sha256 = (bytes: Uint8Array) =>
+      digest.digest(Digest.sha256, bytes).pipe(Effect.map(Hex.encode));
+    /** The stamp names the pinned archive and the program it held; the program must still be it. */
+    const installed = Effect.fn("KinToolchain.installed")(
+      function* (archive: string) {
+        const [stamped = "", program = ""] = (yield* fs.readFileString(`${directory!}/.sha256`))
+          .trim()
+          .split("\n");
+        if (stamped !== archive || program === "") return false;
+        return (yield* sha256(yield* fs.readFile(binary))) === program;
+      },
+      Effect.orElseSucceed(() => false),
     );
 
     const typst = Effect.fn("KinToolchain.typst")(function* () {
@@ -85,15 +122,29 @@ export const layer = Layer.effect(
         return yield* unavailable(
           `Kin has no Typst build for ${platform} on this processor, so it can't make PDFs here.`,
         );
-      if ((yield* installed) === release.sha256 && (yield* fs.exists(binary))) return;
+      if (yield* installed(release.sha256)) return;
       yield* Effect.logInfo("Kin is fetching Typst for documents", { version: TYPST_VERSION });
       const url = `https://github.com/typst/typst/releases/download/v${TYPST_VERSION}/typst-${release.target}.tar.xz`;
       const response = yield* http.get(url);
-      const length = Number(response.headers["content-length"] ?? "0");
-      if (length > MAX_DOWNLOAD_BYTES)
-        return yield* unavailable("Typst's download was larger than expected.");
-      const bytes = new Uint8Array(yield* response.arrayBuffer);
-      const sum = Hex.encode(yield* digest.digest(Digest.sha256, bytes));
+      // Counted as it arrives: a length header is the sender's word, not a limit.
+      const chunks: Array<Uint8Array> = [];
+      let received = 0;
+      const tooLarge = unavailable("Typst's download was larger than expected.");
+      yield* response.stream.pipe(
+        Stream.runForEach((chunk) => {
+          received += chunk.length;
+          if (received > MAX_DOWNLOAD_BYTES) return Effect.fail(tooLarge);
+          chunks.push(chunk);
+          return Effect.void;
+        }),
+      );
+      const bytes = new Uint8Array(received);
+      let at = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, at);
+        at += chunk.length;
+      }
+      const sum = yield* sha256(bytes);
       if (sum !== release.sha256)
         return yield* unavailable(
           "Typst's download didn't match its pinned checksum, so Kin didn't use it.",
@@ -106,15 +157,42 @@ export const layer = Layer.effect(
       yield* Effect.gen(function* () {
         const archive = path.join(scratch, "typst.tar.xz");
         yield* fs.writeFile(archive, bytes);
+        const root = `typst-${release.target}`;
+        const list = (flags: string) =>
+          runner
+            .run({ command: "tar", args: [flags, archive], timeout: "2 minutes" })
+            .pipe(
+              Effect.map((out) => (out.code === 0 ? out.stdout.split("\n").filter(Boolean) : [])),
+            );
+        const problem = tarProblem(yield* list("-tJf"), yield* list("-tvJf"), root);
+        if (problem !== undefined)
+          return yield* unavailable(`Typst's archive holds ${problem}, so Kin didn't use it.`);
         const unpacked = yield* runner.run({
           command: "tar",
-          args: ["-xJf", archive, "-C", scratch],
+          args: ["-xJf", archive, "-C", scratch, "--no-same-owner", "--no-same-permissions"],
           timeout: "2 minutes",
         });
         if (unpacked.code !== 0)
           return yield* unavailable(
             `Kin couldn't unpack Typst: ${unpacked.stderr.trim().slice(0, 200) || "tar failed"}. The host needs tar with xz.`,
           );
+        // What tar made, looked at before anything in it runs: no links, and within the cap.
+        let size = 0;
+        for (const entry of yield* fs.readDirectory(path.join(scratch, root), {
+          recursive: true,
+        })) {
+          const at = path.join(scratch, root, entry);
+          if (
+            yield* fs.readLink(at).pipe(
+              Effect.as(true),
+              Effect.orElseSucceed(() => false),
+            )
+          )
+            return yield* unavailable("Typst's archive unpacked a link, so Kin didn't use it.");
+          size += Number((yield* fs.stat(at)).size);
+          if (size > MAX_UNPACKED_BYTES)
+            return yield* unavailable("Typst unpacked larger than expected, so Kin didn't use it.");
+        }
         const unpackedBinary = path.join(scratch, `typst-${release.target}`, "typst");
         const info = yield* fs.stat(unpackedBinary);
         if (info.type !== "File") return yield* unavailable("Typst's archive held no program.");
@@ -128,7 +206,10 @@ export const layer = Layer.effect(
           return yield* unavailable("The Typst Kin fetched doesn't run on this host.");
         yield* fs.remove(directory!, { recursive: true, force: true });
         yield* fs.rename(path.dirname(unpackedBinary), directory!);
-        yield* fs.writeFileString(`${directory!}/.sha256`, `${release.sha256}\n`);
+        yield* fs.writeFileString(
+          `${directory!}/.sha256`,
+          `${release.sha256}\n${yield* sha256(yield* fs.readFile(binary))}\n`,
+        );
       }).pipe(
         Effect.ensuring(fs.remove(scratch, { recursive: true, force: true }).pipe(Effect.ignore)),
       );

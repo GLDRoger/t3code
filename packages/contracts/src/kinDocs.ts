@@ -179,6 +179,8 @@ export const KinDocsListInput = Schema.Struct({
   party: Schema.optional(KinRecordKey),
   project: Schema.optional(KinRecordKey),
   archived: Schema.optional(Schema.Boolean),
+  /** Case-insensitive match on the title and the latest version's text. */
+  text: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
   cursor: Schema.optional(PageCursor),
   limit: Schema.optional(PageLimit),
 });

@@ -13,6 +13,7 @@ import { KinGroupFormScreen } from "./KinGroupFormScreen";
 import { KinGroupScreen } from "./KinGroupScreen";
 import { KinLeadFormScreen } from "./KinLeadFormScreen";
 import { KinListSettingsScreen, KinPaymentScreen } from "./KinListEntry";
+import { KinEntryEditScreen } from "./KinListEntryEdit";
 import { KinDatesScreen, KinListScreen } from "./KinListScreen";
 import { KinLeadScreen } from "./KinLeadScreen";
 import { KinMemoryScreen } from "./KinMemoryScreen";
@@ -73,6 +74,10 @@ export const KIN_SCREENS = {
   // Full sheets, so the keyboard never covers what is being typed.
   KinPayment: createNativeStackScreen({
     screen: KinPaymentScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinEntryEdit: createNativeStackScreen({
+    screen: KinEntryEditScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
   KinListSettings: createNativeStackScreen({

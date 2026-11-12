@@ -6,6 +6,7 @@ import {
   kinDocRestoreOutcome,
   kinDocVersionView,
 } from "@t3tools/client-runtime/kin/kinDocs";
+import { KIN_DOC_CHANGES } from "@t3tools/client-runtime/kin/kinDocChanges";
 import { KIN_WORK_TITLE } from "@t3tools/client-runtime/kin/kinWork";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { KinDocDetail, KinRecordKey } from "@t3tools/contracts";
@@ -51,6 +52,7 @@ import {
 import { PREFERRED_HIGHLIGHTER } from "../lib/syntaxHighlighting";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
+import { KinDocChangesView } from "./KinDocChangesView";
 import { KinDocReader } from "./KinDocReader";
 import { KinWorkNotice } from "./KinWorkParts";
 import { kinClient } from "./kinClient";
@@ -329,6 +331,7 @@ function KinDocChanges(
     },
   });
   const state = kinWorkReadState(useAtomValue(atom));
+  const [source, setSource] = useState(false);
   if (comparing.to === 1 && comparing.from === undefined)
     return <KinWorkNotice {...KIN_DOCS.firstVersion} />;
   if (state._tag === "loading")
@@ -361,9 +364,16 @@ function KinDocChanges(
     <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain scrollbar-gutter-both">
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-6 pt-6 pb-24">
         <header className="flex flex-col gap-1">
-          <h1 className="text-lg font-semibold text-foreground">
-            Version {diff.from.version} to {diff.to.version}
-          </h1>
+          <div className="flex items-start gap-3">
+            <h1 className="min-w-0 flex-1 text-lg font-semibold text-foreground">
+              Version {diff.from.version} to {diff.to.version}
+            </h1>
+            {patch === null ? null : (
+              <Button size="xs" variant="outline" onClick={() => setSource(!source)}>
+                {source ? KIN_DOC_CHANGES.showDocument : KIN_DOC_CHANGES.showSource}
+              </Button>
+            )}
+          </div>
           <p className="text-sm text-muted-foreground">
             {to.line.lead}
             {to.asked === null ? null : ` · ${to.asked}`}
@@ -374,6 +384,14 @@ function KinDocChanges(
         </header>
         {patch === null ? (
           <KinWorkNotice {...KIN_DOCS.noChanges} />
+        ) : !source ? (
+          <KinDocChangesView
+            environmentId={props.environmentId}
+            orgId={props.orgId}
+            docKey={doc.key}
+            from={diff.from.version}
+            to={diff.to.version}
+          />
         ) : patch.kind === "raw" ? (
           <pre className="overflow-x-auto rounded-md bg-muted/40 p-3 text-xs">{patch.text}</pre>
         ) : (

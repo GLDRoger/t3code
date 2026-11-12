@@ -686,3 +686,40 @@ it.effect("one search finds entries and docs, and the team view hides what label
     assert.lengthOf((yield* found("owner")).hits, 4);
   }).pipe(Effect.provide(layer)),
 );
+
+it.effect("the Docs list filters by words in a title or the latest text, on the host", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const made = yield* newDoc();
+    yield* newDoc("Invented hiring notes for the spring.", { title: "Invented hiring plan" });
+    const titles = (text: string) =>
+      OwnerDocs.list([owner], { orgId, text, limit: 1 }).pipe(
+        Effect.map((page) => [page.docs.map((doc) => doc.title), page.total] as const),
+      );
+    // Both match and only one fits the page: the count is of every match, not of loaded rows.
+    assert.deepStrictEqual(yield* titles("INVENTED"), [["Invented launch plan"], 2]);
+    assert.deepStrictEqual(yield* titles("spring"), [["Invented hiring plan"], 1]);
+    assert.deepStrictEqual(yield* titles("  starter costs "), [["Invented launch plan"], 1]);
+    // Words only an older version had no longer find it.
+    yield* Docs.edit(
+      orgId,
+      agentWriter(lead),
+      {},
+      { key: made.row.key },
+      {
+        operations: [
+          {
+            op: "replace_section",
+            section: "pricing",
+            hash: section(plan, "pricing").hash,
+            text: "Nothing decided.",
+          },
+        ],
+        summary: "Cleared the price",
+        originKey: "clear-pricing",
+      },
+    );
+    assert.deepStrictEqual(yield* titles("starter costs"), [[], 0]);
+    assert.deepStrictEqual(yield* titles("100%_"), [[], 0]);
+  }).pipe(Effect.provide(layer)),
+);

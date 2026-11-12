@@ -589,6 +589,28 @@ describe("lists through the tools", () => {
         { group: "FY2025-26", count: 1, total: [{ minor: 100_00, currency: "INR" }] },
         { group: "FY2026-27", count: 1, total: [{ minor: 100_00, currency: "INR" }] },
       ]);
+      // Undated, it belongs to the month it was added in, wherever it is due.
+      yield* records.create(orgId, system, {
+        list: "expenses",
+        title: "Invented undated bill",
+        owner: { _tag: "person", personId: ownerId },
+        amount: { minor: 100_00, currency: "INR" },
+        dueAt: Date.parse("2026-12-01T06:00:00.000Z"),
+        originKey: "undated",
+      });
+      const november = yield* records.totals(
+        orgId,
+        {
+          list: "expenses",
+          dateFrom: Date.parse("2026-10-31T18:30:00.000Z"),
+          dateTo: Date.parse("2026-11-30T18:30:00.000Z"),
+        },
+        "month",
+      );
+      assert.deepStrictEqual(
+        november.groups?.map((one) => one.group),
+        ["2026-11"],
+      );
     }).pipe(Effect.provide(layer)),
   );
 
@@ -932,6 +954,457 @@ describe("invoices", () => {
         const row = yield* records.get(orgId, "INV-5");
         assert.include(row!.fieldsJson, "INV/27-28/001");
       }).pipe(Effect.provide(layer)),
+  );
+});
+
+describe("the owner's taps", () => {
+  const inr = (minor: number) => [{ minor, currency: "INR" }];
+
+  it.effect("edit every kind of detail, checked as an agent's are, and log each change", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, {
+        name: "Vendor bills",
+        prefix: "VB",
+        amount: true,
+        categories: ["rent", "gst"],
+        fields: [
+          { label: "Reference", type: "text" },
+          { label: "Mode", type: "choice", choices: ["card", "upi"] },
+          { label: "Paid day", type: "date" },
+          { label: "Approver", type: "person" },
+          { label: "For client", type: "link", link: "clients" },
+          { label: "Tax", type: "money" },
+          { label: "Bill", type: "file" },
+        ],
+      });
+      const asked = yield* turn(3, "A bill", ["bill.pdf"]);
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [{ list: "clients", title: "Invented Acme" }],
+      });
+      const made = yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [{ list: "vendor_bills", title: "Invented rent", amount: "50,000" }],
+      });
+      const key = made.records[0]!.key;
+      const records = yield* KinRecords.KinRecords;
+      const client = (yield* records.query(orgId, { list: "clients" })).rows[0]!;
+      const edit = (patch: Omit<Parameters<typeof OwnerWork.update>[1], "orgId" | "key" | "rev">) =>
+        Effect.gen(function* () {
+          const row = yield* records.get(orgId, key);
+          return yield* OwnerWork.update(people, { orgId, key, rev: row!.rev, ...patch });
+        });
+      const fields = {
+        reference: "Q3 lease",
+        mode: "upi",
+        paidDay: "2026-11-10",
+        approver: `person:${ownerId}`,
+        forClient: client.recordId,
+        tax: { minor: 900_000, currency: "INR" },
+        bill: ["att-3-0"],
+      };
+      const saved = yield* edit({
+        listCategory: "gst" as never,
+        amount: { minor: 6_000_000, currency: "INR" },
+        party: client.key,
+        fields,
+      });
+      assert.deepStrictEqual(
+        [saved.listCategory, saved.amount, saved.party?.key, saved.fields],
+        ["gst", { minor: 6_000_000, currency: "INR" }, client.key, fields],
+      );
+      assert.deepStrictEqual(
+        saved.files?.map((file) => file.name),
+        ["bill.pdf"],
+      );
+      const logged = saved.changes[0]!;
+      assert.strictEqual(logged.via, "owner");
+      assert.deepInclude(logged.fields, { field: "tax", from: null, to: "₹9,000.00" });
+      assert.deepInclude(logged.fields, { field: "category", from: null, to: "gst" });
+
+      // A file on a message in a chat the owner is not in is not the owner's to keep.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+        VALUES ('elsewhere-chat', ${orgId}, 'direct', 'a:b', 1, ${at})`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('mate', ${orgId}, 'mate', 'Mate', ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+          person_id, role, joined_at)
+        VALUES ('else-mate', ${orgId}, 'elsewhere-chat', 'person', 'mate', 'member', ${at})`;
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+          author_person_id, author_member_id, author_role, kind, body, mentions_json, status,
+          created_at, attachments_json)
+        VALUES ('msg-else', ${orgId}, 'elsewhere-chat', 1, 'human', 'mate', 'else-mate', 'member',
+          'text', 'x', '[]', 'posted', ${at},
+          ${JSON.stringify([{ type: "file", id: "att-else", name: "payroll.pdf", mimeType: "application/pdf", sizeBytes: 9 }])})`;
+      yield* sql`INSERT INTO kin_message_attachments (attachment_id, org_id, chat_id, message_id)
+        VALUES ('att-else', ${orgId}, 'elsewhere-chat', 'msg-else')`;
+      for (const [patch, reason] of [
+        [{ fields: { mode: "cheque" } }, "invalid_state"],
+        [{ fields: { paidDay: "2026-02-30" } }, "invalid_state"],
+        [{ fields: { approver: "person:nobody" } }, "not_found"],
+        [{ fields: { forClient: "rec_nope" } }, "not_found"],
+        [{ fields: { tax: { minor: 1, currency: "ZZZ" } } }, "invalid_state"],
+        [{ fields: { bill: ["att-none"] } }, "not_found"],
+        [{ fields: { bill: ["att-3-0", "att-else"] } }, "not_found"],
+        [{ fields: { vendor: "No such field" } }, "invalid_state"],
+        [{ listCategory: "travel" as never }, "invalid_state"],
+      ] as const)
+        assert.include(yield* Effect.flip(edit(patch)), { reason }, JSON.stringify(patch));
+      // The picker offers only what would be accepted.
+      const offered = yield* OwnerMoney.files(people, { orgId });
+      assert.deepStrictEqual(
+        offered.files.map((file) => file.name),
+        ["bill.pdf"],
+      );
+      assert.lengthOf((yield* OwnerMoney.files(people, { orgId, text: "BILL" })).files, 1);
+      assert.lengthOf((yield* OwnerMoney.files(people, { orgId, text: "payroll" })).files, 0);
+      // A teammate who joined after the bill was sent is never offered it; the owner still is.
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('teammate', ${orgId}, 'teammate', 'Teammate', ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+          person_id, role, joined_at, joined_seq)
+        VALUES ('lead-chat-teammate', ${orgId}, 'lead-chat', 'person', 'teammate', 'member', ${at}, 4)`;
+      yield* turn(5, "The new bill", ["later.pdf"]);
+      const names = (personId: string) =>
+        OwnerMoney.readableFiles(orgId, personId, {}).pipe(
+          Effect.map((page) => page.files.map((file) => file.name).toSorted()),
+        );
+      assert.deepStrictEqual(yield* names("teammate"), ["later.pdf"]);
+      assert.deepStrictEqual(yield* names(ownerId), ["bill.pdf", "later.pdf"]);
+
+      const cleared = yield* edit({ listCategory: null, fields: { bill: null, mode: null } });
+      assert.deepStrictEqual(
+        [cleared.listCategory, cleared.files, cleared.fields?.mode, cleared.fields?.reference],
+        [undefined, undefined, undefined, "Q3 lease"],
+      );
+      // Work's own entries have no details of this kind.
+      const task = yield* OwnerWork.create(people, {
+        orgId,
+        title: "A task",
+        clientRequestId: "t",
+      });
+      assert.include(
+        yield* Effect.flip(
+          OwnerWork.update(people, {
+            orgId,
+            key: task.key,
+            rev: task.rev,
+            fields: { reference: "x" },
+          }),
+        ),
+        { reason: "invalid_state" },
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("settle an invoice from its balance when the amount is edited", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, { template: "invoices" });
+      const asked = yield* turn(3, "Invoice");
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [{ list: "invoices", title: "Invented retainer", amount: "1 lakh" }],
+      });
+      yield* OwnerMoney.recordPayment(people, {
+        orgId,
+        key: "INV-1",
+        amount: { minor: 4_000_000, currency: "INR" },
+        paidOn: "2026-11-05",
+        clientRequestId: "p1",
+      });
+      const records = yield* KinRecords.KinRecords;
+      const amount = (minor: number) =>
+        Effect.gen(function* () {
+          const row = yield* records.get(orgId, "INV-1");
+          return yield* OwnerWork.update(people, {
+            orgId,
+            key: "INV-1",
+            rev: row!.rev,
+            amount: { minor, currency: "INR" },
+          });
+        });
+      const below = yield* Effect.flip(amount(3_000_000));
+      assert.include(below, { reason: "invalid_state" });
+      assert.include(below.message, "₹40,000.00");
+      // The owner is told what to do in the app's words, not an agent tool's.
+      assert.notInclude(below.message, "payment_record");
+      assert.deepStrictEqual(
+        [(yield* amount(4_000_000)).state, (yield* amount(9_000_000)).state],
+        ["done", "waiting"],
+      );
+      assert.deepStrictEqual(
+        (yield* records.detail((yield* records.get(orgId, "INV-1"))!)).balance,
+        {
+          minor: 5_000_000,
+          currency: "INR",
+        },
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("pay any list over time once its definition says so, and only then", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, { template: "expenses" });
+      yield* defined(3, { template: "invoices" });
+      const asked = yield* turn(5, "Rent is due");
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [
+          { list: "expenses", title: "Invented rent", amount: "1 lakh", state: "open" },
+          { list: "expenses", title: "Invented taxi", amount: "500", date: "2026-11-10" },
+        ],
+      });
+      const pay = (minor: number, id: string) =>
+        OwnerMoney.recordPayment(people, {
+          orgId,
+          key: "EXP-1",
+          amount: { minor, currency: "INR" },
+          paidOn: "2026-11-05",
+          clientRequestId: id,
+        });
+      const totals = OwnerWork.list(people, { orgId, list: "expenses", totalsBy: "none" }).pipe(
+        Effect.map((page) => page.totals),
+      );
+      // Without the flag a list is as it was: no payments, no balance, no "still owed".
+      assert.include(yield* Effect.flip(pay(4_000_000, "a")), { reason: "invalid_state" });
+      assert.strictEqual((yield* totals)?.owed, undefined);
+      const lists = () =>
+        OwnerMoney.lists(people, { orgId }).pipe(
+          Effect.map((all) => all.lists.find((one) => one.list === "expenses")!),
+        );
+      assert.strictEqual((yield* lists()).payments, undefined);
+      const flagged = yield* OwnerMoney.updateList(people, {
+        orgId,
+        list: "expenses",
+        rev: (yield* lists()).rev,
+        payments: true,
+      });
+      assert.strictEqual(flagged.payments, true);
+
+      const part = yield* pay(4_000_000, "a");
+      assert.deepStrictEqual(
+        [part.state, part.balance, part.payments?.length],
+        ["open", { minor: 6_000_000, currency: "INR" }, 1],
+      );
+      assert.deepStrictEqual(
+        [(yield* totals)?.total, (yield* totals)?.owed],
+        [inr(10_050_000), inr(6_000_000)],
+      );
+      const full = yield* pay(6_000_000, "b");
+      assert.deepStrictEqual([full.state, full.balance?.minor], ["done", 0]);
+      // Taken back, it is owed again in the state this list has for that.
+      const back = yield* OwnerMoney.voidPayment(people, {
+        orgId,
+        key: "EXP-1",
+        paymentId: part.payments![0]!.paymentId,
+      });
+      assert.deepStrictEqual([back.state, back.balance?.minor], ["open", 4_000_000]);
+      // Money paid out never counts as money received.
+      assert.deepStrictEqual((yield* OwnerMoney.money(people, { orgId })).received.thisMonth, []);
+      // The way out is refused while a payment still counts, and Invoices never lose theirs.
+      const off = (list: string, rev: number) =>
+        OwnerMoney.updateList(people, { orgId, list, rev, payments: false });
+      assert.include(yield* Effect.flip(off("expenses", flagged.rev)), { reason: "invalid_state" });
+      const invoices = (yield* OwnerMoney.lists(people, { orgId })).lists.find(
+        (one) => one.list === "invoices",
+      )!;
+      assert.strictEqual(invoices.payments, true);
+      assert.include(yield* Effect.flip(off("invoices", invoices.rev)), {
+        reason: "invalid_state",
+      });
+      yield* OwnerMoney.voidPayment(people, {
+        orgId,
+        key: "EXP-1",
+        paymentId: full.payments!.find((one) => one.voidedAt === null)!.paymentId,
+      });
+      assert.strictEqual((yield* off("expenses", flagged.rev)).payments, undefined);
+      assert.strictEqual((yield* totals)?.owed, undefined);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("count every unpaid entry not yet closed as owed, whatever it is called", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, {
+        name: "Jobs",
+        prefix: "JOB",
+        amount: true,
+        states: ["open", "doing", "done", "dropped"],
+        fields: [{ label: "Site\tcode", type: "text" }],
+      });
+      const lists = yield* OwnerMoney.lists(people, { orgId });
+      const jobs = lists.lists.find((one) => one.list === "jobs")!;
+      // A label is one line, however a lead wrote it.
+      assert.strictEqual(jobs.fields.find((one) => one.key === "siteCode")?.label, "Site code");
+      yield* OwnerMoney.updateList(people, { orgId, list: "jobs", rev: jobs.rev, payments: true });
+      const asked = yield* turn(3, "A job under way");
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [{ list: "jobs", title: "Invented fit-out", amount: "100", state: "doing" }],
+      });
+      const page = yield* OwnerWork.list(people, { orgId, list: "jobs", totalsBy: "none" });
+      assert.deepStrictEqual(page.totals?.owed, inr(10_000));
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("open, from each Money figure, a list whose header is that figure", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, { template: "invoices" });
+      yield* defined(3, { template: "expenses" });
+      const asked = yield* turn(5, "The books");
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [
+          { list: "clients", title: "Invented Acme" },
+          { list: "clients", title: "Invented Birch" },
+        ],
+      });
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [
+          {
+            list: "invoices",
+            title: "Invented October retainer",
+            client: "Invented Acme",
+            amount: "1 lakh",
+            due: "2026-11-01",
+          },
+          { list: "invoices", title: "Invented one-off", amount: "50,000", due: "2026-12-01" },
+          {
+            list: "invoices",
+            title: "Invented old audit",
+            client: "Invented Birch",
+            amount: "10,000",
+            due: "2026-09-01",
+          },
+          // A draft past its date is not owed yet, whatever its due date says.
+          {
+            list: "invoices",
+            title: "Invented draft",
+            amount: "20,000",
+            due: "2026-10-01",
+            state: "open",
+          },
+          // Paid, with no date of its own: spent on the day it was added.
+          { list: "expenses", title: "Invented taxi", amount: "500" },
+          { list: "expenses", title: "Invented flight", amount: "9,000", category: "travel" },
+        ],
+      });
+      yield* OwnerMoney.recordPayment(people, {
+        orgId,
+        key: "INV-1",
+        amount: { minor: 4_000_000, currency: "INR" },
+        paidOn: "2026-11-05",
+        clientRequestId: "p1",
+      });
+      const summary = yield* OwnerMoney.money(people, { orgId });
+      const open = (filter: Omit<Parameters<typeof OwnerWork.list>[1], "orgId" | "totalsBy">) =>
+        OwnerWork.list(people, { orgId, totalsBy: "none", ...filter });
+      const issued = yield* open({ list: "invoices", states: ["waiting"] });
+      assert.deepStrictEqual(
+        [summary.owed.total, issued.totals?.owed, issued.totals?.total],
+        [inr(12_000_000), inr(12_000_000), inr(16_000_000)],
+      );
+      // The whole list agrees too: a draft is billed, and not owed yet.
+      const every = yield* open({ list: "invoices" });
+      assert.deepStrictEqual(
+        [every.totals?.owed, every.totals?.total],
+        [inr(12_000_000), inr(18_000_000)],
+      );
+      const overdue = yield* open({ list: "invoices", states: ["waiting"], late: true });
+      assert.deepStrictEqual(
+        [summary.owed.overdue, overdue.totals?.owed],
+        [inr(7_000_000), inr(7_000_000)],
+      );
+      const month = { paidFrom: "2026-11-01", paidTo: "2026-11-30" };
+      const received = yield* open({ list: "invoices", ...month });
+      assert.deepStrictEqual(
+        [summary.received.thisMonth, received.totals?.received],
+        [inr(4_000_000), inr(4_000_000)],
+      );
+      const dated = { dateFrom: "2026-11-01", dateTo: "2026-11-30" };
+      const spent = yield* open({ list: "expenses", states: ["done"], ...dated });
+      assert.deepStrictEqual(
+        [summary.spent.thisMonth.total, spent.totals?.total],
+        [inr(950_000), inr(950_000)],
+      );
+      // Longest overdue first, whatever the amounts.
+      assert.deepStrictEqual(
+        summary.owed.byClient.map((row) => [row.party?.title ?? null, row.oldestOverdueDays]),
+        [
+          ["Invented Birch", 71],
+          ["Invented Acme", 10],
+          [null, null],
+        ],
+      );
+      // "No client" and "No category" are filters of their own.
+      const noClient = yield* open({ list: "invoices", states: ["waiting"], party: null });
+      assert.deepStrictEqual(
+        [noClient.records.map((one) => one.title), noClient.totals?.owed],
+        [["Invented one-off"], inr(5_000_000)],
+      );
+      const noCategory = yield* open({ list: "expenses", listCategory: null });
+      assert.deepStrictEqual(
+        [noCategory.records.map((one) => one.title), noCategory.totals?.total],
+        [["Invented taxi"], inr(50_000)],
+      );
+      // A stored category keeps a label only where the definition gives one.
+      const expenses = (yield* OwnerMoney.lists(people, { orgId })).lists.find(
+        (one) => one.list === "expenses",
+      )!;
+      const labelled = yield* OwnerMoney.updateList(people, {
+        orgId,
+        list: "expenses",
+        rev: expenses.rev,
+        categoryLabels: { travel: "Travel & stay" as never },
+      });
+      assert.deepStrictEqual(labelled.categoryLabels, { travel: "Travel & stay" });
+      assert.include(
+        yield* Effect.flip(
+          OwnerMoney.updateList(people, {
+            orgId,
+            list: "expenses",
+            rev: labelled.rev,
+            categoryLabels: { nope: "Nope" as never },
+          }),
+        ),
+        { reason: "invalid_state" },
+      );
+      const plain = yield* OwnerMoney.updateList(people, {
+        orgId,
+        list: "expenses",
+        rev: labelled.rev,
+        categoryLabels: { travel: null },
+      });
+      assert.strictEqual(plain.categoryLabels, undefined);
+      // A preset's label cleared stays cleared.
+      yield* defined(7, { template: "dates" });
+      const dates = () =>
+        OwnerMoney.lists(people, { orgId }).pipe(
+          Effect.map((all) => all.lists.find((one) => one.list === "dates")!),
+        );
+      const unlabelled = yield* OwnerMoney.updateList(people, {
+        orgId,
+        list: "dates",
+        rev: (yield* dates()).rev,
+        categoryLabels: { gst: null },
+      });
+      assert.notProperty(unlabelled.categoryLabels ?? {}, "gst");
+      assert.notProperty((yield* dates()).categoryLabels ?? {}, "gst");
+      assert.strictEqual((yield* dates()).categoryLabels?.tds, "TDS");
+      // A label stored with a control character before they were refused still loads, without it.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_registers SET name = ${"Key\tdates"},
+          definition_json = replace(definition_json, '"TDS"', '"T\\u0007DS"')
+        WHERE org_id = ${orgId} AND register_id = 'dates'`;
+      const loaded = yield* dates();
+      assert.deepStrictEqual([loaded.name, loaded.categoryLabels?.tds], ["Key dates", "T DS"]);
+    }).pipe(Effect.provide(layer)),
   );
 });
 

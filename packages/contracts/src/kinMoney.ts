@@ -50,11 +50,15 @@ export const KinFileRef = Schema.Struct({
 });
 export type KinFileRef = typeof KinFileRef.Type;
 
+/** A field of a defined list, by the key its definition gives it. */
+export const KinListFieldKey = Schema.String.check(Schema.isPattern(/^[a-z][a-zA-Z0-9]{0,39}$/));
+export type KinListFieldKey = typeof KinListFieldKey.Type;
+
 /** A list field's stored value: text, a choice or a day; files and people as ids; money. */
 export const KinFieldValue = Schema.Union([Schema.String, Schema.Array(Schema.String), KinMoney]);
 export type KinFieldValue = typeof KinFieldValue.Type;
 
-/** Money received against an invoice. A voided one stays in the history and counts for nothing. */
+/** Money paid against an entry that is paid over time. A voided one stays in the history and counts for nothing. */
 export const KinPayment = Schema.Struct({
   paymentId: TrimmedNonEmptyString,
   amount: KinMoney,

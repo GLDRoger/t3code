@@ -57,6 +57,7 @@ import {
   ArrowLeftIcon,
   BugIcon,
   ChartNoAxesColumnIcon,
+  FileTextIcon,
   MessagesSquareIcon,
   BrainIcon,
   UsersIcon,
@@ -104,6 +105,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { kinSearchHit } from "@t3tools/client-runtime/kin/kinDocs";
 import { kinClient } from "../kin/kinClient";
 import { kinListSwitchHref } from "../kin/kinListSwitch";
 import {
@@ -111,6 +113,7 @@ import {
   noKinLeadPermissionAtom,
   openKinLeadForm,
 } from "../kin/KinNewLeadButton";
+import { useKinPaletteHits } from "../kin/useKinDocs";
 import { useKinHost } from "../kin/useKinHost";
 import { useKinListSwitch } from "../kin/useKinListSwitch";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
@@ -291,6 +294,14 @@ const ADD_PROJECT_ENTRY_GROUP = "add-project";
 const NEW_THREAD_IN_GROUP = "projects";
 
 /** The submenu an open intent starts in; its groups resolve while rendering. */
+// The address says "client"; reading it by name keeps it apart from an RPC client in lint's eyes.
+const KIN_CLIENT_PARAM = "client";
+/** What Kin is asked for: nothing for a command filter or a single letter. */
+const kinPaletteQuery = (query: string) => {
+  const text = query.trim();
+  return query.startsWith(">") || text.length < 2 ? "" : text;
+};
+
 function openIntentView(intent: CommandPaletteOpenIntent | null): CommandPaletteView | null {
   switch (intent?.kind) {
     case "add-project":
@@ -469,6 +480,10 @@ function OpenCommandPaletteDialog(props: {
   const setQuery = (query: string) => dispatchSearch({ type: "query", query });
   const deferredQuery = useDeferredValue(query);
   const isActionsOnly = deferredQuery.startsWith(">");
+  const kinHits = useKinPaletteHits(
+    canOpenKinWork ? kinNewLead : null,
+    kinPaletteQuery(deferredQuery),
+  );
   const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
   const resultListRef = useRef<LegendListRef | null>(null);
   // A pushed view drops the typed highlight until the user moves it again.
@@ -1774,6 +1789,20 @@ function OpenCommandPaletteDialog(props: {
       },
       {
         kind: "action",
+        value: "action:kin-docs",
+        searchTerms: ["kin", "docs", "documents", "notes", "plans", "proposals", "writing"],
+        title: "Docs: what your agents have written up",
+        icon: <FileTextIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          await navigate({
+            to: "/kin/$environmentId/$orgId/work",
+            params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
+            search: { show: "docs" },
+          });
+        },
+      },
+      {
+        kind: "action",
         value: "action:kin-money",
         searchTerms: [
           "kin",
@@ -2006,6 +2035,40 @@ function OpenCommandPaletteDialog(props: {
       : {}),
     projectSearchItems: projectSearchItems,
     settingsSearchItems,
+    kinItems:
+      kinNewLead === null || currentView !== null
+        ? []
+        : kinHits.map((raw) => {
+            const hit = kinSearchHit(raw);
+            const Icon = hit.kind === "docs" ? FileTextIcon : ListChecksIcon;
+            return {
+              kind: "action" as const,
+              value: `kin-hit:${hit.id}`,
+              searchTerms: [hit.title],
+              title: hit.title,
+              description: [hit.kindLabel, hit.section?.title, hit.snippet, hit.closed]
+                .filter((part) => part !== null && part !== undefined)
+                .join(" · "),
+              icon: <Icon className={ITEM_ICON_CLASS} />,
+              run: async () => {
+                await navigate({
+                  to: "/kin/$environmentId/$orgId/work",
+                  params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
+                  search:
+                    hit.kind === "docs"
+                      ? {
+                          doc: raw.key,
+                          ...(hit.section === null ? {} : { section: hit.section.id }),
+                        }
+                      : hit.kind === "clients"
+                        ? { [KIN_CLIENT_PARAM]: raw.key }
+                        : hit.kind === "projects"
+                          ? { project: raw.key }
+                          : { task: raw.key },
+                });
+              },
+            };
+          }),
     threadSearchItems:
       isLinkedThreadSearch && linkedThreadSearch?.linkedThreads
         ? buildLinkedThreadActionItems({

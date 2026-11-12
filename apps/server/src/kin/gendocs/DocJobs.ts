@@ -13,11 +13,14 @@ import {
   TrimmedNonEmptyString,
   type WorkerReport,
 } from "@t3tools/contracts";
+import { AgentScope } from "@t3tools/shared/AgentScope";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -30,7 +33,8 @@ import { reportFormat } from "../lead/workerBrief.ts";
 import * as Docs from "../work/docs.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import type { RecordRow } from "../work/recordRows.ts";
-import { gatherFacts } from "./facts.ts";
+import { listDef } from "../work/registers.ts";
+import { entrySensitive, gatherFacts, jobSensitive } from "./facts.ts";
 import { assembleInputs, needsEntry, type Value } from "./recipe.ts";
 import { RETURN_CAPS, takeOutputs } from "./returnPath.ts";
 import { jobWorktree, KinWorkspace, type StoredRecipe } from "./workspace.ts";
@@ -187,7 +191,8 @@ export const planJob = Effect.fn("KinDocJobs.plan")(function* (
       inputsHash,
       number: null,
       draft: false,
-      sensitive: entry !== undefined && (entry.sensitive === 1 || entry.inheritedSensitive === 1),
+      sensitive:
+        entry !== undefined && entrySensitive(entry, yield* listDef(orgId, entry.registerId)),
       docOrigin:
         entry === undefined
           ? `file:${inputsHash}`
@@ -222,7 +227,7 @@ export const planJob = Effect.fn("KinDocJobs.plan")(function* (
     inputsHash,
     number: named.numbered ? gathered.number : null,
     draft: named.numbered && gathered.number === null,
-    sensitive: named.sensitive || gathered.sensitive,
+    sensitive: jobSensitive(named, assembled.inputs, gathered),
     docOrigin:
       entry === undefined
         ? `recipe:${named.name}:${inputsHash}`
@@ -232,7 +237,7 @@ export const planJob = Effect.fn("KinDocJobs.plan")(function* (
 });
 
 const returnRules = [
-  `Put each finished file in out/ under a plain name (letters, digits, spaces, . _ - and brackets). Kin takes back only what your report names, as evidence {"kind": "file", "ref": "out/<name>"}: PDF, PNG, JPEG, WebP, SVG without scripts, CSV, XLSX, DOCX, PPTX, Markdown, text or JSON, at most ${RETURN_CAPS.files} files, ${RETURN_CAPS.fileBytes / 1048576} MB each and ${RETURN_CAPS.totalBytes / 1048576} MB in all. No links, no HTML, no macros. Anything else in out/ is left behind.`,
+  `Put each finished file in out/ under a plain name (letters, digits, spaces, . _ - and brackets). Kin takes back only what your report names, as evidence {"kind": "file", "ref": "out/<name>"}: PDF, PNG, JPEG, WebP, SVG, CSV, XLSX, DOCX, PPTX, Markdown, text or JSON, at most ${RETURN_CAPS.files} files, ${RETURN_CAPS.fileBytes / 1048576} MB each and ${RETURN_CAPS.totalBytes / 1048576} MB in all. No links, no HTML. An SVG is plain shapes, text and paint, with no script, image, outside link or CSS import. An Office file has no macros, embedded objects, templates or outside links but web and email hyperlinks. A CSV cell that starts with = + - or @ and isn't a number starts with ' instead. Anything else in out/ is left behind.`,
   "Kin commits nothing and opens no pull request for this task, whatever you were told before; it removes this worktree after taking the files.",
 ];
 
@@ -277,7 +282,7 @@ export const docBrief = (plan: Plan, input: DocumentInput) => {
 };
 
 const RECIPE_GUIDE = `A recipe is a folder: RECIPE.md, its scripts and its templates. RECIPE.md starts with YAML front matter between --- lines:
-name (the folder's name), title, description (one line the agent reads), list (when it is for one entry of a list, such as invoices), numbered (true when it shows the entry's issued number), sensitive (true for money, client or bank details), tools ([typst] when it renders PDF or PNG), outputs (file names, * for a varying part), and inputs.
+name (the folder's name), title, description (one line the agent reads), list (when it is for one entry of a list, such as invoices), numbered (true when it shows the entry's issued number), sensitive (Kin labels a file confidential by where its inputs come from, such as amounts, bank details, tax ids or a sensitive entry; true here labels it so anyway), tools ([typst] when it renders PDF or PNG), outputs (file names, * for a varying part), and inputs.
 Each input has a type (text, integer, decimal, money, date, boolean, month or table with columns), required (default true for stored values, false for the agent's), a description, and from: where Kin reads it. Leave from out for the agent's own words; otherwise one of entry.key|title|state|amount|tax|date|due|notes|number, entry.fields.<field>, client.name|gstin|placeOfSupply|terms, company.legalName|tradeName|address|gstin|pan|placeOfSupply|sac, company.bank.accountName|accountNumber|ifsc|bankName|branch|upi, system.number|draft|today, rows.<list> (a table of that list's entries in a month, with period naming a month input; columns from key, title, state, amount, tax, date, due, client, category, number, field_<field>), or payments (a table: invoice, client, amount, paidOn). Money is {"minor": <integer>, "currency": "INR"}.
 The body after the front matter tells a worker how to run it. Scripts are plain Node .mjs with no packages, run as node recipes/<name>/build.mjs in/inputs.json out; they do every sum in integer minor units. Typst templates read the data with --input; use typst compile --root . --ignore-system-fonts. Settings the owner may change go in config.json beside them.`;
 
@@ -364,8 +369,86 @@ export class KinDocCollector extends Context.Service<
       completed: boolean,
       report: WorkerReport,
     ) => Effect.Effect<WorkerReport | undefined>;
+    /** Removes a job's worktree, its inputs first; a no-op for a worker that is no document job. */
+    readonly cleanup: (orgId: KinOrgId, workerId: KinWorkerId) => Effect.Effect<void>;
+    /** At startup: removes the worktree of every job whose run is over. */
+    readonly sweep: Effect.Effect<void>;
   }
 >()("t3/kin/gendocs/DocJobs/KinDocCollector") {}
+
+/**
+ * Removes a job's worktree and records it gone once it is; until then its row says it's owed.
+ * The inputs go first, and only from the worktree's own `in/`, never through a link put there.
+ */
+export const cleanupJob = Effect.fn("KinDocJobs.cleanup")(
+  function* (orgId: KinOrgId, workerId: KinWorkerId) {
+    const sql = yield* SqlClient.SqlClient;
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const config = yield* ServerConfig;
+    const workspace = yield* KinWorkspace;
+    const [job] = yield* sql<{ removedAt: number | null }>`SELECT removed_at AS "removedAt"
+      FROM kin_doc_jobs WHERE org_id = ${orgId} AND worker_id = ${workerId} ORDER BY worker_id`;
+    if (job === undefined || job.removedAt !== null) return;
+    const worktree = jobWorktree(config.worktreesDir, workerId);
+    const root = yield* fs.realPath(worktree).pipe(Effect.option);
+    const inputs = yield* fs.realPath(path.join(worktree, "in")).pipe(Effect.option);
+    if (
+      Option.isSome(root) &&
+      Option.isSome(inputs) &&
+      inputs.value === path.join(root.value, "in")
+    )
+      yield* fs.remove(path.join(inputs.value, "inputs.json"), { force: true });
+    yield* workspace.discard(orgId, workerId);
+    if (yield* fs.exists(worktree))
+      return yield* Effect.logWarning("Kin couldn't remove a document job's worktree yet", {
+        workerId,
+      });
+    yield* sql`UPDATE kin_doc_jobs SET removed_at = ${yield* Clock.currentTimeMillis}
+      WHERE org_id = ${orgId} AND worker_id = ${workerId} AND removed_at IS NULL`;
+  },
+  Effect.catchCause((cause) =>
+    Effect.logWarning("Kin couldn't clean up a document job", { cause }),
+  ),
+);
+
+/**
+ * Stores a job's outcome once. The same outcome again returns it; a different one fails, so a
+ * second collection never replaces what the first filed.
+ */
+export const recordOutcome = Effect.fn("KinDocJobs.recordOutcome")(function* (
+  orgId: KinOrgId,
+  workerId: KinWorkerId,
+  outcomeJson: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const now = yield* Clock.currentTimeMillis;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      yield* sql`UPDATE kin_doc_jobs SET collected_at = ${now}, outcome_json = ${outcomeJson}
+        WHERE org_id = ${orgId} AND worker_id = ${workerId} AND collected_at IS NULL`;
+      const [row] = yield* sql<{ outcomeJson: string | null }>`SELECT outcome_json AS "outcomeJson"
+        FROM kin_doc_jobs WHERE org_id = ${orgId} AND worker_id = ${workerId} ORDER BY worker_id`;
+      if (row?.outcomeJson !== outcomeJson)
+        return yield* denied(
+          "This job was already collected with another outcome; Kin kept the first.",
+        );
+      return outcomeJson;
+    }),
+  );
+});
+
+const UNCONFIRMED: Outcome = {
+  summary:
+    "Kin took back no file: it couldn't confirm the worker had stopped, so it couldn't trust out/. Ask again.",
+  documents: [],
+  problems: [],
+};
+const FAILED: Outcome = {
+  summary: "Kin couldn't file this job's files; ask it again.",
+  documents: [],
+  problems: [],
+};
 
 export const collectorLayer = Layer.effect(
   KinDocCollector,
@@ -377,6 +460,18 @@ export const collectorLayer = Layer.effect(
     const workspace = yield* KinWorkspace;
     const records = yield* KinRecords;
     const chat = yield* KinChatService;
+    const scopes = yield* AgentScope;
+    // Workers elsewhere have no shell (`KinWorkSandbox`), so file tools are all that touched out/.
+    const shellHost = (yield* HostProcess.Platform) === "linux";
+    const jobContext = Effect.provideService(SqlClient.SqlClient, sql);
+    const cleanup = (orgId: KinOrgId, workerId: KinWorkerId) =>
+      cleanupJob(orgId, workerId).pipe(
+        jobContext,
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(Path.Path, path),
+        Effect.provideService(ServerConfig, config),
+        Effect.provideService(KinWorkspace, workspace),
+      );
 
     const store = Effect.fn("KinDocCollector.store")(function* (
       orgId: KinOrgId,
@@ -439,10 +534,17 @@ export const collectorLayer = Layer.effect(
       const named = report.evidence.filter((item) => item.kind === "file").map((item) => item.ref);
       const returned = yield* takeOutputs({ worktree, named });
       const problems = returned.refused.map((one) => `${one.name}: ${one.reason}`);
+      // The recipe as the worker ran it, never as main holds it now.
       const recipe =
         job.recipe === null
           ? undefined
-          : (yield* workspace.recipes(job.orgId)).find((one) => one.name === job.recipe);
+          : yield* workspace.recipeAt(job.orgId, job.recipe, job.recipeCommit);
+      if (job.recipe !== null && recipe === undefined)
+        return {
+          summary: `Kin took back no file: it couldn't read the ${job.recipe} recipe at the commit this job ran.`,
+          documents: [],
+          problems,
+        } satisfies Outcome;
       const documents: Array<Outcome["documents"][number]> = [];
       const entry =
         job.entryRecordId === null
@@ -522,9 +624,49 @@ export const collectorLayer = Layer.effect(
       } satisfies Outcome;
     });
 
+    /** A document job's outcome, filed once: a later collection returns the stored one. */
+    const settle = Effect.fn("KinDocCollector.settle")(function* (
+      job: JobRow,
+      threadId: ThreadId,
+      completed: boolean,
+      workerReport: WorkerReport,
+    ) {
+      const stored = job.outcomeJson === null ? undefined : decodeOutcome(job.outcomeJson);
+      if (stored !== undefined && stored._tag === "Some") return stored.value;
+      // out/ is read only once nothing the worker started can still change it.
+      const gone = yield* scopes.reap(threadId);
+      const outcome =
+        !gone && shellHost
+          ? UNCONFIRMED
+          : yield* outcomeOf(job, completed, workerReport).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Kin couldn't file a document job's files", { cause }).pipe(
+                  Effect.as(FAILED),
+                ),
+              ),
+            );
+      yield* recordOutcome(job.orgId, job.workerId, yield* encodeOutcome(outcome)).pipe(jobContext);
+      if (job.chatId !== null) {
+        const documents = yield* decodeDocuments(outcome.documents);
+        yield* chat
+          .setTaskCardDocuments({
+            orgId: job.orgId,
+            chatId: KinChatId.make(job.chatId),
+            threadId,
+            documents,
+            lastError: documents.length === 0 ? (outcome.problems[0] ?? outcome.summary) : null,
+          })
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Kin couldn't update a document card", { cause }),
+            ),
+          );
+      }
+      return outcome;
+    });
     const collect: KinDocCollector["Service"]["collect"] = Effect.fn("KinDocCollector.collect")(
-      function* (worker, completed, report) {
-        const [job] = yield* sql<JobRow>`SELECT j.org_id AS "orgId", j.worker_id AS "workerId",
+      function* (worker, completed, workerReport) {
+        const found = yield* sql<JobRow>`SELECT j.org_id AS "orgId", j.worker_id AS "workerId",
             j.agent_id AS "agentId", j.wakeup_id AS "wakeupId", j.mode, j.recipe,
             j.recipe_commit AS "recipeCommit", j.entry_record_id AS "entryRecordId",
             j.inputs_sha256 AS "inputsSha256", j.number, j.sensitive, j.doc_origin AS "docOrigin",
@@ -535,49 +677,47 @@ export const collectorLayer = Layer.effect(
           FROM kin_doc_jobs j
           LEFT JOIN kin_workers w ON w.org_id = j.org_id AND w.worker_id = j.worker_id
           WHERE j.org_id = ${worker.orgId} AND j.worker_id = ${worker.workerId}
-          ORDER BY j.worker_id`;
+          ORDER BY j.worker_id`.pipe(Effect.result);
+        // Unreadable, it may be a document job: blocked, never handed on to be published.
+        if (found._tag === "Failure") {
+          yield* Effect.logWarning("Kin couldn't read a worker's document job", {
+            cause: found.failure,
+          });
+          return reported(workerReport, FAILED);
+        }
+        const [job] = found.success;
         if (job === undefined) return undefined;
-        const stored = job.outcomeJson === null ? undefined : decodeOutcome(job.outcomeJson);
-        if (stored !== undefined && stored._tag === "Some") return reported(report, stored.value);
-        const outcome = yield* outcomeOf(job, completed, report).pipe(
+        // Every way out of a document job ends in its cleanup; none falls through to publishing.
+        return yield* settle(job, worker.threadId, completed, workerReport).pipe(
+          Effect.map((outcome) => reported(workerReport, outcome)),
           Effect.catchCause((cause) =>
-            Effect.logWarning("Kin couldn't file a document job's files", { cause }).pipe(
-              Effect.as({
-                summary: "Kin couldn't file this job's files; ask it again.",
-                documents: [],
-                problems: [],
-              } satisfies Outcome),
+            Effect.logWarning("Kin document collection failed", { cause }).pipe(
+              Effect.as(reported(workerReport, FAILED)),
             ),
           ),
+          Effect.ensuring(cleanup(job.orgId, job.workerId)),
         );
-        const now = yield* Clock.currentTimeMillis;
-        yield* sql`UPDATE kin_doc_jobs SET collected_at = ${now}, outcome_json = ${yield* encodeOutcome(outcome)}
-          WHERE org_id = ${job.orgId} AND worker_id = ${job.workerId} AND collected_at IS NULL`;
-        if (job.chatId !== null) {
-          const documents = yield* decodeDocuments(outcome.documents);
-          yield* chat
-            .setTaskCardDocuments({
-              orgId: job.orgId,
-              chatId: KinChatId.make(job.chatId),
-              threadId: worker.threadId,
-              documents,
-              lastError: documents.length === 0 ? (outcome.problems[0] ?? outcome.summary) : null,
-            })
-            .pipe(
-              Effect.catchCause((cause) =>
-                Effect.logWarning("Kin couldn't update a document card", { cause }),
-              ),
-            );
-        }
-        yield* workspace.discard(job.orgId, job.workerId);
-        return reported(report, outcome);
       },
       Effect.provideService(KinRecords, records),
-      Effect.provideService(SqlClient.SqlClient, sql),
+      jobContext,
+    );
+
+    const sweep = Effect.fn("KinDocCollector.sweep")(
+      function* () {
+        // A startup scan across orgs: a job whose run is over still owes its worktree.
+        const rows = yield* sql<{ orgId: KinOrgId; workerId: KinWorkerId }>`SELECT
+            j.org_id AS "orgId", j.worker_id AS "workerId"
+          FROM kin_doc_jobs j
+          LEFT JOIN kin_workers w ON w.org_id = j.org_id AND w.worker_id = j.worker_id
+          WHERE j.removed_at IS NULL
+            AND (j.collected_at IS NOT NULL OR w.worker_id IS NULL OR w.ended_at IS NOT NULL)
+          ORDER BY j.org_id, j.worker_id LIMIT 1000`;
+        for (const row of rows) yield* cleanup(row.orgId, row.workerId);
+      },
       Effect.catchCause((cause) =>
-        Effect.logWarning("Kin document collection failed", { cause }).pipe(Effect.as(undefined)),
+        Effect.logWarning("Kin couldn't sweep document worktrees", { cause }),
       ),
     );
-    return KinDocCollector.of({ collect });
+    return KinDocCollector.of({ collect, cleanup, sweep: sweep() });
   }),
 );

@@ -44,7 +44,7 @@ import type { DelegateInput } from "./Workers.ts";
 import { STOPPED_BEFORE_START, WorkerTracker } from "./WorkerTracker.ts";
 import { hostShell } from "./workSandbox.ts";
 import { localThreadId } from "./workThread.ts";
-import { docBrief, type DocumentInput, planJob } from "../gendocs/DocJobs.ts";
+import { cleanupJob, docBrief, type DocumentInput, planJob } from "../gendocs/DocJobs.ts";
 import { KinToolchain } from "../gendocs/toolchain.ts";
 import { jobBranch, jobWorktree, KinWorkspace } from "../gendocs/workspace.ts";
 import { KinRecords } from "../work/KinRecords.ts";
@@ -113,7 +113,8 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
   const launcher = yield* ThreadLaunchService.ThreadLaunchService;
   const settings = yield* ServerSettings.ServerSettingsService;
   const path = yield* Path.Path;
-  const { stateDir, worktreesDir } = yield* ServerConfig;
+  const serverConfig = yield* ServerConfig;
+  const { stateDir, worktreesDir } = serverConfig;
   const workspace = yield* KinWorkspace;
   const projects = yield* ProjectService.ProjectService;
   const toolchain = yield* KinToolchain;
@@ -539,6 +540,14 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
         ? plan.event.messageId
         : null;
     const projectId = yield* documentsProject(ctx.orgId);
+    // A job that never ran still owes its prepared worktree, inputs included.
+    const discardJob = cleanupJob(ctx.orgId, workerId).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(Path.Path, path),
+      Effect.provideService(ServerConfig, serverConfig),
+      Effect.provideService(KinWorkspace, workspace),
+    );
     const started = yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* shared.lead(scope);
@@ -603,6 +612,7 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
             Effect.gen(function* () {
               yield* sql`UPDATE kin_workers SET status = 'failed', ended_at = ${yield* Clock.currentTimeMillis}
                 WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId} AND status = 'queued'`;
+              yield* discardJob;
             }).pipe(Effect.ignore),
           ),
         );
@@ -634,6 +644,7 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
             yield* Effect.logWarning("Kin document worker launch failed", { workerId, cause });
             yield* sql`UPDATE kin_workers SET status = 'failed', ended_at = ${yield* Clock.currentTimeMillis}
               WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId} AND status = 'queued'`;
+            yield* discardJob;
           }).pipe(Effect.ignore),
         ),
         Effect.mapError((error) =>
@@ -651,7 +662,10 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
             : new KinChatError({ reason: "unavailable", message: LAUNCH_FAILED }),
         ),
       );
-    if (Option.isNone(launched)) return yield* denied(STOPPED_BEFORE_START);
+    if (Option.isNone(launched)) {
+      yield* discardJob;
+      return yield* denied(STOPPED_BEFORE_START);
+    }
     yield* chat
       .createTaskCard({
         orgId: ctx.orgId,

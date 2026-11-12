@@ -82,6 +82,7 @@ export const list = Effect.fn("KinDocs.list")(
       input.project === undefined
         ? undefined
         : (yield* inList(input.orgId, input.project, "projects")).recordId;
+    const text = input.text?.trim().toLowerCase() ?? "";
     const where = sql.and([
       sql`r.org_id = ${input.orgId}`,
       sql`r.register_id = 'docs'`,
@@ -91,6 +92,15 @@ export const list = Effect.fn("KinDocs.list")(
       ...(input.owner === undefined
         ? []
         : [sql`r.owner_kind = ${input.owner._tag} AND r.owner_id = ${principalId(input.owner)}`]),
+      ...(text === ""
+        ? []
+        : [
+            sql`(instr(lower(r.title), ${text}) > 0 OR EXISTS (SELECT 1 FROM kin_doc_versions v
+              WHERE v.org_id = r.org_id AND v.record_id = r.record_id
+                AND v.version = (SELECT MAX(w.version) FROM kin_doc_versions w
+                  WHERE w.org_id = r.org_id AND w.record_id = r.record_id)
+                AND instr(lower(v.body), ${text}) > 0))`,
+          ]),
     ]);
     const limit = input.limit ?? 50;
     const [count] = yield* sql<{

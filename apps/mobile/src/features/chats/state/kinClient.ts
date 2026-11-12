@@ -744,6 +744,11 @@ export const kinClient = {
   }),
   /** One page of everything dated in a window; the Dates screen decides when. */
   workDates: workDatesRead,
+  /** The files in the owner's chats, to keep one on an entry; read as its picker is typed in. */
+  workFiles: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:files:read",
+    tag: "kin.work.files",
+  }),
   workListUpdate: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:work:list:update",
     tag: "kin.work.updateList",

@@ -62,13 +62,10 @@ export const threadOnlyFields = new Set([
   "onUserDialog",
   "onElicitation",
 ]);
-// How the CLI would reach a real model; the check talks to its fake one only.
-const modelAccess =
-  /^(?:ANTHROPIC_|CLAUDE_CODE_USE_|CLAUDE_CODE_OAUTH|AWS_|VERTEX_|CLOUD_ML_|GOOGLE_)/;
-
 /**
- * A shell child's session as `workSessionOptions` makes it, pointed at the check's worktree and
- * fake model: only the model endpoint, key and thread identity differ from the real one.
+ * A shell child's session as `workSessionOptions` makes it, pointed at the check's worktree,
+ * config directory and fake model: only the model endpoint, key, Claude home and thread identity
+ * differ from the real one, whose environment comes from the same builder.
  */
 export const probeSessionOptions = (
   session: WorkSession & { readonly shell: NonNullable<WorkSession["shell"]> },
@@ -83,21 +80,13 @@ export const probeSessionOptions = (
     ...session,
     options: { ...session.options, cwd: fixture.cwd, model: PROBE_MODEL },
     credentials: { env: { ANTHROPIC_BASE_URL: fixture.baseUrl, ANTHROPIC_API_KEY: fixture.key } },
-    shell: {
-      ...session.shell,
-      env: {
-        ...Object.fromEntries(
-          Object.entries(session.shell.env).filter(([name]) => !modelAccess.test(name)),
-        ),
-        CLAUDE_CONFIG_DIR: fixture.configDir,
-        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-      },
-    },
+    place: { ...session.place, configDir: fixture.configDir },
   });
   return {
     ...(Object.fromEntries(
       Object.entries(built).filter(([key]) => !threadOnlyFields.has(key)),
     ) as ClaudeAdapterV2.ClaudeAgentSdkQueryOptions),
+    env: { ...built.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
     persistSession: false,
   };
 };
@@ -275,9 +264,8 @@ export interface ProbeInput {
   readonly platform: NodeJS.Platform;
   /** The same resolution a real child's paths go through, for the check's own worktree. */
   readonly paths: (worktree: string, tmp: string) => Effect.Effect<ShellPaths, string>;
-  /** A real child's sandbox and environment, for given paths. */
-  readonly sandbox: (paths: ShellPaths, env: NodeJS.ProcessEnv) => SandboxSettings;
-  readonly childEnv: (tmp: string) => NodeJS.ProcessEnv;
+  /** A real child's sandbox, for given paths. */
+  readonly sandbox: (paths: ShellPaths) => SandboxSettings;
   /** The real session, without its shell; the check adds the one it would get. */
   readonly session: Omit<WorkSession, "shell" | "confinement">;
   readonly confinement: (root: string) => HookCallbackMatcher;
@@ -308,6 +296,10 @@ export const probe = Effect.fn("KinWorkSandbox.probe")(function* (input: ProbeIn
     yield* fs.makeTempDirectoryScoped({ directory: input.tmpRoot, prefix: "kin-shared-" }),
   );
   const socket = `${input.tmpRoot}/kin-${token.slice(-8)}.sock`;
+  const configDir = `${root}/claude`;
+  const canary = `sk-ant-${token}`;
+  // A stored login as Claude Code keeps one; the API key outranks it, so it is never used.
+  const login = `sk-ant-oat01-${token}-login`;
   const failedEarly = (failed: string): CheckResult => ({
     failed,
     version: null,
@@ -326,6 +318,18 @@ export const probe = Effect.fn("KinWorkSandbox.probe")(function* (input: ProbeIn
     );
   yield* fs.makeDirectory(outside);
   yield* fs.makeDirectory(main);
+  yield* fs.makeDirectory(configDir);
+  yield* fs.writeFileString(
+    `${configDir}/.credentials.json`,
+    yield* encodeJson({
+      claudeAiOauth: {
+        accessToken: login,
+        refreshToken: login,
+        expiresAt: 4_102_444_800_000,
+        scopes: ["user:inference"],
+      },
+    }),
+  );
   yield* fs.writeFileString(`${outside}/secret.txt`, token);
   yield* fs.writeFileString(`${sharedTmp}/secret.txt`, token);
   yield* fs.writeFileString(`${main}/README.md`, "probe\n");
@@ -397,6 +401,13 @@ export const probe = Effect.fn("KinWorkSandbox.probe")(function* (input: ProbeIn
     `touch ${quote(`${tmp}/inside`)}`,
     `echo "tmpdir=$TMPDIR"`,
     "env",
+    // Where else a key or login could sit: this process's and each ancestor's environment, and
+    // what the CLI keeps in the task's temp and config directories.
+    "tr '\\0' '\\n' 2>/dev/null < /proc/self/environ",
+    // Its ancestors in the sandbox's own PID namespace, which numbers them from 1.
+    `cat ${Array.from({ length: 64 }, (_, index) => `/proc/${index + 1}/environ`).join(" ")} 2>/dev/null | tr '\\0' '\\n'`,
+    // Names only: the command's own output file is in the temp directory as it runs.
+    `grep -rlsF -e "${token.slice(0, 12)}""${token.slice(12)}" ${quote(tmp)} ${quote(configDir)} && echo "found-""secret"`,
     `ls /proc/${process.pid}`,
     `curl -s -m 3 http://127.0.0.1:${tcpPort}/`,
     `curl -s -m 3 ${viaProxy} http://127.0.0.1:${tcpPort}/`,
@@ -434,15 +445,13 @@ export const probe = Effect.fn("KinWorkSandbox.probe")(function* (input: ProbeIn
     },
   );
   const port = (model.address() as NodeNet.AddressInfo).port;
-  const canary = `sk-ant-${token}`;
-  const env = input.childEnv(tmp);
   const options = probeSessionOptions(
     {
       ...input.session,
       confinement: input.confinement(tree),
-      shell: { sandbox: input.sandbox(paths.success, env), env },
+      shell: { sandbox: input.sandbox(paths.success), tmp },
     },
-    { cwd: tree, configDir: `${root}/claude`, baseUrl: `http://127.0.0.1:${port}`, key: canary },
+    { cwd: tree, configDir, baseUrl: `http://127.0.0.1:${port}`, key: canary },
   );
   const messages: Array<SDKMessage> = [];
   const session = query({ prompt: "Run the Kin sandbox check.", options });
@@ -484,8 +493,18 @@ export const probe = Effect.fn("KinWorkSandbox.probe")(function* (input: ProbeIn
     ],
     [
       output.includes(canary),
-      "a command saw the model key in its environment",
-      "commands don't see the model key",
+      "a command found the model key",
+      "commands find no model key in their environment or any process's they can see",
+    ],
+    [
+      output.includes("found-secret"),
+      "a command found a key or login in its temp or config directory",
+      "commands find no key or login in their temp or config directory",
+    ],
+    [
+      output.includes(login),
+      "a command found the Claude login",
+      "commands find no Claude login in their environment or any process's they can see",
     ],
     [leaked, "a command read a file outside its worktree", "commands read nothing outside"],
     [

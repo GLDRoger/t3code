@@ -1,9 +1,13 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
+  KIN_FIELD_FILES_MAX,
   KIN_LISTS,
+  kinAmountCheck,
+  kinFieldCheck,
   kinListEntryView,
   kinPaymentCheck,
   type KinListEntryView,
+  type KinListFieldView,
   type KinPaymentDraft,
 } from "@t3tools/client-runtime/kin/kinLists";
 import {
@@ -12,8 +16,18 @@ import {
   type KinWorkItemView,
 } from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
-import type { KinFileRef, KinRecordDetail, KinRecordKey } from "@t3tools/contracts";
-import { CheckIcon, ChevronDownIcon, FileIcon, MessageSquareIcon, RepeatIcon } from "lucide-react";
+import type { KinFieldValue, KinFileRef, KinRecordDetail, KinRecordKey } from "@t3tools/contracts";
+import * as Option from "effect/Option";
+import { AsyncResult } from "effect/reactivity";
+import {
+  CheckIcon,
+  ChevronDownIcon,
+  FileIcon,
+  MessageSquareIcon,
+  PlusIcon,
+  RepeatIcon,
+  XIcon,
+} from "lucide-react";
 import { useId, useState } from "react";
 
 import { useAssetUrls } from "../assets/assetUrls";
@@ -49,6 +63,7 @@ import {
 } from "../components/ui/menu";
 import { SheetDescription, SheetHeader, SheetTitle } from "../components/ui/sheet";
 import { cn, randomUUID } from "../lib/utils";
+import { KinEntryFilePicker, KinEntryPick, KinEntryText } from "./KinWorkEntryEdit";
 import { KinWorkPrivateMark, KinWorkSection as Section } from "./KinWorkParts";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
@@ -59,13 +74,18 @@ import {
   useKinListContext,
   useKinLists,
 } from "./useKinMoney";
-import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
+import { kinWorkChoicesAtom, type KinWorkDirectory, type KinWorkTarget } from "./useKinWork";
 
 const isImage = (file: KinFileRef) => file.mimeType.startsWith("image/");
 
 /** An entry's files: a photo opens large, anything else downloads. */
 function EntryFiles(
-  props: KinWorkTarget & { readonly files: ReadonlyArray<KinFileRef>; readonly previewKey: string },
+  props: KinWorkTarget & {
+    readonly files: ReadonlyArray<KinFileRef>;
+    readonly previewKey: string;
+    /** Takes the file off the entry; the file itself stays in its chat. */
+    readonly onRemove?: ((file: KinFileRef) => void) | undefined;
+  },
 ) {
   const { files } = props;
   const urls = useAssetUrls(
@@ -89,7 +109,19 @@ function EntryFiles(
         const src = urls[index] ?? null;
         const at = images.findIndex((image) => image.id === file.attachmentId);
         return (
-          <li key={file.attachmentId} className="min-w-0">
+          <li key={file.attachmentId} className="relative min-w-0">
+            {props.onRemove === undefined ? null : (
+              <div className="absolute -end-2 -top-2 z-10">
+                <Button
+                  size="icon-xs"
+                  variant="outline"
+                  aria-label={`${KIN_LISTS.entry.removeFile} ${file.name}`}
+                  onClick={() => props.onRemove?.(file)}
+                >
+                  <XIcon />
+                </Button>
+              </div>
+            )}
             {isImage(file) && src !== null ? (
               <button
                 type="button"
@@ -276,6 +308,144 @@ function PaymentForm(props: {
   );
 }
 
+type Choice = { readonly value: string; readonly label: string };
+type Ref = { readonly recordId: string; readonly key: KinRecordKey; readonly name: string };
+
+/** One of the list's own details with the control its type calls for, saved as it is changed. */
+function FieldEdit(
+  props: KinWorkTarget & {
+    readonly field: KinListFieldView;
+    readonly currency: string;
+    readonly busy: boolean;
+    readonly now: Date;
+    readonly previewKey: string;
+    readonly people: ReadonlyArray<Choice>;
+    readonly clients: ReadonlyArray<Ref>;
+    readonly projects: ReadonlyArray<Ref>;
+    readonly onSet: (value: KinFieldValue | null) => Promise<boolean>;
+    readonly onEdit: (value: KinFieldValue | null) => Promise<string | null>;
+    readonly onOpenClient: (key: KinRecordKey) => void;
+    readonly onOpenProject: (key: KinRecordKey) => void;
+  },
+) {
+  const { field, busy } = props;
+  const [picking, setPicking] = useState(false);
+  const current = typeof field.value === "string" ? field.value : null;
+  switch (field.type) {
+    case "text":
+    case "money":
+      return (
+        <KinEntryText
+          label={field.label}
+          shown={field.text}
+          draft={field.draft}
+          numeric={field.type === "money"}
+          {...(field.type === "money" ? { placeholder: KIN_LISTS.entry.amountPlaceholder } : {})}
+          disabled={busy}
+          onSave={async (text) => {
+            const checked = kinFieldCheck(field, text, props.currency);
+            return checked.ok ? props.onEdit(checked.value) : checked.problem;
+          }}
+        />
+      );
+    case "date":
+      return (
+        <DayMenu
+          label={field.label}
+          text={field.text}
+          day={current}
+          now={props.now}
+          disabled={busy}
+          onPick={(day) => void props.onSet(day)}
+        />
+      );
+    case "choice":
+    case "person":
+      return (
+        <KinEntryPick
+          label={field.label}
+          shown={field.text}
+          current={current}
+          disabled={busy}
+          choices={
+            field.type === "person"
+              ? props.people
+              : field.choices.map((choice) => ({ value: choice, label: choice }))
+          }
+          onPick={(value) => void props.onSet(value)}
+        />
+      );
+    case "link": {
+      const { opens } = field;
+      return (
+        <div className="flex flex-wrap items-center gap-1">
+          <KinEntryPick
+            label={field.label}
+            shown={field.text}
+            current={current}
+            disabled={busy}
+            choices={(field.link === "projects" ? props.projects : props.clients).map((row) => ({
+              value: row.recordId,
+              label: row.name,
+            }))}
+            onPick={(value) => void props.onSet(value)}
+          />
+          {opens === null ? null : (
+            <Button
+              size="xs"
+              variant="ghost"
+              onClick={() =>
+                opens.list === "projects"
+                  ? props.onOpenProject(opens.key)
+                  : props.onOpenClient(opens.key)
+              }
+            >
+              Open
+            </Button>
+          )}
+        </div>
+      );
+    }
+    case "file": {
+      const ids = field.files.map((file) => file.attachmentId);
+      return (
+        <>
+          {field.files.length === 0 ? null : (
+            <EntryFiles
+              {...props}
+              files={field.files}
+              onRemove={(file) =>
+                void props.onSet(
+                  ids.length === 1 ? null : ids.filter((id) => id !== file.attachmentId),
+                )
+              }
+            />
+          )}
+          {ids.length >= KIN_FIELD_FILES_MAX ? null : (
+            <Button size="xs" variant="outline" disabled={busy} onClick={() => setPicking(true)}>
+              <PlusIcon />
+              {KIN_LISTS.entry.addFile}
+            </Button>
+          )}
+          {picking ? (
+            <KinEntryFilePicker
+              environmentId={props.environmentId}
+              orgId={props.orgId}
+              label={field.label}
+              held={ids}
+              onClose={() => setPicking(false)}
+              onPick={(file) => {
+                setPicking(false);
+                void props.onSet([...ids, file.attachmentId]);
+              }}
+            />
+          ) : null}
+        </>
+      );
+    }
+  }
+}
+
 /**
  * An entry of any list beside the page: every field by its type, its files, what repeats, and
  * for an entry that takes payments, what came in and what is left. The quick taps are here;
@@ -317,7 +487,17 @@ export function KinListEntry(
       clientRequestId: randomUUID(),
     });
   };
-  const { finish } = entry;
+  const { finish, amountEdit } = entry;
+  const held = Option.getOrNull(AsyncResult.value(useAtomValue(kinWorkChoicesAtom(props))));
+  const clients = held?.clients ?? [];
+  const projects = held?.projects ?? [];
+  const { names } = props.directory;
+  const people = [
+    ...[...names.people].map(([id, name]) => ({ value: `person:${id}`, label: name })),
+    ...[...names.agents]
+      .filter(([id]) => names.retired?.has(id) !== true)
+      .map(([id, name]) => ({ value: `agent:${id}`, label: name })),
+  ];
   const open = (fact: KinListEntryView["facts"][number]) =>
     fact.opens === null
       ? null
@@ -334,7 +514,25 @@ export function KinListEntry(
       </SheetHeader>
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
         <div className="flex flex-col gap-3">
-          {entry.amount === null ? null : (
+          {amountEdit !== null && canChange ? (
+            <div>
+              <KinEntryText
+                headline
+                numeric
+                label={KIN_LISTS.entry.amount}
+                shown={entry.amount}
+                draft={amountEdit.draft}
+                placeholder={KIN_LISTS.entry.amountPlaceholder}
+                disabled={busy}
+                onSave={async (text) => {
+                  const checked = kinAmountCheck(text, amountEdit.currency, amountEdit.received);
+                  return checked.ok
+                    ? changes.edit(item.rev, { amount: checked.value })
+                    : checked.problem;
+                }}
+              />
+            </div>
+          ) : entry.amount === null ? null : (
             <p className="text-2xl font-semibold tracking-tight text-foreground tabular-nums">
               {entry.amount}
             </p>
@@ -362,7 +560,7 @@ export function KinListEntry(
                 </dd>
               </div>
               <div className="flex flex-col">
-                <dt className="text-xs text-muted-foreground">{KIN_LISTS.entry.received}</dt>
+                <dt className="text-xs text-muted-foreground">{entry.balance.receivedLabel}</dt>
                 <dd className="text-foreground tabular-nums">{entry.balance.receivedText}</dd>
               </div>
             </dl>
@@ -477,15 +675,43 @@ export function KinListEntry(
             )}
             {entry.facts.map((fact) => {
               const opens = open(fact);
+              const picks = canChange && fact.id !== "owner";
+              if (!picks && fact.value === null) return null;
               return (
                 <div key={fact.id} className="contents">
                   <dt className="text-muted-foreground">{fact.label}</dt>
-                  <dd className="min-w-0 text-foreground">
-                    {opens === null ? (
+                  <dd className="flex min-w-0 flex-wrap items-center gap-1 text-foreground">
+                    {picks ? (
+                      <KinEntryPick
+                        label={fact.label}
+                        shown={fact.value}
+                        current={fact.current}
+                        disabled={busy}
+                        choices={
+                          fact.id === "category"
+                            ? fact.choices
+                            : (fact.id === "project" ? projects : clients).map((row) => ({
+                                value: row.key,
+                                label: row.name,
+                              }))
+                        }
+                        onPick={(value) =>
+                          void changes.update(
+                            item.rev,
+                            fact.id === "category"
+                              ? { listCategory: value as never }
+                              : fact.id === "project"
+                                ? { project: value }
+                                : { party: value },
+                          )
+                        }
+                      />
+                    ) : opens === null ? (
                       <span className="truncate">{fact.value}</span>
-                    ) : (
+                    ) : null}
+                    {opens === null ? null : (
                       <Button size="xs" variant="ghost" onClick={opens}>
-                        {fact.value}
+                        {picks ? "Open" : fact.value}
                       </Button>
                     )}
                   </dd>
@@ -519,8 +745,23 @@ export function KinListEntry(
                   {field.label}
                   {field.private ? <KinWorkPrivateMark /> : null}
                 </dt>
-                <dd className="flex min-w-0 flex-col gap-1.5 text-foreground">
-                  {field.files.length > 0 ? (
+                <dd className="flex min-w-0 flex-col items-start gap-1.5 text-foreground">
+                  {canChange && !field.retired ? (
+                    <FieldEdit
+                      {...props}
+                      field={field}
+                      currency={amountEdit?.currency ?? def?.currency ?? "INR"}
+                      busy={busy}
+                      previewKey={previewKey}
+                      people={people}
+                      clients={clients}
+                      projects={projects}
+                      onSet={(value) =>
+                        changes.update(item.rev, { fields: { [field.key]: value } })
+                      }
+                      onEdit={(value) => changes.edit(item.rev, { fields: { [field.key]: value } })}
+                    />
+                  ) : field.files.length > 0 ? (
                     <EntryFiles {...props} files={field.files} previewKey={previewKey} />
                   ) : field.opens !== null ? (
                     <div>

@@ -3,6 +3,7 @@ import {
   KIN_DOCS_DEFAULT_FILTER,
   KIN_SEARCH_INITIAL,
   createKinSearch,
+  kinDocsQuery,
   kinDocsSameFilter,
   type KinDocsFilter,
   type KinSearchState,
@@ -63,7 +64,7 @@ export function useKinDocsList({ environmentId, orgId }: KinWorkTarget, seq: num
           mapPage(
             await kinClient.docsList.run(appAtomRegistry, {
               environmentId,
-              input: { orgId, archived: filter.archived, ...page },
+              input: { ...kinDocsQuery(orgId, filter), ...page },
             }),
             (value) => ({ ...value, rows: value.docs }),
           ),
