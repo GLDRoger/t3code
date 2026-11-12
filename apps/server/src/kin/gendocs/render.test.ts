@@ -1,6 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- a local TCP listener stands in for a proxy, to count any connection Typst makes.
 import * as NodeNet from "node:net";
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- builds a real PNG to draw.
 import * as NodeZlib from "node:zlib";
 
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";

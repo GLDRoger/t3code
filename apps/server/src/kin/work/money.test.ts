@@ -1,6 +1,5 @@
 // Loaded first: the chat and trigger modules import each other.
 import "../chat/KinChatService.ts";
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- builds real PNGs for the logo checks.
 import * as NodeZlib from "node:zlib";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";

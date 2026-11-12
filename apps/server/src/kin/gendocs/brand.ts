@@ -1,6 +1,5 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous content hash; Digest would add a service to every caller.
 import * as NodeCrypto from "node:crypto";
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- a PNG's checksums and image data, decoded to check it whole.
 import * as NodeZlib from "node:zlib";
 import { KinChatError, type KinCompanyLogo, type KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
