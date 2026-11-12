@@ -58,6 +58,15 @@ describe("kinWithoutChoiceEchoes", () => {
       (message) => message.messageId,
     );
     expect(ids).toEqual(["far", "other", "card", "human"]);
+    // A chart card is never a choice: neither it nor the bubble beside it folds.
+    const chartWidget = { ...choiceWidget, widgetId: "w2", type: "chart" } as KinWidget;
+    const chart = { ...said(agent!, "chart", ""), widgetId: chartWidget.widgetId };
+    const caption = said(agent!, "caption", "Red or Blue?");
+    expect(
+      kinWithoutChoiceEchoes([chart, caption], new Map([["w2", chartWidget]]), []).map(
+        (message) => message.messageId,
+      ),
+    ).toEqual(["chart", "caption"]);
   });
 
   it("keeps an echo something hangs off: a reaction, a reply to it, or its own reply", () => {

@@ -47,6 +47,7 @@ import { kinCardDraws } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { MessageAttachmentList } from "../../threads/ThreadFeed";
 import { KinWidgetView } from "../widgets/KinWidgetView";
 import { KinAvatar } from "./KinAvatar";
+import { KinDocRefs } from "./KinDocRefs";
 
 type MessageRow = Extract<KinFeedRow, { readonly type: "message" }>;
 type SystemRow = Extract<KinFeedRow, { readonly type: "system" }>;
@@ -125,6 +126,8 @@ export function KinMessageBubble(props: {
   readonly viewerPersonId: KinPersonId | null;
   /** The card's agent by name when it is retired. */
   readonly heldFor?: string | null;
+  /** The chat's agents by id, for a doc card's "by Growth". */
+  readonly agentNames?: ReadonlyMap<string, string>;
   readonly reactions: ReadonlyArray<KinReactionChip>;
   /** Toggles the viewer's reaction; null where they can't react, such as a privileged card. */
   readonly onReact: ((emoji: KinReactionEmoji) => void) | null;
@@ -147,6 +150,7 @@ export function KinMessageBubble(props: {
     message.widgetId !== null &&
     kinCardDraws(props.widget, props.environmentId, hasBody);
   const attachments = deleted ? [] : (message.attachments ?? []);
+  const refs = deleted ? [] : (message.refs ?? []);
   // Files alone need no empty bubble under them.
   const hasBubble =
     (!hasCard && attachments.length === 0) || hasBody || suggested || message.editedAt !== null;
@@ -234,6 +238,14 @@ export function KinMessageBubble(props: {
           onPressPreview={props.onPressPreview}
         />
       ) : null}
+      {refs.length === 0 ? null : (
+        <KinDocRefs
+          refs={refs}
+          environmentId={props.environmentId}
+          orgId={message.orgId}
+          own={row.own}
+        />
+      )}
       {bubble === null ? null : onOpenActions === null ? (
         <View className={row.own ? OWN_WIDTH_CLASS_NAME : OTHER_WIDTH_CLASS_NAME}>{bubble}</View>
       ) : (
@@ -260,6 +272,7 @@ export function KinMessageBubble(props: {
             viewerPersonId={props.viewerPersonId}
             onOpenLink={props.onLinkPress}
             heldFor={props.heldFor ?? null}
+            {...(props.agentNames === undefined ? {} : { agentNames: props.agentNames })}
           />
         </View>
       ) : null}
@@ -352,6 +365,7 @@ export function KinSystemLine(props: {
 export function KinPendingBubble(props: {
   readonly entry: KinOutboxEntry;
   readonly environmentId: EnvironmentId;
+  readonly orgId: string;
   readonly onPressPreview: (source: FilePreviewSource) => void;
   readonly connected: boolean;
   /** The row above is the viewer's own bubble. */
@@ -369,10 +383,11 @@ export function KinPendingBubble(props: {
       ? "Waiting for connection"
       : "Sending…";
   const attachments = entry.attachments ?? [];
+  const refs = entry.refs ?? [];
   // Only while it reads as refused or waiting: a "Sending…" bubble is on its way.
   const editable = (failed || queued) && kinOutboxRetractable(entry);
-  // Edit keeps only the text, so a message with files is only deleted.
-  const canEdit = editable && attachments.length === 0;
+  // Edit keeps only the text, so a message with files or doc references is only deleted.
+  const canEdit = editable && attachments.length === 0 && refs.length === 0;
   const hasBody = entry.body.trim().length > 0;
   const remove = () =>
     Dialog.confirm({
@@ -394,6 +409,9 @@ export function KinPendingBubble(props: {
           />
         </View>
       ) : null}
+      {refs.length === 0 ? null : (
+        <KinDocRefs refs={refs} environmentId={props.environmentId} orgId={props.orgId} own />
+      )}
       {hasBody ? (
         <Pressable
           disabled={!editable}

@@ -898,6 +898,129 @@ describe("KinChatService", () => {
   );
 
   it.effect(
+    "posts a chart as the agent's own card once per retry, says how to fix a bad one, and never changes or takes a tap",
+    () =>
+      Effect.gen(function* () {
+        const { repo, service, person, agent, chat } = yield* seed();
+        const input = {
+          chatId: chat.chatId,
+          clientMessageId: "chart-1",
+          intent: "answer" as const,
+          chart: "line" as const,
+          title: "  Signups\nthis week ",
+          unit: { kind: "count" as const },
+          labels: ["Mon", "Tue", "Wed"],
+          series: [{ name: "This week", values: [12, null, 0] }],
+          comparison: { name: "Last week", values: [9, 14, -2] },
+        };
+        const card = yield* service.chart(agent, input);
+        assert.include(card, { type: "chart", revision: 1 });
+        assert.strictEqual(String(card.widgetId), `chart:${card.messageId}`);
+        assert.deepStrictEqual(card.awaiting, []);
+        assert.deepInclude(card.state, {
+          title: "Signups this week",
+          caption: null,
+          labelType: "category",
+        });
+        assert.deepStrictEqual(yield* service.chart(agent, input), card);
+        assert.deepStrictEqual(yield* repo.listOpenWaiting(person), []);
+
+        // A scatter sends points in place of labels and series; x counts unless it says otherwise.
+        const scatter = yield* service.chart(agent, {
+          chatId: chat.chatId,
+          clientMessageId: "chart-scatter",
+          intent: "answer",
+          chart: "scatter",
+          title: "Spend against signups",
+          unit: { kind: "count" },
+          target: { name: " Goal ", value: 40 },
+          scatter: {
+            xName: " Ad  spend ",
+            yName: "Signups",
+            series: [{ name: "Campaigns", points: [{ x: 12, y: 40, label: " Diwali " }] }],
+          },
+        });
+        assert.deepInclude(scatter.state, {
+          labels: [],
+          series: [],
+          target: { name: "Goal", value: 40 },
+          scatter: {
+            xName: "Ad spend",
+            yName: "Signups",
+            xUnit: { kind: "count" },
+            series: [{ name: "Campaigns", points: [{ x: 12, y: 40, label: "Diwali" }] }],
+          },
+        });
+
+        const refusal = (change: object) =>
+          service
+            .chart(agent, {
+              ...input,
+              clientMessageId: "chart-2",
+              comparison: undefined,
+              ...change,
+            })
+            .pipe(Effect.flip);
+        for (const [change, fix] of [
+          [
+            {
+              unit: { kind: "money", currency: "INR" },
+              series: [{ name: "Spend", values: [1299.5, 1, 2] }],
+            },
+            "whole minor units",
+          ],
+          [{ unit: { kind: "money", currency: "ZZZ" } }, "not a currency code"],
+          [{ labels: ["Mon", "Tue"] }, "one value per label"],
+          [{ title: " " }, "needs a title"],
+          [{ chart: "pie", series: [{ name: "Net", values: [5, -2, 3] }] }, 'use chart "bar"'],
+          [{ chart: "scatter" }, "scatter: {xName"],
+          [
+            {
+              chart: "scatter",
+              labels: undefined,
+              series: undefined,
+              scatter: {
+                xName: "Spend",
+                yName: "Signups",
+                xUnit: { kind: "money", currency: "ZZZ" },
+                series: [{ name: "Campaigns", points: [{ x: 1, y: 2 }] }],
+              },
+            },
+            "not a currency code",
+          ],
+        ] as const) {
+          const refused = yield* refusal(change);
+          assert.include(refused, { reason: "invalid_state" });
+          assert.include(String(refused.message), fix);
+        }
+
+        assert.include(
+          yield* service
+            .upsertWidget(agent, {
+              chatId: chat.chatId,
+              widgetId: card.widgetId,
+              revision: 1,
+              type: "chart",
+              state: card.state,
+            })
+            .pipe(Effect.flip),
+          { reason: "not_allowed" },
+        );
+        assert.include(
+          yield* service
+            .act(person, {
+              widgetId: card.widgetId,
+              revision: 1,
+              actionId: "open",
+              clientActionId: "tap-chart",
+            })
+            .pipe(Effect.flip),
+          { reason: "invalid_state" },
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
     "takes reactions as replies: 👍 answers a yes/no card once, wakes on a yes/no to the lead's latest message or a 👎, one per person per message, refuses privileged cards",
     () =>
       Effect.gen(function* () {

@@ -1264,6 +1264,7 @@ function KinChatFeed(props: {
             environmentId={props.environmentId}
             viewerPersonId={props.viewer.personId}
             heldFor={kinHeldCardAgent(message.author, props.viewer, props.retired?.name ?? null)}
+            agentNames={props.viewer.agentNames}
             reactions={chips}
             onReact={
               reactable
@@ -1294,6 +1295,7 @@ function KinChatFeed(props: {
           <KinPendingBubble
             entry={item.entry}
             environmentId={props.environmentId}
+            orgId={props.orgId}
             onPressPreview={setPreviewFile}
             connected={props.connected}
             continues={item.continues}

@@ -54,6 +54,27 @@ const isNulFree = Schema.makeFilter((value: string) => !value.includes("\u0000")
 export const KinText = Schema.String.check(isNulFree);
 export const KinTrimmedText = TrimmedNonEmptyString.check(isNulFree);
 
+/** A doc section's id: its heading as a slug, unique in the doc; `top` is the text before any. */
+export const KinDocSectionId = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,63}$/));
+export type KinDocSectionId = typeof KinDocSectionId.Type;
+// Docs' keys, such as `D-12`; `KinRecordKey` lives in kinWork, which imports this file.
+const KinRefKey = Schema.String.check(Schema.isPattern(/^[A-Z][A-Z0-9]{0,7}-[1-9]\d{0,8}$/));
+/** What a person points at from the composer: a doc, or one section of it, at a version. */
+export const KinMessageRefInput = Schema.TaggedStruct("doc", {
+  key: KinRefKey,
+  version: PositiveInt,
+  section: Schema.NullOr(KinDocSectionId),
+});
+export type KinMessageRefInput = typeof KinMessageRefInput.Type;
+/** A stored reference, with the titles the host read when it was sent, for the quote chip. */
+export const KinMessageRef = Schema.TaggedStruct("doc", {
+  ...KinMessageRefInput.fields,
+  title: KinTrimmedText,
+  sectionTitle: Schema.NullOr(KinText),
+});
+export type KinMessageRef = typeof KinMessageRef.Type;
+export const KIN_MESSAGE_REFS_CAP = 5;
+
 export const KinChatKind = Schema.Literals(["direct", "team_group", "project_group", "router"]);
 export type KinChatKind = typeof KinChatKind.Type;
 export const KinRole = Schema.Literals(["owner", "member", "guest"]);
@@ -175,6 +196,8 @@ export const KinMessage = Schema.Struct({
   body: KinText,
   // Absent on a message without files, so those stay the size they were.
   attachments: Schema.optional(Schema.Array(KinAttachment)),
+  // Absent on a message that points at nothing.
+  refs: Schema.optional(Schema.Array(KinMessageRef)),
   intent: Schema.NullOr(KinAgentIntent),
   mentions: Schema.Array(KinMemberId),
   replyTo: Schema.NullOr(KinMessageId),
@@ -519,6 +542,10 @@ export const KinMessagesSendInput = Schema.Struct({
   ),
   mentions: Schema.optional(Schema.Array(KinMemberId)),
   replyTo: Schema.optional(KinMessageId),
+  /** Doc sections the message is about; the host quotes their text to the agent. Owner only. */
+  refs: Schema.optional(
+    Schema.Array(KinMessageRefInput).check(Schema.isMaxLength(KIN_MESSAGE_REFS_CAP)),
+  ),
 }).check(
   Schema.makeFilter(
     (input: {

@@ -6,6 +6,8 @@ import { KinAgentsScreen } from "./KinAgentsScreen";
 import { KinChatScreen } from "./KinChatScreen";
 import { KinChatsScreen } from "./KinChatsScreen";
 import { KinClientScreen } from "./KinClientScreen";
+import { KinDocScreen } from "./KinDocScreen";
+import { KinDocChangesScreen, KinDocHistoryScreen, KinSearchScreen } from "./KinDocVersionScreens";
 import { KinGroupFormScreen } from "./KinGroupFormScreen";
 import { KinGroupScreen } from "./KinGroupScreen";
 import { KinLeadFormScreen } from "./KinLeadFormScreen";
@@ -84,6 +86,26 @@ export const KIN_SCREENS = {
     screen: KinProjectScreen,
     linking: "kin/:environmentId/:orgId/projects/:project",
     options: pageRoute({ title: "Project" }),
+  }),
+  KinDoc: createNativeStackScreen({
+    screen: KinDocScreen,
+    linking: "kin/:environmentId/:orgId/docs/:doc",
+    options: pageRoute({ title: "Doc" }),
+  }),
+  KinDocChanges: createNativeStackScreen({
+    screen: KinDocChangesScreen,
+    linking: "kin/:environmentId/:orgId/docs/:doc/changes",
+    options: pageRoute({ title: "Changes" }),
+  }),
+  KinDocHistory: createNativeStackScreen({
+    screen: KinDocHistoryScreen,
+    options: sheetRoute({ detent: 0.75 }),
+  }),
+  // A full sheet, so the keyboard never covers what was found.
+  KinSearch: createNativeStackScreen({
+    screen: KinSearchScreen,
+    linking: "kin/:environmentId/:orgId/search",
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
   KinClientForm: createNativeStackScreen({
     screen: KinClientFormScreen,

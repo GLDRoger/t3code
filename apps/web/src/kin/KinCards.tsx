@@ -35,6 +35,7 @@ import {
   type KinMemoryChangeItemView,
   type KinMemoryChangesCardView,
 } from "@t3tools/client-runtime/kin/kinMemoryChangesPresentation";
+import { kinDocCardLine, KIN_DOCS, type KinDocCardView } from "@t3tools/client-runtime/kin/kinDocs";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, KinPersonId, KinWidget } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
@@ -48,7 +49,9 @@ import { cn, randomUUID } from "../lib/utils";
 import { useAtomCommand } from "../state/use-atom-command";
 import { Button } from "../components/ui/button";
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
+import { KinChart } from "./KinChart";
 import { kinClient } from "./kinClient";
+import { useKinHostAt } from "./useKinHost";
 
 const CANT_ACT_TEXT =
   "This browser can't answer here. Pair it again with the server that runs Kin.";
@@ -105,6 +108,7 @@ function useWidgetPost(environmentId: EnvironmentId) {
 export const KinCard = memo(function KinCard(props: {
   readonly widget: KinWidget | undefined;
   readonly environmentId: EnvironmentId;
+  readonly orgId: string;
   readonly viewerPersonId: KinPersonId | null;
   readonly heldFor: string | null;
 }) {
@@ -128,12 +132,20 @@ export const KinCard = memo(function KinCard(props: {
           viewerPersonId={props.viewerPersonId}
         />
       );
+    case "chart":
+      return (
+        <CardFrame>
+          <KinChart view={view.chart} />
+        </CardFrame>
+      );
     case "digest":
       return <KinDigestCard digest={view.digest} />;
     case "memory_changes":
       return <KinMemoryChangesCard changes={view.changes} environmentId={props.environmentId} />;
     case "approval":
       return <KinApprovalCard approval={view.approval} />;
+    case "doc":
+      return <KinDocCard doc={view.doc} environmentId={props.environmentId} orgId={props.orgId} />;
     case "missing":
       return (
         <CardFrame>
@@ -205,6 +217,59 @@ function KinTaskCard(props: { readonly task: KinTaskCardView }) {
           )}
         </div>
       )}
+    </CardFrame>
+  );
+}
+
+/** A doc an agent wrote or changed: what it is, what changed, and the way to read either. */
+function KinDocCard(props: {
+  readonly doc: KinDocCardView;
+  readonly environmentId: EnvironmentId;
+  readonly orgId: string;
+}) {
+  const { doc } = props;
+  const nowMs = useNowMinuteMs();
+  const host = useKinHostAt(props.environmentId);
+  const agents =
+    host._tag === "host" && host.probe._tag === "ready"
+      ? (host.probe.orgs.orgs.find((org) => org.orgId === props.orgId)?.agents ?? [])
+      : [];
+  const line = kinDocCardLine(
+    doc,
+    new Map(agents.map((agent) => [agent.agentId, agent.displayName])),
+    new Date(nowMs),
+  );
+  const params = { environmentId: props.environmentId, orgId: props.orgId };
+  return (
+    <CardFrame eyebrow="Doc" label={`Doc: ${doc.title}. ${line.text}`}>
+      <p className="font-medium text-foreground">{doc.title}</p>
+      <p className="text-xs text-muted-foreground">{line.text}</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          size="xs"
+          variant="outline"
+          render={
+            <Link to="/kin/$environmentId/$orgId/work" params={params} search={{ doc: doc.key }} />
+          }
+        >
+          Open
+        </Button>
+        {doc.previousVersion === null ? null : (
+          <Button
+            size="xs"
+            variant="ghost"
+            render={
+              <Link
+                to="/kin/$environmentId/$orgId/work"
+                params={params}
+                search={{ doc: doc.key, changes: doc.version, from: doc.previousVersion }}
+              />
+            }
+          >
+            {KIN_DOCS.changes}
+          </Button>
+        )}
+      </div>
     </CardFrame>
   );
 }

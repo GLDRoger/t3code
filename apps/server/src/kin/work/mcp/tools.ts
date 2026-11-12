@@ -9,6 +9,7 @@ import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import { KinIdentity } from "../../chat/KinIdentity.ts";
 import { KinRecords } from "../KinRecords.ts";
+import * as Money from "../leadMoney.ts";
 import * as Work from "../leadWork.ts";
 
 // tools/list runs this before handler services are provided; the Kin MCP endpoint provides `KinIdentity`.
@@ -42,26 +43,55 @@ const marked =
 export const KinWorkToolkit = Toolkit.make(
   Tool.make("records_query", {
     ...shared,
-    description: `Find Work entries: filter by owner ("me", "owner" or an agent's agentId), states, open, late, dueBefore, text, keys, client, project, side (ours: we owe it; theirs: they owe us) or repo. groupBy also counts them per client, project, side, owner or state. list clients, contacts or projects finds those instead. Newest work under way first, then soonest due. Returns asOf, the total and up to limit rows (default 20). Use it for any question about where work stands, or what we and a client owe each other, instead of memory or earlier messages. Read-only. ${data} ${marked}`,
+    description: `Find Work entries: filter by owner ("me", "owner" or an agent's agentId), states, open, late, dueBefore, text, keys, client, project, side (ours: we owe it; theirs: they owe us) or repo. groupBy also counts them per client, project, side, owner or state. list clients, contacts or projects finds those instead. Newest work under way first, then soonest due. Returns asOf, the total and up to limit rows (default 20). A list you defined (expenses, invoices, dates…) answers with its amounts, dates and fields; filter it by dateFrom and dateTo, and groupBy category, month or financialYear to get exact totals per currency. Quote totals as given: never add amounts up yourself. Use it for any question about where work stands, what we spent, or what we and a client owe each other, instead of memory or earlier messages. Read-only. ${data} ${marked}`,
     parameters: Work.QueryInput,
     success: Work.QueryResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("record_get", {
     ...shared,
-    description: `Open one Work entry by key (W-12): its fields, notes, links (source message, workers, pull requests) and its last changes. A client (C-3) also shows what each side owes, its contacts and projects; a project (P-2) its health now. Read-only. ${data} ${marked}`,
+    description: `Open one Work entry by key (W-12): its fields, notes, links (source message, workers, pull requests) and its last changes. A client (C-3) also shows what each side owes, its contacts and projects; a project (P-2) its health now; an invoice (INV-4) its payments and balance. Read-only. ${data} ${marked}`,
     parameters: Work.GetInput,
     success: Work.GetResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("record_create", {
     ...shared,
-    description: `Track work in Work: one call for one entry or many (up to 100, such as breaking a project into steps). Each row has a title, and optionally owner (default "me"), state (default open), due (a day such as 2026-11-20 in the owner's time zone, or a time with offset), notes, category (task, issue, obligation) and side (theirs when the other party owes it). Clients, contacts and projects are rows too, with list: clients (title is the name; kind client or vendor; terms), contacts (client, role, email, phone) or projects (client, due as its target date, repos); one that exists by name is returned, not duplicated. An obligation is a Work row with client and side. A row can name a client made earlier in the same call, so one call sets up a client, its contacts and what each side owes. Set sensitive true for a confidential client or project. Never put an amount in a title. Set suggested true when you inferred it rather than were asked. Giving an entry to another agent asks that agent to do it. Pass this turn's sourceEventId; retrying the same rows from the same event returns the same entries, so check before adding a duplicate of one that exists. Returns each key. Don't list what you wrote in your reply: one short line is enough, and Kin shows the owner what was tracked.`,
+    description: `Track work in Work: one call for one entry or many (up to 100, such as breaking a project into steps). Each row has a title, and optionally owner (default "me"), state (default open), due (a day such as 2026-11-20 in the owner's time zone, or a time with offset), notes, category (task, issue, obligation) and side (theirs when the other party owes it). Clients, contacts and projects are rows too, with list: clients (title is the name; kind client or vendor; terms), contacts (client, role, email, phone) or projects (client, due as its target date, repos); one that exists by name is returned, not duplicated. An obligation is a Work row with client and side. A row can name a client made earlier in the same call, so one call sets up a client, its contacts and what each side owes. Set sensitive true for a confidential client or project. A list defined with list_define (expenses, invoices, dates…) takes amount as said ("4.2 lakh", "₹1,200"), date for when it happened or was issued, category, repeat, and its own fields by key; a receipt or invoice sent in this turn goes in its file field by file name. Never put an amount in a title: Kin refuses it. Read a receipt yourself and fill amount, date and vendor; if you can't read it clearly, create it with suggested true rather than guess. Set suggested true when you inferred it rather than were asked. Giving an entry to another agent asks that agent to do it. Pass this turn's sourceEventId; retrying the same rows from the same event returns the same entries, so check before adding a duplicate of one that exists. Returns each key. Don't list what you wrote in your reply: one short line is enough, and Kin shows the owner what was tracked.`,
     parameters: Work.CreateInput,
     success: Work.CreateResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("record_update", {
     ...shared,
-    description: `Change named fields of one Work entry by key; fields you leave out stay as they are, and the entry's history keeps every change. Move state as you work it: doing, waiting with waitingOn ("owner" or an agent's agentId), done, or dropped. owner gives it to someone; giving it to another agent asks that agent to do it. client and project set what it belongs to; due, client, project and contact details take null to clear. Clients, contacts and projects change the same way; state dropped closes one. Pass this turn's sourceEventId, and expectedRev to refuse the change if it moved since you read it. Returns the new rev and the fields that changed. Don't narrate the change in your reply.`,
+    description: `Change named fields of one Work entry by key; fields you leave out stay as they are, and the entry's history keeps every change. Move state as you work it: doing, waiting with waitingOn ("owner" or an agent's agentId), done, or dropped. owner gives it to someone; giving it to another agent asks that agent to do it. client and project set what it belongs to; due, client, project and contact details take null to clear. A defined list's entry also takes amount (as said; "That was 4,200, not 2,400" changes only amount), date, category, repeat and fields; amount, date and repeat take null to clear. Closing a repeating entry makes its next one. Clients, contacts and projects change the same way; state dropped closes one. Pass this turn's sourceEventId, and expectedRev to refuse the change if it moved since you read it. Returns the new rev and the fields that changed. Don't narrate the change in your reply.`,
     parameters: Work.UpdateInput,
     success: Work.UpdateResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("list_define", {
+    ...shared,
+    description: `Start tracking something new as a list with typed fields, such as "start tracking expenses" or "track leave": a template (expenses, invoices, dates) or a name and fields (text, choice with choices, date, person, link to clients or projects, money, file), plus categories, the states it uses and what it calls them, and whether entries carry an amount. To add fields, choices or categories to a list you defined, pass list. The first call only proposes: it returns a proposal and creates nothing. Put the fields to the owner in one short message and ask; once they answer yes in a later message, call again with just proposal and sourceEventId to create exactly that. Never create a list the owner hasn't agreed to. Only the owner retires a field or archives a list.`,
+    parameters: Money.DefineInput,
+    success: Money.DefineResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("payment_record", {
+    ...shared,
+    description: `Record money received against an invoice (INV-4): amount as said, in the invoice's currency, and paidOn, the day it came in. A part payment leaves the rest owed; paying the balance marks it paid. It refuses more than is owed. void with a paymentId from record_get takes a wrong one back. Returns the amount, what has been received and the balance, exact. Pass this turn's sourceEventId; a retry records nothing more. Reply in one line.`,
+    parameters: Money.PaymentInput,
+    success: Money.PaymentResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("money_summary", {
+    ...shared,
+    description: `The company's money as Kin adds it up: owed to us and overdue by client, received and spent this month and last, top spending, and dates due in the next 30 days. Every figure is exact per currency; quote them, never sum them yourself. Read-only, for owner-only answers. ${data}`,
+    success: Money.MoneyResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("dates_query", {
+    ...shared,
+    description: `Everything due or dated between two days (both included) across every list: filings, renewals, invoices falling due, Work, soonest first. lists narrows it; open false includes what is done. Read-only. ${data}`,
+    parameters: Money.DatesInput,
+    success: Money.DatesResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("company_profile", {
+    ...shared,
+    description: `The company's legal name, address, GSTIN, PAN, place of supply, SAC and bank details. set changes the fields given, null clears one, and only from the owner's own message in this turn (pass its sourceEventId). It is confidential: never put it in a worker brief, a pull request or a chat others read.`,
+    parameters: Money.ProfileInput,
+    success: Money.ProfileResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
 );

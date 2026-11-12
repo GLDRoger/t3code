@@ -675,19 +675,22 @@ const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
 // RpcGroup.toLayer derives each handler's requirements by scanning every RPC in
 // the group, so its type cost grows with handlers × RPCs. Near 200 methods that
 // crosses TypeScript's instantiation limit and the layer's requirements degrade to
-// `any`, so the handlers are registered as two disjoint, smaller groups.
+// `any`, so the handlers are registered as disjoint, smaller groups.
 type ServerWsRpc = RpcGroup.Rpcs<typeof ServerWsRpcGroup>;
 const SPLIT_WS_RPC_PREFIXES = ["server", "pullRequests", "provider", "orchestration"] as const;
 type SplitWsRpc = Extract<
   ServerWsRpc,
   { readonly _tag: `${(typeof SPLIT_WS_RPC_PREFIXES)[number]}.${string}` }
 >;
+type KinWorkWsRpc = Extract<ServerWsRpc, { readonly _tag: `kin.work.${string}` }>;
 const isSplitWsRpc = (rpc: ServerWsRpc): rpc is SplitWsRpc =>
   SPLIT_WS_RPC_PREFIXES.some((prefix) => rpc._tag.startsWith(`${prefix}.`));
-const isOtherWsRpc = (rpc: ServerWsRpc): rpc is Exclude<ServerWsRpc, SplitWsRpc> =>
-  !isSplitWsRpc(rpc);
+const isKinWorkWsRpc = (rpc: ServerWsRpc): rpc is KinWorkWsRpc => rpc._tag.startsWith("kin.work.");
+const isOtherWsRpc = (rpc: ServerWsRpc): rpc is Exclude<ServerWsRpc, SplitWsRpc | KinWorkWsRpc> =>
+  !isSplitWsRpc(rpc) && !isKinWorkWsRpc(rpc);
 const serverWsRpcs = Array.from(ServerWsRpcGroup.requests.values());
 const SplitWsRpcGroup = RpcGroup.make(...serverWsRpcs.filter(isSplitWsRpc));
+const KinWorkWsRpcGroup = RpcGroup.make(...serverWsRpcs.filter(isKinWorkWsRpc));
 const OtherWsRpcGroup = RpcGroup.make(...serverWsRpcs.filter(isOtherWsRpc));
 // Replaying each intervening event costs a shell refetch; past this gap a
 // single O(active-threads) snapshot is cheaper and bounded.
@@ -3539,10 +3542,14 @@ export const layerWsRpc = (
           ),
       });
       const splitHandlers: Pick<typeof handlers, SplitWsRpc["_tag"]> = handlers;
-      const otherHandlers: Pick<typeof handlers, Exclude<ServerWsRpc, SplitWsRpc>["_tag"]> =
-        handlers;
-      return Context.merge(
+      const kinWorkHandlers: Pick<typeof handlers, KinWorkWsRpc["_tag"]> = handlers;
+      const otherHandlers: Pick<
+        typeof handlers,
+        Exclude<ServerWsRpc, SplitWsRpc | KinWorkWsRpc>["_tag"]
+      > = handlers;
+      return Context.mergeAll(
         yield* SplitWsRpcGroup.toHandlers(splitHandlers),
+        yield* KinWorkWsRpcGroup.toHandlers(kinWorkHandlers),
         yield* OtherWsRpcGroup.toHandlers(otherHandlers),
       );
     }),

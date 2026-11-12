@@ -72,12 +72,19 @@ import {
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import type { KinSynced } from "@t3tools/client-runtime/kin/kinStreams";
 import {
+  kinDocAskPlaceholder,
+  kinDocRefLabel,
+  kinPendingRefAtom,
+  kinPendingRefKey,
+} from "@t3tools/client-runtime/kin/kinDocs";
+import {
   KinChatId,
   type EnvironmentId,
   type KinAttachment,
   type KinChatMember,
   type KinChatMembersResult,
   type KinLeadsListResult,
+  type KinMessageRef,
   type KinPresence,
   type KinReactionEmoji,
   type KinWakeupId,
@@ -87,7 +94,7 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { ArrowDownIcon, ArrowLeftIcon, ChevronUpIcon } from "lucide-react";
+import { ArrowDownIcon, ArrowLeftIcon, ChevronUpIcon, XIcon } from "lucide-react";
 import {
   useEffect,
   useRef,
@@ -144,6 +151,7 @@ import { kinFeedDisplay } from "./kinFeedDisplay";
 import {
   formatKinMessageTime,
   KinDayRow,
+  KinDocRefMark,
   KinDraftRow,
   KinFoldRow,
   KinMessageRow,
@@ -787,6 +795,7 @@ function KinChatFeed(props: {
     body: string,
     attachments: ReadonlyArray<KinAttachment> = [],
     images: ReadonlyArray<Blob> = [],
+    refs: ReadonlyArray<KinMessageRef> = [],
   ) => {
     const queued = await kinOutbox.enqueue({
       environmentId: props.environmentId,
@@ -795,6 +804,7 @@ function KinChatFeed(props: {
       ...(attachments.length > 0 ? { attachments } : {}),
       // Read from the text, so a resent message asks the lead it named the first time.
       mentions: kinMentionsIn(body, props.mentionable),
+      ...(refs.length > 0 ? { refs } : {}),
     });
     if (queued._tag !== "queued") return false;
     kinLocalPreviews.remember(
@@ -833,6 +843,7 @@ function KinChatFeed(props: {
             environmentId={props.environmentId}
             viewerPersonId={props.viewer.personId}
             heldFor={kinHeldCardAgent(message.author, props.viewer, props.retired?.name ?? null)}
+            orgId={props.orgId}
             reactions={chips}
             onReact={
               reactable
@@ -865,6 +876,7 @@ function KinChatFeed(props: {
             entry={item.entry}
             connected={props.connected}
             environmentId={props.environmentId}
+            orgId={props.orgId}
             previewKey={previewKey}
             continues={item.continues}
             onEdit={() =>
@@ -1050,6 +1062,7 @@ function KinChatFeed(props: {
           <KinComposer
             draftKey={draftKey}
             environmentId={props.environmentId}
+            pendingRefKey={kinPendingRefKey(props.environmentId, props.chatId)}
             recipient={props.title}
             textareaRef={composerRef}
             onSend={sendText}
@@ -1168,7 +1181,10 @@ function KinComposer(props: {
     body: string,
     attachments: ReadonlyArray<KinAttachment>,
     images: ReadonlyArray<Blob>,
+    refs: ReadonlyArray<KinMessageRef>,
   ) => Promise<boolean>;
+  /** Where a doc section pointed at for this chat waits until it is sent. */
+  readonly pendingRefKey: string;
   /** The group's leads, offered on `@`; a message that names one is answered by it. */
   readonly mentionable: ReadonlyArray<KinMentionCandidate>;
 }) {
@@ -1178,6 +1194,8 @@ function KinComposer(props: {
   const [dismissed, setDismissed] = useState<string | null>(null);
   const atom = kinDraftAtom(draftKey);
   const text = useAtomValue(atom);
+  const pendingAtom = kinPendingRefAtom(props.pendingRefKey);
+  const pending = useAtomValue(pendingAtom);
   const full = useAtomValue(kinOutbox.fullAtom(environmentId));
   const files = useKinComposerAttachments({ environmentId, draftKey });
   const [sending, setSending] = useState(false);
@@ -1208,7 +1226,10 @@ function KinComposer(props: {
     const settled = await files.settle();
     if (settled._tag === "blocked") return;
     if (body.length === 0 && settled.attachments.length === 0) return;
-    if (!(await onSend(body, settled.attachments, settled.images))) return;
+    const held = appAtomRegistry.get(pendingAtom);
+    if (!(await onSend(body, settled.attachments, settled.images, held === null ? [] : [held.ref])))
+      return;
+    if (appAtomRegistry.get(pendingAtom) === held) appAtomRegistry.set(pendingAtom, null);
     // Keeps anything typed while the files were uploading.
     const typed = appAtomRegistry.get(atom);
     appAtomRegistry.set(atom, typed.startsWith(drafted) ? typed.slice(drafted.length) : typed);
@@ -1284,6 +1305,19 @@ function KinComposer(props: {
           ))}
         </div>
       )}
+      {pending === null ? null : (
+        <div className="flex items-center gap-1 px-1">
+          <KinDocRefMark label={kinDocRefLabel(pending.ref)} />
+          <Button
+            size="icon-xs"
+            variant="ghost-muted"
+            aria-label={`Remove ${kinDocRefLabel(pending.ref)}`}
+            onClick={() => appAtomRegistry.set(pendingAtom, null)}
+          >
+            <XIcon />
+          </Button>
+        </div>
+      )}
       <ComposerSurface.Shell>
         <ComposerSurface.Host>
           <ComposerSurface.Main>
@@ -1322,9 +1356,13 @@ function KinComposer(props: {
                 <textarea
                   className="-m-1 block field-sizing-content max-h-52 min-h-[calc(2lh+--spacing(2))] w-[calc(100%+--spacing(2))] resize-none overflow-y-auto bg-transparent p-1 text-sm leading-relaxed wrap-break-word text-foreground outline-none placeholder:text-placeholder"
                   ref={textareaRef}
+                  // Arriving from a doc with a section in hand, the next thing is to type.
+                  autoFocus={pending !== null}
                   value={text}
                   aria-label={`Message ${recipient}`}
-                  placeholder={`Message ${recipient}`}
+                  placeholder={
+                    pending === null ? `Message ${recipient}` : kinDocAskPlaceholder(pending)
+                  }
                   onChange={(event) => {
                     appAtomRegistry.set(atom, event.target.value);
                     setCaret(event.target.selectionStart);
