@@ -1,18 +1,30 @@
-import { KinChatError, KinPersonId, KinRecordKey, TrimmedNonEmptyString } from "@t3tools/contracts";
+import {
+  KinChatError,
+  KinDay,
+  KinPersonId,
+  KinRecordKey,
+  KinTrimmedText,
+  TrimmedNonEmptyString,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { isOrgPaused } from "../lead/orgState.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import { shown } from "../work/leadDocs.ts";
+import { parseAmount } from "../work/money.ts";
 import { admitted, askedBy, type Lead, leadTool, sourceOf, writerFor } from "../work/leadWork.ts";
 import type { DocumentInput } from "./DocJobs.ts";
 import { canonical, makeDocument, remakeForEntry, type Requester } from "./make.ts";
 import * as Numbers from "./numbering.ts";
+import { makeReceipt } from "./receipts.ts";
 import { recipeLabelled, undoRecipe as undoLabelled } from "./recipeLabels.ts";
 import { KinWorkspace } from "./workspace.ts";
 
-/** `kin_recipes`, `kin_issue`, `kin_recipe_undo`, and `kin_document` with a recipe, made in the call. */
+/**
+ * `kin_recipes`, `kin_issue`, `kin_recipe_undo`, `kin_receipt`, and `kin_document` with a recipe,
+ * made in the call.
+ */
 
 const RecipeInputRow = Schema.Struct({
   name: Schema.String,
@@ -37,6 +49,8 @@ export const RecipesResult = Schema.Struct({
       inputs: Schema.Array(RecipeInputRow),
       computed: Schema.Array(Schema.String),
       outputs: Schema.Array(Schema.String),
+      /** The one to use for its list unless the owner asks for another. */
+      default: Schema.optional(Schema.Literal(true)),
     }),
   ),
 });
@@ -65,6 +79,7 @@ export const recipes = leadTool("KinDocuments.recipes", (lead, _input: Record<st
         })),
         computed: recipe.computed.map(([name]) => name),
         outputs: [...recipe.outputs],
+        ...(recipe.default ? { default: true as const } : {}),
       })),
     };
   }),
@@ -227,4 +242,87 @@ export const undoRecipe = leadTool(
         });
       return { recipe: input.recipe, commit: undone.commit, removed: undone.removed };
     }),
+);
+
+export const ReceiptInput = Schema.Struct({
+  payment: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(120))).annotate({
+    description:
+      "The paymentId of a payment recorded on an invoice (payment_record returns it; record_get lists them).",
+  }),
+  entry: Schema.optional(KinRecordKey).annotate({
+    description: "A receipt entry already made, such as an advance, to number and make again.",
+  }),
+  advance: Schema.optional(
+    Schema.Struct({
+      client: Schema.optional(KinRecordKey),
+      amount: TrimmedNonEmptyString.check(Schema.isMaxLength(40)),
+      receivedOn: KinDay,
+    }),
+  ).annotate({
+    description:
+      "Money received before any invoice: the client's key, the amount as the owner said it, and the day.",
+  }),
+  against: Schema.optional(KinRecordKey).annotate({
+    description:
+      "An invoice to set an advance against: Kin records it as a payment on that invoice, once.",
+  }),
+  towards: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(300))),
+  mode: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(40))),
+  reference: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(120))),
+  sourceEventId: TrimmedNonEmptyString,
+});
+export const ReceiptResult = Schema.Struct({
+  receipt: Schema.String,
+  number: Schema.NullOr(Schema.String),
+  documents: Schema.Array(
+    Schema.Struct({ key: Schema.String, title: Schema.String, version: Schema.Number }),
+  ),
+  problems: Schema.Array(Schema.String),
+  sensitive: Schema.Literal(true),
+});
+
+/** `kin_receipt`: a numbered receipt and its PDF, shown as a card; asking again returns it. */
+export const receipt = leadTool("KinDocuments.receipt", (lead, input: typeof ReceiptInput.Type) =>
+  Effect.gen(function* () {
+    yield* admitted(lead, "kin_receipt", input);
+    if (yield* isOrgPaused(lead.orgId))
+      return yield* denied(
+        "Kin is paused by the owner, so nothing new is made until they resume it.",
+      );
+    const requester = yield* requesterOf(lead, input.sourceEventId);
+    const amount =
+      input.advance === undefined ? undefined : parseAmount(input.advance.amount, "INR");
+    if (amount !== undefined && "error" in amount) return yield* amount.error;
+    const made = yield* makeReceipt({
+      orgId: lead.orgId,
+      writer: requester.writer,
+      requester,
+      paymentId: input.payment,
+      key: input.entry,
+      advance:
+        input.advance === undefined || amount === undefined || "error" in amount
+          ? undefined
+          : {
+              client: input.advance.client,
+              amount: amount.money,
+              receivedOn: input.advance.receivedOn,
+              originKey: `receipt:advance:${lead.wakeupId}:${input.sourceEventId}:${canonical(input.advance)}`,
+            },
+      against: input.against,
+      extras: { towards: input.towards, mode: input.mode, reference: input.reference },
+      admit: stillAdmitted(lead, "kin_receipt", input),
+    });
+    for (const written of made.made?.written ?? []) yield* shown(lead, written, true);
+    return {
+      receipt: made.key,
+      number: made.number,
+      documents: (made.made?.documents ?? []).map((doc) => ({
+        key: doc.key,
+        title: doc.title,
+        version: doc.version,
+      })),
+      problems: made.problems,
+      sensitive: true as const,
+    };
+  }),
 );

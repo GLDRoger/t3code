@@ -1,5 +1,6 @@
 import {
   KinChatError,
+  KinCompanyLogo,
   type KinCompanyProfile,
   KinCompanyProfileData,
   KinCompanyProfileSetInput,
@@ -14,9 +15,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { iso } from "./recordRows.ts";
 
 /**
- * The company profile: legal name, address, tax ids and bank details, one sensitive record per
- * org. The owner reads and sets it from a client. An agent reads it in a turn only the owner
- * reads, and changes it only by a card the owner confirms.
+ * The company profile: legal name, address, tax ids, bank details, logo and brand, one sensitive
+ * record per org. The owner reads and sets it from a client. An agent reads it in a turn only the
+ * owner reads, and changes it only by a card the owner confirms.
  */
 
 const ProfileJson = Schema.fromJsonString(KinCompanyProfileData);
@@ -38,8 +39,13 @@ const EMPTY: KinCompanyProfileData = {
     branch: null,
     upi: null,
   },
+  logo: null,
+  brand: { primaryColor: null, secondaryColor: null, font: null, footer: null },
 };
-export type ProfilePatch = Omit<KinCompanyProfileSetInput, "orgId" | "rev">;
+/** A client only clears the logo; a new one is Kin's copy of a file, from an agent's card. */
+export type ProfilePatch = Omit<KinCompanyProfileSetInput, "orgId" | "rev" | "logo"> & {
+  readonly logo?: KinCompanyLogo | null | undefined;
+};
 export type ProfileWriter =
   | { readonly _tag: "person"; readonly personId: string }
   | { readonly _tag: "agent"; readonly agentId: string };
@@ -69,16 +75,14 @@ export const setProfile = Effect.fn("KinCompanyProfile.set")(function* (
     Effect.gen(function* () {
       const current = yield* readProfile(orgId);
       const { rev: _rev, updatedAt: _at, ...data } = current;
-      const { bank, ...rest } = patch;
+      const { bank, brand, ...rest } = patch;
+      const given = <A extends object>(value: A | undefined) =>
+        Object.fromEntries(Object.entries(value ?? {}).filter(([, one]) => one !== undefined));
       const next: KinCompanyProfileData = {
         ...data,
-        ...Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined)),
-        bank: {
-          ...data.bank,
-          ...Object.fromEntries(
-            Object.entries(bank ?? {}).filter(([, value]) => value !== undefined),
-          ),
-        },
+        ...given(rest),
+        bank: { ...data.bank, ...given(bank) },
+        brand: { ...data.brand, ...given(brand) },
       };
       const json = yield* encodeProfile(next);
       if (json === (yield* encodeProfile(data))) return current;
@@ -100,11 +104,13 @@ export const setProfile = Effect.fn("KinCompanyProfile.set")(function* (
   );
 });
 
-const { orgId: _orgId, rev: _rev, ...patchFields } = KinCompanyProfileSetInput.fields;
-const PatchJson = Schema.fromJsonString(Schema.Struct(patchFields));
+const { orgId: _orgId, rev: _rev, logo: _logo, ...patchFields } = KinCompanyProfileSetInput.fields;
+const PatchJson = Schema.fromJsonString(
+  Schema.Struct({ ...patchFields, logo: Schema.optional(Schema.NullOr(KinCompanyLogo)) }),
+);
 const encodePatch = Schema.encodeEffect(PatchJson);
 const decodePatch = Schema.decodeUnknownEffect(PatchJson);
-const LABELS: Record<Exclude<keyof ProfilePatch, "bank">, string> = {
+const LABELS: Record<Exclude<keyof ProfilePatch, "bank" | "brand" | "logo">, string> = {
   gstin: "GSTIN",
   pan: "PAN",
   placeOfSupply: "Place of supply",
@@ -121,6 +127,16 @@ const BANK_LABELS: Record<keyof KinCompanyProfileData["bank"], string> = {
   branch: "Branch",
   upi: "UPI",
 };
+const BRAND_LABELS: Record<keyof KinCompanyProfileData["brand"], string> = {
+  primaryColor: "Brand colour",
+  secondaryColor: "Second brand colour",
+  font: "Document font",
+  footer: "Document footer",
+};
+const logoLine = (logo: KinCompanyLogo | null) =>
+  logo === null
+    ? "none"
+    : `${logo.name} (${logo.mimeType === "image/svg+xml" ? "SVG" : logo.mimeType === "image/png" ? "PNG" : "JPEG"}${logo.width === null || logo.height === null ? "" : `, ${logo.width} × ${logo.height} px`}, ${Math.max(1, Math.round(logo.bytes / 1024))} KB)`;
 
 /**
  * Each field the patch changes, old value beside new, as the owner's card shows it: bank details
@@ -135,6 +151,14 @@ export const changeLines = (current: KinCompanyProfileData, patch: ProfilePatch)
     ),
     ...(Object.keys(LABELS) as Array<keyof typeof LABELS>).flatMap((key) =>
       line(LABELS[key], current[key], patch[key]),
+    ),
+    ...(patch.logo === undefined || patch.logo?.sha256 === current.logo?.sha256
+      ? []
+      : [
+          `Logo: ${logoLine(current.logo)} → ${patch.logo === null ? "cleared" : logoLine(patch.logo)}`,
+        ]),
+    ...(Object.keys(BRAND_LABELS) as Array<keyof typeof BRAND_LABELS>).flatMap((key) =>
+      line(BRAND_LABELS[key], current.brand[key], patch.brand?.[key]),
     ),
   ];
 };

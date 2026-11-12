@@ -1,6 +1,7 @@
 import {
   KinChatError,
   KinCompanyBank,
+  KinCompanyBrand,
   KinDay,
   KinGstin,
   KinListFieldType,
@@ -18,6 +19,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 
+import { takeLogo } from "../gendocs/brand.ts";
 import { turnChat } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { attachChangeCard, changeLines, proposeChange, readProfile } from "./companyProfile.ts";
@@ -65,6 +67,7 @@ const askOwner = Effect.fn("KinOwnerCards.ask")(function* (
     readonly detail: string;
     readonly yes: string;
     readonly no: string;
+    readonly image?: { readonly attachmentId: string; readonly mimeType: string };
   },
   bind: (widgetId: string) => Effect.Effect<void, SqlError.SqlError, SqlClient.SqlClient>,
 ) {
@@ -82,6 +85,7 @@ const askOwner = Effect.fn("KinOwnerCards.ask")(function* (
         { label: input.yes, kind: "yes" },
         { label: input.no, kind: "no" },
       ],
+      ...(input.image === undefined ? {} : { image: input.image }),
     },
     (card) => bind(card.widgetId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
   );
@@ -429,6 +433,15 @@ export const ProfileInput = Schema.Struct({
           upi: Schema.optional(KinCompanyBank.fields.upi),
         }),
       ),
+      logo: Schema.optional(Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(128)))),
+      brand: Schema.optional(
+        Schema.Struct({
+          primaryColor: Schema.optional(KinCompanyBrand.fields.primaryColor),
+          secondaryColor: Schema.optional(KinCompanyBrand.fields.secondaryColor),
+          font: Schema.optional(KinCompanyBrand.fields.font),
+          footer: Schema.optional(KinCompanyBrand.fields.footer),
+        }),
+      ),
     }),
   ),
 });
@@ -449,7 +462,17 @@ const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof Profil
     if (input.sourceEventId === undefined)
       return yield* invalid("Pass this turn's sourceEventId to change the profile.");
     yield* sourceOf(lead, input.sourceEventId);
-    const lines = changeLines(current, input.set);
+    const { logo: logoId, ...fields } = input.set;
+    // The logo is an image the owner sent in this chat, copied now so clearing the chat keeps it.
+    const taken =
+      typeof logoId === "string"
+        ? yield* takeLogo(lead.orgId, (yield* writerFor(lead)).chatId, logoId)
+        : undefined;
+    const patch = {
+      ...fields,
+      ...(logoId === undefined ? {} : { logo: taken?.logo ?? null }),
+    };
+    const lines = changeLines(current, patch);
     const refused = tooLongForCard(lines.join("\n"));
     if (refused !== undefined) return yield* refused;
     if (lines.length > 0) {
@@ -457,13 +480,13 @@ const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof Profil
       const [chat] = yield* sql<{ chatId: string }>`SELECT owner_chat_id AS "chatId" FROM kin_leads
         WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}`;
       if (chat === undefined) return yield* invalid("There is no owner chat to confirm this in.");
-      const changeId = `pc_${retryKey(`${lead.orgId}|${lead.agentId}|${lead.wakeupId}|${rev}|${stableStringify(input.set)}`)}`;
+      const changeId = `pc_${retryKey(`${lead.orgId}|${lead.agentId}|${lead.wakeupId}|${rev}|${stableStringify(patch)}`)}`;
       yield* proposeChange({
         orgId: lead.orgId,
         changeId,
         agentId: lead.agentId,
         wakeupId: lead.wakeupId,
-        patch: input.set,
+        patch,
         baseRev: rev,
         now: yield* Clock.currentTimeMillis,
       });
@@ -477,6 +500,7 @@ const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof Profil
           detail: lines.join("\n"),
           yes: "Confirm",
           no: "Cancel",
+          ...(taken === undefined ? {} : { image: taken.shown }),
         },
         (widgetId) => attachChangeCard(lead.orgId, changeId, widgetId),
       );

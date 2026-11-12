@@ -25,6 +25,7 @@ const toolchain = Layer.succeed(KinToolchain, {
     typst === undefined
       ? Effect.fail(new KinChatError({ reason: "unavailable", message: "no Typst here" }))
       : Effect.succeed(typst),
+  fonts: () => Effect.undefined,
 });
 const layerOf = (limits = Render.RENDER_LIMITS) =>
   Render.makeLayer(limits).pipe(
@@ -66,7 +67,12 @@ const starter = (name: string) =>
     const recipe = recipes.find((one) => one.name === name)!;
     const inputs = sampleInputs(recipe, STARTER_FILES[`recipes/${name}/sample.json`]);
     if (typeof inputs === "string") return yield* Effect.die(inputs);
-    return { recipe, inputs };
+    // Rendered with no logo: a sample's stand-in text is no file in the root.
+    const logos = recipe.inputs.filter((input) => input.from === "company.logo");
+    return {
+      recipe,
+      inputs: { ...inputs, ...Object.fromEntries(logos.map((input) => [input.name, null])) },
+    };
   });
 const render = (
   recipe: Workspace.StoredRecipe,
@@ -210,6 +216,59 @@ it.layer(layerOf())("KinDocRenderer", (it) => {
         assert.match(reason(yield* render(absolute)), /not found|does not exist/i);
         const broken = yield* commitRecipe("broken", { "template.typ": "#let x = (" });
         assert.match(reason(yield* render(broken)), /^probe\.pdf: template\.typ:1:/);
+      }),
+  );
+
+  it.effect.skipIf(typst === undefined)(
+    "puts the logo in the root only for a recipe that reads it, and shows the first page",
+    () =>
+      Effect.gen(function* () {
+        const logo = {
+          bytes: new TextEncoder().encode(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="#0A5C8F"/></svg>',
+          ),
+          extension: "svg",
+        };
+        const markdown = (name: string, reads: boolean) =>
+          `---\nname: ${name}\ntitle: Probe\ndescription: A probe.\noutputs: [probe.pdf]\ninputs:\n  note: { type: text }\n${reads ? "  logo: { type: text, from: company.logo, required: false }\n" : ""}---\nProbe.\n`;
+        const template = '#image("/brand/logo.svg", width: 2cm)\n#json("/inputs.json").note';
+        const reads = yield* commitRecipe("branded", {
+          "RECIPE.md": markdown("branded", true),
+          "template.typ": template,
+        });
+        const shown = yield* Effect.flatMap(Render.KinDocRenderer, (renderer) =>
+          renderer.render({
+            orgId,
+            recipe: reads,
+            commit: reads.commit,
+            inputs: { note: "hello", logo: "/brand/logo.svg" },
+            day: "2026-11-12",
+            logo,
+            page: true,
+          }),
+        );
+        assert.deepStrictEqual(
+          shown._tag === "made"
+            ? [shown.files.map((file) => file.name), shown.page?.name, shown.page?.mimeType]
+            : [reason(shown)],
+          [["probe.pdf"], "probe-page-1.png", "image/png"],
+        );
+        // A recipe that doesn't declare the logo finds no file there, though Kin was given one.
+        const sneaks = yield* commitRecipe("sneaks", {
+          "RECIPE.md": markdown("sneaks", false),
+          "template.typ": template,
+        });
+        const refused = yield* Effect.flatMap(Render.KinDocRenderer, (renderer) =>
+          renderer.render({
+            orgId,
+            recipe: sneaks,
+            commit: sneaks.commit,
+            inputs: { note: "hello" },
+            day: "2026-11-12",
+            logo,
+          }),
+        );
+        assert.match(reason(refused), /not found|does not exist/i);
       }),
   );
 

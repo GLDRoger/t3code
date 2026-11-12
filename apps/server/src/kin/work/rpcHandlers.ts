@@ -191,6 +191,12 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.void": Effect.fn("KinWork.rpc.void")(function* (input) {
         return yield* call((people) => Money.voidEntry(people, input));
       }),
+      "kin.work.receipts": Effect.fn("KinWork.rpc.receipts")(function* (input) {
+        return yield* call((people) => Money.receipts(people, input));
+      }),
+      "kin.work.makeReceipt": Effect.fn("KinWork.rpc.makeReceipt")(function* (input) {
+        return yield* call((people) => Money.makeReceipt(people, input));
+      }),
     }),
     ...statements.of({
       "kin.work.statementUnlock": Effect.fn("KinWork.rpc.statementUnlock")(function* (input) {

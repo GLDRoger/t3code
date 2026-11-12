@@ -340,6 +340,8 @@ export const KIN_RPC_AGGREGATES = {
   "kin.work.setCompanyProfile": "kin-work",
   "kin.work.issue": "kin-work",
   "kin.work.void": "kin-work",
+  "kin.work.receipts": "kin-work",
+  "kin.work.makeReceipt": "kin-work",
   "kin.work.statementUnlock": "kin-work",
   "kin.work.statementForgetPassword": "kin-work",
   "kin.work.statementApply": "kin-work",

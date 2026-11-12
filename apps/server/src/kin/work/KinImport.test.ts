@@ -561,7 +561,7 @@ describe("KinImport", () => {
     ["OBK-RN/2026-27/001", { series: "imported|OBK-RN/2026-27/001", seq: 1 }],
   ] as const)("places %s in its series", (number, expected) => {
     assert.deepStrictEqual(
-      KinImport.seriesOf({ prefix: "OBK", series: "financial_year", width: 3 }, number),
+      Numbers.seriesOf({ prefix: "OBK", series: "financial_year", width: 3 }, number),
       expected,
     );
   });

@@ -57,7 +57,7 @@ import { KinEventQueue } from "./KinEventQueue.ts";
 import { KinLeadRegistry } from "./KinLeadRegistry.ts";
 import * as KinLevels from "./KinLevels.ts";
 import { isOrgPaused, STOP_REASON } from "./orgState.ts";
-import { KinDocCollector } from "../gendocs/DocJobs.ts";
+import { CONTINUED, KinDocCollector } from "../gendocs/DocJobs.ts";
 import { OWNER_DECLINED, parseReport, WAITING_FOR_OWNER } from "./workerBrief.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
 import * as Publish from "./workerPublish.ts";
@@ -1120,6 +1120,8 @@ const make = Effect.gen(function* () {
     const filed = Option.isSome(documents)
       ? yield* documents.value.collect(worker, status === "completed", report)
       : undefined;
+    // Kin sent a recipe writer back to work: that next run's end reports instead.
+    if (filed === CONTINUED) return false;
     if (filed !== undefined)
       return yield* settleRun(worker, {
         runId: run.id,
