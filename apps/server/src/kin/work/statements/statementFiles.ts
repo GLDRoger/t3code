@@ -1,17 +1,22 @@
 // @effect-diagnostics nodeBuiltinImport:off -- a bounded, synchronous read of one file's bytes; no service owns these formats.
 import * as NodeBuffer from "node:buffer";
+import * as NodeZlib from "node:zlib";
 
 import { SaxesParser } from "saxes";
 import * as Yauzl from "yauzl";
 
 import { officeProblem } from "../../gendocs/officeCheck.ts";
 import {
-  delimitedLines,
-  htmlLines,
   type Cell,
+  cellBudget,
+  delimitedLines,
+  EMPTY_CELL,
+  htmlLines,
   type Line,
+  LINE_CAPS,
   readTable,
   type Statement,
+  TooLarge,
 } from "./statementTable.ts";
 
 /**
@@ -33,7 +38,12 @@ const STATEMENT_CAPS = {
   pages: 300,
   rows: 20_000,
   sheetBytes: 64 * 1024 * 1024,
+  /** What one deflated PDF stream may inflate to, and all of them together. */
+  streamBytes: 32 * 1024 * 1024,
+  streamsBytes: 256 * 1024 * 1024,
 };
+
+const tooLarge = (reason: string): Failure => ({ _tag: "unreadable", reason });
 
 const startsWith = (bytes: Uint8Array, magic: ReadonlyArray<number>) =>
   magic.every((byte, index) => bytes[index] === byte);
@@ -73,17 +83,11 @@ export const readStatementFile = async (
       _tag: "unreadable",
       reason: "This isn't a statement file Kin reads: send a PDF, CSV, XLS or XLSX.",
     };
-  const lines =
-    format === "pdf"
-      ? await pdfLines(bytes, password)
-      : format === "xlsx"
-        ? await xlsxLines(bytes)
-        : format === "xls"
-          ? xlsLines(bytes)
-          : format === "html"
-            ? htmlLines(decodeText(bytes))
-            : delimitedLines(decodeText(bytes));
-  if (!Array.isArray(lines)) return lines as Exclude<FileOutcome, { _tag: "read" }>;
+  const lines = await linesOf(format, bytes, password).catch((error: unknown) => {
+    if (error instanceof TooLarge) return tooLarge(error.reason);
+    throw error;
+  });
+  if (!Array.isArray(lines)) return lines as Failure;
   const table = readTable(lines);
   if (table._tag === "no_table") return { _tag: "unreadable", reason: table.reason };
   if (table.statement.rows.length > STATEMENT_CAPS.rows)
@@ -96,6 +100,21 @@ export const readStatementFile = async (
 
 type Failure = Exclude<FileOutcome, { _tag: "read" }>;
 
+const linesOf = async (
+  format: StatementFormat,
+  bytes: Uint8Array,
+  password: string | undefined,
+): Promise<ReadonlyArray<Line> | Failure> =>
+  format === "pdf"
+    ? pdfLines(bytes, password)
+    : format === "xlsx"
+      ? xlsxLines(bytes)
+      : format === "xls"
+        ? xlsLines(bytes)
+        : format === "html"
+          ? htmlLines(decodeText(bytes))
+          : delimitedLines(decodeText(bytes));
+
 // pdf.js reports a missing or wrong password with these codes (`PasswordResponses`).
 const NEED_PASSWORD = 1;
 const INCORRECT_PASSWORD = 2;
@@ -105,7 +124,13 @@ const pdfLines = async (
   bytes: Uint8Array,
   password?: string,
 ): Promise<ReadonlyArray<Line> | Failure> => {
+  const bomb = inflatedTooFar(bytes);
+  if (bomb !== undefined) return tooLarge(bomb);
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  // pdf.js runs its worker in this thread, from this global; bundled, its own path to it is gone.
+  Reflect.set(globalThis, "pdfjsWorker", await import("pdfjs-dist/legacy/build/pdf.worker.mjs"));
+  // Text only: no fonts, CMaps, wasm decoders or fetches, which a statement's text never needs.
+  // pdf.js 6 has no eval path left to turn off (`isEvalSupported` is gone).
   const task = pdfjs.getDocument({
     // pdf.js takes ownership of the buffer it is given, so it reads a copy.
     data: new Uint8Array(bytes),
@@ -115,11 +140,19 @@ const pdfLines = async (
     disableFontFace: true,
     enableXfa: false,
     stopAtErrors: false,
+    useWorkerFetch: false,
+    useWasm: false,
+    disableAutoFetch: true,
+    disableStream: true,
+    disableRange: true,
+    isOffscreenCanvasSupported: false,
+    isImageDecoderSupported: false,
   });
   try {
     const document = await task.promise;
     if (document.numPages > STATEMENT_CAPS.pages)
       return { _tag: "unreadable", reason: `The PDF has more than ${STATEMENT_CAPS.pages} pages.` };
+    const budget = cellBudget();
     const lines: Array<Line> = [];
     let characters = 0;
     for (let number = 1; number <= document.numPages; number += 1) {
@@ -138,7 +171,11 @@ const pdfLines = async (
           : [],
       );
       characters += items.reduce((sum, item) => sum + item.text.trim().length, 0);
-      lines.push(...groupLines(items));
+      for (const line of groupLines(items)) {
+        budget.line();
+        budget.cells(line.length);
+        lines.push(line);
+      }
       page.cleanup();
     }
     if (characters < 20) return { _tag: "scanned", pages: document.numPages };
@@ -151,6 +188,7 @@ const pdfLines = async (
     if (name === "PasswordException" && code === NEED_PASSWORD) return { _tag: "needs_password" };
     if (name === "PasswordException" && code === INCORRECT_PASSWORD)
       return { _tag: "wrong_password" };
+    if (error instanceof TooLarge) return tooLarge(error.reason);
     return { _tag: "unreadable", reason: "The PDF couldn't be opened; it may be damaged." };
   } finally {
     await task.destroy();
@@ -184,8 +222,36 @@ const groupLines = (items: ReadonlyArray<Item>): ReadonlyArray<Line> => {
         last.right = Math.max(last.right, item.x + item.width);
       } else cells.push({ text: item.text, x: item.x, right: item.x + item.width });
     }
-    return cells.map((cell) => ({ ...cell, text: cell.text.trim() }));
+    return cells.slice(0, LINE_CAPS.width).map((cell) => ({ ...cell, text: cell.text.trim() }));
   });
+};
+
+/**
+ * Why a PDF's deflated streams would inflate past what a statement needs, before pdf.js
+ * inflates them all in memory: a few kilobytes can hold gigabytes. Streams that aren't plain
+ * deflate (an encrypted file's) are left to pdf.js, which the reader's time limit bounds.
+ */
+const inflatedTooFar = (bytes: Uint8Array): string | undefined => {
+  const text = NodeBuffer.Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(
+    "latin1",
+  );
+  let total = 0;
+  for (const found of text.matchAll(/(?<!end)stream\r?\n/g)) {
+    const start = found.index + found[0].length;
+    const dict = text.slice(Math.max(0, found.index - 1_024), found.index);
+    if (!/\/FlateDecode\b/.test(dict.slice(dict.lastIndexOf("obj")))) continue;
+    const end = text.indexOf("endstream", start);
+    if (end === -1) continue;
+    try {
+      total += NodeZlib.inflateSync(bytes.subarray(start, end), {
+        maxOutputLength: STATEMENT_CAPS.streamBytes,
+      }).byteLength;
+    } catch (error) {
+      if (error instanceof RangeError) return "The PDF holds far more data than a statement.";
+    }
+    if (total > STATEMENT_CAPS.streamsBytes) return "The PDF holds far more data than a statement.";
+  }
+  return undefined;
 };
 
 const unzip = (bytes: Uint8Array) =>
@@ -248,9 +314,29 @@ const xml = (
   parser.write(text).close();
 };
 
+/** A cell reference's column from 0, up to XFD; `undefined` past it or when it names none. */
 const columnIndex = (reference: string) => {
-  const letters = /^[A-Z]+/.exec(reference)?.[0] ?? "A";
-  return [...letters].reduce((sum, letter) => sum * 26 + letter.charCodeAt(0) - 64, 0) - 1;
+  const letters = /^[A-Z]{1,3}(?=\d|$)/.exec(reference)?.[0];
+  if (letters === undefined) return undefined;
+  const index = [...letters].reduce((sum, letter) => sum * 26 + letter.charCodeAt(0) - 64, 0) - 1;
+  return index < 16_384 ? index : undefined;
+};
+
+/** Puts a cell in its column; a row holds no cells past `LINE_CAPS.width`, padding counted. */
+const place = (
+  row: Array<Cell>,
+  column: number,
+  cell: Cell,
+  budget: ReturnType<typeof cellBudget>,
+) => {
+  if (column >= LINE_CAPS.width) return;
+  if (column < row.length) {
+    row[column] = cell;
+    return;
+  }
+  budget.cells(column - row.length + 1);
+  while (row.length < column) row.push(EMPTY_CELL);
+  row.push(cell);
 };
 
 /** The first sheet of an XLSX, once Kin has checked it is only a document. */
@@ -270,11 +356,13 @@ const xlsxLines = async (bytes: Uint8Array): Promise<ReadonlyArray<Line> | Failu
       if (name === "t") inText = true;
     },
     text: (value) => {
-      if (inText && current !== undefined) current += value;
+      if (inText && current !== undefined && current.length < 4_000) current += value;
     },
     close: (name) => {
       if (name === "t") inText = false;
       if (name === "si") {
+        if (strings.length >= LINE_CAPS.cells)
+          throw new TooLarge({ reason: "The spreadsheet has far more text than a statement." });
         strings.push(current ?? "");
         current = undefined;
       }
@@ -284,33 +372,45 @@ const xlsxLines = async (bytes: Uint8Array): Promise<ReadonlyArray<Line> | Failu
     .filter((name) => name.startsWith("xl/worksheets/"))
     .toSorted((left, right) => Number(/\d+/.exec(left)?.[0]) - Number(/\d+/.exec(right)?.[0]));
   const read = (name: string) => {
+    const budget = cellBudget();
     const lines: Array<Array<Cell>> = [];
     let row: Array<Cell> = [];
-    let cell: { column: number; type: string; value: string } | undefined;
+    let cell: { column: number | undefined; type: string; value: string } | undefined;
     let inValue = false;
     xml(parts.get(name)!, {
       open: (tag, attributes) => {
         if (tag === "row") row = [];
         if (tag === "c")
-          cell = { column: columnIndex(attributes.r ?? ""), type: attributes.t ?? "n", value: "" };
+          cell = {
+            // A cell without a reference follows the one before it.
+            column: attributes.r === undefined ? row.length : columnIndex(attributes.r),
+            type: attributes.t ?? "n",
+            value: "",
+          };
         if (tag === "v" || tag === "t") inValue = true;
       },
       text: (value) => {
-        if (inValue && cell !== undefined) cell.value += value;
+        if (inValue && cell !== undefined && cell.value.length < 4_000) cell.value += value;
       },
       close: (tag) => {
         if (tag === "v" || tag === "t") inValue = false;
         if (tag === "c" && cell !== undefined) {
-          while (row.length < cell.column) row.push({ text: "" });
           const text = cell.type === "s" ? (strings[Number(cell.value)] ?? "") : cell.value;
           const number = cell.type === "n" && cell.value !== "" ? Number(cell.value) : undefined;
-          row[cell.column] = {
-            text: number === undefined || !Number.isFinite(number) ? text : String(number),
-            ...(number === undefined || !Number.isFinite(number) ? {} : { serial: number }),
-          };
+          const finite = number !== undefined && Number.isFinite(number);
+          if (cell.column !== undefined)
+            place(
+              row,
+              cell.column,
+              finite ? { text: String(number), serial: number } : { text },
+              budget,
+            );
           cell = undefined;
         }
-        if (tag === "row") lines.push(row);
+        if (tag === "row") {
+          budget.line();
+          lines.push(row);
+        }
       },
     });
     return lines;
@@ -330,9 +430,14 @@ const FREESECT = 0xffffffff;
 const workbookStream = (bytes: Uint8Array): Uint8Array | undefined => {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (bytes.byteLength < 512) return undefined;
-  const sectorSize = 1 << view.getUint16(30, true);
-  const miniSize = 1 << view.getUint16(32, true);
+  const sectorShift = view.getUint16(30, true);
+  if ((sectorShift !== 9 && sectorShift !== 12) || view.getUint16(32, true) !== 6) return undefined;
+  const sectorSize = 1 << sectorShift;
+  const miniSize = 64;
+  const sectors = Math.floor((bytes.byteLength - 512) / sectorSize);
   const fatCount = view.getUint32(44, true);
+  // Every FAT sector is a sector of this file; a header claiming more is not a workbook.
+  if (fatCount > sectors) return undefined;
   const firstDir = view.getUint32(48, true);
   const miniCutoff = view.getUint32(56, true);
   const firstMiniFat = view.getUint32(60, true);
@@ -341,35 +446,38 @@ const workbookStream = (bytes: Uint8Array): Uint8Array | undefined => {
   const fatSectors: Array<number> = [];
   for (let at = 76; at < 512 && fatSectors.length < fatCount; at += 4)
     fatSectors.push(view.getUint32(at, true));
-  let guard = 0;
+  const difatSeen = new Set<number>();
   while (difatSector !== ENDOFCHAIN && difatSector !== FREESECT && fatSectors.length < fatCount) {
-    if (guard++ > 10_000 || sectorAt(difatSector) + sectorSize > bytes.byteLength) return undefined;
+    if (difatSeen.has(difatSector) || difatSector >= sectors) return undefined;
+    difatSeen.add(difatSector);
     for (let at = 0; at < sectorSize - 4 && fatSectors.length < fatCount; at += 4)
       fatSectors.push(view.getUint32(sectorAt(difatSector) + at, true));
     difatSector = view.getUint32(sectorAt(difatSector) + sectorSize - 4, true);
   }
   const fat: Array<number> = [];
+  if (new Set(fatSectors).size !== fatSectors.length) return undefined;
   for (const sector of fatSectors) {
-    if (sectorAt(sector) + sectorSize > bytes.byteLength) return undefined;
+    if (sector >= sectors) return undefined;
     for (let at = 0; at < sectorSize; at += 4)
       fat.push(view.getUint32(sectorAt(sector) + at, true));
   }
-  const chain = (start: number, table: ReadonlyArray<number>) => {
+  /** A sector chain, each of its `count` sectors once: a cycle or a sector past the end fails. */
+  const chain = (start: number, table: ReadonlyArray<number>, count: number) => {
     const ids: Array<number> = [];
+    const seen = new Set<number>();
     for (let id = start; id !== ENDOFCHAIN && id !== FREESECT; id = table[id] ?? ENDOFCHAIN) {
-      if (ids.length > table.length) return undefined;
+      if (id >= count || seen.has(id)) return undefined;
+      seen.add(id);
       ids.push(id);
     }
     return ids;
   };
   const read = (start: number, size: number) => {
-    const ids = chain(start, fat);
+    const ids = chain(start, fat, sectors);
     if (ids === undefined) return undefined;
     const out = new Uint8Array(ids.length * sectorSize);
-    for (const [index, id] of ids.entries()) {
-      if (sectorAt(id) + sectorSize > bytes.byteLength) return undefined;
+    for (const [index, id] of ids.entries())
       out.set(bytes.subarray(sectorAt(id), sectorAt(id) + sectorSize), index * sectorSize);
-    }
     return out.subarray(0, Math.min(size, out.length));
   };
   const directory = read(firstDir, Number.MAX_SAFE_INTEGER);
@@ -406,7 +514,7 @@ const workbookStream = (bytes: Uint8Array): Uint8Array | undefined => {
   const miniFat = Array.from({ length: miniFatBytes.length / 4 }, (_, index) =>
     miniView.getUint32(index * 4, true),
   );
-  const ids = chain(book.start, miniFat);
+  const ids = chain(book.start, miniFat, Math.floor(miniStream.length / miniSize));
   if (ids === undefined) return undefined;
   const out = new Uint8Array(ids.length * miniSize);
   for (const [index, id] of ids.entries())
@@ -432,14 +540,16 @@ const xlsLines = (bytes: Uint8Array): ReadonlyArray<Line> | Failure => {
   const sheets: Array<Map<number, Map<number, Cell>>> = [];
   let sheet: Map<number, Map<number, Cell>> | undefined;
   let pendingFormula: { row: number; column: number } | undefined;
+  const budget = cellBudget();
   const set = (row: number, column: number, cell: Cell) => {
-    if (sheet === undefined) return;
+    if (sheet === undefined || column >= LINE_CAPS.width) return;
+    budget.cells(1);
     const cells = sheet.get(row) ?? new Map<number, Cell>();
     cells.set(column, cell);
     sheet.set(row, cells);
   };
   const number = (value: number) => ({ text: String(value), serial: value });
-  for (const record of records) {
+  const readRecord = (record: Record) => {
     const data = new DataView(record.data.buffer, record.data.byteOffset, record.data.byteLength);
     const u16 = (at: number) => data.getUint16(at, true);
     switch (record.type) {
@@ -467,7 +577,11 @@ const xlsLines = (bytes: Uint8Array): ReadonlyArray<Line> | Failure => {
       case 0x00bd: {
         // MULRK
         const last = u16(record.data.length - 2);
-        for (let column = u16(2), at = 4; column <= last; column += 1, at += 6)
+        for (
+          let column = u16(2), at = 4;
+          column <= last && at + 6 <= record.data.length - 2;
+          column += 1, at += 6
+        )
           set(u16(0), column, number(rk(data.getUint32(at + 2, true))));
         break;
       }
@@ -489,18 +603,29 @@ const xlsLines = (bytes: Uint8Array): ReadonlyArray<Line> | Failure => {
         }
         break;
     }
+  };
+  for (const record of records) {
+    try {
+      readRecord(record);
+    } catch (error) {
+      // A record shorter than its type needs is skipped, as Excel skips one it can't read.
+      if (!(error instanceof RangeError)) throw error;
+    }
   }
-  const asLines = (cells: Map<number, Map<number, Cell>>) =>
-    [...cells.keys()]
+  const asLines = (cells: Map<number, Map<number, Cell>>) => {
+    const lines = cellBudget();
+    return [...cells.keys()]
       .toSorted((left, right) => left - right)
       .map((row) => {
+        lines.line();
         const line: Array<Cell> = [];
-        for (const [column, cell] of cells.get(row)!) {
-          while (line.length < column) line.push({ text: "" });
-          line[column] = cell;
-        }
-        return line.map((cell) => cell ?? { text: "" });
+        for (const [column, cell] of [...cells.get(row)!].toSorted(
+          ([left], [right]) => left - right,
+        ))
+          place(line, column, cell, lines);
+        return line;
       });
+  };
   for (const one of sheets) {
     const lines = asLines(one);
     if (readTable(lines)._tag === "read") return lines;

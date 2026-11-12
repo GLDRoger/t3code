@@ -32,7 +32,7 @@ import { dayIn, formatMoney } from "../money.ts";
 import { ownerZone } from "../recordRows.ts";
 import { listDef } from "../registers.ts";
 import { bankStates, findBankList, type KnownRow, knownRows } from "./bankList.ts";
-import { type FileOutcome, readStatementFile } from "./statementFiles.ts";
+import { readIsolated } from "./statementReader.ts";
 import { type Candidate, matchRows, type RowMatch } from "./statementMatch.ts";
 import type { Statement } from "./statementTable.ts";
 
@@ -602,14 +602,7 @@ export const tryKeptPasswords = Effect.fn("KinStatements.tryKept")(function* (
 
 /** Reads a statement file, with a password for a locked PDF; nothing of it leaves this call. */
 export const readWith = (bytes: Uint8Array, password?: Redacted.Redacted<string>) =>
-  Effect.promise((): Promise<FileOutcome> =>
-    readStatementFile(bytes, password === undefined ? undefined : Redacted.value(password)).catch(
-      () => ({
-        _tag: "unreadable",
-        reason: "Kin couldn't read this file.",
-      }),
-    ),
-  );
+  readIsolated(bytes, password);
 
 export const keepPassword = Effect.fn("KinStatements.keepPassword")(function* (
   orgId: KinOrgId,
