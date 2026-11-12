@@ -41,6 +41,7 @@ import { downloadPlanAsTextFile } from "../proposedPlan";
 import { CardFrame } from "./KinCards";
 import { KinChart } from "./KinChart";
 import { KinVisual } from "./KinVisual";
+import { KinDocFileCard } from "./KinInvoice";
 import { useNowMinuteMs } from "./useKinClock";
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
 
@@ -392,8 +393,13 @@ export function KinDocReader(
               </Alert>
             ) : null}
           </header>
+          {doc.version.file === undefined ? null : (
+            <KinDocFileCard environmentId={props.environmentId} file={doc.version.file} />
+          )}
           {doc.body.trim() === "" ? (
-            <p className="text-sm text-muted-foreground">This doc has no text yet.</p>
+            doc.version.file === undefined ? (
+              <p className="text-sm text-muted-foreground">This doc has no text yet.</p>
+            ) : null
           ) : (
             <div
               ref={setArticle}

@@ -1286,10 +1286,16 @@ export async function kinListSend<A>(input: {
     case "not_found":
       return failed("That isn't there any more.");
     case "not_allowed":
-      return failed("Only whoever runs this Kin can change this.");
+      // A retry key reused for something else: the form's id is stale, not the person's rights.
+      return failed(
+        /retry key/i.test(error.message)
+          ? "This was already sent once with different details. Close it and start again."
+          : "Only whoever runs this Kin can change this.",
+      );
     case "unavailable":
     case "disabled":
       return failed("Kin isn't answering right now. Try again in a moment.");
+    case "limit":
     case "invalid_state":
       // The host says exactly what it refused; words meant for an agent's tools are not shown.
       return failed(

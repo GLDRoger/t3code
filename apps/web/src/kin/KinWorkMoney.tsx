@@ -17,6 +17,7 @@ import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import { cn } from "../lib/utils";
 import { KinChart } from "./KinChart";
+import { KinReceiptsSection } from "./KinReceipts";
 import { KinDateRow } from "./KinWorkDates";
 import { useNowMinuteMs } from "./useKinClock";
 import { KinWorkNotice, KinWorkRowSkeletons, KinWorkSection } from "./KinWorkParts";
@@ -147,6 +148,8 @@ export function KinWorkMoney(
     readonly onOpenKey: (key: KinRecordKey) => void;
     readonly onDates: () => void;
     readonly onLists: () => void;
+    readonly onClients: () => void;
+    readonly onOpenDoc: (key: KinRecordKey) => void;
   },
 ) {
   const { names } = props.directory;
@@ -318,6 +321,12 @@ export function KinWorkMoney(
             </table>
           </KinWorkSection>
         )}
+        <KinReceiptsSection
+          {...props}
+          seq={props.stale ? null : props.live.seq}
+          onOpenDoc={props.onOpenDoc}
+          onOpenKey={props.onOpenKey}
+        />
         <KinWorkSection
           title={KIN_MONEY.upcoming}
           action={
@@ -346,6 +355,9 @@ export function KinWorkMoney(
         <div className="flex flex-wrap gap-2 px-2">
           <Button size="sm" variant="outline" onClick={props.onLists}>
             {KIN_LISTS.title}
+          </Button>
+          <Button size="sm" variant="outline" onClick={props.onClients}>
+            {KIN_MONEY.clients}
           </Button>
           {agent === null ? null : (
             <Button size="sm" variant="ghost" onClick={() => agent.ask("")}>

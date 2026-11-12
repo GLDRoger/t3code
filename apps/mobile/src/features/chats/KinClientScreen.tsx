@@ -12,7 +12,11 @@ import {
   type KinContactView,
   type KinOwedView,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
-import { kinWorkSend, type KinWorkFormProblem } from "@t3tools/client-runtime/kin/kinWorkForms";
+import {
+  KIN_WORK_FORM_COPY,
+  kinWorkSend,
+  type KinWorkFormProblem,
+} from "@t3tools/client-runtime/kin/kinWorkForms";
 import {
   EnvironmentId,
   KinOrgId,
@@ -367,6 +371,16 @@ function KinClientBody(
         ) : null}
       </ListSection>
       {unopened === null ? null : <Notice message={unopened} onDismiss={() => setUnopened(null)} />}
+      {view.address === null ? null : (
+        <View className="gap-2 px-2">
+          <Text textRole="footnote" className="text-foreground-muted">
+            {KIN_WORK_FORM_COPY.party.address}
+          </Text>
+          <Text textRole="body" selectable className="text-foreground">
+            {view.address}
+          </Text>
+        </View>
+      )}
       <View className="gap-2 px-2">
         <View className="flex-row items-center justify-between">
           <Text textRole="footnote" className="text-foreground-muted">

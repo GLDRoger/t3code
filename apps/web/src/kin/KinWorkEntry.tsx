@@ -16,6 +16,12 @@ import {
   type KinWorkItemView,
 } from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
+import {
+  KIN_INVOICE_NUMBER_FIELD,
+  KIN_INVOICES,
+  kinInvoiceView,
+  kinIsInvoice,
+} from "@t3tools/client-runtime/kin/kinInvoices";
 import type { KinFieldValue, KinFileRef, KinRecordDetail, KinRecordKey } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
@@ -63,6 +69,13 @@ import {
 } from "../components/ui/menu";
 import { SheetDescription, SheetHeader, SheetTitle } from "../components/ui/sheet";
 import { cn, randomUUID } from "../lib/utils";
+import {
+  KinInvoiceActions,
+  KinInvoiceDocuments,
+  KinInvoiceFigures,
+  KinInvoicePayments,
+  KinMoneyActionNotice,
+} from "./KinInvoice";
 import { KinEntryFilePicker, KinEntryPick, KinEntryText } from "./KinWorkEntryEdit";
 import { KinWorkPrivateMark, KinWorkSection as Section } from "./KinWorkParts";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
@@ -73,6 +86,7 @@ import {
   useKinEntryChanges,
   useKinListContext,
   useKinLists,
+  useKinMoneyActions,
 } from "./useKinMoney";
 import { kinWorkChoicesAtom, type KinWorkDirectory, type KinWorkTarget } from "./useKinWork";
 
@@ -461,6 +475,7 @@ export function KinListEntry(
     readonly links: React.ReactNode;
     readonly onOpenClient: (key: KinRecordKey) => void;
     readonly onOpenProject: (key: KinRecordKey) => void;
+    readonly onOpenDoc: (key: KinRecordKey) => void;
   },
 ) {
   const { item, view, environmentId } = props;
@@ -468,6 +483,8 @@ export function KinListEntry(
   const context = useKinListContext(props, props.directory);
   const def = kinListsOf(lists).find((one) => one.list === item.list) ?? null;
   const entry = kinListEntryView(item, def, context);
+  const invoice = kinIsInvoice(item) ? kinInvoiceView(item, def, props.now) : null;
+  const money = useKinMoneyActions(props);
   const changes = useKinEntryChanges(props, item.key);
   const agent = useKinAskAgent(props);
   const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
@@ -509,7 +526,10 @@ export function KinListEntry(
       <SheetHeader>
         <div className="flex flex-col gap-1 pe-8">
           <SheetDescription>{entry.heading}</SheetDescription>
-          <SheetTitle>{item.title}</SheetTitle>
+          <SheetTitle>{invoice?.heading ?? item.title}</SheetTitle>
+          {invoice?.description == null ? null : (
+            <p className="text-sm text-muted-foreground">{invoice.description}</p>
+          )}
         </div>
       </SheetHeader>
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
@@ -540,7 +560,13 @@ export function KinListEntry(
           <div className="flex flex-wrap items-center gap-2 text-sm text-foreground">
             <KinWorkStateIcon state={entry.state} />
             <span>{entry.stateLabel}</span>
-            {entry.late ? (
+            {invoice?.void === true ? (
+              entry.stateLabel === KIN_INVOICES.void ? null : (
+                <Badge size="sm" variant="secondary">
+                  {KIN_INVOICES.void}
+                </Badge>
+              )
+            ) : entry.late ? (
               <Badge size="sm" variant="error">
                 {KIN_LISTS.late}
               </Badge>
@@ -551,7 +577,9 @@ export function KinListEntry(
               </span>
             ) : null}
           </div>
-          {entry.balance === null ? null : (
+          {invoice !== null ? (
+            <KinInvoiceFigures invoice={invoice} />
+          ) : entry.balance === null ? null : (
             <dl className="grid grid-cols-2 gap-x-6 text-sm">
               <div className="flex flex-col">
                 <dt className="text-xs text-muted-foreground">{KIN_LISTS.entry.left}</dt>
@@ -610,6 +638,18 @@ export function KinListEntry(
               </Menu>
             </div>
           )}
+          {invoice === null ? null : (
+            <KinInvoiceActions
+              {...props}
+              itemKey={item.key}
+              invoice={invoice}
+              def={def}
+              actions={money}
+              busy={busy}
+              onUnvoid={(state) => void changes.update(item.rev, { state })}
+            />
+          )}
+          <KinMoneyActionNotice actions={money} />
           {paying ? (
             <PaymentForm
               entry={entry}
@@ -739,64 +779,68 @@ export function KinListEntry(
                 </dd>
               </>
             )}
-            {entry.fields.map((field) => (
-              <div key={field.key} className="contents">
-                <dt className="flex items-center gap-1.5 self-start pt-0.5 text-muted-foreground">
-                  {field.label}
-                  {field.private ? <KinWorkPrivateMark /> : null}
-                </dt>
-                <dd className="flex min-w-0 flex-col items-start gap-1.5 text-foreground">
-                  {canChange && !field.retired ? (
-                    <FieldEdit
-                      {...props}
-                      field={field}
-                      currency={amountEdit?.currency ?? def?.currency ?? "INR"}
-                      busy={busy}
-                      previewKey={previewKey}
-                      people={people}
-                      clients={clients}
-                      projects={projects}
-                      onSet={(value) =>
-                        changes.update(item.rev, { fields: { [field.key]: value } })
-                      }
-                      onEdit={(value) => changes.edit(item.rev, { fields: { [field.key]: value } })}
-                    />
-                  ) : field.files.length > 0 ? (
-                    <EntryFiles {...props} files={field.files} previewKey={previewKey} />
-                  ) : field.opens !== null ? (
-                    <div>
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        onClick={() =>
-                          field.opens?.list === "projects"
-                            ? props.onOpenProject(field.opens.key)
-                            : field.opens === null
-                              ? undefined
-                              : props.onOpenClient(field.opens.key)
+            {entry.fields
+              .filter((field) => invoice === null || field.key !== KIN_INVOICE_NUMBER_FIELD)
+              .map((field) => (
+                <div key={field.key} className="contents">
+                  <dt className="flex items-center gap-1.5 self-start pt-0.5 text-muted-foreground">
+                    {field.label}
+                    {field.private ? <KinWorkPrivateMark /> : null}
+                  </dt>
+                  <dd className="flex min-w-0 flex-col items-start gap-1.5 text-foreground">
+                    {canChange && !field.retired ? (
+                      <FieldEdit
+                        {...props}
+                        field={field}
+                        currency={amountEdit?.currency ?? def?.currency ?? "INR"}
+                        busy={busy}
+                        previewKey={previewKey}
+                        people={people}
+                        clients={clients}
+                        projects={projects}
+                        onSet={(value) =>
+                          changes.update(item.rev, { fields: { [field.key]: value } })
                         }
+                        onEdit={(value) =>
+                          changes.edit(item.rev, { fields: { [field.key]: value } })
+                        }
+                      />
+                    ) : field.files.length > 0 ? (
+                      <EntryFiles {...props} files={field.files} previewKey={previewKey} />
+                    ) : field.opens !== null ? (
+                      <div>
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          onClick={() =>
+                            field.opens?.list === "projects"
+                              ? props.onOpenProject(field.opens.key)
+                              : field.opens === null
+                                ? undefined
+                                : props.onOpenClient(field.opens.key)
+                          }
+                        >
+                          {field.text}
+                        </Button>
+                      </div>
+                    ) : (
+                      <span
+                        className={cn(
+                          "whitespace-pre-wrap",
+                          field.text === null && "text-muted-foreground",
+                        )}
                       >
-                        {field.text}
-                      </Button>
-                    </div>
-                  ) : (
-                    <span
-                      className={cn(
-                        "whitespace-pre-wrap",
-                        field.text === null && "text-muted-foreground",
-                      )}
-                    >
-                      {field.text ?? "–"}
-                    </span>
-                  )}
-                  {field.retired ? (
-                    <span className="text-xs text-muted-foreground">
-                      {KIN_LISTS.entry.retiredField}
-                    </span>
-                  ) : null}
-                </dd>
-              </div>
-            ))}
+                        {field.text ?? "–"}
+                      </span>
+                    )}
+                    {field.retired ? (
+                      <span className="text-xs text-muted-foreground">
+                        {KIN_LISTS.entry.retiredField}
+                      </span>
+                    ) : null}
+                  </dd>
+                </div>
+              ))}
           </dl>
           {view.privacy.private ? (
             <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -810,7 +854,20 @@ export function KinListEntry(
             <EntryFiles {...props} files={entry.otherFiles} previewKey={previewKey} />
           </Section>
         )}
-        {entry.balance === null ? null : (
+        {invoice !== null ? (
+          <>
+            <KinInvoicePayments
+              {...props}
+              itemKey={item.key}
+              invoice={invoice}
+              actions={money}
+              canPay={canPay}
+              busy={busy}
+              onTakeBack={setTakingBack}
+            />
+            <KinInvoiceDocuments invoice={invoice} onOpenDoc={props.onOpenDoc} />
+          </>
+        ) : entry.balance === null ? null : (
           <Section title={KIN_LISTS.entry.payments}>
             {entry.payments.length === 0 ? (
               <p className="text-sm text-muted-foreground">{KIN_LISTS.entry.noPayments}</p>
