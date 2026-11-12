@@ -882,7 +882,7 @@ describe("KinPushSender", () => {
         { title: "Kin approvals", body: "Removed." },
         { title: "Kin approvals", body: "Removed." },
       ]);
-      assert.deepStrictEqual((apns.sent[0]?.payload as { body: unknown }).body, {
+      assert.deepStrictEqual((apns.sent[0]!.payload as { body: unknown }).body, {
         kin: 1,
         orgId,
         deepLink: "/kin/env_kin/org_01/approvals",
