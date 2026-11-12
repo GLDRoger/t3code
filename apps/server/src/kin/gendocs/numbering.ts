@@ -5,7 +5,13 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import { dayIn, financialYearOf } from "../work/money.ts";
-import { endOfDay, notFound, ownerZone, workFailure } from "../work/recordRows.ts";
+import {
+  endOfDay,
+  notFound,
+  ownerZone,
+  receiptNumbersIn,
+  workFailure,
+} from "../work/recordRows.ts";
 import { listDef, numberingOf, unknownList } from "../work/registers.ts";
 
 /**
@@ -171,12 +177,15 @@ const notedFloor = Effect.fn("KinNumbers.notedFloor")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const notes = yield* sql<{ note: string }>`SELECT note FROM kin_record_payments
-    WHERE org_id = ${orgId} AND substr(note, 1, ${rule.prefix.length}) = ${rule.prefix}
+    WHERE org_id = ${orgId} AND instr(note, ${rule.prefix}) > 0
     ORDER BY payment_id LIMIT 10000`;
-  return notes.reduce((highest, row) => {
-    const at = seriesOf(rule, row.note.trim());
-    return at.series === series ? Math.max(highest, at.seq) : highest;
-  }, 0);
+  let highest = 0;
+  for (const { note } of notes)
+    for (const number of receiptNumbersIn(note)) {
+      const at = seriesOf(rule, number);
+      if (at.series === series) highest = Math.max(highest, at.seq);
+    }
+  return highest;
 });
 
 /**

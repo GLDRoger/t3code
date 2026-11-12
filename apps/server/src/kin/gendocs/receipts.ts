@@ -56,7 +56,7 @@ const receiptsList = Effect.fn("KinReceipts.list")(function* (orgId: KinOrgId) {
     notes.map((row) => row.note),
   );
   const seen = new Map<string, { count: number; width: number }>();
-  for (const number of numbers) {
+  for (const number of new Set(numbers.values())) {
     const found = ISSUED_SHAPE.exec(number);
     if (found === null) continue;
     const one = seen.get(found[1]!) ?? { count: 0, width: 1 };
@@ -149,11 +149,15 @@ const receiptOfPayment = Effect.fn("KinReceipts.ofPayment")(function* (
   paymentId: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+  const rows = yield* sql<{ key: string; state: string }>`SELECT key, state FROM kin_records
     WHERE org_id = ${orgId} AND register_id = ${RECEIPTS}
       AND json_extract(fields_json, '$.payment') = ${paymentId}
-    ORDER BY created_at, record_id LIMIT 1`;
-  return row?.key;
+    ORDER BY created_at, record_id LIMIT 100`;
+  // A voided receipt stays void; the payment may get a new one, made once per voided one.
+  return {
+    key: rows.find((row) => row.state !== "dropped")?.key,
+    voided: rows.filter((row) => row.state === "dropped").length,
+  };
 });
 
 export type Extras = {
@@ -188,14 +192,14 @@ const forPayment = Effect.fn("KinReceipts.forPayment")(function* (
     return yield* invalid("That payment was taken back, so it gets no receipt.");
   yield* receiptsList(orgId);
   const made = yield* receiptOfPayment(orgId, paymentId);
-  if (made !== undefined) return yield* settle(orgId, writer, made, undefined);
+  if (made.key !== undefined) return yield* settle(orgId, writer, made.key, undefined);
   const owner = principalOf(writer);
   if (owner === undefined) return yield* invalid("Only the owner or an agent makes a receipt.");
   const zone = yield* ownerZone(orgId);
   const against = payment.invoiceNumber ?? payment.invoiceKey;
   const { row } = yield* records.create(orgId, writer, {
     list: RECEIPTS,
-    originKey: `receipt:payment:${paymentId}`,
+    originKey: `receipt:payment:${paymentId}${made.voided === 0 ? "" : `:${made.voided}`}`,
     title: `Received towards ${against}`,
     owner,
     state: "open",
@@ -215,11 +219,12 @@ const forPayment = Effect.fn("KinReceipts.forPayment")(function* (
     ],
   });
   const noted = yield* notedReceiptNumbers(orgId, [payment.note]);
+  // A number the old system gave goes to the payment's first receipt only.
   return yield* settle(
     orgId,
     writer,
     row.key,
-    noted.has(payment.note.trim()) ? payment.note.trim() : undefined,
+    made.voided === 0 ? noted.get(payment.note) : undefined,
   );
 });
 
@@ -311,11 +316,18 @@ const setAgainst = Effect.fn("KinReceipts.setAgainst")(function* (
   const fields = parseFields(receipt.fieldsJson);
   const invoice = yield* records.get(orgId, invoiceKey);
   if (invoice === undefined) return yield* invalid(`No entry ${invoiceKey}. Nothing changed.`);
-  if (typeof fields.payment === "string") {
-    if (fields.invoice === invoice.key) return receipt.key;
-    return yield* invalid(
-      `${receipt.key} is already set against ${String(fields.invoice)}. Nothing changed.`,
-    );
+  const sql = yield* SqlClient.SqlClient;
+  const held = typeof fields.payment === "string" ? fields.payment : undefined;
+  if (held !== undefined) {
+    const [payment] = yield* sql<{ voidedAt: number | null }>`SELECT voided_at AS "voidedAt"
+      FROM kin_record_payments WHERE org_id = ${orgId} AND payment_id = ${held}`;
+    // Once its payment is taken back, the advance may be set against an invoice again.
+    if (payment !== undefined && payment.voidedAt === null) {
+      if (fields.invoice === invoice.key) return receipt.key;
+      return yield* invalid(
+        `${receipt.key} is already set against ${String(fields.invoice)}. Nothing changed.`,
+      );
+    }
   }
   if (receipt.amountMinor === null || receipt.currency === null || receipt.dateAt === null)
     return yield* invalid(`${receipt.key} has no amount or date to set against an invoice.`);
@@ -326,7 +338,7 @@ const setAgainst = Effect.fn("KinReceipts.setAgainst")(function* (
     amount: { minor: receipt.amountMinor, currency: receipt.currency },
     paidOn: dayIn(receipt.dateAt, yield* ownerZone(orgId)),
     note: number,
-    originKey: `receipt:${receipt.recordId}`,
+    originKey: `receipt:${receipt.recordId}${held === undefined ? "" : `:after:${held}`}`,
   });
   yield* records.update(orgId, writer, receipt.key, {
     fields: { invoice: invoice.key, payment: paymentId },

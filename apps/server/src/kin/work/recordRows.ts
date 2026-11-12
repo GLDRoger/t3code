@@ -515,7 +515,7 @@ const paymentsOf = Effect.fn("KinRecords.paymentsOf")(function* (
   );
   return rows.map((payment): KinPayment => {
     const receipt = receipts.find((one) => one.payment === payment.paymentId);
-    const noted = numbers.has(payment.note.trim()) ? payment.note.trim() : undefined;
+    const noted = numbers.get(payment.note);
     return {
       paymentId: payment.paymentId,
       amount: { minor: payment.minor, currency: payment.currency },
@@ -537,20 +537,25 @@ const paymentsOf = Effect.fn("KinRecords.paymentsOf")(function* (
   });
 });
 
-/** `QST-RN/2026-27/001`: a receipt number another system issued, kept as a payment's note. */
-const ISSUED_RECEIPT = /^[A-Za-z][A-Za-z0-9-]{0,7}\/(?:\d{2})?\d{2}-\d{2}\/\d{1,9}$/;
+/** `QST-RN/2026-27/001`: a receipt number another system issued, written in a payment's note. */
+const RECEIPT_IN_NOTE =
+  /(?<![A-Za-z0-9/-])([A-Za-z][A-Za-z0-9-]{0,7}\/(?:\d{2})?\d{2}-\d{2}\/\d{1,9})(?![A-Za-z0-9/-])/g;
+/** Every number in a note shaped like a receipt number, in order. */
+export const receiptNumbersIn = (note: string) =>
+  [...note.matchAll(RECEIPT_IN_NOTE)].map((found) => found[1]!);
 /**
- * Which of these payment notes are receipt numbers another system gave: shaped like one, and not
- * a number of an entry in another list, such as the invoice's own number noted on its payment.
+ * The receipt number each payment note holds, such as "Advance received; receipt note
+ * QST-RN/2026-27/001": its first number of that shape that isn't a number of an entry in another
+ * list, such as the invoice's own. Notes with none aren't in the map.
  */
 export const notedReceiptNumbers = Effect.fn("KinRecords.notedReceiptNumbers")(function* (
   orgId: KinOrgId,
   notes: ReadonlyArray<string>,
 ) {
-  const shaped = [...new Set(notes.map((note) => note.trim()))].filter((note) =>
-    ISSUED_RECEIPT.test(note),
-  );
-  if (shaped.length === 0) return new Set<string>();
+  const found = new Map(notes.map((note) => [note, receiptNumbersIn(note)] as const));
+  const shaped = [...new Set([...found.values()].flat())];
+  const noted = new Map<string, string>();
+  if (shaped.length === 0) return noted;
   const sql = yield* SqlClient.SqlClient;
   const other = new Set(
     (yield* sql<{ number: string }>`SELECT number FROM kin_issued_numbers
@@ -558,7 +563,11 @@ export const notedReceiptNumbers = Effect.fn("KinRecords.notedReceiptNumbers")(f
       (row) => row.number,
     ),
   );
-  return new Set(shaped.filter((note) => !other.has(note)));
+  for (const [note, numbers] of found) {
+    const number = numbers.find((one) => !other.has(one));
+    if (number !== undefined) noted.set(note, number);
+  }
+  return noted;
 });
 
 export const recordSeq = Effect.fn("KinRecords.recordSeq")(function* (

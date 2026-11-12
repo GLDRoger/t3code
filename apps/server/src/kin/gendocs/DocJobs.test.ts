@@ -776,11 +776,12 @@ describe("receipts", () => {
         const system = { actor: { _tag: "system" as const }, via: "import" as const };
         const receipt = (input: Omit<typeof LeadDocuments.ReceiptInput.Type, "sourceEventId">) =>
           LeadDocuments.receipt(scope, { sourceEventId: asked, ...input });
-        // An advance the old system gave a receipt for, recorded on the invoice by an import.
+        // An advance the old system gave a receipt for, recorded on the invoice by an import,
+        // its number in the payment's note as the import writes it.
         const imported = yield* records.pay(orgId, system, "INV-1", {
           amount: { minor: 40_000, currency: "INR" },
           paidOn: "2026-10-01",
-          note: "QST-RN/2026-27/007",
+          note: "Advance received; receipt note QST-RN/2026-27/007",
           originKey: "import:payment:1",
         });
         const adopted = yield* receipt({ payment: imported.paymentId });
@@ -952,6 +953,31 @@ describe("receipts", () => {
         assert.deepStrictEqual(
           detail.payments?.map((one) => one.receipt?.number),
           ["QST-RN/26-27/008", "QST-RN/2026-27/007"],
+        );
+
+        // Ways back: a voided receipt keeps its number and the payment gets a new one; an
+        // advance whose payment was taken back can be set against an invoice again.
+        yield* LeadDocuments.issue(scope, {
+          entry: KinRecordKey.make(next.receipt),
+          void: true,
+          sourceEventId: asked,
+        });
+        const remade = yield* receipt({ payment: later.paymentId });
+        assert.deepStrictEqual(
+          [remade.receipt !== next.receipt, remade.number],
+          [true, "QST-RN/26-27/011"],
+        );
+        const held = (yield* OwnerMoney.receipts(people, { orgId })).receipts.find(
+          (one) => one.key === advance.receipt,
+        )!.paymentId!;
+        yield* records.voidPayment(orgId, system, "INV-2", held);
+        yield* receipt(against);
+        const reset = (yield* OwnerMoney.receipts(people, { orgId })).receipts.find(
+          (one) => one.key === advance.receipt,
+        )!;
+        assert.deepStrictEqual(
+          [reset.invoice, reset.number, reset.paymentId !== held],
+          ["INV-2", "QST-RN/26-27/009", true],
         );
       }).pipe(Effect.provide(layer)),
   );

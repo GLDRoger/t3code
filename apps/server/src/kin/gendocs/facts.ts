@@ -141,7 +141,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
         input.name,
         rows.map((row) =>
           pick(input, {
-            receipt: row.receipt ?? (noted.has(row.note.trim()) ? row.note.trim() : null),
+            receipt: row.receipt ?? noted.get(row.note) ?? null,
             amount: { minor: row.minor, currency: row.currency },
             paidOn: row.paidOn,
           }),
