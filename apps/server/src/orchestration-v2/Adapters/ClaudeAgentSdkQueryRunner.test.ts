@@ -579,6 +579,66 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
     }),
   );
 
+  // The SDK runs a script entry through node, so the wrap goes around what it spawns.
+  it.effect("starts a session with its own limits in its scope when Claude Code is a script", () =>
+    Effect.gen(function* () {
+      const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-claude-script-"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true })),
+      );
+      const placed = NodePath.join(dir, "placed");
+      NodeChildProcess.execFileSync("mkfifo", [placed]);
+      // Whoever writes first is what started: the scope's launcher, or the CLI unplaced.
+      const cli = NodePath.join(dir, "cli.mjs");
+      NodeFS.writeFileSync(
+        cli,
+        `import * as fs from "node:fs";\nfs.writeFileSync(${JSON.stringify(placed)}, "cli\\n");\nprocess.stdin.resume();\n`,
+      );
+      const reader = NodeFS.createReadStream(placed, "utf8");
+      const read = new Promise<string>((resolve) =>
+        reader.once("data", (chunk) => resolve(String(chunk))),
+      );
+      const asked: Array<ReadonlyArray<string> | undefined> = [];
+      const session = yield* Effect.gen(function* () {
+        const runner = yield* ClaudeAgentSdkQueryRunner;
+        return yield* runner.open({
+          threadId: ThreadId.make("thread-script-cli"),
+          providerSessionId: ProviderSessionId.make("session-script-cli"),
+          options: {
+            sessionId: "native-session-script-cli",
+            model: "claude-sonnet-4-6",
+            tools: [],
+            permissionMode: "default",
+            pathToClaudeCodeExecutable: cli,
+          },
+          scopeProperties: ["MemoryMax=4294967296"],
+        });
+      }).pipe(
+        Effect.provide(
+          realQueryRunner.pipe(
+            Layer.provide(
+              Layer.succeed(AgentScope, {
+                ...AgentScope.defaultValue(),
+                wrap: ({ command, args, properties }) => {
+                  asked.push(properties);
+                  return Effect.succeed({
+                    command: "/bin/sh",
+                    args: ["-c", 'echo placed > "$0"; exec "$@"', placed, command, ...args],
+                    unit: "t3code-claude-script.scope",
+                  });
+                },
+              }),
+            ),
+          ),
+        ),
+      );
+      assert.match(yield* Effect.promise(() => read), /^placed\n/);
+      yield* session.close;
+      reader.destroy();
+      assert.deepStrictEqual(asked, [["MemoryMax=4294967296"]]);
+    }),
+  );
+
   const rootRefusal =
     "--dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons";
 

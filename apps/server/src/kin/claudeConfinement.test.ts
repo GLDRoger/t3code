@@ -197,3 +197,59 @@ it.effect("a Kin session's file tools reach only its real checkout", () =>
     assert.deepStrictEqual(mismatches, []);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
+
+it.effect(
+  "a worker's credential is resolved here: a key or token, the owner's helper, or the login",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const base = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+      const helper = `printf 'helper-key\\n'; touch '${base}/helper-ran'`;
+      const resolve = (
+        input: Partial<Parameters<typeof Confinement.resolveWorkerCredentials>[0]>,
+      ) =>
+        Confinement.resolveWorkerCredentials({ auth: {}, managed: [], providerEnv: {}, ...input });
+      const resolved = (env: Record<string, string>) => ({
+        _tag: "resolved" as const,
+        credentials: Object.keys(env).length === 0 ? {} : { env },
+      });
+      // A key in the environment outranks the helper, which then never runs.
+      assert.deepStrictEqual(
+        yield* resolve({
+          providerEnv: { ANTHROPIC_API_KEY: "env-key", AWS_PROFILE: "x", PATH: "/usr/bin" },
+          auth: { apiKeyHelper: helper, env: { ANTHROPIC_BASE_URL: "https://gw.test" } },
+        }),
+        resolved({ ANTHROPIC_API_KEY: "env-key", ANTHROPIC_BASE_URL: "https://gw.test" }),
+      );
+      assert.isFalse(yield* fs.exists(`${base}/helper-ran`));
+      assert.deepStrictEqual(
+        yield* resolve({ auth: { apiKeyHelper: helper } }),
+        resolved({ ANTHROPIC_API_KEY: "helper-key", ANTHROPIC_AUTH_TOKEN: "helper-key" }),
+      );
+      assert.deepStrictEqual(
+        yield* resolve({ providerEnv: { CLAUDE_CODE_OAUTH_TOKEN: "oat" } }),
+        resolved({ CLAUDE_CODE_OAUTH_TOKEN: "oat" }),
+      );
+      // Nothing set: the owner's login, which Claude Code reads from the provider's home.
+      assert.deepStrictEqual(yield* resolve({}), resolved({}));
+      // An empty cloud switch is off, as Claude Code reads it.
+      assert.deepStrictEqual(
+        yield* resolve({ providerEnv: { CLAUDE_CODE_USE_BEDROCK: "" } }),
+        resolved({}),
+      );
+      for (const [input, why] of [
+        [{ auth: { apiKeyHelper: "sh -c 'exit 1'" } }, "gave no key"],
+        [
+          { managed: [{ env: { CLAUDE_CODE_USE_BEDROCK: "1" } }] },
+          "managed settings set CLAUDE_CODE_USE_BEDROCK",
+        ],
+        [{ managed: [{ apiKeyHelper: "./key.sh" }] }, "managed settings set apiKeyHelper"],
+        [{ auth: { commands: ["awsCredentialExport"] } }, "awsCredentialExport"],
+        [{ providerEnv: { CLAUDE_CODE_USE_MANTLE: "1" } }, "CLAUDE_CODE_USE_MANTLE"],
+      ] as const) {
+        const result = yield* resolve(input);
+        assert.strictEqual(result._tag, "refused", why);
+        assert.include(result._tag === "refused" ? result.reason : "", why);
+      }
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
