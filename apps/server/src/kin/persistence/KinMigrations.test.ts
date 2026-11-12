@@ -9,6 +9,8 @@ import K063LegacyWorkerAttempts from "./migrations/K063_LegacyWorkerAttempts.ts"
 import K064AgentRetirement from "./migrations/K064_AgentRetirement.ts";
 import K065WakeupRetired from "./migrations/K065_WakeupRetired.ts";
 import K066WakeupsUnretiredIndex from "./migrations/K066_WakeupsUnretiredIndex.ts";
+import K067Docs from "./migrations/K067_Docs.ts";
+import K068WorkMoney from "./migrations/K068_WorkMoney.ts";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
@@ -36,8 +38,10 @@ const tableNames = [
   "kin_chat_levels",
   "kin_chat_members",
   "kin_chats",
+  "kin_company_profile",
   "kin_cursor",
   "kin_deferral_runs",
+  "kin_doc_versions",
   "kin_dream_runs",
   "kin_events",
   "kin_executions",
@@ -50,6 +54,7 @@ const tableNames = [
   "kin_lead_deliveries",
   "kin_lead_tool_calls",
   "kin_leads",
+  "kin_list_proposals",
   "kin_memory_heads",
   "kin_memory_labels",
   "kin_memory_reads",
@@ -73,6 +78,7 @@ const tableNames = [
   "kin_record_changes",
   "kin_record_cursors",
   "kin_record_links",
+  "kin_record_payments",
   "kin_records",
   "kin_registers",
   "kin_retirement_holds",
@@ -80,6 +86,13 @@ const tableNames = [
   "kin_routine_preferences",
   "kin_scheduled_tasks",
   "kin_schedules",
+  "kin_search",
+  "kin_search_config",
+  "kin_search_content",
+  "kin_search_data",
+  "kin_search_docsize",
+  "kin_search_idx",
+  "kin_search_rows",
   "kin_secret_allow",
   "kin_session_bindings",
   "kin_shadow_entries",
@@ -257,6 +270,8 @@ describe("Kin migrations", () => {
           { migration_id: 64, name: "AgentRetirement" },
           { migration_id: 65, name: "WakeupRetired" },
           { migration_id: 66, name: "WakeupsUnretiredIndex" },
+          { migration_id: 67, name: "Docs" },
+          { migration_id: 68, name: "WorkMoney" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -292,11 +307,15 @@ describe("Kin migrations", () => {
           yield* sql`SELECT name FROM pragma_table_info('kin_webhook_sources') WHERE pk > 0 ORDER BY pk`,
           [{ name: "org_id" }, { name: "source_id" }],
         );
+        // The search index's FTS5 tables carry no org: each row is reached through kin_search_rows.
         for (const { name } of before.filter(
           (row) =>
-            !["kin_auth_session_keys", "kin_auth_key_repairs", "kin_auth_paired_sessions"].includes(
-              row.name,
-            ),
+            ![
+              "kin_auth_session_keys",
+              "kin_auth_key_repairs",
+              "kin_auth_paired_sessions",
+              "kin_search",
+            ].includes(row.name) && !row.name.startsWith("kin_search_"),
         )) {
           const columns = yield* sql<{ name: string; notnull: number }>`
           SELECT name, "notnull" FROM pragma_table_info(${name})
@@ -376,6 +395,8 @@ describe("Kin migrations", () => {
           { migration_id: 64, name: "AgentRetirement" },
           { migration_id: 65, name: "WakeupRetired" },
           { migration_id: 66, name: "WakeupsUnretiredIndex" },
+          { migration_id: 67, name: "Docs" },
+          { migration_id: 68, name: "WorkMoney" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -422,6 +443,10 @@ describe("Kin migrations", () => {
           { name: "idx_kin_record_changes_org" },
           { name: "idx_kin_record_changes_record" },
           { name: "idx_kin_record_links_target" },
+          { name: "idx_kin_record_payments_paid" },
+          { name: "idx_kin_record_payments_record" },
+          { name: "idx_kin_records_date" },
+          { name: "idx_kin_records_due" },
           { name: "idx_kin_records_owner" },
           { name: "idx_kin_records_party" },
           { name: "idx_kin_records_project" },
@@ -532,6 +557,8 @@ describe("Kin migrations", () => {
         [64, "AgentRetirement"],
         [65, "WakeupRetired"],
         [66, "WakeupsUnretiredIndex"],
+        [67, "Docs"],
+        [68, "WorkMoney"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -558,6 +585,7 @@ describe("Kin migrations", () => {
       ])
         yield* sql.unsafe(`DROP TRIGGER ${trigger}`);
       yield* sql`DROP INDEX idx_kin_messages_changes`;
+      yield* sql`ALTER TABLE kin_messages DROP COLUMN refs_json`;
       yield* sql`ALTER TABLE kin_messages DROP COLUMN silent`;
       yield* sql`ALTER TABLE kin_messages DROP COLUMN change_seq`;
       yield* sql`ALTER TABLE kin_chats DROP COLUMN change_seq`;
@@ -692,6 +720,8 @@ describe("Kin migrations", () => {
         [64, "AgentRetirement"],
         [65, "WakeupRetired"],
         [66, "WakeupsUnretiredIndex"],
+        [67, "Docs"],
+        [68, "WorkMoney"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
@@ -779,6 +809,8 @@ describe("Kin migrations", () => {
         { migration_id: 64, name: "AgentRetirement" },
         { migration_id: 65, name: "WakeupRetired" },
         { migration_id: 66, name: "WakeupsUnretiredIndex" },
+        { migration_id: 67, name: "Docs" },
+        { migration_id: 68, name: "WorkMoney" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);
@@ -870,6 +902,8 @@ describe("Kin migrations", () => {
         [64, "AgentRetirement"],
         [65, "WakeupRetired"],
         [66, "WakeupsUnretiredIndex"],
+        [67, "Docs"],
+        [68, "WorkMoney"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT session_id, via FROM kin_auth_paired_sessions ORDER BY session_id`,
@@ -937,6 +971,8 @@ describe("Kin migrations", () => {
         [64, "AgentRetirement"],
         [65, "WakeupRetired"],
         [66, "WakeupsUnretiredIndex"],
+        [67, "Docs"],
+        [68, "WorkMoney"],
       ]);
       const columns = yield* sql<{ name: string }>`
         SELECT name FROM pragma_table_info('kin_workers')`;
@@ -1013,8 +1049,10 @@ describe("Kin migrations", () => {
           [64, "AgentRetirement"],
           [65, "WakeupRetired"],
           [66, "WakeupsUnretiredIndex"],
+          [67, "Docs"],
+          [68, "WorkMoney"],
         ]);
-        assert.deepStrictEqual((yield* kinHistory).slice(-31), [
+        assert.deepStrictEqual((yield* kinHistory).slice(-33), [
           { migration_id: 32, name: "WorkerEnvironment" },
           { migration_id: 33, name: "ApproverKeyConfirmations" },
           { migration_id: 34, name: "PerLeadWakeups" },
@@ -1046,6 +1084,8 @@ describe("Kin migrations", () => {
           { migration_id: 64, name: "AgentRetirement" },
           { migration_id: 65, name: "WakeupRetired" },
           { migration_id: 66, name: "WakeupsUnretiredIndex" },
+          { migration_id: 67, name: "Docs" },
+          { migration_id: 68, name: "WorkMoney" },
         ]);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_lead_deliveries`, [delivery]);
         assert.deepStrictEqual(
@@ -1130,6 +1170,8 @@ describe("Kin migrations", () => {
         [64, "AgentRetirement"],
         [65, "WakeupRetired"],
         [66, "WakeupsUnretiredIndex"],
+        [67, "Docs"],
+        [68, "WorkMoney"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT message_id, status FROM kin_messages ORDER BY seq`, [
         { message_id: "promotion:lead:L1", status: "dismissed" },
@@ -1237,6 +1279,8 @@ describe("Kin migrations", () => {
           [64, "AgentRetirement"],
           [65, "WakeupRetired"],
           [66, "WakeupsUnretiredIndex"],
+          [67, "Docs"],
+          [68, "WorkMoney"],
         ]);
         assert.deepStrictEqual(
           yield* sql`SELECT chat_id, shared_at IS NOT NULL AS shared, shared_from_seq FROM kin_chats ORDER BY chat_id`,
@@ -1320,6 +1364,8 @@ describe("Kin migrations", () => {
         [64, "AgentRetirement"],
         [65, "WakeupRetired"],
         [66, "WakeupsUnretiredIndex"],
+        [67, "Docs"],
+        [68, "WorkMoney"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT name FROM sqlite_master WHERE type = 'index' AND name GLOB 'idx_kin_wakeups_running*' ORDER BY name`,
@@ -1378,6 +1424,8 @@ describe("Kin migrations", () => {
         [64, "AgentRetirement"],
         [65, "WakeupRetired"],
         [66, "WakeupsUnretiredIndex"],
+        [67, "Docs"],
+        [68, "WorkMoney"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT item_id, held_at, classified, shared_content, suggested_content,
@@ -1449,6 +1497,8 @@ describe("Kin migrations", () => {
         [64, "AgentRetirement"],
         [65, "WakeupRetired"],
         [66, "WakeupsUnretiredIndex"],
+        [67, "Docs"],
+        [68, "WorkMoney"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT item_id, held_at, shared_content, shared_how, suggested_content,
@@ -1511,6 +1561,8 @@ describe("Kin migrations", () => {
         [64, "AgentRetirement"],
         [65, "WakeupRetired"],
         [66, "WakeupsUnretiredIndex"],
+        [67, "Docs"],
+        [68, "WorkMoney"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT * FROM kin_memory_labels`, []);
       yield* undoSuggestionsByVersion;
@@ -1580,6 +1632,8 @@ describe("Kin migrations", () => {
         [64, "AgentRetirement"],
         [65, "WakeupRetired"],
         [66, "WakeupsUnretiredIndex"],
+        [67, "Docs"],
+        [68, "WorkMoney"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT org_id, item_id, held_at, shared_content, shared_how, suggested_content,
@@ -1606,7 +1660,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 66");
+      assert.include(String(exit), "below the latest applied migration 68");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -2166,6 +2220,8 @@ it.effect("K058 adds Work to a database at K057, keeps its rows, and reruns with
       [64, "AgentRetirement"],
       [65, "WakeupRetired"],
       [66, "WakeupsUnretiredIndex"],
+      [67, "Docs"],
+      [68, "WorkMoney"],
     ]);
     assert.deepStrictEqual(yield* sql`SELECT org_id FROM kin_orgs`, [{ org_id: "org" }]);
     yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
@@ -2206,6 +2262,8 @@ it.effect(
         [64, "AgentRetirement"],
         [65, "WakeupRetired"],
         [66, "WakeupsUnretiredIndex"],
+        [67, "Docs"],
+        [68, "WorkMoney"],
       ]);
       assert.lengthOf(
         yield* sql`SELECT 1 FROM sqlite_master WHERE name = 'kin_worker_withdrawals'`,
@@ -2249,6 +2307,8 @@ it.effect("K061 turns the withdrawals K059 stored into stops of those attempts",
       [64, "AgentRetirement"],
       [65, "WakeupRetired"],
       [66, "WakeupsUnretiredIndex"],
+      [67, "Docs"],
+      [68, "WorkMoney"],
     ]);
     assert.deepStrictEqual(
       yield* sql`SELECT worker_id, started_at, agent_id, withdrawn_at, stopped_at, stop_key,
@@ -2322,6 +2382,8 @@ it.effect(
         [64, "AgentRetirement"],
         [65, "WakeupRetired"],
         [66, "WakeupsUnretiredIndex"],
+        [67, "Docs"],
+        [68, "WorkMoney"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT key, repo FROM kin_records`, [
         { key: "W-1", repo: null },
@@ -2367,6 +2429,8 @@ it.effect("K062 upgrades a database at K061, keeps its attempts, and reruns clea
       [64, "AgentRetirement"],
       [65, "WakeupRetired"],
       [66, "WakeupsUnretiredIndex"],
+      [67, "Docs"],
+      [68, "WorkMoney"],
     ]);
     assert.deepStrictEqual(
       yield* sql`SELECT worker_id, pushed_sha, visibility, sensitive_at, ready_sha, approved_sha,
@@ -2478,6 +2542,8 @@ it.effect(
         [64, "AgentRetirement"],
         [65, "WakeupRetired"],
         [66, "WakeupsUnretiredIndex"],
+        [67, "Docs"],
+        [68, "WorkMoney"],
       ]);
       assert.deepStrictEqual(yield* shape, fresh);
       assert.deepStrictEqual(
@@ -2521,6 +2587,8 @@ it.effect(
       assert.deepStrictEqual(yield* runKinMigrations(), [
         [65, "WakeupRetired"],
         [66, "WakeupsUnretiredIndex"],
+        [67, "Docs"],
+        [68, "WorkMoney"],
       ]);
       assert.deepStrictEqual(yield* column, fresh);
       assert.deepStrictEqual(
@@ -2557,10 +2625,98 @@ it.effect(
       // Back to K065.
       yield* sql`DROP INDEX idx_kin_wakeups_unretired_agent`;
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 66`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [[66, "WakeupsUnretiredIndex"]]);
+      assert.deepStrictEqual(yield* runKinMigrations(), [
+        [66, "WakeupsUnretiredIndex"],
+        [67, "Docs"],
+        [68, "WorkMoney"],
+      ]);
       assert.deepStrictEqual(yield* index, fresh);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       yield* K066WakeupsUnretiredIndex;
       assert.deepStrictEqual(yield* index, fresh);
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "K067 indexes a K066 database's entries for search, and reruns without a second copy",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const found = sql<{
+        rowid: number;
+      }>`SELECT rowid FROM kin_search WHERE kin_search MATCH 'invented'`;
+      yield* runKinMigrations();
+      // Back to K066, with an entry in it.
+      yield* sql`DROP TABLE kin_search`;
+      yield* sql`DROP TABLE kin_search_rows`;
+      yield* sql`DROP TABLE kin_doc_versions`;
+      yield* sql`ALTER TABLE kin_messages DROP COLUMN refs_json`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 67`;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
+      VALUES ('org', 'work', 'Work', 'W', 1)`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+        owner_id, created_by_kind, origin_key, created_at, updated_at)
+      VALUES ('org', 'rec', 'work', 'W-1', 'Ship the invented report', 'person', 'p', 'person',
+        'owner:1', 1, 1)`;
+      assert.deepStrictEqual(yield* runKinMigrations(), [
+        [67, "Docs"],
+        [68, "WorkMoney"],
+      ]);
+      const indexed = yield* found;
+      assert.lengthOf(indexed, 1);
+      assert.deepStrictEqual(yield* runKinMigrations(), []);
+      yield* K067Docs;
+      assert.deepStrictEqual(yield* found, indexed);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("K068 adds money to a database at K067, keeps its entries, and reruns cleanly", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runKinMigrations();
+    // Back to K067.
+    yield* sql`DROP TABLE kin_company_profile`;
+    yield* sql`DROP TABLE kin_list_proposals`;
+    yield* sql`DROP TABLE kin_record_payments`;
+    yield* sql`DROP INDEX idx_kin_records_due`;
+    yield* sql`DROP INDEX idx_kin_records_date`;
+    yield* sql`ALTER TABLE kin_records DROP COLUMN date_all_day`;
+    yield* sql`ALTER TABLE kin_registers DROP COLUMN rev`;
+    yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 68`;
+    yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
+      VALUES ('org', 'work', 'Work', 'W', 1)`;
+    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+        owner_id, created_by_kind, origin_key, created_at, updated_at, amount_minor, currency)
+      VALUES ('org', 'rec', 'work', 'W-1', 'Pay the invented vendor', 'person', 'p', 'person',
+        'owner:1', 1, 1, 4200000, 'INR')`;
+    assert.deepStrictEqual(yield* runKinMigrations(), [[68, "WorkMoney"]]);
+    assert.deepStrictEqual(
+      yield* sql`SELECT r.amount_minor, r.currency, r.date_all_day, g.rev FROM kin_records r
+        JOIN kin_registers g ON g.org_id = r.org_id AND g.register_id = r.register_id`,
+      [{ amount_minor: 4200000, currency: "INR", date_all_day: 0, rev: 1 }],
+    );
+    const pay = (id: string, minor: number) =>
+      sql`INSERT INTO kin_record_payments (org_id, payment_id, record_id, amount_minor, currency,
+          paid_on, origin_key, created_at, created_by_kind)
+        VALUES ('org', ${id}, 'rec', ${minor}, 'INR', '2026-11-01', ${id}, 1, 'person')`.pipe(
+        Effect.exit,
+      );
+    assert.isTrue(Exit.isSuccess(yield* pay("pay-1", 100)));
+    // Payments are positive amounts, and one origin records one payment.
+    assert.isTrue(Exit.isFailure(yield* pay("pay-2", 0)));
+    assert.isTrue(
+      Exit.isFailure(
+        yield* sql`INSERT INTO kin_record_payments (org_id, payment_id, record_id, amount_minor,
+            currency, paid_on, origin_key, created_at, created_by_kind)
+          VALUES ('org', 'pay-3', 'rec', 5, 'INR', '2026-11-01', 'pay-1', 1, 'person')`.pipe(
+          Effect.exit,
+        ),
+      ),
+    );
+    assert.deepStrictEqual(yield* runKinMigrations(), []);
+    yield* K068WorkMoney;
+    assert.lengthOf(yield* sql`SELECT 1 FROM kin_record_payments`, 1);
+  }).pipe(Effect.provide(layer)),
 );

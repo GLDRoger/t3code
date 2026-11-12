@@ -330,6 +330,29 @@ const samples = {
     { type: "image", id: "kin-chat-1", name: "kite.png", mimeType: "image/png", sizeBytes: 12 },
     { type: "file", id: "kin-chat-2", name: "list.txt", mimeType: "text/plain", sizeBytes: 3 },
   ],
+  KinDocSectionId: ["top", "pricing", "launch-plan-2"],
+  KinMessageRefInput: [
+    { _tag: "doc", key: "D-3", version: 2, section: "pricing" },
+    { _tag: "doc", key: "D-3", version: 1, section: null },
+  ],
+  KinMessageRef: [
+    {
+      _tag: "doc",
+      key: "D-3",
+      version: 2,
+      section: "pricing",
+      title: "Launch plan",
+      sectionTitle: "Pricing",
+    },
+    {
+      _tag: "doc",
+      key: "D-3",
+      version: 1,
+      section: null,
+      title: "Launch plan",
+      sectionTitle: null,
+    },
+  ],
   KinLeadInterruptInput: [{ orgId: "org-1", wakeupId: "wakeup-1" }],
   KinLeadInterruptResult: [{ interrupted: true }, { interrupted: false }],
   KinChatError: [

@@ -41,6 +41,8 @@ import { KinLeadToolkit } from "./mcp/tools.ts";
 import { handlers } from "./mcp/handlers.ts";
 import { KinWorkToolkit } from "../work/mcp/tools.ts";
 import { handlers as workHandlers } from "../work/mcp/handlers.ts";
+import { KinDocsToolkit } from "../work/mcp/docTools.ts";
+import { handlers as docHandlers } from "../work/mcp/docHandlers.ts";
 import { importWork } from "../work/importWork.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
@@ -274,9 +276,10 @@ const memoryPullRequests = Layer.unwrap(
   }),
 );
 
-const registration = Layer.merge(
+const registration = Layer.mergeAll(
   McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers),
   McpHttpServer.toolkitRegistration(KinWorkToolkit, workHandlers),
+  McpHttpServer.toolkitRegistration(KinDocsToolkit, docHandlers),
 );
 const toolkit = LeadMemory.layer.pipe(
   Layer.provide(KinSchedules.layer),

@@ -20,7 +20,8 @@ import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { summaryGroups } from "./crm.ts";
 import { KinRecords, type Patch, type Writer } from "./KinRecords.ts";
-import { LISTS, type ListName, listOf } from "./lists.ts";
+import { LISTS, type ListName } from "./lists.ts";
+import { isBuiltIn, listDef, unknownList } from "./registers.ts";
 import {
   endOfDay,
   isClosed,
@@ -30,6 +31,7 @@ import {
   principal,
   toRecord,
   unavailable,
+  workFailure,
 } from "./recordRows.ts";
 
 /**
@@ -85,7 +87,11 @@ export const inList = Effect.fn("KinWork.inList")(function* (
 ) {
   const records = yield* KinRecords;
   const row = yield* records.get(orgId, key);
-  if (row === undefined || listOf(row.registerId) !== list)
+  // Work's edits also reach the lists defined in chat, whose own fields are typed there.
+  const inIt =
+    row !== undefined &&
+    (row.registerId === list || (list === "work" && !isBuiltIn(row.registerId)));
+  if (row === undefined || !inIt)
     return yield* new KinChatError({
       reason: "not_found",
       message: `No ${LISTS[list].noun} ${key.slice(0, 40)} in Work.`,
@@ -113,7 +119,13 @@ export const list = Effect.fn("KinWork.list")(function* (
   const projectId = yield* refId(input.orgId, input.project, "projects");
   const at = cursor.at ?? (yield* Clock.currentTimeMillis);
   const limit = input.limit ?? 50;
+  if (
+    input.list !== undefined &&
+    (yield* listDef(input.orgId, input.list).pipe(workFailure)) === undefined
+  )
+    return yield* unknownList(input.list);
   const page = yield* records.query(input.orgId, {
+    ...(input.list === undefined ? {} : { list: input.list }),
     ...(input.owner === undefined ? {} : { owner: input.owner }),
     ...(input.states === undefined ? {} : { states: input.states }),
     ...(input.open === undefined ? {} : { open: input.open }),
@@ -311,7 +323,19 @@ export const update = Effect.fn("KinWork.update")(function* (
       ...(input.side === undefined ? {} : { side: input.side }),
       ...(input.repo === undefined ? {} : { repo: input.repo }),
       ...(input.sensitive === undefined ? {} : { sensitive: input.sensitive }),
+      ...(input.amount === undefined ? {} : { amount: input.amount }),
+      ...(input.repeat === undefined ? {} : { repeat: input.repeat }),
       ...due,
+      ...(input.dateAt === undefined
+        ? input.dateAllDay === undefined
+          ? {}
+          : { dateAllDay: input.dateAllDay }
+        : input.dateAt === null
+          ? { dateAt: null, dateAllDay: false }
+          : {
+              dateAt: yield* dueMillis(input.orgId, input.dateAt, input.dateAllDay),
+              dateAllDay: input.dateAllDay === true,
+            }),
     },
     input.rev,
   );

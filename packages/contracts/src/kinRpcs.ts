@@ -23,6 +23,8 @@ import { KinApprovalRpcs, KIN_APPROVAL_RPC_SCOPES } from "./kinApprovals.ts";
 import { KinLevelRpcs, KIN_LEVEL_RPC_SCOPES } from "./kinLevels.ts";
 import { KinMemoryRpcs, KIN_MEMORY_RPC_SCOPES } from "./kinMemory.ts";
 import { KinWorkRpcs, KIN_WORK_RPC_SCOPES } from "./kinWork.ts";
+import { KinDocsRpcs, KIN_DOCS_RPC_SCOPES } from "./kinDocs.ts";
+import { KinFinanceRpcs, KIN_FINANCE_RPC_SCOPES } from "./kinFinance.ts";
 import {
   KinChatError,
   KinChatRpcs,
@@ -170,6 +172,8 @@ export const KinRpcs = [
   ...KinLevelRpcs,
   ...KinMemoryRpcs,
   ...KinWorkRpcs,
+  ...KinDocsRpcs,
+  ...KinFinanceRpcs,
   ...KinGithubWebhookRpcs,
   ...KinPushRpcs,
   ...KinPeopleRpcs,
@@ -180,6 +184,8 @@ export const KIN_RPC_SCOPES = {
   ...KIN_LEVEL_RPC_SCOPES,
   ...KIN_MEMORY_RPC_SCOPES,
   ...KIN_WORK_RPC_SCOPES,
+  ...KIN_DOCS_RPC_SCOPES,
+  ...KIN_FINANCE_RPC_SCOPES,
   ...KIN_PUSH_RPC_SCOPES,
   ...KIN_PEOPLE_RPC_SCOPES,
   "kin.budget.get": AuthOrchestrationReadScope,
@@ -280,6 +286,13 @@ export const KIN_RPC_AGGREGATES = {
   "kin.memory.setVisibility": "kin-memory",
   "kin.memory.confirmSuggestions": "kin-memory",
   "kin.memory.forget": "kin-memory",
+  "kin.docs.list": "kin-docs",
+  "kin.docs.get": "kin-docs",
+  "kin.docs.history": "kin-docs",
+  "kin.docs.diff": "kin-docs",
+  "kin.docs.restore": "kin-docs",
+  "kin.docs.subscribe": "kin-docs",
+  "kin.search": "kin-docs",
   "kin.work.summary": "kin-work",
   "kin.work.list": "kin-work",
   "kin.work.get": "kin-work",
@@ -300,6 +313,14 @@ export const KIN_RPC_AGGREGATES = {
   "kin.work.updateContact": "kin-work",
   "kin.work.createProject": "kin-work",
   "kin.work.updateProject": "kin-work",
+  "kin.work.lists": "kin-work",
+  "kin.work.updateList": "kin-work",
+  "kin.work.dates": "kin-work",
+  "kin.work.money": "kin-work",
+  "kin.work.recordPayment": "kin-work",
+  "kin.work.voidPayment": "kin-work",
+  "kin.work.companyProfile": "kin-work",
+  "kin.work.setCompanyProfile": "kin-work",
   "kin.push.registerDevice": "kin-push",
   "kin.push.unregisterDevice": "kin-push",
   "kin.push.watch": "kin-push",

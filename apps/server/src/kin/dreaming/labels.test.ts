@@ -149,7 +149,7 @@ it.effect.each([
     const before = yield* parseFrontMatter(orgId, "claims/a.md", item);
     const labelled = withLabel(item, true);
     assert.isDefined(labelled);
-    const after = yield* parseFrontMatter(orgId, "claims/a.md", labelled ?? "");
+    const after = yield* parseFrontMatter(orgId, "claims/a.md", labelled);
     assert.deepStrictEqual(after.frontMatter, { ...before.frontMatter, sensitive: true });
     assert.strictEqual(after.body, before.body);
   }),
