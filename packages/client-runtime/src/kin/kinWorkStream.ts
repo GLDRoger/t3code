@@ -1,4 +1,4 @@
-import type { KinWorkSubscribeInput, KinWorkSummary } from "@t3tools/contracts";
+import type { KinWorkEvent, KinWorkSubscribeInput, KinWorkSummary } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
@@ -67,7 +67,6 @@ export function kinWorkNote(
 
 /** Asks the counts stream to read again now, inside the running stream. */
 export const KIN_WORK_RETRY = { _tag: "retry" } as const;
-type KinWorkChange = { readonly seq: number; readonly key?: string | undefined };
 
 /** A read cut off with its connection can stay pending; past this it counts as failed. */
 export const KIN_WORK_READ_TIMEOUT = Duration.seconds(20);
@@ -98,7 +97,7 @@ export function kinWorkLiveStream<E, R, RR = never>(
 
 /** `kinWorkLiveStream` over any source of changes and retries. */
 export function kinWorkLiveFold<E, R, EE, RR>(
-  events: Stream.Stream<KinWorkChange | typeof KIN_WORK_RETRY, EE, RR>,
+  events: Stream.Stream<KinWorkEvent | typeof KIN_WORK_RETRY, EE, RR>,
   readSummary: () => Effect.Effect<KinWorkSummary, E, R>,
 ) {
   return Stream.suspend(() => {
@@ -114,11 +113,12 @@ export function kinWorkLiveFold<E, R, EE, RR>(
           ): ReadonlyArray<KinWorkLive> => [
             (last = { ...live, changed: named.changed, unnamed: named.unnamed }),
           ];
-          const retry = "_tag" in event;
+          // The host's own events are tagged `changed`, so only this tag means a retry.
+          const retry = event._tag === "retry";
           if (retry && named.latest === null) return NOTHING;
-          const seq = retry ? (named.latest ?? 0) : event.seq;
+          const seq = event._tag === "retry" ? (named.latest ?? 0) : event.seq;
           const before = named;
-          if (!retry) named = kinWorkNote(before, event);
+          if (event._tag !== "retry") named = kinWorkNote(before, event);
           const news = named !== before;
           // Counts read during a burst already cover this number; only which task it was is new.
           if (!retry && held !== null && held.seq >= seq)

@@ -1,4 +1,4 @@
-import type { KinWorkSummary } from "@t3tools/contracts";
+import type { KinRecordKey, KinWorkEvent, KinWorkSummary } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -24,7 +24,11 @@ const summary = (seq: number, open: number) =>
     asOf: "2026-11-12T05:00:00.000Z",
   }) as unknown as KinWorkSummary;
 
-type Event = { readonly seq: number; readonly key?: string } | typeof KIN_WORK_RETRY;
+// Exactly what `kin.work.subscribe` sends, so the fold sees the real tag.
+type Event = KinWorkEvent | typeof KIN_WORK_RETRY;
+
+const changed = (seq: number, key?: string): KinWorkEvent =>
+  key === undefined ? { _tag: "changed", seq } : { _tag: "changed", seq, key: key as KinRecordKey };
 
 /** Changes the test sends, reads it answers one by one, and what the stream emits. */
 const harness = (reads: Array<Effect.Effect<KinWorkSummary, string>>) =>
@@ -50,17 +54,17 @@ describe("kinWorkLiveFold", () => {
           Effect.never,
           Effect.succeed(summary(9, 413)),
         ]);
-        yield* h.send({ seq: 7 });
+        yield* h.send(changed(7));
         expect(yield* h.next).toMatchObject({ seq: 7, failed: false, summary: { open: 12 } });
 
         // A burst of tasks arrives; the socket drops while its read is in flight.
-        yield* h.send({ seq: 9, key: "W-9" });
+        yield* h.send(changed(9, "W-9"));
         yield* TestClock.adjust(250);
         yield* TestClock.adjust(KIN_WORK_READ_TIMEOUT);
         expect(yield* h.next).toMatchObject({ seq: 9, failed: true, summary: { open: 12 } });
 
         // The next session announces the same number; failed counts are read again anyway.
-        yield* h.send({ seq: 9 });
+        yield* h.send(changed(9));
         yield* TestClock.adjust(250);
         expect(yield* h.next).toMatchObject({ seq: 9, failed: false, summary: { open: 413 } });
       }),
@@ -75,14 +79,14 @@ describe("kinWorkLiveFold", () => {
           Effect.failCause(Cause.interrupt()),
           Effect.succeed(summary(9, 413)),
         ]);
-        yield* h.send({ seq: 7 });
+        yield* h.send(changed(7));
         yield* h.next;
-        yield* h.send({ seq: 9, key: "W-9" });
+        yield* h.send(changed(9, "W-9"));
         yield* TestClock.adjust(250);
         expect(yield* h.next).toMatchObject({ seq: 9, failed: true, summary: { open: 12 } });
 
         // The next session announces the same number; failed counts are read again anyway.
-        yield* h.send({ seq: 9 });
+        yield* h.send(changed(9));
         yield* TestClock.adjust(250);
         expect(yield* h.next).toMatchObject({ seq: 9, failed: false, summary: { open: 413 } });
       }),
@@ -98,9 +102,9 @@ describe("kinWorkLiveFold", () => {
           Effect.fail("unavailable"),
           Effect.succeed(summary(5, 13)),
         ]);
-        yield* h.send({ seq: 4 });
+        yield* h.send(changed(4));
         yield* h.next;
-        yield* h.send({ seq: 5, key: "W-5" });
+        yield* h.send(changed(5, "W-5"));
         yield* TestClock.adjust(250);
         expect(yield* h.next).toMatchObject({ failed: true, summary: { open: 12 } });
 
