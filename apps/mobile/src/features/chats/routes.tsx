@@ -20,6 +20,7 @@ import { KinMemoryScreen } from "./KinMemoryScreen";
 import { KinProjectScreen } from "./KinProjectScreen";
 import { KinSettingsScreen } from "./KinSettings";
 import { KinInviteScreen } from "./KinInviteScreen";
+import { KinMakeDocumentScreen, KinReceiptApplyScreen, KinReceiptNewScreen } from "./KinInvoice";
 import { KinJoinScreen } from "./KinJoinScreen";
 import { KinTeamScreen } from "./KinTeamScreen";
 import { KinTeammateScreen } from "./KinTeammateScreen";
@@ -82,6 +83,18 @@ export const KIN_SCREENS = {
   KinPayment: createNativeStackScreen({
     screen: KinPaymentScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinMakeDocument: createNativeStackScreen({
+    screen: KinMakeDocumentScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinReceiptNew: createNativeStackScreen({
+    screen: KinReceiptNewScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinReceiptApply: createNativeStackScreen({
+    screen: KinReceiptApplyScreen,
+    options: sheetRoute({ detent: 0.75 }),
   }),
   KinEntryEdit: createNativeStackScreen({
     screen: KinEntryEditScreen,

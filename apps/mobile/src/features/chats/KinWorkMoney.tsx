@@ -26,6 +26,7 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListSection } from "../../components/ui/ListSection";
+import { KinReceiptsSection } from "./KinInvoice";
 import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
@@ -404,6 +405,7 @@ export function KinMoneyArea(props: Shared) {
           })}
         </ListSection>
       )}
+      <KinReceiptsSection {...target} seq={seq} />
       <ListSection title={KIN_MONEY.upcoming}>
         {upcoming.length === 0 ? (
           <Text textRole="body" className="px-4 py-3 text-foreground-muted">
@@ -419,6 +421,12 @@ export function KinMoneyArea(props: Shared) {
           onPress={() => navigation.navigate("KinDates", target)}
         />
       </ListSection>
+      <Button
+        tone="secondary"
+        icon="person.2"
+        label={KIN_MONEY.clients}
+        onPress={() => props.areas.onArea("clients")}
+      />
       {agent === null ? null : (
         <Button
           tone="secondary"

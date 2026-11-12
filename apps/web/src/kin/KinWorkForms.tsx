@@ -220,7 +220,7 @@ export function KinClientDialog(
   }, [form, editing]);
   const { draft } = state;
   const moved = kinWorkFormMoved(state);
-  const ids = { name: useId(), terms: useId(), notes: useId() };
+  const ids = { name: useId(), terms: useId(), address: useId(), notes: useId() };
   const save = async () => {
     const outcome = await form.save();
     if (!outcome.saved) return;
@@ -277,6 +277,21 @@ export function KinClientDialog(
           maxLength={KIN_WORK_FORM_LIMITS.notes}
           placeholder={COPY.party.termsPlaceholder}
           onChange={(event) => form.edit({ terms: event.target.value })}
+        />
+      </Field>
+      <Field
+        id={ids.address}
+        label={COPY.party.address}
+        hint={COPY.party.addressHint}
+        moved={moved.address}
+      >
+        <Textarea
+          id={ids.address}
+          rows={3}
+          value={draft.address}
+          maxLength={500}
+          placeholder={COPY.party.addressPlaceholder}
+          onChange={(event) => form.edit({ address: event.target.value })}
         />
       </Field>
       <Field id={ids.notes} label={COPY.party.notes} moved={moved.notes}>

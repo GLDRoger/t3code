@@ -32,6 +32,7 @@ import type { KinWorkLive } from "./kinWorkStream.ts";
 const NAME_MAX = 200;
 const SHORT_MAX = 200;
 const NOTES_MAX = 4_000;
+const ADDRESS_MAX = 500;
 export const KIN_WORK_FORM_LIMITS = { name: NAME_MAX, short: SHORT_MAX, notes: NOTES_MAX };
 
 export const KIN_WORK_FORM_COPY = {
@@ -50,6 +51,9 @@ export const KIN_WORK_FORM_COPY = {
     terms: "Terms",
     termsPlaceholder: "Retainer, billed monthly, net 30",
     termsHint: "Always private. Only you see the terms.",
+    address: "Billing address",
+    addressPlaceholder: "Street, city, state and PIN code",
+    addressHint: "Printed on their invoices.",
     notes: "Notes",
     notesPlaceholder: "Anything worth remembering about them",
   },
@@ -91,6 +95,7 @@ export interface KinClientDraft {
   readonly name: string;
   readonly vendor: boolean;
   readonly terms: string;
+  readonly address: string;
   readonly notes: string;
   readonly private: boolean;
 }
@@ -99,6 +104,7 @@ export const kinClientDraftOf = (party?: KinPartyDetail): KinClientDraft => ({
   name: party?.name ?? "",
   vendor: party?.kind === "vendor",
   terms: party?.terms ?? "",
+  address: party?.address ?? "",
   notes: party?.notes ?? "",
   private: party?.sensitive ?? false,
 });
@@ -111,6 +117,7 @@ export const kinClientDraftCheck = (draft: KinClientDraft): string | null =>
     ? "Give them a name."
     : (tooLong(draft.name, NAME_MAX, "the name") ??
       tooLong(draft.terms, NOTES_MAX, "the terms") ??
+      tooLong(draft.address, ADDRESS_MAX, "the address") ??
       tooLong(draft.notes, NOTES_MAX, "the notes"));
 
 export const kinClientCreateInput = (
@@ -119,6 +126,7 @@ export const kinClientCreateInput = (
   name: draft.name.trim(),
   ...(draft.vendor ? { kind: "vendor" as const } : {}),
   ...(draft.terms.trim() === "" ? {} : { terms: draft.terms.trim() }),
+  ...(draft.address.trim() === "" ? {} : { address: draft.address.trim() }),
   ...(draft.notes.trim() === "" ? {} : { notes: draft.notes.trim() }),
   ...(draft.private ? { sensitive: true } : {}),
 });
@@ -133,6 +141,7 @@ export const kinClientUpdateInput = (
     ? {}
     : { kind: changed.vendor ? ("vendor" as const) : ("client" as const) }),
   ...(changed.terms === undefined ? {} : { terms: changed.terms.trim() || null }),
+  ...(changed.address === undefined ? {} : { address: changed.address.trim() || null }),
   ...(changed.notes === undefined ? {} : { notes: changed.notes.trim() }),
   ...(changed.private === undefined ? {} : { sensitive: changed.private }),
 });

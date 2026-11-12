@@ -19,6 +19,8 @@ import {
   type KinChatHistoryInput,
   type KinChatMembersInput,
   type KinCompanyProfileInput,
+  type KinReceiptsInput,
+  type KinRecipesInput,
   type KinListsInput,
   type KinMoneySummaryInput,
   type KinDocDiffInput,
@@ -236,6 +238,16 @@ const companyProfileRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   tag: "kin.work.companyProfile",
 });
 const readCompanyProfile = guardedRead(companyProfileRead);
+const receiptsRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:work:receipts:read",
+  tag: "kin.work.receipts",
+});
+const readReceipts = guardedRead(receiptsRead);
+const recipesRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:docs:recipes:read",
+  tag: "kin.docs.recipes",
+});
+const readRecipes = guardedRead(recipesRead);
 
 // One per host and org, so a retry reaches the running counts stream without restarting it.
 const workRetries = new Map<string, PubSub.PubSub<void>>();
@@ -834,6 +846,45 @@ export const kinClient = {
     label: "kin:company:set",
     tag: "kin.work.setCompanyProfile",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
+  }),
+  workIssue: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:issue",
+    tag: "kin.work.issue",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+  }),
+  workVoid: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:void",
+    tag: "kin.work.void",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+  }),
+  /** Money's receipts, newest first. Its `permissionAtom` gates the section. */
+  receiptsRead,
+  receipts: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:work:receipts",
+    execute: Effect.fn("KinClient.receipts")(function* (input: KinReceiptsInput) {
+      return yield* readReceipts(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: sessionGeneration,
+  }),
+  makeReceipt: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:receipt:make",
+    tag: "kin.work.makeReceipt",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+  }),
+  /** The company's document templates. */
+  recipes: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:docs:recipes",
+    execute: Effect.fn("KinClient.recipes")(function* (input: KinRecipesInput) {
+      return yield* readRecipes(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: sessionGeneration,
+  }),
+  docRender: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:docs:render",
+    tag: "kin.docs.render",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
   }),
   memorySetVisibility: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:memory:set-visibility",

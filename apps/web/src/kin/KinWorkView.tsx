@@ -375,6 +375,8 @@ export function KinWorkView({
               onOpenKey={setOpenKey}
               onDates={() => onGo({ dates: true })}
               onLists={() => onGo({ area: "lists" })}
+              onClients={() => onGo({ area: "clients" })}
+              onOpenDoc={openDoc}
             />
           ) : area === "lists" ? (
             <KinWorkListsIndex
@@ -491,6 +493,10 @@ export function KinWorkView({
           onOpenKey={setOpenKey}
           onOpenClient={openClient}
           onOpenProject={openProject}
+          onOpenDoc={(doc) => {
+            setOpenKey(null);
+            openDoc(doc);
+          }}
           onClose={() => setOpenKey(null)}
         />
       )}

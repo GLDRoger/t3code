@@ -81,6 +81,8 @@ describe("createKinWorkForm", () => {
       { rev: 4, terms: "Invented net 30" },
       { rev: 5, terms: "Invented net 30" },
     ]);
+    // A billing address typed away clears it, rather than keeping blank lines.
+    expect(kinClientUpdateInput({ address: " \n " })).toEqual({ address: null });
   });
 
   it("offers the one already there when the name is taken, and keeps the form", async () => {
