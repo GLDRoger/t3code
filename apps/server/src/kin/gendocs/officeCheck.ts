@@ -119,9 +119,11 @@ const headerName = (raw: Buffer, flags: number, extra: Buffer) => {
   return name;
 };
 
+type ZipCaps = Pick<OfficeCaps, "entries" | "entryBytes" | "totalBytes" | "commentBytes">;
+
 /** The ZIP's directory, checked: one end record, no ZIP64, no gaps, no odd or repeated names. */
-const directory = (bytes: Buffer) => {
-  const floor = Math.max(0, bytes.length - 22 - OFFICE_CAPS.commentBytes);
+const directory = (bytes: Buffer, caps: ZipCaps = OFFICE_CAPS) => {
+  const floor = Math.max(0, bytes.length - 22 - caps.commentBytes);
   let end = -1;
   for (let at = bytes.length - 22; at >= floor; at -= 1)
     if (bytes.readUInt32LE(at) === EOCD) {
@@ -142,7 +144,7 @@ const directory = (bytes: Buffer) => {
   if (disk !== 0 || startDisk !== 0 || here !== count) return refuse("a split ZIP");
   if (count === 0xffff || size === 0xffffffff || start === 0xffffffff)
     return refuse("a ZIP64 directory");
-  if (count > OFFICE_CAPS.entries) return refuse(`more than ${OFFICE_CAPS.entries} parts`);
+  if (count > caps.entries) return refuse(`more than ${caps.entries} parts`);
   if (start + size !== end) return refuse("data between its parts and its ZIP directory");
   const entries: Array<Entry> = [];
   const names = new Set<string>();
@@ -182,9 +184,9 @@ const directory = (bytes: Buffer) => {
     const key = name.toLowerCase().normalize("NFC");
     if (names.has(key)) return refuse(`two parts named ${quoted(name)}`);
     names.add(key);
-    if (entrySize > OFFICE_CAPS.entryBytes) return refuse("a part over the size cap");
+    if (entrySize > caps.entryBytes) return refuse("a part over the size cap");
     total += entrySize;
-    if (total > OFFICE_CAPS.totalBytes) return refuse("parts over the size cap together");
+    if (total > caps.totalBytes) return refuse("parts over the size cap together");
     entries.push({ name, flags, method, crc, packed, size: entrySize, offset });
     at = next;
   }
@@ -239,13 +241,12 @@ const directory = (bytes: Buffer) => {
 };
 
 /** One part's bytes, inflated a chunk at a time into `sink`, its size and CRC checked as they come. */
-const streamPart = (bytes: Buffer, entry: Entry, sink: (text: string) => void) =>
+const streamBytes = (bytes: Buffer, entry: Entry, sink: (chunk: Buffer) => void) =>
   new Promise<void>((resolve, reject) => {
     const head = entry.offset;
     const data = head + 30 + bytes.readUInt16LE(head + 26) + bytes.readUInt16LE(head + 28);
     const packed = bytes.subarray(data, data + entry.packed);
     const mismatch = `${entry.name} doesn't match its ZIP directory`;
-    const decoder = new TextDecoder("utf-8");
     let size = 0;
     let crc = 0;
     let done = false;
@@ -259,10 +260,9 @@ const streamPart = (bytes: Buffer, entry: Entry, sink: (text: string) => void) =
       size += chunk.length;
       if (size > entry.size) refuse(mismatch);
       crc = NodeZlib.crc32(chunk, crc);
-      sink(decoder.decode(chunk, { stream: true }));
+      sink(chunk);
     };
     const finish = () => {
-      sink(decoder.decode());
       if (size !== entry.size || crc !== entry.crc) refuse(mismatch);
       done = true;
       resolve();
@@ -296,6 +296,44 @@ const streamPart = (bytes: Buffer, entry: Entry, sink: (text: string) => void) =
     });
     inflater.end(packed);
   });
+
+const streamPart = async (bytes: Buffer, entry: Entry, sink: (text: string) => void) => {
+  const decoder = new TextDecoder("utf-8");
+  await streamBytes(bytes, entry, (chunk) => sink(decoder.decode(chunk, { stream: true })));
+  sink(decoder.decode());
+};
+
+/**
+ * A ZIP's files by name, its directory checked as an Office file's is but under `caps`. Each
+ * `read` inflates one file, its size and CRC checked; `undefined` for a name it doesn't have.
+ */
+export const openZip = (
+  input: Uint8Array,
+  caps: ZipCaps,
+):
+  | {
+      readonly names: ReadonlyArray<string>;
+      readonly read: (name: string) => Promise<Uint8Array | undefined>;
+    }
+  | { readonly refused: string } => {
+  const bytes = Buffer.from(input.buffer, input.byteOffset, input.byteLength);
+  try {
+    const entries = directory(bytes, caps).filter((entry) => !entry.name.endsWith("/"));
+    const byName = new Map(entries.map((entry) => [entry.name, entry]));
+    return {
+      names: entries.map((entry) => entry.name),
+      read: async (name) => {
+        const entry = byName.get(name);
+        if (entry === undefined) return undefined;
+        const chunks: Array<Buffer> = [];
+        await streamBytes(bytes, entry, (chunk) => chunks.push(chunk));
+        return Buffer.concat(chunks);
+      },
+    };
+  } catch (error) {
+    return { refused: error instanceof Refusal ? error.reason : "its ZIP couldn't be read" };
+  }
+};
 
 type Handlers = {
   readonly open: (tag: SaxesTagNS) => void;

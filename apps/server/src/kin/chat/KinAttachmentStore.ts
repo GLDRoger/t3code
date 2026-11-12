@@ -3,11 +3,13 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 
 import { forgetPendingAttachment, type PendingUploadOwner } from "../../assets/AttachmentUpload.ts";
 import { resolveAttachmentRelativePath } from "../../attachmentPaths.ts";
 import {
   createAttachmentId,
+  createDeterministicAttachmentId,
   isKinAttachmentId,
   KIN_ATTACHMENT_ID_PREFIX,
   resolveAttachmentPathById,
@@ -21,6 +23,31 @@ const KIN_ATTACHMENT_OWNER = KIN_ATTACHMENT_ID_PREFIX.slice(0, -1);
 export { KIN_ATTACHMENT_ID_PREFIX };
 
 const refused = (message: string) => new KinChatError({ reason: "invalid_state", message });
+
+/**
+ * Keeps checked bytes as a file of the org's, named by its content: the same bytes again are the
+ * same file, so a retry or a second entry with it writes nothing. `undefined` if no id fits.
+ */
+export const keepOrgFile = Effect.fn("KinAttachmentStore.keepOrgFile")(function* (
+  orgId: string,
+  scratchTag: string,
+  file: { readonly sha256: string; readonly extension: string; readonly bytes: Uint8Array },
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const { attachmentsDir } = yield* ServerConfig.ServerConfig;
+  const base = createDeterministicAttachmentId("kin-chat", `${orgId}:${file.sha256}`);
+  if (base === null) return undefined;
+  const attachmentId = `${base}-${file.extension}`;
+  const target = path.join(attachmentsDir, `${attachmentId}.${file.extension}`);
+  if (!(yield* fs.exists(target))) {
+    yield* fs.makeDirectory(attachmentsDir, { recursive: true });
+    const scratch = `${target}.${scratchTag}.tmp`;
+    yield* fs.writeFile(scratch, file.bytes);
+    yield* fs.rename(scratch, target);
+  }
+  return attachmentId;
+});
 
 export interface ClaimedKinAttachments {
   readonly attachments: ReadonlyArray<KinAttachment>;

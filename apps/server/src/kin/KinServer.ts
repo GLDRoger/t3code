@@ -26,6 +26,7 @@ import type { KinPushSender } from "./push/KinPushSender.ts";
 import type { KinPresence } from "./reply/KinPresence.ts";
 import type { KinDocRenderer } from "./gendocs/render.ts";
 import type { KinWorkspace } from "./gendocs/workspace.ts";
+import type { KinImport } from "./work/KinImport.ts";
 import type { KinRecords } from "./work/KinRecords.ts";
 
 export type Services =
@@ -52,6 +53,7 @@ export type Services =
   | KinPushSender
   | KinPresence
   | KinRecords
+  | KinImport
   | KinWorkspace
   | KinDocRenderer;
 

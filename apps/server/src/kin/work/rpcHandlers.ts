@@ -1,20 +1,29 @@
-import { KinChatError, KinDocsRpcs, KinFinanceRpcs, KinWorkRpcs } from "@t3tools/contracts";
+import {
+  KinChatError,
+  KinDocsRpcs,
+  KinFinanceRpcs,
+  KinImportRpcs,
+  KinWorkRpcs,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Stream from "effect/Stream";
 
+import { sessionUploadOwner } from "../../assets/AttachmentUpload.ts";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinServer } from "../KinServer.ts";
 import * as Clients from "./ownerClients.ts";
+import * as Import from "./KinImport.ts";
 import * as Docs from "./ownerDocs.ts";
 import * as Money from "./ownerMoney.ts";
 import * as Work from "./ownerWork.ts";
 
 const group = RpcGroup.make(...KinWorkRpcs, ...KinDocsRpcs);
 const finance = RpcGroup.make(...KinFinanceRpcs);
+const imports = RpcGroup.make(...KinImportRpcs);
 const disabled = new KinChatError({
   reason: "disabled",
   message: "Kin is not running on this host.",
@@ -182,6 +191,18 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       }),
       "kin.work.void": Effect.fn("KinWork.rpc.void")(function* (input) {
         return yield* call((people) => Money.voidEntry(people, input));
+      }),
+    }),
+    ...imports.of({
+      "kin.import.plan": Effect.fn("KinImport.rpc.plan")(function* (input) {
+        return yield* call((people) =>
+          Import.ownerImport(people, sessionUploadOwner(session), input, false),
+        );
+      }),
+      "kin.import.apply": Effect.fn("KinImport.rpc.apply")(function* (input) {
+        return yield* call((people) =>
+          Import.ownerImport(people, sessionUploadOwner(session), input, true),
+        );
       }),
     }),
   };

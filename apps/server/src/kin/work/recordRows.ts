@@ -446,6 +446,14 @@ const definedDetail = Effect.fn("KinRecords.definedDetail")(function* (row: Reco
           JOIN kin_messages m ON m.org_id = a.org_id AND m.message_id = a.message_id
           WHERE a.org_id = ${orgId} AND a.attachment_id IN ${sql.in(ids)} AND m.status <> 'deleted'
           ORDER BY a.attachment_id`;
+  const imported =
+    ids.length === 0
+      ? []
+      : yield* sql<{ attachmentId: string; name: string; mimeType: string }>`
+          SELECT DISTINCT attachment_id AS "attachmentId", name, mime_type AS "mimeType"
+          FROM kin_entry_files
+          WHERE org_id = ${orgId} AND record_id = ${row.recordId} AND attachment_id IN ${sql.in(ids)}
+          ORDER BY attachment_id`;
   const files = stored.flatMap((file): ReadonlyArray<KinFileRef> => {
     const found = Option.getOrElse(decodeAttachments(file.json ?? "[]"), () => []).find(
       (attachment) => attachment.id === file.id,
@@ -462,6 +470,8 @@ const definedDetail = Effect.fn("KinRecords.definedDetail")(function* (row: Reco
           },
         ];
   });
+  for (const file of imported)
+    if (!files.some((one) => one.attachmentId === file.attachmentId)) files.push(file);
   const payments = row.takesPayments === 1 ? yield* paymentsOf(orgId, row.recordId) : undefined;
   return {
     fields,
@@ -533,12 +543,16 @@ const validZone = (zone: string) => {
   }
 };
 
-/** A calendar day's last millisecond in `zone`: an all-day entry is late only once it is over. */
-export const endOfDay = (day: string, zone: string) => {
+const dayStart = (day: string, zone: string) => {
   const [year, month, date] = day.split("-").map((part) => Number.parseInt(part, 10));
-  const start = DateTime.makeZonedUnsafe(
+  return DateTime.makeZonedUnsafe(
     { year: year ?? 1970, month: month ?? 1, day: date ?? 1 },
     { timeZone: zone, adjustForTimeZone: true },
   );
-  return DateTime.toEpochMillis(DateTime.add(start, { days: 1 })) - 1;
 };
+/** A calendar day's last millisecond in `zone`: an all-day entry is late only once it is over. */
+export const endOfDay = (day: string, zone: string) =>
+  DateTime.toEpochMillis(DateTime.add(dayStart(day, zone), { days: 1 })) - 1;
+/** A calendar day's first millisecond in `zone`. */
+export const startOfDay = (day: string, zone: string) =>
+  DateTime.toEpochMillis(dayStart(day, zone));

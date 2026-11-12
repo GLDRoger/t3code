@@ -25,6 +25,7 @@ import { KinMemoryRpcs, KIN_MEMORY_RPC_SCOPES } from "./kinMemory.ts";
 import { KinWorkRpcs, KIN_WORK_RPC_SCOPES } from "./kinWork.ts";
 import { KinDocsRpcs, KIN_DOCS_RPC_SCOPES } from "./kinDocs.ts";
 import { KinFinanceRpcs, KIN_FINANCE_RPC_SCOPES } from "./kinFinance.ts";
+import { KinImportRpcs, KIN_IMPORT_RPC_SCOPES } from "./kinImport.ts";
 import {
   KinChatError,
   KinChatRpcs,
@@ -177,6 +178,7 @@ export const KinRpcs = [
   ...KinWorkRpcs,
   ...KinDocsRpcs,
   ...KinFinanceRpcs,
+  ...KinImportRpcs,
   ...KinGithubWebhookRpcs,
   ...KinPushRpcs,
   ...KinPeopleRpcs,
@@ -190,6 +192,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_WORK_RPC_SCOPES,
   ...KIN_DOCS_RPC_SCOPES,
   ...KIN_FINANCE_RPC_SCOPES,
+  ...KIN_IMPORT_RPC_SCOPES,
   ...KIN_PUSH_RPC_SCOPES,
   ...KIN_PEOPLE_RPC_SCOPES,
   ...KIN_VISUAL_RPC_SCOPES,
@@ -335,6 +338,8 @@ export const KIN_RPC_AGGREGATES = {
   "kin.work.setCompanyProfile": "kin-work",
   "kin.work.issue": "kin-work",
   "kin.work.void": "kin-work",
+  "kin.import.plan": "kin-work",
+  "kin.import.apply": "kin-work",
   "kin.push.registerDevice": "kin-push",
   "kin.push.unregisterDevice": "kin-push",
   "kin.push.watch": "kin-push",

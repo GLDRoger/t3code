@@ -40,13 +40,16 @@ export const KinRepeatRule = Schema.Union([
 ]);
 export type KinRepeatRule = typeof KinRepeatRule.Type;
 
-/** A file kept on an entry: one already sent in chat, readable by whoever may read that chat. */
+/**
+ * A file kept on an entry: one sent in chat, readable by whoever may read that chat, or one the
+ * owner imported, which has no chat and only the owner reads.
+ */
 export const KinFileRef = Schema.Struct({
   attachmentId: TrimmedNonEmptyString,
   name: KinTrimmedText,
   mimeType: Schema.String,
-  chatId: KinChatId,
-  messageId: KinMessageId,
+  chatId: Schema.optional(KinChatId),
+  messageId: Schema.optional(KinMessageId),
 });
 export type KinFileRef = typeof KinFileRef.Type;
 
