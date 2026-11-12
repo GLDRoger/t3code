@@ -1,10 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import {
-  KIN_WORK_ONLY_OWNER,
-  kinWorkDueLabel,
-  type KinWorkRef,
-} from "@t3tools/client-runtime/kin/kinWork";
+import { KIN_WORK_ONLY_OWNER, type KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import {
   KIN_CLIENTS,
   KIN_CLIENT_FAILED,
@@ -22,11 +18,9 @@ import {
   kinClientDraftOf,
   kinClientUpdateInput,
   kinContactCreateInput,
-  kinContactDraftCheck,
   kinContactDraftOf,
   kinContactUpdateInput,
   kinProjectCreateInput,
-  kinProjectDraftCheck,
   kinProjectDraftOf,
   kinProjectUpdateInput,
   kinWorkFormMoved,
@@ -66,6 +60,11 @@ import {
   KinWorkTextField,
 } from "./components/KinWorkPieces";
 import { KinWorkPlaceRow } from "./components/KinWorkTaskMenus";
+import {
+  kinContactFormCheck,
+  kinProjectFormCheck,
+  kinProjectTargetHint,
+} from "./kinWorkFormChecks";
 import { kinWorkRefParam, type KinWorkParams } from "./KinWorkScreen";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected } from "./state/useKinHost";
@@ -448,7 +447,7 @@ function ContactForm(
     start: kinContactDraftOf(editing ?? undefined),
     editing: editing === null ? null : { key: editing.key, rev: editing.rev },
     nameOf: (draft) => draft.name,
-    check: kinContactDraftCheck,
+    check: kinContactFormCheck,
     send: (change) =>
       change.type === "create"
         ? create({
@@ -652,8 +651,6 @@ function ProjectFormGate(
   return <ProjectForm {...props} />;
 }
 
-const DAY = /^\d{4}-\d{2}-\d{2}$/;
-
 function ProjectForm(
   props: KinWorkTarget & {
     readonly editing: ProjectEditing | null;
@@ -673,7 +670,7 @@ function ProjectForm(
     start: kinProjectDraftOf(editing?.project, editing?.targetDay, props.party),
     editing: editing === null ? null : { key: editing.project.key, rev: editing.project.rev },
     nameOf: (draft) => draft.name,
-    check: kinProjectDraftCheck,
+    check: kinProjectFormCheck,
     send: (change) =>
       change.type === "create"
         ? create({
@@ -757,11 +754,7 @@ function ProjectForm(
           disabled={state.saving}
           maxLength={10}
           placeholder="2026-12-31"
-          hint={
-            DAY.test(target)
-              ? kinWorkDueLabel(target, opened)
-              : `A day as year-month-day. Leave it empty for ${KIN_PROJECTS.noTarget.toLowerCase()}.`
-          }
+          hint={kinProjectTargetHint(target, opened)}
           onChangeText={(text) => form.edit({ target: text.trim() === "" ? null : text.trim() })}
         />
       </ListSection>
