@@ -48,6 +48,7 @@ import {
   type DesktopWslState,
   type EnvironmentId,
   type FilesystemBrowseResult,
+  isKinLeadProjectId,
   SourceControlProviderKind,
   PRIMARY_LOCAL_ENVIRONMENT_ID,
   resolveEnvironmentMachineKind,
@@ -526,7 +527,8 @@ function OpenCommandPaletteDialog(props: {
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
     useHandleNewThread();
   const paletteRouteTarget = useThreadRouteTarget();
-  const projects = useProjects();
+  // A lead's own project holds its memory, not code, and is reached through Kin.
+  const projects = useProjects().filter((project) => !isKinLeadProjectId(project.id));
   const referenceThreadRef =
     pathname === "/pull-requests"
       ? environments.some((environment) => environment.serverConfig !== null)

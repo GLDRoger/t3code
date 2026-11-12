@@ -15,6 +15,7 @@ import {
   classifyKinProbe,
   kinHostCandidate,
   kinHostIdToSave,
+  kinStandInLine,
   resolveKinHost,
   resolveKinHostAt,
   type KinProbe,
@@ -164,7 +165,7 @@ describe("resolveKinHost", () => {
   ] as const)("holds the saved host's cache while it is %s, saving nothing", (_name, phase) => {
     const host = resolve({ [b]: ready }, { savedHostId: c, phases: { [c]: phase } });
     expect(host).toMatchObject({ environmentId: c, connected: false });
-    expect(host).not.toHaveProperty("standIn");
+    expect(host).not.toHaveProperty("standInFor");
   });
 
   it.each([
@@ -175,8 +176,20 @@ describe("resolveKinHost", () => {
     ["offline", { phase: "offline", error: null }],
   ] as const)("lets a live host stand in, unsaved, for a saved host %s", (_name, phase) => {
     const host = resolve({ [b]: ready }, { savedHostId: c, phases: { [c]: phase } });
-    expect(host).toMatchObject({ environmentId: b, connected: true, probe: ready, standIn: true });
+    expect(host).toMatchObject({ environmentId: b, connected: true, probe: ready, standInFor: c });
     expect(kinHostIdToSave(host)).toBeNull();
+    const names = new Map([[b, "Studio Mac"]]);
+    expect(kinStandInLine(host, (id) => names.get(id) ?? null)).toEqual({
+      message: "Showing Studio Mac. Your usual computer can't be reached.",
+      usual: c,
+    });
+    expect(kinStandInLine(host, () => "Studio Mac")?.message).toBe(
+      "Showing Studio Mac. Your usual computer can't be reached.",
+    );
+    names.set(c, "Office Mac");
+    expect(kinStandInLine(host, (id) => names.get(id) ?? null)?.message).toBe(
+      "Showing Studio Mac. Office Mac can't be reached.",
+    );
   });
 
   it("waits on an earlier host's probe before letting a later one stand in", () => {
@@ -187,7 +200,7 @@ describe("resolveKinHost", () => {
     });
     expect(resolve({ [a]: notKin, [b]: ready }, { savedHostId: c, phases: down })).toMatchObject({
       environmentId: b,
-      standIn: true,
+      standInFor: c,
     });
   });
 
@@ -198,6 +211,7 @@ describe("resolveKinHost", () => {
     });
     const back = resolve({ [b]: ready, [c]: ready }, { savedHostId: c });
     expect(back).toMatchObject({ environmentId: c, connected: true });
+    expect(kinStandInLine(back, () => "Office Mac")).toBeNull();
     expect(kinHostIdToSave(back)).toBe(c);
     const noIdentity: KinProbe = { _tag: "noIdentity", orgs: orgs([]) };
     const flaky: KinProbe = { _tag: "error", message: "socket closed", transient: true };

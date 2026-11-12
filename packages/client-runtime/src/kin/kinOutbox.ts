@@ -204,7 +204,9 @@ export function createKinOutbox(options: KinOutboxOptions) {
           if (entries.has(record.value.clientMessageId)) continue;
           // A send cut off by the restart goes out again under the same id.
           const state = record.value.error === null ? "waiting" : "failed";
-          set({ ...record.value, state, sent: null });
+          // Older builds never wrote `attempted`, even mid-send: take it as tried, so posted stays.
+          const attempted = record.value.attempted ?? true;
+          set({ ...record.value, attempted, state, sent: null });
         }
         if (corrupt > 0) warn("[kin-outbox] skipped corrupt entries", corrupt);
       })
@@ -297,6 +299,7 @@ export function createKinOutbox(options: KinOutboxOptions) {
       ...(input.refs === undefined || input.refs.length === 0 ? {} : { refs: input.refs }),
       createdAt: now().toISOString(),
       error: null,
+      attempted: false,
       state: "waiting",
       sent: null,
     };

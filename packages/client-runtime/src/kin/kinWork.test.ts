@@ -450,7 +450,7 @@ describe("kinWorkAssignees", () => {
     person(priya.personId, "Priya"),
     person(sami.personId, "Sami"),
   ];
-  const offered = (current: typeof sami | null) =>
+  const offered = (current: typeof sami | null, invited: ReadonlyArray<KinPersonId> = []) =>
     kinWorkAssignees({
       orgs: null,
       orgId,
@@ -458,11 +458,20 @@ describe("kinWorkAssignees", () => {
       names,
       current,
       joined: [me.personId, priya.personId],
-    }).people.map((to) => to.key);
+      invited,
+    }).people.map((to) => (to.invited ? `${to.key} (invited)` : to.key));
 
   it("leaves out people whose access was removed, unless the task is with them now", () => {
     expect(offered(null)).toEqual(["person:invented-owner", "person:invented-priya"]);
     expect(offered(sami)).toContain("person:invented-sami");
+  });
+
+  it("lists someone re-invited who hasn't opened the link as invited, last", () => {
+    expect(offered(null, [sami.personId])).toEqual([
+      "person:invented-owner",
+      "person:invented-priya",
+      "person:invented-sami (invited)",
+    ]);
   });
 });
 

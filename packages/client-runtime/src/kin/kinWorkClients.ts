@@ -246,13 +246,17 @@ export interface KinContactView {
 
 /** The bar a contact's email must clear before a row offers to mail it; forms check the same. */
 export const kinContactEmailOk = (email: string) => /^[^\s@]+@[^\s@]+$/.test(email);
-export const KIN_CONTACT_PHONE_DIGITS = 5;
-export const kinContactPhoneOk = (phone: string) =>
-  phone.replace(/\D/g, "").length >= KIN_CONTACT_PHONE_DIGITS;
+/** Anything with a digit can be dialled: short internal lines and extensions included. */
+export const kinContactPhoneOk = (phone: string) => /\d/.test(phone);
 
 const emailHref = (email: string) => (kinContactEmailOk(email) ? `mailto:${email}` : null);
-const phoneHref = (phone: string) =>
-  kinContactPhoneOk(phone) ? `tel:${phone.replace(/[^\d+]/g, "")}` : null;
+const phoneHref = (phone: string) => {
+  const [line = "", extension] = phone.split(/\s*(?:ext\.?|x|#)\s*/i);
+  const number = line.replace(/[^\d+]/g, "");
+  if (!/\d/.test(number)) return null;
+  const ext = extension?.replace(/\D/g, "") ?? "";
+  return `tel:${number}${ext === "" ? "" : `;ext=${ext}`}`;
+};
 
 function kinContactView(contact: KinContact): KinContactView {
   const notes = contact.notes.trim();
