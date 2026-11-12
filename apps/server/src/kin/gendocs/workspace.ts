@@ -31,6 +31,8 @@ const DEFAULT_BRANCH = "main";
 const MAX_RECIPE_BYTES = 20 * 1024 * 1024;
 const MAX_RECIPE_MD_BYTES = 64 * 1024;
 const MAX_RECIPES = 200;
+const MAX_RECIPE_FILES = 500;
+const LFS_POINTER = /^version https:\/\/git-lfs\.github\.com\/spec\//;
 const COMMITTER = ["-c", "user.name=Kin", "-c", "user.email=kin@localhost"];
 // Names a tool would act on if they reached a checkout: project scripts, agent settings, git's own.
 const forbiddenName =
@@ -68,6 +70,12 @@ export class KinWorkspace extends Context.Service<
     readonly root: (orgId: KinOrgId) => Effect.Effect<string, KinChatError>;
     /** Every readable recipe on `main`; a broken one is left out and logged. */
     readonly recipes: (orgId: KinOrgId) => Effect.Effect<ReadonlyArray<StoredRecipe>, KinChatError>;
+    /** A recipe as it was at `commit`; `undefined` when it wasn't there or doesn't read. */
+    readonly recipeAt: (
+      orgId: KinOrgId,
+      name: string,
+      commit: string,
+    ) => Effect.Effect<Recipe | undefined, KinChatError>;
     /** A fresh worktree for the job, holding `files` as Kin wrote them. */
     readonly prepare: (
       orgId: KinOrgId,
@@ -209,6 +217,29 @@ export const layer = Layer.effect(
       };
     });
 
+    /** One recipe's RECIPE.md at `ref`, parsed; `undefined`, logged, when it doesn't read. */
+    const readRecipe = Effect.fn("KinWorkspace.readRecipe")(function* (
+      root: string,
+      ref: string,
+      name: string,
+    ) {
+      const spec = `${ref}:recipes/${name}/RECIPE.md`;
+      const size = yield* git(root, ["cat-file", "-s", spec]).pipe(
+        Effect.map((text) => Number.parseInt(text, 10)),
+        Effect.orElseSucceed(() => Number.NaN),
+      );
+      if (!(size > 0 && size <= MAX_RECIPE_MD_BYTES)) return undefined;
+      const parsed = parseRecipe(yield* git(root, ["cat-file", "blob", spec], { raw: true }));
+      if ("reason" in parsed || parsed.name !== name) {
+        yield* Effect.logWarning("Kin skipped a recipe it couldn't read", {
+          name,
+          reason: "reason" in parsed ? parsed.reason : "its name isn't its folder's",
+        });
+        return undefined;
+      }
+      return parsed;
+    });
+
     const recipes = Effect.fn("KinWorkspace.recipes")(function* (orgId: KinOrgId) {
       const root = yield* lock.withPermits(1)(ensureLocked(orgId));
       const listed = yield* git(
@@ -223,24 +254,20 @@ export const layer = Layer.effect(
         .split("\0")
         .filter((name) => recipeName.test(name))
         .slice(0, MAX_RECIPES)) {
-        const spec = `${DEFAULT_BRANCH}:recipes/${name}/RECIPE.md`;
-        const size = yield* git(root, ["cat-file", "-s", spec]).pipe(
-          Effect.map((text) => Number.parseInt(text, 10)),
-          Effect.orElseSucceed(() => Number.NaN),
-        );
-        if (!(size > 0 && size <= MAX_RECIPE_MD_BYTES)) continue;
-        const parsed = parseRecipe(yield* git(root, ["cat-file", "blob", spec], { raw: true }));
-        if ("reason" in parsed || parsed.name !== name) {
-          yield* Effect.logWarning("Kin skipped a recipe it couldn't read", {
-            name,
-            reason: "reason" in parsed ? parsed.reason : "its name isn't its folder's",
-          });
-          continue;
-        }
-        found.push({ ...parsed, ...(yield* lastChange(root, name)) });
+        const parsed = yield* readRecipe(root, DEFAULT_BRANCH, name);
+        if (parsed !== undefined) found.push({ ...parsed, ...(yield* lastChange(root, name)) });
       }
       return found;
     }, failed("read the recipes"));
+
+    const recipeAt = Effect.fn("KinWorkspace.recipeAt")(function* (
+      orgId: KinOrgId,
+      name: string,
+      commit: string,
+    ) {
+      if (!recipeName.test(name) || !/^[0-9a-f]{40}$/.test(commit)) return undefined;
+      return yield* readRecipe(yield* lock.withPermits(1)(ensureLocked(orgId)), commit, name);
+    }, failed("read a recipe"));
 
     const discardLocked = Effect.fn("KinWorkspace.discardLocked")(function* (
       root: string,
@@ -356,18 +383,38 @@ export const layer = Layer.effect(
           changes.push({ mode, blob, file: raw[index + 1]! });
         }
         if (changes.length === 0) return { _tag: "unchanged", left } as const;
-        let bytes = 0;
         for (const change of changes) {
           if (change.mode === "120000" || change.mode === "160000")
             return refused(`${change.file} is a link or a submodule, which a recipe can't hold`);
           if (change.file.split("/").some((part) => forbiddenName.test(part)))
             return refused(`${change.file} is a file Kin never commits`);
-          if (/^0+$/.test(change.blob)) continue;
-          bytes += Number.parseInt(yield* git(root, ["cat-file", "-s", change.blob]), 10);
+        }
+        // The folder as it would be committed, not just what changed: its size, and no pointers.
+        const tree = yield* git(worktree, ["write-tree"], at);
+        const listed = (yield* git(root, ["ls-tree", "-r", "-l", "-z", tree, "--", folder], {
+          raw: true,
+        }))
+          .split("\0")
+          .filter((line) => line.length > 0);
+        if (listed.length > MAX_RECIPE_FILES)
+          return refused(`a recipe holds at most ${MAX_RECIPE_FILES} files`);
+        let bytes = 0;
+        for (const line of listed) {
+          const [meta = "", file = ""] = line.split("\t");
+          const [mode = "", , blob = "", size = ""] = meta.split(/ +/);
+          if (mode === "120000" || mode === "160000")
+            return refused(`${file} is a link or a submodule, which a recipe can't hold`);
+          const length = Number.parseInt(size, 10);
+          bytes += length;
+          if (
+            length <= 1024 &&
+            LFS_POINTER.test(yield* git(root, ["cat-file", "blob", blob], { raw: true }))
+          )
+            return refused(`${file} is a Git LFS pointer, not the file itself`);
         }
         if (bytes > MAX_RECIPE_BYTES)
           return refused(
-            `the change adds ${Math.ceil(bytes / 1048576)} MB; a recipe holds at most 20 MB`,
+            `with this change it is ${Math.ceil(bytes / 1048576)} MB; a recipe holds at most 20 MB`,
           );
         const markdown = yield* git(worktree, ["show", `:${folder}/RECIPE.md`], {
           ...at,
@@ -423,6 +470,13 @@ export const layer = Layer.effect(
       failed("make the documents workspace"),
     );
 
-    return KinWorkspace.of({ root: rootFor, recipes, prepare, applyRecipeChange, discard });
+    return KinWorkspace.of({
+      root: rootFor,
+      recipes,
+      recipeAt,
+      prepare,
+      applyRecipeChange,
+      discard,
+    });
   }),
 );

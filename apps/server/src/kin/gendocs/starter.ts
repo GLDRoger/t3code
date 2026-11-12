@@ -651,8 +651,12 @@ export const sheetOf = (rows, columns, skip) => {
   return [header, ...body, ...totals];
 };
 
+// Text a spreadsheet would run as a formula gets a leading ' so it opens as text; numbers don't.
+const PLAIN_NUMBER = /^[+-]?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$/;
+const neutralise = (text) =>
+  /^ *[=+\-@\t\r]/.test(text) && !PLAIN_NUMBER.test(text.trim()) ? "'" + text : text;
 const csvCell = (cell) => {
-  const text = cell.number ?? cell.text;
+  const text = cell.number ?? neutralise(cell.text);
   return /[",\n\r]/.test(text) ? '"' + text.replaceAll('"', '""') + '"' : text;
 };
 export const toCsv = (cells) => cells.map((row) => row.map(csvCell).join(",")).join("\r\n") + "\r\n";

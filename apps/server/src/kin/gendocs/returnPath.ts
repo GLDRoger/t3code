@@ -5,10 +5,13 @@ import * as NodePath from "node:path";
 
 import * as Effect from "effect/Effect";
 
+import { officeProblem } from "./officeCheck.ts";
+import { svgProblem } from "./svgCheck.ts";
+
 /**
  * The one way a worker's file comes back: only names its report gave, read from `out/` itself,
  * each a regular file with one link, within the caps, whose leading bytes are its named type.
- * Nothing is executed or unpacked: an Office file's part names are found in its bytes.
+ * Nothing is executed or unpacked to disk: an Office file's directory and links are read in memory.
  */
 
 /**
@@ -89,17 +92,6 @@ const utf8 = (bytes: Uint8Array): string | undefined => {
   }
 };
 
-// Anything that runs, loads another document, or reaches out when an SVG is opened.
-const unsafeSvg =
-  /<\s*script|<\s*foreignObject|<\s*iframe|<\s*embed|<\s*object|<!ENTITY|<!DOCTYPE|\son[a-z]+\s*=|javascript:|(?:xlink:)?href\s*=\s*["']\s*(?!#|data:image\/(?:png|jpeg|webp);)|url\s*\(\s*["']?\s*(?!#)/i;
-
-/** An Office file's parts, read as names in its bytes; macro parts are refused. */
-const officeParts: Record<"xlsx" | "docx" | "pptx", string> = {
-  xlsx: "xl/workbook.xml",
-  docx: "word/document.xml",
-  pptx: "ppt/presentation.xml",
-};
-
 /** Why these bytes are not the type `extension` says, or `undefined` when they are. */
 export const typeMismatch = (extension: Extension, bytes: Uint8Array): string | undefined => {
   const wrong = `its bytes aren't a ${extension.toUpperCase()} file`;
@@ -121,21 +113,18 @@ export const typeMismatch = (extension: Extension, bytes: Uint8Array): string | 
     case "docx":
     case "pptx": {
       if (!startsWith(bytes, [0x50, 0x4b, 0x03, 0x04])) return wrong;
-      const names = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(
-        "latin1",
-      );
-      if (!names.includes("[Content_Types].xml") || !names.includes(officeParts[extension]))
-        return wrong;
-      return /vbaProject\.bin|\.bin\b.*activeX|activeX\//i.test(names)
-        ? "it carries macros or ActiveX controls"
-        : undefined;
+      const problem = officeProblem(extension, bytes);
+      return problem === undefined
+        ? undefined
+        : `it's a ${extension.toUpperCase()} that ${problem}. Kin takes back Office files with no macros, embedded objects or outside links, plain web and email hyperlinks aside: make it again without them, or return a PDF`;
     }
     case "svg": {
       const text = utf8(bytes);
-      if (text === undefined || !/<svg[\s>]/i.test(text)) return wrong;
-      return unsafeSvg.test(text)
-        ? "it's an SVG with scripts, links or embedded documents"
-        : undefined;
+      if (text === undefined || !/<svg[\s>/]/.test(text)) return wrong;
+      const problem = svgProblem(text);
+      return problem === undefined
+        ? undefined
+        : `it's an SVG with ${problem}: Kin takes back only plain drawings. Return it as a PNG or a PDF, or show it in chat with kin_visual`;
     }
     case "json": {
       const text = utf8(bytes);
@@ -147,11 +136,71 @@ export const typeMismatch = (extension: Extension, bytes: Uint8Array): string | 
         return wrong;
       }
     }
-    case "csv":
+    case "csv": {
+      const text = utf8(bytes);
+      return text === undefined ? "it isn't plain UTF-8 text" : csvProblem(text);
+    }
     case "md":
     case "txt":
       return utf8(bytes) === undefined ? "it isn't plain UTF-8 text" : undefined;
   }
+};
+
+const PLAIN_NUMBER = /^[+-]?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$/;
+const FORMULA_START: Record<string, string> = {
+  "=": '"="',
+  "+": '"+"',
+  "-": '"-"',
+  "@": '"@"',
+  "\t": "a tab",
+  "\r": "a carriage return",
+};
+
+/** The first cell a spreadsheet would run as a formula, by row and column, or `undefined`. */
+const csvProblem = (text: string): string | undefined => {
+  let row = 1;
+  let column = 1;
+  let at = 0;
+  while (at <= text.length) {
+    let cell = "";
+    if (text[at] === '"') {
+      at += 1;
+      while (at < text.length) {
+        if (text[at] === '"') {
+          if (text[at + 1] !== '"') break;
+          at += 1;
+        }
+        cell += text[at];
+        at += 1;
+      }
+      at += 1;
+    }
+    while (
+      at < text.length &&
+      text[at] !== "," &&
+      text[at] !== "\n" &&
+      !text.startsWith("\r\n", at)
+    ) {
+      cell += text[at];
+      at += 1;
+    }
+    const start = cell.replace(/^ +/, "")[0];
+    if (
+      start !== undefined &&
+      FORMULA_START[start] !== undefined &&
+      !PLAIN_NUMBER.test(cell.trim())
+    )
+      return `row ${row}, column ${column} starts with ${FORMULA_START[start]}: a spreadsheet would run it as a formula. Write that cell with a leading ' (as the starter recipes do) or as a plain number`;
+    if (text[at] === ",") {
+      column += 1;
+      at += 1;
+    } else {
+      row += 1;
+      column = 1;
+      at += text[at] === "\r" ? 2 : 1;
+    }
+  }
+  return undefined;
 };
 
 const pdfPages = (bytes: Uint8Array) => {
@@ -165,11 +214,20 @@ const errorCode = (cause: unknown) =>
 
 type Read = { readonly bytes: Uint8Array } | { readonly refused: string };
 
-/** One named file, through a descriptor opened without following a link. */
-const readOne = (path: string, budget: number): Promise<Read> =>
+type Anchor = {
+  readonly handle: NodeFS.promises.FileHandle;
+  readonly path: string;
+  /** Where children are opened from: the open directory itself where the host can say so. */
+  readonly base: string;
+  readonly dev: number;
+  readonly ino: number;
+};
+
+/** One named file, through a descriptor opened without following a link, on out/'s own device. */
+const readOne = (anchor: Anchor, name: string, budget: number): Promise<Read> =>
   NodeFS.promises
     .open(
-      path,
+      NodePath.join(anchor.base, name),
       NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK,
     )
     .then(
@@ -178,6 +236,7 @@ const readOne = (path: string, budget: number): Promise<Read> =>
           const info = await handle.stat();
           if (!info.isFile()) return { refused: "it isn't a regular file" };
           if (info.nlink !== 1) return { refused: "it has another link to it (a hard link)" };
+          if (info.dev !== anchor.dev) return { refused: "it isn't in out/" };
           if (info.size > budget) return { refused: `it's over the ${megabytes(budget)} cap` };
           const bytes = new Uint8Array(info.size);
           let offset = 0;
@@ -205,19 +264,42 @@ const readOne = (path: string, budget: number): Promise<Read> =>
       },
     );
 
-/** Real path of the worktree's own `out/`, or why there is none to read from. */
-const outDirectory = (worktree: string): Promise<string | { readonly refused: string }> =>
+const NOT_PLAIN = { refused: "out/ isn't a plain folder" } as const;
+
+/**
+ * The worktree's own `out/`, opened once as a directory without following a link. On Linux its
+ * children are opened through `/proc/self/fd/<n>/`, so a later swap of the path can't redirect
+ * them; elsewhere they go by path, and `stillThere` catches a swap that outlasts the read.
+ */
+const anchorOut = (worktree: string): Promise<Anchor | { readonly refused: string }> =>
   (async () => {
     const root = await NodeFS.promises.realpath(worktree);
-    const out = NodePath.join(root, OUT_DIR);
-    const info = await NodeFS.promises.lstat(out).catch(() => undefined);
-    if (info === undefined) return { refused: "the worktree has no out/ folder" };
-    if (info.isSymbolicLink() || !info.isDirectory())
-      return { refused: "out/ isn't a plain folder" };
-    return (await NodeFS.promises.realpath(out)) === out
-      ? out
-      : { refused: "out/ isn't a plain folder" };
+    const path = NodePath.join(root, OUT_DIR);
+    const handle = await NodeFS.promises
+      .open(
+        path,
+        NodeFS.constants.O_RDONLY | NodeFS.constants.O_DIRECTORY | NodeFS.constants.O_NOFOLLOW,
+      )
+      .catch((cause: unknown) => errorCode(cause));
+    if (typeof handle === "string")
+      return handle === "ENOENT" ? { refused: "the worktree has no out/ folder" } : NOT_PLAIN;
+    const info = await handle.stat();
+    const viaFd = `/proc/self/fd/${handle.fd}`;
+    const proc = await NodeFS.promises.stat(viaFd).catch(() => undefined);
+    const anchored = proc !== undefined && proc.dev === info.dev && proc.ino === info.ino;
+    return { handle, path, base: anchored ? viaFd : path, dev: info.dev, ino: info.ino };
   })().catch(() => ({ refused: "Kin couldn't read the worktree" }));
+
+/** Whether out/'s path is still the directory Kin opened. */
+const stillThere = (anchor: Anchor) =>
+  NodeFS.promises.lstat(anchor.path).then(
+    (info) =>
+      info.isDirectory() &&
+      !info.isSymbolicLink() &&
+      info.dev === anchor.dev &&
+      info.ino === anchor.ino,
+    () => false,
+  );
 
 /**
  * Takes the files the report named, and nothing else. Returns each one taken with its bytes and
@@ -262,15 +344,16 @@ export const takeOutputs = Effect.fn("KinGenDocs.takeOutputs")(function* (input:
     wanted.push({ ref, name, extension });
   }
   if (wanted.length === 0) return { taken, refused } satisfies Returned;
-  const out = yield* Effect.promise(() => outDirectory(input.worktree));
-  if (typeof out !== "string") {
-    for (const one of wanted) refused.push({ name: one.name, reason: out.refused });
+  const anchor = yield* Effect.promise(() => anchorOut(input.worktree));
+  if ("refused" in anchor) {
+    for (const one of wanted) refused.push({ name: one.name, reason: anchor.refused });
     return { taken, refused } satisfies Returned;
   }
+  yield* Effect.addFinalizer(() => Effect.promise(() => anchor.handle.close()).pipe(Effect.ignore));
   let total = 0;
   for (const one of wanted) {
     const budget = Math.min(caps.fileBytes, caps.totalBytes - total);
-    const read = yield* Effect.promise(() => readOne(NodePath.join(out, one.name), budget));
+    const read = yield* Effect.promise(() => readOne(anchor, one.name, budget));
     if ("refused" in read) {
       refused.push({
         name: one.name,
@@ -296,5 +379,10 @@ export const takeOutputs = Effect.fn("KinGenDocs.takeOutputs")(function* (input:
       pages: one.extension === "pdf" ? pdfPages(read.bytes) : null,
     });
   }
+  if (!(yield* Effect.promise(() => stillThere(anchor)))) {
+    for (const one of taken)
+      refused.push({ name: one.name, reason: "out/ changed while Kin read it" });
+    return { taken: [], refused } satisfies Returned;
+  }
   return { taken, refused } satisfies Returned;
-});
+}, Effect.scoped);
