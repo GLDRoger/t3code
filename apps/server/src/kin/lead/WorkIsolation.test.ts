@@ -1,4 +1,8 @@
-import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
+// @effect-diagnostics nodeBuiltinImport:off -- a loopback model answers the real Claude Code.
+import * as NodeHttp from "node:http";
+import type * as NodeNet from "node:net";
+
+import { type HookCallback, query } from "@anthropic-ai/claude-agent-sdk";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -115,6 +119,15 @@ const opened = Effect.fn("WorkIsolationTest.opened")(function* (
     ),
   );
   return seen[0]!;
+});
+
+/** The installed Claude Code on this machine's PATH, if any; without one only the PATH is checked. */
+const searchPath = process.env.PATH ?? "";
+const installedClaude = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  for (const directory of searchPath.split(":").filter(Boolean))
+    if (yield* fs.exists(`${directory}/claude`)) return yield* fs.realPath(`${directory}/claude`);
+  return undefined;
 });
 
 /** A worktree as T3 makes one: `.git` a file naming the main checkout's git directory. */
@@ -270,17 +283,20 @@ it.live(
       });
       assert.notInclude(JSON.stringify(work), "key-helper");
       assert.isFalse(yield* fs.exists(`${root}/helper-ran`));
-      // Built from nothing: the private home, the provider's Claude home for the login, absolute
-      // PATH entries and the locale, terminal and proxy basics.
-      assert.deepStrictEqual(work.env, {
+      // Built from nothing: the private home, the provider's Claude home for the login, a PATH
+      // and shell Kin chose, and the locale, terminal and proxy basics.
+      const { PATH: path, ...rest } = work.env ?? {};
+      assert.deepStrictEqual(rest, {
         LANG: "C.UTF-8",
         LC_ALL: "C",
         TERM: "xterm",
         HTTPS_PROXY: "http://proxy.test:3128",
-        PATH: "/usr/bin",
+        SHELL: yield* fs.realPath("/bin/bash"),
         HOME: "/nonexistent/kin-worker-home",
         CLAUDE_CONFIG_DIR: configDir,
       });
+      assert.isTrue((path ?? "").split(":").every((entry) => entry.startsWith("/")));
+      assert.include((path ?? "").split(":"), yield* fs.realPath("/usr/bin"));
       // Its own systemd scope gets the worker's limits.
       assert.deepStrictEqual(
         inputs[0]?.scopeProperties,
@@ -443,9 +459,9 @@ it.effect(
             return Effect.succeed({
               _tag: "shell",
               place: { home: "/state/kin/worker-home", configDir: configDir },
+              paths: { PATH: "/usr/bin" },
               sandbox,
               tmp: "/tmp/kin-task",
-              bins: [],
               release: Effect.void,
               noteMessage: () => Effect.void,
             } as const);
@@ -604,5 +620,113 @@ it.effect(
         "no AWS variable reaches a worker",
       );
       assert.isFalse(yield* fs.exists(`${root}/credential-ran`));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "a repository's tools on the provider's PATH never run in a worker's Claude Code, file-only included",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const { root, tree } = yield* worktree();
+      const configDir = `${root}/claude`;
+      const home = `${root}/home`;
+      yield* fs.makeDirectory(configDir);
+      yield* fs.makeDirectory(home);
+      yield* fs.makeDirectory(`${tree}/bin`);
+      // The reviewer's shim: Claude Code's own process runs git at start, from PATH.
+      yield* fs.writeFileString(
+        `${tree}/bin/git`,
+        `#!/bin/sh\necho git >> '${root}/executed'\nexec /usr/bin/git "$@"\n`,
+      );
+      yield* fs.chmod(`${tree}/bin/git`, 0o755);
+      const server = yield* Effect.acquireRelease(
+        Effect.callback<NodeHttp.Server>((resume) => {
+          const created = NodeHttp.createServer((request, response) => {
+            request.resume();
+            request.on("end", () => {
+              response.setHeader("content-type", "application/json");
+              response.end(
+                JSON.stringify({
+                  id: "msg_fixture",
+                  type: "message",
+                  role: "assistant",
+                  model: "claude-haiku-4-5",
+                  content: [{ type: "text", text: "done" }],
+                  stop_reason: "end_turn",
+                  stop_sequence: null,
+                  usage: { input_tokens: 1, output_tokens: 1 },
+                }),
+              );
+            });
+          });
+          created.listen(0, "127.0.0.1", () => resume(Effect.succeed(created)));
+        }),
+        (created) => Effect.sync(() => created.close()),
+      );
+      const port = (server.address() as NodeNet.AddressInfo).port;
+      const claude = yield* installedClaude;
+      const seen: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
+      const base = Layer.succeed(
+        ClaudeAdapterV2.ClaudeAgentSdkQueryRunner,
+        ClaudeAdapterV2.ClaudeAgentSdkQueryRunner.of({
+          allocateSessionId: Effect.succeed("session"),
+          open: (input) =>
+            Effect.sync(() => seen.push(input.options)).pipe(Effect.andThen(Effect.die("unused"))),
+          forkSession: () => Effect.die("unused fork"),
+          subagentLaunchToolUseId: () => Effect.die("unused lookup"),
+          assertComplete: Effect.void,
+        }),
+      );
+      const sandbox = WorkSandbox.layer.pipe(
+        Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-path-" })),
+        Layer.provide(SecureRandom.layerWebCrypto),
+      );
+      yield* Effect.flatMap(Effect.service(ClaudeAdapterV2.ClaudeAgentSdkQueryRunner), (runner) =>
+        runner.open({
+          threadId: ThreadId.make("kin-work:wk-path"),
+          providerSessionId: ProviderSessionId.make("session"),
+          options: {
+            ...options,
+            model: "claude-haiku-4-5",
+            cwd: tree,
+            ...(claude === undefined ? {} : { pathToClaudeCodeExecutable: claude }),
+            env: {
+              PATH: `${tree}/bin:/usr/bin:/bin`,
+              CLAUDE_CONFIG_DIR: configDir,
+              ANTHROPIC_API_KEY: "fixture-only",
+              ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
+            },
+          },
+        }),
+      ).pipe(
+        Effect.exit,
+        Effect.provide(WorkIsolation.claudeQueryRunnerWith(base, sandbox)),
+        // A Mac's worker is file-only, so the check never runs; the fixture home stands in.
+        Effect.provideService(HostProcess.Platform, "darwin"),
+        Effect.provideService(HostProcess.HomeDirectory, home),
+      );
+      const work = seen[0]!;
+      // With Claude Code installed here, run its real start against the loopback model.
+      if (claude !== undefined)
+        yield* Effect.promise(async () => {
+          const session = query({
+            prompt: "Say done.",
+            // The CLI wants a UUID; the adapter's own is the fixture's "native".
+            options: {
+              ...work,
+              sessionId: "00000000-0000-4000-8000-000000000289",
+              persistSession: false,
+              maxTurns: 1,
+            },
+          });
+          try {
+            for await (const _message of session);
+          } finally {
+            session.close();
+          }
+        });
+      assert.isFalse(yield* fs.exists(`${root}/executed`), "the repository's git ran");
+      assert.isFalse((work.env?.PATH ?? "").split(":").some((entry) => entry.startsWith(tree)));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

@@ -2,6 +2,7 @@ import type { HookCallbackMatcher, SandboxSettings } from "@anthropic-ai/claude-
 
 import type * as ClaudeAdapterV2 from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { type SessionCredentials, withConfinementHook } from "../claudeConfinement.ts";
+import { pointerVariables } from "./workerPath.ts";
 
 /** A file-only worker's tools; Claude's file tools run outside the OS sandbox. */
 export const workTools = ["Read", "Grep", "Glob", "Edit", "Write"];
@@ -86,10 +87,8 @@ const keptVariables = [
   "no_proxy",
   "all_proxy",
 ];
-/** Copied only as absolute paths; relative, each would name a file in the worktree. */
-const keptPaths = ["SHELL", "TMPDIR", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR"];
 /** What a shell's commands still see; Claude Code sets their proxy variables and TMPDIR itself. */
-const commandVariables = new Set(["PATH", "HOME", ...keptVariables, ...keptPaths]);
+const commandVariables = new Set(["PATH", "HOME", ...keptVariables, ...pointerVariables, "SHELL"]);
 const commandSees = (name: string) =>
   name.startsWith("LC_") || (commandVariables.has(name) && name !== "CLAUDE_CODE_ENTRYPOINT");
 
@@ -111,28 +110,23 @@ export interface WorkerPlace {
 }
 
 /**
- * A worker's whole environment, built from nothing: absolute `PATH` entries, a private `HOME`,
+ * A worker's whole environment, built from nothing: `paths` (`workerPaths`), a private `HOME`,
  * locale, terminal and proxy basics, and Claude Code's own settings. Credentials travel in the
  * session's settings `env`, never here.
  */
 const workerEnvironment = (
   server: NodeJS.ProcessEnv,
   place: WorkerPlace,
-  shell?: { readonly tmp: string; readonly bins: ReadonlyArray<string> },
+  paths: Readonly<Record<string, string>>,
+  shell?: { readonly tmp: string },
 ): Record<string, string> => {
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(server))
     if (value !== undefined && (keptVariables.includes(name) || name.startsWith("LC_")))
       env[name] = value;
-  for (const name of keptPaths) {
-    const value = server[name];
-    if (value?.startsWith("/") === true) env[name] = value;
-  }
-  const path = (server.PATH ?? "").split(":").filter((entry) => entry.startsWith("/"));
-  path.unshift(...(shell?.bins ?? []));
   return {
     ...env,
-    PATH: path.join(":"),
+    ...paths,
     HOME: place.home,
     // No CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: it also refuses any command with a variable or loop.
     ...(place.configDir === undefined ? {} : { CLAUDE_CONFIG_DIR: place.configDir }),
@@ -157,21 +151,16 @@ export interface WorkSession {
   /** The server's environment, for a session the adapter gave none; only `workerEnvironment` reads it. */
   readonly environment: NodeJS.ProcessEnv;
   readonly place: WorkerPlace;
-  readonly shell?:
-    | {
-        readonly sandbox: SandboxSettings;
-        readonly tmp: string;
-        /** Put first on `PATH`: the server's Node and Kin's tools. */
-        readonly bins: ReadonlyArray<string>;
-      }
-    | undefined;
+  /** `PATH`, `SHELL` and the paths Claude Code loads, as `workerPaths` built them. */
+  readonly paths: Readonly<Record<string, string>>;
+  readonly shell?: { readonly sandbox: SandboxSettings; readonly tmp: string } | undefined;
 }
 
 /** The only place a work session's options are made; the sandbox check runs the same ones. */
 export const workSessionOptions = (
   session: WorkSession,
 ): ClaudeAdapterV2.ClaudeAgentSdkQueryOptions => {
-  const { options, credentials, confinement, environment, place, shell } = session;
+  const { options, credentials, confinement, environment, place, paths, shell } = session;
   const passed = Object.fromEntries(
     Object.entries(options).filter(([key]) => workOptionFields.has(key)),
   );
@@ -184,7 +173,7 @@ export const workSessionOptions = (
     ...(Object.keys(credentialEnv).length === 0 ? {} : { env: credentialEnv }),
   };
   const thinking = extraArgs?.["thinking-display"];
-  const env = workerEnvironment(options.env ?? environment, place, shell);
+  const env = workerEnvironment(options.env ?? environment, place, paths, shell);
   return {
     // The thread identity (`sessionId` or `resume`) and model arrive in `passed`.
     ...(passed as ClaudeAdapterV2.ClaudeAgentSdkQueryOptions),

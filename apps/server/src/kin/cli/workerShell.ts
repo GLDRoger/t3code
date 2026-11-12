@@ -18,10 +18,13 @@ import {
   type CheckLine,
   checkShell,
   hostShell,
+  protectedOverlap,
   providerHomes,
   readStatus,
   workerPlace,
+  workerWritable,
 } from "../lead/workSandbox.ts";
+import { ownerPath, workerPaths } from "../lead/workerPath.ts";
 
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
@@ -68,12 +71,49 @@ const runCheck = Effect.fn("KinWorkerShellCli.check")(function* (input: {
     return yield* new KinWorkerShellCheckError({ message: "No claude on PATH; pass --claude." });
   const auth = yield* resolveWorkerCredentials({
     auth: yield* ownerAuth(env),
-    managed: yield* managedAuth(),
+    managed: yield* managedAuth(env),
     providerEnv: env,
   });
   const fs = yield* FileSystem.FileSystem;
   const checkHome = `${input.stateDir}/kin/worker-home`;
   yield* fs.makeDirectory(checkHome, { recursive: true, mode: 0o700 });
+  const privateHome = yield* fs.realPath(checkHome);
+  const place = yield* workerPlace(env, privateHome);
+  const homes = yield* settingsProviderHomes(input.settingsPath, env);
+  const worktreesDir = `${input.baseDir}/worktrees`;
+  const paths = yield* workerPaths({
+    providerEnv: env,
+    claude,
+    toolDirs: toolDirectories(input.baseDir),
+    ownerPath: ownerPath(env),
+    writable: workerWritable({ worktree: undefined, worktreesDir, stateDir: input.stateDir }),
+  });
+  const overlap = yield* protectedOverlap({
+    worktree: worktreesDir,
+    home: yield* HostProcess.HomeDirectory,
+    stateDir: input.stateDir,
+    privateHome,
+    providerHomes: [...homes, ...(place.configDir === undefined ? [] : [place.configDir])],
+  });
+  const environment: ReadonlyArray<CheckLine> = [
+    { passed: true, kind: "info", label: `workers' PATH: ${paths.env.PATH}` },
+    ...paths.dropped.map((why): CheckLine => ({
+      passed: false,
+      kind: "info",
+      label: `left out: ${why}`,
+    })),
+    overlap === undefined
+      ? {
+          passed: true,
+          kind: "gate",
+          label: `no protected place is, holds or sits in the worktrees directory ${worktreesDir}`,
+        }
+      : {
+          passed: false,
+          kind: "gate",
+          label: `the worktrees directory ${worktreesDir} overlaps ${overlap}, so no worker starts`,
+        },
+  ];
   const checked =
     auth._tag === "refused"
       ? ({ _tag: "unresolved", reason: auth.reason } as const)
@@ -92,11 +132,12 @@ const runCheck = Effect.fn("KinWorkerShellCli.check")(function* (input: {
             credentials: {},
             environment: env,
           },
-          place: yield* workerPlace(env, yield* fs.realPath(checkHome)),
+          place,
+          paths: paths.env,
           domains: [...DEFAULT_WORKER_HOSTS, ...(host._tag === "on" ? host.domains : [])],
           readPaths: host._tag === "on" ? host.readPaths : [],
           toolDirs: toolDirectories(input.baseDir),
-          providerHomes: yield* settingsProviderHomes(input.settingsPath, env),
+          providerHomes: homes,
         });
   const platform = yield* HostProcess.Platform;
   const last = Option.getOrUndefined(yield* readStatus(input.stateDir));
@@ -113,12 +154,18 @@ const runCheck = Effect.fn("KinWorkerShellCli.check")(function* (input: {
             : `each worker's Claude Code, native or a script, runs in its own scope: ${Math.round(last.limits.memoryMaxBytes / 1024 ** 3)} GiB memory, ${last.limits.tasksMax} tasks, CPU weight ${last.limits.cpuWeight}${last.limitsNote === undefined ? "" : `; ${last.limitsNote}`}`,
   };
   const lines = [
+    ...environment,
     ...(checked._tag === "unresolved"
       ? [{ passed: false, kind: "gate" as const, label: checked.reason }]
       : checked.result.lines),
     limits,
   ];
-  const failed = checked._tag === "unresolved" ? checked.reason : checked.result.failed;
+  const failed =
+    overlap !== undefined
+      ? `the worktrees directory overlaps ${overlap}`
+      : checked._tag === "unresolved"
+        ? checked.reason
+        : checked.result.failed;
   if (input.json)
     yield* Console.log(
       yield* encodeJson({
