@@ -40,6 +40,7 @@ import { Menu } from "../../components/ui/Menu";
 import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
+import { useContentTopInset } from "../../components/ui/useBarInset";
 import { useNowMinuteMs } from "../../lib/clock";
 import { tryCopyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { shareFileFromSource } from "../../lib/shareFileFromSource";
@@ -67,6 +68,8 @@ export type KinDocParams = {
   readonly section?: string;
   /** An earlier version to read; the latest otherwise. */
   readonly v?: string;
+  /** The version that was latest before a restore, which restoring again undoes. */
+  readonly undo?: string;
 };
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
@@ -117,6 +120,7 @@ export function KinDocScreen({ route }: StaticScreenProps<KinDocParams>) {
       docKey={key}
       version={kinDocVersionParam(route.params.v)}
       section={route.params.section ?? null}
+      undo={kinDocVersionParam(route.params.undo)}
     />
   );
 }
@@ -125,6 +129,7 @@ type DocTarget = KinWorkTarget & {
   readonly docKey: KinRecordKey;
   readonly version: number | null;
   readonly section: string | null;
+  readonly undo: number | null;
 };
 
 function KinDocStates(props: DocTarget) {
@@ -215,11 +220,12 @@ function KinDocBody(
   const openLink = useOpenPullRequest();
   const restore = useKinDocRestore(target, doc.key);
   const scroll = useRef<ComponentRef<typeof ScreenScrollView>>(null);
+  // On iOS the page scrolls under the bar, so a section's top sits that far down the screen.
+  const bar = useContentTopInset();
   const offsets = useRef(new Map<string, number>());
   const arrived = useRef(false);
   const [copied, setCopied] = useState(false);
-  /** The version that was latest before a restore, which restoring again undoes. */
-  const [undo, setUndo] = useState<number | null>(null);
+  const undo = props.undo !== null && props.undo < doc.latest.version ? props.undo : null;
 
   const sections = kinDocSections(doc.body, doc.outline);
   const outline = kinDocOutline(doc.outline);
@@ -275,7 +281,7 @@ function KinDocBody(
   };
   const jump = (id: string) => {
     const y = id === "top" ? 0 : offsets.current.get(id);
-    if (y !== undefined) scroll.current?.scrollTo({ y, animated: true });
+    if (y !== undefined) scroll.current?.scrollTo({ y: y - bar, animated: true });
   };
   const act = (section: string | null, text: string, action: string) => {
     if (action === "ask" || action === "change") point(section, action);
@@ -409,7 +415,7 @@ function KinDocBody(
                   onPress: () =>
                     void restore.run(undo, doc.latest.version).then((restored) => {
                       if (restored === null) return;
-                      setUndo(null);
+                      navigation.setParams({ undo: undefined });
                       props.onRefresh();
                     }),
                 }}
@@ -432,10 +438,9 @@ function KinDocBody(
                     loading={restore.busy}
                     disabled={restore.busy}
                     onPress={() =>
-                      restore.confirm(doc.version.version, doc.latest.version, () => {
-                        setUndo(doc.latest.version);
-                        navigation.setParams({ v: undefined });
-                      })
+                      restore.confirm(doc.version.version, doc.latest.version, () =>
+                        navigation.setParams({ v: undefined, undo: String(doc.latest.version) }),
+                      )
                     }
                   />
                 ) : null}
@@ -463,7 +468,10 @@ function KinDocBody(
                   // Arriving from a link or a search hit, the page opens at its section.
                   if (section.id === props.section && !arrived.current) {
                     arrived.current = true;
-                    scroll.current?.scrollTo({ y: event.nativeEvent.layout.y, animated: false });
+                    scroll.current?.scrollTo({
+                      y: event.nativeEvent.layout.y - bar,
+                      animated: false,
+                    });
                   }
                 }}
               >

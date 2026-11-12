@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_DOCS,
   KIN_SEARCH,
@@ -170,7 +170,14 @@ function KinDocChanges(
           disabled={restore.busy}
           onPress={() =>
             restore.confirm(diff.from.version, latest, () =>
-              navigation.navigate("KinDoc", { environmentId, orgId, doc: key }),
+              navigation.dispatch(
+                StackActions.popTo("KinDoc", {
+                  environmentId,
+                  orgId,
+                  doc: key,
+                  undo: String(latest),
+                }),
+              ),
             )
           }
         />
@@ -223,7 +230,9 @@ function KinDocHistory(props: KinWorkTarget & { readonly docKey: KinRecordKey })
         to: String(latest),
       });
     else if (action === "restore")
-      restore.confirm(version, latest, () => navigation.navigate("KinDoc", base));
+      restore.confirm(version, latest, () =>
+        navigation.dispatch(StackActions.popTo("KinDoc", { ...base, undo: String(latest) })),
+      );
   };
   return (
     <KinWorkFrame
