@@ -382,6 +382,7 @@ const setAgainst = Effect.fn("KinReceipts.setAgainst")(function* (
       `${receipt.key} was received from another client than ${invoice.key}'s. Nothing changed.`,
     );
   const advance = { minor: receipt.amountMinor, currency: receipt.currency };
+  const paidOn = dayIn(receipt.dateAt, yield* ownerZone(orgId));
   if (invoice.amountMinor !== null) {
     const owed = { minor: invoice.amountMinor - invoice.paid, currency: invoice.currency ?? "" };
     if (owed.currency !== advance.currency || owed.minor < advance.minor)
@@ -394,7 +395,7 @@ const setAgainst = Effect.fn("KinReceipts.setAgainst")(function* (
     Effect.gen(function* () {
       const { paymentId } = yield* records.pay(orgId, writer, invoice.key, {
         amount: advance,
-        paidOn: dayIn(receipt.dateAt!, yield* ownerZone(orgId)),
+        paidOn,
         note: number,
         originKey: `receipt:${receipt.recordId}${held === undefined ? "" : `:after:${held}`}`,
       });
