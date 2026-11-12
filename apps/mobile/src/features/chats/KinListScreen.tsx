@@ -236,7 +236,7 @@ function NarrowMenu(props: {
   );
 }
 
-const TABLE_ROW = "h-11 justify-center border-b border-border-subtle px-3";
+const TABLE_ROW = "h-14 justify-center border-b border-border-subtle px-3";
 
 /**
  * The list as a table on a phone: the entry's name stays put while its columns scroll sideways.

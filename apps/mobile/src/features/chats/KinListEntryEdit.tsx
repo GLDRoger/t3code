@@ -290,13 +290,14 @@ function FileEdit(props: Shared & { readonly field: KinListFieldView }) {
     state._tag === "ready" ? state.files.filter((file) => !held.includes(file.attachmentId)) : [];
   const full = held.length >= KIN_FIELD_FILES_MAX;
   return (
-    <KinWorkFrame title={KIN_LISTS.entry.filesTitle} onClose={props.onClose}>
+    <KinWorkFrame title={KIN_LISTS.entry.filesTitle} form onClose={props.onClose}>
       {changes.problem === null ? null : (
         <Notice message={changes.problem} tone="danger" onDismiss={changes.dismiss} />
       )}
       <View className="flex-row">
         <SearchField
           inputRef={input}
+          autoFocus={false}
           accessibilityLabel={KIN_LISTS.entry.filesSearch}
           clearAccessibilityLabel="Clear search"
           placeholder={KIN_LISTS.entry.filesSearch}
