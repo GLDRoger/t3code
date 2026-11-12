@@ -234,6 +234,8 @@ export function kinStandInLine(
 ): { readonly message: string; readonly usual: EnvironmentId } | null {
   if (host._tag !== "host" || host.standInFor === undefined) return null;
   const shown = labelOf(host.environmentId) ?? "another computer";
-  const usual = labelOf(host.standInFor) ?? "Your usual computer";
+  const named = labelOf(host.standInFor);
+  // Two machines can share a name; then only "usual" tells them apart.
+  const usual = named === null || named === shown ? "Your usual computer" : named;
   return { message: `Showing ${shown}. ${usual} can't be reached.`, usual: host.standInFor };
 }

@@ -183,6 +183,13 @@ describe("resolveKinHost", () => {
       message: "Showing Studio Mac. Your usual computer can't be reached.",
       usual: c,
     });
+    expect(kinStandInLine(host, () => "Studio Mac")?.message).toBe(
+      "Showing Studio Mac. Your usual computer can't be reached.",
+    );
+    names.set(c, "Office Mac");
+    expect(kinStandInLine(host, (id) => names.get(id) ?? null)?.message).toBe(
+      "Showing Studio Mac. Office Mac can't be reached.",
+    );
   });
 
   it("waits on an earlier host's probe before letting a later one stand in", () => {
