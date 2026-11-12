@@ -332,6 +332,22 @@ describe("bank statements", () => {
         });
         assert.strictEqual(again.statement, result.statement);
         assert.lengthOf(yield* sql`SELECT 1 FROM kin_widgets WHERE type = 'statement_review'`, 1);
+        // Every word the bank wrote reaches the lead quoted as untrusted, references masked.
+        assert.isTrue(
+          [...result.matched, ...result.unmatched].every((one) =>
+            one.text.startsWith("> BEGIN QUOTE: bank statement text (untrusted)"),
+          ),
+        );
+        const listed = yield* LeadStatements.rows(scope, { statement: result.statement });
+        const referenced = listed.rows.find((one) => one.reference !== undefined)!;
+        assert.include(referenced.description, "(untrusted)");
+        assert.match(referenced.reference!, /"••\w{4}"/);
+        const detail = yield* LeadStatements.rows(scope, {
+          statement: result.statement,
+          row: referenced.row,
+        });
+        assert.lengthOf(detail.rows, 1);
+        assert.notMatch(detail.rows[0]!.reference!, /••/);
         // Nothing is recorded by reading.
         assert.lengthOf(yield* bankRows, 0);
         assert.lengthOf(yield* sql`SELECT 1 FROM kin_record_payments`, 0);
@@ -640,6 +656,12 @@ describe("bank statements", () => {
           });
         assert.deepStrictEqual(yield* unlock("lake0000", false), { status: "wrong" });
         assert.deepStrictEqual(yield* unlock(PASSWORD, true), { status: "opened" });
+        const keptAccounts = yield* OwnerStatements.passwords(people, { orgId });
+        assert.deepStrictEqual(
+          keptAccounts.accounts.map((one) => one.label),
+          ["HDFC Bank ••4821"],
+        );
+        assert.notInclude(JSON.stringify(keptAccounts), PASSWORD);
         const { card: review } = yield* reviewCardOf(locked.statement);
         assert.strictEqual(review.matched.length, 3);
         // The next locked statement of the account opens with the kept password, untyped.
@@ -662,14 +684,50 @@ describe("bank statements", () => {
         }
         assert.notInclude(JSON.stringify([locked, next]), PASSWORD);
         assert.notInclude(logged.join("\n"), PASSWORD);
-        // The owner can take it back; the next locked one asks again.
+        // The owner can take it back, from its card or the list of kept accounts.
         yield* OwnerStatements.forgetPassword(people, { orgId, statementId: locked.statement });
+        yield* OwnerStatements.unlock(people, {
+          orgId,
+          statementId: next.statement,
+          password: Redacted.make(PASSWORD),
+          remember: true,
+        }).pipe(Effect.ignore);
+        yield* sql`UPDATE kin_bank_statements SET status = 'needs_password'
+          WHERE statement_id = ${next.statement}`;
+        yield* OwnerStatements.unlock(people, {
+          orgId,
+          statementId: next.statement,
+          password: Redacted.make(PASSWORD),
+          remember: true,
+        });
+        const listed = yield* OwnerStatements.passwords(people, { orgId });
+        assert.lengthOf(listed.accounts, 1);
+        assert.deepStrictEqual(
+          yield* OwnerStatements.forgetAccount(people, {
+            orgId,
+            account: listed.accounts[0]!.account,
+          }),
+          { accounts: [] },
+        );
         assert.isTrue(Option.isNone(yield* secrets.get(kept[0]!.replace(/\.bin$/, ""))));
         assert.lengthOf(
           NodeFS.readdirSync(secretsDir).filter((name) => name.startsWith("kin-statement-")),
           0,
         );
-        assert.strictEqual((yield* read(3, "hdfc-account-locked.pdf")).status, "needs_password");
+        const third = yield* read(3, "hdfc-account-locked.pdf");
+        assert.strictEqual(third.status, "needs_password");
+        // Five wrong passwords and the card stops trying, the right one included.
+        const tries = [];
+        for (let n = 0; n < 6; n += 1)
+          tries.push(
+            (yield* OwnerStatements.unlock(people, {
+              orgId,
+              statementId: third.statement,
+              password: Redacted.make(n === 5 ? PASSWORD : `lake000${n}`),
+              remember: false,
+            })).status,
+          );
+        assert.deepStrictEqual(tries, ["wrong", "wrong", "wrong", "wrong", "limit", "limit"]);
       }).pipe(Effect.provide(layer)),
   );
 
@@ -701,6 +759,13 @@ describe("bank statements", () => {
       const { card } = yield* reviewCardOf(proposed.statement);
       assert.strictEqual(card.readByAgent, true);
       assert.strictEqual(card.matched.length, 1);
+      // Rows read from images start with nothing ticked; Tick all is one change.
+      assert.deepStrictEqual([card.selection?.ticked, card.chosen?.matched], ["none", 0]);
+      assert.include(card.heldBack, "images of a scan");
+      assert.strictEqual(
+        (yield* choose(card, [{ _tag: "tickAll", ticked: true }])).chosen?.matched,
+        1,
+      );
     }).pipe(Effect.provide(layer)),
   );
 });

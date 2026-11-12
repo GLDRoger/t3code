@@ -6,6 +6,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { turnChat } from "../lead/Audience.ts";
+import { quote } from "../lead/LeadPrompt.ts";
 import { turnFiles } from "./leadFields.ts";
 import { admitted, type Lead, leadTool, sourceOf } from "./leadWork.ts";
 import { formatMoney, parseAmount } from "./money.ts";
@@ -27,6 +28,10 @@ import { checkBalances, type Statement, type StatementRow } from "./statements/s
 /** The lead tools for statements. Kin reads and matches; the owner confirms on Kin's card. */
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+/** Words the bank or a counterparty wrote: quoted, so no narration reads as an instruction. */
+const bankSaid = (text: string) => quote("bank statement text (untrusted)", text, true);
+/** A reference as the summary shows an account: its last four characters. */
+const masked = (reference: string) => (reference.length <= 4 ? "••" : `••${reference.slice(-4)}`);
 const isChatError = Schema.is(KinChatError);
 const Amount = TrimmedNonEmptyString.check(Schema.isMaxLength(40));
 
@@ -72,6 +77,7 @@ const Shown = Schema.Struct({
   to: Schema.optional(Schema.String),
   options: Schema.optional(Schema.Array(Schema.String)),
   suggestion: Schema.optional(Schema.String),
+  vendor: Schema.optional(Schema.String),
 });
 export const ReadResult = Schema.Struct({
   statement: Schema.String,
@@ -174,7 +180,7 @@ const describe = (statementId: string, file: string, review: Review, applied: bo
     return {
       row: index,
       date: row.date,
-      text: row.description.slice(0, 120),
+      text: bankSaid(row.description.slice(0, 120)),
       amount: formatMoney({ minor: row.amountMinor, currency }),
       direction: row.direction,
     };
@@ -221,8 +227,11 @@ const describe = (statementId: string, file: string, review: Review, applied: bo
       ...shown(index),
       suggestion:
         match.suggestion.action === "expense"
-          ? `new expense${match.suggestion.vendor === undefined ? "" : `: ${match.suggestion.vendor}`}${match.suggestion.category === undefined ? "" : ` (${match.suggestion.category})`}`
+          ? `new expense${match.suggestion.category === undefined ? "" : ` (${match.suggestion.category})`}`
           : match.suggestion.action,
+      ...(match.suggestion.action === "expense" && match.suggestion.vendor !== undefined
+        ? { vendor: bankSaid(match.suggestion.vendor) }
+        : {}),
     })),
     ...(Math.max(matched.length, choose.length, unmatched.length) > LIST
       ? { more: "statement_rows has every row and its matches." }
@@ -340,6 +349,10 @@ export const RowsInput = Schema.Struct({
   text: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(80))).annotate({
     description: "Only rows whose narration or reference has this.",
   }),
+  row: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))).annotate({
+    description:
+      "Only this row, with its full reference: only when the owner asks for that row's detail.",
+  }),
   offset: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
   limit: Schema.optional(
     Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(200)),
@@ -384,6 +397,7 @@ const runRows = Effect.fnUntraced(function* (lead: Lead, input: typeof RowsInput
   const needle = input.text?.toLowerCase();
   const picked = statement.rows.filter(
     (row) =>
+      (input.row === undefined || row.index === input.row) &&
       (input.group === undefined || input.group === "all" || groupOf(row.index) === input.group) &&
       (needle === undefined ||
         row.description.toLowerCase().includes(needle) ||
@@ -428,8 +442,12 @@ const runRows = Effect.fnUntraced(function* (lead: Lead, input: typeof RowsInput
       return {
         row: row.index,
         date: row.date,
-        description: row.description,
-        ...(row.reference === null ? {} : { reference: row.reference }),
+        description: bankSaid(row.description),
+        ...(row.reference === null
+          ? {}
+          : {
+              reference: bankSaid(input.row === undefined ? masked(row.reference) : row.reference),
+            }),
         amount: formatMoney({ minor: row.amountMinor, currency }),
         direction: row.direction,
         ...(row.balanceMinor === null || row.balanceMinor < 0
