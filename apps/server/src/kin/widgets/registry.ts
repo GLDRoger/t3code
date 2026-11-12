@@ -1,4 +1,5 @@
 import {
+  KinChartCardState,
   KinChatError,
   KinChoiceCardState,
   KinDocCardState,
@@ -15,6 +16,7 @@ const schemas = new Map<string, Schema.Codec<unknown>>([
   ["deferral", KinDeferralCard],
   ["choice", KinChoiceCardState],
   ["doc", KinDocCardState],
+  ["chart", KinChartCardState],
 ]);
 
 export const validateState = Effect.fn("KinWidgetRegistry.validateState")(function* (

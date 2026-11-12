@@ -10,6 +10,7 @@ import {
   kinCardView,
 } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { KinApprovalCard } from "./KinApprovalCard";
+import { KinChart } from "./KinChart";
 import { KinChoiceCard } from "./KinChoiceCard";
 import { KinDeferralCard } from "./KinDeferralCard";
 import { KinDigestCard } from "./KinDigestCard";
@@ -46,6 +47,12 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
           environmentId={props.environmentId}
           viewerPersonId={props.viewerPersonId}
         />
+      );
+    case "chart":
+      return (
+        <View className="rounded-[20px] border border-border bg-card-alt p-4">
+          <KinChart view={view.chart} />
+        </View>
       );
     case "digest":
       return <KinDigestCard digest={view.digest} onOpenLink={props.onOpenLink} />;

@@ -327,8 +327,9 @@ it.effect.each([true, false])(
         // Every tool a lead can call says what it may do where others read; a tool added later
         // without a line is refused there, and the table names no tool that isn't served.
         assert.sameMembers(toolNames, Object.keys(SHARED_TOOLS));
-        // Four Work tools joined with slice 1 of Work, nine doc tools with Docs (`work/mcp/`).
-        assert.lengthOf(toolNames, 37);
+        // Four Work tools joined the lead toolkit with slice 1 of Work (`work/mcp/tools.ts`),
+        // `kin_chart` after them, and nine doc tools with Docs (`work/mcp/docTools.ts`).
+        assert.lengthOf(toolNames, 38);
         assert.isFalse(
           yield* sharedToolAllowed(
             { orgId: person.orgId, agentId, wakeupId: "any" },

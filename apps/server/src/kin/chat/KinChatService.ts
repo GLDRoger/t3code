@@ -66,6 +66,7 @@ import * as SecureRandom from "effect/crypto/SecureRandom";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { validateState } from "../widgets/registry.ts";
 import { deferralCardActions, deferralCardActionsReady } from "../widgets/deferralCard.ts";
+import * as ChartCard from "../widgets/chartCard.ts";
 import * as ChoiceCard from "../widgets/choiceCard.ts";
 import { undoDeferral } from "../triggers/KinTriggerService.ts";
 import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
@@ -248,6 +249,16 @@ export class KinChatService extends Context.Service<
         readonly clientMessageId: string;
         readonly type: typeof KIN_DOC_CARD;
         readonly state: unknown;
+      },
+    ) => Effect.Effect<KinWidget, ServiceError>;
+    /** `kin_chart`'s card: the agent's own message in that chat, limited like any other post. */
+    readonly chart: (
+      identity: AgentIdentity,
+      input: ChartCard.ChartInput & {
+        readonly chatId: KinChatId;
+        readonly clientMessageId: string;
+        /** The intent the turn's text reply carries: an answer, or evidence when nobody asked. */
+        readonly intent: "answer" | "evidence";
       },
     ) => Effect.Effect<KinWidget, ServiceError>;
     readonly addWaiting: (
@@ -641,6 +652,7 @@ const make = Effect.gen(function* () {
     request: KinWidgetsActInput,
     reaction: { readonly emoji: KinReactionEmoji } | null,
   ) {
+    if (widget.type === "chart") return yield* invalidState;
     const choice = widget.type === "choice" ? yield* ChoiceCard.readChoice(widget, request) : null;
     const reminder =
       widget.type === "reminder"
@@ -951,6 +963,104 @@ const make = Effect.gen(function* () {
       yield* floor.recordNotice(identity, message);
     return message;
   }, transaction);
+  // An agent's card that is its own message: `kin_ask`'s question and `kin_chart`'s chart.
+  const postCard = Effect.fn("KinChatService.postCard")(function* (
+    identity: AgentIdentity,
+    input: {
+      readonly chatId: KinChatId;
+      readonly clientMessageId: string;
+      readonly type: "choice" | "chart" | typeof KIN_DOC_CARD;
+      readonly intent: KinAgentIntent;
+      readonly state: Effect.Effect<unknown, KinChatError>;
+    },
+  ) {
+    const member = yield* memberFor(identity, input.chatId);
+    yield* canWrite(identity, member);
+    const state = yield* input.state;
+    const existing = yield* repo.findClientMessage({
+      orgId: identity.orgId,
+      chatId: input.chatId,
+      memberId: member.memberId,
+      kind: "send",
+      clientId: input.clientMessageId,
+    });
+    if (Option.isSome(existing)) {
+      const widget =
+        existing.value.widgetId === null
+          ? Option.none<KinWidget>()
+          : yield* repo.getWidget({ orgId: identity.orgId, widgetId: existing.value.widgetId });
+      if (Option.isNone(widget) || widget.value.type !== input.type) return yield* notAllowed;
+      return widget.value;
+    }
+    const chat = yield* requireRecord(repo.getChat(member));
+    const used = yield* repo.wakeupPosts({
+      orgId: identity.orgId,
+      chatId: input.chatId,
+      agentId: identity.agentId,
+      threadId: identity.threadId,
+    });
+    if (used.messages >= KIN_WAKEUP_MESSAGE_LIMIT)
+      return yield* new KinChatError({
+        reason: "limit",
+        message: "This wake-up has posted all it may in this chat.",
+      });
+    const authorization = yield* floor.authorize(identity, chat, input.intent);
+    const message = yield* post(identity, member, {
+      chatId: input.chatId,
+      body: "",
+      intent: input.intent,
+      kind: "text",
+      mentions: [],
+      replyTo: null,
+      widgetId: null,
+      floorRunId: authorization.runId,
+      clientId: { kind: "send", id: input.clientMessageId },
+      publish: false,
+    });
+    if (authorization.runId === null) yield* floor.recordNotice(identity, message);
+    // Only a question waits on the people in the chat.
+    const awaiting = (input.type === "choice" ? yield* repo.listMembers(member) : []).flatMap(
+      (row) =>
+        row.leftAt === null && row.role !== "guest" && row.principal._tag === "person"
+          ? [row.principal.personId]
+          : [],
+    );
+    const widget: KinWidget = {
+      orgId: identity.orgId,
+      chatId: input.chatId,
+      widgetId: yield* decodeWidgetId(`${input.type}:${message.messageId}`).pipe(Effect.orDie),
+      messageId: message.messageId,
+      widgetClass: "native",
+      type: input.type,
+      revision: 1,
+      state,
+      source: null,
+      feed: null,
+      awaiting,
+      pinnedAt: null,
+      closedAt: null,
+      updatedAt: yield* now,
+    };
+    yield* repo.insertWidget({ ...widget, audience: yield* authorAudience(identity) });
+    const anchor = yield* requireRecord(
+      repo.getMessage({ orgId: identity.orgId, messageId: message.messageId }),
+    );
+    for (const personId of new Set(awaiting))
+      yield* add(identity, {
+        chatId: widget.chatId,
+        personId,
+        messageId: widget.messageId,
+        widgetId: widget.widgetId,
+        reason: "question",
+      });
+    yield* sql.afterCommit(
+      Effect.andThen(
+        hub.publish({ type: "message.posted", orgId: identity.orgId, message: anchor }),
+        hub.publish({ type: "widget.updated", orgId: identity.orgId, widget }),
+      ),
+    );
+    return widget;
+  });
   return KinChatService.of({
     // Trusted server callers only; deliberately absent from RPC and MCP.
     notice: Effect.fn("KinChatService.notice")(function* (input) {
@@ -1801,6 +1911,8 @@ const make = Effect.gen(function* () {
         input.type === "choice" ||
         // Only the doc tools post one, from the stored doc.
         input.type === KIN_DOC_CARD ||
+        // Only kin_chart posts one, and it never changes.
+        input.type === "chart" ||
         (input.type === "task" && input.widgetId === undefined)
       )
         return yield* notAllowed;
@@ -2127,161 +2239,41 @@ const make = Effect.gen(function* () {
         });
       return reaction;
     }, transaction),
-    ask: Effect.fn("KinChatService.ask")(function* (identity, input) {
-      const member = yield* memberFor(identity, input.chatId);
-      yield* canWrite(identity, member);
-      const state = yield* validateState("choice", ChoiceCard.choiceCardState(input));
-      const existing = yield* repo.findClientMessage({
-        orgId: identity.orgId,
-        chatId: input.chatId,
-        memberId: member.memberId,
-        kind: "send",
-        clientId: input.clientMessageId,
-      });
-      if (Option.isSome(existing)) {
-        const widget =
-          existing.value.widgetId === null
-            ? Option.none<KinWidget>()
-            : yield* repo.getWidget({ orgId: identity.orgId, widgetId: existing.value.widgetId });
-        if (Option.isNone(widget) || widget.value.type !== "choice") return yield* notAllowed;
-        return widget.value;
-      }
-      const chat = yield* requireRecord(repo.getChat(member));
-      const used = yield* repo.wakeupPosts({
-        orgId: identity.orgId,
-        chatId: input.chatId,
-        agentId: identity.agentId,
-        threadId: identity.threadId,
-      });
-      if (used.messages >= KIN_WAKEUP_MESSAGE_LIMIT)
-        return yield* new KinChatError({
-          reason: "limit",
-          message: "This wake-up has posted all it may in this chat.",
-        });
-      const authorization = yield* floor.authorize(identity, chat, "question");
-      const message = yield* post(identity, member, {
-        chatId: input.chatId,
-        body: "",
-        intent: "question",
-        kind: "text",
-        mentions: [],
-        replyTo: null,
-        widgetId: null,
-        floorRunId: authorization.runId,
-        clientId: { kind: "send", id: input.clientMessageId },
-        publish: false,
-      });
-      if (authorization.runId === null) yield* floor.recordNotice(identity, message);
-      const awaiting = (yield* repo.listMembers(member)).flatMap((row) =>
-        row.leftAt === null && row.role !== "guest" && row.principal._tag === "person"
-          ? [row.principal.personId]
-          : [],
-      );
-      const widget: KinWidget = {
-        orgId: identity.orgId,
-        chatId: input.chatId,
-        widgetId: yield* decodeWidgetId(`choice:${message.messageId}`).pipe(Effect.orDie),
-        messageId: message.messageId,
-        widgetClass: "native",
-        type: "choice",
-        revision: 1,
-        state,
-        source: null,
-        feed: null,
-        awaiting,
-        pinnedAt: null,
-        closedAt: null,
-        updatedAt: yield* now,
-      };
-      yield* repo.insertWidget({ ...widget, audience: yield* authorAudience(identity) });
-      const anchor = yield* requireRecord(
-        repo.getMessage({ orgId: identity.orgId, messageId: message.messageId }),
-      );
-      for (const personId of new Set(awaiting))
-        yield* add(identity, {
-          chatId: widget.chatId,
-          personId,
-          messageId: widget.messageId,
-          widgetId: widget.widgetId,
-          reason: "question",
-        });
-      yield* sql.afterCommit(
-        Effect.andThen(
-          hub.publish({ type: "message.posted", orgId: identity.orgId, message: anchor }),
-          hub.publish({ type: "widget.updated", orgId: identity.orgId, widget }),
-        ),
-      );
-      return widget;
-    }, transaction),
-    showCard: Effect.fn("KinChatService.showCard")(function* (identity, input) {
-      const member = yield* memberFor(identity, input.chatId);
-      yield* canWrite(identity, member);
-      const state = yield* validateState(input.type, input.state);
-      const existing = yield* repo.findClientMessage({
-        orgId: identity.orgId,
-        chatId: input.chatId,
-        memberId: member.memberId,
-        kind: "send",
-        clientId: input.clientMessageId,
-      });
-      if (Option.isSome(existing)) {
-        const widget =
-          existing.value.widgetId === null
-            ? Option.none<KinWidget>()
-            : yield* repo.getWidget({ orgId: identity.orgId, widgetId: existing.value.widgetId });
-        if (Option.isNone(widget) || widget.value.type !== input.type) return yield* notAllowed;
-        return widget.value;
-      }
-      const used = yield* repo.wakeupPosts({
-        orgId: identity.orgId,
-        chatId: input.chatId,
-        agentId: identity.agentId,
-        threadId: identity.threadId,
-      });
-      if (used.messages >= KIN_WAKEUP_MESSAGE_LIMIT)
-        return yield* new KinChatError({
-          reason: "limit",
-          message: "This wake-up has posted all it may in this chat.",
-        });
-      const message = yield* post(identity, member, {
-        chatId: input.chatId,
-        body: "",
-        intent: "answer",
-        kind: "text",
-        mentions: [],
-        replyTo: null,
-        widgetId: null,
-        clientId: { kind: "send", id: input.clientMessageId },
-        publish: false,
-      });
-      const widget: KinWidget = {
-        orgId: identity.orgId,
-        chatId: input.chatId,
-        widgetId: yield* decodeWidgetId(`${input.type}:${message.messageId}`).pipe(Effect.orDie),
-        messageId: message.messageId,
-        widgetClass: "native",
-        type: input.type,
-        revision: 1,
-        state,
-        source: null,
-        feed: null,
-        awaiting: [],
-        pinnedAt: null,
-        closedAt: null,
-        updatedAt: yield* now,
-      };
-      yield* repo.insertWidget({ ...widget, audience: yield* authorAudience(identity) });
-      const anchor = yield* requireRecord(
-        repo.getMessage({ orgId: identity.orgId, messageId: message.messageId }),
-      );
-      yield* sql.afterCommit(
-        Effect.andThen(
-          hub.publish({ type: "message.posted", orgId: identity.orgId, message: anchor }),
-          hub.publish({ type: "widget.updated", orgId: identity.orgId, widget }),
-        ),
-      );
-      return widget;
-    }, transaction),
+    ask: Effect.fn("KinChatService.ask")(
+      (identity, input) =>
+        postCard(identity, {
+          chatId: input.chatId,
+          clientMessageId: input.clientMessageId,
+          type: "choice",
+          intent: "question",
+          state: validateState("choice", ChoiceCard.choiceCardState(input)),
+        }),
+      transaction,
+    ),
+    chart: Effect.fn("KinChatService.chart")(
+      (identity, input) =>
+        postCard(identity, {
+          chatId: input.chatId,
+          clientMessageId: input.clientMessageId,
+          type: "chart",
+          intent: input.intent,
+          state: ChartCard.chartCardState(input).pipe(
+            Effect.flatMap((state) => validateState("chart", state)),
+          ),
+        }),
+      transaction,
+    ),
+    showCard: Effect.fn("KinChatService.showCard")(
+      (identity, input) =>
+        postCard(identity, {
+          chatId: input.chatId,
+          clientMessageId: input.clientMessageId,
+          type: input.type,
+          intent: "answer",
+          state: validateState(input.type, input.state),
+        }),
+      transaction,
+    ),
     addWaiting: Effect.fn("KinChatService.addWaiting")(function* (identity, input) {
       yield* memberFor(identity, input.chatId);
       if (input.reason === "approval") return yield* notAllowed;

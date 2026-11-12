@@ -15,6 +15,7 @@ import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagem
 import { KinIdentity } from "../../chat/KinIdentity.ts";
 import * as RepoReads from "../../github/KinRepoReads.ts";
 import { MEMORY_RULE } from "../../memory/keeping.ts";
+import * as ChartCard from "../../widgets/chartCard.ts";
 import * as ChoiceCard from "../../widgets/choiceCard.ts";
 import * as Handoff from "../Handoff.ts";
 import { KinLevelGate } from "../LevelGate.ts";
@@ -92,6 +93,13 @@ export const KinLeadToolkit = Toolkit.make(
       "Ask a question with 2-4 tap-to-answer options in the chat your reply goes to. Use it when the answer is one of a few choices; otherwise ask in plain text. Mark a yes/no pair with kind. It counts as your reply, and the tap arrives later as their answer. A choice is never an approval: privileged actions still need request_action.",
     parameters: ChoiceCard.AskInput,
     success: ChoiceCard.AskResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("kin_chart", {
+    ...chat,
+    description:
+      'Put a small chart in the chat your reply goes to, when the answer is a trend or a comparison of three or more numbers: signups this week against last, spend by month. Not for one number or two, and not for a list of things: say those in text. It sits beside your reply, so still write the one-line takeaway. chart is line (change over time), bar (compare categories; several series sit side by side) or stacked_bar (parts of a total). unit is {kind: "count"}, {kind: "percent"} (12.5 means 12.5%) or {kind: "money", currency: "INR"} with every value in whole minor units (paise, cents): ₹1,299.50 is 129950. Never convert or round money yourself. labels has one entry per point, at most 24, each short; with labelType "day" they are YYYY-MM-DD, with "month" YYYY-MM, oldest first. series is one to four of {name, values}, values lined up with labels and null where there is none. To set one series against its previous period, send that one series and put the earlier period in comparison with the same labels. title says what it shows; caption is an optional line under it, such as the source or the period. Only numbers you have read or been given, never estimates. A refusal says what to change: fix that and call again.',
+    parameters: ChartCard.ChartInput,
+    success: ChartCard.ChartResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_react", {
     ...chat,
