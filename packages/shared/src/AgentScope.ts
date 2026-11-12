@@ -43,6 +43,8 @@ export interface AgentScopeCommand {
   readonly args: ReadonlyArray<string>;
   /** The systemd scope the command runs in, for `stop`. */
   readonly unit?: string | undefined;
+  /** Asked-for properties this systemd refuses; the scope starts without them. */
+  readonly refusedProperties?: ReadonlyArray<string> | undefined;
 }
 
 export const AgentScope = Context.Reference<AgentScopeShape>("@t3tools/shared/AgentScope", {

@@ -1,11 +1,7 @@
 import type { HookCallbackMatcher, SandboxSettings } from "@anthropic-ai/claude-agent-sdk";
 
 import type * as ClaudeAdapterV2 from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
-import {
-  type SessionCredentials,
-  sessionEnvironment,
-  withConfinementHook,
-} from "../claudeConfinement.ts";
+import { type SessionCredentials, withConfinementHook } from "../claudeConfinement.ts";
 
 /** A file-only worker's tools; Claude's file tools run outside the OS sandbox. */
 export const workTools = ["Read", "Grep", "Glob", "Edit", "Write"];
@@ -72,43 +68,77 @@ export const workOptionFields = new Set([
   "cwd",
 ]);
 
-/** Claude Code runs, sources or loads what these name, outside the sandbox or before each command. */
-const loaderVariables = new Set([
-  "CLAUDE_CODE_SHELL_PREFIX",
-  "CLAUDE_CODE_PROCESS_WRAPPER",
-  "CLAUDE_CODE_SHELL",
-  "CLAUDE_CODE_GIT_BASH_PATH",
-  "CLAUDE_ENV_FILE",
-  "CLAUDE_CODE_PLUGIN_DIRS",
-  "CLAUDE_CODE_PLUGIN_SEED_DIR",
-  "CLAUDE_CODE_PLUGIN_CACHE_DIR",
-]);
-// A file or directory the CLI or a credential SDK opens; relative, it would be the worktree's.
-const pathVariable = /(?:DIR|_FILE|_PATH|_CERTS?|_CREDENTIALS|^CLAUDE_CODE_CLIENT_KEY)$/;
+/** Copied from the server's environment when set; nothing else of it reaches a worker. */
+const keptVariables = [
+  "USER",
+  "LOGNAME",
+  "LANG",
+  "LANGUAGE",
+  "TZ",
+  "TERM",
+  "CLAUDE_CODE_ENTRYPOINT",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "ALL_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "all_proxy",
+];
+/** Copied only as absolute paths; relative, each would name a file in the worktree. */
+const keptPaths = ["SHELL", "TMPDIR", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR"];
+/** What a shell's commands still see; Claude Code sets their proxy variables and TMPDIR itself. */
+const commandVariables = new Set(["PATH", "HOME", ...keptVariables, ...keptPaths]);
+const commandSees = (name: string) =>
+  name.startsWith("LC_") || (commandVariables.has(name) && name !== "CLAUDE_CODE_ENTRYPOINT");
 
-/** Drops the variables above, and a relative path in a path variable. */
-const pinnedEnvironment = <A extends string | undefined>(
-  env: Readonly<Record<string, A>>,
-): Record<string, A> =>
-  Object.fromEntries(
-    Object.entries(env).filter(
-      ([name, value]) =>
-        !loaderVariables.has(name) &&
-        !(pathVariable.test(name) && value !== undefined && !value.startsWith("/")),
-    ),
-  );
+/** Per command and per task; Claude Code enforces the first two, `WorkerTracker` the last. */
+export const commandLimits = {
+  BASH_DEFAULT_TIMEOUT_MS: "120000",
+  BASH_MAX_TIMEOUT_MS: "600000",
+  BASH_MAX_OUTPUT_LENGTH: "30000",
+  // No `run_in_background`: a command ends before its tool call returns.
+  CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
+};
 
-/** Also keeps only absolute `PATH` entries, which Claude Code's own `git` and `rg` lookups use. */
-const processEnvironment = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
-  const pinned = pinnedEnvironment(env);
-  return pinned.PATH === undefined
-    ? pinned
-    : {
-        ...pinned,
-        PATH: pinned.PATH.split(":")
-          .filter((entry) => entry.startsWith("/"))
-          .join(":"),
-      };
+/** Where a worker's Claude Code keeps its state; neither is readable to a shell's commands. */
+export interface WorkerPlace {
+  /** An empty directory only Kin's server writes, or the real home where the login needs it. */
+  readonly home: string;
+  /** The provider's Claude home, absolute, holding the owner's login; unset for the default. */
+  readonly configDir: string | undefined;
+}
+
+/**
+ * A worker's whole environment, built from nothing: absolute `PATH` entries, a private `HOME`,
+ * locale, terminal and proxy basics, and Claude Code's own settings. Credentials travel in the
+ * session's settings `env`, never here.
+ */
+const workerEnvironment = (
+  server: NodeJS.ProcessEnv,
+  place: WorkerPlace,
+  shell?: { readonly tmp: string; readonly runtimeBin: string | undefined },
+): Record<string, string> => {
+  const env: Record<string, string> = {};
+  for (const [name, value] of Object.entries(server))
+    if (value !== undefined && (keptVariables.includes(name) || name.startsWith("LC_")))
+      env[name] = value;
+  for (const name of keptPaths) {
+    const value = server[name];
+    if (value?.startsWith("/") === true) env[name] = value;
+  }
+  const path = (server.PATH ?? "").split(":").filter((entry) => entry.startsWith("/"));
+  // The server's own Node first: version-manager shims live in the home the shell can't read.
+  if (shell?.runtimeBin !== undefined) path.unshift(shell.runtimeBin);
+  return {
+    ...env,
+    PATH: path.join(":"),
+    HOME: place.home,
+    // No CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: it also refuses any command with a variable or loop.
+    ...(place.configDir === undefined ? {} : { CLAUDE_CONFIG_DIR: place.configDir }),
+    ...(shell === undefined ? {} : { ...commandLimits, CLAUDE_CODE_TMPDIR: shell.tmp }),
+  };
 };
 
 /** Also unsets `names` for every command: settings `env` reaches Claude Code's environment too. */
@@ -125,10 +155,15 @@ export interface WorkSession {
   readonly options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions;
   readonly credentials: SessionCredentials;
   readonly confinement: HookCallbackMatcher;
-  /** The server's environment, for a session the adapter gave none. */
+  /** The server's environment, for a session the adapter gave none; only `workerEnvironment` reads it. */
   readonly environment: NodeJS.ProcessEnv;
+  readonly place: WorkerPlace;
   readonly shell?:
-    | { readonly sandbox: SandboxSettings; readonly env: NodeJS.ProcessEnv }
+    | {
+        readonly sandbox: SandboxSettings;
+        readonly tmp: string;
+        readonly runtimeBin: string | undefined;
+      }
     | undefined;
 }
 
@@ -136,12 +171,12 @@ export interface WorkSession {
 export const workSessionOptions = (
   session: WorkSession,
 ): ClaudeAdapterV2.ClaudeAgentSdkQueryOptions => {
-  const { options, credentials, confinement, environment, shell } = session;
+  const { options, credentials, confinement, environment, place, shell } = session;
   const passed = Object.fromEntries(
     Object.entries(options).filter(([key]) => workOptionFields.has(key)),
   );
-  const { settings, extraArgs, env } = options;
-  const credentialEnv = pinnedEnvironment(credentials.env ?? {});
+  const { settings, extraArgs } = options;
+  const credentialEnv = credentials.env ?? {};
   const kept: Record<string, unknown> = {
     ...(typeof settings === "object" && settings !== null
       ? Object.fromEntries(Object.entries(settings).filter(([key]) => keptSettings.has(key)))
@@ -149,6 +184,7 @@ export const workSessionOptions = (
     ...(Object.keys(credentialEnv).length === 0 ? {} : { env: credentialEnv }),
   };
   const thinking = extraArgs?.["thinking-display"];
+  const env = workerEnvironment(options.env ?? environment, place, shell);
   return {
     // The thread identity (`sessionId` or `resume`) and model arrive in `passed`.
     ...(passed as ClaudeAdapterV2.ClaudeAgentSdkQueryOptions),
@@ -167,12 +203,17 @@ export const workSessionOptions = (
       append: shell === undefined ? workPreamble : shellPreamble,
     },
     hooks: withConfinementHook(undefined, confinement),
-    env: processEnvironment(
-      shell === undefined ? sessionEnvironment(env ?? environment) : shell.env,
-    ),
+    env,
     ...(shell === undefined
       ? {}
-      : { sandbox: denyVariables(shell.sandbox, Object.keys(credentialEnv)) }),
+      : {
+          sandbox: denyVariables(shell.sandbox, [
+            ...Object.keys(env)
+              .filter((name) => !commandSees(name))
+              .toSorted(),
+            ...Object.keys(credentialEnv),
+          ]),
+        }),
     ...(Object.keys(kept).length === 0 ? {} : { settings: kept }),
     ...(thinking === undefined ? {} : { extraArgs: { "thinking-display": thinking } }),
   };

@@ -36,6 +36,21 @@ export const KinWorkerNetworkInput = Schema.Struct({ orgId: KinOrgId });
 export type KinWorkerNetworkInput = typeof KinWorkerNetworkInput.Type;
 export const KinWorkerNetworkChange = Schema.Struct({ orgId: KinOrgId, host: KinWorkerHost });
 export type KinWorkerNetworkChange = typeof KinWorkerNetworkChange.Type;
+/** Removal also takes a refused entry's host as stored, which no longer passes `KinWorkerHost`. */
+export const KinWorkerNetworkRemoval = Schema.Struct({
+  orgId: KinOrgId,
+  host: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1024)),
+});
+export type KinWorkerNetworkRemoval = typeof KinWorkerNetworkRemoval.Type;
+
+/** A stored entry today's rules refuse; workers never get it, and removing it deletes it. */
+export const KinWorkerNetworkRefused = Schema.Struct({
+  host: Schema.String,
+  /** What the entry was: an addition, or the removal of a host. */
+  allowed: Schema.Boolean,
+  reason: Schema.String,
+});
+export type KinWorkerNetworkRefused = typeof KinWorkerNetworkRefused.Type;
 
 export const KinWorkerNetworkEntry = Schema.Struct({
   host: KinWorkerHost,
@@ -61,7 +76,8 @@ export const KinWorkerLimits = Schema.Struct({
 export type KinWorkerLimits = typeof KinWorkerLimits.Type;
 
 export const KinWorkerSandboxStatus = Schema.Struct({
-  state: Schema.Literals(["shell", "file_only", "unchecked"]),
+  /** `refused`: workers don't start here at all, not even with file tools; `reason` says why. */
+  state: Schema.Literals(["shell", "file_only", "refused", "unchecked"]),
   reason: Schema.String,
   /** Epoch ms of the check. */
   checkedAt: Schema.NullOr(Schema.Number),
@@ -72,6 +88,8 @@ export const KinWorkerSandboxStatus = Schema.Struct({
   namesBlockedHosts: Schema.NullOr(Schema.Boolean),
   /** Null where the host gives agents no systemd scope (macOS, no user manager), or unknown. */
   limits: Schema.NullOr(KinWorkerLimits),
+  /** Why limits are off, or which systemd refused; null when all apply or nothing is known. */
+  limitsNote: Schema.NullOr(Schema.String),
 });
 export type KinWorkerSandboxStatus = typeof KinWorkerSandboxStatus.Type;
 
@@ -81,6 +99,8 @@ export const KinWorkerNetwork = Schema.Struct({
   allowed: Schema.Array(KinWorkerNetworkEntry),
   /** Hosts the owner removed from Kin's defaults or the host's extras; allowing one restores it. */
   removed: Schema.Array(KinWorkerHost),
+  /** Stored entries that no longer pass validation, so the owner can see and remove them. */
+  refused: Schema.Array(KinWorkerNetworkRefused),
   sandbox: KinWorkerSandboxStatus,
 });
 export type KinWorkerNetwork = typeof KinWorkerNetwork.Type;
@@ -99,7 +119,7 @@ export const KinWorkerNetworkRpcs = [
     error: KinError,
   }),
   Rpc.make("kin.workers.network.remove", {
-    payload: KinWorkerNetworkChange,
+    payload: KinWorkerNetworkRemoval,
     success: KinWorkerNetwork,
     error: KinError,
   }),

@@ -260,19 +260,34 @@ export const sessionEnvironment = (environment: NodeJS.ProcessEnv): NodeJS.Proce
 // How Claude reaches its model (a gateway, Bedrock, Vertex). Read from the owner's user settings
 // only, never a Kin checkout's project settings.
 const authEnv = /^(ANTHROPIC_|CLAUDE_CODE_USE_|CLOUD_ML_REGION$|AWS_|VERTEX_REGION)/;
-const UserAuthSettings = Schema.fromJsonString(
-  Schema.Struct({
-    apiKeyHelper: Schema.optional(Schema.String),
-    env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  }),
-);
-export type AuthSettings = { apiKeyHelper?: string; env?: Record<string, string> };
+// Settings keys whose command Claude Code runs to get cloud or proxy credentials.
+const credentialCommands = [
+  "awsAuthRefresh",
+  "awsCredentialExport",
+  "gcpAuthRefresh",
+  "proxyAuthHelper",
+] as const;
+const AuthFields = Schema.Struct({
+  apiKeyHelper: Schema.optional(Schema.String),
+  env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  awsAuthRefresh: Schema.optional(Schema.Unknown),
+  awsCredentialExport: Schema.optional(Schema.Unknown),
+  gcpAuthRefresh: Schema.optional(Schema.Unknown),
+  proxyAuthHelper: Schema.optional(Schema.Unknown),
+});
+const UserAuthSettings = Schema.fromJsonString(AuthFields);
+export type AuthSettings = {
+  apiKeyHelper?: string;
+  env?: Record<string, string>;
+  /** The credential commands the owner's settings name; a worker refuses to start with any. */
+  commands?: ReadonlyArray<string>;
+};
 
 /**
  * The owner's model credentials from their user settings, for a session that loads no settings
  * file: user settings also carry hooks, plugins and env that a Kin session must not inherit.
  */
-const ownerAuth = Effect.fn("KinClaudeConfinement.ownerAuth")(function* (
+export const ownerAuth = Effect.fn("KinClaudeConfinement.ownerAuth")(function* (
   env: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions["env"],
 ) {
   const fs = yield* FileSystem.FileSystem;
@@ -282,11 +297,49 @@ const ownerAuth = Effect.fn("KinClaudeConfinement.ownerAuth")(function* (
     Effect.flatMap(Schema.decodeUnknownEffect(UserAuthSettings)),
     Effect.orElseSucceed(() => ({}) as AuthSettings),
   );
+  return authSettings(parsed);
+});
+
+const authSettings = (parsed: typeof AuthFields.Type): AuthSettings => {
   const authOnly = Object.entries(parsed.env ?? {}).filter(([key]) => authEnv.test(key));
-  const auth: AuthSettings = {
+  const commands = credentialCommands.filter((key) => parsed[key] !== undefined);
+  return {
     ...(parsed.apiKeyHelper === undefined ? {} : { apiKeyHelper: parsed.apiKeyHelper }),
     ...(authOnly.length === 0 ? {} : { env: Object.fromEntries(authOnly) }),
+    ...(commands.length === 0 ? {} : { commands }),
   };
+};
+
+/**
+ * Managed settings load whatever `settingSources` says, so their env and commands count as the
+ * owner's. Read from the platform's managed file and its drop-in directory.
+ */
+export const managedAuth = Effect.fn("KinClaudeConfinement.managedAuth")(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const platform = yield* HostProcess.Platform;
+  const directory =
+    platform === "darwin"
+      ? "/Library/Application Support/ClaudeCode"
+      : platform === "win32"
+        ? "C:\\Program Files\\ClaudeCode"
+        : "/etc/claude-code";
+  const dropIns = yield* fs.readDirectory(path.join(directory, "managed-settings.d")).pipe(
+    Effect.map((names) =>
+      names
+        .filter((name) => name.endsWith(".json"))
+        .toSorted()
+        .map((name) => path.join(directory, "managed-settings.d", name)),
+    ),
+    Effect.orElseSucceed((): Array<string> => []),
+  );
+  const auth: Array<AuthSettings> = [];
+  for (const file of [path.join(directory, "managed-settings.json"), ...dropIns]) {
+    const parsed = yield* fs
+      .readFileString(file)
+      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(UserAuthSettings)), Effect.option);
+    if (parsed._tag === "Some") auth.push(authSettings(parsed.value));
+  }
   return auth;
 });
 
@@ -295,19 +348,96 @@ export interface SessionCredentials {
   readonly env?: Readonly<Record<string, string>>;
 }
 
+/**
+ * The only variables a worker's model credential may set: a key or token and where it goes.
+ * Anything else that picks a model provider is refused instead (`cloudModes`).
+ */
+const credentialVariables = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_CUSTOM_HEADERS",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "ANTHROPIC_SMALL_FAST_MODEL",
+] as const;
+// Providers whose credential chains (AWS, Google, Azure) can run a configured command.
+const cloudModes =
+  /^CLAUDE_CODE_USE_(?:BEDROCK|VERTEX|FOUNDRY|MANTLE|ANTHROPIC_AWS|ANTHROPIC_GOOGLE_CLOUD|GATEWAY)$/;
+const isOn = (value: string | undefined) =>
+  value !== undefined && !["", "0", "false", "no", "off"].includes(value.trim().toLowerCase());
+
+export const workerCredentialProblem = "workers need a Claude login or an API key on this server";
+
+export type WorkerCredentials =
+  | { readonly _tag: "resolved"; readonly credentials: SessionCredentials }
+  | { readonly _tag: "refused"; readonly reason: string };
+
 const HELPER_LIMIT = Duration.seconds(30);
 const HELPER_OUTPUT_LIMIT = 16_384;
 
 /**
- * Runs the owner's `apiKeyHelper` from the home, with the server's environment, and returns its
- * output as the two variables Claude Code sends a helper's output as. Claude Code would run it
- * unsandboxed in the session's cwd: a relative helper in a worktree runs the repository's code.
+ * A worker's model credential, resolved here so the child resolves none: a key or token from
+ * the provider's environment or the owner's settings, the owner's `apiKeyHelper` run from the
+ * home, or nothing, for the owner's Claude login. Bedrock, Vertex, Foundry and credential
+ * commands are refused: their chains run what a config names, relative to the worktree.
  */
-export const resolveCredentials = Effect.fn("KinClaudeConfinement.resolveCredentials")(function* (
-  auth: AuthSettings,
+export const resolveWorkerCredentials = Effect.fn("KinClaudeConfinement.resolveWorkerCredentials")(
+  function* (input: {
+    readonly auth: AuthSettings;
+    readonly managed: ReadonlyArray<AuthSettings>;
+    readonly providerEnv: NodeJS.ProcessEnv;
+  }) {
+    const refused = (why: string): WorkerCredentials => ({
+      _tag: "refused",
+      reason: `${workerCredentialProblem} (${why})`,
+    });
+    const sources = [
+      { from: "kin-server's environment", env: input.providerEnv, commands: [] },
+      { from: "the owner's Claude settings", ...input.auth },
+      ...input.managed.map((auth) => ({ from: "Claude Code's managed settings", ...auth })),
+    ];
+    for (const source of sources) {
+      const mode = Object.keys(source.env ?? {}).find(
+        (name) => cloudModes.test(name) && isOn(source.env?.[name]),
+      );
+      if (mode !== undefined) return refused(`${source.from} set ${mode}`);
+      const command = source.commands?.[0];
+      if (command !== undefined) return refused(`${source.from} set ${command}`);
+    }
+    const managedHelper = input.managed.find((auth) => auth.apiKeyHelper !== undefined);
+    if (managedHelper !== undefined)
+      return refused("Claude Code's managed settings set apiKeyHelper");
+    // Claude Code applies settings `env` over its own environment.
+    const merged: Record<string, string | undefined> = {
+      ...input.providerEnv,
+      ...input.auth.env,
+      ...Object.assign({}, ...input.managed.map((auth) => auth.env ?? {})),
+    };
+    const env: Record<string, string> = {};
+    for (const name of credentialVariables) {
+      const value = merged[name];
+      if (value !== undefined && value.length > 0) env[name] = value;
+    }
+    const resolved = (credentials: Record<string, string>): WorkerCredentials => ({
+      _tag: "resolved",
+      credentials: Object.keys(credentials).length === 0 ? {} : { env: credentials },
+    });
+    const helper = input.auth.apiKeyHelper;
+    if (helper === undefined || env.ANTHROPIC_API_KEY !== undefined || env.ANTHROPIC_AUTH_TOKEN)
+      return resolved(env);
+    const key = yield* runKeyHelper(helper);
+    if (Option.isNone(key)) return refused("the owner's apiKeyHelper gave no key");
+    return resolved({ ...env, ANTHROPIC_API_KEY: key.value, ANTHROPIC_AUTH_TOKEN: key.value });
+  },
+);
+
+/** Runs the owner's `apiKeyHelper` from the home, with the server's environment. */
+const runKeyHelper = Effect.fn("KinClaudeConfinement.runKeyHelper")(function* (
+  apiKeyHelper: string,
 ) {
-  const { apiKeyHelper, env } = auth;
-  if (apiKeyHelper === undefined) return env === undefined ? {} : { env };
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const home = yield* HostProcess.HomeDirectory;
   const environment = yield* HostProcess.Environment;
@@ -339,14 +469,9 @@ export const resolveCredentials = Effect.fn("KinClaudeConfinement.resolveCredent
     Effect.map(Option.flatMap(Option.fromUndefinedOr)),
     Effect.orElseSucceed(() => Option.none<string>()),
   );
-  if (Option.isNone(key)) {
+  if (Option.isNone(key))
     yield* Effect.logWarning("The owner's apiKeyHelper gave a Kin work session no key");
-    return env === undefined ? {} : { env };
-  }
-  const credentials: SessionCredentials = {
-    env: { ...env, ANTHROPIC_API_KEY: key.value, ANTHROPIC_AUTH_TOKEN: key.value },
-  };
-  return credentials;
+  return key;
 });
 
 /** Built where the query runner is: a runner's `open` can't require the filesystem itself. */
@@ -362,6 +487,7 @@ export const makeConfiner = Effect.fn("KinClaudeConfinement.makeConfiner")(funct
         : fs.realPath(cwd).pipe(Effect.orElseSucceed(() => undefined)),
     ownerAuth: (env: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions["env"]) =>
       ownerAuth(env).pipe(Effect.provide(context)),
+    managedAuth: managedAuth().pipe(Effect.provide(context)),
     /**
      * A `PreToolUse` hook runs in this process before Claude Code's permission modes, so its deny
      * holds under bypassPermissions too. `block` refuses the call if the hook throws or times out.

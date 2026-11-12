@@ -8,12 +8,17 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { ServerConfig } from "../../config.ts";
 import * as ClaudeAdapterV2 from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import { workerCredentialProblem } from "../claudeConfinement.ts";
 import { hookAllows, kinSecretVariables } from "../claudeConfinement.testkit.ts";
 import * as WorkIsolation from "./WorkIsolation.ts";
 import * as WorkSandbox from "./workSandbox.ts";
@@ -153,9 +158,16 @@ it.live(
           permissions: { allow: ["Bash"] },
         }),
       );
+      // A hostile server environment: whatever it holds, only the allow-list's names arrive.
       const env = {
         CLAUDE_CONFIG_DIR: configDir,
         PATH: ".:bin::/usr/bin",
+        LANG: "C.UTF-8",
+        LC_ALL: "C",
+        TERM: "xterm",
+        SHELL: "bash",
+        TMPDIR: "tmp",
+        HTTPS_PROXY: "http://proxy.test:3128",
         // Claude Code runs, sources or loads what each of these names.
         CLAUDE_CODE_SHELL_PREFIX: "/repo/wrap.sh",
         CLAUDE_CODE_PROCESS_WRAPPER: "/repo/launch",
@@ -165,6 +177,38 @@ it.live(
         CLAUDE_CODE_PLUGIN_SEED_DIR: "/repo/seed",
         CLAUDE_CODE_PLUGIN_CACHE_DIR: "/repo/cache",
         CLAUDE_CODE_CLIENT_CERT: "./cert.pem",
+        CLAUDE_CODE_USE_POWERSHELL_TOOL: "1",
+        // Credential chains and loaders of every kind a toolchain reads.
+        AWS_CONFIG_FILE: "./aws-config",
+        AWS_SHARED_CREDENTIALS_FILE: "/home/kin/.aws/credentials",
+        AWS_PROFILE: "work",
+        AWS_REGION: "us-east-1",
+        GOOGLE_APPLICATION_CREDENTIALS: "./gcp.json",
+        GCLOUD_PROJECT: "p",
+        CLOUDSDK_CONFIG: "./gcloud",
+        AZURE_CONFIG_DIR: "./azure",
+        KUBECONFIG: "./kube",
+        DOCKER_CONFIG: "./docker",
+        NPM_CONFIG_USERCONFIG: "./npmrc",
+        NODE_OPTIONS: "--require ./evil.js",
+        NODE_PATH: "./lib",
+        LD_PRELOAD: "./evil.so",
+        LD_LIBRARY_PATH: "./lib",
+        DYLD_INSERT_LIBRARIES: "./evil.dylib",
+        GIT_DIR: "./.git",
+        GIT_CONFIG_GLOBAL: "./gitconfig",
+        GIT_SSH_COMMAND: "sh ./ssh.sh",
+        SSH_AUTH_SOCK: "/run/user/1000/ssh",
+        GPG_AGENT_INFO: "/run/user/1000/gnupg",
+        GNUPGHOME: "./gnupg",
+        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
+        XDG_CONFIG_HOME: "./config",
+        XDG_RUNTIME_DIR: "/run/user/1000",
+        BASH_ENV: "./bashrc",
+        ENV: "./shrc",
+        PYTHONSTARTUP: "./startup.py",
+        PERL5OPT: "-Mevil",
+        RUBYOPT: "-revil",
         ...Object.fromEntries(kinSecretVariables.map((name) => [name, "secret"])),
       };
       const inputs: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOpenInput> = [];
@@ -173,7 +217,10 @@ it.live(
         env,
         hooks: { PreToolUse: [{ hooks: [callerHook] }] },
         inputs,
-      }).pipe(Effect.provideService(HostProcess.HomeDirectory, home));
+      }).pipe(
+        Effect.provideService(HostProcess.HomeDirectory, home),
+        Effect.provideService(HostProcess.Platform, "linux"),
+      );
       const other = yield* opened("thread-1", { cwd: tree, env });
 
       const setByWrapper = new Set([
@@ -223,7 +270,17 @@ it.live(
       });
       assert.notInclude(JSON.stringify(work), "key-helper");
       assert.isFalse(yield* fs.exists(`${root}/helper-ran`));
-      assert.deepStrictEqual(work.env, { CLAUDE_CONFIG_DIR: configDir, PATH: "/usr/bin" });
+      // Built from nothing: the private home, the provider's Claude home for the login, absolute
+      // PATH entries and the locale, terminal and proxy basics.
+      assert.deepStrictEqual(work.env, {
+        LANG: "C.UTF-8",
+        LC_ALL: "C",
+        TERM: "xterm",
+        HTTPS_PROXY: "http://proxy.test:3128",
+        PATH: "/usr/bin",
+        HOME: "/nonexistent/kin-worker-home",
+        CLAUDE_CONFIG_DIR: configDir,
+      });
       // Its own systemd scope gets the worker's limits.
       assert.deepStrictEqual(
         inputs[0]?.scopeProperties,
@@ -377,8 +434,7 @@ it.effect(
         allowUnsandboxedCommands: false,
         credentials: { envVars: [{ name: "ANTHROPIC_BASE_URL", mode: "deny" as const }] },
       };
-      const env = { PATH: "/usr/bin", CLAUDE_CODE_TMPDIR: "/tmp/kin-task" };
-      const asked: Array<string> = [];
+      const asked: Array<string | undefined> = [];
       const proven = Layer.succeed(
         WorkSandbox.KinWorkSandbox,
         WorkSandbox.KinWorkSandbox.of({
@@ -386,8 +442,10 @@ it.effect(
             asked.push(input.worktree);
             return Effect.succeed({
               _tag: "shell",
+              place: { home: "/state/kin/worker-home", configDir: configDir },
               sandbox,
-              env,
+              tmp: "/tmp/kin-task",
+              runtimeBin: undefined,
               release: Effect.void,
               noteMessage: () => Effect.void,
             } as const);
@@ -408,14 +466,24 @@ it.effect(
       assert.deepStrictEqual(work.sandbox, {
         ...sandbox,
         credentials: {
-          envVars: ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"].map((name) => ({
-            name,
-            mode: "deny" as const,
-          })),
+          envVars: [
+            "ANTHROPIC_BASE_URL",
+            ...Object.keys(WorkSession.commandLimits).toSorted(),
+            "CLAUDE_CODE_TMPDIR",
+            "CLAUDE_CONFIG_DIR",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+          ].map((name) => ({ name, mode: "deny" as const })),
         },
       });
       assert.notProperty(work.settings ?? {}, "sandbox");
-      assert.deepStrictEqual(work.env, env);
+      assert.deepStrictEqual(work.env, {
+        PATH: "/usr/bin",
+        HOME: "/state/kin/worker-home",
+        CLAUDE_CONFIG_DIR: configDir,
+        ...WorkSession.commandLimits,
+        CLAUDE_CODE_TMPDIR: "/tmp/kin-task",
+      });
       assert.deepStrictEqual(work.settingSources, []);
       assert.strictEqual(work.strictMcpConfig, true);
       assert.isUndefined(work.mcpServers);
@@ -445,5 +513,96 @@ it.effect(
       asked.length = 0;
       yield* opened("thread-1", { cwd: tree, sandbox: proven });
       assert.deepStrictEqual(asked, []);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "a server set up for Bedrock, Vertex or a credential command starts no worker, and says why",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const { root, tree } = yield* worktree();
+      const configDir = yield* fs.makeTempDirectoryScoped();
+      // The reviewer's experiment: a relative credential_process that would run the worktree's
+      // script, unsandboxed, from Claude Code's AWS credential chain.
+      yield* fs.writeFileString(`${tree}/credential.sh`, `touch '${root}/credential-ran'\n`);
+      yield* fs.writeFileString(
+        `${root}/aws-config`,
+        "[profile kin]\ncredential_process = sh ./credential.sh\n",
+      );
+      const bedrock = {
+        CLAUDE_CONFIG_DIR: configDir,
+        PATH: "/usr/bin",
+        CLAUDE_CODE_USE_BEDROCK: "1",
+        AWS_CONFIG_FILE: `${root}/aws-config`,
+        AWS_PROFILE: "kin",
+        AWS_REGION: "us-east-1",
+      };
+      const settings = (value: object) =>
+        fs.writeFileString(`${configDir}/settings.json`, JSON.stringify(value));
+      const start = Effect.fn("WorkIsolationTest.start")(function* (env: NodeJS.ProcessEnv) {
+        const seen: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOpenInput> = [];
+        const base = Layer.succeed(
+          ClaudeAdapterV2.ClaudeAgentSdkQueryRunner,
+          ClaudeAdapterV2.ClaudeAgentSdkQueryRunner.of({
+            allocateSessionId: Effect.succeed("session"),
+            open: (input) =>
+              Effect.sync(() => seen.push(input)).pipe(Effect.andThen(Effect.die("unused"))),
+            forkSession: () => Effect.die("unused fork"),
+            subagentLaunchToolUseId: () => Effect.die("unused lookup"),
+            assertComplete: Effect.void,
+          }),
+        );
+        const sandbox = WorkSandbox.layer.pipe(
+          Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-refuse-" })),
+          Layer.provide(SecureRandom.layerWebCrypto),
+        );
+        return yield* Effect.gen(function* () {
+          const exit = yield* (yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner)
+            .open({
+              threadId: ThreadId.make("kin-work:wk-refused"),
+              providerSessionId: ProviderSessionId.make("session"),
+              options: { ...options, cwd: tree, env },
+            })
+            .pipe(Effect.exit);
+          const { stateDir } = yield* ServerConfig;
+          return { exit, seen, status: yield* WorkSandbox.readStatus(stateDir) };
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(WorkIsolation.claudeQueryRunnerWith(base, sandbox), sandbox),
+          ),
+        );
+      });
+      for (const [env, owner, why] of [
+        [bedrock, {}, "CLAUDE_CODE_USE_BEDROCK"],
+        [{ ...bedrock, CLAUDE_CODE_USE_BEDROCK: "true" }, {}, "CLAUDE_CODE_USE_BEDROCK"],
+        [{ CLAUDE_CONFIG_DIR: configDir }, { env: { CLAUDE_CODE_USE_VERTEX: "1" } }, "VERTEX"],
+        [{ CLAUDE_CONFIG_DIR: configDir, CLAUDE_CODE_USE_FOUNDRY: "1" }, {}, "FOUNDRY"],
+        [{ CLAUDE_CONFIG_DIR: configDir }, { awsAuthRefresh: "sh ./aws.sh" }, "awsAuthRefresh"],
+        [{ CLAUDE_CONFIG_DIR: configDir }, { gcpAuthRefresh: "sh ./gcp.sh" }, "gcpAuthRefresh"],
+      ] as const) {
+        yield* settings(owner);
+        const { exit, seen, status } = yield* start(env);
+        assert.isTrue(Exit.isFailure(exit), why);
+        // Not even a file-only session opens.
+        assert.deepStrictEqual(seen, [], why);
+        assert.isFalse(yield* fs.exists(`${root}/credential-ran`), why);
+        const recorded = Option.getOrUndefined(status);
+        assert.isTrue(recorded?.refused, why);
+        assert.isFalse(recorded?.shell, why);
+        assert.include(recorded?.reason ?? "", workerCredentialProblem, why);
+        assert.include(recorded?.reason ?? "", why, why);
+      }
+      // Switched off, the same server starts a worker; the AWS variables never reach it.
+      yield* settings({});
+      const { exit, seen } = yield* start({ ...bedrock, CLAUDE_CODE_USE_BEDROCK: "0" });
+      assert.isTrue(Exit.isFailure(exit));
+      assert.strictEqual(seen.length, 1);
+      assert.notInclude(
+        Object.keys(seen[0]?.options.env ?? {}).join(","),
+        "AWS_",
+        "no AWS variable reaches a worker",
+      );
+      assert.isFalse(yield* fs.exists(`${root}/credential-ran`));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

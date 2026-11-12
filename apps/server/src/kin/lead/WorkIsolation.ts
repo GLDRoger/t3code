@@ -5,7 +5,7 @@ import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Stream from "effect/Stream";
 
 import * as ClaudeAdapterV2 from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
-import { makeConfiner, resolveCredentials } from "../claudeConfinement.ts";
+import { makeConfiner, resolveWorkerCredentials } from "../claudeConfinement.ts";
 import * as WorkSandbox from "./workSandbox.ts";
 import { shellTools, workSessionOptions, workTools } from "./workSession.ts";
 import { isWorkThread } from "./workThread.ts";
@@ -31,22 +31,30 @@ export const claudeQueryRunnerWith = <E, R, E2, R2>(
         ...runner,
         open: Effect.fn("KinWorkIsolation.open")(function* (input) {
           if (!isWorkThread(input.threadId)) return yield* runner.open(input);
+          const environment = yield* HostProcess.Environment;
+          const providerEnv = input.options.env ?? environment;
           // The owner's helper runs here, never in the child, which would run it in the worktree.
-          const credentials = yield* resolveCredentials(
-            yield* confiner.ownerAuth(input.options.env),
-          ).pipe(Effect.provide(spawning));
+          const credentials = yield* resolveWorkerCredentials({
+            auth: yield* confiner.ownerAuth(input.options.env),
+            managed: yield* confiner.managedAuth,
+            providerEnv,
+          }).pipe(Effect.provide(spawning));
           // The worktree's real path; one that doesn't resolve leaves the file tools nothing.
           const root = yield* confiner.root(input.options.cwd);
-          const session = {
-            options: input.options,
+          const session = { options: input.options, credentials: {}, environment };
+          const prepared = yield* sandboxes.prepare({
+            threadId: input.threadId,
+            worktree: root,
+            session,
             credentials,
-            environment: yield* HostProcess.Environment,
-          };
-          const prepared =
-            root === undefined
-              ? undefined
-              : yield* sandboxes.prepare({ threadId: input.threadId, worktree: root, session });
-          const shell = prepared?._tag === "shell" ? prepared : undefined;
+          });
+          if (prepared._tag === "refused")
+            return yield* new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+              method: "kin.worker",
+              cause: new Error(prepared.reason),
+            });
+          const resolved = credentials._tag === "resolved" ? credentials.credentials : {};
+          const shell = prepared._tag === "shell" ? prepared : undefined;
           const confinement = confiner.hook({
             root,
             tools: shell === undefined ? workTools : shellTools,
@@ -55,7 +63,13 @@ export const claudeQueryRunnerWith = <E, R, E2, R2>(
           const opened = yield* runner
             .open({
               ...input,
-              options: workSessionOptions({ ...session, confinement, shell }),
+              options: workSessionOptions({
+                ...session,
+                credentials: resolved,
+                confinement,
+                place: prepared.place,
+                shell,
+              }),
               scopeProperties,
             })
             .pipe(Effect.onError(() => shell?.release ?? Effect.void));

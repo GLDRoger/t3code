@@ -336,6 +336,18 @@ function mergeClaudeStreamUsage(
 }
 export const CLAUDE_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(CLAUDE_PROVIDER);
 const CLAUDE_SCRIPT_EXTENSIONS = [".js", ".mjs", ".tsx", ".ts", ".jsx"];
+/** Runs what the SDK would spawn behind `launch`, which ends in a command taking it as arguments. */
+const scopedSpawn = (
+  launch: { readonly command: string; readonly args: ReadonlyArray<string> } | undefined,
+  spawnOptions: ClaudeSpawnOptions,
+): ClaudeSpawnOptions =>
+  launch === undefined
+    ? spawnOptions
+    : {
+        ...spawnOptions,
+        command: launch.command,
+        args: [...launch.args, spawnOptions.command, ...spawnOptions.args],
+      };
 // The SDK has no control-request deadline; the CLI waits up to 30 s per MCP server.
 const CLAUDE_MCP_REGISTRATION_TIMEOUT = "90 seconds";
 // Claude can consume a subagent result before the launching turn ends, leaving
@@ -1201,7 +1213,21 @@ export const layerQueryRunner: Layer.Layer<
           };
           // The SDK can prepend a scope wrapper to native binaries; script entries run through node.
           const binaryPath = queryOptions.pathToClaudeCodeExecutable;
+          // A session with its own limits is placed at spawn, whatever runs it, so none skips them.
+          const spawnLaunch =
+            input.scopeProperties === undefined || platform === "win32"
+              ? undefined
+              : yield* agentScope.wrap({
+                  command: "/usr/bin/env",
+                  // Only the scope's launcher needs it; the session gets the environment it asked for.
+                  args: ["-u", "XDG_RUNTIME_DIR"],
+                  name: "claude",
+                  threadId: input.threadId,
+                  env: queryOptions.env,
+                  properties: input.scopeProperties,
+                });
           const launch =
+            spawnLaunch !== undefined ||
             binaryPath === undefined ||
             CLAUDE_SCRIPT_EXTENSIONS.some((ext) => binaryPath.endsWith(ext))
               ? undefined
@@ -1221,7 +1247,7 @@ export const layerQueryRunner: Layer.Layer<
                   pathToClaudeCodeExecutable: launch.command,
                   executableArgs: [...launch.args, ...(queryOptions.executableArgs ?? [])],
                 };
-          const unit = launch?.unit;
+          const unit = launch?.unit ?? spawnLaunch?.unit;
           const stopScope =
             unit === undefined ? undefined : () => void runFork(agentScope.stop(unit));
           // Only a CLI that fails before its first message explains itself on
@@ -1259,7 +1285,7 @@ export const layerQueryRunner: Layer.Layer<
           let processExited = false;
           let processExit: Promise<void> | undefined;
           const spawnClaudeCodeProcess = (spawnOptions: ClaudeSpawnOptions) => {
-            const child = spawnProcess(spawnOptions);
+            const child = spawnProcess(scopedSpawn(spawnLaunch, spawnOptions));
             spawnedProcess = child;
             // A spawn that fails emits only "error".
             const releaseAgent = portDiscovery.trackAgent();

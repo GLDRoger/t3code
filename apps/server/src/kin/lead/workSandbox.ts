@@ -3,13 +3,16 @@ import * as NodeOS from "node:os";
 
 import type { SandboxSettings, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
+  ClaudeSettings,
+  CodexSettings,
   type KinWorkerLimits,
   type KinWorkerSandboxInstall,
   KinWorkerLimits as Limits,
   KinWorkerSandboxInstall as Install,
+  type ServerSettings,
   workerHostProblem,
 } from "@t3tools/contracts";
-import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
+import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import { AgentScope, type AgentScopeShape } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cause from "effect/Cause";
@@ -26,36 +29,15 @@ import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import { makeConfiner, sessionEnvironment } from "../claudeConfinement.ts";
+import { resolveClaudeHomePath } from "../../provider/Drivers/ClaudeHome.ts";
+import { resolveCodexHomeLayout } from "../../provider/Drivers/CodexHomeLayout.ts";
+import { makeConfiner, type WorkerCredentials } from "../claudeConfinement.ts";
 import { grantedHosts, noteBlocked, refusedHosts } from "./workNetwork.ts";
-import { type CheckResult, probe, type ShellPaths } from "./workSandboxProbe.ts";
-import { shellTools, type WorkSession } from "./workSession.ts";
+import { type CheckLine, type CheckResult, probe, type ShellPaths } from "./workSandboxProbe.ts";
+import { shellTools, type WorkerPlace, type WorkSession } from "./workSession.ts";
 import { workThreadPrefix } from "./workThread.ts";
 
 export type { CheckLine, CheckResult, ShellPaths } from "./workSandboxProbe.ts";
-
-/** Per command and per task; Claude Code enforces the first two, `WorkerTracker` the last. */
-const commandLimits = {
-  BASH_DEFAULT_TIMEOUT_MS: "120000",
-  BASH_MAX_TIMEOUT_MS: "600000",
-  BASH_MAX_OUTPUT_LENGTH: "30000",
-  // No `run_in_background`: a command ends before its tool call returns.
-  CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
-};
-
-/** A shell child's environment; the check runs with exactly this, plus its fake model's address. */
-const childEnvironment = (env: NodeJS.ProcessEnv, tmp: string, runtimeBin: string | undefined) => {
-  const session = sessionEnvironment(env);
-  return {
-    ...session,
-    ...commandLimits,
-    CLAUDE_CODE_TMPDIR: tmp,
-    // The server's own Node first: version-manager shims live in the home the shell can't read.
-    ...(runtimeBin === undefined
-      ? {}
-      : { PATH: [runtimeBin, session.PATH].filter(Boolean).join(":") }),
-  };
-};
 
 const GiB = 1024 ** 3;
 
@@ -116,36 +98,31 @@ export const hostShell = (env: NodeJS.ProcessEnv): HostShell => {
   return { _tag: "on", domains, readPaths };
 };
 
-// The shell keeps these; Claude Code sets its own proxy variables and TMPDIR for each command.
-const shellVariables = new Set([
-  "PATH",
-  "HOME",
-  "USER",
-  "LOGNAME",
-  "SHELL",
-  "LANG",
-  "LANGUAGE",
-  "TZ",
-  "TERM",
-  "TMPDIR",
-  "NODE_EXTRA_CA_CERTS",
-  "SSL_CERT_FILE",
-  "SSL_CERT_DIR",
-  "HTTP_PROXY",
-  "HTTPS_PROXY",
-  "NO_PROXY",
-  "ALL_PROXY",
-  "http_proxy",
-  "https_proxy",
-  "no_proxy",
-  "all_proxy",
-]);
+/** Readable by every shell: the system's programs, libraries and configuration. */
+const systemRoots: Partial<Record<NodeJS.Platform, ReadonlyArray<string>>> = {
+  linux: ["/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc", "/opt"],
+  // For `kin worker-shell --check` on a Mac; workers get no shell there.
+  darwin: [
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/System",
+    "/Library",
+    "/private/etc",
+    "/private/var/db",
+    "/opt",
+    "/dev",
+  ],
+};
 
-/** The child's sandbox. Every list is closed; nothing here comes from the worktree. */
+/**
+ * The child's sandbox. Reads are closed: everything is denied and only the worktree, the task's
+ * temp directory and `paths.readable` come back, minus `paths.denied` inside those. Every list
+ * is closed; nothing here comes from the worktree.
+ */
 export const sandboxSettings = (
   paths: ShellPaths,
   domains: ReadonlyArray<string>,
-  env: NodeJS.ProcessEnv,
 ): SandboxSettings => ({
   enabled: true,
   failIfUnavailable: true,
@@ -157,7 +134,8 @@ export const sandboxSettings = (
   allowAppleEvents: false,
   excludedCommands: [],
   filesystem: {
-    denyRead: [...paths.denied, paths.gitCommonDir],
+    // A narrower deny holds inside a wider allow, so `denied` stays shut in a readable root.
+    denyRead: ["/", ...paths.denied, paths.gitCommonDir],
     allowRead: [paths.worktree, paths.tmp, ...paths.readable],
     allowWrite: [paths.tmp],
     denyWrite: [paths.gitCommonDir, `${paths.worktree}/.git`],
@@ -170,12 +148,6 @@ export const sandboxSettings = (
     allowLocalBinding: false,
     allowMachLookup: [],
   },
-  credentials: {
-    envVars: Object.keys(env)
-      .filter((name) => !shellVariables.has(name) && !name.startsWith("LC_"))
-      .toSorted()
-      .map((name) => ({ name, mode: "deny" as const })),
-  },
 });
 
 /** Standard login and credential locations under a home, beside the provider homes. */
@@ -183,6 +155,7 @@ const credentialLocations = [
   ".ssh",
   ".gnupg",
   ".aws",
+  ".azure",
   ".config",
   ".netrc",
   ".docker",
@@ -199,43 +172,136 @@ const credentialLocations = [
 const isInside = (parent: string, child: string) =>
   child === parent || child.startsWith(parent.endsWith("/") ? parent : `${parent}/`);
 
-/** The Claude and Codex homes the server's own provider settings point at, as written there. */
+const decodeClaude = Schema.decodeUnknownOption(ClaudeSettings);
+const decodeCodex = Schema.decodeUnknownOption(CodexSettings);
+const noClaudeHome = { homePath: "" };
+
+/**
+ * Every Claude and Codex home the server's providers use, through each provider's own resolver
+ * and environment merge: the defaults, then each configured instance's. A home that doesn't
+ * exist yet is still named.
+ */
+export const providerHomes = Effect.fn("KinWorkSandbox.providerHomes")(function* (
+  settings: Pick<ServerSettings, "providerInstances"> | undefined,
+  hostEnv: NodeJS.ProcessEnv,
+) {
+  const codexHomes = Effect.fnUntraced(function* (config: CodexSettings, env: NodeJS.ProcessEnv) {
+    const fromEnv = env.CODEX_HOME?.trim();
+    const layout = yield* resolveCodexHomeLayout(
+      !config.homePath.trim() && !config.shadowHomePath.trim() && fromEnv
+        ? { ...config, homePath: fromEnv }
+        : config,
+    );
+    return [layout.sharedHomePath, layout.effectiveHomePath];
+  });
+  const defaultCodex = decodeCodex({});
+  const homes = [
+    yield* resolveClaudeHomePath(noClaudeHome, hostEnv),
+    ...(Option.isSome(defaultCodex) ? yield* codexHomes(defaultCodex.value, hostEnv) : []),
+  ];
+  for (const instance of Object.values(settings?.providerInstances ?? {})) {
+    if (instance.driver !== "claudeAgent" && instance.driver !== "codex") continue;
+    const env = yield* mergeProviderInstanceEnvironment(instance.environment, hostEnv);
+    if (instance.driver === "claudeAgent") {
+      const config = decodeClaude(instance.config ?? {});
+      homes.push(
+        yield* resolveClaudeHomePath(Option.isSome(config) ? config.value : noClaudeHome, env),
+      );
+    } else {
+      const config = decodeCodex(instance.config ?? {});
+      if (Option.isSome(config)) homes.push(...(yield* codexHomes(config.value, env)));
+    }
+  }
+  return [...new Set(homes.filter((home): home is string => home !== undefined))];
+});
+
+/** The homes a worker started now would protect, from the server's provider settings. */
 const configuredProviderHomes = Effect.fn("KinWorkSandbox.configuredProviderHomes")(function* (
   service: Option.Option<ServerSettingsService["Service"]>,
+  hostEnv: NodeJS.ProcessEnv,
 ) {
-  if (Option.isNone(service)) return [];
-  const settings = yield* service.value.getSettings.pipe(Effect.option);
-  if (Option.isNone(settings)) return [];
-  const homes: Array<string> = [];
-  for (const instance of Object.values(settings.value.providerInstances)) {
-    if (instance.driver !== "claudeAgent" && instance.driver !== "codex") continue;
-    const config =
-      typeof instance.config === "object" && instance.config !== null ? instance.config : {};
-    for (const field of ["homePath", "shadowHomePath"])
-      if (field in config) {
-        const value = (config as Record<string, unknown>)[field];
-        if (typeof value === "string" && value.trim().length > 0) homes.push(value.trim());
-      }
-    for (const variable of instance.environment ?? [])
-      if (
-        (variable.name === "CLAUDE_CONFIG_DIR" || variable.name === "CODEX_HOME") &&
-        typeof variable.value === "string"
-      )
-        homes.push(variable.value);
+  const settings = Option.isNone(service)
+    ? Option.none()
+    : yield* service.value.getSettings.pipe(Effect.option);
+  return yield* providerHomes(Option.getOrUndefined(settings), hostEnv);
+});
+
+const WALK_ENTRIES = 1_000_000;
+const WALK_DEPTH = 32;
+const WALK_CONCURRENCY = 64;
+
+/**
+ * Where links under `roots` lead outside the root they sit in, each such target walked in turn.
+ * Fails when a directory can't be listed or the walk passes its bounds: an unseen link could
+ * lead anywhere.
+ */
+const outwardTargets = Effect.fn("KinWorkSandbox.outwardTargets")(function* (
+  roots: ReadonlyArray<string>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const targets = new Set<string>();
+  let entries = 0;
+  const queue = [...roots];
+  while (queue.length > 0) {
+    const root = queue.shift()!;
+    const info = yield* fs.stat(root).pipe(Effect.option);
+    if (Option.isNone(info) || info.value.type !== "Directory") continue;
+    let frontier = [root];
+    for (let depth = 0; frontier.length > 0; depth++) {
+      if (depth > WALK_DEPTH)
+        return yield* Effect.fail(`${root} is nested too deep to check for links out`);
+      const listed = yield* Effect.forEach(
+        frontier,
+        (directory) =>
+          fs.readDirectoryEntries(directory).pipe(
+            Effect.map((found) => found.map((entry) => ({ entry, directory }))),
+            Effect.mapError(() => `${directory} can't be listed to check for links out`),
+          ),
+        { concurrency: WALK_CONCURRENCY },
+      );
+      const found = listed.flat();
+      entries += found.length;
+      if (entries > WALK_ENTRIES)
+        return yield* Effect.fail(`${root} holds too many files to check for links out`);
+      const leads = yield* Effect.forEach(
+        found.filter(({ entry }) => entry.type === "SymbolicLink"),
+        ({ entry, directory }) => {
+          const link = path.join(directory, entry.name);
+          // A dangling link still names where a later file would be read from.
+          return fs.realPath(link).pipe(
+            Effect.catch(() =>
+              fs.readLink(link).pipe(Effect.map((to) => path.resolve(directory, to))),
+            ),
+            Effect.mapError(() => `${link} can't be read to check where it leads`),
+          );
+        },
+        { concurrency: WALK_CONCURRENCY },
+      );
+      for (const target of leads)
+        if (!isInside(root, target) && !targets.has(target)) {
+          targets.add(target);
+          queue.push(target);
+        }
+      frontier = found.flatMap(({ entry, directory }) =>
+        entry.type === "Directory" ? [path.join(directory, entry.name)] : [],
+      );
+    }
   }
-  return homes;
+  return [...targets];
 });
 
 /**
- * Every root a shell must not read, as real paths: the home and state directories, each provider
- * home, the target of every link directly under the home, the standard credential locations, and
- * the shared temp and runtime directories. A readable path inside one, or holding one, fails.
+ * What a shell may read beside its worktree and temp directory, and the private places denied
+ * inside that: state, shared temp, provider homes, credential locations and wherever their links
+ * lead. A read path or the server's Node that holds or sits in one fails.
  */
 export const shellRoots = Effect.fn("KinWorkSandbox.shellRoots")(function* (input: {
   readonly home: string;
   readonly stateDir: string;
-  readonly env: NodeJS.ProcessEnv;
-  /** Provider homes from the server's settings, as written there (`~` allowed). */
+  /** Readable everywhere: `systemRoots` for the platform. */
+  readonly system: ReadonlyArray<string>;
+  /** Absolute, as each provider resolves them (`providerHomes`); missing ones included. */
   readonly providerHomes: ReadonlyArray<string>;
   readonly readPaths: ReadonlyArray<string>;
   readonly runtime: string | undefined;
@@ -247,35 +313,35 @@ export const shellRoots = Effect.fn("KinWorkSandbox.shellRoots")(function* (inpu
   const state = yield* real(input.stateDir);
   if (home === undefined || state === undefined)
     return yield* Effect.fail("the home or state directory doesn't resolve");
-  const absolute = (entry: string) => path.resolve(home, expandHomePath(entry.trim(), home));
-  const providerHomes = [
-    ...[input.env.CLAUDE_CONFIG_DIR, input.env.CODEX_HOME].filter(
-      (entry): entry is string => entry !== undefined && entry.trim().length > 0,
-    ),
-    ...input.providerHomes,
-  ].map(absolute);
+  const tmpRoot = (yield* real("/tmp")) ?? (yield* real(NodeOS.tmpdir()));
+  if (tmpRoot === undefined) return yield* Effect.fail("no temp directory resolves");
   const links = (yield* fs.readDirectoryEntries(home).pipe(Effect.orElseSucceed(() => [])))
     .filter((entry) => entry.type === "SymbolicLink")
     .map((entry) => path.join(home, entry.name));
-  const tmpRoot = (yield* real("/tmp")) ?? (yield* real(NodeOS.tmpdir()));
-  if (tmpRoot === undefined) return yield* Effect.fail("no temp directory resolves");
-  const resolved = yield* Effect.forEach(
-    [
-      ...providerHomes,
-      ...links,
-      ...credentialLocations.map((entry) => path.join(home, entry)),
-      "/var/tmp",
-      "/run",
-      "/var/run",
-      "/dev/shm",
-    ],
-    real,
-  );
-  const denied = [
-    ...new Set(
-      [home, state, tmpRoot, ...resolved].filter((entry): entry is string => entry !== undefined),
-    ),
+  const credentialDirs = [
+    ...input.providerHomes,
+    ...credentialLocations.map((entry) => path.join(home, entry)),
   ];
+  // Each by its name and, where it exists, its real path.
+  const spelled = Effect.fnUntraced(function* (entries: ReadonlyArray<string>) {
+    const found = yield* Effect.forEach(entries, (entry) =>
+      real(entry).pipe(Effect.map((target) => [path.resolve(entry), target])),
+    );
+    return [...new Set(found.flat().filter((entry): entry is string => entry !== undefined))];
+  });
+  const credentials = yield* spelled(credentialDirs);
+  const walked = yield* outwardTargets(credentials);
+  const privateRoots = [
+    ...new Set([
+      ...(yield* spelled([state, tmpRoot, ...links, "/var/tmp", "/run", "/var/run", "/dev/shm"])),
+      ...credentials,
+      ...walked,
+    ]),
+  ];
+  const holds = (target: string) =>
+    [home, ...privateRoots].find(
+      (root) => isInside(target, root) || (root !== home && isInside(root, target)),
+    );
   const readable: Array<string> = [];
   for (const entry of [
     ...(input.runtime === undefined ? [] : [input.runtime]),
@@ -283,27 +349,41 @@ export const shellRoots = Effect.fn("KinWorkSandbox.shellRoots")(function* (inpu
   ]) {
     const target = yield* real(entry);
     if (target === undefined) continue;
-    const reopens = denied.some(
-      (root) => isInside(target, root) || (root !== home && isInside(root, target)),
-    );
-    if (reopens)
+    if (holds(target) !== undefined)
       return yield* Effect.fail(`the readable path "${entry}" would reopen private data`);
     readable.push(target);
   }
-  return { denied, readable, tmpRoot };
+  const system: Array<string> = [];
+  for (const entry of input.system) {
+    const target = yield* real(entry);
+    if (target !== undefined && !system.includes(target)) system.push(target);
+  }
+  for (const root of system) {
+    const covered = [home, ...privateRoots].find((entry) => isInside(entry, root));
+    if (covered !== undefined)
+      return yield* Effect.fail(`${covered} would hide the system directory ${root}`);
+  }
+  const denied = [home, ...privateRoots].filter((entry) =>
+    system.some((root) => isInside(root, entry)),
+  );
+  return { denied, readable: [...system, ...readable], tmpRoot };
 });
 
 export type Prepared =
   | {
       readonly _tag: "shell";
+      readonly place: WorkerPlace;
       readonly sandbox: SandboxSettings;
-      readonly env: NodeJS.ProcessEnv;
+      readonly tmp: string;
+      readonly runtimeBin: string | undefined;
       /** Removes the task's private temp directory once its session closes. */
       readonly release: Effect.Effect<void>;
       /** Keeps the hosts a message says the network rule refused, for the worker's report. */
       readonly noteMessage: (message: SDKMessage) => Effect.Effect<void>;
     }
-  | { readonly _tag: "file-only"; readonly reason: string };
+  | { readonly _tag: "file-only"; readonly place: WorkerPlace; readonly reason: string }
+  /** The worker must not start at all; `reason` is the owner's. */
+  | { readonly _tag: "refused"; readonly reason: string };
 
 export const WorkShellStatus = Schema.Struct({
   checkedAt: Schema.Number,
@@ -313,6 +393,9 @@ export const WorkShellStatus = Schema.Struct({
   install: Schema.optional(Schema.Array(Install)),
   namesBlockedHosts: Schema.optional(Schema.Boolean),
   limits: Schema.optional(Schema.NullOr(Limits)),
+  limitsNote: Schema.optional(Schema.String),
+  /** Workers didn't start at all, not even with file tools. */
+  refused: Schema.optional(Schema.Boolean),
 });
 const statusJson = Schema.fromJsonString(WorkShellStatus);
 const statusFile = (stateDir: string) => `${stateDir}/kin/worker-shell.json`;
@@ -324,29 +407,67 @@ export const readStatus = Effect.fn("KinWorkSandbox.readStatus")(function* (stat
 });
 
 /** The session a worker would open, without a shell; the check runs these same options. */
-export type CheckedSession = Omit<WorkSession, "shell" | "confinement">;
+export type CheckedSession = Omit<WorkSession, "shell" | "confinement" | "place">;
 
-/** Decides, at each work session's start, whether its child may have a shell. */
+/** Decides, at each work session's start, whether its child may start, and with a shell. */
 export class KinWorkSandbox extends Context.Service<
   KinWorkSandbox,
   {
     readonly prepare: (input: {
       /** Kin's thread for the worker; its id names the hosts the server granted it. */
       readonly threadId: string;
-      readonly worktree: string;
+      /** The worktree's real path; `undefined` leaves the file tools nothing and no shell. */
+      readonly worktree: string | undefined;
       readonly session: CheckedSession;
+      readonly credentials: WorkerCredentials;
     }) => Effect.Effect<Prepared>;
   }
 >()("t3/kin/lead/workSandbox/KinWorkSandbox") {}
 
+const workerHome = (stateDir: string) => `${stateDir}/kin/worker-home`;
+
+/**
+ * Where a worker's Claude Code keeps its state: an empty home under the state directory, which
+ * neither its commands nor its file tools reach, and the provider's Claude home for the login.
+ */
+export const workerPlace = Effect.fn("KinWorkSandbox.workerPlace")(function* (
+  providerEnv: NodeJS.ProcessEnv,
+  privateHome: string,
+) {
+  const path = yield* Path.Path;
+  const configured = providerEnv.CLAUDE_CONFIG_DIR?.trim();
+  // The login Keychain is found through the real home; a Mac worker has no shell to read it with.
+  if ((yield* HostProcess.Platform) === "darwin") {
+    const place: WorkerPlace = {
+      home: yield* HostProcess.HomeDirectory,
+      configDir: configured ? path.resolve(configured) : undefined,
+    };
+    return place;
+  }
+  const place: WorkerPlace = {
+    home: privateHome,
+    configDir: yield* resolveClaudeHomePath(noClaudeHome, providerEnv),
+  };
+  return place;
+});
+
 /** For tests and hosts that must never run a shell. */
-export const fileOnly = (reason: string) =>
-  Layer.succeed(
+export const fileOnly = (reason: string, privateHome = "/nonexistent/kin-worker-home") =>
+  Layer.effect(
     KinWorkSandbox,
-    KinWorkSandbox.of({
-      prepare: Effect.fn("KinWorkSandbox.fileOnly")(() =>
-        Effect.succeed({ _tag: "file-only", reason } as const),
-      ),
+    Effect.gen(function* () {
+      const context = yield* Effect.context<Path.Path>();
+      return KinWorkSandbox.of({
+        prepare: Effect.fn("KinWorkSandbox.fileOnly")(function* (input) {
+          if (input.credentials._tag === "refused")
+            return { _tag: "refused", reason: input.credentials.reason } as const;
+          const place = yield* workerPlace(
+            input.session.options.env ?? input.session.environment,
+            privateHome,
+          );
+          return { _tag: "file-only", place, reason } as const;
+        }, Effect.provide(context)),
+      });
     }),
   );
 
@@ -396,15 +517,32 @@ const missing = Effect.fn("KinWorkSandbox.missing")(
   Effect.orElseSucceed((): Array<KinWorkerSandboxInstall> => []),
 );
 
-/** The worker's limits, or `null` where this host gives agents no systemd scope to hold them. */
+/**
+ * The limits a worker's scope gets here, and why any are off: a launch is wrapped the way every
+ * worker's is, without starting anything.
+ */
 const scopedLimits = Effect.fn("KinWorkSandbox.scopedLimits")(function* (scope: AgentScopeShape) {
-  // A wrap with no thread starts nothing; it says whether a launch here would get a scope.
+  const platform = yield* HostProcess.Platform;
+  if (platform !== "linux")
+    return { limits: null, limitsNote: `${platform} has no systemd scope for a worker` };
   const launch = yield* scope.wrap({
-    command: yield* HostProcess.ExecutablePath,
+    command: "/usr/bin/env",
     args: [],
     name: "kin-limits",
+    properties: workerScopeProperties(hostWorkerLimits),
   });
-  return launch.unit === undefined ? null : hostWorkerLimits;
+  if (launch.unit === undefined)
+    return {
+      limits: null,
+      limitsNote: "no systemd user manager answers here, so workers run without their own limits",
+    };
+  const refused = launch.refusedProperties ?? [];
+  return {
+    limits: hostWorkerLimits,
+    ...(refused.length === 0
+      ? {}
+      : { limitsNote: `systemd refused ${refused.join(", ")}, so workers start without it` }),
+  };
 });
 
 /**
@@ -414,9 +552,10 @@ const scopedLimits = Effect.fn("KinWorkSandbox.scopedLimits")(function* (scope: 
 export const checkShell = Effect.fn("KinWorkSandbox.checkShell")(function* (input: {
   readonly stateDir: string;
   readonly session: CheckedSession;
+  readonly place: WorkerPlace;
   readonly domains: ReadonlyArray<string>;
   readonly readPaths: ReadonlyArray<string>;
-  /** From the server's provider settings; see `configuredProviderHomes`. */
+  /** Absolute, as each provider resolves them; see `providerHomes`. */
   readonly providerHomes: ReadonlyArray<string>;
 }) {
   const fs = yield* FileSystem.FileSystem;
@@ -431,7 +570,7 @@ export const checkShell = Effect.fn("KinWorkSandbox.checkShell")(function* (inpu
   const roots = yield* shellRoots({
     home: yield* HostProcess.HomeDirectory,
     stateDir: input.stateDir,
-    env,
+    system: systemRoots[platform] ?? [],
     providerHomes: input.providerHomes,
     readPaths: input.readPaths,
     runtime,
@@ -454,14 +593,19 @@ export const checkShell = Effect.fn("KinWorkSandbox.checkShell")(function* (inpu
       Effect.provide(context),
     );
   const confiner = yield* makeConfiner();
+  const policy: CheckLine = {
+    passed: true,
+    kind: "info",
+    label: `reads are closed: commands read their worktree, their temp directory and ${readable.join(", ")}${denied.length === 0 ? "" : `, except ${denied.join(", ")}`}`,
+  };
   const result: CheckResult = yield* probe({
     stateDir: input.stateDir,
     tmpRoot,
     platform,
     paths,
-    sandbox: (shellPaths, childEnv) => sandboxSettings(shellPaths, input.domains, childEnv),
-    childEnv: (tmp) => childEnvironment(env, tmp, runtimeBin),
-    session: input.session,
+    sandbox: (shellPaths) => sandboxSettings(shellPaths, input.domains),
+    runtimeBin,
+    session: { ...input.session, place: input.place },
     confinement: (root) => confiner.hook({ root, tools: shellTools, mcp: false }),
     hostEnv,
   }).pipe(
@@ -479,10 +623,10 @@ export const checkShell = Effect.fn("KinWorkSandbox.checkShell")(function* (inpu
   );
   return {
     _tag: "checked",
-    result,
+    result: { ...result, lines: [...result.lines, policy] },
     paths,
     tmpRoot,
-    childEnv: (tmp: string) => childEnvironment(env, tmp, runtimeBin),
+    runtimeBin,
     install: result.failed === undefined ? [] : yield* missing(env),
   } as const;
 });
@@ -500,6 +644,15 @@ export const layer = Layer.effect(
       | ChildProcessSpawner.ChildProcessSpawner
       | SecureRandom.SecureRandom
     >();
+    // Made once: nothing a worker controls writes it, so sessions share it.
+    const privateHome = yield* Effect.cached(
+      Effect.gen(function* () {
+        const home = workerHome(stateDir);
+        yield* fs.makeDirectory(home, { recursive: true, mode: 0o700 });
+        yield* fs.chmod(home, 0o700);
+        return yield* fs.realPath(home);
+      }).pipe(Effect.option),
+    );
 
     const record = Effect.fn("KinWorkSandbox.record")(
       function* (
@@ -509,6 +662,7 @@ export const layer = Layer.effect(
         found: {
           readonly install?: ReadonlyArray<KinWorkerSandboxInstall>;
           readonly namesBlockedHosts?: boolean;
+          readonly refused?: boolean;
         } = {},
       ) {
         const status = {
@@ -517,7 +671,7 @@ export const layer = Layer.effect(
           reason,
           claudeCodeVersion,
           ...found,
-          limits: yield* scopedLimits(agentScope),
+          ...(yield* scopedLimits(agentScope)),
         };
         yield* fs.makeDirectory(`${stateDir}/kin`, { recursive: true });
         yield* fs.writeFileString(
@@ -528,18 +682,30 @@ export const layer = Layer.effect(
       Effect.ignoreCause({ log: true }),
     );
 
-    const fileOnlyBecause = (
-      reason: string,
-      version: string | null = null,
-      install: ReadonlyArray<KinWorkerSandboxInstall> = [],
-    ) =>
-      record(false, reason, version, { install }).pipe(
-        Effect.andThen(Effect.logWarning("Kin worker runs without a shell", { reason })),
-        Effect.as({ _tag: "file-only", reason } as const),
-      );
-
     const prepare: KinWorkSandbox["Service"]["prepare"] = Effect.fn("KinWorkSandbox.prepare")(
       function* (input) {
+        if (input.credentials._tag === "refused") {
+          yield* record(false, input.credentials.reason, null, { refused: true });
+          yield* Effect.logWarning("Kin worker refused", { reason: input.credentials.reason });
+          return { _tag: "refused", reason: input.credentials.reason } as const;
+        }
+        const providerEnv = input.session.options.env ?? input.session.environment;
+        const home = yield* privateHome;
+        if (Option.isNone(home)) {
+          const reason = "Kin couldn't make the workers' private home directory";
+          yield* record(false, reason, null, { refused: true });
+          return { _tag: "refused", reason } as const;
+        }
+        const place = yield* workerPlace(providerEnv, home.value);
+        const fileOnlyBecause = (
+          reason: string,
+          version: string | null = null,
+          install: ReadonlyArray<KinWorkerSandboxInstall> = [],
+        ) =>
+          record(false, reason, version, { install }).pipe(
+            Effect.andThen(Effect.logWarning("Kin worker runs without a shell", { reason })),
+            Effect.as({ _tag: "file-only", place, reason } as const),
+          );
         const host = hostShell(yield* HostProcess.Environment);
         if (host._tag === "off") return yield* fileOnlyBecause(host.reason);
         const platform = yield* HostProcess.Platform;
@@ -548,6 +714,8 @@ export const layer = Layer.effect(
           return yield* fileOnlyBecause(
             `worker shells run only on Linux, where every process a command starts ends with it; this host is ${platform}`,
           );
+        if (input.worktree === undefined)
+          return yield* fileOnlyBecause("the worker's worktree doesn't resolve");
         const workerId = input.threadId.startsWith(workThreadPrefix)
           ? input.threadId.slice(workThreadPrefix.length)
           : "";
@@ -555,9 +723,10 @@ export const layer = Layer.effect(
         const checked = yield* checkShell({
           stateDir,
           session: input.session,
+          place,
           domains,
           readPaths: host.readPaths,
-          providerHomes: yield* configuredProviderHomes(settings),
+          providerHomes: yield* configuredProviderHomes(settings, yield* HostProcess.Environment),
         });
         if (checked._tag === "unresolved") return yield* fileOnlyBecause(checked.reason);
         const { result, install } = checked;
@@ -582,14 +751,15 @@ export const layer = Layer.effect(
           yield* fs.remove(tmp.success, { recursive: true }).pipe(Effect.ignore);
           return yield* fileOnlyBecause(childPaths.failure, result.version);
         }
-        const childEnv = checked.childEnv(tmp.success);
         yield* record(true, "the sandbox check passed", result.version, {
           namesBlockedHosts: result.namesBlockedHosts,
         });
         return {
           _tag: "shell",
-          sandbox: sandboxSettings(childPaths.success, domains, childEnv),
-          env: childEnv,
+          place,
+          sandbox: sandboxSettings(childPaths.success, domains),
+          tmp: tmp.success,
+          runtimeBin: checked.runtimeBin,
           release: fs.remove(tmp.success, { recursive: true }).pipe(Effect.ignore),
           noteMessage: (message: SDKMessage) => {
             const refused = refusedHosts(message);
