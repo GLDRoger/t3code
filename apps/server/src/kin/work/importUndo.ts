@@ -102,7 +102,7 @@ export const removeChunk = Effect.fn("KinImport.removeChunk")(function* (
       const held = new Set(
         (yield* sql<{ id: string }>`SELECT p.record_id AS id FROM kin_record_payments p
           WHERE p.org_id = ${orgId} AND p.record_id IN ${asked} AND NOT (${inBatch("p.origin_key")})
-          UNION SELECT n.id FROM (${kinNumbered(sql, orgId, asked)}) n
+          UNION SELECT n.id FROM (${kinNumbered(sql, orgId, sql`${asked}`)}) n
           ${
             options.includeChanged
               ? sql``
