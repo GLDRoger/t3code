@@ -8,7 +8,7 @@ import { sampleInputs } from "./recipeLabels.ts";
 import { assembleInputs, parseRecipe, type Recipe, type Value } from "./recipe.ts";
 import { typeMismatch } from "./returnPath.ts";
 import { STARTER_FILES } from "./starter.ts";
-import { sheetCells, tableFiles, toCsv, toXlsx } from "./tables.ts";
+import { sheetCells, tableFiles, tableTooLarge, toCsv, toXlsx } from "./tables.ts";
 
 // Invented companies, GSTINs and figures only.
 const recipe = (name: string): Recipe => {
@@ -370,4 +370,40 @@ it("ships three recipes that parse, read only what Kin supplies, and make their 
     "body",
     "charts",
   ]);
+
+  // A sample is checked as an agent's inputs are before Kin renders from it.
+  for (const wrong of [{ title: "x".repeat(60_001) }, { title: { minor: 1, currency: "INR" } }])
+    assert.match(String(sampleInputs(report!, JSON.stringify(wrong))), /sample.json has inputs/);
+  for (const wrong of [
+    { month: "2026-10", invoices: [{ key: "INV-1", script: "x" }] },
+    { month: "2026-10", invoices: [{ key: "INV-1", amount: { minor: 1.5, currency: "INR" } }] },
+    { month: "2026-10", invoices: {} },
+  ])
+    assert.match(String(sampleInputs(pack!, JSON.stringify(wrong))), /sample.json has inputs/);
+
+  // A year of rows fits; the work and size budgets, not a row count, bound what is made from them.
+  const ledger = parseRecipe(
+    "---\nname: ledger\ntitle: Ledger\ndescription: d\noutputs: [a.pdf]\ninputs:\n  rows: {type: table, columns: {title: text, amount: money}}\n---\nGo.\n",
+  );
+  if ("reason" in ledger) return assert.fail(ledger.reason);
+  const year = Array.from({ length: 50_000 }, (_, index) => ({
+    title: `Line ${index}`,
+    amount: "₹1,200",
+  }));
+  assert.property(assembleInputs(ledger, { rows: year }, facts, "INR"), "inputs");
+  assert.property(
+    assembleInputs(ledger, { rows: [...year, { title: "One more" }] }, facts, "INR"),
+    "error",
+  );
+  const invoices = Array.from({ length: 50_000 }, (_, index) => ({
+    key: `INV-${index}`,
+    amount: inr(118_000),
+  }));
+  assert.isUndefined(tableTooLarge(pack!, { ...packSample, invoices }));
+  assert.match(
+    String(
+      tableTooLarge({ sheets: Array.from({ length: 7 }, () => pack!.sheets[0]!) }, { invoices }),
+    ),
+    /sheets grow too large/,
+  );
 });

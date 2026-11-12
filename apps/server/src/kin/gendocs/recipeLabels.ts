@@ -3,7 +3,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import type { Recipe, Value } from "./recipe.ts";
+import { checkedSample, type Recipe, type Value } from "./recipe.ts";
 import { KinDocRenderer } from "./render.ts";
 import {
   type ChangedBy,
@@ -33,9 +33,10 @@ export const sampleInputs = (
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
     return "its sample.json isn't an object of inputs";
-  return Object.fromEntries(
-    recipe.inputs.map((input) => [input.name, (Reflect.get(parsed, input.name) ?? null) as Value]),
-  );
+  const checked = checkedSample(recipe, parsed);
+  return "error" in checked
+    ? `its sample.json has inputs that aren't right: ${checked.error}`
+    : checked.inputs;
 };
 
 /** Why a recipe can't be kept: its sample, rendered as Kin renders a document from it. */

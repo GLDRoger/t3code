@@ -17,7 +17,7 @@ import { ServerConfig } from "../../config.ts";
 import { computeData } from "./compute.ts";
 import type { Recipe, Value } from "./recipe.ts";
 import { type Taken, typeMismatch } from "./returnPath.ts";
-import { fileName, tableFiles } from "./tables.ts";
+import { fileName, tableFiles, tableTooLarge } from "./tables.ts";
 import { KinToolchain } from "./toolchain.ts";
 import { KinWorkspace } from "./workspace.ts";
 
@@ -381,6 +381,8 @@ export const makeLayer = (limits: typeof RENDER_LIMITS = RENDER_LIMITS) =>
       const render: KinDocRenderer["Service"]["render"] = Effect.fn("KinDocRenderer.render")(
         function* (request) {
           if (request.recipe.kind === "table") {
+            const tooLarge = tableTooLarge(request.recipe, request.inputs);
+            if (tooLarge !== undefined) return failed(tooLarge);
             const files = tableFiles(request.recipe, request.inputs);
             const declared = request.recipe.outputs.map((output) =>
               fileName(output, request.inputs),

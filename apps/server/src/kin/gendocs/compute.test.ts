@@ -46,4 +46,49 @@ it("works out a year of rows, and refuses fields that grow past what Kin works o
     (computeData({ rows }, copies) as { readonly error: string }).error,
     /computed fields grow too large/,
   );
+
+  // Turning a long note into blocks costs what it reads and what it makes, so copies of it stop.
+  const notes = "*a* ".repeat(15_000);
+  for (const count of [100, 2_900])
+    assert.match(
+      (
+        computeData(
+          { notes },
+          Array.from(
+            { length: count },
+            (_, index) => [`f${index}`, { markdown: "notes" }] as const,
+          ),
+        ) as { readonly error: string }
+      ).error,
+      /computed fields grow too large/,
+    );
+  const once = computeData({ notes: `${notes}\n\nSee [the terms](https://example.com/terms).` }, [
+    ["body", { markdown: "notes" }],
+  ]);
+  if ("error" in once) return assert.fail(once.error);
+  assert.deepStrictEqual((once.data.body as ReadonlyArray<{ spans: ReadonlyArray<unknown> }>)[1], {
+    kind: "paragraph",
+    spans: [
+      { text: "See ", style: "plain" },
+      { text: "the terms", style: "link", url: "https://example.com/terms" },
+      { text: ".", style: "plain" },
+    ],
+  });
+  // Measured as JSON escapes it: one control character is written as six.
+  const controls = "\u0001".repeat(60_000);
+  assert.match(
+    (
+      computeData(
+        { controls },
+        Array.from({ length: 2_900 }, (_, index) => [`c${index}`, { first: "controls" }] as const),
+      ) as { readonly error: string }
+    ).error,
+    /computed fields grow too large/,
+  );
+  const fewer = computeData(
+    { controls },
+    Array.from({ length: 100 }, (_, index) => [`c${index}`, { first: "controls" }] as const),
+  );
+  if ("error" in fewer) return assert.fail(fewer.error);
+  assert.isAbove(JSON.stringify(fewer.data).length, 101 * 6 * 60_000);
 });
