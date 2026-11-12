@@ -35,7 +35,7 @@ import { effectiveAudience, recordAudience, turnAudience, type TurnAudience } fr
 import { sectionsOf } from "../work/docBody.ts";
 import { moneySection, moneySummary } from "../work/moneyViews.ts";
 import { buildWorkSection, MONEY_RULE, WITHDRAWN_WORK, WORK_RULE } from "../work/workPrompt.ts";
-import { entriesShown, sensitiveShown } from "../work/workerAttempts.ts";
+import { entriesShown, sensitiveShown, sourcesShown } from "../work/workerAttempts.ts";
 import { askedWhereOthersRead } from "../triggers/deferralOrigin.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { groupRules } from "./instructions.ts";
@@ -68,7 +68,7 @@ export class KinLeadPrompt extends Context.Service<
     readonly build: (input: KinLeadPromptInput) => Effect.Effect<string, KinLeadPromptError>;
     /** Messages that arrived in the lane while the wake-up ran, quoted exactly as `build` does. */
     readonly steer: (
-      input: Pick<KinLeadPromptInput, "orgId" | "agentId" | "events">,
+      input: Pick<KinLeadPromptInput, "orgId" | "agentId" | "wakeupId" | "events">,
     ) => Effect.Effect<string, KinLeadPromptError>;
     /**
      * The files on the messages these events carry, to hand the turn as its attachments. Only
@@ -101,6 +101,7 @@ export class KinLeadPrompt extends Context.Service<
           const task = yield* KinSchedules.readNativeTask(sql, schedule.taskId);
           return {
             task,
+            sourceEvent: schedule.sourceEvent,
             every: task === undefined ? undefined : KinSchedules.everyOf(task),
             confirmed:
               task !== undefined &&
@@ -189,7 +190,10 @@ export class KinLeadPrompt extends Context.Service<
         );
       });
       const quoteEvents = Effect.fnUntraced(function* (
-        input: Pick<KinLeadPromptInput, "orgId" | "agentId" | "events" | "routineFacts"> & {
+        input: Pick<
+          KinLeadPromptInput,
+          "orgId" | "agentId" | "wakeupId" | "events" | "routineFacts"
+        > & {
           readonly laneChatId?: KinChatId | undefined;
           readonly audience?: TurnAudience | undefined;
           /** In a group, who each member is, so a quoted message says who wrote it. */
@@ -203,6 +207,8 @@ export class KinLeadPrompt extends Context.Service<
             reason: "Event is outside the wake-up scope",
           });
         const events: string[] = [];
+        // Where each reminder or scheduled task shown was asked for (`sourcesShown`).
+        const askedIn: string[] = [];
         let fromOwner = true;
         // A reminder always gets a reply; a brief, a scheduled run and other notices may stay silent.
         let replyDue = false;
@@ -285,6 +291,8 @@ export class KinLeadPrompt extends Context.Service<
           if (event._tag === "deferral.due" && event.subject.type === "reminder") {
             fromOwner = false;
             const item = yield* admitted(event.subject.itemId);
+            if (Option.isSome(item) && item.value.head.source_event !== undefined)
+              askedIn.push(item.value.head.source_event);
             const lateMinutes = Math.floor(event.lateByMs / 60_000);
             // Not the team's to know: only the stored words that asked for it, if anyone here
             // could read them, else nothing at all.
@@ -323,6 +331,7 @@ export class KinLeadPrompt extends Context.Service<
                 events.push(`${quote("event data", { event: event.eventId })}\n\n${WITHHELD_DUE}`);
                 continue;
               }
+              askedIn.push(native.sourceEvent);
               const eventQuote = quote("event data", {
                 event: event.eventId,
                 item: event.subject.itemId,
@@ -349,6 +358,8 @@ export class KinLeadPrompt extends Context.Service<
               events.push(`${quote("event data", { event: event.eventId })}\n\n${WITHHELD_DUE}`);
               continue;
             }
+            if (Option.isSome(item) && item.value.head.source_event !== undefined)
+              askedIn.push(item.value.head.source_event);
             const eventQuote = quote("event data", {
               event: event.eventId,
               item: event.subject.itemId,
@@ -495,6 +506,12 @@ export class KinLeadPrompt extends Context.Service<
           for (const ref of message.refs ?? [])
             events.push(yield* quotedRef(orgId, ref, owner && ownerOnly));
         }
+        yield* sourcesShown({ orgId, wakeupId: input.wakeupId, eventIds: askedIn }).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.catch((cause) =>
+            Effect.logWarning("Kin couldn't record what a prompt's reminders carry", cause),
+          ),
+        );
         return { events, fromOwner: fromOwner && events.length > 0, replyDue };
       });
       // Retry resends the text only: a file belongs to one message. The message it repeats is the
@@ -565,7 +582,7 @@ export class KinLeadPrompt extends Context.Service<
         return turnAttachments(found);
       });
       const steer = Effect.fn("KinLeadPrompt.steer")(function* (
-        input: Pick<KinLeadPromptInput, "orgId" | "agentId" | "events">,
+        input: Pick<KinLeadPromptInput, "orgId" | "agentId" | "wakeupId" | "events">,
       ) {
         const { events, fromOwner } = yield* quoteEvents(input);
         // Rakazo's wording; who sent it comes from each quote's stored role, never this line.

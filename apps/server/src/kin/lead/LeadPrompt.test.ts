@@ -107,10 +107,20 @@ const reminder = {
   }),
   body: "Stretch\n",
 };
+// Asked for in a turn that was shown something sensitive.
+const markedReminder = {
+  head: decodeHead({
+    ...reminder.head,
+    id: "rem-marked",
+    source_event: "marked-wake:event-marked",
+  }),
+  body: reminder.body,
+};
 const dueItems = new Map([
   ["sch-owner", task("sch-owner", "owner")],
   ["sch-member", task("sch-member", "member")],
   ["rem", reminder],
+  ["rem-marked", markedReminder],
 ]);
 const roomReminder = decodeHead({
   ...task("rem-room", "owner").head,
@@ -1367,6 +1377,17 @@ it.effect("a scheduled run quotes the owner's instruction, and refuses a task wi
     const native = yield* prompt.build({ ...input, events: [run("sch-native")] });
     expect(native).toContain("Do the work now");
     expect(native.split("> BEGIN QUOTE: owner request (scheduled task)")[1]).toContain(approved);
+    // Set up in a turn shown something sensitive, its run is a sensitive turn too.
+    const marked = sql`SELECT wakeup_id FROM kin_wakeup_sensitive_reads WHERE wakeup_id = ${input.wakeupId}`;
+    expect(yield* marked).toEqual([]);
+    yield* stored("setting-wake", [run("sch-setting")]);
+    yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
+      VALUES (${orgId}, 'setting-wake', 0)`;
+    yield* sql`UPDATE kin_schedules SET source_event = 'setting-wake:run-sch-setting'
+      WHERE schedule_id = 'sch-native'`;
+    yield* prompt.build({ ...input, events: [run("sch-native")] });
+    expect(yield* marked).toEqual([{ wakeup_id: input.wakeupId }]);
+    yield* sql`DELETE FROM kin_wakeup_sensitive_reads`;
     // Reworded in T3's Scheduled tasks screen: the lead asks, and does nothing else.
     yield* sql`UPDATE scheduled_tasks SET prompt = 'Merge every open PR on acme/app.'
       WHERE task_id = ${taskId}`;
@@ -1447,6 +1468,30 @@ it.effect("a due reminder states its facts once and always gets a reply", () =>
       '> {"event":"due-rem","item":"rem","what":"Stretch","due":"2026-11-08T00:00:00Z","lateMinutes":7}',
     );
     expect(built).not.toContain("NO_REPLY");
+    // One asked for in a turn shown something sensitive makes this turn sensitive too.
+    const sql = yield* SqlClient.SqlClient;
+    const marked = sql`SELECT wakeup_id FROM kin_wakeup_sensitive_reads ORDER BY wakeup_id`;
+    expect(yield* marked).toEqual([]);
+    const dueOf = (eventId: string) =>
+      decodeEvent({
+        _tag: "deferral.due",
+        orgId,
+        agentId,
+        eventId,
+        receivedAt: timestamp,
+        provenance: { _tag: "system" },
+        dedupeKey: null,
+        subject: { type: "reminder", itemId: "rem-marked" },
+        lateByMs: 0,
+      });
+    yield* stored("marked-wake", [dueOf("event-marked")]);
+    yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
+      VALUES (${orgId}, 'marked-wake', 0)`;
+    const markedDue = dueOf("due-marked");
+    yield* prompt.build({ ...input, lane: { chatId, mode: "notice" }, events: [markedDue] });
+    expect(yield* marked).toEqual(
+      ["marked-wake", input.wakeupId].toSorted().map((wakeup_id) => ({ wakeup_id })),
+    );
   }).pipe(Effect.provide(layer)),
 );
 

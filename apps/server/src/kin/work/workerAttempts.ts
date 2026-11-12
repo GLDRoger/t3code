@@ -616,6 +616,23 @@ export const entriesShown = Effect.fn("KinWorkerAttempts.entriesShown")(function
   if (found.length > 0) yield* sensitiveShown(input);
 });
 
+/**
+ * The same for a prompt that shows what an earlier turn wrote, such as a reminder or a scheduled
+ * task, when that turn had been shown something sensitive: the words may carry it.
+ */
+export const sourcesShown = Effect.fn("KinWorkerAttempts.sourcesShown")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly wakeupId: string;
+  readonly eventIds: ReadonlyArray<string>;
+}) {
+  if (input.eventIds.length === 0) return;
+  const sql = yield* SqlClient.SqlClient;
+  const found = yield* sql`SELECT 1 FROM kin_events e
+    JOIN kin_wakeup_sensitive_reads w ON w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id
+    WHERE e.org_id = ${input.orgId} AND e.event_id IN ${sql.in(input.eventIds)} LIMIT 1`;
+  if (found.length > 0) yield* sensitiveShown(input);
+});
+
 /** Whether a tool result carries an entry marked sensitive anywhere in it. */
 export const showsSensitive = (value: unknown): boolean =>
   Array.isArray(value)
