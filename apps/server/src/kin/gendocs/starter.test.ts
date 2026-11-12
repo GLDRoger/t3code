@@ -347,6 +347,20 @@ it("ships three recipes that parse, read only what Kin supplies, and make their 
     assembleInputs(report!, { title: "Q3", taxRecorded: "₹1" }, facts, "INR"),
     "error",
   );
+  // A day the agent gives is a real calendar day: 31 February isn't, 29 February 2028 is.
+  const dated = parseRecipe(
+    "---\nname: dated\ntitle: Dated\ndescription: d\noutputs: [a.pdf]\ninputs:\n  on: {type: date}\n---\nGo.\n",
+  );
+  if ("reason" in dated) return assert.fail(dated.reason);
+  for (const [on, real] of [
+    ["2026-02-31", false],
+    ["2026-02-29", false],
+    ["2026-04-31", false],
+    ["0050-01-01", false],
+    ["2028-02-29", true],
+    ["2026-12-31", true],
+  ] as const)
+    assert.strictEqual("inputs" in assembleInputs(dated, { on }, facts, "INR"), real, on);
   const made = assembleInputs(report!, { title: "Q3", body: "Hello" }, facts, "INR");
   assert.deepStrictEqual(Object.keys("inputs" in made ? made.inputs : {}), [
     "title",

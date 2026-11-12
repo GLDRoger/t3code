@@ -226,6 +226,20 @@ it.layer(layer)("KinWorkspace", (it) => {
       assert.strictEqual((yield* described("invoice"))!.description, original);
       assert.strictEqual((yield* change(2, undefined))._tag, "committed");
       assert.strictEqual((yield* described("invoice"))!.description, "Change 2.");
+      // An undo is checked as a change is: what it would bring back must render from its sample.
+      const unrendered = yield* workspace.undoRecipe(
+        orgId,
+        "invoice",
+        { _tag: "owner", personId },
+        ({ sample }) =>
+          Effect.sync(() => samples.push(sample)).pipe(Effect.as("invoice.pdf: an invented error")),
+      );
+      assert.match(
+        unrendered._tag === "refused" ? unrendered.reason : unrendered._tag,
+        /didn't render from its sample, so Kin left the recipe as it is: invoice\.pdf: an invented error/,
+      );
+      assert.strictEqual(samples.at(-1), STARTER_FILES["recipes/invoice/sample.json"]);
+      assert.strictEqual((yield* described("invoice"))!.description, "Change 2.");
       // Undo puts it back as a new change by whoever undid it; undoing that redoes it.
       const undone = yield* workspace.undoRecipe(
         orgId,
@@ -268,6 +282,63 @@ it.layer(layer)("KinWorkspace", (it) => {
         () => Effect.undefined,
       );
       assert.match(starter._tag === "refused" ? starter.reason : starter._tag, /nothing to undo/);
+    }),
+  );
+
+  it.effect("refuses to copy out a recipe holding two names for one place", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const vcs = yield* Vcs.VcsProcess;
+      const workspace = yield* Workspace.KinWorkspace;
+      const root = yield* workspace.root(orgId);
+      // Planted with git's plumbing: this file system can't hold both names to commit them.
+      const plant = (names: ReadonlyArray<string>) =>
+        Effect.gen(function* () {
+          const run = (...args: ReadonlyArray<string>) =>
+            vcs
+              .run({
+                operation: "KinWorkspaceTest.plant",
+                command: "git",
+                cwd: root,
+                args: [
+                  "-c",
+                  "core.precomposeunicode=false",
+                  "-c",
+                  "user.name=Worker",
+                  "-c",
+                  "user.email=worker@example.com",
+                  ...args,
+                ],
+                env: {
+                  GIT_CONFIG_NOSYSTEM: "1",
+                  GIT_CONFIG_GLOBAL: "/dev/null",
+                  GIT_INDEX_FILE: `${root}/.git/planted-index`,
+                },
+              })
+              .pipe(Effect.map((result) => result.stdout.trim()));
+          yield* run("read-tree", "main");
+          const blob = yield* run("hash-object", "-w", `${root}/recipes/report/RECIPE.md`);
+          for (const name of names)
+            yield* run("update-index", "--add", "--cacheinfo", `100644,${blob},${name}`);
+          return yield* run("commit-tree", yield* run("write-tree"), "-m", "Planted");
+        });
+      for (const names of [
+        ["recipes/report/Notes.md", "recipes/report/notes.md"],
+        ["recipes/report/caf\u00e9/a.md", "recipes/report/cafe\u0301/b.md"],
+      ]) {
+        const target = yield* fs.makeTempDirectory();
+        const copied = yield* workspace.checkoutRecipe(
+          orgId,
+          "report",
+          yield* plant(names),
+          `${target}/recipe`,
+        );
+        assert.match(
+          copied._tag === "refused" ? copied.reason : copied._tag,
+          /would be written to one place$/,
+        );
+        assert.isFalse(yield* fs.exists(`${target}/recipe`));
+      }
     }),
   );
 

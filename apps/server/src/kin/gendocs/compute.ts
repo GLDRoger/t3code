@@ -17,6 +17,26 @@ const fail = (message: string): never => {
   throw new ComputeError(message);
 };
 
+/**
+ * What one computation may do and make, sized for a year of rows (50,000 by 40 columns) worked
+ * over a few times: past either, the fields would hold the server up before Typst even starts.
+ */
+const COMPUTE_BUDGET = {
+  operations: 25_000_000,
+  values: 12_000_000,
+  bytes: 256 * 1024 * 1024,
+};
+const tooLarge = () =>
+  fail(
+    "this recipe's computed fields grow too large for Kin to work out: keep each field to the rows and columns it needs",
+  );
+// The evaluator is synchronous, so one counter per `computeData` call can't interleave with another.
+let operations = 0;
+const spend = (count: number) => {
+  operations += count;
+  if (operations > COMPUTE_BUDGET.operations) tooLarge();
+};
+
 /** The functions a computed field may name; each spec is one of these as its only key. */
 export const FUNCTIONS = [
   "times",
@@ -497,6 +517,7 @@ const resolve = (scope: Scope, arg: unknown): unknown => {
   if (!Object.hasOwn(scope, head)) return fail(`${arg} isn't an input or an earlier field`);
   const value = scope[head];
   if (tail === undefined) return value;
+  if (Array.isArray(value)) spend(value.length);
   if (Array.isArray(value))
     return value.map((row: unknown) =>
       typeof row === "object" && row !== null ? Reflect.get(row, tail) : null,
@@ -516,6 +537,7 @@ const argsOf = (spec: unknown, count: number, name: string): ReadonlyArray<unkno
 
 const sumOf = (values: ReadonlyArray<unknown>, what: string): Money | null => {
   const amounts = values.flatMap((value) => (Array.isArray(value) ? value : [value]));
+  spend(amounts.length);
   let total: bigint | null = null;
   let currency: string | null = null;
   for (const value of amounts) {
@@ -586,11 +608,24 @@ const evaluate = (scope: Scope, name: string, spec: Spec): unknown => {
       if (rows === null || rows === undefined) return null;
       if (!Array.isArray(rows)) return fail(`${name}: rows isn't a table`);
       if (typeof set !== "object" || set === null) return fail(`${name}: each needs set`);
+      // A row holds single values only, so no field can nest tables in tables and multiply them.
+      const width = Object.keys(scope).length;
       return rows.map((row: unknown, index) => {
         const own = typeof row === "object" && row !== null ? { ...row } : {};
+        spend(width + Object.keys(own).length + 1);
+        if (!Object.values(own).every(isSingle))
+          fail(`${name}: each runs over a table whose cells are single values`);
         const out: Record<string, unknown> = { ...own, n: index + 1 };
-        for (const [column, inner] of Object.entries(set))
-          out[column] = field({ ...scope, ...out }, `${name}.${column}`, inner);
+        const local: Record<string, unknown> = { ...scope, ...out };
+        for (const [column, inner] of Object.entries(set)) {
+          const value = field(local, `${name}.${column}`, inner);
+          if (!isSingle(value))
+            fail(
+              `${name}.${column}: each sets one value per row, such as text, a number or an amount`,
+            );
+          out[column] = value ?? null;
+          local[column] = out[column];
+        }
         return out;
       });
     }
@@ -632,20 +667,60 @@ const evaluate = (scope: Scope, name: string, spec: Spec): unknown => {
       return fail(`${name}: ${fn} isn't one of ${FUNCTIONS.join(", ")}`);
   }
 };
-const field = (scope: Scope, name: string, spec: unknown): unknown =>
-  typeof spec === "object" && spec !== null && !Array.isArray(spec)
+const isSingle = (value: unknown) =>
+  value === null ||
+  value === undefined ||
+  typeof value === "string" ||
+  typeof value === "number" ||
+  typeof value === "boolean" ||
+  isMoney(value);
+const field = (scope: Scope, name: string, spec: unknown): unknown => {
+  spend(1);
+  return typeof spec === "object" && spec !== null && !Array.isArray(spec)
     ? evaluate(scope, name, spec as Spec)
     : resolve(scope, spec);
+};
 
-/** Every money value with its text as the document shows it, everywhere in `value`. */
-const withText = (value: unknown): unknown =>
-  isMoney(value)
+type Size = { readonly values: number; readonly bytes: number };
+/**
+ * How much `value` is once written out whole, each shared table counted every place it appears,
+ * as JSON writes it; measured once per object, so a field that repeats another costs no more here.
+ */
+const sizeOf = (value: unknown, seen: WeakMap<object, Size>): Size => {
+  if (typeof value === "string") return { values: 1, bytes: value.length + 2 };
+  if (typeof value !== "object" || value === null) return { values: 1, bytes: 8 };
+  const known = seen.get(value);
+  if (known !== undefined) return known;
+  spend(1);
+  let values = 1;
+  let bytes = 2;
+  for (const [key, inner] of Object.entries(value)) {
+    const size = sizeOf(inner, seen);
+    values += size.values;
+    bytes += size.bytes + key.length + 4;
+    if (values > COMPUTE_BUDGET.values || bytes > COMPUTE_BUDGET.bytes) tooLarge();
+  }
+  const size = { values, bytes };
+  seen.set(value, size);
+  return size;
+};
+
+/** Every money value with its text as the document shows it, everywhere in `value`, once per object. */
+const withText = (value: unknown, done: WeakMap<object, unknown>): unknown => {
+  if (typeof value !== "object" || value === null) return value;
+  const known = done.get(value);
+  if (known !== undefined) return known;
+  spend(1);
+  const out = isMoney(value)
     ? { minor: value.minor, currency: value.currency, text: formatMoney(value) }
     : Array.isArray(value)
-      ? value.map(withText)
-      : typeof value === "object" && value !== null
-        ? Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, withText(inner)]))
-        : value;
+      ? value.map((inner) => withText(inner, done))
+      : Object.fromEntries(
+          Object.entries(value).map(([key, inner]) => [key, withText(inner, done)]),
+        );
+  done.set(value, out);
+  return out;
+};
 
 /**
  * What a template reads: the inputs and each computed field in order, money with its `text`.
@@ -656,11 +731,13 @@ export const computeData = (
   computed: ReadonlyArray<readonly [string, unknown]>,
 ): { readonly data: Computed } | { readonly error: string } => {
   const scope: Record<string, unknown> = { ...inputs };
+  operations = 0;
   try {
     for (const [name, spec] of computed) scope[name] = field(scope, name, spec);
+    sizeOf(scope, new WeakMap());
+    return { data: withText(scope, new WeakMap()) as Computed };
   } catch (error) {
     if (error instanceof ComputeError) return { error: error.message };
     throw error;
   }
-  return { data: withText(scope) as Computed };
 };

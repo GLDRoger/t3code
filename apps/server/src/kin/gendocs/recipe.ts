@@ -268,6 +268,17 @@ const invalid = (message: string) => new KinChatError({ reason: "invalid_state",
 const MAX_TEXT = 60_000;
 const MAX_ROWS = 500;
 
+/** A real calendar day as YYYY-MM-DD: `Date.parse` takes 31 February as 3 March. */
+const isDay = (value: string) => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (match === null) return false;
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+  );
+};
+
 /** An agent's value for one declared input, checked and made exact; a string error says why. */
 const agentValue = (
   type: ScalarType | "month",
@@ -296,9 +307,7 @@ const agentValue = (
       return "error" in parsed ? { error: 'an amount as said, such as "₹1,200"' } : parsed.money;
     }
     case "date":
-      return typeof value === "string" &&
-        /^\d{4}-\d{2}-\d{2}$/.test(value) &&
-        !Number.isNaN(Date.parse(value))
+      return typeof value === "string" && isDay(value)
         ? value
         : { error: "a day such as 2026-11-12" };
     case "month":

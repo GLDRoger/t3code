@@ -39,7 +39,8 @@ RECIPE.md starts with front matter between --- lines:
   - system.number, system.draft, system.today.
 - computed (typst): fields Kin works out, in order, each one function: times [amount, factor],
   percent [amount, rate] (round: half-up, half-even, down or up), sum [amounts or table.column],
-  minus [a, b], first [values], each { rows, set: { column: field } }, words amount,
+  minus [a, b], first [values], each { rows, set: { column: field } } (one value per row in
+  each column it sets, never a table), words amount,
   date [day, format], gst { taxable, total, recordedTax, rate, supplierGstin, supplierPlace,
   clientGstin, clientPlace, exportUnderLut } and markdown text.
 - sheets and workbook (table): each sheet's name, the table input it shows, its CSV file name,
