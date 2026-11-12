@@ -1,5 +1,6 @@
 import {
   KinChartCardState,
+  type KinChartColor,
   type KinChartKind,
   type KinChartSpec,
   type KinChartUnit,
@@ -10,14 +11,49 @@ import * as Schema from "effect/Schema";
 
 import { kinSentences } from "./kinScreenState.ts";
 
-/** Which of the product's colours a series takes; `previous` is the muted comparison. */
-export type KinChartTone = "one" | "two" | "three" | "four" | "previous";
+/** One of the product's colours; `soft` is the same colour drawn lighter. */
+export interface KinChartTone {
+  readonly color: KinChartColor;
+  readonly soft: boolean;
+}
+
+/** What a legend draws beside a name, so the key looks like the thing it names. */
+export type KinChartMark = "line" | "dashed" | "box" | "dot";
 
 export interface KinChartSeriesView {
   readonly key: string;
   readonly name: string;
   readonly tone: KinChartTone;
+  /** The muted comparison: drawn behind, and dashed where it is a line. */
+  readonly previous: boolean;
   readonly values: ReadonlyArray<number | null>;
+}
+
+export interface KinChartSliceView {
+  readonly key: string;
+  readonly name: string;
+  readonly tone: KinChartTone;
+  readonly value: number;
+  /** "₹1,20,000 · 34%", as the legend and a tooltip say it. */
+  readonly detail: string;
+}
+
+export interface KinChartScatterView {
+  readonly xName: string;
+  readonly yName: string;
+  readonly xUnit: KinChartUnit;
+  readonly series: ReadonlyArray<{
+    readonly key: string;
+    readonly name: string;
+    readonly tone: KinChartTone;
+    readonly points: ReadonlyArray<{
+      readonly key: string;
+      readonly x: number;
+      readonly y: number;
+      readonly label: string | null;
+      readonly title: string;
+    }>;
+  }>;
 }
 
 export interface KinChartView {
@@ -31,10 +67,27 @@ export interface KinChartView {
   readonly dated: boolean;
   /** In drawing order: the comparison sits behind and to the left of its series. */
   readonly series: ReadonlyArray<KinChartSeriesView>;
+  /** A colour per label, when one series of bars is coloured bar by bar. */
+  readonly labelTones: ReadonlyArray<KinChartTone> | null;
+  /** A pie's drawn slices: past twelve, the smallest are drawn together as one. */
+  readonly slices: ReadonlyArray<KinChartSliceView>;
+  /** What a donut says in its middle. */
+  readonly total: string | null;
+  readonly scatter: KinChartScatterView | null;
+  readonly target: { readonly name: string; readonly value: number } | null;
+  readonly valueLabels: boolean;
   /** Empty when a single series needs no key. */
-  readonly legend: ReadonlyArray<Pick<KinChartSeriesView, "key" | "name" | "tone">>;
+  readonly legend: ReadonlyArray<{
+    readonly key: string;
+    readonly name: string;
+    readonly tone: KinChartTone;
+    readonly mark: KinChartMark;
+    readonly detail: string | null;
+  }>;
+  /** A pie's key is read as a list, one slice and its share per row. */
+  readonly legendAsList: boolean;
   readonly table: {
-    readonly columns: ReadonlyArray<string>;
+    readonly columns: ReadonlyArray<{ readonly key: string; readonly name: string }>;
     readonly rows: ReadonlyArray<{
       readonly key: string;
       readonly label: string;
@@ -67,6 +120,9 @@ const SYMBOLS: Readonly<Record<string, string>> = {
 
 const minorDigits = (currency: string) =>
   NO_MINOR_UNIT.has(currency) ? 0 : THREE_MINOR_DIGITS.has(currency) ? 3 : 2;
+/** One whole unit of what a chart counts: a rupee in paise, or simply 1. */
+export const kinChartWholeUnit = (unit: KinChartUnit) =>
+  unit.kind === "money" ? 10 ** minorDigits(unit.currency) : 1;
 const symbol = (currency: string) => SYMBOLS[currency] ?? `${currency} `;
 
 // Indian grouping: the last three digits, then pairs (12,34,567).
@@ -144,20 +200,215 @@ const label = (spec: KinChartSpec, text: string) => {
   return { short: month === "01" ? `${name} ’${year!.slice(2)}` : name, full: `${name} ${year}` };
 };
 
-const TONES = ["one", "two", "three", "four"] as const;
+// Strong colours first, red last so it is never a default by accident; then each one soft.
+const COLORS = ["accent", "amber", "green", "purple", "grey", "red"] as const;
+const PREVIOUS: KinChartTone = { color: "grey", soft: true };
+const CYCLE: ReadonlyArray<KinChartTone> = [false, true].flatMap((soft) =>
+  COLORS.map((color) => ({ color, soft })),
+);
+
+/**
+ * A tone for each series or slice: the colour it asked for, or the next default nobody asked for,
+ * so a series left to the default never matches one that was given a meaning.
+ */
+function tonesFor(colors: ReadonlyArray<KinChartColor | null | undefined>) {
+  const asked = new Set(colors);
+  const free = CYCLE.filter((tone) => tone.soft || !asked.has(tone.color));
+  const defaults = free.length === 0 ? CYCLE : free;
+  let next = 0;
+  return colors.map((color): KinChartTone =>
+    color === null || color === undefined
+      ? defaults[next++ % defaults.length]!
+      : { color, soft: false },
+  );
+}
+
 const KIND_NAMES: Record<KinChartKind, string> = {
   line: "Line chart",
+  area: "Area chart",
+  stacked_area: "Stacked area chart",
   bar: "Bar chart",
   stacked_bar: "Stacked bar chart",
+  horizontal_bar: "Bar chart",
+  stacked_horizontal_bar: "Stacked bar chart",
+  pie: "Pie chart",
+  donut: "Donut chart",
+  radar: "Radar chart",
+  scatter: "Scatter chart",
 };
+const MARKS: Record<KinChartKind, KinChartMark> = {
+  line: "line",
+  area: "box",
+  stacked_area: "box",
+  bar: "box",
+  stacked_bar: "box",
+  horizontal_bar: "box",
+  stacked_horizontal_bar: "box",
+  pie: "box",
+  donut: "box",
+  radar: "line",
+  scatter: "dot",
+};
+// Kinds whose labels run in an order worth reading as "from the first to the last".
+const ORDERED: ReadonlySet<KinChartKind> = new Set([
+  "line",
+  "area",
+  "stacked_area",
+  "bar",
+  "stacked_bar",
+]);
+const SLICES = 12;
+
+const share = (value: number, total: number) => {
+  const percent = (value / total) * 100;
+  return percent > 0 && percent < 0.1 ? "<0.1%" : `${trimmed(percent, 1)}%`;
+};
+
+const EMPTY = {
+  labels: [],
+  dated: false,
+  series: [],
+  labelTones: null,
+  slices: [],
+  total: null,
+  scatter: null,
+  legendAsList: false,
+} as const;
+
+function scatterView(spec: KinChartSpec, scatter: NonNullable<KinChartSpec["scatter"]>) {
+  const many = scatter.series.length > 1;
+  const points = scatter.series.flatMap((series) => series.points);
+  const keep = (unit: KinChartUnit, values: ReadonlyArray<number | null>) =>
+    values.some((value) => value !== null && value % kinChartWholeUnit(unit) !== 0);
+  const keepX = keep(
+    scatter.xUnit,
+    points.map((point) => point.x),
+  );
+  const keepY = keep(
+    spec.unit,
+    points.map((point) => point.y),
+  );
+  const sayX = (value: number) => formatKinChartValue(scatter.xUnit, value, "full", keepX);
+  const sayY = (value: number) => formatKinChartValue(spec.unit, value, "full", keepY);
+  const tones = tonesFor(scatter.series.map((one) => one.color));
+  const series = scatter.series.map((one, index) => ({
+    key: `series-${index}`,
+    name: one.name,
+    tone: tones[index]!,
+    points: one.points.flatMap((point, at) => {
+      if (point.x === null || point.y === null) return [];
+      const name = point.label ?? (many ? `${one.name} ${at + 1}` : `Point ${at + 1}`);
+      return [
+        {
+          key: `series-${index}-${at}`,
+          x: point.x,
+          y: point.y,
+          label: point.label ?? null,
+          name,
+          title: `${name}: ${scatter.xName} ${sayX(point.x)}, ${scatter.yName} ${sayY(point.y)}`,
+        },
+      ];
+    }),
+  }));
+  const range = (values: ReadonlyArray<number>, say: (value: number) => string) => {
+    const low = Math.min(...values);
+    const high = Math.max(...values);
+    return low === high ? say(low) : `${say(low)} to ${say(high)}`;
+  };
+  return {
+    scatter: { xName: scatter.xName, yName: scatter.yName, xUnit: scatter.xUnit, series },
+    legend: many
+      ? series.map(({ key, name, tone }) => ({
+          key,
+          name,
+          tone,
+          mark: "dot" as const,
+          detail: null,
+        }))
+      : [],
+    table: {
+      columns: [
+        ...(many ? [{ key: "group", name: "Group" }] : []),
+        { key: "x", name: scatter.xName },
+        { key: "y", name: scatter.yName },
+      ],
+      rows: series.flatMap((one) =>
+        one.points.map((point) => ({
+          key: point.key,
+          label: point.name,
+          cells: [...(many ? [one.name] : []), sayX(point.x), sayY(point.y)],
+        })),
+      ),
+    },
+    described: [
+      `${scatter.yName} against ${scatter.xName}`,
+      ...series.map((one) =>
+        one.points.length === 0
+          ? `${one.name}: no points`
+          : `${one.name}: ${one.points.length} ${one.points.length === 1 ? "point" : "points"}, ${scatter.xName} ${range(
+              one.points.map((point) => point.x),
+              sayX,
+            )}, ${scatter.yName} ${range(
+              one.points.map((point) => point.y),
+              sayY,
+            )}`,
+      ),
+    ],
+  };
+}
 
 /** A chart ready to draw, from a spec that already passed `kinChartProblem`. */
 export function kinChartView(spec: KinChartSpec): KinChartView {
+  const kind = spec.chart;
+  const keepMinorFor = (values: ReadonlyArray<number | null>) =>
+    values.some((value) => value !== null && value % kinChartWholeUnit(spec.unit) !== 0);
+  const target = spec.target ?? null;
+  const head = {
+    kind,
+    title: spec.title,
+    caption: spec.caption,
+    unit: spec.unit,
+    target,
+    valueLabels: spec.valueLabels === true,
+  };
+  // The key names a target: written on its line it would sit on the bars and points it judges.
+  const targetKey =
+    target === null
+      ? []
+      : [
+          {
+            key: "target",
+            name: `${target.name} ${formatKinChartValue(spec.unit, target.value, "compact")}`,
+            tone: PREVIOUS,
+            mark: "dashed" as const,
+            detail: null,
+          },
+        ];
+  const targetSaid = (keepMinor: boolean) =>
+    target === null
+      ? null
+      : `${target.name}: ${formatKinChartValue(spec.unit, target.value, "full", keepMinor)}`;
+  const summary = (parts: ReadonlyArray<string | null>) =>
+    kinSentences([`${KIND_NAMES[kind]}: ${spec.title}`, ...parts, spec.caption]);
+
+  if (spec.scatter !== undefined) {
+    const { described, ...scatter } = scatterView(spec, spec.scatter);
+    return {
+      ...EMPTY,
+      ...head,
+      ...scatter,
+      legend: [...scatter.legend, ...targetKey],
+      summary: summary([...described, targetSaid(false)]),
+    };
+  }
+
   const labels = spec.labels.map((text) => label(spec, text));
+  const tones = tonesFor(spec.series.map((series) => series.color));
   const current = spec.series.map((series, index): KinChartSeriesView => ({
     key: `series-${index}`,
     name: series.name,
-    tone: TONES[index] ?? "four",
+    tone: tones[index]!,
+    previous: false,
     values: series.values,
   }));
   const previous: ReadonlyArray<KinChartSeriesView> =
@@ -167,17 +418,98 @@ export function kinChartView(spec: KinChartSpec): KinChartView {
           {
             key: "previous",
             name: spec.comparison.name,
-            tone: "previous",
+            tone:
+              spec.comparison.color === undefined
+                ? PREVIOUS
+                : { color: spec.comparison.color, soft: false },
+            previous: true,
             values: spec.comparison.values,
           },
         ];
   // People read the current period first, whatever is drawn first.
   const read = [...current, ...previous];
   const values = read.flatMap((series) => series.values);
-  const minorScale = spec.unit.kind === "money" ? 10 ** minorDigits(spec.unit.currency) : 1;
-  const keepMinor = values.some((value) => value !== null && value % minorScale !== 0);
+  const keepMinor = keepMinorFor(target === null ? values : [...values, target.value]);
   const full = (value: number | null) =>
     value === null ? MISSING : formatKinChartValue(spec.unit, value, "full", keepMinor);
+  const missing = values.filter((value) => value === null).length;
+  const missingSaid =
+    missing === 0 ? null : `${missing} ${missing === 1 ? "value is" : "values are"} missing`;
+
+  if (kind === "pie" || kind === "donut") {
+    const [series] = current;
+    const total = series!.values.reduce<number>((sum, value) => sum + (value ?? 0), 0);
+    const all = series!.values.flatMap((value, index) =>
+      value === null ? [] : [{ index, value, name: labels[index]!.full }],
+    );
+    // Past twelve slices nobody can match a colour to a name, so the smallest are drawn as one.
+    const kept =
+      all.length <= SLICES
+        ? all
+        : [...all]
+            .sort((a, b) => b.value - a.value)
+            .slice(0, SLICES - 1)
+            .sort((a, b) => a.index - b.index);
+    const rest = all.length - kept.length;
+    const detail = (value: number) => `${full(value)} · ${share(value, total)}`;
+    const sliceTones = tonesFor(kept.map((slice) => spec.colors?.[slice.index]));
+    const slices: ReadonlyArray<KinChartSliceView> = [
+      ...kept.map((slice, index) => ({
+        key: `slice-${slice.index}`,
+        name: slice.name,
+        tone: sliceTones[index]!,
+        value: slice.value,
+        detail: detail(slice.value),
+      })),
+      ...(rest === 0
+        ? []
+        : [kept.reduce((left, slice) => left - slice.value, total)].map((value) => ({
+            key: "slice-rest",
+            name: `${rest} others`,
+            tone: PREVIOUS,
+            value,
+            detail: detail(value),
+          }))),
+    ];
+    return {
+      ...EMPTY,
+      ...head,
+      labels,
+      series: current,
+      slices,
+      total: formatKinChartValue(spec.unit, total, "compact"),
+      legend: slices.map(({ key, name, tone, detail }) => ({
+        key,
+        name,
+        tone,
+        mark: "box",
+        detail,
+      })),
+      legendAsList: true,
+      table: {
+        columns: [
+          { key: "value", name: series!.name },
+          { key: "share", name: "Share" },
+        ],
+        rows: [
+          ...labels.map((one, index) => {
+            const value = series!.values[index] ?? null;
+            return {
+              key: `row-${index}`,
+              label: one.full,
+              cells: [full(value), value === null ? MISSING : share(value, total)],
+            };
+          }),
+          { key: "row-total", label: "Total", cells: [full(total), "100%"] },
+        ],
+      },
+      summary: summary([
+        `Total ${full(total)}`,
+        ...slices.map((slice) => `${slice.name}: ${slice.detail.replace(" · ", ", ")}`),
+        missingSaid,
+      ]),
+    };
+  }
 
   const described = read.map((series) => {
     const points = series.values.flatMap((value, index) =>
@@ -189,33 +521,41 @@ export function kinChartView(spec: KinChartSpec): KinChartView {
     if (points.length === 1) return `${series.name}: ${say(first)}`;
     const highest = points.reduce((a, b) => (b.value > a.value ? b : a));
     const lowest = points.reduce((a, b) => (b.value < a.value ? b : a));
-    return `${series.name}: ${say(first)} to ${say(points.at(-1)!)}; highest ${say(highest)}, lowest ${say(lowest)}`;
+    const span = ORDERED.has(kind) ? `${say(first)} to ${say(points.at(-1)!)}; ` : "";
+    return `${series.name}: ${span}highest ${say(highest)}, lowest ${say(lowest)}`;
   });
-  const missing = values.filter((value) => value === null).length;
+  const colored = spec.colors !== undefined && read.length === 1;
 
   return {
-    kind: spec.chart,
-    title: spec.title,
-    caption: spec.caption,
-    unit: spec.unit,
+    ...EMPTY,
+    ...head,
     labels,
     dated: spec.labelType !== "category",
     series: [...previous, ...current],
-    legend: read.length > 1 ? read.map(({ key, name, tone }) => ({ key, name, tone })) : [],
+    labelTones: colored
+      ? spec.colors.map((color) => (color === null ? current[0]!.tone : { color, soft: false }))
+      : null,
+    legend: [
+      ...(read.length > 1
+        ? read.map(({ key, name, tone, previous }) => ({
+            key,
+            name,
+            tone,
+            mark: previous && MARKS[kind] === "line" ? ("dashed" as const) : MARKS[kind],
+            detail: null,
+          }))
+        : []),
+      ...targetKey,
+    ],
     table: {
-      columns: read.map((series) => series.name),
+      columns: read.map(({ key, name }) => ({ key, name })),
       rows: labels.map((one, index) => ({
         key: `row-${index}`,
         label: one.full,
         cells: read.map((series) => full(series.values[index] ?? null)),
       })),
     },
-    summary: kinSentences([
-      `${KIND_NAMES[spec.chart]}: ${spec.title}`,
-      ...described,
-      missing === 0 ? null : `${missing} ${missing === 1 ? "value is" : "values are"} missing`,
-      spec.caption,
-    ]),
+    summary: summary([...described, targetSaid(keepMinor), missingSaid]),
   };
 }
 
@@ -225,237 +565,4 @@ const decode = Schema.decodeUnknownOption(KinChartCardState);
 export function kinChartCardView(widget: KinWidget): KinChartView | null {
   const state = decode(widget.state);
   return Option.isSome(state) ? kinChartView(state.value) : null;
-}
-
-export interface KinChartLayout {
-  readonly width: number;
-  readonly height: number;
-  readonly plot: {
-    readonly left: number;
-    readonly right: number;
-    readonly top: number;
-    readonly bottom: number;
-  };
-  readonly yTicks: ReadonlyArray<{
-    readonly value: number;
-    readonly y: number;
-    readonly label: string;
-  }>;
-  /** Where zero sits when the chart crosses it, so bars have a floor to stand on. */
-  readonly zeroY: number | null;
-  readonly xTicks: ReadonlyArray<{
-    readonly key: string;
-    readonly x: number;
-    readonly label: string;
-    readonly anchor: "start" | "middle" | "end";
-  }>;
-  readonly bars: ReadonlyArray<{
-    readonly key: string;
-    readonly tone: KinChartTone;
-    readonly x: number;
-    readonly y: number;
-    readonly width: number;
-    readonly height: number;
-    /** A stack's segments meet flat; a bar on its own has soft corners. */
-    readonly radius: number;
-    readonly title: string;
-  }>;
-  readonly lines: ReadonlyArray<{
-    readonly key: string;
-    readonly tone: KinChartTone;
-    /** SVG path data; a missing value breaks the line. */
-    readonly path: string;
-    readonly dots: ReadonlyArray<{
-      readonly key: string;
-      readonly x: number;
-      readonly y: number;
-      readonly title: string;
-    }>;
-  }>;
-}
-
-/** A chart's height for its width: wider cards get a little more room, never a tall one. */
-export const kinChartHeight = (width: number) =>
-  Math.round(Math.min(200, Math.max(132, width * 0.46)));
-
-const AXIS_LABEL_CHARS = 10;
-const MIN_LABEL_CHARS = 4;
-const TICKS = 4;
-const DOTS_UP_TO = 12;
-const round = (value: number) => Math.round(value * 10) / 10;
-
-function domain(view: KinChartView) {
-  const stacked = view.kind === "stacked_bar";
-  const points = stacked
-    ? view.labels.map((_, index) =>
-        view.series.reduce((sum, series) => sum + (series.values[index] ?? 0), 0),
-      )
-    : view.series.flatMap((series) => series.values.filter((value) => value !== null));
-  let low = Math.min(...points);
-  let high = Math.max(...points);
-  // Bars are read by length, so they stand on zero. A line may zoom in on a narrow band.
-  const zoomed = view.kind === "line" && low > 0 && high > low && low > 0.6 * high;
-  if (!zoomed) {
-    low = Math.min(low, 0);
-    high = Math.max(high, 0);
-  }
-  // Nothing but zeros: one unit of headroom frames the chart like any other.
-  if (low === high) {
-    const one = view.unit.kind === "money" ? 10 ** minorDigits(view.unit.currency) : 1;
-    return { low: 0, high: one, ticks: [0, one] };
-  }
-  const whole =
-    view.unit.kind === "money" ||
-    view.series.every((series) => series.values.every((v) => v === null || Number.isInteger(v)));
-  const raw = (high - low) / TICKS;
-  const power = 10 ** Math.floor(Math.log10(raw));
-  const unit = raw / power;
-  let step = (unit <= 1 ? 1 : unit <= 2 ? 2 : unit <= 5 ? 5 : 10) * power;
-  if (whole) step = Math.max(1, step);
-  const from = Math.floor(low / step + 1e-9);
-  const to = Math.ceil(high / step - 1e-9);
-  const ticks = Array.from({ length: to - from + 1 }, (_, index) =>
-    Number(((from + index) * step).toPrecision(12)),
-  );
-  return { low: ticks[0]!, high: ticks.at(-1)!, ticks };
-}
-
-/**
- * Where everything goes at one size, in pixels. Text is not measured: `charWidth` is the average
- * glyph width of the axis font, which is enough to keep labels from colliding.
- */
-export function kinChartLayout(
-  view: KinChartView,
-  size: { readonly width: number; readonly height: number; readonly charWidth?: number },
-): KinChartLayout {
-  const { width, height } = size;
-  const charWidth = size.charWidth ?? 6;
-  const scale = domain(view);
-  const yLabels = scale.ticks.map((tick) => formatKinChartValue(view.unit, tick, "compact"));
-  const left = Math.max(...yLabels.map((text) => text.length)) * charWidth + 8;
-  const plot = { left, right: width - 6, top: 8, bottom: height - 20 };
-  const plotWidth = Math.max(1, plot.right - plot.left);
-  const plotHeight = Math.max(1, plot.bottom - plot.top);
-  const toY = (value: number) =>
-    round(plot.bottom - ((value - scale.low) / (scale.high - scale.low)) * plotHeight);
-
-  const count = view.labels.length;
-  const line = view.kind === "line";
-  const band = plotWidth / count;
-  const inset = 6;
-  const spacing = line && count > 1 ? (plotWidth - inset * 2) / (count - 1) : band;
-  const toX = (index: number) =>
-    round(
-      line && count > 1 ? plot.left + inset + spacing * index : plot.left + band * (index + 0.5),
-    );
-
-  // A category keeps its label under its own bar, cut to the room it has; dates thin out instead.
-  const gap = 10;
-  const room = view.dated
-    ? AXIS_LABEL_CHARS
-    : Math.max(MIN_LABEL_CHARS, Math.floor((spacing - gap) / charWidth));
-  const short = view.labels.map((one) => {
-    const chars = Array.from(one.short);
-    return chars.length > room ? `${chars.slice(0, room - 1).join("")}…` : one.short;
-  });
-  const widest = Math.max(...short.map((text) => text.length)) * charWidth + gap;
-  const every = Math.max(1, Math.ceil(widest / spacing));
-  const xTicks = short.flatMap((text, index) => {
-    const offset = view.dated ? count - 1 - index : index;
-    if (offset % every !== 0) return [];
-    const x = toX(index);
-    const half = (text.length * charWidth) / 2;
-    const anchor = x - half < 0 ? "start" : x + half > width ? "end" : "middle";
-    return [
-      {
-        key: `x-${index}`,
-        x: anchor === "start" ? 0 : anchor === "end" ? width : x,
-        label: text,
-        anchor,
-      } as const,
-    ];
-  });
-
-  const many = view.series.length > 1;
-  const title = (series: KinChartSeriesView, index: number, value: number) =>
-    `${view.labels[index]!.full}: ${many ? `${series.name} ` : ""}${formatKinChartValue(view.unit, value)}`;
-
-  const bars: Array<KinChartLayout["bars"][number]> = [];
-  if (!line) {
-    const stacked = view.kind === "stacked_bar";
-    const columns = stacked ? 1 : view.series.length;
-    const gap = columns > 1 ? 2 : 0;
-    const barWidth = Math.max(1, Math.min(40, (band * 0.72 - gap * (columns - 1)) / columns));
-    const groupWidth = barWidth * columns + gap * (columns - 1);
-    const floor = toY(0);
-    for (let index = 0; index < count; index++) {
-      const start = plot.left + band * (index + 0.5) - groupWidth / 2;
-      let base = 0;
-      view.series.forEach((series, column) => {
-        const value = series.values[index] ?? null;
-        if (value === null) return;
-        const top = toY(stacked ? base + value : Math.max(value, 0));
-        const bottom = stacked ? toY(base) : value < 0 ? toY(value) : floor;
-        base += value;
-        // A zero still leaves a mark, so it never reads as a missing value. Stacked segments
-        // keep a hairline between them.
-        const tall = Math.max(1.5, bottom - top - (stacked && base > value ? 1 : 0));
-        bars.push({
-          key: `${series.key}-${index}`,
-          tone: series.tone,
-          x: round(start + (stacked ? 0 : column * (barWidth + gap))),
-          y: round(value < 0 ? top : Math.min(top, bottom - tall)),
-          width: round(barWidth),
-          height: round(tall),
-          radius: stacked ? 0 : 2,
-          title: title(series, index, value),
-        });
-      });
-    }
-  }
-
-  const lines = !line
-    ? []
-    : view.series.map((series) => {
-        const points = series.values.map((value, index) =>
-          value === null ? null : { index, value, x: toX(index), y: toY(value) },
-        );
-        const path = points
-          .flatMap((point, index) =>
-            point === null
-              ? []
-              : [`${index === 0 || points[index - 1] === null ? "M" : "L"}${point.x} ${point.y}`],
-          )
-          .join("");
-        const alone = (index: number) =>
-          (points[index - 1] ?? null) === null && (points[index + 1] ?? null) === null;
-        return {
-          key: series.key,
-          tone: series.tone,
-          path,
-          dots: points.flatMap((point) =>
-            point !== null && (count <= DOTS_UP_TO || alone(point.index))
-              ? [
-                  {
-                    key: `${series.key}-${point.index}`,
-                    x: point.x,
-                    y: point.y,
-                    title: title(series, point.index, point.value),
-                  },
-                ]
-              : [],
-          ),
-        };
-      });
-
-  return {
-    width,
-    height,
-    plot,
-    yTicks: scale.ticks.map((value, index) => ({ value, y: toY(value), label: yLabels[index]! })),
-    zeroY: scale.low < 0 && scale.high > 0 ? toY(0) : null,
-    xTicks,
-    bars,
-    lines,
-  };
 }

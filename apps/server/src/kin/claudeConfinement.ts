@@ -34,6 +34,13 @@ const textField = (input: unknown, key: string): string | undefined | null => {
   return typeof value === "string" ? value : null;
 };
 
+/** Only a missing, `undefined` or `false` field is unset; any other value counts as asking. */
+const isSet = (input: unknown, key: string) => {
+  if (typeof input !== "object" || input === null || !(key in input)) return false;
+  const value = (input as Record<string, unknown>)[key];
+  return value !== undefined && value !== false;
+};
+
 /** The paths and globs a call names, or `undefined` for a tool whose input this doesn't know. */
 const callTargets = (tool: string, input: unknown) => {
   if (tool === "Read" || tool === "Edit" || tool === "Write") {
@@ -102,6 +109,13 @@ export const permits = Effect.fn("KinClaudeConfinement.permits")(function* (
   if (tool.startsWith("mcp__")) return scope.mcp !== false;
   const root = scope.root;
   if (root === undefined || !scope.tools.includes(tool)) return false;
+  // The OS sandbox judges what a command reaches; this keeps every command inside it, in front.
+  if (tool === "Bash")
+    return (
+      typeof textField(input, "command") === "string" &&
+      isSet(input, "run_in_background") === false &&
+      isSet(input, "dangerouslyDisableSandbox") === false
+    );
   const targets = callTargets(tool, input);
   if (targets === undefined || !targets.globs.every(safeGlob)) return false;
   const fs = yield* FileSystem.FileSystem;

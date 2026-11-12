@@ -1,7 +1,7 @@
 import type { KinChartSpec, KinChartUnit } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { formatKinChartValue, kinChartLayout, kinChartView } from "./kinChart.ts";
+import { formatKinChartValue, kinChartView } from "./kinChart.ts";
 
 const inr: KinChartUnit = { kind: "money", currency: "INR" };
 const spec = (change: Partial<KinChartSpec> = {}): KinChartSpec => ({
@@ -15,7 +15,6 @@ const spec = (change: Partial<KinChartSpec> = {}): KinChartSpec => ({
   comparison: null,
   ...change,
 });
-const size = { width: 320, height: 150 };
 
 describe("formatKinChartValue", () => {
   it.each<[KinChartUnit, number, "full" | "compact", string]>([
@@ -50,13 +49,17 @@ describe("kinChartView", () => {
     expect(view.summary).toBe(
       "Bar chart: Signups. This week: 12 (Mon) to 0 (Wed); highest 12 (Mon), lowest 0 (Wed). Last week: 9 (Mon) to −2 (Wed); highest 14 (Tue), lowest −2 (Wed). 1 value is missing. Acme, all plans.",
     );
-    expect(view.table.columns).toEqual(["This week", "Last week"]);
+    expect(view.table.columns.map((column) => column.name)).toEqual(["This week", "Last week"]);
     expect(view.table.rows.map((row) => [row.label, ...row.cells])).toEqual([
       ["Mon", "12", "9"],
       ["Tue", "–", "14"],
       ["Wed", "0", "−2"],
     ]);
-    expect(view.series.map((series) => series.tone)).toEqual(["previous", "one"]);
+    expect(view.series.map((series) => [series.previous, series.tone.color])).toEqual([
+      [true, "grey"],
+      [false, "accent"],
+    ]);
+    expect(view.legend.map((item) => item.mark)).toEqual(["box", "box"]);
     expect(view.legend.map((item) => item.name)).toEqual(["This week", "Last week"]);
   });
 
@@ -78,132 +81,109 @@ describe("kinChartView", () => {
     expect(view.labels.map((label) => label.short)).toEqual(["Nov", "Dec", "Jan ’27"]);
     expect(view.legend).toEqual([]);
   });
-});
 
-describe("kinChartLayout", () => {
-  it("stands bars on zero, marks a zero and leaves a gap for a missing value", () => {
-    const layout = kinChartLayout(kinChartView(spec()), size);
-    expect(layout.bars.map((bar) => bar.key)).toEqual(["series-0-0", "series-0-2"]);
-    const [tall, zero] = layout.bars;
-    expect(tall!.y + tall!.height).toBeCloseTo(layout.plot.bottom, 0);
-    expect(zero!.height).toBe(1.5);
-    expect(layout.yTicks[0]).toMatchObject({ value: 0, label: "0" });
-    expect(layout.zeroY).toBeNull();
-  });
-
-  it("hangs negative bars below a zero line inside the plot", () => {
-    const layout = kinChartLayout(
-      kinChartView(spec({ series: [{ name: "Net", values: [40, -20, 10] }] })),
-      size,
+  it("reads a pie as shares of its total, and draws the smallest of many slices as one", () => {
+    const view = kinChartView(
+      spec({
+        chart: "donut",
+        unit: inr,
+        labels: ["Rent", "Salaries", "Cloud", "Travel"],
+        series: [{ name: "Spend", values: [5000000, 15000000, null, 0] }],
+        colors: [null, "accent", null, null],
+      }),
     );
-    const zeroY = layout.zeroY!;
-    expect(zeroY).toBeGreaterThan(layout.plot.top);
-    expect(zeroY).toBeLessThan(layout.plot.bottom);
-    const [up, down] = layout.bars;
-    expect(up!.y + up!.height).toBeCloseTo(zeroY, 0);
-    expect(down!.y).toBeCloseTo(zeroY, 0);
-  });
-
-  it("stacks series to their total", () => {
-    const layout = kinChartLayout(
-      kinChartView(
-        spec({
-          chart: "stacked_bar",
-          labels: ["Q1"],
-          series: [
-            { name: "Web", values: [30] },
-            { name: "App", values: [70] },
-          ],
-        }),
-      ),
-      size,
-    );
-    const [web, app] = layout.bars;
-    expect(layout.yTicks.at(-1)!.value).toBe(100);
-    expect(app!.y).toBeCloseTo(layout.plot.top, 0);
-    expect(app!.y + app!.height).toBeCloseTo(web!.y - 1, 0);
-    expect(web!.x).toBe(app!.x);
-  });
-
-  it("breaks a line at a missing value and dots a point left on its own", () => {
-    const labels = Array.from(
-      { length: 14 },
-      (_, index) => `2026-11-${String(index + 1).padStart(2, "0")}`,
-    );
-    const values = labels.map((_, index) => (index === 3 || index === 5 ? null : 100 + index));
-    const layout = kinChartLayout(
-      kinChartView(
-        spec({ chart: "line", labelType: "day", labels, series: [{ name: "Visits", values }] }),
-      ),
-      size,
-    );
-    const [line] = layout.lines;
-    expect(line!.path.match(/M/g)).toHaveLength(3);
-    expect(line!.dots.map((dot) => dot.key)).toEqual(["series-0-4"]);
-    // A narrow band zooms in instead of flattening against zero.
-    expect(layout.yTicks[0]!.value).toBeGreaterThan(0);
-    // Dates thin out from the latest, and no two labels share room.
-    expect(layout.xTicks.at(-1)!.label).toBe("14 Nov");
-    expect(layout.xTicks.length).toBeLessThan(labels.length);
-  });
-
-  it("draws one point, and a chart of zeros, without dividing by nothing", () => {
-    const one = kinChartLayout(
-      kinChartView(
-        spec({ chart: "line", labels: ["Today"], series: [{ name: "Open", values: [7] }] }),
-      ),
-      size,
-    );
-    expect(one.lines[0]!.dots).toHaveLength(1);
-    expect(one.lines[0]!.dots[0]!.x).toBeGreaterThan(one.plot.left);
-    const zeros = kinChartLayout(
-      kinChartView(spec({ series: [{ name: "Errors", values: [0, 0, 0] }] })),
-      size,
-    );
-    expect(zeros.yTicks.map((tick) => tick.label)).toEqual(["0", "1"]);
-    expect(zeros.bars.every((bar) => Number.isFinite(bar.y) && bar.height === 1.5)).toBe(true);
-  });
-
-  it("cuts a long category label to its bar's room, so every bar keeps one at phone width", () => {
-    const labels = [
-      "Enterprise annual contracts",
-      "Self-serve monthly",
-      "Partner referrals",
-      "Other",
-    ];
-    const layout = kinChartLayout(
-      kinChartView(spec({ labels, series: [{ name: "Deals", values: [4, 9, 2, 1] }] })),
-      { width: 260, height: 132 },
-    );
-    expect(layout.xTicks.map((tick) => tick.label)).toEqual([
-      "Enterpr…",
-      "Self-se…",
-      "Partner…",
-      "Other",
+    expect(view.table.columns.map((column) => column.name)).toEqual(["Spend", "Share"]);
+    expect(view.table.rows.map((row) => [row.label, ...row.cells])).toEqual([
+      ["Rent", "₹50,000", "25%"],
+      ["Salaries", "₹1,50,000", "75%"],
+      ["Cloud", "–", "–"],
+      ["Travel", "₹0", "0%"],
+      ["Total", "₹2,00,000", "100%"],
     ]);
-    for (const charWidth of [5.5, 6.4, 6.9, 7.5])
-      for (const width of [240, 260, 288, 300, 340])
-        expect(
-          kinChartLayout(
-            kinChartView(spec({ labels, series: [{ name: "Deals", values: [4, 9, 2, 1] }] })),
-            { width, height: 132, charWidth },
-          ).xTicks,
-        ).toHaveLength(4);
-    const wide = kinChartLayout(
-      kinChartView(spec({ labels, series: [{ name: "Deals", values: [4, 9, 2, 1] }] })),
-      { width: 900, height: 200 },
+    expect(view.total).toBe("₹2L");
+    expect(view.legend.map((item) => [item.name, item.tone.color, item.detail])).toEqual([
+      // A slice left to the default never takes the colour another slice asked for.
+      ["Rent", "amber", "₹50,000 · 25%"],
+      ["Salaries", "accent", "₹1,50,000 · 75%"],
+      ["Travel", "green", "₹0 · 0%"],
+    ]);
+    expect(view.summary).toBe(
+      "Donut chart: Signups. Total ₹2,00,000. Rent: ₹50,000, 25%. Salaries: ₹1,50,000, 75%. Travel: ₹0, 0%. 1 value is missing.",
     );
-    expect(wide.xTicks[0]!.label).toBe("Enterprise annual contracts");
-    for (const tick of layout.xTicks) {
-      const half = (tick.label.length * 6) / 2;
-      const [from, to] =
-        tick.anchor === "middle"
-          ? [tick.x - half, tick.x + half]
-          : tick.anchor === "start"
-            ? [tick.x, tick.x + half * 2]
-            : [tick.x - half * 2, tick.x];
-      expect(from).toBeGreaterThanOrEqual(0);
-      expect(to).toBeLessThanOrEqual(260);
-    }
+
+    const labels = Array.from({ length: 20 }, (_, index) => `Team ${index + 1}`);
+    const many = kinChartView(
+      spec({
+        chart: "pie",
+        labels,
+        series: [
+          { name: "Tickets", values: labels.map((_, index) => (index === 19 ? 1000 : index + 1)) },
+        ],
+      }),
+    );
+    expect(many.slices).toHaveLength(12);
+    expect(many.slices.at(-2)!.name).toBe("Team 20");
+    expect(many.slices.at(-1)).toMatchObject({ name: "9 others", value: 45 });
+    expect(many.table.rows).toHaveLength(21);
+  });
+
+  it("reads a scatter as its two measures, each in its own unit", () => {
+    const view = kinChartView(
+      spec({
+        chart: "scatter",
+        labels: [],
+        series: [],
+        target: { name: "Goal", value: 50 },
+        scatter: {
+          xName: "Ad spend",
+          yName: "Signups",
+          xUnit: inr,
+          series: [
+            {
+              name: "Search",
+              points: [
+                { x: 12000000, y: 40, label: "Diwali" },
+                { x: 3000050, y: 12 },
+              ],
+            },
+            { name: "Social", color: "purple", points: [{ x: 500000, y: 3 }] },
+          ],
+        },
+      }),
+    );
+    expect(view.table.columns.map((column) => column.name)).toEqual([
+      "Group",
+      "Ad spend",
+      "Signups",
+    ]);
+    expect(view.table.rows.map((row) => [row.label, ...row.cells])).toEqual([
+      ["Diwali", "Search", "₹1,20,000.00", "40"],
+      ["Search 2", "Search", "₹30,000.50", "12"],
+      ["Social 1", "Social", "₹5,000.00", "3"],
+    ]);
+    expect(view.legend.map((item) => [item.name, item.tone.color, item.mark])).toEqual([
+      ["Search", "accent", "dot"],
+      ["Social", "purple", "dot"],
+      ["Goal 50", "grey", "dashed"],
+    ]);
+    expect(view.summary).toBe(
+      "Scatter chart: Signups. Signups against Ad spend. Search: 2 points, Ad spend ₹30,000.50 to ₹1,20,000.00, Signups 12 to 40. Social: 1 point, Ad spend ₹5,000.00, Signups 3. Goal: 50.",
+    );
+  });
+
+  it("says a radar by its strongest and weakest axis, and gives twelve series twelve tones", () => {
+    const view = kinChartView(
+      spec({
+        chart: "radar",
+        labels: ["Speed", "Cost", "Quality"],
+        series: Array.from({ length: 12 }, (_, index) => ({
+          name: `Vendor ${index + 1}`,
+          values: [index, 5, 9],
+        })),
+      }),
+    );
+    expect(view.summary).toContain("Vendor 1: highest 9 (Quality), lowest 0 (Speed).");
+    expect(new Set(view.series.map((one) => `${one.tone.color}${one.tone.soft}`)).size).toBe(12);
+    expect(view.legend[0]!.mark).toBe("line");
   });
 });

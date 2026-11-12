@@ -1,11 +1,15 @@
 import {
   KIN_SENSITIVE_FIELDS,
   KinChatError,
+  KinFieldValue,
+  type KinMoney,
   type KinRecordState,
   type KinWorkListName,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+
+import { formatMoney } from "./money.ts";
 
 /**
  * The built-in lists and what each allows. Code depends on all five, so they are fixed here; the
@@ -39,7 +43,8 @@ export const LISTS: Record<ListName, List> = {
     noun: "client",
     states: ["open", "dropped"],
     categories: ["client", "vendor"],
-    fields: ["terms"],
+    // Tax ids are configuration for invoices; computing tax is not Kin's.
+    fields: ["terms", "gstin", "placeOfSupply"],
   },
   contacts: {
     name: "Contacts",
@@ -84,11 +89,9 @@ export const sensitiveFields = (list: ListName): ReadonlyArray<string> =>
       ? KIN_SENSITIVE_FIELDS.contacts
       : [];
 
-export type FieldValue = string | ReadonlyArray<string>;
+export type FieldValue = KinFieldValue;
 export type FieldValues = Readonly<Record<string, FieldValue>>;
-const FieldsJson = Schema.fromJsonString(
-  Schema.Record(Schema.String, Schema.Union([Schema.String, Schema.Array(Schema.String)])),
-);
+const FieldsJson = Schema.fromJsonString(Schema.Record(Schema.String, KinFieldValue));
 const decodeFields = Schema.decodeUnknownOption(FieldsJson);
 export const encodeFieldValues = Schema.encodeEffect(FieldsJson);
 export const parseFields = (json: string): FieldValues =>
@@ -99,7 +102,7 @@ export const fieldText = (fields: FieldValues, key: string) => {
 };
 export const fieldList = (fields: FieldValues, key: string): ReadonlyArray<string> => {
   const value = fields[key];
-  return Array.isArray(value) ? value : [];
+  return Array.isArray(value) ? (value as ReadonlyArray<string>) : [];
 };
 /** How a field's value reads in the change log. */
 export const shownField = (value: FieldValue | null | undefined) =>
@@ -107,7 +110,11 @@ export const shownField = (value: FieldValue | null | undefined) =>
     ? null
     : typeof value === "string"
       ? value
-      : value.join(", ");
+      : isMoney(value)
+        ? formatMoney(value)
+        : value.join(", ");
+export const isMoney = (value: FieldValue): value is KinMoney =>
+  typeof value === "object" && "currency" in value;
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 

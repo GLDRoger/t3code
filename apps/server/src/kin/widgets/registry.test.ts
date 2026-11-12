@@ -53,7 +53,8 @@ describe("Kin widget registry", () => {
         ["choice", { ...choice, options: choice.options.slice(0, 1) }],
         ["choice", { ...choice, question: "x".repeat(241) }],
         ["chart", { ...chart, labels: ["Mon"] }],
-        ["chart", { ...chart, html: "<b>hi</b>", chart: "pie" }],
+        ["chart", { ...chart, html: "<b>hi</b>", chart: "sankey" }],
+        ["chart", { ...chart, chart: "pie", series: [{ name: "Net", values: [12, -3] }] }],
       ] as const) {
         assert.include(
           yield* validateState(type, value).pipe(

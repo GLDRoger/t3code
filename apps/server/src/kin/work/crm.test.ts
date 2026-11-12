@@ -26,11 +26,13 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinRecords from "./KinRecords.ts";
+import * as LeadMoney from "./leadMoney.ts";
 import * as LeadWork from "./leadWork.ts";
 import { KinWorkToolkit } from "./mcp/tools.ts";
 import * as Clients from "./ownerClients.ts";
 import * as OwnerWork from "./ownerWork.ts";
 import { effectivelySensitive } from "./recordRows.ts";
+import { PRESETS } from "./registers.ts";
 import { buildWorkSection } from "./workPrompt.ts";
 
 // Invented org, people, clients and work only; nothing here reads a real database.
@@ -579,31 +581,65 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
     yield* seed;
     yield* setup("ask-event");
     yield* LeadWork.update(scope, { key: "C-1", sourceEventId: "ask-event", sensitive: true });
+    // An invoices list as if defined, and an invoice for the payment row.
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at, definition_json)
+      VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(PRESETS.invoices)})`;
+    yield* LeadWork.create(scope, {
+      sourceEventId: "ask-event",
+      records: [{ list: "invoices", title: "Invented October retainer", amount: "1 lakh" }],
+    });
     // One row per tool the lead has: a tool added without one fails to typecheck and here.
+    // A definition shows no entry, so proposing one marks nothing.
     const calls = {
-      records_query: LeadWork.query(scope, { keys: ["W-2"] }),
-      record_get: LeadWork.get(scope, { key: "W-2" }),
+      records_query: [LeadWork.query(scope, { keys: ["W-2"] }), true],
+      record_get: [LeadWork.get(scope, { key: "W-2" }), true],
       // Setting up a client that exists returns it, and shows it, sensitive.
-      record_create: LeadWork.create(scope, {
-        sourceEventId: "again-event",
-        records: [{ list: "clients", title: "Invented Acme" }],
-      }),
-      record_update: LeadWork.update(scope, {
-        key: "W-2",
-        sourceEventId: "ask-event",
-        notes: "Invented note",
-      }),
-    } satisfies Record<keyof typeof KinWorkToolkit.tools, unknown>;
+      record_create: [
+        LeadWork.create(scope, {
+          sourceEventId: "again-event",
+          records: [{ list: "clients", title: "Invented Acme" }],
+        }),
+        true,
+      ],
+      record_update: [
+        LeadWork.update(scope, {
+          key: "W-2",
+          sourceEventId: "ask-event",
+          notes: "Invented note",
+        }),
+        true,
+      ],
+      list_define: [
+        LeadMoney.define(scope, { sourceEventId: "ask-event", name: "Invented leave" }),
+        false,
+      ],
+      payment_record: [
+        LeadMoney.payment(scope, {
+          sourceEventId: "ask-event",
+          key: "INV-1",
+          amount: "10,000",
+          paidOn: "2026-11-11",
+        }),
+        true,
+      ],
+      money_summary: [LeadMoney.money(scope, {}), true],
+      dates_query: [LeadMoney.datesQuery(scope, { from: "1970-01-01", to: "2030-12-31" }), true],
+      company_profile: [LeadMoney.profile(scope, {}), true],
+    } satisfies Record<
+      keyof typeof KinWorkToolkit.tools,
+      readonly [Effect.Effect<unknown, unknown, Services>, boolean]
+    >;
     assert.deepStrictEqual(
       Object.keys(calls).toSorted(),
       Object.keys(KinWorkToolkit.tools).toSorted(),
     );
-    for (const [tool, call] of Object.entries(calls)) {
+    for (const [tool, [call, marks]] of Object.entries(calls)) {
       yield* sql`DELETE FROM kin_wakeup_sensitive_reads`;
       yield* call;
       assert.deepStrictEqual(
         yield* sql`SELECT wakeup_id FROM kin_wakeup_sensitive_reads`,
-        [{ wakeup_id: "wake" }],
+        marks ? [{ wakeup_id: "wake" }] : [],
         tool,
       );
     }

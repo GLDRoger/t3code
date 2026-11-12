@@ -29,6 +29,7 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
@@ -37,6 +38,7 @@ import * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
 import * as Stream from "effect/Stream";
+import { ServerConfig } from "../../config.ts";
 import { FORWARDED_WAIT_CHUNK_MS } from "../../peer/PeerForwarding.ts";
 import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
@@ -58,6 +60,7 @@ import { isOrgPaused, STOP_REASON } from "./orgState.ts";
 import { OWNER_DECLINED, parseReport, WAITING_FOR_OWNER } from "./workerBrief.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
 import * as Publish from "./workerPublish.ts";
+import { takeBlocked } from "./workNetwork.ts";
 import { localThreadId, workThreadPrefix } from "./workThread.ts";
 import { KinRecords, type Withdrawal } from "../work/KinRecords.ts";
 import * as Attempts from "../work/workerAttempts.ts";
@@ -101,6 +104,9 @@ const isLocal = (worker: {
 }) => worker.environmentId === null && worker.threadId === localThreadId(worker.workerId);
 /** The longest one wait on a local worker's thread blocks a follower. */
 const LOCAL_WAIT_MS = 600_000;
+/** A local worker's whole run, its commands included; past it, Kin stops it unpublished. */
+export const LOCAL_TASK_LIMIT_MS = 3_600_000;
+const TASK_LIMIT_REASON = "The worker ran past its one-hour limit.";
 const MAX_REPLY_CHARS = 200_000;
 const cardStateEquivalent = Schema.toEquivalence(
   KinTaskCardState.mapFields((fields) => ({
@@ -153,6 +159,20 @@ const withPublication = (report: WorkerReport, published: Publication | undefine
             ],
           }
         : { ...report, openQuestions: [...report.openQuestions, published.refused] };
+/** Kin's record of refused hosts replaces any the worker claims; the lead asks the owner. */
+const withBlockedHosts = (report: WorkerReport, hosts: ReadonlyArray<string>): WorkerReport => {
+  const { blockedHosts: _claimed, ...rest } = report;
+  return hosts.length === 0
+    ? rest
+    : {
+        ...rest,
+        blockedHosts: [...hosts],
+        openQuestions: [
+          ...rest.openQuestions,
+          `Its commands were refused network access to ${hosts.join(", ")}. Ask the owner whether workers may reach ${hosts.length === 1 ? "it" : "them"}; the owner adds hosts in Kin's settings.`,
+        ],
+      };
+};
 const WorkerRow = Schema.Struct({
   orgId: KinOrgId,
   workerId: KinWorkerId,
@@ -286,6 +306,8 @@ const make = Effect.gen(function* () {
   const hub = yield* KinChatHub;
   const environment = yield* Effect.serviceOption(ServerEnvironment);
   const projects = yield* ProjectService.ProjectService;
+  const { stateDir } = yield* ServerConfig;
+  const fs = yield* FileSystem.FileSystem;
   // Followers live as long as this service, so shutting down stops them.
   const followers = yield* Scope.Scope;
   const bootedAt = yield* Clock.currentTimeMillis;
@@ -1052,10 +1074,20 @@ const make = Effect.gen(function* () {
     if (worker.projectId === null || shell.projectId !== worker.projectId)
       return yield* abandoned("The worker's thread is no longer in its project.");
     yield* reach(worker, true);
+    const left = worker.startedAt + LOCAL_TASK_LIMIT_MS - (yield* Clock.currentTimeMillis);
+    if (left <= 0 && !(yield* stopRequested(worker)))
+      yield* stop({
+        orgId: worker.orgId,
+        agentId: worker.agentId,
+        workerId: worker.workerId,
+        reason: TASK_LIMIT_REASON,
+        key: `kin-work-limit:${worker.workerId}:${worker.startedAt}`,
+        startedAt: worker.startedAt,
+      }).pipe(Effect.ignoreCause({ log: true }));
     const waited = yield* threads.waitForThread({
       projectId: worker.projectId,
       threadId: worker.threadId,
-      timeoutMs: LOCAL_WAIT_MS,
+      timeoutMs: left <= 0 ? LOCAL_WAIT_MS : Math.min(LOCAL_WAIT_MS, left),
     });
     if (waited.timedOut) return false;
     if (waited.run === null) return yield* abandoned("The worker's thread never started a run.");
@@ -1069,9 +1101,14 @@ const make = Effect.gen(function* () {
     const reply = projection.messages
       .findLast((message) => message.role === "assistant" && message.runId === run.id)
       ?.text.slice(-MAX_REPLY_CHARS);
-    const report =
+    const report = withBlockedHosts(
       (reply === undefined ? undefined : parseReport(reply)) ??
-      blocked(worker, here, `Worker ended ${status} without a report.`);
+        blocked(worker, here, `Worker ended ${status} without a report.`),
+      yield* takeBlocked(stateDir, worker.workerId).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.orElseSucceed(() => []),
+      ),
+    );
     const project =
       status === "completed" && worker.kind === "build"
         ? Option.getOrUndefined(yield* projects.getById(worker.projectId))

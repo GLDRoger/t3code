@@ -87,6 +87,9 @@ describe("command permissions", () => {
     "kin.memory.setVisibility",
     "kin.memory.confirmSuggestions",
     "kin.memory.forget",
+    "kin.workers.network.get",
+    "kin.workers.network.allow",
+    "kin.workers.network.remove",
   ] as const)("guards the Kin owner setting %s with the destination settings grant", (method) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -164,6 +167,7 @@ describe("command permissions", () => {
     [KIN_APPROVAL_WS_METHODS.registerKey, AuthAccessWriteScope],
     [KIN_APPROVAL_WS_METHODS.listKeys, AuthAccessWriteScope],
     [KIN_APPROVAL_WS_METHODS.revokeKey, AuthAccessWriteScope],
+    [KIN_APPROVAL_WS_METHODS.allowKey, AuthAccessWriteScope],
     // Changing Work can wake a lead on the owner's budget, as giving it work does.
     [KIN_WORK_WS_METHODS.get, AuthOrchestrationReadScope],
     [KIN_WORK_WS_METHODS.assign, AuthOrchestrationOperateScope],

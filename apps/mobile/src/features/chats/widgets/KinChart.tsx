@@ -1,12 +1,17 @@
+import type {
+  KinChartMark,
+  KinChartTone,
+  KinChartView,
+} from "@t3tools/client-runtime/kin/kinChart";
 import {
   kinChartHeight,
   kinChartLayout,
-  type KinChartTone,
-  type KinChartView,
-} from "@t3tools/client-runtime/kin/kinChart";
+  type KinChartLayout,
+  type KinChartText,
+} from "@t3tools/client-runtime/kin/kinChartLayout";
 import { memo, useState } from "react";
-import { View } from "react-native";
-import { Circle, G, Line, Path, Rect, Svg, Text as SvgText } from "react-native-svg";
+import { ScrollView, View } from "react-native";
+import { Circle, G, Path, Rect, Svg, Text as SvgText } from "react-native-svg";
 import { withUniwind } from "uniwind";
 
 import { AppText as Text } from "../../../components/ui/AppText";
@@ -23,144 +28,235 @@ const LABEL_MIN_WIDTH = 84;
 
 // `colorClassName` sets each shape's `color`, which `currentColor` draws with, so a chart follows
 // light, dark and custom themes like any other themed view.
-const ThemedLine = withUniwind(Line);
 const ThemedRect = withUniwind(Rect);
 const ThemedPath = withUniwind(Path);
 const ThemedCircle = withUniwind(Circle);
 const ThemedText = withUniwind(SvgText);
 
-const TONES: Record<
-  KinChartTone,
-  { readonly color: string; readonly swatch: string; readonly opacity: number }
-> = {
-  one: { color: "accent-primary", swatch: "bg-primary", opacity: 1 },
-  two: { color: "accent-warning-foreground", swatch: "bg-warning-foreground", opacity: 1 },
-  three: { color: "accent-foreground", swatch: "bg-foreground", opacity: 0.5 },
-  four: { color: "accent-primary", swatch: "bg-primary", opacity: 0.45 },
-  previous: { color: "accent-foreground-muted", swatch: "bg-foreground-muted", opacity: 0.55 },
+const COLORS: Record<KinChartTone["color"], { readonly color: string; readonly swatch: string }> = {
+  accent: { color: "accent-primary", swatch: "bg-primary" },
+  amber: { color: "accent-warning-foreground", swatch: "bg-warning-foreground" },
+  green: { color: "accent-adaptive-emerald-600-400", swatch: "bg-adaptive-emerald-600-400" },
+  purple: { color: "accent-adaptive-fuchsia-600-300", swatch: "bg-adaptive-fuchsia-600-300" },
+  grey: { color: "accent-foreground-muted", swatch: "bg-foreground-muted" },
+  red: { color: "accent-danger-foreground", swatch: "bg-danger-foreground" },
 };
+const SOFT = 0.45;
+const strength = (tone: KinChartTone) => (tone.soft ? SOFT : 1);
 
-function KinChartPlot(props: { readonly view: KinChartView; readonly width: number }) {
-  const { view, width } = props;
-  const height = kinChartHeight(width);
-  const layout = kinChartLayout(view, { width, height, charWidth: AXIS_CHAR_WIDTH });
-  const axisText = {
-    fontSize: AXIS_FONT_SIZE,
-    fontFamily: "DMSans-Regular",
-    fill: "currentColor",
-    colorClassName: "accent-foreground-muted",
-  };
+function Texts(props: { readonly texts: ReadonlyArray<KinChartText> }) {
+  return props.texts.map((text) => (
+    <ThemedText
+      key={text.key}
+      x={text.x}
+      y={text.y}
+      textAnchor={text.anchor}
+      fontSize={AXIS_FONT_SIZE}
+      fontFamily={text.strong ? "DMSans-Medium" : "DMSans-Regular"}
+      fill="currentColor"
+      colorClassName={text.strong ? "accent-foreground" : "accent-foreground-muted"}
+    >
+      {text.text}
+    </ThemedText>
+  ));
+}
+
+function Shapes(props: { readonly layout: KinChartLayout }) {
+  const { layout } = props;
   return (
-    <View accessible accessibilityRole="image" accessibilityLabel={view.summary}>
-      <Svg width={width} height={height} accessible={false}>
-        {layout.yTicks.map((tick) => (
-          <G key={tick.value}>
-            <ThemedLine
-              x1={layout.plot.left}
-              x2={layout.plot.right}
-              y1={tick.y}
-              y2={tick.y}
-              stroke="currentColor"
-              colorClassName="accent-border"
-              strokeWidth={1}
-            />
-            <ThemedText
-              {...axisText}
-              x={layout.plot.left - 6}
-              y={tick.y + AXIS_FONT_SIZE / 3}
-              textAnchor="end"
-            >
-              {tick.label}
-            </ThemedText>
-          </G>
-        ))}
-        {layout.bars.map((bar) => (
-          <ThemedRect
-            key={bar.key}
-            x={bar.x}
-            y={bar.y}
-            width={bar.width}
-            height={bar.height}
-            rx={bar.radius}
-            fill="currentColor"
-            colorClassName={TONES[bar.tone].color}
-            opacity={TONES[bar.tone].opacity}
+    <>
+      {layout.rules.map((rule) =>
+        rule.strong ? null : (
+          <ThemedPath
+            key={rule.key}
+            d={rule.path}
+            fill="none"
+            stroke="currentColor"
+            colorClassName="accent-border"
+            strokeWidth={1}
           />
-        ))}
-        {layout.zeroY === null ? null : (
-          <ThemedLine
-            x1={layout.plot.left}
-            x2={layout.plot.right}
-            y1={layout.zeroY}
-            y2={layout.zeroY}
+        ),
+      )}
+      {layout.areas.map((area) => (
+        <ThemedPath
+          key={area.key}
+          d={area.path}
+          fill="currentColor"
+          colorClassName={COLORS[area.tone.color].color}
+          fillOpacity={area.opacity * strength(area.tone)}
+        />
+      ))}
+      {layout.bars.map((bar) => (
+        <ThemedRect
+          key={bar.key}
+          x={bar.x}
+          y={bar.y}
+          width={bar.width}
+          height={bar.height}
+          rx={bar.radius}
+          fill="currentColor"
+          colorClassName={COLORS[bar.tone.color].color}
+          opacity={strength(bar.tone)}
+        />
+      ))}
+      {layout.rules.map((rule) =>
+        rule.strong ? (
+          <ThemedPath
+            key={rule.key}
+            d={rule.path}
+            fill="none"
             stroke="currentColor"
             colorClassName="accent-foreground-muted"
             strokeWidth={1}
+            strokeDasharray={rule.dashed ? [5, 4] : undefined}
           />
-        )}
-        {layout.lines.map((line) => (
-          <G key={line.key} opacity={TONES[line.tone].opacity}>
+        ) : null,
+      )}
+      {layout.lines.map((line) => (
+        <G key={line.key} opacity={strength(line.tone)}>
+          {line.path === "" ? null : (
             <ThemedPath
               d={line.path}
               fill="none"
               stroke="currentColor"
-              colorClassName={TONES[line.tone].color}
+              colorClassName={COLORS[line.tone.color].color}
               strokeWidth={2}
               strokeLinecap="round"
               strokeLinejoin="round"
-              strokeDasharray={line.tone === "previous" ? [4, 4] : undefined}
+              strokeDasharray={line.dashed ? [4, 4] : undefined}
             />
-            {line.dots.map((dot) => (
-              <ThemedCircle
-                key={dot.key}
-                cx={dot.x}
-                cy={dot.y}
-                r={2.5}
-                fill="currentColor"
-                colorClassName={TONES[line.tone].color}
-              />
-            ))}
-          </G>
-        ))}
-        {layout.xTicks.map((tick) => (
-          <ThemedText
-            {...axisText}
-            key={tick.key}
-            x={tick.x}
-            y={height - 5}
-            textAnchor={tick.anchor}
-          >
-            {tick.label}
-          </ThemedText>
-        ))}
-      </Svg>
+          )}
+          {line.dots.map((dot) => (
+            <ThemedCircle
+              key={dot.key}
+              cx={dot.x}
+              cy={dot.y}
+              r={dot.r}
+              fill="currentColor"
+              colorClassName={COLORS[line.tone.color].color}
+            />
+          ))}
+        </G>
+      ))}
+      <Texts texts={layout.texts} />
+    </>
+  );
+}
+
+function KinChartPlot(props: { readonly view: KinChartView; readonly width: number }) {
+  const { view, width } = props;
+  const layout = kinChartLayout(view, {
+    width,
+    charWidth: AXIS_CHAR_WIDTH,
+    fontSize: AXIS_FONT_SIZE,
+  });
+  const room = width - layout.axis.width;
+  const plot = (
+    <Svg width={layout.width} height={layout.height} accessible={false}>
+      <Shapes layout={layout} />
+    </Svg>
+  );
+  return (
+    <View
+      accessible
+      accessibilityRole="image"
+      accessibilityLabel={view.summary}
+      className="flex-row"
+    >
+      {layout.axis.width === 0 ? null : (
+        <Svg width={layout.axis.width} height={layout.height} accessible={false}>
+          <Texts texts={layout.axis.texts} />
+        </Svg>
+      )}
+      {layout.width <= room ? (
+        plot
+      ) : (
+        // A chart wider than its card scrolls sideways; dates open on the latest.
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator
+          style={{ width: room }}
+          contentOffset={{ x: layout.startAtEnd ? layout.width - room : 0, y: 0 }}
+        >
+          {plot}
+        </ScrollView>
+      )}
     </View>
   );
 }
+
+const MARKS: Record<Exclude<KinChartMark, "dashed">, string> = {
+  box: "size-2 rounded-xs",
+  dot: "size-2 rounded-full",
+  line: "h-0.5 w-3 rounded-full",
+};
 
 function KinChartLegend(props: { readonly view: KinChartView }) {
   const { view } = props;
   if (view.legend.length === 0) return null;
   return (
     <View
-      className="flex-row flex-wrap gap-x-3 gap-y-1"
+      className={
+        view.legendAsList ? "min-w-44 flex-1 gap-1" : "w-full flex-row flex-wrap gap-x-3 gap-y-1"
+      }
       importantForAccessibility="no-hide-descendants"
       accessibilityElementsHidden
     >
       {view.legend.map((item) => (
         <View key={item.key} className="shrink flex-row items-center gap-1.5">
-          <View
-            className={cn(
-              view.kind === "line" ? "h-0.5 w-3 rounded-full" : "size-2 rounded-xs",
-              TONES[item.tone].swatch,
-            )}
-            style={{ opacity: TONES[item.tone].opacity }}
-          />
+          {item.mark === "dashed" ? (
+            <View className="flex-row gap-0.5" style={{ opacity: strength(item.tone) }}>
+              <View className={cn("h-0.5 w-1.5", COLORS[item.tone.color].swatch)} />
+              <View className={cn("h-0.5 w-1.5", COLORS[item.tone.color].swatch)} />
+            </View>
+          ) : (
+            <View
+              className={cn(MARKS[item.mark], COLORS[item.tone.color].swatch)}
+              style={{ opacity: strength(item.tone) }}
+            />
+          )}
           <Text textRole="caption" numberOfLines={1} className="shrink text-foreground-muted">
             {item.name}
           </Text>
+          {item.detail === null ? null : (
+            <Text
+              textRole="caption"
+              numberOfLines={1}
+              className="ml-auto pl-3 text-foreground"
+              style={{ fontVariant: ["tabular-nums"] }}
+            >
+              {item.detail}
+            </Text>
+          )}
         </View>
       ))}
+    </View>
+  );
+}
+
+function KinChartFigure(props: { readonly view: KinChartView; readonly width: number }) {
+  const { view, width } = props;
+  return (
+    <View className="gap-1">
+      {view.scatter === null ? null : (
+        <Text textRole="caption" className="text-foreground-muted">
+          {view.scatter.yName}
+        </Text>
+      )}
+      {view.scatter === null ? (
+        <View className="flex-row flex-wrap items-center gap-x-5 gap-y-2.5">
+          <KinChartPlot view={view} width={width} />
+          <KinChartLegend view={view} />
+        </View>
+      ) : (
+        <>
+          <KinChartPlot view={view} width={width} />
+          <Text textRole="caption" className="text-right text-foreground-muted">
+            {view.scatter.xName}
+          </Text>
+          <KinChartLegend view={view} />
+        </>
+      )}
     </View>
   );
 }
@@ -169,7 +265,7 @@ function KinChartTable(props: { readonly view: KinChartView; readonly width: num
   const { table } = props.view;
   const widths = table.columns.map((column, index) =>
     Math.ceil(
-      Math.max(column.length, ...table.rows.map((row) => row.cells[index]!.length)) *
+      Math.max(column.name.length, ...table.rows.map((row) => row.cells[index]!.length)) *
         CELL_CHAR_WIDTH +
         CELL_GAP,
     ),
@@ -186,7 +282,7 @@ function KinChartTable(props: { readonly view: KinChartView; readonly width: num
             key={row.key}
             accessible
             accessibilityLabel={`${row.label}. ${row.cells
-              .map((cell, index) => `${table.columns[index]}: ${cell}`)
+              .map((cell, index) => `${table.columns[index]!.name}: ${cell}`)
               .join(". ")}`}
             className="gap-0.5"
           >
@@ -194,9 +290,9 @@ function KinChartTable(props: { readonly view: KinChartView; readonly width: num
               {row.label}
             </Text>
             {row.cells.map((cell, index) => (
-              <View key={table.columns[index]} className="flex-row justify-between gap-3">
+              <View key={table.columns[index]!.key} className="flex-row justify-between gap-3">
                 <Text textRole="footnote" className="shrink text-foreground-muted">
-                  {table.columns[index]}
+                  {table.columns[index]!.name}
                 </Text>
                 <Text textRole="footnote" className="text-foreground">
                   {cell}
@@ -219,13 +315,13 @@ function KinChartTable(props: { readonly view: KinChartView; readonly width: num
           <View className="flex-1" />
           {table.columns.map((column, index) => (
             <Text
-              key={column}
+              key={column.key}
               textRole="caption"
               numberOfLines={1}
               className="text-right font-t3-medium text-foreground-muted"
               style={{ width: widths[index] }}
             >
-              {column}
+              {column.name}
             </Text>
           ))}
         </View>
@@ -235,7 +331,7 @@ function KinChartTable(props: { readonly view: KinChartView; readonly width: num
           key={row.key}
           accessible
           accessibilityLabel={`${row.label}. ${row.cells
-            .map((cell, index) => (single ? cell : `${table.columns[index]}: ${cell}`))
+            .map((cell, index) => (single ? cell : `${table.columns[index]!.name}: ${cell}`))
             .join(". ")}`}
           className={cn(
             "flex-row items-baseline py-1.5",
@@ -247,7 +343,7 @@ function KinChartTable(props: { readonly view: KinChartView; readonly width: num
           </Text>
           {row.cells.map((cell, index) => (
             <Text
-              key={table.columns[index]}
+              key={table.columns[index]!.key}
               textRole="footnote"
               className="text-right text-foreground"
               style={{ width: widths[index], fontVariant: ["tabular-nums"] }}
@@ -293,10 +389,7 @@ export const KinChart = memo(function KinChart(props: { readonly view: KinChartV
       ) : asTable ? (
         <KinChartTable view={view} width={width} />
       ) : (
-        <>
-          <KinChartPlot view={view} width={width} />
-          <KinChartLegend view={view} />
-        </>
+        <KinChartFigure view={view} width={width} />
       )}
       <View className="flex-row">
         <Chip
