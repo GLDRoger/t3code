@@ -5,7 +5,7 @@ import * as Effect from "effect/Effect";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import { parseFrontMatter } from "../memory/frontMatter.ts";
 import { fingerprint } from "../memory/sensitivity.ts";
-import { keepLabels } from "./labels.ts";
+import { keepLabels, withLabel } from "./labels.ts";
 
 const orgId = KinOrgId.make("fixture-org");
 const claim = (id: string, fields: Record<string, unknown> = {}) =>
@@ -134,5 +134,21 @@ it.effect.each([
       const parsed = yield* parseFrontMatter(orgId, path, changes.get(path) ?? "");
       assert.strictEqual(content, fingerprint({ head: parsed.frontMatter, body: parsed.body }));
     }
+  }),
+);
+
+it.effect.each([
+  ["a quoted key", (text: string) => text.replace("sensitive: false", '"sensitive": false')],
+  ["an indented mapping", (text: string) => text.replace(/^(?!---)(.+)$/gm, "  $1")],
+  ["no label yet", (text: string) => text.replace("sensitive: false\n", "")],
+] as const)("withLabel sets the label on front matter with %s, and nothing else", ([, shape]) =>
+  Effect.gen(function* () {
+    const [front = "", body = ""] = fixtureItem({ sensitive: false }).split("\n---\n");
+    const text = `${shape(front.replace("---\n", ""))}`;
+    const item = `---\n${text}\n---\n${body}`;
+    const before = yield* parseFrontMatter(orgId, "claims/a.md", item);
+    const after = yield* parseFrontMatter(orgId, "claims/a.md", withLabel(item, true));
+    assert.deepStrictEqual(after.frontMatter, { ...before.frontMatter, sensitive: true });
+    assert.strictEqual(after.body, before.body);
   }),
 );

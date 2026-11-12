@@ -481,6 +481,16 @@ it.effect.each([
     failures: [],
   },
   {
+    name: "refuses a new item that takes its id",
+    files: [
+      [
+        "claims/collision.md",
+        newClaim({ id: "clm-stated", source: statedRef, trust: "agent", quote: undefined }),
+      ],
+    ],
+    failures: ["claims/collision.md takes the id of claims/stated.md"],
+  },
+  {
     name: "lets it be labelled, and writes back the stored item with only that label",
     files: [["claims/stated.md", stated({ sensitive: true })]],
     failures: [],
