@@ -27,6 +27,7 @@ export const KIN_INVOICES = {
   voidNote: "Kept with its number so the series stays complete. It counts for nothing.",
   total: "Total",
   received: "Received",
+  tdsDeducted: "TDS deducted",
   balance: "Balance due",
   paidInFull: "Paid in full",
   documents: "Documents",
@@ -159,7 +160,9 @@ export interface KinInvoicePaymentView {
   readonly when: string;
   readonly note: string | null;
   readonly voided: boolean;
-  /** Null on a voided payment, which gets no receipt. */
+  /** TDS the client deducted: it settles the invoice but is no money received. */
+  readonly tds: boolean;
+  /** Null on a voided payment or a TDS line, which get no receipt. */
   readonly receipt: KinPaymentReceiptView | null;
 }
 
@@ -172,6 +175,8 @@ export interface KinInvoiceView {
   readonly void: boolean;
   readonly total: string | null;
   readonly received: string | null;
+  /** TDS the client deducted, when there is any: not part of what was received. */
+  readonly tdsDeducted: string | null;
   /** Null on a void invoice: nothing is due on it. */
   readonly balance: string | null;
   readonly settled: boolean;
@@ -202,10 +207,14 @@ export function kinInvoiceView(
 ): KinInvoiceView {
   const { number, description } = kinInvoiceTitle(item.title, numberFieldOf(item));
   const isVoid = item.state === "dropped";
+  // Older servers send no `received`: then everything that settled it came in.
   const received =
-    item.amount === undefined || item.balance === undefined
+    item.received ??
+    (item.amount === undefined || item.balance === undefined
       ? null
-      : { minor: item.amount.minor - item.balance.minor, currency: item.amount.currency };
+      : { minor: item.amount.minor - item.balance.minor, currency: item.amount.currency });
+  const tds =
+    item.tdsDeducted !== undefined && item.tdsDeducted.minor > 0 ? item.tdsDeducted : null;
   const seen = new Set<string>();
   const documents = item.links.flatMap((link) => {
     const ref = link.record;
@@ -221,10 +230,12 @@ export function kinInvoiceView(
     void: isVoid,
     total: item.amount === undefined ? null : kinMoneyText(item.amount, true),
     received: received === null ? null : kinMoneyText(received, true),
+    tdsDeducted: tds === null ? null : kinMoneyText(tds, true),
     balance: isVoid || item.balance === undefined ? null : kinMoneyText(item.balance, true),
     settled: item.balance?.minor === 0,
     payments: (item.payments ?? []).map((payment) => {
-      const receipt = payment.voidedAt !== null ? null : receiptOf(payment);
+      const withheld = payment.withheld === true;
+      const receipt = payment.voidedAt !== null || withheld ? null : receiptOf(payment);
       const note = payment.note.trim();
       const shown = receipt !== null && "number" in receipt && receipt.number === note;
       return {
@@ -233,6 +244,7 @@ export function kinInvoiceView(
         when: kinWorkDueLabel(payment.paidOn, now),
         note: note === "" || shown ? null : note,
         voided: payment.voidedAt !== null,
+        tds: withheld,
         receipt,
       };
     }),

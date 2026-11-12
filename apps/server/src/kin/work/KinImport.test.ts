@@ -500,7 +500,7 @@ describe("KinImport", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("undo never takes a series' numbers back, nor a payment Kin recorded", () =>
+  it.effect("undo never takes a number Kin issued back, nor a payment Kin recorded", () =>
     Effect.gen(function* () {
       yield* seed;
       const imports = yield* KinImport.KinImport;
@@ -510,7 +510,7 @@ describe("KinImport", () => {
         entry: { source, list: "invoices", title, state: "open", client: "c1", amount: "500" },
       });
       const onlyInvoices = { ...header, lists: [header.lists[0]] };
-      // The batch makes the list; the owner issues one of its invoices; the whole batch goes.
+      // The batch makes the list; the owner issues one of its invoices: changed or not, it stays.
       yield* imports.apply(
         orgId,
         ownerId,
@@ -518,19 +518,20 @@ describe("KinImport", () => {
       );
       const june = (yield* recordOf("i3"))!;
       assert.strictEqual((yield* Numbers.issue(orgId, owner, june.key)).number, "OBK/26-27/001");
-      const emptied = yield* imports.undo(orgId, ownerId, "oldbooks", {
+      const kept = yield* imports.undo(orgId, ownerId, "oldbooks", {
         apply: true,
         includeChanged: true,
       });
+      assert.deepStrictEqual(kept.kept, [
+        { key: (yield* recordOf("c1"))!.key, reason: `${june.key} uses it` },
+        { key: june.key, reason: "Kin issued it OBK/26-27/001, which stays in its series" },
+      ]);
       assert.deepStrictEqual(
-        emptied.lists.map((one) => [one.list, one.action]),
-        [["invoices", "remove"]],
+        kept.lists.map((one) => [one.list, one.action]),
+        [["invoices", "keep"]],
       );
-      assert.strictEqual(
-        (yield* sql`SELECT 1 FROM kin_registers WHERE register_id = 'invoices'`).length,
-        0,
-      );
-      // Defined again, the list carries on the same series.
+      assert.strictEqual((yield* recordOf("i3"))?.key, june.key);
+      // Imported again, the list carries on the same series.
       yield* imports.apply(
         orgId,
         ownerId,
@@ -558,10 +559,14 @@ describe("KinImport", () => {
         includeChanged: true,
       });
       const acme = (yield* recordOf("c1"))!;
-      assert.deepStrictEqual(undone.kept, [
-        { key: acme.key, reason: `${may.key} uses it` },
-        { key: may.key, reason: "a payment recorded in Kin is on it" },
-      ]);
+      assert.deepStrictEqual(
+        undone.kept,
+        [
+          { key: acme.key, reason: [june.key, may.key].toSorted().join(", ") + " use it" },
+          { key: june.key, reason: "Kin issued it OBK/26-27/001, which stays in its series" },
+          { key: may.key, reason: "a payment recorded in Kin is on it" },
+        ].toSorted((a, b) => (a.key < b.key ? -1 : 1)),
+      );
       assert.deepStrictEqual(undone.removes, { clients: 0, projects: 0, entries: 0, payments: 0 });
       assert.deepStrictEqual(
         yield* sql`SELECT origin_key AS "originKey" FROM kin_record_payments ORDER BY origin_key`,

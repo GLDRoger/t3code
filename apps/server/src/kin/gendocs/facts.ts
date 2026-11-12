@@ -150,7 +150,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
         LEFT JOIN kin_records p2 ON p2.org_id = r.org_id AND p2.record_id = r.party_id
         LEFT JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
         WHERE p.org_id = ${orgId} AND p.voided_at IS NULL AND r.register_id = 'invoices'
-          AND substr(p.paid_on, 1, 7) = ${month}
+          AND p.withheld = 0 AND substr(p.paid_on, 1, 7) = ${month}
         ORDER BY p.paid_on, p.payment_id LIMIT ${MAX_ROWS}`;
       tables.set(
         input.name,

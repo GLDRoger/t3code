@@ -149,13 +149,16 @@ export function kinStatementTakenBy(
 export const kinStatementTotal = (card: ReviewCard, section: KinStatementSection) =>
   card.counts?.[section] ?? card[section].length;
 
-/** Unmatched rows shown where Kin suggests something other than what the card now says. */
+/** Unmatched rows shown where Kin suggests something other than what the card now says; never a recorded one. */
 export const kinStatementOpenSuggestions = (
   rows: ReadonlyArray<UnmatchedRow>,
   selection: KinStatementSelection,
 ) =>
   rows.filter(
-    (one) => one.suggestion !== "later" && kinStatementActionOf(selection, one) !== one.suggestion,
+    (one) =>
+      one.recorded === undefined &&
+      one.suggestion !== "later" &&
+      kinStatementActionOf(selection, one) !== one.suggestion,
   ).length;
 
 /** Whether "Use Kin's suggestions" still changes anything, rows not loaded yet included. */

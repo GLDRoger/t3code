@@ -20,6 +20,8 @@ export const runStatementWorker = async () => {
   const length = input.readUInt32LE(0);
   const password = length === 0 ? undefined : input.subarray(4, 4 + length).toString("utf8");
   input.fill(0, 4, 4 + length);
-  const outcome = await readStatementFile(new Uint8Array(input.subarray(4 + length)), password);
+  const outcome = await readStatementFile(new Uint8Array(input.subarray(4 + length)), password, {
+    precheck: !process.argv.includes("--no-precheck"),
+  });
   process.stdout.write(JSON.stringify(outcome));
 };

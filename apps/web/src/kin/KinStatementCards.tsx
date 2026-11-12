@@ -84,6 +84,16 @@ function RowLine(props: { readonly row: Row; readonly muted?: boolean }) {
   );
 }
 
+/** A row this statement already recorded and an undo kept: what holds it, and nothing to change. */
+function RecordedRow(props: { readonly row: Row & { readonly recorded: string } }) {
+  return (
+    <li className="flex flex-col gap-0.5 py-1.5">
+      <RowLine row={props.row} muted />
+      <span className="text-xs text-muted-foreground sm:pl-14">{props.row.recorded}</span>
+    </li>
+  );
+}
+
 /** A section shows a page at a time; past the rows the card carries, it reads the next page. */
 function Section(props: {
   readonly id: KinStatementSectionId;
@@ -344,6 +354,8 @@ function MatchedRows(props: RowsProps) {
         </li>
       )}
       {rows.matched.slice(0, props.count).map((one) => {
+        if (one.recorded !== undefined)
+          return <RecordedRow key={one.row} row={{ ...one, recorded: one.recorded }} />;
         const ticked = kinStatementTicked(selection, one.row);
         return (
           <li key={one.row}>
@@ -375,6 +387,8 @@ function ChooseRows(props: RowsProps) {
   return (
     <ul className="flex flex-col gap-2">
       {rows.choose.slice(0, props.count).map((one) => {
+        if (one.recorded !== undefined)
+          return <RecordedRow key={one.row} row={{ ...one, recorded: one.recorded }} />;
         const picked = kinStatementPickOf(selection, one.row);
         const taken = one.options.flatMap((option) => {
           const other = kinStatementTakenBy(rows.choose, selection, one.row, option);
@@ -439,6 +453,8 @@ function UnmatchedRows(props: RowsProps) {
         </li>
       )}
       {rows.unmatched.slice(0, props.count).map((one) => {
+        if (one.recorded !== undefined)
+          return <RecordedRow key={one.row} row={{ ...one, recorded: one.recorded }} />;
         const action = kinStatementActionOf(selection, one);
         const note = kinStatementRowNote(one, action);
         return (

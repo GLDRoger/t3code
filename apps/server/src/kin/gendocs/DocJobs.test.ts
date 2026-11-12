@@ -42,6 +42,7 @@ import * as Docs from "../work/docs.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import * as LeadMoney from "../work/leadMoney.ts";
 import * as LeadWork from "../work/leadWork.ts";
+import { moneySummary } from "../work/moneyViews.ts";
 import * as OwnerDocs from "../work/ownerDocs.ts";
 import * as OwnerMoney from "../work/ownerMoney.ts";
 import * as OwnerWork from "../work/ownerWork.ts";
@@ -829,6 +830,114 @@ describe("recipe documents", () => {
 });
 
 describe("receipts", () => {
+  it.effect(
+    "stand on money received: an entry an agent made is recorded as received as it is numbered, and TDS gets none",
+    () =>
+      Effect.gen(function* () {
+        const asked = yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const records = yield* KinRecords.KinRecords;
+        const agent = { actor: { _tag: "agent" as const, agentId: lead }, via: "lead" as const };
+        const receipt = (input: Omit<typeof LeadDocuments.ReceiptInput.Type, "sourceEventId">) =>
+          LeadDocuments.receipt(scope, { sourceEventId: asked, ...input });
+        const received = (now = Date.parse("2026-11-12T06:00:00.000Z")) =>
+          moneySummary(orgId, now).pipe(Effect.map((summary) => summary.received.thisMonth));
+        // Any first receipt makes the list; an advance stands on its own payment from the start.
+        const advance = yield* receipt({ advance: { amount: "500", receivedOn: "2026-11-05" } });
+        assert.deepStrictEqual(yield* received(), [{ minor: 50_000, currency: "INR" }]);
+        // An agent's own receipts entry, with no payment anywhere, numbered: recorded as received.
+        const { row } = yield* records.create(orgId, agent, {
+          list: "receipts",
+          originKey: "agent:receipt:big",
+          title: "Received from a client",
+          owner: { _tag: "agent", agentId: lead },
+          state: "open",
+          amount: { minor: 99_999_900, currency: "INR" },
+          dateAt: Date.parse("2026-11-06T18:29:59.999Z"),
+          dateAllDay: true,
+        });
+        const numbered = yield* receipt({ entry: KinRecordKey.make(row.key) });
+        assert.isNotNull(numbered.number);
+        const payments = yield* sql<{ minor: number; paidOn: string; voidedAt: number | null }>`
+          SELECT amount_minor AS minor, paid_on AS "paidOn", voided_at AS "voidedAt"
+          FROM kin_record_payments WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
+        assert.deepStrictEqual(payments, [
+          { minor: 99_999_900, paidOn: "2026-11-06", voidedAt: null },
+        ]);
+        assert.deepStrictEqual(rendered.at(-1)!.request.inputs.amount, {
+          minor: 99_999_900,
+          currency: "INR",
+        });
+        assert.deepStrictEqual(yield* received(), [{ minor: 100_049_900, currency: "INR" }]);
+        const activity = yield* OwnerWork.get(people, { orgId, key: KinRecordKey.make(row.key) });
+        assert.isTrue(
+          activity.changes.some((change) =>
+            change.fields.some(
+              (one) => one.field === "payment" && one.to === "₹9,99,999.00 on 2026-11-06",
+            ),
+          ),
+        );
+        // Asked again, the same receipt on the same payment; void, it counts for nothing.
+        yield* receipt({ entry: KinRecordKey.make(row.key) });
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM kin_record_payments WHERE record_id = ${row.recordId}`,
+          1,
+        );
+        yield* LeadDocuments.issue(scope, {
+          entry: KinRecordKey.make(row.key),
+          void: true,
+          sourceEventId: asked,
+        });
+        assert.deepStrictEqual(yield* received(), [{ minor: 50_000, currency: "INR" }]);
+        // An entry with no amount can't stand on money, so it gets no number.
+        const { row: empty } = yield* records.create(orgId, agent, {
+          list: "receipts",
+          originKey: "agent:receipt:empty",
+          title: "Received",
+          owner: { _tag: "agent", agentId: lead },
+          state: "open",
+        });
+        const refused = yield* receipt({ entry: KinRecordKey.make(empty.key) }).pipe(Effect.flip);
+        assert.match(refused.message, /no amount or day received/);
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM kin_issued_numbers WHERE record_id = ${empty.recordId}`,
+          0,
+        );
+        // An advance's own payment is no invoice's to make a receipt for.
+        const own = yield* sql<{ paymentId: string }>`SELECT p.payment_id AS "paymentId"
+          FROM kin_record_payments p JOIN kin_records r ON r.record_id = p.record_id
+          WHERE r.key = ${advance.receipt}`;
+        const twice = yield* receipt({ payment: own[0]!.paymentId }).pipe(Effect.flip);
+        assert.match(twice.message, /it is its own receipt/);
+        // TDS a client deducted is no money received: no receipt for it.
+        const tds = yield* records.pay(orgId, agent, "INV-1", {
+          amount: { minor: 10_000, currency: "INR" },
+          paidOn: "2026-11-10",
+          withheld: true,
+          originKey: "tds:1",
+        });
+        const withheld = yield* receipt({ payment: tds.paymentId }).pipe(Effect.flip);
+        assert.match(withheld.message, /TDS the client deducted, not money received/);
+        // Nor does a month's payments table list it as received.
+        yield* records.pay(orgId, agent, "INV-1", {
+          amount: { minor: 20_000, currency: "INR" },
+          paidOn: "2026-11-10",
+          originKey: "paid:1",
+        });
+        const recipe = parseRecipe(
+          "---\nname: probe\ntitle: Probe\ndescription: probe\nsensitive: true\noutputs: [a.pdf]\ninputs:\n  m: {type: month}\n  a: {type: table, from: payments, period: m, columns: {invoice: text, amount: money}}\n---\nGo.\n",
+        );
+        if ("reason" in recipe) return assert.fail(recipe.reason);
+        const gathered = yield* gatherFacts(orgId, recipe, undefined, { m: "2026-11" });
+        const table = assembleInputs(recipe, { m: "2026-11" }, gathered.facts, gathered.currency);
+        if ("error" in table) return assert.fail(table.error.message);
+        assert.deepStrictEqual(
+          (table.inputs.a as ReadonlyArray<{ amount: unknown }>).map((one) => one.amount),
+          [{ minor: 20_000, currency: "INR" }],
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
   it.effect(
     "are numbered in their own series once each, keeping a number the old system gave",
     () =>

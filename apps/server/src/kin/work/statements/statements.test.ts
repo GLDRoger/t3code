@@ -309,6 +309,10 @@ describe("bank statements", () => {
         const result = opened(yield* read(1, "hdfc-account.pdf"));
         assert.strictEqual(result.status, "read");
         assert.strictEqual(result.account, "HDFC Bank ••4821");
+        assert.strictEqual(
+          result.file,
+          '> BEGIN QUOTE: statement file name (untrusted)\n> "hdfc-account.pdf"\n> END QUOTE',
+        );
         assert.strictEqual(result.rows, 20);
         assert.include(result.balance, "It adds up");
         assert.deepStrictEqual(result.matched.map((one) => one.to).toSorted(), [
@@ -332,6 +336,18 @@ describe("bank statements", () => {
         });
         assert.strictEqual(again.statement, result.statement);
         assert.lengthOf(yield* sql`SELECT 1 FROM kin_widgets WHERE type = 'statement_review'`, 1);
+        // Read afresh, the same review starts over with a revision above every one before it.
+        const changed = yield* choose(card, [{ _tag: "tickAll", ticked: false }]);
+        yield* LeadStatements.read(scope, {
+          sourceEventId: "event-1",
+          attachment: "hdfc-account.pdf",
+          refresh: true,
+        });
+        const fresh = (yield* reviewCardOf(result.statement)).card;
+        assert.strictEqual(fresh.hash, card.hash);
+        assert.isAbove(fresh.selection!.revision, changed.selection!.revision);
+        const stale = yield* OwnerStatements.apply(people, confirmOf(changed)).pipe(Effect.flip);
+        assert.strictEqual(stale.reason, "conflict");
         // Every word the bank wrote reaches the lead quoted as untrusted, references masked.
         assert.isTrue(
           [...result.matched, ...result.unmatched].every((one) =>
@@ -819,6 +835,131 @@ const livePayments = Effect.gen(function* () {
 });
 
 describe("bank statement safety", () => {
+  it.effect(
+    "keeps a receipted part payment through undo, never records it twice, and takes it back once its receipt is void",
+    () =>
+      Effect.gen(function* () {
+        const keys = yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const records = yield* KinRecords.KinRecords;
+        const result = yield* read(
+          1,
+          "part.csv",
+          csvOf([["2026-10-02", "NEFT CR-BRIGHTLINE MEDIA LLP SEPTEMBER PART", null, 4_000_000]], {
+            opening: 1_000_000,
+          }),
+        );
+        const card = (yield* reviewCardOf(result.statement)).card;
+        const row = [...card.matched, ...card.choose][0]!;
+        const picked = yield* choose(card, [
+          ...card.choose.map((one) => ({ _tag: "pick" as const, row: one.row, option: 0 })),
+          { _tag: "tickAll", ticked: true },
+        ]);
+        yield* OwnerStatements.apply(people, confirmOf(picked));
+        assert.deepStrictEqual(yield* livePayments, [{ key: keys.exact, minor: 4_000_000 }]);
+        // A receipt is issued for the ₹40,000.
+        const [payment] = yield* sql<{ paymentId: string }>`SELECT payment_id AS "paymentId"
+          FROM kin_record_payments WHERE voided_at IS NULL`;
+        yield* defineList(
+          orgId,
+          { _tag: "new", id: "receipts", ...PRESETS.receipts, definition: PRESETS.receipts },
+          NOW,
+        );
+        const receipt = yield* records.create(orgId, owner, {
+          list: "receipts",
+          originKey: "receipt:part",
+          title: "Received towards September",
+          owner: { _tag: "person", personId: ownerId },
+          state: "open",
+          amount: { minor: 4_000_000, currency: "INR" },
+        });
+        yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json,
+            '$.invoice', ${keys.exact}, '$.payment', ${payment!.paymentId})
+          WHERE record_id = ${receipt.row.recordId}`;
+
+        const undone = yield* OwnerStatements.undo(people, {
+          orgId,
+          statementId: result.statement,
+        });
+        const said = undone.card.result!.join(" ");
+        assert.include(said, "Nothing was taken back.");
+        assert.include(said, "1 row stays recorded and shows as Already recorded");
+        assert.include(said, `receipt ${receipt.row.key} was issued for it`);
+        assert.notInclude(said, "Confirm again");
+        const shown = [...undone.card.matched, ...undone.card.choose].find(
+          (one) => one.row === row.row,
+        );
+        assert.strictEqual(shown?.recorded, `Already recorded · receipt ${receipt.row.key}`);
+        assert.deepStrictEqual(undone.card.chosen, { matched: 0, choose: 0, unmatched: 0 });
+        const tick = yield* OwnerStatements.select(people, {
+          orgId,
+          statementId: result.statement,
+          hash: card.hash,
+          change: { _tag: "tickAll", ticked: true },
+        });
+        assert.deepStrictEqual(tick.card.chosen, { matched: 0, choose: 0, unmatched: 0 });
+        const refused = yield* OwnerStatements.select(people, {
+          orgId,
+          statementId: result.statement,
+          hash: card.hash,
+          change:
+            card.choose.length > 0
+              ? { _tag: "pick", row: row.row, option: 0 }
+              : { _tag: "tick", row: row.row, ticked: true },
+        }).pipe(Effect.flip);
+        assert.include(refused.message, "already recorded");
+        // Confirm again: the kept row is left as it is, not paid a second time.
+        const again = yield* OwnerStatements.apply(people, confirmOf(tick.card));
+        assert.include(again.card.result!.join(" "), "1 row was already recorded");
+        assert.deepStrictEqual(yield* livePayments, [{ key: keys.exact, minor: 4_000_000 }]);
+
+        // Its receipt voided, a later undo takes the payment back and frees the row.
+        yield* records.update(orgId, owner, receipt.row.key, { state: "dropped" });
+        const freed = yield* OwnerStatements.undo(people, {
+          orgId,
+          statementId: result.statement,
+        });
+        assert.include(freed.card.result!.join(" "), "Undone: 1 row taken back (1 payment).");
+        assert.deepStrictEqual(yield* livePayments, []);
+        assert.lengthOf(yield* sql`SELECT 1 FROM kin_bank_statement_entries`, 0);
+        assert.isUndefined(
+          [...freed.card.matched, ...freed.card.choose].find((one) => one.row === row.row)
+            ?.recorded,
+        );
+        const last = yield* OwnerStatements.apply(
+          people,
+          confirmOf(
+            yield* choose(freed.card, [
+              ...freed.card.choose.map((one) => ({
+                _tag: "pick" as const,
+                row: one.row,
+                option: 0,
+              })),
+              { _tag: "tickAll", ticked: true },
+            ]),
+          ),
+        );
+        assert.strictEqual(last.card.status, "applied");
+        assert.deepStrictEqual(yield* livePayments, [{ key: keys.exact, minor: 4_000_000 }]);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("tells a build that sends no revision to update, and applies nothing", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const result = yield* read(1, "hdfc-account.pdf");
+      const { revision: _revision, ...old } = yield* confirmAll(
+        (yield* reviewCardOf(result.statement)).card,
+      );
+      const refused = yield* OwnerStatements.apply(people, old).pipe(Effect.flip);
+      assert.deepStrictEqual(
+        [refused.reason, refused.message],
+        ["invalid_state", "Update the app to confirm this statement."],
+      );
+      assert.deepStrictEqual(yield* livePayments, []);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect(
     "confirms again after an undo and a fresh read, and the card says what was recorded",
     () =>

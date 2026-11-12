@@ -33,6 +33,11 @@ const RowFields = {
   /** Formatted by the server, exact. */
   amount: Label,
   direction: KinStatementDirection,
+  /**
+   * "Already recorded · receipt RCT/26-27/001": this statement recorded the row and an undo kept
+   * it. Shown, never selectable; Confirm leaves it as it is.
+   */
+  recorded: Schema.optional(Label),
 };
 export const KinStatementTarget = Schema.Struct({
   /** Which of the row's candidates, by index, a choice names. */
@@ -159,7 +164,8 @@ export const KinStatementApplyInput = Schema.Struct({
   orgId: KinOrgId,
   statementId: TrimmedNonEmptyString,
   hash: TrimmedNonEmptyString,
-  revision: NonNegativeInt,
+  /** Optional on the wire only so builds from before it get a reason to update, not a decode error. */
+  revision: Schema.optional(NonNegativeInt),
 });
 export type KinStatementApplyInput = typeof KinStatementApplyInput.Type;
 

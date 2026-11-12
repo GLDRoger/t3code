@@ -33,6 +33,7 @@ export const KIN_MONEY = {
   noClient: "No client",
   nothingOwed: "Nobody owes you anything right now.",
   received: "Received",
+  tdsDeducted: "TDS deducted",
   spent: "Spent",
   byCategory: "Spent by category",
   uncategorised: "No category",
@@ -105,6 +106,8 @@ export interface KinMoneyView {
   /** "November 2026". */
   readonly monthLabel: string;
   readonly received: KinMoneyFigure;
+  /** TDS clients deducted this month: it settled invoices, but no money came in. Null with none. */
+  readonly tdsDeducted: KinMoneyFigure | null;
   readonly spent: KinMoneyFigure;
   readonly categories: ReadonlyArray<{
     readonly key: string;
@@ -115,6 +118,7 @@ export interface KinMoneyView {
   /** "FY 2026–27, April to March". */
   readonly yearLabel: string;
   readonly yearReceived: KinMoneyFigure;
+  readonly yearTdsDeducted: KinMoneyFigure | null;
   readonly yearSpent: KinMoneyFigure;
   /** One chart per currency that moved: amounts in different currencies never share an axis. */
   readonly charts: ReadonlyArray<KinChartSpec>;
@@ -212,6 +216,18 @@ export function kinMoneyView(
       late: false,
       open: receivedIn(thisMonth),
     },
+    tdsDeducted:
+      summary.tdsDeducted === undefined ||
+      summary.tdsDeducted.thisMonth.length + summary.tdsDeducted.lastMonth.length === 0
+        ? null
+        : {
+            id: "tds",
+            label: KIN_MONEY.tdsDeducted,
+            lines: lines(summary.tdsDeducted.thisMonth),
+            note: `${kinTotalsText(summary.tdsDeducted.lastMonth)} last month`,
+            late: false,
+            open: null,
+          },
     spent: {
       id: "spent",
       label: KIN_MONEY.spent,
@@ -236,6 +252,18 @@ export function kinMoneyView(
       late: false,
       open: receivedIn(year),
     },
+    yearTdsDeducted:
+      summary.tdsDeductedThisFinancialYear === undefined ||
+      summary.tdsDeductedThisFinancialYear.length === 0
+        ? null
+        : {
+            id: "year-tds",
+            label: KIN_MONEY.tdsDeducted,
+            lines: lines(summary.tdsDeductedThisFinancialYear),
+            note: null,
+            late: false,
+            open: null,
+          },
     yearSpent: {
       id: "year-spent",
       label: KIN_MONEY.spent,

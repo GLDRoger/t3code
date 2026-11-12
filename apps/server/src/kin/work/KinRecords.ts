@@ -273,7 +273,7 @@ const actorIdOf = (writer: Writer) =>
     : writer.actor._tag === "person"
       ? writer.actor.personId
       : null;
-const paymentIdFor = (orgId: string, originKey: string) =>
+export const paymentIdFor = (orgId: string, originKey: string) =>
   `pay_${NodeCrypto.createHash("sha256").update(`${orgId.length}:${orgId}${originKey}`).digest("hex").slice(0, 20)}`;
 
 /** What a write may set on a list: its states, kinds, fields, and an amount, date or repeat. */

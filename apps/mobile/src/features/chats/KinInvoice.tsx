@@ -185,7 +185,7 @@ export function KinInvoiceFigures(props: { readonly invoice: KinInvoiceView }) {
     );
   if (invoice.balance === null) return null;
   return (
-    <View className="flex-row gap-6">
+    <View className="flex-row flex-wrap gap-x-6 gap-y-2">
       <View className="gap-0.5">
         <Text textRole="footnote" className="text-foreground-muted">
           {KIN_INVOICES.balance}
@@ -202,6 +202,16 @@ export function KinInvoiceFigures(props: { readonly invoice: KinInvoiceView }) {
           {invoice.received}
         </Text>
       </View>
+      {invoice.tdsDeducted === null ? null : (
+        <View className="gap-0.5">
+          <Text textRole="footnote" className="text-foreground-muted">
+            {KIN_INVOICES.tdsDeducted}
+          </Text>
+          <Text textRole="body" selectable className="tabular-nums text-foreground">
+            {invoice.tdsDeducted}
+          </Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -232,6 +242,7 @@ export function KinInvoicePayments(
           const { receipt } = payment;
           const number = receipt === null || receipt._tag === "none" ? null : receipt.number;
           const detail = [
+            payment.tds ? KIN_INVOICES.tdsDeducted : null,
             payment.when,
             payment.note,
             number === null ? null : `Receipt ${number}`,

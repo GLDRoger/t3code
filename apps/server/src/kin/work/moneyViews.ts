@@ -164,14 +164,14 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
     };
   });
 
-  // Received: payments on invoices by the day they were paid, already a day in the owner's zone.
-  // Other lists paid over time are money going out.
+  // Received: payments on invoices, and advances on their own receipts, by the day they were paid,
+  // already a day in the owner's zone. Other lists paid over time are money going out.
   const paid = yield* sql<{ minor: number; currency: string; paidOn: string; withheld: number }>`
     SELECT p.amount_minor AS minor, p.currency, p.paid_on AS "paidOn", p.withheld
     FROM kin_record_payments p
     JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     WHERE p.org_id = ${orgId} AND p.voided_at IS NULL AND r.state <> 'dropped'
-      AND r.register_id = 'invoices' AND p.paid_on >= ${since}
+      AND r.register_id IN ('invoices', 'receipts') AND p.paid_on >= ${since}
     ORDER BY p.paid_on, p.payment_id`;
   // TDS a client deducted settles the invoice, but no money came in: it is shown on its own.
   const payments = paid.filter((one) => one.withheld === 0);

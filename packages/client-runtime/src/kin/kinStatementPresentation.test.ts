@@ -76,6 +76,13 @@ describe("statement review card", () => {
     let selection = kinStatementSelectionOf(card);
     expect(kinStatementConfirm(card)).toEqual({ count: 2, label: "Confirm all 2" });
     expect(kinStatementOpenSuggestions(card.unmatched, selection)).toBe(3);
+    // A row an undo kept as recorded offers nothing to take.
+    expect(
+      kinStatementOpenSuggestions(
+        [{ ...card.unmatched[0]!, recorded: "Already recorded" }, ...card.unmatched.slice(1)],
+        selection,
+      ),
+    ).toBe(2);
     expect(kinStatementRowNote(card.unmatched[0]!, "later")).toBe(
       "Kin suggests expense: Zomato, food",
     );

@@ -145,6 +145,38 @@ describe("kinInvoiceView", () => {
     expect(view.documents.map((doc) => doc.key)).toEqual(["D-7", "D-4"]);
   });
 
+  it("settles on TDS without counting it received, and offers no receipt for it", () => {
+    const view = kinInvoiceView(
+      invoice({
+        state: "done",
+        balance: { minor: 0, currency: "INR" },
+        received: { minor: 9_000_000, currency: "INR" },
+        tdsDeducted: { minor: 1_000_000, currency: "INR" },
+        payments: [
+          { ...payment("p1", null), amount: { minor: 9_000_000, currency: "INR" } },
+          {
+            ...payment("p2", null),
+            amount: { minor: 1_000_000, currency: "INR" },
+            withheld: true,
+          },
+        ] as never,
+      }),
+      invoices,
+      now,
+    );
+    expect(view).toMatchObject({
+      total: "₹1,00,000.00",
+      received: "₹90,000.00",
+      tdsDeducted: "₹10,000.00",
+      balance: "₹0.00",
+      settled: true,
+    });
+    expect(view.payments.map((one) => [one.tds, one.receipt])).toEqual([
+      [false, { _tag: "none" }],
+      [true, null],
+    ]);
+  });
+
   it("reads a void invoice as void, owing nothing, with its way back", () => {
     const view = kinInvoiceView(invoice({ state: "dropped", late: true }), invoices, now);
     expect([view.void, view.balance]).toEqual([true, null]);

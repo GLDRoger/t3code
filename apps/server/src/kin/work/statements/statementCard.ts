@@ -60,6 +60,13 @@ const target = (candidate: Candidate, option: number, currency: string): KinStat
         : {}),
 });
 
+/**
+ * Rows this statement already recorded and an undo kept, such as a payment with a receipt: shown
+ * with what holds them, never applied again. By row, from `heldRows`.
+ */
+export type Held = ReadonlyMap<number, string>;
+const NONE: Held = new Map();
+
 /** The rows of one section, in statement order. */
 const sectionRows = (review: Review, section: KinStatementSection) =>
   [...review.matches.entries()]
@@ -72,18 +79,21 @@ export const rowsOf = (
   section: KinStatementSection,
   offset: number,
   limit: number,
+  held: Held = NONE,
 ) => {
   const { statement } = review;
   const currency = statement.currency;
   const all = sectionRows(review, section);
   const shown = (index: number) => {
     const row = statement.rows[index]!;
+    const recorded = held.get(index);
     return {
       row: index,
       date: row.date,
       text: clamp(row.description, 120),
       amount: money(row.amountMinor, currency),
       direction: row.direction,
+      ...(recorded === undefined ? {} : { recorded: clamp(recorded, 200) }),
     };
   };
   const page = all.slice(offset, offset + limit);
@@ -122,7 +132,7 @@ export const rowsOf = (
   };
 };
 
-/** Binds a confirm to this exact review: each row's entries and how its money fits them. */
+/** Binds a confirm to this exact review: each row as read, its entries and how its money fits them. */
 export const reviewHash = (statementId: string, review: Review) => {
   const fit = (one: Candidate) => [one.recordId, one.fit, one.tdsMinor ?? null];
   return hash(
@@ -130,7 +140,17 @@ export const reviewHash = (statementId: string, review: Review) => {
       statementId,
       rows: [...review.matches.entries()]
         .toSorted(([left], [right]) => left - right)
-        .map(([index, match]) => [index, match.group, match.candidates.map(fit)]),
+        .map(([index, match]) => {
+          const row = review.statement.rows[index];
+          return [
+            index,
+            row?.date ?? null,
+            row?.amountMinor ?? null,
+            row?.direction ?? null,
+            match.group,
+            match.candidates.map(fit),
+          ];
+        }),
       recorded: review.statement.rows.length - review.matches.size,
     }),
   ).slice(0, 32);
@@ -165,8 +185,12 @@ export type Decision = {
   };
 };
 
-/** What Confirm records for a selection, row by row in statement order. */
-export const decisionsOf = (review: Review, selection: KinStatementSelection) => {
+/** What Confirm records for a selection, row by row in statement order; held rows never. */
+export const decisionsOf = (
+  review: Review,
+  selection: KinStatementSelection,
+  held: Held = NONE,
+) => {
   const except = new Set(selection.except);
   const picks = new Map(selection.picks.map((one) => [one.row, one.option]));
   const actions = new Map(selection.actions.map((one) => [one.row, one.action]));
@@ -174,6 +198,7 @@ export const decisionsOf = (review: Review, selection: KinStatementSelection) =>
   for (const [row, match] of [...review.matches.entries()].toSorted(
     ([left], [right]) => left - right,
   )) {
+    if (held.has(row)) continue;
     if (match.group === "matched") {
       if ((selection.ticked === "all") !== except.has(row)) decisions.push({ row, option: 0 });
     } else if (match.group === "choose") {
@@ -200,9 +225,9 @@ export const decisionsOf = (review: Review, selection: KinStatementSelection) =>
   return decisions;
 };
 
-const chosenCounts = (review: Review, selection: KinStatementSelection) => {
+const chosenCounts = (review: Review, selection: KinStatementSelection, held: Held) => {
   const counts = { matched: 0, choose: 0, unmatched: 0 };
-  for (const decision of decisionsOf(review, selection))
+  for (const decision of decisionsOf(review, selection, held))
     counts[review.matches.get(decision.row)!.group] += 1;
   return counts;
 };
@@ -212,8 +237,11 @@ export const changeSelection = (
   review: Review,
   selection: KinStatementSelection,
   change: KinStatementSelectChange,
+  held: Held = NONE,
 ): KinStatementSelection | string => {
   const match = "row" in change ? review.matches.get(change.row) : undefined;
+  if ("row" in change && held.has(change.row))
+    return "That row is already recorded from this statement; undo it first to change it.";
   const next = { ...selection, revision: selection.revision + 1 };
   switch (change._tag) {
     case "tick": {
@@ -277,11 +305,12 @@ export const reviewCard = (
   review: Review,
   categories: ReadonlyArray<string>,
   selection: KinStatementSelection = defaultSelection(review),
+  held: Held = NONE,
 ): KinStatementReviewCard => {
   const { statement } = review;
   const currency = statement.currency;
   const page = (section: KinStatementSection) =>
-    rowsOf(review, section, 0, KIN_STATEMENT_CARD_ROWS);
+    rowsOf(review, section, 0, KIN_STATEMENT_CARD_ROWS, held);
   const matched = page("matched");
   const choose = page("choose");
   const unmatched = page("unmatched");
@@ -318,6 +347,11 @@ export const reviewCard = (
       ...(recorded === 0
         ? []
         : [`${recorded} already in Bank transactions from an earlier statement.`]),
+      ...(held.size === 0
+        ? []
+        : [
+            `${held.size} row${held.size === 1 ? " is" : "s are"} already recorded from this statement and stay${held.size === 1 ? "s" : ""} as ${held.size === 1 ? "it is" : "they are"}.`,
+          ]),
       ...(review.source === "agent"
         ? ["Kin read these rows from images of a scanned statement: check them against it."]
         : []),
@@ -329,7 +363,7 @@ export const reviewCard = (
     unmatched: unmatched.unmatched,
     counts: { matched: matched.total, choose: choose.total, unmatched: unmatched.total },
     selection,
-    chosen: chosenCounts(review, selection),
+    chosen: chosenCounts(review, selection, held),
     ...(heldBack === undefined ? {} : { heldBack }),
     recorded,
     categories: [...categories],
