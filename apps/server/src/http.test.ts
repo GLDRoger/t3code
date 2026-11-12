@@ -1068,13 +1068,18 @@ describe("Kin chat file URLs", () => {
       const inner = yield* page("?frame=1", { "sec-fetch-dest": "iframe" });
       expect(inner).toMatchObject({ ...sealed, policy: kinVisualContentSecurityPolicy("page") });
       expect(inner.policy).toContain("connect-src 'none'");
-      expect(inner.body).toContain('<script>fetch("https://evil.example.com")</script>');
-      expect(inner.body).toContain('<style id="t3-theme">');
+      // The agent's markup reaches the parser only through the prelude's document.write.
+      const write = "<script>document.write(";
+      const markup = JSON.parse(
+        inner.body.slice(inner.body.lastIndexOf(write) + write.length, -")</script>".length),
+      ) as string;
+      expect(markup).toContain('<script>fetch("https://evil.example.com")</script>');
+      expect(markup).toContain('<style id="t3-theme">');
       // The chat's own picture becomes this reader's URL for it; a file from elsewhere stays dead.
-      const picture = /<img src="(\/api\/assets\/[^"]+)">/.exec(inner.body)?.[1];
+      const picture = /<img src="(\/api\/assets\/[^"]+)">/.exec(markup)?.[1];
       expect(picture).toBeDefined();
       expect(yield* fetch("GET", picture!)).toMatchObject({ status: 200, body: "pixels" });
-      expect(inner.body).toContain('<img src="kin-file:kin-chat-elsewhere">');
+      expect(markup).toContain('<img src="kin-file:kin-chat-elsewhere">');
       // The owner's list is the only way an outside host enters the policy, and never for script.
       allowedHosts.push("tiles.example.com");
       const widened = (yield* page("?frame=1", { "sec-fetch-dest": "iframe" })).policy ?? "";

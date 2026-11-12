@@ -15,6 +15,7 @@ import { injectLinuxArm64Sea } from "../../../scripts/lib/linux-arm64-sea.ts";
 import rootPackageJson from "../../../package.json" with { type: "json" };
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { stageKinVisualLibraries } from "../src/kin/visualLibraries.ts";
 import {
   ServerCliBootstrapTooLargeError,
   ServerCliBuildAssetMissingError,
@@ -88,6 +89,10 @@ const buildCmd = Command.make(
           shell: false,
         }),
       );
+
+      // A visual's libraries are dev dependencies, so a packaged server has only this copy.
+      yield* stageKinVisualLibraries(path.join(serverDir, "dist"));
+      yield* Effect.log("[cli] Staged Kin visual libraries into dist/visual-lib");
 
       const webDist = path.join(repoRoot, "apps/web/dist");
       const clientTarget = path.join(serverDir, "dist/client");

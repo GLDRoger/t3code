@@ -31,6 +31,7 @@ import {
   type KinLeadAccessInput,
   type KinMemoryListInput,
   type KinLeadsListInput,
+  type KinVisualHostsInput,
   type KinOrgsListInput,
   type KinOwnerTimeZoneGetInput,
   type KinPushWatchInput,
@@ -124,6 +125,11 @@ const leadsRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   tag: "kin.leads.list",
 });
 const readLeads = guardedRead(leadsRead);
+const visualHostsRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:visual-hosts:read",
+  tag: "kin.visuals.hosts.list",
+});
+const readVisualHosts = guardedRead(visualHostsRead);
 const leadAccessRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "kin:lead-access:read",
   tag: "kin.lead.access.list",
@@ -512,10 +518,24 @@ export const kinClient = {
       key: ({ input }) => `${input.messageId}|${input.emoji}`,
     },
   }),
+  /** The outside hosts the owner lets visuals load from. Owner only. */
+  visualHosts: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:visual-hosts",
+    execute: Effect.fn("KinClient.visualHosts")(function* (input: KinVisualHostsInput) {
+      return yield* readVisualHosts(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: sessionGeneration,
+  }),
   /** Owner-only: lets every visual in the org load from one more host. */
   visualHostAllow: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:visual-host:allow",
     tag: "kin.visuals.hosts.allow",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.host}` },
+  }),
+  visualHostRemove: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:visual-host:remove",
+    tag: "kin.visuals.hosts.remove",
     concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.host}` },
   }),
   /** Owner-only Undo of one line on a memory change card. */

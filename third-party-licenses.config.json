@@ -226,6 +226,44 @@
           ]
         }
       ]
+    },
+    {
+      "name": "Apache ECharts 6.1.0 (Kin visuals)",
+      "bundles": ["desktop", "server"],
+      "license": "Apache-2.0",
+      "sourceUrl": "https://github.com/apache/echarts",
+      "generatedNotices": [
+        {
+          "licenseId": "Apache-2.0",
+          "preamble": [
+            "Apache ECharts\nCopyright 2017-2026 The Apache Software Foundation\n\nThis product includes software developed at\nThe Apache Software Foundation (https://www.apache.org/).\n\nKin serves dist/echarts.min.js to the visuals agents send."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Mermaid 12.2.0 (Kin visuals)",
+      "bundles": ["desktop", "server"],
+      "license": "MIT",
+      "sourceUrl": "https://github.com/mermaid-js/mermaid",
+      "generatedNotices": [
+        {
+          "licenseId": "MIT",
+          "copyrights": ["Copyright (c) 2014 - 2022 Knut Sveidqvist"]
+        }
+      ]
+    },
+    {
+      "name": "D3 7.9.0 (Kin visuals)",
+      "bundles": ["desktop", "server"],
+      "license": "ISC",
+      "sourceUrl": "https://github.com/d3/d3",
+      "generatedNotices": [
+        {
+          "licenseId": "ISC",
+          "copyrights": ["Copyright 2010-2023 Mike Bostock"]
+        }
+      ]
     }
   ],
   "packageOverrides": [
