@@ -524,6 +524,11 @@ function ClientPage(
             </>
           )}
         </KinWorkSection>
+        {view.address === null ? null : (
+          <KinWorkSection title={KIN_WORK_FORM_COPY.party.address}>
+            <p className="whitespace-pre-wrap text-sm text-foreground">{view.address}</p>
+          </KinWorkSection>
+        )}
         <KinWorkSection title={KIN_CLIENTS.terms} action={<KinWorkPrivateMark />}>
           {view.terms === null ? (
             <p className="text-sm text-muted-foreground">{KIN_CLIENTS.noTerms}</p>

@@ -42,6 +42,7 @@ export const KIN_MONEY = {
   nothingUpcoming: "Nothing is due in the next 30 days.",
   allDates: "All dates",
   lists: "Lists",
+  clients: "Clients",
   none: {
     title: "Nothing is tracked here yet",
     detail:

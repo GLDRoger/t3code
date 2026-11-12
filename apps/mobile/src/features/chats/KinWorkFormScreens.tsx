@@ -324,6 +324,19 @@ function ClientForm(props: KinWorkTarget & { readonly editing: KinPartyDetail | 
       </ListSection>
       <ListSection>
         <KinWorkTextField
+          label={COPY.party.address}
+          value={draft.address}
+          multiline
+          disabled={state.saving}
+          maxLength={500}
+          placeholder={COPY.party.addressPlaceholder}
+          hint={COPY.party.addressHint}
+          moved={moved.address}
+          onChangeText={(address) => form.edit({ address })}
+        />
+      </ListSection>
+      <ListSection>
+        <KinWorkTextField
           label={COPY.party.notes}
           value={draft.notes}
           multiline

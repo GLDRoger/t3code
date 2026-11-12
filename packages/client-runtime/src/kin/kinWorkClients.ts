@@ -298,6 +298,7 @@ export interface KinClientPageView {
   readonly projects: ReadonlyArray<KinProjectRowView>;
   readonly contacts: ReadonlyArray<KinContactView>;
   readonly terms: string | null;
+  readonly address: string | null;
   readonly notes: string | null;
 }
 
@@ -342,6 +343,7 @@ export function kinClientPageView(
     projects: page.projects.map((row) => kinProjectRow(row, names, now, ref)),
     contacts: page.contacts.map(kinContactView),
     terms: terms === "" ? null : terms,
+    address: party.address?.trim() || null,
     notes: notes === "" ? null : notes,
   };
 }

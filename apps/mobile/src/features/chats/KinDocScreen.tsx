@@ -70,6 +70,7 @@ import { useMarkdownPreviewStyles } from "../files/FileMarkdownPreview";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { ThreadMarkdownImage } from "../threads/ThreadMarkdownImage";
 import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
+import { KinDocFileRows } from "./KinInvoice";
 import { kinClient } from "./state/kinClient";
 import { useKinDoc } from "./state/useKinDocs";
 import { kinHostConnected } from "./state/useKinHost";
@@ -535,10 +536,15 @@ function KinDocBody(
               </View>
             ) : null}
           </View>
+          {doc.version.file === undefined ? null : (
+            <KinDocFileRows environmentId={environmentId} file={doc.version.file} />
+          )}
           {doc.body.trim() === "" ? (
-            <Text textRole="body" className="text-foreground-muted">
-              This doc has no text yet.
-            </Text>
+            doc.version.file === undefined ? (
+              <Text textRole="body" className="text-foreground-muted">
+                This doc has no text yet.
+              </Text>
+            ) : null
           ) : sections === null ? (
             content(doc.body, (children) => (
               <Menu

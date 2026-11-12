@@ -100,6 +100,41 @@ export function kinChatScreenState(
   return { _tag: "error", message: message ?? "Kin didn't answer.", retry: "chat" };
 }
 
+/** Why a chat can't be shown, in words: never the host's reason code. */
+export function kinChatGoneCopy(reason: "left" | KinChatClosedReason): {
+  readonly title: string;
+  readonly detail: string;
+} {
+  switch (reason) {
+    case "left":
+      return {
+        title: "You were removed from this chat",
+        detail: "Ask the chat's owner to add you back.",
+      };
+    case "disabled":
+      return {
+        title: "Kin is turned off on this server",
+        detail: "Ask whoever runs Kin here to turn it back on, then come back.",
+      };
+    case "limit":
+      return {
+        title: "Too many chats are open",
+        detail: "Close a few chats on this device, then open this one again.",
+      };
+    case "not_found":
+    case "not_allowed":
+      return {
+        title: "This chat isn't available",
+        detail: "It may have been removed, or you're no longer a member.",
+      };
+    default:
+      return {
+        title: "This chat isn't available",
+        detail: "Kin couldn't open this chat. Go back to your chats and try again.",
+      };
+  }
+}
+
 // Paging
 
 /** The next "Load earlier" page, or null when nothing older can exist. */
