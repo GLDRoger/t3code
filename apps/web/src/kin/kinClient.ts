@@ -38,6 +38,7 @@ import {
   type KinOwnerTimeZoneGetInput,
   type KinOrgId,
   type KinPartyPageInput,
+  type KinVisualHostsInput,
   type KinProjectPageInput,
   type KinWorkGetInput,
   type KinWorkSubscribeInput,
@@ -99,6 +100,12 @@ const leadAccessRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   tag: "kin.lead.access.list",
 });
 const readLeadAccess = guardedRead(leadAccessRead);
+
+const visualHostsRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:visual-hosts:read",
+  tag: "kin.visuals.hosts.list",
+});
+const readVisualHosts = guardedRead(visualHostsRead);
 
 const membersRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "kin:chat-members:read",
@@ -332,6 +339,26 @@ export const kinClient = {
     staleTimeMs: 30_000,
     refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
       environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  /** The outside hosts the owner lets visuals load from. Owner only. */
+  visualHosts: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:visual-hosts",
+    execute: Effect.fn("KinWebClient.visualHosts")(function* (input: KinVisualHostsInput) {
+      return yield* readVisualHosts(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
+      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  visualHostAllow: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:visual-hosts:allow",
+    tag: "kin.visuals.hosts.allow",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.host}` },
+  }),
+  visualHostRemove: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:visual-hosts:remove",
+    tag: "kin.visuals.hosts.remove",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.host}` },
   }),
   leadAllow: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:lead-access:allow",

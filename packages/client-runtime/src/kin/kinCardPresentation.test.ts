@@ -78,6 +78,19 @@ describe("kinCardView", () => {
     // A chart from a newer host, of a kind this build can't draw, still says its title.
     const pie = widget({ type: "chart", state: { chart: "pie", title: "Spend by team" } });
     expect(kinCardView(pie, HOST, known())).toEqual({ kind: "unknown", text: "Spend by team" });
+    // A visual holds no markup, only where its page is; one this build can't read says its title.
+    const visual = { title: "Signup funnel", attachmentId: "kin-chat-1-html", height: 360 };
+    expect(kinCardView(widget({ type: "visual", state: visual }), HOST, known())).toMatchObject({
+      kind: "visual",
+      visual,
+    });
+    expect(
+      kinCardView(
+        widget({ type: "visual", state: { ...visual, attachmentId: "", html: "<b>x</b>" } }),
+        HOST,
+        known(),
+      ),
+    ).toEqual({ kind: "unknown", text: "Signup funnel" });
     // Beside the message's own text the card adds nothing; with no words at all it isn't drawn.
     expect(kinCardDraws(poll, HOST, false)).toBe(true);
     expect(kinCardDraws(poll, HOST, true)).toBe(false);

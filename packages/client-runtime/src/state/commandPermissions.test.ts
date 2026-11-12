@@ -79,6 +79,9 @@ describe("command permissions", () => {
   it.effect.each([
     "kin.budget.set",
     "kin.triggers.setTimeZone",
+    "kin.visuals.hosts.list",
+    "kin.visuals.hosts.allow",
+    "kin.visuals.hosts.remove",
     "kin.lead.create",
     "kin.lead.update",
     "kin.lead.retire",

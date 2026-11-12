@@ -31,6 +31,11 @@ import {
   readImageDimensions,
   type ImageDimensions,
 } from "@t3tools/shared/imageDimensions";
+import {
+  kinVisualFileReferences,
+  kinVisualPageDocument,
+  resolveKinVisualFileReferences,
+} from "@t3tools/shared/kinVisual";
 import { MCP_APP_MAX_HTML_BYTES } from "@t3tools/shared/mcpApp";
 import {
   isProjectFaviconPath,
@@ -56,7 +61,11 @@ import {
   parseAttachmentFileExtension,
   resolveAttachmentPathById,
 } from "../attachmentStore.ts";
-import { authorizeAttachmentServe } from "../kin/chat/attachmentAccess.ts";
+import {
+  authorizeAttachmentServe,
+  kinVisualSources,
+  type KinVisualSources,
+} from "../kin/chat/attachmentAccess.ts";
 import * as ServerConfig from "../config.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
@@ -198,6 +207,8 @@ export type ResolvedAsset =
       readonly renderIntent?: "mcp-app";
       /** Authority is checked per request, so no cache may answer for it. */
       readonly noStore?: boolean;
+      /** A Kin chat's HTML: served sealed, with only these sources and for this reader. */
+      readonly kinVisual?: KinVisualSources & { readonly reader: AuthSessionId };
     }
   | {
       readonly kind: "bytes";
@@ -242,6 +253,43 @@ export const readMcpAppHtml = Effect.fn("AssetAccess.readMcpAppHtml")(function* 
     position += chunk.byteLength;
   }
   return bytes;
+});
+
+/** The agent's page as served: chat files it names become this reader's URLs for them. */
+export const readKinVisualPage = Effect.fn("AssetAccess.readKinVisualPage")(function* (
+  filePath: string,
+  visual: KinVisualSources & { readonly reader: AuthSessionId },
+) {
+  const bytes = yield* readMcpAppHtml(filePath);
+  if (bytes === null) return null;
+  const html = new TextDecoder().decode(bytes);
+  const urls: Record<string, string> = {};
+  const signer = yield* AssetSigner.AssetSigner;
+  const expiresAt = (yield* Clock.currentTimeMillis) + ASSET_TOKEN_TTL_MS;
+  for (const id of kinVisualFileReferences(html)) {
+    const attachmentId = id.toLowerCase();
+    const file = visual.files.find((candidate) => candidate.attachmentId === attachmentId);
+    const mimeType = file?.mimeType?.split(";", 1)[0]?.trim() ?? "";
+    // Pictures, sound and video only: a page never loads a chat's other files.
+    const media = /^(?:audio|video)\/[\w!#$&^.+-]+$/i.test(mimeType);
+    if (file === undefined || !(media || parseAttachmentFileExtension(attachmentId) === null))
+      continue;
+    // Each URL names the reader, who is checked against the chat again when it is fetched.
+    const encodedPayload = base64UrlEncode(
+      encodeAssetClaims({
+        version: 1,
+        kind: "attachment",
+        attachmentId,
+        reader: visual.reader,
+        ...(media ? { mimeType } : {}),
+        expiresAt,
+      }),
+    );
+    const signature = yield* signer.sign(encodedPayload).pipe(Effect.option);
+    if (Option.isSome(signature))
+      urls[id] = `${ASSET_ROUTE_PREFIX}/${encodedPayload}.${signature.value}/file`;
+  }
+  return kinVisualPageDocument(resolveKinVisualFileReferences(html, urls));
 });
 
 const readToolOutputImage = Effect.fn("AssetAccess.readToolOutputImage")(function* (input: {
@@ -934,10 +982,16 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
       ),
       Effect.orElseSucceed(() => Option.none()),
     );
+    // Every HTML file of a Kin chat takes this path, so none is ever served under T3's policy.
+    const kinVisual =
+      kinFile && claims.reader !== undefined && !claims.download && /\.html?$/i.test(attachmentPath)
+        ? { ...(yield* kinVisualSources(claims.attachmentId)), reader: claims.reader }
+        : undefined;
     return Option.isSome(info) && info.value.type === "File"
       ? ({
           kind: "file",
           path: attachmentPath,
+          ...(kinVisual === undefined ? {} : { kinVisual }),
           ...(claims.download ? { download: true } : {}),
           ...(claims.fileName !== undefined ? { fileName: claims.fileName } : {}),
           ...(claims.mimeType !== undefined ? { mimeType: claims.mimeType } : {}),

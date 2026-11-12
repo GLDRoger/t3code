@@ -108,6 +108,8 @@ export const SHARED_TOOLS = {
   kin_react: "allowed",
   // Numbers the agent supplies, which it could have written in that chat as text; it reads nothing.
   kin_chart: "allowed",
+  // A page is code that runs on each reader's device: owner-only chats until it is reviewed.
+  kin_visual: "refused",
   kin_chat_read: inAskedChat,
   // Lists only the names of the leads in the asked chat (`KinHandoff.leads`).
   kin_leads: "allowed",
