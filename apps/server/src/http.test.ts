@@ -1070,9 +1070,9 @@ describe("Kin chat file URLs", () => {
       expect(inner.policy).toContain("connect-src 'none'");
       // The agent's markup reaches the parser only through the prelude's document.write.
       const write = "<script>document.write(";
-      const markup = JSON.parse(
-        inner.body.slice(inner.body.lastIndexOf(write) + write.length, -")</script>".length),
-      ) as string;
+      const [markup] = JSON.parse(
+        `[${inner.body.slice(inner.body.lastIndexOf(write) + write.length, -")</script>".length)}]`,
+      ) as [string, string];
       expect(markup).toContain('<script>fetch("https://evil.example.com")</script>');
       expect(markup).toContain('<style id="t3-theme">');
       // The chat's own picture becomes this reader's URL for it; a file from elsewhere stays dead.

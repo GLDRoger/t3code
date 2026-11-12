@@ -918,6 +918,23 @@ it.effect(
       );
       assert.deepStrictEqual(pages, [page]);
       assert.lengthOf(yield* files, 2);
+      // Another doc may show that file, but only for a writer who can read the doc it is from.
+      yield* sql`INSERT INTO kin_doc_files (org_id, record_id, attachment_id, mime_type, page_sha256, created_at)
+        VALUES (${orgId}, 'not-a-doc', 'kin-chat-stray-png', 'image/png', NULL, ${at})`;
+      const reuse = (writer: KinRecords.Writer, id: string, origin: string) =>
+        create(`# Invented reuse\n\n![Logo](kin-file:${id})`, writer, origin);
+      const mate: KinRecords.Writer = { actor: { _tag: "person", personId: mateId }, via: "owner" };
+      for (const [writer, id] of [
+        [mate, "kin-chat-logo-png"],
+        [agentWriter(lead), "kin-chat-stray-png"],
+      ] as const) {
+        const refused = yield* Effect.flip(reuse(writer, id, `reuse:${id}:${writer.actor._tag}`));
+        assert.include(
+          refused.message,
+          `kin-file:${id} is not a file in this chat or in another doc`,
+        );
+      }
+      yield* reuse(agentWriter(lead), "kin-chat-logo-png", "reuse:lead");
     }).pipe(Effect.provide(Layer.merge(store, layer)));
   },
 );

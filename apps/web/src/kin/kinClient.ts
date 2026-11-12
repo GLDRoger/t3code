@@ -467,6 +467,12 @@ export const kinClient = {
     tag: KIN_CHAT_WS_METHODS.chatsClear,
     concurrency: { mode: "singleFlight", key: ({ input }) => input.chatId },
   }),
+  /** What a clear would leave, asked when its confirm opens; changes nothing. */
+  clearPreview: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:clear-preview",
+    tag: KIN_CHAT_WS_METHODS.chatsClear,
+    concurrency: { mode: "singleFlight", key: ({ input }) => `preview:${input.chatId}` },
+  }),
   inbox: createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {
     label: KIN_INBOX_LABEL,
     subscribe: (input: Parameters<typeof kinInboxStream>[0]) =>

@@ -13,6 +13,8 @@ export const KinVisualCardState = Schema.Struct({
   title: KinTrimmedText.check(Schema.isMaxLength(120)),
   attachmentId: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
   height: Schema.Finite.check(Schema.isBetween({ minimum: 80, maximum: 2000 })),
+  /** Built in a turn that was shown something sensitive, as a doc it wrote would be labelled. */
+  sensitive: Schema.optional(Schema.Literal(true)),
 });
 export type KinVisualCardState = typeof KinVisualCardState.Type;
 

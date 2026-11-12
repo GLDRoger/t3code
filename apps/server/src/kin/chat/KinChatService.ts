@@ -44,6 +44,7 @@ import {
   type KinMessagesMarkReadInput,
   type KinChatsMuteInput,
   type KinChatsClearInput,
+  type KinChatsClearResult,
   type KinPersonId,
   type KinOrgId,
   type KinReaction,
@@ -87,6 +88,7 @@ import { effectiveAudience } from "../lead/Audience.ts";
 import { KinStop } from "../lead/KinStop.ts";
 import { isOrgOwner } from "../lead/orgState.ts";
 import { docPageSources } from "../work/docFiles.ts";
+import { turnSensitive } from "../work/workerAttempts.ts";
 import * as Repository from "./KinChatRepository.ts";
 import type { WriteAudience } from "./KinChatRepository.ts";
 import { KinAttachmentStore } from "./KinAttachmentStore.ts";
@@ -164,7 +166,7 @@ export class KinChatService extends Context.Service<
     readonly clear: (
       identity: PersonCaller,
       input: KinChatsClearInput,
-    ) => Effect.Effect<void, ServiceError>;
+    ) => Effect.Effect<KinChatsClearResult, ServiceError>;
     readonly leaveChat: (
       identity: PersonIdentity,
       input: { readonly chatId: KinChatId; readonly memberId: KinMemberId },
@@ -1320,6 +1322,7 @@ const make = Effect.gen(function* () {
           reason: "not_allowed",
           message: "Only the owner can clear this chat.",
         });
+      if (input.preview === true) return { keptFiles: yield* repo.docKeptFiles(chat) };
       const clearedAtMs = yield* Clock.currentTimeMillis;
       const cleared = yield* repo.clearChat({
         orgId: chat.orgId,
@@ -1363,6 +1366,7 @@ const make = Effect.gen(function* () {
           ),
         ),
       );
+      return { keptFiles: cleared.keptFiles };
     }, transaction),
     leaveChat: Effect.fn("KinChatService.leaveChat")(function* (identity, input) {
       const caller = yield* memberFor(identity, input.chatId);
@@ -2451,6 +2455,13 @@ const make = Effect.gen(function* () {
           message: "Attachments are unavailable.",
         });
       const store = attachmentStore.value;
+      // The server decides the label, from what the turn was shown; the agent has no say.
+      const sensitive =
+        identity.wakeupId !== undefined &&
+        (yield* turnSensitive(identity.orgId, identity.wakeupId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError(toPersistenceSqlError("KinChatService.visual")),
+        ));
       // The file is written before the transaction and dropped unless this call's card keeps it.
       const attachmentId = yield* store.storePage(page.html);
       const kept = (widget: KinWidget) =>
@@ -2466,6 +2477,7 @@ const make = Effect.gen(function* () {
             title: page.title,
             attachmentId,
             height: page.height,
+            ...(sensitive ? { sensitive: true } : {}),
           }),
           file: attachmentId,
         }),

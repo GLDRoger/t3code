@@ -10,6 +10,8 @@ import {
 import {
   KIN_VISUAL_PRELUDE,
   type KinVisualMessage,
+  kinVisualHostUnicode,
+  kinVisualSaveFile,
   readKinVisualMessage,
 } from "@t3tools/shared/kinVisual";
 import { AsyncResult } from "effect/reactivity";
@@ -20,21 +22,23 @@ import { WebView } from "react-native-webview";
 
 import { AppActivityIndicator } from "../../../components/ui/AppActivityIndicator";
 import { AppText as Text } from "../../../components/ui/AppText";
+import { REVIEW_MONO_FONT_FAMILY } from "../../review/reviewDiffRendering";
 import * as Dialog from "../../../components/ui/Dialog";
 import { shareGeneratedAttachment } from "../../../lib/attachmentDownload";
 import { tryOpenExternalUrl } from "../../../lib/openExternalUrl";
 import { useAssetUrlState, useRefreshAssetUrl } from "../../../state/assets";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { useHtmlRenderTheme } from "../../threads/HtmlRenderWebView";
+import { KinWorkPrivateMark } from "../components/KinWorkPieces";
 import { kinClient } from "../state/kinClient";
 
-const MAX_BLOCKED_HOSTS = 3;
 // A link request counts only this soon after the reader touched the visual.
 const TOUCH_WINDOW_MS = 1500;
 // Kept across remounts, so a card scrolled back into view does not jump.
 const measuredHeights = new Map<string, number>();
 
 const location = (url: string) => url.split(/[?#]/, 1)[0];
+const withoutHash = (url: string) => url.split("#", 1)[0];
 
 function readMessage(data: string): KinVisualMessage | undefined {
   try {
@@ -91,6 +95,8 @@ function KinVisualWebView(props: {
     const touched = touchedAt.current;
     if (touched === null || performance.now() - touched > TOUCH_WINDOW_MS) return;
     touchedAt.current = null;
+    const saved = kinVisualSaveFile(file.name, file.mimeType);
+    if (saved === null) return;
     let bytes: Uint8Array;
     try {
       bytes = Uint8Array.from(atob(file.data), (char) => char.charCodeAt(0));
@@ -99,7 +105,7 @@ function KinVisualWebView(props: {
     }
     void shareGeneratedAttachment({
       bytes,
-      attachment: { name: file.name, mimeType: file.mimeType },
+      attachment: { name: saved.name, mimeType: saved.mimeType },
       signal: new AbortController().signal,
     }).then(
       (shared) => {
@@ -171,6 +177,9 @@ function KinVisualWebView(props: {
         showsHorizontalScrollIndicator={false}
         overScrollMode="never"
         onMessage={(event) => {
+          // iOS hands the bridge to every frame; only the outer document, which holds no agent
+          // content, may speak through it.
+          if (withoutHash(event.nativeEvent.url) !== withoutHash(props.uri)) return;
           const message = readMessage(event.nativeEvent.data);
           if (message === undefined) return;
           if (message.type === "height") props.onHeight?.(message.height);
@@ -264,7 +273,9 @@ export const KinVisual = memo(function KinVisual(props: {
   const [width, setWidth] = useState(0);
   const [contentHeight, setContentHeight] = useState(() => measuredHeights.get(attachmentId));
   const [expanded, setExpanded] = useState(false);
-  const [blocked, setBlocked] = useState<ReadonlyArray<string>>([]);
+  // One request line at a time; once the reader says not now, this visual asks no more.
+  const [blocked, setBlocked] = useState<string | null>(null);
+  const [declined, setDeclined] = useState(false);
   const [allowing, setAllowing] = useState<string | null>(null);
   const [problem, setProblem] = useState(false);
   const canAllow = useAtomValue(kinClient.visualHostAllow.permissionAtom(props.environmentId));
@@ -285,12 +296,12 @@ export const KinVisual = memo(function KinVisual(props: {
     setUri(next);
     setAttempt((value) => value + 1);
   };
-  const allowHost = (host: string) =>
-    Dialog.confirm({
-      title: `Let visuals load from ${host}?`,
-      message:
-        "Every visual in your chats will be able to load images, fonts and data from this host, and to send it anything the visual shows. Allow only a host you trust.",
-      confirmText: "Allow this host",
+  const allowHost = (host: string) => {
+    const unicode = kinVisualHostUnicode(host);
+    return Dialog.confirm({
+      title: "Allow this host for every visual?",
+      message: `${host}${unicode === null ? "" : `\n(shown as “${unicode}”)`}\n\nThe visual asked for this itself; nobody checked the host. Once allowed, every visual in this workspace can load from it and send it anything a visual shows. Allow only a host you trust. You can remove it later under Team.`,
+      confirmText: "Allow for every visual",
       onConfirm: () => {
         setAllowing(host);
         setProblem(false);
@@ -303,18 +314,20 @@ export const KinVisual = memo(function KinVisual(props: {
             setProblem(true);
             return;
           }
-          setBlocked([]);
+          setBlocked(null);
           // The same address now answers with the wider policy.
           setAttempt((value) => value + 1);
         });
       },
     });
+  };
   return (
     <View className="gap-2 rounded-[20px] border border-border bg-card-alt p-4">
       <View className="flex-row items-center gap-3">
         <Text textRole="headline" numberOfLines={2} className="min-w-0 flex-1 text-foreground">
           {title}
         </Text>
+        {props.visual.sensitive === true ? <KinWorkPrivateMark label="" /> : null}
         {showing ? (
           <Pressable accessibilityRole="button" hitSlop={12} onPress={() => setExpanded(true)}>
             <Text textRole="footnote" className="font-t3-medium text-primary">
@@ -333,13 +346,9 @@ export const KinVisual = memo(function KinVisual(props: {
               measuredHeights.set(attachmentId, next);
               setContentHeight(next);
             }}
-            onBlockedHost={(host) =>
-              setBlocked((hosts) =>
-                hosts.includes(host) || hosts.length >= MAX_BLOCKED_HOSTS
-                  ? hosts
-                  : [...hosts, host],
-              )
-            }
+            onBlockedHost={(host) => {
+              if (!declined) setBlocked((held) => held ?? host);
+            }}
             onLoadError={() => setFailed("once")}
           />
         ) : failed === "gone" ? (
@@ -365,29 +374,47 @@ export const KinVisual = memo(function KinVisual(props: {
           </View>
         )}
       </View>
-      {canAllow
-        ? blocked.map((host) => (
-            <View key={host} className="flex-row flex-wrap items-center gap-x-3 gap-y-1">
-              <Text textRole="caption" className="min-w-0 shrink text-foreground-muted">
-                This visual wanted to load from{" "}
-                <Text textRole="caption" className="font-t3-medium text-foreground">
-                  {host}
-                </Text>
-                .
-              </Text>
-              <Pressable
-                accessibilityRole="button"
-                hitSlop={12}
-                disabled={allowing !== null}
-                onPress={() => allowHost(host)}
-              >
-                <Text textRole="caption" className="font-t3-medium text-primary">
-                  {allowing === host ? "Allowing…" : "Allow"}
-                </Text>
-              </Pressable>
-            </View>
-          ))
-        : null}
+      {canAllow && blocked !== null ? (
+        <View className="flex-row flex-wrap items-center gap-x-3 gap-y-1">
+          <Text textRole="caption" className="min-w-0 shrink text-foreground-muted">
+            This visual asks to load from{" "}
+            <Text
+              textRole="caption"
+              className="text-foreground"
+              style={{ fontFamily: REVIEW_MONO_FONT_FAMILY }}
+            >
+              {blocked}
+            </Text>
+            {kinVisualHostUnicode(blocked) === null
+              ? ""
+              : ` (shown as “${kinVisualHostUnicode(blocked)}”)`}
+            .
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            hitSlop={12}
+            disabled={allowing !== null}
+            onPress={() => allowHost(blocked)}
+          >
+            <Text textRole="caption" className="font-t3-medium text-primary">
+              {allowing === blocked ? "Allowing…" : "Allow"}
+            </Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            hitSlop={12}
+            disabled={allowing !== null}
+            onPress={() => {
+              setBlocked(null);
+              setDeclined(true);
+            }}
+          >
+            <Text textRole="caption" className="text-foreground-muted">
+              Not now
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
       {problem ? (
         <Text accessibilityRole="alert" textRole="caption" className="text-danger-foreground">
           Couldn't allow it. Try again.

@@ -44,6 +44,7 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
 import { kinClient } from "./kinClient";
+import { announceKinClearKept, useKinClearPreview } from "./useKinClearPreview";
 import { kinGroupFormAtom } from "./kinGroupForm";
 
 function Section(props: { readonly title: string; readonly children: React.ReactNode }) {
@@ -97,6 +98,7 @@ export function KinGroupSheet(props: {
   const deleteGroup = useAtomCommand(kinClient.groupDelete, { reportFailure: false });
   const canClear = useAtomValue(kinClient.clear.permissionAtom(environmentId)) && owns;
   const clear = useAtomCommand(kinClient.clear, { reportFailure: false });
+  const clearPreview = useKinClearPreview(environmentId, chatId);
   const title = group.chat.title ?? "Group";
   const [name, setName] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -146,11 +148,17 @@ export function KinGroupSheet(props: {
       return;
     }
     if (pending.kind === "clear") {
+      let kept: number | undefined;
       const done = await change("clear this chat", () =>
-        clear({ environmentId, input: { chatId } }),
+        clear({ environmentId, input: { chatId } }).then((result) => {
+          if (AsyncResult.isSuccess(result)) kept = result.value.keptFiles;
+          return result;
+        }),
       );
-      // Nothing to announce: the chat behind the sheet is empty.
-      if (done) props.onOpenChange(false);
+      // The chat behind the sheet is empty; only files a doc kept need saying.
+      if (!done) return;
+      announceKinClearKept(kept);
+      props.onOpenChange(false);
       return;
     }
     const done = await change("delete this group", () =>
@@ -324,7 +332,10 @@ export function KinGroupSheet(props: {
                   variant="destructive-outline"
                   className="self-start"
                   disabled={busy}
-                  onClick={() => setConfirm({ kind: "clear" })}
+                  onClick={() => {
+                    clearPreview.ask();
+                    setConfirm({ kind: "clear" });
+                  }}
                 >
                   {KIN_CLEAR_CHAT_ACTION}
                 </Button>
@@ -363,7 +374,7 @@ export function KinGroupSheet(props: {
                   ? `${confirm.member.name} stops answering here. You can add it back any time.`
                   : `${confirm.member.name} stops seeing this group and its files. You can add them back any time.`
                 : confirm?.kind === "clear"
-                  ? kinClearChatBody("group")
+                  ? kinClearChatBody("group", clearPreview.kept)
                   : "The group closes for everyone in it. This can't be undone."}
             </AlertDialogDescription>
           </AlertDialogHeader>
