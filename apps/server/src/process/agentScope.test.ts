@@ -253,6 +253,15 @@ describe("AgentScope service", () => {
               false,
             );
             expect(calls.filter(([, verb]) => verb === "kill")).toEqual([]);
+
+            // Reaping confirms the tree is gone only once the kernel says the cgroup is empty.
+            exitedAgent(units, cgroupRoot, unitOf(agent), { populated: false, oomKills: 0 });
+            expect(yield* scope.reap("a")).toBe(true);
+            units.delete(unitOf(agent));
+            expect(yield* scope.reap("a")).toBe(true);
+            // A shared scope, or a thread with none here, can't be confirmed.
+            expect(yield* scope.reap("b")).toBe(false);
+            expect(yield* scope.reap("unknown")).toBe(false);
           }),
         { oomPolicy },
       ),

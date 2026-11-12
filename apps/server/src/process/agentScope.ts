@@ -376,6 +376,27 @@ export const make = Effect.gen(function* () {
     return killed._tag === "Some" && killed.value.code === 0;
   });
 
+  const reap: AgentScopeShape["reap"] = Effect.fn("AgentScope.reap")(function* (threadId) {
+    const tracked = scopeByThread.get(threadId);
+    if (tracked === undefined || tracked.shared) return false;
+    const scope = yield* systemd;
+    if (scope === undefined) return false;
+    yield* kill(threadId);
+    for (let attempt = 0; attempt < STOPPING_POLL_ATTEMPTS; attempt++) {
+      const state = yield* readScope(scope.systemctl, tracked.unit);
+      if (state === undefined) return false;
+      if (
+        state.populated === false ||
+        state.loadState !== "loaded" ||
+        state.activeState === "inactive" ||
+        state.activeState === "failed"
+      )
+        return true;
+      yield* Effect.sleep(STOPPING_POLL_INTERVAL);
+    }
+    return false;
+  });
+
   const clear: AgentScopeShape["clear"] = Effect.fn("agentScope.clear")(function* (threadId) {
     if (!scopeByThread.has(threadId)) return;
     const scope = yield* systemd;
@@ -425,6 +446,7 @@ export const make = Effect.gen(function* () {
     oomKilled,
     stop,
     kill,
+    reap,
     clear,
   } satisfies AgentScopeShape;
 });

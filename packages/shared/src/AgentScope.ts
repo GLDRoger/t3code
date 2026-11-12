@@ -31,6 +31,11 @@ export interface AgentScopeShape {
    */
   readonly kill: (threadId: string) => Effect.Effect<boolean>;
   /**
+   * Kills the thread's own scope and succeeds with true once no process is left in it. False
+   * when the thread has no scope of its own here, or its end can't be confirmed.
+   */
+  readonly reap: (threadId: string) => Effect.Effect<boolean>;
+  /**
    * Forgets the thread's scope. The session manager calls it before it opens
    * a provider session, so a scope only answers for the session that launched
    * it, even when the next session runs without one (Cursor, OpenCode).
@@ -51,6 +56,7 @@ export const AgentScope = Context.Reference<AgentScopeShape>("@t3tools/shared/Ag
     oomKilled: () => Effect.succeed(false),
     stop: () => Effect.void,
     kill: () => Effect.succeed(false),
+    reap: () => Effect.succeed(false),
     clear: () => Effect.void,
   }),
 });
