@@ -22,6 +22,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { authorizeRpc } from "../../auth/RpcAuthorization.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import { KinAttachmentStore } from "../chat/KinAttachmentStore.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
@@ -807,4 +808,116 @@ it.effect("the Docs list filters by words in a title or the latest text, on the 
     assert.deepStrictEqual(yield* titles("starter costs"), [[], 0]);
     assert.deepStrictEqual(yield* titles("100%_"), [[], 0]);
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a doc keeps the images, charts and visuals its markdown shows, only from where its writer could see them",
+  () => {
+    const pages: Array<string> = [];
+    const store = Layer.mock(KinAttachmentStore)({
+      storePage: (html) =>
+        Effect.sync(() => {
+          pages.push(html);
+          return `kin-chat-page-${pages.length}-html`;
+        }),
+    });
+    return Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+        author_member_id, author_role, kind, body, mentions_json, status, created_at, attachments_json)
+      VALUES ('photo', ${orgId}, 'lead-chat', 2, 'human', ${ownerId}, 'lead-chat-owner', 'owner', 'text',
+        'Our invented logo', '[]', 'posted', ${at},
+        '[{"id":"kin-chat-logo-png","type":"image","name":"logo.png","mimeType":"image/png","sizeBytes":10}]')`;
+      yield* sql`INSERT INTO kin_message_attachments (attachment_id, org_id, chat_id, message_id)
+      VALUES ('kin-chat-logo-png', ${orgId}, 'lead-chat', 'photo')`;
+      const inChat = { ...agentWriter(lead), chatId: KinChatId.make("lead-chat") };
+      const chart = JSON.stringify({
+        chart: "bar",
+        title: "Invented signups",
+        unit: { kind: "count" },
+        labels: ["W1", "W2"],
+        series: [{ name: "Signups", values: [3, 5] }],
+      });
+      const page = '<h1>Invented funnel</h1><img src="kin-file:kin-chat-logo-png">';
+      const body = [
+        "# Invented report",
+        "",
+        "![Our logo](kin-file:kin-chat-logo-png)",
+        "",
+        "```kin_chart",
+        chart,
+        "```",
+        "",
+        "```kin_visual Invented funnel",
+        page,
+        "```",
+        "",
+      ].join("\n");
+      const create = (text: string, writer: KinRecords.Writer, origin: string) =>
+        Docs.create(
+          orgId,
+          writer,
+          {},
+          {
+            title: "Invented report",
+            body: text,
+            owner: { _tag: "agent", agentId: lead },
+            summary: "Created",
+            originKey: origin,
+          },
+        );
+      for (const [text, writer, says] of [
+        [body, agentWriter(lead), "kin-file:kin-chat-logo-png is not a file in this chat"],
+        [body.replace('"bar"', '"pie_ish"'), inChat, "A kin_chart block must hold"],
+        [
+          body.replace("kin_visual Invented funnel", "kin_visual"),
+          inChat,
+          "A kin_visual block: A visual needs a title",
+        ],
+      ] as const) {
+        const refused = yield* Effect.flip(create(text, writer, `refused:${says}`));
+        assert.strictEqual(reasonOf(refused), "invalid_state");
+        assert.include(refused.message, says);
+      }
+      assert.deepStrictEqual(pages, []);
+      assert.deepStrictEqual(yield* sql`SELECT * FROM kin_doc_files`, []);
+
+      const created = yield* create(body, inChat, "made");
+      const { key } = created.row;
+      const detail = yield* OwnerDocs.get([owner], { orgId, key });
+      assert.deepStrictEqual(
+        detail.embeds?.map((embed) => embed._tag),
+        ["chart", "visual"],
+      );
+      assert.deepInclude(detail.embeds![0]!, { _tag: "chart" });
+      assert.deepStrictEqual(detail.embeds![1], {
+        _tag: "visual",
+        title: "Invented funnel",
+        attachmentId: "kin-chat-page-1-html",
+        height: 360,
+      });
+      assert.deepStrictEqual(pages, [page]);
+      const files = sql`SELECT attachment_id AS id, mime_type AS mime, page_sha256 IS NOT NULL AS page
+      FROM kin_doc_files WHERE record_id = ${created.row.recordId} ORDER BY attachment_id`;
+      assert.deepStrictEqual(yield* files, [
+        { id: "kin-chat-logo-png", mime: "image/png", page: 0 },
+        { id: "kin-chat-page-1-html", mime: "text/html", page: 1 },
+      ]);
+      // A later version, even from a turn with no chat, keeps the doc's own files and its page once.
+      yield* Docs.edit(
+        orgId,
+        agentWriter(lead),
+        {},
+        { key },
+        {
+          operations: [{ op: "append", text: "More invented notes." }],
+          summary: "Added notes",
+          originKey: "append",
+        },
+      );
+      assert.deepStrictEqual(pages, [page]);
+      assert.lengthOf(yield* files, 2);
+    }).pipe(Effect.provide(Layer.merge(store, layer)));
+  },
 );

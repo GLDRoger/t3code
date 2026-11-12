@@ -16,7 +16,9 @@ import { describe, expect, it } from "vite-plus/test";
 import type { AtomCommandResult } from "../state/runtime.ts";
 import {
   createKinSearch,
+  KIN_DOCS,
   kinDocChangeLine,
+  kinDocPieces,
   kinSearchHit,
   kinDocGroups,
   kinDocRef,
@@ -181,6 +183,60 @@ describe("kinDocSections", () => {
     expect(
       kinDocSections(body, [section("plan", "Plan", 1), section("pricing", "Pricing", 2)]),
     ).toBeNull();
+  });
+});
+
+describe("kinDocPieces", () => {
+  const visual = (title: string, attachmentId: string) =>
+    ({ _tag: "visual", title, attachmentId, height: 240 }) as const;
+  const body = [
+    "# Funnel",
+    "```kin_visual Funnel",
+    "<p>a</p>",
+    "```",
+    "# Signups",
+    "Before.",
+    "```kin_chart",
+    "{}",
+    "```",
+    "```kin_visual Trend",
+    "<p>b</p>",
+    "```",
+    "After.",
+  ].join("\n");
+  const section = body.split("# Signups")[1]!;
+
+  it("gives a section's blocks the embeds the host drew for them in the whole body", () => {
+    const doc = {
+      body,
+      embeds: [
+        visual("Funnel", "page-a"),
+        { _tag: "broken", message: "Bad JSON." } as const,
+        visual("Trend", "page-b"),
+      ],
+    };
+    expect(kinDocPieces(section, doc)).toEqual([
+      { type: "text", text: "\nBefore." },
+      { type: "embed", embed: { _tag: "broken", message: "Bad JSON." } },
+      { type: "embed", embed: visual("Trend", "page-b") },
+      { type: "text", text: "After." },
+    ]);
+  });
+
+  it("says a block can't be shown when the host drew nothing, or the wrong kind, for it", () => {
+    const undrawn = (kind: "chart" | "visual") => ({
+      type: "embed",
+      embed: { _tag: "broken", message: KIN_DOCS.undrawn[kind] },
+    });
+    expect(kinDocPieces(section, { body }).filter((piece) => piece.type === "embed")).toEqual([
+      undrawn("chart"),
+      undrawn("visual"),
+    ]);
+    const shifted = { body, embeds: [visual("Funnel", "page-a"), visual("Trend", "page-b")] };
+    expect(kinDocPieces(section, shifted).filter((piece) => piece.type === "embed")).toEqual([
+      undrawn("chart"),
+      undrawn("visual"),
+    ]);
   });
 });
 

@@ -57,7 +57,7 @@ import { useKinHostAt } from "./useKinHost";
 const CANT_ACT_TEXT =
   "This browser can't answer here. Pair it again with the server that runs Kin.";
 
-function CardFrame(props: {
+export function CardFrame(props: {
   readonly eyebrow?: string;
   readonly label?: string;
   readonly children: ReactNode;

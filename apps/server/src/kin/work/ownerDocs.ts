@@ -30,6 +30,7 @@ import { makeDocument } from "../gendocs/make.ts";
 import { clearLabel, recipeLabelled, undoRecipe as undoLabelled } from "../gendocs/recipeLabels.ts";
 import { KinWorkspace } from "../gendocs/workspace.ts";
 import { changedSections, outlineOf, patchOf } from "./docBody.ts";
+import { docEmbeds } from "./docFiles.ts";
 import * as Docs from "./docs.ts";
 import { KinRecords } from "./KinRecords.ts";
 import { LISTS } from "./lists.ts";
@@ -83,6 +84,7 @@ const detailOf = Effect.fn("KinDocs.detail")(function* (
     outline: [...outlineOf(shown.body)],
     links: detail.links,
     seq: yield* recordSeq(orgId, row.recordId),
+    embeds: yield* docEmbeds(orgId, row.recordId, shown.body),
   } satisfies KinDocDetail;
 });
 

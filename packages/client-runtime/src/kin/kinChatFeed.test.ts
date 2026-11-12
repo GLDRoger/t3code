@@ -22,6 +22,7 @@ import {
   kinChatStatusLine,
   kinDayLabel,
   kinBodyMarkdown,
+  kinDocMarkdown,
   kinImageSource,
   kinImageText,
   kinLinkToOpen,
@@ -746,6 +747,20 @@ describe("message images", () => {
     ["a plain link", "[docs](https://example.com)", "[docs](https://example.com)"],
   ])("renders %s as text before parsing", (_name, body, rendered) => {
     expect(kinBodyMarkdown(body)).toBe(rendered);
+  });
+
+  it.each([
+    ["keeps a doc file's image", "a ![Plan](kin-file:Ab_1-c) b", "a ![Plan](kin-file:ab_1-c) b"],
+    ["reads a bracketed source with a title", '![x](<kin-file:ab> "t")', "![x](kin-file:ab)"],
+    ["drops any other image", "![x](https://attacker.example/kin-file:ab)", "Image: x"],
+    ["drops a reference image", "![x][1]\n\n[1]: kin-file:ab", "Image: x\n\n[1]: kin-file:ab"],
+    ["drops an HTML image", '<img src="kin-file:ab">', "Image"],
+  ])("a doc's body %s", (_name, body, rendered) => {
+    expect(kinDocMarkdown(body)).toBe(rendered);
+  });
+
+  it("writes a doc file's image source as the reader asks", () => {
+    expect(kinDocMarkdown("![x](kin-file:ab)", (id) => `#${id}`)).toBe("![x](#ab)");
   });
 
   it("resolves no source, so the renderer requests nothing", () => {

@@ -1075,6 +1075,23 @@ describe("KinChatService", () => {
             files: [{ attachmentId: photo, mimeType: "image/png" }],
           },
         );
+        // A doc's page and image: the org's owner reads them, anyone else is refused, and the
+        // page may show only that doc's files.
+        yield* sql`INSERT INTO kin_doc_files (org_id, record_id, attachment_id, mime_type, page_sha256, created_at)
+          VALUES (${person.orgId}, 'invented-doc', 'kin-chat-doc-page-html', 'text/html', 'sha', 0),
+            (${person.orgId}, 'invented-doc', 'kin-chat-doc-image', 'image/png', NULL, 0),
+            (${person.orgId}, 'other-doc', 'kin-chat-other-image', 'image/png', NULL, 0)`;
+        assert.isTrue(yield* service.attachmentReadable(person, "kin-chat-doc-page-html"));
+        const stranger = { ...person, personId: KinPersonId.make("invented-stranger") };
+        assert.isFalse(yield* service.attachmentReadable(stranger, "kin-chat-doc-page-html"));
+        assert.isFalse(yield* service.attachmentReadable(stranger, photo));
+        assert.deepStrictEqual(
+          Option.getOrThrow(yield* service.visualSources("kin-chat-doc-page-html")),
+          {
+            orgId: person.orgId,
+            files: [{ attachmentId: "kin-chat-doc-image", mimeType: "image/png" }],
+          },
+        );
 
         const refusal = (change: object) =>
           service
@@ -2303,7 +2320,7 @@ describe("KinChatService", () => {
     }).pipe(Effect.provide(presenceLayer)),
   );
   it.effect(
-    "clears a chat for good: messages, cards, reactions and files go; the chat, its members, memory and seq stay",
+    "clears a chat for good: messages, cards, reactions and files go, but a doc's image stays; the chat, its members, memory and seq stay",
     () =>
       Effect.gen(function* () {
         const { repo, service, person, agent, chat } = yield* seed();
@@ -2318,6 +2335,15 @@ describe("KinChatService", () => {
           attachments: [yield* uploadPhoto("whiteboard.png")],
           uploader: TEST_UPLOAD_OWNER,
         });
+        const inDoc = (yield* service.send(person, {
+          chatId: chat.chatId,
+          body: "The invented chart",
+          clientMessageId: "doc-photo",
+          attachments: [yield* uploadPhoto("chart.png")],
+          uploader: TEST_UPLOAD_OWNER,
+        })).attachments![0]!.id;
+        yield* sql`INSERT INTO kin_doc_files (org_id, record_id, attachment_id, mime_type, page_sha256, created_at)
+          VALUES (${person.orgId}, 'invented-doc', ${inDoc}, 'image/png', NULL, 0)`;
         const answer = yield* service.send(agent, {
           chatId: chat.chatId,
           clientMessageId: "lead-answer",
@@ -2388,8 +2414,10 @@ describe("KinChatService", () => {
         );
         for (const table of ["kin_messages", "kin_widgets", "kin_reactions"])
           assert.strictEqual(after[table], 0, table);
-        assert.deepStrictEqual(yield* storedFiles, []);
+        assert.deepStrictEqual(yield* storedFiles, [`${inDoc}.png`]);
         assert.isFalse(yield* service.attachmentReadable(person, photo.attachments![0]!.id));
+        // The doc still shows it to the person who reads Docs.
+        assert.isTrue(yield* service.attachmentReadable(person, inDoc));
         // The chat is as empty as a new one, and still the same chat.
         const cleared = yield* repo.getChat(chat);
         assert.deepInclude(Option.getOrThrow(cleared), {

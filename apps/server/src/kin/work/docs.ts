@@ -25,6 +25,7 @@ import {
   type Operation,
   rewriteRefusal,
 } from "./docBody.ts";
+import { keepDocFiles } from "./docFiles.ts";
 import { KinRecords, type Writer } from "./KinRecords.ts";
 import { listOf } from "./lists.ts";
 import { actorOf, iso, principal, type RecordRow, toRecord, unavailable } from "./recordRows.ts";
@@ -253,6 +254,7 @@ const insertVersion = Effect.fn("KinDocs.insertVersion")(function* (
         ? writer.actor.personId
         : null;
   const answered = provenance.answered;
+  if (file === undefined) yield* keepDocFiles(orgId, recordId, writer, version.body);
   yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body_kind, body, title, kind,
       summary, operations_json, base_version, restored_from, actor_kind, actor_id, via, wakeup_id,
       chat_id, answered_message_id, answered_author_kind, answered_author_id, audience, origin_key,

@@ -1827,7 +1827,9 @@ const make = Effect.gen(function* () {
           AND json_extract(json, '$.messageId') IN (${said})`;
         const attachments = yield* sql<{ id: string }>`
           SELECT attachment_id AS id FROM kin_message_attachments
-          WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} ORDER BY attachment_id`;
+          WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}
+            AND attachment_id NOT IN (SELECT attachment_id FROM kin_doc_files)
+          ORDER BY attachment_id`;
         const taskCards = yield* SqlSchema.findAll({
           Request: Schema.Unknown,
           Result: WidgetRow,
