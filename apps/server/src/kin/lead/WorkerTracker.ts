@@ -101,6 +101,9 @@ const isLocal = (worker: {
 }) => worker.environmentId === null && worker.threadId === localThreadId(worker.workerId);
 /** The longest one wait on a local worker's thread blocks a follower. */
 const LOCAL_WAIT_MS = 600_000;
+/** A local worker's whole run, its commands included; past it, Kin stops it unpublished. */
+export const LOCAL_TASK_LIMIT_MS = 3_600_000;
+const TASK_LIMIT_REASON = "The worker ran past its one-hour limit.";
 const MAX_REPLY_CHARS = 200_000;
 const cardStateEquivalent = Schema.toEquivalence(
   KinTaskCardState.mapFields((fields) => ({
@@ -1052,10 +1055,20 @@ const make = Effect.gen(function* () {
     if (worker.projectId === null || shell.projectId !== worker.projectId)
       return yield* abandoned("The worker's thread is no longer in its project.");
     yield* reach(worker, true);
+    const left = worker.startedAt + LOCAL_TASK_LIMIT_MS - (yield* Clock.currentTimeMillis);
+    if (left <= 0 && !(yield* stopRequested(worker)))
+      yield* stop({
+        orgId: worker.orgId,
+        agentId: worker.agentId,
+        workerId: worker.workerId,
+        reason: TASK_LIMIT_REASON,
+        key: `kin-work-limit:${worker.workerId}:${worker.startedAt}`,
+        startedAt: worker.startedAt,
+      }).pipe(Effect.ignoreCause({ log: true }));
     const waited = yield* threads.waitForThread({
       projectId: worker.projectId,
       threadId: worker.threadId,
-      timeoutMs: LOCAL_WAIT_MS,
+      timeoutMs: left <= 0 ? LOCAL_WAIT_MS : Math.min(LOCAL_WAIT_MS, left),
     });
     if (waited.timedOut) return false;
     if (waited.run === null) return yield* abandoned("The worker's thread never started a run.");

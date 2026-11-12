@@ -718,7 +718,10 @@ const fakeLocal = () => {
         const last = runs.get(input.threadId)?.at(-1);
         if (last === undefined) return { threadId: input.threadId, run: null, timedOut: false };
         if (!terminal(last.status)) {
-          yield* Deferred.await(waiting);
+          // As T3's own wait: a change or the caller's timeout, on the test's clock.
+          yield* Deferred.await(waiting).pipe(
+            Effect.timeoutOption(Duration.millis(input.timeoutMs)),
+          );
           return { threadId: input.threadId, run: last as never, timedOut: true };
         }
         return { threadId: input.threadId, run: last as never, timedOut: false };
@@ -3363,6 +3366,26 @@ it.effect(
           stopped: false,
         });
         assert.lengthOf(local.interrupted, 1);
+      }),
+    ),
+);
+
+it.effect(
+  "a local worker still running at its time limit is stopped there: interrupted, unpublished, reported once",
+  () =>
+    run(({ ctx, remote, local, workers, tracker }) =>
+      Effect.gen(function* () {
+        yield* goLocal(ctx, remote);
+        const { workerId } = yield* workers.delegate(scope, delegateInput);
+        const threadId = localThreadId(workerId);
+        yield* TestClock.adjust(Duration.millis(Tracker.LOCAL_TASK_LIMIT_MS - 1));
+        assert.lengthOf(local.interrupted, 0);
+        yield* TestClock.adjust(Duration.millis(1));
+        yield* settled(tracker, ctx.orgId, workerId);
+        assert.deepStrictEqual(local.interrupted, [threadId]);
+        assert.strictEqual((yield* workerRow(ctx.sql, ctx.orgId, workerId)).status, "interrupted");
+        assert.lengthOf(remote.published, 0);
+        assert.lengthOf(yield* reports(ctx.sql, ctx.orgId), 1);
       }),
     ),
 );

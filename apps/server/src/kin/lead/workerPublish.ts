@@ -87,7 +87,7 @@ export class KinWorkerPublish extends Context.Service<
       /** The worker's worktree there, as its server reports it. */
       readonly worktreePath: string;
       /**
-       * A worker on this server, which has no shell: Kin commits its edits, from a worktree that
+       * A worker on this server, which can't commit: Kin commits its edits, from a worktree that
        * must be one of `projectRoot`'s own.
        */
       readonly local?: { readonly projectRoot: string };
