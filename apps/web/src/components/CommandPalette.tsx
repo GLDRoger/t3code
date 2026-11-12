@@ -84,6 +84,9 @@ import {
   SquarePenIcon,
   TextSearchIcon,
   UserPlusIcon,
+  WalletIcon,
+  ListIcon,
+  CalendarDaysIcon,
 } from "lucide-react";
 import { openThreadFind } from "./chat/threadFindStore";
 import {
@@ -1766,6 +1769,58 @@ function OpenCommandPaletteDialog(props: {
             to: "/kin/$environmentId/$orgId/work",
             params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
             search: { show: "projects" },
+          });
+        },
+      },
+      {
+        kind: "action",
+        value: "action:kin-money",
+        searchTerms: [
+          "kin",
+          "money",
+          "invoices",
+          "expenses",
+          "owed",
+          "overdue",
+          "received",
+          "spent",
+          "receivables",
+        ],
+        title: "Money: who owes you, what came in and what went out",
+        icon: <WalletIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          await navigate({
+            to: "/kin/$environmentId/$orgId/work",
+            params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
+            search: { show: "money" },
+          });
+        },
+      },
+      {
+        kind: "action",
+        value: "action:kin-lists",
+        searchTerms: ["kin", "lists", "expenses", "invoices", "renewals", "tracking", "register"],
+        title: "Lists: everything your agents keep track of",
+        icon: <ListIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          await navigate({
+            to: "/kin/$environmentId/$orgId/work",
+            params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
+            search: { show: "lists" },
+          });
+        },
+      },
+      {
+        kind: "action",
+        value: "action:kin-dates",
+        searchTerms: ["kin", "dates", "calendar", "due", "agenda", "renewals", "gst", "filing"],
+        title: "Dates: everything due, across every list",
+        icon: <CalendarDaysIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          await navigate({
+            to: "/kin/$environmentId/$orgId/work",
+            params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
+            search: { show: "dates" },
           });
         },
       },

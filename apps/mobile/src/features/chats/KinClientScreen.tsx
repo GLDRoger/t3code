@@ -50,6 +50,7 @@ import {
   KinWorkTimelineLines,
 } from "./components/KinWorkPieces";
 import { KinWorkNamedRow } from "./KinWorkLists";
+import { KinPlaceLists } from "./KinPlaceLists";
 import { KinDocsUnder } from "./KinDocsList";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected } from "./state/useKinHost";
@@ -145,7 +146,8 @@ function KinClientBody(
   const { environmentId, orgId, page } = props;
   const target = { environmentId, orgId };
   const work = useKinWork(target);
-  const { names } = useKinWorkDirectory(target, true);
+  const directory = useKinWorkDirectory(target, true);
+  const { names } = directory;
   const { state: changed, changes } = useKinWorkChanges(target);
   const canChange = useAtomValue(kinClient.workClientUpdate.permissionAtom(environmentId));
   const canAddTask = useAtomValue(kinClient.workCreate.permissionAtom(environmentId));
@@ -298,6 +300,13 @@ function KinClientBody(
         label: KIN_CLIENTS.addTheyOwe,
         side: "theirs",
       })}
+      <KinPlaceLists
+        environmentId={environmentId}
+        orgId={orgId}
+        place={{ party: { key: view.key, title: view.name } }}
+        seq={props.stale ? null : page.seq}
+        directory={directory}
+      />
       <ListSection title={KIN_CLIENTS.projects}>
         {view.projects.length === 0 ? (
           <ListRowLayout label={KIN_CLIENTS.noProjects} disabled />

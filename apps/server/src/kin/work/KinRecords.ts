@@ -153,6 +153,9 @@ export type QueryInput = {
   /** Its own date in `[dateFrom, dateTo)`. */
   readonly dateFrom?: number;
   readonly dateTo?: number;
+  /** A payment that still counts was received on a day in `[paidFrom, paidTo]`. */
+  readonly paidFrom?: string;
+  readonly paidTo?: string;
   readonly text?: string;
   readonly keys?: ReadonlyArray<string>;
   readonly category?: string;
@@ -332,6 +335,8 @@ export class KinRecords extends Context.Service<
       orgId: KinOrgId,
       input: QueryInput,
       by?: TotalsBy,
+      /** Count entries with no amount too, as a list without amounts needs. */
+      everyEntry?: boolean,
     ) => Effect.Effect<Totals, KinChatError>;
     readonly query: (
       orgId: KinOrgId,
@@ -1389,11 +1394,15 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     input: QueryInput,
     by?: TotalsBy,
+    everyEntry?: boolean,
   ) {
     return yield* failed(
       Effect.gen(function* () {
         const now = input.at ?? (yield* Clock.currentTimeMillis);
-        const filter = sql.and([filterOf(orgId, input, now), sql`r.amount_minor IS NOT NULL`]);
+        const filter =
+          everyEntry === true
+            ? filterOf(orgId, input, now)
+            : sql.and([filterOf(orgId, input, now), sql`r.amount_minor IS NOT NULL`]);
         const [count] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records r
           WHERE ${filter}`;
         const counted = count?.n ?? 0;
@@ -1402,7 +1411,7 @@ const make = Effect.gen(function* () {
             `${counted} entries match; narrow it to under ${TOTALS_CAP} by dates or category to total them.`,
           );
         const rows = yield* sql<{
-          minor: number;
+          minor: number | null;
           currency: string;
           category: string | null;
           party: string | null;
@@ -1415,7 +1424,13 @@ const make = Effect.gen(function* () {
             r.project_id AS project, r.side, r.state, r.owner_kind || ':' || r.owner_id AS owner,
             COALESCE(r.date_at, r.due_at, r.created_at) AS at
           FROM kin_records r WHERE ${filter} ORDER BY r.record_id`;
-        const total = addUp(rows);
+        const amounts = (members: typeof rows) =>
+          addUp(
+            members.flatMap((row) =>
+              row.minor === null ? [] : [{ minor: row.minor, currency: row.currency }],
+            ),
+          );
+        const total = amounts(rows);
         if (by === undefined) return { total, counted } satisfies Totals;
         const zone =
           by === "month" || by === "financialYear"
@@ -1439,7 +1454,7 @@ const make = Effect.gen(function* () {
         const groups = [...grouped].map(([group, members]) => ({
           group,
           count: members.length,
-          total: addUp(members),
+          total: amounts(members),
         }));
         // Periods read in time order; anything else most entries first.
         const ordered =
@@ -1481,6 +1496,11 @@ const make = Effect.gen(function* () {
     if (input.dateFrom !== undefined) where.push(sql`r.date_at >= ${input.dateFrom}`);
     if (input.dateTo !== undefined) where.push(sql`r.date_at < ${input.dateTo}`);
     if (input.category !== undefined) where.push(sql`r.category = ${input.category}`);
+    if (input.paidFrom !== undefined || input.paidTo !== undefined)
+      where.push(sql`EXISTS (SELECT 1 FROM kin_record_payments p
+        WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL
+          AND p.paid_on >= ${input.paidFrom ?? "0000-00-00"}
+          AND p.paid_on <= ${input.paidTo ?? "9999-12-31"})`);
     if (input.side !== undefined) where.push(sql`r.side = ${input.side}`);
     if (input.keys !== undefined && input.keys.length > 0)
       where.push(sql`r.key IN ${sql.in(input.keys)}`);
