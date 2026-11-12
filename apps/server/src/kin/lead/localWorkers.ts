@@ -11,6 +11,7 @@ import {
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
@@ -32,7 +33,9 @@ import { isOrgPaused } from "./orgState.ts";
 import { toolAdmitted } from "./SharedTools.ts";
 import { buildBrief } from "./workerBrief.ts";
 import { labelOf, resolveProject, type Checkout, type HostProject } from "./workerProjects.ts";
+import { workerHosts } from "./workerNetwork.ts";
 import { publishBranch } from "./workerPublish.ts";
+import { grantHosts } from "./workNetwork.ts";
 import type { DelegateInput } from "./Workers.ts";
 import { STOPPED_BEFORE_START, WorkerTracker } from "./WorkerTracker.ts";
 import { localThreadId } from "./workThread.ts";
@@ -102,7 +105,9 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
   const launcher = yield* ThreadLaunchService.ThreadLaunchService;
   const settings = yield* ServerSettings.ServerSettingsService;
   const path = yield* Path.Path;
-  const kinDirectory = path.join((yield* ServerConfig).stateDir, "kin");
+  const { stateDir } = yield* ServerConfig;
+  const kinDirectory = path.join(stateDir, "kin");
+  const fs = yield* FileSystem.FileSystem;
 
   /**
    * From stored rows only: the host owner's own lead, the turn owner-only, its event the owner's in
@@ -337,6 +342,21 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
           Effect.as("origin/HEAD"),
           Effect.orElseSucceed(() => "HEAD"),
         ));
+    // What the owner allows now; the worker's sandbox reads this when its session opens.
+    yield* workerHosts(ctx.orgId).pipe(
+      Effect.flatMap(({ allowed }) =>
+        grantHosts(
+          stateDir,
+          workerId,
+          allowed.map((entry) => entry.host),
+        ),
+      ),
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Kin worker starts without network", { workerId, cause }),
+      ),
+    );
     // A retry replays the same command, which returns the thread the first launch made. A stop
     // that came first means no launch; one during it reaches the thread as it returns.
     const launch = launcher

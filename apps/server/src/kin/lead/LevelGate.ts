@@ -56,6 +56,11 @@ export class KinLevelGate extends Context.Service<
     ) => Effect.Effect<KinWidget, KinChatError>;
     /** `kin_ask`'s choice card, gated like a post: it is the lead's reply too. */
     readonly ask: (agent: AgentIdentity, input: AskInput) => Effect.Effect<KinWidget, KinChatError>;
+    /** A doc card, gated like a post. */
+    readonly showCard: (
+      agent: AgentIdentity,
+      input: Parameters<KinChatService["Service"]["showCard"]>[1],
+    ) => Effect.Effect<KinWidget, KinChatError>;
     /** `kin_chart`'s chart card, gated like a post: it says what the reply could have in text. */
     readonly chart: (
       agent: AgentIdentity,
@@ -286,6 +291,9 @@ const make = Effect.gen(function* () {
     ),
     ask: Effect.fn("KinLevelGate.ask")((agent, input) =>
       gated("gated ask", agent, input.chatId, chat.ask(agent, input)),
+    ),
+    showCard: Effect.fn("KinLevelGate.showCard")((agent, input) =>
+      gated("gated card", agent, input.chatId, chat.showCard(agent, input)),
     ),
     chart: Effect.fn("KinLevelGate.chart")((agent, input) =>
       gated("gated chart", agent, input.chatId, chat.chart(agent, input)),
