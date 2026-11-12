@@ -1,4 +1,4 @@
-import { injectHtmlRenderBootstrap } from "./htmlRender.ts";
+import { blankNonMarkup, injectHtmlRenderBootstrap } from "./htmlRender.ts";
 
 export const KIN_VISUAL_TOOL_NAME = "kin_visual";
 export const KIN_VISUAL_CARD_TYPE = "visual";
@@ -180,6 +180,26 @@ const KIN_SCRIPT = `(function(){var root=document.documentElement,subs=[],sheet=
 
 const KIN_MARKUP = `<style id="kin-visual">${KIN_CSS}</style><script>${KIN_SCRIPT}</script>`;
 
+// Hints that open a connection or look a name up before any policy check on a fetch.
+const RESOURCE_HINT =
+  /(?:^|\s)(?:preconnect|dns-prefetch|prefetch|prerender|preload|modulepreload|next)(?:\s|$)/i;
+const LINK_TAG = /<link\b[^>]*>/gi;
+const REL_ATTRIBUTE = /\srel\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i;
+
+/** Hint links in the markup go before the preload scanner can read them. Offsets match `scan`. */
+function withoutResourceHints(html: string): string {
+  const scan = blankNonMarkup(html);
+  let out = "";
+  let at = 0;
+  for (const tag of scan.matchAll(LINK_TAG)) {
+    const rel = REL_ATTRIBUTE.exec(tag[0]);
+    if (rel === null || !RESOURCE_HINT.test(rel[1] ?? rel[2] ?? rel[3] ?? "")) continue;
+    out += html.slice(at, tag.index);
+    at = tag.index + tag[0].length;
+  }
+  return out + html.slice(at);
+}
+
 const WEBRTC_GLOBALS = [
   "RTCPeerConnection",
   "webkitRTCPeerConnection",
@@ -205,14 +225,14 @@ const WEBRTC_GLOBALS = [
  * srcdoc or javascript: frame is the only one CSP lets run (a sandboxed parent cannot reach a
  * blank child's globals, and data, blob, object and worker realms are refused by the policy).
  */
-const KIN_VISUAL_PRELUDE = `(function(){"use strict";var W=window,G=${JSON.stringify(WEBRTC_GLOBALS)},F=/^(?:IFRAME|FRAME|OBJECT|EMBED|FENCEDFRAME|PORTAL)$/i,U=/^\\s*(?:javascript|vbscript|data|blob):/i;function gone(o,n){try{Object.defineProperty(o,n,{configurable:false,enumerable:false,get:function(){return undefined;},set:function(){}});}catch(e){}}G.forEach(function(n){gone(W,n);});["mediaDevices","getUserMedia","webkitGetUserMedia","mozGetUserMedia"].forEach(function(n){gone(Navigator.prototype,n);});function fix(o,k,v){try{Object.defineProperty(o,k,{configurable:false,writable:false,value:v});}catch(e){}}function framing(el,name,value){var n;if(!F.test(el.tagName))return false;n=(""+name).toLowerCase();return n==="srcdoc"||n==="data"||(n==="src"&&U.test(""+value));}var E=Element.prototype,sa=E.setAttribute,sn=E.setAttributeNS;fix(E,"setAttribute",function(name,value){if(framing(this,name,value))return;return sa.call(this,name,value);});fix(E,"setAttributeNS",function(ns,name,value){if(framing(this,(""+name).replace(/^.*:/,""),value))return;return sn.call(this,ns,name,value);});[W.HTMLIFrameElement,W.HTMLFrameElement].forEach(function(C){var p=C&&C.prototype,s=p&&Object.getOwnPropertyDescriptor(p,"src");if(!p)return;try{Object.defineProperty(p,"srcdoc",{configurable:false,get:function(){return "";},set:function(){}});}catch(e){}if(s&&s.set)try{Object.defineProperty(p,"src",{configurable:false,get:s.get,set:function(v){if(!U.test(""+v))s.set.call(this,v);}});}catch(e){}});function drop(n){var q,i;if(!n||n.nodeType!==1)return;if(F.test(n.tagName)){n.remove();return;}q=n.getElementsByTagName("*");for(i=q.length-1;i>=0;i--)if(F.test(q[i].tagName))q[i].remove();}new MutationObserver(function(m){for(var i=0;i<m.length;i++){if(m[i].type==="attributes")drop(m[i].target);else for(var j=0;j<m[i].addedNodes.length;j++)drop(m[i].addedNodes[j]);}}).observe(document,{childList:true,subtree:true,attributes:true,attributeFilter:["srcdoc","src","data"]});})();`;
+const KIN_VISUAL_PRELUDE = `(function(){"use strict";var W=window,G=${JSON.stringify(WEBRTC_GLOBALS)},F=/^(?:IFRAME|FRAME|OBJECT|EMBED|FENCEDFRAME|PORTAL)$/i,U=/^\\s*(?:javascript|vbscript|data|blob):/i,H=${RESOURCE_HINT.toString()};function gone(o,n){try{Object.defineProperty(o,n,{configurable:false,enumerable:false,get:function(){return undefined;},set:function(){}});}catch(e){}}G.forEach(function(n){gone(W,n);});["mediaDevices","getUserMedia","webkitGetUserMedia","mozGetUserMedia"].forEach(function(n){gone(Navigator.prototype,n);});function fix(o,k,v){try{Object.defineProperty(o,k,{configurable:false,writable:false,value:v});}catch(e){}}function framing(el,name,value){var n;if(!F.test(el.tagName))return false;n=(""+name).toLowerCase();return n==="srcdoc"||n==="data"||(n==="src"&&U.test(""+value));}var E=Element.prototype,sa=E.setAttribute,sn=E.setAttributeNS;fix(E,"setAttribute",function(name,value){if(framing(this,name,value))return;return sa.call(this,name,value);});fix(E,"setAttributeNS",function(ns,name,value){if(framing(this,(""+name).replace(/^.*:/,""),value))return;return sn.call(this,ns,name,value);});[W.HTMLIFrameElement,W.HTMLFrameElement].forEach(function(C){var p=C&&C.prototype,s=p&&Object.getOwnPropertyDescriptor(p,"src");if(!p)return;try{Object.defineProperty(p,"srcdoc",{configurable:false,get:function(){return "";},set:function(){}});}catch(e){}if(s&&s.set)try{Object.defineProperty(p,"src",{configurable:false,get:s.get,set:function(v){if(!U.test(""+v))s.set.call(this,v);}});}catch(e){}});function bad(n){return F.test(n.tagName)||(n.tagName==="LINK"&&H.test(n.getAttribute("rel")||""));}function drop(n){var q,i;if(!n||n.nodeType!==1)return;if(bad(n)){n.remove();return;}q=n.getElementsByTagName("*");for(i=q.length-1;i>=0;i--)if(bad(q[i]))q[i].remove();}new MutationObserver(function(m){for(var i=0;i<m.length;i++){if(m[i].type==="attributes")drop(m[i].target);else for(var j=0;j<m[i].addedNodes.length;j++)drop(m[i].addedNodes[j]);}}).observe(document,{childList:true,subtree:true,attributes:true,attributeFilter:["srcdoc","src","data","rel","href"]});})();`;
 
 const LEADING_DOCTYPE = /^\uFEFF?\s*(?:<!--[\s\S]*?-->\s*)*<!doctype[^>]*>/i;
 const THEME_SHEET = '<style id="t3-theme">';
 
 /** T3's theme bootstrap, then Kin's tokens and helper, ahead of anything the agent wrote. */
 export function kinVisualPageDocument(html: string): string {
-  const page = injectHtmlRenderBootstrap(html);
+  const page = injectHtmlRenderBootstrap(withoutResourceHints(html));
   const sheet = page.indexOf(THEME_SHEET);
   const close = sheet === -1 ? -1 : page.indexOf("</script>", sheet);
   const themed =
