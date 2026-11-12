@@ -417,5 +417,6 @@ export const clearRecipeLabel = Effect.fn("KinDocs.clearRecipeLabel")(function* 
     input.orgId,
     input.recipe,
     person.personId,
+    input.commit,
   )) satisfies KinRecipeClearLabelResult;
 }, workFailure);

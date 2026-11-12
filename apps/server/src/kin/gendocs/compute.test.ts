@@ -66,7 +66,7 @@ it("works out a year of rows, and refuses fields that grow past what Kin works o
     ["body", { markdown: "notes" }],
   ]);
   if ("error" in once) return assert.fail(once.error);
-  assert.deepStrictEqual((once.data.body as ReadonlyArray<{ spans: ReadonlyArray<unknown> }>)[1], {
+  assert.deepStrictEqual((once.data.body as ReadonlyArray<unknown>)[1], {
     kind: "paragraph",
     spans: [
       { text: "See ", style: "plain" },

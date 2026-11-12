@@ -168,6 +168,14 @@ export class KinWorkspace extends Context.Service<
     ) => Effect.Effect<RecipeUndo, KinChatError>;
     /** Removes the job's worktree and branch, with the inputs it held. */
     readonly discard: (orgId: KinOrgId, workerId: KinWorkerId) => Effect.Effect<void>;
+    /** `main`'s commit now. */
+    readonly head: (orgId: KinOrgId) => Effect.Effect<string, KinChatError>;
+    /** Whether Kin made `commit` as its starter recipes, or it is `baseline` or in its history. */
+    readonly madeBefore: (
+      orgId: KinOrgId,
+      commit: string,
+      baseline: string | null,
+    ) => Effect.Effect<boolean, KinChatError>;
   }
 >()("t3/kin/gendocs/workspace/KinWorkspace") {}
 
@@ -738,6 +746,39 @@ export const layer = Layer.effect(
       failed("undo a recipe change"),
     );
 
+    const head = Effect.fn("KinWorkspace.head")(
+      function* (orgId: KinOrgId) {
+        return yield* git(yield* ensureLocked(orgId), ["rev-parse", "--verify", DEFAULT_BRANCH]);
+      },
+      lock.withPermits(1),
+      failed("read the documents workspace"),
+    );
+
+    // Only Kin writes commit messages here: a job's, a merge's and an undo's never read like these.
+    const STARTER_SUBJECTS = ["Kin's starter recipes", "Kin's starter recipes, rendered by Kin"];
+    const madeBefore = Effect.fn("KinWorkspace.madeBefore")(
+      function* (orgId: KinOrgId, commit: string, baseline: string | null) {
+        if (!/^[0-9a-f]{40}$/.test(commit)) return false;
+        const root = yield* ensureLocked(orgId);
+        const [parents = "", subject = "", trailers = ""] = (yield* git(root, [
+          "log",
+          "-1",
+          "--format=%P%x00%s%x00%(trailers:only,unfold)",
+          commit,
+        ])).split("\0");
+        if (
+          STARTER_SUBJECTS.includes(subject) &&
+          !parents.trim().includes(" ") &&
+          trailers.trim() === ""
+        )
+          return true;
+        if (baseline === null || !/^[0-9a-f]{40}$/.test(baseline)) return false;
+        return (yield* git(root, ["merge-base", commit, baseline])) === commit;
+      },
+      lock.withPermits(1),
+      failed("read the documents workspace"),
+    );
+
     const rootFor = Effect.fn("KinWorkspace.root")(
       function* (orgId: KinOrgId) {
         return yield* ensureLocked(orgId);
@@ -754,6 +795,8 @@ export const layer = Layer.effect(
       applyRecipeChange,
       undoRecipe,
       discard,
+      head,
+      madeBefore,
     });
   }),
 );
