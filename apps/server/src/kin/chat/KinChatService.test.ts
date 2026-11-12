@@ -27,6 +27,7 @@ import {
   EnvironmentId,
   KinAgentId,
   KinChatId,
+  KinKeyThumbprint,
   KinMemberId,
   KinMessageId,
   KinMessagesSendInput,
@@ -55,6 +56,8 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
+import { KinKeyNotices } from "../approvals/ExecutionNotices.ts";
+import { keyNoticeBody, keyNoticesLayer } from "./executionNotices.ts";
 import * as Hub from "./KinChatHub.ts";
 import * as Repository from "./KinChatRepository.ts";
 import * as Identity from "./KinIdentity.ts";
@@ -2575,5 +2578,64 @@ describe("KinChatService", () => {
         yield* service.clear([person], { chatId: chat.chatId });
         assert.deepStrictEqual(yield* messages(), [{ chatId: miras.chatId, n: 1 }]);
       }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "every key change owes the owner a push, and only a chat the owner alone reads gets the notice",
+    () =>
+      Effect.gen(function* () {
+        const { person } = yield* seed(true);
+        const sql = yield* SqlClient.SqlClient;
+        const notices = yield* KinKeyNotices;
+        const first = KinKeyThumbprint.make("NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs");
+        const second = KinKeyThumbprint.make("aZ3kLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9X");
+        const change = (thumbprint: KinKeyThumbprint, kind: "added" | "removed", at: number) => ({
+          orgId: person.orgId,
+          ownerPersonId: person.personId,
+          thumbprint,
+          deviceLabel: "Owner's phone",
+          platform: "ios",
+          change: kind,
+          at,
+          lastKey: kind === "removed",
+        });
+        const owed = sql<{ thumbprint: string; change: string; body: string; messageId: unknown }>`
+          SELECT thumbprint, change, body, message_id AS "messageId" FROM kin_key_pushes
+          WHERE org_id = ${person.orgId} AND sent_at IS NULL ORDER BY owed_at, change`;
+        const notified = sql<{ chatId: string; body: string }>`SELECT chat_id AS "chatId", body
+          FROM kin_messages WHERE message_id LIKE 'kin-key-%' ORDER BY seq`;
+
+        // The push is owed in the change's transaction, so a rolled back change owes nothing.
+        yield* sql
+          .withTransaction(
+            notices.changed(change(first, "added", 1)).pipe(Effect.andThen(Effect.fail("undo"))),
+          )
+          .pipe(Effect.ignore);
+        assert.deepStrictEqual(yield* owed, []);
+        yield* sql.withTransaction(notices.changed(change(first, "added", 1)));
+        // With every chat shared, nobody else may read it: the change commits, owing its push.
+        yield* sql`UPDATE kin_chats SET shared_at = 1 WHERE org_id = ${person.orgId}`;
+        yield* sql.withTransaction(notices.changed(change(second, "removed", 2)));
+        // An identical retry owes nothing more.
+        yield* sql.withTransaction(notices.changed(change(first, "added", 1)));
+        assert.deepStrictEqual(yield* owed, [
+          {
+            thumbprint: first,
+            change: "added",
+            body: keyNoticeBody(change(first, "added", 1), "UTC"),
+            messageId: `kin-key-added:${first}`,
+          },
+          {
+            thumbprint: second,
+            change: "removed",
+            body: keyNoticeBody(change(second, "removed", 2), "UTC"),
+            messageId: null,
+          },
+        ]);
+        assert.deepStrictEqual(
+          (yield* notified).map((message) => message.body),
+          [keyNoticeBody(change(first, "added", 1), "UTC")],
+        );
+      }).pipe(Effect.provide(keyNoticesLayer), Effect.provide(layer)),
   );
 });

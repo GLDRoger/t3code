@@ -53,11 +53,21 @@ const kinChatPath = (environmentId: string, orgId: string, chatId: string) =>
 
 /**
  * Where a push's `deepLink` opens, checked against the ids it carries. The sender writes
- * `/kin/<environmentId>/<orgId>/(chats|actions)/<id>`; anything else is dropped.
+ * `/kin/<environmentId>/<orgId>/(chats|actions)/<id>` or `/kin/<environmentId>/<orgId>/approvals`;
+ * anything else is dropped.
  */
 function linkTarget(data: KinPushData): { environmentId: string; path: string } | null {
   const parts = data.deepLink.split("/");
-  if (parts.length !== 6 || parts[0] !== "" || parts[1] !== "kin") return null;
+  if (parts[0] !== "" || parts[1] !== "kin") return null;
+  if (parts.length === 5 && parts[4] === "approvals") {
+    const [environmentId, orgId] = parts.slice(2, 4).map(decodeSegment);
+    if (!environmentId || orgId !== data.orgId) return null;
+    return {
+      environmentId,
+      path: `/kin/${encodeURIComponent(environmentId)}/${encodeURIComponent(orgId)}/approvals`,
+    };
+  }
+  if (parts.length !== 6) return null;
   const [environmentId, orgId, kind, id] = parts.slice(2).map(decodeSegment);
   if (!environmentId || !orgId || !kind || !id || orgId !== data.orgId) return null;
   if (kind === "chats") {

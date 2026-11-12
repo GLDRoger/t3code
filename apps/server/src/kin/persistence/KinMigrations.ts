@@ -30,6 +30,7 @@ import WorkMoney from "./migrations/K068_WorkMoney.ts";
 import WorkerNetwork from "./migrations/K069_WorkerNetwork.ts";
 import VisualHosts from "./migrations/K070_VisualHosts.ts";
 import OwnerAnswerCards from "./migrations/K071_OwnerAnswerCards.ts";
+import KeyPushes from "./migrations/K073_KeyPushes.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -140,6 +141,7 @@ const loader = Migrator.fromRecord({
   "69_WorkerNetwork": WorkerNetwork,
   "70_VisualHosts": VisualHosts,
   "71_OwnerAnswerCards": OwnerAnswerCards,
+  "73_KeyPushes": KeyPushes,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

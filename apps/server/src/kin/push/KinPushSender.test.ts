@@ -856,6 +856,43 @@ describe("KinPushSender", () => {
     },
   );
 
+  it.effect("sends what a key change owes from its stored row to the owner, loud, and once", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { sender, notify, sql } = yield* seed;
+      const notice = yield* postMessage(sql, "system", "posted", { chatId: "chat_dm" });
+      const body = `"Phone" (iOS) can now approve for Kin. It was set up on Sun 8 Nov, 00:00 UTC. ${"x".repeat(120)} If that wasn't you, remove it in Settings, then Approvals.`;
+      // As a key change's transaction leaves them: one with its chat notice, one with none.
+      yield* sql`INSERT INTO kin_key_pushes (org_id, thumbprint, change, body, message_id, owed_at)
+        VALUES ('org_01', ${"k".repeat(43)}, 'added', ${body}, ${notice}, ${NOW}),
+          ('org_01', ${"k".repeat(43)}, 'removed', 'Removed.', NULL, ${NOW + 1})`;
+      // The notice doesn't ring for itself: its key push says the same.
+      assert.strictEqual((yield* notify({ _tag: "message", orgId, messageId: notice })).sent, 0);
+
+      // 22:00 in New York: quiet hours, which a key change rings through.
+      yield* TestClock.setTime(NOW + 3 * 60 * 60 * 1000);
+      assert.strictEqual(yield* sender.flushKeyPushes, 2);
+      assert.deepStrictEqual(
+        apns.sent.map((push) => push.token),
+        [ownerPhone, ownerTablet, ownerPhone, ownerTablet],
+      );
+      assert.deepStrictEqual(alerts(apns.sent), [
+        { title: "Kin approvals", body },
+        { title: "Kin approvals", body },
+        { title: "Kin approvals", body: "Removed." },
+        { title: "Kin approvals", body: "Removed." },
+      ]);
+      assert.deepStrictEqual((apns.sent[0]?.payload as { body: unknown }).body, {
+        kin: 1,
+        orgId,
+        deepLink: "/kin/env_kin/org_01/approvals",
+      });
+      // Settled once sent, so the next start's pass sends nothing again.
+      assert.strictEqual(yield* sender.flushKeyPushes, 0);
+      assert.strictEqual(apns.sent.length, 4);
+    }).pipe(Effect.provide(build(apns)));
+  });
+
   it.effect("sends nothing without an APNs key", () => {
     const apns = makeApns("unconfigured");
     return Effect.gen(function* () {
