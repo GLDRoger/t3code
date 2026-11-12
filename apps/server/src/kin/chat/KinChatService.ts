@@ -514,6 +514,11 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toPersistenceSqlError("KinChatService.sharedTurn")),
   );
+  /** Who reads a doc a message points at: a person, or a lead's turn by its stored audience. */
+  const docViewer = (identity: Identity) =>
+    identity._tag === "agent"
+      ? sharedTurn(identity).pipe(Effect.map((shared) => ({ sharedTurn: shared })))
+      : Effect.succeed(identity);
   /** A person's words are the chat's; a lead's are the owner's alone on an owner-only turn. */
   const authorAudience = (identity: Identity) =>
     identity._tag === "agent"
@@ -1786,15 +1791,20 @@ const make = Effect.gen(function* () {
       const member = yield* memberFor(identity, request.chatId);
       if (identity._tag === "agent" && !(yield* leadMayRead(identity, request.chatId)))
         return yield* notFound;
-      return yield* repo.messagesAfter({
+      const viewer = yield* docViewer(identity);
+      const messages = yield* repo.messagesAfter({
         orgId: identity.orgId,
         chatId: request.chatId,
         afterSeq: request.afterSeq ?? 0,
         limit: request.limit ?? 50,
         viewerMemberId: member.memberId,
         // Whatever page it asks for, a shared turn sees nothing below the chat's history floor.
-        fromHistoryFloor: identity._tag === "agent" && (yield* sharedTurn(identity)),
+        fromHistoryFloor: "sharedTurn" in viewer && viewer.sharedTurn,
       });
+      return (yield* docsForViewer(identity.orgId, viewer, { messages, widgets: [] }).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.mapError(toPersistenceSqlError("KinChatService.privateDocs")),
+      )).messages;
     }, transaction),
     history: Effect.fn("KinChatService.history")(
       function* (identity, input) {
@@ -1807,12 +1817,10 @@ const make = Effect.gen(function* () {
         });
         const page = {
           ...stored,
-          ...(identity._tag === "person"
-            ? yield* docsForViewer(identity.orgId, identity, stored).pipe(
-                Effect.provideService(SqlClient.SqlClient, sql),
-                Effect.mapError(toPersistenceSqlError("KinChatService.privateDocs")),
-              )
-            : {}),
+          ...(yield* docsForViewer(identity.orgId, yield* docViewer(identity), stored).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.mapError(toPersistenceSqlError("KinChatService.privateDocs")),
+          )),
         };
         return {
           ...page,
