@@ -169,7 +169,7 @@ The lead's working line shows in the chat as soon as the message is queued, befo
 
 Kin's lead hands coding work to worker threads. They have a full shell, so they never run on kin-server: they run in the **worker environment**, a plain T3 server with Kin off, as the `kin-worker` user, linked from kin-server. kin-server launches, follows and stops them over that link. A worker's shell runs in a systemd sandbox where `/home` is empty apart from `/home/kin-worker`, `/tmp` is its own, other users' processes are hidden and `sudo` can't raise privileges. Kin's build is mounted in read-only. So a worker can't read Kin's database, `~/.t3/userdata/secrets`, `~/.config/kin/*` (memory deploy key, APNs key, GitHub App key), `service.env`, kin's or the owner's logins, and can't run Kin's CLI against Kin's state (`auth session`, `kin lead projects`, direct SQL). It holds no credential for kin-server.
 
-Without a worker environment (`KIN_WORKER_ENVIRONMENT_ID` unset), workers run on kin-server itself as kin, with **no shell**: they edit files in a worktree of a project kin-server has and nothing else, and kin-server commits and publishes for them. They start only from the owner's direct chat with a lead, for build work, on a Claude model. They can't run tests, builds or installs; CI on the draft PR does that. To use them, clone the repository as kin, add it as a project in kin-server, and leave the variable unset:
+Without a worker environment (`KIN_WORKER_ENVIRONMENT_ID` unset), workers run on kin-server itself as kin. They start only from the owner's direct chat with a lead, for build work, on a Claude model, in a worktree of a project kin-server has, and kin-server commits and publishes for them. By default they have file tools in that worktree and **no shell**, so CI on the draft PR runs the tests. A worker gets a shell only inside Claude Code's OS sandbox, after a check proves the sandbox holds on this host (see [Worker shell](#worker-shell)). To use them, clone the repository as kin, add it as a project in kin-server, and leave the variable unset:
 
 ```bash
 sudo -iu kin git clone https://github.com/<owner>/<repo>.git ~kin/work/<repo>
@@ -179,6 +179,44 @@ sudo systemctl restart kin-server
 ```
 
 What a worker does get: its own checkouts and worktrees in `/home/kin-worker`, its own Claude and Codex logins, and at most read access to GitHub. **Workers hold no GitHub write credential**, so no worker can push, approve or merge anything. A build worker commits on `kin/worker/<worker id>` in its worktree. When its run ends, kin-server reads that branch through `kin-worker upload-pack` (root runs `git upload-pack` as kin-worker in the sandbox, read-only and capped at 512 MiB), checks it, and pushes it to GitHub itself with a Kin GitHub App `server` token it mints for that repository and never hands to an agent. Then it opens a draft PR and puts it on the task card and in the lead's report. Each publish fetches into a fresh scratch repository under kin's state directory, deleted afterwards, and is refused when the worker's objects take more than 1 GiB on disk. It publishes only `kin/worker/<id>`, refuses a branch with no new commits or with any commit, merges included, that changes `.github` or anything under it (workflows and composite actions; the App has no Workflows permission, so GitHub would refuse a workflow change too), and never publishes while Kin is paused: it checks again just before the push and before opening the PR. Without `KIN_GITHUB_APP_ID`, the commits stay in the worker environment and the report says so.
+
+### Worker shell
+
+A local worker gets one tool, `Bash`, inside Claude Code's sandbox (bubblewrap on Linux), and only if a check passes at that worker's start. The check runs a real Claude Code session against a fake model on loopback. Its commands try to read a file outside the worktree and in the shared temp directory, write outside, write git metadata, see the model key, reach a port and a Unix socket on this host, see kin-server's process, run unsandboxed, load the repository's own settings, hooks and MCP servers, and leave a process running. Any success, or a session that can't start, leaves that worker with file tools only. macOS dev machines always get file tools only: Seatbelt has no PID namespace to end what a command leaves running.
+
+Install once, as root:
+
+```bash
+sudo apt-get install bubblewrap socat
+# Ubuntu 23.10 and later restrict unprivileged user namespaces; check, and if it prints 1, add the profile:
+sysctl kernel.apparmor_restrict_unprivileged_userns
+sudo tee /etc/apparmor.d/bwrap > /dev/null <<'PROFILE'
+abi <abi/4.0>,
+include <tunables/global>
+
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+  include if exists <local/bwrap>
+}
+PROFILE
+sudo systemctl reload apparmor
+```
+
+The profile only applies when `/usr/bin/bwrap` is the first `bwrap` on kin's `PATH`. Optional: as kin, `npm install -g @anthropic-ai/sandbox-runtime` adds Claude Code's seccomp filter, which blocks Unix sockets outright; without it they are blocked by the paths below.
+
+Network: a worker's commands reach only the hosts on its org's list, through Claude Code's proxy. The list starts with the package registries and code hosts builds fetch from: npm (`registry.npmjs.org`, `registry.yarnpkg.com`), PyPI (`pypi.org`, `files.pythonhosted.org`), crates.io (`crates.io`, `index.crates.io`, `static.crates.io`), Go modules (`proxy.golang.org`, `sum.golang.org`), Ubuntu's archives (`archive.ubuntu.com`, `security.ubuntu.com`; commands have no root, so `apt-get download` and `apt-get source` only) and GitHub (`github.com`, `codeload.github.com`, `raw.githubusercontent.com`, `objects.githubusercontent.com`, `release-assets.githubusercontent.com`). The owner adds and removes hosts from a client through the `kin.workers.network.*` calls, which need the owner's settings grant; a removed default stays off until allowed again. Each worker gets the list as it was when it started. When the proxy refuses a host, the worker's report names it and the lead asks the owner whether to allow it.
+
+Settings, in `~/.t3/service.env`, read from the server's environment only:
+
+| Variable                     | Default | Effect                                                                                                                                                            |
+| ---------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `KIN_WORKER_SHELL=off`       | unset   | Never give workers a shell                                                                                                                                        |
+| `KIN_WORKER_ALLOWED_DOMAINS` | none    | Optional extra host names (`mirror.example.com`, `*.example.org`) added to every org's list. An entry that isn't a host name turns the shell off                  |
+| `KIN_WORKER_READ_PATHS`      | none    | Comma-separated absolute paths of extra toolchains to make readable. A path that would reopen the home, state, temp or credential directories turns the shell off |
+
+Then restart kin-server. The owner's clients read whether workers get a shell from `kin.workers.network.get`: the last worker start's result, why, and which of `bubblewrap`, `socat` and the AppArmor profile above to install when that is the likely cause. On the host, `kin worker-shell` prints the same.
+
+What a worker's commands can reach: they write only the worktree and a private temp directory that is removed when the session closes. They can't read kin's home (so not `~/.t3`, Kin's database, memory checkouts, other worktrees, `~/.ssh`, `~/.config`, `~/.claude` or any provider login), the main checkout's `.git`, `/tmp`, `/var/tmp`, `/run` or `/dev/shm`. They can still read the rest of the system (`/usr`, `/etc`, `/opt`, other users' files their permissions allow), kin-server's own Node install, and the paths in `KIN_WORKER_READ_PATHS`. Every environment variable except the shell's basics and proxy settings is unset for them. Network goes only through the proxy, which checks the host name of each connection and doesn't inspect TLS, so an allowed host that fronts others can relay. A host that accepts uploads, GitHub included, can carry the worktree's contents out; the worktree holds only the repository the worker was given. Plain `ssh`, UDP and anything that ignores proxy variables can't connect. Each command times out after 2 minutes by default and 10 at most, can't run in the background, and returns at most 30,000 characters; kin-server stops a worker an hour after it starts and publishes nothing from it. There is no memory or disk cap. `git` can't read the history, so the worker can't commit; kin-server commits as before.
 
 ### Set up workers
 

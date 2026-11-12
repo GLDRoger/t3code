@@ -29,6 +29,7 @@ import * as KinEnabled from "../KinEnabled.ts";
 import type * as Provision from "../lead/KinLeadProvision.ts";
 import { approvalsCommand } from "./approvals.ts";
 import { githubCommand } from "./githubWebhook.ts";
+import { workerShellCommand } from "./workerShell.ts";
 
 export class KinLeadCliError extends Schema.TaggedError<KinLeadCliError>()("KinLeadCliError", {
   message: Schema.String,
@@ -359,5 +360,6 @@ export const kinCommand = Command.make("kin").pipe(
     approvalsCommand,
     githubCommand,
     peopleCommand,
+    workerShellCommand,
   ]),
 );
