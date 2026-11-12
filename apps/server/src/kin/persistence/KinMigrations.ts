@@ -26,6 +26,7 @@ import AgentRetirement from "./migrations/K064_AgentRetirement.ts";
 import WakeupRetired from "./migrations/K065_WakeupRetired.ts";
 import WakeupsUnretiredIndex from "./migrations/K066_WakeupsUnretiredIndex.ts";
 import Docs from "./migrations/K067_Docs.ts";
+import WorkMoney from "./migrations/K068_WorkMoney.ts";
 import WorkerNetwork from "./migrations/K069_WorkerNetwork.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
@@ -133,6 +134,7 @@ const loader = Migrator.fromRecord({
   "65_WakeupRetired": WakeupRetired,
   "66_WakeupsUnretiredIndex": WakeupsUnretiredIndex,
   "67_Docs": Docs,
+  "68_WorkMoney": WorkMoney,
   "69_WorkerNetwork": WorkerNetwork,
 });
 

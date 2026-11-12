@@ -328,8 +328,9 @@ it.effect.each([true, false])(
         // without a line is refused there, and the table names no tool that isn't served.
         assert.sameMembers(toolNames, Object.keys(SHARED_TOOLS));
         // Four Work tools joined the lead toolkit with slice 1 of Work (`work/mcp/tools.ts`),
-        // `kin_chart` after them, and nine doc tools with Docs (`work/mcp/docTools.ts`).
-        assert.lengthOf(toolNames, 38);
+        // `kin_chart` after them, nine doc tools with Docs (`work/mcp/docTools.ts`), and five
+        // list and money tools with slice 5.
+        assert.lengthOf(toolNames, 43);
         assert.isFalse(
           yield* sharedToolAllowed(
             { orgId: person.orgId, agentId, wakeupId: "any" },

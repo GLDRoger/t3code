@@ -10,11 +10,16 @@ import * as SqlClient from "effect/sql/SqlClient";
  */
 
 const sensitiveField = (sql: SqlClient.SqlClient) =>
-  sql.or(
-    Object.entries(KIN_SENSITIVE_FIELDS).map(
+  sql.or([
+    ...Object.entries(KIN_SENSITIVE_FIELDS).map(
       ([list, fields]) => sql`(r.register_id = ${list} AND j.key IN ${sql.in(fields)})`,
     ),
-  );
+    // A list the owner defined marks its own sensitive fields in its stored definition.
+    sql`j.key IN (SELECT json_extract(f.value, '$.key') FROM kin_registers g,
+      json_each(g.definition_json, '$.fields') f
+      WHERE g.org_id = r.org_id AND g.register_id = r.register_id
+        AND json_extract(f.value, '$.sensitive') = 1)`,
+  ]);
 const fieldText = (sql: SqlClient.SqlClient, sensitive: boolean) =>
   sql`COALESCE((SELECT group_concat(j.value, ' ') FROM json_each(r.fields_json) j
     WHERE ${sensitive ? sensitiveField(sql) : sql`NOT ${sensitiveField(sql)}`}), '')`;

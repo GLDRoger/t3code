@@ -146,6 +146,13 @@ export const SHARED_TOOLS = {
   docs_search: "refused",
   doc_history: "refused",
   doc_restore: "refused",
+  // Lists and money (design 9.3, 4.9): defining a list, amounts, payments and the company
+  // profile are the owner's; none reaches a turn anyone else reads.
+  list_define: "refused",
+  payment_record: "refused",
+  money_summary: "refused",
+  dates_query: "refused",
+  company_profile: "refused",
 } satisfies Record<string, SharedToolPolicy>;
 
 /** Whether `name` may run with these arguments in a turn someone besides the owner reads. */
