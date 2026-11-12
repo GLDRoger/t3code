@@ -156,6 +156,10 @@ export const SHARED_TOOLS = {
   money_summary: "refused",
   dates_query: "refused",
   company_profile: "refused",
+  // Generated files, recipes and issued numbers read and make the owner's records and money.
+  kin_document: "refused",
+  kin_recipes: "refused",
+  kin_issue: "refused",
 } satisfies Record<string, SharedToolPolicy>;
 
 /** Whether `name` may run with these arguments in a turn someone besides the owner reads. */

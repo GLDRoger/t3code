@@ -105,13 +105,13 @@ const PatchJson = Schema.fromJsonString(Schema.Struct(patchFields));
 const encodePatch = Schema.encodeEffect(PatchJson);
 const decodePatch = Schema.decodeUnknownEffect(PatchJson);
 const LABELS: Record<Exclude<keyof ProfilePatch, "bank">, string> = {
-  legalName: "Legal name",
-  tradeName: "Trade name",
-  address: "Address",
   gstin: "GSTIN",
   pan: "PAN",
   placeOfSupply: "Place of supply",
   sac: "SAC",
+  legalName: "Legal name",
+  tradeName: "Trade name",
+  address: "Address",
 };
 const BANK_LABELS: Record<keyof KinCompanyProfileData["bank"], string> = {
   accountName: "Account name",
@@ -122,16 +122,19 @@ const BANK_LABELS: Record<keyof KinCompanyProfileData["bank"], string> = {
   upi: "UPI",
 };
 
-/** Each field the patch changes, old value beside new, as the owner's card shows it. */
+/**
+ * Each field the patch changes, old value beside new, as the owner's card shows it: bank details
+ * and tax ids first, since they go on invoices.
+ */
 export const changeLines = (current: KinCompanyProfileData, patch: ProfilePatch) => {
   const line = (label: string, from: string | null, to: string | null | undefined) =>
     to === undefined || to === from ? [] : [`${label}: ${from ?? "none"} → ${to ?? "cleared"}`];
   return [
-    ...(Object.keys(LABELS) as Array<keyof typeof LABELS>).flatMap((key) =>
-      line(LABELS[key], current[key], patch[key]),
-    ),
     ...(Object.keys(BANK_LABELS) as Array<keyof typeof BANK_LABELS>).flatMap((key) =>
       line(`Bank ${BANK_LABELS[key].toLowerCase()}`, current.bank[key], patch.bank?.[key]),
+    ),
+    ...(Object.keys(LABELS) as Array<keyof typeof LABELS>).flatMap((key) =>
+      line(LABELS[key], current[key], patch[key]),
     ),
   ];
 };
@@ -165,14 +168,16 @@ export const attachChangeCard = Effect.fn("KinCompanyProfile.attachChangeCard")(
 });
 
 /**
- * The owner's answer on a profile change card: Confirm applies exactly the stored patch, once, and
- * only to the profile revision the card showed. Any other card is not this one's business.
+ * The owner's answer on a profile change card: a tap on Confirm applies exactly the stored patch,
+ * once, and only to the profile revision the card showed. A reaction answers nothing here. Any
+ * other card is not this one's business.
  */
 export const answerChange = Effect.fn("KinCompanyProfile.answerChange")(function* (input: {
   readonly orgId: KinOrgId;
   readonly widgetId: string;
   readonly personId: string;
   readonly confirmed: boolean;
+  readonly via: "tap" | "reaction";
   readonly now: number;
 }) {
   const sql = yield* SqlClient.SqlClient;
@@ -191,6 +196,11 @@ export const answerChange = Effect.fn("KinCompanyProfile.answerChange")(function
     return yield* new KinChatError({
       reason: "not_allowed",
       message: "Only the owner changes the company profile.",
+    });
+  if (input.via === "reaction")
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message: "Tap Confirm or Cancel on the card to answer a company profile change.",
     });
   if (row.done === 1)
     return yield* new KinChatError({
