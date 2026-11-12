@@ -391,6 +391,7 @@ export const make = Effect.gen(function* () {
       env,
       survivesRestart,
       shared,
+      properties,
     }) {
       const resolved = yield* resolve(command, env ?? hostEnvironment);
       if (resolved === null) return { command, args };
@@ -416,6 +417,7 @@ export const make = Effect.gen(function* () {
             ? [`--property=OOMPolicy=${continuing ? "continue" : "stop"}`]
             : []),
           ...(owned ? [] : ["--collect"]),
+          ...(properties ?? []).map((property) => `--property=${property}`),
         ],
       };
       return { ...agentScopeCommand({ command: resolved, args, scope: systemdScope }), unit };

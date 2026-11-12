@@ -15,6 +15,8 @@ export interface AgentScopeShape {
      * Falls back to ordinary scope behavior on older systemd.
      */
     readonly shared?: boolean | undefined;
+    /** systemd properties for this scope alone, such as `MemoryMax=8G`; dropped without one. */
+    readonly properties?: ReadonlyArray<string> | undefined;
   }) => Effect.Effect<AgentScopeCommand>;
   readonly oomKilled: (threadId: string) => Effect.Effect<boolean>;
   /**
