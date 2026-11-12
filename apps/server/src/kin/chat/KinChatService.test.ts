@@ -2681,7 +2681,9 @@ describe("KinChatService", () => {
         const cards = sql`SELECT widget_id FROM kin_widgets WHERE type = 'choice'`;
         assert.deepStrictEqual(yield* cards, []);
         const card = yield* gate.ask(agent, ask, (widget) =>
-          attachChangeCard(person.orgId, changeId, widget.widgetId),
+          attachChangeCard(person.orgId, changeId, widget.widgetId).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          ),
         );
         const profile = () =>
           readProfile(person.orgId).pipe(Effect.map((one) => one.bank.accountNumber));
