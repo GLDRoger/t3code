@@ -20,8 +20,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { summaryGroups } from "./crm.ts";
-import { KinRecords, type Patch, type Writer } from "./KinRecords.ts";
-import { LISTS, type ListName, parseFields } from "./lists.ts";
+import { KinRecords, type Patch, type Totals, type Writer } from "./KinRecords.ts";
+import { fieldList, LISTS, type ListName, parseFields } from "./lists.ts";
 import { isBuiltIn, listDef, unknownList } from "./registers.ts";
 import {
   endOfDay,
@@ -144,6 +144,7 @@ export const list = Effect.fn("KinWork.list")(function* (
     ...(input.list === undefined || input.listCategory === undefined
       ? {}
       : { category: input.listCategory }),
+    ...(input.party === null ? { partyId: null } : {}),
     ...(input.dateFrom === undefined
       ? {}
       : { dateFrom: endOfDay(input.dateFrom, zone) - DAY_MS + 1 }),
@@ -182,10 +183,13 @@ export const list = Effect.fn("KinWork.list")(function* (
     nextCursor: next < page.total ? `o:${next}:${at}` : null,
     seq: page.seq,
     asOf: iso(at),
-    ...(totals === undefined
-      ? {}
-      : { totals: { total: totals.total, groups: totals.groups ?? [] } }),
+    ...(totals === undefined ? {} : { totals: listTotals(totals) }),
   };
+});
+
+const listTotals = ({ counted: _counted, groups, ...sums }: Totals) => ({
+  ...sums,
+  groups: groups ?? [],
 });
 
 const found = Effect.fn("KinWork.found")(function* (
@@ -339,14 +343,23 @@ export const update = Effect.fn("KinWork.update")(function* (
             dueAt: yield* dueMillis(input.orgId, input.dueAt, input.dueAllDay),
             dueAllDay: input.dueAllDay === true,
           };
-  yield* inList(input.orgId, input.key, "work");
+  const row = yield* inList(input.orgId, input.key, "work");
   const partyId = yield* refId(input.orgId, input.party, "clients");
   const projectId = yield* refId(input.orgId, input.project, "projects");
-  return yield* change(
+  const defined = !isBuiltIn(row.registerId);
+  if (!defined && (input.fields !== undefined || input.listCategory !== undefined))
+    return yield* new KinChatError({
+      reason: "invalid_state",
+      message: `${row.key} is a Work entry; it has no list details or list category.`,
+    });
+  const sql = yield* SqlClient.SqlClient;
+  const save = change(
     person,
     input.orgId,
     input.key,
     {
+      ...(input.listCategory === undefined ? {} : { category: input.listCategory }),
+      ...(input.fields === undefined ? {} : { fields: input.fields }),
       ...(input.title === undefined ? {} : { title: input.title }),
       ...(input.notes === undefined ? {} : { notes: input.notes }),
       ...(input.state === undefined ? {} : { state: input.state }),
@@ -373,6 +386,44 @@ export const update = Effect.fn("KinWork.update")(function* (
     },
     input.rev,
   );
+  if (input.fields === undefined) return yield* save;
+  // The files are checked and kept in one transaction, so none slips in between the two.
+  return yield* sql
+    .withTransaction(ownFiles(person, row.fieldsJson, input.fields).pipe(Effect.andThen(save)))
+    .pipe(workFailure);
+});
+
+/**
+ * The files an owner's edit adds are ones the owner can read: each on a message, not deleted, in
+ * a chat the owner is in. Anything else looks like no file at all.
+ */
+const ownFiles = Effect.fn("KinWork.ownFiles")(function* (
+  person: PersonIdentity,
+  storedJson: string,
+  fields: Readonly<Record<string, unknown>>,
+) {
+  const stored = parseFields(storedJson);
+  const added = [
+    ...new Set(
+      Object.entries(fields).flatMap(([key, value]) =>
+        Array.isArray(value)
+          ? value.filter(
+              (id): id is string => typeof id === "string" && !fieldList(stored, key).includes(id),
+            )
+          : [],
+      ),
+    ),
+  ];
+  if (added.length === 0) return;
+  const sql = yield* SqlClient.SqlClient;
+  const mine = yield* sql`SELECT a.attachment_id FROM kin_message_attachments a
+    JOIN kin_messages m ON m.org_id = a.org_id AND m.message_id = a.message_id
+    JOIN kin_chat_members c ON c.org_id = a.org_id AND c.chat_id = a.chat_id
+      AND c.principal_kind = 'person' AND c.person_id = ${person.personId} AND c.left_at IS NULL
+    WHERE a.org_id = ${person.orgId} AND a.attachment_id IN ${sql.in(added)}
+      AND m.status <> 'deleted'`;
+  if (mine.length !== added.length)
+    return yield* new KinChatError({ reason: "not_found", message: "No such file in your chats." });
 });
 
 /** Keeps a lead's suggestion: it counts as the owner's from now on. */

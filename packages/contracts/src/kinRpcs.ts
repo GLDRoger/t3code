@@ -325,6 +325,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.work.money": "kin-work",
   "kin.work.recordPayment": "kin-work",
   "kin.work.voidPayment": "kin-work",
+  "kin.work.files": "kin-work",
   "kin.work.companyProfile": "kin-work",
   "kin.work.setCompanyProfile": "kin-work",
   "kin.push.registerDevice": "kin-push",

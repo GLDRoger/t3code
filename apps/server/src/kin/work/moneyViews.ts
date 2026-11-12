@@ -164,13 +164,14 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
     };
   });
 
-  // Received: payments by the day they were paid, which is already a day in the owner's zone.
+  // Received: payments on invoices by the day they were paid, already a day in the owner's zone.
+  // Other lists paid over time are money going out.
   const payments = yield* sql<{ minor: number; currency: string; paidOn: string }>`
     SELECT p.amount_minor AS minor, p.currency, p.paid_on AS "paidOn"
     FROM kin_record_payments p
     JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     WHERE p.org_id = ${orgId} AND p.voided_at IS NULL AND r.state <> 'dropped'
-      AND p.paid_on >= ${since}
+      AND r.register_id = 'invoices' AND p.paid_on >= ${since}
     ORDER BY p.paid_on, p.payment_id`;
   const receivedIn = (month: string) =>
     addUp(payments.filter((one) => monthOf(one.paidOn) === month));

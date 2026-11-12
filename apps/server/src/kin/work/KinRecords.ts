@@ -76,6 +76,7 @@ import {
   isBuiltIn,
   type ListDef,
   listDef,
+  owedState,
   stateLabel,
   unknownList,
   verifyRefs,
@@ -142,7 +143,8 @@ export type LinkInput = {
 export type QueryInput = {
   /** Default `work`. */
   readonly list?: string;
-  readonly partyId?: string;
+  /** `null`: entries with no client. */
+  readonly partyId?: string | null;
   readonly projectId?: string;
   readonly repo?: string;
   readonly owner?: KinWorkPrincipal;
@@ -151,7 +153,7 @@ export type QueryInput = {
   readonly late?: boolean;
   readonly dueBy?: number;
   readonly dueAfter?: number;
-  /** Its own date in `[dateFrom, dateTo)`. */
+  /** Its own date, or the time it was added when it has none, in `[dateFrom, dateTo)`. */
   readonly dateFrom?: number;
   readonly dateTo?: number;
   /** A payment that still counts was received on a day in `[paidFrom, paidTo]`. */
@@ -159,7 +161,8 @@ export type QueryInput = {
   readonly paidTo?: string;
   readonly text?: string;
   readonly keys?: ReadonlyArray<string>;
-  readonly category?: string;
+  /** `null`: entries with no category. */
+  readonly category?: string | null;
   readonly side?: KinRecordSide;
   readonly offset?: number;
   readonly limit?: number;
@@ -194,14 +197,16 @@ export type GroupBy = "party" | "project" | "side" | "owner" | "state" | "catego
 export type TotalsBy = GroupBy | "month" | "financialYear";
 /** Past this many entries with an amount, totals ask for a narrower filter instead of guessing. */
 const TOTALS_CAP = 20_000;
-export type Totals = {
+type Sums = {
   readonly total: ReadonlyArray<KinMoney>;
+  /** In a list paid over time: what its open entries still have unpaid. */
+  readonly owed?: ReadonlyArray<KinMoney>;
+  /** With a paid window: the payments made in it. */
+  readonly received?: ReadonlyArray<KinMoney>;
+};
+export type Totals = Sums & {
   readonly counted: number;
-  readonly groups?: ReadonlyArray<{
-    readonly group: string | null;
-    readonly count: number;
-    readonly total: ReadonlyArray<KinMoney>;
-  }>;
+  readonly groups?: ReadonlyArray<Sums & { readonly group: string | null; readonly count: number }>;
 };
 export type PaymentInput = {
   readonly amount: KinMoney;
@@ -317,14 +322,14 @@ export class KinRecords extends Context.Service<
       recordId: string,
       link: LinkInput,
     ) => Effect.Effect<boolean, KinChatError>;
-    /** Money received against an invoice; paid in full, it is marked paid. Never more than owed. */
+    /** Money paid against an entry paid over time; in full, it is marked paid. Never more than owed. */
     readonly pay: (
       orgId: KinOrgId,
       writer: Writer,
       key: string,
       payment: PaymentInput,
     ) => Effect.Effect<{ readonly row: RecordRow; readonly paymentId: string }, KinChatError>;
-    /** Takes a payment back; an invoice it leaves short is issued again. */
+    /** Takes a payment back; an entry it leaves short is owed again. */
     readonly voidPayment: (
       orgId: KinOrgId,
       writer: Writer,
@@ -927,6 +932,7 @@ const make = Effect.gen(function* () {
         }
         if (fieldsChanged) set("fields_json", yield* encodeFieldValues(merged));
         const amount = amountOf(row) ?? null;
+        const byOwner = writer.via === "owner";
         const amountChanged =
           patch.amount !== undefined &&
           (patch.amount?.minor !== amount?.minor || patch.amount?.currency !== amount?.currency);
@@ -940,30 +946,33 @@ const make = Effect.gen(function* () {
           if (patch.amount!.minor < row.paid)
             return yield* new SensitiveRefusal({
               reason: "invalid_state",
-              message: `${row.key} has ${received} received, so its amount can't be less. Void a payment with payment_record first, then change the amount.`,
+              message: `${row.key} has ${received} received, so its amount can't be less. ${byOwner ? "Take a payment back first" : "Void a payment with payment_record first"}, then change the amount.`,
             });
         }
         // Paid or owed follows the balance whenever the amount moves; a state saying otherwise is
         // refused, while Draft and Void stay the caller's to set.
         const balanced = amountChanged && row.paid > 0;
         const owed = balanced ? patch.amount!.minor - row.paid : 0;
+        const owing = owedState(def);
         if (
           balanced &&
-          ((patch.state === "done" && owed > 0) || (patch.state === "waiting" && owed === 0))
+          ((patch.state === "done" && owed > 0) || (patch.state === owing && owed === 0))
         )
           return yield* new SensitiveRefusal({
             reason: "invalid_state",
             message:
               owed > 0
-                ? `${row.key} would still have ${formatMoney({ minor: owed, currency: amount!.currency })} owed, so it can't be ${stateLabel(def, "done")}. Leave the state out: recording the rest with payment_record marks it ${stateLabel(def, "done")}.`
-                : `${row.key} would be fully paid at this amount, so it can't be ${stateLabel(def, "waiting")}. Leave the state out.`,
+                ? `${row.key} would still have ${formatMoney({ minor: owed, currency: amount!.currency })} owed, so it can't be ${stateLabel(def, "done")}. Leave the state out: recording the rest ${byOwner ? "as a payment" : "with payment_record"} marks it ${stateLabel(def, "done")}.`
+                : `${row.key} would be fully paid at this amount, so it can't be ${stateLabel(def, patch.state ?? "waiting")}. Leave the state out.`,
           });
         const settled =
           balanced && patch.state === undefined && row.state !== "dropped"
             ? owed === 0
-              ? "done"
+              ? def.states.includes("done")
+                ? "done"
+                : row.state
               : row.state === "done"
-                ? "waiting"
+                ? (owing ?? row.state)
                 : row.state
             : undefined;
         const state = patch.state ?? settled ?? row.state;
@@ -1270,8 +1279,11 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const row = yield* byKey(orgId, key).pipe(provideSql);
         if (row === undefined) return yield* notFound(key);
-        if (row.registerId !== "invoices")
-          return yield* invalid(`${row.key} is not an invoice; payments are recorded on invoices.`);
+        if (row.takesPayments !== 1)
+          return yield* invalid(
+            `${row.key} is not an invoice or in a list paid over time; payments are recorded on those.`,
+          );
+        const def = yield* resolveList(orgId, row.registerId);
         const paymentId = paymentIdFor(orgId, payment.originKey);
         const [earlier] = yield* sql<{
           recordId: string;
@@ -1318,7 +1330,8 @@ const make = Effect.gen(function* () {
           VALUES (${orgId}, ${paymentId}, ${row.recordId}, ${payment.amount.minor},
             ${payment.amount.currency}, ${payment.paidOn}, ${payment.note ?? ""},
             ${payment.originKey}, ${now}, ${writer.actor._tag}, ${actorIdOf(writer)})`;
-        const paidUp = payment.amount.minor === balance && row.state !== "done";
+        const paidUp =
+          payment.amount.minor === balance && row.state !== "done" && def.states.includes("done");
         const rev = row.rev + 1;
         yield* sql`UPDATE kin_records SET rev = ${rev}, updated_at = ${now},
             state = ${paidUp ? "done" : row.state},
@@ -1378,10 +1391,11 @@ const make = Effect.gen(function* () {
         yield* sql`UPDATE kin_record_payments SET voided_at = ${now}
           WHERE org_id = ${orgId} AND payment_id = ${paymentId}`;
         // Paid no longer, it is owed again: issued, as it was before the payment closed it.
-        const reissued = row.state === "done";
+        const owing = owedState(yield* resolveList(orgId, row.registerId));
+        const reissued = row.state === "done" && owing !== undefined;
         const rev = row.rev + 1;
         yield* sql`UPDATE kin_records SET rev = ${rev}, updated_at = ${now},
-            state = ${reissued ? "waiting" : row.state}, closed_at = ${reissued ? null : row.closedAt}
+            state = ${reissued ? owing : row.state}, closed_at = ${reissued ? null : row.closedAt}
           WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
         yield* logChange(
           orgId,
@@ -1394,7 +1408,7 @@ const make = Effect.gen(function* () {
               from: `${formatMoney({ minor: found.minor, currency: found.currency })} on ${found.paidOn}`,
               to: null,
             },
-            ...(reissued ? [{ field: "state", from: "done", to: "waiting" }] : []),
+            ...(reissued ? [{ field: "state", from: "done", to: owing }] : []),
           ],
           now,
         );
@@ -1425,6 +1439,9 @@ const make = Effect.gen(function* () {
           return yield* invalid(
             `${counted} entries match; narrow it to under ${TOTALS_CAP} by dates or category to total them.`,
           );
+        const windowed = input.paidFrom !== undefined || input.paidTo !== undefined;
+        const live = sql`FROM kin_record_payments p WHERE p.org_id = r.org_id
+          AND p.record_id = r.record_id AND p.voided_at IS NULL`;
         const rows = yield* sql<{
           minor: number | null;
           currency: string;
@@ -1432,21 +1449,49 @@ const make = Effect.gen(function* () {
           party: string | null;
           project: string | null;
           side: string;
-          state: string;
+          state: KinRecordState;
           owner: string;
           at: number;
+          paid: number;
+          received: number;
         }>`SELECT r.amount_minor AS minor, r.currency, r.category, r.party_id AS party,
             r.project_id AS project, r.side, r.state, r.owner_kind || ':' || r.owner_id AS owner,
-            COALESCE(r.date_at, r.due_at, r.created_at) AS at
+            COALESCE(r.date_at, r.due_at, r.created_at) AS at,
+            (SELECT COALESCE(SUM(p.amount_minor), 0) ${live}) AS paid,
+            (SELECT COALESCE(SUM(p.amount_minor), 0) ${live}
+              AND p.paid_on >= ${input.paidFrom ?? "0000-00-00"}
+              AND p.paid_on <= ${input.paidTo ?? "9999-12-31"}) AS received
           FROM kin_records r WHERE ${filter} ORDER BY r.record_id`;
-        const amounts = (members: typeof rows) =>
-          addUp(
-            members.flatMap((row) =>
-              row.minor === null ? [] : [{ minor: row.minor, currency: row.currency }],
-            ),
+        const paidOverTime = (yield* resolveList(orgId, input.list ?? "work")).payments === true;
+        const amounts = (members: typeof rows): Sums => {
+          const priced = members.flatMap((row) =>
+            row.minor === null ? [] : [{ ...row, minor: row.minor }],
           );
+          return {
+            total: addUp(priced),
+            // Closed is settled or void, whatever its payments add up to.
+            ...(paidOverTime
+              ? {
+                  owed: addUp(
+                    priced
+                      .filter((row) => !isClosed(row.state) && row.minor > row.paid)
+                      .map((row) => ({ minor: row.minor - row.paid, currency: row.currency })),
+                  ),
+                }
+              : {}),
+            ...(windowed
+              ? {
+                  received: addUp(
+                    priced
+                      .filter((row) => row.received > 0)
+                      .map((row) => ({ minor: row.received, currency: row.currency })),
+                  ),
+                }
+              : {}),
+          };
+        };
         const total = amounts(rows);
-        if (by === undefined) return { total, counted } satisfies Totals;
+        if (by === undefined) return { ...total, counted } satisfies Totals;
         const zone =
           by === "month" || by === "financialYear"
             ? yield* ownerZone(orgId).pipe(provideSql)
@@ -1469,7 +1514,7 @@ const make = Effect.gen(function* () {
         const groups = [...grouped].map(([group, members]) => ({
           group,
           count: members.length,
-          total: amounts(members),
+          ...amounts(members),
         }));
         // Periods read in time order; anything else most entries first.
         const ordered =
@@ -1478,7 +1523,7 @@ const make = Effect.gen(function* () {
             : groups.toSorted(
                 (a, b) => b.count - a.count || ((a.group ?? "") < (b.group ?? "") ? -1 : 1),
               );
-        return { total, counted, groups: ordered.slice(0, 50) } satisfies Totals;
+        return { ...total, counted, groups: ordered.slice(0, 50) } satisfies Totals;
       }).pipe(
         Effect.catchDefect((defect) =>
           defect instanceof RangeError
@@ -1491,7 +1536,7 @@ const make = Effect.gen(function* () {
 
   const filterOf = (orgId: KinOrgId, input: QueryInput, now: number) => {
     const where = [sql`r.org_id = ${orgId}`, sql`r.register_id = ${input.list ?? "work"}`];
-    if (input.partyId !== undefined) where.push(sql`r.party_id = ${input.partyId}`);
+    if (input.partyId !== undefined) where.push(sql`r.party_id IS ${input.partyId}`);
     if (input.projectId !== undefined) where.push(sql`r.project_id = ${input.projectId}`);
     if (input.repo !== undefined) where.push(sql`lower(r.repo) = lower(${input.repo})`);
     if (input.owner !== undefined)
@@ -1508,9 +1553,12 @@ const make = Effect.gen(function* () {
       where.push(sql`(r.due_at IS NULL OR r.due_at >= ${now} OR r.state IN ('done', 'dropped'))`);
     if (input.dueBy !== undefined) where.push(sql`r.due_at <= ${input.dueBy}`);
     if (input.dueAfter !== undefined) where.push(sql`r.due_at >= ${input.dueAfter}`);
-    if (input.dateFrom !== undefined) where.push(sql`r.date_at >= ${input.dateFrom}`);
-    if (input.dateTo !== undefined) where.push(sql`r.date_at < ${input.dateTo}`);
-    if (input.category !== undefined) where.push(sql`r.category = ${input.category}`);
+    // One rule for a money day, here and in the Money summary: its date, else when it was added.
+    if (input.dateFrom !== undefined)
+      where.push(sql`COALESCE(r.date_at, r.created_at) >= ${input.dateFrom}`);
+    if (input.dateTo !== undefined)
+      where.push(sql`COALESCE(r.date_at, r.created_at) < ${input.dateTo}`);
+    if (input.category !== undefined) where.push(sql`r.category IS ${input.category}`);
     if (input.paidFrom !== undefined || input.paidTo !== undefined)
       where.push(sql`EXISTS (SELECT 1 FROM kin_record_payments p
         WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL

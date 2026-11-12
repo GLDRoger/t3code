@@ -27,6 +27,7 @@ import {
   KinDay,
   KinFieldValue,
   KinFileRef,
+  KinListFieldKey,
   KinListId,
   KinMoney,
   KinMoneyTotals,
@@ -238,14 +239,22 @@ export const KIN_RECORDS_PAGE_CAP = 100;
 /** How a defined list's totals split: none, its categories, or its entries' dates. */
 export const KinListGroupBy = Schema.Literals(["none", "category", "month", "financialYear"]);
 export type KinListGroupBy = typeof KinListGroupBy.Type;
+const KinListSums = {
+  /** Full amounts. */
+  total: KinMoneyTotals,
+  /** In a list whose entries are paid over time: what the open ones still have unpaid. */
+  owed: Schema.optional(KinMoneyTotals),
+  /** With `paidFrom` or `paidTo`: the payments made in those days, not the entries' amounts. */
+  received: Schema.optional(KinMoneyTotals),
+};
 /** `group` is a category, `2026-11` or `FY2026-27`; null is entries with none. */
 export const KinListTotals = Schema.Struct({
-  total: KinMoneyTotals,
+  ...KinListSums,
   groups: Schema.Array(
     Schema.Struct({
       group: Schema.NullOr(Schema.String),
       count: NonNegativeInt,
-      total: KinMoneyTotals,
+      ...KinListSums,
     }),
   ),
 });
@@ -268,17 +277,20 @@ export const KinWorkListInput = Schema.Struct({
   dueAfter: Schema.optional(IsoDateTime),
   category: Schema.optional(KinRecordCategory),
   side: Schema.optional(KinRecordSide),
-  /** A client's or vendor's key: its entries. */
-  party: Schema.optional(KinRecordKey),
+  /** A client's or vendor's key: its entries. `null`: entries with no client. */
+  party: Schema.optional(Schema.NullOr(KinRecordKey)),
   /** A project's key: its entries, such as its issues with `category: "issue"`. */
   project: Schema.optional(KinRecordKey),
   repo: Schema.optional(KinRepoName),
   /** Case-insensitive match on title and notes. */
   text: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
   // Defined lists only.
-  /** One of the list's own categories. */
-  listCategory: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(60))),
-  /** Its own date on or after this day, and on or before `dateTo`, in the owner's time zone. */
+  /** One of the list's own categories. `null`: entries with none. */
+  listCategory: Schema.optional(Schema.NullOr(KinTrimmedText.check(Schema.isMaxLength(60)))),
+  /**
+   * Its own date, or the day it was added when it has none, on or after this day and on or
+   * before `dateTo`, in the owner's time zone: the rule Money's "spent" uses.
+   */
   dateFrom: Schema.optional(KinDay),
   dateTo: Schema.optional(KinDay),
   /** A payment was received against it on or after this day, and on or before `paidTo`. */
@@ -442,6 +454,17 @@ export const KinWorkUpdateInput = Schema.Struct({
   dateAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   dateAllDay: Schema.optional(Schema.Boolean),
   repeat: Schema.optional(Schema.NullOr(KinRepeatRule)),
+  // Defined lists only.
+  /** One of the list's own categories; `null` clears it. */
+  listCategory: Schema.optional(Schema.NullOr(KinTrimmedText.check(Schema.isMaxLength(60)))),
+  /**
+   * The list's own fields by key, as stored and as its definition types them: text, a choice, a
+   * `YYYY-MM-DD` day, `person:<id>` or `agent:<id>`, a client's or project's record id, an amount,
+   * or the ids of files from `kin.work.files`. `null` clears one. Checked as an agent's are.
+   */
+  fields: Schema.optional(
+    Schema.Record(KinListFieldKey, Schema.NullOr(KinFieldValue)).check(Schema.isMaxProperties(20)),
+  ),
 });
 export type KinWorkUpdateInput = typeof KinWorkUpdateInput.Type;
 

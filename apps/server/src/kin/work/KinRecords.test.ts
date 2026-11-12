@@ -396,7 +396,7 @@ it.effect(
         ...Object.values(KIN_WORK_WS_METHODS),
         ...KinFinanceRpcs.map((rpc) => rpc._tag),
       ];
-      assert.lengthOf(methods, 28);
+      assert.lengthOf(methods, 29);
       for (const method of methods)
         assert.isTrue(
           (yield* Effect.exit(authorizeRpc([AuthKinChatScope], method, { orgId })))._tag ===
