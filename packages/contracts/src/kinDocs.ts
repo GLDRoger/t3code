@@ -7,6 +7,7 @@ import {
   EnvironmentAuthorizationError,
 } from "./auth.ts";
 import { IsoDateTime, NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { KinChartCardState } from "./kinChart.ts";
 import { KinWorkerId } from "./kinLead.ts";
 import {
   KinAgentId,
@@ -153,6 +154,21 @@ export const KinDocRow = Schema.Struct({
 export type KinDocRow = typeof KinDocRow.Type;
 
 /** A doc at one version, for the reader and its contents sheet. */
+/**
+ * What one `kin_chart` or `kin_visual` block of a doc's body draws, in the order the blocks
+ * appear. `broken` says why a block can't be drawn, so the rest still line up.
+ */
+export const KinDocEmbed = Schema.Union([
+  Schema.TaggedStruct("chart", { chart: KinChartCardState }),
+  Schema.TaggedStruct("visual", {
+    title: KinTrimmedText,
+    attachmentId: TrimmedNonEmptyString,
+    height: PositiveInt,
+  }),
+  Schema.TaggedStruct("broken", { message: KinTrimmedText }),
+]);
+export type KinDocEmbed = typeof KinDocEmbed.Type;
+
 export const KinDocDetail = Schema.Struct({
   ...KinDocRow.fields,
   /** The version shown: the latest unless one was asked for. */
@@ -162,6 +178,8 @@ export const KinDocDetail = Schema.Struct({
   links: Schema.Array(KinRecordLink),
   /** This doc's latest change number: compare with a `changed` event's. */
   seq: NonNegativeInt,
+  /** Absent from servers that draw no blocks. */
+  embeds: Schema.optional(Schema.Array(KinDocEmbed)),
 });
 export type KinDocDetail = typeof KinDocDetail.Type;
 
