@@ -7,6 +7,7 @@ import {
   KinChatError,
   KinChatId,
   KinMemberId,
+  KinMessageRef,
   type KinMessage,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
@@ -33,6 +34,8 @@ const KinOutboxRecord = Schema.Struct({
   attachments: Schema.optional(Schema.Array(KinAttachment)),
   /** The leads the message names, so the right one answers in a group. */
   mentions: Schema.optional(Schema.Array(KinMemberId)),
+  /** Doc sections the message points at, with the titles its chip shows until the host answers. */
+  refs: Schema.optional(Schema.Array(KinMessageRef)),
   createdAt: Schema.String,
   /** Null while it waits to go out; why the host refused it for good otherwise. */
   error: Schema.NullOr(Schema.String),
@@ -260,6 +263,7 @@ export function createKinOutbox(options: KinOutboxOptions) {
     readonly body: string;
     readonly attachments?: ReadonlyArray<KinAttachment>;
     readonly mentions?: ReadonlyArray<KinMemberId>;
+    readonly refs?: ReadonlyArray<KinMessageRef>;
   }): Promise<
     | { readonly _tag: "queued"; readonly entry: KinOutboxEntry }
     | { readonly _tag: "full" }
@@ -279,6 +283,7 @@ export function createKinOutbox(options: KinOutboxOptions) {
       ...(input.mentions === undefined || input.mentions.length === 0
         ? {}
         : { mentions: input.mentions }),
+      ...(input.refs === undefined || input.refs.length === 0 ? {} : { refs: input.refs }),
       createdAt: now().toISOString(),
       error: null,
       state: "waiting",
