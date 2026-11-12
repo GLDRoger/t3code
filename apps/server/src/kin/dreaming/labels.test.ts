@@ -157,8 +157,10 @@ it("withLabel refuses front matter where setting the label would change another 
   const item = fixtureItem({ sensitive: false });
   const aliased = item
     .replace("sensitive: false", '"sensitive": &label false')
-    .replace("\n---\n", "\nlinks: [*label]\n---\n");
+    .replace("\n---\n", "\nextra: *label\n---\n");
+  assert.include(aliased, "extra: *label");
   assert.isUndefined(withLabel(aliased, true));
+  assert.isUndefined(withLabel(aliased.replace('"sensitive":', "sensitive:"), true));
   // An anchor nothing aliases changes nothing else, so the plain edit stands.
   assert.strictEqual(
     withLabel(item.replace("sensitive: false", "sensitive: &label false"), true),

@@ -39,9 +39,14 @@ export const withLabel = (text: string, sensitive: boolean) => {
     : `${front}\n${line}`;
   if (valuesOf(plain) === want) return `${open}${plain}${rest}`;
   // A fresh node, so an anchor on the old value isn't carried onto the new one.
-  doc.set("sensitive", doc.createNode(sensitive));
-  const rendered = doc.toString().replace(/\r?\n$/, "");
-  return valuesOf(rendered) === want ? `${open}${rendered}${rest}` : undefined;
+  try {
+    doc.set("sensitive", doc.createNode(sensitive));
+    const rendered = doc.toString().replace(/\r?\n$/, "");
+    return valuesOf(rendered) === want ? `${open}${rendered}${rest}` : undefined;
+  } catch {
+    // An alias to the anchor just replaced can't be rendered.
+    return undefined;
+  }
 };
 
 /**
