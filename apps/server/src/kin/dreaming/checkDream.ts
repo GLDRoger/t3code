@@ -76,6 +76,7 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
   const material = new Map(input.material.map((entry) => [entry.ref, entry]));
   const listed = new Set(report?.changes.map((change) => change.path));
 
+  const ids = new Map<string, string>();
   for (const [path, text] of changes) {
     if (path === "rules.md") {
       failures.push("rules.md changed");
@@ -98,6 +99,7 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
       continue;
     }
     const fm = parsed.success.frontMatter;
+    ids.set(path, fm.id);
     const folder = fm.kind === "person" ? "people" : `${fm.kind}s`;
     if (!path.startsWith(`${folder}/`))
       failures.push(`${path} kind ${fm.kind} is in the wrong folder`);
@@ -172,6 +174,25 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
             : undefined;
       if (refusal !== undefined) failures.push(`${path} quote: ${refusal}`);
     }
+  }
+
+  // Two files with one id leave neither readable by it, so a new file can't take an item's id.
+  const holders = new Map<string, string>();
+  for (const [path, text] of input.tree) {
+    if (ids.has(path) || !isItemPath(path)) continue;
+    const item = yield* parseFrontMatter(input.orgId, path, text).pipe(Effect.option);
+    if (item._tag === "Some") holders.set(item.value.frontMatter.id, path);
+  }
+  for (const [path, id] of ids) {
+    const holder = holders.get(id);
+    const before = input.base.get(path);
+    const earlier =
+      before === undefined
+        ? undefined
+        : yield* parseFrontMatter(input.orgId, path, before).pipe(Effect.option);
+    const kept = earlier?._tag === "Some" && earlier.value.frontMatter.id === id;
+    if (holder !== undefined && !kept) failures.push(`${path} takes the id of ${holder}`);
+    else if (holder === undefined) holders.set(id, path);
   }
 
   if (report !== undefined) {

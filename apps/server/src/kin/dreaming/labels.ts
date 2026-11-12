@@ -1,8 +1,9 @@
 import type { KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import { parseDocument } from "yaml";
 
 import { isItemPath } from "../memory/checkoutPaths.ts";
-import { parseFrontMatter } from "../memory/frontMatter.ts";
+import { FRONT_MATTER_YAML, parseFrontMatter } from "../memory/frontMatter.ts";
 import {
   contentOf,
   fingerprint,
@@ -11,15 +12,26 @@ import {
   type StoredLabels,
 } from "../memory/sensitivity.ts";
 
-/** The item's text with its `sensitive` line set, leaving every other byte as the dream wrote it. */
+/**
+ * The item's text with `sensitive` set. An ordinary file keeps every other byte; one whose label
+ * isn't a plain top-level line (quoted key, indented or flow mapping) is re-rendered by the parser.
+ */
 export const withLabel = (text: string, sensitive: boolean) => {
-  const parts = /^((?:﻿)?---\r?\n)([\s\S]*?)(\r?\n---(?:\r?\n|$)[\s\S]*)$/.exec(text);
+  const parts = /^((?:\uFEFF)?---\r?\n)([\s\S]*?)(\r?\n---(?:\r?\n|$)[\s\S]*)$/.exec(text);
   if (parts === null) return text;
   const [, open = "", front = "", rest = ""] = parts;
+  const doc = parseDocument(front, FRONT_MATTER_YAML);
+  if (doc.errors.length > 0) return text;
+  const want = JSON.stringify({ ...doc.toJS(), sensitive });
   const line = `sensitive: ${sensitive}`;
-  return `${open}${
-    /^sensitive:.*$/m.test(front) ? front.replace(/^sensitive:.*$/m, line) : `${front}\n${line}`
-  }${rest}`;
+  const plain = /^sensitive:.*$/m.test(front)
+    ? front.replace(/^sensitive:.*$/m, line)
+    : `${front}\n${line}`;
+  const check = parseDocument(plain, FRONT_MATTER_YAML);
+  if (check.errors.length === 0 && JSON.stringify(check.toJS()) === want)
+    return `${open}${plain}${rest}`;
+  doc.set("sensitive", sensitive);
+  return `${open}${doc.toString().replace(/\r?\n$/, "")}${rest}`;
 };
 
 /**
