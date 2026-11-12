@@ -32,3 +32,15 @@ export function createKinPushRefusals() {
     },
   };
 }
+
+/**
+ * What push registration does with the OS permission. Connecting never prompts: the prompt waits
+ * for a Kin moment that explains it (opening a chat, the Kin notifications row) and shows once.
+ */
+export function kinPushPermissionStep(
+  permission: { readonly granted: boolean; readonly canAskAgain: boolean },
+  request: { readonly wanted: boolean; readonly asked: boolean },
+): "register" | "ask" | "wait" {
+  if (permission.granted) return "register";
+  return request.wanted && !request.asked && permission.canAskAgain ? "ask" : "wait";
+}

@@ -28,6 +28,7 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import type { KinWorkItemParams } from "./KinWorkItemScreen";
 import { kinClient } from "./state/kinClient";
 import {
+  useKinWorkAnswer,
   useKinWorkChanges,
   useKinWorkDirectory,
   useKinWorkItemWatch,
@@ -94,7 +95,8 @@ function KinWorkEditGate(props: ItemTarget) {
     environmentId: props.environmentId,
     input: { orgId: props.orgId, key: props.itemKey },
   });
-  const state = kinWorkItemState(useAtomValue(itemAtom), null);
+  // Opens from the host's latest answer, so a just-saved edit isn't typed over from an old read.
+  const state = kinWorkItemState(useAtomValue(itemAtom), useKinWorkAnswer(props, props.itemKey));
   const close = () => navigation.goBack();
   if (!allowed) {
     return (

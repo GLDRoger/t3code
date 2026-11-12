@@ -30,7 +30,12 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { KinAvatar } from "./components/KinAvatar";
 import type { KinWorkItemParams } from "./KinWorkItemScreen";
 import { kinClient } from "./state/kinClient";
-import { useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
+import {
+  kinWorkAnswersOf,
+  useKinWorkAnswer,
+  useKinWorkDirectory,
+  type KinWorkTarget,
+} from "./state/useKinWork";
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
@@ -92,13 +97,14 @@ function KinWorkAssignBody(props: ItemTarget) {
   const navigation = useNavigation();
   const { environmentId, orgId, itemKey } = props;
   const itemAtom = kinClient.workItem({ environmentId, input: { orgId, key: itemKey } });
-  const state = kinWorkItemState(useAtomValue(itemAtom), null);
-  const { orgs, people, names } = useKinWorkDirectory(props, true);
+  const state = kinWorkItemState(useAtomValue(itemAtom), useKinWorkAnswer(props, itemKey));
+  const { orgs, people, joined, names } = useKinWorkDirectory(props, true);
   const create = useAtomCommand(kinClient.workCreate, { reportFailure: false });
   const assign = useAtomCommand(kinClient.workAssign, { reportFailure: false });
   const [actions] = useState(() =>
     createKinWorkActions({
       orgId,
+      answers: kinWorkAnswersOf(props),
       create: (input) => create({ environmentId, input }),
       assign: (input) => assign({ environmentId, input }),
       reread: () => appAtomRegistry.refresh(itemAtom),
@@ -145,7 +151,14 @@ function KinWorkAssignBody(props: ItemTarget) {
     appAtomRegistry.refresh(itemAtom);
     navigation.goBack();
   };
-  const assignees = kinWorkAssignees({ orgs, orgId, people, names, current: state.item.owner });
+  const assignees = kinWorkAssignees({
+    orgs,
+    orgId,
+    people,
+    joined,
+    names,
+    current: state.item.owner,
+  });
   const rows = (list: ReadonlyArray<KinWorkAssignee>) =>
     list.map((to, index) => (
       <ListChoiceRow

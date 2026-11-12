@@ -17,8 +17,10 @@ import {
   KIN_WORK_TITLE_MAX,
   kinWorkClosed,
   kinWorkName,
+  kinWorkNewest,
   kinWorkSamePrincipal,
   kinWorkSettled,
+  type KinWorkAnswers,
   type KinWorkChangeResult,
   type KinWorkNames,
   type KinWorkRef,
@@ -35,6 +37,8 @@ export type KinWorkAction =
     }
   /** A calendar day, `YYYY-MM-DD`; null takes the date off. */
   | { readonly type: "due"; readonly day: string | null }
+  /** Undo of `due`: the date as it was, exact time included. */
+  | { readonly type: "dueBack"; readonly dueAt: string | null; readonly allDay: boolean }
   /** Only what the owner retyped, so a lead's change to the other field stays. */
   | { readonly type: "edit"; readonly title?: string; readonly notes?: string }
   /** Keep a lead's suggestion, or say no to it. */
@@ -176,6 +180,17 @@ export const kinWorkListNotice = (
     : null;
 };
 
+/** What a task's own screen says about it: nothing once a later change, such as Give to, is held. */
+export const kinWorkItemNotice = (
+  state: KinWorkChangesState,
+  item: KinRecord,
+): KinWorkNotice | null => {
+  const { notice } = state;
+  if (notice === null || notice.key !== item.key) return null;
+  const answer = state.answers[item.key];
+  return notice.kind === "saved" && answer !== undefined && item.rev > answer.rev ? null : notice;
+};
+
 /** A task as the owner should see it now: the host's newest word, then what is being saved. */
 export function kinWorkApplied<R extends KinRecord>(record: R, state: KinWorkChangesState): R {
   const answer = state.answers[record.key];
@@ -217,6 +232,8 @@ function savedText(record: KinRecord, action: KinWorkAction, names: KinWorkNames
         : `Waiting on ${kinWorkName(action.waitingOn, names, "you")}.`;
     case "due":
       return action.day === null ? "Due date removed." : "Due date changed.";
+    case "dueBack":
+      return "Due date put back.";
     case "edit":
       return "Saved.";
     case "confirm":
@@ -238,12 +255,15 @@ function savedText(record: KinRecord, action: KinWorkAction, names: KinWorkNames
   }
 }
 
-/** Closing has a way back: to where the task stood. Nothing else needs one. */
-const undoOf = (record: KinRecord, action: KinWorkAction): KinWorkAction | null =>
-  !kinWorkClosed(record.state) &&
-  (action.type === "decline" || (action.type === "state" && kinWorkClosed(action.state)))
+/** Closing and re-dating have a way back: to where the task stood. Nothing else needs one. */
+const undoOf = (record: KinRecord, action: KinWorkAction): KinWorkAction | null => {
+  if (action.type === "due")
+    return { type: "dueBack", dueAt: record.dueAt, allDay: record.dueAllDay };
+  return !kinWorkClosed(record.state) &&
+    (action.type === "decline" || (action.type === "state" && kinWorkClosed(action.state)))
     ? { type: "state", state: record.state, waitingOn: record.waitingOn }
     : null;
+};
 
 function patchOf(record: KinRecord, action: KinWorkAction, names: KinWorkNames): Patch {
   switch (action.type) {
@@ -260,6 +280,9 @@ function patchOf(record: KinRecord, action: KinWorkAction, names: KinWorkNames):
         ? { dueAt: null, dueAllDay: false, late: false }
         : // Midday keeps the picked day the same day in the owner's zone until the host answers.
           { dueAt: `${action.day}T12:00:00.000Z`, dueAllDay: true, late: false };
+    case "dueBack":
+      // The host says whether the old date is late.
+      return { dueAt: action.dueAt, dueAllDay: action.dueAt !== null && action.allDay };
     case "edit":
       return {
         ...(action.title === undefined ? {} : { title: action.title }),
@@ -302,6 +325,8 @@ export function createKinWorkChanges(options: {
   /** A form that opens already typing over this task. */
   readonly editing?: KinRecordDetail;
   readonly onChange: (state: KinWorkChangesState) => void;
+  /** Answers shared with the task's other screens: read before sending, written on success. */
+  readonly answers?: KinWorkAnswers;
 }) {
   const { orgId } = options;
   let state = kinWorkChangesStart(options.editing);
@@ -331,6 +356,14 @@ export function createKinWorkChanges(options: {
             action.day === null
               ? { ...at, dueAt: null }
               : { ...at, dueAt: action.day, dueAllDay: true },
+          ),
+        );
+      case "dueBack":
+        return kinWorkSettled(
+          await options.update(
+            action.dueAt === null
+              ? { ...at, dueAt: null }
+              : { ...at, dueAt: action.dueAt, dueAllDay: action.allDay },
           ),
         );
       case "edit":
@@ -365,10 +398,11 @@ export function createKinWorkChanges(options: {
 
   /** Makes one change to the task as the owner sees it. Resolves true when the host took it. */
   const run = async (
-    record: KinRecord,
+    held: KinRecord,
     action: KinWorkAction,
     names: KinWorkNames,
   ): Promise<boolean> => {
+    const record = kinWorkNewest(held, options.answers);
     const { key } = record;
     if (state.pending[key] !== undefined) return false;
     if (!options.online()) {
@@ -382,6 +416,7 @@ export function createKinWorkChanges(options: {
     const outcome = await send(record, action);
     const pending = without(state.pending, key);
     if (outcome.ok) {
+      options.answers?.put(outcome.item);
       set({
         pending,
         answers: { ...state.answers, [key]: outcome.item },

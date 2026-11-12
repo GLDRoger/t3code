@@ -14,9 +14,9 @@ import {
   type KinSearchHitView,
   type KinSearchState,
 } from "@t3tools/client-runtime/kin/kinDocs";
-import { KIN_WORK_STALE, KIN_WORK_TITLE } from "@t3tools/client-runtime/kin/kinWork";
+import { KIN_WORK_TITLE } from "@t3tools/client-runtime/kin/kinWork";
 import type { KinDocRow, KinRecordKey } from "@t3tools/contracts";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -35,10 +35,11 @@ import {
   KinWorkAreaSwitch,
   KinWorkLoading,
   KinWorkPrivateMark,
+  KinWorkStaleNotice,
   type KinWorkAreas,
 } from "./components/KinWorkPieces";
 import { useKinDocsList, useKinDocsLive, useKinDocsUnder, useKinSearch } from "./state/useKinDocs";
-import type { KinWorkDirectory, KinWorkTarget } from "./state/useKinWork";
+import { refreshKinWorkLive, type KinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 
 /** A doc as a row that opens it: its name, then when it last changed, by whom and how. */
 function KinDocRowButton(props: {
@@ -171,9 +172,20 @@ export function KinDocsList(
   const { names } = props.directory;
   const now = new Date(useNowMinuteMs());
   const { refused, live } = useKinDocsLive(props);
-  const { state, list } = useKinDocsList(props, props.stale ? null : (live?.seq ?? null));
+  const { state, list } = useKinDocsList(
+    props,
+    props.stale ? null : (live?.seq ?? null),
+    props.areas.words,
+  );
   const { state: found, search } = useKinSearch(props, DOCS_ONLY);
   const [by, setBy] = useState<KinDocGrouping>("client");
+  const { words } = props.areas;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the native search bar keeps words typed in another part of Work, so the docs search takes them up; setText ignores text it already has
+  useEffect(() => search.setText(words), [search, words]);
+  const refresh = () => {
+    refreshKinWorkLive(props);
+    list.refresh();
+  };
   const { filter } = state;
   const searching = found.text.trim() !== "";
   const passages = searching && (found.hits?.length ?? 0) > 0;
@@ -199,7 +211,7 @@ export function KinDocsList(
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
         title={KIN_WORK_TITLE}
-        refresh={{ accessibilityLabel: "Refresh", onPress: list.refresh }}
+        refresh={{ accessibilityLabel: "Refresh", onPress: refresh }}
         actions={[
           {
             accessibilityLabel: KIN_SEARCH.hint.title,
@@ -212,6 +224,7 @@ export function KinDocsList(
           search: {
             value: found.text,
             onChangeText: (text) => {
+              props.areas.onWords(text);
               search.setText(text);
               list.setFilter({ ...filter, text });
             },
@@ -242,7 +255,7 @@ export function KinDocsList(
               <KinWorkAreaSwitch {...props.areas} />
               {props.stale || state.stale ? (
                 <View className="px-4">
-                  <Notice message={KIN_WORK_STALE} />
+                  <KinWorkStaleNotice environmentId={environmentId} onRetry={refresh} />
                 </View>
               ) : null}
               {refused ? null : (

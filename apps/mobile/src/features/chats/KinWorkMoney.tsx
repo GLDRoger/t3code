@@ -13,7 +13,7 @@ import {
   type KinListOpen,
   type KinMoneyFigure,
 } from "@t3tools/client-runtime/kin/kinMoney";
-import { KIN_WORK_STALE, KIN_WORK_TITLE } from "@t3tools/client-runtime/kin/kinWork";
+import { KIN_WORK_TITLE } from "@t3tools/client-runtime/kin/kinWork";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import { useState } from "react";
 import { Pressable, View } from "react-native";
@@ -27,15 +27,19 @@ import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListSection } from "../../components/ui/ListSection";
 import { ListToggleRow } from "../../components/ui/ListToggleRow";
-import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { cn } from "../../lib/cn";
 import { useNowMinuteMs } from "../../lib/clock";
 import { useKinTab } from "./components/KinTab";
-import { KinWorkAreaSwitch, KinWorkLoading, type KinWorkAreas } from "./components/KinWorkPieces";
+import {
+  KinWorkAreaSwitch,
+  KinWorkLoading,
+  KinWorkStaleNotice,
+  type KinWorkAreas,
+} from "./components/KinWorkPieces";
 import { kinListsOf, useKinAskAgent, useKinLists, useKinMoneySummary } from "./state/useKinMoney";
-import type { KinWorkDirectory, KinWorkTarget } from "./state/useKinWork";
+import { refreshKinWorkLive, type KinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 import { KinChart } from "./widgets/KinChart";
 
 type Shared = KinWorkTarget & {
@@ -58,6 +62,7 @@ export function useKinOpenList(target: KinWorkTarget) {
 
 /** One part of Work that isn't a paged list: the switch, then whatever the part shows. */
 function AreaFrame(props: {
+  readonly target: KinWorkTarget;
   readonly areas: KinWorkAreas;
   readonly stale: boolean;
   readonly onRefresh: () => void;
@@ -65,11 +70,16 @@ function AreaFrame(props: {
 }) {
   const navigation = useNavigation();
   const tab = useKinTab();
+  // The counts may be what failed, so they are read again with the area's own figures.
+  const refresh = () => {
+    refreshKinWorkLive(props.target);
+    props.onRefresh();
+  };
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
         title={KIN_WORK_TITLE}
-        refresh={{ accessibilityLabel: "Refresh", onPress: props.onRefresh }}
+        refresh={{ accessibilityLabel: "Refresh", onPress: refresh }}
         {...(tab === null ? { onBack: () => navigation.goBack() } : {})}
       />
       <ScreenContent surface="screen">
@@ -85,7 +95,7 @@ function AreaFrame(props: {
           <KinWorkAreaSwitch {...props.areas} />
           {props.stale ? (
             <View className="px-4">
-              <Notice message={KIN_WORK_STALE} />
+              <KinWorkStaleNotice environmentId={props.target.environmentId} onRetry={refresh} />
             </View>
           ) : null}
           <View className="gap-6 px-4">{props.children}</View>
@@ -248,6 +258,7 @@ export function KinMoneyArea(props: Shared) {
   const { names } = props.directory;
   const { state } = money;
   const frame = {
+    target,
     areas: props.areas,
     stale: props.stale,
     onRefresh: () => {
@@ -453,7 +464,7 @@ export function KinListsArea(props: Shared) {
   const lists = useKinLists(target, { enabled: true, archived, seq });
   const agent = useKinAskAgent(target);
   const { state } = lists;
-  const frame = { areas: props.areas, stale: props.stale, onRefresh: lists.refresh };
+  const frame = { target, areas: props.areas, stale: props.stale, onRefresh: lists.refresh };
   if (state._tag !== "ready") {
     return (
       <AreaFrame {...frame}>

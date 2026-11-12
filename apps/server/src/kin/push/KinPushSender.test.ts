@@ -40,7 +40,7 @@ import { KinApnsTransport, type KinApnsPush, type KinApnsResult } from "./Apns.t
 import { KinPushDevices, type KinPushCaller } from "./KinPushDevices.ts";
 import { KinPushPresence } from "./KinPushPresence.ts";
 import * as Devices from "./KinPushDevices.ts";
-import * as Presence from "./KinPushPresence.ts";
+import { layerTrusting, watcher } from "./KinPushPresence.testkit.ts";
 import * as Sender from "./KinPushSender.ts";
 
 const NOW = Date.parse("2026-11-08T00:00:00Z");
@@ -90,7 +90,7 @@ const makeApns = (
 
 const buildOn = <A, E, R>(apns: ReturnType<typeof makeApns>, database: Layer.Layer<A, E, R>) =>
   Sender.layer.pipe(
-    Layer.provideMerge(Layer.mergeAll(Devices.layer, Presence.layer, apns.layer)),
+    Layer.provideMerge(Layer.mergeAll(Devices.layer, layerTrusting, apns.layer)),
     Layer.provideMerge(ApproverKeys.layer),
     Layer.provide(MemoryCache.layer),
     Layer.provideMerge(PendingActions.layer),
@@ -635,7 +635,7 @@ describe("KinPushSender", () => {
         },
       );
       const watching = yield* presence
-        .watch(phone, chat)
+        .watch(watcher(phone), chat)
         .pipe(Stream.runDrain, Effect.forkChild({ startImmediately: true }));
       const watched = yield* notify({ _tag: "message", orgId, messageId });
       assert.deepStrictEqual(watched, { status: "ready", sent: 1, suppressed: 1, failed: 0 });
@@ -651,7 +651,7 @@ describe("KinPushSender", () => {
       const elsewhere = yield* notify({ _tag: "message", orgId, messageId: yield* lead() });
       assert.deepStrictEqual(elsewhere, { status: "ready", sent: 2, suppressed: 0, failed: 0 });
       const both = yield* presence
-        .watch(phone, dm)
+        .watch(watcher(phone), dm)
         .pipe(Stream.runDrain, Effect.forkChild({ startImmediately: true }));
       const bothOpen = yield* notify({ _tag: "message", orgId, messageId: yield* lead() });
       assert.deepStrictEqual(bothOpen, { status: "ready", sent: 1, suppressed: 1, failed: 0 });
@@ -664,7 +664,7 @@ describe("KinPushSender", () => {
 
       // A phone that dropped off without closing its socket stops acking. After an idle hour,
       // the next message reaches it.
-      yield* presence.watch(phone, chat).pipe(
+      yield* presence.watch(watcher(phone), chat).pipe(
         Stream.runForEach(() => Effect.never),
         Effect.forkChild({ startImmediately: true }),
       );

@@ -38,6 +38,7 @@ export const KIN_WORK_NEW = "New task";
 export const KIN_WORK_SEARCH_PLACEHOLDER = "Search tasks";
 export const KIN_WORK_LOAD_FAILED = "Couldn't load Work";
 export const KIN_WORK_STALE = "Offline. Showing the last update.";
+export const KIN_WORK_REFRESH_FAILED = "Couldn't refresh. Showing the last update.";
 export const KIN_WORK_ONLY_OWNER = {
   title: "Only the owner can open this",
   detail: "Work is shown to the person who runs this workspace for now.",
@@ -1099,6 +1100,8 @@ export function kinWorkAssignees(input: {
   readonly people: ReadonlyArray<KinPerson> | null;
   readonly names: KinWorkNames;
   readonly current: KinWorkPrincipal | null;
+  /** People whose device still opens Kin; when given, others are offered only if they hold it now. */
+  readonly joined?: ReadonlyArray<KinPersonId> | null;
 }): {
   readonly leads: ReadonlyArray<KinWorkAssignee>;
   readonly people: ReadonlyArray<KinWorkAssignee>;
@@ -1113,8 +1116,15 @@ export function kinWorkAssignees(input: {
   });
   const org = input.orgs?.orgs.find((held) => held.orgId === input.orgId);
   const me = input.orgs?.me.find((held) => held.orgId === input.orgId)?.personId;
+  const joined = input.joined == null ? null : new Set(input.joined);
   const others = (input.people ?? [])
     .filter((person) => person.personId !== me)
+    .filter(
+      (person) =>
+        joined === null ||
+        joined.has(person.personId) ||
+        kinWorkSamePrincipal({ _tag: "person", personId: person.personId }, current),
+    )
     .map((person) => view({ _tag: "person", personId: person.personId }));
   return {
     leads: (org?.agents ?? [])
@@ -1326,8 +1336,24 @@ export function kinWorkSettled(
 }
 
 /** Adding a task and giving one to someone, each answered with the task or a reason in words. */
+/**
+ * The host's latest answers to the owner's changes, per task, shared by every screen on one host
+ * and org, so a screen whose own read is behind still sends the revision the host is at.
+ */
+export interface KinWorkAnswers {
+  readonly get: (key: KinRecordKey) => KinRecordDetail | undefined;
+  readonly put: (item: KinRecordDetail) => void;
+}
+
+/** A task as held, or the host's newer answer to a change made to it from any screen. */
+export function kinWorkNewest<R extends KinRecord>(record: R, answers?: KinWorkAnswers): R {
+  const answer = answers?.get(record.key);
+  return answer !== undefined && answer.rev > record.rev ? { ...record, ...answer } : record;
+}
+
 export function createKinWorkActions(options: {
   readonly orgId: KinOrgId;
+  readonly answers?: KinWorkAnswers;
   readonly create: (input: KinWorkCreateInput) => Sent<KinRecordDetail>;
   readonly assign: (input: KinWorkAssignInput) => Sent<KinRecordDetail>;
   /** Reads a task again after the host refused a change to it. */
@@ -1346,11 +1372,13 @@ export function createKinWorkActions(options: {
       item: { readonly key: KinRecordKey; readonly rev: number },
       to: KinWorkPrincipal,
     ): Promise<KinWorkChangeResult> => {
+      const rev = Math.max(item.rev, options.answers?.get(item.key)?.rev ?? 0);
       const outcome = kinWorkSettled(
-        await options.assign({ orgId, key: item.key, to, rev: item.rev }),
+        await options.assign({ orgId, key: item.key, to, rev }),
         "give",
       );
-      if (!outcome.ok) options.reread(item.key);
+      if (outcome.ok) options.answers?.put(outcome.item);
+      else options.reread(item.key);
       return outcome;
     },
   };

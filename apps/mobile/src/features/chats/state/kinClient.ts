@@ -44,6 +44,7 @@ import {
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
 import { Atom, AsyncResult, AtomRegistry } from "effect/reactivity";
 
@@ -92,6 +93,7 @@ function guardedRead<Input, A, E>(command: {
     Effect.gen(function* () {
       const registry = yield* AtomRegistry.AtomRegistry;
       const environmentId = yield* currentEnvironmentId;
+      // A caller's timeout abandons this promise without cancelling the request; the session bounds it.
       const result = yield* Effect.promise(() => command.run(registry, { environmentId, input }));
       return yield* result._tag === "Success"
         ? Effect.succeed(result.value)
@@ -235,13 +237,39 @@ const companyProfileRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
 });
 const readCompanyProfile = guardedRead(companyProfileRead);
 
+// One per host and org, so a retry reaches the running counts stream without restarting it.
+const workRetries = new Map<string, PubSub.PubSub<void>>();
+const workRetriesOf = (environmentId: EnvironmentId, orgId: KinOrgId) => {
+  const key = JSON.stringify([environmentId, orgId]);
+  let retries = workRetries.get(key);
+  if (retries === undefined) {
+    // Taps while a read runs fold into one more read.
+    retries = Effect.runSync(PubSub.sliding<void>(1));
+    workRetries.set(key, retries);
+  }
+  return retries;
+};
+
+/** Reads Work's counts again inside the running stream, keeping what it holds meanwhile. */
+export const retryKinWorkLive = (environmentId: EnvironmentId, orgId: KinOrgId) =>
+  Effect.runSync(PubSub.publish(workRetriesOf(environmentId, orgId), undefined));
+
 /** Work's change number and counts, kept current by the host's own announcements. */
 const workLive = createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {
   label: KIN_WORK_LABEL,
   subscribe: (input: KinWorkSubscribeInput) =>
-    kinWorkLiveStream(input, (summaryInput) =>
-      readWorkSummary(summaryInput).pipe(
-        Effect.provideService(AtomRegistry.AtomRegistry, appAtomRegistry),
+    kinWorkLiveStream(
+      input,
+      (summaryInput) =>
+        readWorkSummary(summaryInput).pipe(
+          Effect.provideService(AtomRegistry.AtomRegistry, appAtomRegistry),
+        ),
+      Stream.unwrap(
+        currentEnvironmentId.pipe(
+          Effect.map((environmentId) =>
+            Stream.fromPubSub(workRetriesOf(environmentId, input.orgId)),
+          ),
+        ),
       ),
     ),
 });

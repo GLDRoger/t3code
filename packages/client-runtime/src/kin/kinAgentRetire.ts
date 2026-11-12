@@ -151,15 +151,15 @@ export function kinRetiredChatLine(name: string | null, canRestore: boolean): st
     : `${who} has been retired, so it won't see new messages.`;
 }
 
-/** What a retired agent's chat says when nothing was ever written in it. */
+/**
+ * What a retired agent's empty chat says: never written in, or cleared. The line over the
+ * composer already says it is retired, so this says only what the chat holds.
+ */
 export function kinRetiredEmptyChat(name: string): {
   readonly title: string;
   readonly detail: string;
 } {
-  return {
-    title: "No messages",
-    detail: `Nothing was said in this chat before ${name} was retired.`,
-  };
+  return { title: "No messages", detail: `There's nothing here from you or ${name}.` };
 }
 
 /** Said in a group whose answering agent is retired: nobody answers until another is picked. */
