@@ -17,6 +17,7 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { ServerConfig } from "../../config.ts";
 import * as ClaudeAdapterV2 from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import type { WorkerCredentials } from "../claudeConfinement.ts";
+import * as WorkerPath from "./workerPath.ts";
 import * as WorkNetwork from "./workNetwork.ts";
 import * as WorkSandbox from "./workSandbox.ts";
 import * as WorkSandboxProbe from "./workSandboxProbe.ts";
@@ -131,6 +132,7 @@ it("the check runs the real session's options: only the model endpoint, key, hom
     confinement: hook,
     environment: env,
     place: { home: "/home/kin/.t3/kin/worker-home", configDir: "/home/kin/.claude" },
+    paths: { PATH: "/opt/node/bin:/usr/bin" },
     shell: {
       sandbox: WorkSandbox.sandboxSettings(
         {
@@ -143,7 +145,6 @@ it("the check runs the real session's options: only the model endpoint, key, hom
         ["registry.npmjs.org"],
       ),
       tmp: "/tmp/kin-1",
-      bins: ["/opt/node/bin"],
     },
   };
   const real = WorkSession.workSessionOptions(session);
@@ -301,6 +302,126 @@ it.effect(
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
+it.effect("a private place inside any readable root stays denied, the worktree included", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const base = yield* fs.realPath(yield* fs.makeTempDirectoryScoped({ prefix: "kin-nested-" }));
+    for (const directory of ["home", "state", "tree/provider"])
+      yield* fs.makeDirectory(`${base}/${directory}`, { recursive: true });
+    yield* fs.writeFileString(`${base}/tree/provider/.credentials.json`, "fixture-login-only");
+    const roots = yield* WorkSandbox.shellRoots({
+      home: `${base}/home`,
+      stateDir: `${base}/state`,
+      system: ["/usr", "/bin", "/etc", "/opt"],
+      providerHomes: [`${base}/tree/provider`],
+      readPaths: [],
+      runtime: undefined,
+    });
+    const policy = WorkSandbox.sandboxSettings(
+      {
+        worktree: `${base}/tree`,
+        tmp: `${base}/task-tmp`,
+        gitCommonDir: `${base}/git`,
+        denied: roots.denied,
+        readable: roots.readable,
+      },
+      [],
+    );
+    assert.include(policy.filesystem?.denyRead ?? [], `${base}/tree/provider`);
+    // A private place no readable root holds is already shut by the denial of `/`.
+    assert.notInclude(policy.filesystem?.denyRead ?? [], `${base}/state`);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "a worker's PATH and the paths it loads are built here, and nothing a worker writes is on them",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const base = yield* fs.realPath(yield* fs.makeTempDirectoryScoped({ prefix: "kin-path-" }));
+      const tree = `${base}/tree`;
+      for (const directory of [
+        `${tree}/bin`,
+        `${tree}/certs`,
+        `${base}/node/bin`,
+        `${base}/tools/typst`,
+        `${base}/claude`,
+        `${base}/owner/bin`,
+        `${base}/certs`,
+      ])
+        yield* fs.makeDirectory(directory, { recursive: true });
+      yield* fs.writeFileString(`${base}/node/bin/node`, "");
+      yield* fs.writeFileString(`${base}/claude/claude`, "");
+      yield* fs.writeFileString(`${tree}/ca.pem`, "");
+      yield* fs.writeFileString(`${base}/ca.pem`, "");
+      yield* fs.symlink(`${tree}/bin`, `${base}/linked-bin`);
+      yield* fs.symlink(`${tree}/certs`, `${base}/linked-certs`);
+      const built = yield* WorkerPath.workerPaths({
+        providerEnv: {
+          PATH: `${tree}/bin:/usr/bin:relative`,
+          SHELL: `${tree}/bin/bash`,
+          TMPDIR: `${tree}/bin`,
+          NODE_EXTRA_CA_CERTS: `${tree}/ca.pem`,
+          SSL_CERT_FILE: `${base}/ca.pem`,
+          SSL_CERT_DIR: `${base}/linked-certs`,
+        },
+        claude: `${base}/claude/claude`,
+        toolDirs: [`${base}/tools/typst`, `${base}/tools/gone`],
+        ownerPath: [
+          `${tree}/bin`,
+          base,
+          `${base}/linked-bin`,
+          "relative/bin",
+          `${base}/missing`,
+          `${base}/owner/bin`,
+        ],
+        writable: [tree],
+      }).pipe(Effect.provideService(HostProcess.ExecutablePath, `${base}/node/bin/node`));
+      const path = (built.env.PATH ?? "").split(":");
+      // Kin's own first, then the fixed system directories, then what the owner added.
+      assert.deepStrictEqual(path.slice(0, 3), [
+        `${base}/node/bin`,
+        `${base}/tools/typst`,
+        `${base}/claude`,
+      ]);
+      assert.strictEqual(path.at(-1), `${base}/owner/bin`);
+      const system = [
+        "/usr/local/sbin",
+        "/usr/local/bin",
+        "/usr/sbin",
+        "/usr/bin",
+        "/sbin",
+        "/bin",
+      ];
+      const real = yield* Effect.forEach(system, (entry) =>
+        fs.realPath(entry).pipe(Effect.orElseSucceed(() => entry)),
+      );
+      for (const entry of path.slice(3, -1)) assert.include(real, entry);
+      // Nothing of the provider's PATH, and no shell, CA or temp path a worker can write.
+      assert.isFalse(path.some((entry) => entry.startsWith(tree) || !entry.startsWith("/")));
+      // Kin's own tool that isn't installed yet is skipped quietly.
+      assert.notInclude(path, `${base}/tools/gone`);
+      assert.notInclude(built.dropped.join("\n"), "gone");
+      assert.strictEqual(built.env.SHELL, yield* fs.realPath("/bin/bash"));
+      assert.strictEqual(built.env.SSL_CERT_FILE, `${base}/ca.pem`);
+      for (const name of ["TMPDIR", "NODE_EXTRA_CA_CERTS", "SSL_CERT_DIR"])
+        assert.notProperty(built.env, name);
+      // Each left out is named: a worktree child, its parent, a link into it, relative, missing.
+      const dropped = built.dropped.join("\n");
+      for (const entry of [
+        `${tree}/bin`,
+        base,
+        `${base}/linked-bin`,
+        "relative/bin",
+        `${base}/missing`,
+        "TMPDIR",
+        "NODE_EXTRA_CA_CERTS",
+        "SSL_CERT_DIR",
+      ])
+        assert.include(dropped, entry, entry);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
 it.effect(
   "each provider home is resolved as its provider resolves it, relative ones included",
   () =>
@@ -367,10 +488,11 @@ const worktree = Effect.fn("WorkSandboxTest.worktree")(function* () {
 
 const prepared = Effect.fn("WorkSandboxTest.prepared")(function* (
   executable: string,
-  env: NodeJS.ProcessEnv,
+  envFor: NodeJS.ProcessEnv | ((tree: string) => NodeJS.ProcessEnv),
   credentials: WorkerCredentials = { _tag: "resolved", credentials: {} },
 ) {
   const tree = yield* worktree();
+  const env = typeof envFor === "function" ? envFor(tree) : envFor;
   const sandbox = yield* WorkSandbox.KinWorkSandbox;
   const { stateDir } = yield* ServerConfig;
   // What the server grants the worker when it starts; nothing else sets the network.
@@ -411,6 +533,7 @@ const live = <A, E>(
     | ChildProcessSpawner.ChildProcessSpawner
     | Scope.Scope
   >,
+  host: NodeJS.ProcessEnv = hostEnv,
 ) =>
   effect.pipe(
     Effect.provide(
@@ -421,10 +544,33 @@ const live = <A, E>(
     ),
     // The probe's own Linux-only checks run wherever the test does; nothing else differs.
     Effect.provideService(HostProcess.Platform, "linux"),
-    Effect.provideService(HostProcess.Environment, hostEnv),
+    Effect.provideService(HostProcess.Environment, host),
     Effect.scoped,
     Effect.provide(NodeServices.layer),
   );
+
+it.live(
+  "a worktree that holds, is, or sits in a protected place starts no worker, shell or not",
+  () =>
+    Effect.gen(function* () {
+      for (const [host, configDir] of [
+        [hostEnv, (tree: string) => `${tree}/provider`],
+        [hostEnv, (tree: string) => tree],
+        [{ ...hostEnv, KIN_WORKER_SHELL: "off" }, (tree: string) => `${tree}/provider`],
+        [{ ...hostEnv, KIN_WORKER_SHELL: "off" }, (tree: string) => `${tree}/..`],
+      ] as const) {
+        const { result, status } = yield* live(
+          prepared("/nonexistent/claude", (tree) => ({ PATH, CLAUDE_CONFIG_DIR: configDir(tree) })),
+          host,
+        );
+        assert.strictEqual(result._tag, "refused");
+        const reason = result._tag === "refused" ? result.reason : "";
+        assert.include(reason, "overlaps");
+        assert.isTrue(Option.getOrUndefined(status)?.refused);
+        assert.strictEqual(Option.getOrUndefined(status)?.reason, reason);
+      }
+    }),
+);
 
 it.live("a child whose sandbox can't start gets file tools only, and the owner can see why", () =>
   live(
@@ -500,6 +646,7 @@ it.live(
               environment: { PATH, HOME },
             },
             place: result.place,
+            paths: result.paths,
             domains: ["registry.npmjs.org"],
             readPaths: [],
             providerHomes: [],

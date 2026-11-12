@@ -2,8 +2,11 @@ import * as NodeOS from "node:os";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 
 import * as Confinement from "./claudeConfinement.ts";
 import { dreamTools } from "./dreaming/DreamIsolation.ts";
@@ -252,4 +255,118 @@ it.effect(
         assert.include(result._tag === "refused" ? result.reason : "", why);
       }
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "managed policy that exists but can't be read or parsed, or that runs anything, starts no worker",
+  () =>
+    Effect.gen(function* () {
+      const notFound = (file: string) =>
+        PlatformError.systemError({
+          _tag: "NotFound",
+          module: "FileSystem",
+          method: "readFile",
+          pathOrDescriptor: file,
+        });
+      // Only these two calls: whatever else the inspection would need, a fixture can't fake.
+      const inspect = (
+        platform: NodeJS.Platform,
+        files: Readonly<Record<string, string | Error>>,
+      ) => {
+        const found = (file: string) => {
+          const value = files[file];
+          return value === undefined
+            ? Effect.fail(notFound(file))
+            : value instanceof Error
+              ? Effect.fail(value)
+              : Effect.succeed(value);
+        };
+        return Effect.gen(function* () {
+          const managed = yield* Confinement.managedAuth({ CLAUDE_CONFIG_DIR: "/claude" });
+          return yield* Confinement.resolveWorkerCredentials({
+            auth: {},
+            managed,
+            providerEnv: {},
+          });
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            readDirectory: (directory: string) =>
+              Effect.map(found(directory), (listing) => listing.split("\n").filter(Boolean)),
+            readFileString: found,
+          } as unknown as FileSystem.FileSystem),
+          Effect.provide(Path.layer),
+          Effect.provideService(HostProcess.Platform, platform),
+          Effect.provideService(HostProcess.HomeDirectory, "/home/kin"),
+        );
+      };
+      const eacces = new Error("EACCES fixture");
+      // No managed file anywhere is fine; so is one that sets only the model.
+      assert.deepStrictEqual(yield* inspect("linux", {}), { _tag: "resolved", credentials: {} });
+      assert.deepStrictEqual(
+        yield* inspect("linux", { "/etc/claude-code/managed-settings.json": '{"model":"opus"}' }),
+        { _tag: "resolved", credentials: {} },
+      );
+      for (const [platform, files, why] of [
+        // The reviewer's fixture: every managed read fails with EACCES.
+        [
+          "linux",
+          {
+            "/etc/claude-code/managed-settings.d": eacces,
+            "/etc/claude-code/managed-settings.json": eacces,
+          },
+          "/etc/claude-code",
+        ],
+        ["linux", { "/etc/claude-code/managed-settings.json": eacces }, "managed-settings.json"],
+        ["linux", { "/etc/claude-code/managed-settings.d": eacces }, "managed-settings.d"],
+        ["linux", { "/etc/claude-code/managed-settings.json": "{not json" }, "managed-settings"],
+        [
+          "linux",
+          {
+            "/etc/claude-code/managed-settings.d": "10-team.json\n",
+            "/etc/claude-code/managed-settings.d/10-team.json": '{"apiKeyHelper":3}',
+          },
+          "10-team.json",
+        ],
+        ["linux", { "/claude/remote-settings.json": eacces }, "/claude/remote-settings.json"],
+        ["linux", { "/etc/claude-code/managed-mcp.json": eacces }, "managed-mcp.json"],
+        [
+          "darwin",
+          { "/Library/Managed Preferences": "com.anthropic.claudecode.plist\n" },
+          "com.anthropic.claudecode.plist",
+        ],
+        [
+          "darwin",
+          {
+            "/Library/Managed Preferences": "kin\n",
+            "/Library/Managed Preferences/kin": "com.anthropic.claudecode.plist\n",
+          },
+          "/Library/Managed Preferences/kin/com.anthropic.claudecode.plist",
+        ],
+        ["darwin", { "/Library/Managed Preferences": eacces }, "/Library/Managed Preferences"],
+        ["win32", {}, "registry"],
+      ] as const) {
+        const result = yield* inspect(platform, files);
+        assert.strictEqual(result._tag, "refused", why);
+        const reason = result._tag === "refused" ? result.reason : "";
+        assert.include(reason, "couldn't be inspected", why);
+        assert.include(reason, why, why);
+      }
+      // A managed setting that names a command, in any managed source, is refused by name.
+      for (const [file, settings, why] of [
+        ["/etc/claude-code/managed-settings.json", { statusLine: { command: "x" } }, "statusLine"],
+        ["/etc/claude-code/managed-settings.json", { hooks: { Stop: [] } }, "hooks"],
+        ["/etc/claude-code/managed-settings.json", { otelHeadersHelper: "x" }, "otelHeadersHelper"],
+        ["/etc/claude-code/managed-settings.json", { policyHelper: { path: "x" } }, "policyHelper"],
+        ["/etc/claude-code/managed-settings.json", { processWrapper: "x" }, "processWrapper"],
+        ["/etc/claude-code/managed-settings.json", { sandbox: { bwrapPath: "x" } }, "bwrapPath"],
+        ["/etc/claude-code/managed-settings.json", { forceLoginMethod: "gateway" }, "gateway"],
+        ["/claude/remote-settings.json", { fileSuggestion: { command: "x" } }, "fileSuggestion"],
+        ["/claude/remote-settings.json", { env: { CLAUDE_CODE_USE_VERTEX: "1" } }, "VERTEX"],
+        ["/etc/claude-code/managed-mcp.json", { mcpServers: { a: { command: "x" } } }, "MCP"],
+      ] as const) {
+        const result = yield* inspect("linux", { [file]: JSON.stringify(settings) });
+        assert.strictEqual(result._tag, "refused", why);
+        assert.include(result._tag === "refused" ? result.reason : "", why, why);
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
 );

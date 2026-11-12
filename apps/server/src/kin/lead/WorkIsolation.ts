@@ -36,7 +36,7 @@ export const claudeQueryRunnerWith = <E, R, E2, R2>(
           // The owner's helper runs here, never in the child, which would run it in the worktree.
           const credentials = yield* resolveWorkerCredentials({
             auth: yield* confiner.ownerAuth(input.options.env),
-            managed: yield* confiner.managedAuth,
+            managed: yield* confiner.managedAuth(input.options.env),
             providerEnv,
           }).pipe(Effect.provide(spawning));
           // The worktree's real path; one that doesn't resolve leaves the file tools nothing.
@@ -68,6 +68,7 @@ export const claudeQueryRunnerWith = <E, R, E2, R2>(
                 credentials: resolved,
                 confinement,
                 place: prepared.place,
+                paths: prepared.paths,
                 shell,
               }),
               scopeProperties,
