@@ -218,10 +218,20 @@ function KinTeammateDetails(props: {
                 icon="xmark"
                 disabled={busy}
                 onPress={() => {
-                  if (teammate.inviteId === null) return;
-                  // Shown at once; the Team page says so if the host refuses.
-                  void actions.cancelInvite(teammate.inviteId);
-                  if (teammate.personId === null) props.onClose();
+                  const { inviteId } = teammate;
+                  if (inviteId === null) return;
+                  Dialog.confirm({
+                    title: `${offered.cancel?.label ?? "Cancel invite"}?`,
+                    message: `The link you gave ${teammate.name} stops working. You can make a new one later.`,
+                    confirmText: offered.cancel?.label ?? "Cancel invite",
+                    cancelText: "Keep it",
+                    destructive: true,
+                    onConfirm: () => {
+                      // Shown at once; the Team page says so if the host refuses.
+                      void actions.cancelInvite(inviteId);
+                      if (teammate.personId === null) props.onClose();
+                    },
+                  });
                 }}
               />
             </View>

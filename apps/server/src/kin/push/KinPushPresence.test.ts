@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import { AuthSessionId, AuthStandardClientScopes, KinChatId } from "@t3tools/contracts";
+import { AuthSessionId, AuthStandardClientScopes, KinAgentId, KinChatId } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
@@ -10,7 +10,11 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
+import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
+import * as Repository from "../chat/KinChatRepository.ts";
+import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as Chat from "../chat/layer.ts";
 import { dormantLeadDependencies } from "../lead/layer.testkit.ts";
 import * as Kin from "../layer.ts";
@@ -65,9 +69,32 @@ const root = Kin.layer.pipe(
   Layer.provideMerge(Sqlite.layerMemory),
 );
 
+const seedDirect = Effect.gen(function* () {
+  const services = Option.getOrThrow((yield* Kin.KinServer).services);
+  const repo = Context.get(services, Repository.KinChatRepository);
+  yield* pairSession(sessionId);
+  const person = (yield* Context.get(services, KinIdentity).resolve(session))[0];
+  assert.isDefined(person);
+  const agentId = KinAgentId.make("lead");
+  yield* repo.insertAgent({
+    ...person,
+    agentId,
+    ownerPersonId: person.personId,
+    displayName: "Lead",
+    role: "lead",
+    createdAt: "1970-01-01T00:00:00.000Z",
+  });
+  const direct = yield* Context.get(services, KinChatService).createDirect(person, {
+    ...person,
+    agentId,
+  });
+  return { services, repo, direct };
+});
+
 it.effect("marks the chat open for the watching session through the real handler", () =>
   Effect.gen(function* () {
-    const services = Option.getOrThrow((yield* Kin.KinServer).services);
+    const { services, direct } = yield* seedDirect;
+    const chatId = direct.chatId;
     const presence = Context.get(services, Presence.KinPushPresence);
     const handlers = yield* makeKinPushHandlers(session);
     const beat = yield* Deferred.make<void>();
@@ -82,5 +109,29 @@ it.effect("marks the chat open for the watching session through the real handler
 
     yield* Fiber.interrupt(watch);
     assert.isFalse(yield* presence.isWatching(sessionId, chatId));
+  }).pipe(Effect.provide(root)),
+);
+
+it.effect("refuses to watch a chat the caller is not in", () =>
+  Effect.gen(function* () {
+    const { services, repo, direct } = yield* seedDirect;
+    const presence = Context.get(services, Presence.KinPushPresence);
+    const handlers = yield* makeKinPushHandlers(session);
+    const strangers = KinChatId.make("chat_strangers");
+    yield* repo.createChat({
+      ...direct,
+      chatId: strangers,
+      kind: "project_group",
+      directKey: null,
+    });
+
+    for (const chatId of [strangers, KinChatId.make("chat_missing")]) {
+      const refused = yield* handlers["kin.push.watch"]({ chatId }).pipe(
+        Stream.runDrain,
+        Effect.flip,
+      );
+      assert.include(refused, { _tag: "KinPushError", reason: "not_member" });
+      assert.isFalse(yield* presence.isWatching(sessionId, chatId));
+    }
   }).pipe(Effect.provide(root)),
 );
