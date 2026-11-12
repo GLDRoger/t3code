@@ -6,7 +6,9 @@ import {
   EnvironmentId,
   KinAgentId,
   type KinChatError,
+  KinChatId,
   KinDocsRpcs,
+  KinMessageId,
   KinOrgId,
   KinPersonId,
   ProviderInstanceId,
@@ -168,6 +170,7 @@ const newDoc = Effect.fn("KinDocsTest.newDoc")(function* (
     },
   );
 });
+const reasonOf = (error: object) => ("reason" in error ? error.reason : undefined);
 const section = (body: string, id: string) => sectionsOf(body).find((part) => part.id === id)!;
 
 it.effect(
@@ -305,7 +308,7 @@ it.effect(
       // A rewrite from an old version is refused the same way an old hash is.
       const fresh = `# Invented runbook\n\n${Array.from({ length: 30 }, (_, index) => `Line ${index}`).join("\n")}`;
       assert.strictEqual((yield* rewrite(fresh)).version.version, 2);
-      assert.strictEqual((yield* Effect.flip(rewrite(`${fresh}\nMore`, 1))).reason, "conflict");
+      assert.strictEqual(reasonOf(yield* Effect.flip(rewrite(`${fresh}\nMore`, 1))), "conflict");
 
       // A short doc may be rewritten for one line.
       const short = yield* newDoc("Invented note.\n\nSecond line.", { title: "Invented note" });
@@ -356,7 +359,9 @@ it.effect("a restore is a new version that brings the old text back, and is undo
     assert.strictEqual(redone.title, "Invented launch plan v2");
     // A restore from a stale view is refused; the same restore again returns what it made.
     assert.strictEqual(
-      (yield* Effect.flip(OwnerDocs.restore(people, { orgId, key, version: 1, latest: 3 }))).reason,
+      reasonOf(
+        yield* Effect.flip(OwnerDocs.restore(people, { orgId, key, version: 1, latest: 3 })),
+      ),
       "conflict",
     );
     assert.strictEqual(
@@ -386,9 +391,11 @@ it.effect("a restore is a new version that brings the old text back, and is undo
     );
     // Only the owner reads or restores.
     assert.strictEqual(
-      (yield* Effect.flip(
-        OwnerDocs.get([{ _tag: "person", orgId, personId: mateId }], { orgId, key }),
-      )).reason,
+      reasonOf(
+        yield* Effect.flip(
+          OwnerDocs.get([{ _tag: "person", orgId, personId: mateId }], { orgId, key }),
+        ),
+      ),
       "not_allowed",
     );
     assert.strictEqual((yield* Docs.versionOf(orgId, recordId))!.version, 4);
@@ -419,16 +426,21 @@ it.effect("a version's provenance comes from stored rows, never from what the ag
       by: { _tag: "agent", agentId: lead },
       via: "lead",
       wakeupId: "wake",
-      chatId: "lead-chat",
-      answered: { messageId: "ask", author: { _tag: "person", personId: ownerId } },
+      chatId: KinChatId.make("lead-chat"),
+      answered: {
+        messageId: KinMessageId.make("ask"),
+        author: { _tag: "person", personId: ownerId },
+      },
       audience: "owner_only",
     });
     assert.strictEqual(version.summary, "Wrote the plan");
     // The event must be this turn's own.
     assert.strictEqual(
-      (yield* Effect.flip(
-        LeadDocs.create(scopeOf(lead), { ...forged, sourceEventId: "elsewhere" }),
-      )).reason,
+      reasonOf(
+        yield* Effect.flip(
+          LeadDocs.create(scopeOf(lead), { ...forged, sourceEventId: "elsewhere" }),
+        ),
+      ),
       "invalid_state",
     );
     // Its outline, with the hashes an edit names, comes back with it.
@@ -459,7 +471,7 @@ it.effect(
         assert.isFalse(yield* sharedToolAllowed(shared, tool, {}), tool);
       }
       // The writes check again inside, so a turn that turned shared mid-call writes nothing.
-      const edited: KinChatError = yield* Effect.flip(
+      const edited = yield* Effect.flip(
         LeadDocs.edit(scopeOf(lead), {
           key: created.row.key,
           sourceEventId: "ask-event",
@@ -467,7 +479,7 @@ it.effect(
           operations: [{ op: "append", text: "More." }],
         }),
       );
-      assert.strictEqual(edited.reason, "not_allowed");
+      assert.strictEqual(reasonOf(edited), "not_allowed");
       assert.strictEqual((yield* Docs.versionOf(orgId, created.row.recordId))!.version, 1);
       for (const rpc of KinDocsRpcs)
         assert.isTrue(
@@ -505,14 +517,16 @@ it.effect("an agent restores a doc only when the owner asked, in a turn only the
     yield* sql`UPDATE kin_events SET json = json_set(json, '$.provenance', json('{"_tag":"system"}')),
       tag = 'routine' WHERE event_id = 'ask-event'`;
     assert.strictEqual(
-      (yield* Effect.flip(
-        LeadDocs.restore(scopeOf(lead), {
-          key: made.key,
-          sourceEventId: "ask-event",
-          version: 2,
-          latest: 3,
-        }),
-      )).reason,
+      reasonOf(
+        yield* Effect.flip(
+          LeadDocs.restore(scopeOf(lead), {
+            key: made.key,
+            sourceEventId: "ask-event",
+            version: 2,
+            latest: 3,
+          }),
+        ),
+      ),
       "not_allowed",
     );
   }).pipe(Effect.provide(layer)),
@@ -524,7 +538,7 @@ it.effect("another org's doc, by key or id, looks like no doc at all", () =>
     const created = yield* newDoc();
     const { key, recordId } = created.row;
     for (const ref of [{ key }, { recordId }])
-      assert.strictEqual((yield* Effect.flip(Docs.docRow(elsewhere, ref))).reason, "not_found");
+      assert.strictEqual(reasonOf(yield* Effect.flip(Docs.docRow(elsewhere, ref))), "not_found");
     const edit: KinChatError = yield* Effect.flip(
       Docs.edit(
         elsewhere,
@@ -552,7 +566,7 @@ it.effect("another org's doc, by key or id, looks like no doc at all", () =>
       owner: { _tag: "agent", agentId: lead },
     });
     assert.strictEqual(
-      (yield* Effect.flip(Docs.docRow(orgId, { key: entry.row.key }))).reason,
+      reasonOf(yield* Effect.flip(Docs.docRow(orgId, { key: entry.row.key }))),
       "not_found",
     );
   }).pipe(Effect.provide(layer)),

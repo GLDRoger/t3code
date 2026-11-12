@@ -51,6 +51,8 @@ export default Effect.gen(function* () {
     part TEXT NOT NULL CHECK (part IN ('public', 'sensitive')),
     UNIQUE (org_id, record_id, part)
   )`;
+  const indexed = yield* sql`SELECT 1 FROM sqlite_master WHERE name = 'kin_search'`;
+  if (indexed.length > 0) return;
   // An SQLite without FTS5 fails with SQLITE_ERROR; search then scans. Other failures fail here,
   // so the next start retries.
   const created = yield* sql`CREATE VIRTUAL TABLE kin_search USING fts5(

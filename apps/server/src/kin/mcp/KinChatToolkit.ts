@@ -46,7 +46,12 @@ const shared = {
   dependencies: [KinServer, McpInvocationContext, ThreadManagementService],
 };
 // A lead posts text; files come only from a person's composer.
-const { attachments: _attachments, body: _body, ...agentSendFields } = KinMessagesSendInput.fields;
+const {
+  attachments: _attachments,
+  body: _body,
+  refs: _refs,
+  ...agentSendFields
+} = KinMessagesSendInput.fields;
 const post = Tool.make("kin_chat_post", {
   ...shared,
   description:

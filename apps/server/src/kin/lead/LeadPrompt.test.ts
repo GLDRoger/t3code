@@ -2088,7 +2088,9 @@ it.effect(
         { key: "D-9", section: null },
         { key: "D-1", section: "no-such-section" },
       ])
-        expect((yield* Effect.flip(send(`ghost-${ref.key}`, [ref]))).reason).toBe("not_found");
+        expect(yield* Effect.flip(send(`ghost-${ref.key}`, [ref]))).toMatchObject({
+          reason: "not_found",
+        });
       const prompt = yield* KinLeadPrompt;
       const events = [event("ask")];
       yield* stored(input.wakeupId, events);
@@ -2118,16 +2120,16 @@ it.effect(
         mutedUntil: null,
       });
       expect(
-        (yield* Effect.flip(
+        yield* Effect.flip(
           send("mate", [{ key: "D-1", section: null }], {
             personId: teammateId,
             memberId: teammateMember,
           }),
-        )).reason,
-      ).toBe("not_allowed");
-      expect((yield* Effect.flip(send("pay", [{ key: "D-2", section: null }]))).reason).toBe(
-        "not_allowed",
-      );
+        ),
+      ).toMatchObject({ reason: "not_allowed" });
+      expect(yield* Effect.flip(send("pay", [{ key: "D-2", section: null }]))).toMatchObject({
+        reason: "not_allowed",
+      });
       yield* send("ask-2", [{ key: "D-1", section: "pricing" }]);
       const shared = [event("ask-2")];
       yield* stored("shared-wake", shared);
