@@ -1,12 +1,18 @@
 import {
+  KIN_STATEMENT_CARD_ROWS,
   KIN_STATEMENT_PASSWORD_CARD,
   KinChatError,
   KIN_STATEMENT_REVIEW_CARD,
   KinStatementPasswordCard,
   KinStatementReviewCard,
   type KinOrgId,
-  type KinStatementAction,
   type KinStatementApplyInput,
+  type KinStatementRowChoice,
+  type KinStatementRowsInput,
+  type KinStatementRowsResult,
+  type KinStatementSection,
+  type KinStatementSelectChange,
+  type KinStatementSelection,
   type KinStatementTarget,
   type KinWidget,
 } from "@t3tools/contracts";
@@ -16,8 +22,9 @@ import * as Schema from "effect/Schema";
 import { KIN_SEND_FAILED_TEXT } from "./kinDeferralPresentation.ts";
 
 /**
- * A statement's two cards. The review card holds the owner's ticks and picks on the device until
- * Confirm, which sends exactly the rows the card showed; the server refuses any other set.
+ * A statement's two cards. The owner's ticks and picks live on the server, keyed to the review
+ * they were made on, so Confirm applies them whole, rows this device never loaded included. A
+ * tap shows at once and is sent in order; the server's reply is the card from then on.
  */
 
 export interface KinStatementReviewView {
@@ -45,129 +52,256 @@ export function kinStatementPasswordView(widget: KinWidget): KinStatementPasswor
   return Option.isSome(card) ? { orgId: widget.orgId, card: card.value } : null;
 }
 
-export type KinStatementRowChoice = KinStatementAction | "later";
+type ReviewCard = KinStatementReviewCard;
+type MatchedRow = ReviewCard["matched"][number];
+type ChooseRow = ReviewCard["choose"][number];
+type UnmatchedRow = ReviewCard["unmatched"][number];
+export type { KinStatementRowChoice, KinStatementSelection };
 
-/** What the owner changed on the card; everything else is what Kin proposed. */
-export interface KinStatementSelection {
-  /** Matched rows the owner unticked: they stay unexplained for later. */
-  readonly unticked: ReadonlySet<number>;
-  /** Rows with several candidates: the one picked, by index. Unpicked rows wait for later. */
-  readonly picks: ReadonlyMap<number, number>;
-  /** What the owner made of unmatched rows; one left alone waits for later. */
-  readonly actions: ReadonlyMap<number, KinStatementRowChoice>;
+/** A card from before selections were kept on the server starts from Kin's proposal. */
+export const kinStatementSelectionOf = (card: ReviewCard): KinStatementSelection =>
+  card.selection ?? {
+    revision: 0,
+    ticked: card.heldBack === undefined ? "all" : "none",
+    except: [],
+    picks: [],
+    suggestions: false,
+    actions: [],
+  };
+
+/** The newer of two copies of one card: a reply to a tap can arrive before the card's push. */
+export const kinStatementNewer = (card: ReviewCard, reply: ReviewCard | null): ReviewCard =>
+  reply !== null &&
+  reply.hash === card.hash &&
+  kinStatementSelectionOf(reply).revision > kinStatementSelectionOf(card).revision
+    ? reply
+    : card;
+
+/** What a tap does, shown before the server answers; the server's reply then replaces it. */
+export function kinStatementChange(
+  selection: KinStatementSelection,
+  change: KinStatementSelectChange,
+  suggested?: (row: number) => KinStatementRowChoice | undefined,
+): KinStatementSelection {
+  switch (change._tag) {
+    case "tick": {
+      const except = selection.except.filter((row) => row !== change.row);
+      return {
+        ...selection,
+        except: (selection.ticked === "all") === change.ticked ? except : [...except, change.row],
+      };
+    }
+    case "tickAll":
+      return { ...selection, ticked: change.ticked ? "all" : "none", except: [] };
+    case "pick": {
+      const picks = selection.picks.filter((one) => one.row !== change.row);
+      return {
+        ...selection,
+        picks:
+          change.option === null ? picks : [...picks, { row: change.row, option: change.option }],
+      };
+    }
+    case "action":
+      return {
+        ...selection,
+        actions: [
+          ...selection.actions.filter((one) => one.row !== change.row),
+          { row: change.row, action: change.action },
+        ],
+      };
+    case "suggestions":
+      return {
+        ...selection,
+        suggestions: true,
+        actions: selection.actions.filter((one) => suggested?.(one.row) === "later"),
+      };
+  }
 }
 
-export const KIN_STATEMENT_EMPTY_SELECTION: KinStatementSelection = {
-  unticked: new Set(),
-  picks: new Map(),
-  actions: new Map(),
-};
+export const kinStatementTicked = (selection: KinStatementSelection, row: number) =>
+  (selection.ticked === "all") !== selection.except.includes(row);
 
-export const kinStatementToggle = (
-  selection: KinStatementSelection,
-  row: number,
-): KinStatementSelection => {
-  const unticked = new Set(selection.unticked);
-  if (unticked.has(row)) unticked.delete(row);
-  else unticked.add(row);
-  return { ...selection, unticked };
-};
-
-/** Picking the picked candidate again unpicks it. */
-export const kinStatementPick = (
-  selection: KinStatementSelection,
-  row: number,
-  option: number,
-): KinStatementSelection => {
-  const picks = new Map(selection.picks);
-  if (picks.get(row) === option) picks.delete(row);
-  else picks.set(row, option);
-  return { ...selection, picks };
-};
-
-export const kinStatementSetAction = (
-  selection: KinStatementSelection,
-  row: number,
-  action: KinStatementRowChoice,
-): KinStatementSelection => ({
-  ...selection,
-  actions: new Map(selection.actions).set(row, action),
-});
+export const kinStatementPickOf = (selection: KinStatementSelection, row: number) =>
+  selection.picks.find((one) => one.row === row)?.option;
 
 export const kinStatementActionOf = (
   selection: KinStatementSelection,
-  row: KinStatementReviewCard["unmatched"][number],
-): KinStatementRowChoice => selection.actions.get(row.row) ?? "later";
+  row: UnmatchedRow,
+): KinStatementRowChoice =>
+  selection.actions.find((one) => one.row === row.row)?.action ??
+  (selection.suggestions ? row.suggestion : "later");
 
-/** Unmatched rows where Kin suggests something other than what the card now says. */
+/** The other row an entry is already picked for: one entry answers one row. */
+export function kinStatementTakenBy(
+  rows: ReadonlyArray<ChooseRow>,
+  selection: KinStatementSelection,
+  row: number,
+  target: KinStatementTarget,
+): ChooseRow | undefined {
+  return rows.find((other) => {
+    if (other.row === row) return false;
+    const picked = other.options[kinStatementPickOf(selection, other.row) ?? -1];
+    return picked?.kind === target.kind && picked.key === target.key;
+  });
+}
+
+/** How many rows a section has, loaded or not. */
+export const kinStatementTotal = (card: ReviewCard, section: KinStatementSection) =>
+  card.counts?.[section] ?? card[section].length;
+
+/** Unmatched rows shown where Kin suggests something other than what the card now says. */
 export const kinStatementOpenSuggestions = (
-  card: KinStatementReviewCard,
+  rows: ReadonlyArray<UnmatchedRow>,
   selection: KinStatementSelection,
 ) =>
-  card.unmatched.filter(
+  rows.filter(
     (one) => one.suggestion !== "later" && kinStatementActionOf(selection, one) !== one.suggestion,
   ).length;
 
-/** Takes Kin's suggestion for every unmatched row: one tap instead of fifty. */
-export const kinStatementUseSuggestions = (
-  card: KinStatementReviewCard,
+/** Whether "Use Kin's suggestions" still changes anything, rows not loaded yet included. */
+export const kinStatementSuggestionsLeft = (
+  card: ReviewCard,
+  rows: ReadonlyArray<UnmatchedRow>,
   selection: KinStatementSelection,
-): KinStatementSelection => {
-  const actions = new Map(selection.actions);
-  for (const one of card.unmatched)
-    if (one.suggestion !== "later") actions.set(one.row, one.suggestion);
-  return { ...selection, actions };
+) =>
+  kinStatementOpenSuggestions(rows, selection) > 0 ||
+  (!selection.suggestions && kinStatementTotal(card, "unmatched") > rows.length);
+
+type Loaded = {
+  readonly matched: ReadonlyArray<MatchedRow>;
+  readonly choose: ReadonlyArray<ChooseRow>;
+  readonly unmatched: ReadonlyArray<UnmatchedRow>;
 };
 
-/** The apply request for what the card shows with the owner's changes. */
-export function kinStatementApplyInput(
+/** What one device holds of a review card: taps not answered yet, the last reply, more rows. */
+export interface KinStatementLocal {
+  readonly hash: string;
+  readonly reply: ReviewCard | null;
+  readonly queued: ReadonlyArray<KinStatementSelectChange>;
+  readonly more: Loaded;
+}
+
+export const kinStatementLocal = (hash: string): KinStatementLocal => ({
+  hash,
+  reply: null,
+  queued: [],
+  more: { matched: [], choose: [], unmatched: [] },
+});
+
+/**
+ * The card as this device shows it. Every change is absolute (tick this row, pick that), so one
+ * applied both by a push and by the queue lands the same; a new read starts over.
+ */
+export function kinStatementShown(card: ReviewCard, held: KinStatementLocal) {
+  const local = held.hash === card.hash ? held : kinStatementLocal(card.hash);
+  const shown = kinStatementNewer(card, local.reply);
+  const rows: Loaded = {
+    matched: [...shown.matched, ...local.more.matched],
+    choose: [...shown.choose, ...local.more.choose],
+    unmatched: [...shown.unmatched, ...local.more.unmatched],
+  };
+  const suggested = (row: number) => rows.unmatched.find((one) => one.row === row)?.suggestion;
+  const selection = local.queued.reduce(
+    (sum, change) => kinStatementChange(sum, change, suggested),
+    kinStatementSelectionOf(shown),
+  );
+  return { card: shown, rows, selection, sending: local.queued.length > 0 };
+}
+
+export const kinStatementQueue = (
+  local: KinStatementLocal,
+  hash: string,
+  change: KinStatementSelectChange,
+): KinStatementLocal => {
+  const held = local.hash === hash ? local : kinStatementLocal(hash);
+  return { ...held, queued: [...held.queued, change] };
+};
+
+/** The server answered the oldest tap: its card, or nothing when it refused. */
+export const kinStatementAnswered = (
+  local: KinStatementLocal,
+  hash: string,
+  reply: ReviewCard | null,
+): KinStatementLocal =>
+  local.hash !== hash
+    ? local
+    : {
+        ...local,
+        queued: local.queued.slice(1),
+        reply:
+          reply !== null && kinStatementNewer(reply, local.reply) === reply ? reply : local.reply,
+      };
+
+export const kinStatementLoaded = (
+  local: KinStatementLocal,
+  hash: string,
+  page: KinStatementRowsResult,
+): KinStatementLocal => {
+  const held = local.hash === hash ? local : kinStatementLocal(hash);
+  return {
+    ...held,
+    more: {
+      matched: [...held.more.matched, ...page.matched],
+      choose: [...held.more.choose, ...page.choose],
+      unmatched: [...held.more.unmatched, ...page.unmatched],
+    },
+  };
+};
+
+/** The apply request for the selection as the owner last saw it. */
+export const kinStatementApplyInput = (
   view: KinStatementReviewView,
   selection: KinStatementSelection,
-): KinStatementApplyInput {
-  const { card } = view;
-  return {
-    orgId: view.orgId,
-    statementId: card.statementId,
-    hash: card.hash,
-    matched: card.matched.filter((one) => !selection.unticked.has(one.row)).map((one) => one.row),
-    chosen: card.choose.flatMap((one) => {
-      const option = selection.picks.get(one.row);
-      return option === undefined || one.options[option] === undefined
-        ? []
-        : [{ row: one.row, option }];
-    }),
-    actions: card.unmatched.flatMap((one) => {
-      const action = kinStatementActionOf(selection, one);
-      if (action === "later") return [];
-      return [
-        {
-          row: one.row,
-          action,
-          ...(action === "expense" && one.vendor !== undefined ? { vendor: one.vendor } : {}),
-          ...(action === "expense" &&
-          one.category !== undefined &&
-          card.categories.includes(one.category)
-            ? { category: one.category }
-            : {}),
-        },
-      ];
-    }),
-  };
-}
+): KinStatementApplyInput => ({
+  orgId: view.orgId,
+  statementId: view.card.statementId,
+  hash: view.card.hash,
+  revision: selection.revision,
+});
+
+/** The next page of a section, after the rows this device has. */
+export const kinStatementRowsInput = (
+  view: KinStatementReviewView,
+  section: KinStatementSection,
+  offset: number,
+): KinStatementRowsInput => ({
+  orgId: view.orgId,
+  statementId: view.card.statementId,
+  hash: view.card.hash,
+  section,
+  offset,
+  limit: KIN_STATEMENT_CARD_ROWS,
+});
 
 /** How many rows Confirm records, and its label: "Confirm all 14" while every match is ticked. */
 export function kinStatementConfirm(
-  view: KinStatementReviewView,
+  card: ReviewCard,
   selection: KinStatementSelection,
 ): { readonly count: number; readonly label: string } {
-  const input = kinStatementApplyInput(view, selection);
-  const count = input.matched.length + input.chosen.length + input.actions.length;
-  const all = selection.unticked.size === 0 && view.card.matched.length > 0;
+  // A card from before counts were kept carries every row, so its own lists count it.
+  const chosen = card.chosen ?? {
+    matched: card.matched.filter((one) => kinStatementTicked(selection, one.row)).length,
+    choose: card.choose.filter((one) => kinStatementPickOf(selection, one.row) !== undefined)
+      .length,
+    unmatched: card.unmatched.filter((one) => kinStatementActionOf(selection, one) !== "later")
+      .length,
+  };
+  const count = chosen.matched + chosen.choose + chosen.unmatched;
+  const all =
+    selection.ticked === "all" &&
+    selection.except.length === 0 &&
+    kinStatementTotal(card, "matched") > 0;
   return {
     count,
     label: count === 0 ? "Nothing to confirm" : all ? `Confirm all ${count}` : `Confirm ${count}`,
   };
 }
+
+/** Matched rows ticked now: what "Tick all" and "Untick all" decide between. */
+export const kinStatementAllTicked = (card: ReviewCard, selection: KinStatementSelection) =>
+  selection.ticked === "all" &&
+  selection.except.length === 0 &&
+  kinStatementTotal(card, "matched") > 0;
 
 export const KIN_STATEMENT_ACTION_LABELS: Record<KinStatementRowChoice, string> = {
   expense: "Expense",
@@ -198,7 +332,7 @@ export const kinStatementActionsFor = (
     ? ["expense", "transfer", "ignore", "later"]
     : ["transfer", "ignore", "later"];
 
-export type KinStatementSectionId = "matched" | "choose" | "unmatched";
+export type KinStatementSectionId = KinStatementSection;
 export const KIN_STATEMENT_SECTION_TITLES: Record<KinStatementSectionId, string> = {
   matched: "Matched",
   choose: "Pick a match",
@@ -207,24 +341,24 @@ export const KIN_STATEMENT_SECTION_TITLES: Record<KinStatementSectionId, string>
 /** Rows a section shows at once; the rest arrive a page at a time, never all 300 in one render. */
 export const KIN_STATEMENT_PAGE = 25;
 
-/** The sections a card shows, with what needs the owner open first. */
-/** An applied card shows what it recorded, not rows to decide again. */
+/**
+ * The sections a card shows, with what needs the owner open first. An applied or replaced card
+ * shows what it says, not rows to decide again.
+ */
 export function kinStatementSections(card: KinStatementReviewCard): ReadonlyArray<{
   readonly id: KinStatementSectionId;
   readonly count: number;
   readonly openAtFirst: boolean;
 }> {
-  if (card.status === "applied") return [];
-  const sections = [
-    { id: "matched" as const, count: card.matched.length },
-    { id: "choose" as const, count: card.choose.length },
-    { id: "unmatched" as const, count: card.unmatched.length },
-  ].filter((one) => one.count > 0);
+  if (card.status === "applied" || card.status === "replaced") return [];
+  const sections = (["matched", "choose", "unmatched"] as const)
+    .map((id) => ({ id, count: kinStatementTotal(card, id) }))
+    .filter((one) => one.count > 0);
+  const total = sections.reduce((sum, one) => sum + one.count, 0);
   return sections.map((one) => ({
     ...one,
     // A short card is read whole; a long one opens only where the owner must decide.
-    openAtFirst:
-      card.matched.length + card.choose.length + card.unmatched.length <= 8 || one.id === "choose",
+    openAtFirst: total <= 8 || one.id === "choose",
   }));
 }
 
@@ -232,10 +366,20 @@ export const kinStatementTargetLine = (target: KinStatementTarget) =>
   target.note === undefined ? target.label : `${target.label}, ${target.note.toLowerCase()}`;
 
 export function kinStatementStatusLines(card: KinStatementReviewCard): ReadonlyArray<string> {
-  if (card.status === "applied") return card.result ?? [];
-  if (card.status === "undone")
-    return ["Undone: nothing from this statement is recorded. Confirm again when it's right."];
-  return [];
+  switch (card.status) {
+    case "applied":
+      return card.result ?? [];
+    case "undone":
+      return (
+        card.result ?? [
+          "Undone: nothing from this statement is recorded. Confirm again when it's right.",
+        ]
+      );
+    case "replaced":
+      return ["Kin read this statement again: its newer card replaces this one."];
+    case "open":
+      return [];
+  }
 }
 
 export const kinStatementPasswordLines = (
@@ -255,6 +399,8 @@ export const kinStatementPasswordLines = (
       ];
     case "unreadable":
       return [card.detail ?? `Kin opened ${card.fileName} but couldn't read it.`];
+    case "limit":
+      return ["Too many wrong passwords for this file. Send the statement again to try once more."];
   }
 };
 
