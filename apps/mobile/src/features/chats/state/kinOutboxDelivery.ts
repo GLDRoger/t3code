@@ -1,3 +1,4 @@
+import { kinDocRefInput } from "@t3tools/client-runtime/kin/kinDocs";
 import { environmentSessionGenerationAtom } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -45,6 +46,7 @@ export const kinOutbox = createKinOutbox({
         body: record.body,
         ...(record.attachments === undefined ? {} : { attachments: record.attachments }),
         ...(record.mentions === undefined ? {} : { mentions: record.mentions }),
+        ...(record.refs === undefined ? {} : { refs: record.refs.map(kinDocRefInput) }),
       },
     });
     return result._tag === "Success"

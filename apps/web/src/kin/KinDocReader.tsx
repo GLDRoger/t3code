@@ -23,6 +23,7 @@ import {
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
+import { kinBodyMarkdown } from "@t3tools/client-runtime/kin/kinChatFeed";
 import ChatMarkdown from "../components/ChatMarkdown";
 import { Alert, AlertAction, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
@@ -314,7 +315,11 @@ export function KinDocReader(
             <p className="text-sm text-muted-foreground">This doc has no text yet.</p>
           ) : (
             <div ref={setArticle} className="leading-relaxed text-foreground">
-              <ChatMarkdown text={doc.body} cwd={undefined} environmentId={props.environmentId} />
+              <ChatMarkdown
+                text={kinBodyMarkdown(doc.body)}
+                cwd={undefined}
+                environmentId={props.environmentId}
+              />
             </div>
           )}
         </article>
