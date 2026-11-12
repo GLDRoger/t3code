@@ -1,4 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { assert, it } from "@effect/vitest";
 import { KinOrgId, KinPersonId, KinWorkerNetworkChange } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -21,7 +22,11 @@ const mate = { _tag: "person" as const, orgId, personId: KinPersonId.make("mate"
 const elsewhere = { ...owner, orgId: KinOrgId.make("elsewhere") };
 
 const layer = Layer.mergeAll(
-  Layer.mock(KinIdentity)({ owner }),
+  Layer.mock(KinIdentity)({
+    owner,
+    isAgentThread: () => false,
+    isLeadThread: () => false,
+  }),
   ServerConfig.layerTest(process.cwd(), { prefix: "kin-network-" }),
 ).pipe(
   Layer.provideMerge(KinPersistence.layer),
@@ -126,7 +131,7 @@ it.effect("a worker's grant and refusals live in server files keyed by its own i
         },
         parent_tool_use_id: null,
         session_id: "s",
-      }) as const;
+      }) as unknown as SDKMessage;
     const refused = WorkNetwork.refusedHosts(
       result(
         "curl: (56) CONNECT tunnel failed\n<sandbox_violations>deny network-outbound Example.com:443 (host is not on the allow list)\ndeny network-outbound 10.0.0.1:80\ndeny network-outbound example.com:80</sandbox_violations>",
