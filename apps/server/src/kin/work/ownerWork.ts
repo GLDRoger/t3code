@@ -124,7 +124,12 @@ export const list = Effect.fn("KinWork.list")(function* (
     (yield* listDef(input.orgId, input.list).pipe(workFailure)) === undefined
   )
     return yield* unknownList(input.list);
-  const page = yield* records.query(input.orgId, {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const zone =
+    input.dateFrom === undefined && input.dateTo === undefined
+      ? "UTC"
+      : yield* ownerZone(input.orgId).pipe(workFailure);
+  const filter = {
     ...(input.list === undefined ? {} : { list: input.list }),
     ...(input.owner === undefined ? {} : { owner: input.owner }),
     ...(input.states === undefined ? {} : { states: input.states }),
@@ -135,15 +140,33 @@ export const list = Effect.fn("KinWork.list")(function* (
       ? {}
       : { dueAfter: yield* millis(input.dueAfter, "dueAfter") }),
     ...(input.category === undefined ? {} : { category: input.category }),
+    ...(input.list === undefined || input.listCategory === undefined
+      ? {}
+      : { category: input.listCategory }),
+    ...(input.dateFrom === undefined
+      ? {}
+      : { dateFrom: endOfDay(input.dateFrom, zone) - DAY_MS + 1 }),
+    ...(input.dateTo === undefined ? {} : { dateTo: endOfDay(input.dateTo, zone) + 1 }),
+    ...(input.paidFrom === undefined ? {} : { paidFrom: input.paidFrom }),
+    ...(input.paidTo === undefined ? {} : { paidTo: input.paidTo }),
     ...(input.side === undefined ? {} : { side: input.side }),
     ...(partyId === undefined || partyId === null ? {} : { partyId }),
     ...(projectId === undefined || projectId === null ? {} : { projectId }),
     ...(input.repo === undefined ? {} : { repo: input.repo }),
     ...(input.text === undefined ? {} : { text: input.text }),
-    offset: cursor.offset,
-    limit,
     at,
-  });
+  };
+  const page = yield* records.query(input.orgId, { ...filter, offset: cursor.offset, limit });
+  // The sums are of every match and the same on each page, so only the first page pays for them.
+  const totals =
+    input.totalsBy === undefined || input.cursor !== undefined
+      ? undefined
+      : yield* records.totals(
+          input.orgId,
+          filter,
+          input.totalsBy === "none" ? undefined : input.totalsBy,
+          true,
+        );
   const next = cursor.offset + page.rows.length;
   return {
     records: page.rows.map((row) => toRecord(row, at)),
@@ -151,6 +174,9 @@ export const list = Effect.fn("KinWork.list")(function* (
     nextCursor: next < page.total ? `o:${next}:${at}` : null,
     seq: page.seq,
     asOf: iso(at),
+    ...(totals === undefined
+      ? {}
+      : { totals: { total: totals.total, groups: totals.groups ?? [] } }),
   };
 });
 
