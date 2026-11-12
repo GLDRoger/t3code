@@ -156,6 +156,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.voidPayment": Effect.fn("KinWork.rpc.voidPayment")(function* (input) {
         return yield* call((people) => Money.voidPayment(people, input));
       }),
+      "kin.work.files": Effect.fn("KinWork.rpc.files")(function* (input) {
+        return yield* call((people) => Money.files(people, input));
+      }),
       "kin.work.companyProfile": Effect.fn("KinWork.rpc.companyProfile")(function* (input) {
         return yield* call((people) => Money.companyProfile(people, input));
       }),

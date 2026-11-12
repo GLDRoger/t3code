@@ -207,6 +207,10 @@ const workLive = createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, 
     ),
 });
 
+const workFilesRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:work:files:read",
+  tag: "kin.work.files",
+});
 const docsListRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "kin:docs:list:read",
   tag: "kin.docs.list",
@@ -750,6 +754,8 @@ export const kinClient = {
     tag: "kin.work.voidPayment",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.paymentId },
   }),
+  /** One page of the files in the owner's chats, for keeping one on an entry. */
+  workFiles: workFilesRead,
   /** Its `permissionAtom` says whether this browser may read company details at all. */
   companyRead: companyProfileRead,
   companyProfile: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {

@@ -10,6 +10,7 @@ import {
   type KinDocVersion,
   type KinMessageRef,
   type KinMessageRefInput,
+  type KinOrgId,
   type KinPersonId,
   type KinSearchHit,
   type KinSearchKind,
@@ -57,6 +58,11 @@ export const KIN_DOCS = {
     detail:
       "Ask an agent for a plan, a brief, a runbook or meeting notes. It lands here, and the agent keeps it current.",
   },
+  noMatch: {
+    title: "No doc says that",
+    detail: "Try other words, or look in the archived ones.",
+  },
+  passages: "Where it says so",
   emptyArchived: {
     title: "Nothing archived",
     detail: "A doc an agent archives is kept here, with its whole history.",
@@ -261,11 +267,19 @@ export function kinDocGroups(
 
 export interface KinDocsFilter {
   readonly archived: boolean;
-  /** Always empty: the list has no words of its own; search answers those. */
-  readonly text: "";
+  /** Words in a title or the latest text, matched by the host across every doc. */
+  readonly text: string;
 }
 export const KIN_DOCS_DEFAULT_FILTER: KinDocsFilter = { archived: false, text: "" };
-export const kinDocsSameFilter = (a: KinDocsFilter, b: KinDocsFilter) => a.archived === b.archived;
+export const kinDocsSameFilter = (a: KinDocsFilter, b: KinDocsFilter) =>
+  a.archived === b.archived && a.text.trim() === b.text.trim();
+
+/** One page of the Docs list as the host is asked for it. */
+export const kinDocsQuery = (orgId: KinOrgId, filter: KinDocsFilter) => ({
+  orgId,
+  archived: filter.archived,
+  ...(filter.text.trim() === "" ? {} : { text: filter.text.trim() }),
+});
 
 export function kinDocsFooter(shown: number, total: number | null, more: boolean): string | null {
   if (!more || total === null) return null;

@@ -85,6 +85,8 @@ export type RecordRow = {
   readonly repeatJson: string | null;
   /** Payments not voided, in its own currency. */
   readonly paid: number;
+  /** Its list's entries are paid over time: Invoices, or a list whose definition says so. */
+  readonly takesPayments: number;
 };
 
 export const unavailable = new KinChatError({
@@ -148,6 +150,12 @@ export const effectivelySensitive = Effect.fn("KinRecords.effectivelySensitive")
   return row === undefined ? undefined : row.sensitive === 1;
 });
 
+/** Whether `r`'s list is paid over time, as `registers.ts` reads a definition. */
+const takesPayments = (sql: SqlClient.SqlClient) =>
+  sql`(r.register_id = 'invoices' OR EXISTS (SELECT 1 FROM kin_registers g
+    WHERE g.org_id = r.org_id AND g.register_id = r.register_id AND g.built_in = 0
+      AND json_extract(g.definition_json, '$.payments') = 1))`;
+
 /**
  * The columns every read selects, with the derived ones: a running worker, the last PR, the client
  * and project as they are now, and the label they lend it. Joins stay inside the entry's org.
@@ -168,6 +176,7 @@ export const selectRecords = (sql: SqlClient.SqlClient) => sql`
     r.date_all_day AS "dateAllDay", r.repeat_json AS "repeatJson",
     (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
       WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid,
+    ${takesPayments(sql)} AS "takesPayments",
     pa.key AS "partyKey", pa.title AS "partyTitle", pj.key AS "projectKey",
     pj.title AS "projectTitle",
     ${inheritedSensitive(sql)} AS "inheritedSensitive",
@@ -255,7 +264,7 @@ const moneyOf = (row: RecordRow) => {
     ...(amount === undefined ? {} : { amount }),
     ...(row.dateAt === null ? {} : { dateAt: iso(row.dateAt), dateAllDay: row.dateAllDay === 1 }),
     ...(repeat === undefined ? {} : { repeat: repeat.rule }),
-    ...(amount === undefined || row.registerId !== "invoices"
+    ...(amount === undefined || row.takesPayments !== 1
       ? {}
       : { balance: { minor: Math.max(amount.minor - row.paid, 0), currency: amount.currency } }),
   };
@@ -412,7 +421,7 @@ export const toDetail = Effect.fn("KinRecords.toDetail")(function* (
 const decodeAttachments = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Array(KinAttachment)),
 );
-/** A defined list's fields, the files they keep and an invoice's payments. */
+/** A defined list's fields, the files they keep and, where it is paid over time, its payments. */
 const definedDetail = Effect.fn("KinRecords.definedDetail")(function* (row: RecordRow) {
   const sql = yield* SqlClient.SqlClient;
   const orgId = row.orgId as KinOrgId;
@@ -450,8 +459,7 @@ const definedDetail = Effect.fn("KinRecords.definedDetail")(function* (row: Reco
           },
         ];
   });
-  const payments =
-    row.registerId === "invoices" ? yield* paymentsOf(orgId, row.recordId) : undefined;
+  const payments = row.takesPayments === 1 ? yield* paymentsOf(orgId, row.recordId) : undefined;
   return {
     fields,
     ...(files.length === 0 ? {} : { files }),

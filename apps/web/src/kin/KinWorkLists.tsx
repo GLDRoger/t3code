@@ -3,6 +3,8 @@ import { KIN_DATES } from "@t3tools/client-runtime/kin/kinDates";
 import {
   KIN_LISTS,
   KIN_LIST_LABEL_MAX,
+  kinCategoryLabel,
+  kinListCanTogglePayments,
   kinListChips,
   kinListColumns,
   kinListEditDraftOf,
@@ -49,6 +51,7 @@ import {
 } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
+import { Switch } from "../components/ui/switch";
 import {
   Select,
   SelectItem,
@@ -78,8 +81,10 @@ import {
   useKinLists,
   type KinListsHandle,
 } from "./useKinMoney";
-import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
+import { useKinWorkChoices, type KinWorkDirectory, type KinWorkTarget } from "./useKinWork";
 
+const ANY = "any";
+const NONE = "none";
 const ROW =
   "flex w-full items-center gap-3 rounded-md px-2 py-2 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset";
 
@@ -295,8 +300,11 @@ function KinListEntries(
     kinListRow(record, def, context, { party: filter.party?.key ?? null }),
   );
   const columns = kinListColumns(def, state.records);
-  const narrowings = kinListNarrowings(filter);
+  const narrowings = kinListNarrowings(filter, def);
   const groupings = kinListGroupings(def);
+  const { clients } = useKinWorkChoices(props, true);
+  const category = filter.noCategory ? NONE : (filter.category ?? ANY);
+  const client = filter.noParty ? NONE : (filter.party?.key ?? ANY);
   const nothing = kinListNothing(def, filter);
   const footer = kinListFooter(rows.length, state.total, state.more);
   const searchId = useId();
@@ -384,8 +392,67 @@ function KinListEntries(
               </SelectPopup>
             </Select>
           ) : null}
-          {/* A table needs width; a narrow window keeps rows. */}
-          <div className="hidden md:block">
+          {def.categories.length === 0 ? null : (
+            <Select
+              value={category}
+              onValueChange={(value) =>
+                entries.setFilter({
+                  ...filter,
+                  noCategory: value === NONE,
+                  category: value === ANY || value === NONE ? null : value,
+                })
+              }
+            >
+              <SelectTrigger
+                className="w-full min-w-0 sm:w-44"
+                aria-label={KIN_LISTS.entry.category}
+              >
+                <SelectValue>
+                  {category === ANY
+                    ? KIN_LISTS.anyCategory
+                    : category === NONE
+                      ? KIN_LISTS.noCategory
+                      : kinCategoryLabel(category, def)}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup alignItemWithTrigger={false}>
+                <SelectItem value={ANY}>{KIN_LISTS.anyCategory}</SelectItem>
+                {def.categories.map((held) => (
+                  <SelectItem key={held} value={held}>
+                    {kinCategoryLabel(held, def)}
+                  </SelectItem>
+                ))}
+                <SelectItem value={NONE}>{KIN_LISTS.noCategory}</SelectItem>
+              </SelectPopup>
+            </Select>
+          )}
+          <Select
+            value={client}
+            onValueChange={(value) => {
+              const party = clients.find((held) => held.key === value) ?? null;
+              entries.setFilter({ ...filter, noParty: value === NONE, party });
+            }}
+          >
+            <SelectTrigger className="w-full min-w-0 sm:w-44" aria-label={KIN_LISTS.clientFilter}>
+              <SelectValue>
+                {client === ANY
+                  ? KIN_LISTS.anyClient
+                  : client === NONE
+                    ? KIN_LISTS.noClient
+                    : (filter.party?.title ?? KIN_LISTS.anyClient)}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectPopup alignItemWithTrigger={false}>
+              <SelectItem value={ANY}>{KIN_LISTS.anyClient}</SelectItem>
+              {clients.map((held) => (
+                <SelectItem key={held.key} value={held.key}>
+                  {held.title}
+                </SelectItem>
+              ))}
+              <SelectItem value={NONE}>{KIN_LISTS.noClient}</SelectItem>
+            </SelectPopup>
+          </Select>
+          <div>
             <ToggleGroup
               aria-label="Layout"
               value={[layout]}
@@ -418,19 +485,32 @@ function KinListEntries(
           </div>
         )}
         {state.loading || state.failed !== null ? null : (
-          <div className="flex flex-wrap items-baseline gap-x-4 gap-y-0.5 px-2">
-            {header.totals.map((line) => (
-              <span
-                key={line}
-                className="text-lg font-semibold tracking-tight text-foreground tabular-nums"
-              >
-                {line}
-              </span>
+          <dl className="flex flex-wrap items-end gap-x-6 gap-y-1 px-2">
+            {header.figures.map((figure, index) => (
+              <div key={figure.id} className="flex flex-col">
+                {figure.label === null ? null : (
+                  <dt className="text-xs text-muted-foreground">{figure.label}</dt>
+                )}
+                <dd
+                  className={cn(
+                    "flex flex-col tracking-tight tabular-nums",
+                    index === 0
+                      ? "text-lg font-semibold text-foreground"
+                      : "text-sm text-muted-foreground",
+                  )}
+                >
+                  {figure.lines.map((line) => (
+                    <span key={line}>{line}</span>
+                  ))}
+                </dd>
+              </div>
             ))}
             {header.count === null ? null : (
-              <span className="text-xs text-muted-foreground tabular-nums">{header.count}</span>
+              <div className="pb-0.5 text-xs text-muted-foreground tabular-nums">
+                {header.count}
+              </div>
             )}
-          </div>
+          </dl>
         )}
         {header.groups.length === 0 ? null : (
           <ul aria-label={KIN_LISTS.group[filter.groupBy]} className="flex flex-col">
@@ -444,10 +524,13 @@ function KinListEntries(
                   <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
                     {group.count}
                   </span>
-                  <span className="flex w-32 shrink-0 flex-col items-end text-sm text-foreground tabular-nums">
+                  <span className="flex w-36 shrink-0 flex-col items-end text-sm text-foreground tabular-nums">
                     {group.totals.map((line) => (
                       <span key={line}>{line}</span>
                     ))}
+                    {group.billed === null ? null : (
+                      <span className="text-xs text-muted-foreground">{group.billed}</span>
+                    )}
                   </span>
                 </>
               );
@@ -489,7 +572,7 @@ function KinListEntries(
           ) : rows.length === 0 ? (
             <KinWorkNotice {...nothing} />
           ) : layout === "table" ? (
-            <Table>
+            <Table pinFirstColumn>
               <TableHeader>
                 <TableRow>
                   {columns.map((column) => (
@@ -564,7 +647,17 @@ function KinListEntries(
           </div>
         )}
       </div>
-      {editing ? <KinListSettings {...props} def={def} onClose={() => setEditing(false)} /> : null}
+      {editing ? (
+        <KinListSettings
+          {...props}
+          def={def}
+          onClose={() => {
+            setEditing(false);
+            // What the list adds up depends on its settings, so its figures are read again.
+            entries.refresh();
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -617,7 +710,7 @@ function KinListSettings(
   const { def, orgId } = props;
   const changes = useKinListChanges(props);
   const [draft, setDraft] = useState(() => kinListEditDraftOf(def));
-  const ids = { name: useId(), states: useId() };
+  const ids = { name: useId(), states: useId(), categories: useId(), payments: useId() };
   const locked = def.builtIn;
   const save = async () => {
     const checked = kinListEditInput(orgId, def, draft);
@@ -686,6 +779,48 @@ function KinListSettings(
                   </div>
                 ))}
               </fieldset>
+              {def.categories.length === 0 ? null : (
+                <fieldset className="flex flex-col gap-2" aria-labelledby={ids.categories}>
+                  <legend id={ids.categories} className="text-sm font-medium text-foreground">
+                    {KIN_LISTS.edit.categories}
+                  </legend>
+                  {def.categories.map((held) => (
+                    <div key={held} className="flex items-center gap-2">
+                      <span className="w-28 shrink-0 truncate text-xs text-muted-foreground">
+                        {held}
+                      </span>
+                      <Input
+                        aria-label={`Name for ${held}`}
+                        value={draft.categoryLabels[held] ?? ""}
+                        placeholder={held}
+                        maxLength={KIN_LIST_LABEL_MAX}
+                        disabled={locked || changes.busy}
+                        autoComplete="off"
+                        onChange={(event) =>
+                          setDraft({
+                            ...draft,
+                            categoryLabels: { ...draft.categoryLabels, [held]: event.target.value },
+                          })
+                        }
+                      />
+                    </div>
+                  ))}
+                </fieldset>
+              )}
+              {kinListCanTogglePayments(def) ? (
+                <div className="flex items-start gap-3">
+                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <Label htmlFor={ids.payments}>{KIN_LISTS.edit.payments}</Label>
+                    <p className="text-xs text-muted-foreground">{KIN_LISTS.edit.paymentsDetail}</p>
+                  </div>
+                  <Switch
+                    id={ids.payments}
+                    checked={draft.payments}
+                    disabled={changes.busy}
+                    onCheckedChange={(payments) => setDraft({ ...draft, payments })}
+                  />
+                </div>
+              ) : null}
               {def.fields.length === 0 ? null : (
                 <KinWorkSection title={KIN_LISTS.edit.fields}>
                   <ul className="flex flex-col gap-1">

@@ -10,10 +10,17 @@ import {
   type KinMoneySummaryInput,
   type KinPaymentInput,
   type KinPaymentVoidInput,
+  KinAttachment,
+  KinChatId,
+  KinMessageId,
+  type KinWorkFile,
+  type KinWorkFilesInput,
   type KinVoidInput,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
@@ -104,8 +111,41 @@ export const updateList = Effect.fn("KinMoney.updateList")(function* (
       );
       if (unused.length > 0) return yield* invalid(`${def.name} doesn't use ${unused.join(", ")}.`);
       const stateLabels = { ...def.stateLabels, ...input.stateLabels };
+      const unlisted = Object.keys(input.categoryLabels ?? {}).filter(
+        (category) => !def.categories.includes(category),
+      );
+      if (unlisted.length > 0)
+        return yield* invalid(`${def.name} has no category ${unlisted.join(", ").slice(0, 80)}.`);
+      const categoryLabels = Object.fromEntries(
+        Object.entries({ ...def.categoryLabels, ...input.categoryLabels }).filter(
+          (entry): entry is [string, NonNullable<(typeof entry)[1]>] =>
+            entry[1] !== null && entry[1] !== entry[0],
+        ),
+      );
+      const payments = input.payments ?? def.payments === true;
+      if (payments !== (def.payments === true)) {
+        if (!payments && def.id === "invoices")
+          return yield* invalid(`${def.name} are always paid over time.`);
+        if (payments && !def.amount)
+          return yield* invalid(`${def.name} has no amounts, so nothing to pay over time.`);
+        const paid = payments
+          ? []
+          : yield* sql`SELECT 1 FROM kin_record_payments p
+              JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
+              WHERE p.org_id = ${input.orgId} AND r.register_id = ${def.id}
+                AND p.voided_at IS NULL LIMIT 1`;
+        if (paid.length > 0)
+          return yield* invalid(
+            `Some ${def.name} entries have payments. Take those back first, then turn this off.`,
+          );
+      }
+      const sameLabels = (a: Readonly<Record<string, string>>, b: typeof a) =>
+        Object.keys(a).length === Object.keys(b).length &&
+        Object.entries(a).every(([key, label]) => b[key] === label);
       const changed =
         name !== def.name ||
+        payments !== (def.payments === true) ||
+        !sameLabels(categoryLabels, def.categoryLabels ?? {}) ||
         def.states.some((state) => stateLabels[state] !== def.stateLabels[state]) ||
         archivedAt !== def.archivedAt ||
         fields.length !== def.fields.length ||
@@ -119,12 +159,27 @@ export const updateList = Effect.fn("KinMoney.updateList")(function* (
             reason: "conflict",
             message: `${def.name} changed since you read it; it is at revision ${def.rev} now.`,
           });
-        const { id: _id, builtIn: _builtIn, name: _name, prefix: _prefix, ...definition } = def;
+        const {
+          id: _id,
+          builtIn: _builtIn,
+          name: _name,
+          prefix: _prefix,
+          archivedAt: _archivedAt,
+          rev: _rev,
+          categoryLabels: _labels,
+          payments: _payments,
+          ...definition
+        } = def;
+        const next = {
+          ...definition,
+          fields,
+          stateLabels,
+          ...(Object.keys(categoryLabels).length === 0 ? {} : { categoryLabels }),
+          ...(payments ? { payments: true as const } : {}),
+        };
         yield* sql`UPDATE kin_registers SET name = ${name}, archived_at = ${archivedAt},
             definition_json = ${yield* encodeDefinition({
-              ...definition,
-              fields,
-              stateLabels,
+              ...next,
               ...(numbering === undefined ? {} : { numbering }),
             })},
             rev = rev + 1
@@ -225,6 +280,59 @@ export const voidPayment = Effect.fn("KinMoney.voidPayment")(function* (
     input.paymentId,
   );
   return yield* records.detail(row, KIN_RECORD_CHANGES_CAP);
+}, workFailure);
+
+const decodeAttachments = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Array(KinAttachment)),
+);
+
+/** Files on messages in chats the owner is in, newest first: what an entry of theirs may keep. */
+export const files = Effect.fn("KinMoney.files")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinWorkFilesInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  const sql = yield* SqlClient.SqlClient;
+  const offset = yield* offsetOf(input.cursor);
+  const limit = input.limit ?? 30;
+  const text = input.text?.trim().toLowerCase() ?? "";
+  const rows = yield* sql<{
+    id: string;
+    chatId: string;
+    messageId: string;
+    json: string | null;
+    sentAt: string;
+  }>`SELECT a.attachment_id AS id, a.chat_id AS "chatId", a.message_id AS "messageId",
+      m.attachments_json AS json, m.created_at AS "sentAt"
+    FROM kin_message_attachments a
+    JOIN kin_messages m ON m.org_id = a.org_id AND m.message_id = a.message_id
+    JOIN kin_chat_members c ON c.org_id = a.org_id AND c.chat_id = a.chat_id
+      AND c.principal_kind = 'person' AND c.person_id = ${person.personId} AND c.left_at IS NULL
+    WHERE a.org_id = ${input.orgId} AND m.status <> 'deleted'
+      AND (${text} = '' OR EXISTS (SELECT 1 FROM json_each(COALESCE(m.attachments_json, '[]')) j
+        WHERE json_extract(j.value, '$.id') = a.attachment_id
+          AND instr(lower(json_extract(j.value, '$.name')), ${text}) > 0))
+    ORDER BY m.created_at DESC, a.attachment_id LIMIT ${limit + 1} OFFSET ${offset}`;
+  return {
+    files: rows.slice(0, limit).flatMap((row): ReadonlyArray<KinWorkFile> => {
+      const found = Option.getOrElse(decodeAttachments(row.json ?? "[]"), () => []).find(
+        (attachment) => attachment.id === row.id,
+      );
+      return found === undefined
+        ? []
+        : [
+            {
+              attachmentId: row.id,
+              name: found.name,
+              mimeType: found.mimeType,
+              chatId: KinChatId.make(row.chatId),
+              messageId: KinMessageId.make(row.messageId),
+              sentAt: row.sentAt,
+            },
+          ];
+    }),
+    nextCursor: rows.length > limit ? `o:${offset + limit}` : null,
+  };
 }, workFailure);
 
 export const companyProfile = Effect.fn("KinMoney.companyProfile")(function* (

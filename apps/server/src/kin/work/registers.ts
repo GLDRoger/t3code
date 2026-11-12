@@ -52,6 +52,9 @@ export const StoredDefinition = Schema.Struct({
   currency: KinCurrency,
   dueLabel: Schema.optional(Label),
   dateLabel: Schema.optional(Label),
+  categoryLabels: Schema.optional(Schema.Record(Schema.String, Label)),
+  /** Entries are paid over time; Invoices are whether or not this says so. */
+  payments: Schema.optional(Schema.Literal(true)),
   numbering: Schema.optional(KinNumberingRule),
 });
 export type StoredDefinition = typeof StoredDefinition.Type;
@@ -127,6 +130,7 @@ export const PRESETS: Record<PresetId, StoredDefinition & { name: string; prefix
     currency: DEFAULT_CURRENCY,
     dueLabel: "Due",
     dateLabel: "Issued",
+    payments: true,
     numbering: { prefix: "INV", series: "financial_year", width: 3 },
   },
   dates: {
@@ -143,6 +147,7 @@ export const PRESETS: Record<PresetId, StoredDefinition & { name: string; prefix
     },
     defaultState: "open",
     categories: ["gst", "tds", "income tax", "company", "payroll", "renewal", "other"],
+    categoryLabels: { gst: "GST", tds: "TDS" },
     fields: [field("form", "Form", "text"), field("period", "Period", "text")],
     sensitive: false,
     amount: false,
@@ -187,6 +192,10 @@ const builtInDef = (name: ListName): ListDef => {
   };
 };
 export const isBuiltIn = (id: string): id is ListName => Object.hasOwn(LISTS, id);
+const isPreset = (id: string): id is PresetId => (PRESET_IDS as ReadonlyArray<string>).includes(id);
+/** The state an entry paid over time is in while something is still unpaid on it. */
+export const owedState = (def: ListDef) =>
+  (["waiting", "open", "doing"] as const).find((state) => def.states.includes(state));
 
 type RegisterRow = {
   readonly id: string;
@@ -201,6 +210,8 @@ const fromRow = (row: RegisterRow): ListDef | undefined =>
     onNone: () => undefined,
     onSome: (definition) => ({
       ...definition,
+      // A preset list made before these existed reads as the preset does now.
+      ...presetExtras(row.id, definition),
       id: row.id,
       builtIn: null,
       name: row.name,
@@ -209,6 +220,14 @@ const fromRow = (row: RegisterRow): ListDef | undefined =>
       rev: row.rev,
     }),
   });
+const presetExtras = (id: string, definition: StoredDefinition) => {
+  const preset = isPreset(id) ? PRESETS[id] : undefined;
+  const categoryLabels = { ...preset?.categoryLabels, ...definition.categoryLabels };
+  return {
+    ...(Object.keys(categoryLabels).length === 0 ? {} : { categoryLabels }),
+    ...(preset?.payments === true ? { payments: true as const } : {}),
+  };
+};
 const registerColumns = (sql: SqlClient.SqlClient) => sql`register_id AS id, name,
   key_prefix AS prefix, definition_json AS "definitionJson", archived_at AS "archivedAt", rev`;
 
@@ -388,6 +407,8 @@ export const toDefinition = (
   sensitive: def.sensitive,
   amount: def.amount,
   currency: def.currency,
+  ...(def.categoryLabels === undefined ? {} : { categoryLabels: def.categoryLabels }),
+  ...(def.payments === true ? { payments: true as const } : {}),
   ...(def.dueLabel === undefined ? {} : { dueLabel: def.dueLabel }),
   ...(def.dateLabel === undefined ? {} : { dateLabel: def.dateLabel }),
   ...(numbering === undefined ? {} : { numbering }),

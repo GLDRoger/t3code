@@ -9,7 +9,15 @@ import {
 } from "./auth.ts";
 import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinChatError, KinOrgId, KinTrimmedText } from "./kinChat.ts";
-import { KinCurrency, KinDay, KinListId, KinMoney, KinMoneyTotals } from "./kinMoney.ts";
+import {
+  KinCurrency,
+  KinDay,
+  KinFileRef,
+  KinListFieldKey,
+  KinListId,
+  KinMoney,
+  KinMoneyTotals,
+} from "./kinMoney.ts";
 import {
   KinRecord,
   KinRecordDetail,
@@ -34,8 +42,7 @@ export const KinListFieldType = Schema.Literals([
   "file",
 ]);
 export type KinListFieldType = typeof KinListFieldType.Type;
-export const KinListFieldKey = Schema.String.check(Schema.isPattern(/^[a-z][a-zA-Z0-9]{0,39}$/));
-export type KinListFieldKey = typeof KinListFieldKey.Type;
+export { KinListFieldKey };
 const Label = KinTrimmedText.check(Schema.isMaxLength(60));
 
 /** One typed field of a list. A retired field keeps its values on entries and takes no new ones. */
@@ -85,12 +92,16 @@ export const KinListDefinition = Schema.Struct({
   stateLabels: KinStateLabels,
   defaultState: KinRecordState,
   categories: Schema.Array(Label),
+  /** How a category reads where that differs from how it is stored: `gst` as `GST`. */
+  categoryLabels: Schema.optional(Schema.Record(Schema.String, Label)),
   fields: Schema.Array(KinListField),
   /** New entries are labelled sensitive. */
   sensitive: Schema.Boolean,
   /** Its entries carry an amount, in `currency` unless they say otherwise. */
   amount: Schema.Boolean,
   currency: KinCurrency,
+  /** Its entries are paid over time: each keeps its payments and a balance, as invoices do. */
+  payments: Schema.optional(Schema.Literal(true)),
   /** What the entry's `dueAt` and `dateAt` are called here; absent when it has none. */
   dueLabel: Schema.optional(Label),
   dateLabel: Schema.optional(Label),
@@ -123,6 +134,15 @@ export const KinListUpdateInput = Schema.Struct({
   name: Schema.optional(Label),
   /** What the list calls the states it uses; only the ones given change. */
   stateLabels: Schema.optional(KinStateLabels),
+  /** By category as stored; only the ones given change, and `null` shows it as stored again. */
+  categoryLabels: Schema.optional(
+    Schema.Record(Schema.String, Schema.NullOr(Label)).check(Schema.isMaxProperties(30)),
+  ),
+  /**
+   * Whether entries are paid over time. Needs a list with amounts; turning it off is refused
+   * while an entry has a payment that counts, and Invoices always are.
+   */
+  payments: Schema.optional(Schema.Boolean),
   archived: Schema.optional(Schema.Boolean),
   retireFields: Schema.optional(Schema.Array(KinListFieldKey).check(Schema.isMaxLength(30))),
   restoreFields: Schema.optional(Schema.Array(KinListFieldKey).check(Schema.isMaxLength(30))),
@@ -193,7 +213,7 @@ export const KinMoneySummary = Schema.Struct({
     overdue: KinMoneyTotals,
     invoices: NonNegativeInt,
     overdueInvoices: NonNegativeInt,
-    /** Most overdue first, then most owed; `party` null for invoices with no client. */
+    /** Longest overdue first, then most owed; `party` null for invoices with no client. */
     byClient: Schema.Array(
       Schema.Struct({
         party: Schema.NullOr(KinRecordRef),
@@ -221,11 +241,14 @@ export type KinMoneySummary = typeof KinMoneySummary.Type;
 export const KinMoneySummaryInput = Schema.Struct({ orgId: KinOrgId });
 export type KinMoneySummaryInput = typeof KinMoneySummaryInput.Type;
 
-/** Money received against an invoice. Paying it in full marks it paid; it never overpays. */
+/**
+ * Money paid against an invoice, or an entry of any list paid over time. Paying it in full marks
+ * it paid; it never overpays.
+ */
 export const KinPaymentInput = Schema.Struct({
   orgId: KinOrgId,
   key: KinRecordKey,
-  /** In the invoice's own currency. */
+  /** In the entry's own currency. */
   amount: KinMoney,
   paidOn: KinDay,
   note: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
@@ -233,7 +256,7 @@ export const KinPaymentInput = Schema.Struct({
   clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
 });
 export type KinPaymentInput = typeof KinPaymentInput.Type;
-/** Takes a payment back; a paid invoice it leaves short is issued again. */
+/** Takes a payment back; a paid entry it leaves short is owed again. */
 export const KinPaymentVoidInput = Schema.Struct({
   orgId: KinOrgId,
   key: KinRecordKey,
@@ -241,6 +264,25 @@ export const KinPaymentVoidInput = Schema.Struct({
 });
 export type KinPaymentVoidInput = typeof KinPaymentVoidInput.Type;
 
+/** A file the owner can keep on an entry: one on a message in a chat the owner is in. */
+export const KinWorkFile = Schema.Struct({ ...KinFileRef.fields, sentAt: IsoDateTime });
+export type KinWorkFile = typeof KinWorkFile.Type;
+/** Files in the owner's chats, newest first, for attaching one to an entry. */
+export const KinWorkFilesInput = Schema.Struct({
+  orgId: KinOrgId,
+  /** Case-insensitive match on the file's name. */
+  text: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
+  cursor: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
+  limit: Schema.optional(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(100)),
+  ),
+});
+export type KinWorkFilesInput = typeof KinWorkFilesInput.Type;
+export const KinWorkFilesResult = Schema.Struct({
+  files: Schema.Array(KinWorkFile),
+  nextCursor: Schema.NullOr(Schema.String),
+});
+export type KinWorkFilesResult = typeof KinWorkFilesResult.Type;
 /**
  * Issues an entry of a numbered list: the server gives it the next number in its series, in
  * one transaction, and marks it issued. Issuing an issued entry returns the number it has.
@@ -328,6 +370,7 @@ const KIN_FINANCE_WS_METHODS = {
   money: "kin.work.money",
   recordPayment: "kin.work.recordPayment",
   voidPayment: "kin.work.voidPayment",
+  files: "kin.work.files",
   companyProfile: "kin.work.companyProfile",
   setCompanyProfile: "kin.work.setCompanyProfile",
   issue: "kin.work.issue",
@@ -367,6 +410,11 @@ export const KinFinanceRpcs = [
     success: KinRecordDetail,
     error,
   }),
+  Rpc.make(KIN_FINANCE_WS_METHODS.files, {
+    payload: KinWorkFilesInput,
+    success: KinWorkFilesResult,
+    error,
+  }),
   Rpc.make(KIN_FINANCE_WS_METHODS.companyProfile, {
     payload: KinCompanyProfileInput,
     success: KinCompanyProfile,
@@ -393,6 +441,7 @@ export const KIN_FINANCE_RPC_SCOPES = {
   [KIN_FINANCE_WS_METHODS.money]: AuthOrchestrationReadScope,
   [KIN_FINANCE_WS_METHODS.recordPayment]: AuthOrchestrationOperateScope,
   [KIN_FINANCE_WS_METHODS.voidPayment]: AuthOrchestrationOperateScope,
+  [KIN_FINANCE_WS_METHODS.files]: AuthOrchestrationReadScope,
   // Bank details: read and written only where owner settings are.
   [KIN_FINANCE_WS_METHODS.companyProfile]: AuthSettingsWriteScope,
   [KIN_FINANCE_WS_METHODS.setCompanyProfile]: AuthSettingsWriteScope,
