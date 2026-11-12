@@ -4,6 +4,7 @@ import {
   type KinOutboxStorage,
 } from "@t3tools/client-runtime/kin/kinOutbox";
 import { createKinLocalPreviews } from "@t3tools/client-runtime/kin/kinAttachments";
+import { kinDocRefInput } from "@t3tools/client-runtime/kin/kinDocs";
 import { createKinOutboxRetry } from "@t3tools/client-runtime/kin/kinOutboxRetry";
 import { environmentSessionGenerationAtom } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -48,6 +49,7 @@ export const kinOutbox = createKinOutbox({
         body: record.body,
         ...(record.attachments === undefined ? {} : { attachments: record.attachments }),
         ...(record.mentions === undefined ? {} : { mentions: record.mentions }),
+        ...(record.refs === undefined ? {} : { refs: record.refs.map(kinDocRefInput) }),
       },
     });
     return result._tag === "Success"
