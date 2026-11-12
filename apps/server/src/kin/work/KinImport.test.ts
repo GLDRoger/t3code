@@ -15,8 +15,10 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Numbers from "../gendocs/numbering.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { removeChunk } from "./importUndo.ts";
 import * as KinImport from "./KinImport.ts";
 import * as KinRecords from "./KinRecords.ts";
+import { searchIndexed } from "./searchIndex.ts";
 
 // Invented org, people and amounts only.
 const orgId = KinOrgId.make("org");
@@ -440,11 +442,16 @@ describe("KinImport", () => {
       });
       assert.strictEqual((yield* Numbers.issue(orgId, owner, draft.key)).number, "OBK/26-27/005");
 
+      const plan = yield* imports.undo(orgId, ownerId, "oldbooks", {
+        apply: false,
+        includeChanged: false,
+      });
+      assert.deepStrictEqual(plan.changed, [may.key]);
       const undone = yield* imports.undo(orgId, ownerId, "oldbooks", {
         apply: true,
         includeChanged: false,
       });
-      assert.strictEqual(undone.changed, 1);
+      assert.deepStrictEqual(undone.changed, [may.key]);
       assert.deepStrictEqual(undone.kept, [
         { key: acme.key, reason: `${[may.key, mine.key].toSorted().join(", ")} use it` },
       ]);
@@ -480,6 +487,153 @@ describe("KinImport", () => {
       assert.strictEqual(all.removes.entries, 1);
       assert.strictEqual(yield* recordOf("i2"), undefined);
       assert.strictEqual((yield* recordOf("c1"))?.key, acme.key);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("undo never takes a series' numbers back, nor a payment Kin recorded", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const imports = yield* KinImport.KinImport;
+      const records = yield* KinRecords.KinRecords;
+      const sql = yield* SqlClient.SqlClient;
+      const invoiceRow = (source: string, title: string) => ({
+        entry: { source, list: "invoices", title, state: "open", client: "c1", amount: "500" },
+      });
+      const onlyInvoices = { ...header, lists: [header.lists[0]] };
+      // The batch makes the list; the owner issues one of its invoices; the whole batch goes.
+      yield* imports.apply(
+        orgId,
+        ownerId,
+        linesOf(onlyInvoices, [rows[0], invoiceRow("i3", "June")]),
+      );
+      const june = (yield* recordOf("i3"))!;
+      assert.strictEqual((yield* Numbers.issue(orgId, owner, june.key)).number, "OBK/26-27/001");
+      const emptied = yield* imports.undo(orgId, ownerId, "oldbooks", {
+        apply: true,
+        includeChanged: true,
+      });
+      assert.deepStrictEqual(
+        emptied.lists.map((one) => [one.list, one.action]),
+        [["invoices", "remove"]],
+      );
+      assert.strictEqual(
+        (yield* sql`SELECT 1 FROM kin_registers WHERE register_id = 'invoices'`).length,
+        0,
+      );
+      // Defined again, the list carries on the same series.
+      yield* imports.apply(
+        orgId,
+        ownerId,
+        linesOf(onlyInvoices, [rows[0], invoiceRow("i4", "May")]),
+      );
+      const { row: next } = yield* records.create(orgId, owner, {
+        list: "invoices",
+        originKey: "owner:july",
+        title: "July retainer",
+        owner: me,
+        state: "open",
+        amount: { minor: 100, currency: "INR" },
+      });
+      assert.strictEqual((yield* Numbers.issue(orgId, owner, next.key)).number, "OBK/26-27/002");
+
+      // An entry with a payment Kin recorded stays with it, changed or not, and so does its client.
+      const may = (yield* recordOf("i4"))!;
+      yield* records.pay(orgId, owner, may.key, {
+        amount: { minor: 10_000, currency: "INR" },
+        paidOn: "2026-11-01",
+        originKey: "owner:may-part",
+      });
+      const undone = yield* imports.undo(orgId, ownerId, "oldbooks", {
+        apply: true,
+        includeChanged: true,
+      });
+      const acme = (yield* recordOf("c1"))!;
+      assert.deepStrictEqual(undone.kept, [
+        { key: acme.key, reason: `${may.key} uses it` },
+        { key: may.key, reason: "a payment recorded in Kin is on it" },
+      ]);
+      assert.deepStrictEqual(undone.removes, { clients: 0, projects: 0, entries: 0, payments: 0 });
+      assert.deepStrictEqual(
+        yield* sql`SELECT origin_key AS "originKey" FROM kin_record_payments ORDER BY origin_key`,
+        [{ originKey: "owner:may-part" }],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("an undo keeps a row paid while it runs, deciding inside each chunk", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const imports = yield* KinImport.KinImport;
+      const records = yield* KinRecords.KinRecords;
+      yield* imports.apply(orgId, ownerId, books());
+      const may = (yield* recordOf("i2"))!;
+      const welcome = (yield* recordOf("t1"))!;
+      // Planned for removal, then paid in Kin before its chunk is deleted.
+      const removing = new Set([may.recordId, welcome.recordId]);
+      yield* records.pay(orgId, owner, may.key, {
+        amount: { minor: 100, currency: "INR" },
+        paidOn: "2026-11-01",
+        originKey: "owner:during-undo",
+      });
+      const kept = yield* removeChunk(
+        orgId,
+        "oldbooks",
+        [may.recordId, welcome.recordId],
+        removing,
+        {
+          includeChanged: true,
+          indexed: yield* searchIndexed(),
+        },
+      );
+      assert.deepStrictEqual(kept, [may.recordId]);
+      assert.deepStrictEqual([...removing], [welcome.recordId]);
+      assert.deepStrictEqual(
+        [
+          (yield* recordOf("i2"))?.key,
+          yield* recordOf("t1"),
+          yield* countOf("kin_record_payments"),
+        ],
+        [may.key, undefined, 2],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("names each client it matches by name, and not one whose GSTIN differs", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const imports = yield* KinImport.KinImport;
+      const records = yield* KinRecords.KinRecords;
+      const client = (title: string, gstin: string) =>
+        records.create(orgId, owner, {
+          list: "clients",
+          originKey: `owner:${title}`,
+          title,
+          owner: me,
+          fields: { gstin },
+        });
+      const { row: acme } = yield* client("Invented Acme", "27AAAAA0000A1Z5");
+      const { row: beta } = yield* client("Invented Beta", "29CCCCC2222C1Z5");
+      const plan = yield* imports.plan(
+        orgId,
+        ownerId,
+        linesOf({ ...header, lists: [] }, [
+          { client: { source: "c1", name: "Invented Acme", gstin: "29BBBBB1111B1Z5" } },
+          { client: { source: "c2", name: "invented beta" } },
+          { entry: { source: "t1", list: "work", title: "Call Acme", client: "c1" } },
+          { entry: { source: "t2", list: "work", title: "Call Beta", client: "c2" } },
+        ]),
+      );
+      assert.deepStrictEqual(
+        [plan.clients.create, plan.clients.matched, plan.clientMatches],
+        [
+          1,
+          1,
+          [
+            { source: "c1", name: "Invented Acme", key: acme.key, made: "C-3" },
+            { source: "c2", name: "invented beta", key: beta.key, made: null },
+          ],
+        ],
+      );
     }).pipe(Effect.provide(layer)),
   );
 

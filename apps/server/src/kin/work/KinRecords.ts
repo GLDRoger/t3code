@@ -255,6 +255,10 @@ const shownRepeat = (rule: KinRepeatRule | null | undefined) =>
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const NUMBERS_ARE_ISSUED =
   "Kin gives this list's entries their numbers when they are issued, so nothing else sets one. Issue the entry instead; an invoice numbered elsewhere keeps that number in its notes.";
+/** A receipt's payment, invoice and number are Kin's own (`gendocs/receipts.ts` writes them). */
+const RECEIPT_TIES = ["payment", "invoice", "number"];
+const RECEIPT_TIES_ARE_KINS =
+  "Kin writes a receipt's payment, invoice and number itself: make the receipt from its payment, or set an advance against an invoice, instead. Nothing changed.";
 const actorIdOf = (writer: Writer) =>
   writer.actor._tag === "agent"
     ? writer.actor.agentId
@@ -695,6 +699,8 @@ const make = Effect.gen(function* () {
       repeat: input.repeat,
     });
     if (invalidFor !== undefined) return yield* invalidFor;
+    if (list === "receipts" && RECEIPT_TIES.some((field) => field in fields))
+      return yield* invalid(RECEIPT_TIES_ARE_KINS);
     if (writer.actor._tag !== "person" && numberingOf(def) !== undefined && "number" in fields)
       return yield* invalid(NUMBERS_ARE_ISSUED);
     if (def.builtIn === null) yield* verifyRefs(orgId, def, fields).pipe(provideSql);
@@ -910,6 +916,20 @@ const make = Effect.gen(function* () {
           repeat: patch.repeat,
         });
         if (invalidFor !== undefined) return yield* invalidFor;
+        if (list === "receipts") {
+          if (RECEIPT_TIES.some((field) => field in (patch.fields ?? {})))
+            return yield* invalid(RECEIPT_TIES_ARE_KINS);
+          const tied =
+            patch.amount !== undefined &&
+            (patch.amount?.minor !== row.amountMinor || patch.amount?.currency !== row.currency) &&
+            (typeof parseFields(row.fieldsJson).payment === "string" ||
+              (yield* sql`SELECT 1 FROM kin_issued_numbers
+                WHERE org_id = ${orgId} AND record_id = ${row.recordId} LIMIT 1`).length > 0);
+          if (tied)
+            return yield* invalid(
+              `${row.key} is a receipt Kin numbered or tied to a payment, so its amount stays what was received. Void it and make a new one instead.`,
+            );
+        }
         if (
           numberingOf(def) !== undefined &&
           patch.fields !== undefined &&

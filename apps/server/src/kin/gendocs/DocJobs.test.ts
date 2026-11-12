@@ -981,6 +981,239 @@ describe("receipts", () => {
         );
       }).pipe(Effect.provide(layer)),
   );
+
+  it.effect(
+    "take their payment, invoice, number and amount only from what Kin recorded, and only imported notes' numbers",
+    () =>
+      Effect.gen(function* () {
+        const asked = yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const records = yield* KinRecords.KinRecords;
+        const system = { actor: { _tag: "system" as const }, via: "import" as const };
+        const owner = {
+          actor: { _tag: "person" as const, personId: ownerId },
+          via: "owner" as const,
+        };
+        const receipt = (input: Omit<typeof LeadDocuments.ReceiptInput.Type, "sourceEventId">) =>
+          LeadDocuments.receipt(scope, { sourceEventId: asked, ...input });
+        const invoiceFor = (title: string, amount: string, client?: string) =>
+          LeadWork.create(scope, {
+            sourceEventId: asked,
+            records: [
+              {
+                list: "invoices",
+                title,
+                amount,
+                state: "open",
+                ...(client === undefined ? {} : { client }),
+              },
+            ],
+          }).pipe(Effect.map((made) => made.records[0]!.key));
+        const pay = (
+          writer: typeof owner | typeof system,
+          key: string,
+          minor: number,
+          originKey: string,
+          note?: string,
+        ) =>
+          records.pay(orgId, writer, key, {
+            amount: { minor, currency: "INR" },
+            paidOn: "2026-10-01",
+            originKey,
+            ...(note === undefined ? {} : { note }),
+          });
+        const retainer = yield* invoiceFor("Retainer", "50,000", "Invented Acme");
+        // The old system's receipt for an advance, as the import writes it; and one it noted
+        // with a number Kin could never issue after.
+        const imported = yield* pay(
+          system,
+          retainer,
+          1_000_000,
+          "import:oldbooks:payment:adv",
+          "Advance received; receipt note QST-RN/2026-27/001",
+        );
+        const long = yield* pay(
+          system,
+          retainer,
+          100,
+          "import:oldbooks:payment:long",
+          "Old ref QST-RN/26-27/999999999",
+        );
+        // Notes typed in Kin: a long number taken back at once, and a client's PO number.
+        const blocking = yield* pay(
+          owner,
+          "INV-1",
+          100,
+          "owner:blocking",
+          "ref QST-RN/26-27/999999999",
+        );
+        yield* records.voidPayment(orgId, owner, "INV-1", blocking.paymentId);
+        const po = yield* pay(
+          owner,
+          "INV-1",
+          100,
+          "owner:po",
+          "Cheque 004512 against client PO/2026-27/118",
+        );
+        const shownFor = (paymentId: string) =>
+          OwnerWork.get(people, { orgId, key: KinRecordKey.make("INV-1") }).pipe(
+            Effect.map(
+              (detail) => detail.payments?.find((one) => one.paymentId === paymentId)?.receipt,
+            ),
+          );
+        assert.isNull(yield* shownFor(po.paymentId));
+        const fromPo = yield* receipt({ payment: po.paymentId });
+        assert.deepStrictEqual([fromPo.number, fromPo.problems], ["QST-RN/26-27/002", []]);
+        assert.strictEqual(
+          (yield* receipt({ payment: imported.paymentId })).number,
+          "QST-RN/2026-27/001",
+        );
+        const fromLong = yield* receipt({ payment: long.paymentId });
+        assert.deepStrictEqual(
+          [fromLong.number, fromLong.problems.length],
+          ["QST-RN/26-27/003", 1],
+        );
+
+        // No one else ties a receipt to a payment or an invoice, or numbers one.
+        const tiny = yield* pay(owner, "INV-1", 100, "owner:tiny");
+        const forged = yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [
+            {
+              list: "receipts",
+              title: "Received in full",
+              amount: "9,99,999",
+              fields: { payment: tiny.paymentId, invoice: "INV-1" },
+            },
+          ],
+        }).pipe(Effect.flip);
+        assert.match(forged.message, /Kin writes a receipt's payment, invoice and number/);
+        const plain = yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [{ list: "receipts", title: "Received in full", amount: "9,99,999" }],
+        });
+        const plainKey = plain.records[0]!.key;
+        for (const patch of [
+          { fields: { payment: tiny.paymentId } },
+          { fields: { invoice: "INV-1" } },
+          { fields: { number: "QST-RN/26-27/050" } },
+        ])
+          assert.match(
+            (yield* records.update(orgId, owner, plainKey, patch).pipe(Effect.flip)).message,
+            /Kin writes a receipt's payment/,
+          );
+        // A row tied by hand before this rule isn't the payment's receipt either.
+        yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.payment',
+            ${tiny.paymentId}) WHERE org_id = ${orgId} AND key = ${plainKey}`;
+        const forTiny = yield* receipt({ payment: tiny.paymentId });
+        assert.notStrictEqual(forTiny.receipt, plainKey);
+        assert.deepStrictEqual(rendered.at(-1)!.request.inputs.amount, {
+          minor: 100,
+          currency: "INR",
+        });
+        // An issued receipt's amount stays what was received, and prints as its payment's.
+        const edit = yield* LeadWork.update(scope, {
+          key: KinRecordKey.make(forTiny.receipt),
+          sourceEventId: asked,
+          amount: "9,99,999",
+        }).pipe(Effect.flip);
+        assert.match(edit.message, /amount stays what was received/);
+        const byOwner = yield* records
+          .update(orgId, owner, forTiny.receipt, {
+            amount: { minor: 99_999_900, currency: "INR" },
+          })
+          .pipe(Effect.flip);
+        assert.match(byOwner.message, /amount stays what was received/);
+        yield* sql`UPDATE kin_records SET amount_minor = 99999900
+          WHERE org_id = ${orgId} AND key = ${forTiny.receipt}`;
+        yield* LeadDocuments.make(scope, {
+          title: "Receipt again",
+          recipe: "receipt",
+          entry: forTiny.receipt,
+          sourceEventId: asked,
+        });
+        assert.deepStrictEqual(rendered.at(-1)!.request.inputs.amount, {
+          minor: 100,
+          currency: "INR",
+        });
+
+        // An advance goes only to an invoice of its own client, never past what it still owes.
+        yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [{ list: "clients", title: "Invented Beta" }],
+        });
+        const [acme] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+          WHERE org_id = ${orgId} AND register_id = 'clients' AND title = 'Invented Acme'`;
+        const forBeta = yield* invoiceFor("Beta work", "300", "Invented Beta");
+        const unbilled = yield* invoiceFor("No client yet", "1,000");
+        const small = yield* invoiceFor("Small job", "300", "Invented Acme");
+        const nobody = yield* receipt({ advance: { amount: "200", receivedOn: "2026-11-05" } });
+        const advance = yield* receipt({
+          advance: {
+            client: KinRecordKey.make(acme!.key),
+            amount: "500",
+            receivedOn: "2026-11-05",
+          },
+        });
+        const setAgainst = (entry: string, against: string) =>
+          receipt({ entry: KinRecordKey.make(entry), against: KinRecordKey.make(against) }).pipe(
+            Effect.flip,
+            Effect.map((error) => error.message),
+          );
+        assert.match(yield* setAgainst(nobody.receipt, unbilled), /names no client/);
+        assert.match(yield* setAgainst(advance.receipt, forBeta), /another client/);
+        assert.match(yield* setAgainst(advance.receipt, unbilled), /another client/);
+        assert.match(
+          yield* setAgainst(advance.receipt, small),
+          /has ₹300\.00 left to pay, less than the ₹500\.00 advance/,
+        );
+        yield* receipt({
+          entry: KinRecordKey.make(advance.receipt),
+          against: KinRecordKey.make(retainer),
+        });
+        // Set against, it is a payment on the invoice like any other, linked by id.
+        const onRetainer = yield* OwnerWork.get(people, {
+          orgId,
+          key: KinRecordKey.make(retainer),
+        });
+        const setPayment = onRetainer.payments!.find((one) => one.paidOn === "2026-11-05")!;
+        assert.deepStrictEqual(
+          [setPayment.amount.minor, setPayment.receipt?.number],
+          [50_000, advance.number],
+        );
+        const linked = yield* sql<{ key: string }>`SELECT t.key FROM kin_record_links l
+          JOIN kin_records r ON r.org_id = l.org_id AND r.record_id = l.record_id
+          JOIN kin_records t ON t.org_id = l.org_id AND t.record_id = l.target
+          WHERE l.org_id = ${orgId} AND r.key = ${advance.receipt} AND l.kind = 'record'
+            AND t.register_id = 'invoices'`;
+        assert.deepStrictEqual(linked, [{ key: retainer }]);
+
+        // A void receipt's number never shows against its advance; the one made after it does.
+        const advances = () =>
+          LeadDocuments.make(
+            scope,
+            invoice({ entry: retainer, title: `Invoice ${retainer} ${rendered.length}` }),
+          ).pipe(
+            Effect.map(() =>
+              (
+                rendered.at(-1)!.request.inputs.advances as ReadonlyArray<{
+                  receipt: string | null;
+                  paidOn: string;
+                }>
+              ).find((one) => one.paidOn === "2026-11-05"),
+            ),
+          );
+        yield* LeadDocuments.issue(scope, {
+          entry: KinRecordKey.make(advance.receipt),
+          void: true,
+          sourceEventId: asked,
+        });
+        assert.isNull((yield* advances())!.receipt);
+        const remade = yield* receipt({ payment: setPayment.paymentId });
+        assert.notStrictEqual(remade.number, advance.number);
+        assert.strictEqual((yield* advances())!.receipt, remade.number);
+      }).pipe(Effect.provide(layer)),
+  );
 });
 
 describe("worker document jobs", () => {

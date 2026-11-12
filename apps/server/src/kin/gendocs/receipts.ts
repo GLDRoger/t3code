@@ -14,23 +14,30 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
-import { dayIn } from "../work/money.ts";
-import { endOfDay, notedReceiptNumbers, ownerZone } from "../work/recordRows.ts";
+import { dayIn, formatMoney } from "../work/money.ts";
+import {
+  endOfDay,
+  fromImport,
+  notedReceiptNumbers,
+  ownerZone,
+  type RecordRow,
+} from "../work/recordRows.ts";
 import { parseFields } from "../work/lists.ts";
 import { defineList, listDef, PRESETS } from "../work/registers.ts";
 import { makeDocument, type Requester } from "./make.ts";
 import * as Numbers from "./numbering.ts";
 
 /**
- * Receipts: money received, as entries of the `receipts` list, numbered in their own series per
- * financial year. One for a payment recorded on an invoice keeps a number the old system already
- * gave it (in the payment's note); an advance is a receipt with no invoice yet, set against one
- * later as a payment on it. Each is made at most once, so asking again returns it.
+ * Receipts: money received, numbered in their own series per financial year, made at most once.
+ * One for a payment keeps a number the old system gave it in an imported payment's note; an
+ * advance is set against an invoice later as a payment on it. Only this module ties a receipt
+ * to its payment and invoice.
  */
 
 const RECEIPTS = "receipts";
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const isChatError = Schema.is(KinChatError);
+const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
 /** `QST-RN/2026-27/001`: a number another system issued, by its shape. */
 const ISSUED_SHAPE = /^([A-Za-z][A-Za-z0-9-]{0,7})\/(?:\d{2})?\d{2}-\d{2}\/(\d{1,9})$/;
 
@@ -50,7 +57,8 @@ const receiptsList = Effect.fn("KinReceipts.list")(function* (orgId: KinOrgId) {
   if (existing !== undefined) return existing;
   const sql = yield* SqlClient.SqlClient;
   const notes = yield* sql<{ note: string }>`SELECT note FROM kin_record_payments
-    WHERE org_id = ${orgId} AND note LIKE '%/%-%/%' ORDER BY payment_id LIMIT 10000`;
+    WHERE org_id = ${orgId} AND origin_key LIKE 'import:%' AND note LIKE '%/%-%/%'
+    ORDER BY payment_id LIMIT 10000`;
   const numbers = yield* notedReceiptNumbers(
     orgId,
     notes.map((row) => row.note),
@@ -58,7 +66,9 @@ const receiptsList = Effect.fn("KinReceipts.list")(function* (orgId: KinOrgId) {
   const seen = new Map<string, { count: number; width: number }>();
   for (const number of new Set(numbers.values())) {
     const found = ISSUED_SHAPE.exec(number);
-    if (found === null) continue;
+    // One Kin couldn't write in its own form, `QST-RN/26-27/001`, says nothing of the series.
+    if (found === null || `${found[1]}/26-27/${found[2]}`.length > Numbers.MAX_NUMBER_LENGTH)
+      continue;
     const one = seen.get(found[1]!) ?? { count: 0, width: 1 };
     seen.set(found[1]!, {
       count: one.count + 1,
@@ -136,6 +146,7 @@ type PaymentRow = {
   readonly currency: string;
   readonly paidOn: string;
   readonly note: string;
+  readonly originKey: string;
   readonly voidedAt: number | null;
   readonly invoiceId: string;
   readonly invoiceKey: string;
@@ -143,14 +154,14 @@ type PaymentRow = {
   readonly partyId: string | null;
 };
 
-/** The receipts entry already made for a payment, by its `payment` field. */
+/** The receipts entry Kin already made for a payment: only Kin's own carry a `receipt:` origin. */
 const receiptOfPayment = Effect.fn("KinReceipts.ofPayment")(function* (
   orgId: KinOrgId,
   paymentId: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ key: string; state: string }>`SELECT key, state FROM kin_records
-    WHERE org_id = ${orgId} AND register_id = ${RECEIPTS}
+    WHERE org_id = ${orgId} AND register_id = ${RECEIPTS} AND origin_key LIKE 'receipt:%'
       AND json_extract(fields_json, '$.payment') = ${paymentId}
     ORDER BY created_at, record_id LIMIT 100`;
   // A voided receipt stays void; the payment may get a new one, made once per voided one.
@@ -166,6 +177,29 @@ export type Extras = {
   readonly reference?: string | undefined;
 };
 
+/**
+ * Ties a receipt to its payment and the payment's invoice, logged as a change. Written here only:
+ * `KinRecords` refuses these fields from every other writer, so no one can point a receipt.
+ */
+const tie = Effect.fn("KinReceipts.tie")(function* (
+  orgId: KinOrgId,
+  writer: Writer,
+  receipt: RecordRow,
+  to: { readonly invoice: string; readonly payment: string },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const records = yield* KinRecords;
+  const fields = parseFields(receipt.fieldsJson);
+  const changes = (["invoice", "payment"] as const)
+    .filter((field) => fields[field] !== to[field])
+    .map((field) => ({ field, from: text(fields[field]), to: to[field] }));
+  if (changes.length === 0) return;
+  yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json,
+      '$.invoice', ${to.invoice}, '$.payment', ${to.payment})
+    WHERE org_id = ${orgId} AND record_id = ${receipt.recordId}`;
+  yield* records.update(orgId, writer, receipt.key, {}, undefined, changes);
+});
+
 /** The receipt for a payment recorded on an invoice: made once, numbered, kept. */
 const forPayment = Effect.fn("KinReceipts.forPayment")(function* (
   orgId: KinOrgId,
@@ -177,7 +211,7 @@ const forPayment = Effect.fn("KinReceipts.forPayment")(function* (
   const records = yield* KinRecords;
   const [payment] = yield* sql<PaymentRow>`SELECT p.payment_id AS "paymentId",
       p.amount_minor AS minor, p.currency, p.paid_on AS "paidOn", p.note,
-      p.voided_at AS "voidedAt", r.record_id AS "invoiceId", r.key AS "invoiceKey",
+      p.origin_key AS "originKey", p.voided_at AS "voidedAt", r.record_id AS "invoiceId", r.key AS "invoiceKey",
       n.number AS "invoiceNumber", r.party_id AS "partyId"
     FROM kin_record_payments p
     JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
@@ -197,35 +231,42 @@ const forPayment = Effect.fn("KinReceipts.forPayment")(function* (
   if (owner === undefined) return yield* invalid("Only the owner or an agent makes a receipt.");
   const zone = yield* ownerZone(orgId);
   const against = payment.invoiceNumber ?? payment.invoiceKey;
-  const { row } = yield* records.create(orgId, writer, {
-    list: RECEIPTS,
-    originKey: `receipt:payment:${paymentId}${made.voided === 0 ? "" : `:${made.voided}`}`,
-    title: `Received towards ${against}`,
-    owner,
-    state: "open",
-    amount: { minor: payment.minor, currency: payment.currency },
-    dateAt: endOfDay(payment.paidOn, zone),
-    dateAllDay: true,
-    partyId: payment.partyId,
-    fields: {
-      towards: extras.towards ?? `Invoice ${against}`,
-      ...(extras.mode === undefined ? {} : { mode: extras.mode }),
-      ...(extras.reference === undefined ? {} : { reference: extras.reference }),
-      invoice: payment.invoiceKey,
-      payment: paymentId,
-    },
-    links: [
-      { kind: "record", target: payment.invoiceId, relation: "relates", label: payment.invoiceKey },
-    ],
-  });
-  const noted = yield* notedReceiptNumbers(orgId, [payment.note]);
-  // A number the old system gave goes to the payment's first receipt only.
-  return yield* settle(
-    orgId,
-    writer,
-    row.key,
-    made.voided === 0 ? noted.get(payment.note) : undefined,
+  const row = yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const { row } = yield* records.create(orgId, writer, {
+        list: RECEIPTS,
+        originKey: `receipt:payment:${paymentId}${made.voided === 0 ? "" : `:${made.voided}`}`,
+        title: `Received towards ${against}`,
+        owner,
+        state: "open",
+        amount: { minor: payment.minor, currency: payment.currency },
+        dateAt: endOfDay(payment.paidOn, zone),
+        dateAllDay: true,
+        partyId: payment.partyId,
+        fields: {
+          towards: extras.towards ?? `Invoice ${against}`,
+          ...(extras.mode === undefined ? {} : { mode: extras.mode }),
+          ...(extras.reference === undefined ? {} : { reference: extras.reference }),
+        },
+        links: [
+          {
+            kind: "record",
+            target: payment.invoiceId,
+            relation: "relates",
+            label: payment.invoiceKey,
+          },
+        ],
+      });
+      yield* tie(orgId, writer, row, { invoice: payment.invoiceKey, payment: paymentId });
+      return row;
+    }),
   );
+  // A number the old system gave goes to the payment's first receipt only.
+  const noted =
+    made.voided === 0 && fromImport(payment)
+      ? (yield* notedReceiptNumbers(orgId, [payment.note])).get(payment.note)
+      : undefined;
+  return yield* settle(orgId, writer, row.key, noted);
 });
 
 /** A receipts entry numbered: kept as it is when it has one. */
@@ -300,8 +341,9 @@ const forEntry = Effect.fn("KinReceipts.forEntry")(function* (
 });
 
 /**
- * Sets an advance receipt against an invoice: a payment on the invoice of the receipt's amount on
- * the day it was received, its note the receipt's number. Once only, and only to one invoice.
+ * Sets an advance receipt against an invoice of the same client: a payment on the invoice of the
+ * receipt's whole amount on the day it was received, its note the receipt's number. Once only,
+ * to one invoice, and never more than the invoice still owes.
  */
 const setAgainst = Effect.fn("KinReceipts.setAgainst")(function* (
   orgId: KinOrgId,
@@ -316,6 +358,10 @@ const setAgainst = Effect.fn("KinReceipts.setAgainst")(function* (
   const fields = parseFields(receipt.fieldsJson);
   const invoice = yield* records.get(orgId, invoiceKey);
   if (invoice === undefined) return yield* invalid(`No entry ${invoiceKey}. Nothing changed.`);
+  if (receipt.partyId === null)
+    return yield* invalid(
+      `${receipt.key} names no client, so it can't be set against an invoice. Nothing changed.`,
+    );
   const sql = yield* SqlClient.SqlClient;
   const held = typeof fields.payment === "string" ? fields.payment : undefined;
   if (held !== undefined) {
@@ -331,19 +377,37 @@ const setAgainst = Effect.fn("KinReceipts.setAgainst")(function* (
   }
   if (receipt.amountMinor === null || receipt.currency === null || receipt.dateAt === null)
     return yield* invalid(`${receipt.key} has no amount or date to set against an invoice.`);
-  if (invoice.partyId !== null && receipt.partyId !== null && invoice.partyId !== receipt.partyId)
-    return yield* invalid(`${receipt.key} was received from another client than ${invoice.key}'s.`);
+  if (invoice.partyId !== receipt.partyId)
+    return yield* invalid(
+      `${receipt.key} was received from another client than ${invoice.key}'s. Nothing changed.`,
+    );
+  const advance = { minor: receipt.amountMinor, currency: receipt.currency };
+  if (invoice.amountMinor !== null) {
+    const owed = { minor: invoice.amountMinor - invoice.paid, currency: invoice.currency ?? "" };
+    if (owed.currency !== advance.currency || owed.minor < advance.minor)
+      return yield* invalid(
+        `${invoice.key} has ${formatMoney(owed)} left to pay, less than the ${formatMoney(advance)} advance ${receipt.key}. Nothing changed.`,
+      );
+  }
   const number = (yield* Numbers.issuedNumber(orgId, receipt.recordId)) ?? receipt.key;
-  const { paymentId } = yield* records.pay(orgId, writer, invoice.key, {
-    amount: { minor: receipt.amountMinor, currency: receipt.currency },
-    paidOn: dayIn(receipt.dateAt, yield* ownerZone(orgId)),
-    note: number,
-    originKey: `receipt:${receipt.recordId}${held === undefined ? "" : `:after:${held}`}`,
-  });
-  yield* records.update(orgId, writer, receipt.key, {
-    fields: { invoice: invoice.key, payment: paymentId },
-  });
-  return receipt.key;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const { paymentId } = yield* records.pay(orgId, writer, invoice.key, {
+        amount: advance,
+        paidOn: dayIn(receipt.dateAt!, yield* ownerZone(orgId)),
+        note: number,
+        originKey: `receipt:${receipt.recordId}${held === undefined ? "" : `:after:${held}`}`,
+      });
+      yield* records.link(orgId, writer, receipt.recordId, {
+        kind: "record",
+        target: invoice.recordId,
+        relation: "relates",
+        label: invoice.key,
+      });
+      yield* tie(orgId, writer, receipt, { invoice: invoice.key, payment: paymentId });
+      return receipt.key;
+    }),
+  );
 });
 
 /** The receipt and its PDF, made with the `receipt` recipe; a retry makes nothing more. */
@@ -416,9 +480,8 @@ type ReceiptRow = {
   readonly docKey: string | null;
   readonly docTitle: string | null;
   readonly originKey: string;
+  readonly invoiceKey: string | null;
 };
-
-const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
 
 /** Receipts as a screen shows them, newest first: number, who from, towards, its invoice and PDF. */
 export const listReceipts = Effect.fn("KinReceipts.listReceipts")(function* (
@@ -430,9 +493,12 @@ export const listReceipts = Effect.fn("KinReceipts.listReceipts")(function* (
   const rows = yield* sql<ReceiptRow>`SELECT r.key, n.number, r.state, r.date_at AS "dateAt",
       r.amount_minor AS minor, r.currency, r.fields_json AS "fieldsJson", r.party_id AS "partyId",
       p.key AS "partyKey", p.title AS "partyTitle", d.key AS "docKey", d.title AS "docTitle",
-      r.origin_key AS "originKey"
+      r.origin_key AS "originKey", i.key AS "invoiceKey"
     FROM kin_records r
     LEFT JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
+    LEFT JOIN kin_record_payments pay ON pay.org_id = r.org_id
+      AND pay.payment_id = json_extract(r.fields_json, '$.payment')
+    LEFT JOIN kin_records i ON i.org_id = pay.org_id AND i.record_id = pay.record_id
     LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.party_id
     LEFT JOIN kin_records d ON d.org_id = r.org_id AND d.record_id = (
       SELECT v.record_id FROM kin_doc_jobs j
@@ -444,7 +510,8 @@ export const listReceipts = Effect.fn("KinReceipts.listReceipts")(function* (
     ORDER BY r.date_at DESC, r.key DESC LIMIT ${options.limit ?? 100}`;
   return rows.map((row): KinReceipt => {
     const fields = parseFields(row.fieldsJson);
-    const invoice = text(fields.invoice);
+    // By its payment's invoice id, so a key used again later never points it elsewhere.
+    const invoice = row.invoiceKey;
     const payment = text(fields.payment);
     return {
       key: KinRecordKey.make(row.key),

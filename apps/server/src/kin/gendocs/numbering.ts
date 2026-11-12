@@ -21,7 +21,7 @@ import { listDef, numberingOf, unknownList } from "../work/registers.ts";
  * keeps its number, so the series has no gaps.
  */
 
-const MAX_NUMBER_LENGTH = 16;
+export const MAX_NUMBER_LENGTH = 16;
 /** A number Kin keeps but never continues: one in no series of the list's rule. */
 export const IMPORTED_SERIES = "imported";
 
@@ -117,7 +117,7 @@ export const issue = Effect.fn("KinNumbers.issue")(function* (
       const series = `${rule.prefix}|${year ?? "running"}`;
       // A receipt number the old system issued may still sit only in a payment's note: past it.
       if (def.id === "receipts") {
-        const floor = yield* notedFloor(orgId, rule, series);
+        const floor = yield* notedFloor(orgId, rule, year, series);
         if (floor > 0)
           yield* sql`INSERT INTO kin_number_series (org_id, register_id, series, last_seq)
             VALUES (${orgId}, ${def.id}, ${series}, ${floor})
@@ -169,21 +169,28 @@ export const issue = Effect.fn("KinNumbers.issue")(function* (
   );
 }, workFailure);
 
-/** The highest number in `series` that a payment's note holds as the receipt it was given. */
+/**
+ * The highest number in `series` an imported payment, not taken back, holds in its note as the
+ * receipt the old system gave it. Only an import writes such a number, and one Kin could never
+ * issue after (over the length limit) is no number at all.
+ */
 const notedFloor = Effect.fn("KinNumbers.notedFloor")(function* (
   orgId: KinOrgId,
   rule: KinNumberingRule,
+  year: string | null,
   series: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const notes = yield* sql<{ note: string }>`SELECT note FROM kin_record_payments
-    WHERE org_id = ${orgId} AND instr(note, ${rule.prefix}) > 0
+    WHERE org_id = ${orgId} AND origin_key LIKE 'import:%' AND voided_at IS NULL
+      AND instr(note, ${rule.prefix}) > 0
     ORDER BY payment_id LIMIT 10000`;
   let highest = 0;
   for (const { note } of notes)
     for (const number of receiptNumbersIn(note)) {
       const at = seriesOf(rule, number);
-      if (at.series === series) highest = Math.max(highest, at.seq);
+      if (at.series === series && formatNumber(rule, year, at.seq).length <= MAX_NUMBER_LENGTH)
+        highest = Math.max(highest, at.seq);
     }
   return highest;
 });
@@ -218,6 +225,13 @@ export const adopt = Effect.fn("KinNumbers.adopt")(function* (
       if (!/^[A-Za-z0-9/-]{1,32}$/.test(number))
         return yield* invalid(`${number.slice(0, 40)} isn't a number Kin can keep.`);
       const { series, seq } = seriesOf(rule, number);
+      if (
+        !series.startsWith(`${IMPORTED_SERIES}|`) &&
+        formatNumber(rule, series.split("|")[1] ?? null, seq + 1).length > MAX_NUMBER_LENGTH
+      )
+        return yield* invalid(
+          `${number} would leave no number of at most ${MAX_NUMBER_LENGTH} characters after it in its series.`,
+        );
       const clash = yield* sql`SELECT 1 FROM kin_issued_numbers WHERE org_id = ${orgId}
         AND register_id = ${def.id}
         AND (number = ${number} OR (series = ${series} AND seq = ${seq})) LIMIT 1`;
