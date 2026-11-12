@@ -8,6 +8,7 @@ import {
   type KinChatMember,
   type KinEvent,
   type KinMessage,
+  type KinMessageRef,
   KinMessageId,
   type KinWakeupId,
 } from "@t3tools/contracts";
@@ -30,6 +31,7 @@ import { historyFloor } from "../chat/sharing.ts";
 
 import { SILENT_REPLY } from "../reply/classify.ts";
 import { effectiveAudience, recordAudience, turnAudience, type TurnAudience } from "./Audience.ts";
+import { sectionsOf } from "../work/docBody.ts";
 import { buildWorkSection, WITHDRAWN_WORK, WORK_RULE } from "../work/workPrompt.ts";
 import { entriesShown } from "../work/workerAttempts.ts";
 import { askedWhereOthersRead } from "../triggers/deferralOrigin.ts";
@@ -141,6 +143,41 @@ export class KinLeadPrompt extends Context.Service<
             : undefined;
         });
         return yield* read.pipe(Effect.orElseSucceed(() => undefined));
+      });
+      // The section a message points at, as stored at that version: quoted, never summarised.
+      // Docs are the owner's until the teammate view, so a turn others read gets only the name.
+      const quotedRef = Effect.fnUntraced(function* (
+        orgId: KinOrgId,
+        ref: KinMessageRef,
+        shown: boolean,
+      ) {
+        const named = {
+          doc: ref.key,
+          title: ref.title,
+          version: ref.version,
+          ...(ref.section === null ? {} : { section: ref.section, sectionTitle: ref.sectionTitle }),
+        };
+        if (!shown)
+          return quote("doc reference (data)", {
+            ...named,
+            text: "not shown in a chat others read",
+          });
+        const [doc] = yield* sql<{ body: string }>`SELECT v.body FROM kin_records r
+          JOIN kin_doc_versions v ON v.org_id = r.org_id AND v.record_id = r.record_id
+            AND v.version = ${ref.version}
+          WHERE r.org_id = ${orgId} AND r.key = ${ref.key} AND r.register_id = 'docs'
+          ORDER BY r.record_id`.pipe(Effect.orElseSucceed(() => []));
+        const text =
+          doc === undefined
+            ? undefined
+            : ref.section === null
+              ? doc.body
+              : sectionsOf(doc.body).find((part) => part.id === ref.section)?.text;
+        return quote(
+          "doc section the owner pointed at (data)",
+          { ...named, body: text ?? "no longer there" },
+          true,
+        );
       });
       const quoteEvents = Effect.fnUntraced(function* (
         input: Pick<KinLeadPromptInput, "orgId" | "agentId" | "events" | "routineFacts"> & {
@@ -446,6 +483,8 @@ export class KinLeadPrompt extends Context.Service<
               true,
             ),
           );
+          for (const ref of message.refs ?? [])
+            events.push(yield* quotedRef(orgId, ref, owner && ownerOnly));
         }
         return { events, fromOwner: fromOwner && events.length > 0, replyDue };
       });

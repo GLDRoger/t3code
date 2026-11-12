@@ -55,6 +55,11 @@ export class KinLevelGate extends Context.Service<
     ) => Effect.Effect<KinWidget, KinChatError>;
     /** `kin_ask`'s choice card, gated like a post: it is the lead's reply too. */
     readonly ask: (agent: AgentIdentity, input: AskInput) => Effect.Effect<KinWidget, KinChatError>;
+    /** A doc card, gated like a post. */
+    readonly showCard: (
+      agent: AgentIdentity,
+      input: Parameters<KinChatService["Service"]["showCard"]>[1],
+    ) => Effect.Effect<KinWidget, KinChatError>;
     /** `kin_react`: the lead's reaction, gated like a post since it can stand for its reply. */
     readonly react: (
       agent: AgentIdentity,
@@ -280,6 +285,9 @@ const make = Effect.gen(function* () {
     ),
     ask: Effect.fn("KinLevelGate.ask")((agent, input) =>
       gated("gated ask", agent, input.chatId, chat.ask(agent, input)),
+    ),
+    showCard: Effect.fn("KinLevelGate.showCard")((agent, input) =>
+      gated("gated card", agent, input.chatId, chat.showCard(agent, input)),
     ),
     react: Effect.fn("KinLevelGate.react")((agent, input) =>
       gated("gated reaction", agent, input.chatId, chat.react(agent, { ...input, on: true })),
