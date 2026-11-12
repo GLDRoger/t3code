@@ -140,6 +140,8 @@ export class KinPushSender extends Context.Service<
     readonly notify: (
       notification: KinPushNotification,
     ) => Effect.Effect<Fiber.Fiber<KinPushOutcome>>;
+    /** Sends every push an approver key change still owes, then settles it. Returns how many. */
+    readonly flushKeyPushes: Effect.Effect<number>;
   }
 >()("t3/kin/push/KinPushSender") {}
 
@@ -307,7 +309,10 @@ const make = Effect.gen(function* () {
               AND k.status = 'running')) AS owner_timed
       FROM kin_messages m
       WHERE m.org_id = ${orgId} AND m.message_id = ${messageId} AND m.status = 'posted'
-        AND m.kind != 'widget_action' AND m.silent = 0`;
+        AND m.kind != 'widget_action' AND m.silent = 0
+        -- A key change's notice rings as that change's own push instead.
+        AND NOT EXISTS (SELECT 1 FROM kin_key_pushes p
+          WHERE p.org_id = m.org_id AND p.message_id = m.message_id)`;
     // A card that waits on someone announces itself through its widget push.
     if (row === undefined || row.awaits_card === 1) return undefined;
     const chat = yield* chatName(orgId, row.chat_id);
@@ -550,7 +555,59 @@ const make = Effect.gen(function* () {
     return yield* Effect.forkIn(run(notification), scope);
   });
 
-  return KinPushSender.of({ status: apns.status, notify });
+  const flushKeyPushes = Effect.fn("KinPushSender.flushKeyPushes")(
+    function* () {
+      // A scan across orgs, at start and after each key change: whatever is still owed.
+      const owed = yield* sql<{
+        org_id: KinOrgId;
+        thumbprint: string;
+        change: string;
+        body: string;
+        human_id: KinPersonId;
+      }>`SELECT p.org_id, p.thumbprint, p.change, p.body, k.human_id FROM kin_key_pushes p
+        JOIN kin_approver_keys k ON k.org_id = p.org_id AND k.thumbprint = p.thumbprint
+        WHERE p.sent_at IS NULL ORDER BY p.owed_at, p.org_id, p.thumbprint, p.change`;
+      let settled = 0;
+      for (const row of owed) {
+        const sent = Effect.gen(function* () {
+          if (apns.status === "ready")
+            yield* deliver(row.org_id, {
+              category: "kin.message",
+              title: "Kin approvals",
+              // The server's own text, whole, so where to remove the phone is never cut off.
+              body: row.body,
+              chatId: undefined,
+              source: undefined,
+              data: {
+                kin: 1,
+                orgId: row.org_id,
+                deepLink: `/kin/${host}/${segment(row.org_id)}/approvals`,
+              },
+              // A phone that can approve came or went: it rings through quiet hours.
+              recipients: [{ personId: row.human_id, silent: false }],
+            });
+          yield* sql`UPDATE kin_key_pushes SET sent_at = ${yield* Clock.currentTimeMillis}
+            WHERE org_id = ${row.org_id} AND thumbprint = ${row.thumbprint}
+              AND change = ${row.change} AND sent_at IS NULL`;
+          settled++;
+        });
+        // Left owed, it goes again at the next key change or start.
+        yield* sent.pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("Kin key change push failed.", { error: error._tag }),
+          ),
+        );
+      }
+      return settled;
+    },
+    Effect.catch((error) =>
+      Effect.logWarning("Kin couldn't read owed key pushes.", { error: error._tag }).pipe(
+        Effect.as(0),
+      ),
+    ),
+  );
+
+  return KinPushSender.of({ status: apns.status, notify, flushKeyPushes: flushKeyPushes() });
 });
 
 export const layer = Layer.effect(KinPushSender, make);

@@ -266,7 +266,7 @@ export interface ProbeInput {
   readonly paths: (worktree: string, tmp: string) => Effect.Effect<ShellPaths, string>;
   /** A real child's sandbox, for given paths. */
   readonly sandbox: (paths: ShellPaths) => SandboxSettings;
-  readonly runtimeBin: string | undefined;
+  readonly bins: ReadonlyArray<string>;
   /** The real session, without its shell; the check adds the one it would get. */
   readonly session: Omit<WorkSession, "shell" | "confinement">;
   readonly confinement: (root: string) => HookCallbackMatcher;
@@ -450,7 +450,7 @@ export const probe = Effect.fn("KinWorkSandbox.probe")(function* (input: ProbeIn
     {
       ...input.session,
       confinement: input.confinement(tree),
-      shell: { sandbox: input.sandbox(paths.success), tmp, runtimeBin: input.runtimeBin },
+      shell: { sandbox: input.sandbox(paths.success), tmp, bins: input.bins },
     },
     { cwd: tree, configDir, baseUrl: `http://127.0.0.1:${port}`, key: canary },
   );

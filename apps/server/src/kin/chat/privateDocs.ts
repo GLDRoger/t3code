@@ -51,12 +51,12 @@ const cardOf = (widget: KinWidget) =>
   widget.type === KIN_DOC_CARD ? Option.getOrUndefined(decodeCard(widget.state)) : undefined;
 
 /**
- * Messages and cards as `viewer` may see them: the org owner and agents see docs as they are;
- * anyone else sees a doc that is sensitive now as a private document.
+ * Messages and cards as `viewer` may see them: the org owner and an agent on an owner-only turn
+ * see docs as they are; anyone else, and a shared turn, sees a doc sensitive now as private.
  */
 export const docsForViewer = Effect.fn("KinPrivateDocs.forViewer")(function* (
   orgId: KinOrgId,
-  viewer: { readonly personId: KinPersonId } | undefined,
+  viewer: { readonly personId: KinPersonId } | { readonly sharedTurn: boolean },
   page: {
     readonly messages: ReadonlyArray<KinMessage>;
     readonly widgets: ReadonlyArray<KinWidget>;
@@ -69,7 +69,8 @@ export const docsForViewer = Effect.fn("KinPrivateDocs.forViewer")(function* (
       return card === undefined ? [] : [card.key];
     }),
   ];
-  if (keys.length === 0 || viewer === undefined || (yield* isOrgOwner(orgId, viewer.personId)))
+  if (keys.length === 0) return page;
+  if ("personId" in viewer ? yield* isOrgOwner(orgId, viewer.personId) : !viewer.sharedTurn)
     return page;
   const hidden = yield* sensitiveDocs(orgId, keys);
   if (hidden.size === 0) return page;

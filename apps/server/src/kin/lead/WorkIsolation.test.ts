@@ -445,7 +445,7 @@ it.effect(
               place: { home: "/state/kin/worker-home", configDir: configDir },
               sandbox,
               tmp: "/tmp/kin-task",
-              runtimeBin: undefined,
+              bins: [],
               release: Effect.void,
               noteMessage: () => Effect.void,
             } as const);

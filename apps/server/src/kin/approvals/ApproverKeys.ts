@@ -3,6 +3,7 @@ import * as NodeCrypto from "node:crypto";
 
 import {
   AuthKinChatScope,
+  KIN_APPROVER_ENROLMENT_VERSION,
   KinApprovalError,
   type AuthSessionId,
   type KinActionId,
@@ -26,6 +27,8 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
+import type * as Scope from "effect/Scope";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Base64Url from "effect/encoding/Base64Url";
 
@@ -109,6 +112,8 @@ export class ApproverKeys extends Context.Service<
     readonly activeApprovers: (
       orgId: KinOrgId,
     ) => Effect.Effect<ReadonlyArray<KinPersonId>, KinApprovalError>;
+    /** Each key change after it commits, owing its owner the push `kin_key_pushes` records. */
+    readonly changes: Effect.Effect<PubSub.Subscription<void>, never, Scope.Scope>;
   }
 >()("t3/kin/approvals/ApproverKeys") {}
 
@@ -121,6 +126,7 @@ const make = Effect.gen(function* () {
   const store = yield* makeKeyStore;
   const { sql, seal, toKey, select } = store;
   // Single-use, session-bound, short-lived: memory is enough, and a restart only means retrying.
+  const changed = yield* PubSub.unbounded<void>();
   const challenges = new Map<
     AuthSessionId,
     { readonly challenge: string; readonly expiresAt: number }
@@ -218,19 +224,28 @@ const make = Effect.gen(function* () {
   });
 
   const notify = (row: KeyRow, change: KinKeyChange["change"], at: number, lastKey: boolean) =>
-    notices.changed({
-      orgId: row.org_id as KinOrgId,
-      ownerPersonId: row.human_id as KinPersonId,
-      thumbprint: row.thumbprint as KinKeyThumbprint,
-      deviceLabel: row.device_label,
-      platform: row.platform,
-      change,
-      at,
-      lastKey,
-    });
+    notices
+      .changed({
+        orgId: row.org_id as KinOrgId,
+        ownerPersonId: row.human_id as KinPersonId,
+        thumbprint: row.thumbprint as KinKeyThumbprint,
+        deviceLabel: row.device_label,
+        platform: row.platform,
+        change,
+        at,
+        lastKey,
+      })
+      .pipe(Effect.andThen(sql.afterCommit(PubSub.publish(changed, undefined))));
 
   const registerKey = Effect.fn("ApproverKeys.registerKey")(
     function* (caller: KinKeyCaller, input: KinApprovalsRegisterKeyInput) {
+      // Older apps expect a code back and discard their key without one. They show the host's
+      // text only for `unavailable`, up to 200 characters.
+      if (input.enrolmentVersion !== KIN_APPROVER_ENROLMENT_VERSION)
+        return yield* fail(
+          "unavailable",
+          "This version of the Kin app can't set up approvals any more. Please update the Kin app, then try again.",
+        );
       // Answered early here; the write below checks again against the rows it commits with.
       yield* ownerIn(caller, input.orgId);
       const thumbprint = computeDpopJwkThumbprint(input.publicJwk) as KinKeyThumbprint;
@@ -500,6 +515,7 @@ const make = Effect.gen(function* () {
     requireActive,
     reconcileSessions,
     activeApprovers,
+    changes: PubSub.subscribe(changed),
   });
 });
 

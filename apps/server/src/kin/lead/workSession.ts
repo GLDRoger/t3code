@@ -118,7 +118,7 @@ export interface WorkerPlace {
 const workerEnvironment = (
   server: NodeJS.ProcessEnv,
   place: WorkerPlace,
-  shell?: { readonly tmp: string; readonly runtimeBin: string | undefined },
+  shell?: { readonly tmp: string; readonly bins: ReadonlyArray<string> },
 ): Record<string, string> => {
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(server))
@@ -129,8 +129,7 @@ const workerEnvironment = (
     if (value?.startsWith("/") === true) env[name] = value;
   }
   const path = (server.PATH ?? "").split(":").filter((entry) => entry.startsWith("/"));
-  // The server's own Node first: version-manager shims live in the home the shell can't read.
-  if (shell?.runtimeBin !== undefined) path.unshift(shell.runtimeBin);
+  path.unshift(...(shell?.bins ?? []));
   return {
     ...env,
     PATH: path.join(":"),
@@ -162,7 +161,8 @@ export interface WorkSession {
     | {
         readonly sandbox: SandboxSettings;
         readonly tmp: string;
-        readonly runtimeBin: string | undefined;
+        /** Put first on `PATH`: the server's Node and Kin's tools. */
+        readonly bins: ReadonlyArray<string>;
       }
     | undefined;
 }

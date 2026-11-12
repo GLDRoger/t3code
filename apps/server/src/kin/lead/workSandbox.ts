@@ -32,6 +32,7 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { resolveClaudeHomePath } from "../../provider/Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../../provider/Drivers/CodexHomeLayout.ts";
 import { makeConfiner, type WorkerCredentials } from "../claudeConfinement.ts";
+import { toolDirectories } from "../gendocs/toolchain.ts";
 import { grantedHosts, noteBlocked, refusedHosts } from "./workNetwork.ts";
 import { type CheckLine, type CheckResult, probe, type ShellPaths } from "./workSandboxProbe.ts";
 import { shellTools, type WorkerPlace, type WorkSession } from "./workSession.ts";
@@ -305,6 +306,8 @@ export const shellRoots = Effect.fn("KinWorkSandbox.shellRoots")(function* (inpu
   readonly providerHomes: ReadonlyArray<string>;
   readonly readPaths: ReadonlyArray<string>;
   readonly runtime: string | undefined;
+  /** Kin's own tools; one that is missing or would reopen private data is left out. */
+  readonly toolDirs?: ReadonlyArray<string>;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -342,7 +345,12 @@ export const shellRoots = Effect.fn("KinWorkSandbox.shellRoots")(function* (inpu
     [home, ...privateRoots].find(
       (root) => isInside(target, root) || (root !== home && isInside(root, target)),
     );
-  const readable: Array<string> = [];
+  const tools: Array<string> = [];
+  for (const entry of input.toolDirs ?? []) {
+    const target = yield* real(entry);
+    if (target !== undefined && holds(target) === undefined) tools.push(target);
+  }
+  const readable: Array<string> = [...tools];
   for (const entry of [
     ...(input.runtime === undefined ? [] : [input.runtime]),
     ...input.readPaths,
@@ -366,7 +374,7 @@ export const shellRoots = Effect.fn("KinWorkSandbox.shellRoots")(function* (inpu
   const denied = [home, ...privateRoots].filter((entry) =>
     system.some((root) => isInside(root, entry)),
   );
-  return { denied, readable: [...system, ...readable], tmpRoot };
+  return { denied, readable: [...system, ...readable], tmpRoot, tools };
 });
 
 export type Prepared =
@@ -375,7 +383,7 @@ export type Prepared =
       readonly place: WorkerPlace;
       readonly sandbox: SandboxSettings;
       readonly tmp: string;
-      readonly runtimeBin: string | undefined;
+      readonly bins: ReadonlyArray<string>;
       /** Removes the task's private temp directory once its session closes. */
       readonly release: Effect.Effect<void>;
       /** Keeps the hosts a message says the network rule refused, for the worker's report. */
@@ -557,6 +565,7 @@ export const checkShell = Effect.fn("KinWorkSandbox.checkShell")(function* (inpu
   readonly readPaths: ReadonlyArray<string>;
   /** Absolute, as each provider resolves them; see `providerHomes`. */
   readonly providerHomes: ReadonlyArray<string>;
+  readonly toolDirs?: ReadonlyArray<string>;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -574,10 +583,12 @@ export const checkShell = Effect.fn("KinWorkSandbox.checkShell")(function* (inpu
     providerHomes: input.providerHomes,
     readPaths: input.readPaths,
     runtime,
+    ...(input.toolDirs === undefined ? {} : { toolDirs: input.toolDirs }),
   }).pipe(Effect.result);
   if (roots._tag === "Failure") return { _tag: "unresolved", reason: roots.failure } as const;
-  const { denied, readable, tmpRoot } = roots.success;
-  const runtimeBin = runtime === undefined ? undefined : path.join(runtime, "bin");
+  const { denied, readable, tmpRoot, tools } = roots.success;
+  // The server's own Node and Kin's tools first: shims in the home the shell can't read fail.
+  const bins = [...(runtime === undefined ? [] : [path.join(runtime, "bin")]), ...tools];
   const paths = (worktree: string, tmp: string) =>
     gitCommonDir(worktree).pipe(
       Effect.map((gitDir): ShellPaths => ({
@@ -604,7 +615,7 @@ export const checkShell = Effect.fn("KinWorkSandbox.checkShell")(function* (inpu
     platform,
     paths,
     sandbox: (shellPaths) => sandboxSettings(shellPaths, input.domains),
-    runtimeBin,
+    bins,
     session: { ...input.session, place: input.place },
     confinement: (root) => confiner.hook({ root, tools: shellTools, mcp: false }),
     hostEnv,
@@ -626,7 +637,7 @@ export const checkShell = Effect.fn("KinWorkSandbox.checkShell")(function* (inpu
     result: { ...result, lines: [...result.lines, policy] },
     paths,
     tmpRoot,
-    runtimeBin,
+    bins,
     install: result.failed === undefined ? [] : yield* missing(env),
   } as const;
 });
@@ -635,7 +646,7 @@ export const layer = Layer.effect(
   KinWorkSandbox,
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const { stateDir } = yield* ServerConfig;
+    const { stateDir, baseDir } = yield* ServerConfig;
     const agentScope = yield* AgentScope;
     const settings = yield* Effect.serviceOption(ServerSettingsService);
     const context = yield* Effect.context<
@@ -726,6 +737,7 @@ export const layer = Layer.effect(
           place,
           domains,
           readPaths: host.readPaths,
+          toolDirs: toolDirectories(baseDir),
           providerHomes: yield* configuredProviderHomes(settings, yield* HostProcess.Environment),
         });
         if (checked._tag === "unresolved") return yield* fileOnlyBecause(checked.reason);
@@ -759,7 +771,7 @@ export const layer = Layer.effect(
           place,
           sandbox: sandboxSettings(childPaths.success, domains),
           tmp: tmp.success,
-          runtimeBin: checked.runtimeBin,
+          bins: checked.bins,
           release: fs.remove(tmp.success, { recursive: true }).pipe(Effect.ignore),
           noteMessage: (message: SDKMessage) => {
             const refused = refusedHosts(message);

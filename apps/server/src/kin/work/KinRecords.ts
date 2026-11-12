@@ -74,8 +74,10 @@ import {
 import {
   checkFields,
   isBuiltIn,
+  numberingOf,
   type ListDef,
   listDef,
+  stateLabel,
   unknownList,
   verifyRefs,
 } from "./registers.ts";
@@ -235,6 +237,8 @@ const shownRepeat = (rule: KinRepeatRule | null | undefined) =>
       ? `every ${rule.days} days`
       : `every ${rule.every}`;
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+const NUMBERS_ARE_ISSUED =
+  "Kin gives this list's entries their numbers when they are issued, so nothing else sets one. Issue the entry instead; an invoice numbered elsewhere keeps that number in its notes.";
 const actorIdOf = (writer: Writer) =>
   writer.actor._tag === "agent"
     ? writer.actor.agentId
@@ -662,6 +666,8 @@ const make = Effect.gen(function* () {
       repeat: input.repeat,
     });
     if (invalidFor !== undefined) return yield* invalidFor;
+    if (writer.actor._tag !== "person" && numberingOf(def) !== undefined && "number" in fields)
+      return yield* invalid(NUMBERS_ARE_ISSUED);
     if (def.builtIn === null) yield* verifyRefs(orgId, def, fields).pipe(provideSql);
     const projectId = input.projectId ?? null;
     const project = projectId === null ? undefined : yield* target(orgId, projectId, "projects");
@@ -874,6 +880,19 @@ const make = Effect.gen(function* () {
           repeat: patch.repeat,
         });
         if (invalidFor !== undefined) return yield* invalidFor;
+        if (
+          numberingOf(def) !== undefined &&
+          patch.fields !== undefined &&
+          "number" in patch.fields
+        ) {
+          if (writer.actor._tag !== "person") return yield* invalid(NUMBERS_ARE_ISSUED);
+          const issued = yield* sql`SELECT 1 FROM kin_issued_numbers
+            WHERE org_id = ${orgId} AND record_id = ${row.recordId} LIMIT 1`;
+          if (issued.length > 0)
+            return yield* invalid(
+              `${row.key} was issued its number, and an issued number never changes.`,
+            );
+        }
         if (def.builtIn === null && patch.fields !== undefined)
           yield* verifyRefs(orgId, def, patch.fields).pipe(provideSql);
         const changes: Array<FieldChange> = [];
@@ -942,10 +961,24 @@ const make = Effect.gen(function* () {
               message: `${row.key} has ${received} received, so its amount can't be less. Void a payment with payment_record first, then change the amount.`,
             });
         }
-        // Paid or owed follows the balance whenever the amount moves, unless the change says.
+        // Paid or owed follows the balance whenever the amount moves; a state saying otherwise is
+        // refused, while Draft and Void stay the caller's to set.
+        const balanced = amountChanged && row.paid > 0;
+        const owed = balanced ? patch.amount!.minor - row.paid : 0;
+        if (
+          balanced &&
+          ((patch.state === "done" && owed > 0) || (patch.state === "waiting" && owed === 0))
+        )
+          return yield* new SensitiveRefusal({
+            reason: "invalid_state",
+            message:
+              owed > 0
+                ? `${row.key} would still have ${formatMoney({ minor: owed, currency: amount!.currency })} owed, so it can't be ${stateLabel(def, "done")}. Leave the state out: recording the rest with payment_record marks it ${stateLabel(def, "done")}.`
+                : `${row.key} would be fully paid at this amount, so it can't be ${stateLabel(def, "waiting")}. Leave the state out.`,
+          });
         const settled =
-          amountChanged && row.paid > 0 && patch.state === undefined && row.state !== "dropped"
-            ? patch.amount!.minor === row.paid
+          balanced && patch.state === undefined && row.state !== "dropped"
+            ? owed === 0
               ? "done"
               : row.state === "done"
                 ? "waiting"

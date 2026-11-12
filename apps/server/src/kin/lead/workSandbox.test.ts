@@ -143,7 +143,7 @@ it("the check runs the real session's options: only the model endpoint, key, hom
         ["registry.npmjs.org"],
       ),
       tmp: "/tmp/kin-1",
-      runtimeBin: "/opt/node/bin",
+      bins: ["/opt/node/bin"],
     },
   };
   const real = WorkSession.workSessionOptions(session);
@@ -233,6 +233,8 @@ it.effect(
         `${base}/sys/etc/aws`,
         `${base}/data/vault`,
         `${base}/homes`,
+        `${home}/kin-tools/typst`,
+        `${state}/kin-tools/typst`,
       ])
         yield* fs.makeDirectory(directory, { recursive: true });
       // Logins kept outside the home, reached through links directly under it.
@@ -254,9 +256,20 @@ it.effect(
           providerHomes: [`${base}/codex-relocated`, `${base}/claude-instance`, ...laterHomes],
           readPaths,
           runtime: `${home}/.local/share/node`,
+          toolDirs: [
+            `${home}/kin-tools/typst`,
+            `${state}/kin-tools/typst`,
+            `${home}/kin-tools/gone`,
+          ],
         });
       const open = yield* roots([]);
-      assert.deepStrictEqual(open.readable, [`${base}/sys`, `${home}/.local/share/node`]);
+      // Kin's tools open up, unless one sits in a closed place; a missing one is just left out.
+      assert.deepStrictEqual(open.tools, [`${home}/kin-tools/typst`]);
+      assert.deepStrictEqual(open.readable, [
+        `${base}/sys`,
+        `${home}/kin-tools/typst`,
+        `${home}/.local/share/node`,
+      ]);
       // Denied inside the system root: what the links lead to, and a home made later.
       for (const inside of [
         `${base}/sys/etc/aws/credentials`,

@@ -65,11 +65,12 @@ const identity = Layer.mock(KinIdentity)({
       threadId: ThreadId.make("lead-thread"),
     }),
 });
-// Kin's card for the owner, stored as the chat service stores a lead's question; no level gate here.
+// Kin's card for the owner, stored as the chat service stores a lead's question, and bound in the
+// same transaction; no level gate here.
 const gate = Layer.unwrap(
   Effect.map(SqlClient.SqlClient, (sql) =>
     Layer.mock(KinLevelGate)({
-      ask: (agent, input) =>
+      ask: (agent, input, bind) =>
         Effect.gen(function* () {
           const messageId = `card-${input.clientMessageId}`;
           const widgetId = `choice:${messageId}`;
@@ -96,8 +97,9 @@ const gate = Layer.unwrap(
             VALUES (${widgetId}, ${agent.orgId}, ${input.chatId}, ${messageId}, 'native', 'choice', 1,
               ${JSON.stringify(state)}, ${JSON.stringify([ownerId])}, ${at})
             ON CONFLICT DO NOTHING`;
+          if (bind !== undefined) yield* bind({ widgetId } as never);
           return { widgetId } as never;
-        }).pipe(Effect.orDie),
+        }).pipe(sql.withTransaction, Effect.orDie),
     }),
   ),
 );
@@ -825,6 +827,22 @@ describe("invoices", () => {
         });
         assert.strictEqual(changed.state, state);
       }
+      // A state given with a new amount can't contradict the balance; Draft and Void still can be.
+      for (const [minor, given, outcome] of [
+        [8_000_000, "done", "₹20,000.00 owed"],
+        [6_000_000, "waiting", "fully paid"],
+        [8_000_000, "open", "open"],
+        [7_000_000, "waiting", "waiting"],
+      ] as const) {
+        const update = records.update(orgId, system, "INV-1", {
+          amount: { minor, currency: "INR" },
+          state: given,
+        });
+        if (outcome === given) assert.strictEqual((yield* update).state, outcome);
+        else assert.include((yield* Effect.flip(update)).message, outcome);
+      }
+      const kept = yield* records.get(orgId, "INV-1");
+      assert.deepStrictEqual([kept!.state, kept!.amountMinor], ["waiting", 7_000_000]);
 
       // A payment retried with any detail changed is refused, the currency included.
       const once = {
@@ -842,6 +860,78 @@ describe("invoices", () => {
         });
       assert.strictEqual((yield* records.pay(orgId, system, "INV-1", once)).row.paid, 6_000_100);
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "issue consecutive numbers per financial year, once per entry, kept when voided, never by an agent",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* defined(1, { template: "invoices" });
+        const asked = yield* turn(3, "Draft five invoices for Invented Acme");
+        yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [
+            { list: "clients", title: "Invented Acme" },
+            ...[1, 2, 3, 4, 5].map((n) => ({
+              list: "invoices",
+              title: `Invented retainer ${n}`,
+              client: "Invented Acme",
+              amount: "1 lakh",
+              state: "open" as const,
+            })),
+          ],
+        });
+        const own = yield* LeadWork.update(scope, {
+          sourceEventId: asked,
+          key: "INV-1",
+          fields: { number: "INV/26-27/999" },
+        }).pipe(Effect.flip);
+        assert.include(own.message, "when they are issued");
+        // Two issues at once get consecutive numbers, one each.
+        const both = yield* Effect.all(
+          [
+            OwnerMoney.issue(people, { orgId, key: "INV-1" }),
+            OwnerMoney.issue(people, { orgId, key: "INV-2" }),
+          ],
+          { concurrency: 2 },
+        );
+        assert.deepStrictEqual(both.map((one) => one.number).toSorted(), [
+          "INV/26-27/001",
+          "INV/26-27/002",
+        ]);
+        assert.deepStrictEqual(
+          both.map((one) => [one.state, one.issued]),
+          [
+            ["waiting", true],
+            ["waiting", true],
+          ],
+        );
+        const first = both.find((one) => one.key === "INV-1")!;
+        // A failed build is retried with the number it was given; asking again issues nothing.
+        const again = yield* OwnerMoney.issue(people, { orgId, key: "INV-1" });
+        assert.deepStrictEqual(again, { ...first, issued: false });
+        const changed = yield* (yield* KinRecords.KinRecords)
+          .update(orgId, OwnerWork.ownerWriter(people[0]!), "INV-1", {
+            fields: { number: "INV/26-27/777" },
+          })
+          .pipe(Effect.flip);
+        assert.include(changed.message, "never changes");
+        // Voided, it keeps its number, and the next one is never that number again.
+        const voided = yield* OwnerMoney.voidEntry(people, { orgId, key: "INV-1" });
+        assert.deepStrictEqual([voided.state, voided.number], ["dropped", first.number]);
+        const third = yield* OwnerMoney.issue(people, { orgId, key: "INV-3" });
+        assert.strictEqual(third.number, "INV/26-27/003");
+        // The series follows India's financial year in the owner's zone.
+        yield* TestClock.setTime(Date.parse("2027-03-31T18:29:59.000Z"));
+        const march = yield* OwnerMoney.issue(people, { orgId, key: "INV-4" });
+        yield* TestClock.setTime(Date.parse("2027-03-31T18:30:00.000Z"));
+        const april = yield* OwnerMoney.issue(people, { orgId, key: "INV-5" });
+        assert.deepStrictEqual([march.number, april.number], ["INV/26-27/004", "INV/27-28/001"]);
+        const records = yield* KinRecords.KinRecords;
+        const row = yield* records.get(orgId, "INV-5");
+        assert.include(row!.fieldsJson, "INV/27-28/001");
+      }).pipe(Effect.provide(layer)),
   );
 });
 
@@ -935,9 +1025,10 @@ describe("the company profile", () => {
         bank: { accountNumber: "1234567890", ifsc: "ABCD0123456" },
       };
       const proposed = yield* LeadMoney.profile(scope, { sourceEventId: asked, set: change });
+      // Bank details and tax ids, which go on invoices, come first.
       assert.deepStrictEqual(proposed.proposed, [
-        "PAN: none → ABCDE1234F",
         "Bank account number: none → 1234567890",
+        "PAN: none → ABCDE1234F",
       ]);
       const unchanged = yield* OwnerMoney.companyProfile(people, { orgId });
       assert.deepStrictEqual([unchanged.pan, unchanged.rev], [null, 1]);
@@ -952,7 +1043,7 @@ describe("the company profile", () => {
       );
       const widgetId = cards[0]!.widgetId;
       const answer = (personId: string, confirmed: boolean) =>
-        answerChange({ orgId, widgetId, personId, confirmed, now: NOW });
+        answerChange({ orgId, widgetId, personId, confirmed, via: "tap", now: NOW });
 
       // Nobody but the owner confirms it; Confirm applies exactly the stored change, once.
       assert.include(yield* Effect.flip(answer("mate", true)), { reason: "not_allowed" });
@@ -976,11 +1067,19 @@ describe("the company profile", () => {
         widgetId: cancelled!,
         personId: ownerId,
         confirmed: false,
+        via: "tap",
         now: NOW,
       });
       yield* OwnerMoney.setCompanyProfile(people, { orgId, rev: 2, sac: "998314" });
       const refused = yield* Effect.flip(
-        answerChange({ orgId, widgetId: outdated!, personId: ownerId, confirmed: true, now: NOW }),
+        answerChange({
+          orgId,
+          widgetId: outdated!,
+          personId: ownerId,
+          confirmed: true,
+          via: "tap",
+          now: NOW,
+        }),
       );
       assert.include(refused, { reason: "conflict" });
       assert.include(refused.message, "Ask for the change again");
@@ -995,8 +1094,36 @@ describe("the company profile", () => {
         widgetId: "choice:other",
         personId: ownerId,
         confirmed: true,
+        via: "tap",
         now: NOW,
       });
+
+      // A change the card can't show whole is refused before anything is stored or asked.
+      yield* OwnerMoney.setCompanyProfile(people, {
+        orgId,
+        rev: 3,
+        legalName: "L".repeat(500),
+        tradeName: "T".repeat(500),
+        address: "A".repeat(500),
+      });
+      const long = yield* turn(3, "Update our details");
+      const changes = sql`SELECT change_id FROM kin_profile_changes ORDER BY change_id`;
+      const before = yield* changes;
+      const tooLong = yield* LeadMoney.profile(scope, {
+        sourceEventId: long,
+        set: {
+          legalName: "N".repeat(500),
+          tradeName: "U".repeat(500),
+          address: "B".repeat(500),
+          bank: { accountNumber: "9999999999" },
+        },
+      }).pipe(Effect.flip);
+      assert.include(tooLong.message, "Change fewer fields per request");
+      assert.deepStrictEqual(yield* changes, before);
+      assert.strictEqual(
+        (yield* OwnerMoney.companyProfile(people, { orgId })).bank.accountNumber,
+        "1234567890",
+      );
     }).pipe(Effect.provide(layer)),
   );
 });

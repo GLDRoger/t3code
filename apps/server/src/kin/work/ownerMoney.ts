@@ -4,17 +4,20 @@ import {
   type KinCompanyProfileInput,
   type KinCompanyProfileSetInput,
   type KinDatesInput,
+  type KinIssueInput,
   type KinListsInput,
   type KinListUpdateInput,
   type KinMoneySummaryInput,
   type KinPaymentInput,
   type KinPaymentVoidInput,
+  type KinVoidInput,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
+import * as Numbers from "../gendocs/numbering.ts";
 import { readProfile, setProfile } from "./companyProfile.ts";
 import { KinRecords } from "./KinRecords.ts";
 import { dates as datesView, moneySummary } from "./moneyViews.ts";
@@ -71,7 +74,10 @@ export const updateList = Effect.fn("KinMoney.updateList")(function* (
         (key) => !def.fields.some((one) => one.key === key),
       );
       if (unknown.length > 0) return yield* invalid(`${def.name} has no ${unknown.join(", ")}.`);
-      const fields: ReadonlyArray<FieldDef> = def.fields.map((one) => {
+      const problem =
+        input.numbering === undefined ? undefined : Numbers.ruleProblem(input.numbering);
+      if (problem !== undefined) return yield* invalid(problem);
+      const kept: ReadonlyArray<FieldDef> = def.fields.map((one) => {
         const { retired: _retired, ...kept } = one;
         return retire.has(one.key)
           ? { ...kept, retired: true as const }
@@ -79,6 +85,12 @@ export const updateList = Effect.fn("KinMoney.updateList")(function* (
             ? kept
             : one;
       });
+      // A numbered list shows its number in a field of its own.
+      const fields: ReadonlyArray<FieldDef> =
+        input.numbering === undefined || kept.some((one) => one.key === "number")
+          ? kept
+          : [...kept, { key: "number", label: "Number", type: "text", sensitive: false }];
+      const numbering = input.numbering ?? def.numbering;
       const now = yield* Clock.currentTimeMillis;
       const archivedAt =
         input.archived === undefined
@@ -96,7 +108,11 @@ export const updateList = Effect.fn("KinMoney.updateList")(function* (
         name !== def.name ||
         def.states.some((state) => stateLabels[state] !== def.stateLabels[state]) ||
         archivedAt !== def.archivedAt ||
-        fields.some((one, index) => one.retired !== def.fields[index]?.retired);
+        fields.length !== def.fields.length ||
+        fields.some((one, index) => one.retired !== def.fields[index]?.retired) ||
+        numbering?.prefix !== def.numbering?.prefix ||
+        numbering?.series !== def.numbering?.series ||
+        numbering?.width !== def.numbering?.width;
       if (changed) {
         if (input.rev !== def.rev)
           return yield* new KinChatError({
@@ -105,7 +121,12 @@ export const updateList = Effect.fn("KinMoney.updateList")(function* (
           });
         const { id: _id, builtIn: _builtIn, name: _name, prefix: _prefix, ...definition } = def;
         yield* sql`UPDATE kin_registers SET name = ${name}, archived_at = ${archivedAt},
-            definition_json = ${yield* encodeDefinition({ ...definition, fields, stateLabels })},
+            definition_json = ${yield* encodeDefinition({
+              ...definition,
+              fields,
+              stateLabels,
+              ...(numbering === undefined ? {} : { numbering }),
+            })},
             rev = rev + 1
           WHERE org_id = ${input.orgId} AND register_id = ${def.id}`;
       }
@@ -155,6 +176,24 @@ export const money = Effect.fn("KinMoney.summary")(function* (
 ) {
   yield* theOwner(people, input.orgId);
   return yield* moneySummary(input.orgId, yield* Clock.currentTimeMillis);
+}, workFailure);
+
+/** The owner's Issue tap: the entry's number from its list's series, the same one if asked twice. */
+export const issue = Effect.fn("KinMoney.issue")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinIssueInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  return yield* Numbers.issue(input.orgId, ownerWriter(person), input.key);
+}, workFailure);
+
+/** The owner's Void tap: kept with its number, so the series stays complete. */
+export const voidEntry = Effect.fn("KinMoney.void")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinVoidInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  return yield* Numbers.voidEntry(input.orgId, ownerWriter(person), input.key);
 }, workFailure);
 
 export const recordPayment = Effect.fn("KinMoney.recordPayment")(function* (
