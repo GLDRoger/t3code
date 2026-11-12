@@ -14,6 +14,7 @@ import { KinChart } from "./KinChart";
 import { KinChoiceCard } from "./KinChoiceCard";
 import { KinDeferralCard } from "./KinDeferralCard";
 import { KinDigestCard } from "./KinDigestCard";
+import { KinDocCard } from "./KinDocCard";
 import { KinMemoryChangesCard } from "./KinMemoryChangesCard";
 import { KinTaskCard } from "./KinTaskCard";
 
@@ -26,6 +27,8 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
   readonly onOpenLink: (url: string) => void;
   /** The card's agent by name when it is retired, so its reminders and schedules read as on hold. */
   readonly heldFor?: string | null;
+  /** The chat's agents by id, for the doc card's "by Growth". */
+  readonly agentNames?: ReadonlyMap<string, string>;
 }) {
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
   // Before the catalog loads, assume the environment is known; the thread screen handles the rest.
@@ -64,6 +67,15 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
           environmentId={props.environmentId}
           actionId={view.approval.actionId}
           revision={view.approval.revision}
+        />
+      );
+    case "doc":
+      return props.widget === undefined ? null : (
+        <KinDocCard
+          doc={view.doc}
+          environmentId={props.environmentId}
+          orgId={props.widget.orgId}
+          {...(props.agentNames === undefined ? {} : { agentNames: props.agentNames })}
         />
       );
     case "missing":
