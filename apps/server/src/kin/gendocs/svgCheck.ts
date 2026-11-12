@@ -192,11 +192,21 @@ const ATTRIBUTES = new Set([
   "lighting-color",
 ]);
 
+/** Attributes that are names or labels, never read as CSS; every other attribute is. */
+const PLAIN = new Set(["id", "class", "lang", "role", "aria-label", "aria-hidden", "href"]);
+
 /** A reference inside this file: `#name`, after the trimming a URL parser does. */
 const internal = (value: string) => /^#[^\s#]*$/.test(value.trim());
 
-/** Why one CSS value could load or run something, or `undefined` when it can only paint. */
-const valueProblem = (text: string): string | undefined => {
+/** Why this CSS could load or run something, or `undefined` when it can only paint. */
+const cssProblem = (css: string): string | undefined => {
+  // Escapes and comments are how a keyword is split or spelled so a check misses it.
+  if (css.includes("\\")) return "CSS escapes";
+  const open = css.indexOf("/*");
+  if (open !== -1 && css.indexOf("*/", open + 2) === -1) return "an unclosed CSS comment";
+  const text = css.replace(/\/\*[\s\S]*?\*\//g, "").toLowerCase();
+  for (const match of text.matchAll(/@([a-z-]*)/g))
+    if (match[1] !== "media" && match[1] !== "keyframes") return `@${match[1]} in its CSS`;
   if (
     /expression\s*\(|javascript:|behavior\s*:|-moz-binding|image-set\s*\(|image\s*\(|cross-fade\s*\(|element\s*\(|src\s*\(/.test(
       text,
@@ -208,24 +218,13 @@ const valueProblem = (text: string): string | undefined => {
   return undefined;
 };
 
-/** Why this CSS could load or run something, or `undefined` when it can only paint. */
-const cssProblem = (css: string): string | undefined => {
-  // Escapes and comments are how a keyword is split or spelled so a check misses it.
-  if (css.includes("\\")) return "CSS escapes";
-  const open = css.indexOf("/*");
-  if (open !== -1 && css.indexOf("*/", open + 2) === -1) return "an unclosed CSS comment";
-  const text = css.replace(/\/\*[\s\S]*?\*\//g, "").toLowerCase();
-  for (const match of text.matchAll(/@([a-z-]*)/g))
-    if (match[1] !== "media" && match[1] !== "keyframes") return `@${match[1]} in its CSS`;
-  return valueProblem(text);
-};
-
-/** Why `text` isn't a plain drawing, or `undefined` when it is. */
+/** Why `text` isn't a plain drawing, or `undefined` when it is. Reading stops at the first. */
 export const svgProblem = (text: string): string | undefined => {
   const parser = new SaxesParser({ xmlns: true, position: false });
   let problem: string | undefined;
-  const refuse = (reason: string) => {
-    problem ??= reason;
+  const refuse = (reason: string): never => {
+    problem = reason;
+    throw new Error(reason);
   };
   const stack: Array<string> = [];
   let elements = 0;
@@ -238,11 +237,11 @@ export const svgProblem = (text: string): string | undefined => {
   parser.on("processinginstruction", () => refuse("a processing instruction"));
   parser.on("opentag", (tag) => {
     elements += 1;
-    if (elements > MAX_ELEMENTS || stack.length >= MAX_DEPTH) return refuse("too many elements");
-    if (tag.uri !== SVG) return refuse(`<${tag.name}>, which isn't SVG`);
-    if (stack.length === 0 && tag.local !== "svg") return refuse("no <svg> at its root");
-    if (!ELEMENTS.has(tag.local)) return refuse(`<${tag.name}>`);
-    if (style !== undefined) return refuse("an element inside <style>");
+    if (elements > MAX_ELEMENTS || stack.length >= MAX_DEPTH) refuse("too many elements");
+    if (tag.uri !== SVG) refuse(`<${tag.name}>, which isn't SVG`);
+    if (stack.length === 0 && tag.local !== "svg") refuse("no <svg> at its root");
+    if (!ELEMENTS.has(tag.local)) refuse(`<${tag.name}>`);
+    if (style !== undefined) refuse("an element inside <style>");
     for (const attribute of Object.values(tag.attributes)) {
       const { uri, local, name, value } = attribute;
       if (uri === XMLNS) continue;
@@ -252,11 +251,10 @@ export const svgProblem = (text: string): string | undefined => {
           : uri === XLINK
             ? local === "href"
             : uri === XML && (local === "space" || local === "lang");
-      if (!allowed) return refuse(`a ${name} attribute`);
-      if (local === "href" && !internal(value))
-        return refuse("a link to something outside the file");
-      const css = local === "style" ? cssProblem(value) : valueProblem(value.toLowerCase());
-      if (css !== undefined) return refuse(css);
+      if (!allowed) refuse(`a ${name} attribute`);
+      if (local === "href" && !internal(value)) refuse("a link to something outside the file");
+      const css = uri === "" && !PLAIN.has(local) ? cssProblem(value) : undefined;
+      if (css !== undefined) refuse(css);
     }
     stack.push(tag.local);
     if (tag.local === "style") style = [];
@@ -275,8 +273,8 @@ export const svgProblem = (text: string): string | undefined => {
   try {
     parser.write(text).close();
   } catch {
-    refuse("XML that isn't well formed");
+    problem ??= "XML that isn't well formed";
   }
-  if (problem === undefined && elements === 0) refuse("no <svg> at its root");
+  if (problem === undefined && elements === 0) problem = "no <svg> at its root";
   return problem;
 };

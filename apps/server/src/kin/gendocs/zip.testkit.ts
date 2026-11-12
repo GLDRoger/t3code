@@ -14,6 +14,9 @@ export const zip = (
     readonly crc?: number;
     readonly before?: Buffer;
     readonly after?: Buffer;
+    readonly extra?: (name: string) => Buffer;
+    /** Moves sizes and CRC to a data descriptor after each part's bytes, written by this. */
+    readonly descriptor?: (crc: number, packed: number, size: number) => Buffer;
   } = {},
 ) => {
   const locals: Array<Buffer> = [];
@@ -24,29 +27,36 @@ export const zip = (
     const packed = NodeZlib.deflateRawSync(data);
     const nameBytes = Buffer.from(bend.name?.(name) ?? name, "utf8");
     const crc = bend.crc ?? NodeZlib.crc32(data);
+    const flags = (bend.flags ?? 0) | (bend.descriptor === undefined ? 0 : 0x0008);
+    const extra = bend.extra?.(name) ?? Buffer.alloc(0);
+    const trailer = bend.descriptor?.(crc, packed.length, data.length) ?? Buffer.alloc(0);
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4);
-    local.writeUInt16LE(bend.flags ?? 0, 6);
+    local.writeUInt16LE(flags, 6);
     local.writeUInt16LE(8, 8);
-    local.writeUInt32LE(crc, 14);
-    local.writeUInt32LE(packed.length, 18);
-    local.writeUInt32LE(data.length, 22);
+    if (bend.descriptor === undefined) {
+      local.writeUInt32LE(crc, 14);
+      local.writeUInt32LE(packed.length, 18);
+      local.writeUInt32LE(data.length, 22);
+    }
     local.writeUInt16LE(nameBytes.length, 26);
+    local.writeUInt16LE(extra.length, 28);
     const central = Buffer.alloc(46);
     central.writeUInt32LE(0x02014b50, 0);
     central.writeUInt16LE(20, 4);
     central.writeUInt16LE(20, 6);
-    central.writeUInt16LE(bend.flags ?? 0, 8);
+    central.writeUInt16LE(flags, 8);
     central.writeUInt16LE(8, 10);
     central.writeUInt32LE(crc, 16);
     central.writeUInt32LE(packed.length, 20);
     central.writeUInt32LE(data.length, 24);
     central.writeUInt16LE(nameBytes.length, 28);
+    central.writeUInt16LE(extra.length, 30);
     central.writeUInt32LE(offset, 42);
-    locals.push(local, nameBytes, packed);
-    centrals.push(central, nameBytes);
-    offset += local.length + nameBytes.length + packed.length;
+    locals.push(local, nameBytes, extra, packed, trailer);
+    centrals.push(central, nameBytes, extra);
+    offset += local.length + nameBytes.length + extra.length + packed.length + trailer.length;
   }
   const between = bend.before ?? Buffer.alloc(0);
   const directory = Buffer.concat(centrals);
