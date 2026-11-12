@@ -38,6 +38,19 @@ export type UndoReport = {
 };
 
 const PAID_IN_KIN = "a payment recorded in Kin is on it";
+const numberedIn = (number: string) => `Kin issued it ${number}, which stays in its series`;
+
+/**
+ * Entries of `ids` holding a number Kin issued or adopted itself, not one the import kept: the
+ * number's change is logged by someone other than the import. Nothing takes those away.
+ */
+const kinNumbered = (sql: SqlClient.SqlClient, orgId: KinOrgId, ids: Statement.Fragment) =>
+  sql<{ id: string; number: string }>`SELECT n.record_id AS id, n.number FROM kin_issued_numbers n
+    WHERE n.org_id = ${orgId} AND n.record_id IN ${ids}
+      AND EXISTS (SELECT 1 FROM kin_record_changes c, json_each(c.fields_json) f
+        WHERE c.org_id = n.org_id AND c.record_id = n.record_id AND c.via <> 'import'
+          AND json_extract(f.value, '$.field') = 'number')
+    ORDER BY n.record_id`;
 /** Entries go before the projects and clients they point at, so a late keep strands nothing. */
 const ORDER: Record<string, number> = { entry: 0, project: 1, client: 2 };
 
@@ -89,6 +102,7 @@ export const removeChunk = Effect.fn("KinImport.removeChunk")(function* (
       const held = new Set(
         (yield* sql<{ id: string }>`SELECT p.record_id AS id FROM kin_record_payments p
           WHERE p.org_id = ${orgId} AND p.record_id IN ${asked} AND NOT (${inBatch("p.origin_key")})
+          UNION SELECT n.id FROM (${kinNumbered(sql, orgId, asked)}) n
           ${
             options.includeChanged
               ? sql``
@@ -152,17 +166,23 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
       WHERE p.org_id = ${orgId} AND p.record_id IN (${ids}) AND NOT (${inBatch("p.origin_key")})
       ORDER BY p.record_id`).map((one) => one.id),
   );
+  const numbered = new Map(
+    (yield* kinNumbered(sql, orgId, sql`(${ids})`)).map((one) => [one.id, one.number]),
+  );
   const edited = new Set(
     (yield* sql<{ id: string }>`SELECT DISTINCT c.record_id AS id FROM kin_record_changes c
       WHERE c.org_id = ${orgId} AND c.via <> 'import' AND c.record_id IN (${ids})
       ORDER BY c.record_id`)
       .map((one) => one.id)
-      .filter((id) => !paid.has(id)),
+      .filter((id) => !paid.has(id) && !numbered.has(id)),
   );
   const removing = new Set(
     rows
       .filter(
-        (one) => !paid.has(one.recordId) && (options.includeChanged || !edited.has(one.recordId)),
+        (one) =>
+          !paid.has(one.recordId) &&
+          !numbered.has(one.recordId) &&
+          (options.includeChanged || !edited.has(one.recordId)),
       )
       .map((one) => one.recordId),
   );
@@ -187,13 +207,15 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
       continue;
     users.set(target, (users.get(target) ?? new Set()).add(ref.byKey ?? "a generated document"));
   }
-  const kept = [...new Set([...paid, ...users.keys()])]
+  const kept = [...new Set([...paid, ...numbered.keys(), ...users.keys()])]
     .map((target) => {
       const by = users.get(target);
+      const number = numbered.get(target);
       return {
         key: keyOf.get(target) ?? target,
         reason: [
           ...(paid.has(target) ? [PAID_IN_KIN] : []),
+          ...(number === undefined ? [] : [numberedIn(number)]),
           ...(by === undefined
             ? []
             : [`${[...by].toSorted().join(", ")} ${by.size === 1 ? "uses" : "use"} it`]),
