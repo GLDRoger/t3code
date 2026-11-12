@@ -10,6 +10,7 @@ import {
   kinWorkItemState,
   type KinWorkAssignee,
 } from "@t3tools/client-runtime/kin/kinWork";
+import { kinWorkAtRev } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import { EnvironmentId, KinOrgId, KinRecordKey, type KinRecordDetail } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -53,7 +54,14 @@ export function KinWorkAssignScreen({ route }: StaticScreenProps<KinWorkItemPara
       </Frame>
     );
   }
-  return <KinWorkAssignGate environmentId={environmentId} orgId={orgId} itemKey={key} />;
+  return (
+    <KinWorkAssignGate
+      environmentId={environmentId}
+      orgId={orgId}
+      itemKey={key}
+      {...(route.params.rev === undefined ? {} : { rev: route.params.rev })}
+    />
+  );
 }
 
 function Frame(props: { readonly onClose: () => void; readonly children: React.ReactNode }) {
@@ -73,7 +81,7 @@ function Frame(props: { readonly onClose: () => void; readonly children: React.R
   );
 }
 
-type ItemTarget = KinWorkTarget & { readonly itemKey: KinRecordKey };
+type ItemTarget = KinWorkTarget & { readonly itemKey: KinRecordKey; readonly rev?: string };
 
 function KinWorkAssignGate(props: ItemTarget) {
   const navigation = useNavigation();
@@ -92,10 +100,7 @@ function KinWorkAssignBody(props: ItemTarget) {
   const navigation = useNavigation();
   const { environmentId, orgId, itemKey } = props;
   const itemAtom = kinClient.workItem({ environmentId, input: { orgId, key: itemKey } });
-  const read = useAtomValue(itemAtom);
-  const state = kinWorkItemState(read, null);
-  // A change made just before is still being read back; its old revision would be refused.
-  const reading = read.waiting;
+  const state = kinWorkItemState(useAtomValue(itemAtom), null);
   const { orgs, people, names } = useKinWorkDirectory(props, true);
   const create = useAtomCommand(kinClient.workCreate, { reportFailure: false });
   const assign = useAtomCommand(kinClient.workAssign, { reportFailure: false });
@@ -139,10 +144,10 @@ function KinWorkAssignBody(props: ItemTarget) {
   }
 
   const give = async (item: KinRecordDetail, to: KinWorkAssignee) => {
-    if (giving !== null || reading || to.current) return;
+    if (giving !== null || to.current) return;
     setGiving(to.key);
     setProblem(null);
-    const outcome = await actions.give(item, to.principal);
+    const outcome = await actions.give(kinWorkAtRev(item, props.rev), to.principal);
     setGiving(null);
     if (!outcome.ok) return setProblem(outcome.problem);
     appAtomRegistry.refresh(itemAtom);
@@ -158,7 +163,7 @@ function KinWorkAssignBody(props: ItemTarget) {
         {...(to.current ? { description: "Has it" } : {})}
         selected={to.current || giving === to.key}
         separated={index > 0}
-        disabled={(giving !== null && giving !== to.key) || (giving === null && reading)}
+        disabled={giving !== null && giving !== to.key}
         onPress={() => void give(state.item, to)}
       />
     ));

@@ -178,6 +178,15 @@ export const kinWorkListNotice = (
     : null;
 };
 
+/**
+ * A task at the newest revision known: a screen opened from the task's sheet is told the sheet's,
+ * which may be the host's answer to a change its own read of the task hasn't caught up with.
+ */
+export function kinWorkAtRev<R extends { readonly rev: number }>(item: R, rev?: string): R {
+  const known = rev === undefined ? Number.NaN : Number(rev);
+  return Number.isSafeInteger(known) && known > item.rev ? { ...item, rev: known } : item;
+}
+
 /** What a task's own screen says about it: nothing once a later change, such as Give to, is held. */
 export const kinWorkItemNotice = (
   state: KinWorkChangesState,
@@ -317,7 +326,7 @@ export function createKinWorkChanges(options: {
   readonly assign: (input: KinWorkAssignInput) => Sent;
   readonly confirm: (input: KinWorkConfirmInput) => Sent;
   readonly decline: (input: KinWorkConfirmInput) => Sent;
-  /** Reads a task again after a change, or after the host said it had moved on. */
+  /** Reads a task again after the host said it had moved on. */
   readonly reread: (key: KinRecordKey) => void;
   readonly online: () => boolean;
   /** A form that opens already typing over this task. */
@@ -411,8 +420,6 @@ export function createKinWorkChanges(options: {
     const outcome = await send(record, action);
     const pending = without(state.pending, key);
     if (outcome.ok) {
-      // Other screens read the task themselves; they must not send the revision this replaced.
-      options.reread(key);
       set({
         pending,
         answers: { ...state.answers, [key]: outcome.item },

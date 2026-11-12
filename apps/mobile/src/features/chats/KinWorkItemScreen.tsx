@@ -76,6 +76,8 @@ export type KinWorkItemParams = {
   readonly orgId: string;
   /** The task's short handle, such as `W-12`. */
   readonly task: string;
+  /** The newest revision the task's sheet holds, for Give to and Edit; links leave it out. */
+  readonly rev?: string;
 };
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
@@ -343,7 +345,12 @@ function KinWorkItemBody(props: ItemTarget) {
             label={view.assignLabel}
             disabled={saving}
             onPress={() =>
-              navigation.navigate("KinWorkAssign", { environmentId, orgId, task: itemKey })
+              navigation.navigate("KinWorkAssign", {
+                environmentId,
+                orgId,
+                task: itemKey,
+                rev: String(item.rev),
+              })
             }
           />
         ) : null}
@@ -367,7 +374,12 @@ function KinWorkItemBody(props: ItemTarget) {
             label="Edit title and notes"
             disabled={saving}
             onPress={() =>
-              navigation.navigate("KinWorkEdit", { environmentId, orgId, task: itemKey })
+              navigation.navigate("KinWorkEdit", {
+                environmentId,
+                orgId,
+                task: itemKey,
+                rev: String(item.rev),
+              })
             }
           />
         )}

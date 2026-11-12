@@ -18,6 +18,7 @@ import {
   createKinWorkChanges,
   createKinWorkItemWatch,
   kinWorkApplied,
+  kinWorkAtRev,
   kinWorkEditMoved,
   kinWorkItemNotice,
   kinWorkListNotice,
@@ -118,8 +119,7 @@ describe("createKinWorkChanges", () => {
     h.answer(AsyncResult.success(task({ owner: lead, state: "done", rev: 4, seq: 6 })));
     expect(await done).toBe(true);
     expect(kinWorkApplied(held, h.state())).toMatchObject({ state: "done", rev: 4 });
-    // Screens that read the task themselves, such as Give to, must not send revision 3 next.
-    expect(h.reread).toEqual(["W-1"]);
+    expect(h.reread).toEqual([]);
     expect(h.state().notice).toMatchObject({
       kind: "saved",
       text: "Marked done. Tech lead was told to stop.",
@@ -201,6 +201,22 @@ describe("createKinWorkChanges", () => {
     expect(h.state().notice).toMatchObject({ text: "Due date put back.", undo: null });
   });
 
+  it.each([
+    [
+      "an all-day date",
+      { dueAt: "2026-11-20T12:00:00.000Z", dueAllDay: true },
+      { dueAt: "2026-11-20T12:00:00.000Z", dueAllDay: true },
+    ],
+    ["no date before, so Undo takes it off", { dueAt: null, dueAllDay: false }, { dueAt: null }],
+  ] as const)("puts back %s", async (_name, before, sent) => {
+    const h = harness();
+    const moved = h.changes.run(task(before), { type: "due", day: "2026-11-14" }, names);
+    h.answer(AsyncResult.success(task({ dueAt: "2026-11-14T12:00:00.000Z", rev: 4 })));
+    await moved;
+    void h.changes.undo(names);
+    expect(h.sent[1]).toEqual(["update", { orgId, key: "W-1", rev: 4, ...sent }]);
+  });
+
   it("drops a task's notice once a later change to it, such as Give to, is held", async () => {
     const h = harness();
     const moved = h.changes.run(task(), { type: "due", day: "2026-11-14" }, names);
@@ -258,6 +274,15 @@ describe("createKinWorkChanges", () => {
     expect(h.state().notice?.text).toBe(
       "This task is closed. Reopen it before giving it to someone.",
     );
+  });
+});
+
+describe("kinWorkAtRev", () => {
+  it("sends the sheet's newer revision, never an older or garbled one", () => {
+    expect(kinWorkAtRev(task({ rev: 3 }), "4").rev).toBe(4);
+    expect(kinWorkAtRev(task({ rev: 5 }), "4").rev).toBe(5);
+    expect(kinWorkAtRev(task({ rev: 3 }), "x").rev).toBe(3);
+    expect(kinWorkAtRev(task({ rev: 3 })).rev).toBe(3);
   });
 });
 

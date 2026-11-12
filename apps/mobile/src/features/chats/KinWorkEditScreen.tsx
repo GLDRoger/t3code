@@ -9,7 +9,11 @@ import {
   KIN_WORK_TITLE_MAX,
   kinWorkItemState,
 } from "@t3tools/client-runtime/kin/kinWork";
-import { KIN_WORK_COPY, kinWorkEditMoved } from "@t3tools/client-runtime/kin/kinWorkChanges";
+import {
+  KIN_WORK_COPY,
+  kinWorkAtRev,
+  kinWorkEditMoved,
+} from "@t3tools/client-runtime/kin/kinWorkChanges";
 import { EnvironmentId, KinOrgId, KinRecordKey, type KinRecordDetail } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -55,7 +59,14 @@ export function KinWorkEditScreen({ route }: StaticScreenProps<KinWorkItemParams
       </Frame>
     );
   }
-  return <KinWorkEditGate environmentId={environmentId} orgId={orgId} itemKey={key} />;
+  return (
+    <KinWorkEditGate
+      environmentId={environmentId}
+      orgId={orgId}
+      itemKey={key}
+      {...(route.params.rev === undefined ? {} : { rev: route.params.rev })}
+    />
+  );
 }
 
 function Frame(props: {
@@ -85,7 +96,7 @@ function Frame(props: {
   );
 }
 
-type ItemTarget = KinWorkTarget & { readonly itemKey: KinRecordKey };
+type ItemTarget = KinWorkTarget & { readonly itemKey: KinRecordKey; readonly rev?: string };
 
 function KinWorkEditGate(props: ItemTarget) {
   const navigation = useNavigation();
@@ -94,8 +105,7 @@ function KinWorkEditGate(props: ItemTarget) {
     environmentId: props.environmentId,
     input: { orgId: props.orgId, key: props.itemKey },
   });
-  const read = useAtomValue(itemAtom);
-  const state = kinWorkItemState(read, null);
+  const state = kinWorkItemState(useAtomValue(itemAtom), null);
   const close = () => navigation.goBack();
   if (!allowed) {
     return (
@@ -129,16 +139,10 @@ function KinWorkEditGate(props: ItemTarget) {
       </Frame>
     );
   }
-  return <KinWorkEditForm {...props} item={state.item} reading={read.waiting} />;
+  return <KinWorkEditForm {...props} item={kinWorkAtRev(state.item, props.rev)} />;
 }
 
-function KinWorkEditForm(
-  props: ItemTarget & {
-    readonly item: KinRecordDetail;
-    /** A change made just before is still being read back; its old revision would be refused. */
-    readonly reading: boolean;
-  },
-) {
+function KinWorkEditForm(props: ItemTarget & { readonly item: KinRecordDetail }) {
   const navigation = useNavigation();
   const { environmentId, orgId, itemKey, item } = props;
   const { names } = useKinWorkDirectory(props, true);
@@ -151,7 +155,7 @@ function KinWorkEditForm(
   const notice = changed.notice?.key === itemKey ? changed.notice : null;
 
   const save = async () => {
-    if (saving || props.reading) return;
+    if (saving) return;
     if (!(await changes.saveEdit(item, names))) return;
     appAtomRegistry.refresh(kinClient.workItem({ environmentId, input: { orgId, key: itemKey } }));
     navigation.goBack();
@@ -164,7 +168,7 @@ function KinWorkEditForm(
         label: KIN_WORK_COPY.save,
         onPress: () => void save(),
         loading: saving,
-        disabled: saving || props.reading || edit === null || edit.title.trim() === "",
+        disabled: saving || edit === null || edit.title.trim() === "",
       }}
     >
       {notice === null ? null : (
