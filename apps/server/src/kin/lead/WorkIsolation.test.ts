@@ -362,7 +362,7 @@ it.effect(
         credentials: {
           envVars: ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"].map((name) => ({
             name,
-            mode: "deny",
+            mode: "deny" as const,
           })),
         },
       });
