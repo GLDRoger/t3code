@@ -40,6 +40,20 @@ const commandLimits = {
   CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
 };
 
+/** A shell child's environment; the check runs with exactly this, plus its fake model's address. */
+const childEnvironment = (env: NodeJS.ProcessEnv, tmp: string, runtimeBin: string | undefined) => {
+  const session = sessionEnvironment(env);
+  return {
+    ...session,
+    ...commandLimits,
+    CLAUDE_CODE_TMPDIR: tmp,
+    // The server's own Node first: version-manager shims live in the home the shell can't read.
+    ...(runtimeBin === undefined
+      ? {}
+      : { PATH: [runtimeBin, session.PATH].filter(Boolean).join(":") }),
+  };
+};
+
 /** What the owner set on the host. Nothing the agent, the brief or the repository says reaches it. */
 export type HostShell =
   | {
@@ -377,6 +391,7 @@ const probe = Effect.fn("KinWorkSandbox.probe")(function* (input: {
   readonly domains: ReadonlyArray<string>;
   readonly options: Pick<SdkOptions, "pathToClaudeCodeExecutable">;
   readonly env: NodeJS.ProcessEnv;
+  readonly runtimeBin: string | undefined;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -489,10 +504,10 @@ const probe = Effect.fn("KinWorkSandbox.probe")(function* (input: {
   const canary = `sk-ant-${token}`;
   const env = {
     ...Object.fromEntries(
-      Object.entries(sessionEnvironment(input.env)).filter(([name]) => !modelAccess.test(name)),
+      Object.entries(childEnvironment(input.env, fixture.tmp, input.runtimeBin)).filter(
+        ([name]) => !modelAccess.test(name),
+      ),
     ),
-    ...commandLimits,
-    CLAUDE_CODE_TMPDIR: fixture.tmp,
     CLAUDE_CONFIG_DIR: `${root}/claude`,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
@@ -703,6 +718,7 @@ export const layer = Layer.effect(
         const resolved = yield* resolve({ env, readPaths: host.readPaths }).pipe(Effect.result);
         if (resolved._tag === "Failure") return yield* fileOnlyBecause(resolved.failure);
         const { denied, readable, tmpRoot, runtime } = resolved.success;
+        const runtimeBin = runtime === undefined ? undefined : path.join(runtime, "bin");
         const paths = (worktree: string, tmp: string) =>
           gitCommonDir(worktree).pipe(
             Effect.map((gitDir) => ({ worktree, gitCommonDir: gitDir, tmp, denied, readable })),
@@ -719,6 +735,7 @@ export const layer = Layer.effect(
           domains: host.domains,
           options: input.options,
           env,
+          runtimeBin,
         }).pipe(
           Effect.scoped,
           Effect.catchCause((cause) =>
@@ -745,16 +762,7 @@ export const layer = Layer.effect(
           yield* fs.remove(tmp.success, { recursive: true }).pipe(Effect.ignore);
           return yield* fileOnlyBecause(childPaths.failure, version);
         }
-        const session = sessionEnvironment(env);
-        const childEnv = {
-          ...session,
-          ...commandLimits,
-          CLAUDE_CODE_TMPDIR: tmp.success,
-          // The server's own Node first: version-manager shims live in the home the shell can't read.
-          ...(runtime === undefined
-            ? {}
-            : { PATH: [path.join(runtime, "bin"), session.PATH].filter(Boolean).join(":") }),
-        };
+        const childEnv = childEnvironment(env, tmp.success, runtimeBin);
         yield* record(true, "the sandbox check passed", version);
         return {
           _tag: "shell",
