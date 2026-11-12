@@ -96,6 +96,16 @@ export type ImportReport = {
   readonly payments: Counts;
   /** Imported before and changed in Kin since: left as they are, with their payments. */
   readonly changed: ReadonlyArray<{ readonly source: string; readonly key: string }>;
+  /**
+   * Clients of the file named like one already in Kin: matched to `key`, or, when both have a
+   * GSTIN and they differ, made as a new client `made` instead.
+   */
+  readonly clientMatches: ReadonlyArray<{
+    readonly source: string;
+    readonly name: string;
+    readonly key: string;
+    readonly made: string | null;
+  }>;
   /** What the file holds by list and currency, to check against the old system. */
   readonly money: ReadonlyArray<{
     readonly list: string;
@@ -222,6 +232,11 @@ const make = Effect.gen(function* () {
       return row;
     });
     const changed: Array<{ source: string; key: string }> = [];
+    const clientMatches: Array<ImportReport["clientMatches"][number]> = [];
+    const matchedClient = (match: ImportReport["clientMatches"][number]) => {
+      if (clientMatches.length < MAX_LISTED) clientMatches.push(match);
+      else more += 1;
+    };
     /** Made by an earlier run; `edited` when anyone but an import has changed it since. */
     const existing = Effect.fn("KinImport.existing")(function* (
       kind: "client" | "project" | "entry",
@@ -373,12 +388,23 @@ const make = Effect.gen(function* () {
       if (failed.client.has(source)) return undefined;
       const had = yield* existing("client", source, tally);
       if (had !== undefined) return had.recordId;
-      const [same] = yield* sql<{ recordId: string }>`SELECT record_id AS "recordId"
+      const [same] = yield* sql<{ recordId: string; key: string; gstin: unknown }>`SELECT
+          record_id AS "recordId", key, json_extract(fields_json, '$.gstin') AS gstin
         FROM kin_records WHERE org_id = ${orgId} AND register_id = 'clients'
           AND state NOT IN ${sql.in(CLOSED)} AND lower(title) = lower(${spec.name})
           ORDER BY key LIMIT 1`;
-      if (same !== undefined) {
-        if (tally) counts.clients.matched += 1;
+      // Two GSTINs that differ are two businesses, however alike their names.
+      const differs =
+        same !== undefined &&
+        typeof same.gstin === "string" &&
+        same.gstin !== "" &&
+        spec.gstin !== undefined &&
+        same.gstin.toUpperCase() !== spec.gstin.toUpperCase();
+      if (same !== undefined && !differs) {
+        if (tally) {
+          counts.clients.matched += 1;
+          matchedClient({ source, name: spec.name, key: same.key, made: null });
+        }
         return same.recordId;
       }
       const fields = Object.fromEntries(
@@ -394,7 +420,7 @@ const make = Effect.gen(function* () {
         records.create(orgId, writer, {
           list: "clients",
           originKey: originOf("client", source),
-          title: spec.name,
+          title: differs ? `${spec.name} (${spec.gstin})` : spec.name,
           owner: me,
           category: spec.kind ?? "client",
           ...(spec.state === undefined ? {} : { state: spec.state }),
@@ -406,7 +432,11 @@ const make = Effect.gen(function* () {
         () => failed.client.add(source),
       );
       if (created === undefined) return undefined;
-      if (tally) counts.clients.create += 1;
+      if (tally) {
+        counts.clients.create += 1;
+        if (differs)
+          matchedClient({ source, name: spec.name, key: same.key, made: created.row.key });
+      }
       return created.row.recordId;
     });
 
@@ -799,6 +829,7 @@ const make = Effect.gen(function* () {
       lists: listReport,
       ...counts,
       changed,
+      clientMatches,
       money: byName(money).map(([, one]) => ({
         list: one.list,
         entries: one.entries,

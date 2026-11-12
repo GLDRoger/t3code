@@ -71,6 +71,11 @@ const describeImport = (report: KinImport.ImportReport) =>
         `Open in ${one.list} from before ${report.asOf}: ${one.open}${one.oldest === null ? "" : `, oldest ${one.oldest}`}`,
     ),
     ...report.changed.map((one) => `Changed in Kin since: ${one.key} (${one.source})`),
+    ...report.clientMatches.map((one) =>
+      one.made === null
+        ? `Client ${one.source} (${one.name}) is ${one.key}, matched by name.`
+        : `Client ${one.source} (${one.name}) isn't ${one.key}: its GSTIN differs, so it is a new client, ${one.made}.`,
+    ),
     ...report.problems.map(
       (one) =>
         `Problem${one.line === null ? "" : ` on line ${one.line}`} (${one.kind}${one.source === null ? "" : ` ${one.source}`}): ${one.reason}`,
@@ -81,9 +86,7 @@ const describeImport = (report: KinImport.ImportReport) =>
 const describeUndo = (report: UndoReport) =>
   [
     `${report.applied ? "Undid" : "Undo plan for"} batch ${report.batch}: ${report.removes.entries} entries, ${report.removes.payments} payments, ${report.removes.clients} clients and ${report.removes.projects} projects ${report.applied ? "removed" : "to remove"}.`,
-    report.includeChanged
-      ? `Changed since import: ${report.changed}, removed with the rest.`
-      : `Changed since import: ${report.changed}, left as they are. Add --include-changed to remove them too.`,
+    `Changed since import: ${report.changed.length}${report.changed.length === 0 ? "" : ` (${report.changed.join(", ")})`}, ${report.includeChanged ? "removed with the rest." : "left as they are. Add --include-changed to remove them too."}`,
     ...report.kept.map((one) => `Kept ${one.key}: ${one.reason}.`),
     ...report.lists.map((one) =>
       one.action === "remove"

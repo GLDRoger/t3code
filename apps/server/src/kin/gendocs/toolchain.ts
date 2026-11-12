@@ -1,5 +1,6 @@
 import { KinChatError } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
@@ -8,6 +9,7 @@ import * as FileSystem from "effect/FileSystem";
 import { HttpClient } from "effect/http";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
@@ -101,6 +103,9 @@ const toolsRoot = (baseDir: string) => `${baseDir}/kin-tools`;
 export const toolDirectories = (baseDir: string) => [
   `${toolsRoot(baseDir)}/typst-${TYPST_VERSION}`,
 ];
+/** A font fetch gives up after this, and a failed one isn't tried again for the pause. */
+const FONT_FETCH_TIMEOUT = "1 minute";
+const FONT_RETRY_PAUSE_MS = 10 * 60_000;
 const fontsDirectory = (baseDir: string) =>
   `${toolsRoot(baseDir)}/fonts-${FONTS_COMMIT.slice(0, 12)}`;
 
@@ -109,6 +114,8 @@ export class KinToolchain extends Context.Service<
   {
     /** The pinned Typst's path on this host, fetched first if need be, or why there is none. */
     readonly ensure: () => Effect.Effect<string, KinChatError>;
+    /** The pinned Typst's path when this host already has it; never fetches. */
+    readonly present: () => Effect.Effect<string | undefined>;
     /** The folder of Kin's pinned fonts, fetched first if need be; `undefined` when it can't be. */
     readonly fonts: () => Effect.Effect<string | undefined>;
   }
@@ -265,8 +272,9 @@ export const layer = Layer.effect(
       ),
     );
     const fontsDir = fontsDirectory(baseDir);
+    const failedAt = yield* Ref.make<number | undefined>(undefined);
     /** Each pinned font, fetched once and checked; a font that won't fetch leaves Typst's own. */
-    const fonts: KinToolchain["Service"]["fonts"] = Effect.fn("KinToolchain.fonts")(
+    const fetchFonts = Effect.fn("KinToolchain.fetchFonts")(
       function* () {
         yield* fs.makeDirectory(fontsDir, { recursive: true });
         for (const font of FONT_FILES) {
@@ -303,13 +311,33 @@ export const layer = Layer.effect(
         }
         return fontsDir;
       },
+      Effect.timeout(FONT_FETCH_TIMEOUT),
       lock.withPermits(1),
-      Effect.catchCause((cause) =>
-        Effect.logWarning("Kin couldn't fetch its fonts; recipes get Typst's own", {
-          cause,
-        }).pipe(Effect.as(undefined)),
-      ),
     );
-    return KinToolchain.of({ ensure, fonts });
+    const fonts: KinToolchain["Service"]["fonts"] = Effect.fn("KinToolchain.fonts")(function* () {
+      const last = yield* Ref.get(failedAt);
+      if (last !== undefined && (yield* Clock.currentTimeMillis) - last < FONT_RETRY_PAUSE_MS)
+        return undefined;
+      return yield* fetchFonts().pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't fetch its fonts; recipes get Typst's own", {
+            cause,
+          }).pipe(
+            Effect.andThen(Clock.currentTimeMillis),
+            Effect.flatMap((now) => Ref.set(failedAt, now)),
+            Effect.as(undefined),
+          ),
+        ),
+      );
+    });
+    const present: KinToolchain["Service"]["present"] = Effect.fn("KinToolchain.present")(
+      function* () {
+        const release =
+          TYPST_RELEASES[`${yield* HostProcess.Platform}-${yield* HostProcess.Architecture}`];
+        return release !== undefined && (yield* installed(release.sha256)) ? binary : undefined;
+      },
+      lock.withPermits(1),
+    );
+    return KinToolchain.of({ ensure, present, fonts });
   }),
 );

@@ -217,6 +217,7 @@ describe("receipts", () => {
       void: true,
       settable: null,
     });
+    expect(kinReceiptView(receipt({ receivedFrom: null }), now).settable).toBeNull();
     expect(kinReceiptView(receipt({ advance: false, number: null }), now)).toMatchObject({
       heading: "RCT-3",
       applied: null,

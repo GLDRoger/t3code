@@ -297,6 +297,8 @@ export const KinRecipe = Schema.Struct({
   sensitive: Schema.Boolean,
   /** Written in a turn that read something sensitive: its documents are labelled until cleared. */
   labelled: Schema.optional(Schema.Literal(true)),
+  /** With a label: the recipe's images and PDFs, for the owner to look at before clearing it. */
+  files: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
   changedAt: Schema.NullOr(IsoDateTime),
   /** Kin's starter, the agent whose worker changed it last, or the owner who undid a change. */
   changedBy: Schema.Union([
