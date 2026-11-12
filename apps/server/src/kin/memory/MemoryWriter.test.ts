@@ -406,7 +406,12 @@ it.live.each([
         yield* fs.rename(`${paths.writer}/.git/refs`, `${paths.writer}/.git/refs-moved`);
         expect((yield* writer.stage(orgId, "wake2", two).pipe(Effect.result))._tag).toBe("Failure");
         yield* fs.rename(`${paths.writer}/.git/refs-moved`, `${paths.writer}/.git/refs`);
+        // QA Q2: the owner's list showed a saved note only minutes after the commit.
+        const listed = () =>
+          memory.items(orgId).pipe(Effect.map((items) => items.map(({ head }) => head.id)));
+        expect(yield* listed()).not.toContain("one");
         const first = yield* writer.commitWakeup(orgId, "wake1", "completed");
+        expect(yield* listed()).toContain("one");
         // The first lead's commit holds none of the second lead's staged work.
         expect(
           (yield* git(paths.writer, ["show", `${first.commit}:claims/two.md`]).pipe(Effect.result))
@@ -506,7 +511,7 @@ it.live.each([
           "show",
           `${second.commit}:journal/2026/11-08.md`,
         ]);
-        expect(journal).not.toContain("lost on restart");
+        expect(journal).not.toContain(Writer.RESTART_JOURNAL_LINE);
         expect(journal).not.toContain("Agent ended without calling kin_end.");
         return;
       }
@@ -538,7 +543,7 @@ it.live.each([
         const committed = yield* writer.commitWakeup(orgId, "wake1", "completed");
         expect(
           yield* git(paths.writer, ["show", `${committed.commit}:journal/2026/11-08.md`]),
-        ).toContain("lost on restart");
+        ).toContain(Writer.RESTART_JOURNAL_LINE);
         return;
       }
       if (scenario === "recovered-no-end") {

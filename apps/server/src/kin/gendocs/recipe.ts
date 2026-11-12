@@ -1,4 +1,4 @@
-import { KinChatError } from "@t3tools/contracts";
+import { isCalendarDay, KinChatError } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { parseDocument } from "yaml";
 
@@ -275,16 +275,6 @@ const MAX_TEXT = 60_000;
 /** A year of a busy company's rows; what a recipe makes from them is bounded by work and size. */
 export const MAX_ROWS = 50_000;
 
-/** A real calendar day as YYYY-MM-DD from year 1000: `Date.parse` takes 31 February as 3 March. */
-const isDay = (value: string) => {
-  const match = /^([1-9]\d{3})-(\d{2})-(\d{2})$/.exec(value);
-  if (match === null) return false;
-  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
-  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
-  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
-  return days !== undefined && day >= 1 && day <= days;
-};
-
 /** An agent's value for one declared input, checked and made exact; a string error says why. */
 const agentValue = (
   type: ScalarType | "month",
@@ -315,7 +305,7 @@ const agentValue = (
       return "error" in parsed ? { error: 'an amount as said, such as "₹1,200"' } : parsed.money;
     }
     case "date":
-      return typeof value === "string" && isDay(value)
+      return typeof value === "string" && isCalendarDay(value)
         ? value
         : { error: "a day such as 2026-11-12" };
     case "month":

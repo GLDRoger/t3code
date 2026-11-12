@@ -20,7 +20,7 @@ import { isSqlError, type SqlError } from "effect/sql/SqlError";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import * as Crm from "./crm.ts";
-import { KinRecords, type Patch } from "./KinRecords.ts";
+import { KinRecords, requestHashOf, type Patch } from "./KinRecords.ts";
 import { type FieldValue, type ListName } from "./lists.ts";
 import { dueMillis, found, inList, ownerWriter, theOwner } from "./ownerWork.ts";
 import { iso, type RecordRow, unavailable } from "./recordRows.ts";
@@ -176,14 +176,15 @@ const createIn = Effect.fn("KinWork.crm.create")(function* (
   person: PersonIdentity,
   orgId: KinOrgId,
   list: ListName,
-  requestId: string,
+  request: { readonly clientRequestId: string },
   input: Omit<Parameters<KinRecords["Service"]["create"]>[2], "originKey" | "list">,
 ) {
   const records = yield* KinRecords;
   const { row } = yield* records.create(orgId, ownerWriter(person), {
     ...input,
     list,
-    originKey: `owner:${list}:${requestId}`,
+    originKey: `owner:${list}:${request.clientRequestId}`,
+    requestHash: requestHashOf(request),
   });
   return row;
 });
@@ -197,7 +198,7 @@ export const createParty = Effect.fn("KinWork.createParty")(function* (
   input: KinPartyCreateInput,
 ) {
   const person = yield* theOwner(people, input.orgId);
-  const row = yield* createIn(person, input.orgId, "clients", input.clientRequestId, {
+  const row = yield* createIn(person, input.orgId, "clients", input, {
     title: input.name,
     owner: input.owner ?? me(person),
     category: input.kind ?? "client",
@@ -242,7 +243,7 @@ export const createContact = Effect.fn("KinWork.createContact")(function* (
 ) {
   const person = yield* theOwner(people, input.orgId);
   const party = yield* inList(input.orgId, input.party, "clients");
-  const row = yield* createIn(person, input.orgId, "contacts", input.clientRequestId, {
+  const row = yield* createIn(person, input.orgId, "contacts", input, {
     title: input.name,
     owner: me(person),
     partyId: party.recordId,
@@ -297,7 +298,7 @@ export const createProject = Effect.fn("KinWork.createProject")(function* (
     input.party === undefined
       ? undefined
       : (yield* inList(input.orgId, input.party, "clients")).recordId;
-  const row = yield* createIn(person, input.orgId, "projects", input.clientRequestId, {
+  const row = yield* createIn(person, input.orgId, "projects", input, {
     title: input.name,
     owner: input.owner ?? me(person),
     ...(partyId === undefined ? {} : { partyId }),

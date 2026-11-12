@@ -58,6 +58,7 @@ import { KinIdentity } from "./KinIdentity.ts";
 import { KinChatService } from "./KinChatService.ts";
 import * as Repository from "./KinChatRepository.ts";
 import { makeKinHandlers } from "../rpcHandlers.ts";
+import { KIN_OPEN_CHATS_PER_CONNECTION } from "./rpcHandlers.ts";
 
 const decodeTaskState = Schema.decodeEffect(KinTaskCardState);
 
@@ -390,6 +391,28 @@ it.effect(
       assert.deepStrictEqual(yield* Queue.take(events), { _tag: "message", message: later });
       assert.deepStrictEqual(yield* Queue.take(events), { _tag: "message", message: delayed });
     }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
+);
+
+// QA Q17: one socket held 1,000 subscriptions to a chat, about 240 KB of server memory each.
+it.effect("caps the chats one connection keeps open with a plain refusal", () =>
+  Effect.gen(function* () {
+    const { direct } = yield* seed;
+    const handlers = yield* makeKinHandlers(session);
+    const client = yield* RpcTest.makeClient(group).pipe(
+      Effect.provide(
+        Layer.merge(
+          group.toLayer({ ...handlers, "server.probe": () => Effect.succeed({}) }),
+          RpcAuthorization.layer(AuthStandardClientScopes),
+        ),
+      ),
+    );
+    const subscribe = () => client["kin.chat.subscribe"]({ chatId: direct.chatId });
+    for (let open = 0; open < KIN_OPEN_CHATS_PER_CONNECTION; open++) {
+      const events = yield* Stream.toQueue(subscribe(), { capacity: "unbounded" });
+      assert.include(yield* Queue.take(events), { _tag: "backlog" });
+    }
+    assert.include(yield* Stream.runHead(subscribe()).pipe(Effect.flip), { reason: "limit" });
+  }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 
 it.effect("keeps transport handlers out of persistence", () =>

@@ -9,6 +9,7 @@ import {
   KinNumberingRule,
   type KinOrgId,
   KinRecordState,
+  isCalendarDay,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -305,14 +306,6 @@ export const sensitiveKeys = (def: ListDef): ReadonlyArray<string> => [
   ...def.fields.filter((one) => one.sensitive || one.type === "money").map((one) => one.key),
 ];
 
-const DAY = /^\d{4}-\d{2}-\d{2}$/;
-const validDay = (day: string) =>
-  DAY.test(day) &&
-  Option.match(DateTime.make(`${day}T00:00:00Z`), {
-    onNone: () => false,
-    onSome: (at) => DateTime.formatIsoDate(at) === day,
-  });
-
 /**
  * Whether stored values fit a defined list's fields: known, not retired unless cleared, and of
  * the field's type. Ids in them are checked against this org by `verifyRefs`.
@@ -341,7 +334,7 @@ export const checkFields = (
         if (typeof value !== "string" || !(spec.choices ?? []).includes(value)) return wrong;
         break;
       case "date":
-        if (typeof value !== "string" || !validDay(value)) return wrong;
+        if (typeof value !== "string" || !isCalendarDay(value)) return wrong;
         break;
       case "person":
         if (typeof value !== "string" || !/^(?:person|agent):.{1,120}$/.test(value)) return wrong;

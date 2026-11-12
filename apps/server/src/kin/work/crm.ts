@@ -26,6 +26,7 @@ import {
   actorOf,
   iso,
   parseChanges,
+  partyKind,
   principal,
   type RecordRow,
   recordSeq,
@@ -145,7 +146,7 @@ const partyRowsWhere = Effect.fn("KinCrm.partyRows")(function* (
       recordId: KinRecordId.make(row.recordId),
       key: row.key,
       name: titled(row.title),
-      kind: (row.category === "vendor" ? "vendor" : "client") satisfies KinPartyKind,
+      kind: partyKind(row.category),
       owner: owned(row.ownerKind, row.ownerId),
       active: row.state === "open",
       sensitive: row.sensitive === 1,
@@ -175,6 +176,7 @@ type ProjectRowSql = {
   readonly partyId: string | null;
   readonly partyKey: string | null;
   readonly partyTitle: string | null;
+  readonly partyCategory: string | null;
   readonly partySensitive: number | null;
   readonly ownerKind: string;
   readonly ownerId: string;
@@ -204,7 +206,8 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
     WHEN COALESCE(n.late, 0) + COALESCE(n."waitingLong", 0) > 0 THEN 1 ELSE 2 END`;
   const rows = yield* sql<ProjectRowSql>`
     SELECT p.record_id AS "recordId", p.key, p.title, p.party_id AS "partyId",
-      pa.key AS "partyKey", pa.title AS "partyTitle", pa.sensitive AS "partySensitive",
+      pa.key AS "partyKey", pa.title AS "partyTitle", pa.category AS "partyCategory",
+      pa.sensitive AS "partySensitive",
       p.owner_kind AS "ownerKind", p.owner_id AS "ownerId", p.state, p.due_at AS "dueAt",
       p.due_all_day AS "dueAllDay", p.sensitive, p.rev, n.open, n.late, n."waitingLong"
     FROM kin_records p
@@ -234,7 +237,10 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
         party:
           row.partyId === null || row.partyKey === null || row.partyTitle === null
             ? null
-            : ref(row.partyId, row.partyKey, row.partyTitle),
+            : {
+                ...ref(row.partyId, row.partyKey, row.partyTitle),
+                kind: partyKind(row.partyCategory),
+              },
         owner: owned(row.ownerKind, row.ownerId),
         state: row.state,
         targetAt: row.dueAt === null ? null : iso(row.dueAt),

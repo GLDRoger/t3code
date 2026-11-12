@@ -258,7 +258,7 @@ const fixture = <A, E>(
       directMainPush: true,
     });
     const recovery = Layer.succeed(Memory.MemoryRecoveryHooks, {
-      notify: (notice) => Effect.sync(() => void notices.push(notice.reason)),
+      notify: (notice) => Effect.sync(() => void notices.push(notice.owner ?? notice.reason)),
     });
     const realWriter = Writer.layer.pipe(
       Layer.provideMerge(Memory.layer),

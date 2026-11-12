@@ -463,8 +463,20 @@ it.effect(
       });
       // A retry is the same client; another of the same name is refused, naming the one there.
       assert.include(
-        yield* Clients.createParty([owner], { orgId, name: "x", clientRequestId: "j" }),
+        yield* Clients.createParty([owner], {
+          orgId,
+          name: "Invented Juniper",
+          kind: "vendor",
+          clientRequestId: "j",
+        }),
         { key: "C-1" },
+      );
+      // QA Q16: the same request id with other words was taken as saved, as chat refuses.
+      assert.include(
+        yield* Effect.flip(
+          Clients.createParty([owner], { orgId, name: "x", clientRequestId: "j" }),
+        ),
+        { reason: "not_allowed" },
       );
       assert.include(
         yield* Effect.flip(
@@ -528,7 +540,12 @@ it.effect(
         clientRequestId: "e",
       });
       assert.deepInclude(entry, {
-        party: { recordId: created.recordId, key: "C-1", title: "Invented Juniper" },
+        party: {
+          recordId: created.recordId,
+          key: "C-1",
+          title: "Invented Juniper",
+          kind: "client",
+        },
       });
       const theirs = yield* OwnerWork.update([owner], {
         orgId,
@@ -590,6 +607,27 @@ it.effect(
         ),
         { reason: "not_found" },
       );
+      // QA: a project's or entry's chip couldn't say its client is a vendor.
+      const supplier = yield* Clients.createParty([owner], {
+        orgId,
+        name: "Invented Supplier",
+        kind: "vendor",
+        clientRequestId: "supplier",
+      });
+      const supplyRun = yield* Clients.createProject([owner], {
+        orgId,
+        name: "Invented supply run",
+        party: supplier.key,
+        clientRequestId: "vendor-project",
+      });
+      assert.include(supplyRun.party, { key: supplier.key, kind: "vendor" });
+      const payment = yield* OwnerWork.create([owner], {
+        orgId,
+        title: "Invented: pay the supplier",
+        party: supplier.key,
+        clientRequestId: "vendor-entry",
+      });
+      assert.include(payment.party, { key: supplier.key, kind: "vendor" });
     }).pipe(Effect.provide(layer)),
 );
 

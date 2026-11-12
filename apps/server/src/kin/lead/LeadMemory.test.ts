@@ -925,7 +925,7 @@ it.live(
         assert.isTrue(notices.some((notice) => notice.includes("lost on restart")));
         assert.include(
           yield* git(remote, ["show", `${recovered.commit}:journal/2026/11-08.md`]),
-          "lost on restart",
+          Writer.RESTART_JOURNAL_LINE,
         );
         assert.notInclude(
           yield* git(remoteB, ["ls-tree", "-r", "--name-only", "main"]),
@@ -945,6 +945,18 @@ it.live(
         // In a chat at L0 the lead writes and reads its shadow branch, and its deferral arms from
         // there. The owner's DM works at L2 from creation, so the owner lowered it here.
         yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'restart-wakeup'`;
+        // QA Q1: a teammate's turn ends with kin_end, which stages nothing; that is no restart.
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids, audience) SELECT 'shared-wakeup', org_id, agent_id, thread_id, run_id, model, started_at, 'running', '[]', 'shared' FROM kin_wakeups WHERE wakeup_id = 'fixture-wakeup'`;
+        yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash) VALUES (${orgId}, 'shared-wakeup', 'end', 'fixture-hash')`;
+        const noticesBefore = notices.length;
+        assert.isFalse(yield* writerService.staged(orgId, "shared-wakeup"));
+        assert.strictEqual(notices.length, noticesBefore);
+        yield* writerService.discard(orgId, "shared-wakeup");
+        yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash) VALUES (${orgId}, 'shared-wakeup', 'item:team-claim', 'fixture-hash')`;
+        assert.isTrue(yield* writerService.staged(orgId, "shared-wakeup"));
+        assert.strictEqual(notices.length, noticesBefore + 1);
+        yield* writerService.discard(orgId, "shared-wakeup");
+        yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'shared-wakeup'`;
         yield* (yield* Orchestrator.OrchestratorV2).dispatch({
           type: "run.interrupt",
           commandId: CommandId.make("interrupt:fixture-wakeup"),

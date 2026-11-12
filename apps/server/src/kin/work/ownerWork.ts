@@ -11,6 +11,8 @@ import {
   type KinWorkPrincipal,
   type KinWorkSummary,
   type KinWorkUpdateInput,
+  calendarTimeMillis,
+  isCalendarDay,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -21,7 +23,7 @@ import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { readableFrom } from "../chat/sharing.ts";
 import { summaryGroups } from "./crm.ts";
-import { KinRecords, type Patch, type Totals, type Writer } from "./KinRecords.ts";
+import { KinRecords, requestHashOf, type Patch, type Totals, type Writer } from "./KinRecords.ts";
 import { fieldList, LISTS, type ListName, parseFields } from "./lists.ts";
 import { isBuiltIn, listDef, unknownList } from "./registers.ts";
 import {
@@ -59,7 +61,7 @@ export const theOwner = Effect.fn("KinWork.owner")(function* (
 });
 
 const millis = (value: string, field: string) => {
-  const ms = Date.parse(value);
+  const ms = calendarTimeMillis(value);
   return Number.isFinite(ms)
     ? Effect.succeed(ms)
     : Effect.fail(
@@ -303,6 +305,7 @@ export const create = Effect.fn("KinWork.create")(function* (
   const projectId = yield* refId(input.orgId, input.project, "projects");
   const { row } = yield* records.create(input.orgId, ownerWriter(person), {
     originKey: `owner:${input.clientRequestId}`,
+    requestHash: requestHashOf(input),
     title: input.title,
     owner,
     dueAt,
@@ -470,7 +473,7 @@ export const dueMillis = Effect.fn("KinWork.dueMillis")(function* (
   dueAt: string,
   allDay: boolean | undefined,
 ) {
-  return allDay === true && /^\d{4}-\d{2}-\d{2}$/.test(dueAt)
+  return allDay === true && isCalendarDay(dueAt)
     ? endOfDay(dueAt, yield* ownerZone(orgId))
     : yield* millis(dueAt, "dueAt");
 });

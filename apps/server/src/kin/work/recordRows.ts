@@ -13,6 +13,7 @@ import {
   type KinFileRef,
   type KinOrgId,
   type KinPayment,
+  type KinPartyKind,
   type KinRecord,
   type KinRecordCategory,
   type KinRecordChange,
@@ -74,6 +75,7 @@ export type RecordRow = {
   readonly pullUrl: string | null;
   readonly partyKey: string | null;
   readonly partyTitle: string | null;
+  readonly partyCategory: string | null;
   readonly projectKey: string | null;
   readonly projectTitle: string | null;
   /** Its client, its project or its project's client is labelled sensitive. */
@@ -180,7 +182,8 @@ export const selectRecords = (sql: SqlClient.SqlClient) => sql`
     (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
       WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid,
     ${takesPayments(sql)} AS "takesPayments",
-    pa.key AS "partyKey", pa.title AS "partyTitle", pj.key AS "projectKey",
+    pa.key AS "partyKey", pa.title AS "partyTitle", pa.category AS "partyCategory",
+    pj.key AS "projectKey",
     pj.title AS "projectTitle",
     ${inheritedSensitive(sql)} AS "inheritedSensitive",
     EXISTS (SELECT 1 FROM kin_record_links l JOIN kin_workers k
@@ -213,6 +216,9 @@ const pullNumber = (url: string) => {
 };
 
 const WORK_CATEGORIES: ReadonlyArray<string> = ["task", "issue", "obligation"];
+/** A client's category says whether it is one we sell to or buy from. */
+export const partyKind = (category: string | null): KinPartyKind =>
+  category === "vendor" ? "vendor" : "client";
 const refOf = (recordId: string | null, key: string | null, title: string | null) =>
   recordId === null || key === null || title === null
     ? undefined
@@ -220,7 +226,8 @@ const refOf = (recordId: string | null, key: string | null, title: string | null
 
 export const toRecord = (row: RecordRow, now: number): KinRecord => {
   const number = row.pullUrl === null ? undefined : pullNumber(row.pullUrl);
-  const party = refOf(row.partyId, row.partyKey, row.partyTitle);
+  const ref = refOf(row.partyId, row.partyKey, row.partyTitle);
+  const party = ref === undefined ? undefined : { ...ref, kind: partyKind(row.partyCategory) };
   const project = refOf(row.projectId, row.projectKey, row.projectTitle);
   return {
     recordId: KinRecordId.make(row.recordId),
