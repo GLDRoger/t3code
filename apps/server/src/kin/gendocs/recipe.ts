@@ -268,15 +268,14 @@ const invalid = (message: string) => new KinChatError({ reason: "invalid_state",
 const MAX_TEXT = 60_000;
 const MAX_ROWS = 500;
 
-/** A real calendar day as YYYY-MM-DD: `Date.parse` takes 31 February as 3 March. */
+/** A real calendar day as YYYY-MM-DD from year 1000: `Date.parse` takes 31 February as 3 March. */
 const isDay = (value: string) => {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  const match = /^([1-9]\d{3})-(\d{2})-(\d{2})$/.exec(value);
   if (match === null) return false;
   const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
-  const date = new Date(Date.UTC(year, month - 1, day));
-  return (
-    date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
-  );
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+  return days !== undefined && day >= 1 && day <= days;
 };
 
 /** An agent's value for one declared input, checked and made exact; a string error says why. */
