@@ -10,6 +10,7 @@ import { ServerConfig } from "../../../config.ts";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import { KinIdentity } from "../../chat/KinIdentity.ts";
+import { KinDocRenderer } from "../../gendocs/render.ts";
 import { KinLevelGate } from "../../lead/LevelGate.ts";
 import { KinRecords } from "../KinRecords.ts";
 import * as Money from "../leadMoney.ts";
@@ -36,6 +37,7 @@ const shared = {
     KinRecords,
     KinIdentity,
     KinLevelGate,
+    KinDocRenderer,
     SqlClient.SqlClient,
     FileSystem.FileSystem,
     ServerConfig,

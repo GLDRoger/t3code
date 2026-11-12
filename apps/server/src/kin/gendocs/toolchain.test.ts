@@ -2,10 +2,13 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import { HttpClient, HttpClientResponse } from "effect/http";
+import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
 import * as ProcessRunner from "../../processRunner.ts";
@@ -50,6 +53,43 @@ it.effect("re-checks the installed Typst, and stops a download as it passes the 
         Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
         Layer.provideMerge(Layer.succeed(HostProcess.Platform, "linux")),
         Layer.provideMerge(Layer.succeed(HostProcess.Architecture, "x64")),
+      ),
+    ),
+  );
+});
+
+it.effect("gives up on fonts that hang, and remembers a failed fetch for a while", () => {
+  let requests = 0;
+  const asked = Deferred.makeUnsafe<void>();
+  // The first request never answers; the rest fail at once.
+  const http = HttpClient.make((request) =>
+    Effect.suspend(() => {
+      requests += 1;
+      return requests === 1
+        ? Deferred.succeed(asked, undefined).pipe(Effect.andThen(Effect.never))
+        : Effect.succeed(HttpClientResponse.fromWeb(request, new Response(null, { status: 503 })));
+    }),
+  );
+  return Effect.gen(function* () {
+    const toolchain = yield* KinToolchain;
+    const hanging = yield* Effect.forkChild(toolchain.fonts());
+    yield* Deferred.await(asked);
+    yield* TestClock.adjust("2 minutes");
+    assert.isUndefined(yield* Fiber.join(hanging));
+    // Within the pause after a failure, a render doesn't ask again.
+    assert.isUndefined(yield* toolchain.fonts());
+    assert.strictEqual(requests, 1);
+    yield* TestClock.adjust("15 minutes");
+    assert.isUndefined(yield* toolchain.fonts());
+    assert.isUndefined(yield* toolchain.fonts());
+    assert.strictEqual(requests, 2);
+  }).pipe(
+    Effect.provide(
+      layer.pipe(
+        Layer.provideMerge(Layer.succeed(HttpClient.HttpClient, http)),
+        Layer.provideMerge(ProcessRunner.layer),
+        Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-fonts-" })),
+        Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
       ),
     ),
   );

@@ -14,6 +14,7 @@ import * as Schema from "effect/Schema";
 
 import { createDeterministicAttachmentId } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { logoPath } from "./brand.ts";
 import { computeData } from "./compute.ts";
 import type { Recipe, Value } from "./recipe.ts";
 import { type Taken, typeMismatch } from "./returnPath.ts";
@@ -71,6 +72,14 @@ export class KinDocRenderer extends Context.Service<
   KinDocRenderer,
   {
     readonly render: (request: RenderRequest) => Effect.Effect<Rendered, KinChatError>;
+    /**
+     * Why Typst, when this host has it already, can't draw the image, or `undefined`: drawn or
+     * not checked. Nothing is fetched for it.
+     */
+    readonly drawable: (image: {
+      readonly bytes: Uint8Array;
+      readonly extension: string;
+    }) => Effect.Effect<string | undefined>;
     /** A file stored by its content: the same bytes again are the same attachment, written once. */
     readonly store: (
       orgId: KinOrgId,
@@ -320,6 +329,72 @@ export const makeLayer = (limits: typeof RENDER_LIMITS = RENDER_LIMITS) =>
         return { _tag: "made", files, ...(page === undefined ? {} : { page }) } satisfies Rendered;
       });
 
+      /** One Typst run in `root`, under the render limits and in its own scope. */
+      const compile = Effect.fn("KinDocRenderer.compile")(function* (
+        binary: string,
+        root: string,
+        args: ReadonlyArray<string>,
+      ) {
+        const scoped = yield* scopes.wrap({
+          command: binary,
+          args: [...args],
+          name: "kin-render",
+          env: typstEnv(),
+          properties: [`MemoryMax=${limits.memory}`, "MemorySwapMax=0", "TasksMax=64"],
+        });
+        const limited = limitedCommand(scoped.command, scoped.args, {
+          cpuSeconds: limits.cpuSeconds,
+          addressSpaceKiB: scoped.unit === undefined ? limits.addressSpaceKiB : undefined,
+        });
+        return yield* runCapped({
+          command: limited.command,
+          args: limited.args,
+          env: typstEnv(),
+          cwd: root,
+          timeoutMs: limits.timeoutMs,
+          maxStdout: limits.pdfBytes,
+        }).pipe(
+          Effect.ensuring(scoped.unit === undefined ? Effect.void : scopes.stop(scoped.unit)),
+        );
+      });
+
+      const drawable: KinDocRenderer["Service"]["drawable"] = Effect.fn("KinDocRenderer.drawable")(
+        function* (image) {
+          const binary = yield* toolchain.present();
+          if (binary === undefined) return undefined;
+          yield* fs.makeDirectory(rendersDir, { recursive: true, mode: 0o700 });
+          return yield* Effect.acquireUseRelease(
+            fs.makeTempDirectory({ directory: rendersDir, prefix: "logo-" }),
+            (scratch) =>
+              Effect.gen(function* () {
+                const root = yield* fs.realPath(scratch);
+                const logo = logoPath(image.extension);
+                yield* fs.makeDirectory(path.join(root, "recipe"));
+                yield* fs.makeDirectory(path.join(root, "brand"));
+                yield* fs.writeFile(path.join(root, logo), image.bytes);
+                yield* fs.writeFileString(
+                  path.join(root, "recipe", "template.typ"),
+                  `#set page(width: 4cm, height: 4cm, margin: 0pt)\n#image("${logo}", width: 100%)\n`,
+                );
+                const run = yield* compile(
+                  binary,
+                  root,
+                  typstArgs({ root, output: "logo.pdf", creationTimestamp: 0, page: true }),
+                );
+                if (run._tag !== "exited") return undefined;
+                return run.code === 0 ? undefined : plainError(run.stderr, root);
+              }),
+            (scratch) => fs.remove(scratch, { recursive: true, force: true }).pipe(Effect.ignore),
+          );
+        },
+        // Typst that won't run here is no verdict on the image; the bytes were checked already.
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't check a logo with Typst", { cause }).pipe(
+            Effect.as(undefined),
+          ),
+        ),
+      );
+
       const typst = Effect.fn("KinDocRenderer.typst")(function* (
         request: RenderRequest,
         data: unknown,
@@ -368,29 +443,7 @@ export const makeLayer = (limits: typeof RENDER_LIMITS = RENDER_LIMITS) =>
                   fonts,
                   page: asPage,
                 });
-                const scoped = yield* scopes.wrap({
-                  command: binary,
-                  args,
-                  name: "kin-render",
-                  env: typstEnv(),
-                  properties: [`MemoryMax=${limits.memory}`, "MemorySwapMax=0", "TasksMax=64"],
-                });
-                const limited = limitedCommand(scoped.command, scoped.args, {
-                  cpuSeconds: limits.cpuSeconds,
-                  addressSpaceKiB: scoped.unit === undefined ? limits.addressSpaceKiB : undefined,
-                });
-                const run = yield* runCapped({
-                  command: limited.command,
-                  args: limited.args,
-                  env: typstEnv(),
-                  cwd: root,
-                  timeoutMs: limits.timeoutMs,
-                  maxStdout: limits.pdfBytes,
-                }).pipe(
-                  Effect.ensuring(
-                    scoped.unit === undefined ? Effect.void : scopes.stop(scoped.unit),
-                  ),
-                );
+                const run = yield* compile(binary, root, args);
                 switch (run._tag) {
                   case "notStarted":
                     return yield* new KinChatError({
@@ -483,7 +536,7 @@ export const makeLayer = (limits: typeof RENDER_LIMITS = RENDER_LIMITS) =>
             ),
         ),
       );
-      return KinDocRenderer.of({ render, store });
+      return KinDocRenderer.of({ render, drawable, store });
     }),
   );
 

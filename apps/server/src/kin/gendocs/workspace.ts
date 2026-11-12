@@ -47,7 +47,10 @@ export const jobWorktree = (worktreesDir: string, workerId: KinWorkerId) =>
   `${documentWorktrees(worktreesDir)}/${workerId}`;
 export const jobBranch = (workerId: KinWorkerId) => `kin/doc/${workerId}`;
 
+const SHOWN_FILE = /\.(?:png|jpe?g|gif|webp|svg|pdf)$/i;
 export type StoredRecipe = Recipe & {
+  /** Its images and PDFs, by name in its folder: what the owner looks at before clearing a label. */
+  readonly files: ReadonlyArray<string>;
   readonly commit: string;
   readonly changed: KinRecipe["changedBy"];
   readonly changedAt: number | null;
@@ -412,7 +415,16 @@ export const layer = Layer.effect(
         const parsed = yield* readRecipe(root, DEFAULT_BRANCH, name);
         if (parsed !== undefined) {
           const { workerId: _workerId, ...last } = yield* lastChange(root, name);
-          found.push({ ...parsed, ...last });
+          const folder = `recipes/${name}/`;
+          const files = (yield* git(
+            root,
+            ["ls-tree", "-r", "-z", "--name-only", DEFAULT_BRANCH, "--", folder],
+            { raw: true },
+          ))
+            .split("\0")
+            .filter((file) => SHOWN_FILE.test(file))
+            .map((file) => file.slice(folder.length));
+          found.push({ ...parsed, files, ...last });
         }
       }
       return found;

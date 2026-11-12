@@ -9,6 +9,7 @@ import { KinRecords } from "../work/KinRecords.ts";
 import { type FieldValues, parseFields } from "../work/lists.ts";
 import { dayIn } from "../work/money.ts";
 import {
+  fromImport,
   notedReceiptNumbers,
   ownerZone,
   type RecordRow,
@@ -92,6 +93,12 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
       : { ...logoBytes, sha256: profile.logo.sha256 };
   const def = entry === undefined ? undefined : yield* listDef(orgId, entry.registerId);
   const fields = entry === undefined ? {} : parseFields(entry.fieldsJson);
+  // A receipt for a payment prints what was paid, whatever its own row says.
+  const [paid] =
+    entry?.registerId === "receipts" && typeof fields.payment === "string"
+      ? yield* sql<Money>`SELECT amount_minor AS minor, currency FROM kin_record_payments
+          WHERE org_id = ${orgId} AND payment_id = ${fields.payment}`
+      : [];
   const client = entry?.partyId == null ? undefined : yield* records.getById(orgId, entry.partyId);
   const clientFields = client === undefined ? {} : parseFields(client.fieldsJson);
   const number =
@@ -122,26 +129,29 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
         currency: string;
         paidOn: string;
         note: string;
+        originKey: string;
         receipt: string | null;
       }>`SELECT p.amount_minor AS minor, p.currency, p.paid_on AS "paidOn", p.note,
+          p.origin_key AS "originKey",
           (SELECT n.number FROM kin_records r
             JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
-            WHERE r.org_id = p.org_id AND r.register_id = 'receipts'
+            WHERE r.org_id = p.org_id AND r.register_id = 'receipts' AND r.state <> 'dropped'
+              AND r.origin_key LIKE 'receipt:%'
               AND json_extract(r.fields_json, '$.payment') = p.payment_id
-            ORDER BY r.key LIMIT 1) AS receipt
+            ORDER BY r.created_at DESC, r.record_id DESC LIMIT 1) AS receipt
         FROM kin_record_payments p
         WHERE p.org_id = ${orgId} AND p.record_id = ${entry.recordId} AND p.voided_at IS NULL
           AND (p.paid_on < ${before} OR p.origin_key LIKE 'receipt:%')
         ORDER BY p.paid_on, p.payment_id LIMIT 200`;
       const noted = yield* notedReceiptNumbers(
         orgId,
-        rows.map((row) => row.note),
+        rows.filter(fromImport).map((row) => row.note),
       );
       tables.set(
         input.name,
         rows.map((row) =>
           pick(input, {
-            receipt: row.receipt ?? noted.get(row.note) ?? null,
+            receipt: row.receipt ?? (fromImport(row) ? noted.get(row.note) : undefined) ?? null,
             amount: { minor: row.minor, currency: row.currency },
             paidOn: row.paidOn,
           }),
@@ -263,7 +273,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
           case "state":
             return def === undefined ? entry.state : stateLabel(def, entry.state);
           case "amount":
-            return amountOf(entry.amountMinor, entry.currency);
+            return paid ?? amountOf(entry.amountMinor, entry.currency);
           case "tax":
             return cellOf(fields, "tax");
           case "date":

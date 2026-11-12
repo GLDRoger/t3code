@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- a local TCP listener stands in for a proxy, to count any connection Typst makes.
 import * as NodeNet from "node:net";
+import * as NodeZlib from "node:zlib";
 
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -11,6 +12,7 @@ import * as Layer from "effect/Layer";
 
 import { ServerConfig } from "../../config.ts";
 import * as Vcs from "../../vcs/VcsProcess.ts";
+import { decodeProblem } from "./brand.ts";
 import { sampleInputs } from "./recipeLabels.ts";
 import * as Render from "./render.ts";
 import { STARTER_FILES } from "./starter.ts";
@@ -25,6 +27,7 @@ const toolchain = Layer.succeed(KinToolchain, {
     typst === undefined
       ? Effect.fail(new KinChatError({ reason: "unavailable", message: "no Typst here" }))
       : Effect.succeed(typst),
+  present: () => Effect.succeed(typst),
   fonts: () => Effect.undefined,
 });
 const layerOf = (limits = Render.RENDER_LIMITS) =>
@@ -180,6 +183,47 @@ it.layer(layerOf())("KinDocRenderer", (it) => {
         ],
       );
     }),
+  );
+
+  it.effect.skipIf(typst === undefined)(
+    "draws a logo once as documents do, and says why one whose image data is garbage won't",
+    () =>
+      Effect.gen(function* () {
+        const renderer = yield* Render.KinDocRenderer;
+        const chunk = (type: string, data: Uint8Array) => {
+          const out = new Uint8Array(12 + data.length);
+          const view = new DataView(out.buffer);
+          view.setUint32(0, data.length);
+          out.set(new TextEncoder().encode(type), 4);
+          out.set(data, 8);
+          view.setUint32(8 + data.length, NodeZlib.crc32(out.subarray(4, 8 + data.length)));
+          return out;
+        };
+        const header = new Uint8Array([0, 0, 0, 40, 0, 0, 0, 12, 8, 2, 0, 0, 0]);
+        const png = new Uint8Array(
+          [
+            new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+            chunk("IHDR", header),
+            chunk("IDAT", NodeZlib.deflateSync(new Uint8Array((40 * 3 + 1) * 12))),
+            chunk("IEND", new Uint8Array()),
+          ].flatMap((part) => [...part]),
+        );
+        // Every marker in place, so the bytes check passes; only drawing it finds the garbage.
+        const garbled = new Uint8Array([
+          0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x0c, 0x00, 0x28, 0x03, 0x01, 0x22, 0x00,
+          0x02, 0x11, 0x01, 0x03, 0x11, 0x01, 0xff, 0xda, 0x00, 0x0c, 0x03, 0x01, 0x00, 0x02, 0x11,
+          0x03, 0x11, 0x00, 0x3f, 0x00, 0xd2, 0xcf, 0x20, 0x8a, 0x28, 0xff, 0xd9,
+        ]);
+        assert.deepStrictEqual(
+          [
+            yield* decodeProblem(png, "image/png"),
+            yield* decodeProblem(garbled, "image/jpeg"),
+            yield* renderer.drawable({ bytes: png, extension: "png" }),
+          ],
+          [undefined, undefined, undefined],
+        );
+        assert.isString(yield* renderer.drawable({ bytes: garbled, extension: "jpg" }));
+      }),
   );
 
   it.effect.skipIf(typst === undefined)(

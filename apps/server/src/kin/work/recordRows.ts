@@ -499,11 +499,13 @@ const paymentsOf = Effect.fn("KinRecords.paymentsOf")(function* (
     currency: string;
     paidOn: string;
     note: string;
+    originKey: string;
     createdAt: number;
     voidedAt: number | null;
     withheld: number;
   }>`SELECT payment_id AS "paymentId", amount_minor AS minor, currency, paid_on AS "paidOn",
-      note, created_at AS "createdAt", voided_at AS "voidedAt", withheld
+      note, origin_key AS "originKey", created_at AS "createdAt", voided_at AS "voidedAt",
+      withheld
     FROM kin_record_payments WHERE org_id = ${orgId} AND record_id = ${recordId}
     ORDER BY paid_on DESC, created_at DESC, payment_id`;
   const receipts =
@@ -519,15 +521,16 @@ const paymentsOf = Effect.fn("KinRecords.paymentsOf")(function* (
         FROM kin_records r
         LEFT JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
         WHERE r.org_id = ${orgId} AND r.register_id = 'receipts' AND r.state <> 'dropped'
+          AND r.origin_key LIKE 'receipt:%'
           AND json_extract(r.fields_json, '$.payment') IN ${sql.in(rows.map((row) => row.paymentId))}
-        ORDER BY r.key`;
+        ORDER BY r.created_at DESC, r.record_id DESC`;
   const numbers = yield* notedReceiptNumbers(
     orgId,
-    rows.map((row) => row.note),
+    rows.filter(fromImport).map((row) => row.note),
   );
   return rows.map((payment): KinPayment => {
     const receipt = receipts.find((one) => one.payment === payment.paymentId);
-    const noted = numbers.get(payment.note);
+    const noted = fromImport(payment) ? numbers.get(payment.note) : undefined;
     return {
       paymentId: payment.paymentId,
       amount: { minor: payment.minor, currency: payment.currency },
@@ -550,6 +553,9 @@ const paymentsOf = Effect.fn("KinRecords.paymentsOf")(function* (
   });
 });
 
+/** Written by an import: only such a payment's note can hold a number another system issued. */
+export const fromImport = (payment: { readonly originKey: string }) =>
+  payment.originKey.startsWith("import:");
 /** `QST-RN/2026-27/001`: a receipt number another system issued, written in a payment's note. */
 const RECEIPT_IN_NOTE =
   /(?<![A-Za-z0-9/-])([A-Za-z][A-Za-z0-9-]{0,7}\/(?:\d{2})?\d{2}-\d{2}\/\d{1,9})(?![A-Za-z0-9/-])/g;

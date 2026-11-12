@@ -1,5 +1,6 @@
 // Loaded first: the chat and trigger modules import each other.
 import "../chat/KinChatService.ts";
+import * as NodeZlib from "node:zlib";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ServerConfig } from "../../config.ts";
@@ -44,15 +45,44 @@ const at = "2026-11-11T00:00:00.000Z";
 const NOW = Date.parse("2026-11-12T06:00:00.000Z");
 const people = [{ _tag: "person" as const, orgId, personId: ownerId }];
 /** A PNG's signature and header, as a logo's size is read from them. */
-const pngOf = (width: number, height: number) => {
-  const bytes = new Uint8Array(33);
-  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52]);
-  const view = new DataView(bytes.buffer);
-  view.setUint32(16, width);
-  view.setUint32(20, height);
-  bytes.set([8, 6, 0, 0, 0], 24);
-  return bytes;
+const joined = (parts: ReadonlyArray<Uint8Array>) => {
+  const out = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.length;
+  }
+  return out;
 };
+const pngChunk = (type: string, data: Uint8Array) => {
+  const out = new Uint8Array(12 + data.length);
+  const view = new DataView(out.buffer);
+  view.setUint32(0, data.length);
+  out.set(new TextEncoder().encode(type), 4);
+  out.set(data, 8);
+  view.setUint32(8 + data.length, NodeZlib.crc32(out.subarray(4, 8 + data.length)));
+  return out;
+};
+/** A real, blank RGBA PNG of this size. */
+const pngOf = (width: number, height: number) => {
+  const header = new Uint8Array(13);
+  const view = new DataView(header.buffer);
+  view.setUint32(0, width);
+  view.setUint32(4, height);
+  header.set([8, 6, 0, 0, 0], 8);
+  return joined([
+    new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", header),
+    pngChunk("IDAT", NodeZlib.deflateSync(new Uint8Array((width * 4 + 1) * height))),
+    pngChunk("IEND", new Uint8Array()),
+  ]);
+};
+/** A JPEG's headers, 120 × 400, cut off in its image data before it ends. */
+const cutJpeg = new Uint8Array([
+  0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x78, 0x01, 0x90, 0x03, 0x01, 0x22, 0x00, 0x02,
+  0x11, 0x01, 0x03, 0x11, 0x01, 0xff, 0xda, 0x00, 0x0c, 0x03, 0x01, 0x00, 0x02, 0x11, 0x03, 0x11,
+  0x00, 0x3f, 0x00, 0xd2, 0xcf, 0x20, 0x8a, 0x28,
+]);
 const system = { actor: { _tag: "system" as const }, via: "import" as const };
 
 const scope: McpInvocationScope = {
@@ -120,7 +150,10 @@ const gate = Layer.unwrap(
   ),
 );
 // No documents were made for these entries, so issuing one renders nothing (`DocJobs.test.ts`).
-const documents = Layer.mergeAll(Layer.mock(KinDocRenderer)({}), Layer.mock(KinWorkspace)({}));
+const documents = Layer.mergeAll(
+  Layer.mock(KinDocRenderer)({ drawable: () => Effect.undefined }),
+  Layer.mock(KinWorkspace)({}),
+);
 const layer = Layer.mergeAll(KinRecords.layer, identity, gate, documents).pipe(
   Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),
@@ -1653,8 +1686,22 @@ describe("the company profile", () => {
         const { attachmentsDir } = yield* ServerConfig;
         yield* fs.makeDirectory(attachmentsDir, { recursive: true });
         const png = pngOf(400, 120);
-        const sent = yield* turn(1, "This is our logo", ["logo.png", "logo.svg", "huge.png"]);
+        const sent = yield* turn(1, "This is our logo", [
+          "logo.png",
+          "logo.svg",
+          "huge.png",
+          "cut.png",
+          "cut.jpg",
+          "cut.svg",
+        ]);
         yield* fs.writeFile(`${attachmentsDir}/att-1-0.png`, png);
+        // Files cut short in sending: their headers read, their images don't.
+        yield* fs.writeFile(`${attachmentsDir}/att-1-3.png`, png.subarray(0, 60));
+        yield* fs.writeFile(`${attachmentsDir}/att-1-4.jpg`, cutJpeg);
+        yield* fs.writeFileString(
+          `${attachmentsDir}/att-1-5.svg`,
+          '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="4',
+        );
         yield* fs.writeFileString(
           `${attachmentsDir}/att-1-1.svg`,
           '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
@@ -1682,6 +1729,9 @@ describe("the company profile", () => {
         assert.match(yield* refused("att-1-1"), /an SVG with <script>\. Nothing changed/);
         assert.match(yield* refused("att-1-2"), /20000 × 10 pixels; a logo is at most 12000/);
         assert.match(yield* refused("att-else"), /not a file in this chat/);
+        for (const cut of ["att-1-3", "att-1-4"])
+          assert.match(yield* refused(cut), /can't be used: it is cut short or damaged/, cut);
+        assert.match(yield* refused("att-1-5"), /That logo can't be used: it is an SVG with/);
         assert.lengthOf(yield* sql`SELECT 1 FROM kin_profile_changes`, 0);
 
         const proposed = yield* LeadMoney.profile(scope, {
