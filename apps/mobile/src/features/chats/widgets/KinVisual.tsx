@@ -16,7 +16,7 @@ import {
 } from "@t3tools/shared/kinVisual";
 import { AsyncResult } from "effect/reactivity";
 import { memo, useEffect, useRef, useState } from "react";
-import { Modal, Pressable, View } from "react-native";
+import { Modal, Platform, Pressable, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
 
@@ -31,6 +31,7 @@ import { useAtomCommand } from "../../../state/use-atom-command";
 import { useHtmlRenderTheme } from "../../threads/HtmlRenderWebView";
 import { KinWorkPrivateMark } from "../components/KinWorkPieces";
 import { kinClient } from "../state/kinClient";
+import { fromVisualPage } from "./kinVisualMessage";
 
 // A link request counts only this soon after the reader touched the visual.
 const TOUCH_WINDOW_MS = 1500;
@@ -38,7 +39,6 @@ const TOUCH_WINDOW_MS = 1500;
 const measuredHeights = new Map<string, number>();
 
 const location = (url: string) => url.split(/[?#]/, 1)[0];
-const withoutHash = (url: string) => url.split("#", 1)[0];
 
 function readMessage(data: string): KinVisualMessage | undefined {
   try {
@@ -177,9 +177,7 @@ function KinVisualWebView(props: {
         showsHorizontalScrollIndicator={false}
         overScrollMode="never"
         onMessage={(event) => {
-          // iOS hands the bridge to every frame; only the outer document, which holds no agent
-          // content, may speak through it.
-          if (withoutHash(event.nativeEvent.url) !== withoutHash(props.uri)) return;
+          if (!fromVisualPage(Platform.OS, event.nativeEvent.url, props.uri)) return;
           const message = readMessage(event.nativeEvent.data);
           if (message === undefined) return;
           if (message.type === "height") props.onHeight?.(message.height);
