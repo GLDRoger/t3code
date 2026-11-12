@@ -16,6 +16,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as SqlError from "effect/sql/SqlError";
 
 import { turnChat } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
@@ -48,9 +49,19 @@ import {
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 
+/** The most a choice card's detail holds (`KinChoiceCardState`). */
+const CARD_DETAIL_MAX = 2000;
+const tooLongForCard = (detail: string) =>
+  detail.length <= CARD_DETAIL_MAX
+    ? undefined
+    : invalid(
+        "The owner's card can't show all of this change, so nothing was stored or asked. Change fewer fields per request.",
+      );
+
 /**
  * A yes/no choice card Kin posts for a lead, so the owner's tap answers exactly the one thing it
- * was made for. A retry with the same `clientMessageId` finds the same card.
+ * was made for, bound to it by `bind` in the card's own commit. A retry with the same
+ * `clientMessageId` finds the same card. Its detail is shown whole or not at all.
  */
 const askOwner = Effect.fn("KinOwnerCards.ask")(function* (
   lead: Lead,
@@ -62,19 +73,24 @@ const askOwner = Effect.fn("KinOwnerCards.ask")(function* (
     readonly yes: string;
     readonly no: string;
   },
+  bind: (widgetId: string) => Effect.Effect<void, SqlError.SqlError, SqlClient.SqlClient>,
 ) {
+  const refused = tooLongForCard(input.detail);
+  if (refused !== undefined) return yield* refused;
+  const sql = yield* SqlClient.SqlClient;
   const widget = yield* (yield* KinLevelGate).ask(
     { ...lead, wakeupId: KinWakeupId.make(lead.wakeupId) },
     {
       chatId: KinChatId.make(input.chatId),
       clientMessageId: input.clientMessageId,
       question: input.question,
-      detail: input.detail.length <= 2000 ? input.detail : `${input.detail.slice(0, 1999)}…`,
+      detail: input.detail,
       options: [
         { label: input.yes, kind: "yes" },
         { label: input.no, kind: "no" },
       ],
     },
+    (card) => bind(card.widgetId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
   );
   return widget.widgetId;
 });
@@ -317,21 +333,24 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
           categories: [...proposal.categories],
         };
   // The card is how a tap answers this proposal and no other; a typed yes still works without it.
-  const card = yield* askOwner(lead, {
-    chatId: chat.chatId,
-    clientMessageId: `kin-list:${proposalId}`,
-    question: `${proposal._tag === "new" ? "Create the list" : "Add to"} ${shown.name}?`,
-    detail: [
-      ...shown.fields.map(
-        (one) =>
-          `${one.label} (${one.type}${one.choices === undefined ? "" : `: ${one.choices.join(", ")}`})`,
-      ),
-      ...(shown.categories.length === 0 ? [] : [`Categories: ${shown.categories.join(", ")}`]),
-    ].join("\n"),
-    yes: proposal._tag === "new" ? "Create it" : "Add them",
-    no: "Not now",
-  }).pipe(
-    Effect.tap((widgetId) => attachCard({ orgId: lead.orgId, proposalId, widgetId })),
+  const card = yield* askOwner(
+    lead,
+    {
+      chatId: chat.chatId,
+      clientMessageId: `kin-list:${proposalId}`,
+      question: `${proposal._tag === "new" ? "Create the list" : "Add to"} ${shown.name}?`,
+      detail: [
+        ...shown.fields.map(
+          (one) =>
+            `${one.label} (${one.type}${one.choices === undefined ? "" : `: ${one.choices.join(", ")}`})`,
+        ),
+        ...(shown.categories.length === 0 ? [] : [`Categories: ${shown.categories.join(", ")}`]),
+      ].join("\n"),
+      yes: proposal._tag === "new" ? "Create it" : "Add them",
+      no: "Not now",
+    },
+    (widgetId) => attachCard({ orgId: lead.orgId, proposalId, widgetId }),
+  ).pipe(
     Effect.catchTags({
       KinChatError: (error) =>
         Effect.logWarning("Kin couldn't show a list proposal card", { reason: error.reason }).pipe(
@@ -539,6 +558,8 @@ const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof Profil
       return yield* invalid("Pass this turn's sourceEventId to change the profile.");
     yield* sourceOf(lead, input.sourceEventId);
     const lines = changeLines(current, input.set);
+    const refused = tooLongForCard(lines.join("\n"));
+    if (refused !== undefined) return yield* refused;
     if (lines.length > 0) {
       const sql = yield* SqlClient.SqlClient;
       const [chat] = yield* sql<{ chatId: string }>`SELECT owner_chat_id AS "chatId" FROM kin_leads
@@ -555,15 +576,18 @@ const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof Profil
         now: yield* Clock.currentTimeMillis,
       });
       // Bank details and tax ids go on invoices: they change only by the owner's own Confirm.
-      const widgetId = yield* askOwner(lead, {
-        chatId: chat.chatId,
-        clientMessageId: `kin-profile:${changeId}`,
-        question: "Change the company profile?",
-        detail: lines.join("\n"),
-        yes: "Confirm",
-        no: "Cancel",
-      });
-      yield* attachChangeCard(lead.orgId, changeId, widgetId);
+      yield* askOwner(
+        lead,
+        {
+          chatId: chat.chatId,
+          clientMessageId: `kin-profile:${changeId}`,
+          question: "Change the company profile?",
+          detail: lines.join("\n"),
+          yes: "Confirm",
+          no: "Cancel",
+        },
+        (widgetId) => attachChangeCard(lead.orgId, changeId, widgetId),
+      );
       proposed = lines;
     }
   }

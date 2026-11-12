@@ -65,11 +65,12 @@ const identity = Layer.mock(KinIdentity)({
       threadId: ThreadId.make("lead-thread"),
     }),
 });
-// Kin's card for the owner, stored as the chat service stores a lead's question; no level gate here.
+// Kin's card for the owner, stored as the chat service stores a lead's question, and bound in the
+// same transaction; no level gate here.
 const gate = Layer.unwrap(
   Effect.map(SqlClient.SqlClient, (sql) =>
     Layer.mock(KinLevelGate)({
-      ask: (agent, input) =>
+      ask: (agent, input, bind) =>
         Effect.gen(function* () {
           const messageId = `card-${input.clientMessageId}`;
           const widgetId = `choice:${messageId}`;
@@ -96,8 +97,9 @@ const gate = Layer.unwrap(
             VALUES (${widgetId}, ${agent.orgId}, ${input.chatId}, ${messageId}, 'native', 'choice', 1,
               ${JSON.stringify(state)}, ${JSON.stringify([ownerId])}, ${at})
             ON CONFLICT DO NOTHING`;
+          if (bind !== undefined) yield* bind({ widgetId } as never);
           return { widgetId } as never;
-        }).pipe(Effect.orDie),
+        }).pipe(sql.withTransaction, Effect.orDie),
     }),
   ),
 );
@@ -843,9 +845,10 @@ describe("the company profile", () => {
         bank: { accountNumber: "1234567890", ifsc: "ABCD0123456" },
       };
       const proposed = yield* LeadMoney.profile(scope, { sourceEventId: asked, set: change });
+      // Bank details and tax ids, which go on invoices, come first.
       assert.deepStrictEqual(proposed.proposed, [
-        "PAN: none → ABCDE1234F",
         "Bank account number: none → 1234567890",
+        "PAN: none → ABCDE1234F",
       ]);
       const unchanged = yield* OwnerMoney.companyProfile(people, { orgId });
       assert.deepStrictEqual([unchanged.pan, unchanged.rev], [null, 1]);
@@ -860,7 +863,7 @@ describe("the company profile", () => {
       );
       const widgetId = cards[0]!.widgetId;
       const answer = (personId: string, confirmed: boolean) =>
-        answerChange({ orgId, widgetId, personId, confirmed, now: NOW });
+        answerChange({ orgId, widgetId, personId, confirmed, via: "tap", now: NOW });
 
       // Nobody but the owner confirms it; Confirm applies exactly the stored change, once.
       assert.include(yield* Effect.flip(answer("mate", true)), { reason: "not_allowed" });
@@ -884,11 +887,19 @@ describe("the company profile", () => {
         widgetId: cancelled!,
         personId: ownerId,
         confirmed: false,
+        via: "tap",
         now: NOW,
       });
       yield* OwnerMoney.setCompanyProfile(people, { orgId, rev: 2, sac: "998314" });
       const refused = yield* Effect.flip(
-        answerChange({ orgId, widgetId: outdated!, personId: ownerId, confirmed: true, now: NOW }),
+        answerChange({
+          orgId,
+          widgetId: outdated!,
+          personId: ownerId,
+          confirmed: true,
+          via: "tap",
+          now: NOW,
+        }),
       );
       assert.include(refused, { reason: "conflict" });
       assert.include(refused.message, "Ask for the change again");
@@ -903,8 +914,36 @@ describe("the company profile", () => {
         widgetId: "choice:other",
         personId: ownerId,
         confirmed: true,
+        via: "tap",
         now: NOW,
       });
+
+      // A change the card can't show whole is refused before anything is stored or asked.
+      yield* OwnerMoney.setCompanyProfile(people, {
+        orgId,
+        rev: 3,
+        legalName: "L".repeat(500),
+        tradeName: "T".repeat(500),
+        address: "A".repeat(500),
+      });
+      const long = yield* turn(3, "Update our details");
+      const changes = sql`SELECT change_id FROM kin_profile_changes ORDER BY change_id`;
+      const before = yield* changes;
+      const tooLong = yield* LeadMoney.profile(scope, {
+        sourceEventId: long,
+        set: {
+          legalName: "N".repeat(500),
+          tradeName: "U".repeat(500),
+          address: "B".repeat(500),
+          bank: { accountNumber: "9999999999" },
+        },
+      }).pipe(Effect.flip);
+      assert.include(tooLong.message, "Change fewer fields per request");
+      assert.deepStrictEqual(yield* changes, before);
+      assert.strictEqual(
+        (yield* OwnerMoney.companyProfile(people, { orgId })).bank.accountNumber,
+        "1234567890",
+      );
     }).pipe(Effect.provide(layer)),
   );
 });

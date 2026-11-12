@@ -61,6 +61,8 @@ import * as Identity from "./KinIdentity.ts";
 import * as Service from "./KinChatService.ts";
 import * as VisualHosts from "./KinVisualHosts.ts";
 import * as Presence from "../reply/KinPresence.ts";
+import * as LevelGate from "../lead/LevelGate.ts";
+import { attachChangeCard, proposeChange, readProfile } from "../work/companyProfile.ts";
 
 const decodeKinOrgId = Schema.decodeSync(KinOrgId);
 const decodeKinPersonId = Schema.decodeSync(KinPersonId);
@@ -2644,5 +2646,62 @@ describe("KinChatService", () => {
           assert.notInclude(JSON.stringify(seen), "Secret pricing");
         }
       }).pipe(Effect.provide(layer)),
+  );
+  it.effect(
+    "binds a profile card to its change in the card's own commit; only a tap confirms",
+    () =>
+      Effect.gen(function* () {
+        const { service, person, agent, chat } = yield* seed();
+        const sql = yield* SqlClient.SqlClient;
+        const gate = yield* LevelGate.KinLevelGate;
+        const changeId = "pc_race";
+        yield* proposeChange({
+          orgId: person.orgId,
+          changeId,
+          agentId,
+          wakeupId: "probe",
+          patch: { bank: { accountNumber: "9999999999" } },
+          baseRev: 0,
+          now: 0,
+        });
+        const ask = {
+          chatId: chat.chatId,
+          clientMessageId: `kin-profile:${changeId}`,
+          question: "Change the company profile?",
+          detail: "Bank account number: none → 9999999999",
+          options: [
+            { label: "Confirm", kind: "yes" as const },
+            { label: "Cancel", kind: "no" as const },
+          ],
+        };
+        // A bind that fails takes its card with it: no card exists that its change doesn't know.
+        yield* gate
+          .ask(agent, ask, () => sql`INSERT INTO kin_no_such_table VALUES (1)`.pipe(Effect.asVoid))
+          .pipe(Effect.flip);
+        const cards = sql`SELECT widget_id FROM kin_widgets WHERE type = 'choice'`;
+        assert.deepStrictEqual(yield* cards, []);
+        const card = yield* gate.ask(agent, ask, (widget) =>
+          attachChangeCard(person.orgId, changeId, widget.widgetId),
+        );
+        const profile = () =>
+          readProfile(person.orgId).pipe(Effect.map((one) => one.bank.accountNumber));
+        // A 👍 on the card is not a Confirm.
+        assert.include(
+          yield* service
+            .react(person, { messageId: card.messageId, emoji: "👍", on: true })
+            .pipe(Effect.flip),
+          { reason: "not_allowed" },
+        );
+        assert.isNull(yield* profile());
+        // The owner's first possible tap already finds the change.
+        yield* service.act(person, {
+          widgetId: card.widgetId,
+          revision: card.revision,
+          actionId: "choose",
+          value: "option-1",
+          clientActionId: "fast-confirm",
+        });
+        assert.strictEqual(yield* profile(), "9999999999");
+      }).pipe(Effect.provide(Layer.provideMerge(LevelGate.layer, layer))),
   );
 });

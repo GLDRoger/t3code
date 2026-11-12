@@ -819,6 +819,7 @@ const make = Effect.gen(function* () {
         widgetId: widget.widgetId,
         personId: identity.personId,
         confirmed: choice.option.kind === "yes",
+        via: reaction === null ? "tap" : "reaction",
         now: yield* Clock.currentTimeMillis,
       }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(cardTapError));
     const message = yield* post(identity, member, {
