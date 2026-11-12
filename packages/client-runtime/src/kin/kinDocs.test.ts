@@ -17,6 +17,7 @@ import type { AtomCommandResult } from "../state/runtime.ts";
 import {
   createKinSearch,
   kinDocChangeLine,
+  kinSearchHit,
   kinDocGroups,
   kinDocRef,
   kinDocRefLabel,
@@ -90,6 +91,38 @@ describe("kinDocChangeLine", () => {
       kinDocChangeLine({ at: version().at, kind: "restored", summary: "", by: me }, names, now)
         .text,
     ).toMatch(/^Restored today .* by you$/);
+    expect(
+      kinDocChangeLine(
+        { at: version().at, kind: "restored", summary: "Restored version 10", by: me },
+        names,
+        now,
+      ).text,
+    ).toMatch(/^Restored version 10 today .* by you$/);
+    expect(
+      kinDocChangeLine(
+        { at: version().at, kind: "created", summary: "Created", by: growth },
+        names,
+        now,
+      ).summary,
+    ).toBeNull();
+  });
+});
+
+describe("kinSearchHit", () => {
+  it("reads a snippet of markdown source as prose", () => {
+    const hit = kinSearchHit({
+      recordId: KinRecordId.make("d1"),
+      key: "D-1",
+      kind: "docs",
+      title: "Launch plan",
+      snippet:
+        "…to everyone ## Risks - [x] Tins **late** | Box | Price | | :-- | --: | see [the brief](https://example.invalid)…",
+      section: { id: "risks", title: "Risks" },
+      sensitive: false,
+      closed: false,
+      updatedAt: version().at,
+    });
+    expect(hit.snippet).toBe("…to everyone Risks · Tins late Box Price see the brief…");
   });
 });
 

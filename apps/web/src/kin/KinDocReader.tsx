@@ -20,7 +20,7 @@ import {
   PencilLineIcon,
   ShareIcon,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 
 import { kinBodyMarkdown } from "@t3tools/client-runtime/kin/kinChatFeed";
@@ -77,6 +77,13 @@ function findHeadings(
   }
   return found;
 }
+
+/**
+ * Where a heading's menu is drawn: a node of our own inside it. The renderer owns the heading's
+ * text, so React refuses the heading itself as a portal's container.
+ */
+const menuSlot = (heading: HTMLElement) =>
+  heading.querySelector<HTMLElement>(":scope > [data-kin-doc-section-menu]");
 
 /** The section a node sits in: the one whose heading is the last at or before it. */
 function sectionAt(
@@ -146,7 +153,7 @@ export function KinDocReader(
   const { doc, onPoint } = props;
   const { names } = props.directory;
   const now = new Date(useNowMinuteMs());
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const [scroller, setScroller] = useState<HTMLDivElement | null>(null);
   const [article, setArticle] = useState<HTMLDivElement | null>(null);
   const [headings, setHeadings] = useState<ReadonlyMap<string, HTMLElement>>(new Map());
   const outline = kinDocOutline(doc.outline);
@@ -173,30 +180,70 @@ export function KinDocReader(
   useLayoutEffect(() => {
     const root = article;
     if (root === null) return;
-    const scan = () =>
+    const scan = () => {
+      const next = findHeadings(root, doc.outline);
+      for (const heading of next.values()) {
+        if (menuSlot(heading) !== null) continue;
+        const slot = document.createElement("span");
+        slot.dataset.kinDocSectionMenu = "";
+        slot.className = "ms-1.5 inline-flex align-middle";
+        heading.append(slot);
+      }
       setHeadings((held) => {
-        const next = findHeadings(root, doc.outline);
         const same = next.size === held.size && [...next].every(([id, el]) => held.get(id) === el);
         return same ? held : next;
       });
+    };
     scan();
     const observer = new MutationObserver(scan);
     observer.observe(root, { childList: true, subtree: true });
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      for (const slot of root.querySelectorAll("[data-kin-doc-section-menu]")) slot.remove();
+    };
   }, [article, doc.outline]);
 
+  // Moves the reader's own scroller only: `scrollIntoView` also shifts the page around it.
+  const reveal = (element: HTMLElement | undefined) => {
+    if (scroller === null || element === undefined) return;
+    const top = element.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+    scroller.scrollTo({ top: scroller.scrollTop + top - 12 });
+  };
   const jump = (id: string) => {
-    if (id === "top") scrollRef.current?.scrollTo({ top: 0 });
-    else headings.get(id)?.scrollIntoView({ block: "start" });
+    if (id === "top") scroller?.scrollTo({ top: 0 });
+    else reveal(headings.get(id));
+  };
+  /** A link to another part of the doc, such as a footnote, goes there in this scroller. */
+  const followFragment = (event: MouseEvent<HTMLElement>) => {
+    const link = event.target instanceof Element ? event.target.closest("a") : null;
+    const href = link?.getAttribute("href");
+    if (article === null || href === null || href === undefined || !href.startsWith("#")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    let id = href.slice(1);
+    try {
+      id = decodeURIComponent(id);
+    } catch {
+      // A malformed escape is looked up as written.
+    }
+    const bare = (held: string) => held.replace(/^(user-content-)+/, "");
+    reveal(
+      [...article.querySelectorAll<HTMLElement>("[id]")].find(
+        (held) => held.id === id || bare(held.id) === bare(id),
+      ),
+    );
   };
   const arrived = useRef<string | null>(null);
   const target = props.section !== null && headings.has(props.section) ? props.section : null;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- scrolls the page to the section a link or a search hit named, once its heading is drawn
   useEffect(() => {
     if (target === null || arrived.current === target) return;
+    const heading = headings.get(target);
+    if (heading === undefined || scroller === null) return;
     arrived.current = target;
-    headings.get(target)?.scrollIntoView({ block: "start" });
-  }, [target, headings]);
+    const top = heading.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+    scroller.scrollTo({ top: scroller.scrollTop + top - 12 });
+  }, [target, headings, scroller]);
 
   const point = (section: string | null) =>
     onPoint === null ? null : (intent: KinDocAsk) => onPoint(kinDocRef(doc, section), intent);
@@ -258,7 +305,7 @@ export function KinDocReader(
             props.actions,
           )}
       <div
-        ref={scrollRef}
+        ref={setScroller}
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain scrollbar-gutter-both"
       >
         <article className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-6 pt-6 pb-24">
@@ -314,7 +361,11 @@ export function KinDocReader(
           {doc.body.trim() === "" ? (
             <p className="text-sm text-muted-foreground">This doc has no text yet.</p>
           ) : (
-            <div ref={setArticle} className="leading-relaxed text-foreground">
+            <div
+              ref={setArticle}
+              onClickCapture={followFragment}
+              className="leading-relaxed text-foreground"
+            >
               <ChatMarkdown
                 text={kinBodyMarkdown(doc.body)}
                 cwd={undefined}
@@ -324,30 +375,27 @@ export function KinDocReader(
           )}
         </article>
       </div>
-      {[...headings].map(([id, heading]) =>
-        createPortal(
-          <span data-kin-doc-section-menu className="ms-1.5 inline-flex align-middle" key={id}>
-            <Menu>
-              <MenuTrigger
-                render={
-                  <Button
-                    size="icon-xs"
-                    variant="ghost-muted"
-                    aria-label={`Section actions: ${heading.dataset.kinDocTitle ?? ""}`}
-                  />
-                }
-              >
-                <EllipsisIcon />
-              </MenuTrigger>
-              <MenuPopup align="start">
-                <AskItems onAsk={point(id)} onCopyLink={() => props.onCopyLink(id)} />
-              </MenuPopup>
-            </Menu>
-          </span>,
-          heading,
-          id,
-        ),
-      )}
+      {[...headings].map(([id, heading]) => {
+        const slot = menuSlot(heading);
+        return slot === null
+          ? null
+          : createPortal(
+              <Menu>
+                <MenuTrigger
+                  render={
+                    <Button size="icon-xs" variant="ghost-muted" aria-label="Section actions" />
+                  }
+                >
+                  <EllipsisIcon />
+                </MenuTrigger>
+                <MenuPopup align="start">
+                  <AskItems onAsk={point(id)} onCopyLink={() => props.onCopyLink(id)} />
+                </MenuPopup>
+              </Menu>,
+              slot,
+              id,
+            );
+      })}
       <KinDocSelectionMenu
         root={article}
         resolve={(node) => (article === null ? null : sectionAt(article, headings, node, hasTop))}

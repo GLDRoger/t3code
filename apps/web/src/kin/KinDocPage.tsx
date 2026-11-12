@@ -399,8 +399,7 @@ function KinDocChanges(
           </div>
         )}
         <p className="text-xs text-muted-foreground">
-          {kinDocDiffSummary(diff, doc.outline.length)} · {diff.additions} added, {diff.deletions}{" "}
-          removed
+          {kinDocDiffSummary(diff, doc.outline.length)}
         </p>
         {props.onRestore === null || diff.from.version === doc.latest.version ? null : (
           <div>

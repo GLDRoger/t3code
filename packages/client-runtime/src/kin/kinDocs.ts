@@ -147,8 +147,16 @@ export interface KinDocChangeLine {
 
 /** The line under a doc's title: when, who, and what changed. */
 export function kinDocChangeLine(change: Change, names: KinWorkNames, now: Date): KinDocChangeLine {
-  const lead = `${VERB[change.kind]} ${kinDocWhen(change.at, now)} by ${actorName(change.by, names, "you")}`;
-  const summary = change.summary.replace(/\s+/g, " ").trim();
+  const said = change.summary.replace(/\s+/g, " ").trim();
+  // The host's own words for a new doc and for a restore repeat the verb: say each once.
+  const restoredTo =
+    change.kind === "restored" ? (/^restored (version \d+)$/i.exec(said)?.[1] ?? null) : null;
+  const verb = restoredTo === null ? VERB[change.kind] : `${VERB.restored} ${restoredTo}`;
+  const lead = `${verb} ${kinDocWhen(change.at, now)} by ${actorName(change.by, names, "you")}`;
+  const summary =
+    restoredTo !== null || (change.kind === "created" && said.toLowerCase() === "created")
+      ? ""
+      : said;
   return {
     lead,
     summary: summary === "" ? null : summary,
@@ -432,6 +440,7 @@ export function kinDocDiffSummary(diff: KinDocDiff, sections: number): string {
     changed > 0 ? `${plural(changed, "section")} changed` : null,
     removed > 0 ? `${removed} removed` : null,
     `${unchanged} unchanged`,
+    `${plural(diff.additions, "line")} added, ${diff.deletions} removed`,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -615,8 +624,22 @@ export interface KinSearchHitView {
   readonly accessibilityLabel: string;
 }
 
+/** A snippet is a cut of the source: read as a line of prose, its markdown marks are noise. */
+const snippetText = (snippet: string) =>
+  snippet
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/(^|\s)#{1,6}\s+/g, "$1")
+    .replace(/(^|\s)(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/g, "$1· ")
+    .replace(/(^|[\s|]):?-{2,}:?(?=$|[\s|])/g, "$1")
+    .replace(/\|/g, " ")
+    .replace(/\*\*|__|~~|`/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/^(?:· )+/, "")
+    .replace(/(?:· )+(?=·)/g, "")
+    .trim();
+
 export function kinSearchHit(hit: KinSearchHit): KinSearchHitView {
-  const snippet = hit.snippet.replace(/\s+/g, " ").trim();
+  const snippet = snippetText(hit.snippet);
   const section =
     hit.section === undefined || hit.section.id === "top"
       ? null

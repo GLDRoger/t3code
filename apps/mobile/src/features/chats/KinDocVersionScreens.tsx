@@ -160,8 +160,7 @@ function KinDocChanges(
         </View>
       )}
       <Text textRole="footnote" className="px-2 text-foreground-muted">
-        {kinDocDiffSummary(diff, held.outline.length)} · {diff.additions} added, {diff.deletions}{" "}
-        removed
+        {kinDocDiffSummary(diff, held.outline.length)}
       </Text>
       {!restore.allowed || diff.from.version === latest ? null : (
         <Button
