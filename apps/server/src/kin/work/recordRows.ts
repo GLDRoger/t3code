@@ -540,12 +540,16 @@ const validZone = (zone: string) => {
   }
 };
 
-/** A calendar day's last millisecond in `zone`: an all-day entry is late only once it is over. */
-export const endOfDay = (day: string, zone: string) => {
+const dayStart = (day: string, zone: string) => {
   const [year, month, date] = day.split("-").map((part) => Number.parseInt(part, 10));
-  const start = DateTime.makeZonedUnsafe(
+  return DateTime.makeZonedUnsafe(
     { year: year ?? 1970, month: month ?? 1, day: date ?? 1 },
     { timeZone: zone, adjustForTimeZone: true },
   );
-  return DateTime.toEpochMillis(DateTime.add(start, { days: 1 })) - 1;
 };
+/** A calendar day's last millisecond in `zone`: an all-day entry is late only once it is over. */
+export const endOfDay = (day: string, zone: string) =>
+  DateTime.toEpochMillis(DateTime.add(dayStart(day, zone), { days: 1 })) - 1;
+/** A calendar day's first millisecond in `zone`. */
+export const startOfDay = (day: string, zone: string) =>
+  DateTime.toEpochMillis(dayStart(day, zone));

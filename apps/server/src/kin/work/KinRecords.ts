@@ -137,6 +137,9 @@ export type CreateInput = Fields & {
   readonly requestHash?: string;
   readonly source?: { readonly chatId: KinChatId; readonly messageId: KinMessageId };
   readonly links?: ReadonlyArray<LinkInput>;
+  /** When an import says it was made, and closed if it is; otherwise now. */
+  readonly createdAt?: number;
+  readonly closedAt?: number;
 };
 export type Patch = Partial<Omit<Fields, "owner">> & { readonly owner?: KinWorkPrincipal };
 export type LinkInput = {
@@ -732,8 +735,9 @@ const make = Effect.gen(function* () {
         ${input.notes ?? ""}, 1, ${input.source?.chatId ?? null},
         ${input.source?.messageId ?? null}, ${writer.actor._tag},
         ${writer.actor._tag === "agent" ? writer.actor.agentId : writer.actor._tag === "person" ? writer.actor.personId : null},
-        ${assignedBy}, ${assignedBy === null ? null : now}, ${input.originKey}, ${now}, ${now},
-        ${isClosed(state) ? now : null}, ${partyId}, ${projectId}, ${input.repo ?? null},
+        ${assignedBy}, ${assignedBy === null ? null : now}, ${input.originKey},
+        ${input.createdAt ?? now}, ${now}, ${isClosed(state) ? (input.closedAt ?? now) : null},
+        ${partyId}, ${projectId}, ${input.repo ?? null},
         ${yield* encodeFieldValues(fields)}, ${amount?.minor ?? null}, ${amount?.currency ?? null},
         ${input.dateAt ?? null}, ${input.dateAllDay === true ? 1 : 0},
         ${repeat === undefined ? null : yield* encodeRepeat(repeat)}, ${input.requestHash ?? null})`;

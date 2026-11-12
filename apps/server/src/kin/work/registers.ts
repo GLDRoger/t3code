@@ -62,7 +62,7 @@ export type StoredDefinition = typeof StoredDefinition.Type;
 const DefinitionJson = Schema.fromJsonString(StoredDefinition);
 const decodeStored = Schema.decodeUnknownOption(StoredDefinition);
 /** A label as one line; ones stored before control characters were refused read so too. */
-export const plain = (text: string) => text.replace(/\p{Cc}/gu, " ").trim();
+const plain = (text: string) => text.replace(/\p{Cc}/gu, " ").trim();
 const decodeDefinition = (json: string) =>
   Option.flatMap(
     Option.liftThrowable(() =>
@@ -524,7 +524,7 @@ export const keyFor = (label: string) => {
   return isFieldKey(key) ? key : undefined;
 };
 /** `Leave requests` is `leave_requests`. */
-export const idFor = (name: string) => {
+const idFor = (name: string) => {
   const id = name
     .normalize("NFKD")
     .toLowerCase()
@@ -533,7 +533,7 @@ export const idFor = (name: string) => {
     .slice(0, 40);
   return /^[a-z][a-z0-9_]{1,39}$/.test(id) ? id : undefined;
 };
-export const prefixFor = (name: string) =>
+const prefixFor = (name: string) =>
   name
     .toUpperCase()
     .replace(/[^A-Z]/g, "")
@@ -586,7 +586,7 @@ const extended = (def: StoredDefinition, additions: Additions) => {
 };
 
 /** What a proposal would make, checked now, so a yes never meets a refusal. */
-export const checkDraft = (draft: Draft): KinChatError | undefined => {
+const checkDraft = (draft: Draft): KinChatError | undefined => {
   const def = draft.definition;
   if (!def.states.includes(def.defaultState))
     return invalid(`A new ${def.noun} starts ${def.defaultState}, which the list doesn't have.`);
@@ -595,6 +595,137 @@ export const checkDraft = (draft: Draft): KinChatError | undefined => {
   if (!isCurrency(def.currency)) return invalid(`${def.currency} is not a currency code.`);
   return checkFieldDefs(def.fields);
 };
+
+/** What a list is asked to be: `list_define`'s input, or an import's list. */
+export type ListInput = {
+  /** The list's id, where the caller names it; otherwise the template's, or one from the name. */
+  readonly id?: string | undefined;
+  readonly template?: PresetId | undefined;
+  readonly list?: string | undefined;
+  readonly name?: string | undefined;
+  readonly noun?: string | undefined;
+  readonly prefix?: string | undefined;
+  readonly fields?:
+    | ReadonlyArray<{
+        readonly label: string;
+        readonly type: FieldType;
+        readonly choices?: ReadonlyArray<string> | undefined;
+        readonly link?: "clients" | "projects" | undefined;
+        readonly sensitive?: boolean | undefined;
+      }>
+    | undefined;
+  readonly categories?: ReadonlyArray<string> | undefined;
+  readonly states?: ReadonlyArray<KinRecordState> | undefined;
+  readonly stateNames?: StoredDefinition["stateLabels"] | undefined;
+  readonly amount?: boolean | undefined;
+  readonly currency?: string | undefined;
+  readonly sensitive?: boolean | undefined;
+  readonly dueLabel?: string | undefined;
+  readonly dateLabel?: string | undefined;
+};
+
+const fieldDefs = (fields: NonNullable<ListInput["fields"]>) => {
+  const defs: Array<FieldDef> = [];
+  for (const one of fields) {
+    const label = plain(one.label);
+    const key = keyFor(label);
+    if (key === undefined) return invalid(`${one.label} needs a name made of letters.`);
+    defs.push({
+      key,
+      label,
+      type: one.type,
+      ...(one.choices === undefined ? {} : { choices: one.choices.map(plain) }),
+      ...(one.link === undefined ? {} : { link: one.link }),
+      sensitive: one.type === "money" || one.type === "file" || one.sensitive === true,
+    });
+  }
+  return defs;
+};
+
+/** The proposal a call describes: a preset with any extras, a new list, or additions to one. */
+export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
+  orgId: KinOrgId,
+  input: ListInput,
+) {
+  const fields = fieldDefs(input.fields ?? []);
+  if (!Array.isArray(fields)) return yield* fields;
+  if (input.list !== undefined) {
+    const def = yield* listDef(orgId, input.list);
+    if (def === undefined) return yield* unknownList(input.list);
+    if (def.builtIn !== null)
+      return yield* invalid(`${def.name} is built in; its fields are fixed.`);
+    // A field named again with new choices adds those choices to it.
+    const choices: Record<string, ReadonlyArray<string>> = {};
+    const added = fields.filter((one) => {
+      const existing = def.fields.find((field) => field.key === one.key);
+      if (existing?.type === "choice" && one.type === "choice") {
+        choices[one.key] = one.choices ?? [];
+        return false;
+      }
+      return true;
+    });
+    return {
+      _tag: "extend",
+      id: def.id,
+      fields: added,
+      categories: input.categories ?? [],
+      choices,
+      stateLabels: input.stateNames ?? {},
+    } satisfies Proposal;
+  }
+  const named =
+    input.id ?? input.template ?? (input.name === undefined ? undefined : idFor(input.name));
+  if (named === undefined)
+    return yield* invalid("Name the list, start from a template, or say which list to add to.");
+  const preset = (PRESET_IDS as ReadonlyArray<string>).includes(named)
+    ? PRESETS[named as (typeof PRESET_IDS)[number]]
+    : undefined;
+  if (preset === undefined && (isBuiltIn(named) || named === "docs"))
+    return yield* invalid(`${input.name ?? named} is one of Kin's own lists already.`);
+  const name = preset?.name ?? input.name ?? named;
+  const amount = input.amount ?? preset?.amount ?? false;
+  const states = input.states ?? preset?.states ?? ["open", "done", "dropped"];
+  const definition: StoredDefinition = {
+    noun: input.noun ?? preset?.noun ?? name.toLowerCase().replace(/s$/, ""),
+    states,
+    stateLabels: { ...preset?.stateLabels, ...input.stateNames },
+    defaultState:
+      preset !== undefined && states.includes(preset.defaultState)
+        ? preset.defaultState
+        : states.includes("open")
+          ? "open"
+          : states[0]!,
+    categories: [...new Set([...(preset?.categories ?? []), ...(input.categories ?? [])])],
+    fields: [
+      ...(preset?.fields ?? []),
+      ...fields.filter((one) => !(preset?.fields ?? []).some((field) => field.key === one.key)),
+    ],
+    sensitive: input.sensitive ?? preset?.sensitive ?? amount,
+    amount,
+    currency: input.currency ?? preset?.currency ?? "INR",
+    ...((input.dueLabel ?? preset?.dueLabel)
+      ? { dueLabel: (input.dueLabel ?? preset?.dueLabel)! }
+      : {}),
+    ...((input.dateLabel ?? preset?.dateLabel)
+      ? { dateLabel: (input.dateLabel ?? preset?.dateLabel)! }
+      : {}),
+  };
+  if (!isCurrency(definition.currency))
+    return yield* invalid(`${definition.currency} is not a currency code.`);
+  const draft = {
+    id: named,
+    name,
+    prefix: input.prefix ?? preset?.prefix ?? prefixFor(name),
+    definition,
+  };
+  const refused = checkDraft(draft);
+  if (refused !== undefined) return yield* refused;
+  if ((yield* listDef(orgId, draft.id)) !== undefined)
+    return yield* invalid(
+      `There is already a list ${draft.name}; propose fields to add to it with list instead.`,
+    );
+  return { _tag: "new", ...draft } satisfies Proposal;
+});
 
 const proposalIdFor = (orgId: string, agentId: string, wakeupId: string, json: string) =>
   `lp_${NodeCrypto.createHash("sha256").update(`${orgId.length}:${orgId}${agentId}:${wakeupId}:${json}`).digest("hex").slice(0, 16)}`;
@@ -632,6 +763,43 @@ export const attachCard = Effect.fn("KinRegisters.attachCard")(function* (input:
   const sql = yield* SqlClient.SqlClient;
   yield* sql`UPDATE kin_list_proposals SET widget_id = ${input.widgetId}
     WHERE org_id = ${input.orgId} AND proposal_id = ${input.proposalId} AND widget_id IS NULL`;
+});
+
+/** Creates or extends the list `proposal` describes, now, in the caller's transaction. */
+export const defineList = Effect.fn("KinRegisters.defineList")(function* (
+  orgId: KinOrgId,
+  proposal: Proposal,
+  now: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  if (proposal._tag === "new") {
+    const draft = { ...proposal };
+    const refused = checkDraft(draft);
+    if (refused !== undefined) return yield* refused;
+    const taken = yield* sql<{ id: string; prefix: string }>`SELECT register_id AS id,
+        key_prefix AS prefix FROM kin_registers WHERE org_id = ${orgId}
+        AND (register_id = ${draft.id} OR key_prefix = ${draft.prefix}) ORDER BY register_id`;
+    if (taken.length > 0)
+      return yield* new KinChatError({
+        reason: "conflict",
+        message:
+          taken[0]!.id === draft.id
+            ? `There is already a list ${draft.name}. Propose adding fields to it instead.`
+            : `The key prefix ${draft.prefix} is taken. Propose the list with another prefix.`,
+      });
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at, definition_json, rev)
+      VALUES (${orgId}, ${draft.id}, ${draft.name}, ${draft.prefix}, 0, ${now},
+        ${yield* encodeDefinition(draft.definition)}, 1)`;
+  } else {
+    const def = yield* listDef(orgId, proposal.id);
+    if (def === undefined || def.builtIn !== null) return yield* unknownList(proposal.id);
+    const next = extended(def, proposal);
+    if (isChatError(next)) return yield* next;
+    yield* sql`UPDATE kin_registers SET definition_json = ${yield* encodeDefinition(next)},
+        rev = rev + 1
+      WHERE org_id = ${orgId} AND register_id = ${proposal.id}`;
+  }
 });
 
 /**
@@ -700,34 +868,7 @@ export const carryOut = Effect.fn("KinRegisters.carryOut")(function* (input: {
     });
   const proposal = Option.getOrUndefined(decodeProposal(row.json));
   if (proposal === undefined) return yield* invalid("That proposal can no longer be read.");
-  if (proposal._tag === "new") {
-    const draft = { ...proposal };
-    const refused = checkDraft(draft);
-    if (refused !== undefined) return yield* refused;
-    const taken = yield* sql<{ id: string; prefix: string }>`SELECT register_id AS id,
-        key_prefix AS prefix FROM kin_registers WHERE org_id = ${input.orgId}
-        AND (register_id = ${draft.id} OR key_prefix = ${draft.prefix}) ORDER BY register_id`;
-    if (taken.length > 0)
-      return yield* new KinChatError({
-        reason: "conflict",
-        message:
-          taken[0]!.id === draft.id
-            ? `There is already a list ${draft.name}. Propose adding fields to it instead.`
-            : `The key prefix ${draft.prefix} is taken. Propose the list with another prefix.`,
-      });
-    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
-        created_at, definition_json, rev)
-      VALUES (${input.orgId}, ${draft.id}, ${draft.name}, ${draft.prefix}, 0, ${input.now},
-        ${yield* encodeDefinition(draft.definition)}, 1)`;
-  } else {
-    const def = yield* listDef(input.orgId, proposal.id);
-    if (def === undefined || def.builtIn !== null) return yield* unknownList(proposal.id);
-    const next = extended(def, proposal);
-    if (isChatError(next)) return yield* next;
-    yield* sql`UPDATE kin_registers SET definition_json = ${yield* encodeDefinition(next)},
-        rev = rev + 1
-      WHERE org_id = ${input.orgId} AND register_id = ${proposal.id}`;
-  }
+  yield* defineList(input.orgId, proposal, input.now);
   yield* sql`UPDATE kin_list_proposals SET defined_at = ${input.now}
     WHERE org_id = ${input.orgId} AND proposal_id = ${input.proposalId}`;
   return { id: proposal.id, created: true };
