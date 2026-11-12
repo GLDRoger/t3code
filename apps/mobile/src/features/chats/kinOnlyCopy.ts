@@ -7,8 +7,8 @@ export const KIN_ONLY_NO_HOST = {
 } as const;
 
 export const KIN_ONLY_UNPAIRED = {
-  title: "This phone isn't connected anymore",
-  detail: "Connect it to your Kin again to open this chat.",
+  title: "This phone isn't connected to that Kin",
+  detail: "Connect it to your Kin to open this chat.",
   actionLabel: "Connect to your Kin",
 } as const;
 

@@ -149,9 +149,14 @@ function GroupForm(props: {
   const leads = AsyncResult.isSuccess(leadsResult)
     ? leadsResult.value.leads.filter((lead) => !inGroup.has(lead.agentId))
     : [];
+  // Only teammates who still have access; a removed one's Team row reads "No access".
+  const joined = new Set<string>(
+    AsyncResult.isSuccess(peopleResult) ? peopleResult.value.joined : [],
+  );
   const people = AsyncResult.isSuccess(peopleResult)
     ? peopleResult.value.people.filter(
-        (person) => !me.has(person.personId) && !inGroup.has(person.personId),
+        (person) =>
+          joined.has(person.personId) && !me.has(person.personId) && !inGroup.has(person.personId),
       )
     : [];
   const loading =
