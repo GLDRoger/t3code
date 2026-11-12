@@ -315,7 +315,7 @@ export function KinListEntryBody(
             </View>
             <View className="gap-0.5">
               <Text textRole="footnote" className="text-foreground-muted">
-                {KIN_LISTS.entry.received}
+                {entry.balance.receivedLabel}
               </Text>
               <Text textRole="body" selectable className="tabular-nums text-foreground">
                 {entry.balance.receivedText}

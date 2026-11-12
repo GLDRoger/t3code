@@ -37,7 +37,7 @@ import {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -346,6 +346,14 @@ function KinListEntries(
     props.stale ? null : props.live.seq,
   );
   const { filter } = state;
+  const { refresh } = entries;
+  const rev = useRef(def.rev);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the host adds a list up by its settings, so its figures are read again when those change
+  useEffect(() => {
+    if (rev.current === def.rev) return;
+    rev.current = def.rev;
+    refresh();
+  }, [def.rev, refresh]);
   const header = kinListHeader(def, filter, totals, state.total);
   const rows = state.records.map((record) =>
     kinListRow(record, def, context, { party: filter.party?.key ?? null }),

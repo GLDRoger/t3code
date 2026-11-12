@@ -956,6 +956,8 @@ export interface KinListEntryView {
     readonly left: KinMoney;
     readonly leftText: string;
     readonly receivedText: string;
+    /** "Received" on money owed to us, "Paid" on money we owe. */
+    readonly receivedLabel: string;
     readonly settled: boolean;
   } | null;
   readonly facts: ReadonlyArray<KinListFactView>;
@@ -1114,6 +1116,7 @@ export function kinListEntryView(
             left: item.balance,
             leftText: kinMoneyText(item.balance, true),
             receivedText: kinMoneyText(received, true),
+            receivedLabel: item.list === "invoices" ? KIN_LISTS.received : KIN_LISTS.paidOut,
             settled: item.balance.minor === 0,
           },
     facts,

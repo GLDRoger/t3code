@@ -560,7 +560,7 @@ export function KinListEntry(
                 </dd>
               </div>
               <div className="flex flex-col">
-                <dt className="text-xs text-muted-foreground">{KIN_LISTS.entry.received}</dt>
+                <dt className="text-xs text-muted-foreground">{entry.balance.receivedLabel}</dt>
                 <dd className="text-foreground tabular-nums">{entry.balance.receivedText}</dd>
               </div>
             </dl>

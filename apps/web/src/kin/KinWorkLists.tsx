@@ -647,7 +647,17 @@ function KinListEntries(
           </div>
         )}
       </div>
-      {editing ? <KinListSettings {...props} def={def} onClose={() => setEditing(false)} /> : null}
+      {editing ? (
+        <KinListSettings
+          {...props}
+          def={def}
+          onClose={() => {
+            setEditing(false);
+            // What the list adds up depends on its settings, so its figures are read again.
+            entries.refresh();
+          }}
+        />
+      ) : null}
     </div>
   );
 }
