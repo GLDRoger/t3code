@@ -691,6 +691,21 @@ it.effect(
       const card = yield* ask(chat.chatId);
       assert.include(card, { type: "choice", chatId: chat.chatId });
       assert.ok("messageId" in card);
+      const chart = (chatId: string) =>
+        gate.chart(agent, {
+          chatId: KinChatId.make(chatId),
+          clientMessageId: `chart-${chatId}`,
+          intent: "answer",
+          chart: "bar",
+          title: "Signups",
+          unit: { kind: "count" },
+          labels: ["Mon", "Tue", "Wed"],
+          series: [{ name: "This week", values: [12, 9, 14] }],
+        });
+      // A chart goes where a message could, and nowhere a message couldn't.
+      assert.deepInclude(yield* chart("group-1").pipe(Effect.flip), NOT_ALLOWED);
+      assert.deepInclude(yield* chart("other-direct").pipe(Effect.flip), NOT_ALLOWED);
+      assert.include(yield* chart(chat.chatId), { type: "chart", chatId: chat.chatId });
       const react = (chatId: string) =>
         gate.react(agent, {
           chatId: KinChatId.make(chatId),

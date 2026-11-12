@@ -147,8 +147,9 @@ it.effect.each([
     const text = `${shape(front.replace("---\n", ""))}`;
     const item = `---\n${text}\n---\n${body}`;
     const before = yield* parseFrontMatter(orgId, "claims/a.md", item);
-    const labelled = withLabel(item, true) ?? assert.fail("the label was refused");
-    const after = yield* parseFrontMatter(orgId, "claims/a.md", labelled);
+    const labelled = withLabel(item, true);
+    assert.isDefined(labelled);
+    const after = yield* parseFrontMatter(orgId, "claims/a.md", labelled ?? "");
     assert.deepStrictEqual(after.frontMatter, { ...before.frontMatter, sensitive: true });
     assert.strictEqual(after.body, before.body);
   }),

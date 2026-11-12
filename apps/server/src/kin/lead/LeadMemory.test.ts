@@ -370,6 +370,7 @@ it.live(
           "kin_leads",
           "kin_hand_off",
           "kin_ask",
+          "kin_chart",
           "kin_react",
           "memory_search",
           "memory_read",

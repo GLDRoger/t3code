@@ -48,6 +48,7 @@ import { cn, randomUUID } from "../lib/utils";
 import { useAtomCommand } from "../state/use-atom-command";
 import { Button } from "../components/ui/button";
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
+import { KinChart } from "./KinChart";
 import { kinClient } from "./kinClient";
 
 const CANT_ACT_TEXT =
@@ -127,6 +128,12 @@ export const KinCard = memo(function KinCard(props: {
           environmentId={props.environmentId}
           viewerPersonId={props.viewerPersonId}
         />
+      );
+    case "chart":
+      return (
+        <CardFrame>
+          <KinChart view={view.chart} />
+        </CardFrame>
       );
     case "digest":
       return <KinDigestCard digest={view.digest} />;

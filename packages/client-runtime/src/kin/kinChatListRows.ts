@@ -27,6 +27,7 @@ export interface KinChatListRow {
 // A card posted without words has no body to preview, so its id's prefix says what it was.
 const CARD_PREVIEWS: ReadonlyArray<readonly [prefix: string, preview: string]> = [
   ["choice:", "Asked you a question"],
+  ["chart:", "Sent a chart"],
   ["approval:", "Needs your approval"],
   ["task:", "Started a task"],
   ["reminder:", "Reminder"],
