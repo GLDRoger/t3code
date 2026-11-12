@@ -4018,7 +4018,7 @@ const upgradedFromK058 = (sql: SqlClient.SqlClient) =>
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 59`;
     assert.deepStrictEqual(
       (yield* runKinMigrations()).map(([id]) => id),
-      [59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77],
+      [59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78],
     );
   }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
 const attemptRows = (sql: SqlClient.SqlClient, workerId: KinWorkerId) =>
