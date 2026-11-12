@@ -155,8 +155,8 @@ export function KinTemplateRows(props: KinWorkTarget) {
                     <Text textRole="body" className="font-t3-medium text-foreground">
                       {template.title}
                     </Text>
-                    {template.labelled ? (
-                      <Text textRole="footnote" className="font-t3-medium text-warning">
+                    {template.labelled || template.alwaysPrivate ? (
+                      <Text textRole="footnote" className="font-t3-medium text-warning-foreground">
                         {KIN_TEMPLATES.private}
                       </Text>
                     ) : null}
@@ -174,9 +174,11 @@ export function KinTemplateRows(props: KinWorkTarget) {
                   <Text textRole="footnote" className="text-foreground-muted">
                     {template.changed}
                   </Text>
-                  {template.labelled ? (
+                  {template.alwaysPrivate || template.labelled ? (
                     <Text textRole="footnote" className="text-foreground-muted">
-                      {KIN_TEMPLATES.privateDetail}
+                      {template.alwaysPrivate
+                        ? KIN_TEMPLATES.alwaysPrivateDetail
+                        : KIN_TEMPLATES.privateDetail}
                     </Text>
                   ) : null}
                 </View>
@@ -212,7 +214,7 @@ export function KinTemplateRows(props: KinWorkTarget) {
                     onPress={() => void makeDefault(template, group.title)}
                   />
                 ) : null}
-                {canLabel ? (
+                {canLabel && !template.alwaysPrivate ? (
                   <ListActionRow
                     icon="lock"
                     label={

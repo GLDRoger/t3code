@@ -19,6 +19,7 @@ export const KIN_TEMPLATES = {
   removed: "Undone. That change made this template, so it's gone until you undo again.",
   private: "Private",
   privateDetail: "What it makes is marked private, so only you and your own chats see it.",
+  alwaysPrivateDetail: "Everything it makes is private, so only you and your own chats see it.",
   clearPrivate: "Mark as not private",
   clearTitle: "Mark this template as not private?",
   clearDetail: "Documents it makes from now on are no longer marked private because of it.",
@@ -48,6 +49,8 @@ export interface KinTemplateView {
   readonly description: string | null;
   readonly changed: string;
   readonly labelled: boolean;
+  /** Its own front matter makes what it makes private, so no mark can raise or lower that. */
+  readonly alwaysPrivate: boolean;
   /** The one its list's documents are made with unless another is picked. */
   readonly isDefault: boolean;
   readonly commit: string;
@@ -92,6 +95,7 @@ export function kinTemplateGroups(
           ? by
           : `Changed by ${by}, ${formatKinTime(new Date(recipe.changedAt), now)}`,
       labelled: recipe.labelled === true,
+      alwaysPrivate: recipe.sensitive,
       isDefault: recipe.default === true,
       commit: recipe.commit,
       forEntry: recipe.list !== null,

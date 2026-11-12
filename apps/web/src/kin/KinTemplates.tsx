@@ -191,7 +191,7 @@ export function KinTemplatesSection(props: KinWorkTarget) {
                         {KIN_TEMPLATES.isDefault(group.title)}
                       </Badge>
                     ) : null}
-                    {template.labelled ? (
+                    {template.labelled || template.alwaysPrivate ? (
                       <Badge size="sm" variant="warning">
                         {KIN_TEMPLATES.private}
                       </Badge>
@@ -201,8 +201,12 @@ export function KinTemplatesSection(props: KinWorkTarget) {
                     <p className="text-xs text-muted-foreground">{template.description}</p>
                   )}
                   <p className="text-xs text-muted-foreground">{template.changed}</p>
-                  {template.labelled ? (
-                    <p className="text-xs text-muted-foreground">{KIN_TEMPLATES.privateDetail}</p>
+                  {template.alwaysPrivate || template.labelled ? (
+                    <p className="text-xs text-muted-foreground">
+                      {template.alwaysPrivate
+                        ? KIN_TEMPLATES.alwaysPrivateDetail
+                        : KIN_TEMPLATES.privateDetail}
+                    </p>
                   ) : null}
                   <div className="flex flex-wrap gap-2">
                     {canPreview ? (
@@ -238,7 +242,7 @@ export function KinTemplatesSection(props: KinWorkTarget) {
                         {KIN_TEMPLATES.pickFor(group.title)}
                       </Button>
                     ) : null}
-                    {canLabel ? (
+                    {canLabel && !template.alwaysPrivate ? (
                       <Button
                         size="xs"
                         variant="outline"
