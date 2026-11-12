@@ -14,12 +14,12 @@ import { cn } from "../lib/utils";
 const TONES: Record<KinChartTone, string> = {
   one: "text-primary",
   two: "text-warning",
-  three: "text-foreground",
+  three: "text-foreground/50",
   four: "text-primary/45",
   previous: "text-muted-foreground/55",
 };
-// The average glyph width of the axis text (`text-3xs`).
-const AXIS_CHAR_WIDTH = 5.6;
+// A generous glyph width for the axis text (`text-3xs`): symbols such as % and ₹ run wide.
+const AXIS_CHAR_WIDTH = 6.4;
 const AXIS_TEXT = "fill-muted-foreground text-3xs tabular-nums";
 
 function useMeasuredWidth() {
@@ -80,7 +80,7 @@ function KinChartPlot(props: { readonly view: KinChartView }) {
               y={bar.y}
               width={bar.width}
               height={bar.height}
-              rx={2}
+              rx={bar.radius}
               fill="currentColor"
               className={TONES[bar.tone]}
             >

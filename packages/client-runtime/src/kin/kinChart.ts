@@ -256,6 +256,8 @@ export interface KinChartLayout {
     readonly y: number;
     readonly width: number;
     readonly height: number;
+    /** A stack's segments meet flat; a bar on its own has soft corners. */
+    readonly radius: number;
     readonly title: string;
   }>;
   readonly lines: ReadonlyArray<{
@@ -277,6 +279,7 @@ export const kinChartHeight = (width: number) =>
   Math.round(Math.min(200, Math.max(132, width * 0.46)));
 
 const AXIS_LABEL_CHARS = 10;
+const MIN_LABEL_CHARS = 4;
 const TICKS = 4;
 const DOTS_UP_TO = 12;
 const round = (value: number) => Math.round(value * 10) / 10;
@@ -296,7 +299,11 @@ function domain(view: KinChartView) {
     low = Math.min(low, 0);
     high = Math.max(high, 0);
   }
-  if (low === high) return { low: 0, high: 1, ticks: [0] };
+  // Nothing but zeros: one unit of headroom frames the chart like any other.
+  if (low === high) {
+    const one = view.unit.kind === "money" ? 10 ** minorDigits(view.unit.currency) : 1;
+    return { low: 0, high: one, ticks: [0, one] };
+  }
   const whole =
     view.unit.kind === "money" ||
     view.series.every((series) => series.values.every((v) => v === null || Number.isInteger(v)));
@@ -342,13 +349,16 @@ export function kinChartLayout(
       line && count > 1 ? plot.left + inset + spacing * index : plot.left + band * (index + 0.5),
     );
 
+  // A category keeps its label under its own bar, cut to the room it has; dates thin out instead.
+  const gap = 10;
+  const room = view.dated
+    ? AXIS_LABEL_CHARS
+    : Math.max(MIN_LABEL_CHARS, Math.floor((spacing - gap) / charWidth));
   const short = view.labels.map((one) => {
     const chars = Array.from(one.short);
-    return chars.length > AXIS_LABEL_CHARS
-      ? `${chars.slice(0, AXIS_LABEL_CHARS - 1).join("")}…`
-      : one.short;
+    return chars.length > room ? `${chars.slice(0, room - 1).join("")}…` : one.short;
   });
-  const widest = Math.max(...short.map((text) => text.length)) * charWidth + 10;
+  const widest = Math.max(...short.map((text) => text.length)) * charWidth + gap;
   const every = Math.max(1, Math.ceil(widest / spacing));
   const xTicks = short.flatMap((text, index) => {
     const offset = view.dated ? count - 1 - index : index;
@@ -387,8 +397,9 @@ export function kinChartLayout(
         const top = toY(stacked ? base + value : Math.max(value, 0));
         const bottom = stacked ? toY(base) : value < 0 ? toY(value) : floor;
         base += value;
-        // A zero still leaves a mark, so it never reads as a missing value.
-        const tall = Math.max(1.5, bottom - top);
+        // A zero still leaves a mark, so it never reads as a missing value. Stacked segments
+        // keep a hairline between them.
+        const tall = Math.max(1.5, bottom - top - (stacked && base > value ? 1 : 0));
         bars.push({
           key: `${series.key}-${index}`,
           tone: series.tone,
@@ -396,6 +407,7 @@ export function kinChartLayout(
           y: round(value < 0 ? top : Math.min(top, bottom - tall)),
           width: round(barWidth),
           height: round(tall),
+          radius: stacked ? 0 : 2,
           title: title(series, index, value),
         });
       });

@@ -4,7 +4,7 @@ import { KinTrimmedText } from "./kinChat.ts";
 
 const KIN_CHART_MAX_POINTS = 24;
 const KIN_CHART_MAX_SERIES = 4;
-const KIN_CHART_MAX_LABEL = 24;
+const KIN_CHART_MAX_LABEL = 40;
 const KIN_CHART_MAX_NAME = 32;
 const KIN_CHART_MAX_TITLE = 80;
 const KIN_CHART_MAX_CAPTION = 140;

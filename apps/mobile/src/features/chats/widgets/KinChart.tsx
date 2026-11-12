@@ -14,8 +14,8 @@ import { Chip } from "../../../components/ui/Chip";
 import { cn } from "../../../lib/cn";
 
 const AXIS_FONT_SIZE = 11;
-// The average glyph width of DM Sans at the axis size.
-const AXIS_CHAR_WIDTH = 6.1;
+// A generous glyph width for DM Sans at the axis size: symbols such as % and ₹ run wide.
+const AXIS_CHAR_WIDTH = 6.9;
 // A value column in the table: the widest value at the footnote size, plus its gap.
 const CELL_CHAR_WIDTH = 7.6;
 const CELL_GAP = 16;
@@ -35,7 +35,7 @@ const TONES: Record<
 > = {
   one: { color: "accent-primary", swatch: "bg-primary", opacity: 1 },
   two: { color: "accent-warning-foreground", swatch: "bg-warning-foreground", opacity: 1 },
-  three: { color: "accent-foreground", swatch: "bg-foreground", opacity: 1 },
+  three: { color: "accent-foreground", swatch: "bg-foreground", opacity: 0.5 },
   four: { color: "accent-primary", swatch: "bg-primary", opacity: 0.45 },
   previous: { color: "accent-foreground-muted", swatch: "bg-foreground-muted", opacity: 0.55 },
 };
@@ -81,7 +81,7 @@ function KinChartPlot(props: { readonly view: KinChartView; readonly width: numb
             y={bar.y}
             width={bar.width}
             height={bar.height}
-            rx={2}
+            rx={bar.radius}
             fill="currentColor"
             colorClassName={TONES[bar.tone].color}
             opacity={TONES[bar.tone].opacity}

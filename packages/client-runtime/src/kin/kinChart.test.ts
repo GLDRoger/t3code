@@ -121,7 +121,7 @@ describe("kinChartLayout", () => {
     const [web, app] = layout.bars;
     expect(layout.yTicks.at(-1)!.value).toBe(100);
     expect(app!.y).toBeCloseTo(layout.plot.top, 0);
-    expect(app!.y + app!.height).toBeCloseTo(web!.y, 0);
+    expect(app!.y + app!.height).toBeCloseTo(web!.y - 1, 0);
     expect(web!.x).toBe(app!.x);
   });
 
@@ -160,11 +160,11 @@ describe("kinChartLayout", () => {
       kinChartView(spec({ series: [{ name: "Errors", values: [0, 0, 0] }] })),
       size,
     );
-    expect(zeros.yTicks).toHaveLength(1);
+    expect(zeros.yTicks.map((tick) => tick.label)).toEqual(["0", "1"]);
     expect(zeros.bars.every((bar) => Number.isFinite(bar.y) && bar.height === 1.5)).toBe(true);
   });
 
-  it("shortens long labels and keeps them inside the card at phone width", () => {
+  it("cuts a long category label to its bar's room, so every bar keeps one at phone width", () => {
     const labels = [
       "Enterprise annual contracts",
       "Self-serve monthly",
@@ -175,7 +175,25 @@ describe("kinChartLayout", () => {
       kinChartView(spec({ labels, series: [{ name: "Deals", values: [4, 9, 2, 1] }] })),
       { width: 260, height: 132 },
     );
-    expect(layout.xTicks[0]!.label).toBe("Enterpris…");
+    expect(layout.xTicks.map((tick) => tick.label)).toEqual([
+      "Enterpr…",
+      "Self-se…",
+      "Partner…",
+      "Other",
+    ]);
+    for (const charWidth of [5.5, 6.4, 6.9, 7.5])
+      for (const width of [240, 260, 288, 300, 340])
+        expect(
+          kinChartLayout(
+            kinChartView(spec({ labels, series: [{ name: "Deals", values: [4, 9, 2, 1] }] })),
+            { width, height: 132, charWidth },
+          ).xTicks,
+        ).toHaveLength(4);
+    const wide = kinChartLayout(
+      kinChartView(spec({ labels, series: [{ name: "Deals", values: [4, 9, 2, 1] }] })),
+      { width: 900, height: 200 },
+    );
+    expect(wide.xTicks[0]!.label).toBe("Enterprise annual contracts");
     for (const tick of layout.xTicks) {
       const half = (tick.label.length * 6) / 2;
       const [from, to] =
