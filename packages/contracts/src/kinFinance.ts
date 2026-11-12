@@ -226,8 +226,14 @@ export const KinMoneySummary = Schema.Struct({
       }),
     ),
   }),
+  /** Money paid in: tax a client deducted at source settles an invoice but isn't counted here. */
   received: Schema.Struct({ thisMonth: KinMoneyTotals, lastMonth: KinMoneyTotals }),
   receivedThisFinancialYear: KinMoneyTotals,
+  /** TDS clients deducted from invoice payments, by the day paid; absent from older servers. */
+  tdsDeducted: Schema.optional(
+    Schema.Struct({ thisMonth: KinMoneyTotals, lastMonth: KinMoneyTotals }),
+  ),
+  tdsDeductedThisFinancialYear: Schema.optional(KinMoneyTotals),
   spent: Schema.Struct({ thisMonth: KinSpent, lastMonth: KinSpent }),
   spentThisFinancialYear: KinMoneyTotals,
   /** Open entries due or dated in the next 30 days, soonest first, at most 50. */

@@ -1,8 +1,12 @@
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
-import { AuthOrchestrationOperateScope, EnvironmentAuthorizationError } from "./auth.ts";
-import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  AuthOrchestrationOperateScope,
+  AuthOrchestrationReadScope,
+  EnvironmentAuthorizationError,
+} from "./auth.ts";
+import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinChatError, KinOrgId } from "./kinChat.ts";
 import { KinDay } from "./kinMoney.ts";
 
@@ -42,6 +46,47 @@ export const KinStatementTarget = Schema.Struct({
 export type KinStatementTarget = typeof KinStatementTarget.Type;
 export const KinStatementAction = Schema.Literals(["expense", "transfer", "ignore"]);
 export type KinStatementAction = typeof KinStatementAction.Type;
+export const KinStatementRowChoice = Schema.Literals(["expense", "transfer", "ignore", "later"]);
+export type KinStatementRowChoice = typeof KinStatementRowChoice.Type;
+
+/** Rows of each section a review card carries; the rest are read a page at a time. */
+export const KIN_STATEMENT_CARD_ROWS = 50;
+const Rows = Schema.Array(NonNegativeInt).check(Schema.isMaxLength(20_000));
+
+/**
+ * What the owner chose on a review card, kept on the server for the review it was made on, so
+ * Confirm applies it whole, including rows the device never loaded. Matched rows start all
+ * ticked or none; `except` are the ones toggled from that.
+ */
+export const KinStatementSelection = Schema.Struct({
+  revision: NonNegativeInt,
+  ticked: Schema.Literals(["all", "none"]),
+  except: Rows,
+  picks: Schema.Array(Schema.Struct({ row: NonNegativeInt, option: NonNegativeInt })).check(
+    Schema.isMaxLength(20_000),
+  ),
+  /** Unmatched rows with no choice of their own take Kin's suggestion. */
+  suggestions: Schema.Boolean,
+  actions: Schema.Array(
+    Schema.Struct({ row: NonNegativeInt, action: KinStatementRowChoice }),
+  ).check(Schema.isMaxLength(20_000)),
+});
+export type KinStatementSelection = typeof KinStatementSelection.Type;
+const SectionCounts = Schema.Struct({
+  matched: NonNegativeInt,
+  choose: NonNegativeInt,
+  unmatched: NonNegativeInt,
+});
+
+const MatchedRow = Schema.Struct({ ...RowFields, target: KinStatementTarget });
+const ChooseRow = Schema.Struct({ ...RowFields, options: Schema.Array(KinStatementTarget) });
+const UnmatchedRow = Schema.Struct({
+  ...RowFields,
+  suggestion: KinStatementRowChoice,
+  why: Schema.optional(Label),
+  vendor: Schema.optional(Label),
+  category: Schema.optional(Label),
+});
 
 export const KinStatementReviewCard = Schema.Struct({
   /** The card's fixed words: what older clients show, and all its push carries. */
@@ -55,22 +100,24 @@ export const KinStatementReviewCard = Schema.Struct({
   balance: Schema.Literals(["adds_up", "off", "unchecked"]),
   /** Rows Kin read itself from images of a scan, rather than from the file's text. */
   readByAgent: Schema.optional(Schema.Literal(true)),
-  matched: Schema.Array(Schema.Struct({ ...RowFields, target: KinStatementTarget })),
-  choose: Schema.Array(Schema.Struct({ ...RowFields, options: Schema.Array(KinStatementTarget) })),
-  unmatched: Schema.Array(
-    Schema.Struct({
-      ...RowFields,
-      suggestion: Schema.Literals(["expense", "transfer", "ignore", "later"]),
-      why: Schema.optional(Label),
-      vendor: Schema.optional(Label),
-      category: Schema.optional(Label),
-    }),
-  ),
+  /** The first rows of each section; `counts` says how many there are in all. */
+  matched: Schema.Array(MatchedRow),
+  choose: Schema.Array(ChooseRow),
+  unmatched: Schema.Array(UnmatchedRow),
+  /** Absent on cards made before rows were paged: then the lists above are whole. */
+  counts: Schema.optional(SectionCounts),
+  /** Absent on older cards, which start from Kin's proposal. */
+  selection: Schema.optional(KinStatementSelection),
+  /** What Confirm records now, by section. */
+  chosen: Schema.optional(SectionCounts),
+  /** Why no match starts ticked: rows Kin read from a scan, or balances that don't check out. */
+  heldBack: Schema.optional(Text),
   /** Rows already in Bank transactions from an earlier statement: counted, not shown again. */
   recorded: NonNegativeInt,
   /** The Expenses categories a new expense may take. */
   categories: Schema.Array(Label),
-  status: Schema.Literals(["open", "applied", "undone"]),
+  /** `replaced`: a fresh read of the statement posted a newer card. */
+  status: Schema.Literals(["open", "applied", "undone", "replaced"]),
   result: Schema.optional(Schema.Array(Text)),
   /** After it is applied: this statement's rows still unexplained in Bank transactions. */
   unexplained: Schema.optional(NonNegativeInt),
@@ -81,7 +128,8 @@ export const KinStatementPasswordCard = Schema.Struct({
   text: Text,
   statementId: TrimmedNonEmptyString,
   fileName: Label,
-  status: Schema.Literals(["locked", "wrong", "opened", "unreadable"]),
+  /** `limit`: too many wrong passwords on this card; sending the file again starts over. */
+  status: Schema.Literals(["locked", "wrong", "opened", "unreadable", "limit"]),
   /** Why an opened file still couldn't be read, in plain words. */
   detail: Schema.optional(Text),
   /** The account the password is now kept for, when the owner asked Kin to remember it. */
@@ -106,25 +154,66 @@ export const KinStatementUnlockResult = Schema.Struct({
 });
 export type KinStatementUnlockResult = typeof KinStatementUnlockResult.Type;
 
+/** Applies the selection kept for this review, as the owner last saw it. */
 export const KinStatementApplyInput = Schema.Struct({
   orgId: KinOrgId,
   statementId: TrimmedNonEmptyString,
   hash: TrimmedNonEmptyString,
-  /** Matched rows the owner kept ticked; an unticked one stays for later. */
-  matched: Schema.Array(NonNegativeInt).check(Schema.isMaxLength(20_000)),
-  chosen: Schema.Array(Schema.Struct({ row: NonNegativeInt, option: NonNegativeInt })).check(
-    Schema.isMaxLength(20_000),
-  ),
-  actions: Schema.Array(
-    Schema.Struct({
-      row: NonNegativeInt,
-      action: KinStatementAction,
-      vendor: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
-      category: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(60))),
-    }),
-  ).check(Schema.isMaxLength(20_000)),
+  revision: NonNegativeInt,
 });
 export type KinStatementApplyInput = typeof KinStatementApplyInput.Type;
+
+export const KinStatementSelectChange = Schema.Union([
+  Schema.TaggedStruct("tick", { row: NonNegativeInt, ticked: Schema.Boolean }),
+  Schema.TaggedStruct("tickAll", { ticked: Schema.Boolean }),
+  /** `option` null takes the pick back. */
+  Schema.TaggedStruct("pick", { row: NonNegativeInt, option: Schema.NullOr(NonNegativeInt) }),
+  Schema.TaggedStruct("action", { row: NonNegativeInt, action: KinStatementRowChoice }),
+  Schema.TaggedStruct("suggestions", {}),
+]);
+export type KinStatementSelectChange = typeof KinStatementSelectChange.Type;
+export const KinStatementSelectInput = Schema.Struct({
+  orgId: KinOrgId,
+  statementId: TrimmedNonEmptyString,
+  hash: TrimmedNonEmptyString,
+  change: KinStatementSelectChange,
+});
+export type KinStatementSelectInput = typeof KinStatementSelectInput.Type;
+
+export const KinStatementSection = Schema.Literals(["matched", "choose", "unmatched"]);
+export type KinStatementSection = typeof KinStatementSection.Type;
+/** More of one section's rows than the card carries, in statement order. */
+export const KinStatementRowsInput = Schema.Struct({
+  orgId: KinOrgId,
+  statementId: TrimmedNonEmptyString,
+  hash: TrimmedNonEmptyString,
+  section: KinStatementSection,
+  offset: NonNegativeInt,
+  limit: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(100)),
+});
+export type KinStatementRowsInput = typeof KinStatementRowsInput.Type;
+export const KinStatementRowsResult = Schema.Struct({
+  total: NonNegativeInt,
+  matched: Schema.Array(MatchedRow),
+  choose: Schema.Array(ChooseRow),
+  unmatched: Schema.Array(UnmatchedRow),
+});
+export type KinStatementRowsResult = typeof KinStatementRowsResult.Type;
+
+/** Accounts whose statement password Kin keeps; never the password itself. */
+export const KinStatementPasswordsInput = Schema.Struct({ orgId: KinOrgId });
+export type KinStatementPasswordsInput = typeof KinStatementPasswordsInput.Type;
+export const KinStatementPasswordsResult = Schema.Struct({
+  accounts: Schema.Array(
+    Schema.Struct({ account: TrimmedNonEmptyString, label: Label, rememberedAt: IsoDateTime }),
+  ),
+});
+export type KinStatementPasswordsResult = typeof KinStatementPasswordsResult.Type;
+export const KinStatementForgetAccountInput = Schema.Struct({
+  orgId: KinOrgId,
+  account: TrimmedNonEmptyString.check(Schema.isMaxLength(300)),
+});
+export type KinStatementForgetAccountInput = typeof KinStatementForgetAccountInput.Type;
 export const KinStatementUndoInput = Schema.Struct({
   orgId: KinOrgId,
   statementId: TrimmedNonEmptyString,
@@ -143,6 +232,10 @@ const KIN_STATEMENT_WS_METHODS = {
   forgetPassword: "kin.work.statementForgetPassword",
   apply: "kin.work.statementApply",
   undo: "kin.work.statementUndo",
+  select: "kin.work.statementSelect",
+  rows: "kin.work.statementRows",
+  passwords: "kin.work.statementPasswords",
+  forgetAccount: "kin.work.statementForgetAccount",
 } as const;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -168,6 +261,26 @@ export const KinStatementRpcs = [
     success: KinStatementResult,
     error,
   }),
+  Rpc.make(KIN_STATEMENT_WS_METHODS.select, {
+    payload: KinStatementSelectInput,
+    success: KinStatementResult,
+    error,
+  }),
+  Rpc.make(KIN_STATEMENT_WS_METHODS.rows, {
+    payload: KinStatementRowsInput,
+    success: KinStatementRowsResult,
+    error,
+  }),
+  Rpc.make(KIN_STATEMENT_WS_METHODS.passwords, {
+    payload: KinStatementPasswordsInput,
+    success: KinStatementPasswordsResult,
+    error,
+  }),
+  Rpc.make(KIN_STATEMENT_WS_METHODS.forgetAccount, {
+    payload: KinStatementForgetAccountInput,
+    success: KinStatementPasswordsResult,
+    error,
+  }),
 ] as const;
 
 export const KIN_STATEMENT_RPC_SCOPES = {
@@ -176,4 +289,9 @@ export const KIN_STATEMENT_RPC_SCOPES = {
   [KIN_STATEMENT_WS_METHODS.forgetPassword]: AuthOrchestrationOperateScope,
   [KIN_STATEMENT_WS_METHODS.apply]: AuthOrchestrationOperateScope,
   [KIN_STATEMENT_WS_METHODS.undo]: AuthOrchestrationOperateScope,
+  [KIN_STATEMENT_WS_METHODS.select]: AuthOrchestrationOperateScope,
+  [KIN_STATEMENT_WS_METHODS.forgetAccount]: AuthOrchestrationOperateScope,
+  // Statement rows and kept accounts are the owner's money: read as Money is.
+  [KIN_STATEMENT_WS_METHODS.rows]: AuthOrchestrationReadScope,
+  [KIN_STATEMENT_WS_METHODS.passwords]: AuthOrchestrationReadScope,
 } as const;

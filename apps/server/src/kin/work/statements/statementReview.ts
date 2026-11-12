@@ -9,8 +9,8 @@ import {
   KinPersonId,
   type KinOrgId,
   type KinStatementPasswordCard,
-  type KinStatementReviewCard,
-  type KinStatementTarget,
+  KinStatementReviewCard,
+  KinStatementSelection,
   KinWidgetId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -28,12 +28,18 @@ import * as ServerConfig from "../../../config.ts";
 import { KinChatHub } from "../../chat/KinChatHub.ts";
 import { KinChatRepository } from "../../chat/KinChatRepository.ts";
 import { fieldText, parseFields } from "../lists.ts";
-import { dayIn, formatMoney } from "../money.ts";
+import { dayIn } from "../money.ts";
 import { ownerZone } from "../recordRows.ts";
 import { listDef } from "../registers.ts";
 import { bankStates, findBankList, type KnownRow, knownRows } from "./bankList.ts";
-import { type FileOutcome, readStatementFile } from "./statementFiles.ts";
-import { type Candidate, matchRows, type RowMatch } from "./statementMatch.ts";
+import { readIsolated } from "./statementReader.ts";
+import { matchRows, type RowMatch } from "./statementMatch.ts";
+import {
+  defaultSelection,
+  type Review,
+  reviewCard,
+  STATEMENT_REVIEW_TEXT,
+} from "./statementCard.ts";
 import type { Statement } from "./statementTable.ts";
 
 /**
@@ -57,14 +63,6 @@ const StoredReview = Schema.Struct({
   known: Schema.Array(Schema.Tuple([Schema.Number, Schema.Unknown])),
   matches: Schema.Array(Schema.Tuple([Schema.Number, Schema.Unknown])),
 });
-export type Review = {
-  readonly statement: Statement;
-  readonly format: string | null;
-  readonly source: "file" | "agent";
-  readonly known: ReadonlyMap<number, KnownRow>;
-  /** Every row not already explained in Bank transactions. */
-  readonly matches: ReadonlyMap<number, RowMatch>;
-};
 const ReviewJson = Schema.fromJsonString(StoredReview);
 const encodeReview = Schema.encodeEffect(ReviewJson);
 const decodeReview = Schema.decodeUnknownOption(ReviewJson);
@@ -104,6 +102,10 @@ export type StatementRow = {
   readonly passwordWidgetId: string | null;
   readonly appliedAt: number | null;
   readonly undoneAt: number | null;
+  /** Rises on each undo, so a later confirm's retry keys are its own. */
+  readonly generation: number;
+  readonly selectionJson: string | null;
+  readonly passwordAttempts: number;
 };
 export const statementRow = Effect.fn("KinStatements.row")(function* (
   orgId: KinOrgId,
@@ -114,7 +116,8 @@ export const statementRow = Effect.fn("KinStatements.row")(function* (
       attachment_id AS "attachmentId", file_name AS "fileName", chat_id AS "chatId",
       agent_id AS "agentId", status, reason, source, account, review_json AS "reviewJson",
       review_hash AS "reviewHash", review_widget_id AS "reviewWidgetId",
-      password_widget_id AS "passwordWidgetId", applied_at AS "appliedAt", undone_at AS "undoneAt"
+      password_widget_id AS "passwordWidgetId", applied_at AS "appliedAt", undone_at AS "undoneAt",
+      generation, selection_json AS "selectionJson", password_attempts AS "passwordAttempts"
     FROM kin_bank_statements WHERE org_id = ${orgId} AND statement_id = ${statementId}`;
   return row;
 });
@@ -144,6 +147,11 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
   const sql = yield* SqlClient.SqlClient;
   const zone = yield* ownerZone(orgId);
   const day = (ms: number | null) => (ms === null ? null : dayIn(ms, zone));
+  // Banks list newest first as often as oldest first; the window starts before either end.
+  const earliest = statement.rows.reduce(
+    (first, row) => (row.date < first ? row.date : first),
+    statement.rows[0]?.date ?? "2000-01-01",
+  );
   const invoiceRows = yield* sql<{
     recordId: string;
     key: string;
@@ -182,7 +190,7 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state IN ('open', 'done')
       AND r.amount_minor IS NOT NULL
-      AND COALESCE(r.date_at, r.due_at, r.created_at) >= ${Date.parse(`${statement.rows[0]?.date ?? "2000-01-01"}T00:00:00Z`) - 60 * 86_400_000}
+      AND COALESCE(r.date_at, r.due_at, r.created_at) >= ${Date.parse(`${earliest}T00:00:00Z`) - 60 * 86_400_000}
     ORDER BY r.key`;
   const vendors = yield* sql<{ vendor: string | null; category: string | null }>`
     SELECT json_extract(fields_json, '$.vendor') AS vendor, category FROM kin_records
@@ -266,130 +274,6 @@ const clamp = (text: string, max: number) => {
   const chars = Array.from(text.replace(/\s+/g, " ").trim());
   return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : chars.join("");
 };
-const SHORT = new Intl.DateTimeFormat("en-IN", {
-  day: "numeric",
-  month: "short",
-  year: "numeric",
-  timeZone: "UTC",
-});
-const shortDay = (day: string) => SHORT.format(Date.parse(`${day}T00:00:00Z`));
-const money = (minor: number, currency: string) => formatMoney({ minor, currency });
-
-const target = (candidate: Candidate, option: number, currency: string): KinStatementTarget => ({
-  option,
-  kind: candidate.kind,
-  key: candidate.key,
-  label: clamp(`${candidate.key} · ${candidate.title}`, 200),
-  ...(candidate.fit === "tds" && candidate.tdsMinor !== undefined
-    ? { note: `Paid with ${money(candidate.tdsMinor, currency)} TDS deducted` }
-    : candidate.fit === "part"
-      ? { note: "Part payment" }
-      : candidate.fit === "foreign"
-        ? { note: "Same amount in its own currency" }
-        : {}),
-});
-
-const STATEMENT_REVIEW_TEXT =
-  "Kin read a bank statement and matched its rows. Review and confirm them on its card.";
-
-/** The review card: what the owner confirms, and the hash that binds a confirm to it. */
-export const reviewCard = (
-  statementId: string,
-  review: Review,
-  categories: ReadonlyArray<string>,
-): KinStatementReviewCard => {
-  const { statement } = review;
-  const currency = statement.currency;
-  const shown = (index: number) => {
-    const row = statement.rows[index]!;
-    return {
-      row: index,
-      date: row.date,
-      text: clamp(row.description, 120),
-      amount: money(row.amountMinor, currency),
-      direction: row.direction,
-    };
-  };
-  const matched: Array<KinStatementReviewCard["matched"][number]> = [];
-  const choose: Array<KinStatementReviewCard["choose"][number]> = [];
-  const unmatched: Array<KinStatementReviewCard["unmatched"][number]> = [];
-  for (const [index, match] of [...review.matches.entries()].toSorted(
-    ([left], [right]) => left - right,
-  )) {
-    if (match.group === "matched")
-      matched.push({ ...shown(index), target: target(match.candidates[0]!, 0, currency) });
-    else if (match.group === "choose")
-      choose.push({
-        ...shown(index),
-        options: match.candidates.map((one, option) => target(one, option, currency)),
-      });
-    else
-      unmatched.push({
-        ...shown(index),
-        suggestion: match.suggestion.action,
-        ...(match.suggestion.why === undefined ? {} : { why: clamp(match.suggestion.why, 200) }),
-        ...(match.suggestion.vendor === undefined
-          ? {}
-          : { vendor: clamp(match.suggestion.vendor, 120) }),
-        ...(match.suggestion.category === undefined ? {} : { category: match.suggestion.category }),
-      });
-  }
-  const credits = statement.rows.filter((row) => row.direction === "credit");
-  const debits = statement.rows.filter((row) => row.direction === "debit");
-  const total = (rows: typeof credits) =>
-    money(
-      rows.reduce((sum, row) => sum + row.amountMinor, 0),
-      currency,
-    );
-  const recorded = statement.rows.length - review.matches.size;
-  const account =
-    statement.account === null
-      ? (statement.bank ?? "Statement")
-      : `${statement.bank ?? (statement.kind === "card" ? "Card" : "Account")} ••${statement.account}`;
-  const period =
-    statement.from !== null && statement.to !== null
-      ? ` · ${shortDay(statement.from)} to ${shortDay(statement.to)}`
-      : "";
-  const shownSet = JSON.stringify({
-    statementId,
-    matched: matched.map((one) => [one.row, review.matches.get(one.row)!.candidates[0]!.recordId]),
-    choose: choose.map((one) => [
-      one.row,
-      review.matches.get(one.row)!.candidates.map((c) => c.recordId),
-    ]),
-    unmatched: unmatched.map((one) => one.row),
-    recorded,
-  });
-  return {
-    text: STATEMENT_REVIEW_TEXT,
-    statementId,
-    hash: hash(shownSet).slice(0, 32),
-    title: clamp(`${account}${period}`, 200),
-    summary: [
-      `${statement.rows.length} rows: ${credits.length} in (${total(credits)}), ${debits.length} out (${total(debits)}).`,
-      ...(statement.openingMinor === null || statement.closingMinor === null
-        ? []
-        : [
-            `Opening ${money(statement.openingMinor, currency)}, closing ${money(statement.closingMinor, currency)}.`,
-          ]),
-      statement.check.line,
-      ...(recorded === 0
-        ? []
-        : [`${recorded} already in Bank transactions from an earlier statement.`]),
-      ...(review.source === "agent"
-        ? ["Kin read these rows from images of a scanned statement: check them against it."]
-        : []),
-    ].map((line) => clamp(line, 300)),
-    balance: statement.check.status,
-    ...(review.source === "agent" ? { readByAgent: true as const } : {}),
-    matched,
-    choose,
-    unmatched,
-    recorded,
-    categories: [...categories],
-    status: "open",
-  };
-};
 
 /** The owner and their direct chat with the lead, where a statement's cards go. */
 const ownerOf = Effect.fn("KinStatements.ownerOf")(function* (orgId: KinOrgId, agentId: string) {
@@ -464,12 +348,16 @@ const postCard = Effect.fn("KinStatements.postCard")(function* (input: {
   return widgetId;
 });
 
-/** Replaces a card's state, closing it when the owner has nothing more to do on it. */
+/**
+ * Replaces a card's state, closing it when the owner has nothing more to do on it; reopened, it
+ * waits on `awaiting` again when given.
+ */
 export const updateCard = Effect.fn("KinStatements.updateCard")(function* (
   orgId: KinOrgId,
   widgetId: string,
   state: unknown,
   closed: boolean,
+  awaiting?: ReadonlyArray<KinPersonId>,
 ) {
   const repo = yield* KinChatRepository;
   const hub = yield* KinChatHub;
@@ -477,7 +365,7 @@ export const updateCard = Effect.fn("KinStatements.updateCard")(function* (
   const found = yield* repo.getWidget({ orgId, widgetId: KinWidgetId.make(widgetId) });
   if (Option.isNone(found)) return;
   const at = iso(yield* Clock.currentTimeMillis);
-  const owner = found.value.awaiting.length > 0 ? found.value.awaiting : [];
+  const owner = found.value.awaiting.length > 0 ? found.value.awaiting : (awaiting ?? []);
   const widget = yield* repo.updateWidget({
     ...found.value,
     audience: "owner",
@@ -511,7 +399,30 @@ export const expenseCategories = Effect.fn("KinStatements.expenseCategories")(fu
   );
 });
 
-/** Stores a read and posts its review card, in one write. */
+const decodeSelection = Schema.decodeUnknownOption(Schema.fromJsonString(KinStatementSelection));
+export const encodeSelection = Schema.encodeEffect(Schema.fromJsonString(KinStatementSelection));
+/** The owner's selection on the stored review: Kin's proposal until they change it. */
+export const selectionOf = (stored: Pick<StatementRow, "selectionJson">, review: Review) =>
+  stored.selectionJson === null
+    ? defaultSelection(review)
+    : Option.getOrElse(decodeSelection(stored.selectionJson), () => defaultSelection(review));
+
+const decodeReviewCard = Schema.decodeUnknownOption(KinStatementReviewCard);
+export const cardState = Effect.fn("KinStatements.cardState")(function* (
+  orgId: KinOrgId,
+  widgetId: string | null,
+) {
+  if (widgetId === null) return undefined;
+  const repo = yield* KinChatRepository;
+  const found = yield* repo.getWidget({ orgId, widgetId: KinWidgetId.make(widgetId) });
+  if (Option.isNone(found)) return undefined;
+  return Option.getOrUndefined(decodeReviewCard(found.value.state));
+});
+
+/**
+ * Stores a read and posts its review card, in one write. A fresh read replaces the card before
+ * it, so the owner never has two live cards for one statement, and starts from Kin's proposal.
+ */
 export const saveRead = Effect.fn("KinStatements.saveRead")(function* (input: {
   readonly orgId: KinOrgId;
   readonly statementId: string;
@@ -523,13 +434,35 @@ export const saveRead = Effect.fn("KinStatements.saveRead")(function* (input: {
   const sql = yield* SqlClient.SqlClient;
   const card = reviewCard(input.statementId, input.review, yield* expenseCategories(input.orgId));
   const json = yield* storeReview(input.review);
+  const before = yield* statementRow(input.orgId, input.statementId);
   // Each read gets its own card, so a fresh read never edits a card the owner is looking at.
   const widgetId = `kin-statement:${input.statementId}:${card.hash.slice(0, 12)}`;
   yield* sql`UPDATE kin_bank_statements SET status = 'read', reason = NULL,
       source = ${input.review.source}, account = ${input.review.statement.account},
       review_json = ${json}, review_hash = ${card.hash}, review_widget_id = ${widgetId},
-      read_at = ${input.now}, applied_at = NULL, applied_by = NULL, undone_at = NULL
+      selection_json = NULL, read_at = ${input.now}, applied_at = NULL, applied_by = NULL,
+      undone_at = NULL
     WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId}`;
+  const previous = before?.reviewWidgetId ?? null;
+  // The same review read again is the same card, back to Kin's proposal and open.
+  if (previous === widgetId)
+    yield* updateCard(input.orgId, widgetId, card, false, [
+      yield* ownerOf(input.orgId, input.agentId),
+    ]);
+  if (previous !== null && previous !== widgetId) {
+    const old = yield* cardState(input.orgId, previous);
+    if (old !== undefined && old.status !== "replaced")
+      yield* updateCard(
+        input.orgId,
+        previous,
+        {
+          ...old,
+          status: "replaced" as const,
+          result: ["Kin read this statement again; the newer card below replaces this one."],
+        },
+        true,
+      );
+  }
   yield* postCard({
     orgId: input.orgId,
     chatId: input.chatId,
@@ -602,14 +535,7 @@ export const tryKeptPasswords = Effect.fn("KinStatements.tryKept")(function* (
 
 /** Reads a statement file, with a password for a locked PDF; nothing of it leaves this call. */
 export const readWith = (bytes: Uint8Array, password?: Redacted.Redacted<string>) =>
-  Effect.promise((): Promise<FileOutcome> =>
-    readStatementFile(bytes, password === undefined ? undefined : Redacted.value(password)).catch(
-      () => ({
-        _tag: "unreadable",
-        reason: "Kin couldn't read this file.",
-      }),
-    ),
-  );
+  readIsolated(bytes, password);
 
 export const keepPassword = Effect.fn("KinStatements.keepPassword")(function* (
   orgId: KinOrgId,
@@ -632,13 +558,33 @@ export const keepPassword = Effect.fn("KinStatements.keepPassword")(function* (
   return label;
 });
 
-export const forgetPassword = Effect.fn("KinStatements.forgetPassword")(function* (
+export const forgetPassword = (
   orgId: KinOrgId,
   statement: Pick<Statement, "bank" | "account" | "kind">,
+) => forgetAccount(orgId, accountKeyOf(statement));
+
+/** Forgets the password kept for one account; the next locked statement of it asks again. */
+export const forgetAccount = Effect.fn("KinStatements.forgetAccount")(function* (
+  orgId: KinOrgId,
+  accountKey: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const secrets = yield* ServerSecretStore.ServerSecretStore;
-  const accountKey = accountKeyOf(statement);
   yield* secrets.remove(secretName(orgId, accountKey));
   yield* sql`DELETE FROM kin_statement_passwords WHERE org_id = ${orgId} AND account_key = ${accountKey}`;
+});
+
+/** The accounts whose statement password Kin keeps, newest first; never the password. */
+export const keptAccounts = Effect.fn("KinStatements.keptAccounts")(function* (orgId: KinOrgId) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ account: string; label: string; rememberedAt: number }>`SELECT
+      account_key AS account, label, remembered_at AS "rememberedAt"
+    FROM kin_statement_passwords WHERE org_id = ${orgId} ORDER BY remembered_at DESC, account_key`;
+  return {
+    accounts: rows.map((row) => ({
+      account: row.account,
+      label: row.label,
+      rememberedAt: iso(row.rememberedAt),
+    })),
+  };
 });

@@ -596,7 +596,22 @@ export const kinClient = {
     tag: "kin.work.statementForgetPassword",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.statementId },
   }),
-  /** Confirms exactly the rows the review card showed; the server refuses any other set. */
+  /** One tap on a review card, in order: the server keeps the selection Confirm applies. */
+  statementSelect: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:statement:select",
+    tag: "kin.work.statementSelect",
+    concurrency: { mode: "serial", key: ({ input }) => input.statementId },
+  }),
+  /** More of a section's rows than the card carries. */
+  statementRows: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:statement:rows",
+    tag: "kin.work.statementRows",
+    concurrency: {
+      mode: "singleFlight",
+      key: ({ input }) => `${input.statementId}:${input.section}:${input.offset}`,
+    },
+  }),
+  /** Applies the selection the server keeps for this review, at the revision the owner saw. */
   statementApply: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:statement:apply",
     tag: "kin.work.statementApply",

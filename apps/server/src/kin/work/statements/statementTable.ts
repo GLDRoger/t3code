@@ -1,3 +1,5 @@
+import * as Schema from "effect/Schema";
+
 import { formatMoney } from "../money.ts";
 
 /**
@@ -266,7 +268,11 @@ const NUMERIC_ROLES = new Set<Role>(["debit", "credit", "amount", "balance"]);
 /** A PDF line's cells by the header's columns: money by right edge, words by where they start. */
 const placeCells = (line: Line, header: Header): Map<Role, Array<Cell>> => {
   const placed = new Map<Role, Array<Cell>>();
-  const put = (role: Role, cell: Cell) => placed.set(role, [...(placed.get(role) ?? []), cell]);
+  const put = (role: Role, cell: Cell) => {
+    const cells = placed.get(role);
+    if (cells === undefined) placed.set(role, [cell]);
+    else cells.push(cell);
+  };
   const positioned = header.columns.filter((column) => column.x !== undefined);
   if (positioned.length === 0) {
     for (const column of header.columns) {
@@ -446,7 +452,7 @@ export const readTable = (lines: ReadonlyArray<Line>, currency = "INR"): TableRe
       const money = [...cells.entries()].some(
         ([role, found]) => NUMERIC_ROLES.has(role) && found.length > 0,
       );
-      if (last !== undefined && !ended && more !== "" && !money)
+      if (last !== undefined && !ended && more !== "" && !money && last.description.length < 2_000)
         last.description = `${last.description} ${more}`.trim();
       if (last !== undefined && !ended && last.reference === null) {
         const reference = joined(cells.get("reference"));
@@ -608,6 +614,33 @@ export const checkBalances = (
   return { status: "adds_up", line: `It adds up: ${sum} = ${money(end, currency)}.` };
 };
 
+/** A file past one of the readers' bounds: reported as unreadable, never read further. */
+export class TooLarge extends Schema.TaggedError<TooLarge>()("KinStatementTooLarge", {
+  reason: Schema.String,
+}) {}
+
+/** The widest line Kin keeps and the most cells and lines it reads from one file. */
+export const LINE_CAPS = { width: 256, cells: 2_000_000, lines: 100_000 } as const;
+export const EMPTY_CELL: Cell = { text: "" };
+const TOO_MANY = "The file has far more cells than a statement; send a shorter period.";
+
+/** Counts every cell a reader makes, padding included, and stops it at the caps. */
+export const cellBudget = () => {
+  let cells = 0;
+  let lines = 0;
+  return {
+    cells: (count: number) => {
+      cells += count;
+      if (cells > LINE_CAPS.cells) throw new TooLarge({ reason: TOO_MANY });
+    },
+    line: () => {
+      lines += 1;
+      if (lines > LINE_CAPS.lines) throw new TooLarge({ reason: TOO_MANY });
+    },
+  };
+};
+const cellOf = (text: string): Cell => (text === "" ? EMPTY_CELL : { text });
+
 /** Reads CSV, or tab-, semicolon- or pipe-separated text, quotes and line breaks in quotes included. */
 export const delimitedLines = (text: string): ReadonlyArray<Line> => {
   const sample = text.slice(0, 20_000).split(/\r?\n/).slice(0, 60);
@@ -618,10 +651,23 @@ export const delimitedLines = (text: string): ReadonlyArray<Line> => {
         score: sample.filter((line) => line.split(one).length >= 4).length,
       }))
       .toSorted((left, right) => right.score - left.score)[0]?.one ?? ",";
+  const budget = cellBudget();
   const lines: Array<Array<Cell>> = [];
   let cells: Array<Cell> = [];
   let cell = "";
   let quoted = false;
+  const push = () => {
+    if (cells.length < LINE_CAPS.width) {
+      budget.cells(1);
+      cells.push(cellOf(cell.trim()));
+    }
+    cell = "";
+  };
+  const end = () => {
+    budget.line();
+    lines.push(cells);
+    cells = [];
+  };
   for (let at = 0; at < text.length; at += 1) {
     const char = text[at]!;
     if (quoted) {
@@ -629,26 +675,22 @@ export const delimitedLines = (text: string): ReadonlyArray<Line> => {
         cell += '"';
         at += 1;
       } else if (char === '"') quoted = false;
-      else cell += char;
+      else if (cell.length < 4_000) cell += char;
       continue;
     }
     if (char === '"' && cell.trim() === "") {
       quoted = true;
       cell = "";
-    } else if (char === delimiter) {
-      cells.push({ text: cell.trim() });
-      cell = "";
-    } else if (char === "\n" || char === "\r") {
+    } else if (char === delimiter) push();
+    else if (char === "\n" || char === "\r") {
       if (char === "\r" && text[at + 1] === "\n") at += 1;
-      cells.push({ text: cell.trim() });
-      lines.push(cells);
-      cells = [];
-      cell = "";
-    } else cell += char;
+      push();
+      end();
+    } else if (cell.length < 4_000) cell += char;
   }
   if (cell !== "" || cells.length > 0) {
-    cells.push({ text: cell.trim() });
-    lines.push(cells);
+    push();
+    end();
   }
   return lines;
 };
@@ -661,21 +703,83 @@ const ENTITIES: Record<string, string> = {
   apos: "'",
   nbsp: " ",
 };
+const codePoint = (value: number, whole: string) =>
+  Number.isInteger(value) && value >= 0 && value <= 0x10ffff ? String.fromCodePoint(value) : whole;
 const unescape = (text: string) =>
-  text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (whole, name: string) =>
+  text.replace(/&(#x[0-9a-f]{1,8}|#\d{1,8}|[a-z]{1,8});/gi, (whole, name: string) =>
     name.startsWith("#x") || name.startsWith("#X")
-      ? String.fromCodePoint(Number.parseInt(name.slice(2), 16))
+      ? codePoint(Number.parseInt(name.slice(2), 16), whole)
       : name.startsWith("#")
-        ? String.fromCodePoint(Number(name.slice(1)))
+        ? codePoint(Number(name.slice(1)), whole)
         : (ENTITIES[name.toLowerCase()] ?? whole),
   );
 
-/** An HTML table, as some banks' ".xls" downloads are: each row's cells as text. */
-export const htmlLines = (html: string): ReadonlyArray<Line> =>
-  [...html.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map((row) =>
-    [...row[1]!.matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi)].map((cell) => ({
-      text: unescape(cell[1]!.replace(/<br\s*\/?>/gi, " ").replace(/<[^>]*>/g, ""))
-        .replace(/\s+/g, " ")
-        .trim(),
-    })),
-  );
+/**
+ * An HTML table, as some banks' ".xls" downloads are: each row's cells as text. One pass over
+ * the tags, closing a cell or row where the next one starts, as browsers do.
+ */
+export const htmlLines = (html: string): ReadonlyArray<Line> => {
+  const budget = cellBudget();
+  const lines: Array<Array<Cell>> = [];
+  let row: Array<Cell> | undefined;
+  let cell: Array<string> | undefined;
+  let size = 0;
+  const endCell = () => {
+    if (cell === undefined) return;
+    if (row !== undefined && row.length < LINE_CAPS.width) {
+      budget.cells(1);
+      row.push(cellOf(unescape(cell.join("")).replace(/\s+/g, " ").trim()));
+    }
+    cell = undefined;
+    size = 0;
+  };
+  const endRow = () => {
+    endCell();
+    if (row === undefined) return;
+    budget.line();
+    lines.push(row);
+    row = undefined;
+  };
+  let at = 0;
+  while (at < html.length) {
+    const open = html.indexOf("<", at);
+    const text = html.slice(at, open === -1 ? html.length : open);
+    if (cell !== undefined && text !== "" && size < 4_000) {
+      cell.push(text);
+      size += text.length;
+    }
+    if (open === -1) break;
+    if (html.startsWith("<!--", open)) {
+      const close = html.indexOf("-->", open + 4);
+      at = close === -1 ? html.length : close + 3;
+      continue;
+    }
+    const close = html.indexOf(">", open + 1);
+    if (close === -1) break;
+    at = close + 1;
+    const head = /^(\/?)\s*([a-z][a-z0-9]{0,15})/i.exec(
+      html.slice(open + 1, Math.min(close, open + 40)),
+    );
+    if (head === null) continue;
+    const closing = head[1] === "/";
+    const name = head[2]!.toLowerCase();
+    if (name === "tr") {
+      endRow();
+      if (!closing) row = [];
+    } else if (name === "td" || name === "th") {
+      endCell();
+      if (!closing) {
+        row ??= [];
+        cell = [];
+      }
+    } else if (name === "table" && closing) endRow();
+    else if (name === "br" && cell !== undefined) cell.push(" ");
+    else if ((name === "script" || name === "style") && !closing) {
+      const end = new RegExp(`</${name}`, "gi");
+      end.lastIndex = at;
+      at = end.exec(html)?.index ?? html.length;
+    }
+  }
+  endRow();
+  return lines;
+};

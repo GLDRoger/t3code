@@ -1,32 +1,39 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_STATEMENT_ACTION_LABELS,
-  KIN_STATEMENT_EMPTY_SELECTION,
   KIN_STATEMENT_PAGE,
   KIN_STATEMENT_SECTION_TITLES,
   kinStatementActionOf,
   kinStatementActionsFor,
+  kinStatementAllTicked,
+  kinStatementAnswered,
   kinStatementApplyInput,
   kinStatementConfirm,
   kinStatementFailureText,
+  kinStatementLoaded,
+  kinStatementLocal,
   kinStatementNeedsPassword,
   kinStatementOpenSuggestions,
   kinStatementPasswordLines,
-  kinStatementPick,
+  kinStatementPickOf,
+  kinStatementQueue,
   kinStatementRowNote,
+  kinStatementRowsInput,
   kinStatementSections,
-  kinStatementSetAction,
+  kinStatementShown,
   kinStatementStatusLines,
+  kinStatementSuggestionsLeft,
+  kinStatementTakenBy,
   kinStatementTargetLine,
-  kinStatementToggle,
-  kinStatementUseSuggestions,
+  kinStatementTicked,
+  kinStatementTotal,
   type KinStatementPasswordView,
   type KinStatementReviewView,
   type KinStatementSectionId,
-  type KinStatementSelection,
 } from "@t3tools/client-runtime/kin/kinStatementPresentation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, KinStatementSelectChange } from "@t3tools/contracts";
+import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import { AsyncResult } from "effect/reactivity";
 import { ChevronRightIcon } from "lucide-react";
@@ -43,7 +50,7 @@ import { kinClient } from "./kinClient";
 const CANT_ACT_TEXT =
   "This browser can't confirm here. Pair it again with the server that runs Kin.";
 
-type ReviewCard = KinStatementReviewView["card"];
+type Shown = ReturnType<typeof kinStatementShown>;
 type Row = {
   readonly row: number;
   readonly date: string;
@@ -77,16 +84,30 @@ function RowLine(props: { readonly row: Row; readonly muted?: boolean }) {
   );
 }
 
+/** A section shows a page at a time; past the rows the card carries, it reads the next page. */
 function Section(props: {
   readonly id: KinStatementSectionId;
   readonly count: number;
+  readonly loaded: number;
   readonly openAtFirst: boolean;
   readonly aside?: string;
+  readonly onLoad: () => Promise<boolean>;
   readonly children: (shown: number) => ReactNode;
 }) {
   const [open, setOpen] = useState(props.openAtFirst);
   const [shown, setShown] = useState(KIN_STATEMENT_PAGE);
+  const [loading, setLoading] = useState(false);
   const bodyId = useId();
+  const more = async () => {
+    const next = shown + KIN_STATEMENT_PAGE;
+    if (next > props.loaded && props.loaded < props.count) {
+      setLoading(true);
+      const loaded = await props.onLoad();
+      setLoading(false);
+      if (!loaded) return;
+    }
+    setShown(next);
+  };
   return (
     <div className="flex flex-col border-t border-border pt-2">
       <button
@@ -108,9 +129,15 @@ function Section(props: {
       </button>
       {open ? (
         <div id={bodyId} className="flex flex-col gap-1 pb-1">
-          {props.children(shown)}
+          {props.children(Math.min(shown, props.loaded))}
           {props.count > shown ? (
-            <Button size="xs" variant="ghost" onClick={() => setShown(shown + KIN_STATEMENT_PAGE)}>
+            <Button
+              size="xs"
+              variant="ghost"
+              aria-busy={loading}
+              disabled={loading}
+              onClick={() => void more()}
+            >
               Show {Math.min(KIN_STATEMENT_PAGE, props.count - shown)} more of {props.count - shown}
             </Button>
           ) : null}
@@ -121,37 +148,55 @@ function Section(props: {
 }
 
 /**
- * A statement's review: what Kin matched, what needs a pick, and what is left, with one Confirm
- * for exactly the rows shown. Sections stay closed on a long statement, and open a page at a time.
+ * A statement's review: what Kin matched, what needs a pick, and what is left. Each tap goes to
+ * the server, which keeps the selection, so Confirm applies it whole on a statement of any size.
  */
 export const KinStatementReviewCard = memo(function KinStatementReviewCard(props: {
   readonly review: KinStatementReviewView;
   readonly environmentId: EnvironmentId;
 }) {
   const { review, environmentId } = props;
-  const { card } = review;
   const canApply = useAtomValue(kinClient.statementApply.permissionAtom(environmentId));
   const apply = useAtomCommand(kinClient.statementApply, { reportFailure: false });
   const undo = useAtomCommand(kinClient.statementUndo, { reportFailure: false });
-  // A new read of the statement is a new card hash, and starts from Kin's proposal again.
-  const [held, setHeld] = useState<{
-    readonly hash: string;
-    readonly selection: KinStatementSelection;
-  }>({
-    hash: card.hash,
-    selection: KIN_STATEMENT_EMPTY_SELECTION,
-  });
-  const selection = held.hash === card.hash ? held.selection : KIN_STATEMENT_EMPTY_SELECTION;
-  const change = (update: (selection: KinStatementSelection) => KinStatementSelection) =>
-    setHeld((prev) => ({
-      hash: card.hash,
-      selection: update(prev.hash === card.hash ? prev.selection : KIN_STATEMENT_EMPTY_SELECTION),
-    }));
+  const select = useAtomCommand(kinClient.statementSelect, { reportFailure: false });
+  const readRows = useAtomCommand(kinClient.statementRows, { reportFailure: false });
+  const [local, setLocal] = useState(() => kinStatementLocal(review.card.hash));
+  const shown = kinStatementShown(review.card, local);
+  const { card, selection } = shown;
   const [pending, setPending] = useState<"apply" | "undo" | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
-  const confirm = kinStatementConfirm(review, selection);
-  const editable = card.status !== "applied" && canApply && pending === null;
+  const confirm = kinStatementConfirm(card);
+  const editable =
+    (card.status === "open" || card.status === "undone") && canApply && pending === null;
 
+  const change = async (next: KinStatementSelectChange) => {
+    const hash = card.hash;
+    setFailure(null);
+    setLocal((prev) => kinStatementQueue(prev, hash, next));
+    const result = await select({
+      environmentId,
+      input: { orgId: review.orgId, statementId: card.statementId, hash, change: next },
+    });
+    const reply = Option.getOrNull(AsyncResult.value(result))?.card ?? null;
+    setLocal((prev) => kinStatementAnswered(prev, hash, reply));
+    if (AsyncResult.isFailure(result))
+      setFailure(kinStatementFailureText(squashAtomCommandFailure(result)));
+  };
+  const load = async (section: KinStatementSectionId) => {
+    const hash = card.hash;
+    const result = await readRows({
+      environmentId,
+      input: kinStatementRowsInput(review, section, shown.rows[section].length),
+    });
+    if (AsyncResult.isFailure(result)) {
+      setFailure(kinStatementFailureText(squashAtomCommandFailure(result)));
+      return false;
+    }
+    const page = Option.getOrNull(AsyncResult.value(result));
+    if (page !== null) setLocal((prev) => kinStatementLoaded(prev, hash, page));
+    return page !== null;
+  };
   const send = async (what: "apply" | "undo") => {
     if (pending !== null) return;
     setPending(what);
@@ -169,6 +214,13 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
   };
 
   const status = kinStatementStatusLines(card);
+  const rows = { shown, editable, onChange: (next: KinStatementSelectChange) => void change(next) };
+  const held = kinStatementTotal(card, "matched") - (card.chosen?.matched ?? 0);
+  // Matches held back for a check are ticked in one tap, without opening their section.
+  const heldAll =
+    card.heldBack !== undefined && editable && !kinStatementAllTicked(card, selection)
+      ? kinStatementTotal(card, "matched")
+      : 0;
   return (
     <CardFrame eyebrow="Bank statement" label={`Bank statement: ${card.title}`}>
       <p className="font-medium text-foreground">{card.title}</p>
@@ -186,42 +238,41 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
             {line}
           </p>
         ))}
+        {card.heldBack === undefined ||
+        (card.status !== "open" && card.status !== "undone") ? null : (
+          <p className="text-xs font-medium text-warning-foreground">{card.heldBack}</p>
+        )}
       </div>
+      {heldAll === 0 ? null : (
+        <div>
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() => void change({ _tag: "tickAll", ticked: true })}
+          >
+            Tick all {heldAll} matches
+          </Button>
+        </div>
+      )}
       {kinStatementSections(card).map((section) => (
         <Section
           key={section.id}
           id={section.id}
           count={section.count}
+          loaded={shown.rows[section.id].length}
           openAtFirst={section.openAtFirst}
-          {...(section.id === "matched" && selection.unticked.size > 0
-            ? { aside: `${selection.unticked.size} held back` }
+          onLoad={() => load(section.id)}
+          {...(section.id === "matched" && card.chosen !== undefined && held > 0
+            ? { aside: `${held} not ticked` }
             : {})}
         >
-          {(shown) =>
+          {(count) =>
             section.id === "matched" ? (
-              <MatchedRows
-                card={card}
-                shown={shown}
-                selection={selection}
-                editable={editable}
-                onChange={change}
-              />
+              <MatchedRows {...rows} count={count} />
             ) : section.id === "choose" ? (
-              <ChooseRows
-                card={card}
-                shown={shown}
-                selection={selection}
-                editable={editable}
-                onChange={change}
-              />
+              <ChooseRows {...rows} count={count} />
             ) : (
-              <UnmatchedRows
-                card={card}
-                shown={shown}
-                selection={selection}
-                editable={editable}
-                onChange={change}
-              />
+              <UnmatchedRows {...rows} count={count} />
             )
           }
         </Section>
@@ -236,7 +287,7 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
           {failure}
         </p>
       )}
-      {!canApply ? (
+      {card.status === "replaced" ? null : !canApply ? (
         <p className="text-xs text-muted-foreground">{CANT_ACT_TEXT}</p>
       ) : card.status === "applied" ? (
         <div className="flex flex-wrap gap-1.5 pt-1">
@@ -254,8 +305,8 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
         <div className="flex flex-wrap items-center gap-2 pt-1">
           <Button
             size="sm"
-            aria-busy={pending === "apply"}
-            disabled={pending !== null || confirm.count === 0}
+            aria-busy={pending === "apply" || shown.sending}
+            disabled={pending !== null || shown.sending || confirm.count === 0}
             onClick={() => void send("apply")}
           >
             {confirm.label}
@@ -270,18 +321,30 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
 });
 
 interface RowsProps {
-  readonly card: ReviewCard;
-  readonly shown: number;
-  readonly selection: KinStatementSelection;
+  readonly shown: Shown;
+  readonly count: number;
   readonly editable: boolean;
-  readonly onChange: (update: (selection: KinStatementSelection) => KinStatementSelection) => void;
+  readonly onChange: (change: KinStatementSelectChange) => void;
 }
 
 function MatchedRows(props: RowsProps) {
+  const { card, rows, selection } = props.shown;
+  const all = kinStatementAllTicked(card, selection);
   return (
     <ul className="flex flex-col">
-      {props.card.matched.slice(0, props.shown).map((one) => {
-        const ticked = !props.selection.unticked.has(one.row);
+      {!props.editable ? null : (
+        <li>
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() => props.onChange({ _tag: "tickAll", ticked: !all })}
+          >
+            {all ? "Untick all" : "Tick all"}
+          </Button>
+        </li>
+      )}
+      {rows.matched.slice(0, props.count).map((one) => {
+        const ticked = kinStatementTicked(selection, one.row);
         return (
           <li key={one.row}>
             <label className="flex min-h-11 cursor-pointer items-start gap-2.5 rounded-md py-1.5">
@@ -290,7 +353,7 @@ function MatchedRows(props: RowsProps) {
                 checked={ticked}
                 disabled={!props.editable}
                 onCheckedChange={() =>
-                  props.onChange((selection) => kinStatementToggle(selection, one.row))
+                  props.onChange({ _tag: "tick", row: one.row, ticked: !ticked })
                 }
               />
               <span className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -308,10 +371,15 @@ function MatchedRows(props: RowsProps) {
 }
 
 function ChooseRows(props: RowsProps) {
+  const { rows, selection } = props.shown;
   return (
     <ul className="flex flex-col gap-2">
-      {props.card.choose.slice(0, props.shown).map((one) => {
-        const picked = props.selection.picks.get(one.row);
+      {rows.choose.slice(0, props.count).map((one) => {
+        const picked = kinStatementPickOf(selection, one.row);
+        const taken = one.options.flatMap((option) => {
+          const other = kinStatementTakenBy(rows.choose, selection, one.row, option);
+          return other === undefined ? [] : [{ option, other }];
+        });
         return (
           <li key={one.row} className="flex flex-col gap-1 py-1">
             <RowLine row={one} />
@@ -326,15 +394,22 @@ function ChooseRows(props: RowsProps) {
                   size="sm-multiline"
                   variant={picked === option.option ? "default" : "outline"}
                   aria-pressed={picked === option.option}
-                  disabled={!props.editable}
+                  disabled={!props.editable || taken.some((one) => one.option === option)}
                   onClick={() =>
-                    props.onChange((selection) =>
-                      kinStatementPick(selection, one.row, option.option),
-                    )
+                    props.onChange({
+                      _tag: "pick",
+                      row: one.row,
+                      option: picked === option.option ? null : option.option,
+                    })
                   }
                 >
                   {kinStatementTargetLine(option)}
                 </Button>
+              ))}
+              {taken.map(({ option, other }) => (
+                <p key={option.option} className="text-xs text-muted-foreground">
+                  {option.key} is picked for the {day(other.date)} row of {other.amount}.
+                </p>
               ))}
             </div>
           </li>
@@ -345,24 +420,26 @@ function ChooseRows(props: RowsProps) {
 }
 
 function UnmatchedRows(props: RowsProps) {
-  const open = kinStatementOpenSuggestions(props.card, props.selection);
+  const { card, rows, selection } = props.shown;
+  const open = kinStatementOpenSuggestions(rows.unmatched, selection);
+  const whole = rows.unmatched.length >= kinStatementTotal(card, "unmatched");
   return (
     <ul className="flex flex-col gap-1.5">
-      {open === 0 || !props.editable ? null : (
+      {!kinStatementSuggestionsLeft(card, rows.unmatched, selection) || !props.editable ? null : (
         <li>
           <Button
             size="xs"
             variant="outline"
-            onClick={() =>
-              props.onChange((selection) => kinStatementUseSuggestions(props.card, selection))
-            }
+            onClick={() => props.onChange({ _tag: "suggestions" })}
           >
-            Use Kin's suggestions for {open} {open === 1 ? "row" : "rows"}
+            {whole
+              ? `Use Kin's suggestions for ${open} ${open === 1 ? "row" : "rows"}`
+              : "Use Kin's suggestions"}
           </Button>
         </li>
       )}
-      {props.card.unmatched.slice(0, props.shown).map((one) => {
-        const action = kinStatementActionOf(props.selection, one);
+      {rows.unmatched.slice(0, props.count).map((one) => {
+        const action = kinStatementActionOf(selection, one);
         const note = kinStatementRowNote(one, action);
         return (
           <li key={one.row} className="flex flex-col gap-1 py-1">
@@ -381,11 +458,7 @@ function UnmatchedRows(props: RowsProps) {
                     variant={action === choice ? "secondary" : "ghost-muted"}
                     aria-checked={action === choice}
                     disabled={!props.editable}
-                    onClick={() =>
-                      props.onChange((selection) =>
-                        kinStatementSetAction(selection, one.row, choice),
-                      )
-                    }
+                    onClick={() => props.onChange({ _tag: "action", row: one.row, action: choice })}
                   >
                     {KIN_STATEMENT_ACTION_LABELS[choice]}
                   </Button>

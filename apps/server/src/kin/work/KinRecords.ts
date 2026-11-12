@@ -222,10 +222,18 @@ export type PaymentInput = {
   /** A day in the owner's zone. */
   readonly paidOn: string;
   readonly note?: string;
-  /** A retry with the same key records nothing more. */
+  /** Tax the payer withheld at source: it settles the invoice but is no money received. */
+  readonly withheld?: boolean;
+  /** A retry with the same key records nothing more; one whose payment was voided is refused. */
   readonly originKey: string;
 };
 const CLOSED = ["done", "dropped"] as const;
+/** A retry whose first result was taken back since: answering it with that result would lie. */
+const undoneRetry = (what: string) =>
+  new KinChatError({
+    reason: "conflict",
+    message: `That retry key's ${what} was taken back since, so a retry can't stand for it. Record it again as a new one.`,
+  });
 const conflict = (key: string, rev: number) =>
   new KinChatError({
     reason: "conflict",
@@ -882,6 +890,8 @@ const make = Effect.gen(function* () {
     return yield* transaction(
       Effect.gen(function* () {
         const result = yield* insert(orgId, writer, input, { wake: true });
+        if (!result.created && result.row.state === "dropped" && input.state !== "dropped")
+          return yield* undoneRetry("entry");
         // Made already closed, a repeating entry's next one is owed at once.
         if (result.created && isClosed(result.row.state))
           yield* spawnNext(orgId, writer, result.row);
@@ -1354,8 +1364,11 @@ const make = Effect.gen(function* () {
           currency: string;
           paidOn: string;
           note: string;
+          withheld: number;
+          voidedAt: number | null;
         }>`
-          SELECT record_id AS "recordId", amount_minor AS minor, currency, paid_on AS "paidOn", note
+          SELECT record_id AS "recordId", amount_minor AS minor, currency, paid_on AS "paidOn", note,
+            withheld, voided_at AS "voidedAt"
           FROM kin_record_payments WHERE org_id = ${orgId} AND origin_key = ${payment.originKey}`;
         if (earlier !== undefined) {
           if (
@@ -1363,12 +1376,14 @@ const make = Effect.gen(function* () {
             earlier.minor !== payment.amount.minor ||
             earlier.currency !== payment.amount.currency ||
             earlier.paidOn !== payment.paidOn ||
-            earlier.note !== (payment.note ?? "")
+            earlier.note !== (payment.note ?? "") ||
+            earlier.withheld !== (payment.withheld === true ? 1 : 0)
           )
             return yield* new KinChatError({
               reason: "not_allowed",
               message: "That retry key already recorded a different payment.",
             });
+          if (earlier.voidedAt !== null) return yield* undoneRetry("payment");
           return { row, paymentId };
         }
         if (row.state === "dropped")
@@ -1389,10 +1404,12 @@ const make = Effect.gen(function* () {
           });
         const now = yield* Clock.currentTimeMillis;
         yield* sql`INSERT INTO kin_record_payments (org_id, payment_id, record_id, amount_minor,
-            currency, paid_on, note, origin_key, created_at, created_by_kind, created_by_id)
+            currency, paid_on, note, origin_key, created_at, created_by_kind, created_by_id,
+            withheld)
           VALUES (${orgId}, ${paymentId}, ${row.recordId}, ${payment.amount.minor},
             ${payment.amount.currency}, ${payment.paidOn}, ${payment.note ?? ""},
-            ${payment.originKey}, ${now}, ${writer.actor._tag}, ${actorIdOf(writer)})`;
+            ${payment.originKey}, ${now}, ${writer.actor._tag}, ${actorIdOf(writer)},
+            ${payment.withheld === true ? 1 : 0})`;
         const paidUp =
           payment.amount.minor === balance && row.state !== "done" && def.states.includes("done");
         const rev = row.rev + 1;
@@ -1521,7 +1538,7 @@ const make = Effect.gen(function* () {
             r.project_id AS project, r.side, r.state, r.owner_kind || ':' || r.owner_id AS owner,
             ${moneyDay(sql)} AS at,
             (SELECT COALESCE(SUM(p.amount_minor), 0) ${live}) AS paid,
-            (SELECT COALESCE(SUM(p.amount_minor), 0) ${live}
+            (SELECT COALESCE(SUM(p.amount_minor), 0) ${live} AND p.withheld = 0
               AND p.paid_on >= ${input.paidFrom ?? "0000-00-00"}
               AND p.paid_on <= ${input.paidTo ?? "9999-12-31"}) AS received
           FROM kin_records r WHERE ${filter} ORDER BY r.record_id`;

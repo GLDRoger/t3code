@@ -867,6 +867,15 @@ describe("invoices", () => {
       const records = yield* KinRecords.KinRecords;
       const after = yield* records.get(orgId, "INV-1");
       assert.deepStrictEqual([after!.state, after!.paid], ["waiting", 6_000_000]);
+      // The voided payment's own call again is no retry of a live payment: it is refused.
+      const voidedRetry = yield* LeadMoney.payment(scope, {
+        sourceEventId: paid,
+        key: "INV-1",
+        amount: "40k",
+        paidOn: "2026-11-05",
+      }).pipe(Effect.flip);
+      assert.include(voidedRetry, { reason: "conflict" });
+      assert.strictEqual((yield* records.get(orgId, "INV-1"))!.paid, 6_000_000);
 
       // A refusal that quotes what is owed or received marks the turn as having read figures.
       const sql = yield* SqlClient.SqlClient;
@@ -1256,6 +1265,20 @@ describe("the owner's taps", () => {
         paymentId: part.payments![0]!.paymentId,
       });
       assert.deepStrictEqual([back.state, back.balance?.minor], ["open", 4_000_000]);
+      // Its request again can't stand for the payment taken back.
+      assert.include(yield* Effect.flip(pay(4_000_000, "a")), { reason: "conflict" });
+      // Nor can a lead's create again stand for the entry the owner dropped.
+      const taxi = { list: "expenses", title: "Invented taxi", amount: "500", date: "2026-11-10" };
+      const records = yield* KinRecords.KinRecords;
+      yield* records.update(orgId, system, "EXP-2", { state: "dropped" });
+      const recreated = yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [
+          { list: "expenses", title: "Invented rent", amount: "1 lakh", state: "open" },
+          taxi,
+        ],
+      }).pipe(Effect.flip);
+      assert.include(recreated, { reason: "conflict" });
       // Money paid out never counts as money received.
       assert.deepStrictEqual((yield* OwnerMoney.money(people, { orgId })).received.thisMonth, []);
       // The way out is refused while a payment still counts, and Invoices never lose theirs.
