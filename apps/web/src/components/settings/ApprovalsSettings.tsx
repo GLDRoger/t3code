@@ -1,6 +1,13 @@
 import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, KinKeyThumbprint, KinOrgId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  KinApproverKey,
+  KinApproverKeyActivity,
+  KinKeyThumbprint,
+  KinOrgId,
+} from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
 
@@ -20,14 +27,7 @@ import {
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
-import {
-  approvalPhones,
-  approvalsProblem,
-  spacedMatchCode,
-  type AllowedPhone,
-  type ApprovalPhone,
-  type WaitingPhone,
-} from "./ApprovalsSettings.logic";
+import { PLATFORM, approvalsProblem } from "./ApprovalsSettings.logic";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
 
 const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
@@ -37,12 +37,16 @@ const dayFormat = new Intl.DateTimeFormat(undefined, {
   hour: "numeric",
   minute: "2-digit",
 });
-const when = (ms: number, now: number) =>
-  now - ms < 12 * 60 * 60 * 1000 ? `at ${timeFormat.format(ms)}` : `on ${dayFormat.format(ms)}`;
+const when = (at: DateTime.Utc, now: number) => {
+  const ms = DateTime.toEpochMillis(at);
+  return now - ms < 12 * 60 * 60 * 1000
+    ? `at ${timeFormat.format(ms)}`
+    : `on ${dayFormat.format(ms)}`;
+};
 
 type Target = { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId };
 
-/** The phones that may approve for Kin: the owner allows, declines and removes them here. */
+/** The phones that can approve for Kin, and Remove for one that shouldn't. */
 export function ApprovalsSettings() {
   const host = useKinHost();
   const environmentId = host._tag === "host" ? host.environmentId : null;
@@ -53,14 +57,14 @@ export function ApprovalsSettings() {
   return (
     <SettingsPageContainer>
       <p className="px-3 text-sm text-muted-foreground sm:px-4">
-        Kin asks a phone you allow here before it merges a pull request or changes what an agent may
-        do, and the phone approves with Face ID. Only you can allow a phone, and only from Kin on
-        the web or desktop.
+        Kin asks one of these phones before it merges a pull request or changes what an agent may
+        do, and the phone approves with Face ID. You'll get a message in your chat whenever a phone
+        is added or removed.
       </p>
       {host._tag === "searching" || (environmentId !== null && orgs.isPending && !orgs.data) ? (
         <Loading />
       ) : environmentId === null ? (
-        <Notice text="No Kin host is connected. Connect to the computer that runs Kin to manage the phones that approve." />
+        <Notice text="No Kin host is connected. Connect to the computer that runs Kin to see the phones that approve." />
       ) : orgId === null ? (
         <Notice text={orgs.error ?? "This sign-in isn't a person in Kin."} />
       ) : (
@@ -92,9 +96,8 @@ function Phones(props: { readonly target: Target }) {
   const { environmentId, orgId } = props.target;
   const keys = useEnvironmentQuery(kinClient.approverKeys({ environmentId, input: { orgId } }));
   const now = useNowMinuteMs();
-  const canAllow = useAtomValue(kinClient.approverKeyAllow.permissionAtom(environmentId));
-  const canRevoke = useAtomValue(kinClient.approverKeyRevoke.permissionAtom(environmentId));
-  const actions = usePhoneActions(props.target, keys.refresh);
+  const canRemove = useAtomValue(kinClient.approverKeyRevoke.permissionAtom(environmentId));
+  const removal = useRemove(props.target, keys.refresh);
 
   if (keys.data === null)
     return keys.error === null ? (
@@ -110,8 +113,8 @@ function Phones(props: { readonly target: Target }) {
       />
     );
 
-  const { waiting, allowed, expired } = approvalPhones(keys.data, now);
-  const checkAgain = (
+  const { keys: phones, activity } = keys.data;
+  const refresh = (
     <Button
       size="xs"
       variant="ghost"
@@ -119,80 +122,48 @@ function Phones(props: { readonly target: Target }) {
       aria-busy={keys.isPending}
       onClick={keys.refresh}
     >
-      Check again
+      Refresh
     </Button>
   );
-  const permissionNote =
-    canAllow && canRevoke ? null : (
-      <p className="px-3 py-3 text-xs text-muted-foreground sm:px-4">
-        This sign-in can't change who approves. Use Kin on your own computer, signed in as you.
-      </p>
-    );
-
   return (
     <>
-      {actions.problem === null ? null : (
+      {removal.problem === null ? null : (
         <p role="alert" className="px-3 text-sm text-destructive-foreground sm:px-4">
-          {actions.problem}
+          {removal.problem}
         </p>
       )}
-      <SettingsSection title="Waiting to be allowed" headerAction={checkAgain}>
-        {waiting.length === 0 ? (
+      <SettingsSection title="Phones that can approve" headerAction={refresh}>
+        {phones.length === 0 ? (
           <p className="px-3 py-3 text-sm text-muted-foreground sm:px-4">
-            No phone is waiting. On your phone, open Kin, then Approvals, and tap Set up approvals.
-            It shows up here within a few seconds; tap Check again.
+            No phone can approve, so nothing that needs approval can happen yet. To set one up, open
+            Approvals in the Kin app on your phone.
           </p>
         ) : (
-          waiting.map((phone) => (
-            <WaitingRow
+          phones.map((phone) => (
+            <PhoneRow
               key={phone.thumbprint}
               phone={phone}
               now={now}
-              busy={actions.busy === phone.thumbprint}
-              disabled={!canAllow || !canRevoke || actions.busy !== null}
-              onAllow={() => actions.allow(phone)}
-              onDecline={() => actions.revoke(phone)}
+              last={phones.length === 1}
+              busy={removal.busy === phone.thumbprint}
+              disabled={!canRemove || removal.busy !== null}
+              onRemove={() => removal.remove(phone.thumbprint)}
             />
           ))
         )}
-        {permissionNote}
-      </SettingsSection>
-      <SettingsSection title="Phones that approve">
-        {allowed.length === 0 ? (
-          <p className="px-3 py-3 text-sm text-muted-foreground sm:px-4">
-            No phone can approve yet. Kin waits for you before anything that needs approval.
+        {canRemove ? null : (
+          <p className="px-3 py-3 text-xs text-muted-foreground sm:px-4">
+            This sign-in can't remove phones. Use Kin signed in as you.
           </p>
-        ) : (
-          allowed.map((phone) => (
-            <AllowedRow
-              key={phone.thumbprint}
-              phone={phone}
-              now={now}
-              busy={actions.busy === phone.thumbprint}
-              disabled={!canRevoke || actions.busy !== null}
-              onRemove={() => actions.revoke(phone)}
-            />
-          ))
         )}
       </SettingsSection>
-      {expired.length === 0 ? null : (
-        <SettingsSection title="Requests that ran out">
-          {expired.map((phone) => (
-            <SettingsRow
-              key={phone.thumbprint}
-              title={phone.name}
-              description={`${phone.kind}, asked ${when(phone.askedAt, now)}. Nobody allowed it within 10 minutes; to try again, make a new key on the phone.`}
-              control={
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={!canRevoke || actions.busy !== null}
-                  aria-busy={actions.busy === phone.thumbprint}
-                  onClick={() => actions.revoke(phone)}
-                >
-                  Clear
-                </Button>
-              }
+      {activity.length === 0 ? null : (
+        <SettingsSection title="Recent changes">
+          {activity.map((entry) => (
+            <ActivityRow
+              key={`${entry.change}:${DateTime.toEpochMillis(entry.at)}:${entry.deviceLabel}`}
+              entry={entry}
+              now={now}
             />
           ))}
         </SettingsSection>
@@ -201,62 +172,35 @@ function Phones(props: { readonly target: Target }) {
   );
 }
 
-function WaitingRow(props: {
-  readonly phone: WaitingPhone;
-  readonly now: number;
-  readonly busy: boolean;
-  readonly disabled: boolean;
-  readonly onAllow: () => void;
-  readonly onDecline: () => void;
-}) {
-  const { phone, now } = props;
-  const minutes = Math.max(1, Math.ceil((phone.expiresAt - now) / 60_000));
+function ActivityRow(props: { readonly entry: KinApproverKeyActivity; readonly now: number }) {
+  const { entry, now } = props;
   return (
-    <SettingsRow
-      title={phone.name}
-      description={`${phone.kind}, asked ${when(phone.askedAt, now)}. Allow it only if your phone shows this number. The request ends in ${minutes} ${minutes === 1 ? "minute" : "minutes"}.`}
-      control={
-        <div className="flex items-center gap-3">
-          <span
-            className="font-mono text-lg tabular-nums tracking-wider text-foreground"
-            aria-label={`Number ${phone.matchCode.split("").join(" ")}`}
-          >
-            {spacedMatchCode(phone.matchCode)}
-          </span>
-          <Button size="sm" variant="ghost" disabled={props.disabled} onClick={props.onDecline}>
-            Decline
-          </Button>
-          <Button
-            size="sm"
-            disabled={props.disabled}
-            aria-busy={props.busy}
-            onClick={props.onAllow}
-          >
-            {props.busy ? "Allowing…" : "Allow"}
-          </Button>
-        </div>
-      }
-    />
+    <p className="min-w-0 break-words px-3 py-2.5 text-sm text-muted-foreground sm:px-4">
+      <span className="text-foreground">{entry.deviceLabel}</span>
+      {` (${PLATFORM[entry.platform]}) ${entry.change === "added" ? "was set up" : "was removed"} ${when(entry.at, now)}.`}
+    </p>
   );
 }
 
-function AllowedRow(props: {
-  readonly phone: AllowedPhone;
+function PhoneRow(props: {
+  readonly phone: KinApproverKey;
   readonly now: number;
+  readonly last: boolean;
   readonly busy: boolean;
   readonly disabled: boolean;
   readonly onRemove: () => void;
 }) {
   const { phone, now } = props;
   const [confirming, setConfirming] = useState(false);
+  const added = phone.confirmedAt ?? phone.createdAt;
+  const used =
+    phone.lastUsedAt === undefined
+      ? "Not used to approve yet."
+      : `Last approved ${when(phone.lastUsedAt, now)}.`;
   return (
     <SettingsRow
-      title={phone.name}
-      description={
-        phone.allowedAt === null
-          ? `${phone.kind}. It approves with Face ID.`
-          : `${phone.kind}, allowed ${when(phone.allowedAt, now)}. It approves with Face ID.`
-      }
+      title={phone.deviceLabel}
+      description={`${PLATFORM[phone.platform]}, added ${when(added, now)}. ${used}`}
       control={
         <>
           <Button
@@ -271,10 +215,11 @@ function AllowedRow(props: {
           <AlertDialog open={confirming} onOpenChange={setConfirming}>
             <AlertDialogPopup>
               <AlertDialogHeader>
-                <AlertDialogTitle>Remove {phone.name}?</AlertDialogTitle>
+                <AlertDialogTitle>Remove {phone.deviceLabel}?</AlertDialogTitle>
                 <AlertDialogDescription>
-                  It stops approving for Kin, and anything it approved that hasn't run yet is
-                  cancelled. To use it again, set up approvals on it and allow it here.
+                  {props.last
+                    ? "It's the only phone that can approve. Once it's removed, nothing that needs approval can happen until you set up a phone again. Anything it approved that hasn't run yet is cancelled."
+                    : "It stops approving for Kin, and anything it approved that hasn't run yet is cancelled. To use it again, set up approvals on it."}
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -297,30 +242,23 @@ function AllowedRow(props: {
   );
 }
 
-/** One change at a time; a refusal says why, and the list is read again either way. */
-function usePhoneActions(target: Target, refresh: () => void) {
-  const allowKey = useAtomCommand(kinClient.approverKeyAllow, { reportFailure: false });
+/** One removal at a time; a refusal says why, and the list is read again either way. */
+function useRemove(target: Target, refresh: () => void) {
   const revokeKey = useAtomCommand(kinClient.approverKeyRevoke, { reportFailure: false });
   const [busy, setBusy] = useState<KinKeyThumbprint | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
-
-  const run = async (phone: ApprovalPhone, command: typeof allowKey) => {
+  const remove = async (thumbprint: KinKeyThumbprint) => {
     if (busy !== null) return;
-    setBusy(phone.thumbprint);
+    setBusy(thumbprint);
     setProblem(null);
-    const result = await command({
+    const result = await revokeKey({
       environmentId: target.environmentId,
-      input: { orgId: target.orgId, thumbprint: phone.thumbprint },
+      input: { orgId: target.orgId, thumbprint },
     });
     setBusy(null);
     refresh();
     if (AsyncResult.isFailure(result))
       setProblem(approvalsProblem(squashAtomCommandFailure(result)));
   };
-  return {
-    busy,
-    problem,
-    allow: (phone: ApprovalPhone) => void run(phone, allowKey),
-    revoke: (phone: ApprovalPhone) => void run(phone, revokeKey),
-  };
+  return { busy, problem, remove: (thumbprint: KinKeyThumbprint) => void remove(thumbprint) };
 }

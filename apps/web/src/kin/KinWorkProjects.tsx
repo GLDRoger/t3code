@@ -17,6 +17,7 @@ import {
   type KinProjectRowView,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import { kinWorkSend, type KinWorkFormProblem } from "@t3tools/client-runtime/kin/kinWorkForms";
+import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type { KinProjectPage, KinProjectState, KinRecordKey } from "@t3tools/contracts";
 import { LegendList } from "@legendapp/list/react";
@@ -45,6 +46,7 @@ import {
   KinWorkSection,
   KinWorkTimeline,
 } from "./KinWorkParts";
+import { KinWorkPlaceLists } from "./KinWorkPlaceLists";
 import { KinWorkRow, KinWorkTaskList } from "./KinWorkTasks";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
@@ -198,7 +200,10 @@ type PageProps = KinWorkTarget & {
   readonly onOpenProject: (key: KinRecordKey) => void;
   readonly onOpenDoc: (key: KinRecordKey) => void;
   /** Opens the new-task form already in this project; null where tasks can't be added. */
-  readonly onAddTask: ((draft: KinWorkDraft) => void) | null;
+  readonly onAddTask:
+    | ((draft: KinWorkDraft) => void)
+    | null /** Opens one of the lists agents set up, narrowed to this project. */;
+  readonly onOpenList: (open: KinListOpen) => void;
 };
 
 /** One project: how it is going and why, what is stuck, what is next, and its tasks. */
@@ -462,6 +467,15 @@ function ProjectPage(
           onCheckedChange={(checked) => void change({ sensitive: checked })}
         />
       </div>
+      <KinWorkPlaceLists
+        environmentId={environmentId}
+        orgId={orgId}
+        place={{ project: view.ref }}
+        seq={props.pageStale ? null : page.seq}
+        directory={props.directory}
+        onOpenList={props.onOpenList}
+        onOpenKey={props.onOpenTask}
+      />
       <div className="flex min-h-6 items-center justify-between gap-2">
         <h3 className="text-xs font-medium text-muted-foreground">{KIN_PROJECTS.tasks}</h3>
         {addTask === null ? null : (

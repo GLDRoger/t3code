@@ -80,6 +80,7 @@ import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { KinAvatar } from "./KinAvatar";
+import { KinListEntry } from "./KinWorkEntry";
 import { KinWorkSection as Section } from "./KinWorkParts";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
@@ -137,7 +138,20 @@ export function KinWorkItemSheet(
       }}
     >
       <SheetPopup side="right">
-        {state._tag === "ready" ? (
+        {state._tag === "ready" && state.item.list !== undefined ? (
+          <KinListEntry
+            {...props}
+            item={state.item}
+            view={kinWorkItemView(state.item, names, now, KIN_RECORD_CHANGES_CAP, place)}
+            now={now}
+            links={
+              <KinWorkLinks
+                {...props}
+                links={kinWorkItemView(state.item, names, now, KIN_RECORD_CHANGES_CAP, place).links}
+              />
+            }
+          />
+        ) : state._tag === "ready" ? (
           <KinWorkItem
             {...props}
             item={state.item}
@@ -576,23 +590,7 @@ function KinWorkItem(
             )}
           </Section>
         )}
-        {view.links.length === 0 ? null : (
-          <Section title="Links">
-            <ul className="flex flex-col">
-              {view.links.map((link) => (
-                <li key={link.key}>
-                  <KinWorkLink
-                    link={link}
-                    environmentId={environmentId}
-                    orgId={orgId}
-                    onOpen={props.onClose}
-                    onOpenKey={props.onOpenKey}
-                  />
-                </li>
-              ))}
-            </ul>
-          </Section>
-        )}
+        <KinWorkLinks {...props} links={view.links} />
         <Section title="History">
           <ol className="flex flex-col gap-1.5">
             {view.history.map((line) => (
@@ -610,6 +608,34 @@ function KinWorkItem(
         </Section>
       </div>
     </>
+  );
+}
+
+/** What an entry points at: the message it came from, a pull request, another entry. */
+function KinWorkLinks(
+  props: KinWorkTarget & {
+    readonly links: ReadonlyArray<KinWorkLinkView>;
+    readonly onOpenKey: (key: KinRecordKey) => void;
+    readonly onClose: () => void;
+  },
+) {
+  if (props.links.length === 0) return null;
+  return (
+    <Section title="Links">
+      <ul className="flex flex-col">
+        {props.links.map((link) => (
+          <li key={link.key}>
+            <KinWorkLink
+              link={link}
+              environmentId={props.environmentId}
+              orgId={props.orgId}
+              onOpen={props.onClose}
+              onOpenKey={props.onOpenKey}
+            />
+          </li>
+        ))}
+      </ul>
+    </Section>
   );
 }
 

@@ -1,4 +1,10 @@
-import { KinChatId, KinMessageId, KinTrigger, type KinPendingAction } from "@t3tools/contracts";
+import {
+  KinApprovalError,
+  KinChatId,
+  KinMessageId,
+  KinTrigger,
+  type KinPendingAction,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -11,8 +17,9 @@ import {
   type KinExecutionOutcome,
   type KinKeyChange,
 } from "../approvals/ExecutionNotices.ts";
-import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
+import { CHIEF_OF_STAFF_DOMAIN } from "../lead/orgLeads.ts";
 import { KinChatService } from "./KinChatService.ts";
+import { chatShared } from "./sharing.ts";
 
 const subject = (action: KinPendingAction) => {
   switch (action.target._tag) {
@@ -138,23 +145,48 @@ const noticeTime = (at: number, timeZone: string) =>
 
 export const keyNoticeBody = (input: KinKeyChange, timeZone: string) => {
   const device = `"${kinNoticeDeviceName(input.deviceLabel)}" (${PLATFORM[input.platform] ?? "phone"})`;
-  return input.change === "allowed"
-    ? `${device} can now approve for Kin. It was allowed on ${noticeTime(input.at, timeZone)}. If that wasn't you, remove it in Kin on the web or desktop: Settings, then Approvals.`
-    : `${device} can no longer approve for Kin. It was removed on ${noticeTime(input.at, timeZone)}, and anything it approved that hadn't run yet was cancelled.`;
+  if (input.change === "added")
+    return `${device} can now approve for Kin. It was set up on ${noticeTime(input.at, timeZone)}. If that wasn't you, remove it in Settings, then Approvals.`;
+  const removed = `${device} can no longer approve for Kin. It was removed on ${noticeTime(input.at, timeZone)}, and anything it approved that hadn't run yet was cancelled.`;
+  return input.lastKey
+    ? `${removed} No phone can approve now: open Approvals in the Kin app on your phone to set one up.`
+    : removed;
 };
 
-/** One notice per change (the message id is the key's), so a retried allow or remove posts once. */
+/**
+ * One notice per change (the message id is the key's), written in the key change's transaction.
+ * It goes to a chat only the owner reads: the chief of staff's, another live lead's, else the
+ * owner's first. With none, Settings' recent activity is the record.
+ */
 export const keyNoticesLayer = Layer.effect(
   KinKeyNotices,
   Effect.gen(function* () {
     const chat = yield* KinChatService;
     const sql = yield* SqlClient.SqlClient;
+    const ownerChat = Effect.fnUntraced(function* (input: KinKeyChange) {
+      const leads = yield* sql<{ chatId: string }>`SELECT l.owner_chat_id AS "chatId"
+        FROM kin_leads l
+        JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+          AND a.role = 'lead' AND a.retired_at IS NULL AND a.owner_person_id = ${input.ownerPersonId}
+        WHERE l.org_id = ${input.orgId}
+        ORDER BY CASE WHEN l.domain = ${CHIEF_OF_STAFF_DOMAIN} THEN 0 ELSE 1 END, a.created_at,
+          l.agent_id`;
+      const own = yield* sql<{ chatId: string }>`SELECT c.chat_id AS "chatId" FROM kin_chats c
+        JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
+          AND m.principal_kind = 'person' AND m.person_id = ${input.ownerPersonId}
+          AND m.left_at IS NULL
+        WHERE c.org_id = ${input.orgId} AND c.archived_at IS NULL
+        ORDER BY c.created_at, c.chat_id`;
+      for (const { chatId } of [...leads, ...own])
+        if (!(yield* chatShared(sql, { orgId: input.orgId, chatId }))) return chatId;
+      return undefined;
+    });
     return KinKeyNotices.of({
       changed: Effect.fn("KinKeyNotices.changed")(
         function* (input) {
-          const lead = yield* liveLead(sql, input.orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
-          if (lead === undefined) {
-            yield* Effect.logWarning("Kin key notice has no chat", {
+          const chatId = yield* ownerChat(input);
+          if (chatId === undefined) {
+            yield* Effect.logInfo("Kin key notice has no owner chat; Settings shows the change", {
               orgId: input.orgId,
               change: input.change,
             });
@@ -165,13 +197,19 @@ export const keyNoticesLayer = Layer.effect(
           const timeZone = Option.getOrElse(decodeZone(zone?.timeZone), () => "UTC");
           yield* chat.notice({
             orgId: input.orgId,
-            chatId: KinChatId.make(lead.ownerChatId),
+            chatId: KinChatId.make(chatId),
             messageId: KinMessageId.make(`kin-key-${input.change}:${input.thumbprint}`),
             audience: "owner",
             body: keyNoticeBody(input, timeZone),
           });
         },
-        Effect.catchCause((cause) => Effect.logWarning("Kin key notice not posted", cause)),
+        Effect.mapError(
+          () =>
+            new KinApprovalError({
+              reason: "unavailable",
+              message: "Kin couldn't tell you about this change in chat, so it didn't make it.",
+            }),
+        ),
       ),
     });
   }),

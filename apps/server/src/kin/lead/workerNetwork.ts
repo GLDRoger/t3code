@@ -6,6 +6,7 @@ import {
   type KinWorkerNetworkEntry,
   type KinWorkerNetworkInput,
   type KinWorkerSandboxStatus,
+  workerHostProblem,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Clock from "effect/Clock";
@@ -74,7 +75,8 @@ const rows = Effect.fn("KinWorkerNetwork.rows")(function* (orgId: KinOrgId) {
 
 /** Kin's defaults, then the owner's additions, then the host's extras; a removal beats each. */
 export const workerHosts = Effect.fn("KinWorkerNetwork.hosts")(function* (orgId: KinOrgId) {
-  const stored = yield* rows(orgId);
+  // A row an older check let in is skipped, not served: the list never fails to load.
+  const stored = (yield* rows(orgId)).filter((row) => workerHostProblem(row.host) === undefined);
   const removed = stored.filter((row) => row.allowed === 0).map((row) => row.host);
   const allowed: Array<KinWorkerNetworkEntry> = [];
   const add = (host: string, source: KinWorkerNetworkEntry["source"]) => {
@@ -98,6 +100,7 @@ const sandboxStatus = Effect.fn("KinWorkerNetwork.sandboxStatus")(function* () {
       claudeCodeVersion: null,
       install: [],
       namesBlockedHosts: null,
+      limits: null,
     }),
     onSome: (status): KinWorkerSandboxStatus => ({
       state: status.shell ? "shell" : "file_only",
@@ -106,6 +109,7 @@ const sandboxStatus = Effect.fn("KinWorkerNetwork.sandboxStatus")(function* () {
       claudeCodeVersion: status.claudeCodeVersion,
       install: status.install ?? [],
       namesBlockedHosts: status.namesBlockedHosts ?? null,
+      limits: status.limits ?? null,
     }),
   });
 });

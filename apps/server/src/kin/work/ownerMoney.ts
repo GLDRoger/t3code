@@ -87,8 +87,14 @@ export const updateList = Effect.fn("KinMoney.updateList")(function* (
             ? (def.archivedAt ?? now)
             : null;
       const name = input.name ?? def.name;
+      const unused = Object.keys(input.stateLabels ?? {}).filter(
+        (state) => !def.states.some((one) => one === state),
+      );
+      if (unused.length > 0) return yield* invalid(`${def.name} doesn't use ${unused.join(", ")}.`);
+      const stateLabels = { ...def.stateLabels, ...input.stateLabels };
       const changed =
         name !== def.name ||
+        def.states.some((state) => stateLabels[state] !== def.stateLabels[state]) ||
         archivedAt !== def.archivedAt ||
         fields.some((one, index) => one.retired !== def.fields[index]?.retired);
       if (changed) {
@@ -99,7 +105,7 @@ export const updateList = Effect.fn("KinMoney.updateList")(function* (
           });
         const { id: _id, builtIn: _builtIn, name: _name, prefix: _prefix, ...definition } = def;
         yield* sql`UPDATE kin_registers SET name = ${name}, archived_at = ${archivedAt},
-            definition_json = ${yield* encodeDefinition({ ...definition, fields })},
+            definition_json = ${yield* encodeDefinition({ ...definition, fields, stateLabels })},
             rev = rev + 1
           WHERE org_id = ${input.orgId} AND register_id = ${def.id}`;
       }

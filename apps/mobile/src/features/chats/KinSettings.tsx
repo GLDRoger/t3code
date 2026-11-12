@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
+import { KIN_COMPANY } from "@t3tools/client-runtime/kin/kinCompanyProfile";
 import { kinHomeTabs } from "@t3tools/client-runtime/kin/kinJoin";
 import type { EnvironmentId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -167,6 +168,11 @@ export function KinSettings() {
                     onPress={() => navigation.navigate("KinMemory", company)}
                   />
                 ) : null}
+                <SettingsRow
+                  icon="doc.text"
+                  label={KIN_COMPANY.title}
+                  onPress={() => navigation.navigate("KinCompany", company)}
+                />
                 <SettingsRow
                   icon="clock"
                   label="Scheduled tasks"

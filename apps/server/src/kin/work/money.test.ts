@@ -390,6 +390,90 @@ describe("lists through the tools", () => {
         { minor: 42_000_030, currency: "INR" },
         { minor: 1_300, currency: "USD" },
       ]);
+
+      // The owner's list screen: one category over some days, with every match summed.
+      const travel = yield* OwnerWork.list(people, {
+        orgId,
+        list: "expenses",
+        listCategory: "travel",
+        dateFrom: "2026-11-03",
+        dateTo: "2026-11-30",
+        totalsBy: "month",
+        limit: 1,
+      });
+      assert.deepStrictEqual(
+        [travel.records.map((one) => one.key), travel.total, travel.totals],
+        [
+          ["EXP-2"],
+          1,
+          {
+            total: [{ minor: 20, currency: "INR" }],
+            groups: [{ group: "2026-11", count: 1, total: [{ minor: 20, currency: "INR" }] }],
+          },
+        ],
+      );
+      const byCategory = yield* OwnerWork.list(people, {
+        orgId,
+        list: "expenses",
+        totalsBy: "category",
+        limit: 1,
+      });
+      assert.deepStrictEqual(
+        byCategory.totals?.groups.map((one) => [one.group, one.count]).toSorted(),
+        [
+          ["hardware", 1],
+          ["software", 2],
+          ["travel", 2],
+        ],
+      );
+
+      // The owner renames a state the list uses; one it doesn't use is refused.
+      const [expenses] = (yield* OwnerMoney.lists(people, { orgId })).lists.filter(
+        (one) => one.list === "expenses",
+      );
+      const renamed = yield* OwnerMoney.updateList(people, {
+        orgId,
+        list: "expenses",
+        rev: expenses!.rev,
+        stateLabels: { done: "Settled" },
+      });
+      assert.deepStrictEqual(
+        [renamed.stateLabels.done, renamed.stateLabels.open, renamed.rev],
+        ["Settled", "To pay", expenses!.rev + 1],
+      );
+      const unused = yield* OwnerMoney.updateList(people, {
+        orgId,
+        list: "expenses",
+        rev: renamed.rev,
+        stateLabels: { doing: "Under way" },
+      }).pipe(Effect.flip);
+      assert.include(unused, { reason: "invalid_state" });
+
+      // A void entry stays in the list and out of its sum, unless void is what was asked for.
+      yield* LeadWork.update(scope, { key: "EXP-3", sourceEventId: yes, state: "dropped" });
+      const everything = yield* OwnerWork.list(people, {
+        orgId,
+        list: "expenses",
+        totalsBy: "none",
+        limit: 1,
+      });
+      const voided = yield* OwnerWork.list(people, {
+        orgId,
+        list: "expenses",
+        states: ["dropped"],
+        totalsBy: "none",
+      });
+      assert.deepStrictEqual(
+        [everything.total, everything.totals?.total, voided.totals?.total],
+        [
+          5,
+          [
+            { minor: 30, currency: "INR" },
+            { minor: 1_300, currency: "USD" },
+          ],
+          [{ minor: 42_000_000, currency: "INR" }],
+        ],
+      );
     }).pipe(Effect.provide(layer)),
   );
 
@@ -684,6 +768,14 @@ describe("invoices", () => {
         [section?.owedToUs, section?.byClient[0]?.daysOverdue],
         ["₹60,000.00", 10],
       );
+
+      // "Received this month" opens the invoices a payment came in against that month.
+      const receivedIn = (paidFrom: string, paidTo: string) =>
+        OwnerWork.list(people, { orgId, list: "invoices", paidFrom, paidTo }).pipe(
+          Effect.map((page) => page.records.map((one) => one.key)),
+        );
+      assert.deepStrictEqual(yield* receivedIn("2026-11-01", "2026-11-30"), ["INV-1"]);
+      assert.deepStrictEqual(yield* receivedIn("2026-10-01", "2026-10-31"), []);
 
       const rest = yield* LeadMoney.payment(scope, {
         sourceEventId: paid,
