@@ -12,26 +12,36 @@ import {
   type StoredLabels,
 } from "../memory/sensitivity.ts";
 
+const valuesOf = (front: string) => {
+  try {
+    const doc = parseDocument(front, FRONT_MATTER_YAML);
+    return doc.errors.length > 0 ? undefined : JSON.stringify(doc.toJS());
+  } catch {
+    return undefined;
+  }
+};
+
 /**
- * The item's text with `sensitive` set. An ordinary file keeps every other byte; one whose label
- * isn't a plain top-level line (quoted key, indented or flow mapping) is re-rendered by the parser.
+ * The item's text with `sensitive` set, or undefined when no edit leaves every other value as it
+ * was (YAML errors, or an anchor other fields alias). An ordinary file keeps every other byte;
+ * a quoted, indented or flow-style label is re-rendered by the parser.
  */
 export const withLabel = (text: string, sensitive: boolean) => {
   const parts = /^((?:\uFEFF)?---\r?\n)([\s\S]*?)(\r?\n---(?:\r?\n|$)[\s\S]*)$/.exec(text);
-  if (parts === null) return text;
+  if (parts === null) return undefined;
   const [, open = "", front = "", rest = ""] = parts;
   const doc = parseDocument(front, FRONT_MATTER_YAML);
-  if (doc.errors.length > 0) return text;
+  if (doc.errors.length > 0 || valuesOf(front) === undefined) return undefined;
   const want = JSON.stringify({ ...doc.toJS(), sensitive });
   const line = `sensitive: ${sensitive}`;
   const plain = /^sensitive:.*$/m.test(front)
     ? front.replace(/^sensitive:.*$/m, line)
     : `${front}\n${line}`;
-  const check = parseDocument(plain, FRONT_MATTER_YAML);
-  if (check.errors.length === 0 && JSON.stringify(check.toJS()) === want)
-    return `${open}${plain}${rest}`;
-  doc.set("sensitive", sensitive);
-  return `${open}${doc.toString().replace(/\r?\n$/, "")}${rest}`;
+  if (valuesOf(plain) === want) return `${open}${plain}${rest}`;
+  // A fresh node, so an anchor on the old value isn't carried onto the new one.
+  doc.set("sensitive", doc.createNode(sensitive));
+  const rendered = doc.toString().replace(/\r?\n$/, "");
+  return valuesOf(rendered) === want ? `${open}${rendered}${rest}` : undefined;
 };
 
 /**
@@ -109,7 +119,7 @@ export const keepLabels = Effect.fn("DreamLabels.keep")(function* (input: {
       suggested.set(id, words);
     // Only files the dream touched are rewritten; the rest keep their label in the database.
     if (changes.has(path) && sensitive !== frontMatter.sensitive)
-      changes.set(path, withLabel(text, sensitive));
+      changes.set(path, withLabel(text, sensitive) ?? text);
   }
   return { changes, classified, suggested };
 });
