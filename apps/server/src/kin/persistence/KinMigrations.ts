@@ -28,6 +28,7 @@ import WakeupsUnretiredIndex from "./migrations/K066_WakeupsUnretiredIndex.ts";
 import Docs from "./migrations/K067_Docs.ts";
 import WorkMoney from "./migrations/K068_WorkMoney.ts";
 import WorkerNetwork from "./migrations/K069_WorkerNetwork.ts";
+import OwnerAnswerCards from "./migrations/K070_OwnerAnswerCards.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -136,6 +137,7 @@ const loader = Migrator.fromRecord({
   "67_Docs": Docs,
   "68_WorkMoney": WorkMoney,
   "69_WorkerNetwork": WorkerNetwork,
+  "70_OwnerAnswerCards": OwnerAnswerCards,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

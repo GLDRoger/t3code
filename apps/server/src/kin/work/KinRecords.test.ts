@@ -6,7 +6,7 @@ import {
   EnvironmentId,
   KIN_WORK_WS_METHODS,
   KinAgentId,
-  type KinChatError,
+  KinChatError,
   KinFinanceRpcs,
   KinOrgId,
   KinPersonId,
@@ -27,6 +27,7 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { turnAudience, turnChat } from "../lead/Audience.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { KinLevelGate } from "../lead/LevelGate.ts";
 import { sharedToolAllowed } from "../lead/SharedTools.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { importWork } from "./importWork.ts";
@@ -73,7 +74,11 @@ const identity = Layer.mock(KinIdentity)({
       threadId: scope.thread!.threadId,
     }),
 });
-const layer = Layer.mergeAll(KinRecords.layer, identity).pipe(
+// No chat to show a card in: a proposal stands on the owner's typed answer.
+const gate = Layer.mock(KinLevelGate)({
+  ask: () => Effect.fail(new KinChatError({ reason: "unavailable", message: "No chat here." })),
+});
+const layer = Layer.mergeAll(KinRecords.layer, identity, gate).pipe(
   Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),
   Layer.provideMerge(Sqlite.layerMemory),

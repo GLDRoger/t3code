@@ -1,4 +1,10 @@
-import type { KinAgentId, KinEvent, KinOrgId, KinWorkerId } from "@t3tools/contracts";
+import {
+  KinChatError,
+  type KinAgentId,
+  type KinEvent,
+  type KinOrgId,
+  type KinWorkerId,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -572,6 +578,11 @@ export const sensitiveShown = Effect.fn("KinWorkerAttempts.sensitiveShown")(func
   yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
     VALUES (${input.orgId}, ${input.wakeupId}, ${at}) ON CONFLICT (org_id, wakeup_id) DO NOTHING`;
 });
+
+/** A refusal that quotes something sensitive, so the tool marks the turn as a result would. */
+export class SensitiveRefusal extends KinChatError {}
+// @effect-diagnostics-next-line instanceOfSchema:off -- the subclass, not the schema, marks it.
+export const isSensitiveRefusal = (error: unknown) => error instanceof SensitiveRefusal;
 
 /** The same for a prompt that shows these entries, when any of them is sensitive now. */
 export const entriesShown = Effect.fn("KinWorkerAttempts.entriesShown")(function* (input: {

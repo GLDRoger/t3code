@@ -12,6 +12,7 @@ import K066WakeupsUnretiredIndex from "./migrations/K066_WakeupsUnretiredIndex.t
 import K067Docs from "./migrations/K067_Docs.ts";
 import K068WorkMoney from "./migrations/K068_WorkMoney.ts";
 import K069WorkerNetwork from "./migrations/K069_WorkerNetwork.ts";
+import K070OwnerAnswerCards from "./migrations/K070_OwnerAnswerCards.ts";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
@@ -2773,4 +2774,31 @@ it.effect(
       yield* K069WorkerNetwork;
       assert.deepStrictEqual(yield* runKinMigrations(), []);
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("K070 adds a proposal's card and one profile change per card, and reruns cleanly", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runKinMigrations();
+    yield* sql`INSERT INTO kin_list_proposals (org_id, proposal_id, agent_id, chat_id, wakeup_id,
+        register_id, extends_existing, definition_json, chat_seq, proposed_at, widget_id)
+      VALUES ('org', 'lp_1', 'lead', 'chat', 'wake', 'leave', 0, '{}', 0, 0, 'choice:card')`;
+    const change = (id: string, widget: string | null) =>
+      sql`INSERT INTO kin_profile_changes (org_id, change_id, agent_id, wakeup_id, patch_json,
+          base_rev, widget_id, proposed_at)
+        VALUES ('org', ${id}, 'lead', 'wake', '{}', 0, ${widget}, 0)`;
+    yield* change("one", "choice:a");
+    yield* change("two", null);
+    yield* change("three", null);
+    assert.isTrue((yield* Effect.exit(change("four", "choice:a")))._tag === "Failure");
+    yield* sql`DROP TABLE kin_profile_changes`;
+    yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 70`;
+    assert.deepStrictEqual(yield* runKinMigrations(), [[70, "OwnerAnswerCards"]]);
+    yield* K070OwnerAnswerCards;
+    assert.deepStrictEqual(yield* runKinMigrations(), []);
+    assert.lengthOf(
+      yield* sql`SELECT 1 FROM kin_list_proposals WHERE widget_id = 'choice:card'`,
+      1,
+    );
+  }).pipe(Effect.provide(layer)),
 );
