@@ -38,24 +38,12 @@ export type KinApproverKeyStatus =
   | { readonly _tag: "unreadable"; readonly retry: () => void }
   /** No key here, or one this host doesn't know. */
   | { readonly _tag: "none"; readonly staleKey: boolean }
-  | {
-      readonly _tag: "pending";
-      readonly code: string | null;
-      readonly thumbprint: string;
-      /** The org's first key: confirmed only on the Kin host, with `t3 kin approvals confirm-key`. */
-      readonly first: boolean;
-    }
+  /** Waiting for Allow in Kin on the web or desktop; `code` is null once the request expired. */
+  | { readonly _tag: "pending"; readonly code: string | null; readonly thumbprint: string }
   /** No App Attest (a simulator, an old phone): the host never activates this key. */
   | { readonly _tag: "unattested" }
   | { readonly _tag: "revoked" }
-  | {
-      readonly _tag: "active";
-      readonly key: KinApproverKey;
-      /** New phones waiting for this one to approve them. */
-      readonly enrolments: ReadonlyArray<KinApprovalEnrolment>;
-    };
-
-export type KinApprovalEnrolment = NonNullable<KinApprovalsListKeysResult["enrolments"]>[number];
+  | { readonly _tag: "active"; readonly key: KinApproverKey };
 
 export function useKinApproverKey(environmentId: EnvironmentId, orgId: KinOrgId) {
   const record = useAtomValue(kinApproverKeyRecordAtom);
@@ -85,19 +73,10 @@ function approverKeyStatus(
   if (here === null || key === undefined) return { _tag: "none", staleKey: saved !== null };
   if (key.state === "revoked") return { _tag: "revoked" };
   if (!key.attested) return { _tag: "unattested" };
-  if (key.state === "active")
-    return {
-      _tag: "active",
-      key,
-      enrolments: (keys.value.enrolments ?? []).filter((e) => e.thumbprint !== key.thumbprint),
-    };
-  const live = here.code !== null && (here.codeExpiresAt ?? 0) > Date.now();
-  return {
-    _tag: "pending",
-    code: live ? here.code : null,
-    thumbprint: key.thumbprint,
-    first: !keys.value.keys.some((k) => k.state === "active"),
-  };
+  if (key.state === "active") return { _tag: "active", key };
+  // The server's list says whether the request still waits, and with which number.
+  const request = keys.value.requests?.find((r) => r.thumbprint === key.thumbprint);
+  return { _tag: "pending", code: request?.matchCode ?? null, thumbprint: key.thumbprint };
 }
 
 const deviceCodeOf = (error: unknown): KinApprovalDeviceCode | null =>
@@ -158,7 +137,7 @@ export function useEnrolApproverKey() {
           platform: Platform.OS === "android" ? "android" : "ios",
           challenge: challenge.value.challenge,
           ...(created.attestation === undefined ? {} : { attestation: created.attestation }),
-          deviceLabel: (Device.deviceName ?? Device.modelName ?? "Phone").slice(0, 80),
+          deviceLabel: deviceLabel(),
         },
       });
       if (AsyncResult.isFailure(registered)) {
@@ -182,6 +161,14 @@ export function useEnrolApproverKey() {
       return { ok: true };
     });
   };
+}
+
+/** What Settings shows for this phone: its name and, when they differ, its model. */
+function deviceLabel() {
+  const parts = [Device.deviceName, Device.modelName]
+    .map((part) => part?.trim() ?? "")
+    .filter((part, index, all) => part !== "" && all.indexOf(part) === index);
+  return (parts.join(" · ") || "Phone").slice(0, 80);
 }
 
 // Outside the hook: the React Compiler can't compile value blocks inside try/catch.

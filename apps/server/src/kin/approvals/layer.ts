@@ -21,14 +21,13 @@ import * as GrantPorts from "./GrantPorts.ts";
 import * as GrantVerifier from "./GrantVerifier.ts";
 import { makeDeleteBranchHandler } from "./handlers/deleteBranch.ts";
 import { makeMergePullRequestHandler } from "./handlers/mergePullRequest.ts";
-import { makeRegisterApproverKeyHandler } from "./handlers/registerApproverKey.ts";
 import { makeSetLevelHandler } from "./handlers/setLevel.ts";
 import * as PendingActions from "./PendingActions.ts";
 
 const refused = (error: { readonly message: string }) =>
   new ActionHandlers.KinExecError({ reason: "refused", detail: error.message });
 
-/** APPR-5's and LEAD-12's handlers take the stored grant only and report a bare success. */
+/** `set_level`'s handler takes the stored grant only and reports a bare success. */
 const grantOnly = <R>(
   make: Effect.Effect<
     {
@@ -58,7 +57,6 @@ const grantOnly = <R>(
     reconcile: (action) =>
       handler.reconcile(action).pipe(Effect.orElseSucceed(() => "unknown" as const)),
   }));
-const registerApproverKeyHandler = grantOnly(makeRegisterApproverKeyHandler);
 const setLevelHandler = grantOnly(makeSetLevelHandler);
 
 /** The GitHub host the GitHub kinds run against; tests swap in fakes. */
@@ -83,12 +81,9 @@ const github = <E, R>(platform: Layer.Layer<GitHubPlatform, E, R>) =>
 const handlers = <E, R>(platform: Layer.Layer<GitHubPlatform, E, R>) =>
   Layer.effect(
     ActionHandlers.KinActionHandlers,
-    Effect.all([
-      registerApproverKeyHandler,
-      setLevelHandler,
-      makeMergePullRequestHandler,
-      makeDeleteBranchHandler,
-    ]).pipe(Effect.map(ActionHandlers.make)),
+    Effect.all([setLevelHandler, makeMergePullRequestHandler, makeDeleteBranchHandler]).pipe(
+      Effect.map(ActionHandlers.make),
+    ),
   ).pipe(Layer.provideMerge(github(platform)));
 
 // Without the GitHub App and scope configured, the GitHub kinds have no handler but stay held
@@ -96,7 +91,7 @@ const handlers = <E, R>(platform: Layer.Layer<GitHubPlatform, E, R>) =>
 const unconfigured = Layer.mergeAll(
   Layer.effect(
     ActionHandlers.KinActionHandlers,
-    Effect.map(Effect.all([registerApproverKeyHandler, setLevelHandler]), (local) =>
+    Effect.map(Effect.all([setLevelHandler]), (local) =>
       ActionHandlers.make(local, ["merge_pull_request", "delete_branch"]),
     ),
   ),

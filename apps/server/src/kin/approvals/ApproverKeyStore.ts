@@ -17,9 +17,11 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { revokedBySession } from "../auth/ProofKeySessions.ts";
 import { KinKeySeal } from "./KeySeal.ts";
 
-/** How long the phone's code works, and how many tries it gets (spec section 4). */
+/** How long a phone waits to be allowed, and how many host-CLI code tries it gets (spec section 4). */
 const CONFIRM_TTL_MS = 10 * 60 * 1000;
 export const MAX_CODE_ATTEMPTS = 5;
+/** Phones waiting at once in one org; past it, registering waits for one to be decided or expire. */
+export const MAX_WAITING_KEYS = 3;
 
 export type KeyRef = { readonly orgId: KinOrgId; readonly thumbprint: KinKeyThumbprint };
 
@@ -158,11 +160,7 @@ export const makeKeyStore = Effect.gen(function* () {
    * The UPDATE that makes a pending attested key active, sealing exactly the row it read. It runs
    * only when that row's pending seal verifies, and pins every field the pending seal covers.
    */
-  const activate = Effect.fn("ApproverKeyStore.activate")(function* (
-    row: KeyRow,
-    now: number,
-    onlyFirst: boolean,
-  ) {
+  const activate = Effect.fn("ApproverKeyStore.activate")(function* (row: KeyRow, now: number) {
     if (!pendingVouched(row) || row.pending_seal === null) return undefined;
     const [active] = yield* sql<KeyRow>`UPDATE kin_approver_keys
         SET state = 'active', confirmed_at = ${now}, seal = ${seal.seal(sealFields(row))}
@@ -173,34 +171,35 @@ export const makeKeyStore = Effect.gen(function* () {
           AND platform = ${row.platform} AND session_id IS ${row.session_id}
           AND proof_key_thumbprint IS ${row.proof_key_thumbprint}
           AND created_at = ${row.created_at}
-          AND ${
-            onlyFirst
-              ? sql`NOT EXISTS (SELECT 1 FROM kin_approver_keys
-                  WHERE org_id = ${row.org_id} AND state = 'active')`
-              : sql`1 = 1`
-          }
         RETURNING *`;
     if (active !== undefined)
       yield* deleteConfirmation({ orgId: row.org_id, thumbprint: row.thumbprint });
     return active;
   });
 
-  /** Stored with the pending key, so the host CLI can check the phone's code later. */
-  const saveConfirmation = (input: {
+  const matchCodeOf = (
+    row: { readonly org_id: string; readonly thumbprint: string },
+    hash: string,
+  ) => seal.matchCode({ orgId: row.org_id, thumbprint: row.thumbprint, challengeSha256: hash });
+  const matchCodeFor = (row: KeyRow, challenge: Uint8Array) =>
+    matchCodeOf(row, challengeSha256(challenge));
+
+  /** Stored with the pending key: the request Settings allows, and the code the host CLI checks. */
+  const saveConfirmation = Effect.fn("ApproverKeyStore.saveConfirmation")(function* (input: {
     readonly row: KeyRow;
     readonly sessionId: string;
     readonly challenge: Uint8Array;
-    readonly code: string;
     readonly now: number;
-  }) => {
+  }) {
     const hash = challengeSha256(input.challenge);
+    const code = matchCodeFor(input.row, input.challenge);
     const verifier = seal.confirmation({
       ...sealFields(input.row),
       sessionId: input.sessionId,
       challengeSha256: hash,
-      code: input.code,
+      code,
     });
-    return sql`INSERT INTO kin_approver_key_confirmations ${sql.insert({
+    yield* sql`INSERT INTO kin_approver_key_confirmations ${sql.insert({
       org_id: input.row.org_id,
       thumbprint: input.row.thumbprint,
       session_id: input.sessionId,
@@ -210,9 +209,41 @@ export const makeKeyStore = Effect.gen(function* () {
       created_at: input.now,
       expires_at: input.now + CONFIRM_TTL_MS,
     })}`;
+    return code;
+  });
+
+  /**
+   * The live request for a pending key: unexpired, under the try limit, for the session that
+   * registered it, and holding this server's match code. Requests from before the match code
+   * (whose phones show another number) never verify, so they read as expired.
+   */
+  const requestOf = (row: KeyRow, confirmation: ConfirmationRow | undefined, now: number) => {
+    if (
+      confirmation === undefined ||
+      !pendingVouched(row) ||
+      confirmation.expires_at <= now ||
+      confirmation.attempts >= MAX_CODE_ATTEMPTS ||
+      confirmation.session_id !== row.session_id
+    )
+      return undefined;
+    const matchCode = matchCodeOf(row, confirmation.challenge_sha256);
+    const verified = seal.verifyConfirmation(
+      {
+        ...sealFields(row),
+        sessionId: confirmation.session_id,
+        challengeSha256: confirmation.challenge_sha256,
+        code: matchCode,
+      },
+      confirmation.verifier,
+    );
+    return verified ? { matchCode, expiresAt: confirmation.expires_at } : undefined;
   };
 
-  /** Sets `revoked`, voids approved actions this key signed, cancels its pending registration. */
+  const selectConfirmations = (orgId: KinOrgId) =>
+    sql<ConfirmationRow>`SELECT * FROM kin_approver_key_confirmations
+      WHERE org_id = ${orgId} ORDER BY created_at, thumbprint`;
+
+  /** Sets `revoked` and voids the approved actions this key signed that haven't run. */
   const revokeRow = (ref: KeyRef, reason: string) =>
     sql.withTransaction(
       Effect.gen(function* () {
@@ -229,19 +260,10 @@ export const makeKeyStore = Effect.gen(function* () {
             WHERE g.action_id = kin_pending_actions.action_id
               AND g.revision = kin_pending_actions.revision
               AND g.key_thumbprint = ${ref.thumbprint} AND g.consumed_at IS NULL)`;
-        yield* cancelEnrolment(ref, reason, now);
         yield* deleteConfirmation(ref);
         return row;
       }),
     );
-
-  /** Ends a key's pending `register_approver_key` action; its card closes on the next pass. */
-  const cancelEnrolment = (ref: KeyRef, reason: string, now: number) =>
-    sql`UPDATE kin_pending_actions
-      SET state = 'cancelled', state_reason = ${reason}, updated_at = ${now}
-      WHERE org_id = ${ref.orgId} AND kind = 'register_approver_key'
-        AND state = 'awaiting_approval'
-        AND json_extract(target_json, '$.thumbprint') = ${ref.thumbprint}`;
 
   // T3 revokes sessions in SessionStore (revokeClient, revokeOtherClients, managed policy).
   // Reading its table here keeps auth free of Kin hooks, and runs before every key is trusted.
@@ -272,10 +294,12 @@ export const makeKeyStore = Effect.gen(function* () {
     select,
     hasActiveKey,
     activate,
+    matchCodeFor,
     saveConfirmation,
+    requestOf,
+    selectConfirmations,
     deleteConfirmation,
     revokeRow,
-    cancelEnrolment,
     reconcileSessions,
   };
 });

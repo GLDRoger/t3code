@@ -1,9 +1,16 @@
 import { KinChatId, KinMessageId, type KinPendingAction } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { KinExecutionNotices, type KinExecutionOutcome } from "../approvals/ExecutionNotices.ts";
+import {
+  KinExecutionNotices,
+  KinKeyNotices,
+  type KinExecutionOutcome,
+  type KinKeyChange,
+} from "../approvals/ExecutionNotices.ts";
+import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { KinChatService } from "./KinChatService.ts";
 
 const subject = (action: KinPendingAction) => {
@@ -95,6 +102,62 @@ export const layer = Layer.effect(
           );
         },
         Effect.catchCause((cause) => Effect.logWarning("Kin lapse notice not posted", cause)),
+      ),
+    });
+  }),
+);
+
+const PLATFORM: Record<string, string> = { ios: "iPhone", android: "Android phone" };
+
+/**
+ * A phone's reported name, safe inside a quoted notice and a push: letters, digits, spaces,
+ * apostrophes and hyphens only, so no markdown, link, domain, mention or control character.
+ */
+export const kinNoticeDeviceName = (label: string) => {
+  const kept = Array.from(label.normalize("NFKC").replace(/[^\p{L}\p{N} '\u2019-]/gu, " "))
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+  const short = Array.from(kept).slice(0, 40).join("").trim();
+  return short === "" ? "A phone" : short;
+};
+
+const noticeTime = (at: number) =>
+  `${DateTime.formatIso(DateTime.makeUnsafe(at)).slice(0, 16).replace("T", " ")} UTC`;
+
+export const keyNoticeBody = (input: KinKeyChange) => {
+  const device = `"${kinNoticeDeviceName(input.deviceLabel)}" (${PLATFORM[input.platform] ?? "phone"})`;
+  return input.change === "allowed"
+    ? `${device} can now approve for Kin. It was allowed at ${noticeTime(input.at)}. If that wasn't you, remove it in Kin on the web or desktop: Settings, then Approvals.`
+    : `${device} can no longer approve for Kin. It was removed at ${noticeTime(input.at)}, and anything it approved that hadn't run yet was cancelled.`;
+};
+
+/** One notice per change (the message id is the key's), so a retried allow or remove posts once. */
+export const keyNoticesLayer = Layer.effect(
+  KinKeyNotices,
+  Effect.gen(function* () {
+    const chat = yield* KinChatService;
+    const sql = yield* SqlClient.SqlClient;
+    return KinKeyNotices.of({
+      changed: Effect.fn("KinKeyNotices.changed")(
+        function* (input) {
+          const lead = yield* liveLead(sql, input.orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
+          if (lead === undefined) {
+            yield* Effect.logWarning("Kin key notice has no chat", {
+              orgId: input.orgId,
+              change: input.change,
+            });
+            return;
+          }
+          yield* chat.notice({
+            orgId: input.orgId,
+            chatId: KinChatId.make(lead.ownerChatId),
+            messageId: KinMessageId.make(`kin-key-${input.change}:${input.thumbprint}`),
+            audience: "owner",
+            body: keyNoticeBody(input),
+          });
+        },
+        Effect.catchCause((cause) => Effect.logWarning("Kin key notice not posted", cause)),
       ),
     });
   }),

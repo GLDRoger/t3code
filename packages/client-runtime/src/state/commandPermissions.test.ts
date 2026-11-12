@@ -164,6 +164,7 @@ describe("command permissions", () => {
     [KIN_APPROVAL_WS_METHODS.registerKey, AuthAccessWriteScope],
     [KIN_APPROVAL_WS_METHODS.listKeys, AuthAccessWriteScope],
     [KIN_APPROVAL_WS_METHODS.revokeKey, AuthAccessWriteScope],
+    [KIN_APPROVAL_WS_METHODS.allowKey, AuthAccessWriteScope],
     // Changing Work can wake a lead on the owner's budget, as giving it work does.
     [KIN_WORK_WS_METHODS.get, AuthOrchestrationReadScope],
     [KIN_WORK_WS_METHODS.assign, AuthOrchestrationOperateScope],
