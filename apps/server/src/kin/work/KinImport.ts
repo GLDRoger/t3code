@@ -502,8 +502,13 @@ const make = Effect.gen(function* () {
           payment.source,
           Effect.gen(function* () {
             const originKey = originOf("payment", payment.source);
-            const before = yield* sql`SELECT 1 FROM kin_record_payments
-              WHERE org_id = ${orgId} AND origin_key = ${originKey} LIMIT 1`;
+            const before = yield* sql<{ voidedAt: number | null }>`SELECT voided_at AS "voidedAt"
+              FROM kin_record_payments WHERE org_id = ${orgId} AND origin_key = ${originKey} LIMIT 1`;
+            // A payment the owner voided since stays voided; importing again leaves it.
+            if (before[0]?.voidedAt != null) {
+              counts.payments.unchanged += 1;
+              return;
+            }
             const amount = parseAmount(payment.amount, payment.currency ?? currency);
             if ("error" in amount) return yield* amount.error;
             yield* records.pay(orgId, writer, key, {

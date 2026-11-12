@@ -2,6 +2,7 @@
 import * as NodeBuffer from "node:buffer";
 import * as NodeZlib from "node:zlib";
 
+import * as Schema from "effect/Schema";
 import { SaxesParser } from "saxes";
 import * as Yauzl from "yauzl";
 
@@ -43,6 +44,7 @@ const STATEMENT_CAPS = {
   streamsBytes: 256 * 1024 * 1024,
 };
 
+const isTooLarge = Schema.is(TooLarge);
 const tooLarge = (reason: string): Failure => ({ _tag: "unreadable", reason });
 
 const startsWith = (bytes: Uint8Array, magic: ReadonlyArray<number>) =>
@@ -84,7 +86,7 @@ export const readStatementFile = async (
       reason: "This isn't a statement file Kin reads: send a PDF, CSV, XLS or XLSX.",
     };
   const lines = await linesOf(format, bytes, password).catch((error: unknown) => {
-    if (error instanceof TooLarge) return tooLarge(error.reason);
+    if (isTooLarge(error)) return tooLarge(error.reason);
     throw error;
   });
   if (!Array.isArray(lines)) return lines as Failure;
@@ -188,7 +190,7 @@ const pdfLines = async (
     if (name === "PasswordException" && code === NEED_PASSWORD) return { _tag: "needs_password" };
     if (name === "PasswordException" && code === INCORRECT_PASSWORD)
       return { _tag: "wrong_password" };
-    if (error instanceof TooLarge) return tooLarge(error.reason);
+    if (isTooLarge(error)) return tooLarge(error.reason);
     return { _tag: "unreadable", reason: "The PDF couldn't be opened; it may be damaged." };
   } finally {
     await task.destroy();

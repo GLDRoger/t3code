@@ -45,7 +45,6 @@ const failed = (reason: string): FileOutcome => ({ _tag: "unreadable", reason })
 
 type Ended = {
   readonly code: number | null;
-  readonly signal: NodeJS.Signals | null;
   readonly stdout: string;
   readonly outOfMemory: boolean;
   readonly overflow: boolean;

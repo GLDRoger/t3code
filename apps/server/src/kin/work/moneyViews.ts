@@ -166,15 +166,19 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
 
   // Received: payments on invoices by the day they were paid, already a day in the owner's zone.
   // Other lists paid over time are money going out.
-  const payments = yield* sql<{ minor: number; currency: string; paidOn: string }>`
-    SELECT p.amount_minor AS minor, p.currency, p.paid_on AS "paidOn"
+  const paid = yield* sql<{ minor: number; currency: string; paidOn: string; withheld: number }>`
+    SELECT p.amount_minor AS minor, p.currency, p.paid_on AS "paidOn", p.withheld
     FROM kin_record_payments p
     JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     WHERE p.org_id = ${orgId} AND p.voided_at IS NULL AND r.state <> 'dropped'
       AND r.register_id = 'invoices' AND p.paid_on >= ${since}
     ORDER BY p.paid_on, p.payment_id`;
+  // TDS a client deducted settles the invoice, but no money came in: it is shown on its own.
+  const payments = paid.filter((one) => one.withheld === 0);
+  const withheld = paid.filter((one) => one.withheld === 1);
   const receivedIn = (month: string) =>
     addUp(payments.filter((one) => monthOf(one.paidOn) === month));
+  const tdsIn = (month: string) => addUp(withheld.filter((one) => monthOf(one.paidOn) === month));
 
   // Spent: paid expenses by their date, in the owner's zone.
   const expenses = yield* sql<{
@@ -230,6 +234,8 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
     },
     received: { thisMonth: receivedIn(thisMonth), lastMonth: receivedIn(lastMonth) },
     receivedThisFinancialYear: addUp(payments.filter((one) => one.paidOn >= fyStart)),
+    tdsDeducted: { thisMonth: tdsIn(thisMonth), lastMonth: tdsIn(lastMonth) },
+    tdsDeductedThisFinancialYear: addUp(withheld.filter((one) => one.paidOn >= fyStart)),
     spent: { thisMonth: spentIn(thisMonth), lastMonth: spentIn(lastMonth) },
     spentThisFinancialYear: addUp(spentRows.filter((one) => one.day >= fyStart)),
     upcoming: upcoming.rows,
@@ -275,6 +281,15 @@ export const moneySection = (summary: KinMoneySummary, zone: string) => {
       [summary.thisMonth]: shown(summary.received.thisMonth),
       [summary.lastMonth]: shown(summary.received.lastMonth),
     },
+    ...(summary.tdsDeducted === undefined ||
+    summary.tdsDeducted.thisMonth.length + summary.tdsDeducted.lastMonth.length === 0
+      ? {}
+      : {
+          tdsDeductedByClients: {
+            [summary.thisMonth]: shown(summary.tdsDeducted.thisMonth),
+            [summary.lastMonth]: shown(summary.tdsDeducted.lastMonth),
+          },
+        }),
     spent: {
       [summary.thisMonth]: shown(summary.spent.thisMonth.total),
       [summary.lastMonth]: shown(summary.spent.lastMonth.total),

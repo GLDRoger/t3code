@@ -14,7 +14,6 @@ import {
   askPassword,
   attachmentBytes,
   buildReview,
-  type Review,
   reviewOf,
   readWith,
   saveRead,
@@ -22,6 +21,7 @@ import {
   statementRow,
   tryKeptPasswords,
 } from "./statements/statementReview.ts";
+import type { Review } from "./statements/statementCard.ts";
 import { checkBalances, type Statement, type StatementRow } from "./statements/statementTable.ts";
 
 /** The lead tools for statements. Kin reads and matches; the owner confirms on Kin's card. */

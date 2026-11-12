@@ -87,6 +87,8 @@ export type RecordRow = {
   readonly repeatJson: string | null;
   /** Payments not voided, in its own currency. */
   readonly paid: number;
+  /** Of `paid`, tax the payer withheld at source rather than paid in. */
+  readonly withheld: number;
   /** Its list's entries are paid over time: Invoices, or a list whose definition says so. */
   readonly takesPayments: number;
 };
@@ -181,6 +183,9 @@ export const selectRecords = (sql: SqlClient.SqlClient) => sql`
     r.date_all_day AS "dateAllDay", r.repeat_json AS "repeatJson",
     (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
       WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid,
+    (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
+      WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL
+        AND p.withheld = 1) AS withheld,
     ${takesPayments(sql)} AS "takesPayments",
     pa.key AS "partyKey", pa.title AS "partyTitle", pa.category AS "partyCategory",
     pj.key AS "projectKey",
@@ -276,7 +281,13 @@ const moneyOf = (row: RecordRow) => {
     ...(repeat === undefined ? {} : { repeat: repeat.rule }),
     ...(amount === undefined || row.takesPayments !== 1
       ? {}
-      : { balance: { minor: Math.max(amount.minor - row.paid, 0), currency: amount.currency } }),
+      : {
+          balance: { minor: Math.max(amount.minor - row.paid, 0), currency: amount.currency },
+          received: { minor: row.paid - row.withheld, currency: amount.currency },
+          ...(row.withheld === 0
+            ? {}
+            : { tdsDeducted: { minor: row.withheld, currency: amount.currency } }),
+        }),
   };
 };
 export const amountOf = (row: RecordRow) =>
@@ -490,8 +501,9 @@ const paymentsOf = Effect.fn("KinRecords.paymentsOf")(function* (
     note: string;
     createdAt: number;
     voidedAt: number | null;
+    withheld: number;
   }>`SELECT payment_id AS "paymentId", amount_minor AS minor, currency, paid_on AS "paidOn",
-      note, created_at AS "createdAt", voided_at AS "voidedAt"
+      note, created_at AS "createdAt", voided_at AS "voidedAt", withheld
     FROM kin_record_payments WHERE org_id = ${orgId} AND record_id = ${recordId}
     ORDER BY paid_on DESC, created_at DESC, payment_id`;
   const receipts =
@@ -523,6 +535,7 @@ const paymentsOf = Effect.fn("KinRecords.paymentsOf")(function* (
       note: payment.note,
       recordedAt: iso(payment.createdAt),
       voidedAt: payment.voidedAt === null ? null : iso(payment.voidedAt),
+      ...(payment.withheld === 1 ? { withheld: true as const } : {}),
       receipt:
         receipt === undefined && noted === undefined
           ? null

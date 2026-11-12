@@ -2,7 +2,11 @@ import {
   KinChatError,
   KinStatementPasswordCard,
   type KinStatementApplyInput,
+  type KinStatementForgetAccountInput,
   type KinStatementForgetPasswordInput,
+  type KinStatementPasswordsInput,
+  type KinStatementRowsInput,
+  type KinStatementSelectInput,
   type KinStatementUndoInput,
   type KinStatementUnlockInput,
   KinWidgetId,
@@ -17,12 +21,19 @@ import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { theOwner } from "./ownerWork.ts";
 import { workFailure } from "./recordRows.ts";
-import { applyStatement, undoStatement } from "./statements/statementApply.ts";
+import {
+  applyStatement,
+  selectRows,
+  statementRows,
+  undoStatement,
+} from "./statements/statementApply.ts";
 import {
   attachmentBytes,
   buildReview,
+  forgetAccount as forgetKeptAccount,
   forgetPassword as forgetKept,
   keepPassword,
+  keptAccounts,
   readWith,
   reviewOf,
   saveRead,
@@ -36,6 +47,8 @@ import {
  */
 
 const notFound = new KinChatError({ reason: "not_found", message: "No such statement." });
+/** Wrong passwords one card takes before Kin stops trying the file. */
+const PASSWORD_TRIES = 5;
 const decodePasswordCard = Schema.decodeUnknownOption(KinStatementPasswordCard);
 
 const passwordCard = Effect.fn("KinStatements.passwordCard")(function* (
@@ -68,7 +81,6 @@ export const unlock = Effect.fn("KinStatements.unlock")(function* (
       message: "This statement isn't locked.",
     });
   const card = yield* passwordCard(input.orgId, stored.passwordWidgetId);
-  const outcome = yield* readWith(yield* attachmentBytes(stored.attachmentId), input.password);
   const sql = yield* SqlClient.SqlClient;
   const now = yield* Clock.currentTimeMillis;
   const setCard = (state: KinStatementPasswordCard, closed: boolean) =>
@@ -81,9 +93,19 @@ export const unlock = Effect.fn("KinStatements.unlock")(function* (
     fileName: stored.fileName,
     status: "locked",
   };
+  if (stored.passwordAttempts >= PASSWORD_TRIES) return { status: "limit" as const };
+  const outcome = yield* readWith(yield* attachmentBytes(stored.attachmentId), input.password);
   if (outcome._tag === "wrong_password" || outcome._tag === "needs_password") {
-    yield* sql.withTransaction(setCard({ ...base, status: "wrong" }, false));
-    return { status: "wrong" as const };
+    const tries = stored.passwordAttempts + 1;
+    const status = tries >= PASSWORD_TRIES ? ("limit" as const) : ("wrong" as const);
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* sql`UPDATE kin_bank_statements SET password_attempts = ${tries}
+          WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId}`;
+        yield* setCard({ ...base, status }, status === "limit");
+      }),
+    );
+    return { status };
   }
   if (outcome._tag !== "read") {
     const detail =
@@ -141,6 +163,40 @@ export const forgetPassword = Effect.fn("KinStatements.forget")(function* (
     yield* sql.withTransaction(updateCard(input.orgId, stored.passwordWidgetId, rest, true));
   }
   return { status: "opened" as const };
+}, workFailure);
+
+export const select = Effect.fn("KinStatements.selectRpc")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinStatementSelectInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  return yield* selectRows({ ...input, personId: person.personId });
+}, workFailure);
+
+export const rows = Effect.fn("KinStatements.rowsRpc")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinStatementRowsInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  return yield* statementRows({ ...input, personId: person.personId });
+}, workFailure);
+
+export const passwords = Effect.fn("KinStatements.passwordsRpc")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinStatementPasswordsInput,
+) {
+  yield* theOwner(people, input.orgId);
+  return yield* keptAccounts(input.orgId);
+}, workFailure);
+
+/** Forgets one kept account's password from the list, outside any statement's card. */
+export const forgetAccount = Effect.fn("KinStatements.forgetAccountRpc")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinStatementForgetAccountInput,
+) {
+  yield* theOwner(people, input.orgId);
+  yield* forgetKeptAccount(input.orgId, input.account);
+  return yield* keptAccounts(input.orgId);
 }, workFailure);
 
 export const apply = Effect.fn("KinStatements.applyRpc")(function* (
