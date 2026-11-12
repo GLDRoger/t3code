@@ -346,6 +346,8 @@ describe("kinOutbox", () => {
       ["client-7", "waiting"],
     ]);
     expect(warnings).toEqual(["[kin-outbox] skipped corrupt entries"]);
+    // An older build wrote no `attempted`, even mid-send, so it may be posted: no Delete.
+    expect(kinOutboxRetractable(chat()[0]!)).toBe(false);
   });
 
   it("refuses a body over the limit and a send past the cap, queuing neither", async () => {

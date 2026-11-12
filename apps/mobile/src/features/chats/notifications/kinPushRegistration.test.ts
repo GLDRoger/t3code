@@ -1,7 +1,7 @@
 import { EnvironmentId, KinPushError } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { createKinPushRefusals, kinPushPermissionStep } from "./kinPushRegistration";
+import { createKinPushRefusals, kinPushHost, kinPushPermissionStep } from "./kinPushRegistration";
 
 const env = EnvironmentId.make("env-1");
 const refusal = (reason: KinPushError["reason"]) => new KinPushError({ reason, message: reason });
@@ -42,5 +42,17 @@ describe("kinPushPermissionStep", () => {
     expect(kinPushPermissionStep(granted, { wanted: false, asked: false })).toBe("register");
     const refused = { granted: false, canAskAgain: false };
     expect(kinPushPermissionStep(refused, { wanted: true, asked: false })).toBe("wait");
+  });
+});
+
+describe("kinPushHost", () => {
+  const orgs = { orgs: [], me: [] };
+  const ready = { _tag: "ready", orgs } as const;
+  it("registers with the usual host, never with one standing in for it", () => {
+    const usual = { _tag: "host", environmentId: env, connected: true, probe: ready } as const;
+    expect(kinPushHost(usual)).toEqual({ environmentId: env, orgs });
+    const other = EnvironmentId.make("env-2");
+    expect(kinPushHost({ ...usual, environmentId: other, standInFor: env })).toBeNull();
+    expect(kinPushHost({ ...usual, connected: false })).toBeNull();
   });
 });

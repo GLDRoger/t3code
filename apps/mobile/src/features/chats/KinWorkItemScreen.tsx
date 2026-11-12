@@ -201,7 +201,7 @@ function KinWorkItemBody(props: ItemTarget) {
     );
   }
   const { item } = state;
-  const { orgs, people, joined, names } = directory;
+  const { orgs, people, joined, invited, names } = directory;
   if (item.list !== undefined) {
     const read = kinWorkItemView(item, names, now, KIN_RECORD_CHANGES_CAP, place);
     return (
@@ -271,6 +271,7 @@ function KinWorkItemBody(props: ItemTarget) {
     orgId,
     people,
     joined,
+    invited,
     names,
     current: view.waitingOn,
   });
