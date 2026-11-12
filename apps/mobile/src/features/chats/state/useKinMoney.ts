@@ -489,12 +489,18 @@ export function useKinMoneyActions({ environmentId, orgId }: KinWorkTarget) {
         kinReceiptNotice,
       ),
     /** The document as it would be made, never filed; null when it couldn't be made. */
-    preview: async (recipe: string, entry: KinRecordKey) => {
+    preview: async (recipe: string, entry: KinRecordKey | undefined) => {
       const made = await run(
         () =>
           render({
             environmentId,
-            input: { orgId, recipe, entry, preview: true, clientRequestId: uuidv4() },
+            input: {
+              orgId,
+              recipe,
+              ...(entry === undefined ? {} : { entry }),
+              preview: true,
+              clientRequestId: uuidv4(),
+            },
           }),
         undefined,
         () => null,

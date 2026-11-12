@@ -732,7 +732,7 @@ export function kinWorkPrivacy(input: {
 
 const CATEGORY_LABEL = { task: null, issue: "Issue", obligation: "Commitment" } as const;
 
-const kinWorkActorName = (actor: KinWorkActor, names: KinWorkNames) =>
+export const kinWorkActorName = (actor: KinWorkActor, names: KinWorkNames) =>
   actor._tag === "system" ? "Kin" : kinWorkName(actor, names);
 
 const principalFromText = (text: string | null): KinWorkPrincipal | null => {

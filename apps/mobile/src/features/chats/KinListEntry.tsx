@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { kinHasNotesHistory } from "@t3tools/client-runtime/kin/kinTemplates";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { kinDatesMonth, kinShiftMonth } from "@t3tools/client-runtime/kin/kinDates";
 import {
@@ -68,6 +69,7 @@ import {
   KinInvoicePayments,
   KinMoneyActionNotice,
 } from "./KinInvoice";
+import { KinNotesVersions } from "./KinNotesVersions";
 import { KinMonthGrid } from "./components/KinMonthGrid";
 import {
   KinWorkFrame,
@@ -727,14 +729,23 @@ export function KinListEntryBody(
           )}
         </ListSection>
       )}
-      {view.notes === null ? null : (
+      {view.notes === null && !kinHasNotesHistory(item) ? null : (
         <View className="gap-2 px-2">
           <Text textRole="footnote" className="text-foreground-muted">
             {KIN_LISTS.entry.notes}
           </Text>
-          <Text textRole="body" selectable className="text-foreground">
-            {view.notes}
-          </Text>
+          {view.notes === null ? null : (
+            <Text textRole="body" selectable className="text-foreground">
+              {view.notes}
+            </Text>
+          )}
+          <KinNotesVersions
+            item={item}
+            names={names}
+            now={props.now}
+            busy={changes.busy}
+            onRestore={canChange ? (notes) => void changes.update(item.rev, { notes }) : null}
+          />
         </View>
       )}
       {props.links}

@@ -189,7 +189,7 @@ export function KinInvoiceActions(
 }
 
 /** A file shown from memory: a blob URL made when it arrives, let go when it is replaced. */
-function previewUrl(file: KinPreviewFile) {
+export function kinPreviewUrl(file: KinPreviewFile) {
   const bytes = kinBase64Bytes(file.base64);
   return URL.createObjectURL(new Blob([bytes.buffer as ArrayBuffer], { type: file.mimeType }));
 }
@@ -230,7 +230,7 @@ function KinMakeDocumentDialog(
     const files = await actions.preview(recipe.name, props.itemKey);
     const file = files?.[0];
     if (file === undefined) return setFailed(files !== null);
-    show({ url: previewUrl(file), file });
+    show({ url: kinPreviewUrl(file), file });
   };
   return (
     <Dialog

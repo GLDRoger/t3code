@@ -734,6 +734,14 @@
     "./kin/kinApprovalPresentation": {
       "types": "./src/kin/kinApprovalPresentation.ts",
       "default": "./src/kin/kinApprovalPresentation.ts"
+    },
+    "./kin/kinBrand": {
+      "types": "./src/kin/kinBrand.ts",
+      "default": "./src/kin/kinBrand.ts"
+    },
+    "./kin/kinTemplates": {
+      "types": "./src/kin/kinTemplates.ts",
+      "default": "./src/kin/kinTemplates.ts"
     }
   },
   "scripts": {
