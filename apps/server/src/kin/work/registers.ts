@@ -59,7 +59,18 @@ export const StoredDefinition = Schema.Struct({
 });
 export type StoredDefinition = typeof StoredDefinition.Type;
 const DefinitionJson = Schema.fromJsonString(StoredDefinition);
-const decodeDefinition = Schema.decodeUnknownOption(DefinitionJson);
+const decodeStored = Schema.decodeUnknownOption(StoredDefinition);
+// Labels stored before control characters were refused read without them.
+const plain = (text: string) => text.replace(/\p{Cc}/gu, " ").trim();
+const decodeDefinition = (json: string) =>
+  Option.flatMap(
+    Option.liftThrowable(() =>
+      JSON.parse(json, (_key, value: unknown) =>
+        typeof value === "string" ? plain(value) : value,
+      ),
+    )(),
+    decodeStored,
+  );
 export const encodeDefinition = Schema.encodeEffect(DefinitionJson);
 
 export type ListDef = StoredDefinition & {
@@ -193,7 +204,10 @@ const builtInDef = (name: ListName): ListDef => {
 };
 export const isBuiltIn = (id: string): id is ListName => Object.hasOwn(LISTS, id);
 const isPreset = (id: string): id is PresetId => (PRESET_IDS as ReadonlyArray<string>).includes(id);
-/** The state an entry paid over time is in while something is still unpaid on it. */
+/** Whether an entry in `state` owes its balance: not closed, and not an Invoices draft. */
+export const owesIn = (def: ListDef, state: KinRecordState) =>
+  state !== "done" && state !== "dropped" && !(def.id === "invoices" && state === "open");
+/** The state an entry paid over time returns to while something is still unpaid on it. */
 export const owedState = (def: ListDef) =>
   (["waiting", "open", "doing"] as const).find((state) => def.states.includes(state));
 
@@ -214,12 +228,29 @@ const fromRow = (row: RegisterRow): ListDef | undefined =>
       ...presetExtras(row.id, definition),
       id: row.id,
       builtIn: null,
-      name: row.name,
+      name: plain(row.name),
       prefix: row.prefix,
       archivedAt: row.archivedAt,
       rev: row.rev,
     }),
   });
+/**
+ * The labels to store from `labels`, where `null` or the category itself shows it as stored. A
+ * preset's label is kept cleared as the category itself, so the preset's doesn't come back.
+ */
+export const storedCategoryLabels = (
+  id: string,
+  labels: Readonly<Record<string, string | null | undefined>>,
+) =>
+  Object.fromEntries(
+    Object.entries(labels).flatMap(([category, label]): ReadonlyArray<[string, string]> =>
+      label !== null && label !== undefined && label !== category
+        ? [[category, label]]
+        : isPreset(id) && PRESETS[id].categoryLabels?.[category] !== undefined
+          ? [[category, category]]
+          : [],
+    ),
+  );
 const presetExtras = (id: string, definition: StoredDefinition) => {
   const preset = isPreset(id) ? PRESETS[id] : undefined;
   const categoryLabels = { ...preset?.categoryLabels, ...definition.categoryLabels };
@@ -389,6 +420,10 @@ export const numberingOf = (def: ListDef): KinNumberingRule | undefined =>
   def.numbering ??
   (def.id === "invoices" && def.builtIn === null ? PRESETS.invoices.numbering : undefined);
 
+const shownLabels = (labels: Readonly<Record<string, string>> | undefined) => {
+  const shown = Object.entries(labels ?? {}).filter(([category, label]) => label !== category);
+  return shown.length === 0 ? {} : { categoryLabels: Object.fromEntries(shown) };
+};
 /** The contract shape, with how many of its entries are open. */
 export const toDefinition = (
   def: ListDef,
@@ -407,7 +442,7 @@ export const toDefinition = (
   sensitive: def.sensitive,
   amount: def.amount,
   currency: def.currency,
-  ...(def.categoryLabels === undefined ? {} : { categoryLabels: def.categoryLabels }),
+  ...shownLabels(def.categoryLabels),
   ...(def.payments === true ? { payments: true as const } : {}),
   ...(def.dueLabel === undefined ? {} : { dueLabel: def.dueLabel }),
   ...(def.dateLabel === undefined ? {} : { dateLabel: def.dateLabel }),

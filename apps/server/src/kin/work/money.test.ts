@@ -589,6 +589,28 @@ describe("lists through the tools", () => {
         { group: "FY2025-26", count: 1, total: [{ minor: 100_00, currency: "INR" }] },
         { group: "FY2026-27", count: 1, total: [{ minor: 100_00, currency: "INR" }] },
       ]);
+      // Undated, it belongs to the month it was added in, wherever it is due.
+      yield* records.create(orgId, system, {
+        list: "expenses",
+        title: "Invented undated bill",
+        owner: { _tag: "person", personId: ownerId },
+        amount: { minor: 100_00, currency: "INR" },
+        dueAt: Date.parse("2026-12-01T06:00:00.000Z"),
+        originKey: "undated",
+      });
+      const november = yield* records.totals(
+        orgId,
+        {
+          list: "expenses",
+          dateFrom: Date.parse("2026-10-31T18:30:00.000Z"),
+          dateTo: Date.parse("2026-11-30T18:30:00.000Z"),
+        },
+        "month",
+      );
+      assert.deepStrictEqual(
+        november.groups?.map((one) => one.group),
+        ["2026-11"],
+      );
     }).pipe(Effect.provide(layer)),
   );
 
@@ -1038,6 +1060,19 @@ describe("the owner's taps", () => {
       );
       assert.lengthOf((yield* OwnerMoney.files(people, { orgId, text: "BILL" })).files, 1);
       assert.lengthOf((yield* OwnerMoney.files(people, { orgId, text: "payroll" })).files, 0);
+      // A teammate who joined after the bill was sent is never offered it; the owner still is.
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('teammate', ${orgId}, 'teammate', 'Teammate', ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+          person_id, role, joined_at, joined_seq)
+        VALUES ('lead-chat-teammate', ${orgId}, 'lead-chat', 'person', 'teammate', 'member', ${at}, 4)`;
+      yield* turn(5, "The new bill", ["later.pdf"]);
+      const names = (personId: string) =>
+        OwnerMoney.readableFiles(orgId, personId, {}).pipe(
+          Effect.map((page) => page.files.map((file) => file.name).toSorted()),
+        );
+      assert.deepStrictEqual(yield* names("teammate"), ["later.pdf"]);
+      assert.deepStrictEqual(yield* names(ownerId), ["bill.pdf", "later.pdf"]);
 
       const cleared = yield* edit({ listCategory: null, fields: { bill: null, mode: null } });
       assert.deepStrictEqual(
@@ -1191,6 +1226,28 @@ describe("the owner's taps", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("count every unpaid entry not yet closed as owed, whatever it is called", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, {
+        name: "Jobs",
+        prefix: "JOB",
+        amount: true,
+        states: ["open", "doing", "done", "dropped"],
+      });
+      const lists = yield* OwnerMoney.lists(people, { orgId });
+      const jobs = lists.lists.find((one) => one.list === "jobs")!;
+      yield* OwnerMoney.updateList(people, { orgId, list: "jobs", rev: jobs.rev, payments: true });
+      const asked = yield* turn(3, "A job under way");
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [{ list: "jobs", title: "Invented fit-out", amount: "100", state: "doing" }],
+      });
+      const page = yield* OwnerWork.list(people, { orgId, list: "jobs", totalsBy: "none" });
+      assert.deepStrictEqual(page.totals?.owed, inr(10_000));
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("open, from each Money figure, a list whose header is that figure", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -1322,6 +1379,28 @@ describe("the owner's taps", () => {
         categoryLabels: { travel: null },
       });
       assert.strictEqual(plain.categoryLabels, undefined);
+      // A preset's label cleared stays cleared.
+      yield* defined(7, { template: "dates" });
+      const dates = () =>
+        OwnerMoney.lists(people, { orgId }).pipe(
+          Effect.map((all) => all.lists.find((one) => one.list === "dates")!),
+        );
+      const unlabelled = yield* OwnerMoney.updateList(people, {
+        orgId,
+        list: "dates",
+        rev: (yield* dates()).rev,
+        categoryLabels: { gst: null },
+      });
+      assert.notProperty(unlabelled.categoryLabels ?? {}, "gst");
+      assert.notProperty((yield* dates()).categoryLabels ?? {}, "gst");
+      assert.strictEqual((yield* dates()).categoryLabels?.tds, "TDS");
+      // A label stored with a control character before they were refused still loads, without it.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_registers SET name = ${"Key\tdates"},
+          definition_json = replace(definition_json, '"TDS"', '"T\\u0007DS"')
+        WHERE org_id = ${orgId} AND register_id = 'dates'`;
+      const loaded = yield* dates();
+      assert.deepStrictEqual([loaded.name, loaded.categoryLabels?.tds], ["Key dates", "T DS"]);
     }).pipe(Effect.provide(layer)),
   );
 });

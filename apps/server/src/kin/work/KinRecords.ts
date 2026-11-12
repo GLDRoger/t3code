@@ -57,6 +57,7 @@ import {
   type Principal,
   isClosed,
   latestSeq,
+  moneyDay,
   notFound,
   ownerZone,
   principal,
@@ -78,6 +79,7 @@ import {
   type ListDef,
   listDef,
   owedState,
+  owesIn,
   stateLabel,
   unknownList,
   verifyRefs,
@@ -1474,7 +1476,7 @@ const make = Effect.gen(function* () {
           received: number;
         }>`SELECT r.amount_minor AS minor, r.currency, r.category, r.party_id AS party,
             r.project_id AS project, r.side, r.state, r.owner_kind || ':' || r.owner_id AS owner,
-            COALESCE(r.date_at, r.due_at, r.created_at) AS at,
+            ${moneyDay(sql)} AS at,
             (SELECT COALESCE(SUM(p.amount_minor), 0) ${live}) AS paid,
             (SELECT COALESCE(SUM(p.amount_minor), 0) ${live}
               AND p.paid_on >= ${input.paidFrom ?? "0000-00-00"}
@@ -1482,8 +1484,6 @@ const make = Effect.gen(function* () {
           FROM kin_records r WHERE ${filter} ORDER BY r.record_id`;
         const listDef = yield* resolveList(orgId, input.list ?? "work");
         const paidOverTime = listDef.payments === true;
-        // The same rule as Money: a draft isn't owed yet, and closed is settled or void.
-        const owing = owedState(listDef);
         const amounts = (members: typeof rows): Sums => {
           const priced = members.flatMap((row) =>
             row.minor === null ? [] : [{ ...row, minor: row.minor }],
@@ -1494,7 +1494,7 @@ const make = Effect.gen(function* () {
               ? {
                   owed: addUp(
                     priced
-                      .filter((row) => row.state === owing && row.minor > row.paid)
+                      .filter((row) => owesIn(listDef, row.state) && row.minor > row.paid)
                       .map((row) => ({ minor: row.minor - row.paid, currency: row.currency })),
                   ),
                 }
@@ -1529,7 +1529,9 @@ const make = Effect.gen(function* () {
         const grouped = new Map<string | null, Array<(typeof rows)[number]>>();
         for (const row of rows) {
           const group = keyOf(row);
-          grouped.set(group, [...(grouped.get(group) ?? []), row]);
+          const members = grouped.get(group);
+          if (members === undefined) grouped.set(group, [row]);
+          else members.push(row);
         }
         const groups = [...grouped].map(([group, members]) => ({
           group,
@@ -1573,11 +1575,8 @@ const make = Effect.gen(function* () {
       where.push(sql`(r.due_at IS NULL OR r.due_at >= ${now} OR r.state IN ('done', 'dropped'))`);
     if (input.dueBy !== undefined) where.push(sql`r.due_at <= ${input.dueBy}`);
     if (input.dueAfter !== undefined) where.push(sql`r.due_at >= ${input.dueAfter}`);
-    // One rule for a money day, here and in the Money summary: its date, else when it was added.
-    if (input.dateFrom !== undefined)
-      where.push(sql`COALESCE(r.date_at, r.created_at) >= ${input.dateFrom}`);
-    if (input.dateTo !== undefined)
-      where.push(sql`COALESCE(r.date_at, r.created_at) < ${input.dateTo}`);
+    if (input.dateFrom !== undefined) where.push(sql`${moneyDay(sql)} >= ${input.dateFrom}`);
+    if (input.dateTo !== undefined) where.push(sql`${moneyDay(sql)} < ${input.dateTo}`);
     if (input.category !== undefined) where.push(sql`r.category IS ${input.category}`);
     if (input.paidFrom !== undefined || input.paidTo !== undefined)
       where.push(sql`EXISTS (SELECT 1 FROM kin_record_payments p
@@ -1611,7 +1610,7 @@ const make = Effect.gen(function* () {
             : isBuiltIn(list)
               ? sql`r.state IN ('done', 'dropped'), lower(r.title), r.key`
               : sql`r.state IN ('done', 'dropped'), r.due_at IS NULL, r.due_at,
-                  COALESCE(r.date_at, r.created_at) DESC, r.created_at DESC, r.key`;
+                  ${moneyDay(sql)} DESC, r.created_at DESC, r.key`;
         const rows = yield* sql<RecordRow>`${selectRecords(sql)} WHERE ${filter}
           ORDER BY ${order}
           LIMIT ${limit} OFFSET ${Math.max(input.offset ?? 0, 0)}`;

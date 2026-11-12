@@ -24,6 +24,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
+import { readableFrom } from "../chat/sharing.ts";
 import * as Numbers from "../gendocs/numbering.ts";
 import { readProfile, setProfile } from "./companyProfile.ts";
 import { KinRecords } from "./KinRecords.ts";
@@ -36,6 +37,7 @@ import {
   type FieldDef,
   listDef,
   openCounts,
+  storedCategoryLabels,
   toDefinition,
   unknownList,
 } from "./registers.ts";
@@ -116,12 +118,10 @@ export const updateList = Effect.fn("KinMoney.updateList")(function* (
       );
       if (unlisted.length > 0)
         return yield* invalid(`${def.name} has no category ${unlisted.join(", ").slice(0, 80)}.`);
-      const categoryLabels = Object.fromEntries(
-        Object.entries({ ...def.categoryLabels, ...input.categoryLabels }).filter(
-          (entry): entry is [string, NonNullable<(typeof entry)[1]>] =>
-            entry[1] !== null && entry[1] !== entry[0],
-        ),
-      );
+      const categoryLabels = storedCategoryLabels(def.id, {
+        ...def.categoryLabels,
+        ...input.categoryLabels,
+      });
       const payments = input.payments ?? def.payments === true;
       if (payments !== (def.payments === true)) {
         if (!payments && def.id === "invoices")
@@ -292,6 +292,15 @@ export const files = Effect.fn("KinMoney.files")(function* (
   input: KinWorkFilesInput,
 ) {
   const person = yield* theOwner(people, input.orgId);
+  return yield* readableFiles(input.orgId, person.personId, input);
+}, workFailure);
+
+/** Files sent in `personId`'s chats that they may read there, newest first. */
+export const readableFiles = Effect.fn("KinMoney.readableFiles")(function* (
+  orgId: string,
+  personId: string,
+  input: Omit<KinWorkFilesInput, "orgId">,
+) {
   const sql = yield* SqlClient.SqlClient;
   const offset = yield* offsetOf(input.cursor);
   const limit = input.limit ?? 30;
@@ -303,16 +312,19 @@ export const files = Effect.fn("KinMoney.files")(function* (
     json: string | null;
     sentAt: string;
   }>`SELECT a.attachment_id AS id, a.chat_id AS "chatId", a.message_id AS "messageId",
-      m.attachments_json AS json, m.created_at AS "sentAt"
+      kin_messages.attachments_json AS json, kin_messages.created_at AS "sentAt"
     FROM kin_message_attachments a
-    JOIN kin_messages m ON m.org_id = a.org_id AND m.message_id = a.message_id
+    JOIN kin_messages ON kin_messages.org_id = a.org_id
+      AND kin_messages.message_id = a.message_id
     JOIN kin_chat_members c ON c.org_id = a.org_id AND c.chat_id = a.chat_id
-      AND c.principal_kind = 'person' AND c.person_id = ${person.personId} AND c.left_at IS NULL
-    WHERE a.org_id = ${input.orgId} AND m.status <> 'deleted'
-      AND (${text} = '' OR EXISTS (SELECT 1 FROM json_each(COALESCE(m.attachments_json, '[]')) j
+      AND c.principal_kind = 'person' AND c.person_id = ${personId} AND c.left_at IS NULL
+    WHERE a.org_id = ${orgId} AND kin_messages.status <> 'deleted'
+      AND ${readableFrom(sql, orgId, sql`COALESCE(c.joined_seq, 0)`)}
+      AND (${text} = '' OR EXISTS (SELECT 1
+        FROM json_each(COALESCE(kin_messages.attachments_json, '[]')) j
         WHERE json_extract(j.value, '$.id') = a.attachment_id
           AND instr(lower(json_extract(j.value, '$.name')), ${text}) > 0))
-    ORDER BY m.created_at DESC, a.attachment_id LIMIT ${limit + 1} OFFSET ${offset}`;
+    ORDER BY kin_messages.created_at DESC, a.attachment_id LIMIT ${limit + 1} OFFSET ${offset}`;
   return {
     files: rows.slice(0, limit).flatMap((row): ReadonlyArray<KinWorkFile> => {
       const found = Option.getOrElse(decodeAttachments(row.json ?? "[]"), () => []).find(
@@ -333,7 +345,7 @@ export const files = Effect.fn("KinMoney.files")(function* (
     }),
     nextCursor: rows.length > limit ? `o:${offset + limit}` : null,
   };
-}, workFailure);
+});
 
 export const companyProfile = Effect.fn("KinMoney.companyProfile")(function* (
   people: ReadonlyArray<PersonIdentity>,

@@ -160,6 +160,9 @@ const takesPayments = (sql: SqlClient.SqlClient) =>
  * The columns every read selects, with the derived ones: a running worker, the last PR, the client
  * and project as they are now, and the label they lend it. Joins stay inside the entry's org.
  */
+/** An entry's money day: its own date, else when it was added. Filters, groups and Money share it. */
+export const moneyDay = (sql: SqlClient.SqlClient) => sql`COALESCE(r.date_at, r.created_at)`;
+
 export const selectRecords = (sql: SqlClient.SqlClient) => sql`
   SELECT r.org_id AS "orgId", r.record_id AS "recordId", r.register_id AS "registerId", r.key,
     r.title, r.state,
