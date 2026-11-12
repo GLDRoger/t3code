@@ -52,7 +52,12 @@ import {
   stateLabel,
   unknownList,
 } from "./registers.ts";
-import { isSensitiveRefusal, sensitiveShown, showsSensitive } from "./workerAttempts.ts";
+import {
+  isSensitiveRefusal,
+  sensitiveShown,
+  showsSensitive,
+  turnSensitive,
+} from "./workerAttempts.ts";
 
 /** The lead tools' inputs, results and the one call each makes. Model-facing text lives in `mcp/tools.ts`. */
 
@@ -956,6 +961,8 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
   const source = yield* sourceOf(lead, input.sourceEventId);
   const writer = yield* writerFor(lead);
   const lists = yield* allLists(lead.orgId);
+  // A turn shown something sensitive may be writing it down, so what it writes is labelled too.
+  const marked = yield* turnSensitive(lead.orgId, lead.wakeupId);
   const results = [];
   for (const row of input.records) {
     const def = yield* listFor(lead, row.list ?? "work");
@@ -1004,7 +1011,7 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
       ...(partyId === undefined ? {} : { partyId }),
       ...(projectId === undefined ? {} : { projectId }),
       ...(row.repo === undefined ? {} : { repo: row.repo }),
-      ...(row.sensitive === undefined ? {} : { sensitive: true }),
+      ...(row.sensitive === undefined && !marked ? {} : { sensitive: true }),
       ...(Object.keys(fields).length === 0 ? {} : { fields }),
       ...(row.state === undefined ? {} : { state: row.state }),
       ...(waitingOn === undefined ? {} : { waitingOn }),
@@ -1046,6 +1053,7 @@ const sameNamed = Effect.fn("KinWorkTools.sameNamed")(function* (
   return row;
 });
 
+const UNCARRYING = new Set(["state", "owner", "waitingOn", "confirmed"]);
 const runUpdate = Effect.fnUntraced(function* (lead: Lead, input: typeof UpdateInput.Type) {
   yield* admitted(lead, "record_update", input);
   const records = yield* KinRecords;
@@ -1075,13 +1083,19 @@ const runUpdate = Effect.fnUntraced(function* (lead: Lead, input: typeof UpdateI
   const projectId = yield* refOrNull(lead, input.project, "projects");
   const fields = fieldsFrom(input);
   const money = yield* moneyPatch(lead, def, input);
-  const full: Patch = {
+  const written: Patch = {
     ...patch,
     ...(partyId === undefined ? {} : { partyId }),
     ...(projectId === undefined ? {} : { projectId }),
     ...(Object.keys(fields).length === 0 ? {} : { fields }),
     ...money,
   };
+  // As in create; a state, owner or confirmation alone carries nothing the turn read.
+  const carries = Object.keys(written).some((field) => !UNCARRYING.has(field));
+  const full: Patch =
+    carries && (yield* turnSensitive(lead.orgId, lead.wakeupId))
+      ? { ...written, sensitive: true }
+      : written;
   const after = yield* records.update(lead.orgId, writer, input.key, full, input.expectedRev);
   // Kin's own change, a label kept on, follows the lead's in the same write.
   const changed =

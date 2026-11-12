@@ -664,6 +664,50 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect(
+  "what a turn shown something sensitive writes is labelled, and reading it marks a later turn",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      const ownLabel = (key: string) =>
+        records.get(orgId, key).pipe(Effect.map((row) => row!.sensitive));
+      const plain = yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [{ title: "Invented plain task" }, { title: "Invented second task" }],
+      });
+      const [first, second] = plain.records.map((row) => row.key);
+      yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
+      VALUES (${orgId}, 'wake', 0) ON CONFLICT DO NOTHING`;
+      const written = yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [{ title: "Invented follow-up on the figure" }],
+      });
+      yield* LeadWork.update(scope, { key: first!, sourceEventId: "ask-event", notes: "Invented" });
+      // Marking a task done carries nothing it read.
+      yield* LeadWork.update(scope, { key: second!, sourceEventId: "ask-event", state: "done" });
+      assert.deepStrictEqual(
+        [
+          yield* ownLabel(written.records[0]!.key),
+          yield* ownLabel(first!),
+          yield* ownLabel(second!),
+        ],
+        [1, 1, 0],
+      );
+      // A later turn that reads it is marked as any sensitive read marks it.
+      yield* sql`DELETE FROM kin_wakeup_sensitive_reads`;
+      yield* LeadWork.get(scope, { key: written.records[0]!.key });
+      assert.deepStrictEqual(yield* sql`SELECT wakeup_id FROM kin_wakeup_sensitive_reads`, [
+        { wakeup_id: "wake" },
+      ]);
+      // Only the owner lowers it.
+      const entry = yield* OwnerWork.get([owner], { orgId, key: first! });
+      yield* OwnerWork.update([owner], { orgId, key: first!, rev: entry.rev, sensitive: false });
+      assert.strictEqual(yield* ownLabel(first!), 0);
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect("a sensitive client or project labels what points at it; only the owner lowers it", () =>
   Effect.gen(function* () {
     yield* seed;
@@ -708,6 +752,8 @@ it.effect("a sensitive client or project labels what points at it; only the owne
     ]);
     const byOwner = yield* LeadWork.query(scope, { groupBy: "owner" });
     assert.isTrue(byOwner.groups!.every((group) => group.sensitive === undefined));
+    // As a turn shown nothing sensitive: an unrelated entry stays plain.
+    yield* (yield* SqlClient.SqlClient)`DELETE FROM kin_wakeup_sensitive_reads`;
     const made = yield* LeadWork.create(scope, {
       sourceEventId: "again-event",
       records: [
@@ -751,8 +797,12 @@ it.effect("no lead write makes anything less sensitive; the owner's own may", ()
         .pipe(Effect.flatMap((row) => effectivelySensitive(orgId, row!.recordId)));
     const ownLabel = (key: string) =>
       records.get(orgId, key).pipe(Effect.map((row) => row!.sensitive));
+    // Each write as a turn shown nothing sensitive, so only Kin's own rules label anything here.
+    const sql = yield* SqlClient.SqlClient;
+    const unmarked = <A, E, R>(write: Effect.Effect<A, E, R>) =>
+      Effect.andThen(sql`DELETE FROM kin_wakeup_sensitive_reads`, write);
     const update = (input: Omit<typeof LeadWork.UpdateInput.Type, "sourceEventId">) =>
-      LeadWork.update(scope, { ...input, sourceEventId: "ask-event" });
+      unmarked(LeadWork.update(scope, { ...input, sourceEventId: "ask-event" }));
     yield* update({ key: "C-1", sensitive: true });
     // W-6 is sensitive through its project's client; unlinking both keeps it so, as Kin's change.
     assert.isTrue(yield* sensitive("W-6"));
@@ -763,16 +813,18 @@ it.effect("no lead write makes anything less sensitive; the owner's own may", ()
     assert.deepInclude(w6.history[0], { by: "Kin", change: "sensitive: true" });
     assert.isTrue(yield* sensitive("W-6"));
     // A project moved to another client, or off any, labels the project: its entries stay sensitive.
-    yield* LeadWork.create(scope, {
-      sourceEventId: "again-event",
-      records: [
-        { list: "clients", title: "Invented Beta" },
-        { list: "projects", title: "Invented app" },
-        { list: "projects", title: "Invented api" },
-        { title: "Invented app login", project: "Invented app" },
-        { title: "Invented api keys", project: "Invented api" },
-      ],
-    });
+    yield* unmarked(
+      LeadWork.create(scope, {
+        sourceEventId: "again-event",
+        records: [
+          { list: "clients", title: "Invented Beta" },
+          { list: "projects", title: "Invented app" },
+          { list: "projects", title: "Invented api" },
+          { title: "Invented app login", project: "Invented app" },
+          { title: "Invented api keys", project: "Invented api" },
+        ],
+      }),
+    );
     yield* update({ key: "P-2", client: "C-1" });
     yield* update({ key: "P-3", client: "C-1" });
     assert.isTrue(yield* sensitive("W-7"));

@@ -30,8 +30,10 @@ const tooLarge = () =>
   fail(
     "this recipe's computed fields grow too large for Kin to work out: keep each field to the rows and columns it needs",
   );
-// The evaluator is synchronous, so one counter per `computeData` call can't interleave with another.
+// The evaluator is synchronous, so one set of counters per `computeData` call can't interleave.
 let operations = 0;
+let made = { values: 0, bytes: 0 };
+let measured = new WeakMap<object, Size>();
 const spend = (count: number) => {
   operations += count;
   if (operations > COMPUTE_BUDGET.operations) tooLarge();
@@ -422,15 +424,16 @@ export type Span = {
   readonly url?: string;
 };
 
+// Each class stops at the next delimiter, so no match attempt scans past it: linear in the text.
 const INLINE =
-  /(\*\*[^*]+\*\*|__[^_]+__|\*[^*\s][^*]*\*|_[^_\s][^_]*_|`[^`]+`|\[[^\]]+\]\([^)\s]+\))/g;
+  /(\*\*[^*]+\*\*|__[^_]+__|\*[^*\s][^*]*\*|_[^_\s][^_]*_|`[^`]+`|\[[^[\]]+\]\([^()\s]+\))/g;
 const spansOf = (text: string): ReadonlyArray<Span> => {
   const spans: Array<Span> = [];
   let last = 0;
   for (const match of text.matchAll(INLINE)) {
     if (match.index > last) spans.push({ text: text.slice(last, match.index), style: "plain" });
     const token = match[0];
-    const link = /^\[([^\]]+)\]\(([^)\s]+)\)$/.exec(token);
+    const link = /^\[([^[\]]+)\]\(([^()\s]+)\)$/.exec(token);
     if (token.startsWith("**") || token.startsWith("__"))
       spans.push({ text: token.slice(2, -2), style: "strong" });
     else if (token.startsWith("`")) spans.push({ text: token.slice(1, -1), style: "code" });
@@ -631,15 +634,16 @@ const evaluate = (scope: Scope, name: string, spec: Spec): unknown => {
     }
     case "words": {
       const value = asMoney(resolve(scope, arg), `${name}'s amount`);
-      return value === null ? null : amountInWords(value);
+      return value === null ? null : charged(amountInWords(value));
     }
     case "date": {
       const [day, format] = argsOf(arg, 2, "date");
       const value = resolve(scope, day);
       if (value === null || value === undefined || value === "") return null;
-      return typeof value === "string" && typeof format === "string"
-        ? formatDate(value, format)
-        : fail(`${name}: date takes a day and a format`);
+      if (typeof value !== "string" || typeof format !== "string")
+        return fail(`${name}: date takes a day and a format`);
+      spend(value.length);
+      return charged(formatDate(value, format));
     }
     case "gst": {
       if (typeof arg !== "object" || arg === null || Array.isArray(arg))
@@ -661,7 +665,11 @@ const evaluate = (scope: Scope, name: string, spec: Spec): unknown => {
     }
     case "markdown": {
       const text = resolve(scope, arg);
-      return typeof text === "string" ? markdownBlocks(text) : null;
+      if (typeof text !== "string") return null;
+      spend(text.length);
+      const blocks = markdownBlocks(text);
+      spend(sizeOf(blocks).bytes);
+      return blocks;
     }
     default:
       return fail(`${name}: ${fn} isn't one of ${FUNCTIONS.join(", ")}`);
@@ -682,27 +690,62 @@ const field = (scope: Scope, name: string, spec: unknown): unknown => {
 };
 
 type Size = { readonly values: number; readonly bytes: number };
+// What JSON.stringify writes for a string: quotes, two-character escapes, and \u00XX for the rest
+// of the controls and for lone surrogates.
+const NEEDS_ESCAPE = /["\\\u0000-\u001f\ud800-\udfff]/;
+const jsonLength = (text: string) => {
+  if (!NEEDS_ESCAPE.test(text)) return text.length + 2;
+  let length = text.length + 2;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code === 0x22 || code === 0x5c || (code >= 8 && code <= 13 && code !== 11)) length += 1;
+    else if (code < 0x20) length += 5;
+    else if (code >= 0xd800 && code <= 0xdbff) {
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) i += 1;
+      else length += 5;
+    } else if (code >= 0xdc00 && code <= 0xdfff) length += 5;
+  }
+  return length;
+};
+// A money value gains its `text` before the template reads it.
+const MONEY_TEXT = 40;
 /**
- * How much `value` is once written out whole, each shared table counted every place it appears,
- * as JSON writes it; measured once per object, so a field that repeats another costs no more here.
+ * How much `value` is once written out whole, as JSON writes it, each shared table counted every
+ * place it appears; measured once per object per computation, so naming a table again is cheap here.
  */
-const sizeOf = (value: unknown, seen: WeakMap<object, Size>): Size => {
-  if (typeof value === "string") return { values: 1, bytes: value.length + 2 };
-  if (typeof value !== "object" || value === null) return { values: 1, bytes: 8 };
-  const known = seen.get(value);
+const sizeOf = (value: unknown): Size => {
+  if (typeof value === "string") return { values: 1, bytes: jsonLength(value) };
+  if (typeof value === "number") return { values: 1, bytes: String(value).length };
+  if (typeof value !== "object" || value === null) return { values: 1, bytes: 5 };
+  const known = measured.get(value);
   if (known !== undefined) return known;
   spend(1);
   let values = 1;
-  let bytes = 2;
+  let bytes = isMoney(value) ? 2 + MONEY_TEXT : 2;
   for (const [key, inner] of Object.entries(value)) {
-    const size = sizeOf(inner, seen);
+    const size = sizeOf(inner);
     values += size.values;
-    bytes += size.bytes + key.length + 4;
-    if (values > COMPUTE_BUDGET.values || bytes > COMPUTE_BUDGET.bytes) tooLarge();
+    bytes += size.bytes + (Array.isArray(value) ? 1 : jsonLength(key) + 1);
+    if (made.values + values > COMPUTE_BUDGET.values || made.bytes + bytes > COMPUTE_BUDGET.bytes)
+      tooLarge();
   }
   const size = { values, bytes };
-  seen.set(value, size);
+  measured.set(value, size);
   return size;
+};
+/** Adds one more value of what the template reads to the running total, stopping past the budget. */
+const keep = (key: string, value: unknown) => {
+  const size = sizeOf(value);
+  made = {
+    values: made.values + size.values,
+    bytes: made.bytes + size.bytes + jsonLength(key) + 1,
+  };
+  if (made.values > COMPUTE_BUDGET.values || made.bytes > COMPUTE_BUDGET.bytes) tooLarge();
+};
+const charged = (text: string) => {
+  spend(text.length);
+  return text;
 };
 
 /** Every money value with its text as the document shows it, everywhere in `value`, once per object. */
@@ -732,9 +775,14 @@ export const computeData = (
 ): { readonly data: Computed } | { readonly error: string } => {
   const scope: Record<string, unknown> = { ...inputs };
   operations = 0;
+  made = { values: 0, bytes: 0 };
+  measured = new WeakMap();
   try {
-    for (const [name, spec] of computed) scope[name] = field(scope, name, spec);
-    sizeOf(scope, new WeakMap());
+    for (const [name, value] of Object.entries(scope)) keep(name, value);
+    for (const [name, spec] of computed) {
+      scope[name] = field(scope, name, spec);
+      keep(name, scope[name]);
+    }
     return { data: withText(scope, new WeakMap()) as Computed };
   } catch (error) {
     if (error instanceof ComputeError) return { error: error.message };

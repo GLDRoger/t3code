@@ -718,6 +718,16 @@ it.live(
           noted("vault-claim", "The deploy key is in the vault under invented/deploy"),
         );
         yield* service.write(scope, noted("status-claim", "Invented launch is on track"));
+        // A turn that was shown something sensitive writes for the owner alone, whatever it says.
+        yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
+          VALUES (${orgId}, 'fixture-wakeup', 0)`;
+        yield* service.write(scope, noted("marked-claim", "Invented launch moved a week"));
+        yield* sql`DELETE FROM kin_wakeup_sensitive_reads WHERE wakeup_id = 'fixture-wakeup'`;
+        assert.deepStrictEqual(
+          yield* sql`SELECT item_id FROM kin_memory_labels WHERE org_id = ${orgId}
+            AND item_id IN ('marked-claim', 'status-claim') AND shared_content IS NOT NULL`,
+          [{ item_id: "status-claim" }],
+        );
         // Not the owner's word: written from a routine, "the team can know it" is only a
         // suggestion the owner is asked about, and the team doesn't know it meanwhile.
         yield* service.write(scope, {
@@ -876,6 +886,7 @@ it.live(
         assert.include(yield* saved("amount-claim"), "sensitive: true");
         assert.include(yield* saved("vault-claim"), "sensitive: true");
         assert.include(yield* saved("status-claim"), "sensitive: false");
+        assert.include(yield* saved("marked-claim"), "sensitive: true");
         assert.notInclude(files, "claims/secret-claim.md");
         assert.include(
           yield* git(remote, ["show", `${committed.commit}:claims/team.md`]),

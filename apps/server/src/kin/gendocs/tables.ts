@@ -198,6 +198,33 @@ export const fileName = (pattern: string, inputs: Readonly<Record<string, Value>
     return typeof value === "string" && /^[A-Za-z0-9 ._()-]{1,40}$/.test(value) ? value : whole;
   });
 
+// What one table recipe may write across its sheets: a year of rows with room for the columns an
+// accountant asks for, and text that stays under a string's length once XML escapes it.
+const TABLE_BUDGET = { cells: 2_500_000, textChars: 32 * 1024 * 1024 };
+/** Why a table recipe's sheets would be too large to write from these inputs, if they would be. */
+export const tableTooLarge = (
+  recipe: { readonly sheets: ReadonlyArray<Sheet> },
+  inputs: Readonly<Record<string, Value>>,
+): string | undefined => {
+  const reason =
+    "this recipe's sheets grow too large for Kin to write: keep each sheet to the rows and columns it needs";
+  let cells = 0;
+  let textChars = 0;
+  for (const sheet of recipe.sheets) {
+    const rows = inputs[sheet.input];
+    if (!Array.isArray(rows)) continue;
+    cells += rows.length * sheet.columns.length;
+    if (cells > TABLE_BUDGET.cells) return reason;
+    for (const row of rows as ReadonlyArray<Row>)
+      for (const column of sheet.columns) {
+        const value = valueAt(row, column.field);
+        if (typeof value === "string") textChars += value.length;
+      }
+    if (textChars > TABLE_BUDGET.textChars) return reason;
+  }
+  return undefined;
+};
+
 /** Every file a table recipe makes, by name, from its inputs. */
 export const tableFiles = (
   recipe: { readonly sheets: ReadonlyArray<Sheet>; readonly workbook: string | null },

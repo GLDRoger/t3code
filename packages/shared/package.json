@@ -143,6 +143,10 @@
       "types": "./src/kinVisual.ts",
       "import": "./src/kinVisual.ts"
     },
+    "./kinVisualSvg": {
+      "types": "./src/kinVisualSvg.ts",
+      "import": "./src/kinVisualSvg.ts"
+    },
     "./kinDocBlocks": {
       "types": "./src/kinDocBlocks.ts",
       "import": "./src/kinDocBlocks.ts"
@@ -578,6 +582,7 @@
     "remark-math": "6.0.0",
     "remark-parse": "catalog:",
     "remark-rehype": "catalog:",
+    "saxes": "6.0.0",
     "unified": "catalog:",
     "yaml": "catalog:"
   },

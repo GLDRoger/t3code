@@ -357,7 +357,7 @@ const make = Effect.gen(function* () {
         const n = steering.steers;
         const messageId = MessageId.make(KinIdentity.steerMessageId(wakeupId, n));
         const deliver = Effect.gen(function* () {
-          const text = yield* prompt.steer({ orgId, agentId, events });
+          const text = yield* prompt.steer({ orgId, agentId, wakeupId, events });
           const attachments = yield* prompt.attachments({ orgId, events });
           const claimed = yield* sql<{ messageId: string }>`
             SELECT json_extract(json, '$.messageId') AS "messageId" FROM kin_events

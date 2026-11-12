@@ -13,6 +13,7 @@ import { issuedNumber } from "./numbering.ts";
 import {
   type Facts,
   type InputDecl,
+  MAX_ROWS,
   type Money,
   type Recipe,
   type Source,
@@ -26,7 +27,6 @@ import {
  */
 
 type Cell = string | number | boolean | Money | null;
-const MAX_ROWS = 500;
 const DAY_MS = 86_400_000;
 
 const isMoney = (value: unknown): value is Money =>

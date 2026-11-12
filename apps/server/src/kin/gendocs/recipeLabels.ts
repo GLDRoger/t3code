@@ -3,7 +3,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import type { Recipe, Value } from "./recipe.ts";
+import { checkedSample, type Recipe, type Value } from "./recipe.ts";
 import { KinDocRenderer } from "./render.ts";
 import {
   type ChangedBy,
@@ -33,9 +33,10 @@ export const sampleInputs = (
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
     return "its sample.json isn't an object of inputs";
-  return Object.fromEntries(
-    recipe.inputs.map((input) => [input.name, (Reflect.get(parsed, input.name) ?? null) as Value]),
-  );
+  const checked = checkedSample(recipe, parsed);
+  return "error" in checked
+    ? `its sample.json has inputs that aren't right: ${checked.error}`
+    : checked.inputs;
 };
 
 /** Why a recipe can't be kept: its sample, rendered as Kin renders a document from it. */
@@ -55,7 +56,25 @@ export const verifySample =
       return rendered._tag === "made" ? undefined : rendered.reason;
     }).pipe(Effect.catch((error) => Effect.succeed(error.message)));
 
-/** A revision's label: its own row, else, from before Kin kept rows, the job that wrote it. */
+/**
+ * Where `main` was before Kin's first change that labels as it commits, recorded before that
+ * change commits: every later commit gets its row once it is visible, unless a crash came between.
+ */
+export const recordBaseline = Effect.fn("KinRecipeLabels.baseline")(function* (orgId: KinOrgId) {
+  const sql = yield* SqlClient.SqlClient;
+  const [known] = yield* sql`SELECT 1 AS known FROM kin_recipe_label_baselines
+    WHERE org_id = ${orgId}`;
+  if (known !== undefined) return;
+  const head = yield* (yield* KinWorkspace).head(orgId);
+  const now = yield* Clock.currentTimeMillis;
+  yield* sql`INSERT INTO kin_recipe_label_baselines (org_id, commit_sha, recorded_at)
+    VALUES (${orgId}, ${head}, ${now}) ON CONFLICT (org_id) DO NOTHING`;
+});
+
+/**
+ * A revision's label: its own row; else sensitive when it came after the baseline, since its row
+ * was lost between its commit and its label; else, from before Kin kept rows, the job that wrote it.
+ */
 const revisionLabelled = Effect.fn("KinRecipeLabels.revision")(function* (
   orgId: KinOrgId,
   recipe: string,
@@ -66,6 +85,13 @@ const revisionLabelled = Effect.fn("KinRecipeLabels.revision")(function* (
     WHERE org_id = ${orgId} AND recipe = ${recipe} AND commit_sha = ${revision.commit}
     ORDER BY commit_sha`;
   if (row !== undefined) return row.sensitive === 1;
+  const [baseline] = yield* sql<{ commit: string }>`SELECT commit_sha AS "commit"
+    FROM kin_recipe_label_baselines WHERE org_id = ${orgId}`;
+  if (
+    baseline !== undefined &&
+    !(yield* (yield* KinWorkspace).madeBefore(orgId, revision.commit, baseline.commit))
+  )
+    return true;
   if (revision.workerId === null) return false;
   const [job] = yield* sql<{ sensitive: number }>`SELECT sensitive FROM kin_doc_jobs
     WHERE org_id = ${orgId} AND worker_id = ${revision.workerId} AND mode = 'recipe'
@@ -116,6 +142,7 @@ export const undoRecipe = Effect.fn("KinRecipeLabels.undo")(function* (
   by: ChangedBy,
 ) {
   const renderer = yield* KinDocRenderer;
+  yield* recordBaseline(orgId);
   const undone = yield* (yield* KinWorkspace).undoRecipe(
     orgId,
     name,
@@ -132,16 +159,22 @@ export const undoRecipe = Effect.fn("KinRecipeLabels.undo")(function* (
   return undone;
 });
 
-/** The owner clears a recipe's label as it is now; later changes start from that. */
+/** The owner clears a recipe's label as they saw it; later changes start from that. */
 export const clearLabel = Effect.fn("KinRecipeLabels.clear")(function* (
   orgId: KinOrgId,
   name: string,
   personId: KinPersonId,
+  seen: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const recipe = (yield* (yield* KinWorkspace).recipes(orgId)).find((one) => one.name === name);
   if (recipe === undefined)
     return yield* new KinChatError({ reason: "not_found", message: `There is no recipe ${name}.` });
+  if (recipe.commit !== seen)
+    return yield* new KinChatError({
+      reason: "invalid_state",
+      message: `The ${name} recipe changed after you looked at it. Look at it again, then clear its label.`,
+    });
   const now = yield* Clock.currentTimeMillis;
   yield* sql`INSERT INTO kin_recipe_labels (org_id, recipe, commit_sha, sensitive,
       cleared_by_person_id, labelled_at)

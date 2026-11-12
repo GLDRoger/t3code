@@ -359,7 +359,12 @@ const pdfReport: WorkerReport = {
 const threadOf = (workerId: KinWorkerId) => ThreadId.make(`kin-work:${workerId}`);
 
 /** A worker's job writing the quote recipe, collected; `n` names the job and its description. */
-const writeQuote = (n: number, sensitive = 0) =>
+/** A quote recipe job ready to collect: its description and template are its own when given. */
+const startQuote = (
+  n: number,
+  sensitive = 0,
+  own: { readonly description?: string; readonly template?: string } = {},
+) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const sql = yield* SqlClient.SqlClient;
@@ -373,10 +378,13 @@ const writeQuote = (n: number, sensitive = 0) =>
       `${folder}/RECIPE.md`,
       STARTER_FILES["recipes/report/RECIPE.md"]!.replace("name: report", "name: quote")
         .replace("title: Report", "title: Quote")
-        .replace(/^description: .*$/m, `description: Quote ${n}.`)
+        .replace(/^description: .*$/m, `description: ${own.description ?? `Quote ${n}.`}`)
         .replace("[report.pdf]", "[quote.pdf]"),
     );
-    yield* fs.writeFileString(`${folder}/template.typ`, '#let d = json("/inputs.json")\n');
+    yield* fs.writeFileString(
+      `${folder}/template.typ`,
+      own.template ?? '#let d = json("/inputs.json")\n',
+    );
     yield* fs.writeFileString(
       `${folder}/sample.json`,
       STARTER_FILES["recipes/report/sample.json"]!,
@@ -392,11 +400,12 @@ const writeQuote = (n: number, sensitive = 0) =>
       VALUES (${orgId}, ${workerId}, ${lead}, 'wake-3', 'recipe', 'quote', ${job.base}, NULL,
         'brief', NULL, ${sensitive}, 'recipe:quote', ${job.worktree}, ${job.branch}, 'lead-chat',
         'owner_only', 0)`;
-    return yield* collector.collect({ orgId, workerId, threadId: threadOf(workerId) }, true, {
+    return collector.collect({ orgId, workerId, threadId: threadOf(workerId) }, true, {
       ...pdfReport,
       evidence: [],
     });
   });
+const writeQuote = (n: number, sensitive = 0) => Effect.flatten(startQuote(n, sensitive));
 
 describe("recipe documents", () => {
   it.effect("are made in the call from the recipe's declared inputs, read from stored rows", () =>
@@ -851,11 +860,16 @@ describe("worker document jobs", () => {
             clientRequestId: `quote-${(n += 1)}`,
             preview,
           }).pipe(Effect.map((made) => made.sensitive));
-        const labelled = () =>
-          Effect.map(
-            OwnerDocs.recipes(people, { orgId }),
-            (listed) => listed.recipes.find((one) => one.name === "quote")?.labelled === true,
+        const listed = (name = "quote") =>
+          Effect.map(OwnerDocs.recipes(people, { orgId }), (all) =>
+            all.recipes.find((one) => one.name === name),
           );
+        const labelled = (name = "quote") =>
+          Effect.map(listed(name), (one) => one?.labelled === true);
+        const clear = Effect.gen(function* () {
+          const commit = (yield* listed())!.commit;
+          return yield* OwnerDocs.clearRecipeLabel(people, { orgId, recipe: "quote", commit });
+        });
         assert.match((yield* writeQuote(1, 1))!.summary, /committed it/);
         assert.deepStrictEqual(
           [yield* quote(), yield* quote(true), yield* labelled()],
@@ -864,7 +878,8 @@ describe("worker document jobs", () => {
         // A plain job's change built on it keeps the label.
         assert.match((yield* writeQuote(2))!.summary, /committed it/);
         assert.isTrue(yield* quote());
-        yield* OwnerDocs.clearRecipeLabel(people, { orgId, recipe: "quote" });
+        const seen = (yield* listed())!.commit;
+        yield* clear;
         assert.deepStrictEqual([yield* quote(), yield* labelled()], [false, false]);
         // Undo brings back the first revision with its own label; redo brings back the cleared one.
         yield* OwnerDocs.undoRecipe(people, { orgId, recipe: "quote" });
@@ -872,10 +887,67 @@ describe("worker document jobs", () => {
         yield* OwnerDocs.undoRecipe(people, { orgId, recipe: "quote" });
         assert.isFalse(yield* quote());
         const someone = [{ _tag: "person" as const, orgId, personId: KinPersonId.make("someone") }];
-        const refused = yield* OwnerDocs.clearRecipeLabel(someone, { orgId, recipe: "quote" }).pipe(
-          Effect.flip,
-        );
+        const refused = yield* OwnerDocs.clearRecipeLabel(someone, {
+          orgId,
+          recipe: "quote",
+          commit: seen,
+        }).pipe(Effect.flip);
         assert.strictEqual(refused.reason, "not_allowed");
+
+        // A crash between a commit and its label leaves no row: the revision reads sensitive.
+        const sql = yield* SqlClient.SqlClient;
+        const unlabel = Effect.gen(function* () {
+          const commit = (yield* listed())!.commit;
+          yield* sql`DELETE FROM kin_recipe_labels WHERE commit_sha = ${commit}`;
+        });
+        // A plain change built on the cleared revision, its label lost.
+        assert.match((yield* writeQuote(3))!.summary, /committed it/);
+        assert.isFalse(yield* labelled());
+        yield* unlabel;
+        assert.isTrue(yield* labelled());
+        yield* clear;
+        // Two plain changes from the same revision, the second merged with the first.
+        const first = yield* startQuote(4);
+        const second = yield* startQuote(5, 0, {
+          description: "Quote 3.",
+          template: '#let d = json("/inputs.json")\n#d.title\n',
+        });
+        assert.match((yield* first)!.summary, /committed it/);
+        const merged = (yield* second)!.summary;
+        assert.match(merged, /committed it/);
+        // The recipe is now the merge of the two, not the second job's own commit.
+        const merge = (yield* listed())!.commit;
+        assert.notInclude(merged, merge.slice(0, 12));
+        assert.isFalse(yield* labelled());
+        yield* unlabel;
+        assert.isTrue(yield* labelled());
+        yield* clear;
+        // The owner's undo of it.
+        yield* OwnerDocs.undoRecipe(people, { orgId, recipe: "quote" });
+        assert.notStrictEqual((yield* listed())!.commit, merge);
+        assert.isFalse(yield* labelled());
+        yield* unlabel;
+        assert.isTrue(yield* labelled());
+        // Clearing what the owner no longer sees is refused, and changes nothing.
+        const stale = yield* OwnerDocs.clearRecipeLabel(people, {
+          orgId,
+          recipe: "quote",
+          commit: merge,
+        }).pipe(Effect.flip);
+        assert.deepInclude(stale, { reason: "invalid_state" });
+        assert.match(stale.message, /changed after you looked/);
+        assert.isTrue(yield* labelled());
+        yield* clear;
+        assert.isFalse(yield* labelled());
+        // The starter recipes, and revisions from before Kin recorded where main was, have no
+        // row and read as the job that wrote them did.
+        assert.isFalse(yield* labelled("report"));
+        yield* sql`DELETE FROM kin_recipe_label_baselines`;
+        yield* unlabel;
+        assert.isFalse(yield* labelled());
+        assert.match((yield* writeQuote(6))!.summary, /committed it/);
+        yield* OwnerDocs.undoRecipe(people, { orgId, recipe: "quote" });
+        assert.isFalse(yield* labelled());
       }).pipe(Effect.provide(layer)),
   );
 

@@ -377,8 +377,11 @@ export const KinDocLabelInput = Schema.Struct({
 });
 export type KinDocLabelInput = typeof KinDocLabelInput.Type;
 
-/** Clears the label a recipe got from being written after a sensitive read. */
-export const KinRecipeClearLabelInput = KinRecipeUndoInput;
+/** Clears the label a recipe got from being written after a sensitive read, as the owner saw it. */
+export const KinRecipeClearLabelInput = Schema.Struct({
+  ...KinRecipeUndoInput.fields,
+  commit: TrimmedNonEmptyString,
+});
 export type KinRecipeClearLabelInput = typeof KinRecipeClearLabelInput.Type;
 export const KinRecipeClearLabelResult = Schema.Struct({
   recipe: TrimmedNonEmptyString,

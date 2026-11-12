@@ -11,6 +11,7 @@ import {
   kinVisualSaveFile,
   readKinVisualMessage,
 } from "@t3tools/shared/kinVisual";
+import { kinVisualSaveBytes } from "@t3tools/shared/kinVisualSvg";
 import { AsyncResult } from "effect/reactivity";
 import { Maximize2Icon, XIcon } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -27,6 +28,7 @@ import {
   AlertDialogTitle,
 } from "../components/ui/alert-dialog";
 import { Button } from "../components/ui/button";
+import { toastManager } from "../components/ui/toast";
 import { Dialog, DialogPopup, DialogTitle } from "../components/ui/dialog";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../components/ui/tooltip";
 import { useHtmlRenderTheme } from "../hooks/useHtmlRenderTheme";
@@ -47,7 +49,16 @@ function saveFile(name: string, mimeType: string, data: string) {
   } catch {
     return;
   }
-  const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+  const saved = kinVisualSaveBytes(mimeType, bytes);
+  if ("error" in saved) {
+    toastManager.add({
+      type: "error",
+      title: "Couldn't save this file",
+      description: `Kin couldn't save this SVG safely: ${saved.error}.`,
+    });
+    return;
+  }
+  const url = URL.createObjectURL(new Blob([saved.bytes], { type: mimeType }));
   const link = document.createElement("a");
   link.href = url;
   link.download = name;

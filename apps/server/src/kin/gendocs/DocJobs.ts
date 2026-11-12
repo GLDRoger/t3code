@@ -37,7 +37,7 @@ import { turnSensitive } from "../work/workerAttempts.ts";
 import { entrySensitive } from "./facts.ts";
 import { canonical } from "./make.ts";
 import type { Value } from "./recipe.ts";
-import { labelChange, verifySample } from "./recipeLabels.ts";
+import { labelChange, recordBaseline, verifySample } from "./recipeLabels.ts";
 import { KinDocRenderer } from "./render.ts";
 import { RETURN_CAPS, takeOutputs } from "./returnPath.ts";
 import { jobWorktree, KinWorkspace, type StoredRecipe } from "./workspace.ts";
@@ -453,6 +453,8 @@ export const makeCollectorLayer = (options: { readonly sweepPage?: number } = {}
               problems: [],
             };
           const orgId = job.orgId;
+          const withWorkspace = Effect.provideService(KinWorkspace, workspace);
+          yield* recordBaseline(orgId).pipe(withWorkspace);
           const change = yield* workspace.applyRecipeChange(orgId, {
             workerId: job.workerId,
             recipe: job.recipe,
@@ -460,7 +462,7 @@ export const makeCollectorLayer = (options: { readonly sweepPage?: number } = {}
             verify: verifySample(renderer, orgId),
           });
           if (change._tag === "committed")
-            yield* labelChange(orgId, job.recipe, change, job.sensitive === 1);
+            yield* labelChange(orgId, job.recipe, change, job.sensitive === 1).pipe(withWorkspace);
           const left =
             change._tag === "refused" || change.left.length === 0
               ? []

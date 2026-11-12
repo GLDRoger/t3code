@@ -264,9 +264,16 @@ export type Value =
   | ReadonlyArray<string>
   | ReadonlyArray<Readonly<Record<string, string | number | boolean | Money | null>>>;
 
+const isExactMoney = (value: unknown): value is Money =>
+  typeof value === "object" &&
+  value !== null &&
+  Number.isSafeInteger(Reflect.get(value, "minor")) &&
+  /^[A-Z]{3}$/.test(String(Reflect.get(value, "currency")));
+
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const MAX_TEXT = 60_000;
-const MAX_ROWS = 500;
+/** A year of a busy company's rows; what a recipe makes from them is bounded by work and size. */
+export const MAX_ROWS = 50_000;
 
 /** A real calendar day as YYYY-MM-DD from year 1000: `Date.parse` takes 31 February as 3 March. */
 const isDay = (value: string) => {
@@ -283,6 +290,7 @@ const agentValue = (
   type: ScalarType | "month",
   value: unknown,
   currency: string,
+  exact: boolean,
 ): Exclude<Value, ReadonlyArray<unknown>> | { readonly error: string } => {
   switch (type) {
     case "text":
@@ -300,6 +308,7 @@ const agentValue = (
         : { error: "a number such as 2 or 1.5" };
     }
     case "money": {
+      if (exact && isExactMoney(value)) return { minor: value.minor, currency: value.currency };
       if (typeof value !== "string" && typeof value !== "number")
         return { error: 'an amount as said, such as "₹1,200"' };
       const parsed = parseAmount(String(value), currency);
@@ -322,6 +331,7 @@ const agentTable = (
   input: InputDecl,
   raw: unknown,
   currency: string,
+  exact: boolean,
 ): Value | { readonly error: string } => {
   if (!Array.isArray(raw) || raw.length > MAX_ROWS) return { error: `rows, at most ${MAX_ROWS}` };
   const rows: Array<Record<string, string | number | boolean | Money | null>> = [];
@@ -337,7 +347,7 @@ const agentTable = (
         out[column] = null;
         continue;
       }
-      const checked = agentValue(type, cell, currency);
+      const checked = agentValue(type, cell, currency, exact);
       if (typeof checked === "object" && checked !== null && "error" in checked)
         return { error: `${column}: ${checked.error}` };
       out[column] = checked;
@@ -345,6 +355,35 @@ const agentTable = (
     rows.push(out);
   }
   return rows;
+};
+
+const checkedValue = (input: InputDecl, raw: unknown, currency: string, exact: boolean) =>
+  input.type === "table"
+    ? agentTable(input, raw, currency, exact)
+    : agentValue(input.type, raw, currency, exact);
+
+/**
+ * A sample's inputs, each checked by its declared type as an agent's input is, so a recipe's own
+ * sample can't hand the renderer what no job could. Amounts may be written as Kin stores them.
+ */
+export const checkedSample = (
+  recipe: Recipe,
+  given: object,
+): { readonly inputs: Readonly<Record<string, Value>> } | { readonly error: string } => {
+  const inputs: Record<string, Value> = {};
+  const wrong: Array<string> = [];
+  for (const input of recipe.inputs) {
+    const raw: unknown = Object.hasOwn(given, input.name) ? Reflect.get(given, input.name) : null;
+    if (raw === undefined || raw === null) {
+      inputs[input.name] = null;
+      continue;
+    }
+    const checked = checkedValue(input, raw, "INR", true);
+    if (typeof checked === "object" && checked !== null && "error" in checked)
+      wrong.push(`${input.name} (${checked.error})`);
+    else inputs[input.name] = checked;
+  }
+  return wrong.length > 0 ? { error: wrong.slice(0, 5).join("; ") } : { inputs };
 };
 
 /** What Kin read from stored rows for one declared input; `agent` holds the agent's checked values. */
@@ -381,10 +420,7 @@ export const assembleInputs = (
     if (input.from !== "agent") continue;
     const raw = given[input.name];
     if (raw === undefined || raw === null) continue;
-    const checked =
-      input.type === "table"
-        ? agentTable(input, raw, currency)
-        : agentValue(input.type, raw, currency);
+    const checked = checkedValue(input, raw, currency, false);
     if (typeof checked === "object" && checked !== null && "error" in checked)
       wrong.push(`${input.name} (${checked.error})`);
     else agent[input.name] = checked;
