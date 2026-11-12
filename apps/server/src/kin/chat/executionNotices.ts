@@ -1,6 +1,7 @@
-import { KinChatId, KinMessageId, type KinPendingAction } from "@t3tools/contracts";
-import * as DateTime from "effect/DateTime";
+import { KinChatId, KinMessageId, KinTrigger, type KinPendingAction } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -107,7 +108,8 @@ export const layer = Layer.effect(
   }),
 );
 
-const PLATFORM: Record<string, string> = { ios: "iPhone", android: "Android phone" };
+const PLATFORM: Record<string, string> = { ios: "iOS", android: "Android" };
+const decodeZone = Schema.decodeUnknownOption(KinTrigger.fields.timeZone);
 
 /**
  * A phone's reported name, safe inside a quoted notice and a push: letters, digits, spaces,
@@ -122,14 +124,23 @@ export const kinNoticeDeviceName = (label: string) => {
   return short === "" ? "A phone" : short;
 };
 
-const noticeTime = (at: number) =>
-  `${DateTime.formatIso(DateTime.makeUnsafe(at)).slice(0, 16).replace("T", " ")} UTC`;
+/** Owner-local "Thu 12 Nov, 09:30", or UTC (and saying so) before the owner has set a zone. */
+const noticeTime = (at: number, timeZone: string) =>
+  `${new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(at)}${timeZone === "UTC" ? " UTC" : ""}`;
 
-export const keyNoticeBody = (input: KinKeyChange) => {
+export const keyNoticeBody = (input: KinKeyChange, timeZone: string) => {
   const device = `"${kinNoticeDeviceName(input.deviceLabel)}" (${PLATFORM[input.platform] ?? "phone"})`;
   return input.change === "allowed"
-    ? `${device} can now approve for Kin. It was allowed at ${noticeTime(input.at)}. If that wasn't you, remove it in Kin on the web or desktop: Settings, then Approvals.`
-    : `${device} can no longer approve for Kin. It was removed at ${noticeTime(input.at)}, and anything it approved that hadn't run yet was cancelled.`;
+    ? `${device} can now approve for Kin. It was allowed on ${noticeTime(input.at, timeZone)}. If that wasn't you, remove it in Kin on the web or desktop: Settings, then Approvals.`
+    : `${device} can no longer approve for Kin. It was removed on ${noticeTime(input.at, timeZone)}, and anything it approved that hadn't run yet was cancelled.`;
 };
 
 /** One notice per change (the message id is the key's), so a retried allow or remove posts once. */
@@ -149,12 +160,15 @@ export const keyNoticesLayer = Layer.effect(
             });
             return;
           }
+          const [zone] = yield* sql<{ timeZone: string }>`SELECT time_zone AS "timeZone"
+            FROM kin_trigger_settings WHERE org_id = ${input.orgId} ORDER BY org_id`;
+          const timeZone = Option.getOrElse(decodeZone(zone?.timeZone), () => "UTC");
           yield* chat.notice({
             orgId: input.orgId,
             chatId: KinChatId.make(lead.ownerChatId),
             messageId: KinMessageId.make(`kin-key-${input.change}:${input.thumbprint}`),
             audience: "owner",
-            body: keyNoticeBody(input),
+            body: keyNoticeBody(input, timeZone),
           });
         },
         Effect.catchCause((cause) => Effect.logWarning("Kin key notice not posted", cause)),

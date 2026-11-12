@@ -32,11 +32,11 @@ describe("key notices", () => {
   });
 
   it("names the phone, when, and where to remove it", () => {
-    expect(keyNoticeBody(change("[x](https://evil.example)"))).toBe(
-      '"x https evil example" (iPhone) can now approve for Kin. It was allowed at 2026-11-12 09:30 UTC. If that wasn\'t you, remove it in Kin on the web or desktop: Settings, then Approvals.',
+    expect(keyNoticeBody(change("[x](https://evil.example)"), "UTC")).toBe(
+      '"x https evil example" (iOS) can now approve for Kin. It was allowed on Thu 12 Nov, 09:30 UTC. If that wasn\'t you, remove it in Kin on the web or desktop: Settings, then Approvals.',
     );
-    expect(keyNoticeBody(change("Pixel 9", "removed"))).toBe(
-      '"Pixel 9" (iPhone) can no longer approve for Kin. It was removed at 2026-11-12 09:30 UTC, and anything it approved that hadn\'t run yet was cancelled.',
+    expect(keyNoticeBody(change("Pixel 9", "removed"), "Asia/Kolkata")).toBe(
+      '"Pixel 9" (iOS) can no longer approve for Kin. It was removed on Thu 12 Nov, 15:00, and anything it approved that hadn\'t run yet was cancelled.',
     );
   });
 });

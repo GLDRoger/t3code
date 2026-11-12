@@ -7,14 +7,16 @@ import {
   type KinApprovalDeviceCode,
   type KinApprovalFailure,
 } from "@t3tools/client-runtime/kin/kinApprovalPresentation";
-import type {
-  EnvironmentId,
-  KinApprovalsListKeysResult,
-  KinApproverKey,
-  KinOrgId,
-  KinPendingAction,
-  KinPendingActionState,
+import {
+  KinApprovalError,
+  type EnvironmentId,
+  type KinApprovalsListKeysResult,
+  type KinApproverKey,
+  type KinOrgId,
+  type KinPendingAction,
+  type KinPendingActionState,
 } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import * as Base64Url from "effect/encoding/Base64Url";
 import { AsyncResult } from "effect/reactivity";
 import * as Device from "expo-device";
@@ -186,7 +188,12 @@ async function orDeviceFailure(
   }
 }
 
+const isApprovalError = Schema.is(KinApprovalError);
+
 function hostText(cause: unknown) {
+  // Registration's refusals (too many phones waiting, signed out, not the owner) say what to do.
+  if (isApprovalError(cause) && (cause.reason === "invalid_state" || cause.reason === "not_owner"))
+    return cause.message;
   return kinApprovalFailure(cause)?.text ?? "Kin didn't answer. Try again.";
 }
 
