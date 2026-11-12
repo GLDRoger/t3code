@@ -366,8 +366,13 @@ const make = Effect.gen(function* () {
       isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
     ),
     view: Effect.fn("KinStop.view")(function* (people, orgId) {
-      yield* member(people, orgId);
-      return yield* state(orgId);
+      const person = yield* member(people, orgId);
+      const current = yield* state(orgId);
+      // Any member sees whether Kin is stopped; why, in the owner's words, is his.
+      const ownsOrg = yield* isOrgOwner(orgId, person.personId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      return ownsOrg || current.reason === null ? current : { ...current, reason: null };
     }, Effect.mapError(mapError)),
     pause,
     resume,
