@@ -23,7 +23,7 @@ import {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -47,6 +47,7 @@ import {
 } from "./components/KinWorkPieces";
 import { KinWorkHealthWord } from "./KinWorkLists";
 import { KinWorkTaskList } from "./KinWorkScreen";
+import { KinDocsUnder } from "./KinDocsList";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected } from "./state/useKinHost";
 import {
@@ -259,6 +260,14 @@ function KinProjectBody(
               disabled: !canChange || busy || view.privacy.inherited,
               onChange: (sensitive) => void change({ sensitive }),
             }}
+            docs={
+              <KinDocsUnder
+                environmentId={environmentId}
+                orgId={orgId}
+                names={props.directory.names}
+                under={{ project: view.key }}
+              />
+            }
           />
         ),
       }}
@@ -274,6 +283,8 @@ function KinProjectSummary(props: {
   readonly onOpenTask: (key: KinRecordKey) => void;
   readonly onOpenClient: (key: KinRecordKey) => void;
   readonly privacy: { readonly disabled: boolean; readonly onChange: (on: boolean) => void };
+  /** The docs linked to the project. */
+  readonly docs: ReactNode;
 }) {
   const { view } = props;
   const { party, nextDue } = view;
@@ -322,6 +333,7 @@ function KinProjectSummary(props: {
           />
         </ListSection>
       )}
+      {props.docs}
       {view.blocked.length === 0 ? null : (
         <ListSection title={KIN_PROJECTS.blocked}>
           {view.blocked.map((row) => (

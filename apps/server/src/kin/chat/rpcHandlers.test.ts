@@ -762,6 +762,29 @@ it.effect(
         (yield* readOnly["kin.triggers.setTimeZone"](zone).pipe(Effect.flip))._tag,
         "EnvironmentAuthorizationError",
       );
+      // Where visuals may load from is the owner's alone: a teammate's session and a session
+      // without the settings grant are both refused, whatever they ask.
+      const host = { orgId: person.orgId, host: "tiles.example.com" };
+      assert.deepStrictEqual(yield* client["kin.visuals.hosts.allow"](host), {
+        orgId: person.orgId,
+        hosts: ["tiles.example.com"],
+      });
+      for (const call of [
+        memberClient["kin.visuals.hosts.list"]({ orgId: person.orgId }),
+        memberClient["kin.visuals.hosts.allow"]({ ...host, host: "evil.example.com" }),
+        memberClient["kin.visuals.hosts.remove"](host),
+      ])
+        assert.include(yield* call.pipe(Effect.flip), { reason: "not_allowed" });
+      for (const call of [
+        readOnly["kin.visuals.hosts.list"]({ orgId: person.orgId }),
+        readOnly["kin.visuals.hosts.allow"](host),
+        readOnly["kin.visuals.hosts.remove"](host),
+      ])
+        assert.strictEqual((yield* call.pipe(Effect.flip))._tag, "EnvironmentAuthorizationError");
+      assert.deepStrictEqual(yield* client["kin.visuals.hosts.remove"](host), {
+        orgId: person.orgId,
+        hosts: [],
+      });
     }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 

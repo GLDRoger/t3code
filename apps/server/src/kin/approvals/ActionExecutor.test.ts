@@ -43,7 +43,7 @@ import * as ActionExecutor from "./ActionExecutor.ts";
 import * as ActionHandlers from "./ActionHandlers.ts";
 import * as Audit from "./Audit.ts";
 import * as CredentialHygiene from "./CredentialHygiene.ts";
-import { KinExecutionNotices } from "./ExecutionNotices.ts";
+import { KinExecutionNotices, KinKeyNotices } from "./ExecutionNotices.ts";
 import { BOOTSTRAP_OWNER, KinOrgRoles } from "./GrantPorts.ts";
 import {
   insertActiveKey,
@@ -1517,6 +1517,7 @@ describe("KinActionExecutor", () => {
               lapsed: ({ holdReason }) => Effect.sync(() => void lapses.push(holdReason)),
             }),
           ),
+          Layer.succeed(KinKeyNotices, KinKeyNotices.of({ changed: () => Effect.void })),
           ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })),
           KeySeal.layerTest(),
           Sqlite.layerMemory,
@@ -1565,7 +1566,7 @@ describe("KinActionExecutor", () => {
   );
 
   it.effect(
-    "a second phone activates once the first signs, with the credential check failing",
+    "a phone-to-phone approval from before Settings is voided, and its key stays pending",
     () => {
       const lapses: Array<string> = [];
       return Effect.gen(function* () {
@@ -1573,30 +1574,20 @@ describe("KinActionExecutor", () => {
         const context = yield* Layer.build(production(ApprovalsLayer.executorLayer, lapses));
         yield* Effect.gen(function* () {
           const { sql } = yield* seed;
-          const enrol = (key: ReturnType<typeof makeApprovalKey>, source: string) =>
-            approved({
-              kind: "register_approver_key",
-              target: { _tag: "device_key", thumbprint: key.kid, hardware: "tee", attested: true },
-              resolved: { _tag: "none" },
-              source,
-            });
-          const stateOfKey = (key: ReturnType<typeof makeApprovalKey>) =>
-            sql<{ state: string; sealed: number }>`SELECT state, seal IS NOT NULL AS sealed
-            FROM kin_approver_keys WHERE thumbprint = ${key.kid}`;
           const phone = makeApprovalKey();
           yield* insertPendingKey({ key: phone, orgId, humanId: owner });
-          // A row written into SQLite with no pending seal, and a card for it the owner signs.
-          const forged = makeApprovalKey();
-          yield* insertPendingKey({ key: forged, orgId, humanId: owner, sealed: false });
-          const ref = yield* enrol(phone, "second-phone");
-          const forgedRef = yield* enrol(forged, "forged-phone");
+          const ref = yield* approved({
+            kind: "register_approver_key",
+            target: { _tag: "device_key", thumbprint: phone.kid, hardware: "tee", attested: true },
+            resolved: { _tag: "none" },
+            source: "second-phone",
+          });
           yield* TestClock.adjust("1 second");
-          assert.deepInclude(yield* stateOf(ref), { state: "succeeded" });
-          assert.deepStrictEqual(yield* stateOfKey(phone), [{ state: "active", sealed: 1 }]);
-          assert.deepInclude(yield* stateOf(forgedRef), { state: "failed" });
-          assert.deepStrictEqual(yield* stateOfKey(forged), [{ state: "pending", sealed: 0 }]);
-          assert.isEmpty(
-            (yield* auditEntries).filter((entry) => entry.event === "credential_check_failed"),
+          assert.deepInclude(yield* stateOf(ref), { state: "voided", reason: "unsupported_kind" });
+          assert.deepStrictEqual(
+            yield* sql<{ state: string }>`SELECT state FROM kin_approver_keys
+            WHERE thumbprint = ${phone.kid}`,
+            [{ state: "pending" }],
           );
         }).pipe(Effect.provide(context));
       }).pipe(Effect.scoped);
@@ -1724,6 +1715,11 @@ describe("KinActionExecutor", () => {
         ],
       ],
       ["outboundHttp.ts", ["const requireUndici = NodeModule.createRequire(import.meta.url);"]],
+      // Only resolves where a chart library's file is on disk; nothing is loaded into the server.
+      [
+        "kin/visualLibraries.ts",
+        ["const requireFromHere = NodeModule.createRequire(import.meta.url);"],
+      ],
       [
         "policy/ManagedPolicy.ts",
         ["const requireForFfi = NodeModule.createRequire(import.meta.url);"],

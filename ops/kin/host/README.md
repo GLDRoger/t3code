@@ -115,24 +115,15 @@ Running it again with the same name and domain changes nothing and prints the ex
 
 ## Approve from the phone
 
-Merges and level raises need your signature from a phone's approval key. The first key in an org is confirmed only here, on the host, by you in a kin shell. No client, remote session or agent can confirm one.
+Merges and level raises need your signature from a phone's approval key. A phone can approve only after you allow it, in Kin on the web or desktop, signed in as yourself. No phone, teammate or agent can allow one.
 
-1. Pair the phone (above). On it, open Kin, then Approvals, and tap **Set up approvals**. It makes a key in the Secure Enclave and shows a 6-digit code and the key's thumbprint. The code works for 10 minutes and takes 5 tries.
-2. In a kin shell:
-
-   ```bash
-   KIN_ENABLED=true node ~/kin-current/apps/server/dist/bin.mjs kin approvals confirm-key --base-dir ~/.t3
-   ```
-
-   It lists each phone waiting: device name, platform, hardware, the full key thumbprint, org and person, the session it registered from, and when its code runs out. Check the thumbprint against the phone, pick it (or pass `--key <thumbprint>`), and type the code.
-
+1. Pair the phone (above). On it, open Kin, then Approvals, and tap **Set up approvals**. It makes a key in the Secure Enclave and shows a 6-digit number. The request waits 10 minutes.
+2. In Kin on the web or desktop, open **Settings**, then **Approvals**. The phone is listed under waiting, with its name, model and the same number. Check the number matches, then click **Allow**.
 3. On the phone, tap **Check again**. It now says "This phone approves for Kin".
 
-Only attested keys are listed. A simulator, or a phone that couldn't prove its key is in secure hardware, never appears and can't approve. The command is safe while `kin-server` runs, and `--code <digits>` skips the prompt.
+Every phone works this way: the first, a second one, and a replacement for one you lost. Remove the lost one from the same page; anything it approved that hadn't run yet is cancelled. Each allow and removal is posted in your chat with the chief of staff and pushed to your phones. Only phones that proved their key is in secure hardware are listed; a simulator never is. At most 3 phones wait at once.
 
-**A second phone.** Set it up the same way. Instead of a host step, the phone that already approves shows a card for it under Approvals, with its name, thumbprint and hardware. Approve that card with Face ID. Running `confirm-key` for it is refused while another key is active.
-
-**A lost phone.** Set up the new phone, then run the same command with `--recover`. It revokes every other key you hold, voids anything they approved that hasn't run yet, and activates the new one. The audit log records each revoked key and the recovery (`key_revoked`, `key_confirmed`).
+**On the host instead.** In a kin shell, `kin approvals confirm-key` lists each waiting phone (device name, platform, hardware, full key thumbprint, org, person, the session it asked from, when its request runs out). Pick one, or pass `--key <thumbprint>`, and type the number the phone shows; `--code <digits>` skips the prompt and a number gets 5 tries. `--recover` also revokes every other key you hold. `kin` is `setup.sh`'s wrapper for `KIN_ENABLED=true node ~/kin-current/apps/server/dist/bin.mjs kin ... ` with `T3CODE_HOME=~/.t3`. It is safe while `kin-server` runs, and the audit log records each step (`key_registered`, `key_confirmed`, `key_revoked`).
 
 ## Reply latency
 

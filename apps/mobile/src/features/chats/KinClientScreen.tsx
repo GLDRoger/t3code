@@ -50,6 +50,7 @@ import {
   KinWorkTimelineLines,
 } from "./components/KinWorkPieces";
 import { KinWorkNamedRow } from "./KinWorkLists";
+import { KinDocsUnder } from "./KinDocsList";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected } from "./state/useKinHost";
 import {
@@ -321,6 +322,7 @@ function KinClientBody(
           />
         ) : null}
       </ListSection>
+      <KinDocsUnder {...target} names={names} under={{ party: props.clientKey }} />
       <ListSection
         title={KIN_CLIENTS.contacts}
         {...(view.contacts.length === 0 ? {} : { footer: KIN_CLIENTS.detailsPrivate })}
