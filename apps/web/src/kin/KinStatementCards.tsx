@@ -166,7 +166,7 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
   const { card, selection } = shown;
   const [pending, setPending] = useState<"apply" | "undo" | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
-  const confirm = kinStatementConfirm(card, selection);
+  const confirm = kinStatementConfirm(card);
   const editable =
     (card.status === "open" || card.status === "undone") && canApply && pending === null;
 
@@ -216,6 +216,11 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
   const status = kinStatementStatusLines(card);
   const rows = { shown, editable, onChange: (next: KinStatementSelectChange) => void change(next) };
   const held = kinStatementTotal(card, "matched") - (card.chosen?.matched ?? 0);
+  // Matches held back for a check are ticked in one tap, without opening their section.
+  const heldAll =
+    card.heldBack !== undefined && editable && !kinStatementAllTicked(card, selection)
+      ? kinStatementTotal(card, "matched")
+      : 0;
   return (
     <CardFrame eyebrow="Bank statement" label={`Bank statement: ${card.title}`}>
       <p className="font-medium text-foreground">{card.title}</p>
@@ -233,10 +238,22 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
             {line}
           </p>
         ))}
-        {card.heldBack === undefined || card.status === "applied" ? null : (
+        {card.heldBack === undefined ||
+        (card.status !== "open" && card.status !== "undone") ? null : (
           <p className="text-xs font-medium text-warning-foreground">{card.heldBack}</p>
         )}
       </div>
+      {heldAll === 0 ? null : (
+        <div>
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() => void change({ _tag: "tickAll", ticked: true })}
+          >
+            Tick all {heldAll} matches
+          </Button>
+        </div>
+      )}
       {kinStatementSections(card).map((section) => (
         <Section
           key={section.id}
@@ -359,6 +376,10 @@ function ChooseRows(props: RowsProps) {
     <ul className="flex flex-col gap-2">
       {rows.choose.slice(0, props.count).map((one) => {
         const picked = kinStatementPickOf(selection, one.row);
+        const taken = one.options.flatMap((option) => {
+          const other = kinStatementTakenBy(rows.choose, selection, one.row, option);
+          return other === undefined ? [] : [{ option, other }];
+        });
         return (
           <li key={one.row} className="flex flex-col gap-1 py-1">
             <RowLine row={one} />
@@ -367,32 +388,29 @@ function ChooseRows(props: RowsProps) {
               aria-label={`Matches for ${one.text}`}
               className="flex flex-col gap-1 sm:pl-14"
             >
-              {one.options.map((option) => {
-                const taken = kinStatementTakenBy(rows.choose, selection, one.row, option);
-                return (
-                  <Button
-                    key={option.option}
-                    size="sm-multiline"
-                    variant={picked === option.option ? "default" : "outline"}
-                    aria-pressed={picked === option.option}
-                    disabled={!props.editable || taken !== undefined}
-                    onClick={() =>
-                      props.onChange({
-                        _tag: "pick",
-                        row: one.row,
-                        option: picked === option.option ? null : option.option,
-                      })
-                    }
-                  >
-                    {kinStatementTargetLine(option)}
-                    {taken === undefined ? null : (
-                      <span className="block text-xs font-normal">
-                        Picked for the {day(taken.date)} row of {taken.amount}
-                      </span>
-                    )}
-                  </Button>
-                );
-              })}
+              {one.options.map((option) => (
+                <Button
+                  key={option.option}
+                  size="sm-multiline"
+                  variant={picked === option.option ? "default" : "outline"}
+                  aria-pressed={picked === option.option}
+                  disabled={!props.editable || taken.some((one) => one.option === option)}
+                  onClick={() =>
+                    props.onChange({
+                      _tag: "pick",
+                      row: one.row,
+                      option: picked === option.option ? null : option.option,
+                    })
+                  }
+                >
+                  {kinStatementTargetLine(option)}
+                </Button>
+              ))}
+              {taken.map(({ option, other }) => (
+                <p key={option.option} className="text-xs text-muted-foreground">
+                  {option.key} is picked for the {day(other.date)} row of {other.amount}.
+                </p>
+              ))}
             </div>
           </li>
         );

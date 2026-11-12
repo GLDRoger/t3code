@@ -74,7 +74,7 @@ const view: KinStatementReviewView = { orgId, card };
 describe("statement review card", () => {
   it("shows each tap at once the way the server will keep it", () => {
     let selection = kinStatementSelectionOf(card);
-    expect(kinStatementConfirm(card, selection)).toEqual({ count: 2, label: "Confirm all 2" });
+    expect(kinStatementConfirm(card)).toEqual({ count: 2, label: "Confirm all 2" });
     expect(kinStatementOpenSuggestions(card.unmatched, selection)).toBe(3);
     expect(kinStatementRowNote(card.unmatched[0]!, "later")).toBe(
       "Kin suggests expense: Zomato, food",
@@ -104,7 +104,7 @@ describe("statement review card", () => {
 
     selection = kinStatementChange(selection, { _tag: "tick", row: 1, ticked: false });
     expect([0, 1].map((row) => kinStatementTicked(selection, row))).toEqual([true, false]);
-    expect(kinStatementConfirm(card, selection).label).toBe("Confirm 5");
+    expect(kinStatementConfirm({ ...card, selection }).label).toBe("Confirm 5");
     selection = kinStatementChange(selection, { _tag: "tickAll", ticked: false });
     selection = kinStatementChange(selection, { _tag: "tick", row: 0, ticked: true });
     expect([0, 1].map((row) => kinStatementTicked(selection, row))).toEqual([true, false]);
@@ -118,7 +118,7 @@ describe("statement review card", () => {
 
   it("starts with nothing ticked when Kin holds the matches back", () => {
     const held = { ...card, heldBack: "Nothing is ticked: Kin read these rows from a scan." };
-    expect(kinStatementConfirm(held, kinStatementSelectionOf(held))).toEqual({
+    expect(kinStatementConfirm(held)).toEqual({
       count: 0,
       label: "Nothing to confirm",
     });
@@ -132,7 +132,7 @@ describe("statement review card", () => {
       chosen: { matched: 400, choose: 0, unmatched: 0 },
       selection,
     };
-    expect(kinStatementConfirm(long, selection).label).toBe("Confirm all 400");
+    expect(kinStatementConfirm(long).label).toBe("Confirm all 400");
     // 900 rows not loaded may still take a suggestion.
     expect(kinStatementSuggestionsLeft(long, [], selection)).toBe(true);
     // The reply to a tap wins until a push as new as it arrives.

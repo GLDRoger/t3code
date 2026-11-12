@@ -273,11 +273,15 @@ export const kinStatementRowsInput = (
   limit: KIN_STATEMENT_CARD_ROWS,
 });
 
-/** How many rows Confirm records, and its label: "Confirm all 14" while every match is ticked. */
-export function kinStatementConfirm(
-  card: ReviewCard,
-  selection: KinStatementSelection,
-): { readonly count: number; readonly label: string } {
+/**
+ * How many rows Confirm records, and its label: "Confirm all 14" while every match is ticked.
+ * Always the server's count: while a tap is on its way, Confirm waits rather than guess.
+ */
+export function kinStatementConfirm(card: ReviewCard): {
+  readonly count: number;
+  readonly label: string;
+} {
+  const selection = kinStatementSelectionOf(card);
   // A card from before counts were kept carries every row, so its own lists count it.
   const chosen = card.chosen ?? {
     matched: card.matched.filter((one) => kinStatementTicked(selection, one.row)).length,
@@ -287,13 +291,14 @@ export function kinStatementConfirm(
       .length,
   };
   const count = chosen.matched + chosen.choose + chosen.unmatched;
-  const all =
-    selection.ticked === "all" &&
-    selection.except.length === 0 &&
-    kinStatementTotal(card, "matched") > 0;
   return {
     count,
-    label: count === 0 ? "Nothing to confirm" : all ? `Confirm all ${count}` : `Confirm ${count}`,
+    label:
+      count === 0
+        ? "Nothing to confirm"
+        : kinStatementAllTicked(card, selection)
+          ? `Confirm all ${count}`
+          : `Confirm ${count}`,
   };
 }
 

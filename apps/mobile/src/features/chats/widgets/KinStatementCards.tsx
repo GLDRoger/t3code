@@ -184,7 +184,7 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
   const { card, selection } = shown;
   const [pending, setPending] = useState<"apply" | "undo" | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
-  const confirm = kinStatementConfirm(card, selection);
+  const confirm = kinStatementConfirm(card);
   const editable =
     (card.status === "open" || card.status === "undone") && canApply && pending === null;
 
@@ -233,6 +233,11 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
 
   const rows = { shown, editable, onChange: (next: KinStatementSelectChange) => void change(next) };
   const held = kinStatementTotal(card, "matched") - (card.chosen?.matched ?? 0);
+  // Matches held back for a check are ticked in one tap, without opening their section.
+  const heldAll =
+    card.heldBack !== undefined && editable && !kinStatementAllTicked(card, selection)
+      ? kinStatementTotal(card, "matched")
+      : 0;
   return (
     <Frame label={`Bank statement: ${card.title}`}>
       <Text textRole="caption" className="font-t3-medium text-foreground-muted">
@@ -255,12 +260,20 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
             {line}
           </Text>
         ))}
-        {card.heldBack === undefined || card.status === "applied" ? null : (
+        {card.heldBack === undefined ||
+        (card.status !== "open" && card.status !== "undone") ? null : (
           <Text textRole="caption" className="font-t3-medium text-warning-foreground">
             {card.heldBack}
           </Text>
         )}
       </View>
+      {heldAll === 0 ? null : (
+        <Button
+          size="compact"
+          label={`Tick all ${heldAll} matches`}
+          onPress={() => void change({ _tag: "tickAll", ticked: true })}
+        />
+      )}
       {kinStatementSections(card).map((section) => (
         <Section
           key={section.id}
