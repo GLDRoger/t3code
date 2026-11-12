@@ -1,4 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- a bounded, synchronous read of one file's bytes; no service owns these formats.
+// oxlint-disable-next-line typescript/triple-slash-reference -- evals typechecks this file outside the server project.
+/// <reference path="./pdfjsWorker.d.ts" />
 import * as NodeBuffer from "node:buffer";
 import * as NodeZlib from "node:zlib";
 
