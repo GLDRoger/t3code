@@ -493,14 +493,19 @@ it.effect("the import brings running workers and open commitments and objectives
         ["Invented goal", "open", lead, 1],
       ],
     );
-    // Run again, after someone moved one: nothing new, nothing overwritten.
+    // Run again, after someone moved one and dropped another: nothing new, nothing overwritten.
     const promise = rows.find((row) => row.title === "Invented promise")!;
     yield* records.update(orgId, { actor: { _tag: "system" }, via: "owner" }, promise.key, {
       state: "done",
     });
+    const goal = rows.find((row) => row.title === "Invented goal")!;
+    yield* records.update(orgId, { actor: { _tag: "system" }, via: "owner" }, goal.key, {
+      state: "dropped",
+    });
     assert.deepStrictEqual(yield* importWork(orgId, items), { workers: 0, memory: 0 });
     assert.lengthOf((yield* records.query(orgId, {})).rows, 3);
     assert.include(yield* records.get(orgId, promise.key), { state: "done" });
+    assert.include(yield* records.get(orgId, goal.key), { state: "dropped" });
   }).pipe(Effect.provide(layer)),
 );
 

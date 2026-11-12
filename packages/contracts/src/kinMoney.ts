@@ -96,6 +96,8 @@ export const KinPayment = Schema.Struct({
   note: Schema.String,
   recordedAt: IsoDateTime,
   voidedAt: Schema.NullOr(IsoDateTime),
+  /** Tax the client deducted at source (TDS), recorded so the invoice settles; not money in. */
+  withheld: Schema.optionalKey(Schema.Literal(true)),
   /** Absent from older servers; `null` when it has no receipt yet (make one with makeReceipt). */
   receipt: Schema.optionalKey(Schema.NullOr(KinPaymentReceipt)),
 });

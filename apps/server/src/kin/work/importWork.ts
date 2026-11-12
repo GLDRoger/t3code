@@ -64,22 +64,34 @@ export const importWork = Effect.fn("KinWorkImport.run")(function* (
       AND NOT EXISTS (SELECT 1 FROM kin_record_links l WHERE l.org_id = k.org_id
         AND l.kind = 'worker' AND l.target = k.worker_id)
     ORDER BY k.started_at, k.worker_id`;
+  // An entry the owner dropped since stays dropped: a run again adds only what is new.
+  const unlessDropped = <E extends { readonly reason?: string }, R>(
+    create: Effect.Effect<{ readonly created: boolean }, E, R>,
+  ) =>
+    create.pipe(
+      Effect.catchIf(
+        (error) => error.reason === "conflict",
+        () => Effect.succeed({ created: false }),
+      ),
+    );
   for (const worker of running) {
-    const { created } = yield* records.create(orgId, writer, {
-      originKey: `worker:${worker.workerId}`,
-      title: worker.title?.trim().slice(0, 280) || "Coding task",
-      state: "doing",
-      owner: { _tag: "agent", agentId: worker.agentId },
-      category: "task",
-      links: [
-        {
-          kind: "worker",
-          target: worker.workerId,
-          relation: "attempt",
-          label: worker.title?.slice(0, 280) ?? null,
-        },
-      ],
-    });
+    const { created } = yield* unlessDropped(
+      records.create(orgId, writer, {
+        originKey: `worker:${worker.workerId}`,
+        title: worker.title?.trim().slice(0, 280) || "Coding task",
+        state: "doing",
+        owner: { _tag: "agent", agentId: worker.agentId },
+        category: "task",
+        links: [
+          {
+            kind: "worker",
+            target: worker.workerId,
+            relation: "attempt",
+            label: worker.title?.slice(0, 280) ?? null,
+          },
+        ],
+      }),
+    );
     if (created) workers++;
   }
   const open = items.filter(
@@ -96,17 +108,19 @@ export const importWork = Effect.fn("KinWorkImport.run")(function* (
     for (const item of open) {
       const owner = yield* ownerFor(orgId, item.chat, first?.agentId);
       if (owner === undefined) continue;
-      const { created } = yield* records.create(orgId, writer, {
-        originKey: `memory:${item.id}`,
-        title: item.title.trim().slice(0, 280),
-        owner: { _tag: "agent", agentId: owner },
-        category: item.kind === "commitment" ? "obligation" : "task",
-        ...dueOf(item.due, zone),
-        notes: (item.what ?? "").slice(0, 4_000),
-        // Unlabelled memory reads as sensitive, and stays so in Work.
-        sensitive: item.sensitive !== false,
-        links: [{ kind: "memory", target: item.id, relation: "source", label: item.path }],
-      });
+      const { created } = yield* unlessDropped(
+        records.create(orgId, writer, {
+          originKey: `memory:${item.id}`,
+          title: item.title.trim().slice(0, 280),
+          owner: { _tag: "agent", agentId: owner },
+          category: item.kind === "commitment" ? "obligation" : "task",
+          ...dueOf(item.due, zone),
+          notes: (item.what ?? "").slice(0, 4_000),
+          // Unlabelled memory reads as sensitive, and stays so in Work.
+          sensitive: item.sensitive !== false,
+          links: [{ kind: "memory", target: item.id, relation: "source", label: item.path }],
+        }),
+      );
       if (created) memory++;
     }
   }

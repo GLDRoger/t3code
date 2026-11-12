@@ -350,9 +350,10 @@ const entryPayments = Effect.fn("KinDocFacts.entryPayments")(function* (
     paidOn: string;
     note: string;
     originKey: string;
+    withheld: number;
     receipt: string | null;
   }>`SELECT p.amount_minor AS minor, p.currency, p.paid_on AS "paidOn", p.note,
-      p.origin_key AS "originKey",
+      p.origin_key AS "originKey", p.withheld,
       (SELECT n.number FROM kin_records r
         JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
         WHERE r.org_id = p.org_id AND r.register_id = 'receipts' AND r.state <> 'dropped'
@@ -373,13 +374,11 @@ const entryPayments = Effect.fn("KinDocFacts.entryPayments")(function* (
     kind:
       row.paidOn < before || row.originKey.startsWith("receipt:")
         ? "advance"
-        : TDS_ORIGIN.test(row.originKey)
+        : row.withheld === 1
           ? "tds"
           : "received",
   }));
 });
-// A bank statement records TDS a client deducted as a payment of its own (`statementApply.ts`).
-const TDS_ORIGIN = /^statement:.*:tds$/;
 
 /** Only the columns the input declares, so a row carries nothing else Kin stores. */
 const pick = (input: InputDecl, row: Readonly<Record<string, Cell>>) =>

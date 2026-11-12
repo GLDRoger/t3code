@@ -5,16 +5,17 @@ import {
   type KinPersonId,
   type KinRecordState,
   type KinStatementApplyInput,
-  KinStatementReviewCard,
-  KinWidgetId,
+  type KinStatementReviewCard,
+  type KinStatementRowsInput,
+  type KinStatementSelectInput,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { KinChatRepository } from "../../chat/KinChatRepository.ts";
 import { KinRecords, type Writer } from "../KinRecords.ts";
+import type { RecordRow } from "../recordRows.ts";
 import { type FieldValue, parseFields } from "../lists.ts";
 import { endOfDay, ownerZone } from "../recordRows.ts";
 import { defineList, listDef, PRESETS } from "../registers.ts";
@@ -27,12 +28,15 @@ import {
   rowFingerprints,
   rowTitle,
 } from "./bankList.ts";
+import { changeSelection, decisionsOf, reviewCard, rowsOf } from "./statementCard.ts";
 import {
-  reviewCard,
+  cardState,
+  encodeSelection,
+  expenseCategories,
   reviewOf,
+  selectionOf,
   statementRow,
   updateCard,
-  expenseCategories,
 } from "./statementReview.ts";
 import type { StatementRow } from "./statementTable.ts";
 
@@ -42,6 +46,7 @@ import type { StatementRow } from "./statementTable.ts";
  * change takes, each with its bank row linked. Undo takes back everything one statement applied.
  */
 
+const isChatError = Schema.is(KinChatError);
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const changed = new KinChatError({
   reason: "conflict",
@@ -62,6 +67,50 @@ const Prior = Schema.Struct({
 const PriorJson = Schema.fromJsonString(Prior);
 const encodePrior = Schema.encodeEffect(PriorJson);
 const decodePrior = Schema.decodeUnknownOption(PriorJson);
+/** What a person may change on an entry after Kin applied it; undo leaves an entry so changed. */
+const Snapshot = Schema.Struct({
+  state: Schema.String,
+  dateAt: Schema.NullOr(Schema.Number),
+  amountMinor: Schema.NullOr(Schema.Number),
+  paidWith: Schema.NullOr(Schema.String),
+  notes: Schema.String,
+  category: Schema.NullOr(Schema.String),
+});
+const After = Schema.Struct({ bank: Snapshot, target: Schema.optional(Snapshot) });
+const AfterJson = Schema.fromJsonString(After);
+const encodeAfter = Schema.encodeEffect(AfterJson);
+const decodeAfter = Schema.decodeUnknownOption(AfterJson);
+const snapshot = (row: RecordRow): typeof Snapshot.Type => {
+  const paid = parseFields(row.fieldsJson).paidWith;
+  return {
+    state: row.state,
+    dateAt: row.dateAt,
+    amountMinor: row.amountMinor,
+    paidWith: typeof paid === "string" ? paid : null,
+    notes: row.notes,
+    category: row.category,
+  };
+};
+/** Whether an entry is as Kin left it; one from before snapshots were kept counts as unchanged. */
+const asLeft = (row: RecordRow, kept: typeof Snapshot.Type | undefined) =>
+  kept === undefined || JSON.stringify(snapshot(row)) === JSON.stringify(kept);
+
+/** The stored review, read for the owner on the card they act on. */
+const ownersReview = Effect.fn("KinStatements.ownersReview")(function* (
+  input: { readonly orgId: KinOrgId; readonly statementId: string; readonly hash: string },
+  personId: KinPersonId,
+  what: string,
+) {
+  const stored = yield* statementRow(input.orgId, input.statementId);
+  if (stored === undefined)
+    return yield* new KinChatError({ reason: "not_found", message: "No such statement." });
+  if ((yield* ownerOf(input.orgId, stored.agentId)) !== personId)
+    return yield* new KinChatError({ reason: "not_allowed", message: `Only the owner ${what}.` });
+  const review = stored.reviewJson === null ? undefined : reviewOf(stored.reviewJson);
+  if (stored.status !== "read" || review === undefined || stored.reviewHash !== input.hash)
+    return yield* changed;
+  return { stored, review };
+});
 
 type Action =
   | "payment"
@@ -92,66 +141,36 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
   const records = yield* KinRecords;
   return yield* sql.withTransaction(
     Effect.gen(function* () {
-      const stored = yield* statementRow(input.orgId, input.statementId);
-      if (stored === undefined)
-        return yield* new KinChatError({ reason: "not_found", message: "No such statement." });
-      if ((yield* ownerOf(input.orgId, stored.agentId)) !== input.personId)
-        return yield* new KinChatError({
-          reason: "not_allowed",
-          message: "Only the owner confirms a statement.",
-        });
+      const { stored, review } = yield* ownersReview(input, input.personId, "confirms a statement");
       if (stored.appliedAt !== null)
         return yield* new KinChatError({
           reason: "widget_changed",
           message: "This statement was already applied.",
         });
-      const review = stored.reviewJson === null ? undefined : reviewOf(stored.reviewJson);
-      if (stored.status !== "read" || review === undefined || stored.reviewHash !== input.hash)
-        return yield* changed;
+      const selection = selectionOf(stored, review);
+      if (selection.revision !== input.revision)
+        return yield* new KinChatError({
+          reason: "conflict",
+          message:
+            "The card changed since you looked at it, so nothing was applied. Check it and confirm again.",
+        });
       const { statement } = review;
       const currency = statement.currency;
       const zone = yield* ownerZone(input.orgId);
       const categories = yield* expenseCategories(input.orgId);
-
-      // The decisions, each checked against the card's own rows and candidates.
-      const decisions = new Map<
-        number,
-        { readonly option?: number; readonly action?: (typeof input.actions)[number] }
-      >();
-      const decide = (
-        row: number,
-        decision: { readonly option?: number; readonly action?: (typeof input.actions)[number] },
-      ) => {
-        if (decisions.has(row)) return false;
-        decisions.set(row, decision);
-        return true;
-      };
-      for (const row of input.matched)
-        if (review.matches.get(row)?.group !== "matched" || !decide(row, { option: 0 }))
-          return yield* changed;
-      for (const one of input.chosen) {
-        const match = review.matches.get(one.row);
-        if (
-          match?.group !== "choose" ||
-          match.candidates[one.option] === undefined ||
-          !decide(one.row, { option: one.option })
-        )
-          return yield* changed;
-      }
-      for (const one of input.actions) {
-        const match = review.matches.get(one.row);
-        const row = statement.rows[one.row];
-        if (
-          match === undefined ||
-          match.group === "matched" ||
-          row === undefined ||
-          !decide(one.row, { action: one })
-        )
-          return yield* changed;
-        if (one.action === "expense" && row.direction !== "debit")
-          return yield* invalid("Only money out can be recorded as an expense.");
-        if (one.category !== undefined && !categories.includes(one.category))
-          return yield* invalid(`Expenses' categories are ${categories.join(", ")}.`);
+      const decisions = decisionsOf(review, selection);
+      // One entry answers one row: two rows naming one entry is refused before anything is written.
+      const claimed = new Map<string, number>();
+      for (const decision of decisions) {
+        if (decision.option === undefined) continue;
+        const candidate = review.matches.get(decision.row)?.candidates[decision.option];
+        if (candidate === undefined) return yield* changed;
+        const first = claimed.get(candidate.recordId);
+        if (first !== undefined)
+          return yield* invalid(
+            `${candidate.key} is matched to two rows (${statement.rows[first]!.date} and ${statement.rows[decision.row]!.date}); one entry answers one row. Pick another for one of them. Nothing was applied.`,
+          );
+        claimed.set(candidate.recordId, decision.row);
       }
 
       const writer: Writer = {
@@ -163,7 +182,7 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
       const def = yield* ensureBankList(input.orgId, input.now);
       const states = bankStates(def);
       if (
-        input.actions.some((one) => one.action === "expense") &&
+        decisions.some((one) => one.action?.action === "expense") &&
         (yield* listDef(input.orgId, "expenses")) === undefined
       )
         yield* defineList(
@@ -178,9 +197,23 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
       );
       const label = accountLabel(statement);
       const fingerprints = rowFingerprints(statement);
-      // An undone confirm's payments stay as void lines, so a later confirm needs its own keys.
+      // An undone confirm's payments stay as void lines, so each undo starts a generation of keys.
       const retryKey = (index: number, what: string) =>
-        `statement:${input.statementId}:${stored.undoneAt ?? 0}:${index}:${what}`;
+        `statement:${input.statementId}:g${stored.generation}:${index}:${what}`;
+      // A retry key's payment or entry taken back since means this isn't the confirm it was.
+      const live = <A, E, R>(write: Effect.Effect<A, E, R>) =>
+        write.pipe(
+          Effect.catchIf(
+            (error) => isChatError(error) && error.reason === "conflict",
+            () => Effect.fail(changed),
+          ),
+        );
+      const livePayment = Effect.fn("KinStatements.livePayment")(function* (paymentId: string) {
+        const [payment] = yield* sql<{ voidedAt: number | null }>`SELECT voided_at AS "voidedAt"
+          FROM kin_record_payments WHERE org_id = ${input.orgId} AND payment_id = ${paymentId}`;
+        if (payment === undefined || payment.voidedAt !== null) return yield* changed;
+        return paymentId;
+      });
 
       // Every row is saved, so what is left for later is there to see in Bank transactions.
       const bankRows = new Map<number, { readonly recordId: string; readonly key: string }>();
@@ -193,20 +226,22 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           continue;
         }
         const title = rowTitle(row);
-        const { row: made } = yield* records.create(input.orgId, writer, {
-          list: def.id,
-          originKey: originKeyOf(fingerprints[row.index]!),
-          title,
-          owner: { _tag: "person", personId: input.personId },
-          state: states.open,
-          amount: { minor: row.amountMinor, currency },
-          dateAt: endOfDay(row.date, zone),
-          dateAllDay: true,
-          fields: rowFields(def, statement, row),
-          ...(title === row.description ? {} : { notes: row.description }),
-          sensitive: true,
-          confirmed: true,
-        });
+        const { row: made } = yield* live(
+          records.create(input.orgId, writer, {
+            list: def.id,
+            originKey: originKeyOf(fingerprints[row.index]!),
+            title,
+            owner: { _tag: "person", personId: input.personId },
+            state: states.open,
+            amount: { minor: row.amountMinor, currency },
+            dateAt: endOfDay(row.date, zone),
+            dateAllDay: true,
+            fields: rowFields(def, statement, row),
+            ...(title === row.description ? {} : { notes: row.description }),
+            sensitive: true,
+            confirmed: true,
+          }),
+        );
         bankRows.set(row.index, { recordId: made.recordId, key: made.key });
       }
 
@@ -221,11 +256,20 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
         prior: typeof Prior.Type,
       ) {
         seq += 1;
+        const bank = yield* records.getById(input.orgId, bankRows.get(row.index)!.recordId);
+        const made = target === null ? undefined : yield* records.getById(input.orgId, target);
+        const after =
+          bank === undefined
+            ? null
+            : yield* encodeAfter({
+                bank: snapshot(bank),
+                ...(made === undefined ? {} : { target: snapshot(made) }),
+              });
         yield* sql`INSERT INTO kin_bank_statement_entries (org_id, statement_id, seq, row_index,
-            bank_record_id, action, target_record_id, payment_id, prior_json)
+            bank_record_id, action, target_record_id, payment_id, prior_json, after_json)
           VALUES (${input.orgId}, ${input.statementId}, ${seq}, ${row.index},
             ${bankRows.get(row.index)!.recordId}, ${action}, ${target}, ${paymentId},
-            ${yield* encodePrior(prior)})`;
+            ${yield* encodePrior(prior)}, ${after})`;
       });
       const settleBank = Effect.fn("KinStatements.settleBank")(function* (
         row: StatementRow,
@@ -274,9 +318,8 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           500,
         );
 
-      for (const [index, decision] of [...decisions.entries()].toSorted(
-        ([left], [right]) => left - right,
-      )) {
+      for (const decision of decisions) {
+        const index = decision.row;
         const row = statement.rows[index]!;
         const match = review.matches.get(index)!;
         if (decision.option !== undefined) {
@@ -284,23 +327,30 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           const targetRow = yield* records.getById(input.orgId, candidate.recordId);
           if (targetRow === undefined) return yield* changed;
           if (candidate.kind === "invoice") {
-            const received = yield* records.pay(input.orgId, writer, targetRow.key, {
-              amount: { minor: row.amountMinor, currency },
-              paidOn: row.date,
-              note: note(row),
-              originKey: retryKey(index, "received"),
-            });
+            const received = yield* live(
+              records.pay(input.orgId, writer, targetRow.key, {
+                amount: { minor: row.amountMinor, currency },
+                paidOn: row.date,
+                note: note(row),
+                originKey: retryKey(index, "received"),
+              }),
+            );
             const prior = yield* settleBank(row, states.explained, "payment received");
-            yield* entry(row, "payment", candidate.recordId, received.paymentId, { bank: prior });
+            const paymentId = yield* livePayment(received.paymentId);
+            yield* entry(row, "payment", candidate.recordId, paymentId, { bank: prior });
             tally.payments += 1;
             if (candidate.fit === "tds" && candidate.tdsMinor !== undefined) {
-              const tds = yield* records.pay(input.orgId, writer, targetRow.key, {
-                amount: { minor: candidate.tdsMinor, currency },
-                paidOn: row.date,
-                note: `TDS deducted by the client on ${row.date}`,
-                originKey: retryKey(index, "tds"),
-              });
-              yield* entry(row, "tds", candidate.recordId, tds.paymentId, { bank: prior });
+              const tds = yield* live(
+                records.pay(input.orgId, writer, targetRow.key, {
+                  amount: { minor: candidate.tdsMinor, currency },
+                  paidOn: row.date,
+                  note: `TDS deducted by the client on ${row.date}`,
+                  withheld: true,
+                  originKey: retryKey(index, "tds"),
+                }),
+              );
+              const tdsId = yield* livePayment(tds.paymentId);
+              yield* entry(row, "tds", candidate.recordId, tdsId, { bank: prior });
               tally.tds += 1;
             }
           } else {
@@ -333,34 +383,38 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           yield* linkBoth(row, candidate.recordId, targetRow.key);
           continue;
         }
-        const action = decision.action!;
+        const action = decision.action;
+        if (action === undefined) return yield* changed;
         if (action.action === "expense") {
-          const suggestion = match.suggestion;
-          const vendor = action.vendor ?? suggestion.vendor;
+          if (row.direction !== "debit")
+            return yield* invalid("Only money out can be recorded as an expense.");
+          const vendor = action.vendor;
           const category =
-            action.category ??
-            (suggestion.category !== undefined && categories.includes(suggestion.category)
-              ? suggestion.category
-              : undefined);
+            action.category !== undefined && categories.includes(action.category)
+              ? action.category
+              : undefined;
           const fields: Record<string, FieldValue> = {
             ...(vendor === undefined ? {} : { vendor }),
             ...(paidWithChoice === undefined ? {} : { paidWith: paidWithChoice }),
           };
-          const { row: made } = yield* records.create(input.orgId, writer, {
-            list: "expenses",
-            originKey: retryKey(index, "expense"),
-            title: rowTitle({ ...row, description: vendor ?? row.description }),
-            owner: { _tag: "person", personId: input.personId },
-            state: "done",
-            amount: { minor: row.amountMinor, currency },
-            dateAt: endOfDay(row.date, zone),
-            dateAllDay: true,
-            ...(category === undefined ? {} : { category }),
-            fields,
-            notes: `From ${label}: ${row.description}`.slice(0, 4_000),
-            sensitive: true,
-            confirmed: true,
-          });
+          const { row: made } = yield* live(
+            records.create(input.orgId, writer, {
+              list: "expenses",
+              originKey: retryKey(index, "expense"),
+              title: rowTitle({ ...row, description: vendor ?? row.description }),
+              owner: { _tag: "person", personId: input.personId },
+              state: "done",
+              amount: { minor: row.amountMinor, currency },
+              dateAt: endOfDay(row.date, zone),
+              dateAllDay: true,
+              ...(category === undefined ? {} : { category }),
+              fields,
+              notes: `From ${label}: ${row.description}`.slice(0, 4_000),
+              sensitive: true,
+              confirmed: true,
+            }),
+          );
+          if (made.state === "dropped") return yield* changed;
           const prior = yield* settleBank(row, states.explained, "expense");
           yield* entry(row, "expense_new", made.recordId, null, { bank: prior });
           yield* linkBoth(row, made.recordId, made.key);
@@ -419,7 +473,7 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
       ];
       const card = yield* cardState(input.orgId, stored.reviewWidgetId);
       const next = {
-        ...(card ?? reviewCard(input.statementId, review, categories)),
+        ...(card ?? reviewCard(input.statementId, review, categories, selection)),
         status: "applied" as const,
         result,
         unexplained,
@@ -447,19 +501,11 @@ const unexplainedCount = Effect.fn("KinStatements.unexplained")(function* (
   return count;
 });
 
-const decodeCard = Schema.decodeUnknownOption(KinStatementReviewCard);
-const cardState = Effect.fn("KinStatements.cardState")(function* (
-  orgId: KinOrgId,
-  widgetId: string | null,
-) {
-  if (widgetId === null) return undefined;
-  const repo = yield* KinChatRepository;
-  const found = yield* repo.getWidget({ orgId, widgetId: KinWidgetId.make(widgetId) });
-  if (Option.isNone(found)) return undefined;
-  return Option.getOrUndefined(decodeCard(found.value.state));
-});
-
-/** Takes back everything this statement applied, newest first; its rows stay, Unexplained again. */
+/**
+ * Takes back what this statement applied, newest first; its rows stay, Unexplained again. What a
+ * person changed since is left as they made it, and a payment with a receipt stays until its
+ * receipt is voided: undo lists both on the card rather than overwrite them.
+ */
 export const undoStatement = Effect.fn("KinStatements.undo")(function* (input: {
   readonly orgId: KinOrgId;
   readonly statementId: string;
@@ -493,76 +539,174 @@ export const undoStatement = Effect.fn("KinStatements.undo")(function* (input: {
         target: string | null;
         paymentId: string | null;
         prior: string | null;
+        after: string | null;
       }>`SELECT seq, bank_record_id AS "bankRecordId", action, target_record_id AS target,
-          payment_id AS "paymentId", prior_json AS prior
+          payment_id AS "paymentId", prior_json AS prior, after_json AS after
         FROM kin_bank_statement_entries WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId}
         ORDER BY seq DESC`;
-      const restored = new Set<string>();
+      const receipts = entries.every((one) => one.paymentId === null)
+        ? []
+        : yield* sql<{ payment: string; key: string; number: string | null }>`
+            SELECT json_extract(r.fields_json, '$.payment') AS payment, r.key, n.number
+            FROM kin_records r
+            LEFT JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
+            WHERE r.org_id = ${input.orgId} AND r.register_id = 'receipts' AND r.state <> 'dropped'
+              AND json_extract(r.fields_json, '$.payment') IN ${sql.in(
+                entries.flatMap((one) => (one.paymentId === null ? [] : [one.paymentId])),
+              )}
+            ORDER BY r.key`;
+      const left: Array<string> = [];
+      const receipted: Array<string> = [];
+      // A bank row stays as it is while anything it explains stays.
+      const kept = new Set<string>();
+      let undone = 0;
       for (const entry of entries) {
         const prior =
           entry.prior === null ? undefined : Option.getOrUndefined(decodePrior(entry.prior));
+        const after =
+          entry.after === null ? undefined : Option.getOrUndefined(decodeAfter(entry.after));
         const target =
           entry.target === null ? undefined : yield* records.getById(input.orgId, entry.target);
+        let reversed = true;
         if (
           (entry.action === "payment" || entry.action === "tds") &&
           target !== undefined &&
           entry.paymentId !== null
-        )
-          yield* records.voidPayment(input.orgId, writer, target.key, entry.paymentId);
-        if (entry.action === "expense_paid" && target !== undefined && prior?.expense !== undefined)
-          yield* records.update(input.orgId, writer, target.key, {
-            state: prior.expense.state as KinRecordState,
-            dateAt: prior.expense.dateAt,
-            dateAllDay: prior.expense.dateAllDay,
-            fields: { paidWith: prior.expense.paidWith },
-          });
-        if (
-          entry.action === "expense_linked" &&
-          target !== undefined &&
-          prior?.expense?.paidWith === null
-        )
-          yield* records.update(input.orgId, writer, target.key, { fields: { paidWith: null } });
-        if (entry.action === "expense_new" && target !== undefined && target.state !== "dropped")
-          yield* records.update(input.orgId, writer, target.key, { state: "dropped" });
+        ) {
+          const receipt = receipts.find((one) => one.payment === entry.paymentId);
+          if (receipt !== undefined) {
+            reversed = false;
+            receipted.push(
+              `The payment on ${target.key} stays: receipt ${receipt.number ?? receipt.key} was issued for it. Void that receipt first if you mean to undo it.`,
+            );
+          } else yield* records.voidPayment(input.orgId, writer, target.key, entry.paymentId);
+        } else if (target !== undefined && entry.action.startsWith("expense")) {
+          if (!asLeft(target, after?.target)) {
+            reversed = false;
+            left.push(target.key);
+          } else if (entry.action === "expense_paid" && prior?.expense !== undefined)
+            yield* records.update(input.orgId, writer, target.key, {
+              state: prior.expense.state as KinRecordState,
+              dateAt: prior.expense.dateAt,
+              dateAllDay: prior.expense.dateAllDay,
+              fields: { paidWith: prior.expense.paidWith },
+            });
+          else if (entry.action === "expense_linked" && prior?.expense?.paidWith === null)
+            yield* records.update(input.orgId, writer, target.key, { fields: { paidWith: null } });
+          else if (entry.action === "expense_new" && target.state !== "dropped")
+            yield* records.update(input.orgId, writer, target.key, { state: "dropped" });
+        }
+        if (!reversed) {
+          kept.add(entry.bankRecordId);
+          continue;
+        }
+        undone += 1;
         if (entry.target !== null)
           yield* sql`DELETE FROM kin_record_links WHERE org_id = ${input.orgId} AND kind = 'record'
             AND ((record_id = ${entry.target} AND target = ${entry.bankRecordId})
               OR (record_id = ${entry.bankRecordId} AND target = ${entry.target}))`;
-        // The oldest entry for a row holds the row's state from before this statement.
-        if (prior !== undefined && !restored.has(entry.bankRecordId)) {
-          const earliest = entries.findLast((one) => one.bankRecordId === entry.bankRecordId)!;
-          const first = Option.getOrUndefined(decodePrior(earliest.prior ?? ""));
-          const bank = yield* records.getById(input.orgId, entry.bankRecordId);
-          if (bank !== undefined && first !== undefined)
-            yield* records.update(input.orgId, writer, bank.key, {
-              state: first.bank.state as KinRecordState,
-              category: first.bank.category,
-            });
-          restored.add(entry.bankRecordId);
+      }
+      // Each bank row back to its state before this statement, unless it was changed since.
+      for (const bankRecordId of new Set(entries.map((one) => one.bankRecordId))) {
+        if (kept.has(bankRecordId)) continue;
+        const mine = entries.filter((one) => one.bankRecordId === bankRecordId);
+        const first = Option.getOrUndefined(decodePrior(mine.at(-1)?.prior ?? ""));
+        const latest = Option.getOrUndefined(decodeAfter(mine[0]?.after ?? ""));
+        const bank = yield* records.getById(input.orgId, bankRecordId);
+        if (bank === undefined || first === undefined) continue;
+        if (!asLeft(bank, latest?.bank)) {
+          left.push(bank.key);
+          continue;
         }
+        yield* records.update(input.orgId, writer, bank.key, {
+          state: first.bank.state as KinRecordState,
+          category: first.bank.category,
+        });
       }
       yield* sql`DELETE FROM kin_bank_statement_entries WHERE org_id = ${input.orgId}
         AND statement_id = ${input.statementId}`;
-      yield* sql`UPDATE kin_bank_statements SET applied_at = NULL, applied_by = NULL, undone_at = ${input.now}
+      yield* sql`UPDATE kin_bank_statements SET applied_at = NULL, applied_by = NULL,
+          undone_at = ${input.now}, generation = generation + 1
         WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId}`;
       const review = stored.reviewJson === null ? undefined : reviewOf(stored.reviewJson);
       const card =
         (yield* cardState(input.orgId, stored.reviewWidgetId)) ??
         (review === undefined
           ? undefined
-          : reviewCard(input.statementId, review, yield* expenseCategories(input.orgId)));
+          : reviewCard(
+              input.statementId,
+              review,
+              yield* expenseCategories(input.orgId),
+              selectionOf(stored, review),
+            ));
       if (card === undefined) return yield* invalid("This statement can no longer be read.");
       const { result: _result, unexplained: _unexplained, ...rest } = card;
+      const shown = [...new Set(left)];
       const next = {
         ...rest,
         status: "undone" as const,
         result: [
-          `Undone: nothing from this statement is applied now (${entries.length === 0 ? "it had made no changes" : `${entries.length} change${entries.length === 1 ? "" : "s"} taken back`}). Confirm again to apply it.`,
-        ],
+          undone === 0 && shown.length + receipted.length === 0
+            ? "Undone: it had made no changes. Confirm again to apply it."
+            : `Undone: ${undone} change${undone === 1 ? "" : "s"} taken back. Confirm again to apply it.`,
+          ...(shown.length === 0
+            ? []
+            : [
+                `${shown.length} left as you changed ${shown.length === 1 ? "it" : "them"}: ${shown.slice(0, 8).join(", ")}${shown.length > 8 ? ", …" : ""}.`,
+              ]),
+          ...receipted.slice(0, 5),
+        ].map((line) => line.slice(0, 300)),
       } satisfies KinStatementReviewCard;
       if (stored.reviewWidgetId !== null)
-        yield* updateCard(input.orgId, stored.reviewWidgetId, next, false);
+        yield* updateCard(input.orgId, stored.reviewWidgetId, next, false, [input.personId]);
       return { card: next };
     }),
   );
+});
+
+/** One change to the owner's selection on a review card, kept on the server for that review. */
+export const selectRows = Effect.fn("KinStatements.select")(function* (
+  input: KinStatementSelectInput & { readonly personId: KinPersonId },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const { stored, review } = yield* ownersReview(input, input.personId, "changes this card");
+      if (stored.appliedAt !== null)
+        return yield* new KinChatError({
+          reason: "widget_changed",
+          message: "This statement was already applied.",
+        });
+      const next = changeSelection(review, selectionOf(stored, review), input.change);
+      if (typeof next === "string") return yield* invalid(next);
+      yield* sql`UPDATE kin_bank_statements SET selection_json = ${yield* encodeSelection(next)}
+        WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId}`;
+      const fresh = reviewCard(
+        input.statementId,
+        review,
+        yield* expenseCategories(input.orgId),
+        next,
+      );
+      const shown = yield* cardState(input.orgId, stored.reviewWidgetId);
+      // An undone card keeps what undo said until it is confirmed again.
+      const card = {
+        ...fresh,
+        ...(shown?.status === "undone" ? { status: "undone" as const } : {}),
+        ...(shown?.result === undefined || shown.status !== "undone"
+          ? {}
+          : { result: shown.result }),
+      } satisfies KinStatementReviewCard;
+      if (stored.reviewWidgetId !== null)
+        yield* updateCard(input.orgId, stored.reviewWidgetId, card, false);
+      return { card };
+    }),
+  );
+});
+
+/** More of one section's rows than its card carries, for the owner. */
+export const statementRows = Effect.fn("KinStatements.rows")(function* (
+  input: KinStatementRowsInput & { readonly personId: KinPersonId },
+) {
+  const { review } = yield* ownersReview(input, input.personId, "reads this card");
+  return rowsOf(review, input.section, input.offset, input.limit);
 });

@@ -145,6 +145,10 @@ export const KinRecord = Schema.Struct({
   repeat: Schema.optional(KinRepeatRule),
   /** An invoice's amount less the payments received against it. */
   balance: Schema.optional(KinMoney),
+  /** Of what settled an invoice, the money paid in; absent from older servers. */
+  received: Schema.optional(KinMoney),
+  /** Tax the client deducted at source: it settles the invoice but is not money received. */
+  tdsDeducted: Schema.optional(KinMoney),
   /** In a defined list's own rows, its fields by key, as its definition types them. */
   fields: Schema.optional(Schema.Record(Schema.String, KinFieldValue)),
 });

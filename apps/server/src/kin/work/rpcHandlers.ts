@@ -225,6 +225,20 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.statementUndo": Effect.fn("KinWork.rpc.statementUndo")(function* (input) {
         return yield* call((people) => Statements.undo(people, input));
       }),
+      "kin.work.statementSelect": Effect.fn("KinWork.rpc.statementSelect")(function* (input) {
+        return yield* call((people) => Statements.select(people, input));
+      }),
+      "kin.work.statementRows": Effect.fn("KinWork.rpc.statementRows")(function* (input) {
+        return yield* call((people) => Statements.rows(people, input));
+      }),
+      "kin.work.statementPasswords": Effect.fn("KinWork.rpc.statementPasswords")(function* (input) {
+        return yield* call((people) => Statements.passwords(people, input));
+      }),
+      "kin.work.statementForgetAccount": Effect.fn("KinWork.rpc.statementForgetAccount")(
+        function* (input) {
+          return yield* call((people) => Statements.forgetAccount(people, input));
+        },
+      ),
     }),
   };
 });
