@@ -16,6 +16,7 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { isOrgOwner } from "../lead/orgState.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { formatMoney } from "../work/money.ts";
+import type { UndoReport } from "../work/importUndo.ts";
 import * as KinImport from "../work/KinImport.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 
@@ -77,7 +78,7 @@ const describeImport = (report: KinImport.ImportReport) =>
     ...(report.more === 0 ? [] : [`And ${report.more} more.`]),
   ].join("\n");
 
-const describeUndo = (report: KinImport.UndoReport) =>
+const describeUndo = (report: UndoReport) =>
   [
     `${report.applied ? "Undid" : "Undo plan for"} batch ${report.batch}: ${report.removes.entries} entries, ${report.removes.payments} payments, ${report.removes.clients} clients and ${report.removes.projects} projects ${report.applied ? "removed" : "to remove"}.`,
     report.includeChanged
