@@ -348,6 +348,11 @@ export function KinMoneyArea(props: Shared) {
           <Figure figure={view.received} onOpen={openList} />
           <Figure figure={view.spent} onOpen={openList} />
         </View>
+        {view.tdsDeducted === null ? null : (
+          <View className="flex-row gap-4 px-2">
+            <Figure figure={view.tdsDeducted} onOpen={openList} />
+          </View>
+        )}
         {view.categories.length === 0 ? null : (
           <ListSection title={KIN_MONEY.byCategory}>
             {view.categories.map((category) => {
@@ -372,6 +377,11 @@ export function KinMoneyArea(props: Shared) {
           <Figure figure={view.yearReceived} onOpen={openList} />
           <Figure figure={view.yearSpent} onOpen={openList} />
         </View>
+        {view.yearTdsDeducted === null ? null : (
+          <View className="flex-row gap-4 px-2">
+            <Figure figure={view.yearTdsDeducted} onOpen={openList} />
+          </View>
+        )}
       </View>
       {view.charts.map((chart) => (
         <View key={chart.unit.kind === "money" ? chart.unit.currency : ""} className="px-2">

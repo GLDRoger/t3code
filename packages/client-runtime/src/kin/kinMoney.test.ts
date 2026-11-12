@@ -99,6 +99,18 @@ describe("the Money summary", () => {
     ]);
     expect(view.months[0]).toMatchObject({ month: "2026-11", received: "₹40,000 and $1" });
     expect(kinMoneyView(summary, []).owed.open).toBeNull();
+    // TDS stands on its own, never inside Received.
+    expect([view.tdsDeducted, view.yearTdsDeducted]).toEqual([null, null]);
+    const withTds = kinMoneyView(
+      {
+        ...summary,
+        tdsDeducted: { thisMonth: inr(1_000_000), lastMonth: [] },
+        tdsDeductedThisFinancialYear: inr(1_000_000),
+      },
+      [list("invoices")],
+    );
+    expect(withTds.tdsDeducted).toMatchObject({ label: "TDS deducted", lines: ["₹10,000"] });
+    expect(withTds.received.lines).toEqual(view.received.lines);
     expect(kinMoneyHeadline(summary)[0]).toBe("₹2,10,000 and $2,500 owed to us");
   });
 

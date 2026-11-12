@@ -240,6 +240,9 @@ export function KinWorkMoney(
           <div className="grid grid-cols-2 gap-x-6 gap-y-2">
             <Figure figure={view.received} onOpen={props.onOpenList} />
             <Figure figure={view.spent} onOpen={props.onOpenList} />
+            {view.tdsDeducted === null ? null : (
+              <Figure figure={view.tdsDeducted} onOpen={props.onOpenList} />
+            )}
           </div>
           {view.categories.length === 0 ? null : (
             <KinWorkSection title={KIN_MONEY.byCategory}>
@@ -265,6 +268,9 @@ export function KinWorkMoney(
           <div className="grid grid-cols-2 gap-x-6 gap-y-2">
             <Figure figure={view.yearReceived} onOpen={props.onOpenList} />
             <Figure figure={view.yearSpent} onOpen={props.onOpenList} />
+            {view.yearTdsDeducted === null ? null : (
+              <Figure figure={view.yearTdsDeducted} onOpen={props.onOpenList} />
+            )}
           </div>
         </section>
         {view.charts.map((chart) => (
