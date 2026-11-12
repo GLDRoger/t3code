@@ -1,7 +1,9 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { kinChartView } from "@t3tools/client-runtime/kin/kinChart";
 import {
-  kinBodyMarkdown,
+  kinDocFileId,
+  kinDocMarkdown,
   kinImageSource,
   kinImageText,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
@@ -13,6 +15,8 @@ import {
   kinDocExport,
   kinDocHasContents,
   kinDocOutline,
+  kinDocPieceKey,
+  kinDocPieces,
   kinDocPrevious,
   kinDocPrivacy,
   kinDocRef,
@@ -22,11 +26,18 @@ import {
   kinPendingRefKey,
   type KinDocAsk,
 } from "@t3tools/client-runtime/kin/kinDocs";
-import { EnvironmentId, KinOrgId, KinRecordKey, type KinDocDetail } from "@t3tools/contracts";
+import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
+import {
+  EnvironmentId,
+  KinOrgId,
+  KinRecordKey,
+  type KinDocDetail,
+  type KinDocEmbed,
+} from "@t3tools/contracts";
 import * as Linking from "expo-linking";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { useRef, useState, type ComponentRef } from "react";
+import { Fragment, useRef, useState, type ComponentRef, type ReactNode } from "react";
 import { File, Paths } from "expo-file-system";
 import { Alert, Pressable, View } from "react-native";
 
@@ -36,6 +47,7 @@ import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { FilePreviewModal, type FilePreviewSource } from "../../components/ui/FilePreviewModal";
 import { Menu } from "../../components/ui/Menu";
 import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
@@ -47,17 +59,24 @@ import { shareFileFromSource } from "../../lib/shareFileFromSource";
 import {
   SelectableMarkdownText,
   type MarkdownImageRenderer,
+  type MarkdownImageSourceResolver,
 } from "../../native/SelectableMarkdownText";
+import { assetEnvironment } from "../../state/assets";
 import { appAtomRegistry } from "../../state/atom-registry";
+import { usePreparedConnection } from "../../state/session";
+import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useMarkdownPreviewStyles } from "../files/FileMarkdownPreview";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
+import { ThreadMarkdownImage } from "../threads/ThreadMarkdownImage";
 import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
 import { useKinDoc } from "./state/useKinDocs";
 import { kinHostConnected } from "./state/useKinHost";
 import { useKinInbox } from "./state/useKinInbox";
 import { useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
+import { KinVisual } from "./widgets/KinVisual";
+import { KinChartCard } from "./widgets/KinWidgetView";
 
 export type KinDocParams = {
   readonly environmentId: string;
@@ -86,6 +105,46 @@ const renderImageAsText: MarkdownImageRenderer = (image) => (
     {kinImageText(image)}
   </Text>
 );
+
+/**
+ * Where an image in a sentence loads from: a doc's own file through a URL the host mints for its
+ * reader, and nothing for any other. An image on a line of its own is drawn by `renderImage`.
+ */
+function useKinDocImageSource(environmentId: EnvironmentId): MarkdownImageSourceResolver {
+  const connection = usePreparedConnection(environmentId);
+  const httpBaseUrl = Option.isSome(connection) ? connection.value.httpBaseUrl : null;
+  const createUrl = useAtomQueryRunner(assetEnvironment.createUrl, { reportFailure: false });
+  return async (image) => {
+    const attachmentId = kinDocFileId(image.href);
+    if (attachmentId === null) return kinImageSource();
+    if (httpBaseUrl === null) throw new Error("The doc's image is unavailable offline");
+    const result = await createUrl({
+      environmentId,
+      input: { resource: { _tag: "attachment", attachmentId } },
+    });
+    if (result._tag !== "Success") throw new Error("Could not authorize the doc's image");
+    const uri = resolveAssetUrl(httpBaseUrl, result.value.relativeUrl);
+    if (uri === null) throw new Error("The doc's image URL is invalid");
+    return { uri };
+  };
+}
+
+/** What the host drew for a doc's block, at the page's width like a card in a chat. */
+function KinDocEmbedView(props: KinWorkTarget & { readonly embed: KinDocEmbed }) {
+  const { embed } = props;
+  switch (embed._tag) {
+    case "chart":
+      return <KinChartCard view={kinChartView(embed.chart)} />;
+    case "visual":
+      return <KinVisual environmentId={props.environmentId} orgId={props.orgId} visual={embed} />;
+    case "broken":
+      return (
+        <Text textRole="footnote" className="text-foreground-muted">
+          {embed.message}
+        </Text>
+      );
+  }
+}
 
 const SECTION_ACTIONS = [
   { id: "ask", title: KIN_DOCS.ask, image: "questionmark.bubble" },
@@ -225,6 +284,8 @@ function KinDocBody(
   const offsets = useRef(new Map<string, number>());
   const arrived = useRef(false);
   const [copied, setCopied] = useState(false);
+  const [preview, setPreview] = useState<FilePreviewSource | null>(null);
+  const resolveImageSource = useKinDocImageSource(environmentId);
   const undo = props.undo !== null && props.undo < doc.latest.version ? props.undo : null;
 
   const sections = kinDocSections(doc.body, doc.outline);
@@ -325,18 +386,45 @@ function KinDocBody(
     },
   ];
 
-  const markdown = (text: string) => (
-    <SelectableMarkdownText
-      markdown={kinBodyMarkdown(text)}
-      textStyle={styles.nativeTextStyle}
-      // A long press opens the section's own actions, which include copying its text.
-      selectable={false}
-      inlineWebLinks
-      onLinkPress={onLinkPress}
-      renderImage={renderImageAsText}
-      resolveImageSource={kinImageSource}
-    />
-  );
+  const renderImage: MarkdownImageRenderer = (image) => {
+    const attachmentId = kinDocFileId(image.href);
+    return attachmentId === null ? (
+      renderImageAsText(image)
+    ) : (
+      <ThreadMarkdownImage
+        environmentId={environmentId}
+        resource={{ _tag: "attachment", attachmentId }}
+        alt={image.alt}
+        onPressPreview={setPreview}
+      />
+    );
+  };
+  /** Text under a long press for `menu`'s actions; a drawn block sits outside it, as a chat card does. */
+  const content = (text: string, menu: (children: ReactNode) => ReactNode) =>
+    kinDocPieces(text, doc).map((piece, index) => (
+      <Fragment key={kinDocPieceKey(piece, index)}>
+        {piece.type === "text" ? (
+          menu(
+            <View>
+              <SelectableMarkdownText
+                markdown={kinDocMarkdown(piece.text)}
+                textStyle={styles.nativeTextStyle}
+                // A long press opens the section's own actions, which include copying its text.
+                selectable={false}
+                inlineWebLinks
+                onLinkPress={onLinkPress}
+                renderImage={renderImage}
+                resolveImageSource={resolveImageSource}
+              />
+            </View>,
+          )
+        ) : (
+          <View className="mb-3">
+            <KinDocEmbedView environmentId={environmentId} orgId={orgId} embed={piece.embed} />
+          </View>
+        )}
+      </Fragment>
+    ));
 
   return (
     <View collapsable={false} className="flex-1 bg-screen">
@@ -452,13 +540,15 @@ function KinDocBody(
               This doc has no text yet.
             </Text>
           ) : sections === null ? (
-            <Menu
-              shouldOpenOnLongPress
-              actions={SECTION_ACTIONS.map((action) => ({ ...action }))}
-              onPressAction={({ nativeEvent }) => act(null, doc.body, nativeEvent.event)}
-            >
-              <View>{markdown(doc.body)}</View>
-            </Menu>
+            content(doc.body, (children) => (
+              <Menu
+                shouldOpenOnLongPress
+                actions={SECTION_ACTIONS.map((action) => ({ ...action }))}
+                onPressAction={({ nativeEvent }) => act(null, doc.body, nativeEvent.event)}
+              >
+                {children}
+              </Menu>
+            ))
           ) : (
             sections.map((section) => (
               <View
@@ -475,22 +565,25 @@ function KinDocBody(
                   }
                 }}
               >
-                <Menu
-                  title={section.title}
-                  shouldOpenOnLongPress
-                  accessibilityLabel={`${section.title}. Hold for actions`}
-                  actions={SECTION_ACTIONS.map((action) => ({ ...action }))}
-                  onPressAction={({ nativeEvent }) =>
-                    act(section.id, section.text, nativeEvent.event)
-                  }
-                >
-                  <View>{markdown(section.text)}</View>
-                </Menu>
+                {content(section.text, (children) => (
+                  <Menu
+                    title={section.title}
+                    shouldOpenOnLongPress
+                    accessibilityLabel={`${section.title}. Hold for actions`}
+                    actions={SECTION_ACTIONS.map((action) => ({ ...action }))}
+                    onPressAction={({ nativeEvent }) =>
+                      act(section.id, section.text, nativeEvent.event)
+                    }
+                  >
+                    {children}
+                  </Menu>
+                ))}
               </View>
             ))
           )}
         </ScreenScrollView>
       </ScreenContent>
+      <FilePreviewModal source={preview} onRequestClose={() => setPreview(null)} />
     </View>
   );
 }

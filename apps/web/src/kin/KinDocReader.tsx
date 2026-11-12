@@ -4,12 +4,15 @@ import {
   kinDocExport,
   kinDocHasContents,
   kinDocOutline,
+  kinDocPieceKey,
+  kinDocPieces,
   kinDocPrevious,
   kinDocPrivacy,
   kinDocRef,
   type KinDocAsk,
 } from "@t3tools/client-runtime/kin/kinDocs";
-import type { KinDocDetail, KinDocSection, KinMessageRef } from "@t3tools/contracts";
+import { kinChartView } from "@t3tools/client-runtime/kin/kinChart";
+import type { KinDocDetail, KinDocEmbed, KinDocSection, KinMessageRef } from "@t3tools/contracts";
 import {
   EllipsisIcon,
   HistoryIcon,
@@ -23,7 +26,7 @@ import {
 import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 
-import { kinBodyMarkdown } from "@t3tools/client-runtime/kin/kinChatFeed";
+import { kinDocFileId, kinDocMarkdown } from "@t3tools/client-runtime/kin/kinChatFeed";
 import ChatMarkdown from "../components/ChatMarkdown";
 import { Alert, AlertAction, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
@@ -35,6 +38,9 @@ import {
   type SelectionActionPoint,
 } from "../lib/selectionActions";
 import { downloadPlanAsTextFile } from "../proposedPlan";
+import { CardFrame } from "./KinCards";
+import { KinChart } from "./KinChart";
+import { KinVisual } from "./KinVisual";
 import { useNowMinuteMs } from "./useKinClock";
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
 
@@ -56,7 +62,7 @@ function findHeadings(
 ): ReadonlyMap<string, HTMLElement> {
   const found = new Map<string, HTMLElement>();
   const drawn = Array.from(root.querySelectorAll<HTMLElement>(HEADINGS)).filter(
-    (heading) => heading.closest("blockquote,li,table") === null,
+    (heading) => heading.closest("blockquote,li,table,[data-kin-doc-embed]") === null,
   );
   let at = 0;
   for (const section of outline) {
@@ -108,6 +114,34 @@ function sectionAt(
 }
 
 export type KinDocPoint = (ref: KinMessageRef, intent: KinDocAsk) => void;
+
+const FILE_IMAGE = "#kin-file:";
+// The sanitizer drops a source with a scheme it doesn't know; a fragment reaches the renderer,
+// which loads nothing else from one.
+const fileImageSource = (id: string) => `${FILE_IMAGE}${id}`;
+const fileImageAttachment = (src: string) =>
+  src.startsWith(FILE_IMAGE) ? kinDocFileId(src.slice(1)) : null;
+
+/** What the host drew for a doc's block, at the reading column's width like a card in chat. */
+function KinDocEmbedView(props: KinWorkTarget & { readonly embed: KinDocEmbed }) {
+  const { embed } = props;
+  switch (embed._tag) {
+    case "chart":
+      return (
+        <CardFrame>
+          <KinChart view={kinChartView(embed.chart)} />
+        </CardFrame>
+      );
+    case "visual":
+      return (
+        <CardFrame label={embed.title}>
+          <KinVisual environmentId={props.environmentId} orgId={props.orgId} visual={embed} />
+        </CardFrame>
+      );
+    case "broken":
+      return <p className="text-sm text-muted-foreground">{embed.message}</p>;
+  }
+}
 
 function AskItems(props: {
   readonly onAsk: ((intent: KinDocAsk) => void) | null;
@@ -364,13 +398,27 @@ export function KinDocReader(
             <div
               ref={setArticle}
               onClickCapture={followFragment}
-              className="leading-relaxed text-foreground"
+              className="flex flex-col gap-3 leading-relaxed text-foreground"
             >
-              <ChatMarkdown
-                text={kinBodyMarkdown(doc.body)}
-                cwd={undefined}
-                environmentId={props.environmentId}
-              />
+              {kinDocPieces(doc.body, doc).map((piece, index) =>
+                piece.type === "text" ? (
+                  <ChatMarkdown
+                    key={kinDocPieceKey(piece, index)}
+                    text={kinDocMarkdown(piece.text, fileImageSource)}
+                    cwd={undefined}
+                    environmentId={props.environmentId}
+                    imageAttachment={fileImageAttachment}
+                  />
+                ) : (
+                  <div key={kinDocPieceKey(piece, index)} data-kin-doc-embed="">
+                    <KinDocEmbedView
+                      environmentId={props.environmentId}
+                      orgId={props.orgId}
+                      embed={piece.embed}
+                    />
+                  </div>
+                ),
+              )}
             </div>
           )}
         </article>

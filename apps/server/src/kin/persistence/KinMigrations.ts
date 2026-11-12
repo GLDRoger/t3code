@@ -34,6 +34,7 @@ import GeneratedDocuments from "./migrations/K072_GeneratedDocuments.ts";
 import KeyPushes from "./migrations/K073_KeyPushes.ts";
 import DocJobCleanup from "./migrations/K074_DocJobCleanup.ts";
 import ServerRenderedDocuments from "./migrations/K075_ServerRenderedDocuments.ts";
+import DocFiles from "./migrations/K076_DocFiles.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -148,6 +149,7 @@ const loader = Migrator.fromRecord({
   "73_KeyPushes": KeyPushes,
   "74_DocJobCleanup": DocJobCleanup,
   "75_ServerRenderedDocuments": ServerRenderedDocuments,
+  "76_DocFiles": DocFiles,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

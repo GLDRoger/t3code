@@ -86,6 +86,7 @@ import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import { effectiveAudience } from "../lead/Audience.ts";
 import { KinStop } from "../lead/KinStop.ts";
 import { isOrgOwner } from "../lead/orgState.ts";
+import { docPageSources } from "../work/docFiles.ts";
 import * as Repository from "./KinChatRepository.ts";
 import type { WriteAudience } from "./KinChatRepository.ts";
 import { KinAttachmentStore } from "./KinAttachmentStore.ts";
@@ -551,16 +552,26 @@ const make = Effect.gen(function* () {
     if (!mayWrite(member, identity._tag === "agent", yield* Clock.currentTimeMillis))
       return yield* notAllowed;
   });
-  /** A generated doc's file is the owner's alone: the person whose agent's job made it, or who asked. */
+  /**
+   * A generated doc's file is the owner's alone: the person whose agent's job made it, or who
+   * asked. A file a doc's markdown shows is read by whoever reads Docs: the org's owner.
+   */
   const docFileReadable = (caller: PersonCaller, attachmentId: string) =>
     Effect.forEach("_tag" in caller ? [caller] : caller, (person) =>
-      sql`SELECT 1 FROM kin_doc_versions v
-        JOIN kin_doc_jobs j ON j.org_id = v.org_id AND j.worker_id = v.worker_id
-        LEFT JOIN kin_agents a ON a.org_id = j.org_id AND a.agent_id = j.agent_id
-        WHERE v.org_id = ${person.orgId} AND v.file_attachment_id = ${attachmentId}
-          AND (a.owner_person_id = ${person.personId} OR j.asked_by_person_id = ${person.personId})
-        LIMIT 1`.pipe(Effect.map((rows) => rows.length > 0)),
+      Effect.gen(function* () {
+        const made = yield* sql`SELECT 1 FROM kin_doc_versions v
+          JOIN kin_doc_jobs j ON j.org_id = v.org_id AND j.worker_id = v.worker_id
+          LEFT JOIN kin_agents a ON a.org_id = j.org_id AND a.agent_id = j.agent_id
+          WHERE v.org_id = ${person.orgId} AND v.file_attachment_id = ${attachmentId}
+            AND (a.owner_person_id = ${person.personId} OR j.asked_by_person_id = ${person.personId})
+          LIMIT 1`;
+        if (made.length > 0) return true;
+        const shown = yield* sql`SELECT 1 FROM kin_doc_files
+          WHERE org_id = ${person.orgId} AND attachment_id = ${attachmentId} LIMIT 1`;
+        return shown.length > 0 && (yield* isOrgOwner(person.orgId, person.personId));
+      }),
     ).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
       Effect.map((found) => found.some(Boolean)),
       Effect.mapError(toPersistenceSqlError("KinChatService.docFileReadable")),
     );
@@ -1761,7 +1772,8 @@ const make = Effect.gen(function* () {
             member.principal.personId === identity.personId,
         );
         // A file on a message from before they joined is not theirs to fetch.
-        return member !== undefined && (yield* readable(member, owner.value.messageId));
+        if (member !== undefined && (yield* readable(member, owner.value.messageId))) return true;
+        return yield* docFileReadable(caller, attachmentId);
       },
     ),
     send: Effect.fn("KinChatService.send")(function* (caller, input) {
@@ -2464,7 +2476,11 @@ const make = Effect.gen(function* () {
     }),
     visualSources: Effect.fn("KinChatService.visualSources")(function* (attachmentId) {
       const owner = yield* repo.attachmentChat(attachmentId);
-      if (Option.isNone(owner)) return Option.none();
+      if (Option.isNone(owner))
+        return yield* docPageSources(attachmentId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError(toPersistenceSqlError("KinChatService.visualSources")),
+        );
       const files = yield* repo.chatFiles(owner.value);
       return Option.some({
         orgId: owner.value.orgId,
