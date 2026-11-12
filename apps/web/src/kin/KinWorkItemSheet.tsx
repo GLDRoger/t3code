@@ -47,7 +47,7 @@ import {
   PlayIcon,
   RotateCcwIcon,
 } from "lucide-react";
-import { useId } from "react";
+import { useId, useState } from "react";
 
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
 import { Alert, AlertAction, AlertDescription } from "../components/ui/alert";
@@ -270,7 +270,7 @@ function KinWorkItem(
   },
 ) {
   const { view, environmentId, orgId, saving, edit } = props;
-  const { orgs, people, names } = props.directory;
+  const { orgs, people, joined, invited, names } = props.directory;
   // An older host reads and hands over; everything else needs one that takes changes.
   const change = props.canChange && view.editable ? props.onAct : null;
   const give = props.canGive ? props.onAct : null;
@@ -278,10 +278,20 @@ function KinWorkItem(
     orgs,
     orgId,
     people,
+    joined,
+    invited,
     names,
     current: view.owner.principal,
   });
-  const waitingOn = kinWorkAssignees({ orgs, orgId, people, names, current: view.waitingOn });
+  const waitingOn = kinWorkAssignees({
+    orgs,
+    orgId,
+    people,
+    joined,
+    invited,
+    names,
+    current: view.waitingOn,
+  });
   const moved = edit === null ? null : kinWorkEditMoved(edit, props.item);
   const titleId = useId();
   const notesId = useId();
@@ -739,13 +749,16 @@ function StatusMenu(props: {
             {people.map((row) => (
               <MenuItem
                 key={row.key}
-                disabled={row.current}
+                disabled={row.current || row.invited}
                 onClick={() =>
                   props.onAct({ type: "state", state: "waiting", waitingOn: row.principal })
                 }
               >
                 <KinAvatar avatar={row.avatar} size="xs" />
                 <span className="min-w-0 flex-1 truncate">{row.name}</span>
+                {row.invited ? (
+                  <span className="text-xs text-muted-foreground">Invited</span>
+                ) : null}
               </MenuItem>
             ))}
             {people.length === 0 ? null : <MenuSeparator />}
@@ -779,8 +792,10 @@ function DueMenu(props: {
 }) {
   const { view } = props;
   const picked = view.dueDay === null ? undefined : new Date(`${view.dueDay}T00:00:00`);
+  // A day picked in the calendar submenu doesn't close the menu the way an item does.
+  const [open, setOpen] = useState(false);
   return (
-    <Menu>
+    <Menu open={open} onOpenChange={setOpen}>
       <MenuTrigger
         render={
           <Button
@@ -812,7 +827,9 @@ function DueMenu(props: {
               selected={picked}
               defaultMonth={picked ?? props.now}
               onSelect={(date) => {
-                if (date !== undefined) props.onAct({ type: "due", day: kinWorkDayOf(date) });
+                if (date === undefined) return;
+                setOpen(false);
+                props.onAct({ type: "due", day: kinWorkDayOf(date) });
               }}
             />
           </MenuSubPopup>
@@ -842,10 +859,18 @@ function GiveMenu(props: {
       <MenuGroup>
         <MenuGroupLabel>{title}</MenuGroupLabel>
         {rows.map((row) => (
-          <MenuItem key={row.key} disabled={row.current} onClick={() => props.onGive(row)}>
+          <MenuItem
+            key={row.key}
+            disabled={row.current || row.invited}
+            onClick={() => props.onGive(row)}
+          >
             <KinAvatar avatar={row.avatar} size="xs" />
             <span className="min-w-0 flex-1 truncate">{row.name}</span>
-            {row.current ? <span className="text-xs text-muted-foreground">Has it</span> : null}
+            {row.current || row.invited ? (
+              <span className="text-xs text-muted-foreground">
+                {row.current ? "Has it" : "Invited"}
+              </span>
+            ) : null}
           </MenuItem>
         ))}
       </MenuGroup>

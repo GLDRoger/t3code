@@ -16,6 +16,8 @@ import {
 } from "@t3tools/client-runtime/kin/kinGroups";
 import { kinDomainLabel } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { kinAgentAvatar } from "@t3tools/client-runtime/kin/kinScreenState";
+import { kinPickablePeople } from "@t3tools/client-runtime/kin/kinTeam";
+import { KIN_WORK_ASSIGN } from "@t3tools/client-runtime/kin/kinWork";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -38,6 +40,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { KinAvatar } from "./components/KinAvatar";
 import { kinClient } from "./state/kinClient";
 import { useKinHostAt } from "./state/useKinHost";
+import { useKinReinvited } from "./state/useKinWork";
 
 export type KinGroupFormParams = {
   readonly environmentId: string;
@@ -99,6 +102,7 @@ function GroupForm(props: {
   );
   const leadsResult = useAtomValue(kinClient.leads({ environmentId, input: { orgId } }));
   const peopleResult = useAtomValue(kinClient.people({ environmentId, input: { orgId } }));
+  const invited = useKinReinvited({ environmentId, orgId });
   // A new group has no members to leave out of the lists.
   const membersAtom =
     chatId === null ? null : kinClient.chatMembers({ environmentId, input: { chatId } });
@@ -149,14 +153,13 @@ function GroupForm(props: {
   const leads = AsyncResult.isSuccess(leadsResult)
     ? leadsResult.value.leads.filter((lead) => !inGroup.has(lead.agentId))
     : [];
-  // Only teammates who still have access; a removed one's Team row reads "No access".
-  const joined = new Set<string>(
-    AsyncResult.isSuccess(peopleResult) ? peopleResult.value.joined : [],
-  );
   const people = AsyncResult.isSuccess(peopleResult)
-    ? peopleResult.value.people.filter(
-        (person) =>
-          joined.has(person.personId) && !me.has(person.personId) && !inGroup.has(person.personId),
+    ? kinPickablePeople(
+        peopleResult.value.people.filter(
+          (person) => !me.has(person.personId) && !inGroup.has(person.personId),
+        ),
+        peopleResult.value.joined,
+        invited,
       )
     : [];
   const loading =
@@ -326,11 +329,12 @@ function GroupForm(props: {
                   title="People"
                   footer="Someone added later sees only what is said after they join, not earlier messages. People in a group can ask its agents to talk things through. Only you can have an agent start work."
                 >
-                  {people.map((person, index) => (
+                  {people.map(({ person, invited: waiting }, index) => (
                     <SelectionRow
                       key={person.personId}
                       role="checkbox"
                       title={person.displayName}
+                      {...(waiting ? { subtitle: KIN_WORK_ASSIGN.invited } : {})}
                       leading={
                         <KinAvatar
                           avatar={{ kind: "person", seed: `person:${person.personId}` }}
@@ -338,7 +342,7 @@ function GroupForm(props: {
                         />
                       }
                       selected={personIds.includes(person.personId)}
-                      disabled={!allowed || saving}
+                      disabled={!allowed || saving || waiting}
                       isLast={index === people.length - 1}
                       onPress={() => setPersonIds((held) => toggle(held, person.personId))}
                     />

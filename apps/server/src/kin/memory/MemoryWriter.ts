@@ -52,6 +52,10 @@ import * as MemoryLander from "./MemoryLander.ts";
 import { MemoryPullRequests } from "./MemoryPullRequests.ts";
 
 export const LEAD_ENDED_WITHOUT_KIN_END = "Agent ended without calling kin_end.";
+export const RESTART_JOURNAL_LINE =
+  "Kin restarted during this turn; what was noted before the restart may not have been saved.";
+const RESTART_OWNER_NOTICE =
+  "Kin restarted while an agent was working, so something it said it saved may not have been kept. If it matters, tell it again.";
 
 export interface WakeupContext extends JournalContext {
   readonly orgId: KinOrgId;
@@ -474,10 +478,14 @@ const make = Effect.gen(function* () {
         ctx.level === "L0" ? shadowBranch(ctx.agentId) : (config.defaultBranch ?? "main");
       const head = yield* branchHead(orgId, writer, branch);
       if ((yield* ownCommit(orgId, writer, head, ctx)) === undefined) {
-        const reason =
-          "Staged changes and kin_end summary were lost on restart; tool receipts do not prove those changes were committed.";
-        state.lines.push(reason);
-        yield* recovery.notify({ orgId, branch: `wakeup:${wakeupId}`, reason });
+        state.lines.push(RESTART_JOURNAL_LINE);
+        yield* recovery.notify({
+          orgId,
+          branch: `wakeup:${wakeupId}`,
+          reason:
+            "Staged changes and kin_end summary were lost on restart; tool receipts do not prove those changes were committed.",
+          owner: RESTART_OWNER_NOTICE,
+        });
       }
     }
     sessions.set(key, state);

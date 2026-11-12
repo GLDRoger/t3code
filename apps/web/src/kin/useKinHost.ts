@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   classifyKinProbe,
+  kinHostCandidate,
   kinHostIdToSave,
   resolveKinHost,
   resolveKinHostAt,
@@ -41,10 +42,9 @@ export function hasSavedKinHost(): boolean {
 }
 
 const kinHostCandidates = (get: Atom.AtomContext): ReadonlyArray<KinHostCandidate> =>
-  [...get(environmentPresentations.presentationsAtom)].map(([environmentId, presentation]) => ({
-    environmentId,
-    connected: presentation.connection.phase === "connected",
-  }));
+  [...get(environmentPresentations.presentationsAtom)].map(([environmentId, presentation]) =>
+    kinHostCandidate(environmentId, presentation.connection),
+  );
 
 // Each host's last directory, so an offline chat still names its lead and knows the viewer.
 const lastOrgs = new Map<EnvironmentId, KinOrgsListResult>();

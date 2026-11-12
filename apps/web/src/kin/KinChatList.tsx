@@ -48,6 +48,7 @@ import { KinTeamEntry } from "./KinTeamView";
 import { KinWorkEntry } from "./KinWorkView";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { useNowMinuteMs } from "./useKinClock";
+import { KinStandInLine } from "./KinStandInLine";
 import { useKinInbox } from "./useKinHost";
 
 const STATE_COPY: Record<
@@ -139,7 +140,9 @@ export function KinChatList() {
         <p role="status" className="px-2 py-1 text-xs text-muted-foreground">
           Offline. Showing the last update.
         </p>
-      ) : null}
+      ) : (
+        <KinStandInLine className="px-2 py-1 text-xs text-muted-foreground" />
+      )}
       <KinWaiting
         waiting={view.waiting}
         chats={inbox.chats}

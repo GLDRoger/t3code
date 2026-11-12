@@ -18,6 +18,8 @@ import {
   type KinOrgId,
   type KinWorkPrincipal,
   TrimmedNonEmptyString,
+  calendarTimeMillis,
+  isCalendarDay,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
@@ -407,9 +409,8 @@ export const resolveWho = Effect.fn("KinWorkTools.resolveWho")(function* (lead: 
 
 const dueOf = Effect.fn("KinWorkTools.dueOf")(function* (orgId: KinOrgId, due: string | null) {
   if (due === null) return { dueAt: null, dueAllDay: false };
-  if (/^\d{4}-\d{2}-\d{2}$/.test(due))
-    return { dueAt: endOfDay(due, yield* ownerZone(orgId)), dueAllDay: true };
-  const ms = Date.parse(due);
+  if (isCalendarDay(due)) return { dueAt: endOfDay(due, yield* ownerZone(orgId)), dueAllDay: true };
+  const ms = calendarTimeMillis(due);
   if (!Number.isFinite(ms))
     return yield* invalid(`due ${due.slice(0, 40)} is not a day or a time.`);
   return { dueAt: ms, dueAllDay: false };
@@ -741,7 +742,7 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
   const records = yield* KinRecords;
   const list = input.list === undefined ? undefined : yield* listFor(lead, input.list);
   const owner = input.owner === undefined ? undefined : yield* resolveWho(lead, input.owner);
-  const dueBy = input.dueBefore === undefined ? undefined : Date.parse(input.dueBefore);
+  const dueBy = input.dueBefore === undefined ? undefined : calendarTimeMillis(input.dueBefore);
   if (dueBy !== undefined && !Number.isFinite(dueBy))
     return yield* invalid("dueBefore is not a time.");
   const partyId =

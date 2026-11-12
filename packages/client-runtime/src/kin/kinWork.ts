@@ -31,6 +31,7 @@ import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runti
 import { kinRetiredAgentIds } from "./kinAgentRetire.ts";
 import { kinLinkToOpen } from "./kinChatFeed.ts";
 import { formatKinTime, kinAgentAvatar, type KinAvatarView } from "./kinScreenState.ts";
+import { kinPickablePeople } from "./kinTeam.ts";
 import type { KinWorkLive } from "./kinWorkStream.ts";
 
 export const KIN_WORK_TITLE = "Work";
@@ -1084,6 +1085,8 @@ export interface KinWorkAssignee {
   readonly avatar: KinAvatarView;
   /** It is theirs already. */
   readonly current: boolean;
+  /** Re-invited and hasn't opened the new link: shown, not offered. */
+  readonly invited?: true;
 }
 
 export const KIN_WORK_ASSIGN = {
@@ -1091,6 +1094,8 @@ export const KIN_WORK_ASSIGN = {
   leads: "Agents",
   leadsHint: "An agent starts on it right away and tells you in your chat with it when it's done.",
   people: "People",
+  /** A re-invited teammate who hasn't opened the new link yet. */
+  invited: "Invited, hasn't joined yet",
 };
 
 /** Who a task can go to: the org's leads, then its people with the viewer first. */
@@ -1102,6 +1107,8 @@ export function kinWorkAssignees(input: {
   readonly current: KinWorkPrincipal | null;
   /** People whose device still opens Kin; when given, others are offered only if they hold it now. */
   readonly joined?: ReadonlyArray<KinPersonId> | null;
+  /** People re-invited who haven't opened the new link yet; listed as invited. */
+  readonly invited?: ReadonlyArray<KinPersonId> | null;
 }): {
   readonly leads: ReadonlyArray<KinWorkAssignee>;
   readonly people: ReadonlyArray<KinWorkAssignee>;
@@ -1116,16 +1123,23 @@ export function kinWorkAssignees(input: {
   });
   const org = input.orgs?.orgs.find((held) => held.orgId === input.orgId);
   const me = input.orgs?.me.find((held) => held.orgId === input.orgId)?.personId;
-  const joined = input.joined == null ? null : new Set(input.joined);
-  const others = (input.people ?? [])
-    .filter((person) => person.personId !== me)
-    .filter(
-      (person) =>
-        joined === null ||
-        joined.has(person.personId) ||
-        kinWorkSamePrincipal({ _tag: "person", personId: person.personId }, current),
-    )
-    .map((person) => view({ _tag: "person", personId: person.personId }));
+  const listed = (input.people ?? []).filter((person) => person.personId !== me);
+  const isCurrent = (personId: KinPersonId) =>
+    kinWorkSamePrincipal({ _tag: "person", personId }, current);
+  const others =
+    input.joined == null
+      ? listed.map((person) => view({ _tag: "person", personId: person.personId }))
+      : kinPickablePeople(
+          listed,
+          [
+            ...input.joined,
+            ...listed.flatMap((person) => (isCurrent(person.personId) ? [person.personId] : [])),
+          ],
+          input.invited ?? [],
+        ).map(({ person, invited }) => {
+          const shown = view({ _tag: "person", personId: person.personId });
+          return invited ? { ...shown, invited: true as const } : shown;
+        });
   return {
     leads: (org?.agents ?? [])
       .filter((agent) => !agent.retired)

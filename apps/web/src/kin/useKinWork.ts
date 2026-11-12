@@ -34,6 +34,7 @@ import {
   mapPage,
   type KinPagedListState,
 } from "@t3tools/client-runtime/kin/kinWorkList";
+import { kinInvitedPeople } from "@t3tools/client-runtime/kin/kinTeam";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type {
   EnvironmentId,
@@ -41,6 +42,7 @@ import type {
   KinOwnerTimeZone,
   KinPartyPage,
   KinPartyRow,
+  KinPeopleListInvitesResult,
   KinPeopleListResult,
   KinProjectPage,
   KinProjectRow,
@@ -72,6 +74,8 @@ const noPeopleAtom: Atom.Atom<AsyncResult.AsyncResult<KinPeopleListResult, unkno
 const noZoneAtom: Atom.Atom<AsyncResult.AsyncResult<KinOwnerTimeZone, unknown>> = Atom.make(
   AsyncResult.initial(),
 );
+const noInvitesAtom: Atom.Atom<AsyncResult.AsyncResult<KinPeopleListInvitesResult, unknown>> =
+  Atom.make(AsyncResult.initial());
 
 export const kinWorkLiveAtom = ({ environmentId, orgId }: KinWorkTarget) =>
   kinClient.workLive({ environmentId, input: { orgId } });
@@ -88,6 +92,18 @@ export function useKinWork(target: KinWorkTarget): KinWorkScreenState {
   });
 }
 
+/**
+ * Teammates re-invited who haven't opened the new link, for pickers to show as invited. Only a
+ * session that hands out access can read invites; others get none.
+ */
+export function useKinReinvited({ environmentId, orgId }: KinWorkTarget, enabled = true) {
+  const allowed = useAtomValue(kinClient.inviteCreate.permissionAtom(environmentId)) && enabled;
+  const result = useAtomValue(
+    allowed ? kinClient.invites({ environmentId, input: { orgId } }) : noInvitesAtom,
+  );
+  return kinInvitedPeople(Option.getOrNull(AsyncResult.value(result))?.invites ?? null);
+}
+
 /** Who Work can name and be given to. `enabled` is off for a viewer the host would refuse. */
 export function useKinWorkDirectory({ environmentId, orgId }: KinWorkTarget, enabled: boolean) {
   const host = useKinHostAt(environmentId);
@@ -95,7 +111,9 @@ export function useKinWorkDirectory({ environmentId, orgId }: KinWorkTarget, ena
   const result = useAtomValue(
     enabled ? kinClient.people({ environmentId, input: { orgId } }) : noPeopleAtom,
   );
-  const people = Option.getOrNull(AsyncResult.value(result))?.people ?? null;
+  const listed = Option.getOrNull(AsyncResult.value(result));
+  const people = listed?.people ?? null;
+  const invited = useKinReinvited({ environmentId, orgId }, enabled);
   const zone =
     Option.getOrNull(
       AsyncResult.value(
@@ -104,7 +122,13 @@ export function useKinWorkDirectory({ environmentId, orgId }: KinWorkTarget, ena
         ),
       ),
     )?.timeZone ?? null;
-  return { orgs, people, names: kinWorkNames({ orgs, orgId, people, zone }) };
+  return {
+    orgs,
+    people,
+    joined: listed?.joined ?? null,
+    invited,
+    names: kinWorkNames({ orgs, orgId, people, zone }),
+  };
 }
 
 export type KinWorkDirectory = ReturnType<typeof useKinWorkDirectory>;

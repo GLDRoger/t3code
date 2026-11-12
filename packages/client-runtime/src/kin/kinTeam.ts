@@ -143,6 +143,31 @@ export function kinTeamView(
   );
 }
 
+/** People with an open link to get back in; a first invite has no person yet. */
+export const kinInvitedPeople = (
+  invites: KinTeamList["invites"] | null,
+): ReadonlyArray<KinPersonId> =>
+  (invites ?? []).flatMap((invite) => (invite.personId === null ? [] : [invite.personId]));
+
+/**
+ * Who a people picker shows: teammates who hold Kin now, then re-invited ones who haven't opened
+ * the new link, shown as invited and not pickable. Teammates whose access was removed are left out.
+ */
+export function kinPickablePeople<P extends { readonly personId: KinPersonId }>(
+  people: ReadonlyArray<P>,
+  joined: ReadonlyArray<KinPersonId>,
+  invited: ReadonlyArray<KinPersonId>,
+): ReadonlyArray<{ readonly person: P; readonly invited: boolean }> {
+  const holds = new Set(joined);
+  const asked = new Set(invited);
+  return [
+    ...people.filter((p) => holds.has(p.personId)).map((person) => ({ person, invited: false })),
+    ...people
+      .filter((p) => !holds.has(p.personId) && asked.has(p.personId))
+      .map((person) => ({ person, invited: true })),
+  ];
+}
+
 /** The second line of the way in from the chat list. */
 export function kinTeamEntrySummary(
   list: KinTeamList | null,
@@ -222,11 +247,22 @@ export function kinRemoveAccessCopy(name: string): {
   };
 }
 
+/** The button that takes back an unopened link, and the confirmation before it does. */
+function kinCancelInviteCopy(teammate: KinTeammate) {
+  const label = teammate.state === "invited" ? "Cancel invite" : "Cancel unopened link";
+  return {
+    label,
+    title: `${label}?`,
+    detail: `The link you gave ${teammate.name} stops working. You can make a new one later.`,
+    keep: "Keep it",
+  };
+}
+
 /** What a teammate's details offer, by where they stand. */
 export function kinTeammateActions(teammate: KinTeammate): {
   /** The button that makes a link, and what it says underneath. */
   readonly link: { readonly label: string; readonly hint: string } | null;
-  readonly cancel: { readonly label: string } | null;
+  readonly cancel: ReturnType<typeof kinCancelInviteCopy> | null;
   readonly remove: boolean;
 } {
   if (teammate.state === "you") return { link: null, cancel: null, remove: false };
@@ -246,9 +282,7 @@ export function kinTeammateActions(teammate: KinTeammate): {
               ? "Use this if the link was lost. The earlier link stops working."
               : "Lets them back in as the same person, with their chats.",
           },
-    cancel: replaces
-      ? { label: teammate.state === "invited" ? "Cancel invite" : "Cancel unopened link" }
-      : null,
+    cancel: replaces ? kinCancelInviteCopy(teammate) : null,
     remove: teammate.personId !== null && (teammate.state === "joined" || replaces),
   };
 }
