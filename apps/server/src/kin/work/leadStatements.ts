@@ -30,6 +30,8 @@ import { checkBalances, type Statement, type StatementRow } from "./statements/s
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 /** Words the bank or a counterparty wrote: quoted, so no narration reads as an instruction. */
 const bankSaid = (text: string) => quote("bank statement text (untrusted)", text, true);
+/** The name the file was sent with: anyone's words, quoted as narrations are. */
+const fileSaid = (name: string) => quote("statement file name (untrusted)", name, true);
 /** A reference as the summary shows an account: its last four characters. */
 const masked = (reference: string) => (reference.length <= 4 ? "••" : `••${reference.slice(-4)}`);
 const isChatError = Schema.is(KinChatError);
@@ -200,7 +202,7 @@ const describe = (statementId: string, file: string, review: Review, applied: bo
   return {
     statement: statementId,
     status: applied ? ("applied" as const) : ("read" as const),
-    file,
+    file: fileSaid(file),
     ...(statement.account === null
       ? {}
       : { account: `${statement.bank ?? "Account"} ••${statement.account}` }),
@@ -258,7 +260,7 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
       ${lead.agentId}, ${lead.wakeupId}, 'unreadable', ${now})
     ON CONFLICT (org_id, statement_id) DO NOTHING`;
   const stored = (yield* statementRow(lead.orgId, statementId))!;
-  const base = { statement: statementId, file: file.name, sensitive: true as const };
+  const base = { statement: statementId, file: fileSaid(file.name), sensitive: true as const };
   if (stored.status === "read" && input.refresh !== true && input.rows === undefined) {
     const review = stored.reviewJson === null ? undefined : reviewOf(stored.reviewJson);
     if (review !== undefined)

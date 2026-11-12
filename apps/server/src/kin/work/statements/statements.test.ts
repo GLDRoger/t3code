@@ -309,6 +309,10 @@ describe("bank statements", () => {
         const result = opened(yield* read(1, "hdfc-account.pdf"));
         assert.strictEqual(result.status, "read");
         assert.strictEqual(result.account, "HDFC Bank ••4821");
+        assert.strictEqual(
+          result.file,
+          '> BEGIN QUOTE: statement file name (untrusted)\n> "hdfc-account.pdf"\n> END QUOTE',
+        );
         assert.strictEqual(result.rows, 20);
         assert.include(result.balance, "It adds up");
         assert.deepStrictEqual(result.matched.map((one) => one.to).toSorted(), [
