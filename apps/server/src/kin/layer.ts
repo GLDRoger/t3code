@@ -26,8 +26,12 @@ export { KinServer } from "./KinServer.ts";
 import type * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as KinMcp from "./mcp/layer.ts";
+import * as Render from "./gendocs/render.ts";
+import * as Toolchain from "./gendocs/toolchain.ts";
 import * as Workspace from "./gendocs/workspace.ts";
 import * as Vcs from "../vcs/VcsProcess.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import { FetchHttpClient } from "effect/http";
 import * as GithubWebhooks from "./triggers/githubWebhooks.ts";
 
 const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
@@ -60,7 +64,16 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
               LevelControl.layer,
               MemoryChanges.layer,
               KinRecords.layer,
-              Workspace.layer.pipe(Layer.provide(Vcs.layer)),
+              Render.layer.pipe(
+                Layer.provideMerge(Workspace.layer),
+                Layer.provide(
+                  Toolchain.layer.pipe(
+                    Layer.provide(ProcessRunner.layer),
+                    Layer.provide(FetchHttpClient.layer),
+                  ),
+                ),
+                Layer.provide(Vcs.layer),
+              ),
               ApprovalCards.layer,
               RetiredActions.layer,
             ).pipe(

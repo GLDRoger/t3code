@@ -160,6 +160,7 @@ export const SHARED_TOOLS = {
   kin_document: "refused",
   kin_recipes: "refused",
   kin_issue: "refused",
+  kin_recipe_undo: "refused",
 } satisfies Record<string, SharedToolPolicy>;
 
 /** Whether `name` may run with these arguments in a turn someone besides the owner reads. */

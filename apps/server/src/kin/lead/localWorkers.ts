@@ -10,7 +10,6 @@ import {
   type ModelSelection,
   ProjectId,
 } from "@t3tools/contracts";
-import * as HostProcess from "@t3tools/shared/HostProcess";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -42,10 +41,14 @@ import { publishBranch } from "./workerPublish.ts";
 import { grantHosts } from "./workNetwork.ts";
 import type { DelegateInput } from "./Workers.ts";
 import { STOPPED_BEFORE_START, WorkerTracker } from "./WorkerTracker.ts";
-import { hostShell } from "./workSandbox.ts";
 import { localThreadId } from "./workThread.ts";
-import { cleanupJob, docBrief, type DocumentInput, planJob } from "../gendocs/DocJobs.ts";
-import { KinToolchain } from "../gendocs/toolchain.ts";
+import {
+  cleanupJob,
+  docBrief,
+  type DocumentInput,
+  planJob,
+  workerJobSensitive,
+} from "../gendocs/DocJobs.ts";
 import { jobBranch, jobWorktree, KinWorkspace } from "../gendocs/workspace.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { attemptBegun, noteSensitivity } from "../work/workerAttempts.ts";
@@ -117,7 +120,6 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
   const { stateDir, worktreesDir } = serverConfig;
   const workspace = yield* KinWorkspace;
   const projects = yield* ProjectService.ProjectService;
-  const toolchain = yield* KinToolchain;
   const kinDirectory = path.join(stateDir, "kin");
   const fs = yield* FileSystem.FileSystem;
 
@@ -472,24 +474,10 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
     return yield* new KinChatError({ reason: "unavailable", message: LAUNCH_FAILED });
   });
 
-  /** Whether this host gives workers a shell (`KinWorkSandbox`): a recipe runs commands. */
-  const shellHere = Effect.gen(function* () {
-    const platform = yield* HostProcess.Platform;
-    if (platform !== "linux")
-      return {
-        available: false,
-        reason: `shells run only on Linux, and this host is ${platform}`,
-      } as const;
-    const host = hostShell(yield* HostProcess.Environment);
-    return host._tag === "off"
-      ? ({ available: false, reason: host.reason } as const)
-      : ({ available: true } as const);
-  });
-
   /**
-   * `kin_document`: a worker on this server makes a file, or writes a recipe, in a worktree of
-   * the org's workspace. The same rules as `delegate`: the host owner's lead, in its direct chat
-   * with the owner, in an owner-only turn. The worker gets no network.
+   * `kin_document` without a recipe to run: a worker on this server makes a one-off file, or
+   * writes a recipe, in a worktree of the org's workspace. The same rules as `delegate`: the
+   * host owner's lead, in its direct chat with the owner, in an owner-only turn. No network.
    */
   const document = Effect.fn("KinLocalWorkers.document")(function* (
     scope: McpInvocationScope,
@@ -517,18 +505,13 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
         reason: "limit",
         message: `Today's budget for worker tasks is used up, so this waits for the daily reset or a higher limit. ${STILL}`,
       });
-    const job = yield* planJob(ctx.orgId, input, yield* shellHere).pipe(
+    const job = yield* planJob(ctx.orgId, input).pipe(
       Effect.provideService(KinWorkspace, workspace),
       Effect.provideService(KinRecords, records),
       Effect.provideService(SqlClient.SqlClient, sql),
     );
-    // Running a recipe is following steps; a one-off file or a new recipe is design work.
-    const modelSelection = yield* shared.pick(
-      job.mode === "document" && job.recipe !== null ? "cheap" : "strong",
-      plan.config.models,
-    );
+    const modelSelection = yield* shared.pick("strong", plan.config.models);
     yield* claudeOnly(modelSelection);
-    if ((yield* shellHere).available) yield* toolchain.ensure(job.tools);
     const workerId = KinWorkerId.make(
       `wk-${(yield* shared.hash({ wakeupId: ctx.wakeupId, document: input })).slice(0, 32)}`,
     );
@@ -578,13 +561,17 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
             return yield* denied(LOCAL_DIRECT_ONLY);
           return { startedAt: stored.startedAt, fresh: false };
         }
+        const sensitive = yield* workerJobSensitive(ctx.orgId, ctx.wakeupId, job).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.provideService(KinRecords, records),
+        );
         yield* sql`INSERT INTO kin_doc_jobs (org_id, worker_id, agent_id, wakeup_id, mode, recipe,
             recipe_commit, entry_record_id, inputs_sha256, number, sensitive, doc_origin,
             worktree_path, branch, chat_id, audience, answered_message_id, answered_author_kind,
             answered_author_id, created_at)
           VALUES (${ctx.orgId}, ${workerId}, ${ctx.agentId}, ${ctx.wakeupId}, ${job.mode},
             ${job.recipeName}, ${job.recipe?.commit ?? ""}, ${job.entry?.recordId ?? null},
-            ${job.inputsHash}, ${job.number}, ${job.sensitive ? 1 : 0}, ${job.docOrigin},
+            ${job.inputsHash}, ${job.number}, ${sensitive ? 1 : 0}, ${job.docOrigin},
             ${worktreePath}, ${jobBranch(workerId)}, ${chatId}, 'owner_only', ${answered},
             ${answered === null ? null : "person"}, ${answered === null ? null : config.ownerPersonId},
             ${startedAt})`;
@@ -599,23 +586,15 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
       }),
     );
     if (started.fresh) {
-      const prepared = yield* workspace
-        .prepare(
-          ctx.orgId,
-          workerId,
-          job.mode === "document" && job.recipe !== null
-            ? { "in/inputs.json": job.inputsJson }
-            : {},
-        )
-        .pipe(
-          Effect.tapError(() =>
-            Effect.gen(function* () {
-              yield* sql`UPDATE kin_workers SET status = 'failed', ended_at = ${yield* Clock.currentTimeMillis}
+      const prepared = yield* workspace.prepare(ctx.orgId, workerId, {}).pipe(
+        Effect.tapError(() =>
+          Effect.gen(function* () {
+            yield* sql`UPDATE kin_workers SET status = 'failed', ended_at = ${yield* Clock.currentTimeMillis}
                 WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId} AND status = 'queued'`;
-              yield* discardJob;
-            }).pipe(Effect.ignore),
-          ),
-        );
+            yield* discardJob;
+          }).pipe(Effect.ignore),
+        ),
+      );
       // The commit the worktree holds: the recipe exactly as the worker ran it.
       yield* sql`UPDATE kin_doc_jobs SET recipe_commit = ${prepared.base}
         WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId}`;
@@ -693,6 +672,7 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
       recipe: job.recipeName,
       number: job.number,
       draft: job.draft,
+      documents: [],
     };
   });
 

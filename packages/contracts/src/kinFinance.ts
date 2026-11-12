@@ -299,6 +299,12 @@ export const KinIssueResult = Schema.Struct({
   state: KinRecordState,
   /** True when this call issued it; false when it already had its number. */
   issued: Schema.Boolean,
+  /** Its documents, made again in place with the number when this call issued it. */
+  documents: Schema.Array(
+    Schema.Struct({ key: KinRecordKey, title: KinTrimmedText, version: Schema.Number }),
+  ),
+  /** Why a document couldn't be made again; the number stands either way. */
+  problems: Schema.Array(Schema.String),
 });
 export type KinIssueResult = typeof KinIssueResult.Type;
 

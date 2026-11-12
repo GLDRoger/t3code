@@ -44,6 +44,7 @@ import { handlers as workHandlers } from "../work/mcp/handlers.ts";
 import { KinDocsToolkit } from "../work/mcp/docTools.ts";
 import { handlers as documentHandlers, KinDocumentToolkit } from "../gendocs/mcp.ts";
 import * as DocJobs from "../gendocs/DocJobs.ts";
+import * as Render from "../gendocs/render.ts";
 import * as Toolchain from "../gendocs/toolchain.ts";
 import * as Workspace from "../gendocs/workspace.ts";
 import { handlers as docHandlers } from "../work/mcp/docHandlers.ts";
@@ -355,6 +356,7 @@ const workers = Workers.layer.pipe(
   Layer.provideMerge(
     WorkerTracker.layer.pipe(Layer.provide(workerPublish), Layer.provide(DocJobs.collectorLayer)),
   ),
+  Layer.provideMerge(Render.layer),
   Layer.provideMerge(Layer.mergeAll(Workspace.layer, Toolchain.layer)),
   Layer.provideMerge(WorkerEnvironment.layer),
   // The repositories the owner connected are part of where the owner's own work may start.

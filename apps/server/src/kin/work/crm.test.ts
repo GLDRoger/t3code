@@ -454,7 +454,13 @@ it.effect(
         kind: "vendor",
         clientRequestId: "j",
       });
-      assert.include(created, { key: "C-1", kind: "vendor", active: true, terms: null });
+      assert.include(created, {
+        key: "C-1",
+        kind: "vendor",
+        active: true,
+        terms: null,
+        address: null,
+      });
       // A retry is the same client; another of the same name is refused, naming the one there.
       assert.include(
         yield* Clients.createParty([owner], { orgId, name: "x", clientRequestId: "j" }),
@@ -472,8 +478,14 @@ it.effect(
         rev: 1,
         kind: "client",
         terms: "Invented net 30",
+        address: "12 Invented Road, Pune 411001",
       });
-      assert.include(edited, { rev: 2, kind: "client", terms: "Invented net 30" });
+      assert.include(edited, {
+        rev: 2,
+        kind: "client",
+        terms: "Invented net 30",
+        address: "12 Invented Road, Pune 411001",
+      });
       assert.include(
         yield* Clients.updateParty([owner], {
           orgId,
@@ -492,6 +504,7 @@ it.effect(
       const history = yield* Clients.history([owner], { orgId, key: "C-1" });
       assert.deepStrictEqual(history.items[0]!.fields, [
         { field: "terms", from: null, to: "Invented net 30" },
+        { field: "address", from: null, to: "12 Invented Road, Pune 411001" },
         { field: "category", from: "vendor", to: "client" },
       ]);
       assert.deepStrictEqual(history.items[0]!.by, { _tag: "person", personId: ownerId });

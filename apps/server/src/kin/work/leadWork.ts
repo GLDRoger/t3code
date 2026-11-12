@@ -94,6 +94,9 @@ const Repeat = Schema.NullOr(KinRepeatRule).annotate({
     'Kin makes the next one when this one closes: {"every":"month"}, "quarter", "year", or {"every":"days","days":14}. null stops it.',
 });
 const TaxId = TrimmedNonEmptyString.check(Schema.isMaxLength(60));
+const Address = TrimmedNonEmptyString.check(Schema.isMaxLength(500)).annotate({
+  description: "A client's billing address, as its invoices show it.",
+});
 export const Client = TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
   description: "A client or vendor: its key (C-3) or exact name.",
 });
@@ -165,6 +168,7 @@ const Row = Schema.Struct({
   phone: Schema.optional(Schema.String),
   terms: Schema.optional(Schema.String),
   repos: Schema.optional(Schema.Array(Schema.String)),
+  address: Schema.optional(Schema.String),
   gstin: Schema.optional(Schema.String),
   placeOfSupply: Schema.optional(Schema.String),
   /** A defined list's: its list, what it calls the state, amount, date and own fields. */
@@ -276,6 +280,7 @@ const CreateRow = Schema.Struct({
   phone: Schema.optional(Detail),
   terms: Schema.optional(Terms),
   repos: Schema.optional(Repos),
+  address: Schema.optional(Address),
   gstin: Schema.optional(TaxId),
   placeOfSupply: Schema.optional(TaxId),
   amount: Schema.optional(Amount),
@@ -320,6 +325,7 @@ export const UpdateInput = Schema.Struct({
   phone: Schema.optional(Schema.NullOr(Detail)),
   terms: Schema.optional(Schema.NullOr(Terms)),
   repos: Schema.optional(Repos),
+  address: Schema.optional(Schema.NullOr(Address)),
   gstin: Schema.optional(Schema.NullOr(TaxId)),
   placeOfSupply: Schema.optional(Schema.NullOr(TaxId)),
   amount: Schema.optional(Schema.NullOr(Amount)),
@@ -559,7 +565,7 @@ const rowFor = (view: View, row: RecordRow, now: number) => {
     ...text("phone"),
     ...text("terms"),
     ...(repos.length === 0 ? {} : { repos: [...repos] }),
-    ...(defined ? {} : { ...text("gstin"), ...text("placeOfSupply") }),
+    ...(defined ? {} : { ...text("address"), ...text("gstin"), ...text("placeOfSupply") }),
     ...(defined && row.category !== null ? { category: row.category } : {}),
     ...(record.amount === undefined ? {} : { amount: formatMoney(record.amount) }),
     ...(record.balance === undefined ? {} : { balance: formatMoney(record.balance) }),
@@ -613,13 +619,14 @@ const fieldsFrom = (row: {
   readonly phone?: string | null | undefined;
   readonly terms?: string | null | undefined;
   readonly repos?: ReadonlyArray<string> | undefined;
+  readonly address?: string | null | undefined;
   readonly gstin?: string | null | undefined;
   readonly placeOfSupply?: string | null | undefined;
 }) =>
   Object.fromEntries(
-    (["role", "email", "phone", "terms", "repos", "gstin", "placeOfSupply"] as const).flatMap(
-      (key) => (row[key] === undefined ? [] : [[key, row[key]]]),
-    ),
+    (
+      ["role", "email", "phone", "terms", "repos", "address", "gstin", "placeOfSupply"] as const
+    ).flatMap((key) => (row[key] === undefined ? [] : [[key, row[key]]])),
   ) as Record<string, string | ReadonlyArray<string> | null>;
 
 /** A list a lead named, as this org has it. */

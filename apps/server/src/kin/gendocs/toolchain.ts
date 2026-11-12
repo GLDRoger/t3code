@@ -16,9 +16,9 @@ import { ServerConfig } from "../../config.ts";
 import { ProcessRunner } from "../../processRunner.ts";
 
 /**
- * Typst, the one renderer recipes use for PDF and PNG: a single static binary with its own fonts,
+ * Typst, the one renderer recipes use for PDF: a single static binary with its own fonts,
  * Apache-2.0. Fetched by the server on first use from the release named here, checked against
- * the checksum pinned here, and kept under the T3 home where every worker's shell may read it.
+ * the checksum pinned here, kept under the T3 home, and run by the server (`render.ts`).
  */
 
 const TYPST_VERSION = "0.15.1";
@@ -80,8 +80,8 @@ export const toolDirectories = (baseDir: string) => [
 export class KinToolchain extends Context.Service<
   KinToolchain,
   {
-    /** Each tool a recipe names is on this host after this, or it fails saying why. */
-    readonly ensure: (tools: ReadonlyArray<"typst">) => Effect.Effect<void, KinChatError>;
+    /** The pinned Typst's path on this host, fetched first if need be, or why there is none. */
+    readonly ensure: () => Effect.Effect<string, KinChatError>;
   }
 >()("t3/kin/gendocs/toolchain/KinToolchain") {}
 
@@ -122,7 +122,7 @@ export const layer = Layer.effect(
         return yield* unavailable(
           `Kin has no Typst build for ${platform} on this processor, so it can't make PDFs here.`,
         );
-      if (yield* installed(release.sha256)) return;
+      if (yield* installed(release.sha256)) return binary;
       yield* Effect.logInfo("Kin is fetching Typst for documents", { version: TYPST_VERSION });
       const url = `https://github.com/typst/typst/releases/download/v${TYPST_VERSION}/typst-${release.target}.tar.xz`;
       const response = yield* http.get(url);
@@ -213,11 +213,12 @@ export const layer = Layer.effect(
       }).pipe(
         Effect.ensuring(fs.remove(scratch, { recursive: true, force: true }).pipe(Effect.ignore)),
       );
+      return binary;
     });
 
     const ensure: KinToolchain["Service"]["ensure"] = Effect.fn("KinToolchain.ensure")(
-      function* (tools) {
-        if (tools.includes("typst")) yield* typst();
+      function* () {
+        return yield* typst();
       },
       lock.withPermits(1),
       Effect.catchIf(
@@ -227,7 +228,7 @@ export const layer = Layer.effect(
             Effect.andThen(
               Effect.fail(
                 unavailable(
-                  "Kin couldn't fetch Typst, which this recipe needs. Try again in a minute.",
+                  "Kin couldn't fetch Typst, which it renders documents with. Try again in a minute.",
                 ),
               ),
             ),

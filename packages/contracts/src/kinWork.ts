@@ -489,6 +489,7 @@ const Name = KinTrimmedText.check(Schema.isMaxLength(200));
 const Notes = KinText.check(Schema.isMaxLength(4_000));
 const ShortText = KinTrimmedText.check(Schema.isMaxLength(200));
 const RequestId = TrimmedNonEmptyString.check(Schema.isMaxLength(120));
+const Address = KinTrimmedText.check(Schema.isMaxLength(500));
 const PageLimit = Schema.Int.check(
   Schema.isGreaterThanOrEqualTo(1),
   Schema.isLessThanOrEqualTo(KIN_RECORDS_PAGE_CAP),
@@ -530,6 +531,8 @@ export const KinPartyDetail = Schema.Struct({
   notes: KinText,
   /** Commercial terms in a line or a paragraph. Always sensitive. */
   terms: Schema.NullOr(KinText),
+  /** The billing address an invoice shows. */
+  address: Schema.NullOr(KinText),
   /** Which fields here are sensitive whatever `sensitive` says. */
   sensitiveFields: SensitiveFields,
   createdAt: IsoDateTime,
@@ -727,6 +730,7 @@ export const KinPartyCreateInput = Schema.Struct({
   owner: Schema.optional(KinWorkPrincipal),
   notes: Schema.optional(Notes),
   terms: Schema.optional(Notes),
+  address: Schema.optional(Address),
   /** Labels everything pointing at it sensitive too. */
   sensitive: Schema.optional(Schema.Boolean),
   clientRequestId: RequestId,
@@ -746,6 +750,8 @@ export const KinPartyUpdateInput = Schema.Struct({
   notes: Schema.optional(Notes),
   /** `null` clears. */
   terms: Schema.optional(Schema.NullOr(Notes)),
+  /** `null` clears. */
+  address: Schema.optional(Schema.NullOr(Address)),
   sensitive: Schema.optional(Schema.Boolean),
   active: Schema.optional(Schema.Boolean),
 });

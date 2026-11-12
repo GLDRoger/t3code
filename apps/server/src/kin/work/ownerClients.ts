@@ -203,7 +203,7 @@ export const createParty = Effect.fn("KinWork.createParty")(function* (
     category: input.kind ?? "client",
     ...(input.notes === undefined ? {} : { notes: input.notes }),
     ...(input.sensitive === undefined ? {} : { sensitive: input.sensitive }),
-    fields: fieldsOf({ terms: input.terms }),
+    fields: fieldsOf({ terms: input.terms, address: input.address }),
   });
   return yield* partyOut(row);
 });
@@ -227,7 +227,9 @@ export const updateParty = Effect.fn("KinWork.updateParty")(function* (
         sensitive: input.sensitive,
       }),
       ...activeState(input.active),
-      ...(input.terms === undefined ? {} : { fields: { terms: input.terms } }),
+      ...(input.terms === undefined && input.address === undefined
+        ? {}
+        : { fields: fieldsOf({ terms: input.terms, address: input.address }) }),
     },
     input.rev,
   );

@@ -5,10 +5,16 @@ import {
   type KinDocGetInput,
   type KinDocHistoryInput,
   type KinDocRestoreInput,
+  type KinDocRenderInput,
+  type KinDocRenderResult,
   type KinDocsListInput,
   type KinOrgId,
   type KinRecipesInput,
   type KinRecipesResult,
+  type KinRecipeUndoInput,
+  type KinRecipeUndoResult,
+  KinRecordId,
+  KinRecordKey,
   type KinSearchInput,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -17,13 +23,21 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
+import { makeDocument } from "../gendocs/make.ts";
 import { KinWorkspace } from "../gendocs/workspace.ts";
 import { changedSections, outlineOf, patchOf } from "./docBody.ts";
 import * as Docs from "./docs.ts";
 import { KinRecords } from "./KinRecords.ts";
 import { LISTS } from "./lists.ts";
 import { inList, ownerWriter, theOwner } from "./ownerWork.ts";
-import { iso, principalId, recordSeq, selectRecords, unavailable } from "./recordRows.ts";
+import {
+  iso,
+  principalId,
+  recordSeq,
+  selectRecords,
+  unavailable,
+  workFailure,
+} from "./recordRows.ts";
 import { search as runSearch } from "./search.ts";
 
 /**
@@ -296,3 +310,74 @@ export const recipes = Effect.fn("KinDocs.recipes")(function* (
     })),
   } satisfies KinRecipesResult;
 });
+
+const PREVIEW_BYTES = 5 * 1024 * 1024;
+
+/**
+ * The owner's "Make invoice", "Preview" and "Export month": a recipe's document made in the call,
+ * with no agent turn, filed as the owner's (or, for a preview, returned and never filed).
+ */
+export const render = Effect.fn("KinDocs.render")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinDocRenderInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  const made = yield* makeDocument({
+    orgId: input.orgId,
+    recipe: input.recipe,
+    entry: input.entry,
+    given: input.inputs ?? {},
+    title: input.title ?? input.recipe,
+    requester: { _tag: "owner", personId: person.personId, writer: ownerWriter(person) },
+    jobKey: `owner:${person.personId}:${input.clientRequestId}`,
+    admit: Effect.void,
+    preview: input.preview === true,
+  });
+  const previewBytes = made.files.reduce((sum, file) => sum + file.bytes.length, 0);
+  if (input.preview === true && previewBytes > PREVIEW_BYTES)
+    return yield* new KinChatError({
+      reason: "invalid_state",
+      message: "The preview is over 5 MB; make the document instead.",
+    });
+  return {
+    documents: made.documents.map((doc) => ({
+      recordId: KinRecordId.make(doc.recordId),
+      key: KinRecordKey.make(doc.key),
+      title: doc.title,
+      version: doc.version,
+    })),
+    number: made.number,
+    draft: made.draft,
+    sensitive: made.sensitive,
+    preview:
+      input.preview === true
+        ? made.files.map((file) => ({
+            name: file.name,
+            mimeType: file.mimeType,
+            base64: Buffer.from(file.bytes).toString("base64"),
+          }))
+        : null,
+  } satisfies KinDocRenderResult;
+}, workFailure);
+
+/** The owner's undo of a recipe's last change; undoing again redoes it. */
+export const undoRecipe = Effect.fn("KinDocs.undoRecipe")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinRecipeUndoInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  const undone = yield* (yield* KinWorkspace).undoRecipe(input.orgId, input.recipe, {
+    _tag: "owner",
+    personId: person.personId,
+  });
+  if (undone._tag === "refused")
+    return yield* new KinChatError({
+      reason: "invalid_state",
+      message: `Nothing changed: ${undone.reason}.`,
+    });
+  return {
+    recipe: input.recipe,
+    commit: undone.commit,
+    removed: undone.removed,
+  } satisfies KinRecipeUndoResult;
+}, workFailure);
