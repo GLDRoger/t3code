@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import { assert, describe, it } from "@effect/vitest";
 import {
   AuthSessionId,
+  KIN_APPROVER_ENROLMENT_VERSION,
   KinEventId,
   KinOrgId,
   KinPersonId,
@@ -194,6 +195,7 @@ const register = (keys: ApproverKeys["Service"], from: KinKeyCaller) =>
       challenge: new Uint8Array(Buffer.from(challenge, "base64url")),
     });
     const registered = yield* keys.registerKey(from, {
+      enrolmentVersion: KIN_APPROVER_ENROLMENT_VERSION,
       orgId,
       publicJwk: chain.publicJwk,
       platform: "android",
@@ -536,6 +538,7 @@ describe("GrantVerifier", () => {
       const { challenge } = yield* keys.keyChallenge(ownerPhone);
       const refused = yield* Effect.exit(
         keys.registerKey(ownerPhone, {
+          enrolmentVersion: KIN_APPROVER_ENROLMENT_VERSION,
           orgId,
           publicJwk,
           platform: "ios",
