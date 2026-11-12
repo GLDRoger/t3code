@@ -843,12 +843,12 @@ function KinChatStateView(props: {
 }
 
 const offlineTime = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
-// A row counts as seen once half of it shows, or once it fills half the screen: a message taller
-// than two screens never shows half of itself. A row peeking under the edge still lights the pill.
 /** The outbox had already handed the message to the host when the reader asked to take it back. */
 const alreadySending = () =>
   Dialog.alert("Already sending", "This message went out before it could be changed.");
 
+// A row counts as seen once half of it shows, or once it fills half the screen: a message taller
+// than two screens never shows half of itself. A row peeking under the edge still lights the pill.
 const SEEN_ROW_CONFIGS = [
   { id: "kin-seen-row", itemVisiblePercentThreshold: 50 },
   { id: "kin-seen-area", viewAreaCoveragePercentThreshold: 50 },

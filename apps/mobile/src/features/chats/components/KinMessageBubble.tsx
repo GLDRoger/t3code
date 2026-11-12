@@ -370,8 +370,10 @@ export function KinPendingBubble(props: {
     : queued
       ? "Waiting for connection"
       : "Sending…";
-  const offersAction = failed || queued;
   const attachments = entry.attachments ?? [];
+  // Edit keeps only the text, so a queued message with files is only deleted, never edited.
+  const canEdit = editable && (failed || attachments.length === 0);
+  const offersAction = failed || queued;
   const hasBody = entry.body.trim().length > 0;
   const remove = () =>
     Dialog.confirm({
@@ -396,12 +398,16 @@ export function KinPendingBubble(props: {
       {hasBody ? (
         <Pressable
           disabled={!editable}
-          onPress={props.onEdit}
+          onPress={canEdit ? props.onEdit : remove}
           onLongPress={editable ? remove : undefined}
           accessibilityRole={editable ? "button" : undefined}
           accessibilityLabel={kinSentences([`You: ${kinPlainText(entry.body)}`, status])}
           accessibilityHint={
-            editable ? "Edit it in the message box. Touch and hold to delete it." : undefined
+            canEdit
+              ? "Edit it in the message box. Touch and hold to delete it."
+              : editable
+                ? "Deletes it."
+                : undefined
           }
           accessibilityActions={editable ? [{ name: "delete", label: "Delete" }] : undefined}
           onAccessibilityAction={(event) => {
@@ -430,14 +436,14 @@ export function KinPendingBubble(props: {
         >
           {status}
         </Text>
-        {offersAction && hasBody ? (
+        {offersAction && hasBody && canEdit ? (
           <Pressable onPress={props.onEdit} hitSlop={12}>
             <Text textRole="caption" className="font-t3-medium text-foreground">
               Edit
             </Text>
           </Pressable>
         ) : null}
-        {offersAction && !hasBody ? (
+        {offersAction && !(hasBody && canEdit) ? (
           <Pressable onPress={remove} hitSlop={12}>
             <Text textRole="caption" className="font-t3-medium text-foreground">
               Delete
