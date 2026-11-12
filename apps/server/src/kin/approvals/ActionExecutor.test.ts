@@ -42,6 +42,7 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as ActionExecutor from "./ActionExecutor.ts";
 import * as ActionHandlers from "./ActionHandlers.ts";
 import * as Audit from "./Audit.ts";
+import { makeKeyStore } from "./ApproverKeyStore.ts";
 import * as CredentialHygiene from "./CredentialHygiene.ts";
 import { KinExecutionNotices, KinKeyNotices } from "./ExecutionNotices.ts";
 import { BOOTSTRAP_OWNER, KinOrgRoles } from "./GrantPorts.ts";
@@ -1066,6 +1067,35 @@ describe("KinActionExecutor", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("removing a key after its last read fences an unstarted write", () =>
+    Effect.gen(function* () {
+      // The removal itself, and a stop that closes no claim (a key stopped, not yet reconciled).
+      for (const how of ["removed", "stopped"] as const) {
+        const { requests, roleChecks, layer } = harness();
+        yield* Effect.gen(function* () {
+          const { sql } = yield* seed;
+          const store = yield* makeKeyStore;
+          const stop =
+            how === "removed"
+              ? store.revokeRow({ orgId, thumbprint: kid }, "key_revoked").pipe(Effect.asVoid)
+              : sql`UPDATE kin_approver_keys SET state = 'revoked' WHERE thumbprint = ${kid}`.pipe(
+                  Effect.asVoid,
+                );
+          const executor = yield* ActionExecutor.KinActionExecutor;
+          const ref = yield* approvedMerge("removed-mid-run");
+          // The second owner check runs after the executor's key read, before the write starts.
+          roleChecks.during = (count) => (count === 2 ? Effect.orDie(stop) : Effect.void);
+          assert.deepStrictEqual(yield* executor.execute(ref), {
+            _tag: "voided",
+            reason: "key_revoked",
+          });
+          assert.deepStrictEqual(writes(requests), []);
+          assert.deepStrictEqual(yield* stateOf(ref), { state: "voided", reason: "key_revoked" });
+        }).pipe(Effect.provide(layer));
+      }
+    }),
+  );
+
   it.effect(
     "a restart mid-merge reconciles to succeeded or interrupted, with no merge call",
     () => {
@@ -1565,34 +1595,31 @@ describe("KinActionExecutor", () => {
     },
   );
 
-  it.effect(
-    "a phone-to-phone approval from before Settings is voided, and its key stays pending",
-    () => {
-      const lapses: Array<string> = [];
-      return Effect.gen(function* () {
-        yield* TestClock.setTime(NOW);
-        const context = yield* Layer.build(production(ApprovalsLayer.executorLayer, lapses));
-        yield* Effect.gen(function* () {
-          const { sql } = yield* seed;
-          const phone = makeApprovalKey();
-          yield* insertPendingKey({ key: phone, orgId, humanId: owner });
-          const ref = yield* approved({
-            kind: "register_approver_key",
-            target: { _tag: "device_key", thumbprint: phone.kid, hardware: "tee", attested: true },
-            resolved: { _tag: "none" },
-            source: "second-phone",
-          });
-          yield* TestClock.adjust("1 second");
-          assert.deepInclude(yield* stateOf(ref), { state: "voided", reason: "unsupported_kind" });
-          assert.deepStrictEqual(
-            yield* sql<{ state: string }>`SELECT state FROM kin_approver_keys
+  it.effect("a phone-to-phone approval from before is voided and never activates its key", () => {
+    const lapses: Array<string> = [];
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const context = yield* Layer.build(production(ApprovalsLayer.executorLayer, lapses));
+      yield* Effect.gen(function* () {
+        const { sql } = yield* seed;
+        const phone = makeApprovalKey();
+        yield* insertPendingKey({ key: phone, orgId, humanId: owner });
+        const ref = yield* approved({
+          kind: "register_approver_key",
+          target: { _tag: "device_key", thumbprint: phone.kid, hardware: "tee", attested: true },
+          resolved: { _tag: "none" },
+          source: "second-phone",
+        });
+        yield* TestClock.adjust("1 second");
+        assert.deepInclude(yield* stateOf(ref), { state: "voided", reason: "unsupported_kind" });
+        assert.deepStrictEqual(
+          yield* sql<{ state: string }>`SELECT state FROM kin_approver_keys
             WHERE thumbprint = ${phone.kid}`,
-            [{ state: "pending" }],
-          );
-        }).pipe(Effect.provide(context));
-      }).pipe(Effect.scoped);
-    },
-  );
+          [{ state: "pending" }],
+        );
+      }).pipe(Effect.provide(context));
+    }).pipe(Effect.scoped);
+  });
 
   it.effect("a configured host holds GitHub kinds on the missing identity probe", () => {
     const lapses: Array<string> = [];

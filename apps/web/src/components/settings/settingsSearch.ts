@@ -440,9 +440,11 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "approval-phones",
     kinOnly: true,
-    title: "Phones that approve",
+    title: "Phones that can approve",
     to: "/settings/approvals",
-    searchTerms: ["kin approvals approve phone face id allow decline remove key device lost new"],
+    searchTerms: [
+      "kin approvals approve phone face id set up remove key device lost new recent changes",
+    ],
   },
   {
     id: "kin-start-list",

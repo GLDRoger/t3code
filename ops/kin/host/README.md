@@ -115,15 +115,14 @@ Running it again with the same name and domain changes nothing and prints the ex
 
 ## Approve from the phone
 
-Merges and level raises need your signature from a phone's approval key. A phone can approve only after you allow it, in Kin on the web or desktop, signed in as yourself. No phone, teammate or agent can allow one.
+Merges and level raises need your signature from a phone's approval key. Any phone paired as you can become one: only the genuine Kin app on a real phone can make a key Kin accepts, and only your own session can register it.
 
-1. Pair the phone (above). On it, open Kin, then Approvals, and tap **Set up approvals**. It makes a key in the Secure Enclave and shows a 6-digit number. The request waits 10 minutes.
-2. In Kin on the web or desktop, open **Settings**, then **Approvals**. The phone is listed under waiting, with its name, model and the same number. Check the number matches, then click **Allow**.
-3. On the phone, tap **Check again**. It now says "This phone approves for Kin".
+1. Pair the phone (above). On it, open Kin, then Approvals, and tap **Set up approvals on this phone**. It makes a key in the phone's secure hardware, and the phone can approve straight away. Every approval asks for Face ID.
+2. Kin posts a notice in your own chat (the chief of staff's, if you have one) and pushes it to your phones, saying which phone and when. If that wasn't you, remove it.
 
-Every phone works this way: the first, a second one, and a replacement for one you lost. Remove the lost one from the same page; anything it approved that hadn't run yet is cancelled. Each allow and removal is posted in your chat with the chief of staff and pushed to your phones. Only phones that proved their key is in secure hardware are listed; a simulator never is. At most 3 phones wait at once.
+**Settings → Approvals** in Kin on the web or desktop, and **Approvals** in the phone app, list the phones that can approve and the last few changes. Remove a lost phone there; anything it approved that hadn't run yet is cancelled. You can remove the last one, and then nothing can be approved until a phone is set up again. At most 10 phones can approve at once.
 
-**On the host instead.** In a kin shell, `kin approvals confirm-key` lists each waiting phone (device name, platform, hardware, full key thumbprint, org, person, the session it asked from, when its request runs out). Pick one, or pass `--key <thumbprint>`, and type the number the phone shows; `--code <digits>` skips the prompt and a number gets 5 tries. `--recover` also revokes every other key you hold. `kin` is `setup.sh`'s wrapper for `KIN_ENABLED=true node ~/kin-current/apps/server/dist/bin.mjs kin ... ` with `T3CODE_HOME=~/.t3`. It is safe while `kin-server` runs, and the audit log records each step (`key_registered`, `key_confirmed`, `key_revoked`).
+The host must recognise the Kin app: set `KIN_IOS_APP_ID` (`<teamId>.<bundleId>`) and, for Android, `KIN_ANDROID_PACKAGE` and `KIN_ANDROID_SIGNING_CERT_SHA256` in `~/.t3/service.env`. Without them every phone is refused. `KIN_IOS_APP_ATTEST_DEVELOPMENT=true` also accepts development builds of the iPhone app; leave it unset on a real host. Simulators are always refused.
 
 ## Reply latency
 

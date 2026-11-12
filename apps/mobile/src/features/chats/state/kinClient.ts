@@ -782,7 +782,7 @@ export const kinClient = {
     staleTimeMs: 5_000,
   }),
   approvalRead,
-  /** The org's approver keys; this phone finds its own by the thumbprint it saved. */
+  /** The org's keys that can approve, and recent changes; this phone finds its own by thumbprint. */
   approverKeys: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:approver-keys",
     execute: Effect.fn("KinClient.approverKeys")(function* (input: KinApprovalsOrgInput) {
@@ -813,6 +813,11 @@ export const kinClient = {
   registerKey: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:approver-key:register",
     tag: KIN_APPROVAL_WS_METHODS.registerKey,
+  }),
+  revokeKey: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:approver-key:revoke",
+    tag: KIN_APPROVAL_WS_METHODS.revokeKey,
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.thumbprint },
   }),
   registerPush: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:register-push",

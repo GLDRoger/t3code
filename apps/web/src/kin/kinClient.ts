@@ -308,7 +308,7 @@ export const kinClient = {
       environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
   }),
   leads,
-  /** The phones that approve, and those waiting to be allowed with their match numbers. */
+  /** The phones that can approve, and the latest changes to them. */
   approverKeys: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:approver-keys",
     execute: Effect.fn("KinWebClient.approverKeys")(function* (input: KinApprovalsOrgInput) {
@@ -318,12 +318,6 @@ export const kinClient = {
     refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
       environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
   }),
-  approverKeyAllow: createEnvironmentRpcCommand(connectionAtomRuntime, {
-    label: "kin:approver-key:allow",
-    tag: KIN_APPROVAL_WS_METHODS.allowKey,
-    concurrency: { mode: "singleFlight", key: ({ input }) => input.thumbprint },
-  }),
-  /** Decline for a waiting phone, Remove for one that approves. */
   approverKeyRevoke: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:approver-key:revoke",
     tag: KIN_APPROVAL_WS_METHODS.revokeKey,
