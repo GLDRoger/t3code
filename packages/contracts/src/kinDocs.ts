@@ -7,7 +7,9 @@ import {
   EnvironmentAuthorizationError,
 } from "./auth.ts";
 import { IsoDateTime, NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { KinWorkerId } from "./kinLead.ts";
 import {
+  KinAgentId,
   KinChatError,
   KinChatId,
   KinDocSectionId,
@@ -44,8 +46,8 @@ export const KinDocSection = Schema.Struct({
 });
 export type KinDocSection = typeof KinDocSection.Type;
 
-/** Only markdown now; generated files (PDFs, sheets) become a second kind later. */
-export const KinDocBodyKind = Schema.Literals(["markdown"]);
+/** Markdown written by agents, or a file a worker made from a recipe (a PDF, sheet, deck, image). */
+export const KinDocBodyKind = Schema.Literals(["markdown", "file"]);
 export type KinDocBodyKind = typeof KinDocBodyKind.Type;
 
 export const KinDocVersionKind = Schema.Literals(["created", "edited", "rewritten", "restored"]);
@@ -83,6 +85,32 @@ export const KinDocProvenance = Schema.Struct({
 });
 export type KinDocProvenance = typeof KinDocProvenance.Type;
 
+/**
+ * A generated file, as Kin took it back from the worker: open it through the asset route with
+ * `attachmentId`, `name` and `mimeType`. Everything here is set by the server from the job's
+ * stored row and the file's own bytes, never from what the worker reported.
+ */
+export const KinDocFile = Schema.Struct({
+  attachmentId: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  mimeType: TrimmedNonEmptyString,
+  bytes: NonNegativeInt,
+  sha256: TrimmedNonEmptyString,
+  /** A PDF's page count when it could be read cheaply. */
+  pages: Schema.NullOr(PositiveInt),
+  /** The recipe and the workspace commit it ran at; `null` for a one-off file. */
+  recipe: Schema.NullOr(
+    Schema.Struct({ name: TrimmedNonEmptyString, commit: TrimmedNonEmptyString }),
+  ),
+  /** Of the exact inputs the server gave the worker. */
+  inputsHash: TrimmedNonEmptyString,
+  workerId: KinWorkerId,
+  /** The issued number it carries; `null` with `draft` for a draft. */
+  number: Schema.NullOr(TrimmedNonEmptyString),
+  draft: Schema.Boolean,
+});
+export type KinDocFile = typeof KinDocFile.Type;
+
 /** One line of a doc's history: "Updated 14:02 by Growth lead · Moved the launch to 14 Dec". */
 export const KinDocVersion = Schema.Struct({
   version: PositiveInt,
@@ -97,6 +125,8 @@ export const KinDocVersion = Schema.Struct({
   operations: Schema.Array(KinDocOperation),
   chars: NonNegativeInt,
   provenance: KinDocProvenance,
+  /** The version's file, for a `file` doc. */
+  file: Schema.optional(KinDocFile),
 });
 export type KinDocVersion = typeof KinDocVersion.Type;
 
@@ -223,6 +253,41 @@ export const KinDocRestoreInput = Schema.Struct({
 });
 export type KinDocRestoreInput = typeof KinDocRestoreInput.Type;
 
+/** One input a recipe asks for, as its RECIPE.md declares it. */
+export const KinRecipeInput = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  type: TrimmedNonEmptyString,
+  required: Schema.Boolean,
+  /** `agent` when the agent gives it; otherwise where Kin reads the exact value. */
+  from: TrimmedNonEmptyString,
+  description: Schema.optional(KinText),
+});
+export type KinRecipeInput = typeof KinRecipeInput.Type;
+/** A recipe in the company's workspace, read from its default branch. */
+export const KinRecipe = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  title: KinTrimmedText,
+  description: KinText,
+  inputs: Schema.Array(KinRecipeInput),
+  outputs: Schema.Array(TrimmedNonEmptyString),
+  /** The list whose entry it is made for, such as `invoices`. */
+  list: Schema.NullOr(TrimmedNonEmptyString),
+  numbered: Schema.Boolean,
+  sensitive: Schema.Boolean,
+  changedAt: Schema.NullOr(IsoDateTime),
+  /** Kin's starter, or the agent whose worker changed it last. */
+  changedBy: Schema.Union([
+    Schema.TaggedStruct("starter", {}),
+    Schema.TaggedStruct("agent", { agentId: KinAgentId, workerId: Schema.NullOr(KinWorkerId) }),
+  ]),
+  commit: TrimmedNonEmptyString,
+});
+export type KinRecipe = typeof KinRecipe.Type;
+export const KinRecipesInput = Schema.Struct({ orgId: KinOrgId });
+export type KinRecipesInput = typeof KinRecipesInput.Type;
+export const KinRecipesResult = Schema.Struct({ recipes: Schema.Array(KinRecipe) });
+export type KinRecipesResult = typeof KinRecipesResult.Type;
+
 export const KinDocsSubscribeInput = Schema.Struct({ orgId: KinOrgId });
 export type KinDocsSubscribeInput = typeof KinDocsSubscribeInput.Type;
 /** The latest change number now, then again after each change to a doc. A client refetches. */
@@ -297,6 +362,7 @@ const KIN_DOCS_WS_METHODS = {
   restore: "kin.docs.restore",
   subscribe: "kin.docs.subscribe",
   search: "kin.search",
+  recipes: "kin.docs.recipes",
 } as const;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -330,6 +396,11 @@ export const KinDocsRpcs = [
     success: KinSearchResult,
     error,
   }),
+  Rpc.make(KIN_DOCS_WS_METHODS.recipes, {
+    payload: KinRecipesInput,
+    success: KinRecipesResult,
+    error,
+  }),
 ] as const;
 
 export const KIN_DOCS_RPC_SCOPES = {
@@ -341,4 +412,5 @@ export const KIN_DOCS_RPC_SCOPES = {
   [KIN_DOCS_WS_METHODS.restore]: AuthOrchestrationOperateScope,
   [KIN_DOCS_WS_METHODS.subscribe]: AuthOrchestrationReadScope,
   [KIN_DOCS_WS_METHODS.search]: AuthOrchestrationReadScope,
+  [KIN_DOCS_WS_METHODS.recipes]: AuthOrchestrationReadScope,
 } as const;

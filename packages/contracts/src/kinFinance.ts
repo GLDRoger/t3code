@@ -61,6 +61,18 @@ const KinStateLabels = Schema.Struct({
   dropped: Schema.optional(Label),
 });
 
+/**
+ * How a list numbers what it issues (CGST Rule 46(b)): a prefix, a series per Indian financial
+ * year or one running series, and the digits the count is padded to, such as `KIN/26-27/014`.
+ * The server issues a number when an entry is issued, never at draft; it is never reused.
+ */
+export const KinNumberingRule = Schema.Struct({
+  prefix: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9-]{1,8}$/)),
+  series: Schema.Literals(["financial_year", "running"]),
+  width: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(6)),
+});
+export type KinNumberingRule = typeof KinNumberingRule.Type;
+
 export const KinListDefinition = Schema.Struct({
   list: KinListId,
   name: Label,
@@ -82,6 +94,8 @@ export const KinListDefinition = Schema.Struct({
   /** What the entry's `dueAt` and `dateAt` are called here; absent when it has none. */
   dueLabel: Schema.optional(Label),
   dateLabel: Schema.optional(Label),
+  /** Its entries get a number from the server when issued. */
+  numbering: Schema.optional(KinNumberingRule),
   archivedAt: Schema.NullOr(IsoDateTime),
   rev: NonNegativeInt,
   /** Entries that are neither done nor dropped. */
@@ -110,6 +124,8 @@ export const KinListUpdateInput = Schema.Struct({
   archived: Schema.optional(Schema.Boolean),
   retireFields: Schema.optional(Schema.Array(KinListFieldKey).check(Schema.isMaxLength(30))),
   restoreFields: Schema.optional(Schema.Array(KinListFieldKey).check(Schema.isMaxLength(30))),
+  /** Sets how it numbers what it issues from now on; numbers already issued stay. */
+  numbering: Schema.optional(KinNumberingRule),
 });
 export type KinListUpdateInput = typeof KinListUpdateInput.Type;
 
@@ -223,6 +239,25 @@ export const KinPaymentVoidInput = Schema.Struct({
 });
 export type KinPaymentVoidInput = typeof KinPaymentVoidInput.Type;
 
+/**
+ * Issues an entry of a numbered list: the server gives it the next number in its series, in
+ * one transaction, and marks it issued. Issuing an issued entry returns the number it has.
+ */
+export const KinIssueInput = Schema.Struct({ orgId: KinOrgId, key: KinRecordKey });
+export type KinIssueInput = typeof KinIssueInput.Type;
+/** Voids an entry: kept, with its number if it had one, so the series stays complete. */
+export const KinVoidInput = Schema.Struct({ orgId: KinOrgId, key: KinRecordKey });
+export type KinVoidInput = typeof KinVoidInput.Type;
+export const KinIssueResult = Schema.Struct({
+  key: KinRecordKey,
+  /** `null` for a voided draft, which never had one. */
+  number: Schema.NullOr(TrimmedNonEmptyString),
+  state: KinRecordState,
+  /** True when this call issued it; false when it already had its number. */
+  issued: Schema.Boolean,
+});
+export type KinIssueResult = typeof KinIssueResult.Type;
+
 const ProfileText = Schema.NullOr(KinTrimmedText.check(Schema.isMaxLength(500)));
 /** India's 15-character GST number. */
 export const KinGstin = Schema.String.check(
@@ -293,6 +328,8 @@ const KIN_FINANCE_WS_METHODS = {
   voidPayment: "kin.work.voidPayment",
   companyProfile: "kin.work.companyProfile",
   setCompanyProfile: "kin.work.setCompanyProfile",
+  issue: "kin.work.issue",
+  void: "kin.work.void",
 } as const;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -338,6 +375,12 @@ export const KinFinanceRpcs = [
     success: KinCompanyProfile,
     error,
   }),
+  Rpc.make(KIN_FINANCE_WS_METHODS.issue, {
+    payload: KinIssueInput,
+    success: KinIssueResult,
+    error,
+  }),
+  Rpc.make(KIN_FINANCE_WS_METHODS.void, { payload: KinVoidInput, success: KinIssueResult, error }),
 ] as const;
 
 export const KIN_FINANCE_RPC_SCOPES = {
@@ -351,4 +394,7 @@ export const KIN_FINANCE_RPC_SCOPES = {
   // Bank details: read and written only where owner settings are.
   [KIN_FINANCE_WS_METHODS.companyProfile]: AuthSettingsWriteScope,
   [KIN_FINANCE_WS_METHODS.setCompanyProfile]: AuthSettingsWriteScope,
+  // A number is an entry change, like a payment; nothing leaves the host.
+  [KIN_FINANCE_WS_METHODS.issue]: AuthOrchestrationOperateScope,
+  [KIN_FINANCE_WS_METHODS.void]: AuthOrchestrationOperateScope,
 } as const;
