@@ -68,6 +68,7 @@ import {
 import { KIN_MESSAGE_MAX_LENGTH } from "@t3tools/client-runtime/kin/kinOutbox";
 import { Chip } from "../../../components/ui/Chip";
 import { deliverKinOutbox, kinOutbox } from "../state/kinOutboxDelivery";
+import { kinAttachmentFailure } from "../state/kinAttachmentFailure";
 
 /** Every Kin host uses the same org id, so the environment keeps two hosts' drafts apart. */
 export const kinDraftKey = (environmentId: EnvironmentId, orgId: string, chatId: string) =>
@@ -253,11 +254,11 @@ export function KinComposer({
     );
     setSending(false);
     if (AsyncResult.isFailure(prepared)) {
-      const error = squashAtomCommandFailure(prepared);
-      Dialog.alert(
-        "Could not send attachments",
-        error instanceof Error ? error.message : "They are still in the message box. Try again.",
+      const failure = kinAttachmentFailure(
+        squashAtomCommandFailure(prepared),
+        attachments.map((attachment) => attachment.type),
       );
+      Dialog.alert(failure.title, failure.message);
       return null;
     }
     if (prepared.value.status !== "ready") return null;
