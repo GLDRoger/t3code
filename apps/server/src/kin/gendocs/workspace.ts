@@ -41,9 +41,10 @@ const forbiddenName =
   /^(?:t3\.json|\.t3|\.claude|\.mcp\.json|\.gitattributes|\.gitmodules|\.git)$/i;
 const recipeName = /^[a-z][a-z0-9-]{1,39}$/;
 
-/** Where a job's worktree is; nothing else lives under `kin-documents`. */
+/** Where document jobs' worktrees are; nothing else lives here. */
+export const documentWorktrees = (worktreesDir: string) => `${worktreesDir}/kin-documents`;
 export const jobWorktree = (worktreesDir: string, workerId: KinWorkerId) =>
-  `${worktreesDir}/kin-documents/${workerId}`;
+  `${documentWorktrees(worktreesDir)}/${workerId}`;
 export const jobBranch = (workerId: KinWorkerId) => `kin/doc/${workerId}`;
 
 export type StoredRecipe = Recipe & {

@@ -91,6 +91,23 @@ it.live("stops a child at the time cap and at the output cap, and gives it no en
       });
     assert.strictEqual((yield* run("sleep 30", 200))._tag, "timedOut");
     assert.strictEqual((yield* run("while :; do echo xxxxxxxxxxxxxxxx; done"))._tag, "tooLarge");
+    // What the child started goes with it: a run ends only once nothing holds its output open, so
+    // returning at all means the day-long sleep it left behind was stopped too.
+    assert.strictEqual((yield* run("sleep 86400 & sleep 86400", 200))._tag, "timedOut");
+    assert.strictEqual((yield* run("sleep 86400 & head -c 4000 /dev/zero; wait"))._tag, "tooLarge");
+    // Processor time is capped too, wherever the host allows it.
+    const limited = Render.limitedCommand("/bin/sh", ["-c", "while :; do :; done"], {
+      cpuSeconds: 1,
+      addressSpaceKiB: undefined,
+    });
+    const spun = yield* Render.runCapped({
+      ...limited,
+      env: {},
+      cwd: "/",
+      timeoutMs: 10_000,
+      maxStdout: 1000,
+    });
+    assert.deepStrictEqual(spun._tag === "exited" ? spun.signal : spun._tag, "SIGXCPU");
     const exited = yield* run("printf '%s' \"$HOME$USER$T3CODE_HOME\"; echo broken >&2; exit 3");
     assert.deepStrictEqual(
       exited._tag === "exited"
@@ -111,6 +128,36 @@ it.layer(layerOf())("KinDocRenderer", (it) => {
       );
       assert.match(reason(yield* render(recipe)), /linked\.txt is a link or a submodule/);
     }),
+  );
+
+  it.effect("removes the render folders a crash left, and follows no link out of them", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const { stateDir } = yield* ServerConfig;
+      const renders = `${stateDir}/kin/renders`;
+      const outside = yield* fs.makeTempDirectoryScoped({ prefix: "kin-outside-" });
+      yield* fs.writeFileString(`${outside}/keep.txt`, "invented");
+      yield* fs.makeDirectory(`${renders}/r-left`, { recursive: true });
+      yield* fs.writeFileString(`${renders}/r-left/inputs.json`, "{}");
+      yield* fs.symlink(outside, `${renders}/r-link`);
+      yield* fs.symlink(outside, `${renders}/r-left/linked`);
+      yield* Effect.provide(Effect.void, Layer.fresh(Render.layer));
+      assert.deepStrictEqual(
+        [
+          yield* fs.exists(`${renders}/r-left`),
+          yield* fs.exists(`${renders}/r-link`),
+          yield* fs.readFileString(`${outside}/keep.txt`),
+        ],
+        [false, false, "invented"],
+      );
+      // A render folder that is itself a link is left alone, and so is what it points at.
+      yield* fs.makeDirectory(`${outside}/r-elsewhere`);
+      yield* fs.remove(renders, { recursive: true });
+      yield* fs.symlink(outside, renders);
+      yield* Effect.provide(Effect.void, Layer.fresh(Render.layer));
+      assert.isTrue(yield* fs.exists(`${outside}/r-elsewhere`));
+      yield* fs.remove(renders);
+    }).pipe(Effect.scoped),
   );
 
   it.effect("writes a table recipe's files itself, with no Typst", () =>
@@ -210,7 +257,7 @@ it.layer(layerOf())("KinDocRenderer", (it) => {
   );
 });
 
-it.layer(layerOf({ timeoutMs: 1500, pdfBytes: 64 * 1024, memory: "1G" }))(
+it.layer(layerOf({ ...Render.RENDER_LIMITS, timeoutMs: 1500, pdfBytes: 64 * 1024 }))(
   "KinDocRenderer caps",
   (it) => {
     it.effect.skipIf(typst === undefined)(
