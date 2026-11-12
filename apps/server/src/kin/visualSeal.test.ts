@@ -314,3 +314,59 @@ kin.mermaid().then(function () {
     assert.strictEqual(yield* Deferred.await(drawn), "?true,3,true");
   }).pipe(Effect.scoped),
 );
+
+it.live("no cookie of the app's rides along on what the page loads from Kin", (ctx) =>
+  Effect.gen(function* () {
+    const executable = (yield* HostProcess.Environment)[TEST_BROWSER_ENV];
+    if (!executable) return ctx.skip(`Set ${TEST_BROWSER_ENV} to run this test.`);
+    const cookies: Record<string, string | undefined> = {};
+    const loaded = { app: yield* Deferred.make<void>(), page: yield* Deferred.make<void>() };
+    const page = `<!doctype html><html><head><script src="/page-script"></script></head><body><img src="/page-image"><script>new Image().src = "/page-last";</script></body></html>`;
+    const server = NodeHttp.createServer((request, response) => {
+      const url = new URL(request.url ?? "/", "http://kin.test");
+      cookies[url.pathname] = request.headers.cookie;
+      if (url.pathname === "/app") {
+        // The session cookie T3 sets, and the frame the web client puts a visual in.
+        response
+          .writeHead(200, {
+            "content-type": "text/html",
+            "set-cookie": "t3_session=secret; Path=/; HttpOnly; SameSite=Lax",
+          })
+          .end(
+            `<!doctype html><script>new Image().src = "/app-image";</script><iframe sandbox="allow-scripts allow-downloads" src="/visual"></iframe>`,
+          );
+        return;
+      }
+      if (url.pathname === "/app-image") Deferred.doneUnsafe(loaded.app, Effect.void);
+      if (url.pathname === "/page-last") Deferred.doneUnsafe(loaded.page, Effect.void);
+      if (url.pathname !== "/visual") {
+        response.writeHead(200, { "content-type": "text/javascript" }).end("");
+        return;
+      }
+      const inner = url.searchParams.has("frame") && request.headers["sec-fetch-dest"] === "iframe";
+      response
+        .writeHead(200, {
+          "content-type": "text/html; charset=utf-8",
+          "content-security-policy": kinVisualContentSecurityPolicy(inner ? "page" : "outer"),
+        })
+        .end(inner ? kinVisualPageDocument(page) : KIN_VISUAL_OUTER_DOCUMENT);
+    });
+    yield* Effect.acquireRelease(
+      Effect.callback<void>((resume) => server.listen(0, "127.0.0.1", () => resume(Effect.void))),
+      () => Effect.sync(() => server.close()),
+    );
+    const { port } = server.address() as NodeNet.AddressInfo;
+    const browser = yield* Effect.acquireRelease(
+      Effect.promise(() => chromium.launch({ executablePath: executable, headless: true })),
+      (opened) => Effect.promise(() => opened.close()),
+    );
+    const tab = yield* Effect.promise(() => browser.newPage());
+    yield* Effect.promise(() => tab.goto(`http://127.0.0.1:${port}/app`));
+    yield* Deferred.await(loaded.app);
+    yield* Deferred.await(loaded.page);
+    // The control: the app's own request carries the session.
+    assert.strictEqual(cookies["/app-image"], "t3_session=secret");
+    for (const path of ["/visual", "/page-script", "/page-image", "/page-last"])
+      assert.isUndefined(cookies[path], path);
+  }).pipe(Effect.scoped),
+);

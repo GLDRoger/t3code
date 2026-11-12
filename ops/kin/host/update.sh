@@ -68,6 +68,9 @@ mise exec "node@$node_version" -- vp i --frozen-lockfile -- --yes </dev/null
 (cd apps/server && mise exec "node@$node_version" -- vp test run kin-contract)
 mise exec "node@$node_version" -- vp run build:desktop
 [ -f apps/server/dist/bin.mjs ] || { echo "update.sh: the build wrote no apps/server/dist/bin.mjs." >&2; false; }
+for lib in echarts mermaid d3; do
+  [ -f "apps/server/dist/visual-lib/$lib.js" ] || { echo "update.sh: the build wrote no apps/server/dist/visual-lib/$lib.js, so visuals would draw without it." >&2; false; }
+done
 trap - ERR
 
 mkdir -p "$(dirname "$ENV_FILE")" "$UNIT_DIR"

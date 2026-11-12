@@ -405,7 +405,7 @@ it.effect.each([true, false])(
         const text = yield* Effect.promise(() => HttpServerResponse.toWeb(result).text());
         assert.include(text, "Production composition");
         assert.notInclude(text, '"isError":true');
-        // Off unless the host switches it on: the page a visual draws is not fully sealed yet.
+        // On by default: no host switch, so the call reaches the lead check, which refuses this caller.
         const visual = yield* request(
           "/kin/mcp",
           issued.config.authorizationHeader,
@@ -414,7 +414,7 @@ it.effect.each([true, false])(
           initialized.headers["mcp-session-id"],
         );
         const refusal = yield* Effect.promise(() => HttpServerResponse.toWeb(visual).text());
-        assert.include(refusal, "not switched on");
+        assert.include(refusal, "not_allowed");
         assert.include(refusal, '"isError":true');
         const agentSessions = Context.get(services, KinAgentSessions);
         assert.isUndefined(yield* registry.resolve(issued.config.authorizationHeader.slice(7)));
