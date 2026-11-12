@@ -152,3 +152,16 @@ it.effect.each([
     assert.strictEqual(after.body, before.body);
   }),
 );
+
+it("withLabel refuses front matter where setting the label would change another value", () => {
+  const item = fixtureItem({ sensitive: false });
+  const aliased = item
+    .replace("sensitive: false", '"sensitive": &label false')
+    .replace("\n---\n", "\nlinks: [*label]\n---\n");
+  assert.isUndefined(withLabel(aliased, true));
+  // An anchor nothing aliases changes nothing else, so the plain edit stands.
+  assert.strictEqual(
+    withLabel(item.replace("sensitive: false", "sensitive: &label false"), true),
+    item.replace("sensitive: false", "sensitive: true"),
+  );
+});

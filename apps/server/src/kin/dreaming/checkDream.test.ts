@@ -491,6 +491,17 @@ it.effect.each([
     failures: ["claims/collision.md takes the id of claims/stated.md"],
   },
   {
+    name: "refuses a new item that takes its id, whatever order the files come in",
+    files: [
+      [
+        "claims/a-taker.md",
+        newClaim({ id: "clm-stated", source: statedRef, trust: "agent", quote: undefined }),
+      ],
+      ["claims/stated.md", stated().replace('links: ["issue #12"]', 'links:\n  - "issue #12"')],
+    ],
+    failures: ["claims/a-taker.md takes the id of claims/stated.md"],
+  },
+  {
     name: "lets it be labelled, and writes back the stored item with only that label",
     files: [["claims/stated.md", stated({ sensitive: true })]],
     failures: [],

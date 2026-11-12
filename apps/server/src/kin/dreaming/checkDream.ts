@@ -76,7 +76,6 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
   const material = new Map(input.material.map((entry) => [entry.ref, entry]));
   const listed = new Set(report?.changes.map((change) => change.path));
 
-  const ids = new Map<string, string>();
   for (const [path, text] of changes) {
     if (path === "rules.md") {
       failures.push("rules.md changed");
@@ -99,7 +98,9 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
       continue;
     }
     const fm = parsed.success.frontMatter;
-    ids.set(path, fm.id);
+    // `keepLabels` settles the label after this check, so either one must be writable.
+    if (withLabel(text, true) === undefined || withLabel(text, false) === undefined)
+      failures.push(`${path} can't be labelled as it is formatted`);
     const folder = fm.kind === "person" ? "people" : `${fm.kind}s`;
     if (!path.startsWith(`${folder}/`))
       failures.push(`${path} kind ${fm.kind} is in the wrong folder`);
@@ -128,7 +129,11 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
       const stored = input.stored.get(path);
       if (changed.length > 0 || stored === undefined) continue;
       if (fm.sensitive === undefined || fm.sensitive === earlier.sensitive) changes.delete(path);
-      else changes.set(path, withLabel(stored, fm.sensitive));
+      else {
+        const labelled = withLabel(stored, fm.sensitive);
+        if (labelled === undefined) failures.push(`${path} can't be labelled as it is formatted`);
+        else changes.set(path, labelled);
+      }
       continue;
     }
     const kept =
@@ -176,23 +181,26 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
     }
   }
 
-  // Two files with one id leave neither readable by it, so a new file can't take an item's id.
-  const holders = new Map<string, string>();
+  // Two files with one id leave neither readable by it, so no file may take an id another holds.
+  // Read as `Memory` reads items, over the whole result, so file order decides nothing.
+  const idOf = Effect.fnUntraced(function* (path: string, text: string | undefined) {
+    if (text === undefined || !isItemPath(path)) return undefined;
+    const item = yield* parseFrontMatter(input.orgId, path, text, false, true).pipe(Effect.option);
+    return item._tag === "Some" ? item.value.frontMatter.id : undefined;
+  });
+  const holders = new Map<string, Array<{ readonly path: string; readonly kept: boolean }>>();
   for (const [path, text] of input.tree) {
-    if (ids.has(path) || !isItemPath(path)) continue;
-    const item = yield* parseFrontMatter(input.orgId, path, text).pipe(Effect.option);
-    if (item._tag === "Some") holders.set(item.value.frontMatter.id, path);
+    const id = yield* idOf(path, text);
+    if (id === undefined) continue;
+    const kept = (yield* idOf(path, input.base.get(path))) === id;
+    holders.set(id, [...(holders.get(id) ?? []), { path, kept }]);
   }
-  for (const [path, id] of ids) {
-    const holder = holders.get(id);
-    const before = input.base.get(path);
-    const earlier =
-      before === undefined
-        ? undefined
-        : yield* parseFrontMatter(input.orgId, path, before).pipe(Effect.option);
-    const kept = earlier?._tag === "Some" && earlier.value.frontMatter.id === id;
-    if (holder !== undefined && !kept) failures.push(`${path} takes the id of ${holder}`);
-    else if (holder === undefined) holders.set(id, path);
+  for (const held of holders.values()) {
+    if (held.length < 2) continue;
+    for (const taker of held.filter((file) => !file.kept))
+      failures.push(
+        `${taker.path} takes the id of ${held.find((file) => file.path !== taker.path)!.path}`,
+      );
   }
 
   if (report !== undefined) {
