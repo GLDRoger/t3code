@@ -30,7 +30,8 @@ import { reportFormat } from "../lead/workerBrief.ts";
 import * as Docs from "../work/docs.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import type { RecordRow } from "../work/recordRows.ts";
-import { gatherFacts } from "./facts.ts";
+import { listDef } from "../work/registers.ts";
+import { entrySensitive, gatherFacts, jobSensitive } from "./facts.ts";
 import { assembleInputs, needsEntry, type Value } from "./recipe.ts";
 import { RETURN_CAPS, takeOutputs } from "./returnPath.ts";
 import { jobWorktree, KinWorkspace, type StoredRecipe } from "./workspace.ts";
@@ -187,7 +188,8 @@ export const planJob = Effect.fn("KinDocJobs.plan")(function* (
       inputsHash,
       number: null,
       draft: false,
-      sensitive: entry !== undefined && (entry.sensitive === 1 || entry.inheritedSensitive === 1),
+      sensitive:
+        entry !== undefined && entrySensitive(entry, yield* listDef(orgId, entry.registerId)),
       docOrigin:
         entry === undefined
           ? `file:${inputsHash}`
@@ -222,7 +224,7 @@ export const planJob = Effect.fn("KinDocJobs.plan")(function* (
     inputsHash,
     number: named.numbered ? gathered.number : null,
     draft: named.numbered && gathered.number === null,
-    sensitive: named.sensitive || gathered.sensitive,
+    sensitive: jobSensitive(named, assembled.inputs, gathered),
     docOrigin:
       entry === undefined
         ? `recipe:${named.name}:${inputsHash}`
@@ -277,7 +279,7 @@ export const docBrief = (plan: Plan, input: DocumentInput) => {
 };
 
 const RECIPE_GUIDE = `A recipe is a folder: RECIPE.md, its scripts and its templates. RECIPE.md starts with YAML front matter between --- lines:
-name (the folder's name), title, description (one line the agent reads), list (when it is for one entry of a list, such as invoices), numbered (true when it shows the entry's issued number), sensitive (true for money, client or bank details), tools ([typst] when it renders PDF or PNG), outputs (file names, * for a varying part), and inputs.
+name (the folder's name), title, description (one line the agent reads), list (when it is for one entry of a list, such as invoices), numbered (true when it shows the entry's issued number), sensitive (Kin labels a file confidential by where its inputs come from, such as amounts, bank details, tax ids or a sensitive entry; true here labels it so anyway), tools ([typst] when it renders PDF or PNG), outputs (file names, * for a varying part), and inputs.
 Each input has a type (text, integer, decimal, money, date, boolean, month or table with columns), required (default true for stored values, false for the agent's), a description, and from: where Kin reads it. Leave from out for the agent's own words; otherwise one of entry.key|title|state|amount|tax|date|due|notes|number, entry.fields.<field>, client.name|gstin|placeOfSupply|terms, company.legalName|tradeName|address|gstin|pan|placeOfSupply|sac, company.bank.accountName|accountNumber|ifsc|bankName|branch|upi, system.number|draft|today, rows.<list> (a table of that list's entries in a month, with period naming a month input; columns from key, title, state, amount, tax, date, due, client, category, number, field_<field>), or payments (a table: invoice, client, amount, paidOn). Money is {"minor": <integer>, "currency": "INR"}.
 The body after the front matter tells a worker how to run it. Scripts are plain Node .mjs with no packages, run as node recipes/<name>/build.mjs in/inputs.json out; they do every sum in integer minor units. Typst templates read the data with --input; use typst compile --root . --ignore-system-fonts. Settings the owner may change go in config.json beside them.`;
 

@@ -7,14 +7,15 @@ import { readProfile } from "../work/companyProfile.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { type FieldValues, parseFields } from "../work/lists.ts";
 import { dayIn } from "../work/money.ts";
-import { ownerZone, type RecordRow } from "../work/recordRows.ts";
-import { listDef, stateLabel } from "../work/registers.ts";
+import { ownerZone, type RecordRow, sensitiveNow } from "../work/recordRows.ts";
+import { type ListDef, listDef, sensitiveKeys, stateLabel } from "../work/registers.ts";
 import { issuedNumber } from "./numbering.ts";
 import {
   type Facts,
   type InputDecl,
   type Money,
   type Recipe,
+  type Source,
   sourceOf,
   type Value,
 } from "./recipe.ts";
@@ -46,10 +47,19 @@ const amountOf = (minor: number | null, currency: string | null): Money | null =
 export type Gathered = {
   readonly facts: Facts;
   readonly currency: string;
-  /** Whether anything read is confidential: the entry, its list, money of a sensitive list. */
-  readonly sensitive: boolean;
+  /** Whether what this input reads is confidential, by where it comes from (`jobSensitive`). */
+  readonly sensitive: (input: InputDecl) => boolean;
   readonly number: string | null;
 };
+
+// Bank details and tax ids; a company's name, address and place of supply print on every invoice.
+const SENSITIVE_COMPANY = /^(?:bank\.|gstin$|pan$)/;
+const SENSITIVE_CLIENT = new Set(["gstin", "terms"]);
+const AMOUNT_COLUMNS = new Set(["amount", "tax"]);
+
+/** An entry's own label, one it inherits, or its list's. */
+export const entrySensitive = (entry: RecordRow, def: ListDef | undefined) =>
+  entry.sensitive === 1 || entry.inheritedSensitive === 1 || def?.sensitive === true;
 
 export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
   orgId: KinOrgId,
@@ -73,11 +83,14 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
         (recipe.numbered ? null : (cellOf(fields, "number") as string | null)));
   const currency = entry?.currency ?? def?.currency ?? "INR";
   const day = (ms: number | null) => (ms === null ? null : dayIn(ms, zone));
-  let sensitive =
-    entry !== undefined &&
-    (entry.sensitive === 1 || entry.inheritedSensitive === 1 || def?.sensitive === true);
+  const clientDef = client === undefined ? undefined : yield* listDef(orgId, client.registerId);
+  const entryLabelled = entry !== undefined && entrySensitive(entry, def);
+  const entryKeys = new Set(def === undefined ? [] : sensitiveKeys(def));
+  const clientKeys = new Set(clientDef === undefined ? [] : sensitiveKeys(clientDef));
 
   const tables = new Map<string, Value>();
+  /** Tables whose rows are confidential: a sensitive list, row, field or amount. */
+  const sensitiveTables = new Set<string>();
   for (const input of recipe.inputs) {
     const source = sourceOf(input.from);
     if (source?._tag !== "rows" && source?._tag !== "payments") continue;
@@ -86,7 +99,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
     const start = Date.parse(`${month}-01T00:00:00Z`) - 2 * DAY_MS;
     const end = start + 35 * DAY_MS;
     if (source._tag === "payments") {
-      sensitive = true;
+      sensitiveTables.add(input.name);
       const rows = yield* sql<{
         invoice: string;
         client: string | null;
@@ -121,7 +134,16 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
       tables.set(input.name, []);
       continue;
     }
-    if (list.sensitive) sensitive = true;
+    const listKeys = new Set(sensitiveKeys(list));
+    if (
+      list.sensitive ||
+      Object.keys(input.columns).some(
+        (column) =>
+          AMOUNT_COLUMNS.has(column) ||
+          (column.startsWith("field_") && listKeys.has(column.slice("field_".length))),
+      )
+    )
+      sensitiveTables.add(input.name);
     const rows = yield* sql<{
       key: string;
       title: string;
@@ -137,7 +159,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
       sensitive: number;
     }>`SELECT r.key, r.title, r.state, r.amount_minor AS minor, r.currency, r.date_at AS "dateAt",
         r.due_at AS "dueAt", r.category, r.fields_json AS "fieldsJson", p.title AS client,
-        n.number, r.sensitive
+        n.number, ${sensitiveNow(sql)} AS sensitive
       FROM kin_records r
       LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.party_id
       LEFT JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
@@ -147,7 +169,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
     const inMonth = rows
       .filter((row) => dayIn(row.dateAt, zone).startsWith(month))
       .slice(0, MAX_ROWS);
-    if (inMonth.some((row) => row.sensitive === 1)) sensitive = true;
+    if (inMonth.some((row) => row.sensitive === 1)) sensitiveTables.add(input.name);
     tables.set(
       input.name,
       inMonth.map((row) => {
@@ -224,9 +246,51 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
         return tables.get(input.name);
     }
   };
+  const fromSource = (source: Source | undefined, input: InputDecl): boolean => {
+    switch (source?._tag) {
+      case undefined:
+      case "agent":
+      case "system":
+        return false;
+      case "entry":
+        return entryLabelled || AMOUNT_COLUMNS.has(source.key);
+      case "entryField":
+        return entryLabelled || entryKeys.has(source.field);
+      case "client":
+        return (
+          (client !== undefined && entrySensitive(client, clientDef)) ||
+          SENSITIVE_CLIENT.has(source.key) ||
+          clientKeys.has(source.key)
+        );
+      case "company":
+        return SENSITIVE_COMPANY.test(source.key);
+      case "rows":
+      case "payments":
+        return sensitiveTables.has(input.name);
+    }
+  };
+  const sensitive = (input: InputDecl) =>
+    input.type === "money" ||
+    Object.values(input.columns).includes("money") ||
+    fromSource(sourceOf(input.from), input);
   return { facts, currency, sensitive, number } satisfies Gathered;
 });
 
 /** Only the columns the input declares, so a row carries nothing else Kin stores. */
 const pick = (input: InputDecl, row: Readonly<Record<string, Cell>>) =>
   Object.fromEntries(Object.keys(input.columns).map((column) => [column, row[column] ?? null]));
+
+/**
+ * Whether a job is confidential: any value it was given is, by where it came from. The recipe's
+ * own `sensitive` can only raise it.
+ */
+export const jobSensitive = (
+  recipe: Recipe,
+  inputs: Readonly<Record<string, Value>>,
+  gathered: Gathered,
+) =>
+  recipe.sensitive ||
+  recipe.inputs.some((input) => {
+    const value = inputs[input.name];
+    return value !== null && value !== undefined && gathered.sensitive(input);
+  });

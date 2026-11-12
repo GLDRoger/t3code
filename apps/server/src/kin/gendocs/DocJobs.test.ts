@@ -8,6 +8,7 @@ import {
   KinAgentId,
   KinOrgId,
   KinPersonId,
+  KinRecordKey,
   KinWorkerId,
   ProviderInstanceId,
   ThreadId,
@@ -36,7 +37,9 @@ import * as LeadMoney from "../work/leadMoney.ts";
 import * as LeadWork from "../work/leadWork.ts";
 import * as OwnerMoney from "../work/ownerMoney.ts";
 import * as DocJobs from "./DocJobs.ts";
+import { gatherFacts, jobSensitive } from "./facts.ts";
 import * as Numbers from "./numbering.ts";
+import { assembleInputs, needsEntry, parseRecipe } from "./recipe.ts";
 import * as Workspace from "./workspace.ts";
 
 // Invented org, company, client, GSTINs and amounts only; nothing here reads a real database.
@@ -290,6 +293,65 @@ describe("document jobs", () => {
       for (const tool of ["kin_document", "kin_recipes", "kin_issue"])
         assert.isFalse(yield* sharedToolAllowed(turnRef, tool, { recipe: "report" }), tool);
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "derive a job's sensitivity from where its inputs come from, not the recipe's say",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* (yield* SqlClient.SqlClient)`UPDATE kin_records
+        SET fields_json = json_set(fields_json, '$.gstin', '27AAAAA1111A1Z5')
+        WHERE org_id = ${orgId} AND title = 'Invented Acme'`;
+        const entry = yield* (yield* KinRecords.KinRecords).get(orgId, KinRecordKey.make("INV-1"));
+        const sensitivity = (inputs: string, given: Record<string, unknown> = {}) =>
+          Effect.gen(function* () {
+            const recipe = parseRecipe(
+              `---\nname: probe\ntitle: Probe\ndescription: probe\nsensitive: false\noutputs: [a.txt]\ninputs:\n${inputs}\n---\nGo.\n`,
+            );
+            if ("reason" in recipe) return assert.fail(recipe.reason);
+            const gathered = yield* gatherFacts(
+              orgId,
+              recipe,
+              needsEntry(recipe) ? entry : undefined,
+              given,
+            );
+            const assembled = assembleInputs(recipe, given, gathered.facts, gathered.currency);
+            if ("error" in assembled) return assert.fail(assembled.error.message);
+            return jobSensitive(recipe, assembled.inputs, gathered);
+          });
+        const cases: ReadonlyArray<readonly [string, string, Record<string, unknown>, boolean]> = [
+          ["bank details", "  a: {type: text, from: company.bank.accountNumber}", {}, true],
+          ["a company tax id", "  a: {type: text, from: company.gstin}", {}, true],
+          ["the company's name", "  a: {type: text, from: company.legalName}", {}, false],
+          ["the date", "  a: {type: date, from: system.today}", {}, false],
+          ["an entry of a sensitive list", "  a: {type: text, from: entry.title}", {}, true],
+          ["the client's tax id", "  a: {type: text, from: client.gstin}", {}, true],
+          ["the client's name", "  a: {type: text, from: client.placeOfSupply}", {}, false],
+          ["the agent's words", "  a: {type: text}", { a: "hello" }, false],
+          ["an amount the agent gives", "  a: {type: money}", { a: "₹5" }, true],
+          [
+            "rows of a plain list",
+            "  m: {type: month}\n  a: {type: table, from: rows.work, period: m, columns: {key: text}}",
+            { m: "2026-11" },
+            false,
+          ],
+          [
+            "rows of a sensitive list",
+            "  m: {type: month}\n  a: {type: table, from: rows.invoices, period: m, columns: {key: text}}",
+            { m: "2026-11" },
+            true,
+          ],
+          [
+            "payments",
+            "  m: {type: month}\n  a: {type: table, from: payments, period: m, columns: {invoice: text}}",
+            { m: "2026-11" },
+            true,
+          ],
+        ];
+        for (const [what, inputs, given, expected] of cases)
+          assert.strictEqual(yield* sensitivity(inputs, given), expected, what);
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect(

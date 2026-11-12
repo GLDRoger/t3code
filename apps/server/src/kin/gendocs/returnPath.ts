@@ -5,10 +5,13 @@ import * as NodePath from "node:path";
 
 import * as Effect from "effect/Effect";
 
+import { officeProblem } from "./officeCheck.ts";
+import { svgProblem } from "./svgCheck.ts";
+
 /**
  * The one way a worker's file comes back: only names its report gave, read from `out/` itself,
  * each a regular file with one link, within the caps, whose leading bytes are its named type.
- * Nothing is executed or unpacked: an Office file's part names are found in its bytes.
+ * Nothing is executed or unpacked to disk: an Office file's directory and links are read in memory.
  */
 
 /**
@@ -89,17 +92,6 @@ const utf8 = (bytes: Uint8Array): string | undefined => {
   }
 };
 
-// Anything that runs, loads another document, or reaches out when an SVG is opened.
-const unsafeSvg =
-  /<\s*script|<\s*foreignObject|<\s*iframe|<\s*embed|<\s*object|<!ENTITY|<!DOCTYPE|\son[a-z]+\s*=|javascript:|(?:xlink:)?href\s*=\s*["']\s*(?!#|data:image\/(?:png|jpeg|webp);)|url\s*\(\s*["']?\s*(?!#)/i;
-
-/** An Office file's parts, read as names in its bytes; macro parts are refused. */
-const officeParts: Record<"xlsx" | "docx" | "pptx", string> = {
-  xlsx: "xl/workbook.xml",
-  docx: "word/document.xml",
-  pptx: "ppt/presentation.xml",
-};
-
 /** Why these bytes are not the type `extension` says, or `undefined` when they are. */
 export const typeMismatch = (extension: Extension, bytes: Uint8Array): string | undefined => {
   const wrong = `its bytes aren't a ${extension.toUpperCase()} file`;
@@ -121,21 +113,18 @@ export const typeMismatch = (extension: Extension, bytes: Uint8Array): string | 
     case "docx":
     case "pptx": {
       if (!startsWith(bytes, [0x50, 0x4b, 0x03, 0x04])) return wrong;
-      const names = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(
-        "latin1",
-      );
-      if (!names.includes("[Content_Types].xml") || !names.includes(officeParts[extension]))
-        return wrong;
-      return /vbaProject\.bin|\.bin\b.*activeX|activeX\//i.test(names)
-        ? "it carries macros or ActiveX controls"
-        : undefined;
+      const problem = officeProblem(extension, bytes);
+      return problem === undefined
+        ? undefined
+        : `it's a ${extension.toUpperCase()} that ${problem}. Kin takes back Office files with no macros, embedded objects or outside links, plain web and email hyperlinks aside: make it again without them, or return a PDF`;
     }
     case "svg": {
       const text = utf8(bytes);
-      if (text === undefined || !/<svg[\s>]/i.test(text)) return wrong;
-      return unsafeSvg.test(text)
-        ? "it's an SVG with scripts, links or embedded documents"
-        : undefined;
+      if (text === undefined || !/<svg[\s>/]/.test(text)) return wrong;
+      const problem = svgProblem(text);
+      return problem === undefined
+        ? undefined
+        : `it's an SVG with ${problem}: Kin takes back only plain drawings. Return it as a PNG or a PDF, or show it in chat with kin_visual`;
     }
     case "json": {
       const text = utf8(bytes);

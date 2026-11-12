@@ -7,14 +7,21 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
 import { takeOutputs, typeMismatch } from "./returnPath.ts";
+import { types, zip } from "./zip.testkit.ts";
 
 const pdf = Buffer.from(
   "%PDF-1.7\n1 0 obj << /Type /Page >> endobj\n2 0 obj << /Type /Pages >> endobj\n%%EOF\n",
 );
 const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]);
-const xlsx = Buffer.concat([
-  Buffer.from([0x50, 0x4b, 0x03, 0x04]),
-  Buffer.from("....[Content_Types].xml....xl/workbook.xml....xl/worksheets/sheet1.xml"),
+const xlsx = zip([
+  [
+    "[Content_Types].xml",
+    types(
+      "xl/workbook.xml",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml",
+    ),
+  ],
+  ["xl/workbook.xml", "<workbook/>"],
 ]);
 
 const worktree = Effect.acquireRelease(
@@ -124,31 +131,100 @@ it.effect("refuses everything when out/ is a link, and past the count and total 
   }).pipe(Effect.scoped),
 );
 
-it("checks leading bytes and refuses unsafe SVG and macro workbooks", () => {
+it("checks leading bytes and text", () => {
   assert.isUndefined(typeMismatch("pdf", pdf));
   assert.isDefined(
     typeMismatch("xlsx", Buffer.from("PK\x03\x04[Content_Types].xml word/document.xml")),
   );
-  assert.strictEqual(
-    typeMismatch("xlsx", Buffer.concat([xlsx, Buffer.from("xl/vbaProject.bin")])),
-    "it carries macros or ActiveX controls",
-  );
-  assert.isUndefined(
-    typeMismatch("svg", Buffer.from('<svg viewBox="0 0 1 1"><rect fill="#000"/></svg>')),
-  );
-  for (const svg of [
-    "<svg><script>alert(1)</script></svg>",
-    '<svg onload="x()"></svg>',
-    '<svg><a href="https://example.com">x</a></svg>',
-    '<svg><image href="file:///etc/passwd"/></svg>',
-  ])
-    assert.strictEqual(
-      typeMismatch("svg", Buffer.from(svg)),
-      "it's an SVG with scripts, links or embedded documents",
-    );
+  assert.isUndefined(typeMismatch("xlsx", xlsx));
   assert.strictEqual(
     typeMismatch("csv", Buffer.from([0x61, 0x00, 0x62])),
     "it isn't plain UTF-8 text",
   );
   assert.isDefined(typeMismatch("json", Buffer.from("{not json")));
+});
+
+const NS = 'xmlns="http://www.w3.org/2000/svg"';
+const XL = 'xmlns:xlink="http://www.w3.org/1999/xlink"';
+it("takes an SVG only when it parses as a drawing made of listed parts", () => {
+  const svg = (body: string, root = `<svg ${NS} ${XL} viewBox="0 0 10 10">`) =>
+    Buffer.from(`${root}${body}</svg>`);
+  // What recipes, Typst and charting libraries write.
+  for (const body of [
+    '<rect fill="#000" width="1" height="1"/>',
+    '<defs><linearGradient id="g"><stop offset="0" stop-color="red"/></linearGradient></defs><rect fill="url(#g)" style="stroke: url( \'#g\' ); fill-opacity: .5"/>',
+    '<defs><symbol id="a"><path d="M0 0L1 1"/></symbol></defs><use xlink:href="#a" x="1"/><use href=" #a"/>',
+    '<style type="text/css"><![CDATA[ *{stroke-linejoin: round;} @media print { rect { fill: #000 } } ]]></style><text x="1" xml:space="preserve">a &amp; b &#x41;<tspan>c@d</tspan></text>',
+    "<!-- a comment --><g><title>t</title><desc>d</desc></g>",
+  ])
+    assert.isUndefined(typeMismatch("svg", svg(body)), body);
+  assert.isUndefined(
+    typeMismatch("svg", Buffer.from(`<?xml version="1.0" encoding="UTF-8"?>\n<svg ${NS}/>`)),
+  );
+  const refused = [
+    ["<script>alert(1)</script>", "<script>"],
+    ['<s:script xmlns:s="http://www.w3.org/2000/svg">alert(1)</s:script>', "<s:script>"],
+    ["<SCRIPT>alert(1)</SCRIPT>", "<SCRIPT>"],
+    ['<g><script xlink:href="data:,alert(1)"/></g>', "<script>"],
+    [
+      '<foreignObject><div xmlns="http://www.w3.org/1999/xhtml"/></foreignObject>',
+      "<foreignObject>",
+    ],
+    ['<h:iframe xmlns:h="http://www.w3.org/1999/xhtml"/>', "<h:iframe>, which isn't SVG"],
+    ['<rect onload="x()"/>', "a onload attribute"],
+    ['<rect ONLOAD="x()"/>', "a ONLOAD attribute"],
+    [
+      '<rect ev:event="click" xmlns:ev="http://www.w3.org/2001/xml-events"/>',
+      "a ev:event attribute",
+    ],
+    ['<a href="https://example.invalid">x</a>', "<a>"],
+    ['<image href="data:image/png;base64,AA=="/>', "<image>"],
+    ['<use href="https://example.invalid/x.svg#a"/>', "a link to something outside the file"],
+    ['<use xlink:href="&#x68;ttps://example.invalid#a"/>', "a link to something outside the file"],
+    ['<use href="javascript:alert(1)"/>', "a link to something outside the file"],
+    ['<set attributeName="href" to="javascript:alert(1)"/>', "<set>"],
+    ['<animate attributeName="href"/>', "<animate>"],
+    ['<feImage href="https://example.invalid"/>', "<feImage>"],
+    ['<rect fill="url(https://example.invalid/t.png)"/>', "a url() to something outside the file"],
+    ["<rect fill=\"URL( '//example.invalid' )\"/>", "a url() to something outside the file"],
+    ['<rect style="fill: url(x.svg#a)"/>', "a url() to something outside the file"],
+    ["<rect style=\"background: image-set('x.png' 1x)\"/>", "CSS that loads or runs something"],
+    ['<rect style="width: expression(alert(1))"/>', "CSS that loads or runs something"],
+    ['<style>@import "https://example.invalid/t.css";</style>', "@import in its CSS"],
+    ["<style>@im<!-- split -->port url(x.css);</style>", "@import in its CSS"],
+    ["<style><![CDATA[@import url(x.css);]]></style>", "@import in its CSS"],
+    ["<style>@im/**/port url(x.css);</style>", "@import in its CSS"],
+    ["<style>@\\69mport url(x.css);</style>", "CSS escapes"],
+    ["<style>@font-face { font-family: x }</style>", "@font-face in its CSS"],
+    [
+      "<style>rect { fill: url(&quot;x.png&quot;) }</style>",
+      "a url() to something outside the file",
+    ],
+    ["<style>/* never closed </style>", "an unclosed CSS comment"],
+    ["<style><g/></style>", "an element inside <style>"],
+    ["<text>&xxe;</text>", "XML that isn't well formed"],
+    ["<g>", "XML that isn't well formed"],
+  ] as const;
+  for (const [body, why] of refused)
+    assert.strictEqual(
+      typeMismatch("svg", svg(body)),
+      `it's an SVG with ${why}: Kin takes back only plain drawings. Return it as a PNG or a PDF, or show it in chat with kin_visual`,
+      body,
+    );
+  for (const [text, why] of [
+    [`<!DOCTYPE svg [<!ENTITY x "y">]><svg ${NS}>&x;</svg>`, "a DOCTYPE"],
+    [
+      `<?xml-stylesheet href="https://example.invalid/t.css"?><svg ${NS}/>`,
+      "a processing instruction",
+    ],
+    [`<?xml version="1.0" encoding="ISO-8859-1"?><svg ${NS}/>`, "a ISO-8859-1 encoding"],
+    ['<svg viewBox="0 0 1 1"/>', "<svg>, which isn't SVG"],
+    [`<g ${NS}><svg/></g>`, "no <svg> at its root"],
+  ] as const)
+    assert.strictEqual(
+      typeMismatch("svg", Buffer.from(text)),
+      `it's an SVG with ${why}: Kin takes back only plain drawings. Return it as a PNG or a PDF, or show it in chat with kin_visual`,
+      text,
+    );
+  assert.strictEqual(typeMismatch("svg", Buffer.from("not xml")), "its bytes aren't a SVG file");
 });
