@@ -16,7 +16,7 @@ import { KinMemoryEntry } from "./KinMemoryScreen";
 import { KinTeamEntry } from "./KinTeamScreen";
 import { KinWorkEntry } from "./KinWorkScreen";
 import { KinChatRow, KinChatRowSkeletons } from "./components/KinChatRow";
-import { KinInboxNotice, KinScreenState } from "./components/KinScreenState";
+import { KinInboxNotice, KinScreenState, KinStandInNotice } from "./components/KinScreenState";
 import { KinWaitingBanner } from "./components/KinWaitingBanner";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import { kinChatListRowLabel, kinChatListRows } from "@t3tools/client-runtime/kin/kinChatListRows";
@@ -236,22 +236,22 @@ export function KinChatsView(props: {
         </>
       )}
       ListHeaderComponent={
-        notice || banner !== null || props.memory != null ? (
-          <>
-            {notice ? (
-              <View className="px-4 pb-2 pt-2">
-                <KinInboxNotice state={state} />
-              </View>
-            ) : null}
-            {banner === null ? null : (
-              <>
-                <KinWaitingBanner view={banner} onPress={props.onOpenWaiting} />
-                <View className="ml-5 h-px bg-border-subtle" />
-              </>
-            )}
-            {props.memory}
-          </>
-        ) : null
+        <>
+          {notice ? (
+            <View className="px-4 pb-2 pt-2">
+              <KinInboxNotice state={state} />
+            </View>
+          ) : (
+            <KinStandInNotice className="px-4 pb-2 pt-2" />
+          )}
+          {banner === null ? null : (
+            <>
+              <KinWaitingBanner view={banner} onPress={props.onOpenWaiting} />
+              <View className="ml-5 h-px bg-border-subtle" />
+            </>
+          )}
+          {props.memory}
+        </>
       }
     />
   );

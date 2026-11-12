@@ -99,8 +99,11 @@ export type KinHost =
       /** False for a saved host that is offline: show its cache. */
       readonly connected: boolean;
       readonly probe: KinProbe;
-      /** Used while the saved host is down; never saved, so Kin goes back when it returns. */
-      readonly standIn?: true;
+      /**
+       * The saved host this one stands in for while it is down; never saved, so Kin goes back
+       * when it returns.
+       */
+      readonly standInFor?: EnvironmentId;
     };
 
 /** A route's host; `unpaired` when this device's catalog doesn't hold the route's environment. */
@@ -145,7 +148,7 @@ export function resolveKinHost(input: {
           environmentId: live.environmentId,
           connected: true,
           probe: input.probe(live.environmentId),
-          standIn: true,
+          standInFor: saved.environmentId,
         };
       }
       return {
@@ -216,7 +219,23 @@ function kinOfflineProbe(cached: KinOrgsListResult | null): KinProbe {
 
 /** The id worth saving: only a host that answered with an identity, and not a stand-in. */
 export function kinHostIdToSave(host: KinHost): EnvironmentId | null {
-  return host._tag === "host" && host.probe._tag === "ready" && host.standIn !== true
+  return host._tag === "host" && host.probe._tag === "ready" && host.standInFor === undefined
     ? host.environmentId
     : null;
+}
+
+/**
+ * The one line a stand-in host shows wherever Kin's list or a chat is, so nobody reads or writes
+ * to another host's Kin without seeing whose it is; null on the usual host.
+ */
+export function kinStandInLine(
+  host: KinHost,
+  labelOf: (environmentId: EnvironmentId) => string | null,
+): { readonly message: string; readonly usual: EnvironmentId } | null {
+  if (host._tag !== "host" || host.standInFor === undefined) return null;
+  const shown = labelOf(host.environmentId) ?? "another computer";
+  const named = labelOf(host.standInFor);
+  // Two machines can share a name; then only "usual" tells them apart.
+  const usual = named === null || named === shown ? "Your usual computer" : named;
+  return { message: `Showing ${shown}. ${usual} can't be reached.`, usual: host.standInFor };
 }

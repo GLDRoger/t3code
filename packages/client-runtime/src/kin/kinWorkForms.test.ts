@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - The target hint is read against a fixed local day.
 import { KinChatError, type KinRecordKey } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
@@ -11,6 +12,11 @@ import {
   kinClientDraftCheck,
   kinClientDraftOf,
   kinClientUpdateInput,
+  kinContactDraftCheck,
+  kinContactDraftOf,
+  kinProjectDraftCheck,
+  kinProjectDraftOf,
+  kinProjectTargetHint,
   kinWorkFormMoved,
   kinWorkSend,
   type KinClientDraft,
@@ -175,5 +181,51 @@ describe("createKinWorkPageWatch", () => {
     here.watch.changed({ changed: { "W-77": 11 }, unnamed: 0 }, here.page);
     await Promise.resolve();
     expect([here.rereads(), here.asked()]).toEqual([1, 1]);
+  });
+});
+
+describe("kinProjectDraftCheck", () => {
+  it.each([
+    ["2026-02-30", "Enter a real date."],
+    ["2026-13-01", "Enter a real date."],
+    ["2025-02-29", "Enter a real date."],
+    ["2028-02-29", null],
+    ["2026-12-31", null],
+  ])("target %s", (target, problem) => {
+    expect(kinProjectDraftCheck({ ...kinProjectDraftOf(), name: "Relaunch", target })).toBe(
+      problem,
+    );
+  });
+
+  it("names the year only outside this one, and never labels an impossible day", () => {
+    const now = new Date(2026, 10, 12);
+    expect(kinProjectTargetHint("2026-12-03", now)).not.toMatch(/2026/);
+    expect(kinProjectTargetHint("2027-03-02", now).match(/2027/g)).toHaveLength(1);
+    expect(kinProjectTargetHint("2026-02-30", now)).toBe("Enter a real date.");
+  });
+});
+
+describe("kinContactDraftCheck", () => {
+  const contact = { ...kinContactDraftOf(), name: "Ravi" };
+  it.each([
+    [{ email: "not-an-email" }, "Enter an email like name@example.com."],
+    [{ phone: "call reception" }, "Enter a phone number with digits in it."],
+    [{ phone: "x12" }, null],
+    [{ phone: "+1 (555) 010-0199 ext. 4" }, null],
+    [{ email: "ravi@example.com", phone: "+91 98450 12345" }, null],
+    [{}, null],
+  ])("%o", (details, problem) => {
+    expect(kinContactDraftCheck({ ...contact, ...details })).toBe(problem);
+  });
+
+  it("lets an old email or phone stay as saved, and checks it once retyped", () => {
+    const saved = { ...contact, email: "front desk", phone: "ask Mira" };
+    expect(kinContactDraftCheck({ ...saved, name: "Ravi Rao" }, saved)).toBeNull();
+    expect(kinContactDraftCheck({ ...saved, email: "front desk 2" }, saved)).toBe(
+      "Enter an email like name@example.com.",
+    );
+    expect(kinContactDraftCheck({ ...saved, phone: "ask Ravi" }, saved)).toBe(
+      "Enter a phone number with digits in it.",
+    );
   });
 });

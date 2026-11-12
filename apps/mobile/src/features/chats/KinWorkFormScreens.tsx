@@ -18,10 +18,13 @@ import {
   kinClientDraftOf,
   kinClientUpdateInput,
   kinContactCreateInput,
+  kinContactDraftCheck,
   kinContactDraftOf,
   kinContactUpdateInput,
   kinProjectCreateInput,
+  kinProjectDraftCheck,
   kinProjectDraftOf,
+  kinProjectTargetHint,
   kinProjectUpdateInput,
   kinWorkFormMoved,
   kinWorkReadState,
@@ -60,11 +63,6 @@ import {
   KinWorkTextField,
 } from "./components/KinWorkPieces";
 import { KinWorkPlaceRow } from "./components/KinWorkTaskMenus";
-import {
-  kinContactFormCheck,
-  kinProjectFormCheck,
-  kinProjectTargetHint,
-} from "./kinWorkFormChecks";
 import { kinWorkRefParam, type KinWorkParams } from "./KinWorkScreen";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected } from "./state/useKinHost";
@@ -447,7 +445,7 @@ function ContactForm(
     start: kinContactDraftOf(editing ?? undefined),
     editing: editing === null ? null : { key: editing.key, rev: editing.rev },
     nameOf: (draft) => draft.name,
-    check: kinContactFormCheck,
+    check: kinContactDraftCheck,
     send: (change) =>
       change.type === "create"
         ? create({
@@ -670,7 +668,7 @@ function ProjectForm(
     start: kinProjectDraftOf(editing?.project, editing?.targetDay, props.party),
     editing: editing === null ? null : { key: editing.project.key, rev: editing.project.rev },
     nameOf: (draft) => draft.name,
-    check: kinProjectFormCheck,
+    check: kinProjectDraftCheck,
     send: (change) =>
       change.type === "create"
         ? create({

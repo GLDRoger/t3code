@@ -97,6 +97,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { ArrowDownIcon, ArrowLeftIcon, ChevronUpIcon, XIcon } from "lucide-react";
 import {
   useEffect,
+  useId,
   useRef,
   useState,
   type ClipboardEvent,
@@ -159,6 +160,7 @@ import {
   KinSystemRow,
 } from "./KinMessageRows";
 import { useKinPresenceNow, useNowMinuteMs } from "./useKinClock";
+import { KinStandInLine } from "./KinStandInLine";
 import { useKinHostAt } from "./useKinHost";
 
 type ChatResult = AsyncResult.AsyncResult<KinSynced<KinChatState>, unknown> | null;
@@ -1046,7 +1048,12 @@ function KinChatFeed(props: {
             </Button>
           </div>
         ) : null}
-        {notice === null ? null : (
+        {notice === null ? (
+          <KinStandInLine
+            environmentId={props.environmentId}
+            className="pb-2 text-center text-xs text-muted-foreground"
+          />
+        ) : (
           <p role="status" className="pb-2 text-center text-xs text-muted-foreground">
             {notice}
           </p>
@@ -1260,6 +1267,14 @@ function KinComposer(props: {
     files.canAttach && event.dataTransfer.types.includes("Files");
 
   const mention = dismissed === text ? null : kinMentionQuery(text, caret, props.mentionable);
+  // The highlighted suggestion, kept only for the query it was moved in.
+  const mentionKey = mention === null ? "" : text.slice(mention.start, caret);
+  const [moved, setMoved] = useState({ key: "", index: 0 });
+  const activeMention =
+    mention === null || moved.key !== mentionKey
+      ? 0
+      : Math.min(moved.index, mention.matches.length - 1);
+  const mentionListId = useId();
   const pickMention = (name: string) => {
     if (mention === null) return;
     const next = kinApplyMention(text, mention.start, caret, name);
@@ -1279,9 +1294,16 @@ function KinComposer(props: {
         setDismissed(text);
         return;
       }
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const count = mention.matches.length;
+        const step = event.key === "ArrowDown" ? 1 : count - 1;
+        setMoved({ key: mentionKey, index: (activeMention + step) % count });
+        return;
+      }
       if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey)) {
         event.preventDefault();
-        pickMention(mention.matches[0]!.name);
+        pickMention(mention.matches[activeMention]!.name);
         return;
       }
     }
@@ -1298,14 +1320,21 @@ function KinComposer(props: {
         </p>
       )}
       {mention === null ? null : (
-        <div role="listbox" aria-label="Agents you can ask" className="flex flex-wrap gap-1.5 px-1">
+        <div
+          id={mentionListId}
+          role="listbox"
+          aria-label="Agents you can ask"
+          className="flex flex-wrap gap-1.5 px-1"
+        >
           {mention.matches.map((lead, index) => (
             <Button
               key={lead.memberId}
+              id={`${mentionListId}-${index}`}
               role="option"
-              aria-selected={index === 0}
+              tabIndex={-1}
+              aria-selected={index === activeMention}
               size="xs"
-              variant={index === 0 ? "outline" : "ghost"}
+              variant={index === activeMention ? "outline" : "ghost"}
               // Keeps the caret in the box, so the name lands where it was typed.
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => pickMention(lead.name)}
@@ -1371,6 +1400,13 @@ function KinComposer(props: {
                   autoFocus={pending !== null}
                   value={text}
                   aria-label={`Message ${recipient}`}
+                  {...(mention === null
+                    ? {}
+                    : {
+                        "aria-controls": mentionListId,
+                        "aria-activedescendant": `${mentionListId}-${activeMention}`,
+                        "aria-autocomplete": "list" as const,
+                      })}
                   placeholder={
                     pending === null ? `Message ${recipient}` : kinDocAskPlaceholder(pending)
                   }

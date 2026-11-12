@@ -1,6 +1,7 @@
 import {
   KinRecordKey,
   KinRepoName,
+  kinRealDay,
   type KinContact,
   type KinContactCreateInput,
   type KinContactUpdateInput,
@@ -22,7 +23,9 @@ import {
   kinWorkFailuresOf,
   kinWorkRefused,
   type KinWorkRef,
+  kinWorkDueLabel,
 } from "./kinWork.ts";
+import { kinContactEmailOk, kinContactPhoneOk, KIN_PROJECTS } from "./kinWorkClients.ts";
 import { KIN_WORK_OFFLINE_CHANGE } from "./kinWorkChanges.ts";
 import type { KinWorkLive } from "./kinWorkStream.ts";
 
@@ -150,14 +153,28 @@ export const kinContactDraftOf = (contact?: KinContact): KinContactDraft => ({
   notes: contact?.notes ?? "",
 });
 
-export const kinContactDraftCheck = (draft: KinContactDraft): string | null =>
-  draft.name.trim() === ""
-    ? "Give them a name."
-    : (tooLong(draft.name, NAME_MAX, "the name") ??
-      tooLong(draft.role, SHORT_MAX, "the role") ??
-      tooLong(draft.email, SHORT_MAX, "the email") ??
-      tooLong(draft.phone, SHORT_MAX, "the phone number") ??
-      tooLong(draft.notes, NOTES_MAX, "the notes"));
+const retyped = (typed: string, saved: string | undefined) => typed.trim() !== (saved ?? "").trim();
+
+/** Email and phone are checked only when retyped, so an old entry never blocks other edits. */
+export const kinContactDraftCheck = (
+  draft: KinContactDraft,
+  saved?: KinContactDraft,
+): string | null => {
+  if (draft.name.trim() === "") return "Give them a name.";
+  const email = draft.email.trim();
+  if (email !== "" && retyped(email, saved?.email) && !kinContactEmailOk(email))
+    return "Enter an email like name@example.com.";
+  const phone = draft.phone.trim();
+  if (phone !== "" && retyped(phone, saved?.phone) && !kinContactPhoneOk(phone))
+    return "Enter a phone number with digits in it.";
+  return (
+    tooLong(draft.name, NAME_MAX, "the name") ??
+    tooLong(draft.role, SHORT_MAX, "the role") ??
+    tooLong(draft.email, SHORT_MAX, "the email") ??
+    tooLong(draft.phone, SHORT_MAX, "the phone number") ??
+    tooLong(draft.notes, NOTES_MAX, "the notes")
+  );
+};
 
 export const kinContactCreateInput = (
   draft: KinContactDraft,
@@ -217,13 +234,21 @@ const reposOf = (text: string) =>
     .map((line) => line.trim())
     .filter((line) => line !== "");
 
+const NOT_A_DAY = "Enter a real date.";
+
+/** What the target field says under itself while the owner types a day. */
+export const kinProjectTargetHint = (target: string, now: Date): string => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(target))
+    return `A day as year-month-day. Leave it empty for ${KIN_PROJECTS.noTarget.toLowerCase()}.`;
+  return kinRealDay(target) ? kinWorkDueLabel(target, now) : NOT_A_DAY;
+};
+
 export const kinProjectDraftCheck = (draft: KinProjectDraft): string | null => {
   if (draft.name.trim() === "") return "Give the project a name.";
   const repos = reposOf(draft.repos);
   if (!repos.every((repo) => isRepo(repo))) return "Write each repo as owner/name, one per line.";
   if (repos.length > 20) return "A project can have up to 20 repos.";
-  if (draft.target !== null && !/^\d{4}-\d{2}-\d{2}$/.test(draft.target))
-    return "That date doesn't look right.";
+  if (draft.target !== null && !kinRealDay(draft.target)) return NOT_A_DAY;
   return tooLong(draft.name, NAME_MAX, "the name") ?? tooLong(draft.notes, NOTES_MAX, "the notes");
 };
 
@@ -413,7 +438,8 @@ export function createKinWorkForm<D extends Draft, A>(options: {
   /** The key and revision being edited; null for a new one. */
   readonly editing: { readonly key: KinRecordKey; readonly rev: number } | null;
   readonly nameOf: (draft: D) => string;
-  readonly check: (draft: D) => string | null;
+  /** `from` is what it said when opened, so a check can pass over fields nobody retyped. */
+  readonly check: (draft: D, from: D) => string | null;
   /** Sends a new one whole, or the retyped fields of an existing one at `rev`. */
   readonly send: (
     change:
@@ -459,7 +485,7 @@ export function createKinWorkForm<D extends Draft, A>(options: {
       { readonly saved: true; readonly value: A | null } | { readonly saved: false }
     > => {
       if (state.saving) return { saved: false };
-      const invalid = options.check(state.draft);
+      const invalid = options.check(state.draft, state.from);
       if (invalid !== null) {
         set({ problem: { kind: "invalid", text: invalid } });
         return { saved: false };

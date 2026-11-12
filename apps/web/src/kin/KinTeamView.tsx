@@ -369,6 +369,7 @@ function KinTeammateSheet(props: {
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const removal = kinRemoveAccessCopy(teammate.name);
 
   const makeLink = async () => {
@@ -436,12 +437,7 @@ function KinTeammateSheet(props: {
                   variant="outline"
                   className="self-start"
                   disabled={busy}
-                  onClick={() => {
-                    if (teammate.inviteId === null) return;
-                    // Shown at once; the page says so if the host refuses.
-                    void actions.cancelInvite(teammate.inviteId);
-                    if (teammate.personId === null) props.onClose();
-                  }}
+                  onClick={() => setCancelling(true)}
                 >
                   {offered.cancel.label}
                 </Button>
@@ -488,6 +484,33 @@ function KinTeammateSheet(props: {
           </AlertDialogFooter>
         </AlertDialogPopup>
       </AlertDialog>
+      {offered.cancel === null ? null : (
+        <AlertDialog open={cancelling} onOpenChange={setCancelling}>
+          <AlertDialogPopup>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{offered.cancel.title}</AlertDialogTitle>
+              <AlertDialogDescription>{offered.cancel.detail}</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogClose render={<Button variant="outline" />}>
+                {offered.cancel.keep}
+              </AlertDialogClose>
+              <Button
+                variant="destructive"
+                onClick={() => {
+                  setCancelling(false);
+                  if (teammate.inviteId === null) return;
+                  // Shown at once; the page says so if the host refuses.
+                  void actions.cancelInvite(teammate.inviteId);
+                  if (teammate.personId === null) props.onClose();
+                }}
+              >
+                {offered.cancel.label}
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogPopup>
+        </AlertDialog>
+      )}
     </Sheet>
   );
 }

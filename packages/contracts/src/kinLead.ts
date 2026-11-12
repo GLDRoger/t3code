@@ -712,3 +712,6 @@ export const KinOrgResumeInput = Schema.Struct({ orgId: KinOrgId });
 export type KinOrgResumeInput = typeof KinOrgResumeInput.Type;
 export const KinOrgGetInput = Schema.Struct({ orgId: KinOrgId });
 export type KinOrgGetInput = typeof KinOrgGetInput.Type;
+
+/** The project a lead's own runs and memory live in (`kin:<org>:<agent>`); never someone's code. */
+export const isKinLeadProjectId = (projectId: string) => projectId.startsWith("kin:");

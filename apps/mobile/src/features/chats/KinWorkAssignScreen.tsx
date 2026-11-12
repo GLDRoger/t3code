@@ -98,7 +98,7 @@ function KinWorkAssignBody(props: ItemTarget) {
   const { environmentId, orgId, itemKey } = props;
   const itemAtom = kinClient.workItem({ environmentId, input: { orgId, key: itemKey } });
   const state = kinWorkItemState(useAtomValue(itemAtom), useKinWorkAnswer(props, itemKey));
-  const { orgs, people, joined, names } = useKinWorkDirectory(props, true);
+  const { orgs, people, joined, invited, names } = useKinWorkDirectory(props, true);
   const create = useAtomCommand(kinClient.workCreate, { reportFailure: false });
   const assign = useAtomCommand(kinClient.workAssign, { reportFailure: false });
   const [actions] = useState(() =>
@@ -142,7 +142,7 @@ function KinWorkAssignBody(props: ItemTarget) {
   }
 
   const give = async (item: KinRecordDetail, to: KinWorkAssignee) => {
-    if (giving !== null || to.current) return;
+    if (giving !== null || to.current || to.invited) return;
     setGiving(to.key);
     setProblem(null);
     const outcome = await actions.give(item, to.principal);
@@ -156,6 +156,7 @@ function KinWorkAssignBody(props: ItemTarget) {
     orgId,
     people,
     joined,
+    invited,
     names,
     current: state.item.owner,
   });
@@ -165,10 +166,14 @@ function KinWorkAssignBody(props: ItemTarget) {
         key={to.key}
         label={to.name}
         leading={<KinAvatar avatar={to.avatar} size="mini" />}
-        {...(to.current ? { description: "Has it" } : {})}
+        {...(to.current
+          ? { description: "Has it" }
+          : to.invited
+            ? { description: KIN_WORK_ASSIGN.invited }
+            : {})}
         selected={to.current || giving === to.key}
         separated={index > 0}
-        disabled={giving !== null && giving !== to.key}
+        disabled={to.invited === true || (giving !== null && giving !== to.key)}
         onPress={() => void give(state.item, to)}
       />
     ));

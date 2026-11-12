@@ -174,6 +174,17 @@ it.effect("record_create makes many entries in one call and a retry makes none",
         ["W-3", true],
       ],
     );
+    // QA Q12: a lead's 30 February is refused too, as a day or a time.
+    for (const due of ["2026-02-30", "2026-02-30T18:00+05:30"])
+      assert.include(
+        yield* Effect.flip(
+          LeadWork.create(scopeOf(lead), {
+            sourceEventId: "ask-event",
+            records: [{ title: "Invented: an impossible day", due }],
+          }),
+        ),
+        { reason: "invalid_state" },
+      );
     const retry = yield* LeadWork.create(scopeOf(lead), input);
     assert.deepStrictEqual(
       retry.records.map((row) => [row.key, row.created]),
@@ -273,6 +284,30 @@ it.effect(
         clientRequestId: "new-1",
       });
       assert.include(created, { key: "W-1", state: "open" });
+      const retry = {
+        orgId,
+        title: "Invented: compare the two hosting quotes",
+        clientRequestId: "new-1",
+      };
+      assert.include(yield* OwnerWork.create([owner], retry), { key: "W-1" });
+      assert.include(
+        yield* Effect.flip(OwnerWork.create([owner], { ...retry, title: "Invented: other" })),
+        { reason: "not_allowed" },
+      );
+      // QA Q12: 30 February was saved as 2 March.
+      for (const dueAt of ["2026-02-30T00:00:00.000Z", "2026-02-30"])
+        assert.include(
+          yield* Effect.flip(
+            OwnerWork.create([owner], {
+              orgId,
+              title: "Invented: an impossible day",
+              clientRequestId: `day-${dueAt}`,
+              dueAt,
+              dueAllDay: dueAt.length === 10,
+            }),
+          ),
+          { reason: "invalid_state" },
+        );
       assert.lengthOf(yield* assignedEvents, 0);
       const assigned = yield* OwnerWork.assign([owner], {
         orgId,

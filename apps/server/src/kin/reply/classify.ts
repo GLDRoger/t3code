@@ -6,15 +6,23 @@ import type {
 } from "@t3tools/contracts";
 
 /**
- * A failure no retry fixes: the model account needs signing in again (`signin`) or cannot use
- * the lead's model (`access`). The codes are the adapters'.
+ * A failure no retry fixes: the model account needs signing in again (`signin`), cannot use
+ * the lead's model (`access`), or the provider doesn't know that model (`model`). The codes are
+ * the adapters'.
  */
-export type SetupFailure = "signin" | "access";
+export type SetupFailure = "signin" | "access" | "model";
 export function setupFailure(failure: OrchestrationV2ProviderFailure): SetupFailure | null {
   if (failure.code === "authentication_failed" || failure.code === "api_error_401") return "signin";
   if (failure.code === "api_error_403" || failure.class === "permission_error") return "access";
+  if (
+    (failure.code === "api_error_400" || failure.code === "api_error_404") &&
+    /\bmodel\b/i.test(failure.message)
+  )
+    return "model";
   return null;
 }
+/** The Claude CLI words a failed API call as the turn's own reply; it is the provider's text. */
+export const isProviderErrorText = (text: string) => text.trimStart().startsWith("API Error:");
 /** The setup failure that ended a run from `rootRunId` on, if one did. */
 export function setupFailureIn(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "turnItems">,

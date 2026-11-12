@@ -366,8 +366,13 @@ const make = Effect.gen(function* () {
       isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
     ),
     view: Effect.fn("KinStop.view")(function* (people, orgId) {
-      yield* member(people, orgId);
-      return yield* state(orgId);
+      const person = yield* member(people, orgId);
+      const current = yield* state(orgId);
+      // Any member sees whether Kin is stopped; why, in the owner's words, is his.
+      const ownsOrg = yield* isOrgOwner(orgId, person.personId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      return ownsOrg || current.reason === null ? current : { ...current, reason: null };
     }, Effect.mapError(mapError)),
     pause,
     resume,
@@ -590,11 +595,12 @@ export const makeFanOut = Effect.fn("KinStop.makeFanOut")(function* (
         WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND status = 'running'
           AND thread_id IS NOT NULL ORDER BY wakeup_id`.pipe(Effect.mapError(failed));
       if (row === undefined) return false;
-      // The owner chose to stop: the run's failure must not requeue its events.
-      yield* sql`UPDATE kin_events SET state = 'done'
-        WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND state = 'claimed'`.pipe(
-        Effect.mapError(failed),
-      );
+      // The owner chose to stop: the run's failure must not requeue its events. A stop that
+      // finds none left is a repeat of one still winding the run down.
+      const released = yield* sql`UPDATE kin_events SET state = 'done'
+        WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND state = 'claimed'
+        RETURNING event_id`.pipe(Effect.mapError(failed));
+      if (released.length === 0) return false;
       const threadId = ThreadId.make(row.threadId);
       const projection = yield* threads.getThreadProjection(threadId).pipe(Effect.mapError(failed));
       const run = projection.runs.at(-1);

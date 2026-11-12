@@ -1,3 +1,4 @@
+import type { KinHost } from "@t3tools/client-runtime/kin/kinHost";
 import { KinPushError, type EnvironmentId } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
@@ -43,4 +44,15 @@ export function kinPushPermissionStep(
 ): "register" | "ask" | "wait" {
   if (permission.granted) return "register";
   return request.wanted && !request.asked && permission.canAskAgain ? "ask" : "wait";
+}
+
+/**
+ * Where this phone's token goes: the usual Kin host once it answered. Never a computer standing
+ * in for it, which can be another company's; a token it already holds stays there.
+ */
+export function kinPushHost(host: KinHost) {
+  if (host._tag !== "host" || !host.connected || host.standInFor !== undefined) return null;
+  return host.probe._tag === "ready"
+    ? { environmentId: host.environmentId, orgs: host.probe.orgs }
+    : null;
 }

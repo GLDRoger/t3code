@@ -96,7 +96,7 @@ export function KinWorkNewDialog(
   },
 ) {
   const { environmentId, orgId } = props;
-  const { orgs, people, names } = props.directory;
+  const { orgs, people, joined, invited, names } = props.directory;
   const create = useAtomCommand(kinClient.workCreate, { reportFailure: false });
   const assign = useAtomCommand(kinClient.workAssign, { reportFailure: false });
   const [actions] = useState(() =>
@@ -116,7 +116,15 @@ export function KinWorkNewDialog(
   const titleId = useId();
   const dueId = useId();
   const notesId = useId();
-  const assignees = kinWorkAssignees({ orgs, orgId, people, names, current: null });
+  const assignees = kinWorkAssignees({
+    orgs,
+    orgId,
+    people,
+    joined,
+    invited,
+    names,
+    current: null,
+  });
   const everyone = [...assignees.people, ...assignees.leads];
   const mine = assignees.people[0]?.key ?? "";
   const ownerKey = draft.owner === null ? mine : kinWorkPrincipalKey(draft.owner);
@@ -195,8 +203,8 @@ export function KinWorkNewDialog(
                         <SelectGroup>
                           <SelectGroupLabel>{KIN_WORK_ASSIGN.people}</SelectGroupLabel>
                           {assignees.people.map((row) => (
-                            <SelectItem key={row.key} value={row.key}>
-                              {row.name}
+                            <SelectItem key={row.key} value={row.key} disabled={row.invited}>
+                              {row.invited ? `${row.name}, invited` : row.name}
                             </SelectItem>
                           ))}
                         </SelectGroup>

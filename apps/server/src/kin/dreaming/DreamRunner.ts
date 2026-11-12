@@ -245,7 +245,12 @@ const make = Effect.gen(function* () {
     const streak = recent.findIndex((row) => row.status !== "failed");
     // Exactly the third failed night in a row: a longer streak was already told.
     if ((streak === -1 ? recent.length : streak) === FAILED_NIGHTS_NOTICE)
-      yield* notices.notify({ orgId, branch, reason: stuckNotice, needsOwner: true });
+      yield* notices.notify({
+        orgId,
+        branch,
+        reason: "Dream failed three nights in a row",
+        owner: stuckNotice,
+      });
   });
 
   const prepareCheckout = Effect.fn("DreamRunner.prepareCheckout")(function* (

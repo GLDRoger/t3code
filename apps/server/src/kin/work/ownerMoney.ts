@@ -19,6 +19,7 @@ import {
   type KinWorkFilesInput,
   type KinVoidInput,
   KinRecordKey,
+  calendarTimeMillis,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -51,7 +52,7 @@ import {
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const millis = (value: string, field: string) => {
-  const ms = Date.parse(value);
+  const ms = calendarTimeMillis(value);
   return Number.isFinite(ms) ? Effect.succeed(ms) : Effect.fail(invalid(`${field} is not a time.`));
 };
 

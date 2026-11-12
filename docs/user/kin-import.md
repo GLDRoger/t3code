@@ -68,7 +68,8 @@ Undo removes the clients, projects, entries and payments the batch made, and lis
 hold nothing else. It leaves alone, and lists, entries someone changed since the import (add
 `--include-changed` to remove those too), and anything still used by a record that stays, such as
 a client you've since added work for. Invoice numbering doesn't go back, so no number is ever
-issued twice. You can apply the same file again afterwards.
+issued twice. You can apply the same file again afterwards. Entry keys such as `INV-4` do go back
+when nothing came after them, so a corrected file applied again gets the keys the batch had.
 
 ## What an import doesn't do
 
