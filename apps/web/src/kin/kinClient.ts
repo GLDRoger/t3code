@@ -17,9 +17,11 @@ import {
   environmentSessionGenerationAtom,
 } from "@t3tools/client-runtime/state/runtime";
 import {
+  KIN_APPROVAL_WS_METHODS,
   KIN_CHAT_WS_METHODS,
   KIN_PEOPLE_WS_METHODS,
   type EnvironmentId,
+  type KinApprovalsOrgInput,
   type KinChatHistoryInput,
   type KinChatId,
   type KinChatMembersInput,
@@ -75,6 +77,12 @@ function guardedRead<Input, A, E>(command: {
           : Effect.never;
     });
 }
+
+const approverKeysRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:approver-keys:read",
+  tag: KIN_APPROVAL_WS_METHODS.listKeys,
+});
+const readApproverKeys = guardedRead(approverKeysRead);
 
 const leadsRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "kin:leads:read",
@@ -249,6 +257,27 @@ export const kinClient = {
       environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
   }),
   leads,
+  /** The phones that approve, and those waiting to be allowed with their match numbers. */
+  approverKeys: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:approver-keys",
+    execute: Effect.fn("KinWebClient.approverKeys")(function* (input: KinApprovalsOrgInput) {
+      return yield* readApproverKeys(input);
+    }),
+    staleTimeMs: 10_000,
+    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
+      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  approverKeyAllow: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:approver-key:allow",
+    tag: KIN_APPROVAL_WS_METHODS.allowKey,
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.thumbprint },
+  }),
+  /** Decline for a waiting phone, Remove for one that approves. */
+  approverKeyRevoke: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:approver-key:revoke",
+    tag: KIN_APPROVAL_WS_METHODS.revokeKey,
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.thumbprint },
+  }),
   leadCreate: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:lead:create",
     tag: "kin.lead.create",

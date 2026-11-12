@@ -14,6 +14,7 @@ import {
   createLucideIcon,
   CalendarClockIcon,
   FileDiffIcon,
+  FingerprintIcon,
   FolderTreeIcon,
   GitBranchIcon,
   GlobeIcon,
@@ -51,6 +52,7 @@ import { scrollToSettingsTarget } from "./settingsLayout";
 import {
   searchSettings,
   revealSettingsSearchTarget,
+  KIN_ONLY_SETTINGS_PATHS,
   SETTINGS_NAV_GROUPS,
   SETTINGS_SECTION_LABELS,
   type SettingsPath,
@@ -59,6 +61,7 @@ import {
 import { useAvailableSettingsSearchItems } from "./useAvailableSettingsSearchItems";
 import { useSettingsSectionNavigation } from "./useSettingsSectionNavigation";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
+import { useKinHost } from "../../kin/useKinHost";
 
 const SnapShotIcon = createLucideIcon("snap-shot", [
   [
@@ -104,6 +107,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/worktrees": FolderTreeIcon,
   "/settings/connections": ServerIcon,
   "/settings/access": ShieldCheckIcon,
+  "/settings/approvals": FingerprintIcon,
   "/settings/secrets": KeyRoundIcon,
   "/settings/maintenance": WrenchIcon,
   "/settings/labs": FlaskConicalIcon,
@@ -132,7 +136,12 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   const navigate = useNavigate();
   const currentHash = useLocation({ select: (location) => location.hash });
   const activePath = SETTINGS_DETAIL_PAGE_PARENTS[pathname] ?? pathname;
-  const navPaths = SETTINGS_NAV_GROUPS.flatMap((group) => group.paths);
+  const hasKinHost = useKinHost()._tag === "host";
+  const navGroups = SETTINGS_NAV_GROUPS.map((group) => ({
+    ...group,
+    paths: group.paths.filter((path) => hasKinHost || !KIN_ONLY_SETTINGS_PATHS.has(path)),
+  }));
+  const navPaths = navGroups.flatMap((group) => group.paths);
   const sectionNavigation = useSettingsSectionNavigation(
     navPaths.find((to) => activePath === to || activePath.startsWith(`${to}/`)) ??
       navPaths[0] ??
@@ -381,7 +390,7 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                   aria-label="Settings sections"
                   className="flex flex-col gap-4"
                 >
-                  {SETTINGS_NAV_GROUPS.map((group, index) => (
+                  {navGroups.map((group, index) => (
                     <div
                       key={group.heading ?? index}
                       role="group"
