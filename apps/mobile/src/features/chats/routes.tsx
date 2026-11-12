@@ -6,11 +6,15 @@ import { KinAgentsScreen } from "./KinAgentsScreen";
 import { KinChatScreen } from "./KinChatScreen";
 import { KinChatsScreen } from "./KinChatsScreen";
 import { KinClientScreen } from "./KinClientScreen";
+import { KinCompanyScreen } from "./KinCompanyScreen";
 import { KinDocScreen } from "./KinDocScreen";
 import { KinDocChangesScreen, KinDocHistoryScreen, KinSearchScreen } from "./KinDocVersionScreens";
 import { KinGroupFormScreen } from "./KinGroupFormScreen";
 import { KinGroupScreen } from "./KinGroupScreen";
 import { KinLeadFormScreen } from "./KinLeadFormScreen";
+import { KinListSettingsScreen, KinPaymentScreen } from "./KinListEntry";
+import { KinEntryEditScreen } from "./KinListEntryEdit";
+import { KinDatesScreen, KinListScreen } from "./KinListScreen";
 import { KinLeadScreen } from "./KinLeadScreen";
 import { KinMemoryScreen } from "./KinMemoryScreen";
 import { KinProjectScreen } from "./KinProjectScreen";
@@ -56,6 +60,34 @@ export const KIN_SCREENS = {
     screen: KinWorkItemScreen,
     linking: "kin/:environmentId/:orgId/work/:task",
     options: sheetRoute({ detent: 0.75 }),
+  }),
+  KinList: createNativeStackScreen({
+    screen: KinListScreen,
+    linking: "kin/:environmentId/:orgId/lists/:list",
+    options: pageRoute({ title: "List" }),
+  }),
+  KinDates: createNativeStackScreen({
+    screen: KinDatesScreen,
+    linking: "kin/:environmentId/:orgId/dates",
+    options: pageRoute({ title: "All dates" }),
+  }),
+  // Full sheets, so the keyboard never covers what is being typed.
+  KinPayment: createNativeStackScreen({
+    screen: KinPaymentScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinEntryEdit: createNativeStackScreen({
+    screen: KinEntryEditScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinListSettings: createNativeStackScreen({
+    screen: KinListSettingsScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinCompany: createNativeStackScreen({
+    screen: KinCompanyScreen,
+    linking: "kin/:environmentId/:orgId/company",
+    options: pageRoute({ title: "Company details" }),
   }),
   KinWorkAssign: createNativeStackScreen({
     screen: KinWorkAssignScreen,

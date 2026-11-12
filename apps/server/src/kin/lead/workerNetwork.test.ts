@@ -8,6 +8,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import { ServerConfig } from "../../config.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
@@ -68,6 +69,28 @@ it.effect(
       const gone = yield* Network.remove([owner], { orgId, host: "*.example.org" });
       assert.notInclude(hosts(gone), "*.example.org");
       assert.notInclude(gone.removed, "*.example.org");
+      // A row an older check let in is never served, but the owner sees it, why, and removes it.
+      const sql = yield* SqlClient.SqlClient;
+      for (const [host, allowed] of [
+        ["printer.local", 1],
+        ["evil.example:443", 1],
+        ["Localhost", 0],
+      ] as const)
+        yield* sql`INSERT INTO kin_worker_network (org_id, host, allowed, changed_at, changed_by)
+          VALUES (${orgId}, ${host}, ${allowed}, 0, 'owner')`;
+      const listed = yield* Network.get([owner], { orgId });
+      assert.notInclude(hosts(listed), "printer.local");
+      assert.deepStrictEqual(
+        listed.refused.map(({ host, allowed }) => ({ host, allowed })),
+        [
+          { host: "Localhost", allowed: false },
+          { host: "evil.example:443", allowed: true },
+          { host: "printer.local", allowed: true },
+        ],
+      );
+      assert.include(listed.refused[2]?.reason ?? "", "ends in .local");
+      for (const { host } of listed.refused) yield* Network.remove([owner], { orgId, host });
+      assert.deepStrictEqual((yield* Network.get([owner], { orgId })).refused, []);
       // Another org's list is its own.
       assert.deepStrictEqual(hosts(yield* Network.workerHosts(KinOrgId.make("elsewhere"))), [
         ...Network.DEFAULT_WORKER_HOSTS,
@@ -107,6 +130,14 @@ it("a host the owner adds is a host name, never an address, port, scheme or the 
     "Example.com",
     "example.com/path",
     "",
+    // Names that point at this machine, the LAN or the tailnet, which the proxy would reach.
+    "foo.localhost",
+    "*.localhost",
+    "printer.local",
+    "db.internal",
+    "nas.home.arpa",
+    "box.tail1234.ts.net",
+    "*.ts.net",
   ])
     assert.isTrue(Exit.isFailure(decode({ orgId, host })), host);
 });

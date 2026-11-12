@@ -194,7 +194,7 @@ export const LinkInput = Schema.Struct({
 });
 export const LinkResult = Schema.Struct({
   key: Schema.String,
-  linked: Schema.Array(Schema.Struct({ key: Schema.String, title: Schema.String })),
+  linked: Schema.Array(Schema.Struct({ key: Schema.String, title: Schema.String, ...Marks })),
 });
 export const SearchInput = Schema.Struct({
   text: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
@@ -277,6 +277,7 @@ const answering = Effect.fn("KinDocTools.answering")(function* (lead: Lead, even
     LEFT JOIN kin_messages m ON m.org_id = e.org_id AND e.tag IN ('chat.message', 'widget.action')
       AND m.message_id = json_extract(e.json, '$.messageId')
       AND m.chat_id = json_extract(e.json, '$.chatId')
+      AND (m.kind = 'widget_action') = (e.tag = 'widget.action')
     WHERE e.org_id = ${lead.orgId} AND e.agent_id = ${lead.agentId}
       AND e.wakeup_id = ${lead.wakeupId} AND e.event_id = ${eventId}
     ORDER BY e.event_id`;
@@ -503,7 +504,14 @@ export const move = leadTool("KinDocTools.move", runMove);
 const runLink = Effect.fnUntraced(function* (lead: Lead, input: typeof LinkInput.Type) {
   const context = yield* writeContext(lead, "doc_link", input);
   const linked = yield* Docs.link(lead.orgId, context.writer, input, input.to, "relates");
-  return { key: input.key, linked: linked.map(({ key, title }) => ({ key, title })) };
+  return {
+    key: input.key,
+    linked: linked.map(({ key, title, sensitive }) => ({
+      key,
+      title,
+      ...(sensitive ? { sensitive: true as const } : {}),
+    })),
+  };
 });
 export const link = leadTool("KinDocTools.link", runLink);
 
@@ -564,14 +572,9 @@ const runHistory = Effect.fnUntraced(function* (lead: Lead, input: typeof Histor
 });
 export const history = leadTool("KinDocTools.history", runHistory);
 
-/** An undo the owner asked for in this turn: refused for any turn not answering only the owner. */
+/** An undo: a new version, undoable again, so it needs no more than a rewrite does. */
 const runRestore = Effect.fnUntraced(function* (lead: Lead, input: typeof RestoreInput.Type) {
   const context = yield* writeContext(lead, "doc_restore", input);
-  if (context.writer.askedBy === null || context.provenance.audience !== "owner_only")
-    return yield* new KinChatError({
-      reason: "not_allowed",
-      message: "Only the owner can ask for a doc to be restored, in a chat only they read.",
-    });
   const written = yield* Docs.restore(lead.orgId, context.writer, context.provenance, input, {
     version: input.version,
     latest: input.latest,

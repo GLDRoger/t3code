@@ -1,4 +1,10 @@
-import type { KinKeyThumbprint, KinOrgId, KinPendingAction } from "@t3tools/contracts";
+import type {
+  KinApprovalError,
+  KinKeyThumbprint,
+  KinOrgId,
+  KinPendingAction,
+  KinPersonId,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 
@@ -30,19 +36,23 @@ export class KinExecutionNotices extends Context.Service<
 /** A phone that started or stopped being able to approve, as `KinKeyNotices` tells the owner. */
 export type KinKeyChange = {
   readonly orgId: KinOrgId;
+  readonly ownerPersonId: KinPersonId;
   readonly thumbprint: KinKeyThumbprint;
   /** As the phone reported it: untrusted text. */
   readonly deviceLabel: string;
   readonly platform: string;
-  readonly change: "allowed" | "removed";
+  readonly change: "added" | "removed";
   readonly at: number;
+  /** Removing it left no phone that can approve. */
+  readonly lastKey: boolean;
 };
 
 /**
- * Posts a fixed-text notice in the owner's chat with the chief of staff, which also pushes to
- * the owner's phones. Tag here, layer in the chat module, as with `KinExecutionNotices`.
+ * Writes a fixed-text notice into the owner's own chat, when one exists, and the push the change
+ * owes the owner, inside the caller's transaction, so both land exactly when the key change does;
+ * a failure rolls the change back. Tag here, layer in the chat module, as with `KinExecutionNotices`.
  */
 export class KinKeyNotices extends Context.Service<
   KinKeyNotices,
-  { readonly changed: (input: KinKeyChange) => Effect.Effect<void> }
+  { readonly changed: (input: KinKeyChange) => Effect.Effect<void, KinApprovalError> }
 >()("t3/kin/approvals/ExecutionNotices/KinKeyNotices") {}

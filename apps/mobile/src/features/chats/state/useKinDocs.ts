@@ -3,6 +3,7 @@ import {
   KIN_DOCS_DEFAULT_FILTER,
   KIN_SEARCH_INITIAL,
   createKinSearch,
+  kinDocsQuery,
   kinDocsSameFilter,
   type KinDocsFilter,
   type KinSearchState,
@@ -49,12 +50,18 @@ export function useKinDocsLive(target: KinWorkTarget) {
 }
 
 /** Every doc, or the archived ones, latest change first, a page at a time. */
-export function useKinDocsList({ environmentId, orgId }: KinWorkTarget, seq: number | null) {
+export function useKinDocsList(
+  { environmentId, orgId }: KinWorkTarget,
+  seq: number | null,
+  /** What the search bar already holds when the list opens. */
+  text = "",
+) {
+  const initial = { ...KIN_DOCS_DEFAULT_FILTER, text };
   return useKinPagedList<KinDocsFilter, KinDocRow>(
-    KIN_DOCS_DEFAULT_FILTER,
+    initial,
     (onChange) =>
       createKinPagedList({
-        initial: KIN_DOCS_DEFAULT_FILTER,
+        initial,
         sameFilter: kinDocsSameFilter,
         idOf: (row) => row.recordId,
         onChange,
@@ -63,7 +70,7 @@ export function useKinDocsList({ environmentId, orgId }: KinWorkTarget, seq: num
           mapPage(
             await kinClient.docsList.run(appAtomRegistry, {
               environmentId,
-              input: { orgId, archived: filter.archived, ...page },
+              input: { ...kinDocsQuery(orgId, filter), ...page },
             }),
             (value) => ({ ...value, rows: value.docs }),
           ),

@@ -1,4 +1,10 @@
-import type { KinAgentId, KinEvent, KinOrgId, KinWorkerId } from "@t3tools/contracts";
+import {
+  KinChatError,
+  type KinAgentId,
+  type KinEvent,
+  type KinOrgId,
+  type KinWorkerId,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -494,7 +500,8 @@ export const unsettledStops = Effect.fn("KinWorkerAttempts.unsettledStops")(func
 
 /**
  * Whether the owner withdrew work this event started: the event itself, or one of its wake-up
- * naming the same chat message (a tap or reaction on it, or the message again).
+ * naming the same chat message (a tap or reaction on it, or the message again). A tap names the
+ * message it was on through its own tap row.
  */
 export const eventWithdrawn = Effect.fn("KinWorkerAttempts.eventWithdrawn")(function* (input: {
   readonly orgId: KinOrgId;
@@ -512,7 +519,9 @@ export const eventWithdrawn = Effect.fn("KinWorkerAttempts.eventWithdrawn")(func
   )
     same.push(sql`(e.wakeup_id = ${input.wakeupId}
       AND json_extract(e.json, '$.chatId') = ${event.chatId}
-      AND json_extract(e.json, '$.messageId') = ${event.messageId})`);
+      AND json_extract(e.json, '$.messageId') IN (${event.messageId},
+        (SELECT reply_to FROM kin_messages WHERE org_id = ${input.orgId}
+          AND message_id = ${event.messageId} AND kind = 'widget_action')))`);
   // A withdrawn legacy attempt names no event, so no event this lead received before that
   // withdrawal authorises any work again, wherever it is claimed and whatever entry it names; an
   // event not found counts as received before. A fresh message or assignment is needed.
@@ -572,6 +581,11 @@ export const sensitiveShown = Effect.fn("KinWorkerAttempts.sensitiveShown")(func
   yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
     VALUES (${input.orgId}, ${input.wakeupId}, ${at}) ON CONFLICT (org_id, wakeup_id) DO NOTHING`;
 });
+
+/** A refusal that quotes something sensitive, so the tool marks the turn as a result would. */
+export class SensitiveRefusal extends KinChatError {}
+// @effect-diagnostics-next-line instanceOfSchema:off -- the subclass, not the schema, marks it.
+export const isSensitiveRefusal = (error: unknown) => error instanceof SensitiveRefusal;
 
 /** The same for a prompt that shows these entries, when any of them is sensitive now. */
 export const entriesShown = Effect.fn("KinWorkerAttempts.entriesShown")(function* (input: {

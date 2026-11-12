@@ -172,7 +172,11 @@ export function KinDocsList(
   const { names } = props.directory;
   const now = new Date(useNowMinuteMs());
   const { refused, live } = useKinDocsLive(props);
-  const { state, list } = useKinDocsList(props, props.stale ? null : (live?.seq ?? null));
+  const { state, list } = useKinDocsList(
+    props,
+    props.stale ? null : (live?.seq ?? null),
+    props.areas.words,
+  );
   const { state: found, search } = useKinSearch(props, DOCS_ONLY);
   const [by, setBy] = useState<KinDocGrouping>("client");
   const { words } = props.areas;
@@ -184,18 +188,18 @@ export function KinDocsList(
   };
   const { filter } = state;
   const searching = found.text.trim() !== "";
-  const items: ReadonlyArray<Item> =
-    searching || refused
-      ? []
-      : kinDocGroups(state.records, by, names).flatMap((group): ReadonlyArray<Item> => [
-          {
-            type: "group",
-            id: `group:${group.id}`,
-            title: `${group.title} · ${group.rows.length}`,
-          },
-          ...group.rows.map((row): Item => ({ type: "doc", id: row.recordId, row })),
-        ]);
-  const footer = searching ? null : kinDocsFooter(state.records.length, state.total, state.more);
+  const passages = searching && (found.hits?.length ?? 0) > 0;
+  const items: ReadonlyArray<Item> = refused
+    ? []
+    : kinDocGroups(state.records, by, names).flatMap((group): ReadonlyArray<Item> => [
+        {
+          type: "group",
+          id: `group:${group.id}`,
+          title: `${group.title} · ${group.rows.length}`,
+        },
+        ...group.rows.map((row): Item => ({ type: "doc", id: row.recordId, row })),
+      ]);
+  const footer = kinDocsFooter(state.records.length, state.total, state.more);
   const open = (doc: KinRecordKey, section?: string) =>
     navigation.navigate("KinDoc", {
       environmentId,
@@ -222,6 +226,7 @@ export function KinDocsList(
             onChangeText: (text) => {
               props.areas.onWords(text);
               search.setText(text);
+              list.setFilter({ ...filter, text });
             },
             placeholder: KIN_DOCS.search,
             closeAccessibilityLabel: "Close search",
@@ -276,17 +281,15 @@ export function KinDocsList(
                       search.setClosed(true);
                     }}
                   />
-                  {searching
-                    ? null
-                    : KIN_DOC_GROUPINGS.map((held) => (
-                        <Chip
-                          key={held.id}
-                          size="small"
-                          label={`By ${held.label.toLowerCase()}`}
-                          selected={by === held.id}
-                          onPress={() => setBy(held.id)}
-                        />
-                      ))}
+                  {KIN_DOC_GROUPINGS.map((held) => (
+                    <Chip
+                      key={held.id}
+                      size="small"
+                      label={`By ${held.label.toLowerCase()}`}
+                      selected={by === held.id}
+                      onPress={() => setBy(held.id)}
+                    />
+                  ))}
                 </ScrollView>
               )}
             </View>
@@ -295,13 +298,6 @@ export function KinDocsList(
             <View className="pt-4">
               {refused ? (
                 <EmptyState variant="plain" {...KIN_DOCS.unavailable} />
-              ) : searching ? (
-                <KinSearchHits
-                  state={found}
-                  docsOnly
-                  onRetry={search.retry}
-                  onOpen={(hit) => open(hit.key, hit.section?.id)}
-                />
               ) : state.loading ? (
                 <KinWorkLoading label={KIN_DOCS.loading} />
               ) : state.failed !== null ? (
@@ -311,6 +307,8 @@ export function KinDocsList(
                   detail="Check your connection to the server and try again."
                   action={<Button tone="secondary" label="Try again" onPress={list.refresh} />}
                 />
+              ) : passages ? null : searching ? (
+                <EmptyState variant="plain" {...KIN_DOCS.noMatch} />
               ) : (
                 <EmptyState
                   variant="plain"
@@ -320,21 +318,42 @@ export function KinDocsList(
             </View>
           }
           ListFooterComponent={
-            footer === null ? null : (
-              <View className="items-start gap-2 px-5 py-4">
-                <Text textRole="footnote" className="text-foreground-muted">
-                  {state.moreFailed ? "Couldn't load more." : footer}
-                </Text>
-                <Button
-                  tone="secondary"
-                  size="compact"
-                  label={state.moreFailed ? "Try again" : "Show more"}
-                  loading={state.loadingMore}
-                  disabled={state.loadingMore}
-                  onPress={() => void list.loadMore()}
-                />
-              </View>
-            )
+            <>
+              {footer === null ? null : (
+                <View className="items-start gap-2 px-5 py-4">
+                  <Text textRole="footnote" className="text-foreground-muted">
+                    {state.moreFailed ? "Couldn't load more." : footer}
+                  </Text>
+                  <Button
+                    tone="secondary"
+                    size="compact"
+                    label={state.moreFailed ? "Try again" : "Show more"}
+                    loading={state.loadingMore}
+                    disabled={state.loadingMore}
+                    onPress={() => void list.loadMore()}
+                  />
+                </View>
+              )}
+              {passages ? (
+                <View className="pt-4">
+                  <View className="px-5 pb-1">
+                    <Text
+                      textRole="footnote"
+                      accessibilityRole="header"
+                      className="font-t3-medium text-foreground-muted"
+                    >
+                      {KIN_DOCS.passages}
+                    </Text>
+                  </View>
+                  <KinSearchHits
+                    state={found}
+                    docsOnly
+                    onRetry={search.retry}
+                    onOpen={(hit) => open(hit.key, hit.section?.id)}
+                  />
+                </View>
+              ) : null}
+            </>
           }
           renderItem={({ item }) =>
             item.type === "group" ? (

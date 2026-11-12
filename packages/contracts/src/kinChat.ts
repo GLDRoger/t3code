@@ -53,6 +53,11 @@ const isNulFree = Schema.makeFilter((value: string) => !value.includes("\u0000")
 });
 export const KinText = Schema.String.check(isNulFree);
 export const KinTrimmedText = TrimmedNonEmptyString.check(isNulFree);
+const isPlainLine = Schema.makeFilter((value: string) => !/\p{Cc}/u.test(value), {
+  expected: "text without control characters",
+});
+/** A name or label shown to clients and in agents' prompts: one line, no control characters. */
+export const KinLabelText = KinTrimmedText.check(isPlainLine);
 
 /** A doc section's id: its heading as a slug, unique in the doc; `top` is the text before any. */
 export const KinDocSectionId = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,63}$/));
@@ -361,6 +366,16 @@ export const KinTaskCardState = Schema.Struct({
   ]),
   pullRequests: Schema.Array(Schema.Struct({ url: Schema.String, number: Schema.Int })),
   lastError: Schema.NullOr(KinText),
+  /** The docs a document job filed; the card opens them once it is done. */
+  documents: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        recordId: TrimmedNonEmptyString,
+        key: TrimmedNonEmptyString,
+        title: KinTrimmedText,
+      }),
+    ),
+  ),
   updatedAt: IsoDateTime,
 });
 export type KinTaskCardState = typeof KinTaskCardState.Type;

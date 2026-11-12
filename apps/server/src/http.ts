@@ -5,6 +5,13 @@ import {
   EnvironmentHttpApi,
 } from "@t3tools/contracts";
 import { isDevProxiedPath } from "@t3tools/shared/devProxy";
+import {
+  KIN_VISUAL_LIBRARIES,
+  KIN_VISUAL_LIBRARY_ROUTE,
+  KIN_VISUAL_OUTER_DOCUMENT,
+  KIN_VISUAL_PAGE_QUERY,
+  kinVisualContentSecurityPolicy,
+} from "@t3tools/shared/kinVisual";
 import { injectMcpAppCookieBootstrap, injectMcpAppThemeBootstrap } from "@t3tools/shared/mcpApp";
 import { decodeOtlpTraceRecords } from "@t3tools/shared/observability";
 import * as ByteSize from "effect/ByteSize";
@@ -29,7 +36,14 @@ import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import { OtlpTracer, OtlpSerialization } from "effect/observability";
 
 import * as ServerConfig from "./config.ts";
-import { ASSET_ROUTE_PREFIX, readMcpAppHtml, resolveAsset } from "./assets/AssetAccess.ts";
+import {
+  ASSET_ROUTE_PREFIX,
+  readKinVisualPage,
+  readMcpAppHtml,
+  resolveAsset,
+  type ResolvedAsset,
+} from "./assets/AssetAccess.ts";
+import { kinVisualLibraryPath } from "./kin/visualLibraries.ts";
 import { sourceControlMediaResponse } from "./assets/sourceControlMediaResponse.ts";
 import { statMediaFile, streamMediaFile, type OpenMediaFile } from "./assets/MediaFile.ts";
 import {
@@ -62,6 +76,9 @@ const SVG_CONTENT_SECURITY_POLICY = "default-src 'none'; style-src 'unsafe-inlin
 // Agent HTML can open without a click, so disallow blocking modals.
 const HTML_CONTENT_SECURITY_POLICY =
   "sandbox allow-scripts allow-forms allow-popups allow-downloads";
+
+const KIN_VISUAL_PERMISSIONS_POLICY =
+  "camera=(), microphone=(), geolocation=(), display-capture=(), usb=(), bluetooth=(), payment=()";
 
 // Proxies may strip disposition; force document-capable downloads to octet-stream.
 const DOWNLOAD_MIME_TYPE_PATTERN = /^[\w!#$&^.+-]+\/[\w!#$&^.+-]+$/;
@@ -253,6 +270,40 @@ export const assetFileResponse = Effect.fn("assetFileResponse")(function* (
     });
   }
   return yield* HttpServerResponse.file(asset.path, { status, offset, bytesToRead, headers });
+});
+
+/**
+ * A Kin chat's HTML. The URL answers with an outer document that holds no agent content and
+ * frames the same URL; only that frame's request gets the agent's page. Both are sealed by
+ * the policy on the response.
+ */
+const kinVisualResponse = Effect.fn("kinVisualResponse")(function* (
+  filePath: string,
+  sources: NonNullable<Extract<ResolvedAsset, { readonly kind: "file" }>["kinVisual"]>,
+  page: boolean,
+  method: "GET" | "HEAD",
+) {
+  const body = page ? yield* readKinVisualPage(filePath, sources) : KIN_VISUAL_OUTER_DOCUMENT;
+  if (body === null) {
+    return HttpServerResponse.text("This page is too large to show.", { status: 413 });
+  }
+  const bytes = new TextEncoder().encode(body);
+  const headers = {
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Length": String(bytes.byteLength),
+    "Content-Security-Policy": kinVisualContentSecurityPolicy(
+      page ? "page" : "outer",
+      sources.hosts,
+    ),
+    "Cache-Control": "private, no-store",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    "Permissions-Policy": KIN_VISUAL_PERMISSIONS_POLICY,
+    "X-DNS-Prefetch-Control": "off",
+  };
+  return method === "HEAD"
+    ? HttpServerResponse.empty({ status: 200, headers })
+    : HttpServerResponse.uint8Array(bytes, { headers });
 });
 
 export const layerHttpCompression = HttpRouter.middleware(HttpMiddleware.compression(), {
@@ -456,6 +507,20 @@ export const layerAssetRoute = HttpRouter.add(
         ),
       );
     }
+    if ("kinVisual" in asset && asset.kinVisual !== undefined) {
+      return yield* kinVisualResponse(
+        asset.path,
+        asset.kinVisual,
+        // Only a frame may ask for the page: opened on its own, nothing would hold its navigation.
+        url.value.searchParams.has(KIN_VISUAL_PAGE_QUERY) &&
+          request.headers["sec-fetch-dest"] === "iframe",
+        request.method === "HEAD" ? "HEAD" : "GET",
+      ).pipe(
+        Effect.orElseSucceed(() =>
+          HttpServerResponse.text("Internal Server Error", { status: 500 }),
+        ),
+      );
+    }
     return yield* assetFileResponse(
       asset,
       request.method === "GET" ? request.headers.range : undefined,
@@ -467,6 +532,32 @@ export const layerAssetRoute = HttpRouter.add(
   }),
   // Its path is a signed capability, so the request log never records it.
 ).pipe(Layer.provide(HttpRouter.disableLogger));
+
+/** The scripts a Kin visual may load: three pinned, public libraries and nothing else. */
+export const layerKinVisualLibraryRoute = HttpRouter.add(
+  "GET",
+  `${KIN_VISUAL_LIBRARY_ROUTE}/*`,
+  Effect.gen(function* () {
+    const url = requestUrl(yield* HttpServerRequest.HttpServerRequest);
+    const [version, file, ...rest] = Option.isNone(url)
+      ? []
+      : url.value.pathname.slice(`${KIN_VISUAL_LIBRARY_ROUTE}/`.length).split("/");
+    const library = KIN_VISUAL_LIBRARIES.find((candidate) => `${candidate.name}.js` === file);
+    // Any version in the path answers with the pinned build, so a stored page outlives an upgrade.
+    const filePath =
+      library !== undefined && rest.length === 0 && /^\d+(?:\.\d+){0,2}$/.test(version ?? "")
+        ? yield* kinVisualLibraryPath(library)
+        : null;
+    if (filePath === null) return HttpServerResponse.text("Not Found", { status: 404 });
+    return yield* HttpServerResponse.file(filePath, {
+      headers: {
+        "Content-Type": "text/javascript; charset=utf-8",
+        "Cache-Control": "public, max-age=31536000, immutable",
+        "X-Content-Type-Options": "nosniff",
+      },
+    }).pipe(Effect.orElseSucceed(() => HttpServerResponse.text("Not Found", { status: 404 })));
+  }),
+);
 
 export const layerAttachmentUploadRoute = HttpRouter.add(
   "POST",

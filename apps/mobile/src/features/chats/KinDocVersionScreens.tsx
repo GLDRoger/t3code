@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { KIN_DOC_CHANGES } from "@t3tools/client-runtime/kin/kinDocChanges";
 import {
   KIN_DOCS,
   KIN_SEARCH,
@@ -11,7 +12,7 @@ import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { EnvironmentId, KinOrgId, KinRecordKey, type KinDocDetail } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { type TextInputInstance, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -26,6 +27,7 @@ import { useNowMinuteMs } from "../../lib/clock";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { PatchDiffView } from "../review/PatchDiffView";
 import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
+import { KinDocChangesView } from "./KinDocChangesView";
 import { KinSearchHits } from "./KinDocsList";
 import { kinDocVersionParam, useKinDocRestore } from "./KinDocScreen";
 import { kinClient } from "./state/kinClient";
@@ -94,6 +96,10 @@ function KinDocChanges(
     input: { orgId, key, ...(to === null ? {} : { to }), ...(from === null ? {} : { from }) },
   });
   const state = kinWorkReadState(useAtomValue(atom));
+  const [source, setSource] = useState(false);
+  const fromVersion = state._tag === "ready" ? state.value.from.version : null;
+  // The earlier version's own words, to read the two as one document.
+  const before = useKinDoc(target, key, fromVersion ?? to);
   const frame = (children: React.ReactNode) => (
     <KinWorkFrame title="Changes" onBack={() => navigation.goBack()}>
       {children}
@@ -150,6 +156,10 @@ function KinDocChanges(
       )}
       {diff.patch.trim() === "" ? (
         <EmptyState variant="plain" {...KIN_DOCS.noChanges} />
+      ) : !source && fromVersion !== null && before.state._tag === "loading" ? (
+        <KinWorkLoading label="Loading changes" />
+      ) : !source && before.state._tag === "ready" ? (
+        <KinDocChangesView before={before.state.value.body} after={held.body} />
       ) : (
         <View className="overflow-hidden rounded-lg border border-border-subtle">
           <PatchDiffView
@@ -162,6 +172,13 @@ function KinDocChanges(
       <Text textRole="footnote" className="px-2 text-foreground-muted">
         {kinDocDiffSummary(diff, held.outline.length)}
       </Text>
+      {diff.patch.trim() === "" ? null : (
+        <Button
+          tone="secondary"
+          label={source ? KIN_DOC_CHANGES.showDocument : KIN_DOC_CHANGES.showSource}
+          onPress={() => setSource(!source)}
+        />
+      )}
       {!restore.allowed || diff.from.version === latest ? null : (
         <Button
           tone="secondary"

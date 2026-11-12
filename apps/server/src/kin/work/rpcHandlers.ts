@@ -130,6 +130,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
         return yield* call((people) => Docs.restore(people, input));
       }),
       "kin.docs.subscribe": (input) => stream((people) => Docs.subscribe(people, input)),
+      "kin.docs.recipes": Effect.fn("KinDocs.rpc.recipes")(function* (input) {
+        return yield* call((people) => Docs.recipes(people, input));
+      }),
       "kin.search": Effect.fn("KinDocs.rpc.search")(function* (input) {
         return yield* call((people) => Docs.search(people, input));
       }),
@@ -153,11 +156,20 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.voidPayment": Effect.fn("KinWork.rpc.voidPayment")(function* (input) {
         return yield* call((people) => Money.voidPayment(people, input));
       }),
+      "kin.work.files": Effect.fn("KinWork.rpc.files")(function* (input) {
+        return yield* call((people) => Money.files(people, input));
+      }),
       "kin.work.companyProfile": Effect.fn("KinWork.rpc.companyProfile")(function* (input) {
         return yield* call((people) => Money.companyProfile(people, input));
       }),
       "kin.work.setCompanyProfile": Effect.fn("KinWork.rpc.setCompanyProfile")(function* (input) {
         return yield* call((people) => Money.setCompanyProfile(people, input));
+      }),
+      "kin.work.issue": Effect.fn("KinWork.rpc.issue")(function* (input) {
+        return yield* call((people) => Money.issue(people, input));
+      }),
+      "kin.work.void": Effect.fn("KinWork.rpc.void")(function* (input) {
+        return yield* call((people) => Money.voidEntry(people, input));
       }),
     }),
   };

@@ -663,6 +663,22 @@
       "types": "./src/kin/kinDeferralPresentation.ts",
       "default": "./src/kin/kinDeferralPresentation.ts"
     },
+    "./kin/kinLists": {
+      "types": "./src/kin/kinLists.ts",
+      "default": "./src/kin/kinLists.ts"
+    },
+    "./kin/kinMoney": {
+      "types": "./src/kin/kinMoney.ts",
+      "default": "./src/kin/kinMoney.ts"
+    },
+    "./kin/kinDates": {
+      "types": "./src/kin/kinDates.ts",
+      "default": "./src/kin/kinDates.ts"
+    },
+    "./kin/kinCompanyProfile": {
+      "types": "./src/kin/kinCompanyProfile.ts",
+      "default": "./src/kin/kinCompanyProfile.ts"
+    },
     "./kin/kinWork": {
       "types": "./src/kin/kinWork.ts",
       "default": "./src/kin/kinWork.ts"
@@ -686,6 +702,10 @@
     "./kin/kinDocs": {
       "types": "./src/kin/kinDocs.ts",
       "default": "./src/kin/kinDocs.ts"
+    },
+    "./kin/kinDocChanges": {
+      "types": "./src/kin/kinDocChanges.ts",
+      "default": "./src/kin/kinDocChanges.ts"
     },
     "./kin/kinDocsStream": {
       "types": "./src/kin/kinDocsStream.ts",

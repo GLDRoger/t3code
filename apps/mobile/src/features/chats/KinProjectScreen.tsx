@@ -47,6 +47,7 @@ import {
 } from "./components/KinWorkPieces";
 import { KinWorkHealthWord } from "./KinWorkLists";
 import { KinWorkTaskList } from "./KinWorkScreen";
+import { KinPlaceLists } from "./KinPlaceLists";
 import { KinDocsUnder } from "./KinDocsList";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected } from "./state/useKinHost";
@@ -248,27 +249,38 @@ function KinProjectBody(
             }
           : {},
         header: (
-          <KinProjectSummary
-            view={view}
-            problem={problem}
-            onDismissProblem={() => setProblem(null)}
-            onOpenTask={openTask}
-            onOpenClient={(to) =>
-              navigation.navigate("KinClient", { environmentId, orgId, party: to })
-            }
-            privacy={{
-              disabled: !canChange || busy || view.privacy.inherited,
-              onChange: (sensitive) => void change({ sensitive }),
-            }}
-            docs={
-              <KinDocsUnder
+          <>
+            <KinProjectSummary
+              view={view}
+              problem={problem}
+              onDismissProblem={() => setProblem(null)}
+              onOpenTask={openTask}
+              onOpenClient={(to) =>
+                navigation.navigate("KinClient", { environmentId, orgId, party: to })
+              }
+              privacy={{
+                disabled: !canChange || busy || view.privacy.inherited,
+                onChange: (sensitive) => void change({ sensitive }),
+              }}
+              docs={
+                <KinDocsUnder
+                  environmentId={environmentId}
+                  orgId={orgId}
+                  names={props.directory.names}
+                  under={{ project: view.key }}
+                />
+              }
+            />
+            <View className="gap-5 px-4 pb-2">
+              <KinPlaceLists
                 environmentId={environmentId}
                 orgId={orgId}
-                names={props.directory.names}
-                under={{ project: view.key }}
+                place={{ project: { key: view.key, title: view.name } }}
+                seq={props.stale ? null : props.page.seq}
+                directory={props.directory}
               />
-            }
-          />
+            </View>
+          </>
         ),
       }}
     />

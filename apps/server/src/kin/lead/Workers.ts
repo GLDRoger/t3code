@@ -59,6 +59,7 @@ import { isOrgPaused, STOP_REASON } from "./orgState.ts";
 import { resolveLead } from "./LeadMemory.ts";
 import { RETIRED_WORKER_REASON } from "./Retirement.ts";
 import { quote } from "./LeadPrompt.ts";
+import type { DocumentInput, DocumentResult } from "../gendocs/DocJobs.ts";
 import { LOCAL_BUILD_ONLY, makeLocalDelegate } from "./localWorkers.ts";
 import { buildBrief, publishNote, Quoted, reportFormat } from "./workerBrief.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
@@ -230,6 +231,11 @@ export class KinWorkers extends Context.Service<
       scope: McpInvocationScope,
       input: typeof StopInput.Type,
     ) => Effect.Effect<typeof StopResult.Type, KinChatError>;
+    /** A file made, or a recipe written, by a worker on this server (`gendocs/DocJobs.ts`). */
+    readonly document: (
+      scope: McpInvocationScope,
+      input: DocumentInput,
+    ) => Effect.Effect<typeof DocumentResult.Type, KinChatError>;
   }
 >()("t3/kin/lead/Workers/KinWorkers") {}
 
@@ -1208,7 +1214,15 @@ const make = Effect.gen(function* () {
     return { workerId: input.workerId, stopped: stopped.stopped };
   }, guarded("KinWorkers.stop"));
 
-  return KinWorkers.of({ delegate, followUp, stop });
+  // Documents always run here, beside the org's workspace, whatever worker environment is named.
+  const document = Effect.fn("KinWorkers.document")(function* (
+    scope: McpInvocationScope,
+    input: DocumentInput,
+  ) {
+    return yield* local.document(scope, input);
+  }, guarded("KinWorkers.document"));
+
+  return KinWorkers.of({ delegate, followUp, stop, document });
 });
 
 export const layer = Layer.effect(KinWorkers, make);

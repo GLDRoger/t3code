@@ -26,6 +26,9 @@ import {
   type KinChatHistoryInput,
   type KinChatId,
   type KinChatMembersInput,
+  type KinCompanyProfileInput,
+  type KinListsInput,
+  type KinMoneySummaryInput,
   type KinDocDiffInput,
   type KinDocGetInput,
   type KinDocsListInput,
@@ -38,6 +41,7 @@ import {
   type KinOwnerTimeZoneGetInput,
   type KinOrgId,
   type KinPartyPageInput,
+  type KinVisualHostsInput,
   type KinProjectPageInput,
   type KinWorkGetInput,
   type KinWorkSubscribeInput,
@@ -99,6 +103,12 @@ const leadAccessRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   tag: "kin.lead.access.list",
 });
 const readLeadAccess = guardedRead(leadAccessRead);
+
+const visualHostsRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:visual-hosts:read",
+  tag: "kin.visuals.hosts.list",
+});
+const readVisualHosts = guardedRead(visualHostsRead);
 
 const membersRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "kin:chat-members:read",
@@ -166,6 +176,26 @@ const workHistoryRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   tag: "kin.work.history",
 });
 
+const workListsRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:work:lists:read",
+  tag: "kin.work.lists",
+});
+const readWorkLists = guardedRead(workListsRead);
+const workMoneyRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:work:money:read",
+  tag: "kin.work.money",
+});
+const readWorkMoney = guardedRead(workMoneyRead);
+const workDatesRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:work:dates:read",
+  tag: "kin.work.dates",
+});
+const companyProfileRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:company:read",
+  tag: "kin.work.companyProfile",
+});
+const readCompanyProfile = guardedRead(companyProfileRead);
+
 /** Work's change number and counts, kept current by the host's own announcements. */
 const workLive = createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {
   label: KIN_WORK_LABEL,
@@ -177,6 +207,10 @@ const workLive = createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, 
     ),
 });
 
+const workFilesRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:work:files:read",
+  tag: "kin.work.files",
+});
 const docsListRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "kin:docs:list:read",
   tag: "kin.docs.list",
@@ -278,7 +312,7 @@ export const kinClient = {
       environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
   }),
   leads,
-  /** The phones that approve, and those waiting to be allowed with their match numbers. */
+  /** The phones that can approve, and the latest changes to them. */
   approverKeys: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:approver-keys",
     execute: Effect.fn("KinWebClient.approverKeys")(function* (input: KinApprovalsOrgInput) {
@@ -288,12 +322,6 @@ export const kinClient = {
     refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
       environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
   }),
-  approverKeyAllow: createEnvironmentRpcCommand(connectionAtomRuntime, {
-    label: "kin:approver-key:allow",
-    tag: KIN_APPROVAL_WS_METHODS.allowKey,
-    concurrency: { mode: "singleFlight", key: ({ input }) => input.thumbprint },
-  }),
-  /** Decline for a waiting phone, Remove for one that approves. */
   approverKeyRevoke: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:approver-key:revoke",
     tag: KIN_APPROVAL_WS_METHODS.revokeKey,
@@ -332,6 +360,26 @@ export const kinClient = {
     staleTimeMs: 30_000,
     refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
       environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  /** The outside hosts the owner lets visuals load from. Owner only. */
+  visualHosts: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:visual-hosts",
+    execute: Effect.fn("KinWebClient.visualHosts")(function* (input: KinVisualHostsInput) {
+      return yield* readVisualHosts(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
+      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  visualHostAllow: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:visual-hosts:allow",
+    tag: "kin.visuals.hosts.allow",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.host}` },
+  }),
+  visualHostRemove: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:visual-hosts:remove",
+    tag: "kin.visuals.hosts.remove",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.host}` },
   }),
   leadAllow: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:lead-access:allow",
@@ -668,6 +716,61 @@ export const kinClient = {
   workDecline: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:work:decline",
     tag: "kin.work.decline",
+  }),
+  /** Every list an agent set up, as its definition: fields, statuses, categories. */
+  workLists: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:work:lists",
+    execute: Effect.fn("KinWebClient.workLists")(function* (input: KinListsInput) {
+      return yield* readWorkLists(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
+      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  /** Owed, received, spent and what is due, added up by the host per currency. */
+  workMoney: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:work:money",
+    execute: Effect.fn("KinWebClient.workMoney")(function* (input: KinMoneySummaryInput) {
+      return yield* readWorkMoney(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
+      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  /** One page of everything dated in a window; the Dates view decides when. */
+  workDates: workDatesRead,
+  workListUpdate: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:list:update",
+    tag: "kin.work.updateList",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.list}` },
+  }),
+  workPaymentRecord: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:payment:record",
+    tag: "kin.work.recordPayment",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+  }),
+  workPaymentVoid: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:payment:void",
+    tag: "kin.work.voidPayment",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.paymentId },
+  }),
+  /** One page of the files in the owner's chats, for keeping one on an entry. */
+  workFiles: workFilesRead,
+  /** Its `permissionAtom` says whether this browser may read company details at all. */
+  companyRead: companyProfileRead,
+  companyProfile: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:company",
+    execute: Effect.fn("KinWebClient.companyProfile")(function* (input: KinCompanyProfileInput) {
+      return yield* readCompanyProfile(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
+      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  companyProfileSet: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:company:set",
+    tag: "kin.work.setCompanyProfile",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
   }),
 };
 

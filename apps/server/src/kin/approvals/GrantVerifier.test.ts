@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import { assert, describe, it } from "@effect/vitest";
 import {
   AuthSessionId,
+  KIN_APPROVER_ENROLMENT_VERSION,
   KinEventId,
   KinOrgId,
   KinPersonId,
@@ -36,7 +37,6 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { ApproverKeys, layer as approverKeysLayer, type KinKeyCaller } from "./ApproverKeys.ts";
 import { sealFields, type KeyRow } from "./ApproverKeyStore.ts";
 import { KinKeyNotices } from "./ExecutionNotices.ts";
-import { KinHostKeyCeremony, layer as hostCeremonyLayer } from "./HostKeyCeremony.ts";
 import { KinAudit, make as makeAudit, type KinAuditAppendInput } from "./Audit.ts";
 import { KinAttestationTrust } from "./attestation/AttestationTrust.ts";
 import { androidChain, makeTrustFixture, newKey } from "./attestation/testFixtures.ts";
@@ -150,7 +150,7 @@ function harness() {
   const quietNotices = Layer.succeed(KinKeyNotices, { changed: () => Effect.void });
   const on = <A, E, R>(database: Layer.Layer<A, E, R>) =>
     grantVerifierLayer.pipe(
-      Layer.provideMerge(Layer.merge(approverKeysLayer, hostCeremonyLayer)),
+      Layer.provideMerge(approverKeysLayer),
       Layer.provideMerge(Layer.merge(pendingActionsLayer, ledgerLayer)),
       Layer.provide(Layer.mergeAll(trust, roles, live, grantAuditLayer, quietNotices)),
       Layer.provideMerge(KeySeal.layerTest()),
@@ -182,7 +182,6 @@ const seed = Effect.gen(function* () {
   return {
     sql,
     keys: yield* ApproverKeys,
-    ceremony: yield* KinHostKeyCeremony,
     actions: { ...(yield* KinPendingActions), ...(yield* KinExecutionLedger) },
     grants: yield* GrantVerifier,
   };
@@ -196,6 +195,7 @@ const register = (keys: ApproverKeys["Service"], from: KinKeyCaller) =>
       challenge: new Uint8Array(Buffer.from(challenge, "base64url")),
     });
     const registered = yield* keys.registerKey(from, {
+      enrolmentVersion: KIN_APPROVER_ENROLMENT_VERSION,
       orgId,
       publicJwk: chain.publicJwk,
       platform: "android",
@@ -222,19 +222,11 @@ const handTo = (ref: KinApproverKey, personId: KinPersonId) =>
       WHERE org_id = ${ref.orgId} AND thumbprint = ${ref.thumbprint}`;
   });
 
-/** The owner's first key, confirmed on the host; the member's allowed in Settings. */
+/** The owner's key, and one handed to a member after the owner set it up. */
 const enrol = Effect.gen(function* () {
   const world = yield* seed;
   const ownerKey = yield* register(world.keys, ownerPhone);
-  yield* world.ceremony.confirm({
-    orgId,
-    thumbprint: ownerKey.key.thumbprint,
-    sessionId: ownerPhone.session.sessionId,
-    code: ownerKey.code,
-    recover: false,
-  });
   const memberKey = yield* register(world.keys, { ...memberPhone, people: ownerPhone.people });
-  yield* world.keys.allowKey(ownerDesktop, memberKey.key);
   yield* handTo(memberKey.key, member);
   return { ...world, ownerKey, memberKey };
 });
@@ -539,26 +531,30 @@ describe("GrantVerifier", () => {
         reasonOf(yield* Effect.exit(grants.challenge(ownerPhone, { actionId: action.id }))),
         "unknown_key",
       );
-      // An iPhone simulator has no App Attest: its key registers unattested and stays pending.
+      // An iPhone simulator has no App Attest: its key is refused and nothing is stored.
       const simulator = newKey();
       const jwk = simulator.publicKey.export({ format: "jwk" });
       const publicJwk = { kty: "EC" as const, crv: "P-256" as const, x: jwk.x!, y: jwk.y! };
       const { challenge } = yield* keys.keyChallenge(ownerPhone);
-      const { key } = yield* keys.registerKey(ownerPhone, {
-        orgId,
-        publicJwk,
-        platform: "ios",
-        challenge,
-        deviceLabel: "iPhone simulator",
-      });
-      assert.deepInclude(key, { state: "pending", attested: false, hardware: "software" });
+      const refused = yield* Effect.exit(
+        keys.registerKey(ownerPhone, {
+          enrolmentVersion: KIN_APPROVER_ENROLMENT_VERSION,
+          orgId,
+          publicJwk,
+          platform: "ios",
+          challenge,
+          deviceLabel: "iPhone simulator",
+        }),
+      );
+      assert.strictEqual(reasonOf(refused), "unattested");
+      const kid = computeDpopJwkThumbprint(publicJwk);
       assert.strictEqual(
         reasonOf(yield* Effect.exit(grants.challenge(ownerPhone, { actionId: action.id }))),
         "unknown_key",
       );
       const compact = signGrant(
         simulator.privateKey,
-        { typ: "kin-grant+jws", alg: "ES256", kid: key.thumbprint },
+        { typ: "kin-grant+jws", alg: "ES256", kid },
         {
           v: 1,
           orgId,
@@ -571,7 +567,7 @@ describe("GrantVerifier", () => {
           headSha: sha("a"),
           base: "main",
           mergeMethod: "squash",
-          approver: { humanId: owner, kid: key.thumbprint },
+          approver: { humanId: owner, kid },
           decision: "approve",
           jti: freshJti(),
           iat: NOW_S,
@@ -762,7 +758,8 @@ describe("GrantVerifier", () => {
       const world = yield* enrol;
       const { grants, actions, keys, ownerKey, memberKey } = world;
       const owner_ = signerOf(ownerKey);
-      const pending = yield* register(keys, ownerPhone);
+      const removed = yield* register(keys, ownerPhone);
+      yield* keys.revokeKey(ownerPhone, removed.key);
 
       type Case = {
         readonly name: string;
@@ -810,9 +807,9 @@ describe("GrantVerifier", () => {
           build: edit((p) => ({ ...p, jti: Buffer.alloc(15, 1).toString("base64url") })),
         },
         {
-          name: "2: a pending key",
-          reason: "unknown_key",
-          build: edit((p) => p, signerOf(pending)),
+          name: "2: a removed key",
+          reason: "revoked_key",
+          build: edit((p) => p, signerOf(removed)),
         },
         {
           name: "2: approver.kid differs from the header kid",
@@ -1019,7 +1016,7 @@ describe("GrantVerifier", () => {
 
       // The signing key's session is revoked, or the key itself, after check 2 passed.
       const laptopKey = yield* register(keys, ownerLaptop);
-      assert.strictEqual((yield* keys.allowKey(ownerDesktop, laptopKey.key)).state, "active");
+      assert.strictEqual(laptopKey.key.state, "active");
       const revocations = [
         {
           number: 214,
@@ -1132,7 +1129,7 @@ describe("GrantVerifier", () => {
         const sessions = yield* SessionStore.SessionStore;
         const first = yield* relayPhone(Duration.minutes(1));
         const relayKey = yield* register(keys, first);
-        assert.strictEqual((yield* keys.allowKey(ownerDesktop, relayKey.key)).state, "active");
+        assert.strictEqual(relayKey.key.state, "active");
         yield* TestClock.adjust(Duration.minutes(2));
         const renewed = yield* relayPhone(Duration.hours(1));
 
@@ -1165,7 +1162,7 @@ describe("GrantVerifier", () => {
         const { grants, actions, keys, sql } = yield* enrol;
         const sessions = yield* SessionStore.SessionStore;
         const relayKey = yield* register(keys, yield* relayPhone(Duration.minutes(1)));
-        assert.strictEqual((yield* keys.allowKey(ownerDesktop, relayKey.key)).state, "active");
+        assert.strictEqual(relayKey.key.state, "active");
         yield* TestClock.adjust(Duration.minutes(2));
         const renewed = yield* relayPhone(Duration.hours(1));
         const action = yield* requestMerge(actions, 212, h.github);
@@ -1196,7 +1193,7 @@ describe("GrantVerifier", () => {
       const sessions = yield* SessionStore.SessionStore;
       const first = yield* relayPhone(Duration.hours(1));
       const relayKey = yield* register(keys, first);
-      assert.strictEqual((yield* keys.allowKey(ownerDesktop, relayKey.key)).state, "active");
+      assert.strictEqual(relayKey.key.state, "active");
       const renewed = yield* relayPhone(Duration.hours(1));
       yield* sessions.revokeAllExcept(renewed.session.sessionId);
 

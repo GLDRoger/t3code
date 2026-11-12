@@ -16,6 +16,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as SqlError from "effect/sql/SqlError";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
@@ -37,6 +38,7 @@ type PostInput = KinMessagesSendInput & { readonly intent: KinAgentIntent };
 type WidgetInput = Parameters<KinChatService["Service"]["upsertWidget"]>[1];
 type AskInput = Parameters<KinChatService["Service"]["ask"]>[1];
 type ChartInput = Parameters<KinChatService["Service"]["chart"]>[1];
+type VisualInput = Parameters<KinChatService["Service"]["visual"]>[1];
 type ReadInput = Parameters<KinChatService["Service"]["read"]>[1];
 
 /**
@@ -54,8 +56,15 @@ export class KinLevelGate extends Context.Service<
       agent: AgentIdentity,
       input: WidgetInput,
     ) => Effect.Effect<KinWidget, KinChatError>;
-    /** `kin_ask`'s choice card, gated like a post: it is the lead's reply too. */
-    readonly ask: (agent: AgentIdentity, input: AskInput) => Effect.Effect<KinWidget, KinChatError>;
+    /**
+     * `kin_ask`'s choice card, gated like a post: it is the lead's reply too. `bind` runs in the
+     * card's own transaction, so no tap reaches the card before what it answers knows it.
+     */
+    readonly ask: (
+      agent: AgentIdentity,
+      input: AskInput,
+      bind?: (widget: KinWidget) => Effect.Effect<void, SqlError.SqlError>,
+    ) => Effect.Effect<KinWidget, KinChatError>;
     /** A doc card, gated like a post. */
     readonly showCard: (
       agent: AgentIdentity,
@@ -65,6 +74,11 @@ export class KinLevelGate extends Context.Service<
     readonly chart: (
       agent: AgentIdentity,
       input: ChartInput,
+    ) => Effect.Effect<KinWidget, KinChatError>;
+    /** `kin_visual`'s card, gated like a post. */
+    readonly visual: (
+      agent: AgentIdentity,
+      input: VisualInput,
     ) => Effect.Effect<KinWidget, KinChatError>;
     /** `kin_react`: the lead's reaction, gated like a post since it can stand for its reply. */
     readonly react: (
@@ -289,14 +303,22 @@ const make = Effect.gen(function* () {
     upsertWidget: Effect.fn("KinLevelGate.upsertWidget")((agent, input) =>
       gated("gated widget upsert", agent, input.chatId, chat.upsertWidget(agent, input)),
     ),
-    ask: Effect.fn("KinLevelGate.ask")((agent, input) =>
-      gated("gated ask", agent, input.chatId, chat.ask(agent, input)),
+    ask: Effect.fn("KinLevelGate.ask")((agent, input, bind) =>
+      gated(
+        "gated ask",
+        agent,
+        input.chatId,
+        bind === undefined ? chat.ask(agent, input) : chat.ask(agent, input).pipe(Effect.tap(bind)),
+      ),
     ),
     showCard: Effect.fn("KinLevelGate.showCard")((agent, input) =>
       gated("gated card", agent, input.chatId, chat.showCard(agent, input)),
     ),
     chart: Effect.fn("KinLevelGate.chart")((agent, input) =>
       gated("gated chart", agent, input.chatId, chat.chart(agent, input)),
+    ),
+    visual: Effect.fn("KinLevelGate.visual")((agent, input) =>
+      gated("gated visual", agent, input.chatId, chat.visual(agent, input)),
     ),
     react: Effect.fn("KinLevelGate.react")((agent, input) =>
       gated("gated reaction", agent, input.chatId, chat.react(agent, { ...input, on: true })),

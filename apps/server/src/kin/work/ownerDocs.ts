@@ -7,6 +7,8 @@ import {
   type KinDocRestoreInput,
   type KinDocsListInput,
   type KinOrgId,
+  type KinRecipesInput,
+  type KinRecipesResult,
   type KinSearchInput,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -15,6 +17,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
+import { KinWorkspace } from "../gendocs/workspace.ts";
 import { changedSections, outlineOf, patchOf } from "./docBody.ts";
 import * as Docs from "./docs.ts";
 import { KinRecords } from "./KinRecords.ts";
@@ -79,6 +82,7 @@ export const list = Effect.fn("KinDocs.list")(
       input.project === undefined
         ? undefined
         : (yield* inList(input.orgId, input.project, "projects")).recordId;
+    const text = input.text?.trim().toLowerCase() ?? "";
     const where = sql.and([
       sql`r.org_id = ${input.orgId}`,
       sql`r.register_id = 'docs'`,
@@ -88,6 +92,15 @@ export const list = Effect.fn("KinDocs.list")(
       ...(input.owner === undefined
         ? []
         : [sql`r.owner_kind = ${input.owner._tag} AND r.owner_id = ${principalId(input.owner)}`]),
+      ...(text === ""
+        ? []
+        : [
+            sql`(instr(lower(r.title), ${text}) > 0 OR EXISTS (SELECT 1 FROM kin_doc_versions v
+              WHERE v.org_id = r.org_id AND v.record_id = r.record_id
+                AND v.version = (SELECT MAX(w.version) FROM kin_doc_versions w
+                  WHERE w.org_id = r.org_id AND w.record_id = r.record_id)
+                AND instr(lower(v.body), ${text}) > 0))`,
+          ]),
     ]);
     const limit = input.limit ?? 50;
     const [count] = yield* sql<{
@@ -253,3 +266,33 @@ export const subscribe = (
       );
     }),
   );
+
+/** The company's recipes, as the Docs screen lists them. */
+export const recipes = Effect.fn("KinDocs.recipes")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinRecipesInput,
+) {
+  yield* theOwner(people, input.orgId);
+  const stored = yield* (yield* KinWorkspace).recipes(input.orgId);
+  return {
+    recipes: stored.map((recipe) => ({
+      name: recipe.name,
+      title: recipe.title,
+      description: recipe.description,
+      inputs: recipe.inputs.map((one) => ({
+        name: one.name,
+        type: one.type,
+        required: one.required,
+        from: one.from,
+        ...(one.description === undefined ? {} : { description: one.description }),
+      })),
+      outputs: [...recipe.outputs],
+      list: recipe.list,
+      numbered: recipe.numbered,
+      sensitive: recipe.sensitive,
+      changedAt: recipe.changedAt === null ? null : iso(recipe.changedAt),
+      changedBy: recipe.changed,
+      commit: recipe.commit,
+    })),
+  } satisfies KinRecipesResult;
+});

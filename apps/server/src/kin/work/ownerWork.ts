@@ -2,6 +2,7 @@ import {
   KIN_RECORD_CHANGES_CAP,
   KinChatError,
   type KinOrgId,
+  KinRecordState,
   type KinWorkAssignInput,
   type KinWorkConfirmInput,
   type KinWorkCreateInput,
@@ -18,9 +19,10 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { readableFrom } from "../chat/sharing.ts";
 import { summaryGroups } from "./crm.ts";
-import { KinRecords, type Patch, type Writer } from "./KinRecords.ts";
-import { LISTS, type ListName } from "./lists.ts";
+import { KinRecords, type Patch, type Totals, type Writer } from "./KinRecords.ts";
+import { fieldList, LISTS, type ListName, parseFields } from "./lists.ts";
 import { isBuiltIn, listDef, unknownList } from "./registers.ts";
 import {
   endOfDay,
@@ -124,7 +126,12 @@ export const list = Effect.fn("KinWork.list")(function* (
     (yield* listDef(input.orgId, input.list).pipe(workFailure)) === undefined
   )
     return yield* unknownList(input.list);
-  const page = yield* records.query(input.orgId, {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const zone =
+    input.dateFrom === undefined && input.dateTo === undefined
+      ? "UTC"
+      : yield* ownerZone(input.orgId).pipe(workFailure);
+  const filter = {
     ...(input.list === undefined ? {} : { list: input.list }),
     ...(input.owner === undefined ? {} : { owner: input.owner }),
     ...(input.states === undefined ? {} : { states: input.states }),
@@ -135,23 +142,55 @@ export const list = Effect.fn("KinWork.list")(function* (
       ? {}
       : { dueAfter: yield* millis(input.dueAfter, "dueAfter") }),
     ...(input.category === undefined ? {} : { category: input.category }),
+    ...(input.list === undefined || input.listCategory === undefined
+      ? {}
+      : { category: input.listCategory }),
+    ...(input.party === null ? { partyId: null } : {}),
+    ...(input.dateFrom === undefined
+      ? {}
+      : { dateFrom: endOfDay(input.dateFrom, zone) - DAY_MS + 1 }),
+    ...(input.dateTo === undefined ? {} : { dateTo: endOfDay(input.dateTo, zone) + 1 }),
+    ...(input.paidFrom === undefined ? {} : { paidFrom: input.paidFrom }),
+    ...(input.paidTo === undefined ? {} : { paidTo: input.paidTo }),
     ...(input.side === undefined ? {} : { side: input.side }),
     ...(partyId === undefined || partyId === null ? {} : { partyId }),
     ...(projectId === undefined || projectId === null ? {} : { projectId }),
     ...(input.repo === undefined ? {} : { repo: input.repo }),
     ...(input.text === undefined ? {} : { text: input.text }),
-    offset: cursor.offset,
-    limit,
     at,
-  });
+  };
+  const page = yield* records.query(input.orgId, { ...filter, offset: cursor.offset, limit });
+  // The sums are of every match and the same on each page, so only the first page pays for them.
+  const totals =
+    input.totalsBy === undefined || input.cursor !== undefined
+      ? undefined
+      : yield* records.totals(
+          input.orgId,
+          // A void entry's amount is not money: sums leave it out unless the filter asks for it.
+          input.states === undefined && input.open === undefined
+            ? { ...filter, states: KinRecordState.literals.filter((state) => state !== "dropped") }
+            : filter,
+          input.totalsBy === "none" ? undefined : input.totalsBy,
+          true,
+        );
   const next = cursor.offset + page.rows.length;
   return {
-    records: page.rows.map((row) => toRecord(row, at)),
+    records: page.rows.map((row) => {
+      const record = toRecord(row, at);
+      const fields = isBuiltIn(row.registerId) ? {} : parseFields(row.fieldsJson);
+      return Object.keys(fields).length === 0 ? record : { ...record, fields };
+    }),
     total: page.total,
     nextCursor: next < page.total ? `o:${next}:${at}` : null,
     seq: page.seq,
     asOf: iso(at),
+    ...(totals === undefined ? {} : { totals: listTotals(totals) }),
   };
+});
+
+const listTotals = ({ counted: _counted, groups, ...sums }: Totals) => ({
+  ...sums,
+  groups: groups ?? [],
 });
 
 const found = Effect.fn("KinWork.found")(function* (
@@ -305,14 +344,23 @@ export const update = Effect.fn("KinWork.update")(function* (
             dueAt: yield* dueMillis(input.orgId, input.dueAt, input.dueAllDay),
             dueAllDay: input.dueAllDay === true,
           };
-  yield* inList(input.orgId, input.key, "work");
+  const row = yield* inList(input.orgId, input.key, "work");
   const partyId = yield* refId(input.orgId, input.party, "clients");
   const projectId = yield* refId(input.orgId, input.project, "projects");
-  return yield* change(
+  const defined = !isBuiltIn(row.registerId);
+  if (!defined && (input.fields !== undefined || input.listCategory !== undefined))
+    return yield* new KinChatError({
+      reason: "invalid_state",
+      message: `${row.key} is a Work entry; it has no list details or list category.`,
+    });
+  const sql = yield* SqlClient.SqlClient;
+  const save = change(
     person,
     input.orgId,
     input.key,
     {
+      ...(input.listCategory === undefined ? {} : { category: input.listCategory }),
+      ...(input.fields === undefined ? {} : { fields: input.fields }),
       ...(input.title === undefined ? {} : { title: input.title }),
       ...(input.notes === undefined ? {} : { notes: input.notes }),
       ...(input.state === undefined ? {} : { state: input.state }),
@@ -339,6 +387,46 @@ export const update = Effect.fn("KinWork.update")(function* (
     },
     input.rev,
   );
+  if (input.fields === undefined) return yield* save;
+  // The files are checked and kept in one transaction, so none slips in between the two.
+  return yield* sql
+    .withTransaction(ownFiles(person, row.fieldsJson, input.fields).pipe(Effect.andThen(save)))
+    .pipe(workFailure);
+});
+
+/**
+ * The files an owner's edit adds are ones the owner can read: each on a message, not deleted, in
+ * a chat the owner is in. Anything else looks like no file at all.
+ */
+const ownFiles = Effect.fn("KinWork.ownFiles")(function* (
+  person: PersonIdentity,
+  storedJson: string,
+  fields: Readonly<Record<string, unknown>>,
+) {
+  const stored = parseFields(storedJson);
+  const added = [
+    ...new Set(
+      Object.entries(fields).flatMap(([key, value]) =>
+        Array.isArray(value)
+          ? value.filter(
+              (id): id is string => typeof id === "string" && !fieldList(stored, key).includes(id),
+            )
+          : [],
+      ),
+    ),
+  ];
+  if (added.length === 0) return;
+  const sql = yield* SqlClient.SqlClient;
+  const mine = yield* sql`SELECT a.attachment_id FROM kin_message_attachments a
+    JOIN kin_messages ON kin_messages.org_id = a.org_id
+      AND kin_messages.message_id = a.message_id
+    JOIN kin_chat_members c ON c.org_id = a.org_id AND c.chat_id = a.chat_id
+      AND c.principal_kind = 'person' AND c.person_id = ${person.personId} AND c.left_at IS NULL
+    WHERE a.org_id = ${person.orgId} AND a.attachment_id IN ${sql.in(added)}
+      AND kin_messages.status <> 'deleted'
+      AND ${readableFrom(sql, person.orgId, sql`COALESCE(c.joined_seq, 0)`)}`;
+  if (mine.length !== added.length)
+    return yield* new KinChatError({ reason: "not_found", message: "No such file in your chats." });
 });
 
 /** Keeps a lead's suggestion: it counts as the owner's from now on. */

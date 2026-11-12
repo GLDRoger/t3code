@@ -36,7 +36,7 @@ import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { mentionsMoney } from "../memory/sensitivity.ts";
 import { indexRecord } from "./searchIndex.ts";
-import { withdrawAttempts } from "./workerAttempts.ts";
+import { SensitiveRefusal, withdrawAttempts } from "./workerAttempts.ts";
 import {
   checkFor,
   encodeFieldValues,
@@ -57,6 +57,7 @@ import {
   type Principal,
   isClosed,
   latestSeq,
+  moneyDay,
   notFound,
   ownerZone,
   principal,
@@ -65,6 +66,7 @@ import {
   repeatOf,
   samePrincipal,
   selectRecords,
+  sensitiveNow,
   type StoredRepeat,
   toDetail,
   toRecord,
@@ -73,8 +75,12 @@ import {
 import {
   checkFields,
   isBuiltIn,
+  numberingOf,
   type ListDef,
   listDef,
+  owedState,
+  owesIn,
+  stateLabel,
   unknownList,
   verifyRefs,
 } from "./registers.ts";
@@ -140,7 +146,8 @@ export type LinkInput = {
 export type QueryInput = {
   /** Default `work`. */
   readonly list?: string;
-  readonly partyId?: string;
+  /** `null`: entries with no client. */
+  readonly partyId?: string | null;
   readonly projectId?: string;
   readonly repo?: string;
   readonly owner?: KinWorkPrincipal;
@@ -149,12 +156,16 @@ export type QueryInput = {
   readonly late?: boolean;
   readonly dueBy?: number;
   readonly dueAfter?: number;
-  /** Its own date in `[dateFrom, dateTo)`. */
+  /** Its own date, or the time it was added when it has none, in `[dateFrom, dateTo)`. */
   readonly dateFrom?: number;
   readonly dateTo?: number;
+  /** A payment that still counts was received on a day in `[paidFrom, paidTo]`. */
+  readonly paidFrom?: string;
+  readonly paidTo?: string;
   readonly text?: string;
   readonly keys?: ReadonlyArray<string>;
-  readonly category?: string;
+  /** `null`: entries with no category. */
+  readonly category?: string | null;
   readonly side?: KinRecordSide;
   readonly offset?: number;
   readonly limit?: number;
@@ -189,14 +200,16 @@ export type GroupBy = "party" | "project" | "side" | "owner" | "state" | "catego
 export type TotalsBy = GroupBy | "month" | "financialYear";
 /** Past this many entries with an amount, totals ask for a narrower filter instead of guessing. */
 const TOTALS_CAP = 20_000;
-export type Totals = {
+type Sums = {
   readonly total: ReadonlyArray<KinMoney>;
+  /** In a list paid over time: what its open entries still have unpaid. */
+  readonly owed?: ReadonlyArray<KinMoney>;
+  /** With a paid window: the payments made in it. */
+  readonly received?: ReadonlyArray<KinMoney>;
+};
+export type Totals = Sums & {
   readonly counted: number;
-  readonly groups?: ReadonlyArray<{
-    readonly group: string | null;
-    readonly count: number;
-    readonly total: ReadonlyArray<KinMoney>;
-  }>;
+  readonly groups?: ReadonlyArray<Sums & { readonly group: string | null; readonly count: number }>;
 };
 export type PaymentInput = {
   readonly amount: KinMoney;
@@ -231,6 +244,8 @@ const shownRepeat = (rule: KinRepeatRule | null | undefined) =>
       ? `every ${rule.days} days`
       : `every ${rule.every}`;
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+const NUMBERS_ARE_ISSUED =
+  "Kin gives this list's entries their numbers when they are issued, so nothing else sets one. Issue the entry instead; an invoice numbered elsewhere keeps that number in its notes.";
 const actorIdOf = (writer: Writer) =>
   writer.actor._tag === "agent"
     ? writer.actor.agentId
@@ -312,14 +327,14 @@ export class KinRecords extends Context.Service<
       recordId: string,
       link: LinkInput,
     ) => Effect.Effect<boolean, KinChatError>;
-    /** Money received against an invoice; paid in full, it is marked paid. Never more than owed. */
+    /** Money paid against an entry paid over time; in full, it is marked paid. Never more than owed. */
     readonly pay: (
       orgId: KinOrgId,
       writer: Writer,
       key: string,
       payment: PaymentInput,
     ) => Effect.Effect<{ readonly row: RecordRow; readonly paymentId: string }, KinChatError>;
-    /** Takes a payment back; an invoice it leaves short is issued again. */
+    /** Takes a payment back; an entry it leaves short is owed again. */
     readonly voidPayment: (
       orgId: KinOrgId,
       writer: Writer,
@@ -331,6 +346,8 @@ export class KinRecords extends Context.Service<
       orgId: KinOrgId,
       input: QueryInput,
       by?: TotalsBy,
+      /** Count entries with no amount too, as a list without amounts needs. */
+      everyEntry?: boolean,
     ) => Effect.Effect<Totals, KinChatError>;
     readonly query: (
       orgId: KinOrgId,
@@ -584,16 +601,19 @@ const make = Effect.gen(function* () {
     except: string | null,
   ) {
     if (list === "work" || list === "docs" || !isBuiltIn(list)) return;
-    const [row] = yield* sql<{ key: string }>`SELECT key FROM kin_records
-      WHERE org_id = ${orgId} AND register_id = ${list} AND state NOT IN ${sql.in(CLOSED)}
-        AND lower(title) = lower(${title}) AND record_id IS NOT ${except}
-        AND (${list} != 'contacts' OR party_id IS ${partyId})
-      ORDER BY key LIMIT 1`;
-    if (row !== undefined)
-      return yield* new KinChatError({
-        reason: "conflict",
+    const [row] = yield* sql<{ key: string; sensitive: number }>`SELECT r.key,
+        ${sensitiveNow(sql)} AS sensitive FROM kin_records r
+      WHERE r.org_id = ${orgId} AND r.register_id = ${list} AND r.state NOT IN ${sql.in(CLOSED)}
+        AND lower(r.title) = lower(${title}) AND r.record_id IS NOT ${except}
+        AND (${list} != 'contacts' OR r.party_id IS ${partyId})
+      ORDER BY r.key LIMIT 1`;
+    if (row !== undefined) {
+      const error = {
+        reason: "conflict" as const,
         message: `There is already a ${LISTS[list].noun} named ${title.slice(0, 80)}: ${row.key}.`,
-      });
+      };
+      return yield* row.sensitive === 1 ? new SensitiveRefusal(error) : new KinChatError(error);
+    }
   });
 
   const resolveList = Effect.fn("KinRecords.resolveList")(function* (orgId: KinOrgId, id: string) {
@@ -653,6 +673,8 @@ const make = Effect.gen(function* () {
       repeat: input.repeat,
     });
     if (invalidFor !== undefined) return yield* invalidFor;
+    if (writer.actor._tag !== "person" && numberingOf(def) !== undefined && "number" in fields)
+      return yield* invalid(NUMBERS_ARE_ISSUED);
     if (def.builtIn === null) yield* verifyRefs(orgId, def, fields).pipe(provideSql);
     const projectId = input.projectId ?? null;
     const project = projectId === null ? undefined : yield* target(orgId, projectId, "projects");
@@ -865,6 +887,19 @@ const make = Effect.gen(function* () {
           repeat: patch.repeat,
         });
         if (invalidFor !== undefined) return yield* invalidFor;
+        if (
+          numberingOf(def) !== undefined &&
+          patch.fields !== undefined &&
+          "number" in patch.fields
+        ) {
+          if (writer.actor._tag !== "person") return yield* invalid(NUMBERS_ARE_ISSUED);
+          const issued = yield* sql`SELECT 1 FROM kin_issued_numbers
+            WHERE org_id = ${orgId} AND record_id = ${row.recordId} LIMIT 1`;
+          if (issued.length > 0)
+            return yield* invalid(
+              `${row.key} was issued its number, and an issued number never changes.`,
+            );
+        }
         if (def.builtIn === null && patch.fields !== undefined)
           yield* verifyRefs(orgId, def, patch.fields).pipe(provideSql);
         const changes: Array<FieldChange> = [];
@@ -916,7 +951,51 @@ const make = Effect.gen(function* () {
           else merged[field] = value;
         }
         if (fieldsChanged) set("fields_json", yield* encodeFieldValues(merged));
-        const state = patch.state ?? row.state;
+        const amount = amountOf(row) ?? null;
+        const byOwner = writer.via === "owner";
+        const amountChanged =
+          patch.amount !== undefined &&
+          (patch.amount?.minor !== amount?.minor || patch.amount?.currency !== amount?.currency);
+        if (amountChanged && row.paid > 0) {
+          const received = formatMoney({ minor: row.paid, currency: amount!.currency });
+          // An invoice's payments are in its currency: a different one would make them nonsense.
+          if (patch.amount?.currency !== amount?.currency)
+            return yield* invalid(
+              `${row.key} has payments in ${amount?.currency}; void them before changing its currency.`,
+            );
+          if (patch.amount!.minor < row.paid)
+            return yield* new SensitiveRefusal({
+              reason: "invalid_state",
+              message: `${row.key} has ${received} received, so its amount can't be less. ${byOwner ? "Take a payment back first" : "Void a payment with payment_record first"}, then change the amount.`,
+            });
+        }
+        // Paid or owed follows the balance whenever the amount moves; a state saying otherwise is
+        // refused, while Draft and Void stay the caller's to set.
+        const balanced = amountChanged && row.paid > 0;
+        const owed = balanced ? patch.amount!.minor - row.paid : 0;
+        const owing = owedState(def);
+        if (
+          balanced &&
+          ((patch.state === "done" && owed > 0) || (patch.state === owing && owed === 0))
+        )
+          return yield* new SensitiveRefusal({
+            reason: "invalid_state",
+            message:
+              owed > 0
+                ? `${row.key} would still have ${formatMoney({ minor: owed, currency: amount!.currency })} owed, so it can't be ${stateLabel(def, "done")}. Leave the state out: recording the rest ${byOwner ? "as a payment" : "with payment_record"} marks it ${stateLabel(def, "done")}.`
+                : `${row.key} would be fully paid at this amount, so it can't be ${stateLabel(def, patch.state ?? "waiting")}. Leave the state out.`,
+          });
+        const settled =
+          balanced && patch.state === undefined && row.state !== "dropped"
+            ? owed === 0
+              ? def.states.includes("done")
+                ? "done"
+                : row.state
+              : row.state === "done"
+                ? (owing ?? row.state)
+                : row.state
+            : undefined;
+        const state = patch.state ?? settled ?? row.state;
         // Closing a client or project would strand what points at it: close or move that first.
         if (
           (list === "clients" || list === "projects") &&
@@ -1003,16 +1082,7 @@ const make = Effect.gen(function* () {
             });
           set("due_all_day", patch.dueAllDay ? 1 : 0);
         }
-        const amount = amountOf(row) ?? null;
-        if (
-          patch.amount !== undefined &&
-          (patch.amount?.minor !== amount?.minor || patch.amount?.currency !== amount?.currency)
-        ) {
-          // An invoice's payments are in its currency: a different one would make them nonsense.
-          if (row.paid > 0 && patch.amount?.currency !== amount?.currency)
-            return yield* invalid(
-              `${row.key} has payments in ${amount?.currency}; void them before changing its currency.`,
-            );
+        if (amountChanged) {
           changes.push({
             field: "amount",
             from: shownAmount(amount),
@@ -1229,17 +1299,28 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const row = yield* byKey(orgId, key).pipe(provideSql);
         if (row === undefined) return yield* notFound(key);
-        if (row.registerId !== "invoices")
-          return yield* invalid(`${row.key} is not an invoice; payments are recorded on invoices.`);
+        if (row.takesPayments !== 1)
+          return yield* invalid(
+            `${row.key} is not an invoice or in a list paid over time; payments are recorded on those.`,
+          );
+        const def = yield* resolveList(orgId, row.registerId);
         const paymentId = paymentIdFor(orgId, payment.originKey);
-        const [earlier] = yield* sql<{ recordId: string; minor: number; paidOn: string }>`
-          SELECT record_id AS "recordId", amount_minor AS minor, paid_on AS "paidOn"
+        const [earlier] = yield* sql<{
+          recordId: string;
+          minor: number;
+          currency: string;
+          paidOn: string;
+          note: string;
+        }>`
+          SELECT record_id AS "recordId", amount_minor AS minor, currency, paid_on AS "paidOn", note
           FROM kin_record_payments WHERE org_id = ${orgId} AND origin_key = ${payment.originKey}`;
         if (earlier !== undefined) {
           if (
             earlier.recordId !== row.recordId ||
             earlier.minor !== payment.amount.minor ||
-            earlier.paidOn !== payment.paidOn
+            earlier.currency !== payment.amount.currency ||
+            earlier.paidOn !== payment.paidOn ||
+            earlier.note !== (payment.note ?? "")
           )
             return yield* new KinChatError({
               reason: "not_allowed",
@@ -1259,16 +1340,18 @@ const make = Effect.gen(function* () {
         if (payment.amount.minor <= 0) return yield* invalid("A payment is more than nothing.");
         const balance = amount.minor - row.paid;
         if (payment.amount.minor > balance)
-          return yield* invalid(
-            `That is more than the ${formatMoney({ minor: balance, currency: amount.currency })} still owed on ${row.key}.`,
-          );
+          return yield* new SensitiveRefusal({
+            reason: "invalid_state",
+            message: `That is more than the ${formatMoney({ minor: balance, currency: amount.currency })} still owed on ${row.key}.`,
+          });
         const now = yield* Clock.currentTimeMillis;
         yield* sql`INSERT INTO kin_record_payments (org_id, payment_id, record_id, amount_minor,
             currency, paid_on, note, origin_key, created_at, created_by_kind, created_by_id)
           VALUES (${orgId}, ${paymentId}, ${row.recordId}, ${payment.amount.minor},
             ${payment.amount.currency}, ${payment.paidOn}, ${payment.note ?? ""},
             ${payment.originKey}, ${now}, ${writer.actor._tag}, ${actorIdOf(writer)})`;
-        const paidUp = payment.amount.minor === balance && row.state !== "done";
+        const paidUp =
+          payment.amount.minor === balance && row.state !== "done" && def.states.includes("done");
         const rev = row.rev + 1;
         yield* sql`UPDATE kin_records SET rev = ${rev}, updated_at = ${now},
             state = ${paidUp ? "done" : row.state},
@@ -1328,10 +1411,11 @@ const make = Effect.gen(function* () {
         yield* sql`UPDATE kin_record_payments SET voided_at = ${now}
           WHERE org_id = ${orgId} AND payment_id = ${paymentId}`;
         // Paid no longer, it is owed again: issued, as it was before the payment closed it.
-        const reissued = row.state === "done";
+        const owing = owedState(yield* resolveList(orgId, row.registerId));
+        const reissued = row.state === "done" && owing !== undefined;
         const rev = row.rev + 1;
         yield* sql`UPDATE kin_records SET rev = ${rev}, updated_at = ${now},
-            state = ${reissued ? "waiting" : row.state}, closed_at = ${reissued ? null : row.closedAt}
+            state = ${reissued ? owing : row.state}, closed_at = ${reissued ? null : row.closedAt}
           WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
         yield* logChange(
           orgId,
@@ -1344,7 +1428,7 @@ const make = Effect.gen(function* () {
               from: `${formatMoney({ minor: found.minor, currency: found.currency })} on ${found.paidOn}`,
               to: null,
             },
-            ...(reissued ? [{ field: "state", from: "done", to: "waiting" }] : []),
+            ...(reissued ? [{ field: "state", from: "done", to: owing }] : []),
           ],
           now,
         );
@@ -1359,11 +1443,15 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     input: QueryInput,
     by?: TotalsBy,
+    everyEntry?: boolean,
   ) {
     return yield* failed(
       Effect.gen(function* () {
         const now = input.at ?? (yield* Clock.currentTimeMillis);
-        const filter = sql.and([filterOf(orgId, input, now), sql`r.amount_minor IS NOT NULL`]);
+        const filter =
+          everyEntry === true
+            ? filterOf(orgId, input, now)
+            : sql.and([filterOf(orgId, input, now), sql`r.amount_minor IS NOT NULL`]);
         const [count] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records r
           WHERE ${filter}`;
         const counted = count?.n ?? 0;
@@ -1371,22 +1459,59 @@ const make = Effect.gen(function* () {
           return yield* invalid(
             `${counted} entries match; narrow it to under ${TOTALS_CAP} by dates or category to total them.`,
           );
+        const windowed = input.paidFrom !== undefined || input.paidTo !== undefined;
+        const live = sql`FROM kin_record_payments p WHERE p.org_id = r.org_id
+          AND p.record_id = r.record_id AND p.voided_at IS NULL`;
         const rows = yield* sql<{
-          minor: number;
+          minor: number | null;
           currency: string;
           category: string | null;
           party: string | null;
           project: string | null;
           side: string;
-          state: string;
+          state: KinRecordState;
           owner: string;
           at: number;
+          paid: number;
+          received: number;
         }>`SELECT r.amount_minor AS minor, r.currency, r.category, r.party_id AS party,
             r.project_id AS project, r.side, r.state, r.owner_kind || ':' || r.owner_id AS owner,
-            COALESCE(r.date_at, r.due_at, r.created_at) AS at
+            ${moneyDay(sql)} AS at,
+            (SELECT COALESCE(SUM(p.amount_minor), 0) ${live}) AS paid,
+            (SELECT COALESCE(SUM(p.amount_minor), 0) ${live}
+              AND p.paid_on >= ${input.paidFrom ?? "0000-00-00"}
+              AND p.paid_on <= ${input.paidTo ?? "9999-12-31"}) AS received
           FROM kin_records r WHERE ${filter} ORDER BY r.record_id`;
-        const total = addUp(rows);
-        if (by === undefined) return { total, counted } satisfies Totals;
+        const listDef = yield* resolveList(orgId, input.list ?? "work");
+        const paidOverTime = listDef.payments === true;
+        const amounts = (members: typeof rows): Sums => {
+          const priced = members.flatMap((row) =>
+            row.minor === null ? [] : [{ ...row, minor: row.minor }],
+          );
+          return {
+            total: addUp(priced),
+            ...(paidOverTime
+              ? {
+                  owed: addUp(
+                    priced
+                      .filter((row) => owesIn(listDef, row.state) && row.minor > row.paid)
+                      .map((row) => ({ minor: row.minor - row.paid, currency: row.currency })),
+                  ),
+                }
+              : {}),
+            ...(windowed
+              ? {
+                  received: addUp(
+                    priced
+                      .filter((row) => row.received > 0)
+                      .map((row) => ({ minor: row.received, currency: row.currency })),
+                  ),
+                }
+              : {}),
+          };
+        };
+        const total = amounts(rows);
+        if (by === undefined) return { ...total, counted } satisfies Totals;
         const zone =
           by === "month" || by === "financialYear"
             ? yield* ownerZone(orgId).pipe(provideSql)
@@ -1404,12 +1529,14 @@ const make = Effect.gen(function* () {
         const grouped = new Map<string | null, Array<(typeof rows)[number]>>();
         for (const row of rows) {
           const group = keyOf(row);
-          grouped.set(group, [...(grouped.get(group) ?? []), row]);
+          const members = grouped.get(group);
+          if (members === undefined) grouped.set(group, [row]);
+          else members.push(row);
         }
         const groups = [...grouped].map(([group, members]) => ({
           group,
           count: members.length,
-          total: addUp(members),
+          ...amounts(members),
         }));
         // Periods read in time order; anything else most entries first.
         const ordered =
@@ -1418,7 +1545,7 @@ const make = Effect.gen(function* () {
             : groups.toSorted(
                 (a, b) => b.count - a.count || ((a.group ?? "") < (b.group ?? "") ? -1 : 1),
               );
-        return { total, counted, groups: ordered.slice(0, 50) } satisfies Totals;
+        return { ...total, counted, groups: ordered.slice(0, 50) } satisfies Totals;
       }).pipe(
         Effect.catchDefect((defect) =>
           defect instanceof RangeError
@@ -1431,7 +1558,7 @@ const make = Effect.gen(function* () {
 
   const filterOf = (orgId: KinOrgId, input: QueryInput, now: number) => {
     const where = [sql`r.org_id = ${orgId}`, sql`r.register_id = ${input.list ?? "work"}`];
-    if (input.partyId !== undefined) where.push(sql`r.party_id = ${input.partyId}`);
+    if (input.partyId !== undefined) where.push(sql`r.party_id IS ${input.partyId}`);
     if (input.projectId !== undefined) where.push(sql`r.project_id = ${input.projectId}`);
     if (input.repo !== undefined) where.push(sql`lower(r.repo) = lower(${input.repo})`);
     if (input.owner !== undefined)
@@ -1448,9 +1575,14 @@ const make = Effect.gen(function* () {
       where.push(sql`(r.due_at IS NULL OR r.due_at >= ${now} OR r.state IN ('done', 'dropped'))`);
     if (input.dueBy !== undefined) where.push(sql`r.due_at <= ${input.dueBy}`);
     if (input.dueAfter !== undefined) where.push(sql`r.due_at >= ${input.dueAfter}`);
-    if (input.dateFrom !== undefined) where.push(sql`r.date_at >= ${input.dateFrom}`);
-    if (input.dateTo !== undefined) where.push(sql`r.date_at < ${input.dateTo}`);
-    if (input.category !== undefined) where.push(sql`r.category = ${input.category}`);
+    if (input.dateFrom !== undefined) where.push(sql`${moneyDay(sql)} >= ${input.dateFrom}`);
+    if (input.dateTo !== undefined) where.push(sql`${moneyDay(sql)} < ${input.dateTo}`);
+    if (input.category !== undefined) where.push(sql`r.category IS ${input.category}`);
+    if (input.paidFrom !== undefined || input.paidTo !== undefined)
+      where.push(sql`EXISTS (SELECT 1 FROM kin_record_payments p
+        WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL
+          AND p.paid_on >= ${input.paidFrom ?? "0000-00-00"}
+          AND p.paid_on <= ${input.paidTo ?? "9999-12-31"})`);
     if (input.side !== undefined) where.push(sql`r.side = ${input.side}`);
     if (input.keys !== undefined && input.keys.length > 0)
       where.push(sql`r.key IN ${sql.in(input.keys)}`);
@@ -1478,7 +1610,7 @@ const make = Effect.gen(function* () {
             : isBuiltIn(list)
               ? sql`r.state IN ('done', 'dropped'), lower(r.title), r.key`
               : sql`r.state IN ('done', 'dropped'), r.due_at IS NULL, r.due_at,
-                  COALESCE(r.date_at, r.created_at) DESC, r.created_at DESC, r.key`;
+                  ${moneyDay(sql)} DESC, r.created_at DESC, r.key`;
         const rows = yield* sql<RecordRow>`${selectRecords(sql)} WHERE ${filter}
           ORDER BY ${order}
           LIMIT ${limit} OFFSET ${Math.max(input.offset ?? 0, 0)}`;

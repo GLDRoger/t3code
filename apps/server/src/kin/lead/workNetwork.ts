@@ -75,6 +75,17 @@ export const takeBlocked = Effect.fn("KinWorkNetwork.takeBlocked")(function* (
   return hosts;
 });
 
+/** Removes a worker's grant and refusals once it has ended; a later session gets no network. */
+export const releaseHosts = Effect.fn("KinWorkNetwork.releaseHosts")(
+  function* (stateDir: string, workerId: string) {
+    if (!safeId(workerId)) return;
+    const fs = yield* FileSystem.FileSystem;
+    for (const file of [grantFile(stateDir, workerId), blockedFile(stateDir, workerId)])
+      yield* fs.remove(file, { force: true });
+  },
+  Effect.ignoreCause({ log: true }),
+);
+
 // Claude Code's own report of a refused connection, which it hands the model with the result.
 const violation = /deny network-outbound ([^\s:]+):\d+/g;
 

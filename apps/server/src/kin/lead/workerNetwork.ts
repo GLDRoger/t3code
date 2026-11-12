@@ -5,7 +5,10 @@ import {
   type KinWorkerNetworkChange,
   type KinWorkerNetworkEntry,
   type KinWorkerNetworkInput,
+  type KinWorkerNetworkRefused,
+  type KinWorkerNetworkRemoval,
   type KinWorkerSandboxStatus,
+  workerHostProblem,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Clock from "effect/Clock";
@@ -74,7 +77,16 @@ const rows = Effect.fn("KinWorkerNetwork.rows")(function* (orgId: KinOrgId) {
 
 /** Kin's defaults, then the owner's additions, then the host's extras; a removal beats each. */
 export const workerHosts = Effect.fn("KinWorkerNetwork.hosts")(function* (orgId: KinOrgId) {
-  const stored = yield* rows(orgId);
+  // A row an older check let in is never served, but the owner sees it and why: the list never
+  // fails to load, and nothing drops out of sight.
+  const all = yield* rows(orgId);
+  const refused: Array<KinWorkerNetworkRefused> = all.flatMap((row) => {
+    const problem = workerHostProblem(row.host);
+    return problem === undefined
+      ? []
+      : [{ host: row.host, allowed: row.allowed === 1, reason: `"${row.host}" ${problem}` }];
+  });
+  const stored = all.filter((row) => workerHostProblem(row.host) === undefined);
   const removed = stored.filter((row) => row.allowed === 0).map((row) => row.host);
   const allowed: Array<KinWorkerNetworkEntry> = [];
   const add = (host: string, source: KinWorkerNetworkEntry["source"]) => {
@@ -84,7 +96,7 @@ export const workerHosts = Effect.fn("KinWorkerNetwork.hosts")(function* (orgId:
   for (const host of defaults) add(host, "default");
   for (const row of stored) if (row.allowed === 1) add(row.host, "owner");
   for (const host of extras(yield* HostProcess.Environment)) add(host, "host");
-  return { allowed, removed };
+  return { allowed, removed, refused };
 });
 
 const sandboxStatus = Effect.fn("KinWorkerNetwork.sandboxStatus")(function* () {
@@ -98,21 +110,31 @@ const sandboxStatus = Effect.fn("KinWorkerNetwork.sandboxStatus")(function* () {
       claudeCodeVersion: null,
       install: [],
       namesBlockedHosts: null,
+      limits: null,
+      limitsNote: null,
     }),
     onSome: (status): KinWorkerSandboxStatus => ({
-      state: status.shell ? "shell" : "file_only",
+      state: status.shell ? "shell" : status.refused === true ? "refused" : "file_only",
       reason: status.reason,
       checkedAt: status.checkedAt,
       claudeCodeVersion: status.claudeCodeVersion,
       install: status.install ?? [],
       namesBlockedHosts: status.namesBlockedHosts ?? null,
+      limits: status.limits ?? null,
+      limitsNote: status.limitsNote ?? null,
     }),
   });
 });
 
 const view = Effect.fn("KinWorkerNetwork.view")(function* (orgId: KinOrgId) {
-  const { allowed, removed } = yield* workerHosts(orgId);
-  return { orgId, allowed, removed, sandbox: yield* sandboxStatus() } satisfies KinWorkerNetwork;
+  const { allowed, removed, refused } = yield* workerHosts(orgId);
+  return {
+    orgId,
+    allowed,
+    removed,
+    refused,
+    sandbox: yield* sandboxStatus(),
+  } satisfies KinWorkerNetwork;
 });
 
 const save = Effect.fn("KinWorkerNetwork.save")(function* (
@@ -171,7 +193,7 @@ export const allow = Effect.fn("KinWorkerNetwork.allow")(function* (
 
 export const remove = Effect.fn("KinWorkerNetwork.remove")(function* (
   people: ReadonlyArray<PersonIdentity>,
-  input: KinWorkerNetworkChange,
+  input: KinWorkerNetworkRemoval,
 ) {
   const owner = yield* theOwner(people, input.orgId);
   // Only a row can hide a default or the host's extra; the owner's own addition just goes.

@@ -27,7 +27,7 @@ export function htmlRenderRowHeight(frameHeight: number) {
   return frameHeight + ROW_BOTTOM_MARGIN;
 }
 
-function useHtmlRenderTheme() {
+export function useHtmlRenderTheme() {
   const { themeId, themeAppearance, themeVariables, systemColorsActive } =
     useAppearancePreferences();
   return mobileHtmlRenderTheme({

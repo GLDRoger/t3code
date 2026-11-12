@@ -51,6 +51,11 @@ import {
   type KinWaitingItem,
   type KinWidget,
 } from "@t3tools/contracts";
+import {
+  KIN_VISUAL_CARD_TYPE,
+  KIN_VISUAL_FILE_SCHEME,
+  kinVisualFileReferences,
+} from "@t3tools/shared/kinVisual";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -58,6 +63,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -67,11 +73,14 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { validateState } from "../widgets/registry.ts";
 import { deferralCardActions, deferralCardActionsReady } from "../widgets/deferralCard.ts";
 import * as ChartCard from "../widgets/chartCard.ts";
+import * as VisualCard from "../widgets/visualCard.ts";
 import * as ChoiceCard from "../widgets/choiceCard.ts";
 import { undoDeferral } from "../triggers/KinTriggerService.ts";
 import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
 import * as PublishCard from "../widgets/workerPublishCard.ts";
+import { answerChange } from "../work/companyProfile.ts";
+import { docsForViewer } from "./privateDocs.ts";
 import * as Hub from "./KinChatHub.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import { effectiveAudience } from "../lead/Audience.ts";
@@ -219,6 +228,14 @@ export class KinChatService extends Context.Service<
       readonly threadId: ThreadId;
       readonly state: Pick<KinTaskCardState, "status" | "pullRequests" | "lastError">;
     }) => Effect.Effect<KinWidget, ServiceError>;
+    /** The docs a document job made, from the job's stored row; on this server's own cards. */
+    readonly setTaskCardDocuments: (input: {
+      readonly orgId: KinOrgId;
+      readonly chatId: KinChatId;
+      readonly threadId: ThreadId;
+      readonly documents: NonNullable<KinTaskCardState["documents"]>;
+      readonly lastError: string | null;
+    }) => Effect.Effect<KinWidget, ServiceError>;
     readonly act: (
       identity: PersonCaller,
       input: KinWidgetsActInput,
@@ -261,6 +278,26 @@ export class KinChatService extends Context.Service<
         readonly intent: "answer" | "evidence";
       },
     ) => Effect.Effect<KinWidget, ServiceError>;
+    /** `kin_visual`'s card: the page is kept as a file of that chat and the card points at it. */
+    readonly visual: (
+      identity: AgentIdentity,
+      input: VisualCard.VisualInput & {
+        readonly chatId: KinChatId;
+        readonly clientMessageId: string;
+        readonly intent: "answer" | "evidence";
+      },
+    ) => Effect.Effect<KinWidget, ServiceError>;
+    /** What the route serving a chat's page needs: the org it belongs to and that chat's files. */
+    readonly visualSources: (attachmentId: string) => Effect.Effect<
+      Option.Option<{
+        readonly orgId: KinOrgId;
+        readonly files: ReadonlyArray<{
+          readonly attachmentId: string;
+          readonly mimeType: string | null;
+        }>;
+      }>,
+      ServiceError
+    >;
     readonly addWaiting: (
       identity: Identity,
       input: WaitingInput,
@@ -485,6 +522,11 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toPersistenceSqlError("KinChatService.sharedTurn")),
   );
+  /** Who reads a doc a message points at: a person, or a lead's turn by its stored audience. */
+  const docViewer = (identity: Identity) =>
+    identity._tag === "agent"
+      ? sharedTurn(identity).pipe(Effect.map((shared) => ({ sharedTurn: shared })))
+      : Effect.succeed(identity);
   /** A person's words are the chat's; a lead's are the owner's alone on an owner-only turn. */
   const authorAudience = (identity: Identity) =>
     identity._tag === "agent"
@@ -509,6 +551,19 @@ const make = Effect.gen(function* () {
     if (!mayWrite(member, identity._tag === "agent", yield* Clock.currentTimeMillis))
       return yield* notAllowed;
   });
+  /** A generated doc's file is the owner's alone: the person whose agent's job made it. */
+  const docFileReadable = (caller: PersonCaller, attachmentId: string) =>
+    Effect.forEach("_tag" in caller ? [caller] : caller, (person) =>
+      sql`SELECT 1 FROM kin_doc_versions v
+        JOIN kin_doc_jobs j ON j.org_id = v.org_id AND j.worker_id = v.worker_id
+        JOIN kin_agents a ON a.org_id = j.org_id AND a.agent_id = j.agent_id
+        WHERE v.org_id = ${person.orgId} AND v.file_attachment_id = ${attachmentId}
+          AND a.owner_person_id = ${person.personId}
+        LIMIT 1`.pipe(Effect.map((rows) => rows.length > 0)),
+    ).pipe(
+      Effect.map((found) => found.some(Boolean)),
+      Effect.mapError(toPersistenceSqlError("KinChatService.docFileReadable")),
+    );
   /** Whether the member may read the message: nothing from before they joined. */
   const readable = (member: KinChatMember, messageId: string, floorOf?: string) =>
     memberReads(sql, { orgId: member.orgId, memberId: member.memberId, messageId, floorOf }).pipe(
@@ -652,7 +707,7 @@ const make = Effect.gen(function* () {
     request: KinWidgetsActInput,
     reaction: { readonly emoji: KinReactionEmoji } | null,
   ) {
-    if (widget.type === "chart") return yield* invalidState;
+    if (widget.type === "chart" || widget.type === KIN_VISUAL_CARD_TYPE) return yield* invalidState;
     const choice = widget.type === "choice" ? yield* ChoiceCard.readChoice(widget, request) : null;
     const reminder =
       widget.type === "reminder"
@@ -778,6 +833,16 @@ const make = Effect.gen(function* () {
             now: yield* Clock.currentTimeMillis,
             emoji: reaction?.emoji ?? null,
           });
+    // A profile change a lead asked for lands only here, from the owner's own answer on its card.
+    if (choice !== null)
+      yield* answerChange({
+        orgId: identity.orgId,
+        widgetId: widget.widgetId,
+        personId: identity.personId,
+        confirmed: choice.option.kind === "yes",
+        via: reaction === null ? "tap" : "reaction",
+        now: yield* Clock.currentTimeMillis,
+      }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(cardTapError));
     const message = yield* post(identity, member, {
       chatId: widget.chatId,
       kind: "widget_action",
@@ -859,11 +924,21 @@ const make = Effect.gen(function* () {
       lastMessage.author.memberId !== member.memberId
         ? yield* repo.getPerson({ orgId: chat.orgId, personId: lastMessage.author.personId })
         : Option.none();
+    const shown =
+      lastMessage === null
+        ? null
+        : (yield* docsForViewer(identity.orgId, identity, {
+            messages: [lastMessage],
+            widgets: [],
+          }).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.mapError(toPersistenceSqlError("KinChatService.privateDocs")),
+          )).messages[0]!;
     return {
       ...chat,
       // A list row never carries a group's member list; `kin.chat.members` does.
       members: group ? [member] : yield* repo.listMembers(chat),
-      lastMessage,
+      lastMessage: shown,
       ...(Option.isSome(author) ? { lastAuthorName: author.value.displayName } : {}),
       unread: yield* repo.unreadCount(member),
       working:
@@ -969,9 +1044,11 @@ const make = Effect.gen(function* () {
     input: {
       readonly chatId: KinChatId;
       readonly clientMessageId: string;
-      readonly type: "choice" | "chart" | typeof KIN_DOC_CARD;
+      readonly type: "choice" | "chart" | typeof KIN_DOC_CARD | typeof KIN_VISUAL_CARD_TYPE;
       readonly intent: KinAgentIntent;
       readonly state: Effect.Effect<unknown, KinChatError>;
+      /** A stored file the card draws; read under the same rule as the message. */
+      readonly file?: string;
     },
   ) {
     const member = yield* memberFor(identity, input.chatId);
@@ -1042,6 +1119,13 @@ const make = Effect.gen(function* () {
       updatedAt: yield* now,
     };
     yield* repo.insertWidget({ ...widget, audience: yield* authorAudience(identity) });
+    if (input.file !== undefined)
+      yield* repo.attachCardFile({
+        orgId: identity.orgId,
+        chatId: input.chatId,
+        messageId: message.messageId,
+        attachmentId: input.file,
+      });
     const anchor = yield* requireRecord(
       repo.getMessage({ orgId: identity.orgId, messageId: message.messageId }),
     );
@@ -1288,11 +1372,27 @@ const make = Effect.gen(function* () {
           const identity = yield* personFor(caller, input);
           const live = yield* hub.subscribeForViewer(identity);
           const member = yield* memberFor(identity, input.chatId);
-          const resumed = yield* repo.resume({
-            ...member,
-            afterSeq: input.afterSeq ?? 0,
-            afterChangeSeq: input.afterChangeSeq,
+          const viewed = Effect.fn("KinChatService.viewed")(function* <
+            T extends {
+              readonly messages: ReadonlyArray<KinMessage>;
+              readonly widgets: ReadonlyArray<KinWidget>;
+            },
+          >(page: T) {
+            return {
+              ...page,
+              ...(yield* docsForViewer(identity.orgId, identity, page).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.mapError(toPersistenceSqlError("KinChatService.privateDocs")),
+              )),
+            };
           });
+          const resumed = yield* viewed(
+            yield* repo.resume({
+              ...member,
+              afterSeq: input.afterSeq ?? 0,
+              afterChangeSeq: input.afterChangeSeq,
+            }),
+          );
           const backlog: KinChatStreamEvent = resumed.reset
             ? {
                 _tag: "reset",
@@ -1325,11 +1425,13 @@ const make = Effect.gen(function* () {
           let cursor = { lastSeq: resumed.lastSeq, lastChangeSeq: resumed.lastChangeSeq };
           let delivered = 0;
           const checkpoint = Effect.fn("KinChatService.subscribeCheckpoint")(function* () {
-            const next = yield* repo.resume({
-              ...member,
-              afterSeq: cursor.lastSeq,
-              afterChangeSeq: cursor.lastChangeSeq,
-            });
+            const next = yield* viewed(
+              yield* repo.resume({
+                ...member,
+                afterSeq: cursor.lastSeq,
+                afterChangeSeq: cursor.lastChangeSeq,
+              }),
+            );
             cursor = { lastSeq: next.lastSeq, lastChangeSeq: next.lastChangeSeq };
             delivered = 0;
             if (next.cleared === true) {
@@ -1441,6 +1543,20 @@ const make = Effect.gen(function* () {
               }),
               Stream.filter(Option.isSome),
               Stream.map((event) => event.value),
+              Stream.mapEffect((event) =>
+                event._tag === "message" || event._tag === "widget"
+                  ? viewed({
+                      messages: event._tag === "message" ? [event.message] : [],
+                      widgets: event._tag === "widget" ? [event.widget] : [],
+                    }).pipe(
+                      Effect.map((page): KinChatStreamEvent =>
+                        event._tag === "message"
+                          ? { ...event, message: page.messages[0]! }
+                          : { ...event, widget: page.widgets[0]! },
+                      ),
+                    )
+                  : Effect.succeed(event),
+              ),
               // Widget writes bump their anchor's change_seq, so they count toward the refresh too.
               // The dedupe state above is updated per event; the hub delivers one event per chunk.
               Stream.mapEffect((event) =>
@@ -1633,7 +1749,7 @@ const make = Effect.gen(function* () {
     attachmentReadable: Effect.fn("KinChatService.attachmentReadable")(
       function* (caller, attachmentId) {
         const owner = yield* repo.attachmentChat(attachmentId);
-        if (Option.isNone(owner)) return false;
+        if (Option.isNone(owner)) return yield* docFileReadable(caller, attachmentId);
         const identity =
           "_tag" in caller ? caller : caller.find((viewer) => viewer.orgId === owner.value.orgId);
         if (identity === undefined || identity.orgId !== owner.value.orgId) return false;
@@ -1697,25 +1813,37 @@ const make = Effect.gen(function* () {
       const member = yield* memberFor(identity, request.chatId);
       if (identity._tag === "agent" && !(yield* leadMayRead(identity, request.chatId)))
         return yield* notFound;
-      return yield* repo.messagesAfter({
+      const viewer = yield* docViewer(identity);
+      const messages = yield* repo.messagesAfter({
         orgId: identity.orgId,
         chatId: request.chatId,
         afterSeq: request.afterSeq ?? 0,
         limit: request.limit ?? 50,
         viewerMemberId: member.memberId,
         // Whatever page it asks for, a shared turn sees nothing below the chat's history floor.
-        fromHistoryFloor: identity._tag === "agent" && (yield* sharedTurn(identity)),
+        fromHistoryFloor: "sharedTurn" in viewer && viewer.sharedTurn,
       });
+      return (yield* docsForViewer(identity.orgId, viewer, { messages, widgets: [] }).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.mapError(toPersistenceSqlError("KinChatService.privateDocs")),
+      )).messages;
     }, transaction),
     history: Effect.fn("KinChatService.history")(
       function* (identity, input) {
         identity = yield* identityFor(identity, input);
         const member = yield* memberFor(identity, input.chatId);
-        const page = yield* repo.history({
+        const stored = yield* repo.history({
           ...input,
           orgId: identity.orgId,
           viewerMemberId: member.memberId,
         });
+        const page = {
+          ...stored,
+          ...(yield* docsForViewer(identity.orgId, yield* docViewer(identity), stored).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.mapError(toPersistenceSqlError("KinChatService.privateDocs")),
+          )),
+        };
         return {
           ...page,
           reactions: yield* Reactions.liveReactions({
@@ -1894,6 +2022,32 @@ const make = Effect.gen(function* () {
       yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
       return widget;
     }, transaction),
+    setTaskCardDocuments: Effect.fn("KinChatService.setTaskCardDocuments")(function* (input) {
+      const existing = yield* requireRecord(
+        repo.getWidget({ orgId: input.orgId, widgetId: yield* taskCardWidgetId(input) }),
+      );
+      if (existing.type !== "task" || existing.chatId !== input.chatId) return yield* notFound;
+      const previous = yield* TaskCard.decodeTaskCardEffect(existing.state).pipe(
+        Effect.mapError(() => invalidState),
+      );
+      if (previous.remoteEnvironmentId !== null) return yield* invalidState;
+      const next = {
+        ...previous,
+        documents: input.documents,
+        ...(input.lastError === null ? {} : { lastError: input.lastError }),
+      };
+      if (TaskCard.taskCardEquivalent(next, previous)) return existing;
+      const updatedAt = yield* now;
+      const widget = yield* repo.updateWidget({
+        ...existing,
+        audience: "owner",
+        state: { ...next, updatedAt },
+        expectedRevision: existing.revision,
+        updatedAt,
+      });
+      yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
+      return widget;
+    }, transaction),
     upsertWidget: Effect.fn("KinChatService.upsertWidget")(function* (identity, input) {
       const member = yield* memberFor(identity, input.chatId);
       yield* canWrite(identity, member);
@@ -1913,6 +2067,8 @@ const make = Effect.gen(function* () {
         input.type === KIN_DOC_CARD ||
         // Only kin_chart posts one, and it never changes.
         input.type === "chart" ||
+        // Only kin_visual posts one, and its page is stored once.
+        input.type === KIN_VISUAL_CARD_TYPE ||
         (input.type === "task" && input.widgetId === undefined)
       )
         return yield* notAllowed;
@@ -2263,6 +2419,62 @@ const make = Effect.gen(function* () {
         }),
       transaction,
     ),
+    visual: Effect.fn("KinChatService.visual")(function* (identity, input) {
+      const page = yield* VisualCard.visualPage(input);
+      const member = yield* memberFor(identity, input.chatId);
+      yield* canWrite(identity, member);
+      const wanted = kinVisualFileReferences(page.html);
+      if (wanted.length > 0) {
+        const files = new Set((yield* repo.chatFiles(member)).map((file) => file.attachmentId));
+        const missing = wanted.find((id) => !files.has(id));
+        if (missing !== undefined)
+          return yield* new KinChatError({
+            reason: "invalid_state",
+            message: `${KIN_VISUAL_FILE_SCHEME}${missing} is not a file in this chat. Use the id of an image, audio or video already sent here, or put your own image in the page as a data: URL.`,
+          });
+      }
+      if (Option.isNone(attachmentStore))
+        return yield* new KinChatError({
+          reason: "unavailable",
+          message: "Attachments are unavailable.",
+        });
+      const store = attachmentStore.value;
+      // The file is written before the transaction and dropped unless this call's card keeps it.
+      const attachmentId = yield* store.storePage(page.html);
+      const kept = (widget: KinWidget) =>
+        Predicate.hasProperty(widget.state, "attachmentId") &&
+        widget.state.attachmentId === attachmentId;
+      return yield* transaction(
+        postCard(identity, {
+          chatId: input.chatId,
+          clientMessageId: input.clientMessageId,
+          type: KIN_VISUAL_CARD_TYPE,
+          intent: input.intent,
+          state: validateState(KIN_VISUAL_CARD_TYPE, {
+            title: page.title,
+            attachmentId,
+            height: page.height,
+          }),
+          file: attachmentId,
+        }),
+      ).pipe(
+        Effect.tap((widget) => (kept(widget) ? Effect.void : store.remove([attachmentId]))),
+        Effect.onError(() => store.remove([attachmentId])),
+      );
+    }),
+    visualSources: Effect.fn("KinChatService.visualSources")(function* (attachmentId) {
+      const owner = yield* repo.attachmentChat(attachmentId);
+      if (Option.isNone(owner)) return Option.none();
+      const files = yield* repo.chatFiles(owner.value);
+      return Option.some({
+        orgId: owner.value.orgId,
+        files: files.flatMap((file) =>
+          file.attachmentId === attachmentId
+            ? []
+            : [{ attachmentId: file.attachmentId, mimeType: file.mimeType }],
+        ),
+      });
+    }),
     showCard: Effect.fn("KinChatService.showCard")(
       (identity, input) =>
         postCard(identity, {

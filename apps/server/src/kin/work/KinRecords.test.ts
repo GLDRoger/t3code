@@ -6,7 +6,7 @@ import {
   EnvironmentId,
   KIN_WORK_WS_METHODS,
   KinAgentId,
-  type KinChatError,
+  KinChatError,
   KinFinanceRpcs,
   KinOrgId,
   KinPersonId,
@@ -27,6 +27,7 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { turnAudience, turnChat } from "../lead/Audience.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { KinLevelGate } from "../lead/LevelGate.ts";
 import { sharedToolAllowed } from "../lead/SharedTools.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { importWork } from "./importWork.ts";
@@ -73,7 +74,11 @@ const identity = Layer.mock(KinIdentity)({
       threadId: scope.thread!.threadId,
     }),
 });
-const layer = Layer.mergeAll(KinRecords.layer, identity).pipe(
+// No chat to show a card in: a proposal stands on the owner's typed answer.
+const gate = Layer.mock(KinLevelGate)({
+  ask: () => Effect.fail(new KinChatError({ reason: "unavailable", message: "No chat here." })),
+});
+const layer = Layer.mergeAll(KinRecords.layer, identity, gate).pipe(
   Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),
   Layer.provideMerge(Sqlite.layerMemory),
@@ -386,12 +391,13 @@ it.effect(
         yield* Effect.flip(LeadMoney.profile(scopeOf(lead), {})),
       ];
       for (const error of refused) assert.include(error, { reason: "not_allowed" });
-      // Every Work method: the clients, contacts and projects ones, lists, money and the profile.
+      // Every Work method: the clients, contacts and projects ones, lists, money, the profile,
+      // and issuing and voiding numbered entries.
       const methods = [
         ...Object.values(KIN_WORK_WS_METHODS),
         ...KinFinanceRpcs.map((rpc) => rpc._tag),
       ];
-      assert.lengthOf(methods, 28);
+      assert.lengthOf(methods, 31);
       for (const method of methods)
         assert.isTrue(
           (yield* Effect.exit(authorizeRpc([AuthKinChatScope], method, { orgId })))._tag ===

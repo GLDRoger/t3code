@@ -36,12 +36,15 @@ const chart = {
   comparison: null,
 };
 
+const visual = { title: "Funnel", attachmentId: "kin-chat-1-html", height: 360 };
+
 describe("Kin widget registry", () => {
   it.effect("validates task state and refuses unknown or invalid state without a fallback", () =>
     Effect.gen(function* () {
       assert.deepStrictEqual(yield* validateState("task", state), state);
       assert.deepStrictEqual(yield* validateState("choice", choice), choice);
       assert.deepStrictEqual(yield* validateState("chart", chart), chart);
+      assert.deepStrictEqual(yield* validateState("visual", visual), visual);
       for (const [type, value] of [
         ["unknown", state],
         ["approval", state],
@@ -55,6 +58,8 @@ describe("Kin widget registry", () => {
         ["chart", { ...chart, labels: ["Mon"] }],
         ["chart", { ...chart, html: "<b>hi</b>", chart: "sankey" }],
         ["chart", { ...chart, chart: "pie", series: [{ name: "Net", values: [12, -3] }] }],
+        ["visual", { ...visual, attachmentId: "" }],
+        ["visual", { ...visual, height: 20_000 }],
       ] as const) {
         assert.include(
           yield* validateState(type, value).pipe(

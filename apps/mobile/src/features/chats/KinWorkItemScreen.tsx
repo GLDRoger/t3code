@@ -60,6 +60,7 @@ import {
   KinWorkSideRow,
   KinWorkStatusRow,
 } from "./components/KinWorkTaskMenus";
+import { KinListEntryBody } from "./KinListEntry";
 import { kinClient } from "./state/kinClient";
 import {
   useKinWork,
@@ -201,6 +202,56 @@ function KinWorkItemBody(props: ItemTarget) {
   }
   const { item } = state;
   const { orgs, people, joined, names } = directory;
+  if (item.list !== undefined) {
+    const read = kinWorkItemView(item, names, now, KIN_RECORD_CHANGES_CAP, place);
+    return (
+      <Frame title={`${item.key}`} onClose={close}>
+        <KinListEntryBody
+          {...props}
+          item={item}
+          view={read}
+          directory={directory}
+          now={now}
+          links={
+            read.links.length === 0 ? null : (
+              <ListSection title="Links">
+                {read.links.map((link) => (
+                  <KinWorkLink
+                    key={link.key}
+                    link={link}
+                    onOpen={() => {
+                      const { open } = link;
+                      if (open === null) return;
+                      if (open.type === "chat") {
+                        navigation.goBack();
+                        return navigation.navigate("KinChat", {
+                          environmentId,
+                          orgId,
+                          chatId: open.chatId,
+                        });
+                      }
+                      if (open.type === "task")
+                        return navigation.navigate("KinWorkItem", {
+                          environmentId,
+                          orgId,
+                          task: open.key,
+                        });
+                      void tryOpenExternalUrl(open.href, "markdown-link");
+                    }}
+                    onOpenThread={(thread) => {
+                      navigation.goBack();
+                      openDetail({ name: "Thread", params: thread });
+                    }}
+                  />
+                ))}
+              </ListSection>
+            )
+          }
+          history={<KinWorkHistory view={read} />}
+        />
+      </Frame>
+    );
+  }
   const view = kinWorkItemView(
     kinWorkApplied(item, changed),
     names,

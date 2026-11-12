@@ -27,6 +27,7 @@ import {
   EnvironmentId,
   KinAgentId,
   KinChatId,
+  KinKeyThumbprint,
   KinMemberId,
   KinMessageId,
   KinMessagesSendInput,
@@ -55,11 +56,16 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
+import { KinKeyNotices } from "../approvals/ExecutionNotices.ts";
+import { keyNoticeBody, keyNoticesLayer } from "./executionNotices.ts";
 import * as Hub from "./KinChatHub.ts";
 import * as Repository from "./KinChatRepository.ts";
 import * as Identity from "./KinIdentity.ts";
 import * as Service from "./KinChatService.ts";
+import * as VisualHosts from "./KinVisualHosts.ts";
 import * as Presence from "../reply/KinPresence.ts";
+import * as LevelGate from "../lead/LevelGate.ts";
+import { attachChangeCard, proposeChange, readProfile } from "../work/companyProfile.ts";
 
 const decodeKinOrgId = Schema.decodeSync(KinOrgId);
 const decodeKinPersonId = Schema.decodeSync(KinPersonId);
@@ -1018,6 +1024,164 @@ describe("KinChatService", () => {
           { reason: "invalid_state" },
         );
       }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "keeps a visual's page as a file of its chat, once per retry, readable only as the chat is, and refuses a bad one with the fix",
+    () =>
+      Effect.gen(function* () {
+        const { repo, service, person, agent, chat } = yield* seed();
+        const sql = yield* SqlClient.SqlClient;
+        const photo = (yield* service.send(person, {
+          chatId: chat.chatId,
+          body: "",
+          clientMessageId: "photo",
+          attachments: [yield* uploadPhoto("logo.png")],
+          uploader: TEST_UPLOAD_OWNER,
+        })).attachments![0]!.id;
+        const input = {
+          chatId: chat.chatId,
+          clientMessageId: "visual-1",
+          intent: "answer" as const,
+          title: "  Signup\nfunnel ",
+          html: `<h1>Funnel</h1><img src="kin-file:${photo}"><script>fetch("https://example.com")</script>`,
+        };
+        const card = yield* service.visual(agent, input);
+        assert.include(card, { type: "visual", revision: 1 });
+        assert.strictEqual(String(card.widgetId), `visual:${card.messageId}`);
+        assert.deepStrictEqual(card.awaiting, []);
+        const state = card.state as { attachmentId: string };
+        assert.deepInclude(card.state, { title: "Signup funnel", height: 360 });
+        assert.match(state.attachmentId, /^kin-chat-[0-9a-f-]+-html$/);
+        // Stored as written: nothing in the page is judged, the frame it is served in seals it.
+        const config = yield* ServerConfig.ServerConfig;
+        const stored = NodePath.join(config.attachmentsDir, `${state.attachmentId}.html`);
+        assert.strictEqual(NodeFS.readFileSync(stored, "utf8"), input.html);
+        assert.deepStrictEqual(
+          yield* sql`SELECT chat_id, message_id FROM kin_message_attachments WHERE attachment_id = ${state.attachmentId}`,
+          [{ chat_id: chat.chatId, message_id: card.messageId }],
+        );
+        // A retry returns the same card and leaves no second file behind.
+        assert.deepStrictEqual(yield* service.visual(agent, input), card);
+        assert.lengthOf(
+          (yield* storedFiles).filter((name) => name.endsWith(".html")),
+          1,
+        );
+        assert.isTrue(yield* service.attachmentReadable(person, state.attachmentId));
+        assert.deepStrictEqual(
+          Option.getOrThrow(yield* service.visualSources(state.attachmentId)),
+          {
+            orgId: person.orgId,
+            files: [{ attachmentId: photo, mimeType: "image/png" }],
+          },
+        );
+
+        const refusal = (change: object) =>
+          service
+            .visual(agent, { ...input, clientMessageId: "visual-2", ...change })
+            .pipe(Effect.flip);
+        for (const [change, fix] of [
+          [{ title: " " }, "needs a title"],
+          [{ title: "x".repeat(121) }, "120 or fewer"],
+          [{ html: "  " }, "page is empty"],
+          [{ html: "x".repeat(5 * 1024 * 1024 + 1) }, "the limit is 5 MiB"],
+          [{ html: '<img src="kin-file:kin-chat-not-here">' }, "is not a file in this chat"],
+        ] as const) {
+          const refused = yield* refusal(change);
+          assert.include(refused, { reason: "invalid_state" });
+          assert.include(String(refused.message), fix);
+        }
+        assert.lengthOf(
+          (yield* storedFiles).filter((name) => name.endsWith(".html")),
+          1,
+        );
+
+        assert.include(
+          yield* service
+            .upsertWidget(agent, {
+              chatId: chat.chatId,
+              widgetId: card.widgetId,
+              revision: 1,
+              type: "visual",
+              state: card.state,
+            })
+            .pipe(Effect.flip),
+          { reason: "not_allowed" },
+        );
+        assert.include(
+          yield* service
+            .act(person, {
+              widgetId: card.widgetId,
+              revision: 1,
+              actionId: "open",
+              clientActionId: "tap-visual",
+            })
+            .pipe(Effect.flip),
+          { reason: "invalid_state" },
+        );
+        assert.deepStrictEqual(yield* repo.listOpenWaiting(person), []);
+      }).pipe(Effect.provide(attachmentLayer)),
+  );
+
+  it.effect(
+    "lets only the owner choose where visuals load from, as bare hosts, and serves exactly that list",
+    () =>
+      Effect.gen(function* () {
+        const { repo, person } = yield* seed();
+        const hosts = yield* VisualHosts.KinVisualHosts;
+        const orgId = person.orgId;
+        assert.deepStrictEqual(yield* hosts.list([person], { orgId }), { orgId, hosts: [] });
+        assert.deepStrictEqual(yield* hosts.served(orgId), []);
+        assert.deepStrictEqual(
+          yield* hosts.allow([person], { orgId, host: " https://Tiles.Example.com/v1/ " }),
+          { orgId, hosts: ["tiles.example.com"] },
+        );
+        // Allowing a host twice keeps one row.
+        yield* hosts.allow([person], { orgId, host: "tiles.example.com" });
+        yield* hosts.allow([person], { orgId, host: "fonts.example.com" });
+        assert.deepStrictEqual(yield* hosts.served(orgId), [
+          "fonts.example.com",
+          "tiles.example.com",
+        ]);
+        for (const host of ["*", "10.0.0.1", "localhost", "example.com; script-src *", "a.b:8443"])
+          assert.include(yield* hosts.allow([person], { orgId, host }).pipe(Effect.flip), {
+            reason: "invalid_state",
+          });
+
+        const teammate = { ...person, personId: decodeKinPersonId("teammate") };
+        yield* repo.insertPerson({
+          ...teammate,
+          handle: "suraj",
+          displayName: "Suraj",
+          githubLogin: null,
+          createdAt: timestamp,
+        });
+        for (const refused of [
+          hosts.list([teammate], { orgId }),
+          hosts.allow([teammate], { orgId, host: "evil.example.com" }),
+          hosts.remove([teammate], { orgId, host: "tiles.example.com" }),
+        ])
+          assert.include(yield* refused.pipe(Effect.flip), { reason: "not_allowed" });
+        // Someone outside the org learns nothing, not even that it exists.
+        assert.include(yield* hosts.list([], { orgId }).pipe(Effect.flip), { reason: "not_found" });
+        assert.deepStrictEqual(yield* hosts.served(orgId), [
+          "fonts.example.com",
+          "tiles.example.com",
+        ]);
+
+        assert.deepStrictEqual(
+          yield* hosts.remove([person], { orgId, host: "Tiles.example.com" }),
+          {
+            orgId,
+            hosts: ["fonts.example.com"],
+          },
+        );
+        // A row that is not a bare host never reaches a policy, however it got there.
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_visual_hosts (org_id, host, added_by, created_at)
+          VALUES (${orgId}, ${"x.example.com; script-src *"}, ${person.personId}, 0)`;
+        assert.deepStrictEqual(yield* hosts.served(orgId), ["fonts.example.com"]);
+      }).pipe(Effect.provide(Layer.provideMerge(VisualHosts.layer, layer))),
   );
 
   it.effect(
@@ -2416,5 +2580,192 @@ describe("KinChatService", () => {
         yield* service.clear([person], { chatId: chat.chatId });
         assert.deepStrictEqual(yield* messages(), [{ chatId: miras.chatId, n: 1 }]);
       }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "every key change owes the owner a push, and only a chat the owner alone reads gets the notice",
+    () =>
+      Effect.gen(function* () {
+        const { person } = yield* seed(true);
+        const sql = yield* SqlClient.SqlClient;
+        const notices = yield* KinKeyNotices;
+        const first = KinKeyThumbprint.make("NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs");
+        const second = KinKeyThumbprint.make("aZ3kLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9X");
+        const change = (thumbprint: KinKeyThumbprint, kind: "added" | "removed", at: number) => ({
+          orgId: person.orgId,
+          ownerPersonId: person.personId,
+          thumbprint,
+          deviceLabel: "Owner's phone",
+          platform: "ios",
+          change: kind,
+          at,
+          lastKey: kind === "removed",
+        });
+        const owed = sql<{ thumbprint: string; change: string; body: string; messageId: unknown }>`
+          SELECT thumbprint, change, body, message_id AS "messageId" FROM kin_key_pushes
+          WHERE org_id = ${person.orgId} AND sent_at IS NULL ORDER BY owed_at, change`;
+        const notified = sql<{ chatId: string; body: string }>`SELECT chat_id AS "chatId", body
+          FROM kin_messages WHERE message_id LIKE 'kin-key-%' ORDER BY seq`;
+
+        // The push is owed in the change's transaction, so a rolled back change owes nothing.
+        yield* sql
+          .withTransaction(
+            notices.changed(change(first, "added", 1)).pipe(Effect.andThen(Effect.fail("undo"))),
+          )
+          .pipe(Effect.ignore);
+        assert.deepStrictEqual(yield* owed, []);
+        yield* sql.withTransaction(notices.changed(change(first, "added", 1)));
+        // With every chat shared, nobody else may read it: the change commits, owing its push.
+        yield* sql`UPDATE kin_chats SET shared_at = 1 WHERE org_id = ${person.orgId}`;
+        yield* sql.withTransaction(notices.changed(change(second, "removed", 2)));
+        // An identical retry owes nothing more.
+        yield* sql.withTransaction(notices.changed(change(first, "added", 1)));
+        assert.deepStrictEqual(yield* owed, [
+          {
+            thumbprint: first,
+            change: "added",
+            body: keyNoticeBody(change(first, "added", 1), "UTC"),
+            messageId: `kin-key-added:${first}`,
+          },
+          {
+            thumbprint: second,
+            change: "removed",
+            body: keyNoticeBody(change(second, "removed", 2), "UTC"),
+            messageId: null,
+          },
+        ]);
+        assert.deepStrictEqual(
+          (yield* notified).map((message) => message.body),
+          [keyNoticeBody(change(first, "added", 1), "UTC")],
+        );
+      }).pipe(Effect.provide(Layer.provideMerge(keyNoticesLayer, layer))),
+  );
+  it.effect(
+    "shows a doc labelled sensitive since as private to teammates and to shared turns",
+    () =>
+      Effect.gen(function* () {
+        const { repo, service, person, agent, chat } = yield* seed();
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${person.orgId}, 'docs', 'Docs', 'D', 1, 0)`;
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+          owner_id, sensitive, created_by_kind, origin_key, created_at, updated_at)
+        VALUES (${person.orgId}, 'probe-doc', 'docs', 'D-1', 'Secret plan', 'agent', ${agentId},
+          0, 'agent', 'probe-doc', 0, 0)`;
+        const message = yield* service.send(person, {
+          chatId: chat.chatId,
+          body: "Look here",
+          clientMessageId: "probe-ref",
+        });
+        const refs = [
+          {
+            _tag: "doc",
+            key: "D-1",
+            version: 1,
+            section: "pricing",
+            title: "Secret plan",
+            sectionTitle: "Secret pricing",
+          },
+        ];
+        yield* sql`UPDATE kin_messages SET refs_json = ${JSON.stringify(refs)}
+        WHERE message_id = ${message.messageId}`;
+        yield* sql`UPDATE kin_records SET sensitive = 1 WHERE record_id = 'probe-doc'`;
+        const page = { chatId: chat.chatId, beforeSeq: 999, limit: 100 };
+        // The seed's turn is the owner's alone: it sees the doc as it was pointed at.
+        assert.include(
+          JSON.stringify(yield* service.read(agent, { chatId: chat.chatId })),
+          "Secret plan",
+        );
+        assert.include(JSON.stringify(yield* service.history(agent, page)), "Secret pricing");
+
+        const mate = { ...person, personId: decodeKinPersonId("probe-mate") };
+        yield* repo.insertPerson({
+          ...mate,
+          handle: "probe-mate",
+          displayName: "Mate",
+          githubLogin: null,
+          createdAt: timestamp,
+        });
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+          person_id, role, joined_at) VALUES ('probe-mate-member', ${person.orgId}, ${chat.chatId},
+          'person', ${mate.personId}, 'member', ${timestamp})`;
+        yield* sql`UPDATE kin_chats SET shared_at = ${timestamp}, shared_from_seq = 1
+        WHERE chat_id = ${chat.chatId}`;
+        const backlog = Option.getOrThrow(
+          yield* Stream.runHead(service.subscribe(mate, { chatId: chat.chatId })),
+        );
+        assert.strictEqual(backlog._tag, "backlog");
+        // A turn others read gets the same private document a teammate does.
+        yield* startAgentWakeup({ orgId: person.orgId, agentId, threadId, message });
+        for (const seen of [
+          backlog,
+          yield* service.history(mate, page),
+          yield* service.read(agent, { chatId: chat.chatId }),
+          yield* service.history(agent, page),
+        ]) {
+          assert.include(JSON.stringify(seen), "a private document");
+          assert.notInclude(JSON.stringify(seen), "Secret plan");
+          assert.notInclude(JSON.stringify(seen), "Secret pricing");
+        }
+      }).pipe(Effect.provide(layer)),
+  );
+  it.effect(
+    "binds a profile card to its change in the card's own commit; only a tap confirms",
+    () =>
+      Effect.gen(function* () {
+        const { service, person, agent, chat } = yield* seed();
+        const sql = yield* SqlClient.SqlClient;
+        const gate = yield* LevelGate.KinLevelGate;
+        const changeId = "pc_race";
+        yield* proposeChange({
+          orgId: person.orgId,
+          changeId,
+          agentId,
+          wakeupId: "probe",
+          patch: { bank: { accountNumber: "9999999999" } },
+          baseRev: 0,
+          now: 0,
+        });
+        const ask = {
+          chatId: chat.chatId,
+          clientMessageId: `kin-profile:${changeId}`,
+          question: "Change the company profile?",
+          detail: "Bank account number: none → 9999999999",
+          options: [
+            { label: "Confirm", kind: "yes" as const },
+            { label: "Cancel", kind: "no" as const },
+          ],
+        };
+        // A bind that fails takes its card with it: no card exists that its change doesn't know.
+        yield* gate
+          .ask(agent, ask, () => sql`INSERT INTO kin_no_such_table VALUES (1)`.pipe(Effect.asVoid))
+          .pipe(Effect.flip);
+        const cards = sql`SELECT widget_id FROM kin_widgets WHERE type = 'choice'`;
+        assert.deepStrictEqual(yield* cards, []);
+        const card = yield* gate.ask(agent, ask, (widget) =>
+          attachChangeCard(person.orgId, changeId, widget.widgetId).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          ),
+        );
+        const profile = () =>
+          readProfile(person.orgId).pipe(Effect.map((one) => one.bank.accountNumber));
+        // A 👍 on the card is not a Confirm.
+        assert.include(
+          yield* service
+            .react(person, { messageId: card.messageId, emoji: "👍", on: true })
+            .pipe(Effect.flip),
+          { reason: "not_allowed" },
+        );
+        assert.isNull(yield* profile());
+        // The owner's first possible tap already finds the change.
+        yield* service.act(person, {
+          widgetId: card.widgetId,
+          revision: card.revision,
+          actionId: "choose",
+          value: "option-1",
+          clientActionId: "fast-confirm",
+        });
+        assert.strictEqual(yield* profile(), "9999999999");
+      }).pipe(Effect.provide(Layer.provideMerge(LevelGate.layer, layer))),
   );
 });
