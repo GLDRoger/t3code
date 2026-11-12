@@ -6,7 +6,11 @@ import {
   htmlRenderThemeFragment,
   htmlRenderThemeMessage,
 } from "@t3tools/shared/htmlRender";
-import { readKinVisualMessage } from "@t3tools/shared/kinVisual";
+import {
+  kinVisualHostUnicode,
+  kinVisualSaveFile,
+  readKinVisualMessage,
+} from "@t3tools/shared/kinVisual";
 import { AsyncResult } from "effect/reactivity";
 import { Maximize2Icon, XIcon } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -30,13 +34,31 @@ import { observeResize } from "../lib/observeResize";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
 
-const MAX_BLOCKED_HOSTS = 3;
 // Kept across remounts, so a card scrolled back into view does not jump.
 const measuredHeights = new Map<string, number>();
+// One file per tap: a page cannot turn the reader's click into a burst of downloads.
+const SAVE_GAP_MS = 1000;
+
+function saveFile(name: string, mimeType: string, data: string) {
+  let bytes: Uint8Array<ArrayBuffer>;
+  try {
+    bytes = Uint8Array.from(atob(data), (char) => char.charCodeAt(0));
+  } catch {
+    return;
+  }
+  const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  link.click();
+  // Browsers may start downloading after the click's task; defer revocation.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
 
 /**
  * The frame an agent's page is drawn in. The page is sealed by the policy its URL is served
- * with; this only sizes it, passes the theme, and turns a tapped link into a question.
+ * with; this only sizes it, passes the theme, turns a tapped link into a question and saves what
+ * the reader asked it to, under a name and type the app picks.
  */
 function KinVisualFrame(props: {
   readonly src: string;
@@ -60,20 +82,30 @@ function KinVisualFrame(props: {
   useLayoutEffect(() => {
     const frame = frameRef.current;
     if (frame === null) return;
+    let savedAt = -Infinity;
     const onMessage = (event: MessageEvent) => {
       if (event.source !== frame.contentWindow) return;
       const message = readKinVisualMessage(event.data);
       if (message === undefined) return;
-      if (message.type === "height") onHeight?.(message.height);
-      else if (message.type === "blocked") onBlockedHost?.(message.host);
-      // A page can post this by script, so it only ever asks: the reader's tap in the frame
-      // raises the question, and their tap on the answer opens the link.
-      else if (
-        message.type === "link" &&
-        document.activeElement === frame &&
-        navigator.userActivation?.isActive !== false
-      )
+      if (message.type === "height") {
+        onHeight?.(message.height);
+        return;
+      }
+      if (message.type === "blocked") {
+        onBlockedHost?.(message.host);
+        return;
+      }
+      // A page can post these by script, so they count only from the reader's own tap in the frame.
+      if (document.activeElement !== frame || navigator.userActivation?.isActive === false) return;
+      // The link only asks: the reader's tap on the answer opens it.
+      if (message.type === "link") {
         setLink(message.url);
+        return;
+      }
+      const file = kinVisualSaveFile(message.name, message.mimeType);
+      if (file === null || event.timeStamp - savedAt < SAVE_GAP_MS) return;
+      savedAt = event.timeStamp;
+      saveFile(file.name, file.mimeType, message.data);
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
@@ -84,8 +116,8 @@ function KinVisualFrame(props: {
         ref={frameRef}
         src={src}
         title={props.title}
-        // Never allow-same-origin, allow-popups, allow-forms or top navigation.
-        sandbox="allow-scripts allow-downloads"
+        // Never allow-same-origin, allow-popups, allow-forms, downloads or top navigation.
+        sandbox="allow-scripts"
         referrerPolicy="no-referrer"
         loading="lazy"
         onLoad={() => {
@@ -166,12 +198,27 @@ function KinVisualFullScreen(props: {
   );
 }
 
-/** Owner only: a host the page tried to load from, and the one tap that lets it. */
+/** The host exactly as the policy will name it, and how it reads when any part is punycode. */
+function KinVisualHostName(props: { readonly host: string }) {
+  const unicode = kinVisualHostUnicode(props.host);
+  return (
+    <>
+      <span className="font-mono text-foreground break-all">{props.host}</span>
+      {unicode === null ? null : <span> (shown as “{unicode}”)</span>}
+    </>
+  );
+}
+
+/**
+ * Owner only: the host a page asks to load from, and the one tap that allows it. The page can
+ * raise this by itself, so it reads as the page's request and the confirm says what allowing does.
+ */
 function KinVisualBlockedHost(props: {
   readonly host: string;
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
   readonly onAllowed: () => void;
+  readonly onDismiss: () => void;
 }) {
   const allow = useAtomCommand(kinClient.visualHostAllow, { reportFailure: false });
   const [state, setState] = useState<"idle" | "confirm" | "saving">("idle");
@@ -188,11 +235,10 @@ function KinVisualBlockedHost(props: {
     else setProblem(true);
   };
   return (
-    <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-      <span>
-        This visual wanted to load from{" "}
-        <span className="font-medium text-foreground">{props.host}</span>.
-      </span>
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+      <p className="min-w-0">
+        This visual asks to load from <KinVisualHostName host={props.host} />.
+      </p>
       <Button
         size="xs"
         variant="outline"
@@ -200,6 +246,9 @@ function KinVisualBlockedHost(props: {
         onClick={() => setState("confirm")}
       >
         {state === "saving" ? "Allowing…" : "Allow"}
+      </Button>
+      <Button size="xs" variant="ghost" disabled={state === "saving"} onClick={props.onDismiss}>
+        Not now
       </Button>
       {problem ? (
         <span role="alert" className="text-destructive-foreground">
@@ -214,20 +263,23 @@ function KinVisualBlockedHost(props: {
       >
         <AlertDialogPopup>
           <AlertDialogHeader>
-            <AlertDialogTitle>Let visuals load from {props.host}?</AlertDialogTitle>
+            <AlertDialogTitle>Allow this host for every visual?</AlertDialogTitle>
             <AlertDialogDescription>
-              Every visual in your chats will be able to load images, fonts and data from this host,
-              and to send it anything the visual shows. Allow only a host you trust. You can remove
-              it later under Team.
+              The visual asked for this itself; nobody checked the host. Once allowed, every visual
+              in this workspace can load from it and send it anything a visual shows. Allow only a
+              host you trust. You can remove it later under Team.
             </AlertDialogDescription>
+            <p className="rounded-md border border-border bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+              <KinVisualHostName host={props.host} />
+            </p>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
-            <Button onClick={() => void run()}>Allow this host</Button>
+            <Button onClick={() => void run()}>Allow for every visual</Button>
           </AlertDialogFooter>
         </AlertDialogPopup>
       </AlertDialog>
-    </p>
+    </div>
   );
 }
 
@@ -259,7 +311,9 @@ export function KinVisual(props: {
   const [width, setWidth] = useState(0);
   const [contentHeight, setContentHeight] = useState(() => measuredHeights.get(attachmentId));
   const [expanded, setExpanded] = useState(false);
-  const [blocked, setBlocked] = useState<ReadonlyArray<string>>([]);
+  // One request line at a time; once the reader says not now, this visual asks no more.
+  const [blocked, setBlocked] = useState<string | null>(null);
+  const [declined, setDeclined] = useState(false);
   const canAllow = useAtomValue(kinClient.visualHostAllow.permissionAtom(props.environmentId));
   const height = htmlRenderFrameHeight(
     { attachmentId, title, height: props.visual.height },
@@ -311,13 +365,9 @@ export function KinVisual(props: {
               measuredHeights.set(attachmentId, next);
               setContentHeight(next);
             }}
-            onBlockedHost={(host) =>
-              setBlocked((hosts) =>
-                hosts.includes(host) || hosts.length >= MAX_BLOCKED_HOSTS
-                  ? hosts
-                  : [...hosts, host],
-              )
-            }
+            onBlockedHost={(host) => {
+              if (!declined) setBlocked((held) => held ?? host);
+            }}
           />
         ) : failed ? (
           <div className="flex size-full flex-col items-center justify-center gap-2 text-xs text-muted-foreground">
@@ -338,21 +388,23 @@ export function KinVisual(props: {
           </p>
         )}
       </div>
-      {canAllow
-        ? blocked.map((host) => (
-            <KinVisualBlockedHost
-              key={host}
-              host={host}
-              environmentId={props.environmentId}
-              orgId={props.orgId}
-              onAllowed={() => {
-                setBlocked([]);
-                // The same URL now answers with the wider policy.
-                setAttempt((value) => value + 1);
-              }}
-            />
-          ))
-        : null}
+      {canAllow && blocked !== null ? (
+        <KinVisualBlockedHost
+          key={blocked}
+          host={blocked}
+          environmentId={props.environmentId}
+          orgId={props.orgId}
+          onAllowed={() => {
+            setBlocked(null);
+            // The same URL now answers with the wider policy.
+            setAttempt((value) => value + 1);
+          }}
+          onDismiss={() => {
+            setBlocked(null);
+            setDeclined(true);
+          }}
+        />
+      ) : null}
       {expanded && loaded !== null ? (
         <KinVisualFullScreen src={loaded} title={title} onClose={() => setExpanded(false)} />
       ) : null}

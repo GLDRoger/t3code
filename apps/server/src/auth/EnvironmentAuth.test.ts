@@ -654,6 +654,84 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
       }).pipe(Effect.provide(layerEnvironmentAuth({ mode: "web" }))),
     );
 
+    it.effect(
+      "reads no session cookie from a cross-site request but a page load or a trusted app",
+      () =>
+        Effect.gen(function* () {
+          const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
+          const sessions = yield* SessionStore.SessionStore;
+          const pairing = yield* serverAuth.issuePairingCredential();
+          const exchanged = yield* serverAuth.createBrowserSession(
+            pairing.credential,
+            requestMetadata,
+          );
+          const bearer = yield* serverAuth.issueSession();
+          const request = (headers: Record<string, string>, extra: Record<string, string> = {}) =>
+            ({
+              url: "/ws",
+              cookies: { [sessions.cookieName]: exchanged.sessionToken },
+              headers: { host: "192.168.1.50:3773", ...headers, ...extra },
+            }) as never;
+          const cross = (mode: string, dest: string, origin?: string) => ({
+            "sec-fetch-site": "cross-site",
+            "sec-fetch-mode": mode,
+            "sec-fetch-dest": dest,
+            ...(origin === undefined ? {} : { origin }),
+          });
+          // What WebKit sends from a sandboxed visual: its frame, a picture, a font, a video track.
+          for (const headers of [
+            cross("navigate", "iframe"),
+            cross("no-cors", "image"),
+            cross("cors", "font", "null"),
+            cross("no-cors", "track"),
+            cross("no-cors", "video"),
+            cross("cors", "empty", "https://elsewhere.example"),
+          ]) {
+            const refused = yield* Effect.flip(
+              serverAuth.authenticateHttpRequest(request(headers)),
+            );
+            expect(refused._tag, JSON.stringify(headers)).toBe("ServerAuthMissingCredentialError");
+            expect((yield* serverAuth.getSessionState(request(headers))).authenticated).toBe(false);
+            // A bearer token beside the ignored cookie still counts.
+            const withBearer = request(headers, { authorization: `Bearer ${bearer.token}` });
+            expect((yield* serverAuth.authenticateHttpRequest(withBearer)).sessionId).toBe(
+              bearer.sessionId,
+            );
+          }
+          // The browser app, desktop and dev clients, top-level page loads and non-browser clients.
+          for (const headers of [
+            {},
+            cross("navigate", "document"),
+            cross("cors", "empty", "t3code://app"),
+            cross("websocket", "websocket", "t3code://app"),
+            cross("cors", "empty", "http://localhost:5733"),
+            { "sec-fetch-site": "same-origin", "sec-fetch-dest": "image" },
+            {
+              "sec-fetch-site": "none",
+              "sec-fetch-mode": "navigate",
+              "sec-fetch-dest": "document",
+            },
+            { origin: "http://192.168.1.50:3773", "sec-fetch-site": "same-origin" },
+          ]) {
+            expect(
+              (yield* serverAuth.authenticateHttpRequest(request(headers))).method,
+              JSON.stringify(headers),
+            ).toBe("browser-session-cookie");
+            expect(
+              (yield* serverAuth.authenticateWebSocketUpgrade(request(headers), "media")).method,
+            ).toBe("browser-session-cookie");
+          }
+        }).pipe(
+          Effect.provide(
+            layerEnvironmentAuth({
+              mode: "web",
+              host: "192.168.1.50",
+              devUrl: new URL("http://localhost:5733"),
+            }),
+          ),
+        ),
+    );
+
     it.effect.each(["Bearer", "bearer", "bEaReR"])(
       "accepts %s for HTTP and socket upgrades regardless of page origin",
       (scheme) =>

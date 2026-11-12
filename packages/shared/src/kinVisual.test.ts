@@ -6,7 +6,9 @@ import {
   kinVisualContentSecurityPolicy,
   kinVisualFileReferences,
   kinVisualHost,
+  kinVisualHostUnicode,
   kinVisualPageDocument,
+  kinVisualSaveFile,
   readKinVisualMessage,
   resolveKinVisualFileReferences,
 } from "./kinVisual.ts";
@@ -14,10 +16,10 @@ import {
 describe("kinVisualContentSecurityPolicy", () => {
   it("seals the page: no outside host anywhere until the owner allows one, and never for script or frames", () => {
     expect(kinVisualContentSecurityPolicy("page")).toBe(
-      "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' 'self'; style-src 'unsafe-inline'; img-src data: blob: 'self'; font-src data: 'self'; media-src data: blob: 'self'; connect-src 'none'; worker-src 'none'; child-src 'none'; frame-src 'none'; object-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'none'; webrtc 'block'; require-trusted-types-for 'script'; trusted-types default kin; sandbox allow-scripts allow-downloads",
+      "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' 'self'; style-src 'unsafe-inline'; img-src data: blob: 'self'; font-src data: 'self'; media-src data: blob: 'self'; connect-src 'none'; worker-src 'none'; child-src 'none'; frame-src 'none'; object-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'none'; webrtc 'block'; require-trusted-types-for 'script'; trusted-types default kin; sandbox allow-scripts",
     );
     expect(kinVisualContentSecurityPolicy("outer")).toBe(
-      "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-src 'self'; worker-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts allow-downloads",
+      "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-src 'self'; worker-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts",
     );
     const allowed = kinVisualContentSecurityPolicy("page", [
       "tiles.example.com",
@@ -43,6 +45,12 @@ describe("kinVisualHost", () => {
 
   it.each([
     "localhost",
+    "kin-secret-q3.localhost",
+    "printer.local",
+    "db.internal",
+    "nas.home.arpa",
+    "router.lan",
+    "localhost.localdomain",
     "10.0.0.1",
     "example.com:8443",
     "*.example.com",
@@ -54,14 +62,15 @@ describe("kinVisualHost", () => {
   ])("refuses %s", (input) => expect(kinVisualHost(input)).toBeNull());
 });
 
-/** The markup a page document hands to the prelude's `document.write`. */
-const written = (page: string) => {
+/** What a page document hands the prelude's own `document.write`: the markup and the hosts. */
+const writeCall = (page: string) => {
   const call = "<script>document.write(";
   expect(page.endsWith(")</script>")).toBe(true);
   return JSON.parse(
-    page.slice(page.lastIndexOf(call) + call.length, -")</script>".length),
-  ) as string;
+    `[${page.slice(page.lastIndexOf(call) + call.length, -")</script>".length)}]`,
+  ) as [string, string];
 };
+const written = (page: string) => writeCall(page)[0];
 
 describe("kinVisualPageDocument", () => {
   it("puts the theme and the helper ahead of the agent's markup and leaves that markup alone", () => {
@@ -91,10 +100,48 @@ describe("kinVisualPageDocument", () => {
     }
   });
 
-  it("holds no agent content in the outer document", () => {
-    expect(KIN_VISUAL_OUTER_DOCUMENT).toContain('"sandbox","allow-scripts allow-downloads"');
+  it("tells the prelude which outside hosts the response allows, and only bare ones", () => {
+    expect(
+      writeCall(kinVisualPageDocument("<p>x</p>", ["tiles.example.com", "x.com; script-src *"]))[1],
+    ).toBe("https://tiles.example.com");
+    expect(writeCall(kinVisualPageDocument("<p>x</p>"))[1]).toBe("");
+  });
+
+  it("holds no agent content in the outer document, and its frame cannot download", () => {
+    expect(KIN_VISUAL_OUTER_DOCUMENT).toContain('"sandbox","allow-scripts")');
+    expect(KIN_VISUAL_OUTER_DOCUMENT).not.toContain("allow-downloads");
     expect(KIN_VISUAL_OUTER_DOCUMENT).toContain('"?frame=1"+location.hash');
   });
+});
+
+describe("kinVisualHostUnicode", () => {
+  it.each([
+    ["xn--bcher-kva.example", "bücher.example"],
+    ["xn--80ak6aa92e.com", "аррӏе.com"],
+    ["plain.example", null],
+    ["xn--zz.example", null],
+  ])("reads %s as %s", (host, unicode) => expect(kinVisualHostUnicode(host)).toBe(unicode));
+});
+
+describe("kinVisualSaveFile", () => {
+  it.each([
+    ["rows", "text/csv", "rows.csv"],
+    ["Chart.PNG", "image/png", "Chart.png"],
+    ["Kin invoice.pdf.command", "text/csv; charset=utf-8", "Kin invoice.pdf.command.csv"],
+    ["../../etc/passwd", "text/plain", "etc-passwd.txt"],
+    ["report\u202Efdp.json", "application/json", "reportfdp.json"],
+    ["a\u0000b\nc.svg", "image/svg+xml", "abc.svg"],
+    ["...", "application/pdf", "visual.pdf"],
+  ])("saves %j as %s to %s", (name, mimeType, saved) =>
+    expect(kinVisualSaveFile(name, mimeType)?.name).toBe(saved),
+  );
+
+  it.each([
+    ["page.html", "text/html"],
+    ["Kin invoice.pdf.command", "application/x-sh"],
+    ["run.js", "text/javascript"],
+    ["x", "application/octet-stream"],
+  ])("refuses %s as %s", (name, mimeType) => expect(kinVisualSaveFile(name, mimeType)).toBeNull());
 });
 
 describe("chat file references", () => {
