@@ -54,6 +54,7 @@ import { instructions as kinLeadInstructions } from "../../apps/server/src/kin/l
 import { leadTools } from "../../apps/server/src/kin/lead/LeadIsolation.ts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
 import { KinChatToolkit } from "../../apps/server/src/kin/mcp/KinChatToolkit.ts";
+import { KinStatementToolkit } from "../../apps/server/src/kin/work/mcp/statementTools.ts";
 import { KinWorkToolkit } from "../../apps/server/src/kin/work/mcp/tools.ts";
 import { KinDocsToolkit } from "../../apps/server/src/kin/work/mcp/docTools.ts";
 import { KinDocumentToolkit } from "../../apps/server/src/kin/gendocs/mcp.ts";
@@ -450,6 +451,7 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   KinApprovalsToolkit,
   KinLeadToolkit,
   KinWorkToolkit,
+  KinStatementToolkit,
   KinDocsToolkit,
   KinDocumentToolkit,
 ].flatMap((toolkit): ReadonlyArray<Tool.Any> => Object.values(toolkit.tools));
@@ -515,6 +517,8 @@ const visibleT3Tools = (options: {
             [
               ...Object.keys(KinLeadToolkit.tools),
               ...Object.keys(KinWorkToolkit.tools),
+              ...Object.keys(KinStatementToolkit.tools),
+              ...Object.keys(KinStatementToolkit.tools),
               ...Object.keys(KinDocsToolkit.tools),
               ...Object.keys(KinDocumentToolkit.tools),
             ].some((name) => tool.name === `${T3_PREFIX}${name}`))
