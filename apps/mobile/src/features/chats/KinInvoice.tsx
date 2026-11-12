@@ -296,6 +296,34 @@ export function KinInvoiceDocuments(props: KinWorkTarget & { readonly invoice: K
 }
 
 /** A doc's made file, such as an invoice's PDF: open it in the system viewer, or share it. */
+// Outside the components: the React Compiler can't lower try statements.
+async function shareFile(
+  url: string,
+  attachment: { readonly name: string; readonly mimeType: string },
+): Promise<string | null> {
+  try {
+    await downloadAndShareAttachment({ url, attachment, signal: new AbortController().signal });
+    return null;
+  } catch (cause) {
+    return nativeViewerErrorMessage(cause);
+  }
+}
+
+async function writePreview(file: {
+  readonly name: string;
+  readonly mimeType: string;
+  readonly base64: string;
+}): Promise<AttachmentPreviewFile | string> {
+  try {
+    return await writeGeneratedAttachmentFile({
+      bytes: kinBase64Bytes(file.base64),
+      attachment: { name: file.name, mimeType: file.mimeType },
+    });
+  } catch (cause) {
+    return nativeViewerErrorMessage(cause);
+  }
+}
+
 export function KinDocFileRows(props: {
   readonly environmentId: EnvironmentId;
   readonly file: KinDocFile;
@@ -316,15 +344,8 @@ export function KinDocFileRows(props: {
     if (url === null) return;
     setBusy(true);
     setProblem(null);
-    const signal = new AbortController().signal;
-    const attachment = { name: file.name, mimeType: file.mimeType };
-    try {
-      await downloadAndShareAttachment({ url, attachment, signal });
-    } catch (cause) {
-      setProblem(nativeViewerErrorMessage(cause));
-    } finally {
-      setBusy(false);
-    }
+    setProblem(await shareFile(url, { name: file.name, mimeType: file.mimeType }));
+    setBusy(false);
   };
   return (
     <View className="gap-2">
@@ -419,17 +440,11 @@ function MakeDocument(props: KinWorkTarget & { readonly itemKey: KinRecordKey })
       if (files !== null) setFailed(KIN_INVOICES.previewFailed);
       return;
     }
-    try {
-      const written = await writeGeneratedAttachmentFile({
-        bytes: kinBase64Bytes(file.base64),
-        attachment: { name: file.name, mimeType: file.mimeType },
-      });
-      shown?.file.dispose();
-      setShown({ file: written, name: file.name, mimeType: file.mimeType });
-      setPreviewed(recipe.name);
-    } catch (cause) {
-      setFailed(nativeViewerErrorMessage(cause));
-    }
+    const written = await writePreview(file);
+    if (typeof written === "string") return setFailed(written);
+    shown?.file.dispose();
+    setShown({ file: written, name: file.name, mimeType: file.mimeType });
+    setPreviewed(recipe.name);
   };
   const ready = recipe !== null && previewed === recipe.name;
   return (
