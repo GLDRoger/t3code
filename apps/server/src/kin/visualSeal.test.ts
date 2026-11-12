@@ -81,6 +81,8 @@ function connectedNow() {
   return n;
 }
 function foreign(markup) { var d = document.implementation.createHTMLDocument(""); d.open(); d.write("<li"); d.write(markup); d.close(); return d; }
+// A name that reads as harmless the first time it is turned into text, and as itself after.
+function tog(real) { var n = 0; return { toString: function () { return n++ ? real : "data-x"; } }; }
 function report(path, list) { new Image().src = new URL("${REPORT}/" + path + "?connected=" + list.join(","), location.href).href; }
 // Blind every built-in a guard written in page script might lean on, before trying anything.
 RegExp.prototype.exec = function () { return null; };
@@ -177,6 +179,9 @@ var attempts = [
   function () { var m = document.createElement("meta"), a = document.createAttribute("HTTP-EQUIV"); a.value = "refresh"; m.setAttributeNode(a); m.content = "0;url=${http}/meta-node"; document.head.appendChild(m); },
   function () { var m = document.createElement("meta"); m.toggleAttribute("http-equiv", true); document.head.appendChild(m); },
   function () { var m = document.createElement("meta"), a = document.createAttribute("http-equiv"); a.value = "refresh"; m.attributes.setNamedItem(a); document.head.appendChild(m); },
+  function () { var m = document.createElement("meta"); document.head.appendChild(m); m.setAttribute("content", "0;url=${http}/toggled-set-attribute"); m.setAttribute(tog("http-equiv"), "refresh"); },
+  function () { var m = document.createElement("meta"); document.head.appendChild(m); m.setAttribute("content", "0;url=${http}/toggled-set-attribute-ns"); m.setAttributeNS(null, tog("http-equiv"), "refresh"); },
+  function () { var m = document.createElement("meta"); document.head.appendChild(m); m.toggleAttribute(tog("http-equiv"), true); },
   function () { var d = document.createElement("div"); d.innerHTML = '<noscript><p title="</noscript>' + M + ' http-equiv=refresh content=0;url=${http}/noscript-meta>"></p></noscript>'; document.body.appendChild(d); },
   function () { var d = document.createElement("div"); d.innerHTML = '<svg><foreignObject>' + L + ' rel="preconnect" href="${http}/foreign-object"></foreignObject></svg><math><mi>' + L + ' rel=preconnect href=${http}/mathml></mi></math>'; document.body.appendChild(d); },
   function () { var t = document.createElement("textarea"); t.innerHTML = L + ' rel=preconnect href=${http}/textarea>'; var d = document.createElement("div"); d.innerHTML = t.value; document.body.appendChild(d); },
@@ -185,6 +190,7 @@ var attempts = [
   function () { var d = document.createElement("div"); d.contentEditable = "true"; document.body.appendChild(d); d.focus(); document.execCommand("insertHTML", false, M + ' http-equiv="refresh" content="0;url=${http}/exec-meta">'); },
   function () { customElements.define("kin-l", class extends HTMLLinkElement {}, { extends: "link" }); var l = new (customElements.get("kin-l"))(); l.rel = "preconnect"; l.href = "${http}"; document.head.appendChild(l); },
   function () { var n = 0; customElements.define("kin-m", class extends HTMLLinkElement {}, { get extends() { return n++ ? "link" : "p"; } }); var l = new (customElements.get("kin-m"))(); l.rel = "preconnect"; l.href = "${http}"; document.head.appendChild(l); },
+  function () { customElements.define("kin-t", class extends HTMLLinkElement {}, { extends: tog("link") }); var l = new (customElements.get("kin-t"))(); l.rel = "preconnect"; l.href = "${http}/toggled-extends"; document.head.appendChild(l); },
   function () { new XSLTProcessor(); },
   function () { var d = document.createElement("div"); d.innerHTML = '<noscript><p title="</noscript>' + L + ' rel=preconnect href=${http}>"></p></noscript>'; document.body.appendChild(d); },
   function () { var h = document.createElement("div"); document.body.appendChild(h); var root = h.attachShadow({ mode: "open" }); shadows.push(root); root.innerHTML = L + ' rel="preconnect" href="${http}">' + IF + ' srcdoc="${childAttr}"></iframe>'; },

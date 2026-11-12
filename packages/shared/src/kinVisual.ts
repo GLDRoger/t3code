@@ -432,18 +432,19 @@ place(this,call(join,a,[""])+(n==="writeln"?"\\n":""));};});});});
 wrap(DcP,"createElement",function(f){return function(n,o){var s=S(n);return call(f,this,[one(SEALED,low(s))?"kin-blocked":s,o]);};});
 wrap(DcP,"createElementNS",function(f){return function(ns,q,o){var u=ns==null?ns:S(ns),s=S(q);return call(f,this,[u,u===X&&one(SEALED,local(s))?"kin-blocked":s,o]);};});
 wrap(DOMImplementation.prototype,"createDocument",function(f){return function(ns,q,t){var u=ns==null?ns:S(ns),s=q==null?q:S(q);return call(f,this,[u,u===X&&s&&one(SEALED,local(s))?"kin-blocked":s,t]);};});
-wrap(W.CustomElementRegistry&&CustomElementRegistry.prototype,"define",function(f){return function(n,c,o){var e=o==null?undefined:o.extends;if(e!==undefined&&(one(SEALED,low(e))||low(e)==="meta"))throw new TE("kin: not here");return call(f,this,[n,c,e===undefined?o:{extends:S(e)}]);};});
+wrap(W.CustomElementRegistry&&CustomElementRegistry.prototype,"define",function(f){return function(n,c,o){var e=o==null?undefined:o.extends,s=e===undefined?e:S(e);if(s!==undefined&&(one(SEALED,low(s))||low(s)==="meta"))throw new TE("kin: not here");return call(f,this,[n,c,s===undefined?o:{extends:s}]);};});
 first(NP,"appendChild");first(NP,"insertBefore");first(NP,"replaceChild",true);
 [EP,DcP,FP].forEach(function(p){every(p,"append");every(p,"prepend");every(p,"replaceChildren");first(p,"moveBefore");});
 [EP,W.CharacterData&&CharacterData.prototype,W.DocumentType&&DocumentType.prototype].forEach(function(p){every(p,"before");every(p,"after");every(p,"replaceWith");});
 wrap(EP,"insertAdjacentElement",function(f){return function(where,n){return admit(n)?call(f,this,[where,n]):null;};});
 first(Range.prototype,"insertNode");first(Range.prototype,"surroundContents");
 (function(){var d=GD(DcP,"body");if(d&&d.set)lock(DcP,"body",{get:d.get,set:function(n){if(admit(n))call(d.set,this,[n]);}});})();
-// An http-equiv attribute is never set; a meta is only ever inserted without one.
-function attr(q){return low(local(q))==="http-equiv";}
-wrap(EP,"setAttribute",function(f){return function(q,v){if(attr(q))return;return call(f,this,[q,v]);};});
-wrap(EP,"setAttributeNS",function(f){return function(ns,q,v){if(attr(q))return;return call(f,this,[ns,q,v]);};});
-wrap(EP,"toggleAttribute",function(f){return function(q,force){if(attr(q))return false;return call(f,this,arguments.length>1?[q,force]:[q]);};});
+// An http-equiv attribute is never set; a meta is only ever inserted without one. A name is made
+// text once and that text is what the native call gets, so it cannot read differently there.
+function attr(s){return low(local(s))==="http-equiv";}
+wrap(EP,"setAttribute",function(f){return function(q,v){var s=S(q);if(attr(s))return;return call(f,this,[s,v]);};});
+wrap(EP,"setAttributeNS",function(f){return function(ns,q,v){var s=S(q);if(attr(s))return;return call(f,this,[ns,s,v]);};});
+wrap(EP,"toggleAttribute",function(f){return function(q,force){var s=S(q);if(attr(s))return false;return call(f,this,arguments.length>1?[s,force]:[s]);};});
 [[EP,"setAttributeNode"],[EP,"setAttributeNodeNS"],[NamedNodeMap.prototype,"setNamedItem"],[NamedNodeMap.prototype,"setNamedItemNS"]].forEach(function(e){wrap(e[0],e[1],function(f){return function(a){if(a&&attr(call(gAttrLocal,a)))return null;return call(f,this,[a]);};});});
 (function(){var d=GD(HTMLMetaElement.prototype,"httpEquiv");if(d&&d.set)lock(HTMLMetaElement.prototype,"httpEquiv",{get:d.get,set:function(){}});})();
 // What the reader pastes or drops arrives as text or through the scrubbed insertHTML path.
