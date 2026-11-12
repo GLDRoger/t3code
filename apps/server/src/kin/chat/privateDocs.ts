@@ -43,7 +43,7 @@ const privateRef = (ref: KinMessageRef): KinMessageRef => ({
   key: ref.key,
   version: ref.version,
   section: null,
-  title: PRIVATE_DOC as KinMessageRef["title"],
+  title: PRIVATE_DOC,
   sectionTitle: null,
 });
 

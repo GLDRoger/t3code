@@ -870,11 +870,21 @@ const make = Effect.gen(function* () {
       lastMessage.author.memberId !== member.memberId
         ? yield* repo.getPerson({ orgId: chat.orgId, personId: lastMessage.author.personId })
         : Option.none();
+    const shown =
+      lastMessage === null
+        ? null
+        : (yield* docsForViewer(identity.orgId, identity, {
+            messages: [lastMessage],
+            widgets: [],
+          }).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.mapError(toPersistenceSqlError("KinChatService.privateDocs")),
+          )).messages[0]!;
     return {
       ...chat,
       // A list row never carries a group's member list; `kin.chat.members` does.
       members: group ? [member] : yield* repo.listMembers(chat),
-      lastMessage,
+      lastMessage: shown,
       ...(Option.isSome(author) ? { lastAuthorName: author.value.displayName } : {}),
       unread: yield* repo.unreadCount(member),
       working:

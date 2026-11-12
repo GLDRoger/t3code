@@ -46,7 +46,7 @@ const message: KinMessage = {
       key: "D-1",
       version: 1,
       section: "pricing",
-      title: "Invented plan" as never,
+      title: "Invented plan",
       sectionTitle: "Pricing",
     },
   ],
@@ -59,7 +59,7 @@ const message: KinMessage = {
   sentBy: null,
   createdAt: at,
   editedAt: null,
-} as KinMessage;
+} satisfies KinMessage;
 const card = {
   orgId,
   chatId,
@@ -87,7 +87,7 @@ const card = {
   pinnedAt: null,
   closedAt: null,
   updatedAt: at,
-} as KinWidget;
+} satisfies KinWidget;
 
 it.effect("shows a doc labelled sensitive since as a private document to all but the owner", () =>
   Effect.gen(function* () {
