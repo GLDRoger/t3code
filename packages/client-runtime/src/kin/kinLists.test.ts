@@ -14,8 +14,15 @@ import {
   kinListColumns,
   kinListEditDraftOf,
   kinListEditInput,
+  kinAmountCheck,
+  kinFieldCheck,
   kinListEntryView,
+  kinListFilterParam,
   kinListHeader,
+  kinListNarrowings,
+  kinMoneyDraft,
+  kinParseMoney,
+  kinPrincipalValue,
   kinListQuery,
   kinListRow,
   kinMoneyText,
@@ -24,6 +31,7 @@ import {
   kinPeriodLabel,
   kinTotalsText,
   type KinListContext,
+  type KinListFieldView,
 } from "./kinLists.ts";
 
 // Invented lists, people and amounts only.
@@ -308,6 +316,7 @@ describe("a list by its definition", () => {
     expect(kinListEditInput(orgId, def, draft)).toEqual({ ok: true, input: null });
     expect(
       kinListEditInput(orgId, def, {
+        ...draft,
         name: " Kit ",
         stateLabels: { ...draft.stateLabels, dropped: "Sold" },
       }),
@@ -318,5 +327,140 @@ describe("a list by its definition", () => {
     expect(
       kinListEditInput(orgId, def, { ...draft, stateLabels: { ...draft.stateLabels, open: " " } }),
     ).toEqual({ ok: false, problem: "Every status needs a name." });
+  });
+
+  it("shows a category as it was written unless the list labels it, and saves only label changes", () => {
+    const def = list({
+      amount: true,
+      categories: ["gst" as never, "income tax" as never],
+      categoryLabels: { gst: "GST" as never },
+    });
+    expect(kinListRow(record({ listCategory: "gst" as never }), def, context).cells.category).toBe(
+      "GST",
+    );
+    expect(
+      kinListRow(record({ listCategory: "income tax" as never }), def, context).cells.category,
+    ).toBe("income tax");
+    const draft = kinListEditDraftOf(def);
+    expect(draft.categoryLabels).toEqual({ gst: "GST", "income tax": "income tax" });
+    expect(
+      kinListEditInput(orgId, def, {
+        ...draft,
+        categoryLabels: { gst: " ", "income tax": "Income tax" },
+        payments: true,
+      }),
+    ).toEqual({
+      ok: true,
+      input: {
+        orgId,
+        list: "equipment",
+        rev: 3,
+        categoryLabels: { gst: null, "income tax": "Income tax" },
+        payments: true,
+      },
+    });
+  });
+
+  it("leads with what is still owed or was received, and makes none a filter of its own", () => {
+    const inr = (minor: number) => [{ minor, currency: "INR" }];
+    const def = list({ amount: true, payments: true, categories: ["rent" as never] });
+    const byCategory = { ...KIN_LIST_DEFAULT_FILTER, groupBy: "category" as const };
+    const header = kinListHeader(
+      def,
+      byCategory,
+      {
+        total: inr(15_000_000),
+        owed: inr(6_000_000),
+        groups: [
+          { group: "rent", count: 1, total: inr(10_000_000), owed: inr(6_000_000) },
+          { group: null, count: 1, total: inr(5_000_000), owed: [] },
+        ],
+      },
+      2,
+    );
+    expect(header.figures).toEqual([
+      { id: "owed", label: "Still owed", lines: ["₹60,000"] },
+      { id: "total", label: "Billed", lines: ["₹1,50,000"] },
+    ]);
+    expect(header.groups.map((group) => [group.label, group.totals, group.billed])).toEqual([
+      ["rent", ["₹60,000"], "₹1,00,000 billed"],
+      ["No category", ["Nothing"], "₹50,000 billed"],
+    ]);
+    const none = header.groups[1]!.narrowed!;
+    expect(kinListQuery(orgId, def.list, none)).toMatchObject({ listCategory: null });
+    expect(kinListNarrowings(none, def)[0]).toMatchObject({ label: "No category" });
+    expect(kinListQuery(orgId, def.list, { ...byCategory, noParty: true })).toMatchObject({
+      party: null,
+    });
+    // A paid window leads with the payments made in it; a plain list has one unnamed figure.
+    expect(
+      kinListHeader(
+        def,
+        KIN_LIST_DEFAULT_FILTER,
+        { total: inr(100), owed: inr(60), received: inr(40), groups: [] },
+        1,
+      ).figures.map((figure) => figure.label),
+    ).toEqual(["Paid", "Billed"]);
+    expect(
+      kinListHeader(
+        list({ amount: true }),
+        KIN_LIST_DEFAULT_FILTER,
+        { total: inr(100), groups: [] },
+        1,
+      ).figures,
+    ).toEqual([{ id: "total", label: null, lines: ["₹1"] }]);
+    expect(kinListFilterParam(JSON.stringify({ noParty: true, noCategory: true }))).toMatchObject({
+      noParty: true,
+      noCategory: true,
+      party: null,
+      category: null,
+    });
+  });
+
+  it("turns each kind of edited detail into what the host stores, or says why not", () => {
+    const check = (type: KinListFieldView["type"], draft: string | ReadonlyArray<string> | null) =>
+      kinFieldCheck({ type, label: "Detail" }, draft, "INR");
+    expect(check("text", "  Q3 lease ")).toEqual({ ok: true, value: "Q3 lease" });
+    expect(check("text", " ")).toEqual({ ok: true, value: null });
+    expect(check("text", "x".repeat(501)).ok).toBe(false);
+    expect(check("choice", "upi")).toEqual({ ok: true, value: "upi" });
+    expect(check("date", "2026-11-10")).toEqual({ ok: true, value: "2026-11-10" });
+    expect(check("date", "10 Nov").ok).toBe(false);
+    expect(check("money", "9,000")).toEqual({
+      ok: true,
+      value: { minor: 900_000, currency: "INR" },
+    });
+    expect(check("money", "$120.50")).toEqual({
+      ok: true,
+      value: { minor: 12_050, currency: "USD" },
+    });
+    expect(check("money", "lots").ok).toBe(false);
+    expect(check("file", ["a", "b"])).toEqual({ ok: true, value: ["a", "b"] });
+    expect(check("file", [])).toEqual({ ok: true, value: null });
+    expect(
+      check(
+        "file",
+        Array.from({ length: 11 }, (_, index) => `f${index}`),
+      ).ok,
+    ).toBe(false);
+    expect(kinPrincipalValue({ _tag: "agent", agentId: "fin" as never })).toBe("agent:fin");
+
+    const received = { minor: 4_000_000, currency: "INR" };
+    expect(kinAmountCheck("", "INR", null)).toEqual({ ok: true, value: null });
+    expect(kinAmountCheck("", "INR", received).ok).toBe(false);
+    expect(kinAmountCheck("USD 500", "INR", received).ok).toBe(false);
+    expect(kinAmountCheck("39,999.99", "INR", received)).toEqual({
+      ok: false,
+      problem:
+        "₹40,000.00 has already been received, so the amount can't be less. Take a payment back first.",
+    });
+    expect(kinAmountCheck("40000", "INR", received)).toEqual({ ok: true, value: received });
+    // What an edit starts with reads back as the same amount.
+    for (const money of [
+      { minor: 5_000_050, currency: "INR" },
+      { minor: 12_000, currency: "USD" },
+      { minor: 1200, currency: "JPY" },
+    ])
+      expect(kinParseMoney(kinMoneyDraft(money, "INR"), "INR")).toEqual(money);
   });
 });

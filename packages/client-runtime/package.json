@@ -703,6 +703,10 @@
       "types": "./src/kin/kinDocs.ts",
       "default": "./src/kin/kinDocs.ts"
     },
+    "./kin/kinDocChanges": {
+      "types": "./src/kin/kinDocChanges.ts",
+      "default": "./src/kin/kinDocChanges.ts"
+    },
     "./kin/kinDocsStream": {
       "types": "./src/kin/kinDocsStream.ts",
       "default": "./src/kin/kinDocsStream.ts"

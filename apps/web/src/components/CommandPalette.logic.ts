@@ -555,6 +555,8 @@ export function filterCommandPaletteGroups(input: {
   threadSearchItems: ReadonlyArray<CommandPaletteActionItem>;
   /** Threads whose messages match, best first; threads already listed are skipped. */
   threadMessageItems?: ReadonlyArray<CommandPaletteActionItem>;
+  /** Kin work items and docs the server matched, in its order; they are not ranked again here. */
+  kinItems?: ReadonlyArray<CommandPaletteActionItem>;
   now?: number;
 }): CommandPaletteGroup[] {
   if (input.allOptions && input.isInSubmenu) {
@@ -655,9 +657,16 @@ export function filterCommandPaletteGroups(input: {
   const listed = new Set(groups.flatMap((group) => group.items.map((item) => item.value)));
   // The items arrive cut to what the palette shows; see `nextShownOrder`.
   const messageItems = (input.threadMessageItems ?? []).filter((item) => !listed.has(item.value));
-  return messageItems.length === 0
-    ? groups
-    : [...groups, { value: "threads-messages", label: "In messages", items: messageItems }];
+  const kinItems = input.kinItems ?? [];
+  return [
+    ...groups,
+    ...(messageItems.length === 0
+      ? []
+      : [{ value: "threads-messages", label: "In messages", items: messageItems }]),
+    ...(kinItems.length === 0
+      ? []
+      : [{ value: "kin-search", label: "Work and docs", items: kinItems }]),
+  ];
 }
 
 /** Every option inside a submenu as one row, e.g. "New thread in t3code" or "Change theme: Dracula". */

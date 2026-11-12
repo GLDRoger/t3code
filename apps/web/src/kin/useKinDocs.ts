@@ -4,6 +4,7 @@ import {
   KIN_SEARCH_INITIAL,
   createKinSearch,
   kinDocChat,
+  kinDocsQuery,
   kinDocsSameFilter,
   kinPendingRefAtom,
   kinPendingRefKey,
@@ -70,7 +71,7 @@ export function useKinDocsList({ environmentId, orgId }: KinWorkTarget, seq: num
           mapPage(
             await kinClient.docsList.run(appAtomRegistry, {
               environmentId,
-              input: { orgId, archived: filter.archived, ...page },
+              input: { ...kinDocsQuery(orgId, filter), ...page },
             }),
             (value) => ({ ...value, rows: value.docs }),
           ),
@@ -175,6 +176,42 @@ export function useKinSearch(
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- abandons the search in flight when its box leaves the screen
   useEffect(() => search.dispose, [search]);
   return { state, search };
+}
+
+/** The work items and docs matching what is typed in the command palette; none without a host. */
+export function useKinPaletteHits(target: KinWorkTarget | null, text: string) {
+  const [state, setState] = useState<KinSearchState>(KIN_SEARCH_INITIAL);
+  const environmentId = target?.environmentId ?? null;
+  const orgId = target?.orgId ?? null;
+  const [held, setHeld] = useState<{
+    readonly at: string | null;
+    readonly search: ReturnType<typeof createKinSearch> | null;
+  }>({ at: null, search: null });
+  const at = environmentId === null || orgId === null ? null : `${environmentId}:${orgId}`;
+  if (held.at !== at)
+    setHeld({
+      at,
+      search:
+        environmentId === null || orgId === null
+          ? null
+          : createKinSearch({
+              onChange: setState,
+              schedule: kinSchedule,
+              read: ({ text: asked, closed }) =>
+                kinClient.search.run(appAtomRegistry, {
+                  environmentId,
+                  input: { orgId, text: asked, closed },
+                }),
+            }),
+    });
+  const { search } = held;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- abandons the search in flight when the palette or its host goes
+  useEffect(() => search?.dispose, [search]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the palette owns its box; the server is asked as it settles
+  useEffect(() => {
+    search?.setText(text);
+  }, [search, text]);
+  return search === null || state.answered !== text.trim() ? [] : (state.hits ?? []);
 }
 
 /**

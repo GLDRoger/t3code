@@ -143,8 +143,12 @@ export function kinMoneyView(
   // Issued and not yet paid in full: the state the host counts as owed.
   const owing = { show: "waiting" as const };
   // Paid expenses by their own date: what the host counts as spent.
-  const spentIn = (period: KinListFilter["period"], category?: string) =>
-    open(expenses, { show: "done", period, ...(category === undefined ? {} : { category }) });
+  const spentIn = (period: KinListFilter["period"], category?: string | null) =>
+    open(expenses, {
+      show: "done",
+      period,
+      ...(category === undefined ? {} : category === null ? { noCategory: true } : { category }),
+    });
   const receivedIn = (paid: KinListFilter["paid"]) => open(invoices, { paid });
   const thisMonth = kinMonthPeriod(summary.thisMonth);
   const year = kinFinancialYearPeriod(summary.financialYear);
@@ -193,7 +197,9 @@ export function kinMoneyView(
       invoices: plural(client.invoices, "invoice"),
       open: open(invoices, {
         ...owing,
-        party: client.party === null ? null : { key: client.party.key, title: client.party.title },
+        ...(client.party === null
+          ? { noParty: true }
+          : { party: { key: client.party.key, title: client.party.title } }),
       }),
     })),
     monthLabel: kinMonthLabel(summary.thisMonth),
@@ -215,9 +221,10 @@ export function kinMoneyView(
     },
     categories: summary.spent.thisMonth.byCategory.map((row) => ({
       key: row.category ?? "",
-      label: row.category === null ? KIN_MONEY.uncategorised : kinCategoryLabel(row.category),
+      label:
+        row.category === null ? KIN_MONEY.uncategorised : kinCategoryLabel(row.category, expenses),
       amount: kinTotalsText(row.total),
-      open: row.category === null ? spentIn(thisMonth) : spentIn(thisMonth, row.category),
+      open: spentIn(thisMonth, row.category),
     })),
     yearLabel: `${kinFinancialYearLabel(summary.financialYear)}, April to March`,
     yearReceived: {
