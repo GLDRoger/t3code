@@ -7,6 +7,7 @@ import {
   KIN_WORK_WS_METHODS,
   KinAgentId,
   type KinChatError,
+  KinFinanceRpcs,
   KinOrgId,
   KinPersonId,
   KinRecordId,
@@ -30,7 +31,9 @@ import { sharedToolAllowed } from "../lead/SharedTools.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { importWork } from "./importWork.ts";
 import * as KinRecords from "./KinRecords.ts";
+import * as LeadMoney from "./leadMoney.ts";
 import * as LeadWork from "./leadWork.ts";
+import { KinWorkToolkit } from "./mcp/tools.ts";
 import * as OwnerWork from "./ownerWork.ts";
 import { buildWorkSection } from "./workPrompt.ts";
 
@@ -357,7 +360,9 @@ it.effect(
       yield* seed;
       yield* turn("mate", "shared");
       const shared = { orgId, agentId: lead, wakeupId: "wake" };
-      for (const tool of ["records_query", "record_get", "record_create", "record_update"])
+      // Slice 5's list and money tools too: none of them is shared-safe yet.
+      assert.lengthOf(Object.keys(KinWorkToolkit.tools), 9);
+      for (const tool of Object.keys(KinWorkToolkit.tools))
         assert.isFalse(yield* sharedToolAllowed(shared, tool, {}), tool);
       assert.include(
         yield* Effect.flip(
@@ -365,9 +370,28 @@ it.effect(
         ),
         { reason: "not_allowed" },
       );
-      // Every Work method, the clients, contacts and projects ones included.
-      const methods = Object.values(KIN_WORK_WS_METHODS);
-      assert.lengthOf(methods, 20);
+      // The services check again, so a turn that became shared since the gate is refused too.
+      const refused = [
+        yield* Effect.flip(
+          LeadMoney.define(scopeOf(lead), { sourceEventId: "ask-event", template: "expenses" }),
+        ),
+        yield* Effect.flip(
+          LeadMoney.payment(scopeOf(lead), {
+            sourceEventId: "ask-event",
+            key: "INV-1",
+            amount: "100",
+            paidOn: "2026-11-11",
+          }),
+        ),
+        yield* Effect.flip(LeadMoney.profile(scopeOf(lead), {})),
+      ];
+      for (const error of refused) assert.include(error, { reason: "not_allowed" });
+      // Every Work method: the clients, contacts and projects ones, lists, money and the profile.
+      const methods = [
+        ...Object.values(KIN_WORK_WS_METHODS),
+        ...KinFinanceRpcs.map((rpc) => rpc._tag),
+      ];
+      assert.lengthOf(methods, 28);
       for (const method of methods)
         assert.isTrue(
           (yield* Effect.exit(authorizeRpc([AuthKinChatScope], method, { orgId })))._tag ===

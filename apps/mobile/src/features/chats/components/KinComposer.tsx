@@ -9,7 +9,7 @@ import {
 import { useNavigation } from "@react-navigation/native";
 import { AsyncResult } from "effect/reactivity";
 import { useState, type RefObject } from "react";
-import { Platform, View } from "react-native";
+import { Platform, Pressable, View } from "react-native";
 
 import { ComposerAttachmentStrip } from "../../../components/ComposerAttachmentStrip";
 import * as Dialog from "../../../components/ui/Dialog";
@@ -65,7 +65,14 @@ import {
   kinMentionsIn,
   type KinMentionCandidate,
 } from "@t3tools/client-runtime/kin/kinGroups";
+import {
+  kinDocAskPlaceholder,
+  kinDocRefLabel,
+  kinPendingRefAtom,
+  kinPendingRefKey,
+} from "@t3tools/client-runtime/kin/kinDocs";
 import { KIN_MESSAGE_MAX_LENGTH } from "@t3tools/client-runtime/kin/kinOutbox";
+import { SymbolView } from "../../../components/ui/AppSymbol";
 import { Chip } from "../../../components/ui/Chip";
 import { deliverKinOutbox, kinOutbox } from "../state/kinOutboxDelivery";
 
@@ -134,6 +141,8 @@ export function KinComposer(props: {
   const draft = useComposerDraft(draftKey);
   const { editorRef } = props;
   const full = useAtomValue(kinOutbox.fullAtom(props.environmentId));
+  const pendingAtom = kinPendingRefAtom(kinPendingRefKey(props.environmentId, props.chatId));
+  const pending = useAtomValue(pendingAtom);
   const [contentHeight, setContentHeight] = useState(0);
   const { lineHeight } = useComposerTextRole();
   // The thread composer's sizing: larger controls on iPad and with the sidebar's tab picker.
@@ -258,12 +267,14 @@ export function KinComposer(props: {
     if (attachments === null) return;
     // The outbox entry owns the uploads from here; only this device's copies are swept below.
     clearComposerDraftContent(draftKey, { deferAttachmentCleanup: true });
+    const held = appAtomRegistry.get(pendingAtom);
     const queued = await kinOutbox.enqueue({
       environmentId: props.environmentId,
       chatId: props.chatId,
       body,
       attachments,
       mentions: kinMentionsIn(body, mentionable),
+      ...(held === null ? {} : { refs: [held.ref] }),
     });
     if (queued._tag !== "queued") {
       restoreDraft(draftKey, body);
@@ -275,6 +286,7 @@ export function KinComposer(props: {
         ({ uploadedAttachmentId: _id, uploadEnvironmentId: _environment, ...local }) => local,
       ),
     );
+    if (appAtomRegistry.get(pendingAtom) === held) appAtomRegistry.set(pendingAtom, null);
     props.onSend();
     await deliverKinOutbox();
   };
@@ -317,6 +329,25 @@ export function KinComposer(props: {
               }}
             />
           ))}
+        </View>
+      )}
+      {pending === null ? null : (
+        <View className="flex-row items-center gap-1 px-1 pb-1">
+          <Chip size="small" icon="doc.text" label={kinDocRefLabel(pending.ref)} />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Remove ${kinDocRefLabel(pending.ref)}`}
+            hitSlop={12}
+            onPress={() => appAtomRegistry.set(pendingAtom, null)}
+            className="h-8 w-8 items-center justify-center active:opacity-60"
+          >
+            <SymbolView
+              name="xmark"
+              size={12}
+              tintColorClassName="accent-icon-muted"
+              type="monochrome"
+            />
+          </Pressable>
         </View>
       )}
       <ComposerSurface
@@ -401,7 +432,9 @@ export function KinComposer(props: {
                 inlineTokens={false}
                 multiline
                 value={draft.text}
-                placeholder={`Message ${props.recipient}`}
+                placeholder={
+                  pending === null ? `Message ${props.recipient}` : kinDocAskPlaceholder(pending)
+                }
                 readOnly={voice.freezesEditor || sending}
                 selection={selection}
                 onSelectionChange={setSelection}

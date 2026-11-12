@@ -16,7 +16,6 @@ import { ErrorBanner } from "../../../components/ui/ErrorBanner";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
 import { kinClient } from "../state/kinClient";
-import { KinApprovalCard } from "../widgets/KinApprovalCard";
 import { useEnrolApproverKey, useKinApproverKey } from "./useKinApproverKey";
 
 type KinApprovalsParams = { readonly environmentId: string; readonly orgId: string };
@@ -84,7 +83,7 @@ function ApprovalsBody(props: { readonly environmentId: EnvironmentId; readonly 
   const confirmReplace = () =>
     Alert.alert(
       "Replace this phone's key?",
-      "Kin stops accepting approvals from the old key. You confirm the new one like the first.",
+      "Kin stops accepting approvals from the old key. Then allow the new one in Kin on the web or desktop.",
       [
         { text: "Cancel", style: "cancel" },
         { text: "Replace key", style: "destructive", onPress: () => void start(true) },
@@ -152,7 +151,7 @@ function ApprovalsBody(props: { readonly environmentId: EnvironmentId; readonly 
   const codeLine = (code: string) => (
     <Text
       selectable
-      accessibilityLabel={`Code ${code.split("").join(" ")}`}
+      accessibilityLabel={`Number ${code.split("").join(" ")}`}
       className="py-2 font-mono text-[34px] tracking-[6px] text-foreground"
     >
       {`${code.slice(0, 3)} ${code.slice(3)}`}
@@ -198,19 +197,13 @@ function ApprovalsBody(props: { readonly environmentId: EnvironmentId; readonly 
       );
     case "pending":
       return section(
-        status.first
-          ? "Confirm this phone on the Kin host"
-          : "Approve this phone from your other one",
+        status.code === null ? "This request expired" : "Allow this phone on your computer",
         status.code === null
-          ? ["The code expired. Make a new key to get another."]
-          : status.first
-            ? [
-                "In a shell on the Kin host, run t3 kin approvals confirm-key, pick this key, and type this code. It works for 10 minutes.",
-              ]
-            : [
-                "On the phone that already approves, open Approvals and approve this key with Face ID.",
-                "Lost that phone? Run t3 kin approvals confirm-key --recover on the Kin host and type this code instead.",
-              ],
+          ? ["Nobody allowed this phone within 10 minutes. Make a new key to ask again."]
+          : [
+              "Open Kin on the web or desktop, go to Settings, then Approvals, and tap Allow next to this phone. Check it shows this same number first.",
+              "No computer to hand? In a shell on the Kin host, run kin approvals confirm-key and type this number.",
+            ],
         <>
           {status.code === null ? null : codeLine(status.code)}
           {keyLine(status.thumbprint)}
@@ -254,20 +247,8 @@ function ApprovalsBody(props: { readonly environmentId: EnvironmentId; readonly 
         </>,
       );
     case "active":
-      return (
-        <>
-          {section("This phone approves for Kin", [
-            `Its key is in ${HARDWARE[status.key.hardware] ?? "secure hardware"}. Every approval asks for Face ID.`,
-          ])}
-          {status.enrolments.map((enrolment) => (
-            <KinApprovalCard
-              key={enrolment.actionId}
-              environmentId={environmentId}
-              actionId={enrolment.actionId}
-              revision={0}
-            />
-          ))}
-        </>
-      );
+      return section("This phone approves for Kin", [
+        `Its key is in ${HARDWARE[status.key.hardware] ?? "secure hardware"}. Every approval asks for Face ID. To add or remove a phone, use Settings, then Approvals, in Kin on the web or desktop.`,
+      ]);
   }
 }

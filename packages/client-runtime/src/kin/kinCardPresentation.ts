@@ -1,5 +1,6 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import {
+  KIN_DOC_CARD,
   KIN_MEMORY_CHANGES_CARD,
   KIN_WORKER_PUBLISH_CARD,
   KinWorkerPublishCard,
@@ -17,6 +18,8 @@ import * as Schema from "effect/Schema";
 
 import { kinHeldLine } from "./kinAgentRetire.ts";
 import { kinApprovalWidgetView, type KinApprovalWidgetView } from "./kinApprovalPresentation.ts";
+import { kinChartCardView, type KinChartView } from "./kinChart.ts";
+import { kinDocCardView, type KinDocCardView } from "./kinDocs.ts";
 import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks.ts";
 import { kinSentences } from "./kinScreenState.ts";
 import { kinChoiceCardView, type KinChoiceCardView } from "./kinChoicePresentation.ts";
@@ -58,9 +61,11 @@ export type KinCardView =
   | { readonly kind: "task"; readonly task: KinTaskCardView }
   | { readonly kind: "deferral"; readonly deferral: KinDeferralCardView }
   | { readonly kind: "choice"; readonly choice: KinChoiceCardView }
+  | { readonly kind: "chart"; readonly chart: KinChartView }
   | { readonly kind: "digest"; readonly digest: KinDigestCardView }
   | { readonly kind: "memory_changes"; readonly changes: KinMemoryChangesCardView }
   | { readonly kind: "approval"; readonly approval: KinApprovalWidgetView }
+  | { readonly kind: "doc"; readonly doc: KinDocCardView }
   | { readonly kind: "missing" }
   /** A card this build can't draw: its own plain words, or nothing when it has none. */
   | { readonly kind: "unknown"; readonly text: string | null };
@@ -552,6 +557,10 @@ function kinLiveCardView(
       const choice = kinChoiceCardView(widget);
       return choice === null ? unknown(widget) : { kind: "choice", choice };
     }
+    case "chart": {
+      const chart = kinChartCardView(widget);
+      return chart === null ? unknown(widget) : { kind: "chart", chart };
+    }
     case "routine": {
       const card = decodeRoutine(widget.state);
       return Option.isSome(card)
@@ -565,6 +574,10 @@ function kinLiveCardView(
     case KIN_WORKER_PUBLISH_CARD: {
       const deferral = kinWorkerPublishCardView(widget);
       return deferral === null ? unknown(widget) : { kind: "deferral", deferral };
+    }
+    case KIN_DOC_CARD: {
+      const doc = kinDocCardView(widget);
+      return doc === null ? unknown(widget) : { kind: "doc", doc };
     }
     case KIN_MEMORY_CHANGES_CARD: {
       const changes = kinMemoryChangesView(widget);

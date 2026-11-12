@@ -42,6 +42,7 @@ import { Switch } from "../components/ui/switch";
 import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { cn } from "../lib/utils";
 import { useAtomCommand } from "../state/use-atom-command";
+import { KinDocsUnder } from "./KinDocsList";
 import { KinClientDialog, KinContactDialog, KinProjectDialog } from "./KinWorkForms";
 import {
   KinWorkHealthBadge,
@@ -255,6 +256,7 @@ export function KinWorkClientPage(
     readonly onOpenTask: (key: KinRecordKey) => void;
     readonly onOpenClient: (key: KinRecordKey) => void;
     readonly onOpenProject: (key: KinRecordKey) => void;
+    readonly onOpenDoc: (key: KinRecordKey) => void;
     /** Opens the task list narrowed to this client. */
     readonly onSeeAll: (party: KinWorkRef) => void;
     /** Opens the new-task form already about this client; null where tasks can't be added. */
@@ -464,6 +466,13 @@ function ClientPage(
             </ul>
           )}
         </KinWorkSection>
+        <KinDocsUnder
+          environmentId={props.environmentId}
+          orgId={props.orgId}
+          directory={props.directory}
+          under={{ party: props.clientKey }}
+          onOpen={props.onOpenDoc}
+        />
         <KinWorkSection
           title={KIN_CLIENTS.contacts}
           action={

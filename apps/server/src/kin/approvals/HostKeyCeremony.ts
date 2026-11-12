@@ -34,8 +34,6 @@ export type KinPendingEnrolment = {
   readonly createdAt: number;
   readonly expiresAt: number;
   readonly attemptsLeft: number;
-  /** The org already has an active key: only `--recover` confirms this one here. */
-  readonly needsRecovery: boolean;
 };
 
 export type KinHostConfirmInput = {
@@ -43,7 +41,7 @@ export type KinHostConfirmInput = {
   readonly thumbprint: KinKeyThumbprint;
   readonly sessionId: AuthSessionId;
   readonly code: string;
-  /** Lost-device recovery: revoke this person's other keys, then activate this one. */
+  /** Also revoke this person's other keys, for a lost phone. */
   readonly recover: boolean;
 };
 
@@ -60,9 +58,9 @@ type Attempt =
   | { readonly _tag: "confirmed"; readonly row: KeyRow; readonly revoked: ReadonlyArray<KeyRow> };
 
 /**
- * The host-side bootstrap ceremony behind `t3 kin approvals confirm-key`: the owner, in a shell
- * on the Kin host, types the code the phone shows. No RPC reaches it, so no remote session,
- * agent or model can confirm a key; the code only proves the owner is looking at that phone.
+ * The host's way to allow a phone, behind `kin approvals confirm-key`, beside Settings' Allow:
+ * the owner, in a shell on the Kin host, types the code the phone shows. No RPC reaches it; the
+ * code only proves the owner is looking at that phone.
  */
 export class KinHostKeyCeremony extends Context.Service<
   KinHostKeyCeremony,
@@ -92,11 +90,8 @@ const make = Effect.gen(function* () {
           client: string | null;
           expires_at: number;
           attempts: number;
-          has_active: number;
         }
-      >`SELECT k.*, s.subject, s.client_label AS client, c.expires_at, c.attempts,
-          EXISTS (SELECT 1 FROM kin_approver_keys a
-            WHERE a.org_id = k.org_id AND a.state = 'active') AS has_active
+      >`SELECT k.*, s.subject, s.client_label AS client, c.expires_at, c.attempts
         FROM kin_approver_key_confirmations c
         JOIN kin_approver_keys k ON k.org_id = c.org_id AND k.thumbprint = c.thumbprint
         LEFT JOIN auth_sessions s ON s.session_id = c.session_id
@@ -117,7 +112,6 @@ const make = Effect.gen(function* () {
         createdAt: row.created_at,
         expiresAt: row.expires_at,
         attemptsLeft: MAX_CODE_ATTEMPTS - row.attempts,
-        needsRecovery: row.has_active === 1,
       }));
     },
     Effect.catch(internal("KinHostKeyCeremony.listPending")),
@@ -127,12 +121,6 @@ const make = Effect.gen(function* () {
     sql<KeyRow>`SELECT * FROM kin_approver_keys
       WHERE org_id = ${input.orgId} AND thumbprint != ${input.thumbprint} AND state != 'revoked'
       ORDER BY created_at, thumbprint`;
-  const needsRecover = (others: ReadonlyArray<KeyRow>, input: KinHostConfirmInput) =>
-    others.some((key) => key.state === "active") && !input.recover;
-  const alreadyActive = refuse(
-    "invalid_state",
-    "This org already has an approver key. Approve the new phone from that one, or pass --recover if it's lost.",
-  );
 
   /** One transaction: count the try, check the code against the exact tuple, then activate. */
   const attempt = (input: KinHostConfirmInput, now: number) =>
@@ -187,11 +175,10 @@ const make = Effect.gen(function* () {
             ),
           );
         }
-        const others = yield* othersOf(input);
-        if (needsRecover(others, input)) return refused(alreadyActive);
         // Recovery: the lost phone's keys, and this person's other pending ones, stop counting first.
         const revoked: Array<KeyRow> = [];
         if (input.recover) {
+          const others = yield* othersOf(input);
           for (const other of others.filter((key) => key.human_id === row.human_id)) {
             const thumbprint = other.thumbprint as KinKeyThumbprint;
             const done = yield* store.revokeRow(
@@ -209,10 +196,9 @@ const make = Effect.gen(function* () {
             });
           }
         }
-        const active = yield* store.activate(row, now, !input.recover);
+        const active = yield* store.activate(row, now);
         if (active === undefined)
-          return refused(refuse("invalid_state", "Another key was confirmed first."));
-        yield* store.cancelEnrolment(ref, "confirmed_on_host", now);
+          return refused(refuse("invalid_state", "This phone's key changed; ask again from it."));
         yield* audit.append({
           orgId: input.orgId,
           event: "key_confirmed",
@@ -230,8 +216,6 @@ const make = Effect.gen(function* () {
       if (!/^\d{6}$/.test(input.code))
         return yield* refuse("bad_code", "The code is the 6 digits the phone shows.");
       yield* store.reconcileSessions(input.orgId);
-      // Checked again inside the transaction; this only spares a try on a missing --recover.
-      if (needsRecover(yield* othersOf(input), input)) return yield* alreadyActive;
       const result = yield* attempt(input, yield* Clock.currentTimeMillis);
       if (result._tag === "refused") return yield* result.error;
       return {

@@ -15,6 +15,7 @@ import * as Schema from "effect/Schema";
 import * as ClaudeAdapterV2 from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { hookAllows, kinSecretVariables } from "../claudeConfinement.testkit.ts";
 import * as WorkIsolation from "./WorkIsolation.ts";
+import * as WorkSandbox from "./workSandbox.ts";
 
 // What T3 would hand any Claude thread, with every way to widen it the adapter knows.
 const options = ClaudeAdapterV2.makeClaudeQueryOptions({
@@ -33,6 +34,7 @@ const options = ClaudeAdapterV2.makeClaudeQueryOptions({
   sdkSettings: {
     permissions: { allow: ["Bash(curl:*)", "WebFetch"] },
     alwaysThinkingEnabled: true,
+    sandbox: { enabled: false, allowUnsandboxedCommands: true, excludedCommands: ["*"] },
   },
   mcpServers: {
     t3: { type: "http", url: "http://127.0.0.1/mcp" },
@@ -51,6 +53,7 @@ const opened = Effect.fn("WorkIsolationTest.opened")(function* (
     readonly cwd: string;
     readonly env?: NodeJS.ProcessEnv;
     readonly hooks?: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions["hooks"];
+    readonly sandbox?: Layer.Layer<WorkSandbox.KinWorkSandbox>;
   },
 ) {
   const seen: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
@@ -78,10 +81,18 @@ const opened = Effect.fn("WorkIsolationTest.opened")(function* (
           cwd: overrides.cwd,
           ...(overrides.env === undefined ? {} : { env: overrides.env }),
           ...(overrides.hooks === undefined ? {} : { hooks: overrides.hooks }),
+          sandbox: { enabled: false, allowUnsandboxedCommands: true },
         },
       })
       .pipe(Effect.exit);
-  }).pipe(Effect.provide(WorkIsolation.claudeQueryRunner(base)));
+  }).pipe(
+    Effect.provide(
+      WorkIsolation.claudeQueryRunnerWith(
+        base,
+        overrides.sandbox ?? WorkSandbox.fileOnly("no sandbox in this test"),
+      ),
+    ),
+  );
   return seen[0]!;
 });
 
@@ -156,6 +167,7 @@ it.effect(
       for (const tool of ["Bash", "Task", "Agent", "Workflow", "WebFetch", "WebSearch"])
         assert.include(work.disallowedTools ?? [], tool);
       assert.isUndefined(work.mcpServers);
+      assert.isUndefined(work.sandbox);
       assert.isUndefined(work.allowedTools);
       assert.isUndefined(work.additionalDirectories);
       assert.isUndefined(work.allowDangerouslySkipPermissions);
@@ -302,5 +314,94 @@ it.effect(
         yield* fs.remove(`${tree}/docs/nested/${link}`);
         assert.isTrue(yield* allows("Grep", { pattern: "marker" }), `${link} removed`);
       }
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "a work session gets a shell only from a proven sandbox, and then Bash alone inside it",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const configDir = yield* fs.makeTempDirectoryScoped();
+      yield* fs.writeFileString(
+        `${configDir}/settings.json`,
+        JSON.stringify({
+          env: { ANTHROPIC_AUTH_TOKEN: "gateway", ANTHROPIC_BASE_URL: "https://g" },
+        }),
+      );
+      const { tree } = yield* worktree();
+      const sandbox = {
+        enabled: true,
+        allowUnsandboxedCommands: false,
+        credentials: { envVars: [{ name: "ANTHROPIC_BASE_URL", mode: "deny" as const }] },
+      };
+      const env = { PATH: "/usr/bin", CLAUDE_CODE_TMPDIR: "/tmp/kin-task" };
+      const asked: Array<string> = [];
+      const proven = Layer.succeed(
+        WorkSandbox.KinWorkSandbox,
+        WorkSandbox.KinWorkSandbox.of({
+          prepare: Effect.fn("WorkIsolationTest.prepare")((input) => {
+            asked.push(input.worktree);
+            return Effect.succeed({
+              _tag: "shell",
+              sandbox,
+              env,
+              release: Effect.void,
+              noteMessage: () => Effect.void,
+            } as const);
+          }),
+        }),
+      );
+      const work = yield* opened("kin-work:wk-fixture", {
+        cwd: tree,
+        env: { PATH: "/usr/bin", ANTHROPIC_API_KEY: "secret", CLAUDE_CONFIG_DIR: configDir },
+        sandbox: proven,
+      });
+      assert.deepStrictEqual(asked, [tree]);
+      assert.deepStrictEqual(work.tools, ["Bash"]);
+      for (const tool of ["Read", "Edit", "Write", "Grep", "Glob", "Task", "WebFetch", "Monitor"])
+        assert.include(work.disallowedTools ?? [], tool);
+      // The prepared sandbox replaces anything the adapter, a settings block or a launch arg said,
+      // and the owner's settings `env`, which Claude Code applies to its own environment, is unset.
+      assert.deepStrictEqual(work.sandbox, {
+        ...sandbox,
+        credentials: {
+          envVars: ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"].map((name) => ({
+            name,
+            mode: "deny" as const,
+          })),
+        },
+      });
+      assert.notProperty(work.settings ?? {}, "sandbox");
+      assert.deepStrictEqual(work.env, env);
+      assert.deepStrictEqual(work.settingSources, []);
+      assert.strictEqual(work.strictMcpConfig, true);
+      assert.isUndefined(work.mcpServers);
+      assert.strictEqual(work.permissionMode, "bypassPermissions");
+      assert.deepStrictEqual(work.systemPrompt, {
+        type: "preset",
+        preset: "claude_code",
+        append: WorkIsolation.shellPreamble,
+      });
+      const allows = (tool: string, input: unknown) =>
+        Effect.promise(() => hookAllows(work, tool, input));
+      assert.isTrue(yield* allows("Bash", { command: "npm test" }));
+      assert.isFalse(yield* allows("Bash", { command: "npm start", run_in_background: true }));
+      assert.isFalse(yield* allows("Bash", { command: "x", dangerouslyDisableSandbox: true }));
+      assert.isFalse(yield* allows("Read", { file_path: "README.md" }));
+      assert.isFalse(yield* allows("mcp__t3__delegate_task", { task: "x" }));
+
+      // Unproven, the same thread stays file-only, and the hook refuses every shell call.
+      const unproven = yield* opened("kin-work:wk-fixture", { cwd: tree });
+      assert.deepStrictEqual(unproven.tools, ["Read", "Grep", "Glob", "Edit", "Write"]);
+      assert.include(unproven.disallowedTools ?? [], "Bash");
+      assert.isUndefined(unproven.sandbox);
+      assert.isFalse(
+        yield* Effect.promise(() => hookAllows(unproven, "Bash", { command: "true" })),
+      );
+      // Any other thread never asks for a shell.
+      asked.length = 0;
+      yield* opened("thread-1", { cwd: tree, sandbox: proven });
+      assert.deepStrictEqual(asked, []);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

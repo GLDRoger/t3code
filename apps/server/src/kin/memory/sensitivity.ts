@@ -407,12 +407,17 @@ const NUMBER_WORDS =
 // A key's known prefix, then its characters with spaces or separators put between them.
 const KEY_PREFIX =
   /\b(?:sk|pk|rk|ghp|gho|ghu|ghs|ghr|glpat|xox[abprs]|whsec)\s*[-_]\s*(?:[A-Za-z0-9]+\s*[-_]\s*)?[A-Za-z0-9](?:[\s._-]{0,3}[A-Za-z0-9]){5,}/i;
-const SENSITIVE_PATTERNS = [
-  // Money: a currency sign or code beside a number, or a number with a money word, in digits or words.
+// Money: a currency sign or code beside a number, or a number with a money word, in digits or words.
+const MONEY_PATTERNS = [
   new RegExp(`(?:[$€£¥₹]|\\b(?:rs|${CURRENCY_CODES})\\.?)\\s?\\d`, "i"),
   new RegExp(`\\b\\d[\\d,.]*\\s?(?:k\\s)?(?:${MONEY_WORDS})\\b`, "i"),
   new RegExp(`\\b(?:(?:${NUMBER_WORDS})[\\s-]+(?:and[\\s-]+)?)+(?:${MONEY_WORDS})\\b`, "i"),
   new RegExp(`(?:[$€£¥₹]|\\b(?:rs|${CURRENCY_CODES})\\.?)\\s?(?:${NUMBER_WORDS})\\b`, "i"),
+];
+/** Text that states an amount of money, which a Work title never may (an entry's amount field does). */
+export const mentionsMoney = (text: string) => MONEY_PATTERNS.some((pattern) => pattern.test(text));
+const SENSITIVE_PATTERNS = [
+  ...MONEY_PATTERNS,
   // Bank details: IBAN and IFSC shapes, an account number, or any long run of digits.
   /\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b/,
   /\b[A-Z]{4}0[A-Z0-9]{6}\b/,

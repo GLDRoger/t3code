@@ -216,7 +216,7 @@ export function useKinWorkPlace(environmentId: EnvironmentId) {
   };
 }
 
-const schedule = (run: () => void, ms: number) => {
+export const kinSchedule = (run: () => void, ms: number) => {
   const timer = setTimeout(run, ms);
   return () => clearTimeout(timer);
 };
@@ -226,7 +226,7 @@ type Paged<Filter extends { readonly text: string }, Row> = ReturnType<
 >;
 
 /** One of Work's lists on screen: started when it shows, told each change number while current. */
-function useKinPagedList<Filter extends { readonly text: string }, Row>(
+export function useKinPagedList<Filter extends { readonly text: string }, Row>(
   initial: Filter,
   make: (onChange: (state: KinPagedListState<Filter, Row>) => void) => Paged<Filter, Row>,
   /** The host's latest change number; null while what is held may be behind. */
@@ -262,7 +262,7 @@ export function useKinClientsList(
         sameFilter: kinClientsSameFilter,
         idOf: (row) => row.recordId,
         onChange,
-        schedule,
+        schedule: kinSchedule,
         read: async (filter, page) =>
           mapPage(
             await kinClient.workClients.run(appAtomRegistry, {
@@ -292,7 +292,7 @@ export function useKinProjectsList(
         sameFilter: kinProjectsSameFilter,
         idOf: (row) => row.recordId,
         onChange,
-        schedule,
+        schedule: kinSchedule,
         read: async (filter, page) =>
           mapPage(
             await kinClient.workProjects.run(appAtomRegistry, {
@@ -322,7 +322,7 @@ export function useKinWorkHistory(
         sameFilter: () => true,
         idOf: (item) => String(item.seq),
         onChange,
-        schedule,
+        schedule: kinSchedule,
         read: async (_filter, page) =>
           mapPage(
             await kinClient.workHistory.run(appAtomRegistry, {

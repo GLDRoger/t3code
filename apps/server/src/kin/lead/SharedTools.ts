@@ -103,9 +103,11 @@ const ownerDelegates: Condition = Effect.fnUntraced(function* (turn, args) {
 export const SHARED_TOOLS = {
   kin_chat_post: inTurnChat,
   kin_widget_upsert: inTurnChat,
-  // These two take no chat: they go to the turn's own chat, and `destination` checks it.
+  // These three take no chat: they go to the turn's own chat, and `destination` checks it.
   kin_ask: "allowed",
   kin_react: "allowed",
+  // Numbers the agent supplies, which it could have written in that chat as text; it reads nothing.
+  kin_chart: "allowed",
   kin_chat_read: inAskedChat,
   // Lists only the names of the leads in the asked chat (`KinHandoff.leads`).
   kin_leads: "allowed",
@@ -134,6 +136,23 @@ export const SHARED_TOOLS = {
   record_get: "refused",
   record_create: "refused",
   record_update: "refused",
+  // Docs are owner-only too until the teammate view; restoring stays the owner's after it.
+  doc_create: "refused",
+  doc_read: "refused",
+  doc_edit: "refused",
+  doc_rewrite: "refused",
+  doc_move: "refused",
+  doc_link: "refused",
+  docs_search: "refused",
+  doc_history: "refused",
+  doc_restore: "refused",
+  // Lists and money (design 9.3, 4.9): defining a list, amounts, payments and the company
+  // profile are the owner's; none reaches a turn anyone else reads.
+  list_define: "refused",
+  payment_record: "refused",
+  money_summary: "refused",
+  dates_query: "refused",
+  company_profile: "refused",
 } satisfies Record<string, SharedToolPolicy>;
 
 /** Whether `name` may run with these arguments in a turn someone besides the owner reads. */

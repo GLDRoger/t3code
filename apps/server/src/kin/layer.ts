@@ -60,7 +60,11 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
               KinRecords.layer,
               ApprovalCards.layer,
               RetiredActions.layer,
-            ).pipe(Layer.provideMerge(KinApprovals.layer)),
+            ).pipe(
+              Layer.provideMerge(
+                KinApprovals.layer.pipe(Layer.provide(ExecutionNotices.keyNoticesLayer)),
+              ),
+            ),
           ),
         ),
         GithubWebhooks.lockLayer,
