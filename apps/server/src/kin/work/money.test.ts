@@ -1178,6 +1178,12 @@ describe("the owner's taps", () => {
         [summary.owed.total, issued.totals?.owed, issued.totals?.total],
         [inr(12_000_000), inr(12_000_000), inr(16_000_000)],
       );
+      // The whole list agrees too: a draft is billed, and not owed yet.
+      const every = yield* open({ list: "invoices" });
+      assert.deepStrictEqual(
+        [every.totals?.owed, every.totals?.total],
+        [inr(12_000_000), inr(18_000_000)],
+      );
       const overdue = yield* open({ list: "invoices", states: ["waiting"], late: true });
       assert.deepStrictEqual(
         [summary.owed.overdue, overdue.totals?.owed],

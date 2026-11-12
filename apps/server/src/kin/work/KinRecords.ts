@@ -1462,19 +1462,21 @@ const make = Effect.gen(function* () {
               AND p.paid_on >= ${input.paidFrom ?? "0000-00-00"}
               AND p.paid_on <= ${input.paidTo ?? "9999-12-31"}) AS received
           FROM kin_records r WHERE ${filter} ORDER BY r.record_id`;
-        const paidOverTime = (yield* resolveList(orgId, input.list ?? "work")).payments === true;
+        const listDef = yield* resolveList(orgId, input.list ?? "work");
+        const paidOverTime = listDef.payments === true;
+        // The same rule as Money: a draft isn't owed yet, and closed is settled or void.
+        const owing = owedState(listDef);
         const amounts = (members: typeof rows): Sums => {
           const priced = members.flatMap((row) =>
             row.minor === null ? [] : [{ ...row, minor: row.minor }],
           );
           return {
             total: addUp(priced),
-            // Closed is settled or void, whatever its payments add up to.
             ...(paidOverTime
               ? {
                   owed: addUp(
                     priced
-                      .filter((row) => !isClosed(row.state) && row.minor > row.paid)
+                      .filter((row) => row.state === owing && row.minor > row.paid)
                       .map((row) => ({ minor: row.minor - row.paid, currency: row.currency })),
                   ),
                 }
