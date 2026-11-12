@@ -1044,11 +1044,14 @@ describe("receipts", () => {
           [true, "QST-RN/26-27/011"],
         );
         // The void one stays void, by the owner's Undo void or an edit: two would count it twice.
-        for (const back of [
-          OwnerMoney.unvoidEntry(people, { orgId, key: KinRecordKey.make(next.receipt) }),
-          records.update(orgId, system, next.receipt, { state: "open" }),
-        ])
-          assert.match((yield* Effect.flip(back)).message, /void receipt, and stays void/);
+        const backs = [
+          Effect.flip(
+            OwnerMoney.unvoidEntry(people, { orgId, key: KinRecordKey.make(next.receipt) }),
+          ),
+          Effect.flip(records.update(orgId, system, next.receipt, { state: "open" })),
+        ] as const;
+        for (const back of backs)
+          assert.match((yield* back).message, /void receipt, and stays void/);
         const held = (yield* OwnerMoney.receipts(people, { orgId })).receipts.find(
           (one) => one.key === advance.receipt,
         )!.paymentId!;

@@ -1010,7 +1010,7 @@ describe("invoices", () => {
         assert.isNull((yield* OwnerMoney.nextNumber(people, { orgId, key: "INV-1" })).number);
         assert.include(
           yield* Effect.flip(
-            OwnerMoney.nextNumber([{ ...people[0]!, personId: "someone" }], {
+            OwnerMoney.nextNumber([{ ...people[0]!, personId: KinPersonId.make("someone") }], {
               orgId,
               key: "INV-3",
             }),
