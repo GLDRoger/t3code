@@ -29,7 +29,7 @@ import { cardAnswer } from "./ownerCards.ts";
 
 export type FieldDef = KinListField;
 export type FieldType = FieldDef["type"];
-export const PRESET_IDS = ["expenses", "invoices", "dates"] as const;
+export const PRESET_IDS = ["expenses", "invoices", "dates", "receipts"] as const;
 export type PresetId = (typeof PRESET_IDS)[number];
 
 const Label = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(60));
@@ -144,6 +144,33 @@ export const PRESETS: Record<PresetId, StoredDefinition & { name: string; prefix
     dateLabel: "Issued",
     payments: true,
     numbering: { prefix: "INV", series: "financial_year", width: 3 },
+  },
+  // Money received: against an invoice's payment, or an advance before any invoice exists.
+  receipts: {
+    name: "Receipts",
+    prefix: "RCT",
+    noun: "receipt",
+    states: ["open", "waiting", "dropped"],
+    stateLabels: { open: "Draft", waiting: "Issued", dropped: "Void" },
+    defaultState: "open",
+    categories: [],
+    fields: [
+      field("number", "Receipt number", "text"),
+      field("towards", "Towards", "text"),
+      field("mode", "Mode", "choice", {
+        choices: ["bank transfer", "upi", "cheque", "cash", "card", "other"],
+      }),
+      field("reference", "Reference", "text"),
+      field("invoice", "Invoice", "text"),
+      field("payment", "Payment", "text"),
+      field("file", "Receipt file", "file", { sensitive: true }),
+    ],
+    sensitive: true,
+    amount: true,
+    currency: DEFAULT_CURRENCY,
+    dueLabel: "Due",
+    dateLabel: "Received on",
+    numbering: { prefix: "RCT", series: "financial_year", width: 3 },
   },
   dates: {
     name: "Dates",
@@ -408,10 +435,12 @@ export const verifyRefs = Effect.fn("KinRegisters.verifyRefs")(function* (
   }
 });
 
-/** How a list numbers what it issues; invoices defined before numbering existed take the preset's. */
+/** How a list numbers what it issues; invoices and receipts without their own rule take the preset's. */
 export const numberingOf = (def: ListDef): KinNumberingRule | undefined =>
   def.numbering ??
-  (def.id === "invoices" && def.builtIn === null ? PRESETS.invoices.numbering : undefined);
+  (def.builtIn === null && (def.id === "invoices" || def.id === "receipts")
+    ? PRESETS[def.id].numbering
+    : undefined);
 
 const shownLabels = (labels: Readonly<Record<string, string>> | undefined) => {
   const shown = Object.entries(labels ?? {}).filter(([category, label]) => label !== category);

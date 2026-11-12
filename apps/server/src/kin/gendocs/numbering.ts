@@ -5,7 +5,13 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import { dayIn, financialYearOf } from "../work/money.ts";
-import { endOfDay, notFound, ownerZone, workFailure } from "../work/recordRows.ts";
+import {
+  endOfDay,
+  notFound,
+  ownerZone,
+  receiptNumbersIn,
+  workFailure,
+} from "../work/recordRows.ts";
 import { listDef, numberingOf, unknownList } from "../work/registers.ts";
 
 /**
@@ -16,6 +22,31 @@ import { listDef, numberingOf, unknownList } from "../work/registers.ts";
  */
 
 const MAX_NUMBER_LENGTH = 16;
+/** A number Kin keeps but never continues: one in no series of the list's rule. */
+export const IMPORTED_SERIES = "imported";
+
+/**
+ * Where an issued number sits: `OBK/2026-27/013` and `OBK/26-27/013` in the list's series for
+ * 26-27, `OBK/13` in a running one, anything else in a series of its own Kin never continues.
+ */
+export const seriesOf = (rule: KinNumberingRule, number: string) => {
+  const prefix = rule.prefix.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
+  if (rule.series === "running") {
+    const found = new RegExp(`^${prefix}[/-](\\d{1,9})$`).exec(number);
+    if (found !== null)
+      return { series: `${rule.prefix}|running`, seq: Number.parseInt(found[1]!, 10) };
+  } else {
+    const found = new RegExp(`^${prefix}[/-](?:\\d{2})?(\\d{2})-(\\d{2})[/-](\\d{1,9})$`).exec(
+      number,
+    );
+    if (found !== null && (Number(found[1]) + 1) % 100 === Number(found[2]))
+      return {
+        series: `${rule.prefix}|${found[1]}-${found[2]}`,
+        seq: Number.parseInt(found[3]!, 10),
+      };
+  }
+  return { series: `${IMPORTED_SERIES}|${number}`, seq: 1 };
+};
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 
 /** `26-27` for any day from 1 April 2026 to 31 March 2027. */
@@ -84,6 +115,15 @@ export const issue = Effect.fn("KinNumbers.issue")(function* (
       const day = dayIn(now, zone);
       const year = rule.series === "financial_year" ? financialYear(day) : null;
       const series = `${rule.prefix}|${year ?? "running"}`;
+      // A receipt number the old system issued may still sit only in a payment's note: past it.
+      if (def.id === "receipts") {
+        const floor = yield* notedFloor(orgId, rule, series);
+        if (floor > 0)
+          yield* sql`INSERT INTO kin_number_series (org_id, register_id, series, last_seq)
+            VALUES (${orgId}, ${def.id}, ${series}, ${floor})
+            ON CONFLICT (org_id, register_id, series) DO UPDATE
+              SET last_seq = MAX(kin_number_series.last_seq, excluded.last_seq)`;
+      }
       const [next] = yield* sql<{ seq: number }>`INSERT INTO kin_number_series
             (org_id, register_id, series, last_seq)
           VALUES (${orgId}, ${def.id}, ${series}, 1)
@@ -121,6 +161,92 @@ export const issue = Effect.fn("KinNumbers.issue")(function* (
             ? { dateAt: endOfDay(day, zone), dateAllDay: true }
             : {}),
         },
+        undefined,
+        [{ field: "number", from: null, to: number }],
+      );
+      return { key: updated.key, number, state: updated.state, issued: true } satisfies Issued;
+    }),
+  );
+}, workFailure);
+
+/** The highest number in `series` that a payment's note holds as the receipt it was given. */
+const notedFloor = Effect.fn("KinNumbers.notedFloor")(function* (
+  orgId: KinOrgId,
+  rule: KinNumberingRule,
+  series: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const notes = yield* sql<{ note: string }>`SELECT note FROM kin_record_payments
+    WHERE org_id = ${orgId} AND instr(note, ${rule.prefix}) > 0
+    ORDER BY payment_id LIMIT 10000`;
+  let highest = 0;
+  for (const { note } of notes)
+    for (const number of receiptNumbersIn(note)) {
+      const at = seriesOf(rule, number);
+      if (at.series === series) highest = Math.max(highest, at.seq);
+    }
+  return highest;
+});
+
+/**
+ * Gives the entry `key` a number another system already issued, instead of a new one: kept for
+ * good like an issued one, and its series moves past it so Kin never issues it again. Asking
+ * again with the same number changes nothing.
+ */
+export const adopt = Effect.fn("KinNumbers.adopt")(function* (
+  orgId: KinOrgId,
+  writer: Writer,
+  key: string,
+  number: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const records = yield* KinRecords;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const row = yield* records.get(orgId, key);
+      if (row === undefined) return yield* notFound(key);
+      const def = yield* listDef(orgId, row.registerId);
+      if (def === undefined) return yield* unknownList(row.registerId);
+      const rule = numberingOf(def);
+      if (rule === undefined) return yield* invalid(`${def.name} doesn't number its entries.`);
+      const had = yield* issuedNumber(orgId, row.recordId);
+      if (had !== undefined) {
+        if (had === number)
+          return { key: row.key, number, state: row.state, issued: false } satisfies Issued;
+        return yield* invalid(`${row.key} already has the number ${had}.`);
+      }
+      if (!/^[A-Za-z0-9/-]{1,32}$/.test(number))
+        return yield* invalid(`${number.slice(0, 40)} isn't a number Kin can keep.`);
+      const { series, seq } = seriesOf(rule, number);
+      const clash = yield* sql`SELECT 1 FROM kin_issued_numbers WHERE org_id = ${orgId}
+        AND register_id = ${def.id}
+        AND (number = ${number} OR (series = ${series} AND seq = ${seq})) LIMIT 1`;
+      if (clash.length > 0) return yield* invalid(`${number} is already issued in Kin.`);
+      const by =
+        writer.actor._tag === "person"
+          ? { kind: "person", id: writer.actor.personId }
+          : writer.actor._tag === "agent"
+            ? { kind: "agent", id: writer.actor.agentId }
+            : undefined;
+      if (by === undefined) return yield* invalid("Only the owner or an agent issues a number.");
+      const now = yield* Clock.currentTimeMillis;
+      yield* sql`INSERT INTO kin_issued_numbers (org_id, register_id, series, seq, number,
+          record_id, issued_at, issued_by_kind, issued_by_id)
+        VALUES (${orgId}, ${def.id}, ${series}, ${seq}, ${number}, ${row.recordId}, ${now},
+          ${by.kind}, ${by.id})`;
+      if (!series.startsWith(`${IMPORTED_SERIES}|`))
+        yield* sql`INSERT INTO kin_number_series (org_id, register_id, series, last_seq)
+          VALUES (${orgId}, ${def.id}, ${series}, ${seq})
+          ON CONFLICT (org_id, register_id, series) DO UPDATE
+            SET last_seq = MAX(kin_number_series.last_seq, excluded.last_seq)`;
+      if (def.fields.some((field) => field.key === "number"))
+        yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', ${number})
+          WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
+      const updated = yield* records.update(
+        orgId,
+        writer,
+        row.key,
+        row.state === "open" && def.states.includes("waiting") ? { state: "waiting" as const } : {},
         undefined,
         [{ field: "number", from: null, to: number }],
       );

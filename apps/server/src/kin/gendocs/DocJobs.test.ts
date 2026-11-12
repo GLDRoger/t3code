@@ -29,6 +29,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
+import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Vcs from "../../vcs/VcsProcess.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
@@ -43,11 +44,13 @@ import * as LeadMoney from "../work/leadMoney.ts";
 import * as LeadWork from "../work/leadWork.ts";
 import * as OwnerDocs from "../work/ownerDocs.ts";
 import * as OwnerMoney from "../work/ownerMoney.ts";
+import * as OwnerWork from "../work/ownerWork.ts";
 import { computeData } from "./compute.ts";
 import * as DocJobs from "./DocJobs.ts";
 import { gatherFacts, jobSensitive } from "./facts.ts";
 import * as LeadDocuments from "./leadDocuments.ts";
 import { assembleInputs, needsEntry, parseRecipe } from "./recipe.ts";
+import { copyReferences } from "./references.ts";
 import * as Render from "./render.ts";
 import { STARTER_FILES } from "./starter.ts";
 import { KinToolchain } from "./toolchain.ts";
@@ -170,8 +173,21 @@ const renderer = Layer.effect(
         const bytes = new TextEncoder().encode(
           `%PDF-1.7\n% ${JSON.stringify(request.inputs)}\n1 0 obj\n<< /Type /Page >>\nendobj\n%%EOF\n`,
         );
+        const page = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
         return Effect.succeed({
           _tag: "made",
+          ...(request.page === true
+            ? {
+                page: {
+                  name: "page-1.png",
+                  extension: "png",
+                  mimeType: "image/png",
+                  bytes: page,
+                  sha256: NodeCrypto.createHash("sha256").update(page).digest("hex"),
+                  pages: null,
+                },
+              }
+            : {}),
           files: request.recipe.outputs.map((name) => ({
             name,
             extension: "pdf",
@@ -188,8 +204,18 @@ const renderer = Layer.effect(
 const toolchain = Layer.succeed(KinToolchain, {
   ensure: () =>
     Effect.fail(new KinChatError({ reason: "unavailable", message: "no Typst in these tests" })),
+  fonts: () => Effect.undefined,
+});
+// Follow-up passes Kin sent recipe writers, by thread.
+const sent: Array<{ readonly threadId: string; readonly text: string }> = [];
+const threads = Layer.mock(ThreadManagementService)({
+  sendToThread: (input) =>
+    Effect.sync(() => {
+      sent.push({ threadId: input.threadId, text: input.text });
+    }).pipe(Effect.as({} as never)),
 });
 const layer = DocJobs.makeCollectorLayer({ sweepPage: 1 }).pipe(
+  Layer.provideMerge(threads),
   Layer.provideMerge(renderer),
   Layer.provideMerge(toolchain),
   Layer.provideMerge(scopes),
@@ -239,6 +265,7 @@ const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   rendered.length = 0;
   shownCards.length = 0;
+  sent.length = 0;
   failing.reason = undefined;
   yield* TestClock.setTime(Date.parse("2026-11-12T06:00:00.000Z"));
   yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Invented Co', ${at})`;
@@ -356,6 +383,11 @@ const pdfReport: WorkerReport = {
   misleadingMemory: [],
   parsed: true,
 };
+/** A collection that settled: a recipe writer sent another pass hasn't. */
+const settled = <A>(result: A | typeof DocJobs.CONTINUED): A => {
+  if (result === DocJobs.CONTINUED) return assert.fail("the job was sent another pass");
+  return result;
+};
 const threadOf = (workerId: KinWorkerId) => ThreadId.make(`kin-work:${workerId}`);
 
 /** A worker's job writing the quote recipe, collected; `n` names the job and its description. */
@@ -400,10 +432,12 @@ const startQuote = (
       VALUES (${orgId}, ${workerId}, ${lead}, 'wake-3', 'recipe', 'quote', ${job.base}, NULL,
         'brief', NULL, ${sensitive}, 'recipe:quote', ${job.worktree}, ${job.branch}, 'lead-chat',
         'owner_only', 0)`;
-    return collector.collect({ orgId, workerId, threadId: threadOf(workerId) }, true, {
-      ...pdfReport,
-      evidence: [],
-    });
+    return collector
+      .collect({ orgId, workerId, threadId: threadOf(workerId) }, true, {
+        ...pdfReport,
+        evidence: [],
+      })
+      .pipe(Effect.map((result) => settled(result)));
   });
 const writeQuote = (n: number, sensitive = 0) => Effect.flatten(startQuote(n, sensitive));
 
@@ -694,18 +728,26 @@ describe("recipe documents", () => {
       assert.isTrue(marked.sensitive);
       assert.strictEqual((yield* versionsOf(marked.documents[0]!.key)).doc.sensitive, 1);
       // So are a worker's brief and a recipe it writes, labelled as the job is admitted.
-      const brief = yield* DocJobs.planJob(orgId, {
-        title: "Note",
-        brief: "A short note.",
-        sourceEventId: quiet,
-      });
-      const writing = yield* DocJobs.planJob(orgId, {
-        title: "Quote",
-        recipe: "quote",
-        writeRecipe: true,
-        brief: "A quote.",
-        sourceEventId: quiet,
-      });
+      const brief = yield* DocJobs.planJob(
+        orgId,
+        {
+          title: "Note",
+          brief: "A short note.",
+          sourceEventId: quiet,
+        },
+        "lead-chat",
+      );
+      const writing = yield* DocJobs.planJob(
+        orgId,
+        {
+          title: "Quote",
+          recipe: "quote",
+          writeRecipe: true,
+          brief: "A quote.",
+          sourceEventId: quiet,
+        },
+        "lead-chat",
+      );
       for (const plan of [brief, writing])
         assert.deepStrictEqual(
           [
@@ -717,9 +759,227 @@ describe("recipe documents", () => {
           plan.mode,
         );
       // A recipe's document is never a worker's job any more.
-      const asWorker = yield* DocJobs.planJob(orgId, invoice()).pipe(Effect.flip);
+      const asWorker = yield* DocJobs.planJob(orgId, invoice(), "lead-chat").pipe(Effect.flip);
       assert.match(asWorker.message, /Kin makes a recipe's document itself/);
     }).pipe(Effect.provide(layer)),
+  );
+});
+
+describe("receipts", () => {
+  it.effect(
+    "are numbered in their own series once each, keeping a number the old system gave",
+    () =>
+      Effect.gen(function* () {
+        const asked = yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const records = yield* KinRecords.KinRecords;
+        const system = { actor: { _tag: "system" as const }, via: "import" as const };
+        const receipt = (input: Omit<typeof LeadDocuments.ReceiptInput.Type, "sourceEventId">) =>
+          LeadDocuments.receipt(scope, { sourceEventId: asked, ...input });
+        // An advance the old system gave a receipt for, recorded on the invoice by an import,
+        // its number in the payment's note as the import writes it.
+        const imported = yield* records.pay(orgId, system, "INV-1", {
+          amount: { minor: 40_000, currency: "INR" },
+          paidOn: "2026-10-01",
+          note: "Advance received; receipt note QST-RN/2026-27/007",
+          originKey: "import:payment:1",
+        });
+        const adopted = yield* receipt({ payment: imported.paymentId });
+        assert.deepStrictEqual(
+          [adopted.number, adopted.problems, adopted.documents.length],
+          ["QST-RN/2026-27/007", [], 1],
+        );
+        // Kin's next is past the highest the old system gave, in the same series.
+        const later = yield* records.pay(orgId, system, "INV-1", {
+          amount: { minor: 60_001, currency: "INR" },
+          paidOn: "2026-11-12",
+          originKey: "payment:2",
+        });
+        const next = yield* receipt({
+          payment: later.paymentId,
+          mode: "upi",
+          reference: "Invented UTR 123",
+        });
+        assert.strictEqual(next.number, "QST-RN/26-27/008");
+        const { request, data } = rendered.at(-1)!;
+        assert.deepStrictEqual(
+          [
+            request.recipe.name,
+            request.inputs.number,
+            request.inputs.client,
+            request.inputs.towards,
+            request.inputs.mode,
+            (data as Record<string, any>).words,
+          ],
+          [
+            "receipt",
+            "QST-RN/26-27/008",
+            "Invented Acme",
+            "Invoice INV-1",
+            "upi",
+            "Rupees Six Hundred and One Paise Only",
+          ],
+        );
+        // Asked again, by the agent or the owner, it is the same receipt, number and file.
+        const renders = rendered.length;
+        const again = yield* receipt({ payment: later.paymentId });
+        const owners = yield* OwnerMoney.makeReceipt(people, {
+          orgId,
+          paymentId: later.paymentId,
+          clientRequestId: "tap-1",
+        });
+        assert.deepStrictEqual(
+          [again.receipt, again.number, again.documents, owners.receipt.number],
+          [next.receipt, next.number, next.documents, next.number],
+        );
+        assert.strictEqual(rendered.length, renders, "nothing rendered again");
+
+        // An advance before any invoice, set against one later, once.
+        const [client] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+          WHERE org_id = ${orgId} AND register_id = 'clients'`;
+        const advance = yield* receipt({
+          advance: {
+            client: KinRecordKey.make(client!.key),
+            amount: "500",
+            receivedOn: "2026-11-05",
+          },
+          towards: "Website redesign",
+        });
+        assert.strictEqual(advance.number, "QST-RN/26-27/009");
+        yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [
+            {
+              list: "invoices",
+              title: "Website redesign",
+              client: "Invented Acme",
+              amount: "2,000",
+              state: "open",
+            },
+          ],
+        });
+        const against = {
+          entry: KinRecordKey.make(advance.receipt),
+          against: KinRecordKey.make("INV-2"),
+        };
+        assert.strictEqual((yield* receipt(against)).number, advance.number);
+        yield* receipt(against);
+        const elsewhere = yield* receipt({ ...against, against: KinRecordKey.make("INV-1") }).pipe(
+          Effect.flip,
+        );
+        assert.match(elsewhere.message, /already set against INV-2/);
+        // The invoice shows the advance and what is left; one paid on its day isn't an advance.
+        yield* LeadDocuments.make(scope, invoice({ entry: "INV-2", title: "Invoice INV-2" }));
+        assert.deepStrictEqual(
+          [rendered.at(-1)!.request.inputs.advances, latestData().balance.text],
+          [
+            [
+              {
+                receipt: "QST-RN/26-27/009",
+                amount: { minor: 50_000, currency: "INR" },
+                paidOn: "2026-11-05",
+              },
+            ],
+            "₹1,500.00",
+          ],
+        );
+        yield* LeadDocuments.make(scope, invoice({ title: "Invoice INV-1 again" }));
+        assert.deepStrictEqual(
+          (rendered.at(-1)!.request.inputs.advances as ReadonlyArray<{ receipt: string }>).map(
+            (one) => one.receipt,
+          ),
+          ["QST-RN/2026-27/007"],
+        );
+
+        // What a screen lists: newest first, who from, towards, the invoice and the PDF.
+        const listed = yield* OwnerMoney.receipts(people, { orgId });
+        assert.deepStrictEqual(
+          listed.receipts.map((one) => [
+            one.number,
+            one.receivedOn,
+            one.receivedFrom?.title,
+            one.towards,
+            one.invoice,
+            one.advance,
+            one.document !== null,
+          ]),
+          [
+            [
+              "QST-RN/26-27/008",
+              "2026-11-12",
+              "Invented Acme",
+              "Invoice INV-1",
+              "INV-1",
+              false,
+              true,
+            ],
+            [
+              "QST-RN/26-27/009",
+              "2026-11-05",
+              "Invented Acme",
+              "Website redesign",
+              "INV-2",
+              true,
+              true,
+            ],
+            [
+              "QST-RN/2026-27/007",
+              "2026-10-01",
+              "Invented Acme",
+              "Invoice INV-1",
+              "INV-1",
+              false,
+              true,
+            ],
+          ],
+        );
+        // A payment noted with the invoice's own number gets a receipt number of its own.
+        const issued = yield* LeadDocuments.issue(scope, {
+          entry: KinRecordKey.make("INV-2"),
+          sourceEventId: asked,
+        });
+        const balance = yield* records.pay(orgId, system, "INV-2", {
+          amount: { minor: 150_000, currency: "INR" },
+          paidOn: "2026-11-12",
+          note: issued.number!,
+          originKey: "payment:3",
+        });
+        assert.strictEqual(
+          (yield* receipt({ payment: balance.paymentId })).number,
+          "QST-RN/26-27/010",
+        );
+        // And each payment on the invoice carries its receipt.
+        const detail = yield* OwnerWork.get(people, { orgId, key: KinRecordKey.make("INV-1") });
+        assert.deepStrictEqual(
+          detail.payments?.map((one) => one.receipt?.number),
+          ["QST-RN/26-27/008", "QST-RN/2026-27/007"],
+        );
+
+        // Ways back: a voided receipt keeps its number and the payment gets a new one; an
+        // advance whose payment was taken back can be set against an invoice again.
+        yield* LeadDocuments.issue(scope, {
+          entry: KinRecordKey.make(next.receipt),
+          void: true,
+          sourceEventId: asked,
+        });
+        const remade = yield* receipt({ payment: later.paymentId });
+        assert.deepStrictEqual(
+          [remade.receipt !== next.receipt, remade.number],
+          [true, "QST-RN/26-27/011"],
+        );
+        const held = (yield* OwnerMoney.receipts(people, { orgId })).receipts.find(
+          (one) => one.key === advance.receipt,
+        )!.paymentId!;
+        yield* records.voidPayment(orgId, system, "INV-2", held);
+        yield* receipt(against);
+        const reset = (yield* OwnerMoney.receipts(people, { orgId })).receipts.find(
+          (one) => one.key === advance.receipt,
+        )!;
+        assert.deepStrictEqual(
+          [reset.invoice, reset.number, reset.paymentId !== held],
+          ["INV-2", "QST-RN/26-27/009", true],
+        );
+      }).pipe(Effect.provide(layer)),
   );
 });
 
@@ -750,7 +1010,7 @@ describe("worker document jobs", () => {
         const first = KinWorkerId.make("wk-first");
         const prepared = yield* docJob(first, { worker: "running" });
         const worker = { orgId, workerId: first, threadId: threadOf(first) };
-        const result = yield* collector.collect(worker, true, report);
+        const result = settled(yield* collector.collect(worker, true, report));
         assert.deepStrictEqual(
           result?.evidence.map((item) => [item.kind, item.ref]),
           [["link", "D-1"]],
@@ -792,7 +1052,7 @@ describe("worker document jobs", () => {
           ["D-1"],
         );
         // Collecting again changes nothing; a file doc's text isn't edited.
-        yield* collector.collect(worker, true, report);
+        settled(yield* collector.collect(worker, true, report));
         assert.lengthOf((yield* versionsOf("D-1")).history, 1);
         const writer = { actor: { _tag: "agent" as const, agentId: lead }, via: "lead" as const };
         const edit = yield* Docs.rewrite(
@@ -813,10 +1073,12 @@ describe("worker document jobs", () => {
         // A run that didn't finish files nothing, and the card says why.
         const third = KinWorkerId.make("wk-third");
         yield* docJob(third, { worker: "running" });
-        const stopped = yield* collector.collect(
-          { ...worker, workerId: third, threadId: threadOf(third) },
-          false,
-          report,
+        const stopped = settled(
+          yield* collector.collect(
+            { ...worker, workerId: third, threadId: threadOf(third) },
+            false,
+            report,
+          ),
         );
         assert.strictEqual(stopped?.result, "blocked");
         assert.match(cards.at(-1)?.lastError ?? "", /didn't finish/);
@@ -844,6 +1106,146 @@ describe("worker document jobs", () => {
       assert.match(kept!.summary, /rendered the quote recipe's sample and committed it/);
       assert.isDefined((yield* workspace.recipes(orgId)).find((one) => one.name === "quote"));
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "send a recipe writer back with what keeps its recipe out, a bounded number of times",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const fs = yield* FileSystem.FileSystem;
+        const sql = yield* SqlClient.SqlClient;
+        const config = yield* ServerConfig;
+        const workspace = yield* Workspace.KinWorkspace;
+        const collector = yield* DocJobs.KinDocCollector;
+        // The owner's old invoice, invented, sent in the chat the turn answers in.
+        const referenceId = "kin-chat-00000000-0000-4000-8000-0000000000aa-pdf";
+        const pdf = "%PDF-1.7\n% an invented reference invoice\n%%EOF\n";
+        yield* fs.makeDirectory(config.attachmentsDir, { recursive: true });
+        yield* fs.writeFileString(`${config.attachmentsDir}/${referenceId}.pdf`, pdf);
+        const asked = yield* turn(4, "Make our invoices look like this");
+        const sent_ = [
+          {
+            type: "file",
+            id: referenceId,
+            name: "Old invoice 12.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: pdf.length,
+          },
+        ];
+        yield* sql`UPDATE kin_messages SET attachments_json = ${JSON.stringify(sent_)}
+          WHERE message_id = 'msg-4'`;
+        yield* sql`INSERT INTO kin_message_attachments (attachment_id, org_id, chat_id, message_id)
+          VALUES (${referenceId}, ${orgId}, 'lead-chat', 'msg-4')`;
+        const input = {
+          title: "Letterhead",
+          recipe: "letterhead",
+          writeRecipe: true,
+          brief: "Match the reference.",
+          references: [referenceId],
+          sourceEventId: asked,
+        };
+        const elsewhere = yield* DocJobs.planJob(orgId, input, "other-chat").pipe(Effect.flip);
+        assert.match(elsewhere.message, /not a file in this chat/);
+        // A recipe written from the owner's own documents is labelled from the start.
+        const plan = yield* DocJobs.planJob(orgId, input, "lead-chat");
+        assert.deepStrictEqual(
+          [plan.sensitive, plan.references.map((one) => [one.name, one.mimeType])],
+          [true, [["Old invoice 12.pdf", "application/pdf"]]],
+        );
+
+        /** A recipe job as `document` starts it, its references copied in, in a project. */
+        const start = (workerId: KinWorkerId, recipe: string) =>
+          Effect.gen(function* () {
+            const job = yield* workspace.prepare(orgId, workerId, {});
+            yield* copyReferences(job.worktree, plan.references);
+            yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind,
+                thread_id, model_json, provenance_json, status, started_at, ended_at, title,
+                chat_id, context, project_id)
+              VALUES (${workerId}, ${orgId}, ${lead}, 'wake-4', 'build', ${threadOf(workerId)},
+                '{}', '{}', 'running', 0, NULL, 'Letterhead recipe', 'lead-chat', 'private',
+                'project-kin')`;
+            yield* sql`INSERT INTO kin_doc_jobs (org_id, worker_id, agent_id, wakeup_id, mode,
+                recipe, recipe_commit, entry_record_id, inputs_sha256, number, sensitive,
+                doc_origin, worktree_path, branch, chat_id, audience, created_at, references_json)
+              VALUES (${orgId}, ${workerId}, ${lead}, 'wake-4', 'recipe', ${recipe}, ${job.base},
+                NULL, 'brief', NULL, 1, ${`recipe:${recipe}`}, ${job.worktree}, ${job.branch},
+                'lead-chat', 'owner_only', 0, ${JSON.stringify(plan.references)})`;
+            const folder = `${job.worktree}/recipes/${recipe}`;
+            yield* fs.makeDirectory(folder, { recursive: true });
+            yield* fs.writeFileString(
+              `${folder}/RECIPE.md`,
+              STARTER_FILES["recipes/report/RECIPE.md"]!.replace(
+                "name: report",
+                `name: ${recipe}`,
+              ).replace("[report.pdf]", `[${recipe}.pdf]`),
+            );
+            yield* fs.writeFileString(`${folder}/template.typ`, '#let d = json("/inputs.json")\n');
+            yield* fs.writeFileString(
+              `${folder}/sample.json`,
+              STARTER_FILES["recipes/report/sample.json"]!,
+            );
+            const collect = collector.collect(
+              { orgId, workerId, threadId: threadOf(workerId) },
+              true,
+              { ...pdfReport, evidence: [] },
+            );
+            return { worktree: job.worktree, folder, collect };
+          });
+
+        const look = KinWorkerId.make("wk-look");
+        const job = yield* start(look, "letterhead");
+        const copied = `${job.worktree}/in/references/Old invoice 12.pdf`;
+        assert.strictEqual(yield* fs.readFileString(copied), pdf);
+        assert.strictEqual(Number((yield* fs.stat(copied)).mode) & 0o222, 0, "read-only");
+        // A copy of the reference in the recipe: never kept, so the writer is told to remove it.
+        yield* fs.writeFileString(`${job.folder}/old.pdf`, pdf);
+        assert.strictEqual(yield* job.collect, DocJobs.CONTINUED);
+        assert.match(
+          sent.at(-1)!.text,
+          /old\.pdf is a copy of the owner's reference Old invoice 12\.pdf/,
+        );
+        // Then Typst's own error.
+        yield* fs.remove(`${job.folder}/old.pdf`);
+        failing.reason = "letterhead.pdf: template.typ:1:1: error: unknown variable: oops";
+        assert.strictEqual(yield* job.collect, DocJobs.CONTINUED);
+        assert.match(sent.at(-1)!.text, /its sample didn't render: .*unknown variable: oops/);
+        // Rendered, its first page goes back once to set beside the references.
+        failing.reason = undefined;
+        assert.strictEqual(yield* job.collect, DocJobs.CONTINUED);
+        assert.match(sent.at(-1)!.text, /in\/rendered-3\/page-1\.png/);
+        assert.isTrue(yield* fs.exists(`${job.worktree}/in/rendered-3/page-1.png`));
+        const kept = settled(yield* job.collect);
+        assert.match(kept!.summary, /committed it/);
+        assert.match(kept!.summary, /kin_recipe_undo with recipe letterhead/);
+        assert.deepStrictEqual(
+          [sent.length, new Set(sent.map((one) => one.threadId)).size],
+          [3, 1],
+        );
+        // The owner sees the new look on the task card: the sample's PDF and its first page.
+        assert.lengthOf(cards.at(-1)!.documents, 2);
+        const listed = yield* OwnerDocs.recipes(people, { orgId });
+        assert.isTrue(listed.recipes.find((one) => one.name === "letterhead")?.labelled);
+        assert.isFalse(yield* fs.exists(job.worktree));
+
+        // A writer that never fixes it is sent back MAX_FOLLOW_UPS times, then the job ends.
+        const leaky = yield* start(KinWorkerId.make("wk-leaky"), "memo");
+        yield* fs.writeFileString(
+          `${leaky.folder}/sample.json`,
+          JSON.stringify({ title: "For Invented Acme", body: "Invented words." }),
+        );
+        for (let pass = 0; pass < DocJobs.MAX_FOLLOW_UPS; pass += 1) {
+          assert.strictEqual(yield* leaky.collect, DocJobs.CONTINUED);
+          assert.match(
+            sent.at(-1)!.text,
+            /sample\.json holds the company's or a client's real details/,
+          );
+        }
+        const refused = settled(yield* leaky.collect);
+        assert.match(refused!.summary, /didn't keep the memo recipe: its sample\.json holds/);
+        assert.lengthOf(sent, 3 + DocJobs.MAX_FOLLOW_UPS);
+        assert.isUndefined((yield* workspace.recipes(orgId)).find((one) => one.name === "memo"));
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect(
@@ -963,10 +1365,12 @@ describe("worker document jobs", () => {
       yield* sql`UPDATE kin_doc_jobs SET collected_at = 1,
           outcome_json = '{"summary":"Kin filed no file from this job.","documents":[],"problems":[]}'
         WHERE worker_id = ${stranded}`;
-      const again = yield* collector.collect(
-        { orgId, workerId: stranded, threadId: threadOf(stranded) },
-        true,
-        pdfReport,
+      const again = settled(
+        yield* collector.collect(
+          { orgId, workerId: stranded, threadId: threadOf(stranded) },
+          true,
+          pdfReport,
+        ),
       );
       assert.match(again!.summary, /^Kin filed no file/);
       assert.isFalse(yield* fs.exists(left.worktree));
@@ -1018,10 +1422,12 @@ describe("worker document jobs", () => {
       const workerId = KinWorkerId.make("wk-alive");
       const prepared = yield* docJob(workerId, { worker: "running" });
       alive.add(threadOf(workerId));
-      const refused = yield* collector.collect(
-        { orgId, workerId, threadId: threadOf(workerId) },
-        true,
-        pdfReport,
+      const refused = settled(
+        yield* collector.collect(
+          { orgId, workerId, threadId: threadOf(workerId) },
+          true,
+          pdfReport,
+        ),
       );
       assert.strictEqual(refused?.result, "blocked");
       assert.match(refused!.summary, /couldn't confirm the worker had stopped/);

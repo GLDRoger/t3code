@@ -16,7 +16,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 import * as Stream from "effect/Stream";
 
-import { ruleProblem } from "../gendocs/numbering.ts";
+import { IMPORTED_SERIES, ruleProblem, seriesOf } from "../gendocs/numbering.ts";
 import {
   ImportHeader,
   type ImportEntry,
@@ -53,7 +53,6 @@ const MAX_FILE_BYTES = 1_000_000_000;
 const MAX_LISTED = 2_000;
 const CLOSED: ReadonlyArray<KinRecordState> = ["done", "dropped"];
 const NOT_ENTRIES = ["clients", "projects", "contacts", "docs"];
-const IMPORTED_SERIES = "imported";
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
@@ -117,29 +116,6 @@ export type ImportReport = {
 /** The file's lines; `fromFile` reads one from this host's disk. */
 export type Lines = Stream.Stream<string, KinChatError>;
 export type Progress = (done: number, of: number) => Effect.Effect<void>;
-
-/**
- * Where an issued number sits: `OBK/2026-27/013` and `OBK/26-27/013` in the list's series for
- * 26-27, `OBK/13` in a running one, anything else in a series of its own Kin never continues.
- */
-export const seriesOf = (rule: KinNumberingRule, number: string) => {
-  const prefix = rule.prefix.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
-  if (rule.series === "running") {
-    const found = new RegExp(`^${prefix}[/-](\\d{1,9})$`).exec(number);
-    if (found !== null)
-      return { series: `${rule.prefix}|running`, seq: Number.parseInt(found[1]!, 10) };
-  } else {
-    const found = new RegExp(`^${prefix}[/-](?:\\d{2})?(\\d{2})-(\\d{2})[/-](\\d{1,9})$`).exec(
-      number,
-    );
-    if (found !== null && (Number(found[1]) + 1) % 100 === Number(found[2]))
-      return {
-        series: `${rule.prefix}|${found[1]}-${found[2]}`,
-        seq: Number.parseInt(found[3]!, 10),
-      };
-  }
-  return { series: `${IMPORTED_SERIES}|${number}`, seq: 1 };
-};
 
 export class KinImport extends Context.Service<
   KinImport,

@@ -25,7 +25,10 @@ export const AskInput = Schema.Struct({
   ).check(Schema.isMinLength(2), Schema.isMaxLength(4)),
   detail: Schema.optional(KinText.check(Schema.isMaxLength(2000))),
 });
-export type AskInput = typeof AskInput.Type;
+/** A card Kin itself asks may also show a picture of what it asks about; `kin_ask` can't. */
+export type AskInput = typeof AskInput.Type & {
+  readonly image?: { readonly attachmentId: string; readonly mimeType: string };
+};
 export const AskResult = Schema.Struct({
   widgetId: KinTrimmedText,
   messageId: KinTrimmedText,
@@ -42,6 +45,7 @@ export const choiceCardState = (input: AskInput): KinChoiceCardState => ({
     label: option.label,
     ...(option.kind === undefined ? {} : { kind: option.kind }),
   })),
+  ...(input.image === undefined ? {} : { image: input.image }),
   answer: null,
 });
 

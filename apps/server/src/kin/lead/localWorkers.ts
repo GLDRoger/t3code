@@ -49,6 +49,7 @@ import {
   planJob,
   workerJobSensitive,
 } from "../gendocs/DocJobs.ts";
+import { copyReferences } from "../gendocs/references.ts";
 import { jobBranch, jobWorktree, KinWorkspace } from "../gendocs/workspace.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { attemptBegun, noteSensitivity } from "../work/workerAttempts.ts";
@@ -505,7 +506,9 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
         reason: "limit",
         message: `Today's budget for worker tasks is used up, so this waits for the daily reset or a higher limit. ${STILL}`,
       });
-    const job = yield* planJob(ctx.orgId, input).pipe(
+    const job = yield* planJob(ctx.orgId, input, plan.config.ownerChatId).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(ServerConfig, serverConfig),
       Effect.provideService(KinWorkspace, workspace),
       Effect.provideService(KinRecords, records),
       Effect.provideService(SqlClient.SqlClient, sql),
@@ -568,13 +571,13 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
         yield* sql`INSERT INTO kin_doc_jobs (org_id, worker_id, agent_id, wakeup_id, mode, recipe,
             recipe_commit, entry_record_id, inputs_sha256, number, sensitive, doc_origin,
             worktree_path, branch, chat_id, audience, answered_message_id, answered_author_kind,
-            answered_author_id, created_at)
+            answered_author_id, created_at, references_json)
           VALUES (${ctx.orgId}, ${workerId}, ${ctx.agentId}, ${ctx.wakeupId}, ${job.mode},
             ${job.recipeName}, ${job.recipe?.commit ?? ""}, ${job.entry?.recordId ?? null},
             ${job.inputsHash}, ${job.number}, ${sensitive ? 1 : 0}, ${job.docOrigin},
             ${worktreePath}, ${jobBranch(workerId)}, ${chatId}, 'owner_only', ${answered},
             ${answered === null ? null : "person"}, ${answered === null ? null : config.ownerPersonId},
-            ${startedAt})`;
+            ${startedAt}, ${job.references.length === 0 ? null : yield* encodeJson(job.references)})`;
         yield* attemptBegun({
           orgId: ctx.orgId,
           workerId,
@@ -587,6 +590,21 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
     );
     if (started.fresh) {
       const prepared = yield* workspace.prepare(ctx.orgId, workerId, {}).pipe(
+        // The owner's references, read-only where the writer looks; never in the recipe.
+        Effect.tap((ready) =>
+          copyReferences(ready.worktree, job.references).pipe(
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, path),
+            Effect.provideService(ServerConfig, serverConfig),
+            Effect.mapError(
+              (error) =>
+                new KinChatError({
+                  reason: isChatError(error) ? error.reason : "unavailable",
+                  message: isChatError(error) ? error.message : LAUNCH_FAILED,
+                }),
+            ),
+          ),
+        ),
         Effect.tapError(() =>
           Effect.gen(function* () {
             yield* sql`UPDATE kin_workers SET status = 'failed', ended_at = ${yield* Clock.currentTimeMillis}

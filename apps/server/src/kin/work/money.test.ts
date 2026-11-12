@@ -1,6 +1,8 @@
 // Loaded first: the chat and trigger modules import each other.
 import "../chat/KinChatService.ts";
 import { assert, describe, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { ServerConfig } from "../../config.ts";
 import {
   EnvironmentId,
   KinAgentId,
@@ -11,6 +13,7 @@ import {
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
@@ -40,6 +43,16 @@ const lead = KinAgentId.make("lead");
 const at = "2026-11-11T00:00:00.000Z";
 const NOW = Date.parse("2026-11-12T06:00:00.000Z");
 const people = [{ _tag: "person" as const, orgId, personId: ownerId }];
+/** A PNG's signature and header, as a logo's size is read from them. */
+const pngOf = (width: number, height: number) => {
+  const bytes = new Uint8Array(33);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52]);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(16, width);
+  view.setUint32(20, height);
+  bytes.set([8, 6, 0, 0, 0], 24);
+  return bytes;
+};
 const system = { actor: { _tag: "system" as const }, via: "import" as const };
 
 const scope: McpInvocationScope = {
@@ -86,6 +99,7 @@ const gate = Layer.unwrap(
               ...option,
             })),
             answer: null,
+            ...(input.image === undefined ? {} : { image: input.image }),
           };
           yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
               author_agent_id, author_owner_person_id, author_thread_id, author_member_id,
@@ -112,6 +126,8 @@ const layer = Layer.mergeAll(KinRecords.layer, identity, gate, documents).pipe(
   Layer.provideMerge(KinPersistence.layer),
   Layer.provideMerge(Sqlite.layerMemory),
   Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-money-" })),
+  Layer.provideMerge(NodeServices.layer),
 );
 
 /**
@@ -1602,5 +1618,94 @@ describe("the company profile", () => {
         "1234567890",
       );
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "takes a logo the owner sent in this chat, only through the card, as Kin's own copy",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const fs = yield* FileSystem.FileSystem;
+        const { attachmentsDir } = yield* ServerConfig;
+        yield* fs.makeDirectory(attachmentsDir, { recursive: true });
+        const png = pngOf(400, 120);
+        const sent = yield* turn(1, "This is our logo", ["logo.png", "logo.svg", "huge.png"]);
+        yield* fs.writeFile(`${attachmentsDir}/att-1-0.png`, png);
+        yield* fs.writeFileString(
+          `${attachmentsDir}/att-1-1.svg`,
+          '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
+        );
+        yield* fs.writeFile(`${attachmentsDir}/att-1-2.png`, pngOf(20_000, 10));
+        // The same image, sent in a chat this turn doesn't answer in.
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+        VALUES ('elsewhere-chat', ${orgId}, 'direct', 'a:b', 1, ${at})`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+          person_id, role, joined_at)
+        VALUES ('else-owner', ${orgId}, 'elsewhere-chat', 'person', ${ownerId}, 'owner', ${at})`;
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+          author_person_id, author_member_id, author_role, kind, body, mentions_json, status,
+          created_at, attachments_json)
+        VALUES ('msg-else', ${orgId}, 'elsewhere-chat', 1, 'human', ${ownerId}, 'else-owner',
+          'owner', 'text', 'x', '[]', 'posted', ${at}, '[]')`;
+        yield* sql`INSERT INTO kin_message_attachments (attachment_id, org_id, chat_id, message_id)
+        VALUES ('att-else', ${orgId}, 'elsewhere-chat', 'msg-else')`;
+        yield* fs.writeFile(`${attachmentsDir}/att-else.png`, png);
+        const refused = (logo: string) =>
+          LeadMoney.profile(scope, { sourceEventId: sent, set: { logo } }).pipe(
+            Effect.flip,
+            Effect.map((error) => error.message),
+          );
+        assert.match(yield* refused("att-1-1"), /an SVG with <script>\. Nothing changed/);
+        assert.match(yield* refused("att-1-2"), /20000 × 10 pixels; a logo is at most 12000/);
+        assert.match(yield* refused("att-else"), /not a file in this chat/);
+        assert.lengthOf(yield* sql`SELECT 1 FROM kin_profile_changes`, 0);
+
+        const proposed = yield* LeadMoney.profile(scope, {
+          sourceEventId: sent,
+          set: { logo: "att-1-0", brand: { primaryColor: "#0A5C8F" } },
+        });
+        assert.deepStrictEqual(proposed.proposed, [
+          "Logo: none → logo.png (PNG, 400 × 120 px, 1 KB)",
+          "Brand colour: none → #0A5C8F",
+        ]);
+        assert.isNull((yield* OwnerMoney.companyProfile(people, { orgId })).logo);
+        // The card shows the image itself, the owner's own file in the chat.
+        const [card] = yield* sql<{ widgetId: string; image: string }>`SELECT c.widget_id AS
+          "widgetId", json_extract(w.state_json, '$.image') AS image
+        FROM kin_profile_changes c JOIN kin_widgets w ON w.widget_id = c.widget_id`;
+        assert.deepStrictEqual(JSON.parse(card!.image), {
+          attachmentId: "att-1-0",
+          mimeType: "image/png",
+        });
+        yield* answerChange({
+          orgId,
+          widgetId: card!.widgetId,
+          personId: ownerId,
+          confirmed: true,
+          via: "tap",
+          now: NOW,
+        });
+        const profile = yield* OwnerMoney.companyProfile(people, { orgId });
+        const logo = profile.logo!;
+        assert.match(logo.attachmentId, /^kin-chat-[0-9a-f-]+-png$/);
+        assert.deepStrictEqual(
+          [logo.mimeType, logo.width, logo.height, profile.brand.primaryColor],
+          ["image/png", 400, 120, "#0A5C8F"],
+        );
+        // Clearing the chat keeps it: the profile holds Kin's own copy, the bytes as sent.
+        yield* fs.remove(`${attachmentsDir}/att-1-0.png`);
+        assert.deepStrictEqual(
+          yield* fs.readFile(`${attachmentsDir}/${logo.attachmentId}.png`),
+          png,
+        );
+        // The owner clears it from the profile; a client never sets a file.
+        const cleared = yield* OwnerMoney.setCompanyProfile(people, {
+          orgId,
+          rev: profile.rev,
+          logo: null,
+        });
+        assert.isNull(cleared.logo);
+      }).pipe(Effect.provide(layer)),
   );
 });
