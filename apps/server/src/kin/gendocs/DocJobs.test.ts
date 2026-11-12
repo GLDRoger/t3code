@@ -1428,6 +1428,11 @@ describe("worker document jobs", () => {
 
         const look = KinWorkerId.make("wk-look");
         const job = yield* start(look, "letterhead");
+        // An image the writer drew for the template, which the owner sees before clearing a label.
+        yield* fs.writeFile(
+          `${job.folder}/stamp.png`,
+          new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        );
         const copied = `${job.worktree}/in/references/Old invoice 12.pdf`;
         assert.strictEqual(yield* fs.readFileString(copied), pdf);
         assert.strictEqual(Number((yield* fs.stat(copied)).mode) & 0o222, 0, "read-only");
@@ -1458,7 +1463,8 @@ describe("worker document jobs", () => {
         // The owner sees the new look on the task card: the sample's PDF and its first page.
         assert.lengthOf(cards.at(-1)!.documents, 2);
         const listed = yield* OwnerDocs.recipes(people, { orgId });
-        assert.isTrue(listed.recipes.find((one) => one.name === "letterhead")?.labelled);
+        const letterhead = listed.recipes.find((one) => one.name === "letterhead");
+        assert.deepStrictEqual([letterhead?.labelled, letterhead?.files], [true, ["stamp.png"]]);
         assert.isFalse(yield* fs.exists(job.worktree));
 
         // A writer that never fixes it is sent back MAX_FOLLOW_UPS times, then the job ends.
