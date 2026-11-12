@@ -279,7 +279,6 @@ export const KIN_RPC_AGGREGATES = {
   "kin.approvals.registerKey": "kin-approvals",
   "kin.approvals.listKeys": "kin-approvals",
   "kin.approvals.revokeKey": "kin-approvals",
-  "kin.approvals.allowKey": "kin-approvals",
   "kin.audit.list": "kin-approvals",
   "kin.audit.verify": "kin-approvals",
   "kin.levels.get": "kin-levels",

@@ -11,14 +11,11 @@ import { appAtomRegistry } from "../../../state/atom-registry";
 // Public facts only: the private key never leaves the Secure Enclave or Keystore.
 const STORE_KEY = "t3code.kin.approval-key";
 
-/** Which host and org this phone's one approval key is registered with, and its code. */
+/** Which host and org this phone's one approval key is registered with. */
 const Record = Schema.Struct({
   environmentId: EnvironmentId,
   orgId: KinOrgId,
   thumbprint: KinKeyThumbprint,
-  /** The confirmation code `registerKey` returned; the server forgets it after 10 minutes. */
-  code: Schema.NullOr(Schema.String),
-  codeExpiresAt: Schema.NullOr(Schema.Number),
 });
 export type KinApproverKeyRecord = typeof Record.Type;
 const decode = Schema.decodeUnknownOption(Schema.fromJsonString(Record));

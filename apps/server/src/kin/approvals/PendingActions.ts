@@ -278,6 +278,22 @@ export class KinPendingActions extends Context.Service<
       readonly orgId: KinOrgId;
       readonly agentId: KinAgentId;
     }) => Effect.Effect<void, Errors>;
+    /**
+     * Voids what this key signed that hasn't started writing: approved actions, and claimed ones
+     * whose write hasn't begun. Run in the transaction that stops the key; audited.
+     */
+    readonly voidKeyClaims: (input: {
+      readonly orgId: KinOrgId;
+      readonly thumbprint: KinKeyThumbprint;
+      readonly reason: string;
+    }) => Effect.Effect<void, Errors>;
+    /**
+     * Closes a request whose kind is gone, expired or not: waiting is cancelled, approved is
+     * voided. False when it had already moved on.
+     */
+    readonly retire: (
+      input: RevisionRef & { readonly reason: string },
+    ) => Effect.Effect<boolean, Errors>;
     /** Every action `approve` moves to `approved`, published after its transaction commits. */
     readonly approvals: Effect.Effect<PubSub.Subscription<ActionRef>, never, Scope.Scope>;
     /** Every action this instance creates, refreshes, decides or sweeps, after its commit. */
@@ -309,7 +325,8 @@ export class KinExecutionLedger extends Context.Service<
     readonly signingKeyUsable: (ref: ActionRef) => Effect.Effect<boolean, Errors>;
     /**
      * Records `at` right before the side effect. Refused when the claim isn't open to write, and
-     * when the requesting agent was retired: that action is voided in the same transaction.
+     * when the requesting agent was retired or the signing key stopped counting: that action is
+     * voided in the same transaction.
      */
     readonly writeStarting: (
       input: ActionRef & { readonly at: number },
@@ -734,15 +751,8 @@ const make = Effect.gen(function* () {
 
   const claimedKeyUsable = Effect.fn("KinExecutionLedger.signingKeyUsable")(
     function* (ref: ActionRef) {
-      const rows = yield* sql`SELECT 1 FROM kin_executions e JOIN kin_grants g
-        ON g.grant_id = e.grant_id AND g.org_id = e.org_id
-        WHERE e.org_id = ${ref.orgId} AND e.action_id = ${ref.actionId}
-          AND ${signingKeyUsable({
-            orgId: sql`g.org_id`,
-            keyThumbprint: sql`g.key_thumbprint`,
-            approverHumanId: sql`g.approver_human_id`,
-          })}`;
-      return rows.length > 0;
+      const [row] = yield* sql<{ usable: number }>`SELECT ${claimKeyUsable(ref)} AS usable`;
+      return row?.usable === 1;
     },
     Effect.mapError(toError("KinExecutionLedger.signingKeyUsable")),
   );
@@ -754,27 +764,41 @@ const make = Effect.gen(function* () {
   const unstarted = (ref: ActionRef) => sql`org_id = ${ref.orgId} AND action_id = ${ref.actionId}
     AND finished_at IS NULL AND write_started_at IS NULL`;
 
-  // A claimed action of a retired agent with nothing sent: closed as retiring closes an approved one.
-  const voidRetiredClaim = Effect.fnUntraced(function* (ref: ActionRef, at: number) {
+  const claimKeyUsable = (ref: ActionRef) => sql`EXISTS (SELECT 1 FROM kin_executions e
+    JOIN kin_grants g ON g.grant_id = e.grant_id AND g.org_id = e.org_id
+    WHERE e.org_id = ${ref.orgId} AND e.action_id = ${ref.actionId}
+      AND ${signingKeyUsable({
+        orgId: sql`g.org_id`,
+        keyThumbprint: sql`g.key_thumbprint`,
+        approverHumanId: sql`g.approver_human_id`,
+      })})`;
+
+  // A claimed action with nothing sent, voided as `approved` ones are when `when` holds.
+  const voidClaim = Effect.fnUntraced(function* (
+    ref: ActionRef,
+    at: number,
+    reason: string,
+    when: Statement.Fragment,
+  ) {
     const [won] = yield* sql<FactsRow>`UPDATE kin_pending_actions
-      SET state = 'voided', state_reason = ${RETIRED_ACTION_REASON}, updated_at = ${at}
+      SET state = 'voided', state_reason = ${reason}, updated_at = ${at}
       WHERE org_id = ${ref.orgId} AND action_id = ${ref.actionId} AND state = 'executing'
-        AND ${requesterRetired(ref)}
-        AND EXISTS (SELECT 1 FROM kin_executions WHERE ${unstarted(ref)})
+        AND ${when} AND EXISTS (SELECT 1 FROM kin_executions WHERE ${unstarted(ref)})
       RETURNING action_id, kind, resolved_json`;
     if (won === undefined) return false;
-    yield* sql`UPDATE kin_executions SET finished_at = ${at}, outcome = 'failed',
-        error = ${RETIRED_ACTION_REASON}
+    yield* sql`UPDATE kin_executions SET finished_at = ${at}, outcome = 'failed', error = ${reason}
       WHERE ${unstarted(ref)}`;
     yield* changed(ref);
     yield* audit.append({
       orgId: ref.orgId,
       event: "action_voided",
       ...(yield* auditFacts(won)),
-      result: RETIRED_ACTION_REASON,
+      result: reason,
     });
     return true;
   });
+  const voidRetiredClaim = (ref: ActionRef, at: number) =>
+    voidClaim(ref, at, RETIRED_ACTION_REASON, requesterRetired(ref));
 
   const voidRetiredClaims = Effect.fn("KinPendingActions.voidRetiredClaims")(
     function* (input: { readonly orgId: KinOrgId; readonly agentId: KinAgentId }) {
@@ -795,17 +819,91 @@ const make = Effect.gen(function* () {
     Effect.mapError(toError("KinPendingActions.voidRetiredClaims")),
   );
 
+  const voidKeyClaims = Effect.fn("KinPendingActions.voidKeyClaims")(
+    function* (input: {
+      readonly orgId: KinOrgId;
+      readonly thumbprint: KinKeyThumbprint;
+      readonly reason: string;
+    }) {
+      const at = yield* Clock.currentTimeMillis;
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const approved = yield* sql<
+            FactsRow & { action_id: KinActionId }
+          >`UPDATE kin_pending_actions
+            SET state = 'voided', state_reason = ${input.reason}, updated_at = ${at}
+            WHERE org_id = ${input.orgId} AND state = 'approved' AND EXISTS (
+              SELECT 1 FROM kin_grants g
+              WHERE g.org_id = kin_pending_actions.org_id
+                AND g.action_id = kin_pending_actions.action_id
+                AND g.revision = kin_pending_actions.revision
+                AND g.key_thumbprint = ${input.thumbprint} AND g.consumed_at IS NULL)
+            RETURNING action_id, kind, resolved_json`;
+          for (const row of approved) {
+            yield* changed({ orgId: input.orgId, actionId: row.action_id });
+            yield* audit.append({
+              orgId: input.orgId,
+              event: "action_voided",
+              ...(yield* auditFacts(row)),
+              result: input.reason,
+            });
+          }
+          const claimed = yield* sql<{ action_id: KinActionId }>`SELECT a.action_id
+            FROM kin_pending_actions a
+            JOIN kin_executions e ON e.org_id = a.org_id AND e.action_id = a.action_id
+            JOIN kin_grants g ON g.grant_id = e.grant_id AND g.org_id = e.org_id
+            WHERE a.org_id = ${input.orgId} AND a.state = 'executing' AND e.finished_at IS NULL
+              AND e.write_started_at IS NULL AND g.key_thumbprint = ${input.thumbprint}
+            ORDER BY a.action_id`;
+          for (const row of claimed) {
+            const ref = { orgId: input.orgId, actionId: row.action_id };
+            yield* voidClaim(ref, at, input.reason, sql`NOT ${claimKeyUsable(ref)}`);
+          }
+        }),
+      );
+    },
+    Effect.mapError(toError("KinPendingActions.voidKeyClaims")),
+  );
+
+  const retire = Effect.fn("KinPendingActions.retire")(
+    function* (input: RevisionRef & { readonly reason: string }) {
+      const now = yield* Clock.currentTimeMillis;
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const [row] = yield* sql<FactsRow & { readonly state: "cancelled" | "voided" }>`
+            UPDATE kin_pending_actions
+            SET state = CASE state WHEN 'approved' THEN 'voided' ELSE 'cancelled' END,
+              state_reason = ${input.reason}, updated_at = ${now}
+            WHERE org_id = ${input.orgId} AND action_id = ${input.actionId}
+              AND revision = ${input.revision} AND state IN ('awaiting_approval', 'approved')
+            RETURNING action_id, kind, resolved_json, state`;
+          if (row === undefined) return false;
+          yield* changed(input);
+          yield* audit.append({
+            orgId: input.orgId,
+            event: `action_${row.state}`,
+            ...(yield* auditFacts(row)),
+            result: input.reason,
+          });
+          return true;
+        }),
+      );
+    },
+    Effect.mapError(toError("KinPendingActions.retire")),
+  );
+
   const writeStarting = Effect.fn("KinExecutionLedger.writeStarting")(
     function* (input: ActionRef & { readonly at: number }) {
       return yield* sql.withTransaction(
         Effect.gen(function* () {
           const rows = yield* sql`UPDATE kin_executions SET write_started_at = ${input.at}
             WHERE ${unstarted(input)} AND NOT ${requesterRetired(input)}
+              AND ${claimKeyUsable(input)}
             RETURNING action_id`;
           if (rows.length > 0) return "started" as const;
-          return (yield* voidRetiredClaim(input, input.at))
-            ? ("retired" as const)
-            : ("closed" as const);
+          if (yield* voidRetiredClaim(input, input.at)) return "retired" as const;
+          yield* voidClaim(input, input.at, "key_revoked", sql`NOT ${claimKeyUsable(input)}`);
+          return "closed" as const;
         }),
       );
     },
@@ -929,6 +1027,8 @@ const make = Effect.gen(function* () {
       approvedWithGrant,
       executingWithGrant,
       voidRetiredClaims,
+      voidKeyClaims,
+      retire,
       approvals: PubSub.subscribe(approvedHub),
       changes: PubSub.subscribe(changedHub),
       sweep,
