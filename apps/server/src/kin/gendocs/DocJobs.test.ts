@@ -612,6 +612,36 @@ describe("recipe documents", () => {
         `${config.attachmentsDir}/${file.attachmentId}.csv`,
       );
       assert.match(text, /INV\/26-27\/001,INV-1,/);
+      // A title that starts with its own number, as an import writes one, shows the number once.
+      yield* (yield* KinRecords.KinRecords).update(
+        orgId,
+        { actor: { _tag: "system" }, via: "import" },
+        "INV-1",
+        { title: "INV/26-27/001 · October retainer" },
+      );
+      yield* LeadDocuments.make(scope, invoice({ title: "Invoice INV-1 again" }));
+      assert.strictEqual(rendered.at(-1)!.request.inputs.title, "October retainer");
+      // TDS the client withheld settles it beside the money that came in, on its own line.
+      const records = yield* KinRecords.KinRecords;
+      const system = { actor: { _tag: "system" as const }, via: "import" as const };
+      for (const [minor, withheld] of [
+        [10_000, true],
+        [90_001, false],
+      ] as const)
+        yield* records.pay(orgId, system, "INV-1", {
+          amount: { minor, currency: "INR" },
+          paidOn: "2026-11-12",
+          originKey: `settle:${minor}`,
+          withheld,
+        });
+      yield* LeadDocuments.make(scope, invoice({ title: "Invoice INV-1 settled" }));
+      assert.deepStrictEqual(
+        [
+          (latestData().paidLines as ReadonlyArray<Record<string, unknown>>).map((one) => one.kind),
+          latestData().balance.text,
+        ],
+        [["tds", "received"], "₹0.00"],
+      );
     }).pipe(Effect.provide(layer)),
   );
 
@@ -650,6 +680,37 @@ describe("recipe documents", () => {
         Effect.flip,
       );
       assert.strictEqual(reused.reason, "not_allowed");
+      // Each list's default is marked; the owner picks another, only one made for a list.
+      const defaults = () =>
+        Effect.map(OwnerDocs.recipes(people, { orgId }), (all) =>
+          all.recipes.filter((one) => one.default === true).map((one) => one.name),
+        );
+      assert.deepStrictEqual(yield* defaults(), ["invoice", "receipt"]);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_recipe_defaults (org_id, list, recipe, set_by_person_id, set_at)
+        VALUES (${orgId}, 'invoices', 'gone', ${ownerId}, 0)`;
+      assert.deepStrictEqual(
+        yield* defaults(),
+        ["invoice", "receipt"],
+        "a gone recipe is no default",
+      );
+      assert.match(
+        (yield* Effect.flip(OwnerDocs.setDefaultRecipe(people, { orgId, recipe: "report" })))
+          .message,
+        /isn't made for a list's entries/,
+      );
+      assert.include(
+        yield* Effect.flip(OwnerDocs.setDefaultRecipe(someone, { orgId, recipe: "invoice" })),
+        { reason: "not_allowed" },
+      );
+      assert.deepStrictEqual(
+        yield* OwnerDocs.setDefaultRecipe(people, { orgId, recipe: "invoice" }),
+        { list: "invoices", recipe: "invoice" },
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT recipe FROM kin_recipe_defaults WHERE org_id = ${orgId}`,
+        [{ recipe: "invoice" }],
+      );
       // A preview neither takes an id nor finds what one filed.
       const again = yield* OwnerDocs.render(people, { ...asked, preview: true });
       assert.deepStrictEqual(
@@ -982,24 +1043,37 @@ describe("receipts", () => {
         // The invoice shows the advance and what is left; one paid on its day isn't an advance.
         yield* LeadDocuments.make(scope, invoice({ entry: "INV-2", title: "Invoice INV-2" }));
         assert.deepStrictEqual(
-          [rendered.at(-1)!.request.inputs.advances, latestData().balance.text],
+          [rendered.at(-1)!.request.inputs.paid, latestData().balance.text],
           [
             [
               {
                 receipt: "QST-RN/26-27/009",
                 amount: { minor: 50_000, currency: "INR" },
                 paidOn: "2026-11-05",
+                kind: "advance",
               },
             ],
             "₹1,500.00",
           ],
         );
+        // Every payment settles it, not only the advance: nothing is left on INV-1.
         yield* LeadDocuments.make(scope, invoice({ title: "Invoice INV-1 again" }));
         assert.deepStrictEqual(
-          (rendered.at(-1)!.request.inputs.advances as ReadonlyArray<{ receipt: string }>).map(
-            (one) => one.receipt,
-          ),
-          ["QST-RN/2026-27/007"],
+          [
+            (latestData().paidLines as ReadonlyArray<Record<string, unknown>>).map((one) => [
+              one.kind,
+              one.receipt,
+              one.paidText,
+            ]),
+            latestData().balance.text,
+          ],
+          [
+            [
+              ["advance", "QST-RN/2026-27/007", "1 Oct 2026"],
+              ["received", "QST-RN/26-27/008", "12 Nov 2026"],
+            ],
+            "₹0.00",
+          ],
         );
 
         // What a screen lists: newest first, who from, towards, the invoice and the PDF.
@@ -1078,6 +1152,15 @@ describe("receipts", () => {
           [remade.receipt !== next.receipt, remade.number],
           [true, "QST-RN/26-27/011"],
         );
+        // The void one stays void, by the owner's Undo void or an edit: two would count it twice.
+        const backs = [
+          Effect.flip(
+            OwnerMoney.unvoidEntry(people, { orgId, key: KinRecordKey.make(next.receipt) }),
+          ),
+          Effect.flip(records.update(orgId, system, next.receipt, { state: "open" })),
+        ] as const;
+        for (const back of backs)
+          assert.match((yield* back).message, /void receipt, and stays void/);
         const held = (yield* OwnerMoney.receipts(people, { orgId })).receipts.find(
           (one) => one.key === advance.receipt,
         )!.paymentId!;
@@ -1307,7 +1390,7 @@ describe("receipts", () => {
           ).pipe(
             Effect.map(() =>
               (
-                rendered.at(-1)!.request.inputs.advances as ReadonlyArray<{
+                rendered.at(-1)!.request.inputs.paid as ReadonlyArray<{
                   receipt: string | null;
                   paidOn: string;
                 }>
@@ -1620,7 +1703,12 @@ describe("worker document jobs", () => {
           Effect.map(listed(name), (one) => one?.labelled === true);
         const clear = Effect.gen(function* () {
           const commit = (yield* listed())!.commit;
-          return yield* OwnerDocs.clearRecipeLabel(people, { orgId, recipe: "quote", commit });
+          return yield* OwnerDocs.labelRecipe(people, {
+            orgId,
+            recipe: "quote",
+            commit,
+            sensitive: false,
+          });
         });
         assert.match((yield* writeQuote(1, 1))!.summary, /committed it/);
         assert.deepStrictEqual(
@@ -1639,10 +1727,11 @@ describe("worker document jobs", () => {
         yield* OwnerDocs.undoRecipe(people, { orgId, recipe: "quote" });
         assert.isFalse(yield* quote());
         const someone = [{ _tag: "person" as const, orgId, personId: KinPersonId.make("someone") }];
-        const refused = yield* OwnerDocs.clearRecipeLabel(someone, {
+        const refused = yield* OwnerDocs.labelRecipe(someone, {
           orgId,
           recipe: "quote",
           commit: seen,
+          sensitive: false,
         }).pipe(Effect.flip);
         assert.strictEqual(refused.reason, "not_allowed");
 
@@ -1681,16 +1770,27 @@ describe("worker document jobs", () => {
         yield* unlabel;
         assert.isTrue(yield* labelled());
         // Clearing what the owner no longer sees is refused, and changes nothing.
-        const stale = yield* OwnerDocs.clearRecipeLabel(people, {
+        const stale = yield* OwnerDocs.labelRecipe(people, {
           orgId,
           recipe: "quote",
           commit: merge,
+          sensitive: false,
         }).pipe(Effect.flip);
         assert.deepInclude(stale, { reason: "invalid_state" });
         assert.match(stale.message, /changed after you looked/);
         assert.isTrue(yield* labelled());
         yield* clear;
         assert.isFalse(yield* labelled());
+        // The owner can mark it private again, and what it makes is private from then on.
+        yield* OwnerDocs.labelRecipe(people, {
+          orgId,
+          recipe: "quote",
+          commit: (yield* listed())!.commit,
+          sensitive: true,
+        });
+        assert.deepStrictEqual([yield* labelled(), yield* quote()], [true, true]);
+        yield* clear;
+        assert.deepStrictEqual([yield* labelled(), yield* quote()], [false, false]);
         // The starter recipes, and revisions from before Kin recorded where main was, have no
         // row and read as the job that wrote them did.
         assert.isFalse(yield* labelled("report"));

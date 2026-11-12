@@ -10,13 +10,14 @@ import {
   kinBase64Bytes,
   kinDocFileLine,
   kinInvoiceActions,
-  kinInvoiceUnvoidState,
+  kinInvoiceMissingClient,
   kinReceiptView,
   kinTemplatesFor,
   type KinAdvanceDraft,
   type KinInvoiceView,
 } from "@t3tools/client-runtime/kin/kinInvoices";
 import { KIN_LISTS, kinMoneyText } from "@t3tools/client-runtime/kin/kinLists";
+import { kinDefaultTemplate } from "@t3tools/client-runtime/kin/kinTemplates";
 import { kinWorkDayOf, kinWorkDueLabel } from "@t3tools/client-runtime/kin/kinWork";
 import {
   EnvironmentId,
@@ -84,7 +85,8 @@ export function KinInvoiceActions(
     readonly def: KinListDefinition | null;
     readonly actions: MoneyActions;
     readonly busy: boolean;
-    readonly onUnvoid: (state: "open" | "waiting") => void;
+    /** The invoice's client, to edit when Make invoice needs a detail of theirs. */
+    readonly party: { readonly key: string; readonly title: string } | null;
   },
 ) {
   const navigation = useNavigation();
@@ -92,10 +94,22 @@ export function KinInvoiceActions(
   const can = kinInvoiceActions(invoice, props.def, {
     render: useAtomValue(kinClient.docRender.permissionAtom(environmentId)),
     issue: useAtomValue(kinClient.workIssue.permissionAtom(environmentId)),
-    change: useAtomValue(kinClient.workUpdate.permissionAtom(environmentId)),
     receipt: useAtomValue(kinClient.makeReceipt.permissionAtom(environmentId)),
   });
-  const busy = props.busy || actions.busy;
+  const [reading, setReading] = useState(false);
+  const busy = props.busy || actions.busy || reading;
+  const askIssue = async () => {
+    setReading(true);
+    const next = await actions.nextNumber(itemKey);
+    setReading(false);
+    Dialog.confirm({
+      title: KIN_INVOICES.issueTitle,
+      message:
+        next === null ? KIN_INVOICES.issueDetail(invoice.prefix) : KIN_INVOICES.issueNumber(next),
+      confirmText: KIN_INVOICES.issue,
+      onConfirm: () => void actions.issue(itemKey),
+    });
+  };
   if (!can.make && !can.issue && !can.void && !can.unvoid) return null;
   return (
     <View className="gap-2">
@@ -107,7 +121,14 @@ export function KinInvoiceActions(
           label={KIN_INVOICES.makeInvoice}
           disabled={busy}
           onPress={() =>
-            navigation.navigate("KinMakeDocument", { environmentId, orgId, task: itemKey })
+            navigation.navigate("KinMakeDocument", {
+              environmentId,
+              orgId,
+              task: itemKey,
+              ...(props.party === null
+                ? {}
+                : { party: props.party.key, partyName: props.party.title }),
+            })
           }
         />
       ) : null}
@@ -117,16 +138,9 @@ export function KinInvoiceActions(
           fullWidth
           icon="checkmark.circle"
           label={KIN_INVOICES.issue}
-          loading={actions.busy}
+          loading={actions.busy || reading}
           disabled={busy}
-          onPress={() =>
-            Dialog.confirm({
-              title: KIN_INVOICES.issueTitle,
-              message: KIN_INVOICES.issueDetail(invoice.prefix),
-              confirmText: KIN_INVOICES.issue,
-              onConfirm: () => void actions.issue(itemKey),
-            })
-          }
+          onPress={() => void askIssue()}
         />
       ) : null}
       {can.unvoid ? (
@@ -136,7 +150,7 @@ export function KinInvoiceActions(
           icon="arrow.uturn.backward"
           label={KIN_INVOICES.unvoid}
           disabled={busy}
-          onPress={() => props.onUnvoid(kinInvoiceUnvoidState(invoice))}
+          onPress={() => void actions.unvoid(itemKey)}
         />
       ) : null}
       {can.void ? (
@@ -401,6 +415,9 @@ export type KinMakeDocumentParams = {
   readonly environmentId: string;
   readonly orgId: string;
   readonly task: string;
+  /** The invoice's client key and name, to edit when a detail of theirs is missing. */
+  readonly party?: string;
+  readonly partyName?: string;
 };
 
 /** Pick a template, see the PDF as it would be made, then file it. */
@@ -414,10 +431,19 @@ export function KinMakeDocumentScreen({ route }: StaticScreenProps<KinMakeDocume
         <EmptyState variant="plain" {...KIN_LISTS.entry.gone} />
       </KinWorkFrame>
     );
-  return <MakeDocument {...target} itemKey={key} />;
+  const party =
+    route.params.party === undefined
+      ? null
+      : { key: route.params.party, title: route.params.partyName ?? route.params.party };
+  return <MakeDocument {...target} itemKey={key} party={party} />;
 }
 
-function MakeDocument(props: KinWorkTarget & { readonly itemKey: KinRecordKey }) {
+function MakeDocument(
+  props: KinWorkTarget & {
+    readonly itemKey: KinRecordKey;
+    readonly party: { readonly key: string; readonly title: string } | null;
+  },
+) {
   const navigation = useNavigation();
   const actions = useKinMoneyActions(props);
   const allowed = useAtomValue(kinClient.docRender.permissionAtom(props.environmentId));
@@ -441,7 +467,8 @@ function MakeDocument(props: KinWorkTarget & { readonly itemKey: KinRecordKey })
     );
   const { state } = recipes;
   const templates = state._tag === "ready" ? kinTemplatesFor(state.value.recipes, INVOICES) : [];
-  const recipe = templates.find((one) => one.name === picked) ?? templates[0] ?? null;
+  const recipe = templates.find((one) => one.name === picked) ?? kinDefaultTemplate(templates);
+  const missing = kinInvoiceMissingClient(actions.problem, props.party);
   const preview = async () => {
     if (recipe === null) return;
     setFailed(null);
@@ -534,6 +561,26 @@ function MakeDocument(props: KinWorkTarget & { readonly itemKey: KinRecordKey })
           ) : null}
           {failed === null ? null : <Notice message={failed} tone="danger" />}
           <KinMoneyActionNotice actions={actions} />
+          {missing === null ? null : (
+            <View className="gap-2 px-2">
+              <Text textRole="body" className="text-foreground">
+                {KIN_INVOICES.missingClient(missing.name)}
+              </Text>
+              <Button
+                tone="secondary"
+                fullWidth
+                label={KIN_INVOICES.editClient(missing.name)}
+                onPress={() => {
+                  actions.dismiss();
+                  navigation.navigate("KinClientForm", {
+                    environmentId: props.environmentId,
+                    orgId: props.orgId,
+                    party: missing.key,
+                  });
+                }}
+              />
+            </View>
+          )}
         </>
       )}
       <FilePreviewModal

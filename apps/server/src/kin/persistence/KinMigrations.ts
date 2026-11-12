@@ -42,6 +42,7 @@ import RecordRequestHash from "./migrations/K080_RecordRequestHash.ts";
 import RecipeJobPasses from "./migrations/K081_RecipeJobPasses.ts";
 import BankStatements from "./migrations/K082_BankStatements.ts";
 import StatementSafety from "./migrations/K083_StatementSafety.ts";
+import RecipeDefaults from "./migrations/K084_RecipeDefaults.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -164,6 +165,7 @@ const loader = Migrator.fromRecord({
   "81_RecipeJobPasses": RecipeJobPasses,
   "82_BankStatements": BankStatements,
   "83_StatementSafety": StatementSafety,
+  "84_RecipeDefaults": RecipeDefaults,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

@@ -34,7 +34,7 @@ describe("kinTemplateGroups", () => {
     const groups = kinTemplateGroups(
       [
         recipe({ name: "month", title: "Month export", list: null }),
-        recipe({ name: "receipt", title: "Receipt", list: "receipts" }),
+        recipe({ name: "receipt", title: "Receipt", list: "receipts", default: true }),
         recipe({
           name: "invoice-plain",
           labelled: true,
@@ -52,7 +52,12 @@ describe("kinTemplateGroups", () => {
       forEntry: true,
       changed: expect.stringMatching(/^Changed by Finance, /),
     });
-    expect(groups[1]?.templates[0]).toMatchObject({ canUndo: false, changed: "Kin's starter" });
+    expect(groups[1]?.templates[0]).toMatchObject({
+      canUndo: false,
+      changed: "Kin's starter",
+      isDefault: true,
+    });
+    expect(groups[0]?.templates[0]?.isDefault).toBe(false);
     expect(groups[2]?.templates[0]?.forEntry).toBe(false);
   });
 });

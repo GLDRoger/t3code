@@ -431,12 +431,12 @@ it.effect(
       ];
       for (const error of refused) assert.include(error, { reason: "not_allowed" });
       // Every Work method: the clients, contacts and projects ones, lists, money, the profile,
-      // issuing and voiding numbered entries, and receipts.
+      // issuing, voiding and unvoiding numbered entries, the next number, and receipts.
       const methods = [
         ...Object.values(KIN_WORK_WS_METHODS),
         ...KinFinanceRpcs.map((rpc) => rpc._tag),
       ];
-      assert.lengthOf(methods, 33);
+      assert.lengthOf(methods, 35);
       for (const method of methods)
         assert.isTrue(
           (yield* Effect.exit(authorizeRpc([AuthKinChatScope], method, { orgId })))._tag ===

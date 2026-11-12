@@ -183,6 +183,11 @@ describe("command permissions", () => {
     // Lowering a doc's or a recipe's label is the owner's, as relabelling an entry is.
     ["kin.docs.label", AuthOrchestrationOperateScope],
     ["kin.docs.clearRecipeLabel", AuthOrchestrationOperateScope],
+    ["kin.docs.labelRecipe", AuthOrchestrationOperateScope],
+    ["kin.docs.setDefaultRecipe", AuthOrchestrationOperateScope],
+    // Undoing a void moves an invoice's number back into what is owed, as voiding it does.
+    ["kin.work.unvoid", AuthOrchestrationOperateScope],
+    ["kin.work.nextNumber", AuthOrchestrationReadScope],
   ] as const)("guards %s with the destination %s grant", ([method, scope]) =>
     Effect.scoped(
       Effect.gen(function* () {

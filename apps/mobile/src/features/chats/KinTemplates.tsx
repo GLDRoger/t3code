@@ -37,14 +37,16 @@ export function KinTemplateRows(props: KinWorkTarget) {
   const { environmentId, orgId } = props;
   const allowed = useAtomValue(kinClient.companyRead.permissionAtom(environmentId));
   const canUndo = useAtomValue(kinClient.undoRecipe.permissionAtom(environmentId));
-  const canClear = useAtomValue(kinClient.clearRecipeLabel.permissionAtom(environmentId));
+  const canLabel = useAtomValue(kinClient.labelRecipe.permissionAtom(environmentId));
+  const canDefault = useAtomValue(kinClient.setDefaultRecipe.permissionAtom(environmentId));
   const canPreview = useAtomValue(kinClient.docRender.permissionAtom(environmentId));
   const recipes = useKinRecipes(props, allowed);
   const { names } = useKinWorkDirectory(props, allowed);
   const asker = useKinAskAgent(props);
   const actions = useKinMoneyActions(props);
   const undo = useAtomCommand(kinClient.undoRecipe, { reportFailure: false });
-  const clear = useAtomCommand(kinClient.clearRecipeLabel, { reportFailure: false });
+  const label = useAtomCommand(kinClient.labelRecipe, { reportFailure: false });
+  const setDefault = useAtomCommand(kinClient.setDefaultRecipe, { reportFailure: false });
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<{ readonly ok: boolean; readonly text: string } | null>(null);
   const [shown, setShown] = useState<{
@@ -75,7 +77,7 @@ export function KinTemplateRows(props: KinWorkTarget) {
     shown?.file.dispose();
     setShown({ file: written, name: file.name, mimeType: file.mimeType });
   };
-  const run = async (kind: "undo" | "clear", template: KinTemplateView) => {
+  const run = async (kind: "undo" | "clear" | "set", template: KinTemplateView) => {
     setBusy(true);
     setSaid(null);
     const input = { orgId, recipe: template.name };
@@ -84,7 +86,10 @@ export function KinTemplateRows(props: KinWorkTarget) {
       send: () =>
         kind === "undo"
           ? undo({ environmentId, input })
-          : clear({ environmentId, input: { ...input, commit: template.commit } }),
+          : label({
+              environmentId,
+              input: { ...input, commit: template.commit, sensitive: kind === "set" },
+            }),
     });
     setBusy(false);
     recipes.refresh();
@@ -94,10 +99,27 @@ export function KinTemplateRows(props: KinWorkTarget) {
       text:
         kind === "clear"
           ? KIN_TEMPLATES.cleared
-          : "removed" in outcome.value && outcome.value.removed
-            ? KIN_TEMPLATES.removed
-            : KIN_TEMPLATES.undone,
+          : kind === "set"
+            ? KIN_TEMPLATES.set
+            : "removed" in outcome.value && outcome.value.removed
+              ? KIN_TEMPLATES.removed
+              : KIN_TEMPLATES.undone,
     });
+  };
+  const makeDefault = async (template: KinTemplateView, list: string) => {
+    setBusy(true);
+    setSaid(null);
+    const outcome = await kinListSend({
+      online: () => kinHostConnected(environmentId),
+      send: () => setDefault({ environmentId, input: { orgId, recipe: template.name } }),
+    });
+    setBusy(false);
+    recipes.refresh();
+    setSaid(
+      outcome.ok
+        ? { ok: true, text: KIN_TEMPLATES.defaultSet(list) }
+        : { ok: false, text: outcome.problem },
+    );
   };
   if (!allowed) return null;
   const { state } = recipes;
@@ -133,12 +155,17 @@ export function KinTemplateRows(props: KinWorkTarget) {
                     <Text textRole="body" className="font-t3-medium text-foreground">
                       {template.title}
                     </Text>
-                    {template.labelled ? (
-                      <Text textRole="footnote" className="font-t3-medium text-warning">
+                    {template.labelled || template.alwaysPrivate ? (
+                      <Text textRole="footnote" className="font-t3-medium text-warning-foreground">
                         {KIN_TEMPLATES.private}
                       </Text>
                     ) : null}
                   </View>
+                  {template.isDefault && group.list !== null ? (
+                    <Text textRole="footnote" className="font-t3-medium text-foreground">
+                      {KIN_TEMPLATES.isDefault(group.title)}
+                    </Text>
+                  ) : null}
                   {template.description === null ? null : (
                     <Text textRole="footnote" className="text-foreground-muted">
                       {template.description}
@@ -147,9 +174,11 @@ export function KinTemplateRows(props: KinWorkTarget) {
                   <Text textRole="footnote" className="text-foreground-muted">
                     {template.changed}
                   </Text>
-                  {template.labelled ? (
+                  {template.alwaysPrivate || template.labelled ? (
                     <Text textRole="footnote" className="text-foreground-muted">
-                      {KIN_TEMPLATES.privateDetail}
+                      {template.alwaysPrivate
+                        ? KIN_TEMPLATES.alwaysPrivateDetail
+                        : KIN_TEMPLATES.privateDetail}
                     </Text>
                   ) : null}
                 </View>
@@ -177,18 +206,37 @@ export function KinTemplateRows(props: KinWorkTarget) {
                     }
                   />
                 ) : null}
-                {canClear && template.labelled ? (
+                {canDefault && group.list !== null && !template.isDefault ? (
+                  <ListActionRow
+                    icon="checkmark.circle"
+                    label={KIN_TEMPLATES.pickFor(group.title)}
+                    disabled={busy}
+                    onPress={() => void makeDefault(template, group.title)}
+                  />
+                ) : null}
+                {canLabel && !template.alwaysPrivate ? (
                   <ListActionRow
                     icon="lock"
-                    label={KIN_TEMPLATES.clearPrivate}
+                    label={
+                      template.labelled ? KIN_TEMPLATES.clearPrivate : KIN_TEMPLATES.setPrivate
+                    }
                     disabled={busy}
                     onPress={() =>
-                      Dialog.confirm({
-                        title: KIN_TEMPLATES.clearTitle,
-                        message: KIN_TEMPLATES.clearDetail,
-                        confirmText: KIN_TEMPLATES.clearPrivate,
-                        onConfirm: () => void run("clear", template),
-                      })
+                      Dialog.confirm(
+                        template.labelled
+                          ? {
+                              title: KIN_TEMPLATES.clearTitle,
+                              message: KIN_TEMPLATES.clearDetail,
+                              confirmText: KIN_TEMPLATES.clearPrivate,
+                              onConfirm: () => void run("clear", template),
+                            }
+                          : {
+                              title: KIN_TEMPLATES.setTitle,
+                              message: KIN_TEMPLATES.setDetail,
+                              confirmText: KIN_TEMPLATES.setPrivate,
+                              onConfirm: () => void run("set", template),
+                            },
+                      )
                     }
                   />
                 ) : null}

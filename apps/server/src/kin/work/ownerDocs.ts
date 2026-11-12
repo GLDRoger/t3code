@@ -10,8 +10,10 @@ import {
   type KinDocRenderResult,
   type KinDocsListInput,
   type KinOrgId,
-  type KinRecipeClearLabelInput,
   type KinRecipeClearLabelResult,
+  type KinRecipeDefaultInput,
+  type KinRecipeDefaultResult,
+  type KinRecipeLabelInput,
   type KinRecipesInput,
   type KinRecipesResult,
   type KinRecipeUndoInput,
@@ -27,7 +29,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { makeDocument } from "../gendocs/make.ts";
-import { clearLabel, recipeLabelled, undoRecipe as undoLabelled } from "../gendocs/recipeLabels.ts";
+import { defaultRecipes, setDefaultRecipe as setDefault } from "../gendocs/recipeDefaults.ts";
+import { recipeLabelled, setLabel, undoRecipe as undoLabelled } from "../gendocs/recipeLabels.ts";
 import { KinWorkspace } from "../gendocs/workspace.ts";
 import { changedSections, outlineOf, patchOf } from "./docBody.ts";
 import { docEmbeds } from "./docFiles.ts";
@@ -295,6 +298,7 @@ export const recipes = Effect.fn("KinDocs.recipes")(function* (
   yield* theOwner(people, input.orgId);
   const stored = yield* (yield* KinWorkspace).recipes(input.orgId);
   const labelled = yield* Effect.forEach(stored, (recipe) => recipeLabelled(input.orgId, recipe));
+  const defaults = yield* defaultRecipes(input.orgId, stored);
   return {
     recipes: stored.map((recipe, index) => ({
       name: recipe.name,
@@ -311,6 +315,7 @@ export const recipes = Effect.fn("KinDocs.recipes")(function* (
       list: recipe.list,
       numbered: recipe.numbered,
       sensitive: recipe.sensitive,
+      ...(defaults.has(recipe.name) ? { default: true as const } : {}),
       ...(labelled[index] === true ? { labelled: true as const, files: [...recipe.files] } : {}),
       changedAt: recipe.changedAt === null ? null : iso(recipe.changedAt),
       changedBy: recipe.changed,
@@ -407,16 +412,30 @@ export const label = Effect.fn("KinDocs.label")(
   Effect.catchTags({ SqlError: () => unavailable }),
 );
 
-/** The owner clears the label a recipe has from being written after a sensitive read. */
-export const clearRecipeLabel = Effect.fn("KinDocs.clearRecipeLabel")(function* (
+/** The owner raises or lowers a recipe's label, as they saw it; only a person may lower one. */
+export const labelRecipe = Effect.fn("KinDocs.labelRecipe")(function* (
   people: ReadonlyArray<PersonIdentity>,
-  input: KinRecipeClearLabelInput,
+  input: KinRecipeLabelInput,
 ) {
   const person = yield* theOwner(people, input.orgId);
-  return (yield* clearLabel(
+  return (yield* setLabel(
     input.orgId,
     input.recipe,
     person.personId,
     input.commit,
+    input.sensitive,
   )) satisfies KinRecipeClearLabelResult;
+}, workFailure);
+
+/** The owner makes a recipe the one its list's documents are made with. */
+export const setDefaultRecipe = Effect.fn("KinDocs.setDefaultRecipe")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinRecipeDefaultInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  return (yield* setDefault(
+    input.orgId,
+    input.recipe,
+    person.personId,
+  )) satisfies KinRecipeDefaultResult;
 }, workFailure);

@@ -151,7 +151,13 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
         return yield* call((people) => Docs.label(people, input));
       }),
       "kin.docs.clearRecipeLabel": Effect.fn("KinDocs.rpc.clearRecipeLabel")(function* (input) {
-        return yield* call((people) => Docs.clearRecipeLabel(people, input));
+        return yield* call((people) => Docs.labelRecipe(people, { ...input, sensitive: false }));
+      }),
+      "kin.docs.labelRecipe": Effect.fn("KinDocs.rpc.labelRecipe")(function* (input) {
+        return yield* call((people) => Docs.labelRecipe(people, input));
+      }),
+      "kin.docs.setDefaultRecipe": Effect.fn("KinDocs.rpc.setDefaultRecipe")(function* (input) {
+        return yield* call((people) => Docs.setDefaultRecipe(people, input));
       }),
       "kin.search": Effect.fn("KinDocs.rpc.search")(function* (input) {
         return yield* call((people) => Docs.search(people, input));
@@ -188,8 +194,14 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.issue": Effect.fn("KinWork.rpc.issue")(function* (input) {
         return yield* call((people) => Money.issue(people, input));
       }),
+      "kin.work.nextNumber": Effect.fn("KinWork.rpc.nextNumber")(function* (input) {
+        return yield* call((people) => Money.nextNumber(people, input));
+      }),
       "kin.work.void": Effect.fn("KinWork.rpc.void")(function* (input) {
         return yield* call((people) => Money.voidEntry(people, input));
+      }),
+      "kin.work.unvoid": Effect.fn("KinWork.rpc.unvoid")(function* (input) {
+        return yield* call((people) => Money.unvoidEntry(people, input));
       }),
       "kin.work.receipts": Effect.fn("KinWork.rpc.receipts")(function* (input) {
         return yield* call((people) => Money.receipts(people, input));
