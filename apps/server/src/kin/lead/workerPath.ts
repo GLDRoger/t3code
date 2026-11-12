@@ -1,4 +1,5 @@
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { resolveCommandPath } from "@t3tools/shared/shell";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -21,8 +22,26 @@ const inside = (parent: string, child: string) =>
 const overlaps = (a: string, b: string) => inside(a, b) || inside(b, a);
 
 /**
+ * The server's own Vite+ `vp`, when its `PATH` has one: the real directory of the binary and the
+ * home holding the Node runtimes and package managers it runs, `<home>/<version>/bin/vp` unless
+ * the server sets `VP_HOME`. A worker's `HOME` is its own, so its commands find that home only
+ * through `VP_HOME`.
+ */
+export const serverVp = Effect.fn("KinWorkSandbox.serverVp")(function* (env: NodeJS.ProcessEnv) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const real = (entry: string) => fs.realPath(entry).pipe(Effect.orElseSucceed(() => undefined));
+  const found = yield* resolveCommandPath("vp", { env });
+  const binary = found === null ? undefined : yield* real(found);
+  if (binary === undefined) return undefined;
+  const bin = path.dirname(binary);
+  const home = yield* real(env.VP_HOME?.trim() || path.dirname(path.dirname(bin)));
+  return home !== undefined && inside(home, bin) ? { bin, home } : undefined;
+});
+
+/**
  * A worker's `PATH`, `SHELL` and the paths it loads, none from the provider's `PATH`: the server's
- * Node, Claude Code's directory, the system's, then the owner's. Each is used by its
+ * Node, Claude Code's directory, the server's `vp`, the system's, then the owner's. Each is used by its
  * real path, and left out, named in `dropped`, when it is relative, missing, or inside, equal to
  * or above a place in `writable`. Claude Code's own process runs what `PATH` finds, unsandboxed.
  */
@@ -67,6 +86,7 @@ export const workerPaths = Effect.fn("KinWorkSandbox.workerPaths")(function* (in
     return target;
   });
   const node = yield* real(yield* HostProcess.ExecutablePath);
+  const vp = yield* serverVp(yield* HostProcess.Environment);
   // Kin's own lists: a directory this host doesn't have (yet) is skipped, not reported.
   const present = Effect.fnUntraced(function* (entries: ReadonlyArray<string>) {
     const found: Array<string> = [];
@@ -77,6 +97,7 @@ export const workerPaths = Effect.fn("KinWorkSandbox.workerPaths")(function* (in
   for (const entry of [
     ...(node === undefined ? [] : [path.dirname(node)]),
     ...(input.claude?.startsWith("/") === true ? [path.dirname(input.claude)] : []),
+    ...(vp === undefined ? [] : [vp.bin]),
     ...(yield* present(systemPath)),
     ...input.ownerPath,
   ]) {
@@ -86,6 +107,10 @@ export const workerPaths = Effect.fn("KinWorkSandbox.workerPaths")(function* (in
   const env: Record<string, string> = { PATH: entries.join(":") };
   const shell = yield* checked("SHELL", systemShell, "File");
   if (shell !== undefined) env.SHELL = shell;
+  if (vp !== undefined && entries.includes(vp.bin)) {
+    const home = yield* checked("VP_HOME", vp.home, "Directory");
+    if (home !== undefined) env.VP_HOME = home;
+  }
   for (const name of pointerVariables) {
     const value = input.providerEnv[name];
     if (value === undefined || value === "") continue;
