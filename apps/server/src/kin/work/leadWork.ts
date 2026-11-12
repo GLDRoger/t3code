@@ -32,7 +32,7 @@ import { toolAdmitted } from "../lead/SharedTools.ts";
 import { partyPage, projectDetail } from "./crm.ts";
 import { KinRecords, type Patch, type TotalsBy, type Writer } from "./KinRecords.ts";
 import { FieldInputs, turnFiles, typedFields } from "./leadFields.ts";
-import { fieldList, fieldText, isMoney, LISTS, parseFields } from "./lists.ts";
+import { fieldList, fieldText, isMoney, LISTS, listOf, parseFields } from "./lists.ts";
 import { formatMoney, parseAmount } from "./money.ts";
 import {
   endOfDay,
@@ -56,7 +56,7 @@ import { sensitiveShown, showsSensitive } from "./workerAttempts.ts";
 
 /** The lead tools' inputs, results and the one call each makes. Model-facing text lives in `mcp/tools.ts`. */
 
-const Who = TrimmedNonEmptyString.check(Schema.isMaxLength(120)).annotate({
+export const Who = TrimmedNonEmptyString.check(Schema.isMaxLength(120)).annotate({
   description:
     '"me" for you, "owner" for the owner, or an agent\'s agentId from kin_leads. Never a name.',
 });
@@ -94,10 +94,10 @@ const Repeat = Schema.NullOr(KinRepeatRule).annotate({
     'Kin makes the next one when this one closes: {"every":"month"}, "quarter", "year", or {"every":"days","days":14}. null stops it.',
 });
 const TaxId = TrimmedNonEmptyString.check(Schema.isMaxLength(60));
-const Client = TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
+export const Client = TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
   description: "A client or vendor: its key (C-3) or exact name.",
 });
-const Project = TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
+export const Project = TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
   description: "A project: its key (P-2) or exact name.",
 });
 const Detail = TrimmedNonEmptyString.check(Schema.isMaxLength(200));
@@ -341,6 +341,8 @@ export const UpdateResult = Schema.Struct({
 
 export type Lead = Effect.Success<ReturnType<typeof resolveLead>>;
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+const isDoc = (key: string) =>
+  invalid(`${key.slice(0, 40)} is a doc: read it with doc_read and change it with doc_edit.`);
 
 /** Who the turn's events came from, by stored author: the owner only when every one is the owner's. */
 export const askedBy = Effect.fn("KinWorkTools.askedBy")(function* (lead: Lead) {
@@ -379,7 +381,7 @@ export const sourceOf = Effect.fn("KinWorkTools.sourceOf")(function* (lead: Lead
     : undefined;
 });
 
-const resolveWho = Effect.fn("KinWorkTools.resolveWho")(function* (lead: Lead, who: string) {
+export const resolveWho = Effect.fn("KinWorkTools.resolveWho")(function* (lead: Lead, who: string) {
   const sql = yield* SqlClient.SqlClient;
   if (who === "me") return { _tag: "agent", agentId: lead.agentId } satisfies KinWorkPrincipal;
   if (who === "owner") {
@@ -402,7 +404,7 @@ const dueOf = Effect.fn("KinWorkTools.dueOf")(function* (orgId: KinOrgId, due: s
 });
 
 /** How a lead reads names: itself as "you", the owner as "owner", other leads by name. */
-const namer = Effect.fn("KinWorkTools.namer")(function* (lead: Lead) {
+export const namer = Effect.fn("KinWorkTools.namer")(function* (lead: Lead) {
   const sql = yield* SqlClient.SqlClient;
   const agents = yield* sql<{ id: string; name: string }>`SELECT agent_id AS id,
       display_name AS name FROM kin_agents WHERE org_id = ${lead.orgId} ORDER BY agent_id`;
@@ -594,7 +596,7 @@ const resolveRef = Effect.fn("KinWorkTools.resolveRef")(function* (
     );
   return rows[0]!.recordId;
 });
-const refOrNull = Effect.fn("KinWorkTools.refOrNull")(function* (
+export const refOrNull = Effect.fn("KinWorkTools.refOrNull")(function* (
   lead: Lead,
   text: string | null | undefined,
   list: "clients" | "projects",
@@ -857,6 +859,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
   const records = yield* KinRecords;
   const row = yield* records.get(lead.orgId, input.key);
   if (row === undefined) return yield* notFound(input.key);
+  if (listOf(row.registerId) === "docs") return yield* isDoc(input.key);
   const detail = yield* records.detail(row, 10);
   const now = yield* Clock.currentTimeMillis;
   const view = yield* viewFor(lead, [row]);
@@ -1039,6 +1042,7 @@ const runUpdate = Effect.fnUntraced(function* (lead: Lead, input: typeof UpdateI
   const writer = yield* writerFor(lead);
   const before = yield* records.get(lead.orgId, input.key);
   if (before === undefined) return yield* notFound(input.key);
+  if (listOf(before.registerId) === "docs") return yield* isDoc(input.key);
   const def = yield* listFor(lead, before.registerId);
   const patch: Patch = {
     ...(input.title === undefined ? {} : { title: input.title }),

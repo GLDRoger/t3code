@@ -12,11 +12,12 @@ import * as Schema from "effect/Schema";
 import { formatMoney } from "./money.ts";
 
 /**
- * The built-in lists and what each allows. Code depends on all four, so they are fixed here; the
+ * The built-in lists and what each allows. Code depends on all five, so they are fixed here; the
  * lists people define later (slice 5) get the same shape from configuration.
  */
 
-export type ListName = KinWorkListName;
+/** `docs` is Kin's own: its rows are docs, read and written through `docs.ts`. */
+export type ListName = KinWorkListName | "docs";
 type List = {
   readonly name: string;
   readonly prefix: string;
@@ -61,10 +62,24 @@ export const LISTS: Record<ListName, List> = {
     categories: [],
     fields: ["repos"],
   },
+  docs: {
+    name: "Docs",
+    prefix: "D",
+    noun: "doc",
+    // Archived is dropped; a doc is never done.
+    states: ["open", "dropped"],
+    categories: [],
+    fields: [],
+  },
 };
 
 export const listOf = (registerId: string): ListName =>
   registerId in LISTS ? (registerId as ListName) : "work";
+/** A list clients older than Docs know; callers keep docs out of what they return. */
+export const workListOf = (registerId: string): KinWorkListName => {
+  const list = listOf(registerId);
+  return list === "docs" ? "work" : list;
+};
 
 /** Which of an entry's own fields are sensitive whatever its label says (design 4.9). */
 export const sensitiveFields = (list: ListName): ReadonlyArray<string> =>

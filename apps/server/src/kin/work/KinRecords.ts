@@ -35,6 +35,7 @@ import { isSqlError } from "effect/sql/SqlError";
 import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { mentionsMoney } from "../memory/sensitivity.ts";
+import { indexRecord } from "./searchIndex.ts";
 import { withdrawAttempts } from "./workerAttempts.ts";
 import {
   checkFor,
@@ -302,6 +303,8 @@ export class KinRecords extends Context.Service<
       key: string,
       patch: Patch,
       expectedRev?: number,
+      /** Logged with the change even when no column changes: a doc's new version. */
+      also?: ReadonlyArray<FieldChange>,
     ) => Effect.Effect<RecordRow, KinChatError>;
     readonly link: (
       orgId: KinOrgId,
@@ -565,7 +568,7 @@ const make = Effect.gen(function* () {
       ? new KinChatError({ reason: "invalid_state", message: "A client has no client or project." })
       : list === "contacts" && partyId === null
         ? new KinChatError({ reason: "invalid_state", message: "A contact needs its client." })
-        : list !== "work" && projectId !== null
+        : list !== "work" && list !== "docs" && projectId !== null
           ? new KinChatError({
               reason: "invalid_state",
               message: `A ${LISTS[list].noun} has no project.`,
@@ -580,7 +583,7 @@ const make = Effect.gen(function* () {
     partyId: string | null,
     except: string | null,
   ) {
-    if (list === "work" || !isBuiltIn(list)) return;
+    if (list === "work" || list === "docs" || !isBuiltIn(list)) return;
     const [row] = yield* sql<{ key: string }>`SELECT key FROM kin_records
       WHERE org_id = ${orgId} AND register_id = ${list} AND state NOT IN ${sql.in(CLOSED)}
         AND lower(title) = lower(${title}) AND record_id IS NOT ${except}
@@ -736,6 +739,7 @@ const make = Effect.gen(function* () {
         now,
       );
     for (const link of input.links ?? []) yield* insertLink(orgId, recordId, link, now);
+    yield* indexRecord(orgId, recordId).pipe(provideSql);
     if (givenAway && options.wake)
       yield* wakeLead(
         orgId,
@@ -841,6 +845,7 @@ const make = Effect.gen(function* () {
     key: string,
     patch: Patch,
     expectedRev?: number,
+    also: ReadonlyArray<FieldChange> = [],
   ) {
     return yield* transaction(
       Effect.gen(function* () {
@@ -1086,8 +1091,9 @@ const make = Effect.gen(function* () {
           changes.push({ field: "sensitive", from: "true", to: "false" });
           set("sensitive", 0);
         }
+        changes.push(...also);
         // A retry of a change that already landed finds nothing to do: that is success.
-        if (sets.length === 0) return row;
+        if (sets.length === 0 && also.length === 0) return row;
         if (expectedRev !== undefined && expectedRev !== row.rev)
           return yield* conflict(row.key, row.rev);
         const rev = row.rev + 1;
@@ -1096,6 +1102,7 @@ const make = Effect.gen(function* () {
         // Each update rewrites only the fields it changed, so two changes to one entry both land.
         yield* sql`UPDATE kin_records SET ${sql.csv(sets)}
           WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
+        yield* indexRecord(orgId, row.recordId).pipe(provideSql);
         const seq = yield* logChange(
           orgId,
           writer,

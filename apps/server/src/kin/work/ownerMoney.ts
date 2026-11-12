@@ -47,7 +47,8 @@ export const lists = Effect.fn("KinMoney.lists")(function* (
   const open = yield* openCounts(input.orgId);
   return {
     lists: [...all.values()]
-      .filter((def) => input.archived === true || def.archivedAt === null)
+      // Docs are a list underneath, with their own screens and RPCs.
+      .filter((def) => def.id !== "docs" && (input.archived === true || def.archivedAt === null))
       .map((def) => toDefinition(def, open.get(def.id) ?? 0)),
   };
 }, workFailure);

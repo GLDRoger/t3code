@@ -365,6 +365,36 @@ describe("lists through the tools", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("keep a defined list's sensitive fields out of what search shows as public", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, {
+        name: "Leave",
+        fields: [
+          { label: "Reason", type: "text", sensitive: true },
+          { label: "Cover", type: "text" },
+        ],
+      });
+      const asked = yield* turn(3, "Log my leave");
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [
+          {
+            list: "leave",
+            title: "Invented week off",
+            fields: { reason: "zqsurgery", cover: "zqcolleague" },
+          },
+        ],
+      });
+      const sql = yield* SqlClient.SqlClient;
+      const parts = (word: string) =>
+        sql<{ part: string }>`SELECT m.part FROM kin_search s
+          JOIN kin_search_rows m ON m.id = s.rowid WHERE kin_search MATCH ${word}`;
+      assert.deepStrictEqual(yield* parts("zqsurgery"), [{ part: "sensitive" }]);
+      assert.deepStrictEqual(yield* parts("zqcolleague"), [{ part: "public" }]);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("groups by Indian financial year in the owner's zone, not UTC", () =>
     Effect.gen(function* () {
       yield* seed;
