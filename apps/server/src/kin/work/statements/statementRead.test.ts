@@ -7,7 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 
 import { readStatementFile } from "./statementFiles.ts";
-import { readIsolated } from "./statementReader.ts";
+import { READER_LIMITS, readIsolated, runReader, TOO_LARGE } from "./statementReader.ts";
 import { checkBalances, parseAmount, parseDay, readTable } from "./statementTable.ts";
 
 // Every statement here is invented: Lakeview Studio, its clients and its accounts are made up.
@@ -93,6 +93,8 @@ const workbook = (cells: string, strings: ReadonlyArray<string> = []) => {
 export const pdf = (
   pages: ReadonlyArray<ReadonlyArray<ReadonlyArray<{ readonly x: number; readonly text: string }>>>,
   extra?: { readonly stream: Uint8Array; readonly filter: string },
+  /** The first page's content stream as it is, under this dictionary. */
+  content?: { readonly dict: string; readonly data: Uint8Array },
 ) => {
   const objects: Array<Buffer> = [];
   const add = (body: Buffer | string) => {
@@ -118,10 +120,14 @@ export const pdf = (
         ),
       )
       .join("\n");
-    const content = add(stream("", Buffer.from(ops, "latin1")));
+    const contents = add(
+      content !== undefined && kids.length === 0
+        ? stream(content.dict, content.data)
+        : stream("", Buffer.from(ops, "latin1")),
+    );
     kids.push(
       add(
-        `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 600 842] /Resources << /Font << /F1 ${font} 0 R >> >> /Contents ${content} 0 R >>`,
+        `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 600 842] /Resources << /Font << /F1 ${font} 0 R >> >> /Contents ${contents} 0 R >>`,
       ),
     );
   }
@@ -399,22 +405,94 @@ describe("hostile statement files", () => {
   it.live("stops a reader past its time or memory with a reason the owner can act on", () =>
     Effect.gen(function* () {
       const slow = yield* readIsolated(fixture("hdfc-account.pdf"), undefined, {
-        heapMb: 512,
+        ...READER_LIMITS,
         timeoutMs: 1,
       });
       if (slow._tag !== "unreadable") return assert.fail(slow._tag);
       assert.include(slow.reason, "too complex to read safely");
       const big = yield* readIsolated(ledgerCsv(20_000), undefined, {
+        ...READER_LIMITS,
         heapMb: 32,
-        timeoutMs: 30_000,
       });
       if (big._tag !== "unreadable") return assert.fail(big._tag);
-      assert.include(big.reason, "more memory");
+      assert.strictEqual(big.reason, TOO_LARGE);
     }),
   );
 
+  // Each decodes to gigabytes in the first page's own content stream, which pdf.js reads.
+  const page = [[[{ x: 40, text: "Invented Bank" }]]];
+  const deflated = (data: Uint8Array) => new Uint8Array(NodeZlib.deflateSync(data));
+  const bombs: ReadonlyArray<readonly [string, () => Uint8Array, boolean]> = [
+    [
+      "a page whose content inflates to 1 GiB",
+      () => pdf(page, undefined, { dict: "/Filter /FlateDecode", data: zeros(1_024) }),
+      true,
+    ],
+    [
+      "a page compressed twice over, 2 GiB from a few kilobytes",
+      () =>
+        pdf(page, undefined, {
+          dict: "/Filter [/FlateDecode /FlateDecode]",
+          data: deflated(zeros(2_048)),
+        }),
+      true,
+    ],
+    [
+      "a page naming its filter by the short name /Fl",
+      () => pdf(page, undefined, { dict: "/Filter /Fl", data: zeros(1_024) }),
+      true,
+    ],
+    [
+      "a page naming its filter with a hex escape, /Flate#44ecode",
+      () => pdf(page, undefined, { dict: "/Filter /Flate#44ecode", data: zeros(1_024) }),
+      true,
+    ],
+    [
+      "a page whose dictionary is padded past a kilobyte after its filter",
+      () =>
+        pdf(page, undefined, {
+          dict: `/Filter /FlateDecode /Pad (${"x".repeat(4_000)})`,
+          data: zeros(1_024),
+        }),
+      true,
+    ],
+    [
+      "a page run-length encoded under deflate, a filter the check doesn't decode",
+      () =>
+        pdf(page, undefined, {
+          dict: "/Filter [/FlateDecode /RunLengthDecode]",
+          // Each pair writes 128 zero bytes: 30 MB of pairs is 1.9 GB.
+          data: deflated(Buffer.alloc(30 * 1024 * 1024, Buffer.from([0x81, 0x00]))),
+        }),
+      false,
+    ],
+  ];
+
+  it.live.each(bombs)(
+    "kills the reader of %s at its memory limit, check or no check",
+    ([, file, checked]) =>
+      Effect.gen(function* () {
+        const bytes = file();
+        const limit = READER_LIMITS.residentMb * 1024;
+        if (checked) {
+          const refused = yield* runReader(bytes);
+          assert.deepStrictEqual(refused.outcome, {
+            _tag: "unreadable",
+            reason: "The PDF holds far more data than a statement.",
+          });
+          assert.isBelow(refused.peakKib, limit);
+        }
+        const run = yield* runReader(bytes, undefined, { ...READER_LIMITS, precheck: false });
+        assert.deepStrictEqual(run.outcome, { _tag: "unreadable", reason: TOO_LARGE });
+        assert.strictEqual(run.stopped, "memory");
+        // Killed at the first sample past the limit: never the gigabytes the file decodes to.
+        assert.isAbove(run.peakKib, limit);
+        assert.isBelow(run.peakKib, limit * 2);
+      }),
+  );
+
   it.live(
-    "reads a year of honest statements whole: 5,000 rows of CSV and XLSX, 300 PDF pages",
+    "reads honest statements whole in its reader, well under its memory limit: CSV and XLSX, 300 PDF pages",
     () =>
       Effect.gen(function* () {
         const rows = ledger(5_000);
@@ -430,13 +508,16 @@ describe("hostile statement files", () => {
         ]);
         for (const [file, count] of [
           [ledgerCsv(5_000), 5_000],
+          [ledgerCsv(20_000), 20_000],
           [sheet, 5_000],
           [ledgerPdf(300, 30), 9_000],
         ] as const) {
-          const outcome = yield* readIsolated(file);
+          const { outcome, stopped, peakKib } = yield* runReader(file);
           if (outcome._tag !== "read") return assert.fail(JSON.stringify(outcome));
           assert.strictEqual(outcome.statement.rows.length, count);
           assert.strictEqual(outcome.statement.check.status, "adds_up");
+          assert.isUndefined(stopped);
+          assert.isBelow(peakKib, READER_LIMITS.residentMb * 1024);
         }
       }),
   );
