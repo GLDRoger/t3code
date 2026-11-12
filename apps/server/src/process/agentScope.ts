@@ -215,6 +215,31 @@ export const make = Effect.gen(function* () {
     }),
   );
 
+  // A property this systemd refuses would fail every launch that asks for it; ask once each.
+  const propertyAccepted = new Map<string, Effect.Effect<boolean>>();
+  const accepts = Effect.fn("agentScope.accepts")(function* (systemdRun: string, property: string) {
+    let accepted = propertyAccepted.get(property);
+    if (accepted === undefined) {
+      accepted = yield* Effect.cached(
+        run(systemdRun, [
+          "--user",
+          "--scope",
+          "--quiet",
+          "--collect",
+          `--slice=${AGENT_SLICE}`,
+          ...SCOPE_OPTIONS,
+          `--property=${property}`,
+          "--",
+          "true",
+        ]).pipe(Effect.map((result) => result._tag === "Some" && result.value.code === 0)),
+      );
+      propertyAccepted.set(property, accepted);
+    }
+    const ok = yield* accepted;
+    if (!ok) yield* Effect.logWarning("systemd refused an agent scope property", { property });
+    return ok;
+  });
+
   // `shared` scopes serve other threads too: tracked only for OOM diagnosis on old systemd.
   const scopeByThread = new Map<string, { unit: string; oomKilled: boolean; shared: boolean }>();
 
@@ -418,6 +443,11 @@ export const make = Effect.gen(function* () {
       if (resolved === null) return { command, args };
       const scope = yield* systemd;
       if (scope === undefined) return agentScopeCommand({ command: resolved, args });
+      const asked = properties ?? [];
+      const accepted = yield* Effect.filter(asked, (property) =>
+        accepts(scope.systemdRun, property),
+      );
+      const refusedProperties = asked.filter((property) => !accepted.includes(property));
       const unit = `t3code-${name}-${NodeCrypto.randomUUID().slice(0, 8)}.scope`;
       // A continuing shared scope cannot attribute a tool's OOM to one thread.
       // Clear the launch thread's previous scope instead.
@@ -438,10 +468,14 @@ export const make = Effect.gen(function* () {
             ? [`--property=OOMPolicy=${continuing ? "continue" : "stop"}`]
             : []),
           ...(owned ? [] : ["--collect"]),
-          ...(properties ?? []).map((property) => `--property=${property}`),
+          ...accepted.map((property) => `--property=${property}`),
         ],
       };
-      return { ...agentScopeCommand({ command: resolved, args, scope: systemdScope }), unit };
+      return {
+        ...agentScopeCommand({ command: resolved, args, scope: systemdScope }),
+        unit,
+        ...(refusedProperties.length === 0 ? {} : { refusedProperties }),
+      };
     }),
     oomKilled,
     stop,
