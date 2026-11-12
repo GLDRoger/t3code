@@ -63,6 +63,7 @@ import { deferralOrigin } from "../triggers/deferralOrigin.ts";
 import { cancelDeferralRun } from "../triggers/KinTriggerService.ts";
 import { scheduledTaskTriggerId } from "../widgets/scheduledTaskCard.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
+import { turnSensitive } from "../work/workerAttempts.ts";
 
 const text = Schema.String.check(Schema.isMaxLength(100_000));
 const date = Schema.String.check(
@@ -784,13 +785,15 @@ const make = Effect.gen(function* () {
     const sensitiveBefore = (head: MemoryItemHead) => isSensitive(head, known);
     // Only ever more sensitive here: an item the owner alone had stays theirs through an update
     // or a replacement, and `label` is the one way to let the team know it.
+    // A turn shown something sensitive may be writing it down, so what it writes stays the owner's.
     const sensitive = shared
       ? false
-      : stored !== undefined && input.op !== "supersede"
-        ? asked || sensitiveBefore(stored)
-        : asked ||
-          mustBeSensitive(judged) ||
-          (replaced._tag === "Some" && sensitiveBefore(replaced.value.head));
+      : (yield* turnSensitive(ctx.orgId, ctx.wakeupId).pipe(provideSql)) ||
+        (stored !== undefined && input.op !== "supersede"
+          ? asked || sensitiveBefore(stored)
+          : asked ||
+            mustBeSensitive(judged) ||
+            (replaced._tag === "Some" && sensitiveBefore(replaced.value.head)));
     if (sensitive && stored !== undefined && !sensitiveBefore(stored))
       yield* hold(ctx.orgId, stored.id).pipe(provideSql);
     const labels = {
