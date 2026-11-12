@@ -169,8 +169,17 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
       }),
     );
   }
+  const touched = [...new Set(gone.map((one) => one.registerId))];
   yield* sql.withTransaction(
     Effect.gen(function* () {
+      // Keys past every entry still on a list were the batch's alone; the next entry reuses them.
+      if (touched.length > 0)
+        yield* sql`UPDATE kin_registers SET next_number = MIN(next_number, 1 + COALESCE((
+            SELECT MAX(CAST(substr(r.key, length(rtrim(r.key, '0123456789')) + 1) AS INTEGER))
+            FROM kin_records r
+            WHERE r.org_id = kin_registers.org_id AND r.register_id = kin_registers.register_id
+          ), 0))
+          WHERE org_id = ${orgId} AND register_id IN ${sql.in(touched)}`;
       for (const one of lists)
         if (one.action === "remove") {
           yield* sql`DELETE FROM kin_number_series WHERE org_id = ${orgId} AND register_id = ${one.list}`;

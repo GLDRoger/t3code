@@ -376,6 +376,10 @@ describe("KinImport", () => {
       });
       const before = yield* holdings;
       yield* imports.apply(orgId, ownerId, books());
+      const keysOf = Effect.forEach(["c1", "p1", "t1", "t2", "i1"], (one) =>
+        recordOf(one).pipe(Effect.map((row) => row?.key)),
+      );
+      const keys = yield* keysOf;
       const plan = yield* imports.undo(orgId, ownerId, "oldbooks", {
         apply: false,
         includeChanged: false,
@@ -399,6 +403,8 @@ describe("KinImport", () => {
 
       const again = yield* imports.apply(orgId, ownerId, books());
       assert.deepStrictEqual([again.entries.create, again.payments.create], [5, 1]);
+      // Nothing else took a key after the batch's, so the same rows get the same keys again.
+      assert.deepStrictEqual(yield* keysOf, keys);
       const sql = yield* SqlClient.SqlClient;
       assert.deepStrictEqual(
         yield* sql`SELECT action FROM kin_import_runs WHERE batch = 'oldbooks' ORDER BY seq`,
