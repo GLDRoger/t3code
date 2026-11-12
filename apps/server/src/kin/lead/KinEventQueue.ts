@@ -85,10 +85,11 @@ const LANE_OF = `CASE WHEN e.tag IN ('chat.message', 'widget.action', 'chat.reac
     || ':' || COALESCE(json_extract(e.json, '$.origin.personId'), '')
   ELSE l.owner_chat_id END`;
 
-/** Who asked by event `e`, from the stored message row or the reaction the server wrote. */
+/** Who asked by event `e`: its stored message (a tap's own tap row) or the server's reaction. */
 const STORED_AUTHOR = `LEFT JOIN kin_messages m ON m.org_id = e.org_id
   AND e.tag IN ('chat.message', 'widget.action') AND m.message_id = json_extract(e.json, '$.messageId')
-  AND m.chat_id = json_extract(e.json, '$.chatId') AND m.author_kind = 'human'`;
+  AND m.chat_id = json_extract(e.json, '$.chatId') AND m.author_kind = 'human'
+  AND (m.kind = 'widget_action') = (e.tag = 'widget.action')`;
 const AUTHOR_OF = `COALESCE(m.author_person_id,
   CASE WHEN e.tag = 'chat.reaction' THEN json_extract(e.json, '$.provenance.personId') END)`;
 

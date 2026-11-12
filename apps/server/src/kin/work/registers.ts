@@ -17,6 +17,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { type FieldValue, isMoney, LISTS, type ListName, sensitiveFields } from "./lists.ts";
 import { DEFAULT_CURRENCY, isCurrency } from "./money.ts";
+import { cardAnswer } from "./ownerCards.ts";
 
 /**
  * KinRegisters: what a list is. Work and the light CRM are fixed in code; every other list,
@@ -560,10 +561,22 @@ export const propose = Effect.fn("KinRegisters.propose")(function* (input: {
   return proposalId;
 });
 
+/** The card Kin put the proposal to the owner with; a retry keeps the first. */
+export const attachCard = Effect.fn("KinRegisters.attachCard")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly proposalId: string;
+  readonly widgetId: string;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_list_proposals SET widget_id = ${input.widgetId}
+    WHERE org_id = ${input.orgId} AND proposal_id = ${input.proposalId} AND widget_id IS NULL`;
+});
+
 /**
- * Creates or extends the list a proposal names, once the owner has answered it: an owner's own
- * message or tap in the proposal's chat, after it was made, is among the events of this turn.
- * A proposal already carried out returns its list again.
+ * Creates or extends the list a proposal names, once the owner has answered it in this turn: by
+ * tapping yes on the proposal's own card, or in a message of theirs in its chat written after it
+ * (which may answer several proposals at once). A no on the card ends the proposal. One already
+ * carried out returns its list again.
  */
 export const carryOut = Effect.fn("KinRegisters.carryOut")(function* (input: {
   readonly orgId: KinOrgId;
@@ -579,33 +592,49 @@ export const carryOut = Effect.fn("KinRegisters.carryOut")(function* (input: {
     chatSeq: number;
     definedAt: number | null;
     registerId: string;
-  }>`SELECT chat_id AS "chatId", definition_json AS json, chat_seq AS "chatSeq",
-      defined_at AS "definedAt", register_id AS "registerId"
-    FROM kin_list_proposals WHERE org_id = ${input.orgId} AND proposal_id = ${input.proposalId}
-      AND agent_id = ${input.agentId}`;
+    widgetId: string | null;
+    owner: string;
+  }>`SELECT p.chat_id AS "chatId", p.definition_json AS json, p.chat_seq AS "chatSeq",
+      p.defined_at AS "definedAt", p.register_id AS "registerId", p.widget_id AS "widgetId",
+      a.owner_person_id AS owner
+    FROM kin_list_proposals p
+    JOIN kin_agents a ON a.org_id = p.org_id AND a.agent_id = p.agent_id
+    WHERE p.org_id = ${input.orgId} AND p.proposal_id = ${input.proposalId}
+      AND p.agent_id = ${input.agentId}`;
   if (row === undefined)
     return yield* new KinChatError({
       reason: "not_found",
       message: `No proposal ${input.proposalId.slice(0, 40)} of yours. Propose the list first.`,
     });
   if (row.definedAt !== null) return { id: row.registerId, created: false };
+  const tapped =
+    row.widgetId === null ? undefined : yield* cardAnswer(input.orgId, row.widgetId, row.owner);
+  if (tapped === "no")
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message:
+        "The owner said no to this proposal on its card, so nothing was created. Propose it again only if they ask for it.",
+    });
+  // Every person here is read from the stored event and the stored message both: a tap is the
+  // owner's own tap row on this proposal's card, a message is the owner's own text after it.
   const answered = yield* sql`SELECT 1 FROM kin_events e
-    JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
     JOIN kin_messages m ON m.org_id = e.org_id AND m.message_id = json_extract(e.json, '$.messageId')
+      AND m.chat_id = json_extract(e.json, '$.chatId')
     WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId}
-      AND e.wakeup_id = ${input.wakeupId} AND m.chat_id = ${row.chatId} AND m.seq > ${row.chatSeq}
+      AND e.wakeup_id = ${input.wakeupId} AND m.chat_id = ${row.chatId}
       AND json_extract(e.json, '$.origin.personId') IS NULL
-      AND ((e.tag = 'chat.message' AND m.author_kind = 'human'
-          AND m.author_person_id = a.owner_person_id)
-        -- A tap's message is the card it was on; the tap itself must be the owner's.
-        OR (e.tag = 'widget.action' AND json_extract(e.json, '$.provenance._tag') = 'human'
-          AND json_extract(e.json, '$.provenance.personId') = a.owner_person_id))
+      AND json_extract(e.json, '$.provenance._tag') = 'human'
+      AND json_extract(e.json, '$.provenance.personId') = ${row.owner}
+      AND m.author_kind = 'human' AND m.author_person_id = ${row.owner}
+      AND ((e.tag = 'chat.message' AND m.kind = 'text' AND m.seq > ${row.chatSeq})
+        OR (e.tag = 'widget.action' AND m.kind = 'widget_action'
+          AND m.widget_id = ${row.widgetId ?? ""} AND ${tapped === "yes" ? 1 : 0} = 1))
     LIMIT 1`;
   if (answered.length === 0)
     return yield* new KinChatError({
       reason: "not_allowed",
       message:
-        "The owner hasn't answered this proposal yet. Show them the fields and wait for their yes; nothing was created.",
+        "The owner hasn't answered this proposal yet. Wait for their yes on its card or in a message; nothing was created.",
     });
   const proposal = Option.getOrUndefined(decodeProposal(row.json));
   if (proposal === undefined) return yield* invalid("That proposal can no longer be read.");

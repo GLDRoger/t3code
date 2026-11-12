@@ -58,6 +58,15 @@ export class KinKeySeal extends Context.Service<
     /** What `kin_approver_key_confirmations.verifier` holds; checked with `verify`'s compare. */
     readonly confirmation: (fields: KinConfirmationFields) => string;
     readonly verifyConfirmation: (fields: KinConfirmationFields, verifier: string) => boolean;
+    /**
+     * The 6 digits a waiting phone and Settings both show. Keyed by the server secret and drawn
+     * after the key exists, so nobody can make a key whose number matches another phone's.
+     */
+    readonly matchCode: (fields: {
+      readonly orgId: string;
+      readonly thumbprint: string;
+      readonly challengeSha256: string;
+    }) => string;
     /** Runs `adopt` on the first start after the seal shipped, and never again once it succeeds. */
     readonly adoptOnce: <E, R>(adopt: Effect.Effect<number, E, R>) => Effect.Effect<void, E, R>;
   }
@@ -111,6 +120,20 @@ const make = (
     verifyPending: (key, stored) => stored !== null && same(pendingSeal(key), stored),
     confirmation,
     verifyConfirmation: (fields, verifier) => same(confirmation(fields), verifier),
+    matchCode: (fields) => {
+      const digest = NodeCrypto.createHmac("sha256", secret)
+        .update(
+          stableStringify({
+            v: 1,
+            use: "kin-approver-key-match",
+            orgId: fields.orgId,
+            thumbprint: fields.thumbprint,
+            challengeSha256: fields.challengeSha256,
+          }),
+        )
+        .digest();
+      return String(digest.readUInt32BE(0) % 1_000_000).padStart(6, "0");
+    },
     adoptOnce: Effect.fn("KinKeySeal.adoptOnce")(function* <E, R>(
       adopt: Effect.Effect<number, E, R>,
     ) {

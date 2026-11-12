@@ -35,6 +35,7 @@ import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { cn } from "../lib/utils";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinWorkProjectRow } from "./KinWorkClients";
+import { KinDocsUnder } from "./KinDocsList";
 import { KinProjectDialog } from "./KinWorkForms";
 import {
   KinWorkHealthBadge,
@@ -197,6 +198,7 @@ type PageProps = KinWorkTarget & {
   readonly onOpenTask: (key: KinRecordKey) => void;
   readonly onOpenClient: (key: KinRecordKey) => void;
   readonly onOpenProject: (key: KinRecordKey) => void;
+  readonly onOpenDoc: (key: KinRecordKey) => void;
   /** Opens the new-task form already in this project; null where tasks can't be added. */
   readonly onAddTask:
     | ((draft: KinWorkDraft) => void)
@@ -425,6 +427,13 @@ function ProjectPage(
           </ul>
         </KinWorkSection>
       )}
+      <KinDocsUnder
+        environmentId={props.environmentId}
+        orgId={props.orgId}
+        directory={props.directory}
+        under={{ project: props.projectKey }}
+        onOpen={props.onOpenDoc}
+      />
       <KinWorkSection title={KIN_PROJECTS.changed}>
         {view.changed.length === 0 ? (
           <p className="text-sm text-muted-foreground">{KIN_PROJECTS.nothingChanged}</p>

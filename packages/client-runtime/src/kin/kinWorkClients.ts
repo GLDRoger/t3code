@@ -117,12 +117,13 @@ export const KIN_CLIENTS_OLDER_HOST = {
 
 // The parts of Work
 
-export type KinWorkArea = "tasks" | "clients" | "projects" | "money" | "lists";
+export type KinWorkArea = "tasks" | "clients" | "projects" | "docs" | "money" | "lists";
 
 export const KIN_WORK_AREAS: ReadonlyArray<{ readonly id: KinWorkArea; readonly label: string }> = [
   { id: "tasks", label: "Tasks" },
   { id: "clients", label: KIN_CLIENTS.title },
   { id: "projects", label: KIN_PROJECTS.title },
+  { id: "docs", label: "Docs" },
   { id: "money", label: "Money" },
   { id: "lists", label: "Lists" },
 ];

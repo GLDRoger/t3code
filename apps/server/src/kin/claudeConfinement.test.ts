@@ -44,6 +44,8 @@ it.effect("a Kin session's file tools reach only its real checkout", () =>
     const lead = { root, tools: leadTools, attachments };
     const dream = { root, tools: dreamTools };
     const shared = { root: undefined, tools: [] };
+    const shell = { root, tools: ["Bash"], mcp: false };
+    const rootless = { root: undefined, tools: ["Bash"], mcp: false };
     const attachment = `${attachments}/kin-chat-thread-0f6c3c1e-6c4a-4e57-9a0b-0d3b1f6f2a11.pdf`;
     const refusedPaths = [
       `${home}/.local/share/keyrings/login.keyring`,
@@ -167,13 +169,29 @@ it.effect("a Kin session's file tools reach only its real checkout", () =>
         [dream, "Grep", { pattern: "x", path: "/" }, false],
         [dream, "Glob", { pattern: "/**" }, false],
         [dream, "Bash", { command: "true" }, false],
+        [shell, "Bash", { command: "npm test", timeout: 600_000, description: "x" }, true],
+        [shell, "Bash", { command: "cat ~/.ssh/id_ed25519" }, true, "the OS sandbox refuses it"],
+        [shell, "Bash", { command: "sleep 1", run_in_background: false }, true],
+        [shell, "Bash", { command: "npm run dev", run_in_background: true }, false],
+        [shell, "Bash", { command: "npm run dev", run_in_background: "yes" }, false],
+        [shell, "Bash", { command: "curl x", dangerouslyDisableSandbox: true }, false],
+        [shell, "Bash", { command: "curl x", dangerouslyDisableSandbox: 1 }, false],
+        [shell, "Bash", { command: 7 }, false],
+        [shell, "Bash", {}, false],
+        [shell, "Bash", "npm test", false],
+        [rootless, "Bash", { command: "true" }, false],
+        [shell, "Read", { file_path: "notes.md" }, false, "a shell worker has no file tools"],
+        [shell, "Write", { file_path: "new.md", content: "x" }, false],
+        [shell, "BashOutput", { bash_id: "1" }, false],
+        [shell, "Monitor", { command: "tail -f x" }, false],
+        [shell, "mcp__t3__delegate_task", { task: "x" }, false],
       ];
     const mismatches: Array<string> = [];
     for (const [scope, tool, input, expected, note] of rows) {
       const actual = yield* Confinement.permits(scope, tool, input);
       if (actual !== expected)
         mismatches.push(
-          `${scope === lead ? "lead" : scope === dream ? "dream" : "shared"} ${tool} ${JSON.stringify(input).slice(0, 160)}${note === undefined ? "" : ` (${note})`}: ${actual}`,
+          `${scope === lead ? "lead" : scope === dream ? "dream" : scope === shell ? "shell" : "shared"} ${tool} ${JSON.stringify(input).slice(0, 160)}${note === undefined ? "" : ` (${note})`}: ${actual}`,
         );
     }
     assert.deepStrictEqual(mismatches, []);

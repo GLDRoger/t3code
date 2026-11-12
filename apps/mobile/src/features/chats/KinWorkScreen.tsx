@@ -24,6 +24,7 @@ import {
   type KinWorkRef,
   type KinWorkRowView,
 } from "@t3tools/client-runtime/kin/kinWork";
+import { KIN_SEARCH } from "@t3tools/client-runtime/kin/kinDocs";
 import {
   KIN_WORK_COPY,
   kinWorkApplied,
@@ -64,6 +65,7 @@ import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { KinListBanner } from "./components/KinListBanner";
 import { KinWorkAreaSwitch, KinWorkTaskRow, type KinWorkAreas } from "./components/KinWorkPieces";
+import { KinDocsList } from "./KinDocsList";
 import { KinClientsList, KinProjectsList } from "./KinWorkLists";
 import { KinListsArea, KinMoneyArea, KinMoneyHeadlineRow } from "./KinWorkMoney";
 import { kinClient } from "./state/kinClient";
@@ -81,7 +83,7 @@ import {
 export type KinWorkParams = {
   readonly environmentId: string;
   readonly orgId: string;
-  /** Which part of Work opens: `clients`, `projects`, `money` or `lists`; tasks otherwise. */
+  /** Which part of Work opens: `clients`, `projects`, `docs`, `money` or `lists`; tasks otherwise. */
   readonly show?: string;
   /** The client the tasks start narrowed to, or a new task starts under. */
   readonly party?: string;
@@ -150,7 +152,11 @@ export function KinWorkScreen({ route }: StaticScreenProps<KinWorkParams>) {
   }
   const { show } = route.params;
   const start =
-    show === "clients" || show === "projects" || show === "money" || show === "lists"
+    show === "clients" ||
+    show === "projects" ||
+    show === "docs" ||
+    show === "money" ||
+    show === "lists"
       ? show
       : "tasks";
   return (
@@ -223,6 +229,17 @@ function KinWorkStates(
         </KinWorkMessage>
       );
     }
+    const searchAll = () => navigation.navigate("KinSearch", target);
+    if (area === "docs" && areas !== null)
+      return (
+        <KinDocsList
+          {...target}
+          directory={directory}
+          stale={state.stale}
+          areas={areas}
+          onSearchAll={searchAll}
+        />
+      );
     if (area === "clients" && areas !== null) return <KinClientsList {...shared} areas={areas} />;
     if (area === "projects" && areas !== null) return <KinProjectsList {...shared} areas={areas} />;
     if (area === "money" && areas !== null) return <KinMoneyArea {...shared} areas={areas} />;
@@ -235,6 +252,7 @@ function KinWorkStates(
         areas={areas}
         choices={hostClients ? choices : null}
         initial={{ ...KIN_WORK_DEFAULT_FILTER, party: props.party, project: props.project }}
+        onSearchAll={searchAll}
       />
     );
   }
@@ -283,6 +301,8 @@ export function KinWorkTaskList(
     /** What the list can be narrowed to; null on an older server, or inside a project. */
     readonly choices: KinWorkChoices | null;
     readonly initial: KinWorkFilter;
+    /** Opens the search over everything in Work; absent inside a project. */
+    readonly onSearchAll?: () => void;
     /** A project's page: its summary heads the list, which stays narrowed to it. */
     readonly within?: {
       readonly header: React.ReactNode;
@@ -368,6 +388,15 @@ export function KinWorkTaskList(
         title={props.title}
         refresh={{ accessibilityLabel: "Refresh", onPress: list.refresh }}
         actions={[
+          ...(props.onSearchAll === undefined
+            ? []
+            : [
+                {
+                  accessibilityLabel: KIN_SEARCH.hint.title,
+                  icon: "magnifyingglass" as const,
+                  onPress: props.onSearchAll,
+                },
+              ]),
           ...(add === null
             ? []
             : [{ accessibilityLabel: KIN_WORK_NEW, icon: "plus" as const, onPress: add }]),

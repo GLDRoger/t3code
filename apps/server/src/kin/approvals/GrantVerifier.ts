@@ -420,10 +420,11 @@ const make = Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
       if (found.state !== "awaiting_approval" || DateTime.toEpochMillis(found.expiresAt) <= now)
         return yield* fail("invalid_state", "This action isn't waiting for approval.");
-      if (found.target._tag === "device_key" && (yield* newKey(found)) === undefined)
+      // Phones are allowed in Settings now; a phone never signs another phone in.
+      if (found.target._tag === "device_key")
         return yield* fail(
           "invalid_state",
-          "Kin can't vouch for this phone's key. Decline it, then set up the new phone again.",
+          "Allow new phones in Kin on the web or desktop: Settings, then Approvals.",
         );
       let action = found;
       let resolved = found.resolved;

@@ -12,11 +12,14 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, Tool, Toolkit } from "effect/ai";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
+import { KIN_VISUAL_PAGE_GUIDE, KIN_VISUAL_TOOL_NAME } from "@t3tools/shared/kinVisual";
+
 import { KinIdentity } from "../../chat/KinIdentity.ts";
 import * as RepoReads from "../../github/KinRepoReads.ts";
 import { MEMORY_RULE } from "../../memory/keeping.ts";
 import * as ChartCard from "../../widgets/chartCard.ts";
 import * as ChoiceCard from "../../widgets/choiceCard.ts";
+import * as VisualCard from "../../widgets/visualCard.ts";
 import * as Handoff from "../Handoff.ts";
 import { KinLevelGate } from "../LevelGate.ts";
 import * as Lead from "../LeadMemory.ts";
@@ -97,9 +100,15 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_chart", {
     ...chat,
     description:
-      'Put a small chart in the chat your reply goes to, when the answer is a trend or a comparison of three or more numbers: signups this week against last, spend by month. Not for one number or two, and not for a list of things: say those in text. It sits beside your reply, so still write the one-line takeaway. chart is line (change over time), bar (compare categories; several series sit side by side) or stacked_bar (parts of a total). unit is {kind: "count"}, {kind: "percent"} (12.5 means 12.5%) or {kind: "money", currency: "INR"} with every value in whole minor units (paise, cents): ₹1,299.50 is 129950. Never convert or round money yourself. labels has one entry per point, at most 24, each short; with labelType "day" they are YYYY-MM-DD, with "month" YYYY-MM, oldest first. series is one to four of {name, values}, values lined up with labels and null where there is none. To set one series against its previous period, send that one series and put the earlier period in comparison with the same labels. title says what it shows; caption is an optional line under it, such as the source or the period. Only numbers you have read or been given, never estimates. A refusal says what to change: fix that and call again.',
+      'Put a chart in the chat your reply goes to, when the answer is a trend, a comparison or a breakdown of three or more numbers: signups this week against last, spend by month, where the money went. Not for one number or two, and not for a list of things: say those in text. It sits beside your reply, so still write the one-line takeaway. Pick chart by the question. Change over time: line (each series a line), area (one quantity\'s volume) or stacked_area (parts of a total over time). Categories against each other: bar, horizontal_bar when names are long or there are many, stacked_bar or stacked_horizontal_bar for the parts of each total. Each part\'s share of one whole: pie or donut. A few options scored on the same measures: radar. Whether two measures move together: scatter. Anything else (a sankey, treemap, heatmap, funnel, map, diagram or a custom layout) is a rich visual, not this tool: use the rich visual tool if you have one, otherwise the nearest kind here. unit is {kind: "count"}, {kind: "percent"} (12.5 means 12.5%) or {kind: "money", currency: "INR"} with every value in whole minor units (paise, cents): ₹1,299.50 is 129950. Never convert or round money yourself. labels has one entry per point, up to 500 (60 on a horizontal chart); a chart too wide for a phone scrolls sideways, so send the real points and don\'t thin them. With labelType "day" they are YYYY-MM-DD, with "month" YYYY-MM, oldest first. series is one to twelve of {name, values}, values lined up with labels and null where there is none; labels times series stays within 3000. To set one series against its previous period, send that one series and put the earlier period in comparison with the same labels. A pie or donut takes one series with a value per slice and no negative values; past twelve slices the smallest are drawn as one. A radar takes 3 to 24 labels as its axes, which all share one scale from zero, so send comparable numbers such as scores out of 10, and no negative values. A scatter takes no labels or series: send scatter: {xName, yName, xUnit, series: [{name, points: [{x, y, label}]}]}, where unit is what y is measured in and xUnit what x is (count when left out), label optionally names a point, every point has both x and y, and there are at most 1000 points. Optional on any kind: color on a series, or colors with one entry per label for pie slices or one series of bars, each one of accent, green, amber, red, purple, grey; use them only when a colour means something, such as red for a loss. target: {name, value} draws a reference line at a goal or limit (not on a pie). valueLabels: true writes the values on bars, or on a single line, where they fit. title says what it shows; caption is an optional line under it, such as the source or the period. Only numbers you have read or been given, never estimates. A refusal says what to change: fix that and call again.',
     parameters: ChartCard.ChartInput,
     success: ChartCard.ChartResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make(KIN_VISUAL_TOOL_NAME, {
+    ...chat,
+    description: `Put a rich visual in the chat your reply goes to: one page of HTML, CSS and JavaScript, drawn in a sealed frame under its title. kin_chart comes first for the kinds it draws. Use this for everything else: a dashboard of several figures, a sankey, treemap, heatmap, funnel, gauge, network graph, gantt or timeline, a flow or sequence diagram, a styled or sortable table, an interactive breakdown. It sits beside your reply, so still write the one-line takeaway. title says what it shows. html is the whole page. height is your estimate of its height in pixels at phone width; the frame then fits the page. One visual per call. Only data you have read or been given, never estimates. A refusal says what to change: fix that and call again.\n${KIN_VISUAL_PAGE_GUIDE}`,
+    parameters: VisualCard.VisualInput,
+    success: VisualCard.VisualResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_react", {
     ...chat,

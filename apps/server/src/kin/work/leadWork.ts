@@ -52,7 +52,7 @@ import {
   stateLabel,
   unknownList,
 } from "./registers.ts";
-import { sensitiveShown, showsSensitive } from "./workerAttempts.ts";
+import { isSensitiveRefusal, sensitiveShown, showsSensitive } from "./workerAttempts.ts";
 
 /** The lead tools' inputs, results and the one call each makes. Model-facing text lives in `mcp/tools.ts`. */
 
@@ -359,6 +359,7 @@ export const askedBy = Effect.fn("KinWorkTools.askedBy")(function* (lead: Lead) 
     FROM kin_events e JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
     LEFT JOIN kin_messages m ON m.org_id = e.org_id AND e.tag IN ('chat.message', 'widget.action')
       AND m.message_id = json_extract(e.json, '$.messageId')
+      AND (m.kind = 'widget_action') = (e.tag = 'widget.action')
     WHERE e.org_id = ${lead.orgId} AND e.agent_id = ${lead.agentId} AND e.wakeup_id = ${lead.wakeupId}
     ORDER BY e.event_id`;
   const owner = rows[0]?.owner;
@@ -711,9 +712,12 @@ export const leadTool = <I, A, E, R>(
 ) =>
   Effect.fn(name)(function* (scope: McpInvocationScope, input: I) {
     const lead = yield* resolveLead(scope);
-    const result = yield* body(lead, input);
-    if (showsSensitive(result))
-      yield* sensitiveShown({ orgId: lead.orgId, wakeupId: lead.wakeupId });
+    const marked = sensitiveShown({ orgId: lead.orgId, wakeupId: lead.wakeupId });
+    // A refusal's own write rolled back, so its mark is made here, after it.
+    const result = yield* body(lead, input).pipe(
+      Effect.tapError((error) => (isSensitiveRefusal(error) ? marked : Effect.void)),
+    );
+    if (showsSensitive(result)) yield* marked;
     return result;
   });
 
