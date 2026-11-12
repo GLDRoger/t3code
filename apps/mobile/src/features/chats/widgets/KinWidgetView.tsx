@@ -17,6 +17,7 @@ import { KinDeferralCard } from "./KinDeferralCard";
 import { KinDigestCard } from "./KinDigestCard";
 import { KinDocCard } from "./KinDocCard";
 import { KinMemoryChangesCard } from "./KinMemoryChangesCard";
+import { KinStatementPasswordCard, KinStatementReviewCard } from "./KinStatementCards";
 import { KinTaskCard } from "./KinTaskCard";
 import { KinVisual } from "./KinVisual";
 
@@ -88,6 +89,12 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
           orgId={props.widget.orgId}
           {...(props.agentNames === undefined ? {} : { agentNames: props.agentNames })}
         />
+      );
+    case "statement_review":
+      return <KinStatementReviewCard review={view.review} environmentId={props.environmentId} />;
+    case "statement_password":
+      return (
+        <KinStatementPasswordCard password={view.password} environmentId={props.environmentId} />
       );
     case "missing":
       return (

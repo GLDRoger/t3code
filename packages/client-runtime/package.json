@@ -651,6 +651,10 @@
       "types": "./src/kin/kinCardPresentation.ts",
       "default": "./src/kin/kinCardPresentation.ts"
     },
+    "./kin/kinStatementPresentation": {
+      "types": "./src/kin/kinStatementPresentation.ts",
+      "default": "./src/kin/kinStatementPresentation.ts"
+    },
     "./kin/kinChart": {
       "types": "./src/kin/kinChart.ts",
       "default": "./src/kin/kinChart.ts"

@@ -532,6 +532,28 @@ export const kinClient = {
       key: ({ input }) => `${input.messageId}|${input.emoji}`,
     },
   }),
+  /** A locked statement's password, once and redacted; never a message the lead reads. */
+  statementUnlock: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:statement:unlock",
+    tag: "kin.work.statementUnlock",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.statementId },
+  }),
+  statementForgetPassword: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:statement:forget-password",
+    tag: "kin.work.statementForgetPassword",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.statementId },
+  }),
+  /** Confirms exactly the rows the review card showed; the server refuses any other set. */
+  statementApply: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:statement:apply",
+    tag: "kin.work.statementApply",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.statementId },
+  }),
+  statementUndo: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:statement:undo",
+    tag: "kin.work.statementUndo",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.statementId },
+  }),
   memoryUndo: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:memory:undo",
     tag: "kin.memory.undo",
