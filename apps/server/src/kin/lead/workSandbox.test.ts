@@ -422,6 +422,9 @@ it.live("a child whose sandbox can't start gets file tools only, and the owner c
       if (Option.isSome(status)) {
         assert.isFalse(status.value.shell);
         assert.strictEqual(result._tag === "file-only" ? result.reason : "", status.value.reason);
+        // Linux with no systemd user manager: limits are off, and the status says so.
+        assert.isNull(status.value.limits);
+        assert.include(status.value.limitsNote ?? "", "no systemd user manager");
       }
     }),
   ),
