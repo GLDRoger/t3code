@@ -794,6 +794,27 @@ it.effect("keeps a run that couldn't sign in out of the chat, and says so once p
   }).pipe(Effect.provide(layer)),
 );
 
+// QA Q3: the CLI's synthetic "API Error: …" reply reached the chat as the lead's own words.
+it.effect("keeps a provider's error text out of the chat when its run failed", () =>
+  Effect.gen(function* () {
+    const { fake, runId, bridge, owner, wakeupId, posted, projectId } = yield* setup({
+      ask: "Is CI green?",
+    });
+    fake.items = [
+      text("a", 1, "API Error: 529 Overloaded", runId),
+      failure("e", 2, "api_error_529", runId),
+    ];
+    yield* bridge.complete({
+      orgId: owner.orgId,
+      wakeupId,
+      projectId,
+      rootRunId: runId,
+      rescueUntil: null,
+    });
+    assert.deepStrictEqual(yield* posted, []);
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("tells a shared chat only that the lead is unavailable when its account fails", () =>
   Effect.gen(function* () {
     const { bridge, owner, wakeupId, posted, chatId } = yield* setup({

@@ -53,6 +53,7 @@ import {
   isToolItem,
   NOTE_MAX_CHARS,
   PHASE_LABELS,
+  isProviderErrorText,
   setupFailureIn,
   stripTrailingSilenceMarker,
   toolLabel,
@@ -105,7 +106,9 @@ const setupNotice = (lead: string, failure: SetupFailure, ownerOnly: boolean) =>
     ? `${lead} is unavailable right now.`
     : failure === "signin"
       ? `${lead} couldn't start: its model account needs signing in again on the server.`
-      : `${lead} couldn't start: its model account can't use its model. Check the account on the server.`;
+      : failure === "model"
+        ? `${lead} couldn't start: its model account doesn't offer the model it's set to use. Choose another model for it.`
+        : `${lead} couldn't start: its model account can't use its model. Check the account on the server.`;
 
 type Outcome = "posted" | "note" | "silent" | "empty" | "withheld" | "overflow" | "dropped";
 type Segment = {
@@ -640,6 +643,11 @@ const make = Effect.gen(function* () {
     const items = projection.turnItems
       .filter((item) => item.runId !== null && runs.has(item.runId))
       .toSorted((a, b) => a.ordinal - b.ordinal);
+    const failedRuns = new Set(
+      items.flatMap((item) =>
+        item.type === "error" && item.status === "failed" ? [item.runId] : [],
+      ),
+    );
     const now = yield* Clock.currentTimeMillis;
     for (const [index, item] of items.entries()) {
       reopen(wake, item);
@@ -649,6 +657,12 @@ const make = Effect.gen(function* () {
       if (segment.outcome !== null) continue;
       segment.text = textOf(item, projection);
       segment.complete = true;
+      if (failedRuns.has(item.runId) && isProviderErrorText(segment.text)) {
+        segment.outcome = "dropped";
+        if (segment.drafting)
+          yield* presence.endDraft(wake.orgId, wake.lane.chatId, segment.id, null);
+        continue;
+      }
       const following = items
         .slice(index + 1)
         .find((next) => next.type === "assistant_message" || isToolItem(next));
