@@ -7,6 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 
 import { readStatementFile } from "./statementFiles.ts";
+import { pdf, threePageStatement } from "./statementPdf.testkit.ts";
 import { READER_LIMITS, readIsolated, runReader, TOO_LARGE } from "./statementReader.ts";
 import { checkBalances, parseAmount, parseDay, readTable } from "./statementTable.ts";
 
@@ -87,76 +88,6 @@ const workbook = (cells: string, strings: ReadonlyArray<string> = []) => {
     "xl/worksheets/sheet1.xml": `<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="${ns}/spreadsheetml/2006/main"><sheetData>${cells}</sheetData></worksheet>`,
     "xl/sharedStrings.xml": `<?xml version="1.0" encoding="UTF-8"?><sst xmlns="${ns}/spreadsheetml/2006/main" count="${strings.length}" uniqueCount="${strings.length}">${strings.map((one) => `<si><t>${one.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</t></si>`).join("")}</sst>`,
   });
-};
-
-/** A text PDF: each page a list of lines, each line cells placed at x, in Helvetica. */
-export const pdf = (
-  pages: ReadonlyArray<ReadonlyArray<ReadonlyArray<{ readonly x: number; readonly text: string }>>>,
-  extra?: { readonly stream: Uint8Array; readonly filter: string },
-  /** The first page's content stream as it is, under this dictionary. */
-  content?: { readonly dict: string; readonly data: Uint8Array },
-) => {
-  const objects: Array<Buffer> = [];
-  const add = (body: Buffer | string) => {
-    objects.push(typeof body === "string" ? Buffer.from(body, "latin1") : body);
-    return objects.length;
-  };
-  const stream = (dict: string, data: Uint8Array) =>
-    Buffer.concat([
-      Buffer.from(`<< ${dict} /Length ${data.byteLength} >>\nstream\n`, "latin1"),
-      data,
-      Buffer.from("\nendstream", "latin1"),
-    ]);
-  const catalog = add("");
-  const pagesId = add("");
-  const font = add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
-  const kids: Array<number> = [];
-  const escape = (text: string) => text.replace(/[\\()]/g, (c) => `\\${c}`);
-  for (const lines of pages) {
-    const ops = lines
-      .flatMap((cells, index) =>
-        cells.map(
-          (cell) => `BT /F1 8 Tf ${cell.x} ${800 - index * 12} Td (${escape(cell.text)}) Tj ET`,
-        ),
-      )
-      .join("\n");
-    const contents = add(
-      content !== undefined && kids.length === 0
-        ? stream(content.dict, content.data)
-        : stream("", Buffer.from(ops, "latin1")),
-    );
-    kids.push(
-      add(
-        `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 600 842] /Resources << /Font << /F1 ${font} 0 R >> >> /Contents ${contents} 0 R >>`,
-      ),
-    );
-  }
-  if (extra !== undefined) add(stream(`/Filter ${extra.filter}`, extra.stream));
-  objects[catalog - 1] = Buffer.from(`<< /Type /Catalog /Pages ${pagesId} 0 R >>`, "latin1");
-  objects[pagesId - 1] = Buffer.from(
-    `<< /Type /Pages /Kids [${kids.map((id) => `${id} 0 R`).join(" ")}] /Count ${kids.length} >>`,
-    "latin1",
-  );
-  const parts: Array<Buffer> = [Buffer.from("%PDF-1.7\n", "latin1")];
-  const offsets: Array<number> = [];
-  let at = parts[0]!.byteLength;
-  for (const [index, body] of objects.entries()) {
-    offsets.push(at);
-    const part = Buffer.concat([
-      Buffer.from(`${index + 1} 0 obj\n`, "latin1"),
-      body,
-      Buffer.from("\nendobj\n", "latin1"),
-    ]);
-    parts.push(part);
-    at += part.byteLength;
-  }
-  const xref = [
-    `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`,
-    ...offsets.map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`),
-    `trailer\n<< /Size ${objects.length + 1} /Root ${catalog} 0 R >>\nstartxref\n${at}\n%%EOF\n`,
-  ].join("");
-  parts.push(Buffer.from(xref, "latin1"));
-  return new Uint8Array(Buffer.concat(parts));
 };
 
 /** A zlib stream of `megabytes` MiB of zeros, built from one flushed block repeated. */
@@ -567,6 +498,22 @@ describe("statement files", () => {
       statement.rows.find((row) => row.description.startsWith("SMS CHGS"))?.amountMinor,
       1_770,
     );
+  });
+
+  it("keeps every page's text of a PDF whose header is on page 1 only, which the table reader stops short of", async () => {
+    const { statement, pages } = await read(threePageStatement().bytes);
+    // The table reader takes the footer on page 1 as the table's end: 12 of 26 rows, off.
+    assert.lengthOf(statement.rows, 12);
+    assert.strictEqual(statement.check.status, "off");
+    assert.deepStrictEqual(
+      pages?.map((page) => page.dated),
+      [12, 12, 2],
+    );
+    // Columns stay apart in the text, and the narration carried over the page break leads page 2.
+    const second = pages![1]!.text.split("\n");
+    const first = second.findIndex((line) => line.trimStart().startsWith("03/05/26"));
+    assert.include(second[first - 3], "ATERERS-LAKESIDECATERERS1999");
+    assert.match(second[first]!, /03\/05\/26 +41771200000043.+ {20,}36,000\.00 +298,198\.15$/);
   });
 
   it("asks for a statement PDF's password, refuses a wrong one and opens with the right one", async () => {

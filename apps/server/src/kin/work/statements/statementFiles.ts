@@ -17,8 +17,11 @@ import {
   htmlLines,
   type Line,
   LINE_CAPS,
+  parseDay,
+  readFacts,
   readTable,
   type Statement,
+  type StatementFacts,
   TooLarge,
 } from "./statementTable.ts";
 
@@ -28,8 +31,22 @@ import {
  * used for this one read and never kept, logged or returned here.
  */
 
+/** One PDF page's text laid out in its columns, and how many of its lines start with a date. */
+export type StatementPage = { readonly text: string; readonly dated: number };
 export type FileOutcome =
-  | { readonly _tag: "read"; readonly statement: Statement; readonly format: StatementFormat }
+  | {
+      readonly _tag: "read";
+      readonly statement: Statement;
+      readonly format: StatementFormat;
+      /** A PDF's pages, so a lead can read them when Kin's table reading doesn't add up. */
+      readonly pages?: ReadonlyArray<StatementPage> | undefined;
+    }
+  /** A PDF with text but no table Kin could read: a lead reads its pages. */
+  | {
+      readonly _tag: "pages";
+      readonly pages: ReadonlyArray<StatementPage>;
+      readonly facts: StatementFacts;
+    }
   | { readonly _tag: "needs_password" }
   | { readonly _tag: "wrong_password" }
   | { readonly _tag: "scanned"; readonly pages: number }
@@ -88,21 +105,51 @@ export const readStatementFile = async (
       _tag: "unreadable",
       reason: "This isn't a statement file Kin reads: send a PDF, CSV, XLS or XLSX.",
     };
-  const lines = await linesOf(format, bytes, password, options.precheck !== false).catch(
+  const read = await linesOf(format, bytes, password, options.precheck !== false).catch(
     (error: unknown) => {
       if (isTooLarge(error)) return tooLarge(error.reason);
       throw error;
     },
   );
-  if (!Array.isArray(lines)) return lines as Failure;
+  if (!Array.isArray(read)) return read as Failure;
+  const pageLines = format === "pdf" ? (read as ReadonlyArray<ReadonlyArray<Line>>) : undefined;
+  const lines = pageLines === undefined ? (read as ReadonlyArray<Line>) : pageLines.flat();
+  const pages = pageLines?.map(pageText);
   const table = readTable(lines);
-  if (table._tag === "no_table") return { _tag: "unreadable", reason: table.reason };
+  if (table._tag === "no_table")
+    return pages === undefined
+      ? { _tag: "unreadable", reason: table.reason }
+      : { _tag: "pages", pages, facts: readFacts(lines) };
   if (table.statement.rows.length > STATEMENT_CAPS.rows)
     return {
       _tag: "unreadable",
       reason: `The statement has more than ${STATEMENT_CAPS.rows} rows.`,
     };
-  return { _tag: "read", statement: table.statement, format };
+  return {
+    _tag: "read",
+    statement: table.statement,
+    format,
+    ...(pages === undefined ? {} : { pages }),
+  };
+};
+
+// Helvetica's average advance at a statement's usual 8 to 9 points, so columns line up as text.
+const POINTS_PER_CHARACTER = 4;
+/** A page as text: each line's cells at their columns, so a reader can tell the columns apart. */
+const pageText = (lines: ReadonlyArray<Line>): StatementPage => {
+  let dated = 0;
+  const text = lines.map((line) => {
+    let out = "";
+    for (const cell of line) {
+      if (cell.text === "") continue;
+      const column = Math.round((cell.x ?? 0) / POINTS_PER_CHARACTER);
+      out += " ".repeat(Math.max(out === "" ? 0 : 1, column - out.length)) + cell.text;
+    }
+    const first = line.find((cell) => cell.text !== "");
+    if (first !== undefined && parseDay(first.text) !== undefined) dated += 1;
+    return out.trimEnd();
+  });
+  return { text: text.join("\n"), dated };
 };
 
 type Failure = Exclude<FileOutcome, { _tag: "read" }>;
@@ -112,7 +159,7 @@ const linesOf = async (
   bytes: Uint8Array,
   password: string | undefined,
   precheck: boolean,
-): Promise<ReadonlyArray<Line> | Failure> =>
+): Promise<ReadonlyArray<Line> | ReadonlyArray<ReadonlyArray<Line>> | Failure> =>
   format === "pdf"
     ? pdfLines(bytes, password, precheck)
     : format === "xlsx"
@@ -132,7 +179,7 @@ const pdfLines = async (
   bytes: Uint8Array,
   password: string | undefined,
   precheck: boolean,
-): Promise<ReadonlyArray<Line> | Failure> => {
+): Promise<ReadonlyArray<ReadonlyArray<Line>> | Failure> => {
   const bomb = precheck ? inflatedTooFar(bytes) : undefined;
   if (bomb !== undefined) return tooLarge(bomb);
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
@@ -162,7 +209,7 @@ const pdfLines = async (
     if (document.numPages > STATEMENT_CAPS.pages)
       return { _tag: "unreadable", reason: `The PDF has more than ${STATEMENT_CAPS.pages} pages.` };
     const budget = cellBudget();
-    const lines: Array<Line> = [];
+    const pages: Array<Array<Line>> = [];
     let characters = 0;
     for (let number = 1; number <= document.numPages; number += 1) {
       const page = await document.getPage(number);
@@ -180,15 +227,17 @@ const pdfLines = async (
           : [],
       );
       characters += items.reduce((sum, item) => sum + item.text.trim().length, 0);
+      const lines: Array<Line> = [];
       for (const line of groupLines(items)) {
         budget.line();
         budget.cells(line.length);
         lines.push(line);
       }
+      pages.push(lines);
       page.cleanup();
     }
     if (characters < 20) return { _tag: "scanned", pages: document.numPages };
-    return lines;
+    return pages;
   } catch (error) {
     const code =
       typeof error === "object" && error !== null ? Reflect.get(error, "code") : undefined;

@@ -11,6 +11,7 @@ import {
   formatReadToolLabel,
   formatSearchToolLabel,
 } from "@t3tools/shared/toolActivity";
+import { redactSecretArguments } from "../toolInputSecrets.ts";
 import { field, text } from "../unknownField.ts";
 import { mergeWorkflowAgentMetadata, type WorkflowAgentMetadata } from "../workflowAgentAnswers.ts";
 import {
@@ -1087,7 +1088,7 @@ function makeClaudeAgentSdkProtocolLogger(input: {
           protocol: CLAUDE_AGENT_SDK_QUERY_PROTOCOL,
           kind: "protocol",
           providerSessionId: input.providerSessionId,
-          event: boundProviderEventForLogging(event),
+          event: boundProviderEventForLogging(redactSecretArguments(event)),
         },
         input.threadId,
       )
@@ -3516,7 +3517,7 @@ function summarizeClaudeToolRequest(toolName: string, input: ClaudeNativeToolInp
   if (path !== undefined) {
     return `${toolName}: ${path.slice(0, 400)}`;
   }
-  const serialized = jsonStringifyForTool(claudeNativeToolInputValue(input));
+  const serialized = jsonStringifyForTool(redactSecretArguments(claudeNativeToolInputValue(input)));
   return serialized.length <= 400
     ? `${toolName}: ${serialized}`
     : `${toolName}: ${serialized.slice(0, 397)}...`;

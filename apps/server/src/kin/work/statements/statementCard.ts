@@ -157,9 +157,11 @@ export const reviewHash = (statementId: string, review: Review) => {
 };
 
 /** Why no match starts ticked, when the rows themselves may be wrong. */
+/** Rows a lead read from images of a scan: no text on the page to check them against. */
+const fromScan = (review: Review) => review.source === "agent" && review.format !== "pdf";
 const heldBackWhy = (review: Review) =>
-  review.source === "agent"
-    ? "Nothing is ticked: Kin read these rows from images of a scan. Check each against the statement, then tick it."
+  fromScan(review)
+    ? "Nothing is ticked: these rows were read from images of a scan. Check each against the statement, then tick it."
     : review.statement.check.status === "off"
       ? "Nothing is ticked: the statement doesn't add up, so a row may be misread. Check each, then tick it."
       : review.statement.check.status === "unchecked"
@@ -322,6 +324,8 @@ export const reviewCard = (
       currency,
     );
   const recorded = statement.rows.length - review.matches.size;
+  // Read again, rows this statement recorded are already counted among the recorded ones.
+  const kept = [...held.keys()].filter((row) => review.matches.has(row)).length;
   const account =
     statement.account === null
       ? (statement.bank ?? "Statement")
@@ -346,15 +350,19 @@ export const reviewCard = (
       statement.check.line,
       ...(recorded === 0
         ? []
-        : [`${recorded} already in Bank transactions from an earlier statement.`]),
-      ...(held.size === 0
+        : [
+            `${recorded} row${recorded === 1 ? " is" : "s are"} already recorded in Bank transactions.`,
+          ]),
+      ...(kept === 0
         ? []
         : [
-            `${held.size} row${held.size === 1 ? " is" : "s are"} already recorded from this statement and stay${held.size === 1 ? "s" : ""} as ${held.size === 1 ? "it is" : "they are"}.`,
+            `${kept} row${kept === 1 ? " is" : "s are"} already recorded from this statement and stay${kept === 1 ? "s" : ""} as ${kept === 1 ? "it is" : "they are"}.`,
           ]),
-      ...(review.source === "agent"
-        ? ["Kin read these rows from images of a scanned statement: check them against it."]
-        : []),
+      ...(fromScan(review)
+        ? ["These rows were read from images of a scanned statement: check them against it."]
+        : review.source === "agent"
+          ? ["These rows were read from the statement's pages and checked against its balances."]
+          : []),
     ].map((line) => clamp(line, 300)),
     balance: statement.check.status,
     ...(review.source === "agent" ? { readByAgent: true as const } : {}),

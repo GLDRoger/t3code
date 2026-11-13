@@ -350,6 +350,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.work.statementForgetPassword": "kin-work",
   "kin.work.statementApply": "kin-work",
   "kin.work.statementUndo": "kin-work",
+  "kin.work.statementReread": "kin-work",
   "kin.work.statementSelect": "kin-work",
   "kin.work.statementRows": "kin-work",
   "kin.work.statementPasswords": "kin-work",
