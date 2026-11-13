@@ -1,30 +1,25 @@
 import type { KinOrgId } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Clock from "effect/Clock";
-import * as Config from "effect/Config";
-import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 
 import { KinGitHubScope } from "../github/KinGitHubScope.ts";
 import * as OwnerMergeClient from "../github/OwnerMergeClient.ts";
+import {
+  CredentialHygieneFailure,
+  type CredentialHygieneReport,
+} from "./CredentialHygieneReport.ts";
+import { forbiddenEnvNames, refusedProviderEnvChanges } from "./HostConfigAllowlist.ts";
 
 /**
- * Agent CLIs inherit the server's environment, so any of these hands them a GitHub credential.
- * `SSH_AUTH_SOCK` reaches every key the SSH agent holds, and the SSH probe sees only the first one
- * GitHub accepts.
+ * The probe the live layer (`GitHubIdentityProbe.ts`) runs for `T3GitHubIdentities.ssh`, with
+ * `-F <validated config>` added and without `SSH_AUTH_SOCK`.
  */
-const ENV_TOKEN_NAMES = [
-  "GH_TOKEN",
-  "GITHUB_TOKEN",
-  "GH_ENTERPRISE_TOKEN",
-  "GITHUB_ENTERPRISE_TOKEN",
-  "SSH_AUTH_SOCK",
-];
-
-/** @public The probe APPR-9's live layer runs for `T3GitHubIdentities.ssh`, without `SSH_AUTH_SOCK`. */
 export const GITHUB_SSH_PROBE = [
   "ssh",
   "-T",
@@ -32,6 +27,11 @@ export const GITHUB_SSH_PROBE = [
   "BatchMode=yes",
   "-o",
   "StrictHostKeyChecking=yes",
+  // A shared connection would answer each per-key probe as whoever opened it.
+  "-o",
+  "ControlMaster=no",
+  "-o",
+  "ControlPath=none",
   // A `~/.ssh/config` block can turn key auth off for the probe while agents turn it back on.
   "-o",
   "PubkeyAuthentication=yes",
@@ -69,76 +69,64 @@ export class T3GitHubIdentityError extends Schema.TaggedError<T3GitHubIdentityEr
   override get message(): string {
     return "Could not tell which GitHub identity T3 uses on this machine.";
   }
+  /** The live layer's fixed `source: reason`, which never holds a value. */
+  get reason(): string {
+    return typeof this.cause === "string" ? this.cause : "the probe failed";
+  }
 }
 
 /**
  * Every github.com login reachable from the server's OS user, and so from every agent CLI it
- * spawns. Each field is required so the live layer (APPR-9) can't skip a source; a source it
+ * spawns. Each field is required so the live layer can't skip a source; a source it
  * can't read fails the whole probe.
  */
 export interface T3GitHubIdentities {
   /**
-   * T3's own credential: `GitHubRequestPolicy.credential("github.com")`, then `GET /user`. None
-   * when T3 has no GitHub credential. `source` is where it came from; `"env"` fails the check.
+   * Every credential T3 holds for github.com, each named by `GET /user` (its login and account
+   * id): the token saved in Settings, the app sign-in, `GH_TOKEN`/`GITHUB_TOKEN` and
+   * `gh auth token`, whether or not the host is enabled. `source` is where it came from; `"env"`
+   * fails the check.
    */
-  readonly t3: Option.Option<{ readonly login: string; readonly source: string }>;
+  readonly t3: ReadonlyArray<{
+    readonly login: string;
+    readonly id: number;
+    readonly source: string;
+  }>;
   /** Every account `gh auth status --hostname github.com` lists, active or not. */
   readonly ghAccounts: ReadonlyArray<string>;
   /**
-   * The login behind `git credential fill` for `https://github.com` (`GET /user` with the
-   * helper's password, never logged). None when no helper answers.
+   * The login and account id behind `git credential fill` for `https://github.com` (`GET /user`
+   * with the helper's password, never logged). None when no helper answers.
    */
-  readonly gitCredential: Option.Option<string>;
+  readonly gitCredential: Option.Option<{ readonly login: string; readonly id: number }>;
+  /** The owner logins asked about that the git helper also holds a password for. */
+  readonly gitCredentialFor: ReadonlyArray<string>;
   /**
    * The combined stdout and stderr of each SSH probe: `GITHUB_SSH_PROBE` as is, then once per
-   * private key in `~/.ssh` with `-o IdentitiesOnly=yes -i <key>` added, since GitHub greets only
-   * the first key it accepts. The check parses them; any answer it can't read fails it.
+   * private key (each `IdentityFile` the SSH configs name, and every key in `~/.ssh`) with
+   * `-o IdentitiesOnly=yes -i <key>` added, since GitHub greets only the first key it accepts. The
+   * check parses them; any answer it can't read fails it.
    */
   readonly ssh: ReadonlyArray<string>;
+  /**
+   * The variables each provider instance's environment adds to or changes from the server's, by
+   * name: agents and the terminal inherit these on top of the server's.
+   */
+  readonly providerEnvironments: ReadonlyArray<{
+    readonly instance: string;
+    readonly names: ReadonlyArray<string>;
+  }>;
 }
 
 export class T3GitHubIdentity extends Context.Service<
   T3GitHubIdentity,
-  { readonly identities: Effect.Effect<T3GitHubIdentities, T3GitHubIdentityError> }
+  {
+    /** `ownerLogins` are the usernames to ask the git helper about. */
+    readonly identities: (input: {
+      readonly ownerLogins: ReadonlyArray<string>;
+    }) => Effect.Effect<T3GitHubIdentities, T3GitHubIdentityError>;
+  }
 >()("t3/kin/approvals/CredentialHygiene/T3GitHubIdentity") {}
-
-/**
- * Until the live probe lands (spec section 12: `gh`, the git credential helper, SSH and T3's own
- * credential), no identity can be read, so every check fails `identity_unknown` and nothing runs.
- */
-export const identityUnavailableLayer = Layer.succeed(
-  T3GitHubIdentity,
-  T3GitHubIdentity.of({
-    identities: Effect.fail(
-      new T3GitHubIdentityError({ cause: "the live GitHub identity probe is not installed" }),
-    ),
-  }),
-);
-
-export const CredentialHygieneFailure = Schema.Literals([
-  "env_token",
-  "owner_identity",
-  "non_bot_identity",
-  "identity_unknown",
-  "merge_token_missing",
-  "merge_token_expired",
-]);
-export type CredentialHygieneFailure = typeof CredentialHygieneFailure.Type;
-
-export interface CredentialHygieneReport {
-  readonly passed: boolean;
-  readonly failures: ReadonlyArray<CredentialHygieneFailure>;
-  readonly warnings: ReadonlyArray<"merge_token_expiring">;
-  /** Credential variables set in the server's environment. Names only, never values. */
-  readonly envTokenNames: ReadonlyArray<string>;
-  readonly t3Login: string | null;
-  /** Every login found, with where it came from. Logins only; no credential leaves the probe. */
-  readonly identities: ReadonlyArray<{
-    readonly source: "t3" | "gh" | "git_credential" | "ssh";
-    readonly login: string;
-  }>;
-  readonly checkedAt: number;
-}
 
 const ISSUE_PASS: unique symbol = Symbol("CredentialHygienePass.issue");
 let issuePass: (orgId: KinOrgId, report: CredentialHygieneReport) => CredentialHygienePass;
@@ -177,16 +165,24 @@ export class CredentialHygienePass {
 
 export class CredentialHygieneFailedError extends Schema.TaggedError<CredentialHygieneFailedError>()(
   "CredentialHygieneFailedError",
-  { failures: Schema.Array(CredentialHygieneFailure) },
+  {
+    failures: Schema.Array(CredentialHygieneFailure),
+    /** The report's fixed reasons, which never hold a value. */
+    reasons: Schema.Array(Schema.String),
+  },
 ) {
   override get message(): string {
     return `Privileged actions are refused until the credential check passes (${this.failures.join(", ")}).`;
   }
 }
 
+/** How long `check` reuses one probe, across every org and held action. */
+export const PROBE_CACHE_TTL = "60 seconds";
+
 /**
- * Spec section 12. The executor runs `check` at startup and hourly (audit `credential_check_failed`
- * and the owner's card on failure) and calls `requirePassing` before every privileged run.
+ * Spec section 12. The executor runs `check` at startup, hourly and to hold an action (audit
+ * `credential_check_failed` and the owner's card on failure), and calls `requirePassing` before
+ * every privileged run. `check` shares one probe for `PROBE_CACHE_TTL`; `requirePassing` never does.
  */
 export class CredentialHygiene extends Context.Service<
   CredentialHygiene,
@@ -203,25 +199,42 @@ const make = Effect.gen(function* () {
   const scope = yield* KinGitHubScope;
   const mergeTokens = yield* OwnerMergeClient.OwnerMergeClient;
   // Read at each check: agent CLIs inherit whatever the environment holds when they spawn.
-  const configProvider = yield* ConfigProvider.ConfigProvider;
+  const environment = yield* HostProcess.Environment;
 
-  const envTokenNames = Effect.forEach(ENV_TOKEN_NAMES, (name) =>
-    Config.option(Config.String(name)).pipe(
-      Effect.map((value) => (Option.isSome(value) && value.value.trim() !== "" ? [name] : [])),
-      // An unreadable variable is treated as set: fail closed.
-      Effect.orElseSucceed(() => [name]),
-    ),
-  ).pipe(
-    Effect.map((names) => names.flat()),
-    Effect.provideService(ConfigProvider.ConfigProvider, configProvider),
-  );
+  // One probe per set of owner logins, shared for `PROBE_CACHE_TTL`. Single-flight too: concurrent
+  // checks wait on the probe already running.
+  const probes = new Map<string, Effect.Effect<T3GitHubIdentities, T3GitHubIdentityError>>();
+  const probesLock = Semaphore.makeUnsafe(1);
+  const cachedIdentities = (ownerLogins: ReadonlyArray<string>) =>
+    probesLock
+      .withPermits(1)(
+        Effect.gen(function* () {
+          const key = ownerLogins.join("\n");
+          const cached = probes.get(key);
+          if (cached !== undefined) return cached;
+          const made = yield* Effect.cachedWithTTL(
+            identity.identities({ ownerLogins }),
+            PROBE_CACHE_TTL,
+          );
+          probes.set(key, made);
+          return made;
+        }),
+      )
+      .pipe(Effect.flatten);
 
-  const check = Effect.fn("CredentialHygiene.check")(function* (orgId: KinOrgId) {
+  const evaluate = Effect.fnUntraced(function* (
+    orgId: KinOrgId,
+    probe: (
+      ownerLogins: ReadonlyArray<string>,
+    ) => Effect.Effect<T3GitHubIdentities, T3GitHubIdentityError>,
+  ) {
     const failures = new Set<CredentialHygieneFailure>();
+    const reasons: Array<string> = [];
     const warnings: Array<"merge_token_expiring"> = [];
 
-    const envNames = yield* envTokenNames;
+    const envNames = forbiddenEnvNames(environment);
     if (envNames.length > 0) failures.add("env_token");
+    for (const name of envNames) reasons.push(`the server's environment sets ${name}`);
 
     const status = yield* mergeTokens
       .status(orgId)
@@ -233,50 +246,106 @@ const make = Effect.gen(function* () {
     if (status._tag === "missing") failures.add("merge_token_missing");
     if (status._tag === "expired") failures.add("merge_token_expired");
     if (status._tag === "active" && status.expiringSoon) warnings.push("merge_token_expiring");
+    // A helper matches the username as stored, so both spellings are asked about.
+    const askAbout = [
+      ...new Set(
+        [scope.ownerLogin, ...(status._tag === "missing" ? [] : [status.login])].flatMap(
+          (login) => [login, login.toLowerCase()],
+        ),
+      ),
+    ];
 
-    const probed = yield* identity.identities.pipe(Effect.option);
+    // A login can be renamed and registered again; the id can't. Without one, nothing to compare.
+    if (Option.isNone(scope.botId)) {
+      failures.add("identity_unknown");
+      reasons.push("KIN_GITHUB_BOT_ID isn't set");
+    }
+    const tokenBacked: Array<{
+      readonly source: string;
+      readonly login: string;
+      readonly id: number;
+    }> = [];
+
+    const probed = yield* probe(askAbout).pipe(Effect.result);
     let t3Login: string | null = null;
     const found: Array<CredentialHygieneReport["identities"][number]> = [];
-    if (Option.isNone(probed)) {
+    if (probed._tag === "Failure") {
       failures.add("identity_unknown");
+      reasons.push(probed.failure.reason);
     } else {
-      const { t3, ghAccounts, gitCredential, ssh } = probed.value;
-      if (Option.isSome(t3)) {
-        t3Login = t3.value.login;
-        if (t3.value.source === "env") failures.add("env_token");
-        found.push({ source: "t3", login: t3.value.login });
+      const { t3, ghAccounts, gitCredential, gitCredentialFor, ssh, providerEnvironments } =
+        probed.success;
+      t3Login = t3[0]?.login ?? null;
+      for (const { login, id, source } of t3) {
+        if (source === "env") failures.add("env_token");
+        found.push({ source: "t3", login });
+        tokenBacked.push({ source: "t3", login, id });
       }
       for (const login of ghAccounts) found.push({ source: "gh", login });
       if (Option.isSome(gitCredential)) {
-        found.push({ source: "git_credential", login: gitCredential.value });
+        found.push({ source: "git_credential", login: gitCredential.value.login });
+        tokenBacked.push({ source: "git_credential", ...gitCredential.value });
       }
-      // The probe as is always runs, so no answer means the live layer skipped SSH.
-      if (ssh.length === 0) failures.add("identity_unknown");
-      for (const output of ssh) {
-        const answer = parseGitHubSshAnswer(output);
-        if (answer._tag === "unknown") failures.add("identity_unknown");
-        if (answer._tag !== "logins") continue;
-        for (const login of answer.logins) {
-          if (!found.some((item) => item.source === "ssh" && item.login === login)) {
-            found.push({ source: "ssh", login });
-          }
+      if (gitCredentialFor.length > 0) {
+        failures.add("owner_identity");
+        reasons.push("the git credential helper holds a password for the owner's login");
+      }
+      for (const { instance, names } of providerEnvironments) {
+        const shown = /^[A-Za-z0-9_-]{1,64}$/.test(instance) ? `"${instance}"` : "an instance";
+        const own = forbiddenEnvNames(Object.fromEntries(names.map((name) => [name, "set"])));
+        for (const name of own.filter((name) => !envNames.includes(name))) {
+          failures.add("env_token");
+          reasons.push(`provider instance ${shown}'s environment sets ${name}`);
+        }
+        // Agents would then run another program, config or startup file than the probe read.
+        for (const name of refusedProviderEnvChanges(names)) {
+          failures.add("env_token");
+          reasons.push(`provider instance ${shown}'s environment changes ${name}`);
         }
       }
+      // The probe as is always runs, so no answer means the live layer skipped SSH.
+      if (ssh.length === 0) {
+        failures.add("identity_unknown");
+        reasons.push("ssh: no answer");
+      }
+      for (const output of ssh) {
+        const answer = parseGitHubSshAnswer(output);
+        if (answer._tag === "unknown") {
+          failures.add("identity_unknown");
+          reasons.push("ssh: an answer couldn't be read");
+        }
+        if (answer._tag !== "logins") continue;
+        for (const login of answer.logins) found.push({ source: "ssh", login });
+      }
     }
+    const identities = found.filter(
+      (item, index) =>
+        found.findIndex((other) => other.source === item.source && other.login === item.login) ===
+        index,
+    );
     const bot = scope.botLogin.toLowerCase();
-    for (const { login } of found) {
+    for (const { login } of identities) {
       const normalized = login.toLowerCase();
       if (ownerLogins.has(normalized)) failures.add("owner_identity");
       else if (normalized !== bot) failures.add("non_bot_identity");
+    }
+    // SSH greets by login only; every token names its account id too.
+    for (const { source, login, id } of tokenBacked) {
+      if (login.toLowerCase() !== bot || Option.isNone(scope.botId) || id === scope.botId.value) {
+        continue;
+      }
+      failures.add("non_bot_identity");
+      reasons.push(`${source}: the bot's login belongs to an account other than KIN_GITHUB_BOT_ID`);
     }
 
     const report: CredentialHygieneReport = {
       passed: failures.size === 0,
       failures: [...failures],
+      reasons: [...new Set(reasons)],
       warnings,
       envTokenNames: envNames,
       t3Login,
-      identities: found,
+      identities,
       checkedAt: yield* Clock.currentTimeMillis,
     };
     yield* Effect.annotateCurrentSpan({
@@ -286,10 +355,19 @@ const make = Effect.gen(function* () {
     return report;
   });
 
+  const check = Effect.fn("CredentialHygiene.check")(function* (orgId: KinOrgId) {
+    return yield* evaluate(orgId, cachedIdentities);
+  });
+  const fresh = (ownerLogins: ReadonlyArray<string>) => identity.identities({ ownerLogins });
+
   const requirePassing = Effect.fn("CredentialHygiene.requirePassing")(function* (orgId: KinOrgId) {
-    const report = yield* check(orgId);
+    // A fresh probe, started after the caller's claim, so a cached pass never gates a side effect.
+    const report = yield* evaluate(orgId, fresh);
     if (!report.passed) {
-      return yield* new CredentialHygieneFailedError({ failures: report.failures });
+      return yield* new CredentialHygieneFailedError({
+        failures: report.failures,
+        reasons: report.reasons,
+      });
     }
     return issuePass(orgId, report);
   });

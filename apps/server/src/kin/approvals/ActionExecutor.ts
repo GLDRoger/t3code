@@ -1,7 +1,7 @@
 import {
   KinApproverPublicJwk,
+  KinOrgId,
   type KinGrant,
-  type KinOrgId,
   type KinPendingAction,
 } from "@t3tools/contracts";
 import { decodeKinGrant, verifyKinGrant } from "@t3tools/shared/kinGrant";
@@ -19,9 +19,9 @@ import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import {
-  toPersistenceSqlError,
   type PersistenceDecodeError,
   type PersistenceSqlError,
+  toPersistenceSqlError,
 } from "../../persistence/Errors.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
 import { RETIRED_ACTION_REASON } from "../lead/Retirement.ts";
@@ -33,6 +33,7 @@ import {
 } from "./ActionHandlers.ts";
 import { KinAudit } from "./Audit.ts";
 import { CredentialHygiene } from "./CredentialHygiene.ts";
+import { type CredentialHygieneReport, failureResult } from "./CredentialHygieneReport.ts";
 import { KinExecutionNotices, type KinExecutionOutcome } from "./ExecutionNotices.ts";
 import { KinOrgRoles } from "./GrantPorts.ts";
 import { grantMatchesRecord } from "./grantFacts.ts";
@@ -45,6 +46,8 @@ const TICK_INTERVAL = "1 minute";
 const SWEEP_INTERVAL = "1 minute";
 /** Reconciliation that can't read GitHub retries until it can; it never re-runs the action. */
 const RECONCILE_RETRY = Schedule.spaced("30 seconds");
+/** Spec section 12: the credential check also runs at startup and this often. */
+const CREDENTIAL_CHECK_INTERVAL = "1 hour";
 // GitHub's edge answers 502 after ~10 s while a slow merge keeps running; 2 minutes after the
 // write was sent covers that.
 const NOT_DONE_AFTER_MS = 2 * 60 * 1000;
@@ -78,6 +81,14 @@ export class KinActionExecutor extends Context.Service<
     readonly execute: (ref: ActionRef) => Effect.Effect<KinExecuteResult, Errors>;
     /** One reconciliation attempt for an action left `executing`. */
     readonly reconcile: (ref: ActionRef) => Effect.Effect<KinReconcileResult, Errors>;
+    /**
+     * The credential check for every org. A changed result is audited when failing and posted to
+     * the owner. The worker runs it at startup and hourly.
+     */
+    readonly checkCredentials: Effect.Effect<
+      ReadonlyArray<{ readonly orgId: KinOrgId; readonly report: CredentialHygieneReport }>,
+      Errors
+    >;
     /** Reconciles until decided, retrying while GitHub can't tell. */
     readonly settle: (ref: ActionRef) => Effect.Effect<KinReconcileResult, Errors>;
     /** `execute`, then `settle` when the outcome is unknown. What the worker forks. */
@@ -211,6 +222,8 @@ export const make = Effect.gen(function* () {
     }
     return { _tag: "held", reason };
   });
+  // The last result each org's owner was told about, so an unchanged hourly result stays quiet.
+  const reportedChecks = new Map<KinOrgId, string>();
 
   const paused = (orgId: KinOrgId) =>
     isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
@@ -306,7 +319,7 @@ export const make = Effect.gen(function* () {
                 (error) =>
                   new KinExecError({
                     reason: "credential_check_failed",
-                    detail: error.failures.join(","),
+                    detail: failureResult(error),
                   }),
               ),
             ),
@@ -397,9 +410,9 @@ export const make = Effect.gen(function* () {
     if (!owner.value) return yield* voided("approver_not_owner");
     // Checked before the claim too, so a misconfigured host holds the grant instead of spending it.
     if (handler.value.credentialCheck) {
-      const check = yield* hygiene.requirePassing(action.orgId).pipe(Effect.flip, Effect.option);
-      if (Option.isSome(check))
-        return yield* held(action, "credential_check_failed", check.value.failures.join(","));
+      const check = yield* hygiene.check(action.orgId);
+      if (!check.passed)
+        return yield* held(action, "credential_check_failed", failureResult(check));
     }
     // 3. The stored grant verifies against its sealed key and binds this action.
     if (!(yield* grantVerifies(action, grant))) {
@@ -443,6 +456,68 @@ export const make = Effect.gen(function* () {
     );
   });
 
+  const checkCredentials = Effect.gen(function* () {
+    const orgs = yield* sql<{ readonly orgId: string }>`
+      SELECT org_id AS "orgId" FROM kin_orgs ORDER BY org_id`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinActionExecutor.checkCredentials")),
+    );
+    // Whether the host was failing when it last ran, and why: an execution only starts on a pass.
+    const lastCredentialEvent = (orgId: KinOrgId) =>
+      sql<{
+        readonly seq: number;
+        readonly event: string;
+        readonly result: string | null;
+        readonly held: number;
+      }>`
+        SELECT seq, event, json_extract(entry_json, '$.result') AS result,
+          json_extract(entry_json, '$.actionId') IS NOT NULL AS held
+        FROM kin_audit
+        WHERE org_id = ${orgId} AND event IN ('credential_check_failed', 'execution_started')
+        ORDER BY seq DESC LIMIT 1`.pipe(
+        Effect.map(([row]) => (row?.event === "credential_check_failed" ? row : undefined)),
+        Effect.mapError(toPersistenceSqlError("KinActionExecutor.checkCredentials")),
+      );
+    return yield* Effect.forEach(orgs, (row) =>
+      Effect.gen(function* () {
+        const orgId = KinOrgId.make(row.orgId);
+        const report = yield* hygiene.check(orgId);
+        const result = [...report.failures, ...report.warnings, ...report.reasons].join(",");
+        let previous = reportedChecks.get(orgId);
+        // After a restart, a failure this check already reported (not an action's hold) stays quiet.
+        if (previous === undefined && !report.passed) {
+          const last = yield* lastCredentialEvent(orgId);
+          if (last !== undefined && !last.held && last.result === failureResult(report)) {
+            previous = result;
+          }
+        }
+        reportedChecks.set(orgId, result);
+        // An org with no merge token hasn't set GitHub up for Kin, so there is no one to tell.
+        if (previous === result || report.failures.includes("merge_token_missing")) {
+          return { orgId, report };
+        }
+        if (!report.passed) {
+          yield* audit
+            .append({ orgId, event: "credential_check_failed", result: failureResult(report) })
+            .pipe(Effect.catch((error) => Effect.logWarning("Kin audit not written", error)));
+          yield* notices.credentialCheck({ orgId, report });
+        } else if (report.warnings.length > 0) {
+          yield* notices.credentialCheck({ orgId, report });
+        } else {
+          // After a restart, the audit log remembers a failure the owner hasn't heard the end of.
+          const failedAt = (yield* lastCredentialEvent(orgId))?.seq;
+          if (previous !== undefined || failedAt !== undefined) {
+            yield* notices.credentialCheck({
+              orgId,
+              report,
+              ...(failedAt === undefined ? {} : { recoveredFrom: failedAt }),
+            });
+          }
+        }
+        return { orgId, report };
+      }),
+    );
+  }).pipe(Effect.withSpan("KinActionExecutor.checkCredentials"));
+
   const settle = (ref: ActionRef) =>
     reconcile(ref).pipe(
       Effect.repeat({
@@ -480,13 +555,14 @@ export const make = Effect.gen(function* () {
     Effect.withSpan("KinActionExecutor.sweep"),
   );
 
-  return KinActionExecutor.of({ execute, reconcile, settle, run, pickup, sweep });
+  return KinActionExecutor.of({ execute, reconcile, checkCredentials, settle, run, pickup, sweep });
 });
 
 /**
  * The executor with its worker: every approval as it lands, a minute tick that retries held
  * approvals and reconciles orphaned `executing` rows (all of them at startup), and the expiry
- * sweep on its own schedule. Each execution is forked, so one stuck call holds up only its org.
+ * sweep on its own schedule, and the credential check at startup and hourly. Each execution is
+ * forked, so one stuck call holds up only its org.
  */
 export const layer = Layer.effect(
   KinActionExecutor,
@@ -510,6 +586,10 @@ export const layer = Layer.effect(
         logged("execution failed", executor.run(ref)).pipe(Effect.forkScoped),
       ),
       Effect.forever,
+      Effect.forkScoped,
+    );
+    yield* logged("credential check failed", executor.checkCredentials).pipe(
+      Effect.repeat(Schedule.spaced(CREDENTIAL_CHECK_INTERVAL)),
       Effect.forkScoped,
     );
     const tick = executor.pickup.pipe(

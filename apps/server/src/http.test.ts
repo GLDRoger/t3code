@@ -939,6 +939,7 @@ describe("Kin chat file URLs", () => {
       const layerRouteServices = Layer.mergeAll(
         Layer.succeed(KinServer)({
           taskCardUpdater: Layer.empty,
+          t3GitHubCredential: Layer.empty,
           services: Option.some(kin as unknown as Context.Context<KinServices>),
           subscribeForViewer: Option.none(),
         }),

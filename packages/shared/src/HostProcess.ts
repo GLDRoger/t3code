@@ -53,6 +53,20 @@ export const HomeDirectory = Context.Reference<string>(
   },
 );
 
+/** The passwd entry's home. ssh reads `~/.ssh` from here whatever `$HOME` says. */
+export const PasswdHomeDirectory = Context.Reference<string | null>(
+  "@t3tools/shared/HostProcess/PasswdHomeDirectory",
+  {
+    defaultValue: () => {
+      try {
+        return NodeOS.userInfo().homedir || null;
+      } catch {
+        return null;
+      }
+    },
+  },
+);
+
 export const Environment = Context.Reference<NodeJS.ProcessEnv>(
   "@t3tools/shared/HostProcess/Environment",
   {

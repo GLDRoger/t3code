@@ -8,6 +8,8 @@ import type {
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 
+import type { CredentialHygieneReport } from "./CredentialHygieneReport.ts";
+
 export type KinExecutionOutcome = "succeeded" | "failed" | "interrupted";
 
 /**
@@ -24,6 +26,13 @@ export class KinExecutionNotices extends Context.Service<
       readonly error?: string;
       /** Something the owner should know about a success, such as a head branch left in place. */
       readonly note?: string;
+    }) => Effect.Effect<void>;
+    /** Tells the owner the credential check's result changed: failing, warning, or passing again. */
+    readonly credentialCheck: (input: {
+      readonly orgId: KinOrgId;
+      readonly report: CredentialHygieneReport;
+      /** For "passes again": the `seq` of the failure it ends, so one failure gets one notice. */
+      readonly recoveredFrom?: number;
     }) => Effect.Effect<void>;
     /** An approval whose grant lapsed while the executor held it; `holdReason` says why. */
     readonly lapsed: (input: {

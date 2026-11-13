@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 
+import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import * as Keychain from "../github/Keychain.ts";
 import * as KinBotReads from "../github/KinBotReads.ts";
 import * as KinGitHubApp from "../github/KinGitHubApp.ts";
@@ -17,6 +18,9 @@ import * as ApproverKeys from "./ApproverKeys.ts";
 import * as Audit from "./Audit.ts";
 import * as AttestationTrust from "./attestation/AttestationTrust.ts";
 import * as CredentialHygiene from "./CredentialHygiene.ts";
+import type { CredentialHygieneReport } from "./CredentialHygieneReport.ts";
+import * as GitHubIdentityProbe from "./GitHubIdentityProbe.ts";
+import * as T3GitHubCredential from "./T3GitHubCredential.ts";
 import * as GrantPorts from "./GrantPorts.ts";
 import * as GrantVerifier from "./GrantVerifier.ts";
 import { makeDeleteBranchHandler } from "./handlers/deleteBranch.ts";
@@ -69,25 +73,38 @@ const githubPlatform = Layer.mergeAll(
 );
 type GitHubPlatform = Layer.Success<typeof githubPlatform>;
 
+// Its process runner and filesystem are the server's, by layer memoization.
+const liveIdentity = GitHubIdentityProbe.layer.pipe(
+  Layer.provide(VcsProcess.layer),
+  Layer.provide(NodeServices.layer),
+);
+
 // The bot App reads, the owner merge token writes, and the hygiene check gates both.
-const github = <E, R>(platform: Layer.Layer<GitHubPlatform, E, R>) =>
+const github = <E, R, IE, IR>(
+  platform: Layer.Layer<GitHubPlatform, E, R>,
+  identity: Layer.Layer<CredentialHygiene.T3GitHubIdentity, IE, IR>,
+) =>
   Layer.mergeAll(KinBotReads.layer, CredentialHygiene.layer).pipe(
     Layer.provideMerge(OwnerMergeClient.layer),
-    Layer.provide(CredentialHygiene.identityUnavailableLayer),
+    Layer.provide(identity),
     Layer.provide(KinGitHubApp.layer),
     Layer.provideMerge(platform),
   );
 
-const handlers = <E, R>(platform: Layer.Layer<GitHubPlatform, E, R>) =>
+const handlers = <E, R, IE, IR>(
+  platform: Layer.Layer<GitHubPlatform, E, R>,
+  identity: Layer.Layer<CredentialHygiene.T3GitHubIdentity, IE, IR>,
+) =>
   Layer.effect(
     ActionHandlers.KinActionHandlers,
     Effect.all([setLevelHandler, makeMergePullRequestHandler, makeDeleteBranchHandler]).pipe(
       Effect.map(ActionHandlers.make),
     ),
-  ).pipe(Layer.provideMerge(github(platform)));
+  ).pipe(Layer.provideMerge(github(platform, identity)));
 
 // Without the GitHub App and scope configured, the GitHub kinds have no handler but stay held
 // until their grants lapse, and the hygiene check can't pass, so only set_level runs.
+const UNCONFIGURED = "the GitHub App and scope aren't configured";
 const unconfigured = Layer.mergeAll(
   Layer.effect(
     ActionHandlers.KinActionHandlers,
@@ -99,9 +116,10 @@ const unconfigured = Layer.mergeAll(
     CredentialHygiene.CredentialHygiene,
     CredentialHygiene.CredentialHygiene.of({
       check: Effect.fn("CredentialHygiene.unconfigured")(function* () {
-        return yield* Effect.succeed<CredentialHygiene.CredentialHygieneReport>({
+        return yield* Effect.succeed<CredentialHygieneReport>({
           passed: false,
           failures: ["identity_unknown", "merge_token_missing"],
+          reasons: [UNCONFIGURED],
           warnings: [],
           envTokenNames: [],
           t3Login: null,
@@ -112,6 +130,7 @@ const unconfigured = Layer.mergeAll(
       requirePassing: Effect.fn("CredentialHygiene.unconfiguredRequirePassing")(function* () {
         return yield* new CredentialHygiene.CredentialHygieneFailedError({
           failures: ["identity_unknown", "merge_token_missing"],
+          reasons: [UNCONFIGURED],
         });
       }),
     }),
@@ -123,13 +142,16 @@ const unconfigured = Layer.mergeAll(
  * anything here would reach every service holding `kin.services`. Built on top of the layer that
  * supplies `KinPendingActions`, so it takes the very approvals that instance publishes.
  */
-export const makeExecutorLayer = <E, R>(platform: Layer.Layer<GitHubPlatform, E, R>) =>
+export const makeExecutorLayer = <E, R, IE, IR>(
+  platform: Layer.Layer<GitHubPlatform, E, R>,
+  identity: Layer.Layer<CredentialHygiene.T3GitHubIdentity, IE, IR>,
+) =>
   Layer.empty.pipe(
     Layer.provide(
       ActionExecutor.layer.pipe(
         Layer.provide(
           Layer.merge(
-            handlers(platform).pipe(
+            handlers(platform, identity).pipe(
               Layer.catchCause((cause) =>
                 unconfigured.pipe(
                   Layer.tap(() =>
@@ -151,12 +173,14 @@ export const makeExecutorLayer = <E, R>(platform: Layer.Layer<GitHubPlatform, E,
     ),
   );
 
-export const executorLayer = makeExecutorLayer(githubPlatform);
+export const executorLayer = makeExecutorLayer(githubPlatform, liveIdentity);
 
 /** Push routing and level control read pending actions, so they stay in the output. */
 export const layer = GrantVerifier.layer.pipe(
   Layer.provideMerge(ApproverKeys.layer),
   Layer.provideMerge(PendingActions.layer),
+  // In Kin's services too: the server installs T3's credential reader into this one slot.
+  Layer.provideMerge(T3GitHubCredential.slotLayer),
   Layer.provide(
     Layer.mergeAll(
       AttestationTrust.layer.pipe(Layer.provide(FetchHttpClient.layer)),

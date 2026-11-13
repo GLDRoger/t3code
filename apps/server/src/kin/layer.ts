@@ -3,6 +3,7 @@ import { KinChatRepository } from "./chat/KinChatRepository.ts";
 import type * as SqlClient from "effect/sql/SqlClient";
 import * as TaskCardUpdater from "./chat/TaskCardUpdater.ts";
 import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
 import * as KinEnabled from "./KinEnabled.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -13,6 +14,7 @@ import * as KinAttachmentStore from "./chat/KinAttachmentStore.ts";
 import * as KinApprovals from "./approvals/layer.ts";
 import * as RetiredActions from "./approvals/retiredActions.ts";
 import * as KeySeal from "./approvals/KeySeal.ts";
+import * as T3GitHubCredential from "./approvals/T3GitHubCredential.ts";
 import * as ApprovalCards from "./chat/approvalCards.ts";
 import * as ExecutionNotices from "./chat/executionNotices.ts";
 import * as KinPush from "./push/layer.ts";
@@ -39,6 +41,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
     KinServer,
     Effect.gen(function* () {
       const services = yield* Effect.context<Services>();
+      const slot = yield* T3GitHubCredential.T3GitHubCredential;
       const hub = yield* KinChatHub;
       const updaterServices = yield* Effect.context<
         KinChatRepository | TaskCardIndex | KinChatHub | SqlClient.SqlClient
@@ -47,7 +50,11 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
         taskCardUpdater: TaskCardUpdater.layer.pipe(
           Layer.provide(Layer.succeedContext(updaterServices)),
         ),
-        services: Option.some(services),
+        t3GitHubCredential: T3GitHubCredential.installLayer.pipe(
+          Layer.provide(Layer.succeed(T3GitHubCredential.T3GitHubCredential, slot)),
+        ),
+        // Context lookups go by key, so the slot is dropped, not just left out of the type.
+        services: Option.some(Context.omit(T3GitHubCredential.T3GitHubCredential)(services)),
         subscribeForViewer: Option.some(hub.subscribeForViewer),
       };
     }),
@@ -91,6 +98,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
   );
 const disabled = Layer.succeed(KinServer, {
   taskCardUpdater: Layer.empty,
+  t3GitHubCredential: Layer.empty,
   services: Option.none(),
   subscribeForViewer: Option.none(),
 });
@@ -107,6 +115,7 @@ const runtime = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
                 config.reportFailure(cause).pipe(
                   Effect.as({
                     taskCardUpdater: Layer.empty,
+                    t3GitHubCredential: Layer.empty,
                     services: Option.none(),
                     subscribeForViewer: Option.none(),
                   }),
@@ -124,6 +133,7 @@ const runtime = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
         Effect.logError("Kin disabled: invalid configuration.", Cause.pretty(cause)).pipe(
           Effect.as({
             taskCardUpdater: Layer.empty,
+            t3GitHubCredential: Layer.empty,
             services: Option.none(),
             subscribeForViewer: Option.none(),
           }),
@@ -158,8 +168,29 @@ const taskCardUpdater = Layer.unwrap(
   }),
 );
 
+// Built with the server's source control host, which the executor's layer comes before.
+const t3GitHubCredential = Layer.unwrap(
+  Effect.gen(function* () {
+    const kin = yield* KinServer;
+    return Option.isSome(kin.services)
+      ? kin.t3GitHubCredential.pipe(
+          Layer.catchCause((cause) =>
+            Layer.effectDiscard(
+              Effect.logWarning(
+                "Kin: T3's GitHub credential can't be read; the credential check fails.",
+                {
+                  cause: Cause.pretty(cause).slice(0, 500),
+                },
+              ),
+            ),
+          ),
+        )
+      : Layer.empty;
+  }),
+);
+
 export const mcpLayer = (base: Parameters<typeof KinMcp.transport>[0]) =>
-  Layer.mergeAll(KinMcp.transport(base), taskCardUpdater);
+  Layer.mergeAll(KinMcp.transport(base), taskCardUpdater, t3GitHubCredential);
 
 export const mcpRegistryLayer = <E, R>(
   base: Layer.Layer<McpSessionRegistry.McpSessionRegistry, E, R>,

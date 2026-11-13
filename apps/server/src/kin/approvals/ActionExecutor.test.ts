@@ -13,6 +13,7 @@ import {
 } from "@t3tools/contracts";
 import { encodeGrantSigningInput } from "@t3tools/shared/kinGrant";
 import * as Clock from "effect/Clock";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Deferred from "effect/Deferred";
@@ -21,6 +22,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -32,6 +34,7 @@ import * as KinBotReads from "../github/KinBotReads.ts";
 import * as KinGitHubApp from "../github/KinGitHubApp.ts";
 import * as OwnerMergeClient from "../github/OwnerMergeClient.ts";
 import {
+  BOT_ID,
   fakeGitHub,
   memoryKeychain,
   scopeLayer,
@@ -246,6 +249,15 @@ function harness(
     readonly outcome: string;
     readonly note?: string;
   }> = [];
+  // What the owner is told about the credential check; `posted` lets a test await each one.
+  const credentialNotices: {
+    readonly sent: Array<{
+      readonly orgId: string;
+      readonly failures: ReadonlyArray<string>;
+      readonly recoveredFrom?: number;
+    }>;
+    posted?: (failures: ReadonlyArray<string>) => Effect.Effect<unknown>;
+  } = { sent: [] };
   const noticed = Deferred.makeUnsafe<void>();
   // Each credential check runs `during` with its count; `failing` makes the identity unreadable.
   const checks: {
@@ -306,25 +318,28 @@ function harness(
     Layer.provide(Layer.mergeAll(app, github.layer, keychain.layer, scope)),
   );
   const identity = Layer.succeed(CredentialHygiene.T3GitHubIdentity, {
-    identities: Effect.suspend(() => {
-      checks.count += 1;
-      return checks.during?.(checks.count) ?? Effect.void;
-    }).pipe(
-      Effect.andThen(() =>
-        checks.failing
-          ? Effect.fail(new CredentialHygiene.T3GitHubIdentityError({ cause: "probe failed" }))
-          : Effect.succeed({
-              t3: Option.some({ login: "kin-bot", source: "app" }),
-              ghAccounts: ["kin-bot"],
-              gitCredential: Option.none(),
-              ssh: ["git@github.com: Permission denied (publickey)."],
-            }),
+    identities: () =>
+      Effect.suspend(() => {
+        checks.count += 1;
+        return checks.during?.(checks.count) ?? Effect.void;
+      }).pipe(
+        Effect.andThen(() =>
+          checks.failing
+            ? Effect.fail(new CredentialHygiene.T3GitHubIdentityError({ cause: "probe failed" }))
+            : Effect.succeed({
+                t3: [{ login: "kin-bot", id: BOT_ID, source: "app" }],
+                ghAccounts: ["kin-bot"],
+                gitCredential: Option.none(),
+                gitCredentialFor: [],
+                ssh: ["git@github.com: Permission denied (publickey)."],
+                providerEnvironments: [],
+              }),
+        ),
       ),
-    ),
   });
   const hygiene = CredentialHygiene.layer.pipe(
     Layer.provide(identity),
-    Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+    Layer.provide(Layer.succeed(HostProcess.Environment, {})),
     Layer.provide(scope),
   );
   const handlers = Layer.effect(
@@ -341,6 +356,14 @@ function harness(
   const notifications = Layer.succeed(
     KinExecutionNotices,
     KinExecutionNotices.of({
+      credentialCheck: ({ orgId: org, report, recoveredFrom }) =>
+        Effect.sync(() =>
+          credentialNotices.sent.push({
+            orgId: org,
+            failures: report.failures,
+            ...(recoveredFrom === undefined ? {} : { recoveredFrom }),
+          }),
+        ).pipe(Effect.andThen(credentialNotices.posted?.(report.failures) ?? Effect.void)),
       finished: ({ action, outcome, note }) =>
         Effect.sync(
           () =>
@@ -397,6 +420,7 @@ function harness(
     world,
     requests: github.requests,
     notices,
+    credentialNotices,
     noticed,
     checks,
     mints,
@@ -806,6 +830,8 @@ describe("KinActionExecutor", () => {
       // Check 1 runs before the claim, check 2 right after it; each case changes state there.
       const afterClaim = (source: string, change: Effect.Effect<unknown>) =>
         Effect.gen(function* () {
+          // Past the shared probe's lifetime, so the pre-claim check probes again as check 1.
+          yield* TestClock.adjust("1 minute");
           checks.count = 0;
           checks.during = (count) => (count === 2 ? change : Effect.void);
           const ref = yield* approvedMerge(source);
@@ -981,10 +1007,14 @@ describe("KinActionExecutor", () => {
       );
       assert.deepStrictEqual(
         failed.map((entry) => entry.result),
-        ["identity_unknown"],
+        // The probe's fixed reason rides along, so the owner can see which source failed.
+        ["identity_unknown: probe failed"],
       );
-      // Fixed before the grant lapses: it runs.
+      // Both holds within the minute shared one probe.
+      assert.strictEqual(checks.count, 1);
+      // Fixed before the grant lapses: the next tick's check sees it, and it runs.
       checks.failing = false;
+      yield* TestClock.adjust("1 minute");
       assert.deepInclude(yield* executor.execute(ref), { outcome: "succeeded" });
       assert.deepStrictEqual(writes(requests), [`PUT ${PULL}/merge`]);
     }).pipe(Effect.provide(layer));
@@ -1372,6 +1402,72 @@ describe("KinActionExecutor", () => {
     }).pipe(Effect.provide(deps));
   });
 
+  it.effect(
+    "the worker checks credentials at startup and hourly, telling the owner of changes",
+    () => {
+      const { checks, credentialNotices, deps } = harness();
+      return Effect.gen(function* () {
+        yield* seed;
+        const posted = yield* Queue.unbounded<ReadonlyArray<string>>();
+        credentialNotices.posted = (failures) => Queue.offer(posted, failures);
+        checks.failing = true;
+        yield* Effect.gen(function* () {
+          yield* ActionExecutor.KinActionExecutor;
+          assert.deepStrictEqual(yield* Queue.take(posted), ["identity_unknown"]);
+          // An unchanged hour stays quiet; the next one that passes says so.
+          yield* TestClock.adjust("1 hour");
+          assert.strictEqual(checks.count, 2);
+          checks.failing = false;
+          yield* TestClock.adjust("1 hour");
+          assert.deepStrictEqual(yield* Queue.take(posted), []);
+        }).pipe(Effect.provide(ActionExecutor.layer), Effect.scoped);
+        assert.strictEqual(checks.count, 3);
+        const failed = (yield* auditEntries).filter(
+          (entry) => entry.event === "credential_check_failed",
+        );
+        assert.deepStrictEqual(
+          failed.map((entry) => [entry.actionId, entry.result]),
+          [[undefined, "identity_unknown: probe failed"]],
+        );
+        assert.deepStrictEqual(credentialNotices.sent, [
+          { orgId, failures: ["identity_unknown"] },
+          { orgId, failures: [], recoveredFrom: failed[0]!.seq as number },
+        ]);
+      }).pipe(Effect.provide(deps));
+    },
+  );
+
+  it.effect("tells only orgs with a merge token, and only of changes across restarts", () => {
+    const { checks, credentialNotices, deps } = harness();
+    return Effect.gen(function* () {
+      const { sql } = yield* seed;
+      // An org that never saved a merge token hasn't set GitHub up: no notice, no audit.
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at)
+        VALUES ('org_02', 'Other', '2026-11-07T00:00:00.000Z')`;
+      checks.failing = true;
+      yield* (yield* ActionExecutor.make).checkCredentials;
+      assert.deepStrictEqual(credentialNotices.sent, [{ orgId, failures: ["identity_unknown"] }]);
+      const others = yield* sql`SELECT seq FROM kin_audit WHERE org_id = 'org_02'`;
+      assert.lengthOf(others, 0);
+      // Restarted while still failing: the owner already heard, so no second notice or entry.
+      for (const _ of [1, 2]) yield* (yield* ActionExecutor.make).checkCredentials;
+      assert.lengthOf(credentialNotices.sent, 1);
+      const [failure, ...again] = (yield* auditEntries).filter(
+        (entry) => entry.event === "credential_check_failed",
+      );
+      assert.lengthOf(again, 0);
+
+      // Restarted after the fix: each new executor says it passes again, under one notice id.
+      checks.failing = false;
+      yield* TestClock.adjust("1 minute");
+      for (const _ of [1, 2]) yield* (yield* ActionExecutor.make).checkCredentials;
+      assert.deepStrictEqual(credentialNotices.sent.slice(1), [
+        { orgId, failures: [], recoveredFrom: failure!.seq as number },
+        { orgId, failures: [], recoveredFrom: failure!.seq as number },
+      ]);
+    }).pipe(Effect.provide(deps));
+  });
+
   it.effect("the worker executes an approval as it lands", () => {
     const { requests, deps } = harness();
     return Effect.gen(function* () {
@@ -1416,6 +1512,8 @@ describe("KinActionExecutor", () => {
       yield* Effect.gen(function* () {
         yield* ActionExecutor.KinActionExecutor;
         yield* TestClock.adjust("1 second");
+        // Past the startup check's shared probe, so the pre-claim check probes again as check 1.
+        yield* TestClock.adjust("1 minute");
         // The first run's post-claim credential check never returns, so it holds the org's lock.
         checks.count = 0;
         checks.during = (count) => (count === 2 ? Effect.never : Effect.void);
@@ -1544,11 +1642,14 @@ describe("KinActionExecutor", () => {
             KinExecutionNotices,
             KinExecutionNotices.of({
               finished: () => Effect.void,
+              credentialCheck: () => Effect.void,
               lapsed: ({ holdReason }) => Effect.sync(() => void lapses.push(holdReason)),
             }),
           ),
           Layer.succeed(KinKeyNotices, KinKeyNotices.of({ changed: () => Effect.void })),
           ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })),
+          // The hygiene check reads the server's environment; this one sets nothing.
+          Layer.succeed(HostProcess.Environment, {}),
           KeySeal.layerTest(),
           Sqlite.layerMemory,
         ),
@@ -1623,6 +1724,12 @@ describe("KinActionExecutor", () => {
 
   it.effect("a configured host holds GitHub kinds on the missing identity probe", () => {
     const lapses: Array<string> = [];
+    const identityUnavailable = Layer.succeed(CredentialHygiene.T3GitHubIdentity, {
+      identities: () =>
+        Effect.fail(
+          new CredentialHygiene.T3GitHubIdentityError({ cause: "the identity probe is missing" }),
+        ),
+    });
     const github = fakeGitHub(() => ({ status: 404, body: { message: "Not Found" } }));
     const platform = Layer.mergeAll(
       Layer.succeed(KinGitHubApp.KinGitHubAppConfig, { appId: "1" }),
@@ -1640,7 +1747,7 @@ describe("KinActionExecutor", () => {
     return Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       const context = yield* Layer.build(
-        production(ApprovalsLayer.makeExecutorLayer(platform), lapses),
+        production(ApprovalsLayer.makeExecutorLayer(platform, identityUnavailable), lapses),
       );
       yield* Effect.gen(function* () {
         yield* seed;
@@ -1651,11 +1758,13 @@ describe("KinActionExecutor", () => {
           (yield* auditEntries)
             .filter((entry) => entry.event === "credential_check_failed")
             .map((entry) => entry.result),
-          ["identity_unknown"],
+          ["identity_unknown: the identity probe is missing"],
         );
         yield* TestClock.adjust("16 minutes");
         assert.deepInclude(yield* stateOf(ref), { state: "voided", reason: "grant_expired" });
-        assert.deepStrictEqual(lapses, ["credential_check_failed: identity_unknown"]);
+        assert.deepStrictEqual(lapses, [
+          "credential_check_failed: identity_unknown: the identity probe is missing",
+        ]);
       }).pipe(Effect.provide(context));
       assert.deepStrictEqual(github.requests, []);
     }).pipe(Effect.scoped);

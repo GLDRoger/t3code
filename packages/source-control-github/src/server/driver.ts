@@ -120,3 +120,5 @@ export const driver = defineSourceControlDriver({
   definition,
   make: makeInstance,
 });
+
+export { GitHubAppSession } from "./GitHubAppSignIn.ts";

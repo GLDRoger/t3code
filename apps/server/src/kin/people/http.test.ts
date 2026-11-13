@@ -69,6 +69,7 @@ it.effect(
         Layer.mergeAll(
           Layer.succeed(KinServer)({
             taskCardUpdater: Layer.empty,
+            t3GitHubCredential: Layer.empty,
             services: Option.some(context as unknown as Context.Context<Services>),
             subscribeForViewer: Option.none(),
           }),

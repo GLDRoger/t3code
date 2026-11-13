@@ -44,6 +44,7 @@ import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as McpSessions from "../../mcp/McpSessionRegistry.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
+import * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
 import * as Kin from "../layer.ts";
 import { ServerActivation } from "../../serverActivation.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
@@ -58,6 +59,7 @@ import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { PreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.ts";
 import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import { OrchestrationEventStore } from "../../persistence/OrchestrationEventStore.ts";
+import { ProjectStoreV2 } from "../../orchestration-v2/ProjectStore.ts";
 import { ProviderAdapterRegistryV2 } from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import { ThreadLaunchService } from "../../orchestration-v2/ThreadLaunchService.ts";
 import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
@@ -84,6 +86,7 @@ import { GitVcsDriver } from "../../vcs/GitVcsDriver.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { DocumentText } from "../../provider/DocumentText.ts";
 import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
+import * as T3GitHubCredential from "../approvals/T3GitHubCredential.ts";
 const decodeToolList = Schema.decodeUnknownSync(
   Schema.fromJsonString(
     Schema.Struct({
@@ -113,6 +116,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ProjectService)({}),
   Layer.mock(ProjectSetupScriptRunner)({}),
   Layer.mock(ProcessRunner)({}),
+  Layer.mock(ProjectStoreV2)({}),
   FetchHttpClient.layer,
   Layer.mock(ProviderAdapterRegistryV2)({}),
   Layer.mock(ProviderInstanceRegistry)({}),
@@ -130,6 +134,11 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ServerSecretStore)({}),
   ServerSettings.layerTest(),
   Layer.mock(SourceControlRepositoryService)({}),
+  // Kin installs T3's GitHub credential reader on this; nothing here reads it.
+  Layer.succeed(
+    SourceControlHost.SourceControlHost,
+    {} as SourceControlHost.SourceControlHost["Service"],
+  ),
   Layer.mock(ThreadLaunchService)({}),
   Layer.mock(ThreadManagementService)({
     getThreadShell: (id) => Effect.succeed(liveThreadShell(id)),
@@ -272,6 +281,12 @@ it.effect.each([true, false])(
         assert.isTrue(enabled);
         const identity = Context.get(kin.services.value, KinIdentity);
         const chatService = Context.get(kin.services.value, KinChatService);
+        // Nothing holding Kin's services can install a reader that hides T3's tokens.
+        assert.isTrue(
+          Option.isNone(
+            Context.getOption(kin.services.value, T3GitHubCredential.T3GitHubCredential),
+          ),
+        );
         yield* pairSession(AuthSessionId.make("owner")).pipe(
           Effect.provideService(SqlClient.SqlClient, Context.get(services, SqlClient.SqlClient)),
         );
