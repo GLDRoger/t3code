@@ -17,6 +17,7 @@ import {
   kinStatementPasswordLines,
   kinStatementPickOf,
   kinStatementQueue,
+  kinStatementRereadText,
   kinStatementRowNote,
   kinStatementRowsInput,
   kinStatementSections,
@@ -171,10 +172,12 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
   const undo = useAtomCommand(kinClient.statementUndo, { reportFailure: false });
   const select = useAtomCommand(kinClient.statementSelect, { reportFailure: false });
   const readRows = useAtomCommand(kinClient.statementRows, { reportFailure: false });
+  const reread = useAtomCommand(kinClient.statementReread, { reportFailure: false });
+  const [rereadNote, setRereadNote] = useState<string | null>(null);
   const [local, setLocal] = useState(() => kinStatementLocal(review.card.hash));
   const shown = kinStatementShown(review.card, local);
   const { card, selection } = shown;
-  const [pending, setPending] = useState<"apply" | "undo" | null>(null);
+  const [pending, setPending] = useState<"apply" | "undo" | "reread" | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const confirm = kinStatementConfirm(card);
   const editable =
@@ -207,21 +210,45 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
     if (page !== null) setLocal((prev) => kinStatementLoaded(prev, hash, page));
     return page !== null;
   };
+  const target = { orgId: review.orgId, statementId: card.statementId };
   const send = async (what: "apply" | "undo") => {
     if (pending !== null) return;
     setPending(what);
     setFailure(null);
+    setRereadNote(null);
     const result =
       what === "apply"
         ? await apply({ environmentId, input: kinStatementApplyInput(review, selection) })
-        : await undo({
-            environmentId,
-            input: { orgId: review.orgId, statementId: card.statementId },
-          });
+        : await undo({ environmentId, input: target });
     setPending(null);
     if (AsyncResult.isFailure(result))
       setFailure(kinStatementFailureText(squashAtomCommandFailure(result)));
   };
+  const readAgainNow = async () => {
+    if (pending !== null) return;
+    setPending("reread");
+    setFailure(null);
+    setRereadNote(null);
+    const result = await reread({ environmentId, input: target });
+    setPending(null);
+    if (AsyncResult.isFailure(result)) {
+      setFailure(kinStatementFailureText(squashAtomCommandFailure(result)));
+      return;
+    }
+    const answer = Option.getOrNull(AsyncResult.value(result));
+    if (answer !== null) setRereadNote(kinStatementRereadText(answer.status));
+  };
+  const readAgain = (
+    <Button
+      size="sm"
+      variant="ghost"
+      aria-busy={pending === "reread"}
+      disabled={pending !== null}
+      onClick={() => void readAgainNow()}
+    >
+      Read again
+    </Button>
+  );
 
   const status = kinStatementStatusLines(card);
   const rows = { shown, editable, onChange: (next: KinStatementSelectChange) => void change(next) };
@@ -240,7 +267,7 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
             key={line}
             className={cn(
               "text-xs",
-              card.balance === "off" && /add up|follow on/.test(line)
+              card.balance === "off" && /add up|follow on| apart\. /.test(line)
                 ? "font-medium text-warning-foreground"
                 : "text-muted-foreground",
             )}
@@ -292,6 +319,11 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
           {line}
         </p>
       ))}
+      {rereadNote === null ? null : (
+        <p role="status" className="text-xs text-muted-foreground">
+          {rereadNote}
+        </p>
+      )}
       {failure === null ? null : (
         <p role="alert" className="text-xs font-medium text-destructive-foreground">
           {failure}
@@ -310,6 +342,7 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
           >
             Undo this statement
           </Button>
+          {readAgain}
         </div>
       ) : (
         <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -324,6 +357,7 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
           <span className="text-xs text-muted-foreground">
             Rows you leave stay unexplained for later.
           </span>
+          <span className="ms-auto">{readAgain}</span>
         </div>
       )}
     </CardFrame>

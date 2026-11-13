@@ -41,8 +41,8 @@ const SAMPLE_MS = 250;
 const CPU_SECONDS = 60;
 // Only where no systemd scope holds it: V8 and the allocator reserve far more than they touch.
 const ADDRESS_SPACE_KIB = 8 * 1024 * 1024;
-// 20,000 rows of 500-character narrations is under 16 MB of JSON.
-const OUTPUT_BYTES = 24 * 1024 * 1024;
+// 20,000 rows of 500-character narrations is under 16 MB of JSON; a PDF's page text about as much again.
+const OUTPUT_BYTES = 40 * 1024 * 1024;
 
 const Day = Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/));
 const Minor = Schema.Int.check(
@@ -80,11 +80,21 @@ const StatementOut = Schema.Struct({
   }),
 });
 const Reason = Schema.String.check(Schema.isMaxLength(1_000));
+// 300 pages of a dense statement's text is a few megabytes; a page past this is not a statement's.
+const Pages = Schema.Array(
+  Schema.Struct({
+    text: Schema.String.check(Schema.isMaxLength(60_000)),
+    dated: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  }),
+).check(Schema.isMaxLength(300));
+const { rows: _rows, check: _check, currency: _currency, ...factFields } = StatementOut.fields;
 const Outcome = Schema.Union([
   Schema.TaggedStruct("read", {
     statement: StatementOut,
     format: Schema.Literals(["csv", "xlsx", "xls", "html", "pdf"]),
+    pages: Schema.optional(Pages),
   }),
+  Schema.TaggedStruct("pages", { pages: Pages, facts: Schema.Struct(factFields) }),
   Schema.TaggedStruct("needs_password", {}),
   Schema.TaggedStruct("wrong_password", {}),
   Schema.TaggedStruct("scanned", { pages: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)) }),

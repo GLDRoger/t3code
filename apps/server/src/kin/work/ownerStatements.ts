@@ -7,6 +7,7 @@ import {
   type KinStatementPasswordsInput,
   type KinStatementRowsInput,
   type KinStatementSelectInput,
+  type KinStatementRereadInput,
   type KinStatementUndoInput,
   type KinStatementUnlockInput,
   KinWidgetId,
@@ -27,19 +28,20 @@ import {
   statementRows,
   undoStatement,
 } from "./statements/statementApply.ts";
+import { readStored, settleOutcome, isReading } from "./statements/statementReading.ts";
 import {
+  askPassword,
   attachmentBytes,
-  buildReview,
   forgetAccount as forgetKeptAccount,
   forgetPassword as forgetKept,
   keepPassword,
   keptAccounts,
   readWith,
   reviewOf,
-  saveRead,
   statementRow,
   updateCard,
 } from "./statements/statementReview.ts";
+import { settledLine, tellLead } from "./statements/statementWake.ts";
 
 /**
  * What only the owner does with a statement, from its cards: open a locked one with its
@@ -65,7 +67,8 @@ const passwordCard = Effect.fn("KinStatements.passwordCard")(function* (
 
 /**
  * Opens a locked statement with the owner's password: used for this read, then forgotten unless
- * they asked Kin to keep it for the account. Its review card follows, as a lead's read posts one.
+ * they asked Kin to keep it for the account. Its review card follows, or its pages wait for the
+ * lead, which hears the outcome as the owner's tap.
  */
 export const unlock = Effect.fn("KinStatements.unlock")(function* (
   people: ReadonlyArray<PersonIdentity>,
@@ -74,7 +77,7 @@ export const unlock = Effect.fn("KinStatements.unlock")(function* (
   yield* theOwner(people, input.orgId);
   const stored = yield* statementRow(input.orgId, input.statementId);
   if (stored === undefined) return yield* notFound;
-  if (stored.status === "read") return { status: "opened" as const };
+  if (stored.status === "read" || isReading(stored)) return { status: "opened" as const };
   if (stored.status !== "needs_password")
     return yield* new KinChatError({
       reason: "invalid_state",
@@ -107,42 +110,133 @@ export const unlock = Effect.fn("KinStatements.unlock")(function* (
     );
     return { status };
   }
-  if (outcome._tag !== "read") {
-    const detail =
-      outcome._tag === "scanned"
-        ? "It opened, but it is a scan with no text. Ask Kin to read it from its pages."
-        : outcome.reason;
+  if (outcome._tag === "unreadable") {
     yield* sql.withTransaction(
       Effect.gen(function* () {
-        yield* sql`UPDATE kin_bank_statements SET status = ${outcome._tag === "scanned" ? "scanned" : "unreadable"},
-            reason = ${outcome._tag === "scanned" ? null : outcome.reason}
+        yield* sql`UPDATE kin_bank_statements SET status = 'unreadable', reason = ${outcome.reason}
           WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId}`;
-        yield* setCard({ ...base, status: "unreadable", detail }, true);
+        yield* setCard({ ...base, status: "unreadable", detail: outcome.reason }, true);
       }),
     );
     return { status: "unreadable" as const };
   }
+  const facts =
+    outcome._tag === "read"
+      ? outcome.statement
+      : outcome._tag === "pages"
+        ? outcome.facts
+        : { bank: null, account: null, kind: "account" as const };
   const remembered = input.remember
-    ? yield* keepPassword(input.orgId, outcome.statement, input.password, now)
+    ? yield* keepPassword(input.orgId, facts, input.password, now)
     : undefined;
-  const review = yield* buildReview(input.orgId, outcome.statement, outcome.format, "file");
+  const settled = yield* settleOutcome({
+    orgId: input.orgId,
+    statementId: input.statementId,
+    agentId: stored.agentId,
+    chatId: stored.chatId,
+    now,
+    outcome,
+  });
   yield* sql.withTransaction(
-    Effect.gen(function* () {
-      yield* saveRead({
+    setCard(
+      { ...base, status: "opened", ...(remembered === undefined ? {} : { remembered }) },
+      true,
+    ),
+  );
+  if (stored.passwordWidgetId !== null)
+    yield* tell({
+      orgId: input.orgId,
+      statementId: input.statementId,
+      widgetId: stored.passwordWidgetId,
+      tap: "unlock",
+      fileName: stored.fileName,
+      outcome: settledLine(settled),
+    });
+  return { status: "opened" as const };
+}, workFailure);
+
+/** The lead hears of a card action; the action itself already stands, whatever happens here. */
+const tell = Effect.fn("KinStatements.tell")(
+  function* (input: Parameters<typeof tellLead>[0]) {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql.withTransaction(tellLead(input));
+  },
+  Effect.catchCause((cause) =>
+    Effect.logWarning("Kin couldn't tell the lead about a statement card action", { cause }),
+  ),
+);
+
+/**
+ * Reads a statement's stored file again, after a reader fix or to take in rows a read missed:
+ * with the password kept for its account, else a fresh password card. Rows it already recorded
+ * show as recorded; the rest are offered on a fresh card, or wait for the lead to read the pages.
+ */
+export const rereadStatement = Effect.fn("KinStatements.reread")(function* (input: {
+  readonly orgId: KinStatementRereadInput["orgId"];
+  readonly statementId: string;
+}) {
+  const stored = yield* statementRow(input.orgId, input.statementId);
+  if (stored === undefined) return yield* notFound;
+  const outcome = yield* readStored(input.orgId, stored.attachmentId);
+  const sql = yield* SqlClient.SqlClient;
+  const now = yield* Clock.currentTimeMillis;
+  if (outcome._tag === "needs_password" || outcome._tag === "wrong_password") {
+    yield* sql.withTransaction(
+      askPassword({
         orgId: input.orgId,
         statementId: input.statementId,
         agentId: stored.agentId,
         chatId: stored.chatId,
-        review,
-        now,
-      });
-      yield* setCard(
-        { ...base, status: "opened", ...(remembered === undefined ? {} : { remembered }) },
-        true,
-      );
-    }),
-  );
-  return { status: "opened" as const };
+        fileName: stored.fileName,
+      }),
+    );
+    return { status: "needs_password" as const, stored, settled: undefined };
+  }
+  if (outcome._tag === "unreadable")
+    return { status: "unreadable" as const, reason: outcome.reason, stored, settled: undefined };
+  const settled = yield* settleOutcome({
+    orgId: input.orgId,
+    statementId: input.statementId,
+    agentId: stored.agentId,
+    chatId: stored.chatId,
+    now,
+    ...(stored.account === null ? {} : { account: stored.account }),
+    outcome,
+  });
+  return {
+    status: settled._tag === "card" ? ("read" as const) : ("reading" as const),
+    stored,
+    settled,
+  };
+});
+
+/** The card the owner read a statement again from, which the lead hears the outcome on. */
+export const rereadTap = (
+  done: Effect.Success<ReturnType<typeof rereadStatement>>,
+  orgId: KinStatementRereadInput["orgId"],
+) => {
+  const widgetId = done.stored.reviewWidgetId ?? done.stored.passwordWidgetId;
+  return done.settled === undefined || widgetId === null
+    ? undefined
+    : {
+        orgId,
+        statementId: done.stored.statementId,
+        widgetId,
+        tap: "read_again" as const,
+        fileName: done.stored.fileName,
+        outcome: settledLine(done.settled),
+      };
+};
+
+export const reread = Effect.fn("KinStatements.rereadRpc")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinStatementRereadInput,
+) {
+  yield* theOwner(people, input.orgId);
+  const done = yield* rereadStatement(input);
+  const tap = rereadTap(done, input.orgId);
+  if (tap !== undefined) yield* tell(tap);
+  return { status: done.status };
 }, workFailure);
 
 /** Forgets the password kept for this statement's account; the next locked one asks again. */
@@ -204,21 +298,42 @@ export const apply = Effect.fn("KinStatements.applyRpc")(function* (
   input: KinStatementApplyInput,
 ) {
   const person = yield* theOwner(people, input.orgId);
-  return yield* applyStatement({
+  const result = yield* applyStatement({
     ...input,
     personId: person.personId,
     now: yield* Clock.currentTimeMillis,
   });
+  yield* tellOutcome(input, "confirm", result.card.result ?? []);
+  return result;
 }, workFailure);
+
+const tellOutcome = Effect.fn("KinStatements.tellOutcome")(function* (
+  input: { readonly orgId: KinStatementUndoInput["orgId"]; readonly statementId: string },
+  tap: "confirm" | "undo",
+  result: ReadonlyArray<string>,
+) {
+  const stored = yield* statementRow(input.orgId, input.statementId);
+  if (stored?.reviewWidgetId == null) return;
+  yield* tell({
+    orgId: input.orgId,
+    statementId: input.statementId,
+    widgetId: stored.reviewWidgetId,
+    tap,
+    fileName: stored.fileName,
+    outcome: result.join(" "),
+  });
+});
 
 export const undo = Effect.fn("KinStatements.undoRpc")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinStatementUndoInput,
 ) {
   const person = yield* theOwner(people, input.orgId);
-  return yield* undoStatement({
+  const result = yield* undoStatement({
     ...input,
     personId: person.personId,
     now: yield* Clock.currentTimeMillis,
   });
+  yield* tellOutcome(input, "undo", result.card.result ?? []);
+  return result;
 }, workFailure);

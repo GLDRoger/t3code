@@ -103,7 +103,7 @@ export const KinStatementReviewCard = Schema.Struct({
   /** Rows read, totals and whether the balances add up, as lines. */
   summary: Schema.Array(Text),
   balance: Schema.Literals(["adds_up", "off", "unchecked"]),
-  /** Rows Kin read itself from images of a scan, rather than from the file's text. */
+  /** Rows the statement's lead read, from a PDF's pages or a scan's images, that Kin then checked. */
   readByAgent: Schema.optional(Schema.Literal(true)),
   /** The first rows of each section; `counts` says how many there are in all. */
   matched: Schema.Array(MatchedRow),
@@ -225,6 +225,17 @@ export const KinStatementUndoInput = Schema.Struct({
   statementId: TrimmedNonEmptyString,
 });
 export type KinStatementUndoInput = typeof KinStatementUndoInput.Type;
+/** Reads a statement's file again: rows it recorded show as recorded, the rest are offered. */
+export const KinStatementRereadInput = Schema.Struct({
+  orgId: KinOrgId,
+  statementId: TrimmedNonEmptyString,
+});
+export type KinStatementRereadInput = typeof KinStatementRereadInput.Type;
+export const KinStatementRereadResult = Schema.Struct({
+  /** `reading`: its lead reads the pages and posts the card; `needs_password`: a card asks. */
+  status: Schema.Literals(["read", "reading", "needs_password", "unreadable"]),
+});
+export type KinStatementRereadResult = typeof KinStatementRereadResult.Type;
 export const KinStatementForgetPasswordInput = Schema.Struct({
   orgId: KinOrgId,
   statementId: TrimmedNonEmptyString,
@@ -238,6 +249,7 @@ const KIN_STATEMENT_WS_METHODS = {
   forgetPassword: "kin.work.statementForgetPassword",
   apply: "kin.work.statementApply",
   undo: "kin.work.statementUndo",
+  reread: "kin.work.statementReread",
   select: "kin.work.statementSelect",
   rows: "kin.work.statementRows",
   passwords: "kin.work.statementPasswords",
@@ -265,6 +277,11 @@ export const KinStatementRpcs = [
   Rpc.make(KIN_STATEMENT_WS_METHODS.undo, {
     payload: KinStatementUndoInput,
     success: KinStatementResult,
+    error,
+  }),
+  Rpc.make(KIN_STATEMENT_WS_METHODS.reread, {
+    payload: KinStatementRereadInput,
+    success: KinStatementRereadResult,
     error,
   }),
   Rpc.make(KIN_STATEMENT_WS_METHODS.select, {
@@ -295,6 +312,7 @@ export const KIN_STATEMENT_RPC_SCOPES = {
   [KIN_STATEMENT_WS_METHODS.forgetPassword]: AuthOrchestrationOperateScope,
   [KIN_STATEMENT_WS_METHODS.apply]: AuthOrchestrationOperateScope,
   [KIN_STATEMENT_WS_METHODS.undo]: AuthOrchestrationOperateScope,
+  [KIN_STATEMENT_WS_METHODS.reread]: AuthOrchestrationOperateScope,
   [KIN_STATEMENT_WS_METHODS.select]: AuthOrchestrationOperateScope,
   [KIN_STATEMENT_WS_METHODS.forgetAccount]: AuthOrchestrationOperateScope,
   // Statement rows and kept accounts are the owner's money: read as Money is.

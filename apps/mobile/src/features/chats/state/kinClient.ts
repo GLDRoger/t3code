@@ -624,6 +624,11 @@ export const kinClient = {
     tag: "kin.work.statementUndo",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.statementId },
   }),
+  statementReread: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:statement:reread",
+    tag: "kin.work.statementReread",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.statementId },
+  }),
   memoryUndo: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:memory:undo",
     tag: "kin.memory.undo",
