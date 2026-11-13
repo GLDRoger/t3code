@@ -21,6 +21,7 @@ import { VcsProcess } from "../../vcs/VcsProcess.ts";
 import { scrubbedEnv } from "../lead/workerPublish.ts";
 import { parseRecipe, type Recipe } from "./recipe.ts";
 import { STARTER_FILES } from "./starter.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 
 /**
  * The org's workspace: a git repository on this host holding its recipes, never pushed anywhere.
@@ -209,6 +210,7 @@ export const layer = Layer.effect(
     const config = yield* ServerConfig;
     const digest = yield* Digest.Digest;
     const lock = yield* Semaphore.make(1);
+    const refresh = yield* KinRefreshObserver;
 
     // A job's worktree is the worker's to write, `.git` file included, so git there always names
     // Kin's own git directory for it: nothing in the worktree chooses the repository or config.
@@ -679,6 +681,7 @@ export const layer = Layer.effect(
           ),
         );
         if (!merged) return refused("the recipe changed meanwhile and the two changes conflict");
+        yield* refresh.touch(orgId, "recipes");
         return {
           _tag: "committed",
           commit,
@@ -809,6 +812,7 @@ export const layer = Layer.effect(
         yield* git(root, ["update-ref", `refs/heads/${DEFAULT_BRANCH}`, commit, head]);
         yield* git(root, ["reset", "-q", "--hard", commit]);
         const restored = before === "" ? null : yield* lastChange(root, name, parent);
+        yield* refresh.touch(orgId, "recipes");
         return {
           _tag: "undone",
           commit,

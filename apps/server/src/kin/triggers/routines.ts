@@ -25,6 +25,7 @@ import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as KinTriggerStore from "./KinTriggerStore.ts";
 import * as KinTriggerScheduler from "./KinTriggerScheduler.ts";
 import * as OwnerCheck from "./ownerCheck.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 
 const routines = ["morning_brief", "evening_summary", "owner_check"] as const;
 const iso = (now: number) => DateTime.formatIso(DateTime.makeUnsafe(now));
@@ -116,6 +117,7 @@ export const isPermanent = (error: unknown) => {
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const refresh = yield* KinRefreshObserver;
   const store = yield* KinTriggerStore.KinTriggerStore;
   const scheduler = yield* KinTriggerScheduler.KinTriggerScheduler;
   const inbox = yield* KinTriggerInbox.KinTriggerInbox;
@@ -232,6 +234,7 @@ const make = Effect.gen(function* () {
             yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary, dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
       VALUES (${settings.orgId}, ${settings.timeZone}, ${settings.morningBrief}, ${settings.eveningSummary}, ${settings.dream}, ${settings.fullRebuildWeekday}, ${settings.ownerCheckWeekday}, ${settings.ownerCheck}, ${yield* encodeQuietHours(settings.quietHours)})
       ON CONFLICT (org_id) DO UPDATE SET time_zone = excluded.time_zone, morning_brief = excluded.morning_brief, evening_summary = excluded.evening_summary, dream = excluded.dream, full_rebuild_weekday = excluded.full_rebuild_weekday, owner_check_weekday = excluded.owner_check_weekday, owner_check = excluded.owner_check, quiet_hours_json = excluded.quiet_hours_json RETURNING org_id`;
+            yield* refresh.touch(settings.orgId, "timeZone");
             yield* reconcile(settings);
           }),
         )

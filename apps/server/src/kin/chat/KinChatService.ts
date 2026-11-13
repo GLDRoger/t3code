@@ -81,6 +81,7 @@ import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
 import * as PublishCard from "../widgets/workerPublishCard.ts";
 import { answerChange } from "../work/companyProfile.ts";
+import { KinRefreshObserver } from "./KinRefreshHub.ts";
 import { docsForViewer } from "./privateDocs.ts";
 import * as Hub from "./KinChatHub.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
@@ -408,6 +409,7 @@ const make = Effect.gen(function* () {
   /** For a stream event; left out of a chat that was never cleared. */
   const clearedAt = (clearedSeq: number) => (clearedSeq > 0 ? { clearedSeq } : {});
   const sql = yield* SqlClient.SqlClient;
+  const refresh = yield* KinRefreshObserver;
   const transaction = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     sql
       .withTransaction(effect)
@@ -859,7 +861,11 @@ const make = Effect.gen(function* () {
         confirmed: choice.option.kind === "yes",
         via: reaction === null ? "tap" : "reaction",
         now: yield* Clock.currentTimeMillis,
-      }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(cardTapError));
+      }).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.provideService(KinRefreshObserver, refresh),
+        Effect.mapError(cardTapError),
+      );
     const message = yield* post(identity, member, {
       chatId: widget.chatId,
       kind: "widget_action",

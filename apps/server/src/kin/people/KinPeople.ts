@@ -33,6 +33,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { SessionStore } from "../../auth/SessionStore.ts";
 import { toPersistenceSqlError, PersistenceSqlError } from "../../persistence/Errors.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
@@ -104,6 +105,7 @@ export const make = Effect.gen(function* () {
   const sessions = yield* SessionStore;
   const repo = yield* KinChatRepository;
   const hub = yield* KinChatHub;
+  const refresh = yield* KinRefreshObserver;
   const presence = yield* Effect.serviceOption(KinPresence);
   const stop = yield* Effect.serviceOption(KinStop);
   const owner = Effect.fn("KinPeople.requireOwner")(function* (
@@ -172,6 +174,7 @@ export const make = Effect.gen(function* () {
           ${hash(secret).toString("hex")}, ${now}, ${expiresAt})`.pipe(
             Effect.mapError(toPersistenceSqlError("KinPeople.createInvite")),
           );
+          yield* refresh.touch(input.orgId, "people");
         }),
       )
       .pipe(Effect.mapError(sqlError("KinPeople.createInvite")));
@@ -234,6 +237,7 @@ export const make = Effect.gen(function* () {
         VALUES (${issued.sessionId}, ${orgId}, ${personId}, ${now})`.pipe(
             Effect.mapError(toPersistenceSqlError("KinPeople.bind")),
           );
+          yield* refresh.touch(identity.owner.orgId, "people");
           return {
             orgId: member.orgId,
             person: member,
@@ -304,6 +308,7 @@ export const make = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("KinPeople.revokeInvite")),
     );
     if (!rows.length) return yield* missing;
+    yield* refresh.touch(input.orgId, "people");
     return { revoked: true };
   });
   const listDevices = Effect.fn("KinPeople.listDevices")(function* (
@@ -355,6 +360,7 @@ export const make = Effect.gen(function* () {
           yield* sessions
             .revoke(input.sessionId)
             .pipe(Effect.mapError(toPersistenceSqlError("KinPeople.revokeSession")));
+          yield* refresh.touch(input.orgId, "people");
           return { revoked: true };
         }),
       )
@@ -403,6 +409,8 @@ export const make = Effect.gen(function* () {
         WHERE org_id = ${input.orgId} AND person_id = ${input.personId} AND revoked_at IS NULL`.pipe(
             Effect.mapError(toPersistenceSqlError("KinPeople.removeAccessLeads")),
           );
+          yield* refresh.touch(input.orgId, "people");
+          yield* refresh.touch(input.orgId, "leads");
           // Before leaving: their own chats with leads are found through their membership.
           const stopped = yield* onPersonRemoved(input).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
@@ -480,6 +488,7 @@ export const make = Effect.gen(function* () {
           yield* sql`UPDATE kin_people SET github_login = ${input.githubLogin} WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`.pipe(
             Effect.mapError(toPersistenceSqlError("KinPeople.setGithubLogin")),
           );
+          yield* refresh.touch(input.orgId, "people");
           return yield* person(input.orgId, input.personId);
         }),
       )

@@ -502,6 +502,8 @@ it("a chat-only grant cannot satisfy any non-chat method's declared permission",
     "kin.push.registerDevice",
     "kin.push.unregisterDevice",
     "kin.push.watch",
+    // Revision numbers only, and only for the topics the viewer may read.
+    "kin.refreshes.subscribe",
     // Read only: setting the zone stays the owner's.
     "kin.triggers.getTimeZone",
     "kin.widgets.act",
