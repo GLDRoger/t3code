@@ -267,7 +267,7 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
             key={line}
             className={cn(
               "text-xs",
-              card.balance === "off" && /add up|follow on/.test(line)
+              card.balance === "off" && /add up|follow on| apart\. /.test(line)
                 ? "font-medium text-warning-foreground"
                 : "text-muted-foreground",
             )}

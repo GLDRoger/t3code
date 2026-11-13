@@ -290,7 +290,7 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
             key={line}
             textRole="caption"
             className={
-              card.balance === "off" && /add up|follow on/.test(line)
+              card.balance === "off" && /add up|follow on| apart\. /.test(line)
                 ? "font-t3-medium text-warning-foreground"
                 : "text-foreground-muted"
             }
