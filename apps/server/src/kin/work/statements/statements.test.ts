@@ -948,9 +948,9 @@ describe("bank statements", () => {
           assert.strictEqual(full.counts.recorded, 12);
           assert.strictEqual(full.counts.matched + full.counts.choose + full.counts.unmatched, 14);
           const { card: again } = yield* reviewCardOf(first.statement);
-          assert.include(
-            again.summary.join(" "),
-            "12 rows are already recorded in Bank transactions.",
+          assert.deepStrictEqual(
+            again.summary.filter((line) => line.includes("already recorded")),
+            ["12 rows are already recorded in Bank transactions."],
           );
           assert.lengthOf(yield* bankRows, 12);
         }).pipe(Effect.provide(layer)),

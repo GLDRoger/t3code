@@ -324,6 +324,8 @@ export const reviewCard = (
       currency,
     );
   const recorded = statement.rows.length - review.matches.size;
+  // Read again, rows this statement recorded are already counted among the recorded ones.
+  const kept = [...held.keys()].filter((row) => review.matches.has(row)).length;
   const account =
     statement.account === null
       ? (statement.bank ?? "Statement")
@@ -351,10 +353,10 @@ export const reviewCard = (
         : [
             `${recorded} row${recorded === 1 ? " is" : "s are"} already recorded in Bank transactions.`,
           ]),
-      ...(held.size === 0
+      ...(kept === 0
         ? []
         : [
-            `${held.size} row${held.size === 1 ? " is" : "s are"} already recorded from this statement and stay${held.size === 1 ? "s" : ""} as ${held.size === 1 ? "it is" : "they are"}.`,
+            `${kept} row${kept === 1 ? " is" : "s are"} already recorded from this statement and stay${kept === 1 ? "s" : ""} as ${kept === 1 ? "it is" : "they are"}.`,
           ]),
       ...(fromScan(review)
         ? ["These rows were read from images of a scanned statement: check them against it."]

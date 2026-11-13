@@ -78,7 +78,7 @@ export const readStored = Effect.fn("KinStatements.readStored")(function* (
 });
 
 /** Kin's own table read of a PDF, only when it proves out and counts every dated line. */
-const provenTable = (statement: Statement, pages: ReadonlyArray<StatementPage>) => {
+export const provenTable = (statement: Statement, pages: ReadonlyArray<StatementPage>) => {
   const proof = proveStatement({
     kind: statement.kind,
     currency: statement.currency,

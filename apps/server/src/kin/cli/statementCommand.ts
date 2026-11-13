@@ -60,6 +60,7 @@ const rereadCommand = Command.make("reread", {
   ...authLocationFlags,
   org: Flag.String("org").pipe(
     Flag.withSchema(KinOrgId),
+    Flag.withDescription("The Kin organisation the statement belongs to."),
     Flag.withDefault(KinOrgId.make("kin-default")),
   ),
   statement: Flag.String("statement").pipe(
