@@ -29,6 +29,7 @@ import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
 
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
@@ -126,7 +127,13 @@ const make = Effect.gen(function* () {
   const hub = yield* Hub.KinChatHub;
   const { owner } = yield* KinIdentity;
   let port: KinMemoryPort | undefined;
-  const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
+  const refresh = yield* KinRefreshObserver;
+  // The labels these write are what the memory page reads, so their commits tell its refresh.
+  const provideSql = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    effect.pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.provideService(KinRefreshObserver, refresh),
+    );
   /** Shown as turns treat it: only a stored authorisation of what it says now lets the team know. */
   const listed = (
     item: MemoryItem,

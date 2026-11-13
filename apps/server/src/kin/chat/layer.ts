@@ -8,6 +8,7 @@ import * as LevelGate from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Repository from "./KinChatRepository.ts";
 import * as Hub from "./KinChatHub.ts";
+import * as RefreshHub from "./KinRefreshHub.ts";
 import * as Presence from "../reply/KinPresence.ts";
 import * as Service from "./KinChatService.ts";
 import * as Groups from "./KinGroups.ts";
@@ -35,7 +36,7 @@ export const layer = Layer.mergeAll(
     Layer.provideMerge(KinIdentity.layer.pipe(Layer.provide(KinIdentityConfig.layer))),
   ),
 ).pipe(
-  Layer.provideMerge(Hub.layer),
+  Layer.provideMerge(Layer.merge(Hub.layer, RefreshHub.layer)),
   Layer.provideMerge(Repository.layer),
   Layer.provide(KinPersistence.layer),
 );

@@ -59,6 +59,7 @@ import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { KinKeyNotices } from "../approvals/ExecutionNotices.ts";
 import { keyNoticeBody, keyNoticesLayer } from "./executionNotices.ts";
 import * as Hub from "./KinChatHub.ts";
+import * as RefreshHub from "./KinRefreshHub.ts";
 import * as Repository from "./KinChatRepository.ts";
 import * as Identity from "./KinIdentity.ts";
 import * as Service from "./KinChatService.ts";
@@ -77,7 +78,7 @@ const decodeTask = Schema.decodeUnknownEffect(KinTaskCardState);
 const decodeSend = Schema.decodeUnknownEffect(KinMessagesSendInput);
 const database = authorityLayer;
 const repositories = Layer.provideMerge(Repository.layer, database);
-const dependencies = Layer.provideMerge(Hub.layer, repositories);
+const dependencies = Layer.provideMerge(Layer.merge(Hub.layer, RefreshHub.layer), repositories);
 const layer = Layer.provideMerge(Service.layer, dependencies).pipe(Layer.provideMerge(environment));
 const attachmentLayer = Layer.provideMerge(
   Service.layer,
@@ -2820,15 +2821,24 @@ describe("KinChatService", () => {
           { reason: "not_allowed" },
         );
         assert.isNull(yield* profile());
-        // The owner's first possible tap already finds the change.
-        yield* service.act(person, {
-          widgetId: card.widgetId,
-          revision: card.revision,
-          actionId: "choose",
-          value: "option-1",
-          clientActionId: "fast-confirm",
-        });
+        const company = (yield* RefreshHub.KinRefreshHub).changes(person.orgId).pipe(
+          Stream.runHead,
+          Effect.map((now) => Option.getOrThrow(now).company),
+        );
+        assert.strictEqual(yield* company, 0);
+        // The owner's first possible tap already finds the change. A tap arrives on an RPC
+        // handler, whose context holds none of Kin's services.
+        yield* service
+          .act(person, {
+            widgetId: card.widgetId,
+            revision: card.revision,
+            actionId: "choose",
+            value: "option-1",
+            clientActionId: "fast-confirm",
+          })
+          .pipe(Effect.provideService(RefreshHub.KinRefreshObserver, { touch: () => Effect.void }));
         assert.strictEqual(yield* profile(), "9999999999");
+        assert.strictEqual(yield* company, 1);
       }).pipe(Effect.provide(Layer.provideMerge(LevelGate.layer, layer))),
   );
 });

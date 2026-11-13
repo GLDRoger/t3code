@@ -20,6 +20,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
 
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { nextScheduledRunAt } from "../../scheduledTasks/Schedule.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
@@ -114,6 +115,7 @@ const resolvePrompt = `Read .kin-dream/dream.json and .kin-dream/material.json. 
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const refresh = yield* KinRefreshObserver;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const memory = yield* Memory.Memory;
@@ -525,7 +527,10 @@ const make = Effect.gen(function* () {
       yield* Effect.gen(function* () {
         yield* classify(orgId, classified);
         for (const [itemId, content] of suggested) yield* suggest(orgId, itemId, content);
-      }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      }).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.provideService(KinRefreshObserver, refresh),
+      );
       return {
         _tag: "succeeded",
         dreamId,

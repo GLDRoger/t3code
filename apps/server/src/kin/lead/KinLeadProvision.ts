@@ -43,6 +43,7 @@ import { KinStop } from "./KinStop.ts";
 import * as Retirement from "./Retirement.ts";
 import * as LeadAccess from "./LeadAccess.ts";
 import { nonClaudeLeadModel } from "./leadModels.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 
 // `create`, `retire` and `restore` have two callers: the host's `kin lead` CLI and the owner's
 // RPCs. `profiles`, `contacts` and `update` back `kin.leads.list` and `kin.lead.update`; `access`,
@@ -124,6 +125,10 @@ const transaction = <A, E, R>(
         Effect.fail(toPersistenceSqlError(operation)(cause)),
       ),
     );
+
+const leadsChanged = Effect.fn("KinLeadProvision.leadsChanged")(function* (orgId: KinOrgId) {
+  yield* (yield* KinRefreshObserver).touch(orgId, "leads");
+});
 
 const leadsIn = Effect.fn("KinLeadProvision.leadsIn")(function* (
   orgId: KinOrgId,
@@ -262,6 +267,7 @@ export const create = Effect.fn("KinLeadProvision.create")(function* (input: Cre
       const [lead] = yield* leadsIn(orgId, { liveOnly: true, agentId });
       if (lead === undefined)
         return yield* refuse("conflict", `Agent ${agentId} could not be recorded.`);
+      yield* leadsChanged(orgId);
       return { _tag: "created" as const, lead };
     }),
   );
@@ -294,6 +300,7 @@ export const setWorkerProjects = Effect.fn("KinLeadProvision.setWorkerProjects")
           WHERE org_id = ${orgId} AND agent_id = ${agentId} RETURNING agent_id`;
       if (changed.length === 0)
         return yield* refuse("conflict", `Agent ${agentId} changed while updating.`);
+      yield* leadsChanged(orgId);
       return { _tag: "updated" as const, lead: { ...lead, workerProjects: projects } };
     }),
   );
@@ -352,6 +359,7 @@ const change = Effect.fn("KinLeadProvision.change")(function* (
   // Chats show the agent's name, so both rows carry it.
   yield* sql`UPDATE kin_agents SET display_name = ${next.name}
     WHERE org_id = ${orgId} AND agent_id = ${agentId} AND role = 'lead' RETURNING agent_id`;
+  yield* leadsChanged(orgId);
   return { ...lead, ...next };
 });
 
@@ -619,6 +627,7 @@ export const retire = Effect.fn("KinLeadProvision.retire")(function* (input: {
           RETURNING agent_id`;
       if (changed.length === 0)
         return yield* refuse("conflict", `Agent ${lead.agentId} changed while retiring.`);
+      yield* leadsChanged(lead.orgId);
       const stopped = yield* Retirement.retire({
         orgId: lead.orgId,
         agentId: lead.agentId,
@@ -682,6 +691,7 @@ export const restore = Effect.fn("KinLeadProvision.restore")(function* (input: {
           RETURNING agent_id`;
       if (changed.length === 0)
         return yield* refuse("conflict", `Agent ${lead.agentId} changed while restoring.`);
+      yield* leadsChanged(lead.orgId);
       yield* Retirement.restore({
         orgId: lead.orgId,
         agentId: lead.agentId,
@@ -779,6 +789,7 @@ export const allow = Effect.fn("KinLeadProvision.allow")(function* (
         WHERE kin_lead_access.revoked_at IS NOT NULL`.pipe(
         Effect.mapError(toPersistenceSqlError("KinLeadProvision.allow")),
       );
+      yield* leadsChanged(lead.orgId);
       yield* chats.createDirect(
         { _tag: "person", orgId: lead.orgId, personId: input.personId },
         { orgId: lead.orgId, agentId: lead.agentId },
@@ -814,6 +825,7 @@ export const disallow = Effect.fn("KinLeadProvision.disallow")(function* (
           Effect.mapError(toPersistenceSqlError("KinLeadProvision.disallow")),
         );
       if (ended.length === 0) return yield* accessRows(lead);
+      yield* leadsChanged(lead.orgId);
       const [chat] = yield* sql<{ chatId: KinChatId; lastSeq: number }>`
         SELECT chat_id AS "chatId", last_seq AS "lastSeq" FROM kin_chats
         WHERE org_id = ${lead.orgId} AND kind = 'direct'

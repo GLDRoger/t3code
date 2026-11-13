@@ -45,6 +45,7 @@ import {
   memoryDateMillis as dateMillis,
   parseFrontMatter,
 } from "./frontMatter.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 
 export class MemoryError extends Schema.TaggedError<MemoryError>()("MemoryError", {
   orgId: Schema.String,
@@ -337,6 +338,7 @@ const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const { notify } = yield* MemoryRecoveryHooks;
   const vcs = yield* VcsProcess;
+  const refresh = yield* KinRefreshObserver;
   const memoryGit = (...args: Parameters<typeof runMemoryGit>) =>
     runMemoryGit(...args).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
@@ -420,6 +422,7 @@ const make = Effect.gen(function* () {
           // The front-matter cache follows commits to the default branch.
           if (branch === (config.defaultBranch ?? "main") && pinnedHeads.get(orgId) === previous)
             pinnedHeads.set(orgId, head);
+          yield* refresh.touch(orgId, "memory");
         }),
       )
       .pipe(

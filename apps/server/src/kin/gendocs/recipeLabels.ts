@@ -15,6 +15,7 @@ import {
   type StoredRecipe,
   type VerifyChange,
 } from "./workspace.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 
 // A recipe revision's label is the server's: sensitive when the job that wrote it was, or when the
 // revision it was built on is. Every document made from it carries it; only the owner clears it.
@@ -163,6 +164,7 @@ const label = Effect.fn("KinRecipeLabels.label")(function* (
       VALUES (${orgId}, ${recipe}, ${commit}, ${sensitive ? 1 : 0}, ${now})
       ON CONFLICT (org_id, recipe, commit_sha) DO UPDATE SET
         sensitive = MAX(sensitive, excluded.sensitive)`;
+  yield* (yield* KinRefreshObserver).touch(orgId, "recipes");
 });
 
 /** A committed change's label: its job's, or carried from a revision it was built on. */
@@ -227,5 +229,6 @@ export const setLabel = Effect.fn("KinRecipeLabels.set")(function* (
     VALUES (${orgId}, ${name}, ${recipe.commit}, ${sensitive ? 1 : 0}, ${cleared}, ${now})
     ON CONFLICT (org_id, recipe, commit_sha) DO UPDATE SET sensitive = excluded.sensitive,
       cleared_by_person_id = excluded.cleared_by_person_id, labelled_at = excluded.labelled_at`;
+  yield* (yield* KinRefreshObserver).touch(orgId, "recipes");
   return { recipe: name, commit: recipe.commit };
 });

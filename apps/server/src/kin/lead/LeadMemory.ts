@@ -26,6 +26,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 import { stringify } from "yaml";
 import { isSqlError } from "effect/sql/SqlError";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
@@ -436,7 +437,13 @@ const make = Effect.gen(function* () {
       Effect.provideService(KinIdentity, identity),
       Effect.provideService(SqlClient.SqlClient, sql),
     );
-  const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
+  const refresh = yield* KinRefreshObserver;
+  // The labels these write are what the memory page reads, so their commits tell its refresh.
+  const provideSql = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    effect.pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.provideService(KinRefreshObserver, refresh),
+    );
   /** The calling turn and who reads it; every memory read and write below starts here. */
   const turn = Effect.fn("LeadMemory.turn")(function* (scope: McpInvocationScope) {
     const ctx = yield* resolve(scope);
