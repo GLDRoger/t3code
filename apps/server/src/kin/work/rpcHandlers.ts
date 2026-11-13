@@ -50,7 +50,7 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
     if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* disabled;
     const services = kin.value.services.value;
     const people = yield* Context.get(services, KinIdentity).resolve(session);
-    return yield* run(people).pipe(Effect.provideContext(services as Context.Context<R>));
+    return yield* run(people).pipe(Effect.provideContext(services));
   }, Effect.catchDefect(defect));
   const stream = <A, E, R>(
     run: (
@@ -62,7 +62,7 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
         if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* disabled;
         const services = kin.value.services.value;
         const people = yield* Context.get(services, KinIdentity).resolve(session);
-        return run(people).pipe(Stream.provideContext(services as Context.Context<R>));
+        return run(people).pipe(Stream.provideContext(services));
       }),
     );
   return {

@@ -7,6 +7,8 @@ import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
+  AuthSessionId,
+  AuthStandardClientScopes,
   EnvironmentId,
   KinAgentId,
   KinChatError,
@@ -14,16 +16,19 @@ import {
   KinPersonId,
   KIN_STATEMENT_CARD_ROWS,
   KinStatementReviewCard,
+  type KinEvent,
   type KinStatementSelectChange,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -33,11 +38,16 @@ import * as ServerSecretStore from "../../../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../../../config.ts";
 import type { McpInvocationScope } from "../../../mcp/McpInvocationContext.ts";
 import * as Sqlite from "../../../persistence/Sqlite.ts";
+import * as KeySeal from "../../approvals/KeySeal.ts";
+import { pairSession } from "../../auth/ProofKeySessions.testkit.ts";
 import * as KinChatHub from "../../chat/KinChatHub.ts";
 import * as KinChatRepository from "../../chat/KinChatRepository.ts";
 import * as KinFloor from "../../floor/KinFloor.ts";
 import { KinIdentity } from "../../chat/KinIdentity.ts";
+import * as ChatWake from "../../lead/ChatWake.ts";
 import * as KinEventQueue from "../../lead/KinEventQueue.ts";
+import { kinHostDependencies } from "../../lead/layer.testkit.ts";
+import * as Kin from "../../layer.ts";
 import { sharedToolAllowed } from "../../lead/SharedTools.ts";
 import * as KinPersistence from "../../persistence/KinPersistence.ts";
 import * as KinRecords from "../KinRecords.ts";
@@ -45,13 +55,15 @@ import * as LeadStatements from "../leadStatements.ts";
 import { moneySummary } from "../moneyViews.ts";
 import * as OwnerStatements from "../ownerStatements.ts";
 import { defineList, PRESETS } from "../registers.ts";
+import { makeKinWorkHandlers } from "../rpcHandlers.ts";
 import { readStatementFile } from "./statementFiles.ts";
 import { type RowRead, threePageStatement } from "./statementPdf.testkit.ts";
 import { queueTap, tellLead } from "./statementWake.ts";
 
 // An invented company, Lakeview Studio, with invented clients, invoices and statements.
-const orgId = KinOrgId.make("org");
-const ownerId = KinPersonId.make("owner");
+// The ids Kin's identity bootstraps, so the server's own layer below knows this owner too.
+const orgId = KinOrgId.make("kin-default");
+const ownerId = KinPersonId.make("kin-default-owner");
 const lead = KinAgentId.make("lead");
 const at = "2026-11-11T00:00:00.000Z";
 const NOW = Date.parse("2026-11-12T06:00:00.000Z");
@@ -183,11 +195,11 @@ const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords.KinRecords;
   yield* TestClock.setTime(NOW);
-  yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Lakeview Studio', ${at})`;
+  yield* sql`INSERT OR IGNORE INTO kin_orgs VALUES (${orgId}, 'Lakeview Studio', ${at})`;
   yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
       dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
     VALUES (${orgId}, 'Asia/Kolkata', '08:00', '18:00', '02:00', 0, 1, '09:00', '[]')`;
-  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+  yield* sql`INSERT OR IGNORE INTO kin_people (person_id, org_id, handle, display_name, created_at)
     VALUES (${ownerId}, ${orgId}, 'owner', 'Owner', ${at})`;
   yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at, retired_at)
     VALUES (${lead}, ${orgId}, 'Chief of staff', 'lead', ${ownerId}, ${at}, NULL)`;
@@ -1857,5 +1869,120 @@ describe("bank statement safety", () => {
       );
       assert.strictEqual((yield* records.get(orgId, keys.tds))!.paid, 0);
     }).pipe(Effect.provide(layer)),
+  );
+});
+
+describe("statement card taps over the server's RPCs", () => {
+  const session = {
+    sessionId: AuthSessionId.make("owner-session"),
+    subject: "browser",
+    method: "browser-session-cookie" as const,
+    scopes: AuthStandardClientScopes,
+  };
+  // The layer the server builds: Kin's services are its own, none handed in by this test.
+  const served = Kin.layerWithSeal(KeySeal.layerTest()).pipe(
+    Layer.provideMerge(kinHostDependencies),
+    Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+    Layer.provideMerge(Sqlite.layerMemory),
+    Layer.provideMerge(Logger.layer([logger])),
+  );
+
+  it.effect("wakes the lead on Unlock, Confirm, Undo and Read again, twice while it reads", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const services = Option.getOrThrow((yield* Kin.KinServer).services);
+      const queue = Context.get(services, KinEventQueue.KinEventQueue);
+      const woken = yield* Queue.unbounded<KinEvent>();
+      // The lead's wake-ups, on the server's own hub and queue, as `KinLead.layerMcp` runs them.
+      yield* Layer.build(
+        ChatWake.layer.pipe(
+          Layer.provide(
+            Layer.succeed(KinEventQueue.KinEventQueue, {
+              ...queue,
+              enqueue: (event) =>
+                queue.enqueue(event).pipe(Effect.tap(() => Queue.offer(woken, event))),
+            }),
+          ),
+          Layer.provide(Layer.succeedContext(services)),
+        ),
+      );
+      // The lead's own side, which the owner's taps answer, runs as the other tests run it.
+      const asLead = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(Effect.provide(identity), Effect.provideContext(services));
+      yield* asLead(seed);
+      yield* pairSession(session.sessionId);
+      const rpc = yield* makeKinWorkHandlers(session);
+      logged.length = 0;
+      const wakes = Effect.fn("test.wakes")(function* (statementId: string, actionId: string) {
+        assert.notInclude(logged.join("\n"), "couldn't tell the lead");
+        const event = yield* Queue.take(woken);
+        assert.deepInclude(event, { _tag: "widget.action", agentId: lead, actionId });
+        const [tap] = yield* sql<{ body: string }>`SELECT body FROM kin_messages
+          WHERE message_id = ${event._tag === "widget.action" ? event.messageId : ""}`;
+        assert.include(JSON.parse(tap!.body).text, `on statement ${statementId}`);
+      });
+
+      const locked = yield* asLead(read(1, "hdfc-account-locked.pdf"));
+      assert.strictEqual(locked.status, "needs_password");
+      assert.deepStrictEqual(
+        yield* rpc["kin.work.statementUnlock"]({
+          orgId,
+          statementId: locked.statement,
+          password: Redacted.make(PASSWORD),
+          remember: false,
+        }),
+        { status: "opened" },
+      );
+      yield* wakes(locked.statement, "unlock");
+      const { card } = yield* asLead(reviewCardOf(locked.statement));
+      yield* rpc["kin.work.statementApply"](yield* asLead(confirmAll(card)));
+      yield* wakes(locked.statement, "confirm");
+      yield* rpc["kin.work.statementUndo"]({ orgId, statementId: locked.statement });
+      yield* wakes(locked.statement, "undo");
+
+      // A statement its lead read into a card, then Read again twice: the host's lost wake-up, retried.
+      const statement = threePageStatement();
+      const name = "account-apr-jun.pdf";
+      const reading = inState(yield* asLead(read(2, name, statement.bytes)), "reading");
+      opened(
+        yield* asLead(
+          LeadStatements.read(scope, {
+            sourceEventId: "event-2",
+            attachment: name,
+            pages: statement.pages,
+          }),
+        ),
+      );
+      const waiting = "Waiting on its lead to read 3 pages (0 given so far).";
+      for (const _ of [1, 2]) {
+        yield* TestClock.adjust("1 second");
+        assert.deepStrictEqual(
+          yield* rpc["kin.work.statementReread"]({ orgId, statementId: reading.statement }),
+          { status: "reading" },
+        );
+        yield* wakes(reading.statement, "read_again");
+        assert.strictEqual(
+          yield* OwnerStatements.standingOf(orgId, reading.statement).pipe(
+            Effect.provideContext(services),
+          ),
+          waiting,
+        );
+      }
+      assert.deepStrictEqual(
+        yield* sql<{ statements: number; cards: number; recorded: number }>`SELECT
+          (SELECT COUNT(*) FROM kin_bank_statements) AS statements,
+          (SELECT COUNT(*) FROM kin_widgets WHERE type = 'statement_review') AS cards,
+          (SELECT COUNT(*) FROM kin_bank_statement_entries) AS recorded`,
+        [{ statements: 2, cards: 2, recorded: 0 }],
+      );
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_events WHERE tag = 'widget.action' AND state = 'queued'`,
+        5,
+      );
+    }).pipe(
+      Effect.provide(served),
+      // Before Kin's timers start: moving the clock past them later runs every tick between.
+      (test) => TestClock.setTime(NOW).pipe(Effect.andThen(test)),
+    ),
   );
 });
