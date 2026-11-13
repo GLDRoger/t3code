@@ -5,12 +5,17 @@ invoices were paid and which expenses the debits were. Nothing is recorded until
 
 ## Sending a statement
 
-Attach the statement your bank lets you download: a PDF, CSV, XLS or XLSX. Kin reads every row
-itself, checks that the opening balance plus credits less debits comes to the closing balance,
-and says plainly when it doesn't add up.
+Attach the statement your bank lets you download: a PDF, CSV, XLS or XLSX. Kin checks every
+row against the statement: the opening balance plus credits less debits must come to the closing
+balance, each running balance must follow from the one before, and each page must have as many
+rows as it prints. When Kin's own reading of a PDF doesn't pass those checks, your agent reads
+its pages instead, and Kin tells it which row doesn't hold until it does. If it still doesn't add
+up, the card says so and where, and nothing on it is ticked for you.
 
-If the PDF is password-protected, a card asks for the password. Type it there, never in a
-message: it goes to Kin only, and your agent only learns that the file opened. Tick
+If the PDF is password-protected, a card asks for the password. Type it there and it goes to Kin
+only. If you write it in your message instead, your agent uses it once to open the file and
+doesn't keep it, but the message itself stays in the chat, so delete it if you'd rather it
+didn't. Tick
 **Remember for this account** and the next statement for that account opens on its own. The
 same card has **Forget the password** later.
 
@@ -33,10 +38,20 @@ One review card shows the statement in three groups:
 read the statement, such as an invoice paid in the meantime, nothing is recorded and the card
 says why. Money and Invoices update straight away.
 
+After you confirm, your agent goes through the rows still unexplained with you, until none are
+left or you say leave them.
+
 Every row is kept in the **Bank transactions** list, so rows you left for later stay there as
 unexplained. If you already keep a list called Bank transactions, Kin uses it and knows the rows
 already in it. Sending the same statement again, or one that overlaps the last, adds no row
 twice. Bank transactions never count as spending or income in Money.
+
+## Reading a statement again
+
+**Read again** on a statement's card reads its file afresh, using a remembered password or asking
+for it. Rows already recorded show as already recorded, and only rows not yet in Bank
+transactions are offered. You can also ask your agent to read it again, or run
+`t3 kin statement reread --statement <id> --apply` on the computer running Kin.
 
 ## Undoing a statement
 

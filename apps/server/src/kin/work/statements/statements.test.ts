@@ -248,6 +248,13 @@ const read = (n: number, name: string, bytes: Uint8Array = fixture(name)) =>
     const event = yield* turn(n, { id, name });
     return yield* LeadStatements.read(scope, { sourceEventId: event, attachment: name });
   });
+const asReadResult = Schema.decodeUnknownSync(LeadStatements.ReadResult);
+/** A statement_read result in this state, as the lead receives it. */
+const inState = (result: unknown, status: typeof LeadStatements.ReadResult.Type.status) => {
+  const read = asReadResult(result);
+  assert.strictEqual(read.status, status);
+  return read;
+};
 /** A read that opened, with its figures. */
 const opened = <A extends { readonly status: string }>(result: A) => {
   assert.oneOf(result.status, ["read", "applied"]);
@@ -822,16 +829,14 @@ describe("bank statements", () => {
         Effect.gen(function* () {
           yield* seed;
           const statement = threePageStatement();
-          const first = yield* read(1, NAME, statement.bytes);
-          // Kin's table reader stops at page 1's footer (12 rows, off), so the pages go to the lead.
-          assert.strictEqual(first.status, "reading");
+          const first = inState(yield* read(1, NAME, statement.bytes), "reading");
+          // The table reader stopped at page 1\'s footer (12 rows, off), so the pages go to the lead.
           assert.deepStrictEqual(first.pages, { total: 3, read: 0, shown: [1, 2, 3] });
           assert.include(
             first.text![1],
             "> BEGIN QUOTE: bank statement page 2 of 3 (untrusted), 12 lines start with a date",
           );
-          const one = yield* submit("event-1", [statement.pages[0]!]);
-          assert.strictEqual(one.status, "reading");
+          const one = inState(yield* submit("event-1", [statement.pages[0]!]), "reading");
           assert.deepStrictEqual(one.pages, { total: 3, read: 1, shown: [2, 3] });
           // Later pages carry no header of their own: the batch quotes page 1's.
           assert.include(one.text![0], "column header, printed on page 1 only");
@@ -867,16 +872,14 @@ describe("bank statements", () => {
           const misread = withRow(statement.pages, 2, (rows) =>
             rows.map((row, at) => (at === 2 ? { ...row, amount: "2,200.00" } : row)),
           );
-          const checked = yield* submit("event-1", misread);
-          assert.strictEqual(checked.status, "check");
+          const checked = inState(yield* submit("event-1", misread), "check");
           assert.include(checked.problems![0], "Row 15 (page 2, 12 May, ₹2,200.00)");
           assert.include(checked.problems![0], "₹19,800.00 apart");
           assert.include(checked.problems![1], "It doesn't add up");
           assert.deepStrictEqual(checked.pages?.shown, [2]);
           // Page 2 fixed, but page 3's first row left out.
           const dropped = withRow(statement.pages, 3, (rows) => rows.slice(1)).slice(1);
-          const again = yield* submit("event-1", dropped);
-          assert.strictEqual(again.status, "check");
+          const again = inState(yield* submit("event-1", dropped), "check");
           assert.include(again.problems![0], "Row 25 (page 3, 27 Jun, ₹4,550.00)");
           assert.include(again.problems![0], "₹725.00 apart");
           assert.isTrue(
@@ -934,10 +937,10 @@ describe("bank statements", () => {
 
           // The lead's next turn reads all three pages; the card offers only what isn't recorded.
           const event = yield* turn(2);
-          const pages = yield* LeadStatements.read(scope, {
-            sourceEventId: event,
-            attachment: NAME,
-          });
+          const pages = inState(
+            yield* LeadStatements.read(scope, { sourceEventId: event, attachment: NAME }),
+            "reading",
+          );
           assert.deepStrictEqual(pages.pages?.shown, [1, 2, 3]);
           const full = opened(yield* submit(event, statement.pages));
           assert.strictEqual(full.rows, 26);
@@ -1000,7 +1003,7 @@ describe("bank statements", () => {
             attachment: name,
             password: Redacted.make(PASSWORD),
           }).pipe(Effect.flip);
-          assert.strictEqual(refused.reason, "not_allowed");
+          assert.isTrue(isChatError(refused) && refused.reason === "not_allowed");
           assert.deepStrictEqual(yield* taps, []);
         }).pipe(Effect.provide(layer)),
     );
