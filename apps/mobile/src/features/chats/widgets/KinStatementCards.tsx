@@ -17,6 +17,7 @@ import {
   kinStatementPasswordLines,
   kinStatementPickOf,
   kinStatementQueue,
+  kinStatementRereadText,
   kinStatementRowNote,
   kinStatementRowsInput,
   kinStatementSections,
@@ -191,10 +192,12 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
   const undo = useAtomCommand(kinClient.statementUndo, { reportFailure: false });
   const select = useAtomCommand(kinClient.statementSelect, { reportFailure: false });
   const readRows = useAtomCommand(kinClient.statementRows, { reportFailure: false });
+  const reread = useAtomCommand(kinClient.statementReread, { reportFailure: false });
+  const [rereadNote, setRereadNote] = useState<string | null>(null);
   const [local, setLocal] = useState(() => kinStatementLocal(review.card.hash));
   const shown = kinStatementShown(review.card, local);
   const { card, selection } = shown;
-  const [pending, setPending] = useState<"apply" | "undo" | null>(null);
+  const [pending, setPending] = useState<"apply" | "undo" | "reread" | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const confirm = kinStatementConfirm(card);
   const editable =
@@ -227,21 +230,44 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
     if (page !== null) setLocal((prev) => kinStatementLoaded(prev, hash, page));
     return page !== null;
   };
+  const target = { orgId: review.orgId, statementId: card.statementId };
   const send = async (what: "apply" | "undo") => {
     if (pending !== null) return;
     setPending(what);
     setFailure(null);
+    setRereadNote(null);
     const result =
       what === "apply"
         ? await apply({ environmentId, input: kinStatementApplyInput(review, selection) })
-        : await undo({
-            environmentId,
-            input: { orgId: review.orgId, statementId: card.statementId },
-          });
+        : await undo({ environmentId, input: target });
     setPending(null);
     if (AsyncResult.isFailure(result))
       setFailure(kinStatementFailureText(squashAtomCommandFailure(result)));
   };
+  const readAgainNow = async () => {
+    if (pending !== null) return;
+    setPending("reread");
+    setFailure(null);
+    setRereadNote(null);
+    const result = await reread({ environmentId, input: target });
+    setPending(null);
+    if (AsyncResult.isFailure(result)) {
+      setFailure(kinStatementFailureText(squashAtomCommandFailure(result)));
+      return;
+    }
+    const answer = Option.getOrNull(AsyncResult.value(result));
+    if (answer !== null) setRereadNote(kinStatementRereadText(answer.status));
+  };
+  const readAgain = (
+    <Button
+      size="compact"
+      tone="text"
+      label="Read again"
+      loading={pending === "reread"}
+      disabled={pending !== null}
+      onPress={() => void readAgainNow()}
+    />
+  );
 
   const rows = { shown, editable, onChange: (next: KinStatementSelectChange) => void change(next) };
   const held = kinStatementTotal(card, "matched") - (card.chosen?.matched ?? 0);
@@ -319,6 +345,11 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
           {line}
         </Text>
       ))}
+      {rereadNote === null ? null : (
+        <Text accessibilityLiveRegion="polite" textRole="caption" className="text-foreground-muted">
+          {rereadNote}
+        </Text>
+      )}
       {failure === null ? null : (
         <Text
           accessibilityRole="alert"
@@ -334,13 +365,16 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
           This phone can't confirm here. Pair it again with the server that runs Kin.
         </Text>
       ) : card.status === "applied" ? (
-        <Button
-          size="compact"
-          label="Undo this statement"
-          loading={pending === "undo"}
-          disabled={pending !== null}
-          onPress={() => void send("undo")}
-        />
+        <View className="flex-row flex-wrap gap-2">
+          <Button
+            size="compact"
+            label="Undo this statement"
+            loading={pending === "undo"}
+            disabled={pending !== null}
+            onPress={() => void send("undo")}
+          />
+          {readAgain}
+        </View>
       ) : (
         <View className="gap-1 pt-1">
           <Button
@@ -354,6 +388,7 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
           <Text textRole="caption" className="text-center text-foreground-muted">
             Rows you leave stay unexplained for later.
           </Text>
+          {readAgain}
         </View>
       )}
     </Frame>

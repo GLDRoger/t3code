@@ -7,6 +7,7 @@ import {
   KinStatementReviewCard,
   type KinOrgId,
   type KinStatementApplyInput,
+  type KinStatementRereadResult,
   type KinStatementRowChoice,
   type KinStatementRowsInput,
   type KinStatementRowsResult,
@@ -416,6 +417,18 @@ export const kinStatementNeedsPassword = (card: KinStatementPasswordCard) =>
   card.status === "locked" || card.status === "wrong";
 
 /** Why the server refused, in its own words, which statements write for the owner. */
+/** What Read again led to, when the card itself doesn't change: a new card replaces this one. */
+export const kinStatementRereadText = (
+  status: KinStatementRereadResult["status"],
+): string | null =>
+  status === "reading"
+    ? "Your agent is reading its pages again; a fresh card follows."
+    : status === "needs_password"
+      ? "It's locked: its password card is in the chat."
+      : status === "unreadable"
+        ? "Kin couldn't read the file again. Nothing changed."
+        : null;
+
 export const kinStatementFailureText = (cause: unknown): string =>
   isKinChatError(cause) && cause.message.trim() !== ""
     ? cause.message.slice(0, 300)
