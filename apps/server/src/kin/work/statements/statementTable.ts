@@ -48,6 +48,7 @@ export type Statement = {
   readonly rows: ReadonlyArray<StatementRow>;
   readonly check: BalanceCheck;
 };
+export type StatementFacts = Omit<Statement, "rows" | "check" | "currency">;
 export type TableResult =
   | { readonly _tag: "read"; readonly statement: Statement }
   | { readonly _tag: "no_table"; readonly reason: string };
@@ -352,7 +353,7 @@ type Draft = {
 };
 
 /** The facts around the table: the account, the bank, the period and the stated balances. */
-const readFacts = (lines: ReadonlyArray<Line>) => {
+export const readFacts = (lines: ReadonlyArray<Line>) => {
   const text = lines.map(lineText).join("\n");
   const card = CARD.exec(text);
   const account = ACCOUNT.exec(text);

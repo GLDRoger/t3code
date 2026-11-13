@@ -225,6 +225,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.statementUndo": Effect.fn("KinWork.rpc.statementUndo")(function* (input) {
         return yield* call((people) => Statements.undo(people, input));
       }),
+      "kin.work.statementReread": Effect.fn("KinWork.rpc.statementReread")(function* (input) {
+        return yield* call((people) => Statements.reread(people, input));
+      }),
       "kin.work.statementSelect": Effect.fn("KinWork.rpc.statementSelect")(function* (input) {
         return yield* call((people) => Statements.select(people, input));
       }),

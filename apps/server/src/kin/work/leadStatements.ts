@@ -1,4 +1,10 @@
-import { KinChatError, KinDay, type KinOrgId, TrimmedNonEmptyString } from "@t3tools/contracts";
+import {
+  KinChatError,
+  KinDay,
+  type KinOrgId,
+  KinStatementPassword,
+  TrimmedNonEmptyString,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -9,21 +15,23 @@ import { turnChat } from "../lead/Audience.ts";
 import { quote } from "../lead/LeadPrompt.ts";
 import { turnFiles } from "./leadFields.ts";
 import { admitted, type Lead, leadTool, sourceOf } from "./leadWork.ts";
-import { formatMoney, parseAmount } from "./money.ts";
+import { formatMoney } from "./money.ts";
 import { bankStates, findBankList, originKeyOf, rowFingerprints } from "./statements/bankList.ts";
 import {
+  isReading,
+  type Reading,
+  readingOf,
+  readStored,
+  settleOutcome,
+  submitPages,
+} from "./statements/statementReading.ts";
+import {
   askPassword,
-  attachmentBytes,
-  buildReview,
   reviewOf,
-  readWith,
-  saveRead,
   statementIdFor,
   statementRow,
-  tryKeptPasswords,
 } from "./statements/statementReview.ts";
 import type { Review } from "./statements/statementCard.ts";
-import { checkBalances, type Statement, type StatementRow } from "./statements/statementTable.ts";
 
 /** The lead tools for statements. Kin reads and matches; the owner confirms on Kin's card. */
 
@@ -34,9 +42,16 @@ const bankSaid = (text: string) => quote("bank statement text (untrusted)", text
 const fileSaid = (name: string) => quote("statement file name (untrusted)", name, true);
 /** A reference as the summary shows an account: its last four characters. */
 const masked = (reference: string) => (reference.length <= 4 ? "••" : `••${reference.slice(-4)}`);
-const isChatError = Schema.is(KinChatError);
 const Amount = TrimmedNonEmptyString.check(Schema.isMaxLength(40));
 
+const Row = Schema.Struct({
+  date: KinDay,
+  description: TrimmedNonEmptyString.check(Schema.isMaxLength(300)),
+  amount: Amount,
+  direction: Schema.Literals(["debit", "credit"]),
+  reference: Schema.optional(Schema.String.check(Schema.isMaxLength(120))),
+  balance: Schema.optional(Amount),
+});
 export const ReadInput = Schema.Struct({
   sourceEventId: TrimmedNonEmptyString,
   attachment: TrimmedNonEmptyString.check(Schema.isMaxLength(255)).annotate({
@@ -48,22 +63,23 @@ export const ReadInput = Schema.Struct({
       "Its account's or card's last four digits, only when the owner said them and the statement doesn't.",
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
-    description: "Read it again and post a fresh card, after invoices or expenses changed.",
+    description:
+      "Read the file again from the start, as when the owner asks to read it again or after invoices or expenses changed. Rows already recorded stay recorded.",
   }),
-  rows: Schema.optional(
+  password: Schema.optional(KinStatementPassword).annotate({
+    description:
+      "The statement's password, only when the owner wrote it in this conversation. Kin uses it once to open this file and never keeps it.",
+  }),
+  pages: Schema.optional(
     Schema.Array(
       Schema.Struct({
-        date: KinDay,
-        description: TrimmedNonEmptyString.check(Schema.isMaxLength(300)),
-        amount: Amount,
-        direction: Schema.Literals(["debit", "credit"]),
-        reference: Schema.optional(Schema.String.check(Schema.isMaxLength(120))),
-        balance: Schema.optional(Amount),
+        page: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(300)),
+        rows: Schema.Array(Row).check(Schema.isMaxLength(2_000)),
       }),
-    ).check(Schema.isMinLength(1), Schema.isMaxLength(5_000)),
+    ).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
   ).annotate({
     description:
-      "Only for a scanned statement Kin said has no text: the rows you read from its page images, amounts as printed.",
+      "Only after Kin says the statement waits for you to read it: each page you read, with every transaction row on it as printed, rows [] for a page with none. A page sent again replaces it.",
   }),
   opening: Schema.optional(Amount),
   closing: Schema.optional(Amount),
@@ -83,7 +99,15 @@ const Shown = Schema.Struct({
 });
 export const ReadResult = Schema.Struct({
   statement: Schema.String,
-  status: Schema.Literals(["read", "needs_password", "scanned", "unreadable", "applied"]),
+  status: Schema.Literals([
+    "read",
+    "needs_password",
+    "reading",
+    "check",
+    "scanned",
+    "unreadable",
+    "applied",
+  ]),
   file: Schema.String,
   account: Schema.optional(Schema.String),
   period: Schema.optional(Schema.String),
@@ -101,6 +125,16 @@ export const ReadResult = Schema.Struct({
   choose: Schema.optional(Schema.Array(Shown)),
   unmatched: Schema.optional(Schema.Array(Shown)),
   more: Schema.optional(Schema.String),
+  /** While the lead reads: how many pages there are, how many it has given, and these pages. */
+  pages: Schema.optional(
+    Schema.Struct({
+      total: Schema.Number,
+      read: Schema.Number,
+      shown: Schema.Array(Schema.Number),
+    }),
+  ),
+  text: Schema.optional(Schema.Array(Schema.String)),
+  problems: Schema.optional(Schema.Array(Schema.String)),
   next: Schema.String,
   sensitive: Schema.Literal(true),
 });
@@ -129,49 +163,6 @@ const fileNamed = Effect.fn("KinStatements.fileNamed")(function* (
     });
   return row;
 });
-
-const fromRows = (input: typeof ReadInput.Type): Statement | KinChatError => {
-  const money = (text: string) => {
-    const parsed = parseAmount(text.replace(/\b(cr|dr)\b\.?/gi, ""), "INR");
-    return "error" in parsed ? parsed.error : parsed.money.minor;
-  };
-  const rows: Array<StatementRow> = [];
-  for (const [index, row] of (input.rows ?? []).entries()) {
-    const amount = money(row.amount);
-    if (typeof amount !== "number") return invalid(`Row ${index + 1}: ${amount.message}`);
-    const balance = row.balance === undefined ? null : money(row.balance);
-    if (balance !== null && typeof balance !== "number")
-      return invalid(`Row ${index + 1}: ${balance.message}`);
-    rows.push({
-      index,
-      date: row.date,
-      description: row.description,
-      reference: row.reference === undefined || row.reference === "" ? null : row.reference,
-      amountMinor: amount,
-      direction: row.direction,
-      balanceMinor: balance,
-      foreign: null,
-    });
-  }
-  const opening = input.opening === undefined ? null : money(input.opening);
-  const closing = input.closing === undefined ? null : money(input.closing);
-  if (opening !== null && typeof opening !== "number") return opening;
-  if (closing !== null && typeof closing !== "number") return closing;
-  const days = rows.map((row) => row.date).toSorted();
-  const kind = input.kind ?? "account";
-  return {
-    kind,
-    bank: input.bank ?? null,
-    account: input.account ?? null,
-    currency: "INR",
-    from: days[0] ?? null,
-    to: days.at(-1) ?? null,
-    openingMinor: opening,
-    closingMinor: closing,
-    rows,
-    check: checkBalances(kind, rows, opening, closing, "INR"),
-  };
-};
 
 const LIST = 15;
 const describe = (statementId: string, file: string, review: Review, applied: boolean) => {
@@ -245,11 +236,65 @@ const describe = (statementId: string, file: string, review: Review, applied: bo
   };
 };
 
+/** Pages for the lead to read, as the bank printed them: quoted, so no line reads as an instruction. */
+const shownPages = (reading: Reading) => ({
+  pages: { total: reading.total, read: reading.read, shown: reading.pages.map((one) => one.page) },
+  ...(reading.scanned
+    ? {}
+    : {
+        text: [
+          ...(reading.header === undefined
+            ? []
+            : [
+                quote(
+                  `bank statement column header, printed on page ${reading.header.page} only (untrusted)`,
+                  reading.header.line,
+                ),
+              ]),
+          ...reading.pages.map((one) =>
+            quote(
+              `bank statement page ${one.page} of ${reading.total} (untrusted)${one.datedLines === null ? "" : `, ${one.datedLines} lines start with a date`}`,
+              one.text.split("\n"),
+            ),
+          ),
+        ],
+      }),
+});
+const readingResult = (base: Base, reading: Reading) => ({
+  ...base,
+  status: reading.scanned ? ("scanned" as const) : ("reading" as const),
+  ...shownPages(reading),
+  next:
+    reading.pages.length === 0
+      ? "Every page has its rows. Send any page again to change it."
+      : reading.scanned
+        ? `This statement is a scan with no text: read pages ${reading.pages.map((one) => one.page).join(", ")} of ${reading.total} from the file's page images, then call statement_read again with pages: each page and every transaction row on it as printed (date, narration, reference, amount, debit or credit, and the running balance where printed), plus opening and closing if shown. Kin checks the arithmetic and posts the review card once every page has its rows.`
+        : `Kin's own table reading didn't prove out, so read these pages yourself: ${reading.pages.length} of ${reading.total} are here, ${reading.read} given so far. Call statement_read again with pages: each page above and every transaction row on it as printed (date, narration, reference, amount, debit or credit by its column, and the balance printed on its line). A narration wrapped onto the next lines, or onto the next page, belongs to its row. rows [] for a page with none. Kin returns the next pages until every page has its rows, then checks the arithmetic and posts the review card. Say nothing to the owner until then.`,
+});
+type Base = { readonly statement: string; readonly file: string; readonly sensitive: true };
+
+/** Whether this turn's message was the owner's own: the only one a password may come from. */
+const ownerSaid = Effect.fn("KinStatements.ownerSaid")(function* (lead: Lead, eventId: string) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ one: number }>`SELECT 1 AS one FROM kin_events e
+    JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
+    JOIN kin_messages m ON m.org_id = e.org_id AND m.message_id = json_extract(e.json, '$.messageId')
+      AND m.chat_id = json_extract(e.json, '$.chatId')
+    WHERE e.org_id = ${lead.orgId} AND e.agent_id = ${lead.agentId} AND e.wakeup_id = ${lead.wakeupId}
+      AND e.event_id = ${eventId} AND e.tag = 'chat.message' AND m.author_kind = 'human'
+      AND m.author_person_id = a.owner_person_id`;
+  return row !== undefined;
+});
+
 const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput.Type) {
   yield* admitted(lead, "statement_read", input);
   yield* sourceOf(lead, input.sourceEventId);
   const chat = yield* turnChat(lead);
   if (chat === undefined) return yield* invalid("This turn has no chat to read a statement in.");
+  if (input.password !== undefined && !(yield* ownerSaid(lead, input.sourceEventId)))
+    return yield* invalid(
+      "A password may only come from the owner's own message in this turn. Nothing was opened.",
+    );
   const file = yield* fileNamed(lead, chat.chatId, input.attachment);
   const sql = yield* SqlClient.SqlClient;
   const now = yield* Clock.currentTimeMillis;
@@ -260,74 +305,89 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
       ${lead.agentId}, ${lead.wakeupId}, 'unreadable', ${now})
     ON CONFLICT (org_id, statement_id) DO NOTHING`;
   const stored = (yield* statementRow(lead.orgId, statementId))!;
-  const base = { statement: statementId, file: fileSaid(file.name), sensitive: true as const };
-  if (stored.status === "read" && input.refresh !== true && input.rows === undefined) {
+  const base: Base = { statement: statementId, file: fileSaid(file.name), sensitive: true };
+  if (input.pages !== undefined) {
+    const done = yield* submitPages({
+      orgId: lead.orgId,
+      stored,
+      now,
+      pages: input.pages,
+      opening: input.opening,
+      closing: input.closing,
+      account: input.account,
+      bank: input.bank,
+      kind: input.kind,
+    });
+    if (done._tag === "more") return readingResult(base, done.reading);
+    if (done._tag === "check")
+      return {
+        ...base,
+        status: "check" as const,
+        problems: done.problems.map((one) => one.line),
+        ...shownPages(done.reading),
+        next: `Kin checked every row and these don't hold. Look at the pages shown again, find the row that is missing or misread, and send those pages again with all their rows. ${done.roundsLeft} more check${done.roundsLeft === 1 ? "" : "s"} before the card goes to the owner as it stands, marked as not adding up.`,
+      };
+    return describe(statementId, file.name, done.review, false);
+  }
+  const fresh = input.refresh === true || input.password !== undefined;
+  if (!fresh && isReading(stored)) {
+    const reading = readingOf(stored);
+    if (reading !== undefined) return readingResult(base, reading);
+  }
+  if (stored.status === "read" && !fresh) {
     const review = stored.reviewJson === null ? undefined : reviewOf(stored.reviewJson);
     if (review !== undefined)
       return describe(statementId, file.name, review, stored.appliedAt !== null);
   }
-  if (stored.appliedAt !== null && input.refresh === true)
-    return yield* invalid(
-      "The owner already applied this statement. Reading it again would show its rows as recorded; ask them to undo it on its card first if something is wrong.",
-    );
-  const post = (review: Review) =>
-    sql.withTransaction(
-      saveRead({
-        orgId: lead.orgId,
-        statementId,
-        agentId: lead.agentId,
-        chatId: chat.chatId,
-        review,
-        now,
-      }),
-    );
-  if (input.rows !== undefined) {
-    if (stored.status !== "scanned")
-      return yield* invalid("Pass rows only for a scanned statement Kin couldn't read itself.");
-    const statement = fromRows(input);
-    if (isChatError(statement)) return yield* statement;
-    yield* post(yield* buildReview(lead.orgId, statement, null, "agent"));
-    return describe(statementId, file.name, yield* storedReview(lead.orgId, statementId), false);
-  }
-  const bytes = yield* attachmentBytes(file.id);
-  let outcome = yield* readWith(bytes);
-  if (outcome._tag === "needs_password")
-    outcome = (yield* tryKeptPasswords(lead.orgId, bytes)) ?? outcome;
+  const outcome = yield* readStored(lead.orgId, file.id, input.password);
   if (outcome._tag === "needs_password" || outcome._tag === "wrong_password") {
+    const wrong = input.password !== undefined;
     yield* sql.withTransaction(
-      askPassword({
-        orgId: lead.orgId,
-        statementId,
-        agentId: lead.agentId,
-        chatId: chat.chatId,
-        fileName: file.name,
+      Effect.gen(function* () {
+        if (wrong)
+          yield* sql`UPDATE kin_bank_statements SET password_attempts = password_attempts + 1
+            WHERE org_id = ${lead.orgId} AND statement_id = ${statementId}`;
+        yield* askPassword({
+          orgId: lead.orgId,
+          statementId,
+          agentId: lead.agentId,
+          chatId: chat.chatId,
+          fileName: file.name,
+        });
       }),
     );
     return {
       ...base,
       status: "needs_password" as const,
-      next: "The file is password-protected. Kin asked the owner for the password on a card of its own; it goes to Kin, never to you or the chat. Say in one line that the statement is locked and they can open it on the card. Never ask them to type the password in a message.",
+      next: wrong
+        ? "The password the owner gave didn't open the file. Kin put a password card in the chat. Say in one line that it didn't open it and they can type the right one on the card; never repeat the password they wrote."
+        : "The file is password-protected. Kin put a password card in the chat for it. If the owner wrote the password in this conversation, call statement_read again with it as password; otherwise say in one line that the statement is locked and they can open it on the card. Never ask them to type it a second time, and never repeat it.",
     };
   }
-  if (outcome._tag === "scanned" || outcome._tag === "unreadable") {
-    const scanned = outcome._tag === "scanned";
-    const reason = outcome._tag === "unreadable" ? outcome.reason : null;
-    yield* sql`UPDATE kin_bank_statements SET status = ${scanned ? "scanned" : "unreadable"},
-        reason = ${reason}
-      WHERE org_id = ${lead.orgId} AND statement_id = ${statementId}`;
+  if (outcome._tag === "unreadable") {
+    // A file read before stays as it was read; only a first read records why it can't be.
+    if (stored.reviewJson === null)
+      yield* sql`UPDATE kin_bank_statements SET status = 'unreadable', reason = ${outcome.reason}
+        WHERE org_id = ${lead.orgId} AND statement_id = ${statementId}`;
     return {
       ...base,
-      status: outcome._tag,
-      next: scanned
-        ? "The PDF is a scan with no text, so Kin can't read its rows itself. Read the pages as images yourself if you can, and call statement_read again with rows: every row as printed, plus opening and closing if shown. Kin checks them, matches them and puts them to the owner on the same card, marked as read by you. If you can't read the pages, say so in one line."
-        : `Kin couldn't read it: ${reason ?? ""} Say so in one line and ask for the PDF, CSV or Excel download from their bank.`,
+      status: "unreadable" as const,
+      next: `Kin couldn't read it: ${outcome.reason} Say so in one line and ask for the PDF, CSV or Excel download from their bank.`,
     };
   }
-  const statement: Statement =
-    outcome.statement.account === null && input.account !== undefined
-      ? { ...outcome.statement, account: input.account }
-      : outcome.statement;
-  yield* post(yield* buildReview(lead.orgId, statement, outcome.format, "file"));
+  const settled = yield* settleOutcome({
+    orgId: lead.orgId,
+    statementId,
+    agentId: lead.agentId,
+    chatId: chat.chatId,
+    now,
+    account: input.account,
+    outcome,
+  });
+  if (settled._tag === "reading") {
+    const reading = readingOf((yield* statementRow(lead.orgId, statementId))!);
+    if (reading !== undefined) return readingResult(base, reading);
+  }
   return describe(statementId, file.name, yield* storedReview(lead.orgId, statementId), false);
 });
 export const read = leadTool("KinStatementTools.read", runRead);

@@ -35,6 +35,7 @@ import type { McpInvocationScope } from "../../../mcp/McpInvocationContext.ts";
 import * as Sqlite from "../../../persistence/Sqlite.ts";
 import * as KinChatHub from "../../chat/KinChatHub.ts";
 import * as KinChatRepository from "../../chat/KinChatRepository.ts";
+import * as KinFloor from "../../floor/KinFloor.ts";
 import { KinIdentity } from "../../chat/KinIdentity.ts";
 import * as KinEventQueue from "../../lead/KinEventQueue.ts";
 import { sharedToolAllowed } from "../../lead/SharedTools.ts";
@@ -45,6 +46,8 @@ import { moneySummary } from "../moneyViews.ts";
 import * as OwnerStatements from "../ownerStatements.ts";
 import { defineList, PRESETS } from "../registers.ts";
 import { readStatementFile } from "./statementFiles.ts";
+import { type RowRead, threePageStatement } from "./statementPdf.testkit.ts";
+import { queueTap, tellLead } from "./statementWake.ts";
 
 // An invented company, Lakeview Studio, with invented clients, invoices and statements.
 const orgId = KinOrgId.make("org");
@@ -89,7 +92,7 @@ const logged: Array<string> = [];
 const logger = Logger.make(({ message, cause }) => {
   logged.push(JSON.stringify(message), String(cause));
 });
-const layer = Layer.mergeAll(KinRecords.layer, identity, KinChatHub.layer).pipe(
+const layer = Layer.mergeAll(KinRecords.layer, identity, KinChatHub.layer, KinFloor.layer).pipe(
   Layer.provideMerge(KinChatRepository.layer),
   Layer.provideMerge(ServerSecretStore.layer),
   Layer.provideMerge(KinEventQueue.layer),
@@ -672,6 +675,11 @@ describe("bank statements", () => {
           });
         assert.deepStrictEqual(yield* unlock("lake0000", false), { status: "wrong" });
         assert.deepStrictEqual(yield* unlock(PASSWORD, true), { status: "opened" });
+        // The owner's unlock on the card wakes the lead with what the read found.
+        const [tap] = yield* sql<{ body: string }>`SELECT body FROM kin_messages
+          WHERE kind = 'widget_action'`;
+        assert.include(JSON.parse(tap!.body).text, 'Tapped "Unlock" on the statement');
+        assert.include(JSON.parse(tap!.body).text, "20 rows read");
         const keptAccounts = yield* OwnerStatements.passwords(people, { orgId });
         assert.deepStrictEqual(
           keptAccounts.accounts.map((one) => one.label),
@@ -760,12 +768,17 @@ describe("bank statements", () => {
           account: "4821",
           opening: "2,50,000.00",
           closing: "3,68,000.00",
-          rows: [
+          pages: [
             {
-              date: "2026-10-02",
-              description: "NEFT CR-BRIGHTLINE MEDIA LLP",
-              amount: "1,18,000.00",
-              direction: "credit",
+              page: 1,
+              rows: [
+                {
+                  date: "2026-10-02",
+                  description: "NEFT CR-BRIGHTLINE MEDIA LLP",
+                  amount: "1,18,000.00",
+                  direction: "credit",
+                },
+              ],
             },
           ],
         }),
@@ -784,6 +797,214 @@ describe("bank statements", () => {
       );
     }).pipe(Effect.provide(layer)),
   );
+
+  describe("a statement its lead reads", () => {
+    const NAME = "account-apr-jun.pdf";
+    const submit = (
+      event: string,
+      pages: ReadonlyArray<{ readonly page: number; readonly rows: ReadonlyArray<RowRead> }>,
+    ) => LeadStatements.read(scope, { sourceEventId: event, attachment: NAME, pages });
+    const taps = Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{ body: string }>`SELECT body FROM kin_messages
+        WHERE kind = 'widget_action' ORDER BY seq, message_id`;
+      return rows.map((row) => JSON.parse(row.body).text as string);
+    });
+    const withRow = (
+      pages: ReturnType<typeof threePageStatement>["pages"],
+      page: number,
+      change: (rows: ReadonlyArray<RowRead>) => ReadonlyArray<RowRead>,
+    ) => pages.map((one) => (one.page === page ? { ...one, rows: change(one.rows) } : one));
+
+    it.effect(
+      "reads a header-on-page-1 PDF page by page and posts its card once all 26 rows add up",
+      () =>
+        Effect.gen(function* () {
+          yield* seed;
+          const statement = threePageStatement();
+          const first = yield* read(1, NAME, statement.bytes);
+          // Kin's table reader stops at page 1's footer (12 rows, off), so the pages go to the lead.
+          assert.strictEqual(first.status, "reading");
+          assert.deepStrictEqual(first.pages, { total: 3, read: 0, shown: [1, 2, 3] });
+          assert.include(
+            first.text![1],
+            "> BEGIN QUOTE: bank statement page 2 of 3 (untrusted), 12 lines start with a date",
+          );
+          const one = yield* submit("event-1", [statement.pages[0]!]);
+          assert.strictEqual(one.status, "reading");
+          assert.deepStrictEqual(one.pages, { total: 3, read: 1, shown: [2, 3] });
+          // Later pages carry no header of their own: the batch quotes page 1's.
+          assert.include(one.text![0], "column header, printed on page 1 only");
+          assert.include(one.text![0], "Withdrawal Amt.");
+          const done = opened(yield* submit("event-1", statement.pages.slice(1)));
+          assert.strictEqual(done.rows, 26);
+          assert.include(done.balance, "It adds up");
+          const { card } = yield* reviewCardOf(done.statement);
+          assert.deepStrictEqual(
+            [card.balance, card.readByAgent, card.heldBack],
+            ["adds_up", true, undefined],
+          );
+          // The lead's own reading wakes no one; the owner's Read again on the card does.
+          assert.deepStrictEqual(yield* taps, []);
+          assert.deepStrictEqual(
+            yield* OwnerStatements.reread(people, { orgId, statementId: done.statement }),
+            { status: "reading" },
+          );
+          const [tap] = yield* taps;
+          assert.include(tap, `Tapped "Read again" on the statement "${NAME}"`);
+          assert.include(tap, "3 pages wait for you to read");
+        }).pipe(Effect.provide(layer)),
+    );
+
+    it.effect(
+      "sends the lead back to the row that breaks the balance, a bounded number of times",
+      () =>
+        Effect.gen(function* () {
+          yield* seed;
+          const statement = threePageStatement();
+          yield* read(1, NAME, statement.bytes);
+          // Row 15 read as ₹2,200.00 instead of ₹22,000.00.
+          const misread = withRow(statement.pages, 2, (rows) =>
+            rows.map((row, at) => (at === 2 ? { ...row, amount: "2,200.00" } : row)),
+          );
+          const checked = yield* submit("event-1", misread);
+          assert.strictEqual(checked.status, "check");
+          assert.include(checked.problems![0], "Row 15 (page 2, 12 May, ₹2,200.00)");
+          assert.include(checked.problems![0], "₹19,800.00 apart");
+          assert.include(checked.problems![1], "It doesn't add up");
+          assert.deepStrictEqual(checked.pages?.shown, [2]);
+          // Page 2 fixed, but page 3's first row left out.
+          const dropped = withRow(statement.pages, 3, (rows) => rows.slice(1)).slice(1);
+          const again = yield* submit("event-1", dropped);
+          assert.strictEqual(again.status, "check");
+          assert.include(again.problems![0], "Row 25 (page 3, 27 Jun, ₹4,550.00)");
+          assert.include(again.problems![0], "₹725.00 apart");
+          assert.isTrue(
+            again.problems!.some((line) => line.startsWith("Page 3: 1 row was read, but 2 lines")),
+          );
+          // The third check that fails posts the card as it stands: off, nothing ticked.
+          const last = opened(yield* submit("event-1", [dropped[1]!]));
+          assert.include(last.balance, "₹725.00 apart");
+          const { card } = yield* reviewCardOf(last.statement);
+          assert.deepStrictEqual([card.balance, card.selection?.ticked], ["off", "none"]);
+          assert.include(card.heldBack, "doesn't add up");
+        }).pipe(Effect.provide(layer)),
+    );
+
+    it.effect(
+      "reads an applied statement again: its 12 rows stay recorded and only 14 are offered",
+      () =>
+        Effect.gen(function* () {
+          yield* seed;
+          const sql = yield* SqlClient.SqlClient;
+          const statement = threePageStatement();
+          const first = yield* read(1, NAME, statement.bytes);
+          // The owner's first read: only page 1's rows, as the old reader saw it, confirmed whole.
+          const pageOne = [statement.pages[0]!, { page: 2, rows: [] }, { page: 3, rows: [] }];
+          yield* submit("event-1", pageOne);
+          yield* submit("event-1", pageOne);
+          const short = opened(yield* submit("event-1", pageOne));
+          assert.strictEqual(short.rows, 12);
+          const { card } = yield* reviewCardOf(first.statement);
+          const chosen = yield* choose(card, [
+            { _tag: "tickAll", ticked: true },
+            ...card.choose.map((one) => ({ _tag: "pick" as const, row: one.row, option: 0 })),
+            ...card.unmatched.map((one) => ({
+              _tag: "action" as const,
+              row: one.row,
+              action: "transfer" as const,
+            })),
+          ]);
+          yield* OwnerStatements.apply(people, confirmOf(chosen));
+          assert.include((yield* taps).at(-1), 'Tapped "Confirm" on the statement');
+          assert.include((yield* taps).at(-1), "Every row of this statement is explained.");
+
+          // From the host, as `kin statement reread` does it: read again, tell the lead, queue it.
+          const done = yield* OwnerStatements.rereadStatement({
+            orgId,
+            statementId: first.statement,
+          });
+          assert.strictEqual(done.status, "reading");
+          const tap = OwnerStatements.rereadTap(done, orgId)!;
+          const told = yield* sql.withTransaction(tellLead(tap));
+          yield* queueTap(told);
+          const [queued] = yield* sql<{ tag: string; agentId: string }>`SELECT tag,
+            agent_id AS "agentId" FROM kin_events WHERE tag = 'widget.action'`;
+          assert.deepStrictEqual(queued, { tag: "widget.action", agentId: lead });
+
+          // The lead's next turn reads all three pages; the card offers only what isn't recorded.
+          const event = yield* turn(2);
+          const pages = yield* LeadStatements.read(scope, {
+            sourceEventId: event,
+            attachment: NAME,
+          });
+          assert.deepStrictEqual(pages.pages?.shown, [1, 2, 3]);
+          const full = opened(yield* submit(event, statement.pages));
+          assert.strictEqual(full.rows, 26);
+          assert.include(full.balance, "It adds up");
+          assert.strictEqual(full.counts.recorded, 12);
+          assert.strictEqual(full.counts.matched + full.counts.choose + full.counts.unmatched, 14);
+          const { card: again } = yield* reviewCardOf(first.statement);
+          assert.include(
+            again.summary.join(" "),
+            "12 rows are already recorded in Bank transactions.",
+          );
+          assert.lengthOf(yield* bankRows, 12);
+        }).pipe(Effect.provide(layer)),
+    );
+
+    it.effect(
+      "opens a locked statement with a password the owner wrote, once, and keeps it nowhere",
+      () =>
+        Effect.gen(function* () {
+          yield* seed;
+          const sql = yield* SqlClient.SqlClient;
+          logged.length = 0;
+          const name = "hdfc-account-locked.pdf";
+          const id = yield* keep(fixture(name), "pdf");
+          const event = yield* turn(1, { id, name });
+          const wrong = yield* LeadStatements.read(scope, {
+            sourceEventId: event,
+            attachment: name,
+            password: Redacted.make("lake0000"),
+          });
+          assert.strictEqual(wrong.status, "needs_password");
+          assert.include(wrong.next, "never repeat the password");
+          const result = opened(
+            yield* LeadStatements.read(scope, {
+              sourceEventId: event,
+              attachment: name,
+              password: Redacted.make(PASSWORD),
+            }),
+          );
+          assert.strictEqual(result.rows, 20);
+          // Not remembered for the account, and in no table, result or log line.
+          assert.deepStrictEqual(
+            (yield* OwnerStatements.passwords(people, { orgId })).accounts,
+            [],
+          );
+          const tables = yield* sql<{ name: string }>`SELECT name FROM sqlite_master
+          WHERE type = 'table' ORDER BY name`;
+          for (const { name: table } of tables)
+            assert.notInclude(
+              JSON.stringify(yield* sql.unsafe(`SELECT * FROM "${table}"`)),
+              PASSWORD,
+              table,
+            );
+          assert.notInclude(JSON.stringify([wrong, result]), PASSWORD);
+          assert.notInclude(logged.join("\n"), PASSWORD);
+          // A shared turn may not pass one at all.
+          const shared = yield* turn(2, { id, name }, "shared");
+          const refused = yield* LeadStatements.read(scope, {
+            sourceEventId: shared,
+            attachment: name,
+            password: Redacted.make(PASSWORD),
+          }).pipe(Effect.flip);
+          assert.strictEqual(refused.reason, "not_allowed");
+          assert.deepStrictEqual(yield* taps, []);
+        }).pipe(Effect.provide(layer)),
+    );
+  });
 });
 
 /** A CSV statement of these rows: day, narration, money out, money in. */

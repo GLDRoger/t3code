@@ -107,6 +107,10 @@ export type StatementRow = {
   readonly generation: number;
   readonly selectionJson: string | null;
   readonly passwordAttempts: number;
+  /** While a lead reads the rows: the pages' text, the rows given so far, and checks failed. */
+  readonly pagesJson: string | null;
+  readonly draftJson: string | null;
+  readonly proofRounds: number;
 };
 export const statementRow = Effect.fn("KinStatements.row")(function* (
   orgId: KinOrgId,
@@ -118,7 +122,8 @@ export const statementRow = Effect.fn("KinStatements.row")(function* (
       agent_id AS "agentId", status, reason, source, account, review_json AS "reviewJson",
       review_hash AS "reviewHash", review_widget_id AS "reviewWidgetId",
       password_widget_id AS "passwordWidgetId", applied_at AS "appliedAt", undone_at AS "undoneAt",
-      generation, selection_json AS "selectionJson", password_attempts AS "passwordAttempts"
+      generation, selection_json AS "selectionJson", password_attempts AS "passwordAttempts",
+      pages_json AS "pagesJson", draft_json AS "draftJson", proof_rounds AS "proofRounds"
     FROM kin_bank_statements WHERE org_id = ${orgId} AND statement_id = ${statementId}`;
   return row;
 });
@@ -461,6 +466,16 @@ export const saveRead = Effect.fn("KinStatements.saveRead")(function* (input: {
   const sql = yield* SqlClient.SqlClient;
   const before = yield* statementRow(input.orgId, input.statementId);
   const earlier = before?.reviewJson == null ? undefined : reviewOf(before.reviewJson);
+  // Read again, a row this statement already recorded may sit at another place: its entries follow it.
+  if (earlier !== undefined) {
+    const places = new Map([...input.review.known].map(([index, row]) => [row.recordId, index]));
+    const entries = yield* sql<{ seq: number; bankRecordId: string }>`SELECT seq,
+        bank_record_id AS "bankRecordId" FROM kin_bank_statement_entries
+      WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId} ORDER BY seq`;
+    for (const entry of entries)
+      yield* sql`UPDATE kin_bank_statement_entries SET row_index = ${places.get(entry.bankRecordId) ?? -1}
+        WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId} AND seq = ${entry.seq}`;
+  }
   // A card from an earlier read never confirms this one: its revision is always below.
   const selection = {
     ...defaultSelection(input.review),
@@ -482,7 +497,8 @@ export const saveRead = Effect.fn("KinStatements.saveRead")(function* (input: {
       review_json = ${json}, review_hash = ${card.hash}, review_widget_id = ${widgetId},
       selection_json = ${yield* encodeSelection(selection)}, read_at = ${input.now},
       applied_at = NULL, applied_by = NULL,
-      undone_at = NULL
+      undone_at = NULL, pages_json = NULL, draft_json = NULL, proof_rounds = 0,
+      generation = generation + ${earlier === undefined ? 0 : 1}
     WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId}`;
   const previous = before?.reviewWidgetId ?? null;
   // The same review read again is the same card, back to Kin's proposal and open.
@@ -517,7 +533,7 @@ export const saveRead = Effect.fn("KinStatements.saveRead")(function* (input: {
 });
 
 const PASSWORD_TEXT =
-  "This statement is password-protected. Type its password on its card, never in a message.";
+  "This statement is password-protected. Type its password on its card to open it.";
 
 /** Asks the owner for a PDF's password on a card of its own. */
 export const askPassword = Effect.fn("KinStatements.askPassword")(function* (input: {
@@ -528,8 +544,16 @@ export const askPassword = Effect.fn("KinStatements.askPassword")(function* (inp
   readonly fileName: string;
 }) {
   const sql = yield* SqlClient.SqlClient;
-  const widgetId = `kin-statement-password:${input.statementId}`;
-  yield* sql`UPDATE kin_bank_statements SET status = 'needs_password', password_widget_id = ${widgetId}
+  const repo = yield* KinChatRepository;
+  const stored = yield* statementRow(input.orgId, input.statementId);
+  const first = `kin-statement-password:${input.statementId}`;
+  const current = stored?.passwordWidgetId ?? first;
+  const shown = yield* repo.getWidget({ orgId: input.orgId, widgetId: KinWidgetId.make(current) });
+  // Asked again after its card closed, as when the statement is read again: a fresh card below.
+  const again = Option.isSome(shown) && shown.value.closedAt !== null;
+  const widgetId = again ? `${first}:${yield* Clock.currentTimeMillis}` : current;
+  yield* sql`UPDATE kin_bank_statements SET status = 'needs_password', password_widget_id = ${widgetId},
+      password_attempts = CASE WHEN ${again ? 1 : 0} = 1 THEN 0 ELSE password_attempts END
     WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId}`;
   yield* postCard({
     orgId: input.orgId,
@@ -545,6 +569,7 @@ export const askPassword = Effect.fn("KinStatements.askPassword")(function* (inp
       status: "locked",
     } satisfies KinStatementPasswordCard,
   });
+  return widgetId;
 });
 
 // Passwords the owner asked Kin to keep, one per account, in the server's own secret store.
