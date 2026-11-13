@@ -167,7 +167,7 @@ export const parseAmount = (text: string): ParsedAmount | undefined => {
   };
 };
 /** Only something printed as money: with paise or grouping, so a cheque number never reads as one. */
-const looksLikeMoney = (text: string) =>
+export const looksLikeMoney = (text: string) =>
   /\d[.,]\d{2}\b|\d,\d{3}/.test(text) && parseAmount(text) !== undefined;
 
 const BANKS: ReadonlyArray<readonly [RegExp, string]> = [
@@ -199,7 +199,7 @@ const PERIOD = new RegExp(
   String.raw`(?:from|period|statement\s+(?:for|of)?)\s*:?\s*${DATE_TEXT}\s*(?:to|-|–|till|until)\s*:?\s*${DATE_TEXT}`,
   "i",
 );
-const FOREIGN =
+export const FOREIGN =
   /\b(USD|EUR|GBP|SGD|AED|AUD|CAD|JPY|CHF|HKD|NZD|SEK|THB|MYR|CNY|ZAR|SAR|QAR)\s?([\d,]+(?:\.\d{1,2})?)\b|\b([\d,]+\.\d{2})\s?(USD|EUR|GBP|SGD|AED|AUD|CAD|JPY|CHF|HKD|NZD|SEK|THB|MYR|CNY|ZAR|SAR|QAR)\b/;
 
 const lineText = (line: Line) => line.map((cell) => cell.text.trim()).join(" ");
@@ -338,7 +338,7 @@ const firstAmount = (cells: ReadonlyArray<Cell> | undefined) => {
   return undefined;
 };
 
-const END_OF_TABLE =
+export const END_OF_TABLE =
   /statement summary|^\s*\*+\s*end of statement|opening balance.*closing bal|^total\b|^grand total|closing balance includes/i;
 
 type Draft = {

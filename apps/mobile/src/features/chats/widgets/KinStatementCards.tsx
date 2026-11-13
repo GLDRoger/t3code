@@ -23,6 +23,7 @@ import {
   kinStatementSections,
   kinStatementShown,
   kinStatementStatusLines,
+  kinStatementUndoLabel,
   kinStatementSuggestionsLeft,
   kinStatementTakenBy,
   kinStatementTargetLine,
@@ -200,6 +201,7 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
   const [pending, setPending] = useState<"apply" | "undo" | "reread" | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const confirm = kinStatementConfirm(card);
+  const undoBefore = kinStatementUndoLabel(card);
   const editable =
     (card.status === "open" || card.status === "undone") && canApply && pending === null;
 
@@ -388,6 +390,15 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
           <Text textRole="caption" className="text-center text-foreground-muted">
             Rows you leave stay unexplained for later.
           </Text>
+          {undoBefore === null ? null : (
+            <Button
+              size="compact"
+              label={undoBefore}
+              loading={pending === "undo"}
+              disabled={pending !== null}
+              onPress={() => void send("undo")}
+            />
+          )}
           {readAgain}
         </View>
       )}

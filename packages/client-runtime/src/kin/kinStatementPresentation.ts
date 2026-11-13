@@ -391,12 +391,21 @@ export function kinStatementStatusLines(card: KinStatementReviewCard): ReadonlyA
   }
 }
 
+/** Undo for the rows this statement recorded before a fresh read, there until the next confirm. */
+export const kinStatementUndoLabel = (card: KinStatementReviewCard): string | null =>
+  (card.status === "open" || card.status === "undone") && (card.recordedHere ?? 0) > 0
+    ? `Undo the ${card.recordedHere} row${card.recordedHere === 1 ? "" : "s"} recorded before`
+    : null;
+
 export const kinStatementPasswordLines = (
   card: KinStatementPasswordCard,
 ): ReadonlyArray<string> => {
   switch (card.status) {
     case "locked":
-      return [`${card.fileName} is password-protected. The password goes to Kin only.`];
+      return [
+        `${card.fileName} is password-protected. The password goes to Kin only.`,
+        ...(card.detail === undefined ? [] : [card.detail]),
+      ];
     case "wrong":
       return ["That password didn't open it. Try again."];
     case "opened":

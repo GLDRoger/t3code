@@ -8,7 +8,8 @@ import {
   KinMessageId,
   KinPersonId,
   type KinOrgId,
-  type KinStatementPasswordCard,
+  type KinRecordState,
+  KinStatementPasswordCard,
   KinStatementReviewCard,
   KinStatementSelection,
   KinWidgetId,
@@ -31,12 +32,13 @@ import { fieldText, parseFields } from "../lists.ts";
 import { dayIn } from "../money.ts";
 import { ownerZone } from "../recordRows.ts";
 import { listDef } from "../registers.ts";
-import { bankStates, findBankList, type KnownRow, knownRows } from "./bankList.ts";
+import { bankStates, directionOf, findBankList, type KnownRow, knownRows } from "./bankList.ts";
 import { readIsolated } from "./statementReader.ts";
 import { matchRows, type RowMatch } from "./statementMatch.ts";
 import {
   defaultSelection,
   type Held,
+  type Missing,
   type Review,
   reviewCard,
   STATEMENT_REVIEW_TEXT,
@@ -63,6 +65,7 @@ const StoredReview = Schema.Struct({
   source: Schema.Literals(["file", "agent"]),
   known: Schema.Array(Schema.Tuple([Schema.Number, Schema.Unknown])),
   matches: Schema.Array(Schema.Tuple([Schema.Number, Schema.Unknown])),
+  missing: Schema.optional(Schema.Array(Schema.Unknown)),
 });
 const ReviewJson = Schema.fromJsonString(StoredReview);
 const encodeReview = Schema.encodeEffect(ReviewJson);
@@ -76,6 +79,9 @@ export const reviewOf = (json: string): Review | undefined =>
       source: stored.source,
       known: new Map(stored.known.map(([index, row]) => [index, row as KnownRow])),
       matches: new Map(stored.matches.map(([index, match]) => [index, match as RowMatch])),
+      ...(stored.missing === undefined || stored.missing.length === 0
+        ? {}
+        : { missing: stored.missing as ReadonlyArray<Missing> }),
     }),
   });
 const storeReview = (review: Review) =>
@@ -85,6 +91,7 @@ const storeReview = (review: Review) =>
     source: review.source,
     known: [...review.known.entries()],
     matches: [...review.matches.entries()],
+    ...(review.missing === undefined ? {} : { missing: review.missing }),
   });
 
 export type StatementRow = {
@@ -107,6 +114,8 @@ export type StatementRow = {
   readonly generation: number;
   readonly selectionJson: string | null;
   readonly passwordAttempts: number;
+  /** Wrong passwords a lead passed from the owner's chat, counted apart from the card's. */
+  readonly chatPasswordAttempts: number;
   /** While a lead reads the rows: the pages' text, the rows given so far, and checks failed. */
   readonly pagesJson: string | null;
   readonly draftJson: string | null;
@@ -123,6 +132,7 @@ export const statementRow = Effect.fn("KinStatements.row")(function* (
       review_hash AS "reviewHash", review_widget_id AS "reviewWidgetId",
       password_widget_id AS "passwordWidgetId", applied_at AS "appliedAt", undone_at AS "undoneAt",
       generation, selection_json AS "selectionJson", password_attempts AS "passwordAttempts",
+      chat_password_attempts AS "chatPasswordAttempts",
       pages_json AS "pagesJson", draft_json AS "draftJson", proof_rounds AS "proofRounds"
     FROM kin_bank_statements WHERE org_id = ${orgId} AND statement_id = ${statementId}`;
   return row;
@@ -149,6 +159,7 @@ export const attachmentBytes = Effect.fn("KinStatements.attachmentBytes")(functi
 const candidates = Effect.fn("KinStatements.candidates")(function* (
   orgId: KinOrgId,
   statement: Statement,
+  statementId: string | undefined,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const zone = yield* ownerZone(orgId);
@@ -174,7 +185,9 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
         WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid
     FROM kin_records r LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
     WHERE r.org_id = ${orgId} AND r.register_id = 'invoices' AND r.state = 'waiting'
-      AND r.amount_minor IS NOT NULL
+      AND r.amount_minor IS NOT NULL AND NOT EXISTS (SELECT 1 FROM kin_bank_statement_entries e
+        WHERE e.org_id = r.org_id AND e.statement_id = ${statementId ?? ""}
+          AND e.target_record_id = r.record_id)
     ORDER BY r.key`;
   const expenseRows = yield* sql<{
     recordId: string;
@@ -252,27 +265,96 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
   };
 });
 
-/** The review of a read statement: rows already explained are counted, the rest matched. */
+/** The bank rows this statement recorded an entry for, in the order it recorded them. */
+const ownRows = Effect.fn("KinStatements.ownRows")(function* (
+  orgId: KinOrgId,
+  statementId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const zone = yield* ownerZone(orgId);
+  const rows = yield* sql<{
+    recordId: string;
+    key: string;
+    state: KinRecordState;
+    amountMinor: number | null;
+    dateAt: number | null;
+    fieldsJson: string;
+  }>`SELECT r.record_id AS "recordId", r.key, r.state, r.amount_minor AS "amountMinor",
+      r.date_at AS "dateAt", r.fields_json AS "fieldsJson"
+    FROM kin_bank_statement_entries e
+    JOIN kin_records r ON r.org_id = e.org_id AND r.record_id = e.bank_record_id
+    WHERE e.org_id = ${orgId} AND e.statement_id = ${statementId}
+    GROUP BY r.record_id ORDER BY MIN(e.seq)`;
+  return rows.map((row) => {
+    const fields = parseFields(row.fieldsJson);
+    const balance = fields.balance;
+    return {
+      ...row,
+      date: row.dateAt === null ? null : dayIn(row.dateAt, zone),
+      direction: directionOf(fields),
+      balanceMinor:
+        typeof balance === "object" && balance !== null && "minor" in balance
+          ? balance.minor
+          : null,
+    };
+  });
+});
+
+/**
+ * The review of a read statement: rows already explained are counted, the rest matched. Read
+ * again, each row this statement recorded finds its row by day, amount and direction, however
+ * the narration or reference reads now; one that finds none is named, and nothing is ticked.
+ */
 export const buildReview = Effect.fn("KinStatements.buildReview")(function* (
   orgId: KinOrgId,
   statement: Statement,
   format: string | null,
   source: "file" | "agent",
+  statementId?: string,
 ) {
   const def = yield* findBankList(orgId);
-  const known = yield* knownRows(orgId, def, statement);
+  const known = new Map(yield* knownRows(orgId, def, statement));
+  const missing: Array<Missing> = [];
+  const used = new Set<number>();
+  for (const earlier of statementId === undefined ? [] : yield* ownRows(orgId, statementId)) {
+    const fits = statement.rows.filter(
+      (row) =>
+        !used.has(row.index) &&
+        row.date === earlier.date &&
+        row.amountMinor === earlier.amountMinor &&
+        row.direction === earlier.direction,
+    );
+    const row =
+      (earlier.balanceMinor === null
+        ? undefined
+        : fits.find((one) => one.balanceMinor === earlier.balanceMinor)) ?? fits[0];
+    if (row === undefined) {
+      missing.push({
+        key: earlier.key,
+        date: earlier.date,
+        amountMinor: earlier.amountMinor,
+        direction: earlier.direction,
+      });
+      continue;
+    }
+    used.add(row.index);
+    for (const [index, other] of known)
+      if (other.recordId === earlier.recordId || index === row.index) known.delete(index);
+    known.set(row.index, { recordId: earlier.recordId, key: earlier.key, state: earlier.state });
+  }
   const states = def === undefined ? undefined : bankStates(def);
   const open = statement.rows.filter((row) => {
     const had = known.get(row.index);
     return had === undefined || (states !== undefined && had.state === states.open);
   });
-  const results = matchRows(open, yield* candidates(orgId, statement));
+  const results = matchRows(open, yield* candidates(orgId, statement, statementId));
   return {
     statement,
     format,
     source,
     known,
     matches: new Map(open.map((row, index) => [row.index, results[index]!])),
+    ...(missing.length === 0 ? {} : { missing }),
   } satisfies Review;
 });
 
@@ -466,15 +548,21 @@ export const saveRead = Effect.fn("KinStatements.saveRead")(function* (input: {
   const sql = yield* SqlClient.SqlClient;
   const before = yield* statementRow(input.orgId, input.statementId);
   const earlier = before?.reviewJson == null ? undefined : reviewOf(before.reviewJson);
-  // Read again, a row this statement already recorded may sit at another place: its entries follow it.
+  // Read again, a row this statement already recorded may sit at another place: its entries follow
+  // it. One this reading lacks keeps a place of its own below 0, so nothing it holds holds another.
   if (earlier !== undefined) {
     const places = new Map([...input.review.known].map(([index, row]) => [row.recordId, index]));
     const entries = yield* sql<{ seq: number; bankRecordId: string }>`SELECT seq,
         bank_record_id AS "bankRecordId" FROM kin_bank_statement_entries
       WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId} ORDER BY seq`;
-    for (const entry of entries)
-      yield* sql`UPDATE kin_bank_statement_entries SET row_index = ${places.get(entry.bankRecordId) ?? -1}
+    const orphans = new Map<string, number>();
+    for (const entry of entries) {
+      if (!places.has(entry.bankRecordId) && !orphans.has(entry.bankRecordId))
+        orphans.set(entry.bankRecordId, -(orphans.size + 1));
+      const place = places.get(entry.bankRecordId) ?? orphans.get(entry.bankRecordId)!;
+      yield* sql`UPDATE kin_bank_statement_entries SET row_index = ${place}
         WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId} AND seq = ${entry.seq}`;
+    }
   }
   // A card from an earlier read never confirms this one: its revision is always below.
   const selection = {
@@ -570,6 +658,22 @@ export const askPassword = Effect.fn("KinStatements.askPassword")(function* (inp
     } satisfies KinStatementPasswordCard,
   });
   return widgetId;
+});
+
+const decodePasswordCard = Schema.decodeUnknownOption(KinStatementPasswordCard);
+/** A line of Kin's on a statement's password card, such as why it stopped trying chat passwords. */
+export const notePasswordCard = Effect.fn("KinStatements.notePasswordCard")(function* (
+  orgId: KinOrgId,
+  widgetId: string,
+  detail: string,
+) {
+  const repo = yield* KinChatRepository;
+  const found = yield* repo.getWidget({ orgId, widgetId: KinWidgetId.make(widgetId) });
+  const card = Option.isNone(found)
+    ? undefined
+    : Option.getOrUndefined(decodePasswordCard(found.value.state));
+  if (card !== undefined && card.detail !== detail)
+    yield* updateCard(orgId, widgetId, { ...card, detail }, false);
 });
 
 // Passwords the owner asked Kin to keep, one per account, in the server's own secret store.

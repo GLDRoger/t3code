@@ -456,7 +456,9 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
             ]),
         ...(tally.paid === 0
           ? []
-          : [`Marked ${tally.paid} expense${tally.paid === 1 ? "" : "s"} paid from ${label}.`]),
+          : [
+              `Marked ${tally.paid} expense${tally.paid === 1 ? "" : "s"} paid from this ${statement.kind === "card" ? "card" : "account"}.`,
+            ]),
         ...(tally.linked === 0
           ? []
           : [
@@ -485,6 +487,11 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
         unexplained === 0
           ? "Every row of this statement is explained."
           : `${unexplained} row${unexplained === 1 ? "" : "s"} left for later in Bank transactions, as Unexplained.`,
+        ...(held.size === 0
+          ? []
+          : [
+              `Undo takes back all ${held.size + decisions.length} rows this statement recorded: ${held.size} from the earlier confirm and ${decisions.length} from this one.`,
+            ]),
       ];
       const card = yield* cardState(input.orgId, stored.reviewWidgetId);
       const next = {

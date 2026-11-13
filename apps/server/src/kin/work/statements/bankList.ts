@@ -80,6 +80,11 @@ export const findBankList = Effect.fn("KinBankList.find")(function* (orgId: KinO
 
 const DEBIT = /^(debit|dr|out|withdrawal|paid|spent|money out)/i;
 const CREDIT = /^(credit|cr|in|deposit|received|money in)/i;
+/** Which way an entry's money went, from its direction field in the list's own words. */
+export const directionOf = (fields: Record<string, FieldValue>) => {
+  const said = typeof fields.direction === "string" ? fields.direction : "";
+  return DEBIT.test(said) ? ("debit" as const) : CREDIT.test(said) ? ("credit" as const) : null;
+};
 
 /**
  * The list, made or adopted, holding every field and state a row needs. Adopting only adds:
@@ -154,25 +159,33 @@ export const bankStates = (def: ListDef) => {
 const last4 = (text: string | null) =>
   text === null ? null : (/(\d{4})\D*$/.exec(text)?.[1] ?? null);
 const squash = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, "");
+/** A reference as one bank or reader prints it and another drops its leading zeros or spaces. */
+const referenceKey = (text: string) => squash(text).replace(/^0+/, "");
 /** How a statement names its account on each row: "HDFC Bank ••4821". */
 export const accountLabel = (statement: Pick<Statement, "bank" | "account" | "kind">) =>
   statement.account === null
     ? (statement.bank ?? (statement.kind === "card" ? "Card" : "Bank account"))
     : `${statement.bank ?? (statement.kind === "card" ? "Card" : "Account")} ••${statement.account}`;
 
-/** A row's identity: the same row from any statement of the account has the same one. */
-export const rowFingerprints = (statement: Statement): ReadonlyArray<string> => {
+/**
+ * A row's identity: the same row from any statement of the account has the same one, however a
+ * reader spaced its narration or printed its reference. `legacy` is the key rows saved before
+ * references dropped their leading zeros have.
+ */
+export const rowFingerprints = (statement: Statement, legacy = false): ReadonlyArray<string> => {
   const seen = new Map<string, number>();
   return statement.rows.map((row) => {
-    const base = [
-      statement.account ?? "",
-      row.date,
-      row.amountMinor,
-      row.direction,
-      row.reference === null || row.reference === ""
-        ? `d:${squash(row.description).slice(0, 60)}`
-        : `r:${squash(row.reference)}`,
-    ].join("|");
+    const narration = `d:${squash(row.description).slice(0, 60)}`;
+    const said = legacy
+      ? row.reference === null || row.reference === ""
+        ? narration
+        : `r:${squash(row.reference)}`
+      : referenceKey(row.reference ?? "") === ""
+        ? narration
+        : `r:${referenceKey(row.reference ?? "")}`;
+    const base = [statement.account ?? "", row.date, row.amountMinor, row.direction, said].join(
+      "|",
+    );
     const position = seen.get(base) ?? 0;
     seen.set(base, position + 1);
     return NodeCrypto.createHash("sha256").update(`${base}|${position}`).digest("hex").slice(0, 32);
@@ -233,8 +246,12 @@ export const knownRows = Effect.fn("KinBankList.known")(function* (
   if (def === undefined || statement.rows.length === 0) return known;
   const sql = yield* SqlClient.SqlClient;
   const zone = yield* ownerZone(orgId);
-  const fingerprints = rowFingerprints(statement);
-  const keyed = new Map(fingerprints.map((one, index) => [originKeyOf(one), index]));
+  const keyed = new Map(
+    [...rowFingerprints(statement, true), ...rowFingerprints(statement)].map((one, at) => [
+      originKeyOf(one),
+      at % statement.rows.length,
+    ]),
+  );
   const origins = [...keyed.keys()];
   for (let at = 0; at < origins.length; at += 500) {
     const rows = yield* sql<{
@@ -285,9 +302,9 @@ export const knownRows = Effect.fn("KinBankList.known")(function* (
       const account = last4(typeof fields.account === "string" ? fields.account : null);
       if (account !== null && statement.account !== null && account !== statement.account)
         return false;
-      const reference = typeof fields.reference === "string" ? squash(fields.reference) : "";
-      if (reference !== "" && row.reference !== null && squash(row.reference) !== "")
-        return reference === squash(row.reference);
+      const reference = typeof fields.reference === "string" ? referenceKey(fields.reference) : "";
+      if (reference !== "" && row.reference !== null && referenceKey(row.reference) !== "")
+        return reference === referenceKey(row.reference);
       const said = squash(`${other.title} ${other.notes}`);
       const narration = squash(row.description);
       return (

@@ -119,6 +119,8 @@ export const KinStatementReviewCard = Schema.Struct({
   heldBack: Schema.optional(Text),
   /** Rows already in Bank transactions from an earlier statement: counted, not shown again. */
   recorded: NonNegativeInt,
+  /** Rows this statement itself recorded, which Undo takes back even before the next Confirm. */
+  recordedHere: Schema.optional(NonNegativeInt),
   /** The Expenses categories a new expense may take. */
   categories: Schema.Array(Label),
   /** `replaced`: a fresh read of the statement posted a newer card. */
