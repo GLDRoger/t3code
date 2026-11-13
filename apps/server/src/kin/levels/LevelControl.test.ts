@@ -45,7 +45,7 @@ import { recordFacts } from "../approvals/grantFacts.ts";
 import * as KeySeal from "../approvals/KeySeal.ts";
 import { makeKinHandlers } from "../rpcHandlers.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
-import { dormantLeadDependencies } from "../lead/layer.testkit.ts";
+import { kinHostDependencies } from "../lead/layer.testkit.ts";
 
 const session = {
   sessionId: AuthSessionId.make("owner-session"),
@@ -60,7 +60,7 @@ const ownerKey = makeApprovalKey();
 const memberKey = makeApprovalKey();
 // The test seal, so `seed` can write key rows as the server activates them.
 const root = Kin.layerWithSeal(KeySeal.layerTest()).pipe(
-  Layer.provide(dormantLeadDependencies),
+  Layer.provideMerge(kinHostDependencies),
   Layer.provideMerge(Chat.layer),
   Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
   Layer.provideMerge(

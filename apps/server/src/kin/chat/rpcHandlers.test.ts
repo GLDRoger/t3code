@@ -1,5 +1,5 @@
 import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
-import { dormantLeadDependencies } from "../lead/layer.testkit.ts";
+import { kinHostDependencies } from "../lead/layer.testkit.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Hub from "./KinChatHub.ts";
@@ -70,7 +70,7 @@ const session = {
 };
 const configured = ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }));
 const root = Kin.layer.pipe(
-  Layer.provide(dormantLeadDependencies),
+  Layer.provideMerge(kinHostDependencies),
   Layer.provideMerge(Chat.layer),
   Layer.provide(configured),
 );
@@ -648,7 +648,7 @@ it.effect("denies settings-only sessions before Kin handlers execute", () =>
       (yield* client["kin.orgs.list"]({}).pipe(Effect.flip))._tag,
       "EnvironmentAuthorizationError",
     );
-  }).pipe(Effect.provide(Sqlite.layerMemory)),
+  }).pipe(Effect.provide(Layer.merge(Sqlite.layerMemory, kinHostDependencies))),
 );
 
 it.effect("drops a failed waiting read without ending the chat list stream", () =>

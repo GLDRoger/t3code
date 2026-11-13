@@ -2578,5 +2578,6 @@ const make = Effect.gen(function* () {
 
 export const layer = Layer.effect(KinChatService, make).pipe(
   Layer.provideMerge(TaskCard.layer),
-  Layer.provide(Floor.layer),
+  // Statement card taps open the floor from Work's RPCs, through `KinServer`'s services.
+  Layer.provideMerge(Floor.layer),
 );

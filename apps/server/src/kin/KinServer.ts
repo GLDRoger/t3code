@@ -6,6 +6,8 @@ import { KinIdentity } from "./chat/KinIdentity.ts";
 import { KinChatService } from "./chat/KinChatService.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
 import type { KinGroups } from "./chat/KinGroups.ts";
+import type { KinRefreshHub } from "./chat/KinRefreshHub.ts";
+import type { KinFloor } from "./floor/KinFloor.ts";
 import type { KinVisualHosts } from "./chat/KinVisualHosts.ts";
 import { KinBudget } from "./lead/KinBudget.ts";
 import type { KinChatRepository } from "./chat/KinChatRepository.ts";
@@ -37,6 +39,8 @@ export type Services =
   | SqlClient.SqlClient
   | KinEventQueue
   | KinChatHub
+  | KinRefreshHub
+  | KinFloor
   | KinStop
   | KinOwnerTimeZone
   | KinVisualHosts
