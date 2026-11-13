@@ -16,6 +16,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { PersistenceSqlError, toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { isOrgOwner } from "../lead/orgState.ts";
 import type { PersonIdentity } from "./KinIdentity.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 
 type HostsError = KinChatError | PersistenceSqlError;
 
@@ -63,6 +64,7 @@ export class KinVisualHosts extends Context.Service<
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const refresh = yield* KinRefreshObserver;
 
   const owner = Effect.fn("KinVisualHosts.owner")(function* (
     people: ReadonlyArray<PersonIdentity>,
@@ -102,6 +104,7 @@ const make = Effect.gen(function* () {
         yield* sql`INSERT INTO kin_visual_hosts (org_id, host, added_by, created_at)
           VALUES (${input.orgId}, ${host}, ${person.personId}, ${createdAt})
           ON CONFLICT DO NOTHING`;
+        yield* refresh.touch(input.orgId, "visualHosts");
         return yield* view(input.orgId);
       },
       sql.withTransaction,
@@ -112,6 +115,7 @@ const make = Effect.gen(function* () {
       // Compared as stored, so a row that would no longer pass the check can still be removed.
       const host = input.host.trim().toLowerCase();
       yield* sql`DELETE FROM kin_visual_hosts WHERE org_id = ${input.orgId} AND host = ${host}`;
+      yield* refresh.touch(input.orgId, "visualHosts");
       return yield* view(input.orgId);
     }, Effect.mapError(mapError)),
     served: Effect.fn("KinVisualHosts.served")(

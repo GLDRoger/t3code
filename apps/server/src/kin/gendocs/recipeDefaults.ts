@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinWorkspace, type StoredRecipe } from "./workspace.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 
 /**
  * The names of the recipes each list makes its documents with unless another is picked: the one
@@ -46,5 +47,6 @@ export const setDefaultRecipe = Effect.fn("KinRecipeDefaults.set")(function* (
     VALUES (${orgId}, ${recipe.list}, ${name}, ${personId}, ${now})
     ON CONFLICT (org_id, list) DO UPDATE SET recipe = excluded.recipe,
       set_by_person_id = excluded.set_by_person_id, set_at = excluded.set_at`;
+  yield* (yield* KinRefreshObserver).touch(orgId, "recipes");
   return { list: recipe.list, recipe: name };
 });

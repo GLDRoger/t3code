@@ -12,6 +12,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { iso } from "./recordRows.ts";
 
 /**
@@ -99,6 +100,7 @@ export const setProfile = Effect.fn("KinCompanyProfile.set")(function* (
         ON CONFLICT (org_id) DO UPDATE SET profile_json = excluded.profile_json,
           rev = kin_company_profile.rev + 1, updated_at = excluded.updated_at,
           updated_by_kind = excluded.updated_by_kind, updated_by_id = excluded.updated_by_id`;
+      yield* (yield* KinRefreshObserver).touch(orgId, "company");
       return yield* readProfile(orgId);
     }),
   );

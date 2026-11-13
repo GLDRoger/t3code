@@ -10,6 +10,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinStreams";
 import { KIN_DOCS_LABEL, kinDocsLiveStream } from "@t3tools/client-runtime/kin/kinDocsStream";
 import { KIN_WORK_LABEL, kinWorkLiveStream } from "@t3tools/client-runtime/kin/kinWorkStream";
+import { createKinRefreshTriggers } from "@t3tools/client-runtime/kin/kinRefresh";
 import type { KinChatState } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
   createEnvironmentQueryAtomFamily,
@@ -239,6 +240,8 @@ const docDiffRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
 });
 const readDocDiff = guardedRead(docDiffRead);
 
+/** A read refreshed on a new session and whenever the host says its topic changed. */
+const kinRefreshOn = createKinRefreshTriggers(connectionAtomRuntime);
 const readOrgs = guardedRead(orgsRead);
 const readLeads = guardedRead(leadsRead);
 const readHistory = guardedRead(historyRead);
@@ -291,8 +294,7 @@ const leads = createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
     return yield* readLeads(input);
   }),
   staleTimeMs: 30_000,
-  refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
-    environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  refreshTrigger: kinRefreshOn("leads"),
 });
 
 /** The same list with the owner's retired agents after the live ones. Only the owner asks. */
@@ -370,8 +372,7 @@ export const kinClient = {
       return yield* readLeadAccess(input);
     }),
     staleTimeMs: 30_000,
-    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
-      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+    refreshTrigger: kinRefreshOn("leads"),
   }),
   /** The outside hosts the owner lets visuals load from. Owner only. */
   visualHosts: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
@@ -380,8 +381,7 @@ export const kinClient = {
       return yield* readVisualHosts(input);
     }),
     staleTimeMs: 30_000,
-    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
-      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+    refreshTrigger: kinRefreshOn("visualHosts"),
   }),
   visualHostAllow: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:visual-hosts:allow",
@@ -411,8 +411,7 @@ export const kinClient = {
       return yield* readPeople(input);
     }),
     staleTimeMs: 30_000,
-    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
-      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+    refreshTrigger: kinRefreshOn("people"),
   }),
   /** The invite links nobody has opened yet. The owner's Team page reads them. */
   invites: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
@@ -421,8 +420,7 @@ export const kinClient = {
       return yield* readInvites(input);
     }),
     staleTimeMs: 30_000,
-    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
-      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+    refreshTrigger: kinRefreshOn("people"),
   }),
   /** Makes a teammate's link. The answer carries the secret once; nothing here keeps it. */
   inviteCreate: createEnvironmentRpcCommand(connectionAtomRuntime, {
@@ -584,8 +582,7 @@ export const kinClient = {
       return yield* readMemory(input);
     }),
     staleTimeMs: 60_000,
-    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
-      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+    refreshTrigger: kinRefreshOn("memory"),
   }),
   memorySetVisibility: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:memory:set-visibility",
@@ -624,8 +621,7 @@ export const kinClient = {
       return yield* readWorkZone(input);
     }),
     staleTimeMs: 5 * 60_000,
-    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
-      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+    refreshTrigger: kinRefreshOn("timeZone"),
   }),
   /** One page of the clients list, or of the projects list; each list's controller decides when. */
   workClients: workClientsRead,
@@ -819,8 +815,7 @@ export const kinClient = {
       return yield* readCompanyProfile(input);
     }),
     staleTimeMs: 30_000,
-    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
-      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+    refreshTrigger: kinRefreshOn("company"),
   }),
   companyProfileSet: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:company:set",
@@ -871,8 +866,7 @@ export const kinClient = {
       return yield* readRecipes(input);
     }),
     staleTimeMs: 30_000,
-    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
-      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+    refreshTrigger: kinRefreshOn("recipes"),
   }),
   docRender: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:docs:render",

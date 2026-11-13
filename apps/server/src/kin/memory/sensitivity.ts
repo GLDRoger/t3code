@@ -15,6 +15,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import type { TurnAudience } from "../lead/Audience.ts";
 import { entropy, secretExceptions, secretRules } from "./secretScan.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 
 /** What a shared turn may receive of an item's head: these fields, as they are, and no others. */
 export const SHARED_HEAD_FIELDS = ["id", "kind", "title", "what", "links", "shared_from"] as const;
@@ -281,6 +282,7 @@ export const hold = Effect.fn("KinSensitivity.hold")(function* (orgId: KinOrgId,
   yield* sql`INSERT INTO kin_memory_labels (org_id, item_id, held_at)
     VALUES (${orgId}, ${itemId}, ${now})
     ON CONFLICT (org_id, item_id) DO UPDATE SET held_at = COALESCE(held_at, excluded.held_at)`;
+  yield* (yield* KinRefreshObserver).touch(orgId, "memory");
 });
 
 /**
@@ -300,6 +302,7 @@ export const authorise = Effect.fn("KinSensitivity.authorise")(function* (
     ON CONFLICT (org_id, item_id) DO UPDATE SET held_at = NULL,
       shared_content = excluded.shared_content, shared_how = excluded.shared_how,
       shared_at = excluded.shared_at, suggested_content = NULL, suggested_at = NULL`;
+  yield* (yield* KinRefreshObserver).touch(orgId, "memory");
 });
 
 /**
@@ -317,6 +320,7 @@ export const retireLabels = Effect.fn("KinSensitivity.retireLabels")(function* (
     WHERE org_id = ${orgId} AND item_id IN ${sql.in([...new Set(itemIds)])}
       AND (shared_content IS NOT NULL OR shared_how IS NOT NULL OR shared_at IS NOT NULL
         OR suggested_content IS NOT NULL OR suggested_at IS NOT NULL)`;
+  yield* (yield* KinRefreshObserver).touch(orgId, "memory");
 });
 
 /**
@@ -347,6 +351,7 @@ export const suggest = Effect.fn("KinSensitivity.suggest")(function* (
         VALUES (${orgId}, ${itemId}, ${content}, ${now})
         ON CONFLICT (org_id, item_id) DO UPDATE SET
           suggested_content = excluded.suggested_content, suggested_at = excluded.suggested_at`;
+      yield* (yield* KinRefreshObserver).touch(orgId, "memory");
     }),
   );
 });
@@ -366,6 +371,7 @@ export const classify = Effect.fn("KinSensitivity.classify")(function* (
       ON CONFLICT (org_id, item_id) DO UPDATE SET classified = excluded.classified
         WHERE kin_memory_labels.classified IS NULL
       RETURNING item_id`;
+    if (inserted.length > 0) yield* (yield* KinRefreshObserver).touch(orgId, "memory");
     if (inserted.length > 0 && !sensitive) yield* suggest(orgId, itemId, content);
   }
 });

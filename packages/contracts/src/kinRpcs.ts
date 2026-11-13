@@ -26,6 +26,7 @@ import { KinWorkRpcs, KIN_WORK_RPC_SCOPES } from "./kinWork.ts";
 import { KinDocsRpcs, KIN_DOCS_RPC_SCOPES } from "./kinDocs.ts";
 import { KinFinanceRpcs, KIN_FINANCE_RPC_SCOPES } from "./kinFinance.ts";
 import { KinStatementRpcs, KIN_STATEMENT_RPC_SCOPES } from "./kinStatements.ts";
+import { KinRefreshRpcs, KIN_REFRESH_RPC_SCOPES } from "./kinRefresh.ts";
 import {
   KinChatError,
   KinChatRpcs,
@@ -184,6 +185,7 @@ export const KinRpcs = [
   ...KinPushRpcs,
   ...KinPeopleRpcs,
   ...KinWorkerNetworkRpcs,
+  ...KinRefreshRpcs,
 ] as const;
 export const KIN_RPC_SCOPES = {
   ...KIN_CHAT_RPC_SCOPES,
@@ -198,6 +200,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_PEOPLE_RPC_SCOPES,
   ...KIN_VISUAL_RPC_SCOPES,
   ...KIN_WORKER_NETWORK_RPC_SCOPES,
+  ...KIN_REFRESH_RPC_SCOPES,
   "kin.budget.get": AuthOrchestrationReadScope,
   "kin.budget.set": AuthSettingsWriteScope,
   // A teammate's app shows that Kin is stopped; the server drops the owner's reason for them.
@@ -246,6 +249,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.people.removeAccess": "kin-people",
   "kin.people.setGithubLogin": "kin-people",
 
+  "kin.refreshes.subscribe": "kin-refreshes",
   "kin.budget.get": "kin-budget",
   "kin.budget.set": "kin-budget",
   "kin.org.get": "kin-org",

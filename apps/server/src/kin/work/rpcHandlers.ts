@@ -2,6 +2,7 @@ import {
   KinChatError,
   KinDocsRpcs,
   KinFinanceRpcs,
+  KinRefreshRpcs,
   KinStatementRpcs,
   KinWorkRpcs,
 } from "@t3tools/contracts";
@@ -13,6 +14,7 @@ import * as Stream from "effect/Stream";
 
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { subscribeRefreshes } from "../chat/refreshes.ts";
 import { KinServer } from "../KinServer.ts";
 import * as Clients from "./ownerClients.ts";
 import * as Docs from "./ownerDocs.ts";
@@ -23,6 +25,7 @@ import * as Work from "./ownerWork.ts";
 const group = RpcGroup.make(...KinWorkRpcs, ...KinDocsRpcs);
 const finance = RpcGroup.make(...KinFinanceRpcs);
 const statements = RpcGroup.make(...KinStatementRpcs);
+const refreshes = RpcGroup.make(...KinRefreshRpcs);
 const disabled = new KinChatError({
   reason: "disabled",
   message: "Kin is not running on this host.",
@@ -34,7 +37,7 @@ const defect = (cause: unknown) =>
     ),
   );
 
-/** Thin transport: resolve the session's people, then one owner-checked Work or Docs call. */
+/** Thin transport: resolve the session's people, then one Work, Docs or refresh call. */
 export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
   session: AuthenticatedSession,
 ) {
@@ -239,6 +242,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
           return yield* call((people) => Statements.forgetAccount(people, input));
         },
       ),
+    }),
+    ...refreshes.of({
+      "kin.refreshes.subscribe": (input) => stream((people) => subscribeRefreshes(people, input)),
     }),
   };
 });

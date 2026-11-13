@@ -66,6 +66,7 @@ import {
 import type { KinChatState } from "@t3tools/client-runtime/kin/kinInboxModel";
 import { KIN_DOCS_LABEL, kinDocsLiveStream } from "@t3tools/client-runtime/kin/kinDocsStream";
 import { KIN_WORK_LABEL, kinWorkLiveStream } from "@t3tools/client-runtime/kin/kinWorkStream";
+import { createKinRefreshTriggers } from "@t3tools/client-runtime/kin/kinRefresh";
 
 export type { KinSynced } from "@t3tools/client-runtime/kin/kinStreams";
 
@@ -84,6 +85,8 @@ const historyRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
 });
 const sessionGeneration = ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
   environmentSessionGenerationAtom(connectionAtomRuntime, environmentId);
+/** A read refreshed on a new session and whenever the host says its topic changed. */
+const kinRefreshOn = createKinRefreshTriggers(connectionAtomRuntime);
 
 function guardedRead<Input, A, E>(command: {
   readonly run: (
@@ -346,7 +349,7 @@ const leads = createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
     return yield* readLeads(input);
   }),
   staleTimeMs: 15_000,
-  refreshTrigger: sessionGeneration,
+  refreshTrigger: kinRefreshOn("leads"),
 });
 /** The same list with the owner's retired agents after the live ones. Only the owner asks. */
 const withRetired = (orgId: KinOrgId): KinLeadsListInput => ({ orgId, includeRetired: true });
@@ -452,7 +455,7 @@ export const kinClient = {
       return yield* readLeadAccess(input);
     }),
     staleTimeMs: 15_000,
-    refreshTrigger: sessionGeneration,
+    refreshTrigger: kinRefreshOn("leads"),
   }),
   leadAllow: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:lead-access:allow",
@@ -472,7 +475,7 @@ export const kinClient = {
       return yield* readPeople(input);
     }),
     staleTimeMs: 30_000,
-    refreshTrigger: sessionGeneration,
+    refreshTrigger: kinRefreshOn("people"),
   }),
   /** The invite links nobody has opened yet. The owner's Team page reads them. */
   invites: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
@@ -481,8 +484,7 @@ export const kinClient = {
       return yield* readInvites(input);
     }),
     staleTimeMs: 30_000,
-    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
-      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+    refreshTrigger: kinRefreshOn("people"),
   }),
   /** Makes a teammate's link. The answer carries the secret once; nothing here keeps it. */
   inviteCreate: createEnvironmentRpcCommand(connectionAtomRuntime, {
@@ -571,7 +573,7 @@ export const kinClient = {
       return yield* readVisualHosts(input);
     }),
     staleTimeMs: 30_000,
-    refreshTrigger: sessionGeneration,
+    refreshTrigger: kinRefreshOn("visualHosts"),
   }),
   /** Owner-only: lets every visual in the org load from one more host. */
   visualHostAllow: createEnvironmentRpcCommand(connectionAtomRuntime, {
@@ -637,7 +639,7 @@ export const kinClient = {
       return yield* readMemory(input);
     }),
     staleTimeMs: 60_000,
-    refreshTrigger: sessionGeneration,
+    refreshTrigger: kinRefreshOn("memory"),
   }),
   /** Docs are never saved on the device either: a doc may be private to the owner. */
   docsLive: createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {
@@ -713,7 +715,7 @@ export const kinClient = {
       return yield* readWorkZone(input);
     }),
     staleTimeMs: 5 * 60_000,
-    refreshTrigger: sessionGeneration,
+    refreshTrigger: kinRefreshOn("timeZone"),
   }),
   /** One page of the clients list, or of the projects list; each list's controller decides when. */
   workClients: workClientsRead,
@@ -855,7 +857,7 @@ export const kinClient = {
       return yield* readCompanyProfile(input);
     }),
     staleTimeMs: 30_000,
-    refreshTrigger: sessionGeneration,
+    refreshTrigger: kinRefreshOn("company"),
   }),
   companyProfileSet: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:company:set",
@@ -905,7 +907,7 @@ export const kinClient = {
       return yield* readRecipes(input);
     }),
     staleTimeMs: 30_000,
-    refreshTrigger: sessionGeneration,
+    refreshTrigger: kinRefreshOn("recipes"),
   }),
   docRender: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:docs:render",

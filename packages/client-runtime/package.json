@@ -719,6 +719,10 @@
       "types": "./src/kin/kinDocsStream.ts",
       "default": "./src/kin/kinDocsStream.ts"
     },
+    "./kin/kinRefresh": {
+      "types": "./src/kin/kinRefresh.ts",
+      "default": "./src/kin/kinRefresh.ts"
+    },
     "./kin/kinWorkStream": {
       "types": "./src/kin/kinWorkStream.ts",
       "default": "./src/kin/kinWorkStream.ts"

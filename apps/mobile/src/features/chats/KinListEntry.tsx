@@ -91,6 +91,7 @@ import {
 import {
   kinWorkChoicesAtom,
   useKinWorkDirectory,
+  useKinWorkItemWatch,
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./state/useKinWork";
@@ -803,6 +804,7 @@ function KinPaymentForm(props: KinWorkTarget & { readonly itemKey: KinRecordKey 
     null,
   );
   const item = state._tag === "ready" ? state.item : null;
+  useKinWorkItemWatch(props, itemKey, item === null ? null : item.seq);
   const directory = useKinWorkDirectory(props, allowed);
   const lists = useKinLists(props, { enabled: allowed, archived: true, seq: null });
   const context = useKinListContext(props, directory, allowed);
