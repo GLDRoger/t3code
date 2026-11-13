@@ -29,6 +29,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { ServerConfig } from "../../config.ts";
 import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
@@ -505,6 +506,8 @@ export const makeCollectorLayer = (options: { readonly sweepPage?: number } = {}
       // Workers elsewhere have no shell (`KinWorkSandbox`), so file tools are all that touched out/.
       const shellHost = (yield* HostProcess.Platform) === "linux";
       const jobContext = Effect.provideService(SqlClient.SqlClient, sql);
+      // A job finishes on the worker's turn, whose context holds none of Kin's services.
+      const refresh = yield* KinRefreshObserver;
       const cleanup = (orgId: KinOrgId, workerId: KinWorkerId) =>
         cleanupJob(orgId, workerId).pipe(
           jobContext,
@@ -723,6 +726,7 @@ export const makeCollectorLayer = (options: { readonly sweepPage?: number } = {}
           } satisfies Outcome;
         const sensitive = yield* labelChange(orgId, recipe, change, job.sensitive === 1).pipe(
           withWorkspace,
+          Effect.provideService(KinRefreshObserver, refresh),
         );
         const left =
           change.left.length === 0

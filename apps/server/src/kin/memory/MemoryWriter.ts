@@ -1,5 +1,6 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Supersession fingerprints compare in-process strings synchronously.
 import * as NodeCrypto from "node:crypto";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { toPersistenceSqlError, type PersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -263,10 +264,12 @@ const retired = (head: {
 const make = Effect.gen(function* () {
   const memory = yield* Memory;
   const sql = yield* SqlClient.SqlClient;
+  const refresh = yield* KinRefreshObserver;
   /** Ends who may know items as they stop being true, before the commit that retires them. */
   const endSharing = (orgId: KinOrgId, itemIds: ReadonlyArray<string>) =>
     retireLabels(orgId, itemIds).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.provideService(KinRefreshObserver, refresh),
       Effect.mapError(toPersistenceSqlError("MemoryWriter.endSharing")),
     );
   // The default-branch head `reconcileSharing` last swept, so an unchanged branch costs one read.

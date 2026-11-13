@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off -- the guard reads source files synchronously, outside any Effect.
 import { assert, describe, it } from "@effect/vitest";
 import {
   AuthSessionId,
