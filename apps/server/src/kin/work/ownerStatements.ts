@@ -149,7 +149,6 @@ export const unlock = Effect.fn("KinStatements.unlock")(function* (
       statementId: input.statementId,
       widgetId: stored.passwordWidgetId,
       tap: "unlock",
-      fileName: stored.fileName,
       outcome: settledLine(settled),
     });
   return { status: "opened" as const };
@@ -181,13 +180,23 @@ export const rereadStatement = Effect.fn("KinStatements.reread")(function* (inpu
   const sql = yield* SqlClient.SqlClient;
   const now = yield* Clock.currentTimeMillis;
   if (outcome._tag === "needs_password" || outcome._tag === "wrong_password") {
+    // Read again starts the file's tries over, on the card and from the chat alike.
     yield* sql.withTransaction(
-      askPassword({
-        orgId: input.orgId,
-        statementId: input.statementId,
-        agentId: stored.agentId,
-        chatId: stored.chatId,
-        fileName: stored.fileName,
+      Effect.gen(function* () {
+        yield* sql`UPDATE kin_bank_statements SET password_attempts = 0, chat_password_attempts = 0
+          WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId}`;
+        const widgetId = yield* askPassword({
+          orgId: input.orgId,
+          statementId: input.statementId,
+          agentId: stored.agentId,
+          chatId: stored.chatId,
+          fileName: stored.fileName,
+        });
+        const card = yield* passwordCard(input.orgId, widgetId);
+        if (card?.detail !== undefined && card.status === "locked") {
+          const { detail: _detail, ...rest } = card;
+          yield* updateCard(input.orgId, widgetId, rest, false);
+        }
       }),
     );
     return { status: "needs_password" as const, stored, settled: undefined };
@@ -223,7 +232,6 @@ export const rereadTap = (
         statementId: done.stored.statementId,
         widgetId,
         tap: "read_again" as const,
-        fileName: done.stored.fileName,
         outcome: settledLine(done.settled),
       };
 };
@@ -319,7 +327,6 @@ const tellOutcome = Effect.fn("KinStatements.tellOutcome")(function* (
     statementId: input.statementId,
     widgetId: stored.reviewWidgetId,
     tap,
-    fileName: stored.fileName,
     outcome: result.join(" "),
   });
 });

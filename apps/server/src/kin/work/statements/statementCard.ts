@@ -20,6 +20,13 @@ import type { Statement } from "./statementTable.ts";
  * what the owner chose, rows the device never loaded included.
  */
 
+/** A bank row this statement recorded before that a fresh reading has no row for. */
+export type Missing = {
+  readonly key: string;
+  readonly date: string | null;
+  readonly amountMinor: number | null;
+  readonly direction: "debit" | "credit" | null;
+};
 export type Review = {
   readonly statement: Statement;
   readonly format: string | null;
@@ -27,6 +34,7 @@ export type Review = {
   readonly known: ReadonlyMap<number, KnownRow>;
   /** Every row not already explained in Bank transactions. */
   readonly matches: ReadonlyMap<number, RowMatch>;
+  readonly missing?: ReadonlyArray<Missing>;
 };
 
 const hash = (text: string) => NodeCrypto.createHash("sha256").update(text).digest("hex");
@@ -156,17 +164,29 @@ export const reviewHash = (statementId: string, review: Review) => {
   ).slice(0, 32);
 };
 
-/** Why no match starts ticked, when the rows themselves may be wrong. */
 /** Rows a lead read from images of a scan: no text on the page to check them against. */
 const fromScan = (review: Review) => review.source === "agent" && review.format !== "pdf";
+/** Why no match starts ticked, when the rows themselves may be wrong. */
 const heldBackWhy = (review: Review) =>
-  fromScan(review)
-    ? "Nothing is ticked: these rows were read from images of a scan. Check each against the statement, then tick it."
-    : review.statement.check.status === "off"
-      ? "Nothing is ticked: the statement doesn't add up, so a row may be misread. Check each, then tick it."
-      : review.statement.check.status === "unchecked"
-        ? "Nothing is ticked: the statement gives no balances to check its rows against. Check each, then tick it."
-        : undefined;
+  (review.missing?.length ?? 0) > 0
+    ? "Nothing is ticked: rows recorded before from this statement aren't all in this reading (named above). Check the statement, then tick what's right."
+    : fromScan(review)
+      ? "Nothing is ticked: these rows were read from images of a scan. Check each against the statement, then tick it."
+      : review.statement.check.status === "off"
+        ? "Nothing is ticked: the statement doesn't check out, so a row may be misread. Check each, then tick it."
+        : review.statement.check.status === "unchecked"
+          ? "Nothing is ticked: Kin couldn't check these rows against the statement's own balances and text. Check each, then tick it."
+          : undefined;
+const missingLine = (missing: ReadonlyArray<Missing>, currency: string) =>
+  `Recorded before, not found in this reading: ${missing
+    .slice(0, 4)
+    .map(
+      (one) =>
+        `${one.date === null ? "undated" : shortDay(one.date)} ${one.amountMinor === null ? "" : money(one.amountMinor, currency)}${one.direction === null ? "" : one.direction === "credit" ? " in" : " out"} (${one.key})`,
+    )
+    .join(
+      ", ",
+    )}${missing.length > 4 ? `, and ${missing.length - 4} more` : ""}. They stay recorded until you undo them.`;
 
 export const defaultSelection = (review: Review): KinStatementSelection => ({
   revision: 0,
@@ -324,8 +344,7 @@ export const reviewCard = (
       currency,
     );
   const recorded = statement.rows.length - review.matches.size;
-  // Read again, rows this statement recorded are already counted among the recorded ones.
-  const kept = [...held.keys()].filter((row) => review.matches.has(row)).length;
+  const missing = review.missing ?? [];
   const account =
     statement.account === null
       ? (statement.bank ?? "Statement")
@@ -353,15 +372,20 @@ export const reviewCard = (
         : [
             `${recorded} row${recorded === 1 ? " is" : "s are"} already recorded in Bank transactions.`,
           ]),
-      ...(kept === 0
+      ...(held.size === 0
         ? []
         : [
-            `${kept} row${kept === 1 ? " is" : "s are"} already recorded from this statement and stay${kept === 1 ? "s" : ""} as ${kept === 1 ? "it is" : "they are"}.`,
+            `${held.size} row${held.size === 1 ? " was" : "s were"} recorded from this statement before; Undo takes ${held.size === 1 ? "it" : "them"} back.`,
           ]),
+      ...(missing.length === 0 ? [] : [missingLine(missing, currency)]),
       ...(fromScan(review)
         ? ["These rows were read from images of a scanned statement: check them against it."]
         : review.source === "agent"
-          ? ["These rows were read from the statement's pages and checked against its balances."]
+          ? [
+              statement.check.status === "adds_up"
+                ? "Kin's lead read these rows from the statement's pages, and Kin found each one in the PDF's own text."
+                : "Kin's lead read these rows from the statement's pages; Kin couldn't tie them all to the PDF's text.",
+            ]
           : []),
     ].map((line) => clamp(line, 300)),
     balance: statement.check.status,
@@ -373,6 +397,7 @@ export const reviewCard = (
     selection,
     chosen: chosenCounts(review, selection, held),
     ...(heldBack === undefined ? {} : { heldBack }),
+    ...(held.size === 0 ? {} : { recordedHere: held.size }),
     recorded,
     categories: [...categories],
     status: "open",

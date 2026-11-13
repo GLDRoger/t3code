@@ -44,6 +44,7 @@ import BankStatements from "./migrations/K082_BankStatements.ts";
 import StatementSafety from "./migrations/K083_StatementSafety.ts";
 import RecipeDefaults from "./migrations/K084_RecipeDefaults.ts";
 import StatementReading from "./migrations/K085_StatementReading.ts";
+import StatementChatPasswords from "./migrations/K086_StatementChatPasswords.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -168,6 +169,7 @@ const loader = Migrator.fromRecord({
   "83_StatementSafety": StatementSafety,
   "84_RecipeDefaults": RecipeDefaults,
   "85_StatementReading": StatementReading,
+  "86_StatementChatPasswords": StatementChatPasswords,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

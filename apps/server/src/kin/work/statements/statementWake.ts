@@ -21,12 +21,12 @@ import { KinFloor } from "../../floor/KinFloor.ts";
 import { wakeEvent } from "../../lead/ChatWake.ts";
 import { KinEventQueue } from "../../lead/KinEventQueue.ts";
 import { formatMoney } from "../money.ts";
-import type { Settled } from "./statementReading.ts";
+import { factsOf, type Settled } from "./statementReading.ts";
 
 /**
- * What the owner did on a statement's card reaches the statement's lead as a tap, the way a choice
- * card's answer does: the owner's own message in the chat, which wakes the lead to carry on with
- * what was asked. Only the button shows in the chat; the lead reads the outcome in numbers.
+ * The owner's tap on a statement card reaches its lead as the owner's own message, as a choice
+ * card's answer does. It names the statement by Kin's id, account digits and period only: a file
+ * name or the bank's words in it would read as the owner's.
  */
 
 const encodeTap = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
@@ -63,13 +63,33 @@ export const settledLine = (settled: Settled) => {
   ].join(" ");
 };
 
+const DAY = new Intl.DateTimeFormat("en-IN", {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+  timeZone: "UTC",
+});
+const day = (date: string) => DAY.format(Date.parse(`${date}T00:00:00Z`));
+/** The statement's account digits and period, as Kin read them: digits and days only. */
+const aboutOf = (stored: {
+  readonly account: string | null;
+  readonly reviewJson: string | null;
+  readonly pagesJson: string | null;
+}) => {
+  const facts = factsOf(stored);
+  const account = /^\d{4}$/.test(facts.account ?? "") ? `••${facts.account}` : undefined;
+  const period =
+    facts.from === null || facts.to === null ? undefined : `${day(facts.from)} to ${day(facts.to)}`;
+  const said = [account, period].filter((one) => one !== undefined);
+  return said.length === 0 ? "" : ` (${said.join(", ")})`;
+};
+
 /** Posts the owner's tap on a statement card, opening the chat's floor so the lead may answer. */
 export const tellLead = Effect.fn("KinStatements.tellLead")(function* (input: {
   readonly orgId: KinOrgId;
   readonly statementId: string;
   readonly widgetId: string;
   readonly tap: StatementTap;
-  readonly fileName: string;
   readonly outcome: string;
 }) {
   const repo = yield* KinChatRepository;
@@ -81,8 +101,15 @@ export const tellLead = Effect.fn("KinStatements.tellLead")(function* (input: {
     widgetId: KinWidgetId.make(input.widgetId),
   });
   if (Option.isNone(widget)) return yield* invalid("The statement's card is gone.");
-  const [owner] = yield* sql<{ personId: string; memberId: string; agentId: string }>`SELECT
-      a.owner_person_id AS "personId", m.member_id AS "memberId", s.agent_id AS "agentId"
+  const [owner] = yield* sql<{
+    personId: string;
+    memberId: string;
+    agentId: string;
+    account: string | null;
+    reviewJson: string | null;
+    pagesJson: string | null;
+  }>`SELECT a.owner_person_id AS "personId", m.member_id AS "memberId", s.agent_id AS "agentId",
+      s.account, s.review_json AS "reviewJson", s.pages_json AS "pagesJson"
     FROM kin_bank_statements s
     JOIN kin_agents a ON a.org_id = s.org_id AND a.agent_id = s.agent_id
     JOIN kin_chat_members m ON m.org_id = s.org_id AND m.chat_id = s.chat_id
@@ -97,7 +124,7 @@ export const tellLead = Effect.fn("KinStatements.tellLead")(function* (input: {
     widgetId: input.widgetId,
     revision: widget.value.revision,
     actionId: input.tap,
-    text: `Tapped "${LABELS[input.tap]}" on the statement "${input.fileName.slice(0, 120)}". ${input.outcome}`.slice(
+    text: `Tapped "${LABELS[input.tap]}" on statement ${input.statementId}${aboutOf(owner)}. ${input.outcome}`.slice(
       0,
       3_000,
     ),

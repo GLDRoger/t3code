@@ -8,22 +8,33 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { parseAmount } from "../money.ts";
 import type { Review } from "./statementCard.ts";
 import type { FileOutcome, StatementPage } from "./statementFiles.ts";
-import { type Problem, proveStatement } from "./statementProof.ts";
+import {
+  bindRows,
+  datedLinesOf,
+  isHeaderLine,
+  type NotRow,
+  type Problem,
+  pagesFor,
+  printed,
+  proveStatement,
+  type ReadRow,
+} from "./statementProof.ts";
 import {
   attachmentBytes,
   buildReview,
   readWith,
+  reviewOf,
   saveRead,
   type StatementRow as StoredStatement,
   tryKeptPasswords,
 } from "./statementReview.ts";
-import type { Statement, StatementFacts, StatementRow } from "./statementTable.ts";
+import type { Statement, StatementFacts } from "./statementTable.ts";
 
 /**
- * The model reads, the server proves. A PDF whose table Kin reads and proves goes straight to its
- * review card; any other PDF's pages wait for the statement's lead, which gives their rows back a
- * batch of pages at a time. Kin checks the rows with arithmetic and sends the lead back to the
- * pages that break it, a bounded number of times, before the owner sees the card either way.
+ * The model reads, the server proves. A PDF whose table Kin reads and ties to its text goes
+ * straight to its review card; any other PDF's pages wait for the statement's lead, which gives
+ * their rows back a batch of pages at a time. Kin ties each row to its page's text, checks the
+ * arithmetic, and sends the lead back to the pages that break it a bounded number of times.
  */
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
@@ -33,14 +44,22 @@ const PROOF_ROUNDS = 3;
 // About 10k tokens of page text per answer: a few dense pages, so a year's statement is batches.
 const BATCH_CHARACTERS = 40_000;
 const MAX_ROWS = 20_000;
+const SCAN =
+  "These rows were read from images of a scan: the file has no text to check them against, so check the amounts.";
 
 type StoredPages = {
   readonly pages: ReadonlyArray<{ readonly text: string; readonly dated: number | null }>;
   readonly facts: StatementFacts | null;
 };
-type DraftRow = Omit<StatementRow, "index" | "foreign">;
+/** A page's rows as the lead gave them, with the dated lines it says aren't transactions. */
+type DraftPage = readonly [
+  page: number,
+  rows: ReadonlyArray<ReadRow>,
+  others?: ReadonlyArray<NotRow>,
+  part?: number,
+];
 type Draft = {
-  readonly pages: ReadonlyArray<readonly [number, ReadonlyArray<DraftRow>]>;
+  readonly pages: ReadonlyArray<DraftPage>;
   readonly opening: number | null;
   readonly closing: number | null;
 };
@@ -60,6 +79,23 @@ const draftOf = (stored: Pick<StoredStatement, "draftJson">): Draft =>
     closing: null,
   };
 
+/** The account digits and period Kin read for a statement, from its review or its pages. */
+export const factsOf = (
+  stored: Pick<StoredStatement, "account" | "reviewJson" | "pagesJson">,
+): {
+  readonly account: string | null;
+  readonly from: string | null;
+  readonly to: string | null;
+} => {
+  const read = stored.reviewJson === null ? undefined : reviewOf(stored.reviewJson)?.statement;
+  const facts = read ?? pagesOf(stored)?.facts ?? undefined;
+  return {
+    account: facts?.account ?? stored.account,
+    from: facts?.from ?? null,
+    to: facts?.to ?? null,
+  };
+};
+
 /** Whether a statement waits on its lead to read its rows. */
 export const isReading = (stored: Pick<StoredStatement, "status" | "pagesJson">) =>
   stored.status === "scanned" && stored.pagesJson !== null;
@@ -77,8 +113,26 @@ export const readStored = Effect.fn("KinStatements.readStored")(function* (
   return outcome;
 });
 
-/** Kin's own table read of a PDF, only when it proves out and counts every dated line. */
+const squash = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, "");
+const currencyOf = (texts: ReadonlyArray<string>) =>
+  /\bcurrency\s*:?\s*([A-Z]{3})\b/.exec(texts.join("\n"))?.[1] ?? "INR";
+const NO_BALANCES =
+  "Each row is printed on its page, but the statement prints no running balance beside its rows, so Kin couldn't prove each one.";
+
+/**
+ * Kin's own table read of a PDF, tied to the pages' text as a lead's rows are: proven when every
+ * row and its balance are printed there, unchecked when no balances are, undefined when it fails.
+ */
 export const provenTable = (statement: Statement, pages: ReadonlyArray<StatementPage>) => {
+  const texts = pages.map((page) => page.text);
+  const bound = bindRows({
+    kind: statement.kind,
+    currency: statement.currency,
+    opening: statement.openingMinor,
+    texts,
+    pages: pagesFor(texts, statement.rows),
+  });
+  const balanced = bound.pages.every((page) => page.rows.every((row) => row.balanceMinor !== null));
   const proof = proveStatement({
     kind: statement.kind,
     currency: statement.currency,
@@ -86,12 +140,15 @@ export const provenTable = (statement: Statement, pages: ReadonlyArray<Statement
     closing: statement.closingMinor,
     from: statement.from,
     to: statement.to,
-    pages: [{ page: 1, rows: statement.rows, dated: null }],
+    pages: bound.pages,
+    bound: {
+      problems: bound.problems,
+      unproven: balanced ? bound.unproven : [NO_BALANCES, ...bound.unproven],
+    },
   });
-  const dated = pages.reduce((sum, page) => sum + page.dated, 0);
-  return proof.check.status === "adds_up" && statement.rows.length === dated
-    ? { ...statement, check: proof.check }
-    : undefined;
+  return proof.check.status === "off"
+    ? undefined
+    : { ...statement, rows: bound.pages.flatMap((page) => page.rows), check: proof.check };
 };
 
 export type Settled =
@@ -117,7 +174,13 @@ export const settleOutcome = Effect.fn("KinStatements.settle")(function* (input:
         : outcome.statement;
     const ready = outcome.pages === undefined ? statement : provenTable(statement, outcome.pages);
     if (ready !== undefined) {
-      const review = yield* buildReview(input.orgId, ready, outcome.format, "file");
+      const review = yield* buildReview(
+        input.orgId,
+        ready,
+        outcome.format,
+        "file",
+        input.statementId,
+      );
       yield* sql.withTransaction(saveRead({ ...input, review }));
       return { _tag: "card", review } satisfies Settled;
     }
@@ -152,24 +215,30 @@ export const settleOutcome = Effect.fn("KinStatements.settle")(function* (input:
   } satisfies Settled;
 });
 
-/** The next pages the lead hasn't given rows for, as many as fit one answer. */
-const nextBatch = (stored: StoredPages, draft: Draft, only?: ReadonlyArray<number>) => {
-  const done = new Set(draft.pages.map(([page]) => page));
-  const wanted =
-    only ?? stored.pages.flatMap((_, index) => (done.has(index + 1) ? [] : [index + 1]));
-  const batch: Array<number> = [];
+/** A page's text in parts that fit one answer, split between lines. */
+const partsOf = (text: string) => {
+  if (text.length <= BATCH_CHARACTERS) return [text];
+  const parts: Array<string> = [];
+  let part: Array<string> = [];
   let size = 0;
-  for (const page of wanted) {
-    const length = stored.pages[page - 1]?.text.length ?? 0;
-    if (batch.length > 0 && size + length > BATCH_CHARACTERS) break;
-    batch.push(page);
-    size += length;
+  for (const line of text.split("\n")) {
+    if (part.length > 0 && size + line.length + 1 > BATCH_CHARACTERS) {
+      parts.push(part.join("\n"));
+      part = [];
+      size = 0;
+    }
+    part.push(line);
+    size += line.length + 1;
   }
-  return batch;
+  parts.push(part.join("\n"));
+  return parts;
 };
 
 export type PageText = {
   readonly page: number;
+  /** From 1, when a long page comes in parts. */
+  readonly part: number;
+  readonly parts: number;
   readonly text: string;
   readonly datedLines: number | null;
 };
@@ -181,38 +250,63 @@ export type Reading = {
   /** The table's column header, from a page this batch doesn't hold: banks print it once. */
   readonly header?: { readonly page: number; readonly line: string };
 };
-/** The first line naming a date, the narration and an amount: the columns the rows sit under. */
-const headerOf = (stored: StoredPages) => {
-  for (const [at, page] of stored.pages.entries())
-    for (const line of page.text.split("\n"))
-      if (
-        /\bdate\b/i.test(line) &&
-        /narration|description|particular|detail/i.test(line) &&
-        /withdrawal|debit|deposit|credit|amount/i.test(line)
-      )
-        return { page: at + 1, line };
-  return undefined;
+
+const partKey = (page: number, part: number) => `${page}:${part}`;
+const donePages = (stored: StoredPages, draft: Draft) => {
+  const done = new Set(draft.pages.map(([page, , , part]) => partKey(page, part ?? 1)));
+  return stored.pages.flatMap((one, at) =>
+    partsOf(one.text).every((_, part) => done.has(partKey(at + 1, part + 1))) ? [at + 1] : [],
+  );
 };
-const reading = (stored: StoredPages, draft: Draft, only?: ReadonlyArray<number>): Reading => {
-  const pages = nextBatch(stored, draft, only);
+
+/** The next pages, or parts of pages, the lead hasn't given rows for: as many as fit one answer. */
+export const readingFor = (
+  stored: StoredPages,
+  draft: Draft,
+  only?: ReadonlyArray<number>,
+): Reading => {
+  const done = new Set(draft.pages.map(([page, , , part]) => partKey(page, part ?? 1)));
+  const units = stored.pages.flatMap((one, at) => {
+    const parts = partsOf(one.text);
+    return parts.map((text, part) => ({
+      page: at + 1,
+      part: part + 1,
+      parts: parts.length,
+      text,
+      datedLines: datedLinesOf(text),
+    }));
+  });
+  const wanted = units.filter((unit) =>
+    only === undefined ? !done.has(partKey(unit.page, unit.part)) : only.includes(unit.page),
+  );
+  const batch: Array<PageText> = [];
+  let size = 0;
+  for (const unit of wanted) {
+    if (batch.length > 0 && size + unit.text.length > BATCH_CHARACTERS) break;
+    batch.push(unit);
+    size += unit.text.length;
+  }
   const header = headerOf(stored);
   return {
     total: stored.pages.length,
-    read: draft.pages.length,
+    read: donePages(stored, draft).length,
     scanned: stored.facts === null && stored.pages.every((page) => page.text === ""),
-    pages: pages.map((page) => ({
-      page,
-      text: stored.pages[page - 1]!.text,
-      datedLines: stored.pages[page - 1]!.dated,
-    })),
-    ...(header === undefined || pages.includes(header.page) ? {} : { header }),
+    pages: batch,
+    ...(header === undefined || batch.some((one) => one.text.split("\n").includes(header.line))
+      ? {}
+      : { header }),
   };
+};
+const headerOf = (stored: StoredPages) => {
+  for (const [at, page] of stored.pages.entries())
+    for (const line of page.text.split("\n")) if (isHeaderLine(line)) return { page: at + 1, line };
+  return undefined;
 };
 
 /** Where a statement the lead is reading stands: the next pages to read. */
 export const readingOf = (stored: Pick<StoredStatement, "pagesJson" | "draftJson">) => {
   const pages = pagesOf(stored);
-  return pages === undefined ? undefined : reading(pages, draftOf(stored));
+  return pages === undefined ? undefined : readingFor(pages, draftOf(stored));
 };
 
 export type RowInput = {
@@ -240,14 +334,20 @@ export type Submitted =
   | { readonly _tag: "card"; readonly review: Review; readonly problems: ReadonlyArray<Problem> };
 
 /**
- * Rows the lead read, a page at a time; a page given again replaces it. Once every page has its
- * rows, Kin proves them: a failure goes back to the lead with where, until the rounds run out.
+ * Rows the lead read, a page or part at a time; one given again replaces it. Once every page has
+ * its rows, Kin ties them to the text and proves them: a failure goes back to the lead with where,
+ * until the rounds run out.
  */
 export const submitPages = Effect.fn("KinStatements.submitPages")(function* (input: {
   readonly orgId: KinOrgId;
   readonly stored: StoredStatement;
   readonly now: number;
-  readonly pages: ReadonlyArray<{ readonly page: number; readonly rows: ReadonlyArray<RowInput> }>;
+  readonly pages: ReadonlyArray<{
+    readonly page: number;
+    readonly part?: number | undefined;
+    readonly rows: ReadonlyArray<RowInput>;
+    readonly notTransactions?: ReadonlyArray<NotRow> | undefined;
+  }>;
   readonly opening?: string | undefined;
   readonly closing?: string | undefined;
   readonly account?: string | undefined;
@@ -261,13 +361,18 @@ export const submitPages = Effect.fn("KinStatements.submitPages")(function* (inp
       "Pass pages only while Kin says this statement waits for you to read it; call statement_read without them first.",
     );
   const draft = draftOf(input.stored);
-  const pages = new Map(draft.pages);
+  const given = new Map(draft.pages.map((one) => [partKey(one[0], one[3] ?? 1), one]));
   for (const one of input.pages) {
     if (one.page > stored.pages.length)
       return yield* invalid(
         `There is no page ${one.page}: the statement has ${stored.pages.length}. Nothing was kept from this call.`,
       );
-    const rows: Array<DraftRow> = [];
+    const parts = partsOf(stored.pages[one.page - 1]!.text).length;
+    if ((parts > 1 && one.part === undefined) || (one.part ?? 1) > parts)
+      return yield* invalid(
+        `Page ${one.page} comes in ${parts} part${parts === 1 ? "" : "s"}: send each part's rows with its part number. Nothing was kept from this call.`,
+      );
+    const rows: Array<ReadRow> = [];
     for (const [at, row] of one.rows.entries()) {
       const amount = minorOf(row.amount);
       const where = `Page ${one.page}, row ${at + 1}`;
@@ -286,7 +391,12 @@ export const submitPages = Effect.fn("KinStatements.submitPages")(function* (inp
           balance === null ? null : negativeBalance(row.balance ?? "") ? -balance : balance,
       });
     }
-    pages.set(one.page, rows);
+    const part = parts > 1 ? one.part : undefined;
+    const entry: DraftPage =
+      part === undefined
+        ? [one.page, rows, one.notTransactions ?? []]
+        : [one.page, rows, one.notTransactions ?? [], part];
+    given.set(partKey(one.page, part ?? 1), entry);
   }
   const money = (text: string | undefined, kept: number | null) => {
     if (text === undefined) return kept;
@@ -294,7 +404,9 @@ export const submitPages = Effect.fn("KinStatements.submitPages")(function* (inp
     return typeof minor === "number" ? (negativeBalance(text) ? -minor : minor) : kept;
   };
   const next: Draft = {
-    pages: [...pages].toSorted(([left], [right]) => left - right),
+    pages: [...given.values()].toSorted(
+      (left, right) => left[0] - right[0] || (left[3] ?? 1) - (right[3] ?? 1),
+    ),
     opening: money(input.opening, draft.opening),
     closing: money(input.closing, draft.closing),
   };
@@ -302,30 +414,73 @@ export const submitPages = Effect.fn("KinStatements.submitPages")(function* (inp
   if (total > MAX_ROWS) return yield* invalid(`A statement holds at most ${MAX_ROWS} rows here.`);
   yield* sql`UPDATE kin_bank_statements SET draft_json = ${yield* encodeJson(next)}
     WHERE org_id = ${input.orgId} AND statement_id = ${input.stored.statementId}`;
-  if (next.pages.length < stored.pages.length)
-    return { _tag: "more", reading: reading(stored, next) } satisfies Submitted;
+  if (donePages(stored, next).length < stored.pages.length)
+    return { _tag: "more", reading: readingFor(stored, next) } satisfies Submitted;
 
   const facts = stored.facts;
-  const kind = input.kind ?? facts?.kind ?? "account";
+  const texts = stored.pages.map((page) => page.text);
+  const scanned = texts.every((text) => text === "");
+  const all = texts.join("\n");
+  // What the page's text says outranks what was read from it; what only the lead says must be in it.
+  const textKind =
+    facts?.kind === "card"
+      ? ("card" as const)
+      : /statement of account|\b(?:account|a\/c)\s*(?:no|number)\b|savings account|current account/i.test(
+            all,
+          )
+        ? ("account" as const)
+        : undefined;
+  const kind = textKind ?? input.kind ?? "account";
+  const currency = currencyOf(texts);
   const opening = facts?.openingMinor ?? next.opening;
   const closing = facts?.closingMinor ?? next.closing;
+  const unproven: Array<string> = [];
+  const fixed: Array<Problem> = [];
+  if (!scanned) {
+    if (textKind === undefined)
+      unproven.push("Kin couldn't tell from the text whether this is a bank account or a card.");
+    else if (input.kind !== undefined && input.kind !== textKind)
+      fixed.push({
+        page: null,
+        row: null,
+        line: `The statement's text reads as a ${textKind === "card" ? "card" : "bank account"} statement, not a ${input.kind === "card" ? "card" : "bank account"}'s: read it as one.`,
+      });
+    for (const [which, value, own] of [
+      ["opening", next.opening, facts?.openingMinor ?? null],
+      ["closing", next.closing, facts?.closingMinor ?? null],
+    ] as const)
+      if (own === null && value !== null && !printed(texts, value))
+        unproven.push(`The ${which} balance you gave isn't printed in the statement's text.`);
+  }
   let index = 0;
-  const proofPages = next.pages.map(([page, rows]) => ({
-    page,
-    rows: rows.map((row) => ({ ...row, index: index++, foreign: null })),
-    dated: stored.pages[page - 1]?.dated ?? null,
-  }));
-  const rows = proofPages.flatMap((page) => page.rows);
+  const pages = stored.pages.map((_, at) => {
+    const parts = next.pages.filter(([page]) => page === at + 1);
+    return {
+      page: at + 1,
+      rows: parts.flatMap(([, rows]) => rows),
+      notRows: parts.flatMap(([, , others]) => others ?? []),
+    };
+  });
+  const bound = scanned
+    ? {
+        pages: pages.map((page) => ({
+          page: page.page,
+          rows: page.rows.map((row) => ({ ...row, index: index++, foreign: null })),
+        })),
+        problems: [],
+        unproven: [SCAN],
+      }
+    : bindRows({ kind, currency, opening, texts, pages });
   const proof = proveStatement({
     kind,
-    currency: "INR",
+    currency,
     opening,
     closing,
     from: facts?.from ?? null,
     to: facts?.to ?? null,
-    pages: proofPages,
+    pages: bound.pages,
+    bound: { problems: [...fixed, ...bound.problems], unproven: [...unproven, ...bound.unproven] },
   });
-  // What the page's text says outranks what was read from it.
   const disagree = [
     ...(facts?.openingMinor != null && next.opening !== null && next.opening !== facts.openingMinor
       ? ["opening"]
@@ -349,7 +504,7 @@ export const submitPages = Effect.fn("KinStatements.submitPages")(function* (inp
     return {
       _tag: "check",
       problems,
-      reading: reading(
+      reading: readingFor(
         stored,
         next,
         flagged.length === 0 ? stored.pages.map((_, at) => at + 1) : flagged,
@@ -357,12 +512,16 @@ export const submitPages = Effect.fn("KinStatements.submitPages")(function* (inp
       roundsLeft: PROOF_ROUNDS - rounds,
     } satisfies Submitted;
   }
+  const rows = bound.pages.flatMap((page) => page.rows);
   const days = rows.map((row) => row.date).toSorted();
+  const bank =
+    facts?.bank ??
+    (input.bank !== undefined && squash(all).includes(squash(input.bank)) ? input.bank : null);
   const statement: Statement = {
     kind,
-    bank: input.bank ?? facts?.bank ?? null,
+    bank,
     account: facts?.account ?? input.account ?? null,
-    currency: "INR",
+    currency,
     from: facts?.from ?? days[0] ?? null,
     to: facts?.to ?? days.at(-1) ?? null,
     openingMinor: opening,
@@ -370,8 +529,13 @@ export const submitPages = Effect.fn("KinStatements.submitPages")(function* (inp
     rows,
     check: proof.check,
   };
-  const scanned = facts === null && stored.pages.every((page) => page.text === "");
-  const review = yield* buildReview(input.orgId, statement, scanned ? "scan" : "pdf", "agent");
+  const review = yield* buildReview(
+    input.orgId,
+    statement,
+    scanned ? "scan" : "pdf",
+    "agent",
+    input.stored.statementId,
+  );
   yield* sql.withTransaction(
     saveRead({
       orgId: input.orgId,
