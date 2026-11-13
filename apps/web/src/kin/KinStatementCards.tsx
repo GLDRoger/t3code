@@ -23,6 +23,7 @@ import {
   kinStatementSections,
   kinStatementShown,
   kinStatementStatusLines,
+  kinStatementUndoLabel,
   kinStatementSuggestionsLeft,
   kinStatementTakenBy,
   kinStatementTargetLine,
@@ -251,6 +252,7 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
   );
 
   const status = kinStatementStatusLines(card);
+  const undoBefore = kinStatementUndoLabel(card);
   const rows = { shown, editable, onChange: (next: KinStatementSelectChange) => void change(next) };
   const held = kinStatementTotal(card, "matched") - (card.chosen?.matched ?? 0);
   // Matches held back for a check are ticked in one tap, without opening their section.
@@ -357,7 +359,20 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
           <span className="text-xs text-muted-foreground">
             Rows you leave stay unexplained for later.
           </span>
-          <span className="ms-auto">{readAgain}</span>
+          <span className="ms-auto flex gap-1.5">
+            {undoBefore === null ? null : (
+              <Button
+                size="sm"
+                variant="ghost"
+                aria-busy={pending === "undo"}
+                disabled={pending !== null}
+                onClick={() => void send("undo")}
+              >
+                {undoBefore}
+              </Button>
+            )}
+            {readAgain}
+          </span>
         </div>
       )}
     </CardFrame>

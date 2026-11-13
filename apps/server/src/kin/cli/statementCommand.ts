@@ -5,20 +5,17 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/sql/SqlClient";
 import { Command, Flag, GlobalFlag } from "effect/cli";
 import { FetchHttpClient } from "effect/http";
 import { RpcGroup } from "effect/rpc";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import { authLocationFlags, resolveCliAuthConfig } from "../../cli/config.ts";
 import * as ServerConfig from "../../config.ts";
-import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { readPersistedServerRuntimeState } from "../../serverRuntimeState.ts";
 import * as EnvironmentAuth from "../auth/EnvironmentAuthRuntime.ts";
 import * as KinEnabled from "../KinEnabled.ts";
-import * as KinPersistence from "../persistence/KinPersistence.ts";
-import { readingOf } from "../work/statements/statementReading.ts";
-import { reviewOf, statementRow } from "../work/statements/statementReview.ts";
+import { standingOf } from "../work/ownerStatements.ts";
 import { openRemote } from "./openRemote.ts";
 
 class KinStatementCliError extends Schema.TaggedError<KinStatementCliError>()(
@@ -28,33 +25,6 @@ class KinStatementCliError extends Schema.TaggedError<KinStatementCliError>()(
 const isCliError = Schema.is(KinStatementCliError);
 const fail = (message: string) => Effect.fail(new KinStatementCliError({ message }));
 const group = RpcGroup.make(...KinStatementRpcs);
-
-/** Where a statement stands, in counts only: never its rows, file name or account. */
-const standing = Effect.fn("kin.statement.standing")(function* (
-  orgId: KinOrgId,
-  statementId: string,
-) {
-  const stored = yield* statementRow(orgId, statementId);
-  if (stored === undefined) return yield* fail(`No statement ${statementId} in ${orgId}.`);
-  const sql = yield* SqlClient.SqlClient;
-  const [held] = yield* sql<{ n: number }>`SELECT COUNT(DISTINCT row_index) AS n
-    FROM kin_bank_statement_entries WHERE org_id = ${orgId} AND statement_id = ${statementId}`;
-  const review = stored.reviewJson === null ? undefined : reviewOf(stored.reviewJson);
-  const reading = readingOf(stored);
-  const groups = review === undefined ? [] : [...review.matches.values()];
-  const count = (name: string) => groups.filter((one) => one.group === name).length;
-  return reading !== undefined && stored.status === "scanned"
-    ? `Waiting on its lead to read ${reading.total} pages (${reading.read} given so far).`
-    : stored.status === "needs_password"
-      ? "Locked: its password card waits in the chat."
-      : review === undefined
-        ? `Not read (${stored.status}).`
-        : [
-            `${review.statement.rows.length} rows, ${review.statement.check.status === "adds_up" ? "adds up" : review.statement.check.status === "off" ? "doesn't add up" : "balances unchecked"}.`,
-            `On its card: ${count("matched")} matched, ${count("choose")} to choose, ${count("unmatched")} unmatched, ${review.statement.rows.length - groups.length} already recorded.`,
-            `${stored.appliedAt === null ? "Not confirmed" : "Confirmed"}; ${held?.n ?? 0} rows recorded from it.`,
-          ].join(" ");
-});
 
 const rereadCommand = Command.make("reread", {
   ...authLocationFlags,
@@ -72,7 +42,7 @@ const rereadCommand = Command.make("reread", {
   ),
 }).pipe(
   Command.withDescription(
-    "Read a statement's stored file again, as Read again on its card does: rows already recorded stay recorded, the rest go to a fresh review card or to its lead to read, and the lead is told in its chat. A locked file with no kept password gets a password card. Reports only unless --apply is given; the server must be running.",
+    "Read a statement's stored file again, as Read again on its card does: rows already recorded stay recorded, the rest go to a fresh review card or to its lead to read, and the lead is told in its chat. A locked file with no kept password gets a password card. Without --apply it only reports, reading the database read-only; --apply goes through the running server.",
   ),
   Command.withHandler(
     Effect.fn("kin.statement.reread")(
@@ -84,13 +54,14 @@ const rereadCommand = Command.make("reread", {
           );
         const logLevel = yield* GlobalFlag.LogLevel;
         const config = yield* resolveCliAuthConfig(flags, logLevel, { quietLogs: true });
-        const local = KinPersistence.layer.pipe(
-          Layer.provideMerge(SqlitePersistence.layerConfig),
-          Layer.provideMerge(ServerConfig.layer(config)),
-          Layer.provide(Layer.succeed(References.MinimumLogLevel, "Warn")),
+        // Read only and without setup: opening it the server's way would migrate it and write.
+        const { dbPath } = yield* ServerConfig.ServerConfig.pipe(
+          Effect.provide(ServerConfig.layer(config)),
         );
-        const now = yield* standing(flags.org, flags.statement).pipe(Effect.provide(local));
-        yield* Console.log(`Now: ${now}`);
+        const standing = standingOf(flags.org, flags.statement).pipe(
+          Effect.provide(NodeSqliteClient.layer({ filename: dbPath, readonly: true })),
+        );
+        yield* Console.log(`Now: ${yield* standing}`);
         if (!flags.apply)
           return yield* Console.log("Run again with --apply to read it again and tell its lead.");
         const result = yield* Effect.gen(function* () {
@@ -128,7 +99,7 @@ const rereadCommand = Command.make("reread", {
             ? "Locked, and no password is kept for its account: Kin posted a password card in its chat. When the owner opens it there, the lead is told."
             : result.status === "unreadable"
               ? "Kin couldn't read the file again; nothing changed."
-              : `Read again; its lead was told in its chat. ${yield* standing(flags.org, flags.statement).pipe(Effect.provide(local))}`,
+              : `Read again; its lead was told in its chat. ${yield* standing}`,
         );
       },
       Effect.tapError((error) =>

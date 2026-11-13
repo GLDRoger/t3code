@@ -28,7 +28,7 @@ import {
   statementRows,
   undoStatement,
 } from "./statements/statementApply.ts";
-import { readStored, settleOutcome, isReading } from "./statements/statementReading.ts";
+import { isReading, readingOf, readStored, settleOutcome } from "./statements/statementReading.ts";
 import {
   askPassword,
   attachmentBytes,
@@ -235,6 +235,33 @@ export const rereadTap = (
         outcome: settledLine(done.settled),
       };
 };
+
+/** Where a statement stands, in counts only: never its rows, file name or account. */
+export const standingOf = Effect.fn("KinStatements.standing")(function* (
+  orgId: KinStatementRereadInput["orgId"],
+  statementId: string,
+) {
+  const stored = yield* statementRow(orgId, statementId);
+  if (stored === undefined) return yield* notFound;
+  const sql = yield* SqlClient.SqlClient;
+  const [held] = yield* sql<{ n: number }>`SELECT COUNT(DISTINCT row_index) AS n
+    FROM kin_bank_statement_entries WHERE org_id = ${orgId} AND statement_id = ${statementId}`;
+  const review = stored.reviewJson === null ? undefined : reviewOf(stored.reviewJson);
+  const reading = readingOf(stored);
+  const groups = review === undefined ? [] : [...review.matches.values()];
+  const count = (name: string) => groups.filter((one) => one.group === name).length;
+  return reading !== undefined && isReading(stored)
+    ? `Waiting on its lead to read ${reading.total} pages (${reading.read} given so far).`
+    : stored.status === "needs_password"
+      ? "Locked: its password card waits in the chat."
+      : review === undefined
+        ? `Not read (${stored.status}).`
+        : [
+            `${review.statement.rows.length} rows, ${review.statement.check.status === "adds_up" ? "adds up" : review.statement.check.status === "off" ? "doesn't check out" : "unchecked"}.`,
+            `On its card: ${count("matched")} matched, ${count("choose")} to choose, ${count("unmatched")} unmatched, ${review.statement.rows.length - groups.length} already recorded.`,
+            `${stored.appliedAt === null ? "Not confirmed" : "Confirmed"}; ${held?.n ?? 0} rows recorded from it.`,
+          ].join(" ");
+});
 
 export const reread = Effect.fn("KinStatements.rereadRpc")(function* (
   people: ReadonlyArray<PersonIdentity>,

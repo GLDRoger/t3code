@@ -23,7 +23,8 @@ export const runStatementCheck = async (path: string) => {
               ? {}
               : {
                   dated: run.outcome.pages.map((page) => page.dated),
-                  proven: provenTable(run.outcome.statement, run.outcome.pages) !== undefined,
+                  proven:
+                    provenTable(run.outcome.statement, run.outcome.pages)?.check.status ?? "off",
                 }),
           }
         : {}),

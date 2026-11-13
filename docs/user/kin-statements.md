@@ -7,20 +7,23 @@ invoices were paid and which expenses the debits were. Nothing is recorded until
 
 Attach the statement your bank lets you download: a PDF, CSV, XLS or XLSX. Kin checks every
 row against the statement: the opening balance plus credits less debits must come to the closing
-balance, each running balance must follow from the one before, and each page must have as many
-rows as it prints. When Kin's own reading of a PDF doesn't pass those checks, your agent reads
-its pages instead, and Kin tells it which row doesn't hold until it does. If it still doesn't add
-up, the card says so and where, and nothing on it is ticked for you.
+balance and each running balance must follow from the one before. For a PDF, each row's date,
+amount and balance must also be printed on its line of the page, and every line that starts with
+a date must be a row or something Kin can see isn't one. When Kin's own reading of a PDF doesn't
+pass, your agent reads its pages instead, and Kin takes each row's numbers from the PDF's own text
+and tells the agent which row doesn't hold until it does. Matches start ticked only when all of
+this holds; otherwise the card says what Kin couldn't confirm, and nothing is ticked for you.
 
 If the PDF is password-protected, a card asks for the password. Type it there and it goes to Kin
-only. If you write it in your message instead, your agent uses it once to open the file and
-doesn't keep it, but the message itself stays in the chat, so delete it if you'd rather it
-didn't. Tick
+only. If you write it in a message instead, Kin uses it once to open the file and doesn't store it
+in its own records, but your message still contains it, so delete the message if you'd rather it
+didn't. Kin tries at most five passwords from the chat for a file; the card still takes the right
+one after that. Tick
 **Remember for this account** and the next statement for that account opens on its own. The
 same card has **Forget the password** later.
 
 A scanned statement has no text to read. Your agent reads the pages instead, and the review card
-says the rows came from images, so check them against the statement.
+says the rows came from images, so check the amounts against the statement before you tick them.
 
 ## Reviewing and confirming
 
@@ -49,12 +52,17 @@ twice. Bank transactions never count as spending or income in Money.
 ## Reading a statement again
 
 **Read again** on a statement's card reads its file afresh, using a remembered password or asking
-for it. Rows already recorded show as already recorded, and only rows not yet in Bank
-transactions are offered. You can also ask your agent to read it again, or run
-`t3 kin statement reread --statement <id> --apply` on the computer running Kin.
+for it. Rows this statement already recorded are found again by date, amount and direction, however
+the new reading spells them, and only rows not yet in Bank transactions are offered. If a row it
+recorded before isn't in the new reading, the card names it and ticks nothing, so you decide.
+Until you confirm again, **Undo** on the new card takes back what the earlier confirm recorded.
+You can also ask your agent to read it again, or run
+`t3 kin statement reread --statement <id> --apply` on the computer running Kin. Without `--apply`
+the command only reports where the statement stands and changes nothing.
 
 ## Undoing a statement
 
 **Undo this statement** on the card takes back everything it recorded: payments, TDS lines,
-expenses marked paid and expenses it created. Each entry's history shows both the change and the
+expenses marked paid and expenses it created, across every confirm since a read again; the card
+says how many rows came from each. Each entry's history shows both the change and the
 undo. You can confirm the card again afterwards.
