@@ -332,13 +332,6 @@ function AddDialog(props: {
                     )}
                   </p>
                 ) : null}
-                {signIn && !setup && waiting === null && service !== undefined ? (
-                  <p className="text-xs text-muted-foreground">
-                    {COPY.signInOpens(
-                      service.service === "google" ? "accounts.google.com" : service.label,
-                    )}
-                  </p>
-                ) : null}
               </div>
               {custom ? (
                 <div className="flex flex-col gap-1.5">

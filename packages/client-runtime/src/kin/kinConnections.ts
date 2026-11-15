@@ -169,14 +169,15 @@ const plural = (count: number, one: string, many: string) => `${count} ${count =
 export function kinConnectionStatus(connection: KinConnection): KinConnectionStatus {
   if (connection.paused)
     return { tone: "muted", label: "Paused", detail: KIN_CONNECTIONS_COPY.pausedDetail };
+  // Ahead of errors: an expired sign-in also fails every listing until the owner signs in.
+  if (connection.state === "needs_sign_in")
+    return { tone: "error", label: "Needs sign-in", detail: "Sign in again to keep using it." };
   if (connection.state === "error" || connection.lastError !== null)
     return {
       tone: "error",
       label: "Can't connect",
       detail: kinConnectionErrorText(connection.lastError ?? "Kin couldn't reach it."),
     };
-  if (connection.state === "needs_sign_in")
-    return { tone: "error", label: "Needs sign-in", detail: "Sign in again to keep using it." };
   const changed = connection.changedTools;
   const instructions =
     connection.instructionsDigest !== null &&

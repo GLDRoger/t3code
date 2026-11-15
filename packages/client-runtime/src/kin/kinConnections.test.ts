@@ -171,6 +171,11 @@ describe("kinToolRows", () => {
         connection({ state: "error", lastError: "mcp.posthog.com refused the key (401)." }),
       ).detail,
     ).toBe("The service didn't accept the key. Make a new key there and use Replace key.");
+    expect(
+      kinConnectionStatus(
+        connection({ state: "needs_sign_in", lastError: "Sentry's sign-in expired." }),
+      ).label,
+    ).toBe("Needs sign-in");
   });
 });
 
