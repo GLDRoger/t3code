@@ -517,7 +517,7 @@ function KinSendDetail(props: {
                           {send.fromChoices
                             .filter((one) => one.account === account)
                             .map((one) => (
-                              <MenuRadioItem key={one.id} value={one.id}>
+                              <MenuRadioItem key={one.id} value={one.id} closeOnClick>
                                 {one.label}
                               </MenuRadioItem>
                             ))}

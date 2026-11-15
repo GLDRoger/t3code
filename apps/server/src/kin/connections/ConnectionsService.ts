@@ -772,7 +772,10 @@ const make = Effect.gen(function* () {
     const { tools, instructions, protocolVersion } = listed.success;
     // Kin's own Google tools are Kin's words, not a server's: a new wording needs no review.
     const ours = row.kind === "builtin";
-    const sendAsJson = ours
+    const signedIn = ours && Option.isSome(yield* secrets.getSignIn(row.connectionId).pipe(
+      Effect.orElseSucceed(Option.none),
+    ));
+    const sendAsJson = signedIn
       ? yield* withSignIn(orgId, row, (force) => googleToken(orgId, row, force)).pipe(
           Effect.flatMap(sendAsJsonOf),
           Effect.orElseSucceed(() => null),
