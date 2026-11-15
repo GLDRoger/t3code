@@ -13,7 +13,7 @@ export const KIN_COMPANY = {
   title: "Company details",
   summary: "Legal name, tax ids and bank details",
   private:
-    "Private. Only you see these. Your agents read them only when you ask for something that needs them, like an invoice.",
+    "Private. Only the owner and co-owners see these. Agents read them only when asked for something that needs them, like an invoice.",
   loadFailed: "Couldn't load your company details",
   edit: "Edit",
   save: "Save",
