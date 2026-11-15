@@ -170,19 +170,18 @@ const make = Effect.gen(function* () {
     const finished = yield* queue.finish({ orgId: row.orgId, wakeupId: row.wakeupId, status });
     if (Option.isNone(bridge) || Option.isNone(lane)) return;
     // Something visible already happened, so a silent retry could repeat it; say so instead.
-    // Otherwise the person waiting hears at once that it is retrying, or has stopped.
+    // Otherwise the person waiting hears at once that it is retrying, or has stopped. A run
+    // nobody waits on (a check-in, a reminder) retries quietly, but never fails silently.
     const outcome =
       finished.stranded > 0
         ? "partway"
-        : !lane.value.owed
-          ? undefined
-          : setup !== null
-            ? setup
-            : finished.failedEventIds.length > 0
-              ? "gave_up"
-              : finished.retried > 0
-                ? "retrying"
-                : undefined;
+        : setup !== null
+          ? setup
+          : finished.failedEventIds.length > 0
+            ? "gave_up"
+            : finished.retried > 0 && lane.value.owed
+              ? "retrying"
+              : undefined;
     if (outcome !== undefined)
       yield* bridge.value.failed({
         orgId: row.orgId,

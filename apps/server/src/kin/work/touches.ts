@@ -132,7 +132,10 @@ export const daysSince = (at: number, now: number) => Math.max(0, Math.floor((no
 /** "No logged contact for 12 days", or null while contact is recent. */
 export const quietLine = (lastAt: number | null, createdAt: number, now: number) => {
   const days = daysSince(lastAt ?? createdAt, now);
-  return days < 7 ? null : `No logged contact for ${days} days`;
+  if (days < 7) return null;
+  return lastAt === null
+    ? `No contact logged since they were added ${days} days ago`
+    : `No logged contact for ${days} days`;
 };
 
 export const logTouch = Effect.fn("KinTouches.log")(function* (
@@ -199,6 +202,8 @@ export type ClientSense = {
   /** Last contact, epoch ms, or null when there has been none. */
   readonly lastAt: number | null;
   readonly days: number;
+  /** What `days` counts from: the last contact, the last project we finished, or their adding. */
+  readonly from: "contact" | "project" | "added";
   /** When it became true, epoch ms. */
   readonly since: number;
   /** What makes this one episode: a new contact starts another. */
@@ -265,6 +270,12 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
       sensitive: client.sensitive === 1,
       lastAt,
       days,
+      from:
+        lastAt === null && client.lastProjectAt === null
+          ? ("added" as const)
+          : (client.lastProjectAt ?? 0) > (lastAt ?? 0)
+            ? ("project" as const)
+            : ("contact" as const),
       episode: `${client.key}:${lastAt ?? "never"}`,
     };
     const limit = (key: ClientLimitKey) => playbookThreshold(orgId, key, client.partyId);

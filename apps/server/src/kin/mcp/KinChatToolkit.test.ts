@@ -461,18 +461,30 @@ it.effect("an owner-only turn posts nothing where a teammate reads, and the owne
         clientMessageId,
       });
     yield* to("theirs", "How did Wednesday's call with Meera go?", "nudge-1");
-    assert.include(
-      (yield* Effect.flip(to("theirs", "INV/26-27/002 for ₹47,200 is overdue.", "nudge-2")))
-        .message,
-      "Nothing was sent: it names an amount",
-    );
+    // Amounts in words or shorthand are amounts too.
+    for (const [index, body] of [
+      "INV/26-27/002 for ₹47,200 is overdue.",
+      "They agreed forty thousand rupees for it.",
+      "The budget is 40k.",
+      "Pinecrest signed at 4.5 lakh.",
+      "It came to two and a half lakh.",
+      "Around five hundred dollars a month.",
+    ].entries())
+      assert.include(
+        (yield* Effect.flip(to("theirs", body, `nudge-amount-${index}`))).message,
+        "Nothing was sent: it names an amount",
+      );
+    yield* to("theirs", "Two thousand users signed up after the launch.", "nudge-count");
     assert.include(yield* Effect.flip(to("room", "How did the call go?", "nudge-3")), {
       reason: "not_allowed",
       message: PRIVATE_DESTINATION,
     });
     assert.deepStrictEqual(
       yield* sql`SELECT body FROM kin_messages WHERE chat_id = 'theirs' ORDER BY seq`,
-      [{ body: "How did Wednesday's call with Meera go?" }],
+      [
+        { body: "How did Wednesday's call with Meera go?" },
+        { body: "Two thousand users signed up after the launch." },
+      ],
     );
   }).pipe(Effect.provide(layer)),
 );

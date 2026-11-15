@@ -48,6 +48,7 @@ import { Route as ChatSettingsDiagnosticsRouteImport } from './routes/_chat.sett
 import { Route as ChatSettingsDevicesRouteImport } from './routes/_chat.settings.devices'
 import { Route as ChatSettingsConnectionsRouteImport } from './routes/_chat.settings.connections'
 import { Route as ChatSettingsCompanyRouteImport } from './routes/_chat.settings.company'
+import { Route as ChatSettingsCheckInsRouteImport } from './routes/_chat.settings.check-ins'
 import { Route as ChatSettingsChatRouteImport } from './routes/_chat.settings.chat'
 import { Route as ChatSettingsBrowserRouteImport } from './routes/_chat.settings.browser'
 import { Route as ChatSettingsBetaRouteImport } from './routes/_chat.settings.beta'
@@ -269,6 +270,11 @@ const ChatSettingsCompanyRoute = ChatSettingsCompanyRouteImport.update({
   path: '/company',
   getParentRoute: () => ChatSettingsRoute,
 } as any)
+const ChatSettingsCheckInsRoute = ChatSettingsCheckInsRouteImport.update({
+  id: '/check-ins',
+  path: '/check-ins',
+  getParentRoute: () => ChatSettingsRoute,
+} as any)
 const ChatSettingsChatRoute = ChatSettingsChatRouteImport.update({
   id: '/chat',
   path: '/chat',
@@ -406,6 +412,7 @@ export interface FileRoutesByFullPath {
   '/settings/beta': typeof ChatSettingsBetaRoute
   '/settings/browser': typeof ChatSettingsBrowserRoute
   '/settings/chat': typeof ChatSettingsChatRoute
+  '/settings/check-ins': typeof ChatSettingsCheckInsRoute
   '/settings/company': typeof ChatSettingsCompanyRoute
   '/settings/connections': typeof ChatSettingsConnectionsRoute
   '/settings/devices': typeof ChatSettingsDevicesRoute
@@ -465,6 +472,7 @@ export interface FileRoutesByTo {
   '/settings/beta': typeof ChatSettingsBetaRoute
   '/settings/browser': typeof ChatSettingsBrowserRoute
   '/settings/chat': typeof ChatSettingsChatRoute
+  '/settings/check-ins': typeof ChatSettingsCheckInsRoute
   '/settings/company': typeof ChatSettingsCompanyRoute
   '/settings/connections': typeof ChatSettingsConnectionsRoute
   '/settings/devices': typeof ChatSettingsDevicesRoute
@@ -527,6 +535,7 @@ export interface FileRoutesById {
   '/_chat/settings/beta': typeof ChatSettingsBetaRoute
   '/_chat/settings/browser': typeof ChatSettingsBrowserRoute
   '/_chat/settings/chat': typeof ChatSettingsChatRoute
+  '/_chat/settings/check-ins': typeof ChatSettingsCheckInsRoute
   '/_chat/settings/company': typeof ChatSettingsCompanyRoute
   '/_chat/settings/connections': typeof ChatSettingsConnectionsRoute
   '/_chat/settings/devices': typeof ChatSettingsDevicesRoute
@@ -589,6 +598,7 @@ export interface FileRouteTypes {
     | '/settings/beta'
     | '/settings/browser'
     | '/settings/chat'
+    | '/settings/check-ins'
     | '/settings/company'
     | '/settings/connections'
     | '/settings/devices'
@@ -648,6 +658,7 @@ export interface FileRouteTypes {
     | '/settings/beta'
     | '/settings/browser'
     | '/settings/chat'
+    | '/settings/check-ins'
     | '/settings/company'
     | '/settings/connections'
     | '/settings/devices'
@@ -709,6 +720,7 @@ export interface FileRouteTypes {
     | '/_chat/settings/beta'
     | '/_chat/settings/browser'
     | '/_chat/settings/chat'
+    | '/_chat/settings/check-ins'
     | '/_chat/settings/company'
     | '/_chat/settings/connections'
     | '/_chat/settings/devices'
@@ -1033,6 +1045,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatSettingsCompanyRouteImport
       parentRoute: typeof ChatSettingsRoute
     }
+    '/_chat/settings/check-ins': {
+      id: '/_chat/settings/check-ins'
+      path: '/check-ins'
+      fullPath: '/settings/check-ins'
+      preLoaderRoute: typeof ChatSettingsCheckInsRouteImport
+      parentRoute: typeof ChatSettingsRoute
+    }
     '/_chat/settings/chat': {
       id: '/_chat/settings/chat'
       path: '/chat'
@@ -1234,6 +1253,7 @@ interface ChatSettingsRouteChildren {
   ChatSettingsBetaRoute: typeof ChatSettingsBetaRoute
   ChatSettingsBrowserRoute: typeof ChatSettingsBrowserRoute
   ChatSettingsChatRoute: typeof ChatSettingsChatRoute
+  ChatSettingsCheckInsRoute: typeof ChatSettingsCheckInsRoute
   ChatSettingsCompanyRoute: typeof ChatSettingsCompanyRoute
   ChatSettingsConnectionsRoute: typeof ChatSettingsConnectionsRoute
   ChatSettingsDevicesRoute: typeof ChatSettingsDevicesRoute
@@ -1267,6 +1287,7 @@ const ChatSettingsRouteChildren: ChatSettingsRouteChildren = {
   ChatSettingsBetaRoute: ChatSettingsBetaRoute,
   ChatSettingsBrowserRoute: ChatSettingsBrowserRoute,
   ChatSettingsChatRoute: ChatSettingsChatRoute,
+  ChatSettingsCheckInsRoute: ChatSettingsCheckInsRoute,
   ChatSettingsCompanyRoute: ChatSettingsCompanyRoute,
   ChatSettingsConnectionsRoute: ChatSettingsConnectionsRoute,
   ChatSettingsDevicesRoute: ChatSettingsDevicesRoute,

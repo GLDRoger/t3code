@@ -12,6 +12,7 @@ import {
   FlaskConicalIcon,
   BotIcon,
   createLucideIcon,
+  CalendarCheckIcon,
   CalendarClockIcon,
   FileDiffIcon,
   FingerprintIcon,
@@ -63,6 +64,7 @@ import {
 import { useAvailableSettingsSearchItems } from "./useAvailableSettingsSearchItems";
 import { useSettingsSectionNavigation } from "./useSettingsSectionNavigation";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
+import { kinListShownAt } from "../../kin/kinListSwitch";
 import { useKinHost } from "../../kin/useKinHost";
 
 const SnapShotIcon = createLucideIcon("snap-shot", [
@@ -112,6 +114,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/approvals": FingerprintIcon,
   "/settings/secrets": KeyRoundIcon,
   "/settings/company": Building2Icon,
+  "/settings/check-ins": CalendarCheckIcon,
   "/settings/kin-connections": PlugIcon,
   "/settings/maintenance": WrenchIcon,
   "/settings/labs": FlaskConicalIcon,
@@ -141,9 +144,15 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   const currentHash = useLocation({ select: (location) => location.hash });
   const activePath = SETTINGS_DETAIL_PAGE_PARENTS[pathname] ?? pathname;
   const hasKinHost = useKinHost()._tag === "host";
+  // Over Kin, its check-ins are the schedule; the coding list keeps its own scheduled tasks.
+  const overKin = hasKinHost && kinListShownAt(pathname) === "kin";
   const navGroups = SETTINGS_NAV_GROUPS.map((group) => ({
     ...group,
-    paths: group.paths.filter((path) => hasKinHost || !KIN_ONLY_SETTINGS_PATHS.has(path)),
+    paths: group.paths.filter(
+      (path) =>
+        (hasKinHost || !KIN_ONLY_SETTINGS_PATHS.has(path)) &&
+        !(overKin && path === "/settings/scheduled-tasks"),
+    ),
   }));
   const navPaths = navGroups.flatMap((group) => group.paths);
   const sectionNavigation = useSettingsSectionNavigation(

@@ -865,6 +865,36 @@ it.effect("keeps a run that couldn't sign in out of the chat, and says so once p
       (yield* posted).at(-1)?.body,
       "Ada couldn't start: its model account doesn't offer the model it's set to use. Choose another model for it.",
     );
+    yield* chats.send(owner, { chatId, body: "Hello?", clientMessageId: "program" });
+    yield* bridge.failed({
+      orgId: owner.orgId,
+      wakeupId: yield* retry(),
+      lane,
+      outcome: "program",
+    });
+    assert.strictEqual(
+      (yield* posted).at(-1)?.body,
+      "Ada couldn't start: the server couldn't run its model program. Check the provider's binary path in Settings.",
+    );
+    // A retry says so once; the next retry before anyone writes adds nothing.
+    yield* chats.send(owner, { chatId, body: "Again?", clientMessageId: "retry" });
+    const before = (yield* posted).length;
+    yield* bridge.failed({
+      orgId: owner.orgId,
+      wakeupId: yield* retry(),
+      lane,
+      outcome: "retrying",
+    });
+    yield* bridge.failed({
+      orgId: owner.orgId,
+      wakeupId: yield* retry(),
+      lane,
+      outcome: "retrying",
+    });
+    assert.deepStrictEqual(
+      (yield* posted).slice(before).map((row) => row.body),
+      ["Ada couldn't start. Trying again in a moment."],
+    );
   }).pipe(Effect.provide(layer)),
 );
 
@@ -951,12 +981,16 @@ it.effect.each([
     expected: ["Tech has been quiet for a day."],
   },
   { reply: "Tech is on it already.", expected: ["Tech is on it already."] },
-  // A paraphrase of the card is the card again; with it gone, one short line is all that stays.
+  // A paraphrase of the card is the card again; it goes, and what else the reply says stays.
   {
     question: "Mark QT-1 accepted and draft the 30% advance invoice?",
     reply:
       "Meera accepted on the thread. Shall I mark QT-1 accepted and draft the 30% advance invoice now? It would be ₹3,18,600 with IGST.",
-    expected: ["Meera accepted on the thread."],
+    expected: ["Meera accepted on the thread. It would be ₹3,18,600 with IGST."],
+  },
+  {
+    reply: "Should I take it over?\nTech is out until Thursday.\nThe client wants it Friday.",
+    expected: ["Tech is out until Thursday.\nThe client wants it Friday."],
   },
   {
     question: "Mark QT-1 accepted and draft the 30% advance invoice?",

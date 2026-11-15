@@ -7,11 +7,13 @@ import type {
 
 /**
  * A failure no retry fixes: the model account needs signing in again (`signin`), cannot use
- * the lead's model (`access`), or the provider doesn't know that model (`model`). The codes are
- * the adapters'.
+ * the lead's model (`access`), the provider doesn't know that model (`model`), or its program
+ * exited before the turn began, such as a binary path to nothing (`program`). The codes and the
+ * last message are the adapters'.
  */
-export type SetupFailure = "signin" | "access" | "model";
+export type SetupFailure = "signin" | "access" | "model" | "program";
 export function setupFailure(failure: OrchestrationV2ProviderFailure): SetupFailure | null {
+  if (failure.message.includes("program exited before the turn started")) return "program";
   if (failure.code === "authentication_failed" || failure.code === "api_error_401") return "signin";
   if (failure.code === "api_error_403" || failure.class === "permission_error") return "access";
   if (

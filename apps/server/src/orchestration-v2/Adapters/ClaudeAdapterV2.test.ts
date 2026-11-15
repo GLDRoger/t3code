@@ -1349,6 +1349,7 @@ describe("ClaudeAdapterV2 MCP elicitation acceptance", () => {
 const captureSdkExecutablePaths = Effect.fn("captureSdkExecutablePaths")(function* (
   binaryPath: string,
   environment: ResolvedProviderInstanceEnvironment = [],
+  messages: Stream.Stream<never, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError> = Stream.never,
 ) {
   const executablePaths: Array<string | undefined> = [];
   const taskToolEnvironment: Array<string | undefined> = [];
@@ -1374,7 +1375,7 @@ const captureSdkExecutablePaths = Effect.fn("captureSdkExecutablePaths")(functio
           executablePaths.push(input.options.pathToClaudeCodeExecutable);
           taskToolEnvironment.push(input.options.env?.CLAUDE_CODE_ENABLE_TODO_TOOLS);
           return {
-            messages: Stream.never,
+            messages,
             offer: () => Effect.void,
             setModel: () => Effect.void,
             applyFlagSettings: () => Effect.void,
@@ -1420,6 +1421,36 @@ const captureSdkExecutablePaths = Effect.fn("captureSdkExecutablePaths")(functio
 });
 
 describe("ClaudeAdapterV2 executable path", () => {
+  it.effect("fails the turn when the CLI exits before the turn attaches, instead of hanging", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const exited = new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+          method: "fromAsyncIterable",
+          cause: new Error("Claude Code process exited with code 127"),
+        });
+        const exit = yield* captureSdkExecutablePaths(
+          "/missing/claude",
+          [],
+          Stream.fail(exited),
+        ).pipe(Effect.exit);
+        assert.isTrue(Exit.isFailure(exit));
+        if (Exit.isFailure(exit))
+          assert.strictEqual(
+            makeProviderFailure({ cause: exit.cause, class: "provider_error" }).message,
+            "The provider could not start this turn: the provider program exited before the turn started. Retry the turn; if it keeps failing, check the provider setup and server logs.",
+          );
+      }),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
   it.effect("follows a bare claude on Windows to the npm package executable", () =>
     Effect.scoped(
       Effect.gen(function* () {

@@ -34,6 +34,7 @@ import { inCompanyChat, toolAdmitted } from "../lead/SharedTools.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { sentMail, SentMailView } from "../connections/Sending.ts";
 import { partyPage, projectDetail } from "./crm.ts";
+import { personMiss, personNamed } from "../people/personNamed.ts";
 import { matchName } from "./nameMatch.ts";
 import { lastContacts } from "./touches.ts";
 import { KinRecords, type Patch, type TotalsBy, type Writer } from "./KinRecords.ts";
@@ -529,66 +530,16 @@ export const resolveWho = Effect.fn("KinWorkTools.resolveWho")(function* (lead: 
   if (agent !== undefined && agent.id !== who)
     return { _tag: "agent", agentId: KinAgentId.make(agent.id) } satisfies KinWorkPrincipal;
   if (agent === undefined) {
-    // A full name, a handle, or a first name only one person has ("Zoya" for Zoya Sheikh).
-    const found = yield* sql<{ id: string; name: string; tags: string; exact: number }>`SELECT
-        person_id AS id, display_name AS name, role_tags_json AS tags,
-        (person_id = ${who} OR lower(display_name) = lower(${who})
-          OR lower(handle) = lower(${who})) AS exact
-      FROM kin_people
-      WHERE org_id = ${lead.orgId} AND (person_id = ${who} OR lower(display_name) = lower(${who})
-        OR lower(handle) = lower(${who}) OR lower(display_name) LIKE lower(${who}) || ' %')
-      ORDER BY person_id = ${who} DESC, person_id
-      LIMIT 6`;
-    // A first name counts only when no one is called exactly that.
-    const exact = found.filter((one) => one.exact === 1);
-    const people = exact.length > 0 ? exact : found;
-    if (people.length > 1 && people[0]!.id !== who)
-      return yield* invalid(
-        `${people.length} people are named ${who.slice(0, 60)}: ${people
-          .map((one) => {
-            const tags = tagsOf(one.tags);
-            return `${one.name} (${tags.length === 0 ? "no roles" : tags.join(", ")}) is ${one.id}`;
-          })
-          .join("; ")}. Ask which one is meant, then pass their personId. Nothing was written.`,
-      );
-    if (people[0] !== undefined)
-      return {
-        _tag: "person",
-        personId: KinPersonId.make(people[0].id),
-      } satisfies KinWorkPrincipal;
-    // As typed: a start of a name or a close spelling only one person has.
-    const everyone = yield* sql<{ id: string; name: string }>`SELECT person_id AS id,
-        display_name AS name FROM kin_people WHERE org_id = ${lead.orgId} ORDER BY person_id`;
-    const typed = matchName(who, everyone);
-    if (typed._tag === "found")
-      return {
-        _tag: "person",
-        personId: KinPersonId.make(typed.item.id),
-      } satisfies KinWorkPrincipal;
-    const offer = typed._tag === "ambiguous" ? typed.items : typed.nearest;
+    const person = yield* personNamed(lead.orgId, who);
+    if (person._tag === "found")
+      return { _tag: "person", personId: person.item.id } satisfies KinWorkPrincipal;
     return yield* new KinChatError({
-      reason: "not_found",
-      message: `No one called ${who.slice(0, 60)} is in the company.${
-        offer.length === 0
-          ? ""
-          : ` Nearest: ${offer
-              .slice(0, 3)
-              .map((one) => `${one.name} (${one.id})`)
-              .join(", ")}; ask "did you mean …?" if one may be them.`
-      } people_read lists who is. Nothing was written.`,
+      reason: person._tag === "ambiguous" ? "invalid_state" : "not_found",
+      message: `${personMiss(who, person)} Nothing was written.`,
     });
   }
   return { _tag: "agent", agentId: KinAgentId.make(who) } satisfies KinWorkPrincipal;
 });
-
-const tagsOf = (json: string): ReadonlyArray<string> => {
-  try {
-    const parsed: unknown = JSON.parse(json);
-    return Array.isArray(parsed) ? parsed.filter((tag) => typeof tag === "string") : [];
-  } catch {
-    return [];
-  }
-};
 
 const atOf = (text: string) => {
   const ms = calendarTimeMillis(text);
