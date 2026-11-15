@@ -1,6 +1,7 @@
 import {
   kinChatListRowLabel,
   kinChatListRows,
+  KIN_TEAMMATE_WELCOME,
   type KinChatListRow,
 } from "@t3tools/client-runtime/kin/kinChatListRows";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
@@ -489,11 +490,13 @@ function KinFirstAgent(props: { readonly target: KinLeadFormTarget }) {
   return (
     <Empty size="compact">
       <EmptyHeader>
-        <EmptyTitle>{canAddLead ? "Create your first agent" : "No chats yet"}</EmptyTitle>
+        <EmptyTitle>
+          {canAddLead ? "Create your first agent" : KIN_TEAMMATE_WELCOME.title}
+        </EmptyTitle>
         <EmptyDescription>
           {canAddLead
             ? "Start with a Chief of staff: your front door for everything. You chat with it like a colleague, and it passes work to the agents you add later."
-            : "Chats with your agents show up here."}
+            : KIN_TEAMMATE_WELCOME.detail}
         </EmptyDescription>
       </EmptyHeader>
       {canAddLead ? (
