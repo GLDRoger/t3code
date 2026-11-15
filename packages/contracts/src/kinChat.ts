@@ -100,6 +100,7 @@ export const KinChat = Schema.Struct({
   chatId: KinChatId,
   kind: KinChatKind,
   title: Schema.NullOr(KinTrimmedText),
+  // `KIN_COMPANY_CHAT_TEAM_ID` on the company chat while it is on.
   teamId: Schema.NullOr(TrimmedNonEmptyString),
   lastSeq: NonNegativeInt,
   lastMessageAt: Schema.NullOr(IsoDateTime),
@@ -534,6 +535,16 @@ export type KinGroupRenameInput = typeof KinGroupRenameInput.Type;
 export const KinGroupDeleteInput = Schema.Struct({ chatId: KinChatId });
 export type KinGroupDeleteInput = typeof KinGroupDeleteInput.Type;
 export const KinGroupDone = Schema.Struct({});
+/** `KinChat.teamId` of the company chat while it is on: the one group everyone on the team is in. */
+export const KIN_COMPANY_CHAT_TEAM_ID = "company";
+/** Turns the company chat on with this agent answering by default, or off with null. Owner only. */
+export const KinGroupSetCompanyInput = Schema.Struct({
+  orgId: KinOrgId,
+  leadAgentId: Schema.NullOr(KinAgentId),
+});
+export type KinGroupSetCompanyInput = typeof KinGroupSetCompanyInput.Type;
+export const KinGroupSetCompanyResult = Schema.Struct({ chat: Schema.NullOr(KinChat) });
+export type KinGroupSetCompanyResult = typeof KinGroupSetCompanyResult.Type;
 export const KinChatSubscribeInput = Schema.Struct({
   chatId: KinChatId,
   afterSeq: Schema.optional(NonNegativeInt),
@@ -782,6 +793,11 @@ export const KinGroupRpcs = [
   Rpc.make("kin.groups.delete", {
     payload: KinGroupDeleteInput,
     success: KinGroupDone,
+    error: KinGroupError,
+  }),
+  Rpc.make("kin.groups.setCompany", {
+    payload: KinGroupSetCompanyInput,
+    success: KinGroupSetCompanyResult,
     error: KinGroupError,
   }),
 ] as const;
