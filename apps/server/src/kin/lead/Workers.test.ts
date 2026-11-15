@@ -2408,11 +2408,11 @@ it.effect("a worker's report answers where its work was asked, for everyone who 
       // The group's answer is shared, so its prompt has no notes and it keeps no journal.
       assert.deepStrictEqual(yield* answering(sql, ctx.orgId, fromTeam.eventId, "report-team"), {
         audience: "shared",
-        lane: { chatId: KinChatId.make("team"), mode: "notice", leadName: "Lead" },
+        lane: { chatId: KinChatId.make("team"), mode: "notice", owed: true, leadName: "Lead" },
       });
       assert.deepStrictEqual(yield* answering(sql, ctx.orgId, fromDm.eventId, "report-dm"), {
         audience: "owner_only",
-        lane: { chatId: ctx.chat.chatId, mode: "notice", leadName: "Lead" },
+        lane: { chatId: ctx.chat.chatId, mode: "notice", owed: true, leadName: "Lead" },
       });
     }),
   ),
@@ -2500,7 +2500,7 @@ it.effect(
           yield* answering(sql, ctx.orgId, reported!.event.eventId, "report-dm"),
           {
             audience: "owner_only",
-            lane: { chatId: ctx.chat.chatId, mode: "notice", leadName: "Lead" },
+            lane: { chatId: ctx.chat.chatId, mode: "notice", owed: true, leadName: "Lead" },
           },
         );
         assert.deepStrictEqual(yield* sinceShared(sql, "team"), []);
@@ -2613,7 +2613,7 @@ it.effect(
           yield* answering(sql, ctx.orgId, reported!.event.eventId, "report-team"),
           {
             audience: "shared",
-            lane: { chatId: KinChatId.make("team"), mode: "notice", leadName: "Lead" },
+            lane: { chatId: KinChatId.make("team"), mode: "notice", owed: true, leadName: "Lead" },
           },
         );
         // Shared turns get no notes and keep no journal; the owner's next word there is shared too.
@@ -4020,7 +4020,7 @@ const upgradedFromK058 = (sql: SqlClient.SqlClient) =>
       (yield* runKinMigrations()).map(([id]) => id),
       [
         59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
-        82, 83, 84, 85, 86,
+        82, 83, 84, 85, 86, 87,
       ],
     );
   }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);

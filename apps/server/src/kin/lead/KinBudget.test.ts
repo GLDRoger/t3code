@@ -1,5 +1,15 @@
 import { assert, describe, it } from "@effect/vitest";
-import { KinAgentId, KinOrgId, KinPersonId, KinWakeupId } from "@t3tools/contracts";
+import {
+  KinAgentId,
+  KinChatId,
+  KinEventId,
+  KinMemberId,
+  KinMessageId,
+  KinOrgId,
+  KinPersonId,
+  KinWakeupId,
+} from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -76,7 +86,8 @@ describe("KinBudget", () => {
         assert.isTrue(yield* budget.admitWorker(orgId));
         yield* sql`UPDATE kin_budget SET worker_units = 10 WHERE org_id = ${orgId}`;
         assert.isFalse(yield* budget.admitWorker(orgId));
-        yield* budget.admit(orgId, "P0");
+        yield* budget.notifyOwner(orgId, "org");
+        yield* budget.notifyOwner(orgId, "org");
         assert.deepStrictEqual(
           yield* sql`SELECT chat_id FROM kin_messages WHERE org_id = ${orgId} ORDER BY message_id`,
           [{ chat_id: "owner-chat" }],
@@ -185,7 +196,7 @@ describe("KinBudget", () => {
         { agentId, name: "Lead", leadUnits: 55.5 },
       ]);
       yield* budget.set(owner, { orgId, limits: { leadUnits: 100, workerUnits: 10 } });
-      yield* budget.admit(orgId, "P3");
+      yield* budget.notifyOwner(orgId, "org");
       const [notice] = yield* sql<{
         body: string;
       }>`SELECT body FROM kin_messages WHERE org_id = ${orgId} ORDER BY message_id`;
@@ -305,7 +316,8 @@ describe("KinBudget", () => {
           { reason: "invalid_state" },
         );
       }
-      assert.deepStrictEqual((yield* budget.set(owner, input)).limits, input.limits);
+      const stored = { ...input.limits, teammateUnits: null };
+      assert.deepStrictEqual((yield* budget.set(owner, input)).limits, stored);
       const defaultOrg = KinOrgId.make("kin-default");
       const bootstrap = [
         {
@@ -317,7 +329,7 @@ describe("KinBudget", () => {
       yield* sql`INSERT INTO kin_orgs VALUES (${defaultOrg}, 'Default', '1970-01-01T00:00:00.000Z')`;
       yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('kin-default-owner', ${defaultOrg}, 'owner', 'Owner', '1970-01-01T00:00:00.000Z'), ('other-owner', ${defaultOrg}, 'other', 'Other', '1970-01-01T00:00:00.000Z')`;
       const defaults = { orgId: defaultOrg, limits: input.limits };
-      assert.deepStrictEqual((yield* budget.set(bootstrap, defaults)).limits, input.limits);
+      assert.deepStrictEqual((yield* budget.set(bootstrap, defaults)).limits, stored);
       yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at) VALUES ('default-lead', ${defaultOrg}, 'Lead', 'lead', 'other-owner', '1970-01-01T00:00:00.000Z')`;
       yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES ('default-chat', ${defaultOrg}, 'team_group', 0, '1970-01-01T00:00:00.000Z')`;
       yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id) SELECT 'default-lead', ${defaultOrg}, name, level_since, models_json, worker_projects_json, 'default-chat' FROM kin_leads WHERE org_id = ${orgId}`;
@@ -325,7 +337,143 @@ describe("KinBudget", () => {
         reason: "not_allowed",
       });
       yield* sql`UPDATE kin_agents SET owner_person_id = 'kin-default-owner' WHERE org_id = ${defaultOrg}`;
-      assert.deepStrictEqual((yield* budget.set(bootstrap, defaults)).limits, input.limits);
+      assert.deepStrictEqual((yield* budget.set(bootstrap, defaults)).limits, stored);
+    }).pipe(Effect.provide(layer)),
+  );
+  it.effect("has no limit until the owner sets one, and the owner can take one away", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const budget = yield* Budget.KinBudget;
+      const sql = yield* SqlClient.SqlClient;
+      // F52: the code default was 2,000,000 units, about 47 Opus turns for the whole company.
+      yield* budget.get(orgId);
+      yield* sql`UPDATE kin_budget SET lead_units = 50000000, worker_units = 50000000
+        WHERE org_id = ${orgId}`;
+      const fresh = yield* budget.get(orgId);
+      assert.deepStrictEqual(fresh.limits, {
+        leadUnits: null,
+        workerUnits: null,
+        teammateUnits: null,
+      });
+      for (const priority of ["P0", "P1", "P2", "P3"] as const)
+        assert.include(yield* budget.admit(orgId, priority, "teammate"), {
+          allowed: true,
+          cheapOnly: false,
+        });
+      assert.isTrue(yield* budget.admitWorker(orgId));
+      assert.strictEqual(yield* budget.promptContext(orgId), "no daily limit");
+      yield* budget.set(owner, { orgId, limits: { leadUnits: 100, workerUnits: 100 } });
+      assert.isFalse((yield* budget.admit(orgId, "P2")).allowed);
+      yield* budget.set(owner, { orgId, limits: { leadUnits: null, workerUnits: null } });
+      assert.isTrue((yield* budget.admit(orgId, "P2")).allowed);
+    }).pipe(Effect.provide(layer)),
+  );
+  it.effect(
+    "holds teammates' requests to their own limit, says so where they asked, and tells the owner once",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const budget = yield* Budget.KinBudget;
+        const queue = yield* Queue.KinEventQueue;
+        const sql = yield* SqlClient.SqlClient;
+        const at = "1970-01-01T00:00:00.000Z";
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('mate', ${orgId}, 'mate', 'Kabir', ${at})`;
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES ('group', ${orgId}, 'team_group', 0, ${at})`;
+        yield* budget.set(owner, {
+          orgId,
+          limits: { leadUnits: 1000, workerUnits: 1000, teammateUnits: 50 },
+        });
+        // A turn Kabir asked for spends from the teammates' limit, and the owner's stays open.
+        const ask = (id: string) =>
+          ({
+            _tag: "chat.message",
+            orgId,
+            agentId,
+            eventId: KinEventId.make(id),
+            receivedAt: DateTime.makeUnsafe(0),
+            dedupeKey: null,
+            provenance: {
+              _tag: "human",
+              personId: KinPersonId.make("mate"),
+              memberId: KinMemberId.make("group-mate"),
+            },
+            chatId: KinChatId.make("group"),
+            messageId: KinMessageId.make(`message-${id}`),
+          }) as const;
+        yield* queue.enqueue(ask("asked"));
+        const wakeupId = KinWakeupId.make("mate-wakeup");
+        yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids) VALUES (${orgId}, ${wakeupId}, ${agentId}, 'cheap', 0, 'completed', '[]')`;
+        yield* sql`UPDATE kin_events SET wakeup_id = ${wakeupId}, state = 'done' WHERE event_id = 'asked'`;
+        yield* budget.charge({ orgId, wakeupId, usage });
+        assert.strictEqual((yield* budget.get(orgId)).teammateUnits, 55.5);
+        assert.include(yield* budget.admit(orgId, "P2", "teammate"), {
+          allowed: false,
+          heldBy: "teammates",
+        });
+        assert.isTrue((yield* budget.admit(orgId, "P2", "owner")).allowed);
+        // F52: Kabir's next request waits, and nobody is left guessing.
+        const next = ask("next");
+        yield* queue.enqueue(next);
+        const { nextReset } = yield* budget.admit(orgId, "P2", "teammate");
+        yield* sql`UPDATE kin_events SET budget_deferred = 1, not_before = ${nextReset} WHERE event_id = 'next'`;
+        for (const _ of [1, 2])
+          yield* budget.held({
+            orgId,
+            agentId,
+            wakeupId: KinWakeupId.make("held-wakeup"),
+            events: [next],
+            heldBy: "teammates",
+            nextReset,
+          });
+        assert.deepStrictEqual(
+          yield* sql`SELECT chat_id AS "chatId", body FROM kin_messages
+            WHERE org_id = ${orgId} ORDER BY chat_id, message_id`,
+          [
+            {
+              chatId: "group",
+              body: "Lead will pick this up at 12:00 am: today's limit for teammates' requests is used up.",
+            },
+            {
+              chatId: "owner-chat",
+              body: "Today's limit for teammates' requests is used up, so they wait until 12:00 am: Lead (1 request). Raise or remove it in Settings to run them now.",
+            },
+          ],
+        );
+        assert.deepStrictEqual((yield* budget.get(orgId)).waiting, {
+          until: DateTime.formatIso(DateTime.makeUnsafe(nextReset)),
+          agents: [{ agentId, name: "Lead", requests: 1, tasks: 0, other: 0 }],
+        });
+        // Raising the limit lets what waited run now.
+        yield* budget.set(owner, {
+          orgId,
+          limits: { leadUnits: 1000, workerUnits: 1000, teammateUnits: null },
+        });
+        assert.deepStrictEqual((yield* budget.get(orgId)).waiting?.agents, []);
+      }).pipe(Effect.provide(layer)),
+  );
+  it.effect("warns the owner once a day at 80% of a limit they set", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const budget = yield* Budget.KinBudget;
+      const sql = yield* SqlClient.SqlClient;
+      yield* budget.set(owner, { orgId, limits: { leadUnits: 100, workerUnits: 100 } });
+      for (const id of ["one", "two", "three"]) {
+        const wakeupId = KinWakeupId.make(id);
+        yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids) VALUES (${orgId}, ${wakeupId}, ${agentId}, 'cheap', 0, 'completed', '[]')`;
+        yield* budget.charge({
+          orgId,
+          wakeupId,
+          usage: [{ providerTurnId: id, usedTokens: 30 }],
+        });
+      }
+      assert.deepStrictEqual(
+        yield* sql`SELECT body FROM kin_messages WHERE org_id = ${orgId} ORDER BY message_id`,
+        [
+          {
+            body: "Your agents have used 80% of today's limit. At the limit only your own messages run, on the cheaper model, until 12:00 am. You can raise or remove the limit in Settings.",
+          },
+        ],
+      );
     }).pipe(Effect.provide(layer)),
   );
 });

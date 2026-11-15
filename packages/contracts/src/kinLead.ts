@@ -648,9 +648,16 @@ export const KinEvent = Schema.Union([
 ]);
 export type KinEvent = typeof KinEvent.Type;
 
+const KinBudgetUnits = Schema.Finite.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
+/**
+ * The owner's daily limits, in budget units; null is no limit, which is the default. Agents'
+ * turns spend `leadUnits`, coding workers `workerUnits`, and turns teammates asked for also count
+ * against `teammateUnits`.
+ */
 export const KinBudgetLimits = Schema.Struct({
-  leadUnits: Schema.Finite.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
-  workerUnits: Schema.Finite.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  leadUnits: Schema.NullOr(KinBudgetUnits),
+  workerUnits: Schema.NullOr(KinBudgetUnits),
+  teammateUnits: Schema.optional(Schema.NullOr(KinBudgetUnits)),
 });
 export type KinBudgetLimits = typeof KinBudgetLimits.Type;
 export const KinBudget = Schema.Struct({
@@ -668,7 +675,24 @@ export const KinBudget = Schema.Struct({
   ),
   leadUnits: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
   workerUnits: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+  /** Today's lead units spent on turns a teammate asked for, within `leadUnits`. */
+  teammateUnits: Schema.optional(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
   limits: KinBudgetLimits,
+  /** Work held for a limit, by agent: it runs when the day turns or a limit is raised. */
+  waiting: Schema.optional(
+    Schema.Struct({
+      until: Schema.NullOr(Schema.toEncoded(CanonicalUtcTimestamp)),
+      agents: Schema.Array(
+        Schema.Struct({
+          agentId: KinAgentId,
+          name: Schema.String,
+          requests: NonNegativeInt,
+          tasks: NonNegativeInt,
+          other: NonNegativeInt,
+        }),
+      ),
+    }),
+  ),
   // Today's lead units by lead, largest first; the limit stays one figure for the org.
   leads: Schema.optional(
     Schema.Array(

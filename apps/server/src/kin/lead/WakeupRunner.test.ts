@@ -730,6 +730,7 @@ describe("WakeupRunner", () => {
             Effect.succeedSome({
               chatId: KinChatId.make("owner-chat"),
               mode: "reply" as const,
+              owed: true,
               leadName: "Lead",
             }),
           preparing: () => Effect.void,
@@ -1581,6 +1582,7 @@ describe("WakeupRunner", () => {
           Effect.succeedSome({
             chatId: KinChatId.make("owner-chat"),
             mode: "reply" as const,
+            owed: true,
             leadName: "Lead",
           }),
         preparing: () => Effect.void,

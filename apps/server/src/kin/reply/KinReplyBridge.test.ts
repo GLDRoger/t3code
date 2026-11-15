@@ -218,7 +218,7 @@ const setup = Effect.fn("test.setup")(function* (input: {
     readonly ownerMember: KinMemberId;
   }) => Effect.Effect<
     (base: WakeupEventBase) => KinEvent,
-    unknown,
+    never,
     Kin.KinServer | SqlClient.SqlClient
   >;
 }) {
@@ -268,16 +268,16 @@ const setup = Effect.fn("test.setup")(function* (input: {
   const event =
     input.event === undefined
       ? undefined
-      : yield* Effect.gen(function* () {
-          const [member] = yield* sql<{ memberId: string }>`SELECT member_id AS "memberId"
-            FROM kin_chat_members WHERE chat_id = ${direct.chatId} AND person_id = ${owner.personId}`;
-          return yield* input.event!({
-            owner,
-            direct: direct.chatId,
-            message,
-            ownerMember: KinMemberId.make(member!.memberId),
-          });
-        }).pipe(Effect.orDie);
+      : yield* input.event({
+          owner,
+          direct: direct.chatId,
+          message,
+          ownerMember: KinMemberId.make(
+            (yield* sql<{ memberId: string }>`SELECT member_id AS "memberId"
+              FROM kin_chat_members WHERE chat_id = ${direct.chatId}
+                AND person_id = ${owner.personId}`)[0]!.memberId,
+          ),
+        });
   const wakeupId = KinWakeupId.make(
     yield* startAgentWakeup({
       orgId: owner.orgId,
@@ -458,7 +458,7 @@ it.effect("holds a claimed wake-up's line from its claim, and drops it if it nev
     const presence = Context.get(services, KinPresence);
     const shown = () => presence.lines(owner.orgId, direct.chatId).map((line) => line.wakeupId);
     const next = KinWakeupId.make("next");
-    const lane = { chatId: direct.chatId, mode: "reply", leadName: "Ada" } as const;
+    const lane = { chatId: direct.chatId, mode: "reply", owed: true, leadName: "Ada" } as const;
     yield* bridge.preparing({ orgId: owner.orgId, agentId, wakeupId: next, lane, startedAt: 0 });
     assert.deepStrictEqual(shown(), [next]);
     yield* bridge.end({ orgId: owner.orgId, agentId, wakeupId: next });
@@ -808,7 +808,7 @@ it.effect("keeps a run that couldn't sign in out of the chat, and says so once p
       rootRunId: runId,
       rescueUntil: null,
     });
-    const lane = { chatId, mode: "reply" as const, leadName: "Ada" };
+    const lane = { chatId, mode: "reply" as const, owed: true, leadName: "Ada" };
     const fail = (id: KinWakeupId) =>
       bridge.failed({ orgId: owner.orgId, wakeupId: id, lane, outcome: "signin" });
     const retry = () =>
@@ -868,7 +868,7 @@ it.effect("tells a shared chat only that the lead is unavailable when its accoun
     yield* bridge.failed({
       orgId: owner.orgId,
       wakeupId,
-      lane: { chatId, mode: "reply", leadName: "Ada" },
+      lane: { chatId, mode: "reply", owed: true, leadName: "Ada" },
       outcome: "access",
     });
     assert.deepStrictEqual(
@@ -1122,7 +1122,7 @@ const WAKE_KINDS: Record<KinEvent["_tag"] | "hand-over", WakeCase> = {
           messageId: message.messageId,
           origin: { agentId: otherLead, chatId: asked.chatId },
         });
-      }),
+      }).pipe(Effect.orDie),
   },
   "record.changed": {
     owed: true,
