@@ -57,6 +57,7 @@ import * as OwnerStatements from "../ownerStatements.ts";
 import { defineList, PRESETS } from "../registers.ts";
 import { makeKinWorkHandlers } from "../rpcHandlers.ts";
 import { readStatementFile } from "./statementFiles.ts";
+import { answerCurrencyCard } from "./statementReview.ts";
 import { type RowRead, threePageStatement } from "./statementPdf.testkit.ts";
 import { queueTap, tellLead } from "./statementWake.ts";
 
@@ -679,6 +680,33 @@ describe("bank statements", () => {
         yield* sql`SELECT COUNT(*) AS n FROM kin_record_payments WHERE voided_at IS NULL`,
         [paid!],
       );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("records a row once when the same file of an unknown account is sent twice", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      // No bank named, so the account has no identity: the same bytes, sent twice.
+      const bytes = csvOf([["2026-10-05", "UPI-INVENTED CAFE-cafe@invbank", 45_000, null]]);
+      const first = opened(yield* read(1, "masked.csv", bytes));
+      const second = opened(yield* read(2, "masked-again.csv", bytes));
+      const asExpense = (card: KinStatementReviewCard) =>
+        choose(card, [
+          { _tag: "tickAll", ticked: false },
+          { _tag: "action", row: card.unmatched[0]!.row, action: "expense" },
+        ]).pipe(Effect.map(confirmOf));
+      const one = yield* asExpense((yield* reviewCardOf(first.statement)).card);
+      const two = yield* asExpense((yield* reviewCardOf(second.statement)).card);
+      yield* OwnerStatements.apply(people, one);
+      const applied = yield* OwnerStatements.apply(people, two);
+      assert.deepStrictEqual(
+        yield* sql`SELECT COUNT(*) AS n FROM kin_records
+          WHERE register_id = 'expenses' AND origin_key LIKE 'statement:%' AND state <> 'dropped'`,
+        [{ n: 1 }],
+      );
+      assert.lengthOf(yield* bankRows, 1);
+      assert.include(applied.card.result!.join(" "), "already recorded from another statement");
     }).pipe(Effect.provide(layer)),
   );
 
@@ -1565,12 +1593,14 @@ describe("bank statements", () => {
 const csvOf = (
   rows: ReadonlyArray<readonly [string, string, number | null, number | null]>,
   balances?: { readonly opening: number },
+  currency: string | null = "INR",
 ) => {
   let balance = balances?.opening ?? 0;
   const money = (minor: number) => (minor / 100).toFixed(2);
   return new TextEncoder().encode(
     [
       "Account No :50100000009034",
+      ...(currency === null ? [] : [`Currency: ${currency}`]),
       ...(balances === undefined ? [] : [`"Opening Balance: ${money(balances.opening)}"`]),
       `Date,Narration,Debit Amount,Credit Amount${balances === undefined ? "" : ",Balance"}`,
       ...rows.map(([day, text, out, inflow]) => {
@@ -1857,12 +1887,14 @@ describe("bank statement safety", () => {
         });
       const rupees = yield* invoice("INR");
       const dollars = yield* invoice("USD");
-      const statement = (heading: string) =>
+      const statement = (heading: string, narration = "") =>
         new TextEncoder().encode(
           `${heading}\n${new TextDecoder().decode(
-            csvOf([["2026-10-02", "WIRE CR-BRIGHTLINE MEDIA LLP", null, 118_000]], {
-              opening: 100_000,
-            }),
+            csvOf(
+              [["2026-10-02", `WIRE CR-BRIGHTLINE MEDIA LLP${narration}`, null, 118_000]],
+              { opening: 100_000 },
+              null,
+            ),
           )}`,
         );
       const result = opened(yield* read(1, "usd.csv", statement("Currency: USD")));
@@ -1887,17 +1919,53 @@ describe("bank statement safety", () => {
         yield* sql`SELECT DISTINCT currency FROM kin_records WHERE origin_key LIKE 'bank:%'`,
         [{ currency: "USD" }],
       );
-      // A currency Kin can't record exactly, or two at once, is refused in plain words.
-      for (const [n, heading, said] of [
-        [2, "Currency: BTC", "can't record exactly"],
-        [3, '"Totals in USD 1,180.00 and EUR 1,180.00"', "more than one currency"],
+      // A currency Kin can't record exactly is refused in plain words.
+      const btc = inState(yield* read(2, "refused.csv", statement("Currency: BTC")), "unreadable");
+      assert.include(JSON.stringify(btc), "can't record exactly");
+      // Unproven or conflicting, the owner picks: never the narration's code, never a default.
+      const currencyCard = (statementId: string) =>
+        sql<{ widgetId: string; state: string }>`SELECT widget_id AS "widgetId",
+            state_json AS state FROM kin_widgets
+          WHERE widget_id LIKE ${`kin-statement-currency:${statementId}:%`}`;
+      for (const [n, heading, narration, first] of [
+        [3, '"Opening Balance: $1,000.00"', "", "USD"],
+        [4, "Account No :50100000009034", " POS USD 15.00", "INR"],
+        [5, "Currency: INR\nCurrency: USD", "", "INR"],
+        [6, '"Totals in USD 1,180.00 and EUR 1,180.00"', "", "USD"],
       ] as const) {
-        const refused = inState(
-          yield* read(n, `refused-${n}.csv`, statement(heading)),
-          "unreadable",
+        const asked = opened(yield* read(n, `unsure-${n}.csv`, statement(heading, narration)));
+        const [card] = yield* currencyCard(asked.statement);
+        const options = JSON.parse(card!.state).options.map((one: { label: string }) => one.label);
+        assert.strictEqual(options[0], first, heading);
+        const review = (yield* reviewCardOf(asked.statement)).card;
+        assert.include(review.summary[0], "doesn't say which currency");
+        const blocked = yield* Effect.flip(
+          OwnerStatements.apply(people, yield* confirmAll(review)),
         );
-        assert.include(JSON.stringify(refused), said);
+        assert.include(blocked.message, "Pick this statement's currency");
       }
+      // The owner's pick reads the same figures in that currency, matched to its invoices.
+      const dollarFile = opened(
+        yield* read(7, "dollars.csv", statement('"Opening Balance: $1,000.00"')),
+      );
+      const [pick] = yield* currencyCard(dollarFile.statement);
+      yield* sql.withTransaction(
+        answerCurrencyCard({
+          orgId,
+          widgetId: pick!.widgetId,
+          personId: ownerId,
+          code: "USD",
+          now: NOW,
+        }),
+      );
+      const picked = (yield* reviewCardOf(dollarFile.statement)).card;
+      assert.notInclude(picked.summary.join(" "), "doesn't say which currency");
+      assert.include(picked.summary.join(" "), "$1,180.00");
+      yield* OwnerStatements.apply(people, yield* confirmAll(picked));
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_record_payments WHERE record_id = ${rupees.row.recordId}`,
+        0,
+      );
     }).pipe(Effect.provide(layer)),
   );
 

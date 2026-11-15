@@ -223,11 +223,9 @@ export type CurrencyRead =
   | { readonly refused: string };
 
 /**
- * The currency a statement's amounts are in, from its own context: "Currency" labels, the codes
- * and symbols its column header and summary lines print, else an Indian bank's account. Narration
- * never counts. Unproven or conflicting, it is read in the likeliest one (`proposed` when it fits)
- * and `choose` lists those the owner may pick, all with the same minor units, so a pick only
- * relabels the figures. Refused only when Kin can't record it exactly.
+ * A statement's currency from its labels, header and summary lines (never narration), else an
+ * Indian bank's account. Unproven or conflicting, it reads in the likeliest one and `choose` lists
+ * same-minor-unit picks for the owner, so a pick only relabels. Refused when not recordable.
  */
 export const currencyIn = (text: string, proposed?: string): CurrencyRead => {
   const recordable = (code: string) => isCurrency(code) && currencyDigits(code) <= 4;
@@ -417,8 +415,7 @@ const placeCells = (line: Line, header: Header, digits: number): Map<Role, Array
       }
     }
     const words = whole ? byLeft.filter((one) => !NUMERIC_ROLES.has(one.role)) : byLeft;
-    const column =
-      words.findLast((one) => one.x! <= cell.x! + 4) ?? words[0] ?? byLeft[0]!;
+    const column = words.findLast((one) => one.x! <= cell.x! + 4) ?? words[0] ?? byLeft[0]!;
     put(column.role, cell);
   }
   return placed;

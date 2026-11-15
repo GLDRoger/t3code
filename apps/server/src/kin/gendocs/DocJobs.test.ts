@@ -50,6 +50,7 @@ import { computeData } from "./compute.ts";
 import * as DocJobs from "./DocJobs.ts";
 import { gatherFacts, jobSensitive } from "./facts.ts";
 import * as LeadDocuments from "./leadDocuments.ts";
+import { answerReceiptCard } from "./receiptProposals.ts";
 import { assembleInputs, needsEntry, parseRecipe } from "./recipe.ts";
 import { copyReferences } from "./references.ts";
 import * as Render from "./render.ts";
@@ -831,11 +832,21 @@ describe("recipe documents", () => {
 });
 
 type ReceiptAsk = Omit<typeof LeadDocuments.ReceiptInput.Type, "sourceEventId">;
-/** The owner's tap on Kin's yes/no card, as the chat service settles a choice. */
+/** The owner's tap on Kin's yes/no card, as the chat service runs it: the receipt, then the card. */
 const answerCard = (clientMessageId: string, kind: "yes" | "no") =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const widgetId = `choice:card-${clientMessageId}`;
+    yield* sql.withTransaction(
+      answerReceiptCard({
+        orgId,
+        widgetId,
+        personId: ownerId,
+        confirmed: kind === "yes",
+        via: "tap",
+        now: Date.parse(at),
+      }),
+    );
     const [card] = yield* sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
       WHERE widget_id = ${widgetId}`;
     const state = JSON.parse(card!.state) as {
@@ -854,7 +865,7 @@ const answerCard = (clientMessageId: string, kind: "yes" | "no") =>
   });
 /**
  * The agent's receipt as the owner asked for it; one that records money waits for the owner's
- * Confirm on its card, tapped here, and is made by the agent's call with its proposal.
+ * Confirm on its card, tapped here, and the agent's call with its proposal reads what it made.
  */
 const agentReceipt = (asked: string, input: ReceiptAsk) =>
   Effect.gen(function* () {
@@ -1018,9 +1029,8 @@ describe("receipts", () => {
           "Client: Invented Acme",
           "Amount: ₹500.00",
           "Received on: 2026-11-05",
-          "Mode: upi",
-          "Towards: Website redesign",
           "Set against: no invoice",
+          "Agent's note: towards Website redesign, by upi",
         ])
           assert.include(detail, line);
         // The same ask is the same card; changed, it is another. Unanswered, it makes nothing.
@@ -1032,8 +1042,11 @@ describe("receipts", () => {
         // Cancel ends a proposal.
         yield* answerCard(`kin-receipt:${more.proposal}`, "no");
         assert.match((yield* Effect.flip(call({ proposal: more.proposal }))).message, /said no/);
-        // Confirm makes exactly what its card showed, once.
+        // The owner's tap records exactly what its card showed, once; the agent reads it after.
         yield* answerCard(`kin-receipt:${advance.proposal}`, "yes");
+        assert.deepStrictEqual(yield* live, [{ minor: 50_000 }]);
+        const twice = yield* Effect.flip(answerCard(`kin-receipt:${advance.proposal}`, "yes"));
+        assert.include(twice.message, "already answered");
         const made = yield* call({ proposal: advance.proposal });
         const again = yield* call({ proposal: advance.proposal });
         assert.deepStrictEqual(
@@ -1059,7 +1072,17 @@ describe("receipts", () => {
             dateAllDay: true,
           },
         );
-        yield* proposed({ entry: KinRecordKey.make(row.key) });
+        const entry = yield* proposed({ entry: KinRecordKey.make(row.key) });
+        assert.deepStrictEqual(yield* live, [{ minor: 50_000 }]);
+        // Changed since its card was shown, it records nothing: not the card's figure, nor the new.
+        yield* records.update(
+          orgId,
+          { actor: { _tag: "agent", agentId: lead }, via: "lead" },
+          row.key,
+          { amount: { minor: 500_000, currency: "INR" } },
+        );
+        const stale = yield* Effect.flip(answerCard(`kin-receipt:${entry.proposal}`, "yes"));
+        assert.match(stale.message, /figures changed since this card was made/);
         assert.deepStrictEqual(yield* live, [{ minor: 50_000 }]);
       }).pipe(Effect.provide(layer)),
   );
@@ -1094,7 +1117,12 @@ describe("receipts", () => {
           clientRequestId: "tap-taken-back",
         }),
       );
-      for (const refused of [byAgent, byOwner]) assert.match(refused.message, /taken back/);
+      // Nor is it set against an invoice into a payment again.
+      const against = yield* Effect.flip(
+        call({ entry: KinRecordKey.make(forPaid.receipt), against: KinRecordKey.make("INV-1") }),
+      );
+      for (const refused of [byAgent, byOwner, against])
+        assert.match(refused.message, /taken back/);
       assert.lengthOf(yield* live, before);
       const listed = (yield* OwnerMoney.receipts(people, { orgId })).receipts.find(
         (one) => one.key === forPaid.receipt,
@@ -1305,7 +1333,7 @@ describe("receipts", () => {
         );
 
         // Ways back: a voided receipt keeps its number and the payment gets a new one; an
-        // advance whose payment was taken back can be set against an invoice again.
+        // advance whose payment was taken back stays void, set against an invoice or not.
         yield* LeadDocuments.issue(scope, {
           entry: KinRecordKey.make(next.receipt),
           void: true,
@@ -1329,13 +1357,13 @@ describe("receipts", () => {
           (one) => one.key === advance.receipt,
         )!.paymentId!;
         yield* records.voidPayment(orgId, system, "INV-2", held);
-        yield* receipt(against);
-        const reset = (yield* OwnerMoney.receipts(people, { orgId })).receipts.find(
-          (one) => one.key === advance.receipt,
-        )!;
-        assert.deepStrictEqual(
-          [reset.invoice, reset.number, reset.paymentId !== held],
-          ["INV-2", "QST-RN/26-27/009", true],
+        const refused = yield* Effect.flip(receipt(against));
+        assert.match(refused.message, /taken back, so it is void/);
+        assert.strictEqual(
+          (yield* OwnerMoney.receipts(people, { orgId })).receipts.find(
+            (one) => one.key === advance.receipt,
+          )!.state,
+          "dropped",
         );
       }).pipe(Effect.provide(layer)),
   );

@@ -329,7 +329,17 @@ describe("what the file itself proves", () => {
           }),
         ],
         pages: [
-          { page: 1, rows: [{ ...vendor("2026-04-02", 50_000, 150_000), description: "NEFT CR-NORTHWIND", reference: "123456", direction: "credit" }] },
+          {
+            page: 1,
+            rows: [
+              {
+                ...vendor("2026-04-02", 50_000, 150_000),
+                description: "NEFT CR-NORTHWIND",
+                reference: "123456",
+                direction: "credit",
+              },
+            ],
+          },
           { page: 2, rows: [] },
           {
             page: 3,

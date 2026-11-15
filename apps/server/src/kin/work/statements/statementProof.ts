@@ -112,7 +112,11 @@ const roleOf = (token: Token, columns: ReadonlyArray<Column>): Role | undefined 
   return nearest !== undefined && farFrom(token, nearest) <= 30 ? nearest.role : undefined;
 };
 /** Whether a line's money sits under a layout as a whole: each near its own column, none shared. */
-const fitsLayout = (tokens: ReadonlyArray<Token>, columns: ReadonlyArray<Column>, slack: number) => {
+const fitsLayout = (
+  tokens: ReadonlyArray<Token>,
+  columns: ReadonlyArray<Column>,
+  slack: number,
+) => {
   const used = new Set<Column>();
   for (const one of tokens) {
     const column = nearestOf(one, columns);

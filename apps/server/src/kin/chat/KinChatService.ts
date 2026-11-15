@@ -131,7 +131,7 @@ export type ChoiceAnswerHandler = (input: {
   readonly option: { readonly label: string; readonly kind?: "yes" | "no" | undefined };
   readonly via: "tap" | "reaction";
   readonly now: number;
-}) => Effect.Effect<void, KinChatError | SqlError.SqlError | Schema.SchemaError>;
+}) => Effect.Effect<void, Repository.RepositoryError | SqlError.SqlError | Schema.SchemaError>;
 type WaitingInput = Pick<
   KinWaitingItem,
   "chatId" | "personId" | "messageId" | "widgetId" | "reason"
@@ -891,7 +891,11 @@ const make = Effect.gen(function* () {
         option: choice.option,
         via: reaction === null ? "tap" : "reaction",
         now: yield* Clock.currentTimeMillis,
-      }).pipe(Effect.mapError(cardTapError));
+      }).pipe(
+        Effect.mapError((cause) =>
+          SqlError.isSqlError(cause) || Schema.isSchemaError(cause) ? cardTapError(cause) : cause,
+        ),
+      );
     const message = yield* post(identity, member, {
       chatId: widget.chatId,
       kind: "widget_action",

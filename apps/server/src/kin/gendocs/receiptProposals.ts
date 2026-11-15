@@ -105,7 +105,9 @@ export const proposeReceipt = Effect.fn("KinReceipts.propose")(function* (input:
   const json = stableStringify(input.request);
   const snapshot = stableStringify(input.snapshot);
   const proposalId = `rp_${NodeCrypto.createHash("sha256")
-    .update(`${input.orgId.length}:${input.orgId}${input.agentId}:${input.wakeupId}:${json}:${snapshot}`)
+    .update(
+      `${input.orgId.length}:${input.orgId}${input.agentId}:${input.wakeupId}:${json}:${snapshot}`,
+    )
     .digest("hex")
     .slice(0, 16)}`;
   yield* sql`INSERT INTO kin_receipt_proposals (org_id, proposal_id, agent_id, wakeup_id, chat_id,
@@ -157,7 +159,8 @@ export const answerReceiptCard = Effect.fn("KinReceipts.answerCard")(function* (
     JOIN kin_agents a ON a.org_id = p.org_id AND a.agent_id = p.agent_id
     WHERE p.org_id = ${input.orgId} AND p.widget_id = ${input.widgetId}`;
   if (row === undefined) return undefined;
-  if (row.owner !== input.personId) return yield* refused("Only the owner confirms money received.");
+  if (row.owner !== input.personId)
+    return yield* refused("Only the owner confirms money received.");
   if (input.via === "reaction")
     return yield* refused("Tap Confirm or Cancel on the card to answer a receipt.");
   if (row.state !== "open")
