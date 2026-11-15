@@ -213,7 +213,7 @@ export type ClientSense = {
  * The client senses, for the pulse, on each client's playbook values: cold after
  * `client_cold_after_days` without contact and no open project, quiet after `client_checkin_days`
  * during one, waiting on us once something we owe them is `reply_owed_hours` past due. Days count
- * from the client's creation when there has never been contact.
+ * from the last contact or the last project we finished for them, else the client's creation.
  */
 export const clientSenses = Effect.fn("KinTouches.senses")(function* (
   orgId: KinOrgId,
@@ -227,8 +227,12 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
     sensitive: number;
     createdAt: number;
     openProjects: number;
+    lastProjectAt: number | null;
     dueAt: number | null;
   }>`SELECT c.record_id AS "partyId", c.key, c.title, c.sensitive, c.created_at AS "createdAt",
+      (SELECT MAX(p.closed_at) FROM kin_records p WHERE p.org_id = c.org_id
+        AND p.register_id = 'projects' AND p.party_id = c.record_id AND p.state = 'done'
+        AND p.closed_at <= ${now}) AS "lastProjectAt",
       (SELECT COUNT(*) FROM kin_records p WHERE p.org_id = c.org_id
         AND p.register_id = 'projects' AND p.party_id = c.record_id AND p.state = 'open')
         AS "openProjects",
@@ -247,7 +251,8 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
   const senses: Array<ClientSense> = [];
   for (const client of clients) {
     const lastAt = last.get(client.partyId) ?? null;
-    const from = lastAt ?? client.createdAt;
+    // Work we finished for them is contact too: silence counts from whichever came last.
+    const from = Math.max(lastAt ?? client.createdAt, client.lastProjectAt ?? 0);
     const days = daysSince(from, now);
     const base = {
       partyId: client.partyId,

@@ -4,7 +4,7 @@ import * as Schema from "effect/Schema";
 import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinAgentId, KinChatError, KinOrgId, KinPersonId } from "./kinChat.ts";
-import { CanonicalUtcTimestamp } from "./kinLead.ts";
+import { CanonicalUtcTimestamp, KinMemoryItemId } from "./kinLead.ts";
 import { KinCurrency, KinDay } from "./kinMoney.ts";
 import { KinRecordId, KinRecordKey } from "./kinWork.ts";
 
@@ -36,6 +36,13 @@ const KIN_PULSE_SENSES = [
   "pr_failing",
   "pr_review_waiting",
   "pr_ready",
+  "milestone_late",
+  "milestone_at_risk",
+  "project_no_plan",
+  "project_quiet",
+  "spec_changed",
+  "meeting_passed",
+  "meeting_soon",
 ] as const;
 export const KinPulseSense = Schema.Literals(KIN_PULSE_SENSES);
 export type KinPulseSense = typeof KinPulseSense.Type;
@@ -217,12 +224,73 @@ export const KinGoalSaveInput = Schema.Struct({
 });
 export type KinGoalSaveInput = typeof KinGoalSaveInput.Type;
 
+// Check-ins: the times an agent looks over the pulse, set in Kin Settings or in chat.
+
+/** "09:30", in the owner's time zone. */
+const KinClockTime = Schema.String.check(Schema.isPattern(/^([01]\d|2[0-3]):[0-5]\d$/));
+/** 0 is Sunday. */
+const KinWeekdays = Schema.Array(
+  Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(6)),
+).check(Schema.isMinLength(1), Schema.isMaxLength(7));
+
+export const KinCheckIn = Schema.Struct({
+  scheduleId: KinMemoryItemId,
+  title: Schema.String,
+  /** What it is for, the owner's words. */
+  what: Schema.String,
+  agentId: KinAgentId,
+  agentName: Schema.String,
+  at: KinClockTime,
+  days: KinWeekdays,
+  on: Schema.Boolean,
+  /** A Run now that hasn't started yet. */
+  runNowPending: Schema.Boolean,
+});
+export type KinCheckIn = typeof KinCheckIn.Type;
+
+export const KinCheckInsInput = Schema.Struct({ orgId: KinOrgId });
+export type KinCheckInsInput = typeof KinCheckInsInput.Type;
+export const KinCheckInsResult = Schema.Struct({
+  /** The owner's time zone, which `at` is in. */
+  zone: Schema.String,
+  checkIns: Schema.Array(KinCheckIn),
+  /** Who can run a new one. */
+  agents: Schema.Array(Schema.Struct({ agentId: KinAgentId, name: Schema.String })),
+});
+export type KinCheckInsResult = typeof KinCheckInsResult.Type;
+
+/** Adds a check-in, or with `scheduleId` changes one's time, days or words. */
+export const KinCheckInSaveInput = Schema.Struct({
+  orgId: KinOrgId,
+  scheduleId: Schema.optional(KinMemoryItemId),
+  agentId: KinAgentId,
+  title: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  what: TrimmedNonEmptyString.check(Schema.isMaxLength(2000)),
+  at: KinClockTime,
+  days: KinWeekdays,
+});
+export type KinCheckInSaveInput = typeof KinCheckInSaveInput.Type;
+
+export const KinCheckInActInput = Schema.Struct({
+  orgId: KinOrgId,
+  scheduleId: KinMemoryItemId,
+  action: Schema.Literals(["run_now", "turn_off", "turn_on", "remove"]),
+});
+export type KinCheckInActInput = typeof KinCheckInActInput.Type;
+
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
 export const KinPulseRpcs = [
   Rpc.make("kin.pulse.read", { payload: KinPulseListInput, success: KinPulseRead, error }),
   Rpc.make("kin.pulse.handle", { payload: KinPulseHandleInput, success: KinPulseFact, error }),
   Rpc.make("kin.goals.list", { payload: KinGoalsInput, success: KinGoalsResult, error }),
   Rpc.make("kin.goals.save", { payload: KinGoalSaveInput, success: KinGoal, error }),
+  Rpc.make("kin.checkIns.list", { payload: KinCheckInsInput, success: KinCheckInsResult, error }),
+  Rpc.make("kin.checkIns.save", {
+    payload: KinCheckInSaveInput,
+    success: KinCheckInsResult,
+    error,
+  }),
+  Rpc.make("kin.checkIns.act", { payload: KinCheckInActInput, success: KinCheckInsResult, error }),
 ] as const;
 
 export const KIN_PULSE_RPC_SCOPES = {
@@ -230,4 +298,7 @@ export const KIN_PULSE_RPC_SCOPES = {
   "kin.pulse.handle": AuthKinChatScope,
   "kin.goals.list": AuthKinChatScope,
   "kin.goals.save": AuthKinChatScope,
+  "kin.checkIns.list": AuthKinChatScope,
+  "kin.checkIns.save": AuthKinChatScope,
+  "kin.checkIns.act": AuthKinChatScope,
 } as const;

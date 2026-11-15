@@ -99,6 +99,17 @@ export const elapsed = (from: number, to: number, unit: "hours" | "days") =>
   Math.floor((to - from) / (unit === "hours" ? HOUR_MS : DAY_MS));
 
 export const dayOf = (ctx: SenseContext, ms: number) => dayIn(ms, ctx.zone);
+/** A moment in the owner's zone, such as "Thu 19 Nov, 15:00". */
+export const whenOf = (ctx: SenseContext, ms: number) =>
+  new Intl.DateTimeFormat("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    timeZone: ctx.zone,
+  }).format(ms);
 export const daysText = (days: number) => (days === 1 ? "1 day" : `${days} days`);
 export const hoursText = (hours: number) => (hours === 1 ? "1 hour" : `${hours} hours`);
 /** An instant as facts carry it. */

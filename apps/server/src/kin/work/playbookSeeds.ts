@@ -99,14 +99,16 @@ Merging follows each repo's own rules and permissions; this playbook doesn't cha
 An issued invoice is unpaid past its due date, or a retainer or renewal is coming up.
 
 ## Steps
-1. On the due date, nothing. Clients pay late; give it the grace below.
-2. After the grace, draft a polite reminder in the invoice's own mail thread and offer it to the owner.
-3. A second reminder after the gap below, firmer, naming the amount and the due date.
-4. After two reminders, tell the owner in the brief; they call the client themselves.
-5. Before a retainer or renewal, give the owner a heads-up and draft the renewal invoice.
+1. An invoice issued without a due date gets one: the client's terms when they name days, else the payment days below.
+2. On the due date, nothing. Clients pay late; give it the grace below.
+3. After the grace, draft a polite reminder in the invoice's own mail thread and offer it to the owner.
+4. A second reminder after the gap below, firmer, naming the amount and the due date.
+5. After two reminders, tell the owner in the brief; they call the client themselves.
+6. Before a retainer or renewal, give the owner a heads-up and draft the renewal invoice.
 
 ## Thresholds
 \`\`\`kin
+payment_due_days: 15
 chase_invoice_after_days: 10
 second_reminder_after_days: 7
 renewal_heads_up_days: 14
@@ -128,7 +130,7 @@ Any client we work with, during a project and after it.
 1. Check in every so often (below) with something useful: progress, a decision we need, or a question.
 2. A client message waiting for our reply too long: tell whoever owns the client.
 3. A client with no contact for the cold days below has gone cold: tell the owner, and suggest what we could offer them next.
-4. After a meeting someone mentioned, ask them how it went and what the action items are.
+4. A meeting's follow-up hours (below) after it, with no outcome noted, ask someone who was in it how it went and what the action items are, in their own chat; note the outcome on the meeting and track the action items as Work.
 5. Keep what we learn about the client in their file: what they value, how they decide, how they like to talk.
 
 ## Thresholds
@@ -136,6 +138,7 @@ Any client we work with, during a project and after it.
 client_checkin_days: 14
 client_cold_after_days: 30
 reply_owed_hours: 24
+meeting_follow_up_hours: 2
 \`\`\`
 
 ## Who decides

@@ -61,7 +61,18 @@ const seed = Layer.effectDiscard(
   }),
 ).pipe(Layer.provideMerge(KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory))));
 
+const listed = (number: number) => ({
+  number,
+  title: `Invented ${number}`,
+  html_url: `https://github.com/acme/app/pull/${number}`,
+  created_at: "2026-11-01T00:00:00Z",
+  user: { login: "mate" },
+  head: { sha: `sha-${number}`, ref: `branch-${number}`, repo: { full_name: "acme/app" } },
+});
+
 const route = (request: RecordedRequest) => {
+  if (request.path === "/repos/acme/app/pulls?state=open&per_page=100")
+    return { status: 200, body: [listed(7), listed(8)] };
   if (request.path === "/repos/acme/app")
     return { status: 200, body: { private: true, owner: { login: "Acme" } } };
   if (request.path === "/repos/acme/site")
@@ -182,7 +193,8 @@ describe("KinPullRequestCare.review", () => {
         const again = (repo: string, proposal: string) => review(repo, { proposal });
         assert.strictEqual((yield* again("acme/site", site!.postId)).status, "waiting");
 
-        // Only the owner's tap counts; then the agent posts exactly what the card showed, once.
+        // A teammate's tap is no answer; the owner's posts exactly what the card showed, once,
+        // from Kin itself (the PR care tick), with no call from the agent.
         for (const personId of ["mate", owner])
           yield* PullRequestCare.answerReviewCard({
             orgId,
@@ -191,6 +203,12 @@ describe("KinPullRequestCare.review", () => {
             confirmed: true,
             now: 1,
           });
+        const care = yield* PullRequestCare.KinPullRequestCare;
+        assert.strictEqual(
+          yield* care.postConfirmed(orgId, site!.postId),
+          "https://github.com/acme/site/pull/7#review",
+        );
+        assert.isUndefined(yield* care.postConfirmed(orgId, site!.postId));
         const done = yield* again("acme/site", site!.postId);
         assert.strictEqual(done.status, "posted");
         assert.deepStrictEqual(requests.at(-1)?.body, {
@@ -213,6 +231,32 @@ describe("KinPullRequestCare.review", () => {
         FROM kin_pr_review_posts WHERE repo = 'client/portal'`;
         assert.strictEqual((yield* again("client/portal", portal!.postId)).status, "declined");
         assert.lengthOf(posts(requests), 2);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "backfills open PRs no webhook reported, and closes ones GitHub no longer lists",
+    () => {
+      const { layer } = setup();
+      return Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_pull_requests (org_id, repo, number, title, url, state, opened_at,
+          review, updated_at)
+        VALUES (${orgId}, 'acme/app', 3, 'Gone', 'https://github.com/acme/app/pull/3', 'open', 0,
+          NULL, 0),
+          (${orgId}, 'acme/app', 8, 'Known', 'https://github.com/acme/app/pull/8', 'open', 0,
+          'approved', 0)`;
+        const care = yield* PullRequestCare.KinPullRequestCare;
+        assert.strictEqual(yield* care.backfill(orgId), 2);
+        const rows = yield* sql<{ number: number; state: string; review: string | null }>`SELECT
+          number, state, review FROM kin_pull_requests WHERE repo = 'acme/app' ORDER BY number`;
+        assert.deepStrictEqual(rows, [
+          { number: 3, state: "closed", review: null },
+          { number: 7, state: "open", review: null },
+          // What a webhook already said is kept.
+          { number: 8, state: "open", review: "approved" },
+        ]);
       }).pipe(Effect.provide(layer));
     },
   );

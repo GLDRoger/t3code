@@ -18,7 +18,12 @@ import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { announceRefreshes, subscribeRefreshes } from "../chat/refreshes.ts";
 import { KinServer } from "../KinServer.ts";
+import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
+import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
+import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
+import * as CheckIns from "../pulse/checkIns.ts";
 import * as Pulse from "../pulse/people.ts";
+import * as KinSchedules from "../triggers/kinSchedules.ts";
 import * as Goals from "./goals.ts";
 import * as Clients from "./ownerClients.ts";
 import * as Docs from "./ownerDocs.ts";
@@ -49,6 +54,12 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
   session: AuthenticatedSession,
 ) {
   const kin = yield* Effect.serviceOption(KinServer);
+  // Saving a check-in writes its native task; the socket's own services do that.
+  const scheduling = Option.all({
+    tasks: yield* Effect.serviceOption(ScheduledTaskService.ScheduledTaskService),
+    launcher: yield* Effect.serviceOption(ThreadLaunchService.ThreadLaunchService),
+    threads: yield* Effect.serviceOption(ThreadManagementService.ThreadManagementService),
+  });
   const call = Effect.fn("KinWork.rpc.call")(function* <A, E, R>(
     run: (
       people: Effect.Success<ReturnType<KinIdentity["Service"]["resolve"]>>,
@@ -306,6 +317,24 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       }),
       "kin.goals.save": Effect.fn("KinGoals.rpc.save")(function* (input) {
         return yield* call((people) => Goals.save(people, input));
+      }),
+      "kin.checkIns.list": Effect.fn("KinCheckIns.rpc.list")(function* (input) {
+        return yield* call((people) => CheckIns.list(people, input.orgId));
+      }),
+      "kin.checkIns.save": Effect.fn("KinCheckIns.rpc.save")(function* (input) {
+        if (Option.isNone(scheduling)) return yield* disabled;
+        const { tasks, launcher, threads } = scheduling.value;
+        return yield* call((people) =>
+          CheckIns.save(people, input).pipe(
+            Effect.provide(KinSchedules.layer),
+            Effect.provideService(ScheduledTaskService.ScheduledTaskService, tasks),
+            Effect.provideService(ThreadLaunchService.ThreadLaunchService, launcher),
+            Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
+          ),
+        );
+      }),
+      "kin.checkIns.act": Effect.fn("KinCheckIns.rpc.act")(function* (input) {
+        return yield* call((people) => CheckIns.act(people, input));
       }),
     }),
   };

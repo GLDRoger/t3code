@@ -26,10 +26,14 @@ const PLAYBOOK_KEYS = {
   stalled_after_days: { unit: "days", min: 1, max: 60, default: 3 },
   waiting_too_long_days: { unit: "days", min: 1, max: 60, default: 5 },
   milestone_heads_up_days: { unit: "days", min: 1, max: 60, default: 3 },
+  // How long after a meeting's time, with no outcome noted, to ask how it went.
+  meeting_follow_up_hours: { unit: "hours", min: 1, max: 168, default: 2 },
   project_quiet_days: { unit: "days", min: 1, max: 90, default: 7, client: true },
   overloaded_load: { unit: "tasks", min: 1, max: 100, default: 8 },
   pr_open_too_long_hours: { unit: "hours", min: 1, max: 720, default: 72 },
   review_waiting_hours: { unit: "hours", min: 1, max: 336, default: 24 },
+  // Days to pay an invoice issued without a due date, when the client's terms name none.
+  payment_due_days: { unit: "days", min: 1, max: 180, default: 15, client: true },
   chase_invoice_after_days: { unit: "days", min: 1, max: 120, default: 10, client: true },
   second_reminder_after_days: { unit: "days", min: 1, max: 60, default: 7, client: true },
   client_checkin_days: { unit: "days", min: 1, max: 180, default: 14, client: true },

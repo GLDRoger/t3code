@@ -2,10 +2,12 @@ import type { KinAgentId, KinOrgId, KinPulseActor, KinPulseFact } from "@t3tools
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { clientHistory } from "./clientHistory.ts";
 import * as KinPulse from "./KinPulse.ts";
+import { teamHoursNow } from "./nudge.ts";
 
 export const PULSE_RULE =
-  "What needs attention, as Kin computed it from its own records just now. Act on a fact when that moves something forward; otherwise leave it. Call pulse_handle once one is in hand or is not a problem.";
+  "What needs attention, as Kin computed it from its own records just now. Act on a fact when that moves something forward; otherwise leave it. Call pulse_handle once one is in hand or is not a problem. teamHours says, per person, whether they are inside their own working hours now: go by it, never by the team's or your own reckoning.";
 const SECTION_CAP = 30;
 
 /**
@@ -47,6 +49,18 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
           ? "you"
           : (names.get(actor.agentId) ?? "another agent")
         : (names.get(actor.personId) ?? "a teammate");
+  // A client gone quiet or cold comes with what we did for them, so a suggestion has substance.
+  const histories = new Map<string, Effect.Success<ReturnType<typeof clientHistory>>>();
+  for (const fact of shown)
+    if (
+      (fact.sense === "client_cold" || fact.sense === "client_quiet") &&
+      fact.subject.recordId !== undefined &&
+      !histories.has(fact.subject.recordId)
+    )
+      histories.set(
+        fact.subject.recordId,
+        yield* clientHistory(input.orgId, fact.subject.recordId, input.now),
+      );
   const row = (fact: KinPulseFact) => ({
     key: fact.key,
     about: `${fact.subject.key === fact.subject.title ? fact.subject.title : `${fact.subject.key} ${fact.subject.title}`}`,
@@ -57,6 +71,9 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
       : {}),
     ...(fact.sensitive ? { sensitive: true } : {}),
     ...(woke.has(fact.key) ? { wokeYou: true } : {}),
+    ...(fact.subject.recordId !== undefined && histories.has(fact.subject.recordId)
+      ? { history: histories.get(fact.subject.recordId) }
+      : {}),
   });
   const groups = new Map<string, Array<ReturnType<typeof row>>>();
   for (const fact of shown) {
@@ -66,9 +83,11 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
         : `${fact.scope.projectTitle ?? ""} (${fact.scope.projectKey})`.trim();
     groups.set(project, [...(groups.get(project) ?? []), row(fact)]);
   }
+  const team = yield* teamHoursNow(input.orgId, input.now);
   return {
     asOf: all.asOf,
     total: all.total,
+    ...(team.length === 0 ? {} : { teamHours: team }),
     ...(all.total > shown.length ? { shown: shown.length, more: "pulse_read has the rest" } : {}),
     byProject: [...groups].map(([project, facts]) => ({ project, facts })),
     ...(gone.length === 0 ? {} : { wokeForButHandledOrNoLongerTrue: gone }),

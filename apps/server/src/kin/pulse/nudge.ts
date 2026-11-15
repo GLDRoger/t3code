@@ -25,6 +25,45 @@ const refuse = (message: string) => new KinChatError({ reason: "not_allowed", me
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
 /**
+ * Whether a person is inside their working hours at `at`, in their own time zone (else the
+ * owner's): their set hours when they have them, else outside the company's quiet hours. Nudges,
+ * people_read and the pulse all ask this, so an agent never works it out itself.
+ */
+export const inHoursAt = (
+  person: { readonly timeZone: string | null; readonly workHours: string | null },
+  ownerZoneId: string,
+  at: number,
+) => {
+  const zone = person.timeZone ?? ownerZoneId;
+  const hours = person.workHours === null ? undefined : decodeHours(person.workHours);
+  return hours !== undefined && hours._tag === "Some"
+    ? workingAt(hours.value, zone, at)
+    : !isQuiet(at, zone, KIN_DEFAULT_QUIET_HOURS);
+};
+
+/** Each teammate (not the owner), and whether they are inside their hours now. */
+export const teamHoursNow = Effect.fn("KinPulse.teamHoursNow")(function* (
+  orgId: KinOrgId,
+  at: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const zone = yield* ownerZone(orgId);
+  const people = yield* sql<{ name: string; timeZone: string | null; workHours: string | null }>`
+    SELECT p.display_name AS name, p.time_zone AS "timeZone", p.work_hours_json AS "workHours"
+    FROM kin_people p
+    WHERE p.org_id = ${orgId}
+      AND NOT EXISTS (SELECT 1 FROM kin_agents a WHERE a.org_id = p.org_id
+        AND a.owner_person_id = p.person_id)
+      AND EXISTS (SELECT 1 FROM kin_session_bindings b WHERE b.org_id = p.org_id
+        AND b.person_id = p.person_id AND b.revoked_at IS NULL)
+    ORDER BY p.display_name, p.person_id LIMIT 50`;
+  return people.map((person) => ({
+    name: person.name,
+    insideTheirHoursNow: inHoursAt(person, zone, at),
+  }));
+});
+
+/**
  * One line to a teammate about a fact they can see, in their own chat with the agent: at most
  * one per person per working day, inside their hours, and none while the last went unanswered.
  * `chatFor` finds or opens that chat; `post` writes the line as the agent.
@@ -74,13 +113,8 @@ export const nudge = Effect.fn("KinPulse.nudge")(function* (input: {
     return yield* refuse(
       `${person.name} can't see that fact, or it no longer needs attention. Nudge only about their own open Work; tell the owner about anything else.`,
     );
-  const hours = person.workHours === null ? undefined : decodeHours(person.workHours);
   const zone = person.timeZone ?? (yield* ownerZone(orgId));
-  const inHours =
-    hours !== undefined && hours._tag === "Some" && person.timeZone !== null
-      ? workingAt(hours.value, person.timeZone, at)
-      : !isQuiet(at, zone, KIN_DEFAULT_QUIET_HOURS);
-  if (!inHours)
+  if (!inHoursAt(person, zone, at))
     return yield* refuse(
       `${person.name} is outside their working hours. Leave it for the next check-in in their hours.`,
     );

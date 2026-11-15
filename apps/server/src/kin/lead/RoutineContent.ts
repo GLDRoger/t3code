@@ -98,6 +98,11 @@ export class KinRoutineContent extends Context.Service<
       event: RoutineEvent,
       note?: string,
     ) => Effect.Effect<KinWidget | null, KinRoutineContentError>;
+    /** The morning brief's sections as JSON, for the morning check-in; null with no live lead. */
+    readonly morningFacts: (
+      orgId: KinOrgId,
+      agentId: KinAgentId,
+    ) => Effect.Effect<string | null, KinRoutineContentError>;
   }
 >()("t3/kin/lead/RoutineContent/KinRoutineContent") {}
 
@@ -119,6 +124,7 @@ const decodeTokens = Schema.decodeUnknownOption(
   ),
 );
 const encodeCard = Schema.encodeEffect(KinRoutineCard);
+const encodeFacts = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const isPostable = (routine: KinLeadRoutine): routine is "morning_brief" | "evening_summary" =>
   routine === "morning_brief" || routine === "evening_summary";
 export const isRoutineContent = (event: KinEvent): event is RoutineEvent =>
@@ -153,7 +159,7 @@ const make = Effect.gen(function* () {
 
   const gather = Effect.fn("KinRoutineContent.gather")(function* (
     orgId: KinOrgId,
-    event: RoutineEvent & { readonly routine: "morning_brief" | "evening_summary" },
+    event: { readonly routine: "morning_brief" | "evening_summary"; readonly agentId: KinAgentId },
     owner: { readonly personId: string; readonly login: string | null },
   ) {
     const now = yield* Clock.currentTimeMillis;
@@ -524,7 +530,28 @@ const make = Effect.gen(function* () {
       ),
   );
 
-  return KinRoutineContent.of({ prepare, post });
+  const morningFacts = Effect.fn("KinRoutineContent.morningFacts")(
+    function* (orgId: KinOrgId, agentId: KinAgentId) {
+      const owner = yield* lead(orgId, agentId);
+      if (owner === undefined) return null;
+      const gathered = yield* gather(orgId, { routine: "morning_brief", agentId }, owner);
+      return gathered.facts.routine === "morning_brief" ? yield* encodeFacts(gathered.facts) : null;
+    },
+    (effect, orgId) =>
+      effect.pipe(
+        Effect.mapError(
+          (cause) =>
+            new KinRoutineContentError({
+              orgId,
+              cause: isSqlError(cause)
+                ? toPersistenceSqlError("KinRoutineContent.morningFacts")(cause)
+                : cause,
+            }),
+        ),
+      ),
+  );
+
+  return KinRoutineContent.of({ prepare, post, morningFacts });
 });
 
 export const layer = Layer.effect(KinRoutineContent, make).pipe(Layer.provide(MemoryCache.layer));

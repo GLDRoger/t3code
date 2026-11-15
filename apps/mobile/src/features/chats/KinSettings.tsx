@@ -39,6 +39,7 @@ import { SettingsRow } from "../settings/components/SettingsRow";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { useSettingsPageBack } from "../settings/useSettingsPageBack";
 import { useKinTab } from "./components/KinTab";
+import { KinCheckInsSection } from "./KinCheckIns";
 import { useKinIsHome } from "./state/kinHome";
 import { openKinNotificationSettings } from "./notifications/installKinNotifications";
 import { useChatOnlyEnvironments, useKinOwnerLevel } from "./state/kinChatOnly";
@@ -222,6 +223,7 @@ export function KinSettings(props: {
                 <KinCompanyChatRow {...company} />
               </SettingsSection>
               <KinDailyLimitSection {...company} />
+              <KinCheckInsSection {...company} />
               <SettingsSection
                 title="Approvals"
                 footer="Your agents ask before anything that needs your say. You approve on this phone with Face ID."

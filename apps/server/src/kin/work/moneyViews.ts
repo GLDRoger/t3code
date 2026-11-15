@@ -16,6 +16,7 @@ import {
   countedEntry,
   fieldDateAt,
   countedPayment,
+  invoiceDue,
   iso,
   moneyDay,
   ownerZone,
@@ -226,7 +227,7 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
       pa.key AS "partyKey", pa.title AS "partyTitle", r.amount_minor AS minor, r.currency,
       (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
         WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid,
-      r.due_at AS "dueAt"
+      ${invoiceDue(sql)} AS "dueAt"
     FROM kin_records r
     LEFT JOIN kin_records pa ON pa.org_id = r.org_id AND pa.record_id = r.party_id
     WHERE r.org_id = ${orgId} AND r.register_id = 'invoices' AND ${countedEntry(sql)}
@@ -404,4 +405,85 @@ export const moneySection = (summary: KinMoneySummary, zone: string) => {
       ? { moreDates: summary.upcomingTotal - SECTION_DATES }
       : {}),
   };
+};
+
+/**
+ * What each open client project still has to bring in beyond what was invoiced: the accepted
+ * quotes, else the sent ones, else the project's value, less every invoice issued under it. The
+ * answer to "how much is left from them" before the last invoice exists.
+ */
+export const stillToInvoice = Effect.fn("KinMoneyViews.stillToInvoice")(function* (
+  orgId: KinOrgId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    key: string;
+    title: string;
+    client: string | null;
+    value: string | null;
+    list: string | null;
+    state: string | null;
+    minor: number | null;
+    currency: string | null;
+  }>`SELECT p.key, p.title, c.title AS client, json_extract(p.fields_json, '$.value') AS value,
+      r.register_id AS list, r.state, r.amount_minor AS minor, r.currency
+    FROM kin_records p
+    LEFT JOIN kin_records c ON c.org_id = p.org_id AND c.record_id = p.party_id
+    LEFT JOIN kin_records r ON r.org_id = p.org_id AND r.project_id = p.record_id
+      AND r.register_id IN ('quotes', 'invoices') AND ${countedEntry(sql)}
+      AND r.amount_minor IS NOT NULL
+    WHERE p.org_id = ${orgId} AND p.register_id = 'projects' AND p.state = 'open'
+    ORDER BY p.key, r.key LIMIT 2000`;
+  const projects = new Map<string, Array<(typeof rows)[number]>>();
+  for (const row of rows) projects.set(row.key, [...(projects.get(row.key) ?? []), row]);
+  return [...projects.values()].flatMap((members) => {
+    const first = members[0]!;
+    const money = (list: string, states: ReadonlyArray<string>) =>
+      addUp(
+        members
+          .filter((one) => one.list === list && states.includes(one.state ?? ""))
+          .map((one) => ({ minor: one.minor!, currency: one.currency! })),
+      );
+    const accepted = money("quotes", ["done"]);
+    const sent = money("quotes", ["waiting"]);
+    const value = first.value === null ? undefined : moneyOf(first.value);
+    const [agreed, basis] =
+      accepted.length > 0
+        ? [accepted, "accepted quotes"]
+        : sent.length > 0
+          ? [sent, "sent quotes"]
+          : value === undefined
+            ? [[], ""]
+            : [[value], "the project's value"];
+    const invoiced = money("invoices", ["waiting", "done"]);
+    const left = agreed.flatMap((one) => {
+      const billed = invoiced.find((bill) => bill.currency === one.currency)?.minor ?? 0;
+      return one.minor - billed > 0 ? [{ minor: one.minor - billed, currency: one.currency }] : [];
+    });
+    if (left.length === 0) return [];
+    return [
+      {
+        project: `${first.key} ${first.title}${first.client === null ? "" : ` (${first.client})`}`,
+        stillToInvoice: left.map(formatMoney).join(" + "),
+        agreed: `${agreed.map(formatMoney).join(" + ")}, from ${basis}`,
+        invoicedSoFar: invoiced.length === 0 ? "nothing" : invoiced.map(formatMoney).join(" + "),
+      },
+    ];
+  });
+});
+
+const moneyOf = (json: string): KinMoney | undefined => {
+  try {
+    const parsed: unknown = JSON.parse(json);
+    return typeof parsed === "object" &&
+      parsed !== null &&
+      "minor" in parsed &&
+      "currency" in parsed &&
+      typeof parsed.minor === "number" &&
+      typeof parsed.currency === "string"
+      ? { minor: parsed.minor, currency: parsed.currency }
+      : undefined;
+  } catch {
+    return undefined;
+  }
 };
