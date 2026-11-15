@@ -344,6 +344,8 @@ export const KIN_RPC_AGGREGATES = {
   "kin.work.updateContact": "kin-work",
   "kin.work.createProject": "kin-work",
   "kin.work.updateProject": "kin-work",
+  "kin.work.logTouch": "kin-work",
+  "kin.work.removeTouch": "kin-work",
   "kin.work.lists": "kin-work",
   "kin.work.updateList": "kin-work",
   "kin.work.dates": "kin-work",

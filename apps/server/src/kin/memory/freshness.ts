@@ -12,6 +12,7 @@ export function defaultReviewBy(
   if (item.review_by !== undefined) return item.review_by;
   switch (item.kind) {
     case "person":
+    case "relationship":
       return DateTime.formatIso(DateTime.makeUnsafe(recordedAt + 90 * day));
     case "claim":
       return DateTime.formatIso(DateTime.makeUnsafe(recordedAt + 30 * day));

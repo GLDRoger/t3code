@@ -33,6 +33,7 @@ import {
   selectRecords,
   toRecord,
 } from "./recordRows.ts";
+import { lastContacts, touchesOf } from "./touches.ts";
 
 /**
  * The light CRM's read model: the client page, the project page and their history, computed on
@@ -42,6 +43,7 @@ import {
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const SUMMARY_CAP = 20;
+const TOUCHES_SHOWN = 5;
 const OPEN = ["open", "doing", "waiting"] as const;
 
 type Sql = SqlClient.SqlClient;
@@ -140,6 +142,7 @@ const partyRowsWhere = Effect.fn("KinCrm.partyRows")(function* (
               AND state IN ${sql.in(OPEN)} AND party_id IN ${sql.in(ids)})
           WHERE n = 1 ORDER BY party_id`;
   const nextBy = new Map(next.map((row) => [row.partyId, row]));
+  const last = yield* lastContacts(orgId, ids, now);
   return rows.map((row): KinPartyRow => {
     const soonest = nextBy.get(row.recordId);
     return {
@@ -154,6 +157,7 @@ const partyRowsWhere = Effect.fn("KinCrm.partyRows")(function* (
       theyOwe: row.theyOwe ?? 0,
       late: row.late ?? 0,
       overdue: row.overdue ?? 0,
+      lastContactAt: last.has(row.recordId) ? iso(last.get(row.recordId)!) : null,
       next:
         soonest === undefined
           ? null
@@ -549,6 +553,7 @@ export const partyPage = Effect.fn("KinCrm.partyPage")(function* (
       open("theirs"),
       sql`(r.due_at IS NOT NULL AND r.due_at < ${now}) DESC, r.due_at IS NULL, r.due_at, r.key`,
     ),
+    touches: yield* touchesOf(orgId, row.recordId, now, TOUCHES_SHOWN),
     seq,
     asOf: iso(now),
   } satisfies KinPartyPage;

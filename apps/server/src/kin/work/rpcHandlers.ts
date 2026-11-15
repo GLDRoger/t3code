@@ -119,6 +119,12 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.createContact": Effect.fn("KinWork.rpc.createContact")(function* (input) {
         return yield* call((people) => Clients.createContact(people, input));
       }),
+      "kin.work.logTouch": Effect.fn("KinWork.rpc.logTouch")(function* (input) {
+        return yield* call((people) => Clients.logTouch(people, input));
+      }),
+      "kin.work.removeTouch": Effect.fn("KinWork.rpc.removeTouch")(function* (input) {
+        return yield* call((people) => Clients.removeTouch(people, input));
+      }),
       "kin.work.updateContact": Effect.fn("KinWork.rpc.updateContact")(function* (input) {
         return yield* call((people) => Clients.updateContact(people, input));
       }),

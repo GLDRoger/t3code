@@ -307,7 +307,15 @@ export class Memory extends Context.Service<
 
 const decodeHead = Schema.decodeEffect(MemoryItemHead);
 
-export const folders = ["objectives", "commitments", "deferrals", "decisions", "people", "claims"];
+export const folders = [
+  "objectives",
+  "commitments",
+  "deferrals",
+  "decisions",
+  "people",
+  "claims",
+  "relationships",
+];
 
 export const maxBlobBytes = 256 * 1024;
 // Well under memoryGit's 64 MiB output cap, so a large journal reads in a few `cat-file` runs.

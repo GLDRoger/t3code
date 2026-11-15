@@ -256,7 +256,15 @@ export class MemoryWriter extends Context.Service<
 >()("t3/kin/memory/MemoryWriter") {}
 const isRepoSlug = Schema.is(RepoSlug);
 const dreamBranch = /^dream\/\d{4}-\d{2}-\d{2}$/;
-const folders = ["objectives", "commitments", "deferrals", "decisions", "people", "claims"];
+const folders = [
+  "objectives",
+  "commitments",
+  "deferrals",
+  "decisions",
+  "people",
+  "claims",
+  "relationships",
+];
 const render = (fields: object, body: string) => `---\n${stringify(fields)}---\n${body}`;
 const retired = (head: {
   readonly invalid_at: string | null;
