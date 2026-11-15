@@ -17,6 +17,14 @@ import {
   RunId,
   ThreadId,
   TurnItemId,
+  KinMemberId,
+  KinMemoryItemId,
+  KinRecordId,
+  KinWorkerId,
+  ScheduledTaskId,
+  ScheduledTaskWebhookDeliveryId,
+  type KinEvent,
+  type KinMessage,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
@@ -37,9 +45,13 @@ import * as ThreadManagement from "../../orchestration-v2/ThreadManagementServic
 import { KinChatHub, type KinChatHubEvent } from "../chat/KinChatHub.ts";
 import { KinGroups } from "../chat/KinGroups.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
-import { KinIdentity, steerMessageId } from "../chat/KinIdentity.ts";
+import { KinIdentity, steerMessageId, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
-import { authorityLayer, startAgentWakeup } from "../chat/WakeupAuthority.testkit.ts";
+import {
+  authorityLayer,
+  startAgentWakeup,
+  type WakeupEventBase,
+} from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
 import * as ChatWake from "../lead/ChatWake.ts";
 import { draftReplyText, SILENCE_MARKERS, stripTrailingSilenceMarker } from "./classify.ts";
@@ -198,6 +210,17 @@ const setup = Effect.fn("test.setup")(function* (input: {
   readonly lane?: "direct" | "group" | "own-group" | "shared-group";
   readonly reaction?: "👍";
   readonly changedFrom?: "👎";
+  /** Wakes on this event instead, given the org and the lead's direct chat. */
+  readonly event?: (context: {
+    readonly owner: PersonIdentity;
+    readonly direct: KinChatId;
+    readonly message: KinMessage | undefined;
+    readonly ownerMember: KinMemberId;
+  }) => Effect.Effect<
+    (base: WakeupEventBase) => KinEvent,
+    unknown,
+    Kin.KinServer | SqlClient.SqlClient
+  >;
 }) {
   const kin = yield* Kin.KinServer;
   const services = Option.getOrThrow(kin.services);
@@ -242,11 +265,25 @@ const setup = Effect.fn("test.setup")(function* (input: {
     input.ask === undefined
       ? undefined
       : yield* chats.send(owner, { chatId, body: input.ask, clientMessageId: "ask" });
+  const event =
+    input.event === undefined
+      ? undefined
+      : yield* Effect.gen(function* () {
+          const [member] = yield* sql<{ memberId: string }>`SELECT member_id AS "memberId"
+            FROM kin_chat_members WHERE chat_id = ${direct.chatId} AND person_id = ${owner.personId}`;
+          return yield* input.event!({
+            owner,
+            direct: direct.chatId,
+            message,
+            ownerMember: KinMemberId.make(member!.memberId),
+          });
+        }).pipe(Effect.orDie);
   const wakeupId = KinWakeupId.make(
     yield* startAgentWakeup({
       orgId: owner.orgId,
       agentId,
       threadId,
+      ...(event === undefined ? {} : { event }),
       ...(message === undefined ? {} : { message }),
       ...(input.reaction === undefined ? {} : { reaction: input.reaction }),
       ...(input.changedFrom === undefined ? {} : { changedFrom: input.changedFrom }),
@@ -1025,3 +1062,203 @@ it.each([
   assert.strictEqual(draftReplyText(body!), expected);
   assert.strictEqual(stripTrailingSilenceMarker("Done. (silent)"), "Done.");
 });
+
+const otherLead = KinAgentId.make("cos");
+type WakeCase = {
+  readonly event?: NonNullable<Parameters<typeof setup>[0]["event"]>;
+  readonly ask?: string;
+  readonly reaction?: "👍";
+  /** Someone waits on words: silence gets one rescue, then a plain line. */
+  readonly owed: boolean;
+};
+const human = (owner: PersonIdentity, memberId: KinMemberId) =>
+  ({ _tag: "human", personId: owner.personId, memberId }) as const;
+// Every kind of wake-up, so a new one can't ship without deciding what its silence means.
+const WAKE_KINDS: Record<KinEvent["_tag"] | "hand-over", WakeCase> = {
+  "chat.message": { ask: "What is the plan?", owed: true },
+  "chat.reaction": { ask: "Ship it Friday?", reaction: "👍", owed: true },
+  "widget.action": {
+    ask: "Pick one",
+    owed: true,
+    event: ({ owner, direct, message, ownerMember }) =>
+      Effect.succeed((base) => ({
+        ...base,
+        _tag: "widget.action",
+        provenance: human(owner, ownerMember),
+        chatId: direct,
+        messageId: message!.messageId,
+        actionId: "yes",
+      })),
+  },
+  // What `KinHandoff.handOff` writes: Kin's row in the lead's chat, woken as a passed-on request.
+  "hand-over": {
+    owed: true,
+    event: ({ owner, direct }) =>
+      Effect.gen(function* () {
+        const kin = yield* Kin.KinServer;
+        const services = Option.getOrThrow(kin.services);
+        const chats = Context.get(services, KinChatService);
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at) VALUES (${otherLead}, ${owner.orgId}, 'Chief', 'lead', ${owner.personId}, '1970-01-01T00:00:00.000Z')`;
+        const asked = yield* chats.createDirect(owner, { orgId: owner.orgId, agentId: otherLead });
+        const { message } = yield* chats.notice({
+          orgId: owner.orgId,
+          chatId: direct,
+          audience: "owner",
+          messageId: KinMessageId.make("kin-handoff:test"),
+          body: 'Passed on by Chief\n"Can Tech estimate phase 2?"',
+        });
+        return (base: WakeupEventBase): KinEvent => ({
+          ...base,
+          _tag: "chat.message",
+          provenance: {
+            _tag: "agent",
+            agentId: otherLead,
+            memberId: KinMemberId.make("cos-member"),
+            ownerPersonId: owner.personId,
+            threadId: ThreadId.make("cos-thread"),
+          },
+          chatId: direct,
+          messageId: message.messageId,
+          origin: { agentId: otherLead, chatId: asked.chatId },
+        });
+      }),
+  },
+  "record.changed": {
+    owed: true,
+    event: ({ owner, ownerMember }) =>
+      Effect.succeed((base) => ({
+        ...base,
+        _tag: "record.changed",
+        provenance: human(owner, ownerMember),
+        recordId: KinRecordId.make("record-19"),
+        key: "W-19",
+        seq: 1,
+        reason: "assigned",
+      })),
+  },
+  "worker.report": {
+    owed: true,
+    event: ({ direct }) =>
+      Effect.succeed((base) => ({
+        ...base,
+        _tag: "worker.report",
+        provenance: { _tag: "system" },
+        workerId: KinWorkerId.make("worker-1"),
+        chatId: direct,
+        report: {
+          result: "done",
+          summary: "Fixed the login bug.",
+          evidence: [],
+          openQuestions: [],
+          memorySuggestions: [],
+          misleadingMemory: [],
+          parsed: true,
+        },
+      })),
+  },
+  // Reminders, briefs and scheduled runs owe their words through `LeadDelivery`'s fallback.
+  "deferral.due": {
+    owed: false,
+    event: () =>
+      Effect.succeed((base) => ({
+        ...base,
+        _tag: "deferral.due",
+        provenance: { _tag: "system" },
+        subject: { type: "reminder", itemId: KinMemoryItemId.make("item-1") },
+        lateByMs: 0,
+      })),
+  },
+  routine: { owed: false },
+  github: {
+    owed: false,
+    event: () =>
+      Effect.succeed((base) => ({
+        ...base,
+        _tag: "github",
+        provenance: { _tag: "system" },
+        deliveryId: "delivery-1",
+        eventName: "push",
+        repo: "acme/site",
+        summary: "A push to main.",
+        scheduledTaskId: ScheduledTaskId.make("task-1"),
+        webhookDeliveryId: ScheduledTaskWebhookDeliveryId.make("hook-1"),
+      })),
+  },
+  watchdog: {
+    owed: false,
+    event: () =>
+      Effect.succeed((base) => ({
+        ...base,
+        _tag: "watchdog",
+        provenance: { _tag: "system" },
+        finding: "A note is stale.",
+        itemIds: [],
+      })),
+  },
+  "action.resolved": {
+    owed: false,
+    event: () =>
+      Effect.succeed((base) => ({
+        ...base,
+        _tag: "action.resolved",
+        provenance: { _tag: "system" },
+        pendingActionId: "action-1",
+        outcome: "executed",
+      })),
+  },
+  resume: {
+    owed: false,
+    event: () =>
+      Effect.succeed((base) => ({
+        ...base,
+        _tag: "resume",
+        provenance: { _tag: "system" },
+        pausedAt: base.receivedAt,
+        expired: { count: 0, events: [] },
+      })),
+  },
+};
+
+const reply = "Phase 2 is about three weeks: booking first, then reports.";
+it.effect.each(
+  Object.entries(WAKE_KINDS).flatMap(([kind, wake]) =>
+    (["reply then kin_end", "kin_end then reply", "kin_end only"] as const).map((order) => ({
+      kind,
+      wake,
+      order,
+    })),
+  ),
+)(
+  "every wake-up posts its one reply in its chat, or says it didn't ($kind, $order)",
+  ({ wake, order }) =>
+    Effect.gen(function* () {
+      const { fake, runId, complete, sql, owner, direct } = yield* setup({
+        ...(wake.ask === undefined ? {} : { ask: wake.ask }),
+        ...(wake.reaction === undefined ? {} : { reaction: wake.reaction }),
+        ...(wake.event === undefined ? {} : { event: wake.event }),
+      });
+      const end = tool("end", 2, "mcp__kin__kin_end", runId);
+      fake.items =
+        order === "reply then kin_end"
+          ? [text("a", 1, reply, runId), end]
+          : order === "kin_end then reply"
+            ? [{ ...end, ordinal: 1 }, text("a", 2, reply, runId)]
+            : [{ ...end, ordinal: 1 }];
+      for (const item of fake.items) yield* Queue.offer(fake.live, itemEvent(item));
+      yield* complete;
+      const said = yield* sql<{ body: string; authorKind: string }>`
+      SELECT body, author_kind AS "authorKind" FROM kin_messages
+      WHERE org_id = ${owner.orgId} AND chat_id = ${direct.chatId} AND author_kind != 'human'
+        AND message_id NOT LIKE 'kin-handoff:%' ORDER BY seq`;
+      assert.deepStrictEqual(
+        said.map((row) => `${row.authorKind}:${row.body}`),
+        order !== "kin_end only"
+          ? [`agent:${reply}`]
+          : wake.owed
+            ? ["system:Ada didn't reply."]
+            : [],
+      );
+      assert.strictEqual(fake.rescues, order === "kin_end only" && wake.owed ? 1 : 0);
+    }).pipe(Effect.provide(layer)),
+);

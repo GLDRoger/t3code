@@ -64,7 +64,7 @@ import { KinPresence, syncQueued } from "./KinPresence.ts";
 
 /** One rescue turn asks for the reply the run owed; its text is posted like any other. */
 const RESCUE_PROMPT =
-  "You ended without replying to the owner. Write your reply now as plain text.";
+  "You ended without a reply anyone can see. Write your reply now as plain text.";
 export { rescueMessageId };
 /** No turn-item or provider-turn update for this long shows the owner a stall and Stop. */
 const STALL_MS = 120_000;
@@ -76,13 +76,22 @@ const OVERFLOW_SUFFIX = "\n\n…more in the agent's thread";
 /**
  * Where a wake-up's text goes. One wake-up answers one chat: the chat of its highest-priority
  * human message, card tap or reported work, else (a notice wake-up) the lead's direct chat with
- * its owner.
+ * its owner. `owed`: someone is waiting on words, so silence gets a rescue and then a plain line.
  */
 export type Lane = {
   readonly chatId: KinChatId;
   readonly mode: "reply" | "notice";
+  readonly owed: boolean;
   readonly leadName: string;
 };
+
+/**
+ * Which wake-ups owe words. A message, card tap or reaction asked in its chat (`reply`); an entry
+ * someone gave the lead and finished work wait on it too. Reminders, briefs and scheduled runs
+ * owe theirs through `LeadDelivery`; the rest may end on NO_REPLY.
+ */
+const OWED_NOTICE = `(tag = 'worker.report'
+  OR (tag = 'record.changed' AND json_extract(json, '$.reason') = 'assigned'))`;
 
 export type FailedOutcome = "partway" | "retrying" | "gave_up" | SetupFailure;
 // Plain words with the lead's name: the inbox shows this as the chat's latest line.
@@ -263,9 +272,14 @@ export const laneFor = Effect.fn("KinReplyBridge.lane")(
       ORDER BY priority, received_at, event_id LIMIT 1`;
     const chatId = first?.chatId ?? lead?.ownerChatId;
     if (chatId === undefined) return Option.none<Lane>();
+    const mode = first !== undefined && first.asked === 1 ? "reply" : "notice";
+    const waiting = yield* sql`SELECT 1 FROM kin_events
+      WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND wakeup_id = ${input.wakeupId}
+        AND ${sql.literal(OWED_NOTICE)} LIMIT 1`;
     return Option.some<Lane>({
       chatId: KinChatId.make(chatId),
-      mode: first !== undefined && first.asked === 1 ? "reply" : "notice",
+      mode,
+      owed: mode === "reply" || waiting.length > 0,
       leadName: lead?.name ?? "Agent",
     });
   },
@@ -682,10 +696,13 @@ const make = Effect.gen(function* () {
   // wake-up owed was the owner's text without a "?", and it reacted to one of those messages:
   // "thanks, that's all" can take a 👍; a question, a card tap or a reaction still needs words.
   const answered = Effect.fn("KinReplyBridge.answered")(function* (wake: Wake) {
-    if (wake.answered || wake.lane.mode === "notice") return true;
+    if (wake.answered || !wake.lane.owed) return true;
     // A turn only reactions started may end on NO_REPLY: a 👍 on a statement needs no answer.
     // A changed or withdrawn answer does: the owner wants to hear what was stopped.
-    if ([...wake.segments.values()].some((segment) => segment.outcome === "silent")) {
+    if (
+      wake.lane.mode === "reply" &&
+      [...wake.segments.values()].some((segment) => segment.outcome === "silent")
+    ) {
       const spoken = yield* sql`SELECT 1 FROM kin_events
         WHERE org_id = ${wake.orgId} AND wakeup_id = ${wake.wakeupId}
           AND (tag IN ('chat.message', 'widget.action') OR (tag = 'chat.reaction'
