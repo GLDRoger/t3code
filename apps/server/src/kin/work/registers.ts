@@ -770,10 +770,24 @@ export const propose = Effect.fn("KinRegisters.propose")(function* (input: {
 }) {
   const sql = yield* SqlClient.SqlClient;
   const json = yield* encodeProposal(input.proposal);
-  const proposalId = proposalIdFor(input.orgId, input.agentId, input.wakeupId, json);
   const [chat] = yield* sql<{ seq: number }>`SELECT last_seq AS seq FROM kin_chats
     WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
   if (chat === undefined) return yield* invalid("This turn has no chat to propose a list in.");
+  // The same list asked again in this chat, from a later turn such as the owner's tap on it, is
+  // that question still: one card. Only a no the owner gave closes it.
+  const [open] = yield* sql<{ proposalId: string; widgetId: string | null; owner: string }>`
+    SELECT p.proposal_id AS "proposalId", p.widget_id AS "widgetId", a.owner_person_id AS owner
+    FROM kin_list_proposals p
+    JOIN kin_agents a ON a.org_id = p.org_id AND a.agent_id = p.agent_id
+    WHERE p.org_id = ${input.orgId} AND p.agent_id = ${input.agentId}
+      AND p.chat_id = ${input.chatId} AND p.definition_json = ${json} AND p.defined_at IS NULL
+    ORDER BY p.proposed_at DESC, p.proposal_id LIMIT 1`;
+  if (
+    open !== undefined &&
+    (open.widgetId === null || (yield* cardAnswer(input.orgId, open.widgetId, open.owner)) !== "no")
+  )
+    return open.proposalId;
+  const proposalId = proposalIdFor(input.orgId, input.agentId, input.wakeupId, json);
   yield* sql`INSERT INTO kin_list_proposals (org_id, proposal_id, agent_id, chat_id, wakeup_id,
       register_id, extends_existing, definition_json, chat_seq, proposed_at)
     VALUES (${input.orgId}, ${proposalId}, ${input.agentId}, ${input.chatId}, ${input.wakeupId},
