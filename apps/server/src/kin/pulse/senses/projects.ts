@@ -241,7 +241,7 @@ export const projectSenses = Effect.fn("KinPulse.projectSenses")(function* (ctx:
             key: `meeting_passed:${row.key}:at=${time}`,
             since: iso(time + toMs(followUp)),
             measure: measure(hours, followUp),
-            consequence: `Meeting${withWho} was ${hours < 48 ? `${hoursText(hours)} ago` : `on ${whenOf(ctx, time)}`}, and no outcome is noted. Ask someone who was in it how it went and what the action items are.`,
+            consequence: `Meeting${withWho} was ${hours < 48 ? `${hoursText(hours)} ago` : `on ${whenOf(ctx, time)}`}, and no outcome is noted. How did it go? Add the outcome and any action items to it.`,
             wake: "sweep",
           }),
         );

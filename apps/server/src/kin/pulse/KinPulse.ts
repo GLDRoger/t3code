@@ -210,7 +210,31 @@ const visibleTo = Effect.fn("KinPulse.visibleTo")(function* (
         AND r.register_id IN ('work', 'milestones') AND ${viewSees(sql, viewer.people)}
       ORDER BY r.record_id`)
       seen.add(row.recordId);
-  return candidates.filter((fact) => seen.has(fact.subject.recordId!));
+  // A meeting's alert asks how it went: only for the people who were in it.
+  const meetingIds = [
+    ...new Set(
+      candidates
+        .filter((fact) => fact.sense.startsWith("meeting_") && seen.has(fact.subject.recordId!))
+        .map((fact) => fact.subject.recordId!),
+    ),
+  ];
+  const attended = new Set<string>();
+  if (meetingIds.length > 0)
+    for (const row of yield* sql<{ recordId: string }>`SELECT r.record_id AS "recordId"
+      FROM kin_records r WHERE r.org_id = ${orgId} AND r.record_id IN ${sql.in(meetingIds.slice(0, 500))}
+        AND ${sql.and(
+          viewer.people.map(
+            (person) => sql`EXISTS (SELECT 1 FROM json_each(r.fields_json, '$.attendees') a
+              WHERE a.value = 'person:' || ${person})`,
+          ),
+        )}
+      ORDER BY r.record_id`)
+      attended.add(row.recordId);
+  return candidates.filter(
+    (fact) =>
+      seen.has(fact.subject.recordId!) &&
+      (!fact.sense.startsWith("meeting_") || attended.has(fact.subject.recordId!)),
+  );
 });
 
 /** The facts that need attention as of `at`, for one viewer, filtered by scope. */

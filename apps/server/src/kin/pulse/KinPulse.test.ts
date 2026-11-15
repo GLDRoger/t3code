@@ -487,6 +487,18 @@ describe("KinPulse", () => {
       const both = (yield* read(at, { _tag: "people", people: [mate, KinPersonId.make("other")] }))
         .facts;
       assert.deepStrictEqual([...new Set(both.map((fact) => fact.subject.key))], ["W-9"]);
+      // H14: a meeting everyone sees asks only those who were in it how it went, in their words.
+      assert.include(
+        keyed(shown, "meeting_passed", "W-14")[0]!.consequence,
+        "no outcome is noted. How did it go?",
+      );
+      yield* sql`UPDATE kin_records SET team_shared = 1 WHERE record_id = 'r-W-14'`;
+      const outside = (yield* read(at, { _tag: "people", people: [KinPersonId.make("other")] }))
+        .facts;
+      assert.notInclude(
+        outside.map((fact) => fact.subject.key),
+        "W-14",
+      );
       // G10: the check-in snoozing Meera's late task hides it from the owner's view, not hers.
       const late = keyed(shown, "task_late", "W-8")[0]!;
       yield* KinPulse.handle({
