@@ -1434,6 +1434,13 @@ it.effect.each(["owner", "nightly", "lead"] as const)(
             yield* storedLabels(orgId),
           ),
         ).toBe(false);
+        if (by !== "owner") return;
+        // The way back: true again, and still known to no shared turn until the owner says.
+        expect(yield* writer.restore(orgId, { itemId: id })).toEqual({ restored: true });
+        expect(yield* writer.restore(orgId, { itemId: id })).toEqual({ restored: false });
+        const back = yield* memory.readItemQuietly(orgId, id);
+        expect(back.head.invalid_at).toBeNull();
+        expect(reaches("shared", back, yield* storedLabels(orgId))).toBe(false);
       }).pipe(Effect.provide(layer));
     }).pipe(
       Effect.provide(

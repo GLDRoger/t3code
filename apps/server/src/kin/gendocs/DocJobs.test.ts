@@ -614,7 +614,7 @@ describe("recipe documents", () => {
       const issued = yield* OwnerMoney.issue(people, { orgId, key: KinRecordKey.make("INV-1") });
       assert.deepStrictEqual(
         [issued.number, issued.issued, issued.documents, issued.problems],
-        ["INV/26-27/001", false, [{ key: "D-1", title: "Invoice INV-1", version: 2 }], []],
+        ["INV/26-27/001", false, [{ key: "D-1", title: "Invoice INV/26-27/001", version: 2 }], []],
       );
       const data = latestData();
       // Made with what was asked last time, now with its number and no longer a draft.

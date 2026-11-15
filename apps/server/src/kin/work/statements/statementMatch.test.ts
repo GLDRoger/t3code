@@ -155,6 +155,28 @@ describe("statement matching", () => {
       fit: "foreign",
     },
     {
+      name: "an INR credit for a dollar invoice, its USD amount in the narration",
+      rows: [
+        row({
+          description: "INWARD REMIT NORTHSTAR LABS USD 2500.00",
+          amountMinor: 20_750_000,
+          foreign: { currency: "USD", amountMinor: 250_000 },
+        }),
+      ],
+      invoices: [invoice({ currency: "USD", amountMinor: 250_000, client: "Northstar Labs" })],
+      expenses: [],
+      group: "matched",
+      fit: "foreign",
+    },
+    {
+      name: "an INR credit for a dollar invoice with no dollar amount to prove it",
+      rows: [row({ description: "INWARD REMIT NORTHSTAR LABS", amountMinor: 20_750_000 })],
+      invoices: [invoice({ currency: "USD", amountMinor: 250_000, client: "Northstar Labs" })],
+      expenses: [],
+      group: "unmatched",
+      fit: undefined,
+    },
+    {
       name: "a debit with no expense of its amount",
       rows: [
         row({ direction: "debit", description: "UPI-SWIGGY-swiggy@invbank", amountMinor: 54_704 }),
@@ -189,8 +211,45 @@ describe("statement matching", () => {
     );
   });
 
+  it("finds a credit's payment already recorded by hand, by its reference", () => {
+    const [found] = matchRows(
+      [
+        row({
+          description: "NEFT CR-KAVERI FOODS",
+          reference: "INVUTR26319004471",
+          amountMinor: 10_000_000,
+        }),
+      ],
+      {
+        currency: "INR",
+        invoices: [],
+        payments: [
+          {
+            paymentId: "pay_1",
+            recordId: "rec_inv",
+            key: "INV-1",
+            title: "Retainer",
+            currency: "INR",
+            amountMinor: 10_000_000,
+            paidOn: "2026-10-04",
+            note: "UTR INVUTR26319004471",
+            client: "Kaveri Foods",
+          },
+        ],
+        expenses: [],
+        ownAccounts: [],
+        known: [],
+        bank: null,
+      },
+    );
+    assert.strictEqual(found!.group, "matched");
+    assert.include(found!.candidates[0], { fit: "recorded", paymentId: "pay_1", key: "INV-1" });
+  });
+
   it.each([
     ["IMPS-627812345-SELF-XXXXXXXX7710-OWN ACCOUNT", "transfer", undefined, undefined],
+    // F30: a salary is the company's cost, never ignored.
+    ["NEFT DR-HDFC0001234-MEERA IYER-SALARY NOV", "expense", "Meera Iyer", "salaries"],
     ["SMS CHGS JUL-SEP 26 INCL GST", "expense", "HDFC Bank", "fees"],
     ["CBDT TDS PAYMENT-CHALLAN 26101", "expense", "Tax payment", "taxes"],
     [
@@ -216,5 +275,9 @@ describe("statement matching", () => {
   it("reads vendors the way banks write them", () => {
     assert.strictEqual(vendorOf("UPI/DR/412345/ZOMATO LTD/YESB/zomato@yes"), "Zomato Ltd");
     assert.strictEqual(vendorOf("ACH D- INVENTED INSURANCE CO-POLICY 88"), "Invented Insurance Co");
+    // F29: the bank's own words before the payee are not its name.
+    assert.strictEqual(vendorOf("UPI DR 412345 CLOUDNEST"), "Cloudnest");
+    assert.strictEqual(vendorOf("DR FIGMA INC"), "Figma Inc");
+    assert.strictEqual(vendorOf("POS DR THIRD WAVE COFFEE"), "Third Wave Coffee");
   });
 });
