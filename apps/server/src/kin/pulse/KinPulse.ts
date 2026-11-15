@@ -16,6 +16,7 @@ import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
@@ -23,6 +24,7 @@ import * as NodeCrypto from "node:crypto";
 
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { KinConnections } from "../connections/ConnectionsService.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { ownerZone } from "../work/recordRows.ts";
@@ -31,14 +33,26 @@ import { moneySenses } from "./senses/money.ts";
 import { iso, type SenseContext, type SensedFact } from "./senses/shared.ts";
 import { systemSenses } from "./senses/system.ts";
 import { workSenses } from "./senses/work.ts";
+import { fromConnections, noOutside, poll } from "./outside.ts";
 import { DAY_MS } from "./thresholds.ts";
 
 const FINANCE_DOMAIN = "finance";
 /** How long "I've got it" with no date holds a fact. */
 export const GOT_IT_MS = 3 * DAY_MS;
 const TICK_EVERY_MS = 15 * 60_000;
+const OUTSIDE_EVERY_MS = 3 * 60_000;
 const READ_CAP = 50;
 const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
+/** Facts that ask for judgement (money owed, a client waiting, a plan slipping) run on the main model. */
+const JUDGEMENT_SENSES: ReadonlySet<string> = new Set([
+  "task_late",
+  "theirs_late",
+  "invoice_overdue",
+  "quote_unanswered",
+  "budget_over",
+]);
+export const needsJudgement = (facts: ReadonlyArray<Pick<KinPulseFact, "sense">>) =>
+  facts.some((fact) => JUDGEMENT_SENSES.has(fact.sense));
 const encodeScope = Schema.encodeEffect(Schema.fromJsonString(KinPulseFact.fields.scope));
 
 /**
@@ -254,6 +268,7 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
               dedupeKey: fact.key,
               provenance: { _tag: "system" },
               factKeys: [fact.key],
+              ...(needsJudgement([fact]) ? { strong: true } : {}),
             }),
           )
           .pipe(
@@ -336,6 +351,31 @@ export const layer = Layer.effectDiscard(
     const queue = yield* KinEventQueue.KinEventQueue;
     const refreshes = yield* KinRefreshObserver;
     const last = new Map<string, { readonly at: number; readonly seq: number }>();
+    const outside = Option.match(yield* Effect.serviceOption(KinConnections), {
+      onNone: () => noOutside,
+      onSome: (connections) => fromConnections(connections, sql),
+    });
+    const polled = new Map<string, number>();
+    // Mail and calendar between check-ins: metadata reads with no model, waking only on a match.
+    yield* ticks.register(
+      "kin-pulse-outside",
+      Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        // Scheduler maintenance: orgs with a live Google connection; each poll is org-scoped.
+        const orgs = yield* sql<{ orgId: string }>`SELECT DISTINCT org_id AS "orgId"
+          FROM kin_connections WHERE preset = 'google' AND removed_at IS NULL
+            AND paused_at IS NULL AND state = 'active'
+          ORDER BY org_id`.pipe(NodeSqliteClient.readOnly);
+        for (const { orgId } of orgs) {
+          if (now - (polled.get(orgId) ?? -Infinity) < OUTSIDE_EVERY_MS) continue;
+          polled.set(orgId, now);
+          yield* poll(KinOrgId.make(orgId), now, outside).pipe(
+            Effect.provideService(KinEventQueue.KinEventQueue, queue),
+            Effect.catch((cause) => Effect.logWarning("Kin outside poll failed", { orgId, cause })),
+          );
+        }
+      }).pipe(Effect.catch((cause) => Effect.logWarning("Kin outside scan failed", { cause }))),
+    );
     yield* ticks.register(
       "kin-pulse",
       Effect.gen(function* () {
