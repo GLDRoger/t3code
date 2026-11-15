@@ -178,16 +178,20 @@ describe("resolveKinHost", () => {
     expect(host).toMatchObject({ environmentId: b, connected: true, probe: ready, standInFor: c });
     expect(kinHostIdToSave(host)).toBeNull();
     const names = new Map([[b, "Studio Mac"]]);
-    expect(kinStandInLine(host, (id) => names.get(id) ?? null)).toEqual({
+    expect(kinStandInLine(host, (id) => names.get(id) ?? null, true)).toEqual({
       message: "Showing Studio Mac. Your usual computer can't be reached.",
       usual: c,
     });
-    expect(kinStandInLine(host, () => "Studio Mac")?.message).toBe(
+    expect(kinStandInLine(host, () => "Studio Mac", true)?.message).toBe(
       "Showing Studio Mac. Your usual computer can't be reached.",
     );
     names.set(c, "Office Mac");
-    expect(kinStandInLine(host, (id) => names.get(id) ?? null)?.message).toBe(
+    expect(kinStandInLine(host, (id) => names.get(id) ?? null, true)?.message).toBe(
       "Showing Studio Mac. Office Mac can't be reached.",
+    );
+    // A teammate never reads a computer's name.
+    expect(kinStandInLine(host, (id) => names.get(id) ?? null, false)?.message).toBe(
+      "Showing another computer. Your usual computer can't be reached.",
     );
   });
 
@@ -198,7 +202,7 @@ describe("resolveKinHost", () => {
     );
     expect(host).toMatchObject({ environmentId: b, connected: true, standInFor: c });
     expect(kinHostIdToSave(host)).toBeNull();
-    expect(kinStandInLine(host, () => "Studio Mac")).toBeNull();
+    expect(kinStandInLine(host, () => "Studio Mac", true)).toBeNull();
   });
 
   it("waits on an earlier host's probe before letting a later one stand in", () => {
@@ -220,7 +224,7 @@ describe("resolveKinHost", () => {
     });
     const back = resolve({ [b]: ready, [c]: ready }, { savedHostId: c });
     expect(back).toMatchObject({ environmentId: c, connected: true });
-    expect(kinStandInLine(back, () => "Office Mac")).toBeNull();
+    expect(kinStandInLine(back, () => "Office Mac", true)).toBeNull();
     expect(kinHostIdToSave(back)).toBe(c);
     const noIdentity: KinProbe = { _tag: "noIdentity", orgs: orgs([]) };
     const flaky: KinProbe = { _tag: "error", message: "socket closed", transient: true };
