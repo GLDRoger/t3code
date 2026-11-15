@@ -430,6 +430,15 @@ describe("a list by its definition", () => {
         1,
       ).figures,
     ).toEqual([{ id: "total", label: null, lines: ["₹1"] }]);
+    // Quotes total only what is out and what was won, never one sum across drafts.
+    const quotes = kinListHeader(
+      list({ amount: true }),
+      KIN_LIST_DEFAULT_FILTER,
+      { total: inr(300), sent: inr(100), accepted: inr(200), groups: [] },
+      3,
+    );
+    expect(quotes.totals).toEqual([]);
+    expect(quotes.summary).toBe("Sent, waiting: ₹1 · Accepted: ₹2");
     expect(kinListFilterParam(JSON.stringify({ noParty: true, noCategory: true }))).toMatchObject({
       noParty: true,
       noCategory: true,

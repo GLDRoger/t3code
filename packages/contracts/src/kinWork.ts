@@ -282,6 +282,9 @@ const KinListSums = {
   owed: Schema.optional(KinMoneyTotals),
   /** With `paidFrom` or `paidTo`: the payments made in those days, not the entries' amounts. */
   received: Schema.optional(KinMoneyTotals),
+  /** Quotes: those sent and waiting for an answer, and those accepted. Drafts aren't totalled. */
+  sent: Schema.optional(KinMoneyTotals),
+  accepted: Schema.optional(KinMoneyTotals),
 };
 /** `group` is a category, `2026-11` or `FY2026-27`; null is entries with none. */
 export const KinListTotals = Schema.Struct({

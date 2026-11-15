@@ -8,13 +8,16 @@ import {
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
-import { AsyncResult } from "effect/reactivity";
+import { Atom, AsyncResult } from "effect/reactivity";
 
 import { environmentCatalog } from "../../../connection/catalog";
 import { connectPairingUrl } from "../../../connection/onboarding";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { environmentPresentations } from "../../../state/presentation";
 import { readEnvironmentChatOnly, whenEnvironmentSessionKnown } from "./kinChatOnly";
+
+/** Set by a join, until the person confirms the name their team gave them. */
+export const kinJoinedNameAtom = Atom.make(false).pipe(Atom.keepAlive);
 
 // A join that connected but whose session never answered still lands; the app corrects itself.
 const SESSION_WAIT_MS = 8_000;
@@ -54,5 +57,6 @@ export async function joinKin(
     whenEnvironmentSessionKnown(result.value),
     new Promise((resolve) => setTimeout(resolve, SESSION_WAIT_MS)),
   ]);
+  appAtomRegistry.set(kinJoinedNameAtom, true);
   return { ok: true };
 }

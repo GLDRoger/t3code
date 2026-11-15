@@ -11,6 +11,7 @@ import { AppBar } from "../../components/ui/AppBar";
 import type { AppBarProps } from "../../components/ui/AppBar.types";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { KIN_ONLY } from "../../lib/kinOnly";
@@ -38,7 +39,9 @@ import {
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import { kinClient } from "./state/kinClient";
 import { rememberKinListAtom } from "./state/kinLastList";
+import { kinJoinedNameAtom } from "./state/kinJoin";
 import { useKinInbox } from "./state/useKinInbox";
+import { useKinProfiles } from "./state/useKinProfiles";
 
 const NO_ENVIRONMENT = EnvironmentId.make("kin:none");
 
@@ -71,6 +74,10 @@ export function KinChatsList({
     host._tag === "host" && host.probe._tag === "ready"
       ? (host.probe.orgs.me[0]?.orgId ?? null)
       : null;
+  const myPersonId =
+    host._tag === "host" && host.probe._tag === "ready"
+      ? (host.probe.orgs.me[0]?.personId ?? null)
+      : null;
   const newLeadAt =
     state._tag === "ready" && orgId !== null ? { environmentId: state.environmentId, orgId } : null;
   const canAddLead = useAtomValue(
@@ -91,14 +98,28 @@ export function KinChatsList({
           bottomClearance={bottomClearance}
           {...(empty === undefined ? {} : { empty })}
           memory={
-            // Where Kin is the whole app these are Settings pages and a tab, and the list is chats.
-            newLeadAt === null || KIN_ONLY ? null : (
-              <>
-                <KinWorkEntry environmentId={newLeadAt.environmentId} orgId={newLeadAt.orgId} />
-                <KinMemoryEntry environmentId={newLeadAt.environmentId} orgId={newLeadAt.orgId} />
-                <KinTeamEntry environmentId={newLeadAt.environmentId} orgId={newLeadAt.orgId} />
-              </>
-            )
+            <>
+              {state._tag === "ready" && orgId !== null && myPersonId !== null ? (
+                <KinJoinedName
+                  environmentId={state.environmentId}
+                  orgId={orgId}
+                  personId={myPersonId}
+                />
+              ) : null}
+              {
+                // Where Kin is the whole app these are Settings pages and a tab, and the list is chats.
+                newLeadAt === null || KIN_ONLY ? null : (
+                  <>
+                    <KinWorkEntry environmentId={newLeadAt.environmentId} orgId={newLeadAt.orgId} />
+                    <KinMemoryEntry
+                      environmentId={newLeadAt.environmentId}
+                      orgId={newLeadAt.orgId}
+                    />
+                    <KinTeamEntry environmentId={newLeadAt.environmentId} orgId={newLeadAt.orgId} />
+                  </>
+                )
+              }
+            </>
           }
           {...(newLeadAt === null || !canAddLead
             ? {}
@@ -119,6 +140,41 @@ export function KinChatsList({
           }}
         />
       </ScreenContent>
+    </View>
+  );
+}
+
+/** Right after joining: the name the team gave this person, to keep or change. */
+function KinJoinedName(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly personId: string;
+}) {
+  const navigation = useNavigation();
+  const joined = useAtomValue(kinJoinedNameAtom);
+  const setJoined = useAtomSet(kinJoinedNameAtom);
+  const { held } = useKinProfiles(joined ? props.environmentId : null, props.orgId);
+  const mine = held?.profiles.find((profile) => profile.personId === props.personId) ?? null;
+  if (!joined || mine === null) return null;
+  return (
+    <View className="px-4 pb-2 pt-2">
+      <Notice
+        icon="person.crop.circle"
+        message={`You joined as ${mine.displayName}. Is that your name?`}
+        dismissLabel="Yes"
+        onDismiss={() => setJoined(false)}
+        action={{
+          label: "Change it",
+          onPress: () => {
+            setJoined(false);
+            navigation.navigate("KinProfileEdit", {
+              environmentId: props.environmentId,
+              orgId: props.orgId,
+              personId: mine.personId,
+            });
+          },
+        }}
+      />
     </View>
   );
 }

@@ -209,11 +209,6 @@ export function KinSettings(props: {
                   label={KIN_COMPANY.title}
                   onPress={() => navigation.navigate("KinCompany", company)}
                 />
-                <SettingsRow
-                  icon="clock"
-                  label="Scheduled tasks"
-                  onPress={() => navigation.navigate("SettingsScheduledTasks")}
-                />
               </SettingsSection>
               <SettingsSection footer={KIN_TEAM_AGENT_COPY.detail}>
                 <KinTeamAgentRow {...company} />

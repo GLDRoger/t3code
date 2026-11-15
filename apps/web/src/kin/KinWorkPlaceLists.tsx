@@ -111,10 +111,8 @@ function PlaceList(props: Shared & { readonly def: KinListDefinition }) {
         </Button>
       }
     >
-      {header.totals.length === 0 ? null : (
-        <p className="text-xs text-muted-foreground tabular-nums">
-          {header.totals.join(" and ")} in all
-        </p>
+      {header.summary === null ? null : (
+        <p className="text-xs text-muted-foreground tabular-nums">{header.summary}</p>
       )}
       <ul className="-mx-2 flex flex-col">
         {state.records.slice(0, SHOWN).map((record) => {

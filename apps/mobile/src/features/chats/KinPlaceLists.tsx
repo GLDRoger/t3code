@@ -97,12 +97,7 @@ function PlaceList(props: Shared & { readonly def: KinListDefinition }) {
   if (state.total === null || state.total === 0) return null;
   const header = kinListHeader(def, filter, totals, state.total);
   return (
-    <ListSection
-      title={def.name}
-      {...(header.totals.length === 0 || state.total < 2
-        ? {}
-        : { footer: `${header.totals.join(" and ")} in all` })}
-    >
+    <ListSection title={def.name} {...(header.summary === null ? {} : { footer: header.summary })}>
       {state.records.slice(0, SHOWN).map((record) => {
         const row = kinListRow(record, def, context, {
           party: "party" in place ? place.party.key : null,

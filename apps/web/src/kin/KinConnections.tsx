@@ -8,6 +8,7 @@ import {
   kinCallRow,
   kinConnectionChange,
   kinConnectionDraft,
+  kinConnectionProvider,
   kinConnectionStatus,
   kinIsOwnerClientService,
   kinServiceNote,
@@ -191,7 +192,9 @@ function ConnectionsList(props: Target) {
               <SettingsRow
                 key={connection.connectionId}
                 title={connection.label}
-                description={`${connection.note ?? connection.urlHost} · ${status.detail}`}
+                description={[kinConnectionProvider(connection), connection.note, status.detail]
+                  .filter(Boolean)
+                  .join(" · ")}
                 status={<Badge variant={TONE_BADGE[status.tone]}>{status.label}</Badge>}
                 control={
                   <Button

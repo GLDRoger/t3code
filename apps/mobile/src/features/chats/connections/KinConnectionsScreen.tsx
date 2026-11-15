@@ -2,6 +2,7 @@ import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_CONNECTIONS_COPY as COPY,
+  kinConnectionProvider,
   kinConnectionStatus,
 } from "@t3tools/client-runtime/kin/kinConnections";
 import * as Option from "effect/Option";
@@ -96,7 +97,7 @@ function ConnectionsList(props: {
                               : "link"
                       }
                       label={connection.label}
-                      description={status.detail}
+                      description={`${kinConnectionProvider(connection)} · ${status.detail}`}
                       detail={status.label}
                       onPress={() =>
                         navigation.navigate("KinConnection", {

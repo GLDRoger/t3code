@@ -64,6 +64,8 @@ export const KIN_LISTS = {
   anyClient: "Any client",
   clientFilter: "Client",
   billed: "Billed",
+  sentWaiting: "Sent, waiting",
+  accepted: "Accepted",
   owed: "Still owed",
   received: "Received",
   paidOut: "Paid",
@@ -570,13 +572,13 @@ export const kinListGroupings = (def: KinListDefinition): ReadonlyArray<KinListG
 
 /** One figure over a list: "Still owed" with a line per currency. */
 export interface KinListFigure {
-  readonly id: "total" | "owed" | "received";
+  readonly id: "total" | "owed" | "received" | "sent" | "accepted";
   /** Null for the only figure of a list that isn't paid over time: it needs no name. */
   readonly label: string | null;
   readonly lines: ReadonlyArray<string>;
 }
 
-type Sums = Pick<KinListTotals, "total" | "owed" | "received">;
+type Sums = Pick<KinListTotals, "total" | "owed" | "received" | "sent" | "accepted">;
 
 /**
  * The figures a filter's sums make, the one the filter is about first: what was received in a
@@ -587,6 +589,12 @@ function figuresOf(def: KinListDefinition, sums: Sums): ReadonlyArray<KinListFig
   const some = (totals: KinMoneyTotals) =>
     totals.length === 0 ? [KIN_MONEY_NOTHING] : kinTotalsLines(totals);
   const billed = { id: "total" as const, label: KIN_LISTS.billed, lines: some(sums.total) };
+  // Quotes add up only what is out and what was won; a draft is not money yet.
+  if (sums.sent !== undefined || sums.accepted !== undefined)
+    return [
+      { id: "sent", label: KIN_LISTS.sentWaiting, lines: some(sums.sent ?? []) },
+      { id: "accepted", label: KIN_LISTS.accepted, lines: some(sums.accepted ?? []) },
+    ];
   if (sums.received !== undefined)
     return [
       {
@@ -620,8 +628,10 @@ const countText = (count: number) => (count === 1 ? "1 entry" : `${count} entrie
 export interface KinListHeaderView {
   /** What the filter's entries add up to, the leading figure first; empty without amounts. */
   readonly figures: ReadonlyArray<KinListFigure>;
-  /** The full amounts, one line per currency; empty without amounts. */
+  /** The full amounts, one line per currency; empty without amounts, and for quotes. */
   readonly totals: ReadonlyArray<string>;
+  /** One line under a few entries shown elsewhere: "₹40,000 in all", or a quotes' two sums. */
+  readonly summary: string | null;
   readonly count: string | null;
   readonly groups: ReadonlyArray<KinListGroupView>;
 }
@@ -679,9 +689,17 @@ export function kinListHeader(
       selected,
     };
   });
+  const figures = totals === null ? [] : figuresOf(def, totals);
+  const quotes = figures[0]?.id === "sent";
+  const full = def.amount && totals !== null && !quotes ? kinTotalsLines(totals.total) : [];
   return {
-    figures: totals === null ? [] : figuresOf(def, totals),
-    totals: def.amount && totals !== null ? kinTotalsLines(totals.total) : [],
+    figures,
+    totals: full,
+    summary: quotes
+      ? figures.map((figure) => `${figure.label}: ${figure.lines.join(" and ")}`).join(" · ")
+      : full.length === 0 || (total ?? 0) < 2
+        ? null
+        : `${full.join(" and ")} in all`,
     count: total === null ? null : countText(total),
     // Periods read newest first; the host sends them oldest first.
     groups: filter.groupBy === "category" ? groups : [...groups].reverse(),

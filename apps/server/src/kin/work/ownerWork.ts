@@ -346,15 +346,16 @@ export const get = Effect.fn("KinWork.get")(function* (
     seq,
   );
   const { milestone, tasks } = yield* milestoneLinks(row).pipe(workFailure);
-  if (milestone === undefined && tasks === undefined) return shown;
+  const linked = [
+    ...(milestone === undefined ? [] : [milestone.recordId]),
+    ...(tasks ?? []).map((task) => task.recordId),
+  ];
   const now = yield* Clock.currentTimeMillis;
-  const led = yield* ledIds(viewer);
   // A teammate reads a task's milestone where they read its project, and only tasks they see.
-  const seen = viewer.teammate
-    ? yield* teamVisible(input.orgId, viewer.person.personId, [
-        ...(milestone === undefined ? [] : [milestone.recordId]),
-        ...(tasks ?? []).map((task) => task.recordId),
-      ]).pipe(workFailure)
+  const team = viewer.teammate && linked.length > 0;
+  const led = team ? yield* ledIds(viewer) : new Set<string>();
+  const seen = team
+    ? yield* teamVisible(input.orgId, viewer.person.personId, linked).pipe(workFailure)
     : undefined;
   const sees = (recordId: string) => seen === undefined || seen.has(recordId);
   return {
