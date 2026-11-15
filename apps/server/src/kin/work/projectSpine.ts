@@ -18,6 +18,7 @@ import { latestOf } from "./docs.ts";
 import { KinRecords } from "./KinRecords.ts";
 import { fieldList, fieldText, parseFields } from "./lists.ts";
 import { iso, principal, type RecordRow, selectRecords, toRecord } from "./recordRows.ts";
+import { playbookThreshold } from "./playbooks.ts";
 import { listDef } from "./registers.ts";
 
 /**
@@ -26,7 +27,6 @@ import { listDef } from "./registers.ts";
  */
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const AT_RISK_WITHIN_MS = 7 * DAY_MS;
 const OPEN = ["open", "doing", "waiting"] as const;
 const titled = (title: string) => title as KinRecordRef["title"];
 const ref = (recordId: string, key: string, title: string): KinRecordRef => ({
@@ -45,13 +45,14 @@ export const principalText = (who: KinWorkPrincipal) =>
 const sameWho = (a: KinWorkPrincipal, b: KinWorkPrincipal) => principalText(a) === principalText(b);
 
 /**
- * The milestone rule: late once its day passed while open; at risk when it is due within a week
- * and one of its open tasks is late or due after it.
+ * The milestone rule: late once its day passed while open; at risk when it is due within the
+ * playbook's `milestone_heads_up_days` and one of its open tasks is late or due after it.
  */
 export const milestoneRisk = (input: {
   readonly state: string;
   readonly dueAt: number | null;
   readonly now: number;
+  readonly headsUpDays: number;
   readonly tasks: ReadonlyArray<{ readonly dueAt: number | null; readonly open: boolean }>;
 }) => {
   const open = input.state === "open";
@@ -60,7 +61,7 @@ export const milestoneRisk = (input: {
     open &&
     !late &&
     input.dueAt !== null &&
-    input.dueAt - input.now <= AT_RISK_WITHIN_MS &&
+    input.dueAt - input.now <= input.headsUpDays * DAY_MS &&
     input.tasks.some(
       (task) =>
         task.open &&
@@ -90,6 +91,7 @@ export const milestonesOf = Effect.fn("KinProjectSpine.milestones")(function* (
       AND project_id = ${projectId}
     ORDER BY state = 'dropped', due_at IS NULL, due_at, key LIMIT 50`;
   if (rows.length === 0) return [];
+  const headsUpDays = (yield* playbookThreshold(orgId, "milestone_heads_up_days")).value;
   const tasks = yield* sql<{ milestone: string; state: string; dueAt: number | null }>`
     SELECT json_extract(fields_json, '$.milestone') AS milestone, state, due_at AS "dueAt"
     FROM kin_records WHERE org_id = ${orgId} AND register_id = 'work'
@@ -110,7 +112,7 @@ export const milestonesOf = Effect.fn("KinProjectSpine.milestones")(function* (
       dueAllDay: row.dueAllDay === 1,
       total: mine.length,
       done: mine.filter((task) => !task.open).length,
-      ...milestoneRisk({ state: row.state, dueAt: row.dueAt, now, tasks: mine }),
+      ...milestoneRisk({ state: row.state, dueAt: row.dueAt, now, headsUpDays, tasks: mine }),
       rev: row.rev,
     };
   });

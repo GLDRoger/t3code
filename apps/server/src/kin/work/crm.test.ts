@@ -1144,16 +1144,20 @@ it.effect(
         ["W-2"],
       );
 
-      // The milestone rule: late once passed while open; at risk within a week with late or later work.
+      // The milestone rule: late once passed while open; at risk within the heads-up days (3 by
+      // default) with late or later work.
       const day = (n: number) => n * DAY;
       for (const [state, dueAt, tasks, late, atRisk] of [
-        ["open", day(9), [{ dueAt: day(8), open: true }], false, false],
-        ["open", day(5), [{ dueAt: day(6), open: true }], false, true],
-        ["open", day(5), [{ dueAt: day(-1), open: true }], false, true],
-        ["open", day(5), [{ dueAt: day(6), open: false }], false, false],
+        ["open", day(4), [{ dueAt: day(8), open: true }], false, false],
+        ["open", day(2), [{ dueAt: day(3), open: true }], false, true],
+        ["open", day(2), [{ dueAt: day(-1), open: true }], false, true],
+        ["open", day(2), [{ dueAt: day(3), open: false }], false, false],
         ["open", day(-1), [], true, false],
         ["done", day(-1), [], false, false],
       ] as const)
-        assert.deepStrictEqual(milestoneRisk({ state, dueAt, now: 0, tasks }), { late, atRisk });
+        assert.deepStrictEqual(milestoneRisk({ state, dueAt, now: 0, headsUpDays: 3, tasks }), {
+          late,
+          atRisk,
+        });
     }).pipe(Effect.provide(layer)),
 );
