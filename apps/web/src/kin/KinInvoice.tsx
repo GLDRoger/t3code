@@ -409,6 +409,18 @@ function KinEditClient(
   );
 }
 
+/** Where the invoice was sent from Kin, newest first. */
+export function KinInvoiceSent(props: { readonly invoice: KinInvoiceView }) {
+  if (props.invoice.sent.length === 0) return null;
+  return (
+    <ul className="flex flex-col gap-0.5 text-xs text-muted-foreground">
+      {props.invoice.sent.map((line) => (
+        <li key={line}>{line}</li>
+      ))}
+    </ul>
+  );
+}
+
 /** Total, what came in and what is left; a void invoice says so instead of owing. */
 export function KinInvoiceFigures(props: { readonly invoice: KinInvoiceView }) {
   const { invoice } = props;
