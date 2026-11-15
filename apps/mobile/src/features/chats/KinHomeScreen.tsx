@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
+import { KIN_TEAMMATE_WELCOME } from "@t3tools/client-runtime/kin/kinChatListRows";
 import { kinDockTabs, type KinDockTab } from "@t3tools/client-runtime/kin/kinJoin";
 import { kinWorkHostClients } from "@t3tools/client-runtime/kin/kinWork";
 import type { SessionGrantInput } from "@t3tools/contracts";
@@ -134,12 +135,7 @@ function KinHomeTabs(props: {
           <KinChatsList
             bottomClearance={bottomClearance}
             actions={[settings]}
-            {...(teammate
-              ? {
-                  emptyDetail:
-                    "When someone on your team starts a chat with you, it shows up here.",
-                }
-              : {})}
+            {...(teammate ? { empty: KIN_TEAMMATE_WELCOME } : {})}
           />
         )}
       </KinTabContext>

@@ -1,9 +1,10 @@
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
+import { KIN_DAILY_LIMIT, kinDailyLimitChoices } from "@t3tools/client-runtime/kin/kinBudget";
 import { KIN_COMPANY } from "@t3tools/client-runtime/kin/kinCompanyProfile";
 import { kinHomeTabs } from "@t3tools/client-runtime/kin/kinJoin";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { View } from "react-native";
@@ -13,10 +14,12 @@ import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
+import { Menu } from "../../components/ui/Menu";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { useEnvironments, type EnvironmentPresentation } from "../../state/environments";
 import { environmentSession } from "../../state/session";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { useConnectionController } from "../connection/useConnectionController";
 import { SettingsRow } from "../settings/components/SettingsRow";
 import { SettingsSection } from "../settings/components/SettingsSection";
@@ -200,6 +203,9 @@ export function KinSettings(props: {
                   onPress={() => navigation.navigate("SettingsScheduledTasks")}
                 />
               </SettingsSection>
+              <SettingsSection footer={KIN_DAILY_LIMIT.detail}>
+                <KinDailyLimitRow {...company} />
+              </SettingsSection>
               <SettingsSection
                 title="Approvals"
                 footer="Your agents ask before anything that needs your say. You approve on this phone with Face ID."
@@ -293,5 +299,49 @@ function KinConnection(props: { readonly environment: EnvironmentPresentation })
         />
       )}
     </>
+  );
+}
+
+/** The owner's daily limit as a native menu of plain choices, on this page rather than its own. */
+function KinDailyLimitRow(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+}) {
+  const target = { environmentId: props.environmentId, input: { orgId: props.orgId } };
+  const budgetAtom = kinClient.budget(target);
+  const result = useAtomValue(budgetAtom);
+  const refresh = useAtomRefresh(budgetAtom);
+  const canSet = useAtomValue(kinClient.budgetSet.permissionAtom(props.environmentId));
+  const set = useAtomCommand(kinClient.budgetSet, { reportFailure: false });
+  const budget = Option.getOrNull(AsyncResult.value(result));
+  const { choices, current } = kinDailyLimitChoices(budget);
+  const label = choices.find((choice) => choice.value === current)?.label ?? "…";
+  return (
+    <Menu
+      actions={choices.map((choice) => ({
+        id: choice.value,
+        title: choice.label,
+        state: choice.value === current ? ("on" as const) : ("off" as const),
+      }))}
+      onPressAction={({ nativeEvent }) => {
+        const picked = choices.find((choice) => choice.value === nativeEvent.event);
+        if (picked === undefined || picked.value === current) return;
+        void set({
+          environmentId: props.environmentId,
+          input: { orgId: props.orgId, limits: picked.limits },
+        }).then((outcome) => {
+          if (AsyncResult.isFailure(outcome)) Dialog.alert(KIN_DAILY_LIMIT.failed);
+          refresh();
+        });
+      }}
+    >
+      <SettingsRow
+        icon="chart.bar.xaxis"
+        label={KIN_DAILY_LIMIT.title}
+        value={label}
+        valuePosition="trailing"
+        disabled={!canSet || budget === null}
+      />
+    </Menu>
   );
 }
