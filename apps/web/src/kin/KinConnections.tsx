@@ -2,12 +2,14 @@ import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import {
   KIN_CONNECTIONS_COPY as COPY,
   createKinConnectionActions,
+  KIN_OWNER_CLIENT_SETUP,
   kinAcceptAll,
   kinAddableServices,
   kinCallRow,
   kinConnectionChange,
   kinConnectionDraft,
   kinConnectionStatus,
+  kinIsOwnerClientService,
   kinServiceNote,
   kinSuggestedModes,
   kinToolRows,
@@ -70,7 +72,7 @@ import { KinConfirm } from "./KinConfirm";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { KinVisualHosts } from "./KinVisualHosts";
 import { kinClient } from "./kinClient";
-import { GoogleSetup, openSignInWindow, SignInWaiting } from "./KinConnectionSignIn";
+import { OwnerClientSetup, openSignInWindow, SignInWaiting } from "./KinConnectionSignIn";
 import { useKinHost } from "./useKinHost";
 import { useNowMinuteMs } from "./useKinClock";
 
@@ -252,6 +254,8 @@ function AddDialog(props: {
   const service = services.find((entry) => entry.service === draft.service);
   const custom = draft.service === "custom";
   const signIn = service?.connect === "sign_in";
+  const ownerClient =
+    service !== undefined && kinIsOwnerClientService(service.service) ? service.service : null;
   const setup = signIn && !ownClient && (service?.needsSetup === true || changingClient);
 
   const submit = async () => {
@@ -338,7 +342,9 @@ function AddDialog(props: {
                 {signIn && !setup && waiting === null && service !== undefined ? (
                   <p className="text-xs text-muted-foreground">
                     {COPY.signInOpens(
-                      service.service === "google" ? "accounts.google.com" : service.label,
+                      ownerClient === null
+                        ? service.label
+                        : KIN_OWNER_CLIENT_SETUP[ownerClient].host,
                     )}
                   </p>
                 ) : null}
@@ -414,18 +420,24 @@ function AddDialog(props: {
                   <p className="text-xs text-muted-foreground">{COPY.secretUrlHint}</p>
                 </div>
               ) : null}
-              {setup ? (
-                <GoogleSetup
+              {setup && ownerClient !== null ? (
+                <OwnerClientSetup
+                  key={ownerClient}
+                  service={ownerClient}
                   signInAddress={props.signInAddress}
                   disabled={busy}
                   onSave={async (clientId, clientSecret) => {
-                    const saved = await props.actions.setGoogleClient(clientId, clientSecret);
+                    const saved = await props.actions.setOwnerClient(
+                      ownerClient,
+                      clientId,
+                      clientSecret,
+                    );
                     if (!saved.ok) return saved.problem;
                     setChangingClient(false);
                     return null;
                   }}
                 />
-              ) : signIn && service?.service === "google" && !ownClient ? (
+              ) : signIn && ownerClient !== null && !ownClient ? (
                 <div className="flex flex-wrap gap-1">
                   <Button
                     type="button"
@@ -433,16 +445,18 @@ function AddDialog(props: {
                     variant="ghost"
                     onClick={() => setChangingClient(true)}
                   >
-                    {COPY.changeClient}
+                    {KIN_OWNER_CLIENT_SETUP[ownerClient].changeClient}
                   </Button>
-                  <Button
-                    type="button"
-                    size="xs"
-                    variant="ghost"
-                    onClick={() => setOwnClient(true)}
-                  >
-                    {COPY.ownClient}
-                  </Button>
+                  {ownerClient === "google" ? (
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="ghost"
+                      onClick={() => setOwnClient(true)}
+                    >
+                      {COPY.ownClient}
+                    </Button>
+                  ) : null}
                 </div>
               ) : null}
               {signIn && service?.service === "google" && ownClient ? (
@@ -456,7 +470,7 @@ function AddDialog(props: {
                     <Input
                       id={ids.clientId}
                       value={draft.clientId}
-                      placeholder={COPY.clientIdPlaceholder}
+                      placeholder={KIN_OWNER_CLIENT_SETUP.google.clientIdPlaceholder}
                       autoComplete="off"
                       spellCheck={false}
                       onChange={(event) => setDraft({ ...draft, clientId: event.target.value })}

@@ -1,6 +1,7 @@
 import {
   KIN_CONNECTIONS_COPY as COPY,
-  kinGoogleSetupSteps,
+  KIN_OWNER_CLIENT_SETUP,
+  type KinOwnerClientService,
 } from "@t3tools/client-runtime/kin/kinConnections";
 import { CheckIcon, CopyIcon } from "lucide-react";
 import { useEffect, useEffectEvent, useId, useState } from "react";
@@ -41,8 +42,9 @@ function CopyAddress(props: { readonly address: string }) {
   );
 }
 
-/** The one-time Google client setup: numbered steps, the exact return address, and two fields. */
-export function GoogleSetup(props: {
+/** The one-time setup at Google or Microsoft: numbered steps, the exact return address, fields. */
+export function OwnerClientSetup(props: {
+  readonly service: KinOwnerClientService;
   readonly signInAddress: string;
   readonly disabled: boolean;
   readonly onSave: (clientId: string, clientSecret: string) => Promise<string | null>;
@@ -52,43 +54,40 @@ export function GoogleSetup(props: {
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const ids = { id: useId(), secret: useId() };
-  const steps = kinGoogleSetupSteps(props.signInAddress);
+  const setup = KIN_OWNER_CLIENT_SETUP[props.service];
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-1">
-        <h3 className="text-sm font-medium">{COPY.googleSetupTitle}</h3>
-        <p className="text-xs text-muted-foreground">{COPY.googleSetupDetail}</p>
+        <h3 className="text-sm font-medium">{setup.title}</h3>
+        <p className="text-xs text-muted-foreground">{setup.detail}</p>
       </div>
       <ol className="flex list-decimal flex-col gap-2 pl-5 text-sm">
-        {steps.map((step, index) => (
-          <li key={step}>
-            {index === 3 ? (
+        {setup.steps.map((step) => (
+          <li key={step.text}>
+            {step.address ? (
               <div className="flex flex-col gap-1.5">
-                <span>
-                  In Clients → Create client, choose Web application, and under Authorized redirect
-                  URIs add exactly this address:
-                </span>
+                <span>{step.text}</span>
                 <CopyAddress address={props.signInAddress} />
               </div>
             ) : (
-              step
+              step.text
             )}
           </li>
         ))}
       </ol>
       <div className="flex flex-col gap-1.5">
-        <Label htmlFor={ids.id}>{COPY.clientIdLabel}</Label>
+        <Label htmlFor={ids.id}>{setup.clientIdLabel}</Label>
         <Input
           id={ids.id}
           value={clientId}
-          placeholder={COPY.clientIdPlaceholder}
+          placeholder={setup.clientIdPlaceholder}
           autoComplete="off"
           spellCheck={false}
           onChange={(event) => setClientId(event.target.value)}
         />
       </div>
       <div className="flex flex-col gap-1.5">
-        <Label htmlFor={ids.secret}>{COPY.clientSecretLabel}</Label>
+        <Label htmlFor={ids.secret}>{setup.secretLabel}</Label>
         <Input
           id={ids.secret}
           type="password"
