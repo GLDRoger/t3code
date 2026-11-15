@@ -7,10 +7,11 @@ import type {
   KinRecord,
   KinRecordKey,
   KinWaitingItem,
+  KinWorkSummary,
 } from "@t3tools/contracts";
 
 import { kinTotalsText } from "./kinLists.ts";
-import { kinInMoney, kinMoneyAgent, kinMoneyView } from "./kinMoney.ts";
+import { kinInMoney, kinMoneyAgent, kinMoneyView, type KinListOpen } from "./kinMoney.ts";
 import { kinWaitingRowView } from "./kinScreenState.ts";
 import {
   kinWorkName,
@@ -28,6 +29,7 @@ export const KIN_WORK_HOME = {
   nothingNeedsYou: "Nothing needs you right now.",
   seeAll: (count: number) => `See all ${count}`,
   seeFewer: "Show fewer",
+  search: "Search Work",
   add: "Add",
   addReceipt: "Receipt",
   addExpense: "Expense",
@@ -69,6 +71,13 @@ export function kinWorkPlaceParam(show: string | undefined): {
 const plural = (count: number, one: string, many = `${one}s`) =>
   `${count} ${count === 1 ? one : many}`;
 
+export function kinTasksLine(summary: KinWorkSummary): string {
+  if (summary.open === 0) return "Nothing open";
+  return [`${summary.open} open`, summary.late > 0 ? `${summary.late} late` : null]
+    .filter((part) => part !== null)
+    .join(", ");
+}
+
 export function kinMoneyLine(money: KinMoneySummary): string {
   if (money.owed.total.length === 0) return "Nobody owes you anything";
   return [
@@ -104,6 +113,7 @@ export const kinPlaceLists = (lists: ReadonlyArray<KinListDefinition>) =>
 
 export type KinNeedsYouOpen =
   | { readonly type: "task"; readonly key: KinRecordKey }
+  | { readonly type: "list"; readonly open: KinListOpen }
   | { readonly type: "money" }
   | { readonly type: "chat"; readonly chatId: KinChatId };
 
@@ -148,7 +158,7 @@ export function kinNeedsYou(input: {
   const late = input.mine.filter((record) => record.late).map(task);
   const today = input.mine.filter((record) => !record.late).map(task);
   const overdue = input.money === null ? null : kinMoneyView(input.money, input.lists).overdue;
-  // Every overdue invoice is one row, which opens Money; Money splits them by client.
+  // Every overdue invoice is one row, which opens them all; Money splits them by client.
   const owed: ReadonlyArray<KinNeedsYouRow> =
     overdue === null || !overdue.late
       ? []
@@ -159,7 +169,7 @@ export function kinNeedsYou(input: {
             title: `${overdue.note ?? "Invoices"} overdue`,
             detail: overdue.lines.join(" and "),
             late: true,
-            open: { type: "money" },
+            open: overdue.open === null ? { type: "money" } : { type: "list", open: overdue.open },
           },
         ];
   const waiting = [...input.waiting]

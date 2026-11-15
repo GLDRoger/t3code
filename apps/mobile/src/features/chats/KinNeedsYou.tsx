@@ -84,6 +84,7 @@ export function KinNeedsYou(
     const { open: to } = row;
     if (to.type === "task") openRecord("KinWorkItem", { ...base, task: to.key });
     else if (to.type === "chat") navigation.navigate("KinChat", { ...base, chatId: to.chatId });
+    // Overdue invoices jump to Money, which splits them by client.
     else openPlace("money");
   };
   const shown = needs === null ? [] : expanded ? needs : needs.slice(0, KIN_NEEDS_YOU_SHOWN);
