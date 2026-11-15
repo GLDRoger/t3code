@@ -59,6 +59,7 @@ const MEMBER = [
   "kin.work.assign",
   "kin.work.create",
   "kin.work.get",
+  "kin.work.handBack",
   "kin.work.list",
   "kin.work.subscribe",
   "kin.work.summary",
