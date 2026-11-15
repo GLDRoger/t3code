@@ -379,7 +379,7 @@ function KinProjectSummary(props: {
       {view.people.length === 0 ? null : (
         <ListSection title={KIN_PROJECTS.people}>
           {view.people.map((row) => (
-            <ListRowLayout key={row.key} label={row.name} detail={row.line} />
+            <ListRowLayout key={row.key} label={row.name} description={row.line} />
           ))}
         </ListSection>
       )}

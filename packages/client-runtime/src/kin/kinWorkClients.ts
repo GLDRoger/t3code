@@ -569,7 +569,7 @@ export interface KinProjectPageView {
   readonly specChanged: ReadonlyArray<{
     readonly key: KinRecordKey;
     readonly title: string;
-    /** "Spec section login changed" or "… was removed". */
+    /** "Lumen spec · checkout section changed", or "… was removed". */
     readonly line: string;
     readonly doc: KinRecordKey;
   }>;
@@ -757,9 +757,7 @@ export function kinProjectPageView(
     specChanged: (page.specChanged ?? []).map((one) => ({
       key: one.record.key,
       title: one.record.title,
-      line: one.gone
-        ? `Its section in ${one.doc.title} was removed`
-        : `Its section in ${one.doc.title} changed`,
+      line: `${one.doc.title} · ${one.section} section ${one.gone ? "was removed" : "changed"}`,
       doc: one.doc.key,
     })),
     money:
