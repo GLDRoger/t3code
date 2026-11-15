@@ -72,6 +72,7 @@ import {
 } from "./workerAttempts.ts";
 import { TEAM_REFUSED, teamChanges, viewVisible } from "./teamView.ts";
 import { type AssignNotice, tellPeople } from "./assignNotices.ts";
+import { bankStates, findBankList } from "./statements/bankList.ts";
 
 /** The lead tools' inputs, results and the one call each makes. Model-facing text lives in `mcp/tools.ts`. */
 
@@ -1368,6 +1369,36 @@ const tell = Effect.fnUntraced(function* (lead: Lead, notices: ReadonlyArray<Ass
   };
 });
 
+// A bank row of these is explained by saying so; any other needs the entry that records its money.
+const SAID_SO = new Set(["transfer", "charges", "interest", "other"]);
+/** F35: a bank row is explained only when its money is recorded, or it is money no entry holds. */
+const explainedHonestly = Effect.fn("KinWorkTools.explainedHonestly")(function* (
+  lead: Lead,
+  before: {
+    readonly recordId: string;
+    readonly key: string;
+    readonly registerId: string;
+    readonly state: string;
+    readonly category: string | null;
+  },
+  state: string | undefined,
+  category: string | undefined,
+) {
+  if (state === undefined || state === before.state) return;
+  const bank = yield* findBankList(lead.orgId);
+  if (bank === undefined || bank.id !== before.registerId) return;
+  if (state !== bankStates(bank).explained) return;
+  if (SAID_SO.has(category ?? before.category ?? "")) return;
+  const sql = yield* SqlClient.SqlClient;
+  const [linked] = yield* sql<{ one: number }>`SELECT 1 AS one FROM kin_record_links l
+    JOIN kin_records t ON t.org_id = l.org_id AND t.record_id = l.target
+    WHERE l.org_id = ${lead.orgId} AND l.record_id = ${before.recordId} AND l.kind = 'record'
+      AND t.register_id IN ('invoices', 'expenses') LIMIT 1`;
+  if (linked === undefined)
+    return yield* invalid(
+      `${before.key} stays unexplained: no invoice payment or expense records its money yet. Record that first (payment_record, or an expense with record_create), or ask the owner to confirm it on the statement's card; a transfer, bank charges or interest may be marked so with its category. Don't say it is explained.`,
+    );
+});
 const runUpdate = Effect.fnUntraced(function* (lead: Lead, input: typeof UpdateInput.Type) {
   const { result, notices } = yield* updateCore(lead, input);
   return { ...(yield* tell(lead, notices)), ...result };
@@ -1386,6 +1417,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, input: typeof Update
   if (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, before.recordId)))
     return yield* notFound(input.key);
   if (listOf(before.registerId) === "docs") return yield* isDoc(input.key);
+  yield* explainedHonestly(lead, before, input.state, input.kind ?? input.category);
   const def = yield* listFor(lead, before.registerId);
   const patch: Patch = {
     ...(input.title === undefined ? {} : { title: input.title }),

@@ -35,6 +35,10 @@ export const memoryDateMillis = (value: string | null) => {
   return Date.parse(value);
 };
 
+/** Whether an item stopped being true by `now`; an `invalid_at` still ahead keeps it true till then. */
+export const endedBy = (head: { readonly invalid_at: string | null }, now: number) =>
+  head.invalid_at !== null && !(memoryDateMillis(head.invalid_at) > now);
+
 const decodeFrontMatter = Schema.decodeUnknownEffect(MemoryItemFrontMatter);
 const decodeStaged = Schema.decodeUnknownEffect(
   Schema.Struct({

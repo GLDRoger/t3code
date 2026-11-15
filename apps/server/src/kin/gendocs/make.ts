@@ -163,6 +163,15 @@ const fromDoc = Effect.fn("KinDocMaker.fromDoc")(function* (
   };
 });
 
+/** A title that names its entry by key ("Invoice INV-1") names it by its issued number instead. */
+const numberedTitle = (title: string, key: string | undefined, number: string | null) =>
+  key === undefined || number === null
+    ? title
+    : title.replace(
+        new RegExp(`(?<![\\w-])${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "g"),
+        number,
+      );
+
 /**
  * What an issued document comes to, as its recipe declares it, when that is what its entry
  * records: a document never shows a total its entry doesn't. `undefined` for any other document.
@@ -380,9 +389,9 @@ export const makeDocument = Effect.fn("KinDocMaker.make")(function* (request: Ma
           : { _tag: "person", personId: requester.personId };
       const documents: Array<MadeDocument> = [];
       const written: Array<Docs.Written> = [];
+      const named = numberedTitle(request.title, final.entry?.key, final.number);
       for (const file of rendered.files) {
-        const title =
-          rendered.files.length === 1 ? request.title : `${request.title} · ${file.name}`;
+        const title = rendered.files.length === 1 ? named : `${named} · ${file.name}`;
         const filed = yield* Docs.fileVersion(
           request.orgId,
           requester.writer,

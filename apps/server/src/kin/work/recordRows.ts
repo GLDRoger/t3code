@@ -690,6 +690,33 @@ const dayStart = (day: string, zone: string) => {
 /** A calendar day's last millisecond in `zone`: an all-day entry is late only once it is over. */
 export const endOfDay = (day: string, zone: string) =>
   DateTime.toEpochMillis(DateTime.add(dayStart(day, zone), { days: 1 })) - 1;
+/** A date field's value as an instant: a day is its last millisecond, as an all-day entry's is. */
+export const fieldDateAt = (value: string, zone: string) => {
+  if (value.length === 10) return { at: endOfDay(value, zone), allDay: true };
+  const [hour, minute] = value
+    .slice(11)
+    .split(":")
+    .map((part) => Number.parseInt(part, 10));
+  const [year, month, day] = value
+    .slice(0, 10)
+    .split("-")
+    .map((part) => Number.parseInt(part, 10));
+  return {
+    at: DateTime.toEpochMillis(
+      DateTime.makeZonedUnsafe(
+        {
+          year: year ?? 1970,
+          month: month ?? 1,
+          day: day ?? 1,
+          hour: hour ?? 0,
+          minute: minute ?? 0,
+        },
+        { timeZone: zone, adjustForTimeZone: true },
+      ),
+    ),
+    allDay: false,
+  };
+};
 /** A calendar day's first millisecond in `zone`. */
 export const startOfDay = (day: string, zone: string) =>
   DateTime.toEpochMillis(dayStart(day, zone));
