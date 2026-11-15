@@ -2,7 +2,6 @@ import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_CONNECTIONS_COPY as COPY,
-  createKinConnectionActions,
   kinAcceptAll,
   kinCallRow,
   kinConnectionChange,
@@ -34,6 +33,7 @@ import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
 import { useNowMinuteMs } from "../../../lib/clock";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
+import { kinSignInInApp, kinSignInReturn, useKinConnectionActions } from "./kinConnectionSignIn";
 import {
   decodeConnectionId,
   decodeConnectionsTarget,
@@ -76,14 +76,7 @@ function ConnectionRecord(props: {
   const refresh = useAtomCommand(kinClient.connectionRefresh, { reportFailure: false });
   const update = useAtomCommand(kinClient.connectionUpdate, { reportFailure: false });
   const setReach = useAtomCommand(kinClient.connectionSetReach, { reportFailure: false });
-  const add = useAtomCommand(kinClient.connectionAdd, { reportFailure: false });
-  const remove = useAtomCommand(kinClient.connectionRemove, { reportFailure: false });
-  const actions = createKinConnectionActions({
-    orgId,
-    add: (input) => add({ environmentId, input }),
-    remove: (input) => remove({ environmentId, input }),
-    refresh: reload,
-  });
+  const actions = useKinConnectionActions(environmentId, orgId, reload);
   const [busy, setBusy] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
 
@@ -130,6 +123,18 @@ function ConnectionRecord(props: {
     void run(`tool:${row.name}`, "change that tool", () =>
       setModes({ environmentId, input: { ...ref, modes: kinToolSwitch(row, on) } }),
     );
+  const signInAgain = async () => {
+    if (busy !== null) return;
+    setBusy("signIn");
+    setProblem(null);
+    const started = await actions.signInAgain(props.connectionId, kinSignInReturn());
+    const response = started.ok ? await kinSignInInApp(started.value.authorizationUrl) : null;
+    const done = response === null ? null : await actions.signInFinish(response);
+    setBusy(null);
+    reload();
+    if (!started.ok) setProblem(started.problem);
+    else if (done !== null && !done.ok) setProblem(done.problem);
+  };
   const confirmRemove = () =>
     Dialog.alert(COPY.removeTitle(connection.label), COPY.removeDetail, [
       { text: "Cancel", style: "cancel" },
@@ -301,6 +306,14 @@ function ConnectionRecord(props: {
                 navigation.navigate("KinConnectionEdit", { ...props.params, edit: "rename" })
               }
             />
+            {connection.auth === "oauth" ? (
+              <ListActionRow
+                label={COPY.signInAgain}
+                loading={busy === "signIn"}
+                disabled={busy !== null}
+                onPress={() => void signInAgain()}
+              />
+            ) : null}
             {connection.auth === "key" ? (
               <ListActionRow
                 label={COPY.replaceKey}

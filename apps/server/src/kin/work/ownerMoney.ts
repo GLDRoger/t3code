@@ -9,6 +9,7 @@ import {
   type KinIssueInput,
   type KinListsInput,
   type KinListUpdateInput,
+  type KinMoney,
   type KinMoneySummaryInput,
   type KinPaymentInput,
   type KinPaymentVoidInput,
@@ -309,12 +310,27 @@ export const recordPayment = Effect.fn("KinMoney.recordPayment")(function* (
 ) {
   const person = yield* theOwner(people, input.orgId);
   const records = yield* KinRecords;
-  const { row } = yield* records.pay(input.orgId, ownerWriter(person), input.key, {
-    amount: input.amount,
-    paidOn: input.paidOn,
-    ...(input.note === undefined ? {} : { note: input.note }),
-    originKey: `owner:${person.personId}:${input.clientRequestId}`,
-  });
+  const sql = yield* SqlClient.SqlClient;
+  const originKey = `owner:${person.personId}:${input.clientRequestId}`;
+  const pay = (amount: KinMoney, withheld: boolean) =>
+    records
+      .pay(input.orgId, ownerWriter(person), input.key, {
+        amount,
+        paidOn: input.paidOn,
+        ...(input.note === undefined ? {} : { note: input.note }),
+        ...(withheld ? { withheld: true } : {}),
+        originKey: withheld ? `${originKey}:tds` : originKey,
+      })
+      .pipe(Effect.map(({ row }) => row));
+  const { tds } = input;
+  // The cash and the TDS are recorded together or not at all.
+  const row = yield* sql.withTransaction(
+    tds === undefined
+      ? pay(input.amount, false)
+      : input.amount.minor === 0
+        ? pay(tds, true)
+        : pay(input.amount, false).pipe(Effect.andThen(pay(tds, true))),
+  );
   return yield* records.detail(row, KIN_RECORD_CHANGES_CAP);
 }, workFailure);
 

@@ -110,6 +110,7 @@ function ClientsEntry(
   },
 ) {
   const counts = useKinClientCounts(props, props.enabled, props.seq);
+  if (counts === "refused") return null;
   return (
     <PlaceEntry
       {...props}

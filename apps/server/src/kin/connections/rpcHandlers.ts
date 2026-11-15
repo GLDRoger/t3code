@@ -44,5 +44,9 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
     "kin.connections.setReach": (input) => call((c, people) => c.setReach(people, input)),
     "kin.connections.remove": (input) => call((c, people) => c.remove(people, input)),
     "kin.connections.calls": (input) => call((c, people) => c.calls(people, input)),
+    "kin.connections.signInStart": (input) => call((c, people) => c.signInStart(people, input)),
+    "kin.connections.signInFinish": (input) => call((c, people) => c.signInFinish(people, input)),
+    "kin.connections.setSignInClient": (input) =>
+      call((c, people) => c.setSignInClient(people, input)),
   });
 });

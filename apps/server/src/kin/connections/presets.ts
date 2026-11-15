@@ -1,4 +1,5 @@
 import type {
+  KinConnectionField,
   KinConnectionPreset,
   KinConnectionReach,
   KinConnectionService,
@@ -30,28 +31,84 @@ export const KEY_PRESETS: Partial<Record<KinConnectionPreset, KeyPreset>> = {
   },
 };
 
-const SIGN_IN_COMING: ReadonlyArray<readonly [KinConnectionPreset, string]> = [
-  ["sentry", "Sentry"],
-  ["google", "Google Workspace"],
-  ["zoho_books", "Zoho Books"],
-];
+/**
+ * A preset the owner connects by signing in at the service. `remote` ones are MCP servers whose
+ * sign-in Kin discovers; `url: null` means the owner's own address, which is itself a secret.
+ * Google is Kin's own tools on Google's APIs, signed in with the owner's own Google client.
+ */
+type SignInPreset = {
+  readonly label: string;
+  readonly kind: "remote" | "builtin";
+  readonly url: string | null;
+  readonly host: string;
+  readonly fields: ReadonlyArray<KinConnectionField>;
+  readonly setup: string;
+};
 
-/** What the Add sheet lists: every preset, whether it can be added yet, and a custom server. */
+export const SIGN_IN_PRESETS: Partial<Record<KinConnectionPreset, SignInPreset>> = {
+  sentry: {
+    label: "Sentry",
+    kind: "remote",
+    url: "https://mcp.sentry.dev/mcp",
+    host: "mcp.sentry.dev",
+    fields: ["org"],
+    setup: "Sign in to Sentry. Name an organization to keep agents to it, or leave it empty.",
+  },
+  zoho_books: {
+    label: "Zoho Books",
+    kind: "remote",
+    url: null,
+    host: "zohomcp.com",
+    fields: ["secretUrl"],
+    setup:
+      "In Zoho MCP: create a server, add Zoho Books and the tools agents may use, then copy its server address here and sign in.",
+  },
+  google: {
+    label: "Google",
+    kind: "builtin",
+    url: null,
+    host: "googleapis.com",
+    fields: [],
+    setup: "Mail and calendar, read only. Agents can't send anything.",
+  },
+};
+
+/** What the Add sheet lists: every preset, and a custom server. */
 export const SERVICES: ReadonlyArray<KinConnectionService> = [
   ...Object.entries(KEY_PRESETS).map(([service, preset]) => ({
     service: service as KinConnectionPreset,
     label: preset.label,
     available: true,
     setup: preset.setup,
+    connect: "key" as const,
+    fields: ["key" as const],
+    needsSetup: false,
   })),
-  ...SIGN_IN_COMING.map(([service, label]) => ({ service, label, available: false, setup: null })),
+  ...Object.entries(SIGN_IN_PRESETS).map(([service, preset]) => ({
+    service: service as KinConnectionPreset,
+    label: preset.label,
+    available: true,
+    setup: preset.setup,
+    connect: "sign_in" as const,
+    fields: preset.fields,
+    needsSetup: false,
+  })),
   {
     service: "custom",
     label: "Another service",
     available: true,
     setup: "Paste the server address the service gives for connecting AI tools.",
+    connect: "key",
+    fields: ["url", "key"],
+    needsSetup: false,
   },
 ];
+
+/** Presets whose sign-in uses a client the owner made at the service and pasted once. */
+export const OWNER_CLIENT_PRESETS: ReadonlyArray<KinConnectionPreset> = ["google"];
+
+/** The redirect every service sends the browser back to: Kin's static sign-in return page. */
+export const DEFAULT_SIGN_IN_ADDRESS = "https://gldroger.github.io/t3code/kin/oauth/callback/";
 
 /** A custom server can reach anywhere until the owner says it only talks to its own vendor. */
 export const CUSTOM_REACH: KinConnectionReach = "open";

@@ -1397,6 +1397,22 @@ describe("the owner's taps", () => {
           currency: "INR",
         },
       );
+      // The owner's cash and the TDS the client kept settle it together, as one payment form.
+      const settled = yield* OwnerMoney.recordPayment(people, {
+        orgId,
+        key: "INV-1",
+        amount: { minor: 4_000_000, currency: "INR" },
+        tds: { minor: 1_000_000, currency: "INR" },
+        paidOn: "2026-11-06",
+        clientRequestId: "p2",
+      });
+      assert.strictEqual(settled.state, "done");
+      assert.deepStrictEqual(
+        settled.payments
+          ?.map((payment) => `${payment.amount.minor}${payment.withheld === true ? " TDS" : ""}`)
+          .toSorted(),
+        ["1000000 TDS", "4000000", "4000000"],
+      );
     }).pipe(Effect.provide(layer)),
   );
 
