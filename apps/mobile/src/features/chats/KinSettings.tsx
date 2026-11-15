@@ -1,7 +1,12 @@
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
-import { KIN_DAILY_LIMIT, kinDailyLimitChoices } from "@t3tools/client-runtime/kin/kinBudget";
+import {
+  KIN_DAILY_LIMIT,
+  kinDailyLimitChoices,
+  kinDailyLimitUse,
+  kinDailyLimitWaiting,
+} from "@t3tools/client-runtime/kin/kinBudget";
 import { KIN_COMPANY } from "@t3tools/client-runtime/kin/kinCompanyProfile";
 import { KIN_CONNECTIONS_COPY } from "@t3tools/client-runtime/kin/kinConnections";
 import {
@@ -211,9 +216,7 @@ export function KinSettings(props: {
               <SettingsSection footer={KIN_TEAM_AGENT_COPY.detail}>
                 <KinTeamAgentRow {...company} />
               </SettingsSection>
-              <SettingsSection footer={KIN_DAILY_LIMIT.detail}>
-                <KinDailyLimitRow {...company} />
-              </SettingsSection>
+              <KinDailyLimitSection {...company} />
               <SettingsSection
                 title="Approvals"
                 footer="Your agents ask before anything that needs your say. You approve on this phone with Face ID."
@@ -310,8 +313,11 @@ function KinConnection(props: { readonly environment: EnvironmentPresentation })
   );
 }
 
-/** The owner's daily limit as a native menu of plain choices, on this page rather than its own. */
-function KinDailyLimitRow(props: {
+/**
+ * The owner's daily limit as a native menu of plain choices, on this page rather than its own,
+ * with today's use and the work held for it.
+ */
+function KinDailyLimitSection(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
 }) {
@@ -324,33 +330,54 @@ function KinDailyLimitRow(props: {
   const budget = Option.getOrNull(AsyncResult.value(result));
   const { choices, current } = kinDailyLimitChoices(budget);
   const label = choices.find((choice) => choice.value === current)?.label ?? "…";
+  const use = kinDailyLimitUse(budget);
+  const waiting = kinDailyLimitWaiting(budget);
   return (
-    <Menu
-      actions={choices.map((choice) => ({
-        id: choice.value,
-        title: choice.label,
-        state: choice.value === current ? ("on" as const) : ("off" as const),
-      }))}
-      onPressAction={({ nativeEvent }) => {
-        const picked = choices.find((choice) => choice.value === nativeEvent.event);
-        if (picked === undefined || picked.value === current) return;
-        void set({
-          environmentId: props.environmentId,
-          input: { orgId: props.orgId, limits: picked.limits },
-        }).then((outcome) => {
-          if (AsyncResult.isFailure(outcome)) Dialog.alert(KIN_DAILY_LIMIT.failed);
-          refresh();
-        });
-      }}
-    >
-      <SettingsRow
-        icon="chart.bar.xaxis"
-        label={KIN_DAILY_LIMIT.title}
-        value={label}
-        valuePosition="trailing"
-        disabled={!canSet || budget === null}
-      />
-    </Menu>
+    <>
+      <SettingsSection
+        footer={use === null ? KIN_DAILY_LIMIT.detail : `${KIN_DAILY_LIMIT.detail}\n\n${use}`}
+      >
+        <Menu
+          actions={choices.map((choice) => ({
+            id: choice.value,
+            title: choice.label,
+            state: choice.value === current ? ("on" as const) : ("off" as const),
+          }))}
+          onPressAction={({ nativeEvent }) => {
+            const picked = choices.find((choice) => choice.value === nativeEvent.event);
+            if (picked === undefined || picked.value === current) return;
+            void set({
+              environmentId: props.environmentId,
+              input: { orgId: props.orgId, limits: picked.limits },
+            }).then((outcome) => {
+              if (AsyncResult.isFailure(outcome)) Dialog.alert(KIN_DAILY_LIMIT.failed);
+              refresh();
+            });
+          }}
+        >
+          <SettingsRow
+            icon="chart.bar.xaxis"
+            label={KIN_DAILY_LIMIT.title}
+            value={label}
+            valuePosition="trailing"
+            disabled={!canSet || budget === null}
+          />
+        </Menu>
+      </SettingsSection>
+      {waiting.length === 0 ? null : (
+        <SettingsSection title={KIN_DAILY_LIMIT.waiting}>
+          {waiting.map((agent) => (
+            <SettingsRow
+              key={agent.agentId}
+              icon="hourglass"
+              label={agent.name}
+              value={agent.line}
+              valuePosition="trailing"
+            />
+          ))}
+        </SettingsSection>
+      )}
+    </>
   );
 }
 
