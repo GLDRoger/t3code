@@ -517,7 +517,11 @@ export function useKinMoneyActions({ environmentId, orgId }: KinWorkTarget) {
         kinReceiptNotice,
       ),
     /** The document as it would be made, never filed; null when it couldn't be made. */
-    preview: async (recipe: string, entry: KinRecordKey | undefined) => {
+    preview: async (
+      recipe: string,
+      entry: KinRecordKey | undefined,
+      inputs?: Readonly<Record<string, unknown>>,
+    ) => {
       const made = await run(
         () =>
           render({
@@ -526,6 +530,7 @@ export function useKinMoneyActions({ environmentId, orgId }: KinWorkTarget) {
               orgId,
               recipe,
               ...(entry === undefined ? {} : { entry }),
+              ...(inputs === undefined ? {} : { inputs }),
               preview: true,
               clientRequestId: randomUUID(),
             },
@@ -535,9 +540,24 @@ export function useKinMoneyActions({ environmentId, orgId }: KinWorkTarget) {
       );
       return made?.preview ?? null;
     },
-    file: (recipe: string, entry: KinRecordKey, clientRequestId: string) =>
+    file: (
+      recipe: string,
+      entry: KinRecordKey,
+      clientRequestId: string,
+      inputs?: Readonly<Record<string, unknown>>,
+    ) =>
       run(
-        () => render({ environmentId, input: { orgId, recipe, entry, clientRequestId } }),
+        () =>
+          render({
+            environmentId,
+            input: {
+              orgId,
+              recipe,
+              entry,
+              ...(inputs === undefined ? {} : { inputs }),
+              clientRequestId,
+            },
+          }),
         entry,
         () => KIN_INVOICES.filed,
       ),

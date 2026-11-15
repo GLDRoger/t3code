@@ -267,6 +267,10 @@ export const cashPosition = Effect.fn("KinMoneyAnswers.cash")(function* (
 });
 export type CashPosition = Effect.Success<ReturnType<typeof cashPosition>>;
 
+/** A currency's balance now if every recorded movement since went through its accounts. */
+export const cashEstimate = (one: CashPosition["byCurrency"][number]) =>
+  one.total !== null && one.sameDay ? one.total + one.receivedSince - one.spentSince : null;
+
 const notRecordLine = (one: Read) => ({
   account: one.label,
   closingBalance: formatMinor(BigInt(one.minor), one.currency),
@@ -310,8 +314,7 @@ export const cashAnswer = (cash: CashPosition) => {
     ...(cards.length === 0 ? {} : { cardsOwed: cards.map(line) }),
     ...notOfRecord,
     byCurrency: cash.byCurrency.map((one) => {
-      const estimate =
-        one.total !== null && one.sameDay ? one.total + one.receivedSince - one.spentSince : null;
+      const estimate = cashEstimate(one);
       return {
         currency: one.currency,
         accounts: one.accounts,
@@ -369,7 +372,7 @@ export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
   const ends = horizons.map((one) => ({ days: one, end: endOfDay(shift(today, one), zone) }));
   const last = Math.max(...ends.map((one) => one.end));
   const bank = (yield* findBankList(orgId))?.id ?? "bank_transactions";
-  const notOutgoing = ["invoices", "receipts", "clients", "contacts", "projects", bank];
+  const notOutgoing = ["invoices", "quotes", "receipts", "clients", "contacts", "projects", bank];
 
   const invoices = yield* sql<{
     key: string;
