@@ -6,7 +6,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { dayIn, formatMinor, monthOf, shiftMonth } from "./money.ts";
-import { moneyDay, ownerZone, startOfDay } from "./recordRows.ts";
+import { countedEntry, moneyDay, ownerZone, startOfDay } from "./recordRows.ts";
 
 /**
  * Monthly spending limits on paid expenses: per category, per project, or a category within a
@@ -151,7 +151,7 @@ export const budgetsView = Effect.fn("KinBudgets.view")(function* (
   }>`SELECT r.amount_minor AS minor, r.currency, r.category, r.project_id AS "projectId"
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state = 'done'
-      AND r.amount_minor IS NOT NULL AND ${moneyDay(sql)} >= ${from} AND ${moneyDay(sql)} < ${to}
+      AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL AND ${moneyDay(sql)} >= ${from} AND ${moneyDay(sql)} < ${to}
     ORDER BY r.key`;
   return {
     month: shown,

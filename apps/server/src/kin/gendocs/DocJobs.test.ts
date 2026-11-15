@@ -671,10 +671,10 @@ describe("recipe documents", () => {
           );
         });
       const text = yield* csvOf(pack.documents[1]!.key);
-      // Place of supply is the client's; with no tax recorded, taxable value and tax stay blank.
+      // Place of supply is the client's; taxable value is the total less the tax issued with it.
       assert.match(
         text,
-        /^INV\/26-27\/001,\d{4}-\d{2}-\d{2},Invented Acme,,Maharashtra,,,1000\.01,INR,Issued,INV-1\r$/m,
+        /^INV\/26-27\/001,\d{4}-\d{2}-\d{2},Invented Acme,,Maharashtra,847\.47,152\.54,1000\.01,INR,Issued,INV-1\r$/m,
       );
       // A title that starts with its own number, as an import writes one, shows the number once.
       yield* (yield* KinRecords.KinRecords).update(

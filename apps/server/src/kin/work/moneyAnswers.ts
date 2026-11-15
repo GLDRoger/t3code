@@ -5,7 +5,15 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { addUp, dayIn, formatMinor, formatMoney, monthOf, shiftMonth } from "./money.ts";
 import { dates } from "./moneyViews.ts";
-import { endOfDay, moneyDay, ownerZone, repeatOf, startOfDay } from "./recordRows.ts";
+import {
+  countedEntry,
+  countedPayment,
+  endOfDay,
+  moneyDay,
+  ownerZone,
+  repeatOf,
+  startOfDay,
+} from "./recordRows.ts";
 import { nextDates, repeatsBetween } from "./repeat.ts";
 import { findBankList } from "./statements/bankList.ts";
 import { reviewOf } from "./statements/statementReview.ts";
@@ -69,15 +77,15 @@ const recordedMoney = Effect.fn("KinMoneyAnswers.recorded")(function* (
     SELECT p.amount_minor AS minor, p.currency, p.paid_on AS day
     FROM kin_record_payments p
     JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
-    WHERE p.org_id = ${orgId} AND p.voided_at IS NULL AND p.withheld = 0
-      AND r.state <> 'dropped' AND r.register_id IN ('invoices', 'receipts')
-      AND p.paid_on >= ${sinceDay}
+    WHERE p.org_id = ${orgId} AND ${countedPayment(sql)} AND p.withheld = 0
+      AND r.register_id IN ('invoices', 'receipts') AND p.paid_on >= ${sinceDay}
     ORDER BY p.paid_on, p.payment_id`;
   const spent = yield* sql<{ minor: number; currency: string; at: number }>`
     SELECT r.amount_minor AS minor, r.currency, ${moneyDay(sql)} AS at
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state = 'done'
-      AND r.amount_minor IS NOT NULL AND ${moneyDay(sql)} >= ${startOfDay(sinceDay, zone)}
+      AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL
+      AND ${moneyDay(sql)} >= ${startOfDay(sinceDay, zone)}
     ORDER BY at, r.key`;
   return {
     received: received.map((one) => ({ minor: one.minor, currency: one.currency, day: one.day })),
@@ -375,7 +383,7 @@ export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
         WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'invoices' AND r.state = 'waiting'
-      AND r.amount_minor IS NOT NULL
+      AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL
     ORDER BY r.due_at, r.key`;
   const open = invoices
     .map((one) => ({ ...one, balance: one.minor - one.paid }))
@@ -413,8 +421,8 @@ export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
         WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid
     FROM kin_records r
     JOIN kin_registers g ON g.org_id = r.org_id AND g.register_id = r.register_id
-    WHERE r.org_id = ${orgId} AND r.amount_minor IS NOT NULL
-      AND r.state NOT IN ('done', 'dropped') AND COALESCE(r.side, 'ours') <> 'theirs'
+    WHERE r.org_id = ${orgId} AND r.amount_minor IS NOT NULL AND ${countedEntry(sql)}
+      AND r.state <> 'done' AND COALESCE(r.side, 'ours') <> 'theirs'
       AND r.register_id NOT IN ${sql.in(notOutgoing)}
       AND COALESCE(r.due_at, r.date_at) IS NOT NULL AND COALESCE(r.due_at, r.date_at) <= ${last}
     ORDER BY at, r.key`;
@@ -447,7 +455,7 @@ export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
     FROM kin_records r
     JOIN kin_registers g ON g.org_id = r.org_id AND g.register_id = r.register_id
     WHERE r.org_id = ${orgId} AND r.repeat_json IS NOT NULL AND r.amount_minor IS NOT NULL
-      AND r.state <> 'dropped' AND COALESCE(r.side, 'ours') <> 'theirs'
+      AND ${countedEntry(sql)} AND COALESCE(r.side, 'ours') <> 'theirs'
       AND r.register_id NOT IN ${sql.in(notOutgoing)}
       AND NOT EXISTS (SELECT 1 FROM kin_records n WHERE n.org_id = r.org_id
         AND n.origin_key = 'repeat:' || r.record_id)
@@ -561,13 +569,13 @@ const runway = Effect.fn("KinMoneyAnswers.runway")(function* (
   const paidFirst = yield* sql<{ currency: string; day: string }>`SELECT p.currency,
       MIN(p.paid_on) AS day
     FROM kin_record_payments p JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
-    WHERE p.org_id = ${orgId} AND p.voided_at IS NULL AND p.withheld = 0
-      AND r.state <> 'dropped' AND r.register_id IN ('invoices', 'receipts')
+    WHERE p.org_id = ${orgId} AND ${countedPayment(sql)} AND p.withheld = 0
+      AND r.register_id IN ('invoices', 'receipts')
     GROUP BY p.currency ORDER BY p.currency`;
   const spentFirst = yield* sql<{ currency: string; at: number }>`SELECT r.currency,
       MIN(${moneyDay(sql)}) AS at
     FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'expenses'
-      AND r.state = 'done' AND r.amount_minor IS NOT NULL
+      AND r.state = 'done' AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL
     GROUP BY r.currency ORDER BY r.currency`;
   const sinceOf = (currency: string) =>
     [
