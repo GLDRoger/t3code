@@ -8,6 +8,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { type ChoiceAnswerHandler, KinChatService } from "../chat/KinChatService.ts";
 import { KinConnections } from "../connections/ConnectionsService.ts";
 import { answerReceiptCard } from "../gendocs/receiptProposals.ts";
+import { answerReviewCard } from "../github/PullRequestCare.ts";
 import { receiptDocument } from "../gendocs/receipts.ts";
 import { answerCurrencyCard } from "./statements/statementReview.ts";
 
@@ -20,6 +21,13 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
   scope: Scope.Scope,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  yield* answerReviewCard({
+    orgId: input.orgId,
+    widgetId: input.widget.widgetId,
+    personId: input.personId,
+    confirmed: input.option.kind === "yes",
+    now: input.now,
+  });
   yield* answerCurrencyCard({
     orgId: input.orgId,
     widgetId: input.widget.widgetId,

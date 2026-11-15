@@ -91,12 +91,14 @@ import { KinRecords } from "../work/KinRecords.ts";
 import * as LeadWork from "../work/leadWork.ts";
 import * as PublishCard from "../widgets/workerPublishCard.ts";
 import * as OwnerWork from "../work/ownerWork.ts";
-import { pullRequestMerged, WORK_NOT_YOURS } from "../work/workerEntries.ts";
+import { githubClosed, pullRequestMerged, WORK_NOT_YOURS } from "../work/workerEntries.ts";
 import { WITHDRAWN_WORK } from "../work/workPrompt.ts";
 import * as Attempts from "../work/workerAttempts.ts";
 import { eventWithdrawn } from "../work/workerAttempts.ts";
 import * as Retirement from "./Retirement.ts";
 import { runKinMigrations } from "../persistence/KinMigrations.ts";
+import { KinPullRequestCare } from "../github/PullRequestCare.ts";
+import { GitVcsDriver } from "../../vcs/GitVcsDriver.ts";
 
 const leadThread = ThreadId.make("lead-thread");
 const leadId = KinAgentId.make("lead");
@@ -844,6 +846,24 @@ const run = <A, E>(
           // Connected on this host, with no project here: the owner's to reach, no one else's.
           Layer.succeed(KinGithubRepoScope, KinGithubRepoScope.of({ repos: ["GLDRoger/t3code"] })),
           ConfigProvider.layer(ConfigProvider.fromUnknown(hostConfig)),
+          // GitHub's word on PRs #7 (a teammate's branch here) and #8 (from a fork), and the head T3's git fetches.
+          Layer.mock(KinPullRequestCare)({
+            pull: (repo, number) =>
+              Effect.succeed({
+                repo: "acme/app" as never,
+                number,
+                title: `Invented PR ${number} by a teammate`,
+                headSha: `sha-${number}`,
+                headRef: "teammate/feature",
+                baseRef: "main",
+                sameRepo: number === 7 && repo === "acme/app",
+                diff: "diff --git a/src/app.ts b/src/app.ts\n+export const x = 1;\n",
+              }),
+          }),
+          Layer.mock(GitVcsDriver)({
+            fetchRefCommit: (input) =>
+              Effect.succeed({ commitSha: `fetched:${input.ref}` } as never),
+          }),
           // Document jobs have their own tests (`gendocs/`); these workers never make one.
           Layer.mock(Workspace.KinWorkspace)({}),
           Layer.mock(Toolchain.KinToolchain)({}),
@@ -3131,15 +3151,32 @@ it.effect(
           pullUrl: "https://github.com/acme/app/pull/9",
         });
         const turns = yield* ctx.sql`SELECT wakeup_id FROM kin_wakeups ORDER BY wakeup_id`;
-        assert.strictEqual(
-          yield* pullRequestMerged({ orgId: ctx.orgId, repo: "Acme/App", number: 9 }).pipe(
-            Effect.provideService(KinRecords, records),
-          ),
-          1,
+        // The task was made from an issue: the merge names it for Kin to close on GitHub.
+        const github = { actor: { _tag: "system" }, via: "github" } as const;
+        yield* records.link(ctx.orgId, github, rows[0]!.recordId, {
+          kind: "url",
+          target: "https://github.com/acme/app/issues/3",
+          relation: "relates",
+          label: "Issue #3",
+        });
+        assert.deepStrictEqual(
+          yield* githubClosed({
+            orgId: ctx.orgId,
+            repo: "Acme/App",
+            number: 9,
+            item: "pull_request",
+          }).pipe(Effect.provideService(KinRecords, records)),
+          { entries: 1, issues: [{ repo: "acme/app", number: 3 }] },
         );
         const merged = yield* records.get(ctx.orgId, rows[0]!.key);
         assert.include(merged, { state: "done" });
         assert.isNotNull(merged!.closedAt);
+        // Closing the issue itself closes its task too.
+        yield* records.update(ctx.orgId, github, rows[0]!.key, { state: "open" });
+        yield* githubClosed({ orgId: ctx.orgId, repo: "acme/app", number: 3, item: "issue" }).pipe(
+          Effect.provideService(KinRecords, records),
+        );
+        assert.include(yield* records.get(ctx.orgId, rows[0]!.key), { state: "done" });
         // Code closed it: no turn ran and nothing was queued to wake one.
         assert.deepStrictEqual(
           yield* ctx.sql`SELECT wakeup_id FROM kin_wakeups ORDER BY wakeup_id`,
@@ -3154,6 +3191,49 @@ it.effect(
           })).rows,
           0,
         );
+      }),
+    ),
+);
+
+it.effect(
+  "a review or fix of anyone's PR starts at the PR's head; a fork's branch takes no fix",
+  () =>
+    run(({ ctx, remote, local, workers }) =>
+      Effect.gen(function* () {
+        yield* goLocal(ctx, remote);
+        const review = { ...teamDelegate, kind: "review" as const, pullRequest: 7 };
+        const { workerId } = yield* workers.delegate(scope, review);
+        const [launch] = local.launches;
+        assert.deepInclude(launch!.workspaceStrategy as object, {
+          type: "worktree",
+          baseRef: "fetched:refs/pull/7/head",
+          startFromOrigin: false,
+        });
+        assert.include(launch!.initialMessage!.text, "pull request acme/app#7");
+        assert.include(launch!.initialMessage!.text, "export const x = 1;");
+        assert.deepStrictEqual(
+          yield* ctx.sql`SELECT kind, target_pr AS "targetPr", target_branch AS "targetBranch"
+          FROM kin_workers WHERE worker_id = ${workerId}`,
+          [{ kind: "review", targetPr: 7, targetBranch: null }],
+        );
+        // A fix pushes to the PR's own branch, which Kin records; a fork's it can't push to.
+        const fix = yield* workers.delegate(scope, {
+          ...teamDelegate,
+          title: "Fix PR 7",
+          pullRequest: 7,
+        });
+        assert.deepStrictEqual(
+          yield* ctx.sql`SELECT kind, target_branch AS "targetBranch" FROM kin_workers
+          WHERE worker_id = ${fix.workerId}`,
+          [{ kind: "build", targetBranch: "teammate/feature" }],
+        );
+        assert.include(
+          yield* Effect.flip(
+            workers.delegate(scope, { ...teamDelegate, title: "Fix PR 8", pullRequest: 8 }),
+          ),
+          { reason: "not_allowed" },
+        );
+        assert.lengthOf(local.launches, 2);
       }),
     ),
 );
@@ -4067,7 +4147,7 @@ const upgradedFromK058 = (sql: SqlClient.SqlClient) =>
       [
         59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
         82, 83, 84, 85, 86, 87, 88, 106, 107, 110, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139,
-        140, 141, 142, 143,
+        140, 141, 142, 143, 144,
       ],
     );
   }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);

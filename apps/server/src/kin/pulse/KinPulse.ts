@@ -27,11 +27,12 @@ import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinConnections } from "../connections/ConnectionsService.ts";
 import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
-import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
+import { CHIEF_OF_STAFF_DOMAIN, ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { viewSees } from "../work/teamView.ts";
 import { clientSenses } from "./senses/clients.ts";
 import { goalSenses } from "./senses/goals.ts";
+import { codeSenses } from "./senses/code.ts";
 import { moneySenses } from "./senses/money.ts";
 import { iso, type SenseContext, type SensedFact } from "./senses/shared.ts";
 import { systemSenses } from "./senses/system.ts";
@@ -75,12 +76,14 @@ const context = Effect.fn("KinPulse.context")(function* (orgId: KinOrgId, at: nu
       AND a.role = 'lead' AND a.retired_at IS NULL
     WHERE l.org_id = ${orgId} ORDER BY a.created_at, l.agent_id`;
   const finance = leads.find((lead) => lead.domain === FINANCE_DOMAIN);
+  const tech = leads.find((lead) => lead.domain === ENGINEERING_DOMAIN);
   return {
     orgId,
     at,
     zone: yield* ownerZone(orgId),
     chief: chief?.agentId,
     finance: finance === undefined ? chief?.agentId : KinAgentId.make(finance.agentId),
+    tech: tech === undefined ? chief?.agentId : KinAgentId.make(tech.agentId),
     liveAgents: new Set(leads.map((lead) => lead.agentId)),
   } satisfies SenseContext;
 });
@@ -94,6 +97,7 @@ const sense = Effect.fn("KinPulse.sense")(function* (orgId: KinOrgId, at: number
     ...(yield* systemSenses(ctx)),
     ...(yield* clientSenses(ctx)),
     ...(yield* goalSenses(ctx)),
+    ...(yield* codeSenses(ctx)),
   ];
   return facts.toSorted(
     (a, b) =>

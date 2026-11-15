@@ -38,7 +38,9 @@ import { relevant } from "./githubInterest.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import { isPermanent } from "./routines.ts";
 import { KinRecords } from "../work/KinRecords.ts";
-import { pullRequestMerged } from "../work/workerEntries.ts";
+import { githubClosed } from "../work/workerEntries.ts";
+import { KinPullRequestCare } from "../github/PullRequestCare.ts";
+import { recordPullRequestEvent } from "../github/pullRequestState.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RETRY_FIRST_MS = 60_000;
@@ -282,6 +284,8 @@ const make = Effect.gen(function* () {
   const records = yield* KinRecords;
   const scope = yield* KinGithubRepoScope;
   const ticks = yield* Scheduler.Scheduler;
+  const care = yield* Effect.serviceOption(KinPullRequestCare);
+  const fibers = yield* Effect.scope;
 
   // Per process: the 24 h give-up is the durable bound, so a restart only retries sooner.
   const retries = new Map<
@@ -348,20 +352,42 @@ const make = Effect.gen(function* () {
       yield* putRecheck(orgId, fire, outcome.reason, now);
     } else if (outcome._tag === "event") {
       const { event: merge } = outcome;
-      // A merge closes its Work entries by code, whether or not a lead wakes for it.
-      if (
-        merge.event === "pull_request" &&
-        merge.action === "closed" &&
-        outcome.merged === true &&
-        merge.number !== null
-      )
-        yield* pullRequestMerged({ orgId, repo: merge.repo, number: merge.number }).pipe(
+      const closedItem =
+        merge.number === null
+          ? undefined
+          : merge.event === "pull_request" && merge.action === "closed" && outcome.merged === true
+            ? ("pull_request" as const)
+            : merge.event === "issues" && merge.action === "closed"
+              ? ("issue" as const)
+              : undefined;
+      // PR state for the pulse, and closing by code: a merge closes its Work entries and their
+      // linked issues, a closed issue its entries, whether or not a lead wakes for it.
+      yield* recordPullRequestEvent(orgId, merge).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't record a pull request's state", { cause }),
+        ),
+      );
+      if (closedItem !== undefined && merge.number !== null) {
+        const closed = yield* githubClosed({
+          orgId,
+          repo: merge.repo,
+          number: merge.number,
+          item: closedItem,
+        }).pipe(
           Effect.provideService(KinRecords, records),
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.catchCause((cause) =>
-            Effect.logWarning("Kin couldn't close Work entries for a merge", { cause }),
+            Effect.logWarning("Kin couldn't close Work entries for a GitHub close", { cause }).pipe(
+              Effect.as(undefined),
+            ),
           ),
         );
+        if (closed !== undefined && closed.issues.length > 0 && Option.isSome(care))
+          yield* sql.afterCommit(
+            care.value.closeIssues(orgId, closed.issues).pipe(Effect.forkIn(fibers), Effect.asVoid),
+          );
+      }
       const lead = yield* liveLead(sql, orgId, { prefer: ENGINEERING_DOMAIN });
       if (lead === undefined) {
         yield* Effect.logWarning("Kin GitHub event dropped: no active lead", {

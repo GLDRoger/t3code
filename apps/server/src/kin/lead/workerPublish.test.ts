@@ -33,6 +33,8 @@ const fixture = Effect.fn("WorkerPublishTest.fixture")(function* (
     readonly local?: boolean;
     /** What GitHub says of the repository besides its default branch. */
     readonly about?: Record<string, unknown>;
+    /** A fix for an open PR whose branch, cut from main, is already on GitHub. */
+    readonly onto?: Publish.PullRequestTarget;
   } = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
@@ -56,6 +58,8 @@ const fixture = Effect.fn("WorkerPublishTest.fixture")(function* (
   yield* git(`${root}/seed`, "add", "README.md");
   yield* git(`${root}/seed`, "commit", "--quiet", "-m", "seed");
   yield* git(`${root}/seed`, "push", "--quiet", origin, "main");
+  if (options.onto !== undefined)
+    yield* git(`${root}/seed`, "push", "--quiet", origin, `main:refs/heads/${options.onto.branch}`);
   yield* git(root, "clone", "--quiet", origin, worker);
   const tree = options.local === true ? `${root}/worktrees/app` : worker;
   if (options.local === true)
@@ -130,6 +134,8 @@ const fixture = Effect.fn("WorkerPublishTest.fixture")(function* (
         status: 200,
         body: opened ? [{ number: 7, html_url: "https://github.com/acme/app/pull/7" }] : [],
       };
+    if (request.method === "POST" && request.path.endsWith("/comments"))
+      return { status: 201, body: {} };
     if (request.method === "POST" && request.path === "/repos/acme/app/pulls") {
       opened = true;
       return { status: 201, body: { number: 7, html_url: "https://github.com/acme/app/pull/7" } };
@@ -179,6 +185,7 @@ const fixture = Effect.fn("WorkerPublishTest.fixture")(function* (
       repositoryKey: "github.com/acme/app",
       worktreePath,
       ...(options.local === true ? { local: { projectRoot: worker } } : {}),
+      ...(options.onto === undefined ? {} : { onto: options.onto }),
       title: "Fix",
       progress: {
         review: (review) =>
@@ -244,6 +251,67 @@ it.live(
       assert.lengthOf(
         requests.filter((request) => request.method === "POST"),
         1,
+      );
+    }).pipe(Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer)), Effect.scoped),
+);
+
+it.live(
+  "pushes a fix onto the PR's own branch and says so there, and never over newer commits",
+  () =>
+    Effect.gen(function* () {
+      const onto = { number: 12, branch: "feature" };
+      const { publish, head, origin, requests, git, root } = yield* fixture(
+        { "src/fix.ts": "export {};\n" },
+        { onto },
+      );
+      assert.deepStrictEqual(yield* publish(), {
+        url: "https://github.com/acme/app/pull/12",
+        number: 12,
+        sha: head,
+      });
+      const feature = () =>
+        git(root, `--git-dir=${origin}`, "rev-parse", "--verify", "refs/heads/feature");
+      assert.strictEqual(yield* feature(), head);
+      const posted = requests.filter((request) => request.method === "POST").map((r) => r.path);
+      // No new PR and no kin/worker branch: one comment on the PR it fixed.
+      assert.deepStrictEqual(posted, ["/repos/acme/app/issues/12/comments"]);
+
+      // The author pushed since the worker started: Kin doesn't push over it.
+      const later = yield* fixture({ "src/fix.ts": "export {};\n" }, { onto });
+      yield* later.git(
+        later.root,
+        "clone",
+        "--quiet",
+        "-b",
+        "feature",
+        later.origin,
+        `${later.root}/author`,
+      );
+      yield* later.git(
+        `${later.root}/author`,
+        "commit",
+        "--quiet",
+        "--allow-empty",
+        "-m",
+        "theirs",
+      );
+      yield* later.git(`${later.root}/author`, "push", "--quiet", "origin", "feature");
+      const theirs = yield* later.git(
+        later.root,
+        `--git-dir=${later.origin}`,
+        "rev-parse",
+        "--verify",
+        "refs/heads/feature",
+      );
+      assert.include(yield* Effect.flip(later.publish()), { diverged: true });
+      assert.strictEqual(
+        yield* later.git(
+          later.root,
+          `--git-dir=${later.origin}`,
+          "rev-parse",
+          "refs/heads/feature",
+        ),
+        theirs,
       );
     }).pipe(Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer)), Effect.scoped),
 );
