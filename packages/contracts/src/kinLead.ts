@@ -624,6 +624,10 @@ export const KinEvent = Schema.Union([
     key: KinRecordKey,
     seq: NonNegativeInt,
     reason: Schema.Literals(["assigned", "withdrawn"]),
+    // Given by a teammate: their direct chat with the lead, where it reports, and `origin` naming
+    // them, so the turn is theirs and never the owner's. From stored rows, as a worker report's.
+    chatId: Schema.optional(KinChatId),
+    origin: Schema.optional(KinEventOrigin),
   }),
   Schema.TaggedStruct("action.resolved", {
     ...EventBase,

@@ -507,7 +507,17 @@ it("a chat-only grant cannot satisfy any non-chat method's declared permission",
     // Read only: setting the zone stays the owner's.
     "kin.triggers.getTimeZone",
     "kin.widgets.act",
+    // Tasks: the service shows a teammate only tasks shared with them or theirs, and changes only
+    // their own; a task they give an agent runs as theirs, in their chat with it.
+    "kin.work.assign",
+    "kin.work.create",
+    "kin.work.get",
+    "kin.work.list",
+    "kin.work.subscribe",
+    "kin.work.summary",
+    "kin.work.update",
   ]);
+  expect(RPC_REQUIRED_SCOPES["kin.work.share"]).toBe("orchestration:operate");
   // Kin schedules live in T3's scheduled tasks: a teammate's session reaches none of them.
   const scheduledTasks = Object.entries(RPC_REQUIRED_SCOPES).filter(([method]) =>
     method.startsWith("scheduledTasks."),

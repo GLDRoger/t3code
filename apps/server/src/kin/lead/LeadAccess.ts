@@ -1,4 +1,5 @@
 import type { KinAgentId, KinChatId, KinOrgId, KinPersonId } from "@t3tools/contracts";
+import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -28,9 +29,20 @@ export const allowed = Effect.fn("KinLeadAccess.allowed")(function* (pair: Pair)
 });
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** Lead turns one teammate may ask for in any 24 hours, by message, tap or task, unless configured. */
+const DEFAULT_TEAMMATE_DAILY_TURNS = 50;
+export const dailyTurns = Config.Int("KIN_TEAMMATE_DAILY_TURNS").pipe(
+  Config.withDefault(DEFAULT_TEAMMATE_DAILY_TURNS),
+  Effect.map((value) => Math.max(0, value)),
+  Effect.catch((cause) =>
+    Effect.logWarning("KIN_TEAMMATE_DAILY_TURNS is not a number; using the default", {
+      cause,
+    }).pipe(Effect.as(DEFAULT_TEAMMATE_DAILY_TURNS)),
+  ),
+);
 
 /**
- * The lead turns this person's messages and taps have asked for in the last 24 hours, in every
+ * The lead turns this person's messages, taps and tasks have asked for in the last 24 hours, in every
  * chat and of every lead they do not own: messages answered in one turn count once, dropped ones
  * not at all.
  * `oldestAt` is when the earliest of them was sent, so the window is known to move on.
@@ -46,14 +58,14 @@ export const recentTurns = Effect.fn("KinLeadAccess.recentTurns")(function* (inp
       MIN(e.received_at) AS "oldestAt"
     FROM kin_events e
     JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
-    WHERE e.org_id = ${input.orgId} AND e.tag IN ('chat.message', 'widget.action')
+    WHERE e.org_id = ${input.orgId} AND e.tag IN ('chat.message', 'widget.action', 'record.changed')
       AND e.state <> 'expired' AND e.received_at > ${input.now - DAY_MS}
       AND json_extract(e.json, '$.provenance.personId') = ${input.personId}
       AND a.owner_person_id <> ${input.personId}`;
   return { turns: row?.turns ?? 0, oldestAt: row?.oldestAt ?? null };
 });
 
-/** A person's messages still waiting for the lead in their direct chat never run. */
+/** A person's messages and tasks still waiting for the lead in their direct chat never run. */
 export const dropQueued = Effect.fn("KinLeadAccess.dropQueued")(function* (
   pair: Pick<Pair, "orgId" | "agentId">,
   chatId: KinChatId,
@@ -61,7 +73,7 @@ export const dropQueued = Effect.fn("KinLeadAccess.dropQueued")(function* (
   const sql = yield* SqlClient.SqlClient;
   const dropped = yield* sql`UPDATE kin_events SET state = 'expired'
     WHERE org_id = ${pair.orgId} AND agent_id = ${pair.agentId} AND state = 'queued'
-      AND tag IN ('chat.message', 'widget.action', 'chat.reaction')
+      AND tag IN ('chat.message', 'widget.action', 'chat.reaction', 'record.changed')
       AND json_extract(json, '$.chatId') = ${chatId}
     RETURNING event_id`;
   return dropped.length;
