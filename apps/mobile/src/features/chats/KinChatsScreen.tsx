@@ -151,7 +151,8 @@ function KinJoinedName(props: {
   readonly personId: string;
 }) {
   const navigation = useNavigation();
-  const joined = useAtomValue(kinJoinedNameAtom);
+  // Only on the computer just joined: elsewhere this person may go by another name.
+  const joined = useAtomValue(kinJoinedNameAtom) === props.environmentId;
   const setJoined = useAtomSet(kinJoinedNameAtom);
   const { held } = useKinProfiles(joined ? props.environmentId : null, props.orgId);
   const mine = held?.profiles.find((profile) => profile.personId === props.personId) ?? null;
@@ -162,11 +163,11 @@ function KinJoinedName(props: {
         icon="person.crop.circle"
         message={`You joined as ${mine.displayName}. Is that your name?`}
         dismissLabel="Yes"
-        onDismiss={() => setJoined(false)}
+        onDismiss={() => setJoined(null)}
         action={{
           label: "Change it",
           onPress: () => {
-            setJoined(false);
+            setJoined(null);
             navigation.navigate("KinProfileEdit", {
               environmentId: props.environmentId,
               orgId: props.orgId,
