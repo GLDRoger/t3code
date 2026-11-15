@@ -26,6 +26,7 @@ import {
   kinStatementUndoLabel,
   kinStatementSuggestionsLeft,
   kinStatementTakenBy,
+  kinStatementSharedNote,
   kinStatementTargetLine,
   kinStatementTicked,
   kinStatementTotal,
@@ -470,15 +471,21 @@ function ChooseRows(props: RowsProps) {
           const other = kinStatementTakenBy(rows.choose, selection, one.row, option);
           return other === undefined ? [] : [{ option, other }];
         });
+        const shared = kinStatementSharedNote(one.options);
         return (
           <View key={one.row} className="gap-1.5 py-1">
             <RowLine row={one} />
+            {shared === null ? null : (
+              <Text textRole="caption" className="text-foreground-muted">
+                {shared}
+              </Text>
+            )}
             <View className="flex-row flex-wrap gap-1.5">
               {one.options.map((option) => (
                 <Chip
                   key={option.option}
                   size="small"
-                  label={kinStatementTargetLine(option)}
+                  label={kinStatementTargetLine(option, shared)}
                   selected={picked === option.option}
                   disabled={!props.editable || taken.some((one) => one.option === option)}
                   onPress={() =>

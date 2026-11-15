@@ -26,9 +26,11 @@ import {
   kinStatementRowNote,
   kinStatementSections,
   kinStatementSelectionOf,
+  kinStatementSharedNote,
   kinStatementStatusLines,
   kinStatementSuggestionsLeft,
   kinStatementTakenBy,
+  kinStatementTargetLine,
   kinStatementTicked,
   type KinStatementReviewView,
 } from "./kinStatementPresentation.ts";
@@ -201,6 +203,20 @@ describe("statement review card", () => {
     expect(kinStatementTakenBy(twice, selection, 7, twice[1]!.options[0]!)?.row).toBe(2);
     expect(kinStatementTakenBy(twice, selection, 7, twice[1]!.options[1]!)).toBeUndefined();
     expect(kinStatementTakenBy(twice, selection, 2, twice[0]!.options[0]!)).toBeUndefined();
+  });
+
+  it("says once what every option of a row shares, and leaves it off each", () => {
+    const open = "An open invoice: pick it if this money is its payment";
+    const offers = [
+      { ...target(0, "INV-3"), note: open },
+      { ...target(1, "INV-4"), note: open },
+    ];
+    const shared = kinStatementSharedNote(offers);
+    expect(shared).toBe(open);
+    expect(kinStatementTargetLine(offers[0]!, shared)).toBe("INV-3 · Retainer");
+    const mixed = [offers[0]!, { ...target(1, "INV-4"), note: "Part payment" }];
+    expect(kinStatementSharedNote(mixed)).toBeNull();
+    expect(kinStatementTargetLine(mixed[1]!, null)).toBe("INV-4 · Retainer, part payment");
   });
 
   it("never offers money in as a new expense", () => {

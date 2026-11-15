@@ -8,6 +8,7 @@ import {
   type KinOrgId,
   type KinSendCard,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -347,8 +348,43 @@ export const prepareMail = Effect.fn("KinSending.prepareMail")(function* (input:
   } satisfies Prepared;
 });
 
-const when = (prepared: Extract<Prepared, { _tag: "event" }>) =>
-  `When: ${prepared.start} to ${prepared.end}${prepared.timeZone === null ? "" : ` (${prepared.timeZone})`}`;
+const OFFSET = /(?:z|[+-]\d{2}:?\d{2})$/i;
+/**
+ * An event's times as a person reads them: in `zone` when the agent gave an offset; a wall-clock
+ * time without one stands as written in the event's own zone, which then is named.
+ */
+const plainWhen = (
+  prepared: Pick<Extract<Prepared, { _tag: "event" }>, "start" | "end" | "timeZone">,
+  zone: string,
+) => {
+  const read = (at: string) => {
+    const offset = OFFSET.test(at);
+    const parsed = DateTime.make(offset ? at : `${at}Z`);
+    return Option.isNone(parsed)
+      ? null
+      : { ms: DateTime.toEpochMillis(parsed.value), timeZone: offset ? zone : "UTC", offset };
+  };
+  const start = read(prepared.start);
+  const end = read(prepared.end);
+  if (start === null || end === null)
+    return `When: ${prepared.start} to ${prepared.end}${prepared.timeZone === null ? "" : ` (${prepared.timeZone})`}`;
+  const day = (at: { ms: number; timeZone: string }) =>
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: at.timeZone,
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+    }).format(at.ms);
+  const time = (at: { ms: number; timeZone: string }) =>
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: at.timeZone,
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(at.ms);
+  const shownZone = start.offset ? null : prepared.timeZone;
+  const ending = day(end) === day(start) ? time(end) : `${day(end)}, ${time(end)}`;
+  return `When: ${day(start)}, ${time(start)} to ${ending}${shownZone === null ? "" : ` (${shownZone})`}`;
+};
 
 /** One From the owner may switch a send card to; `id` names it in the switch. */
 export type FromChoice = NonNullable<KinSendCard["fromChoices"]>[number];
@@ -365,6 +401,8 @@ export const sendCard = (input: {
   readonly tool: string;
   readonly prepared: Prepared;
   readonly choices?: ReadonlyArray<FromChoice>;
+  /** The owner's time zone, which an event's times are shown in. */
+  readonly zone: string;
 }): { readonly question: string; readonly detail: string; readonly send: KinSendCard } => {
   const { prepared } = input;
   if (prepared._tag === "email") {
@@ -410,7 +448,7 @@ export const sendCard = (input: {
   }
   if (prepared._tag === "event") {
     const body = [
-      when(prepared),
+      plainWhen(prepared, input.zone),
       ...(prepared.location === null ? [] : [`Where: ${prepared.location}`]),
       ...(prepared.notes === null ? [] : ["", prepared.notes]),
     ].join("\n");
@@ -419,7 +457,9 @@ export const sendCard = (input: {
         prepared.eventId === null
           ? "Add this event and send the invitations?"
           : "Change this event and tell the guests?",
-      detail: [`Event: ${prepared.title}`, when(prepared)].join("\n").slice(0, 2000),
+      detail: [`Event: ${prepared.title}`, plainWhen(prepared, input.zone)]
+        .join("\n")
+        .slice(0, 2000),
       send: {
         service: input.mail?.calendarService ?? input.service,
         action: "event",

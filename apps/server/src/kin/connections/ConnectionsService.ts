@@ -121,6 +121,7 @@ import {
   sendMail,
   sentToClient,
 } from "./Sending.ts";
+import { ownerZone } from "../work/recordRows.ts";
 
 export const SHARED_CONNECTIONS =
   "I don't use the company's connected services in chats with other people.";
@@ -1910,6 +1911,7 @@ const make = Effect.gen(function* () {
     if (chat === undefined)
       return yield* refuse(turn, entry, fail("not_allowed", "This turn has no chat to ask in."));
     const card = sendCard({
+      zone: yield* ownerZone(turn.orgId).pipe(provideSql),
       service: row.label,
       ...(provider === undefined ? {} : { mail: provider }),
       account: row.accountLabel,
@@ -2037,6 +2039,7 @@ const make = Effect.gen(function* () {
           WHERE org_id = ${input.orgId} AND ask_id = ${ask.askId} AND state = 'open'`;
         const mail = mailProviderOf(chosen.row);
         const card = sendCard({
+          zone: yield* ownerZone(input.orgId).pipe(provideSql),
           service: chosen.row.label,
           ...(mail === undefined ? {} : { mail }),
           account: chosen.row.accountLabel,
@@ -2166,6 +2169,7 @@ const make = Effect.gen(function* () {
     const connection = yield* connectionById(orgId, stale.row.connectionId).pipe(provideSql);
     const mail = connection === undefined ? undefined : mailProviderOf(connection);
     const card = sendCard({
+      zone: yield* ownerZone(orgId).pipe(provideSql),
       service: stale.label,
       ...(mail === undefined ? {} : { mail }),
       account: stale.account,
