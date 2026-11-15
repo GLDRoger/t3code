@@ -315,6 +315,20 @@ describe("rows", () => {
           author: { _tag: "system" },
           widgetId: "memory-changes:w1" as KinMessage["widgetId"],
         }),
+        agentMessage(6, {
+          kind: "system",
+          author: { _tag: "system" },
+          body: "Screenshots from Test PR 7",
+          attachments: [
+            {
+              type: "image",
+              id: "kin-chat-shot-png",
+              name: "01-home.png",
+              mimeType: "image/png",
+              sizeBytes: 11,
+            },
+          ],
+        }),
       ],
       viewer,
       new Set(),
@@ -324,12 +338,18 @@ describe("rows", () => {
       false,
       true,
       true,
+      false,
     ]);
     expect(rows[1]!.type).toBe("system");
     // A host card is a system message with a widget; it draws as its card, not a line.
     expect(rows[3]).toMatchObject({
       type: "message",
       message: { widgetId: "memory-changes:w1", body: "" },
+    });
+    // A worker's screenshots draw as a message with its words and the images.
+    expect(rows[4]).toMatchObject({
+      type: "message",
+      message: { body: "Screenshots from Test PR 7", attachments: [{ name: "01-home.png" }] },
     });
   });
 

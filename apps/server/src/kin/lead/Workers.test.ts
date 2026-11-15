@@ -99,6 +99,8 @@ import * as Retirement from "./Retirement.ts";
 import { runKinMigrations } from "../persistence/KinMigrations.ts";
 import { KinPullRequestCare } from "../github/PullRequestCare.ts";
 import { GitVcsDriver } from "../../vcs/GitVcsDriver.ts";
+import { PreviewBrowser } from "../../preview/PreviewBrowser.ts";
+import { KinDocRenderer } from "../gendocs/render.ts";
 
 const leadThread = ThreadId.make("lead-thread");
 const leadId = KinAgentId.make("lead");
@@ -737,7 +739,7 @@ const fakeLocal = () => {
       }),
     getThreadProjection: (threadId: ThreadId) =>
       Effect.succeed({
-        thread: { worktreePath: "/home/user/.t3/worktrees/app/kin-worker" },
+        thread: { worktreePath: worktree.path },
         runs: runs.get(threadId) ?? [],
         messages: (runs.get(threadId) ?? []).flatMap((run) =>
           run.reply === undefined ? [] : [{ role: "assistant", runId: run.id, text: run.reply }],
@@ -766,6 +768,8 @@ const fakeLocal = () => {
         return { type: "interrupt_requested", run: last, dispatch: {} } as never;
       }),
   };
+  /** Where the projection says the worker's worktree is; a test may point it at a real folder. */
+  const worktree = { path: "/home/user/.t3/worktrees/app/kin-worker" };
   /** Ends the thread's latest run here, as the worker's last turn or the owner's stop would. */
   const finish = (
     threadId: ThreadId,
@@ -780,7 +784,18 @@ const fakeLocal = () => {
       if (error !== undefined) last.error = error;
       yield* signal();
     });
-  return { launches, runs, dispatched, interrupted, interrupts, hooks, launcher, threads, finish };
+  return {
+    launches,
+    runs,
+    dispatched,
+    interrupted,
+    interrupts,
+    hooks,
+    launcher,
+    threads,
+    finish,
+    worktree,
+  };
 };
 type FakeLocal = ReturnType<typeof fakeLocal>;
 
@@ -863,6 +878,14 @@ const run = <A, E>(
           Layer.mock(GitVcsDriver)({
             fetchRefCommit: (input) =>
               Effect.succeed({ commitSha: `fetched:${input.ref}` } as never),
+          }),
+          Layer.mock(PreviewBrowser)({
+            executable: Effect.succeed("/invented/chrome-headless-shell"),
+          }),
+          // Stores a worker's screenshot under an id from its name, as the real store does by hash.
+          Layer.mock(KinDocRenderer)({
+            store: (_orgId, _jobId, file) =>
+              Effect.succeed(`kin-chat-${file.name.replace(/[^a-z0-9]/gi, "-")}`),
           }),
           // Document jobs have their own tests (`gendocs/`); these workers never make one.
           Layer.mock(Workspace.KinWorkspace)({}),
@@ -3233,9 +3256,80 @@ it.effect(
           ),
           { reason: "not_allowed" },
         );
-        assert.lengthOf(local.launches, 2);
+        // A UI test is a review that drives the app in T3's own Chrome, and only of a PR.
+        yield* workers.delegate(scope, { ...review, title: "Test PR 7's screens", uiTest: true });
+        const uiBrief = local.launches.at(-1)!.initialMessage!.text;
+        assert.include(uiBrief, `executablePath: "/invented/chrome-headless-shell"`);
+        assert.include(uiBrief, "in one command");
+        assert.notInclude(uiBrief, "Review it:");
+        assert.include(
+          yield* Effect.flip(
+            workers.delegate(scope, { ...teamDelegate, title: "Test screens", uiTest: true }),
+          ),
+          { reason: "not_allowed" },
+        );
+        assert.lengthOf(local.launches, 3);
       }),
     ),
+);
+
+it.effect("a UI test's screenshots reach its chat as one Kin message with the images", () =>
+  run(({ ctx, remote, local, workers, tracker }) =>
+    Effect.gen(function* () {
+      yield* goLocal(ctx, remote);
+      const fs = yield* FileSystem.FileSystem;
+      const worktree = yield* fs.makeTempDirectoryScoped({ prefix: "kin-ui-test-" });
+      yield* fs.makeDirectory(`${worktree}/out`);
+      const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+      yield* fs.writeFile(`${worktree}/out/01-home.png`, png);
+      local.worktree.path = worktree;
+      const { workerId } = yield* workers.delegate(scope, {
+        ...teamDelegate,
+        kind: "review",
+        title: "Test PR 7's screens",
+        pullRequest: 7,
+        uiTest: true,
+      });
+      const tested = {
+        ...report,
+        summary: "Sign-in works; the settings page crashes.",
+        evidence: [
+          { kind: "screenshot" as const, ref: "out/01-home.png", note: "Home after sign-in" },
+          { kind: "screenshot" as const, ref: "out/never-saved.png" },
+        ],
+      };
+      yield* local.finish(
+        localThreadId(workerId),
+        "completed",
+        `Done.\n\`\`\`kin-report\n${JSON.stringify(tested)}\n\`\`\``,
+      );
+      yield* settled(tracker, ctx.orgId, workerId);
+      const posted = yield* ctx.sql<{ body: string; attachments: string; author: string }>`
+        SELECT body, attachments_json AS attachments, author_kind AS author FROM kin_messages
+        WHERE org_id = ${ctx.orgId} AND message_id LIKE 'kin-shots:%' ORDER BY message_id`;
+      assert.lengthOf(posted, 1);
+      assert.strictEqual(posted[0]!.body, "Screenshots from Test PR 7's screens");
+      assert.deepStrictEqual(JSON.parse(posted[0]!.attachments), [
+        {
+          type: "image",
+          id: "kin-chat-01-home-png",
+          name: "01-home.png",
+          mimeType: "image/png",
+          sizeBytes: png.length,
+        },
+      ]);
+      // Readable through its message, as a member's upload is; the lead still gets the report.
+      assert.lengthOf(
+        yield* ctx.sql`SELECT 1 FROM kin_message_attachments
+          WHERE org_id = ${ctx.orgId} AND attachment_id = 'kin-chat-01-home-png'`,
+        1,
+      );
+      assert.strictEqual(
+        (yield* reports(ctx.sql, ctx.orgId))[0]!.event.report.summary,
+        tested.summary,
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  ),
 );
 
 it.effect.each(["failed", "interrupted", "cancelled"] as const)(
