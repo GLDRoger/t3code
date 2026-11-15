@@ -41,13 +41,15 @@ import { useKinDocsList, useKinDocsLive, useKinDocsUnder, useKinSearch } from ".
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
 
 const ROW =
-  "flex w-full items-start gap-3 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset";
+  "flex w-full items-start gap-3 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset aria-[current=true]:bg-accent";
 
 /** A doc as a row that opens it: its name, then when it last changed, by whom and how. */
 function KinDocRowButton(props: {
   readonly row: KinDocRowView;
   /** Under its own client or project the row needn't name them again. */
   readonly bare?: boolean;
+  /** The one showing beside the list. */
+  readonly selected?: boolean;
   readonly onOpen: () => void;
 }) {
   const { row } = props;
@@ -55,6 +57,7 @@ function KinDocRowButton(props: {
     <button
       type="button"
       aria-label={row.accessibilityLabel}
+      aria-current={props.selected === true ? true : undefined}
       onClick={props.onOpen}
       className={ROW}
     >
@@ -184,6 +187,8 @@ export function KinDocsList(
     readonly lists: ReadonlyArray<KinListDefinition> | null;
     readonly onOpenList: (list: KinListId) => void;
     readonly onAskList: (() => void) | null;
+    /** The doc or list showing beside the list, marked in it. */
+    readonly selected?: string | null;
   },
 ) {
   const { names } = props.directory;
@@ -381,7 +386,12 @@ export function KinDocsList(
           </div>
         ) : item.type === "list" ? (
           <div className="mx-auto w-full max-w-3xl border-b border-border/60 px-4 py-1">
-            <button type="button" onClick={() => props.onOpenList(item.row.list)} className={ROW}>
+            <button
+              type="button"
+              aria-current={props.selected === item.row.list ? true : undefined}
+              onClick={() => props.onOpenList(item.row.list)}
+              className={ROW}
+            >
               <TableIcon aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
               <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                 <span className="truncate text-sm text-foreground">{item.row.name}</span>
@@ -393,6 +403,7 @@ export function KinDocsList(
           <div className="mx-auto w-full max-w-3xl border-b border-border/60 px-4 py-1">
             <KinDocRowButton
               row={kinDocRow(item.row, names, now)}
+              selected={props.selected === item.row.key}
               onOpen={() => props.onOpen(item.row.key)}
             />
           </div>

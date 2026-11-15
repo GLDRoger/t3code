@@ -26,6 +26,7 @@ export function KinDock(props: KinDockProps) {
       <SidebarTabBar
         compact={compact}
         reserveComposeSpace={false}
+        showsLabels
         tabs={props.tabs}
         selectedTab={props.selectedTab}
         onSelect={props.onSelect}
