@@ -40,6 +40,12 @@ it("treats only sign-in, account access and unknown model failures as ones no re
     "model",
   );
   expect(said("api_error_400", "API Error: 400 prompt is too long")).toBeNull();
+  expect(
+    said(
+      "",
+      "The provider could not start this turn: the provider program exited before the turn started. Retry the turn.",
+    ),
+  ).toBe("program");
   expect(of("api_error_529")).toBeNull();
   expect(of(null)).toBeNull();
 });

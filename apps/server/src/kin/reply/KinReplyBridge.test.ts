@@ -864,6 +864,36 @@ it.effect("keeps a run that couldn't sign in out of the chat, and says so once p
       (yield* posted).at(-1)?.body,
       "Ada couldn't start: its model account doesn't offer the model it's set to use. Choose another model for it.",
     );
+    yield* chats.send(owner, { chatId, body: "Hello?", clientMessageId: "program" });
+    yield* bridge.failed({
+      orgId: owner.orgId,
+      wakeupId: yield* retry(),
+      lane,
+      outcome: "program",
+    });
+    assert.strictEqual(
+      (yield* posted).at(-1)?.body,
+      "Ada couldn't start: the server couldn't run its model program. Check the provider's binary path in Settings.",
+    );
+    // A retry says so once; the next retry before anyone writes adds nothing.
+    yield* chats.send(owner, { chatId, body: "Again?", clientMessageId: "retry" });
+    const before = (yield* posted).length;
+    yield* bridge.failed({
+      orgId: owner.orgId,
+      wakeupId: yield* retry(),
+      lane,
+      outcome: "retrying",
+    });
+    yield* bridge.failed({
+      orgId: owner.orgId,
+      wakeupId: yield* retry(),
+      lane,
+      outcome: "retrying",
+    });
+    assert.deepStrictEqual(
+      (yield* posted).slice(before).map((row) => row.body),
+      ["Ada couldn't start. Trying again in a moment."],
+    );
   }).pipe(Effect.provide(layer)),
 );
 
