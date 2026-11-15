@@ -100,6 +100,8 @@ const tableNames = [
   "kin_ping_ledger",
   "kin_profile_changes",
   "kin_pulse_facts",
+  "kin_pulse_nudges",
+  "kin_pulse_seeds",
   "kin_push_devices",
   "kin_reaction_wakes",
   "kin_reactions",

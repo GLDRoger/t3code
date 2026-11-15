@@ -74,3 +74,35 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
     ...(gone.length === 0 ? {} : { wokeForButHandledOrNoLongerTrue: gone }),
   };
 });
+
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/** This agent's check-ins, one line each, so the owner can move or drop one in plain words. */
+export const checkInIndex = Effect.fn("KinLeadPrompt.checkIns")(function* (
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    scheduleId: string;
+    title: string;
+    looseAt: string | null;
+    timeOfDay: string | null;
+    weekdays: string | null;
+    enabled: number;
+  }>`SELECT s.schedule_id AS "scheduleId", t.title, s.loose_at AS "looseAt",
+      json_extract(t.schedule_json, '$.timeOfDay') AS "timeOfDay",
+      json_extract(t.schedule_json, '$.weekdays') AS weekdays, t.enabled
+    FROM kin_schedules s JOIN scheduled_tasks t ON t.task_id = s.task_id
+    WHERE s.org_id = ${orgId} AND s.agent_id = ${agentId} AND s.check_in = 1
+      AND s.deleted_at IS NULL
+    ORDER BY json_extract(t.schedule_json, '$.timeOfDay'), s.schedule_id`;
+  return rows.map((row) => {
+    const days: unknown = row.weekdays === null ? null : JSON.parse(row.weekdays);
+    const named = Array.isArray(days) && days.length > 0 && days.length < 7
+      ? ` ${days.map((day) => DAY_NAMES[Number(day)] ?? "?").join(", ")}`
+      : " every day";
+    const time = row.looseAt === null ? `at ${row.timeOfDay ?? "?"}` : `around ${row.looseAt}`;
+    return `${row.scheduleId} ${row.title}: ${time}${named}${row.enabled === 1 ? "" : " (paused)"}`;
+  });
+});

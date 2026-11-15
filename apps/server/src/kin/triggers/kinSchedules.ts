@@ -36,6 +36,16 @@ const commandIdOf = (orgId: KinOrgId, scheduleId: string) =>
 export const scheduleTaskId = (orgId: KinOrgId, scheduleId: string) =>
   ScheduledTaskId.make(`scheduled-task:${commandIdOf(orgId, scheduleId)}`);
 
+/** "Around 15:30" is any minute from 15:25 to 15:50: the native task fires at the start. */
+export const LOOSE_BEFORE_MINUTES = 5;
+export const LOOSE_AFTER_MINUTES = 20;
+/** The native task's time for a loose one: five minutes earlier, never before midnight. */
+export const windowStart = (at: string) => {
+  const [hours, minutes] = at.split(":").map(Number);
+  const start = Math.max(0, hours! * 60 + minutes! - LOOSE_BEFORE_MINUTES);
+  return `${String(Math.floor(start / 60)).padStart(2, "0")}:${String(start % 60).padStart(2, "0")}`;
+};
+
 /** The zone native `fixed_time` schedules are read in: the host's, not the owner's. */
 export const hostTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 
@@ -61,13 +71,17 @@ export interface KinSchedule {
   readonly pendingEnabled: number | null;
   readonly runNowAt: number | null;
   readonly deletedAt: number | null;
+  /** The time the owner said for a loose schedule ("around 15:30"); the native task runs earlier. */
+  readonly looseAt: string | null;
+  /** Its runs are pulse check-ins, not its prompt run as a task. */
+  readonly checkIn: number;
 }
 
 const COLUMNS = `task_id AS "taskId", org_id AS "orgId", schedule_id AS "scheduleId",
   agent_id AS "agentId", chat_id AS "chatId", source_event AS "sourceEvent", said_by AS "saidBy",
   audience, content_sha256 AS "contentSha256", inbox_thread_id AS "inboxThreadId",
   asked_sha256 AS "askedSha256", pending_enabled AS "pendingEnabled", run_now_at AS "runNowAt",
-  deleted_at AS "deletedAt"`;
+  deleted_at AS "deletedAt", loose_at AS "looseAt", check_in AS "checkIn"`;
 
 export const readSchedule = (sql: SqlClient.SqlClient, orgId: KinOrgId, scheduleId: string) =>
   sql<KinSchedule>`SELECT ${sql.literal(COLUMNS)} FROM kin_schedules
@@ -101,11 +115,15 @@ export const readNativeTask = (sql: SqlClient.SqlClient, taskId: string) =>
     FROM scheduled_tasks WHERE task_id = ${taskId}`.pipe(Effect.map((rows) => rows[0]));
 
 /** The native schedule as the card shows it; undefined for a shape Kin never saves. */
-export const everyOf = (task: NativeTask): MemoryItemEvery | undefined => {
+export const everyOf = (
+  task: NativeTask,
+  looseAt: string | null = null,
+): MemoryItemEvery | undefined => {
   if (task.scheduleType !== "fixed_time" || task.timeOfDay === null) return undefined;
   const days: unknown = task.weekdays === null ? null : JSON.parse(task.weekdays);
   return {
-    at: task.timeOfDay,
+    // Changed on T3's screen since, it is exact again at the time shown there.
+    at: looseAt !== null && windowStart(looseAt) === task.timeOfDay ? looseAt : task.timeOfDay,
     days: Array.isArray(days) && days.length > 0 ? days.map(Number) : [0, 1, 2, 3, 4, 5, 6],
   };
 };
@@ -126,6 +144,9 @@ export interface SaveInput {
   readonly title: string;
   readonly prompt: string;
   readonly every: MemoryItemEvery;
+  /** Fires once somewhere around `every.at`, a different minute each day. */
+  readonly around?: boolean | undefined;
+  readonly checkIn?: boolean | undefined;
   readonly now: number;
 }
 
@@ -206,7 +227,11 @@ const make = Effect.gen(function* () {
       prompt: input.prompt,
       // A change keeps a pause set in the Scheduled tasks screen.
       enabled: existing === undefined ? true : existing.enabled === 1,
-      schedule: { type: "fixed_time", timeOfDay: input.every.at, weekdays: input.every.days },
+      schedule: {
+        type: "fixed_time",
+        timeOfDay: input.around === true ? windowStart(input.every.at) : input.every.at,
+        weekdays: input.every.days,
+      },
       projectId,
       threadId: null,
       threadMode: "new_thread",
@@ -221,11 +246,14 @@ const make = Effect.gen(function* () {
     yield* tasks.upsert(upsert).pipe(Effect.catch(failed("The schedule could not be saved.")));
     // After the task: a crash between leaves a task with no row, which the sink refuses.
     yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
-        source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at)
+        source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at,
+        loose_at, check_in)
       VALUES (${taskId}, ${input.orgId}, ${input.scheduleId}, ${input.agentId}, ${input.chatId},
         ${input.sourceEvent}, ${input.saidBy}, 'owner_only', ${hash}, ${inbox}, ${input.now},
-        ${input.now})
+        ${input.now}, ${input.around === true ? input.every.at : null},
+        ${input.checkIn === true ? 1 : 0})
       ON CONFLICT (task_id) DO UPDATE SET chat_id = excluded.chat_id,
+        loose_at = excluded.loose_at, check_in = excluded.check_in,
         source_event = excluded.source_event, said_by = excluded.said_by,
         audience = excluded.audience, content_sha256 = excluded.content_sha256,
         inbox_thread_id = excluded.inbox_thread_id, asked_sha256 = NULL,

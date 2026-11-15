@@ -39,6 +39,16 @@ export const GOT_IT_MS = 3 * DAY_MS;
 const TICK_EVERY_MS = 15 * 60_000;
 const READ_CAP = 50;
 const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
+/** Facts that ask for judgement (money owed, a client waiting, a plan slipping) run on the main model. */
+const JUDGEMENT_SENSES: ReadonlySet<string> = new Set([
+  "task_late",
+  "theirs_late",
+  "invoice_overdue",
+  "quote_unanswered",
+  "budget_over",
+]);
+export const needsJudgement = (facts: ReadonlyArray<Pick<KinPulseFact, "sense">>) =>
+  facts.some((fact) => JUDGEMENT_SENSES.has(fact.sense));
 const encodeScope = Schema.encodeEffect(Schema.fromJsonString(KinPulseFact.fields.scope));
 
 /**
@@ -254,6 +264,7 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
               dedupeKey: fact.key,
               provenance: { _tag: "system" },
               factKeys: [fact.key],
+              ...(needsJudgement([fact]) ? { strong: true } : {}),
             }),
           )
           .pipe(

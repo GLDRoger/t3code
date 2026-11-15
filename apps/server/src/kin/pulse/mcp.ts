@@ -21,11 +21,15 @@ import { McpSchema, Tool, Toolkit } from "effect/ai";
 import { McpInvocationContext } from "../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
 import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { KinServer } from "../KinServer.ts";
+import { agentServices } from "../mcp/KinChatToolkit.ts";
 import { SHARED_REFUSAL, effectiveAudience, turnPeople } from "../lead/Audience.ts";
 import { type Lead, leadTool } from "../work/leadWork.ts";
 import { ownerZone, startOfDay } from "../work/recordRows.ts";
 import * as KinPulse from "./KinPulse.ts";
+import { nudge } from "./nudge.ts";
 
 export const PulseReadInput = Schema.Struct({
   project: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))).annotate({
@@ -65,6 +69,27 @@ export const PulseHandleInput = Schema.Struct({
   note: Schema.optional(Schema.String.check(Schema.isMaxLength(500))).annotate({
     description: "One line on what is being done, for whoever reads it next.",
   }),
+});
+
+export const PulseNudgeInput = Schema.Struct({
+  person: TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
+    description: "The teammate, by name as people_read gives it.",
+  }),
+  factKey: TrimmedNonEmptyString.check(Schema.isMaxLength(300)).annotate({
+    description: "The fact it is about, exactly as the Pulse section or pulse_read gave it.",
+  }),
+  text: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(280),
+    Schema.makeFilter((value) => !value.includes("\n"), { expected: "one line" }),
+  ).annotate({
+    description:
+      'One line, with the concrete consequence: "W-12 was due Friday; the Lumen demo on Tuesday waits on it. Still on for Monday?"',
+  }),
+});
+export const PulseNudgeResult = Schema.Struct({
+  person: Schema.String,
+  day: Schema.String,
+  note: Schema.String,
 });
 
 /** The owner in their own turn; in a turn others read, the people behind it, or a refusal. */
@@ -109,7 +134,50 @@ const runHandle = Effect.fnUntraced(function* (lead: Lead, input: typeof PulseHa
   });
 });
 
+const runNudge = Effect.fnUntraced(function* (lead: Lead, input: typeof PulseNudgeInput.Type) {
+  if ((yield* viewerOf(lead))._tag !== "owner")
+    return yield* new KinChatError({ reason: "not_allowed", message: SHARED_REFUSAL });
+  const kin = yield* KinServer;
+  if (Option.isNone(kin.services))
+    return yield* new KinChatError({ reason: "disabled", message: "Kin is not running here." });
+  const chat = Context.get(kin.services.value, KinChatService);
+  const { agent, post } = yield* agentServices;
+  const sent = yield* nudge({
+    orgId: lead.orgId,
+    agentId: lead.agentId,
+    at: yield* Clock.currentTimeMillis,
+    person: input.person,
+    factKey: input.factKey,
+    text: input.text,
+    chatFor: (personId) =>
+      chat.createDirect({ _tag: "person", orgId: lead.orgId, personId }, {
+        orgId: lead.orgId,
+        agentId: lead.agentId,
+      }).pipe(
+        Effect.map((direct) => direct.chatId),
+        Effect.mapError(
+          () =>
+            new KinChatError({
+              reason: "not_allowed",
+              message: `${input.person} can't message you, so you can't nudge them. Ask the owner, or the team agent.`,
+            }),
+        ),
+      ),
+    post: (chatId, clientMessageId) =>
+      post(agent, { chatId, body: input.text, intent: "question", clientMessageId }).pipe(
+        Effect.asVoid,
+        Effect.mapError(failure),
+      ),
+  });
+  return {
+    person: sent.person,
+    day: sent.day,
+    note: `Sent in ${sent.person}'s chat with you. Their answer arrives there; if none comes, replan or tell the owner rather than nudging again.`,
+  };
+});
+
 const read = leadTool("KinPulseTools.read", runRead);
+const nudgeTool = leadTool("KinPulseTools.nudge", runNudge);
 const handle = leadTool("KinPulseTools.handle", runHandle);
 
 // tools/list runs this before handler services are provided; the Kin MCP endpoint provides `KinIdentity`.
@@ -127,7 +195,13 @@ const enabled = () => {
 const shared = {
   failure: Schema.Union([KinChatError, OrchestratorMcpFailure]),
   failureMode: "return" as const,
-  dependencies: [McpInvocationContext, ThreadManagementService, KinIdentity, SqlClient.SqlClient],
+  dependencies: [
+    McpInvocationContext,
+    ThreadManagementService,
+    KinIdentity,
+    KinServer,
+    SqlClient.SqlClient,
+  ],
 };
 
 export const KinPulseToolkit = Toolkit.make(
@@ -144,6 +218,13 @@ export const KinPulseToolkit = Toolkit.make(
       "Mark a pulse fact as in hand (got_it, optionally until a date) or not a problem, so it stops coming back; undo takes that back. Use it once you have acted on a fact or decided it needs nothing.",
     parameters: PulseHandleInput,
     success: KinPulseFact,
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("pulse_nudge", {
+    ...shared,
+    description:
+      "Nudge a teammate about one of their open Work facts: Kin posts your one line in their own chat with you. Only with a concrete consequence (a date missed, someone blocked, a client waiting). At most one a day per person, only in their working hours, and refused while your last nudge to them is unanswered: then replan, take it over or tell the owner. Owner-only turns.",
+    parameters: PulseNudgeInput,
+    success: PulseNudgeResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
 );
 
@@ -162,6 +243,11 @@ export const handlers = McpToolAccess.toLayer(KinPulseToolkit, {
   pulse_handle: McpToolAccess.actsAsCaller(
     Effect.fn("KinPulseToolkit.handle")(function* (input) {
       return yield* handle(yield* McpInvocationContext, input);
+    }, Effect.mapError(failure)),
+  ),
+  pulse_nudge: McpToolAccess.actsAsCaller(
+    Effect.fn("KinPulseToolkit.nudge")(function* (input) {
+      return yield* nudgeTool(yield* McpInvocationContext, input);
     }, Effect.mapError(failure)),
   ),
 });

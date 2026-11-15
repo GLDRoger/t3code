@@ -132,6 +132,14 @@ export const ScheduleInput = Schema.Struct({
   chatId: KinChatId,
   sourceEventId: TrimmedNonEmptyString,
   replaces: Schema.optional(KinMemoryItemId),
+  around: Schema.optional(Schema.Boolean).annotate({
+    description:
+      'Loose: fires once somewhere from 5 minutes before to 20 after at, a different minute each day. For "around", "-ish" or a check-in; a plain time stays exact. A replacement keeps what it replaces unless set.',
+  }),
+  checkIn: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "A check-in: each run wakes you with what needs attention and what is new on connected sources, and is skipped when nothing is. A replacement keeps what it replaces unless set.",
+  }),
 });
 export const CancelInput = Schema.Struct({
   itemId: KinMemoryItemId,
@@ -1159,7 +1167,11 @@ const make = Effect.gen(function* () {
             );
           if (input.replaces === id) return yield* invalid("`replaces` names this same item.");
           // The native task is the record; its prompt is the instruction, its row the authority.
-          const save = (scheduleId: KinMemoryItemId, existing: boolean) =>
+          const save = (
+            scheduleId: KinMemoryItemId,
+            existing: boolean,
+            kept?: KinSchedules.KinSchedule,
+          ) =>
             Clock.currentTimeMillis.pipe(
               Effect.flatMap((now) =>
                 schedules.save({
@@ -1176,6 +1188,8 @@ const make = Effect.gen(function* () {
                     at: input.at,
                     days: [...new Set(input.days)].toSorted((a, b) => a - b),
                   },
+                  around: input.around ?? (kept !== undefined && kept.looseAt !== null),
+                  checkIn: input.checkIn ?? kept?.checkIn === 1,
                   now,
                 }),
               ),
@@ -1191,7 +1205,7 @@ const make = Effect.gen(function* () {
               ctx,
               `item:${replaced.scheduleId}`,
               { ...input, itemId: replaced.scheduleId },
-              save(replaced.scheduleId, true),
+              save(replaced.scheduleId, true, replaced),
             );
             return { itemId: replaced.scheduleId };
           }

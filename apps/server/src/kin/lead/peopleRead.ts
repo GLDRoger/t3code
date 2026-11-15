@@ -25,7 +25,7 @@ const describeHours = (hours: KinWorkHours) => {
 };
 
 /** Whether `now` falls inside the hours, in their time zone. */
-const workingAt = (hours: KinWorkHours, timeZone: string, now: number) => {
+export const workingAt = (hours: KinWorkHours, timeZone: string, now: number) => {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone,
     weekday: "short",
