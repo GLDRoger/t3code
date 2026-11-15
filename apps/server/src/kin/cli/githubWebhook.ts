@@ -16,7 +16,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
-import * as References from "effect/References";
 import * as Runtime from "effect/Runtime";
 import * as Schema from "effect/Schema";
 import * as Stdio from "effect/Stdio";
@@ -24,16 +23,14 @@ import * as Stream from "effect/Stream";
 import { Command, Flag, GlobalFlag, Prompt } from "effect/cli";
 import { FetchHttpClient } from "effect/http";
 import { RpcGroup } from "effect/rpc";
-import { openRemote as openRemoteClient } from "./openRemote.ts";
+import { openRemote as openRemoteClient, remoteLayer } from "./openRemote.ts";
 
 import {
   authLocationFlags,
   type CliAuthLocationFlags,
   resolveCliAuthConfig,
 } from "../../cli/config.ts";
-import * as ServerConfig from "../../config.ts";
 import { readPersistedServerRuntimeState } from "../../serverRuntimeState.ts";
-import * as EnvironmentAuth from "../auth/EnvironmentAuthRuntime.ts";
 import * as Keychain from "../github/Keychain.ts";
 import * as KinGitHubApp from "../github/KinGitHubApp.ts";
 import { KIN_GITHUB_APP_EVENTS, diffAppEvents } from "../github/KinGitHubPermissions.ts";
@@ -337,18 +334,7 @@ const runOnHost = Effect.fn("kin.github.webhook.runOnHost")(
       if (Option.isNone(state))
         return yield* fail(`No running Kin server uses ${config.baseDir}. Start it, then retry.`);
       return yield* run(yield* openRemote(state.value.origin));
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(
-        Layer.merge(
-          EnvironmentAuth.layerRuntime.pipe(
-            Layer.provide(ServerConfig.layer(config)),
-            Layer.provide(Layer.succeed(References.MinimumLogLevel, "Warn")),
-          ),
-          FetchHttpClient.layer,
-        ),
-      ),
-    );
+    }).pipe(Effect.scoped, Effect.provide(remoteLayer(config)));
   },
   Effect.tapError((error) => (isCliError(error) ? Console.error(error.message) : Effect.void)),
 );
