@@ -130,11 +130,11 @@ const LABELS: Record<
   address: "Address",
 };
 const BANK_LABELS: Record<keyof KinCompanyProfileData["bank"], string> = {
-  accountName: "Account name",
-  accountNumber: "Account number",
-  ifsc: "IFSC",
-  bankName: "Bank",
-  branch: "Branch",
+  accountName: "Bank account name",
+  accountNumber: "Bank account number",
+  ifsc: "Bank IFSC",
+  bankName: "Bank name",
+  branch: "Bank branch",
   upi: "UPI",
 };
 const BRAND_LABELS: Record<keyof KinCompanyProfileData["brand"], string> = {
@@ -157,7 +157,7 @@ export const changeLines = (current: KinCompanyProfileData, patch: ProfilePatch)
     to === undefined || to === from ? [] : [`${label}: ${from ?? "none"} → ${to ?? "cleared"}`];
   return [
     ...(Object.keys(BANK_LABELS) as Array<keyof typeof BANK_LABELS>).flatMap((key) =>
-      line(`Bank ${BANK_LABELS[key].toLowerCase()}`, current.bank[key], patch.bank?.[key]),
+      line(BANK_LABELS[key], current.bank[key], patch.bank?.[key]),
     ),
     ...(Object.keys(LABELS) as Array<keyof typeof LABELS>).flatMap((key) =>
       line(LABELS[key], current[key] ?? null, patch[key]),
