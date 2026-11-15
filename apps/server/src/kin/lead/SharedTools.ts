@@ -160,6 +160,8 @@ export const SHARED_TOOLS = {
   kin_github_prs: "refused",
   kin_github_pr: "refused",
   kin_github_runs: "refused",
+  kin_github_review: "refused",
+  kin_github_link: "refused",
   request_action: "refused",
   // Work tasks every person behind the turn may see, shaped as their own screens show them.
   records_query: "view",

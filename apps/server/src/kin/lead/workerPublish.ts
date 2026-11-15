@@ -66,6 +66,12 @@ export type { Visibility } from "../work/workerAttempts.ts";
 /** The most changed files a review lists; the rest are counted. */
 const MAX_REVIEW_FILES = 50;
 
+/** The open PR a fix worker's commits go onto, by its head branch in the same repository. */
+export interface PullRequestTarget {
+  readonly number: number;
+  readonly branch: string;
+}
+
 export interface PublishedPullRequest {
   readonly url: string;
   readonly number: number;
@@ -92,6 +98,8 @@ export class KinWorkerPublish extends Context.Service<
        */
       readonly local?: { readonly projectRoot: string };
       readonly title: string;
+      /** A fix for an open PR: pushed to that PR's own branch, and said so on it, not a new PR. */
+      readonly onto?: PullRequestTarget;
       readonly progress: {
         /** Once, before anything reaches GitHub: what this publish would write, and where. */
         readonly review: (review: PublishReview) => Effect.Effect<void, KinWorkerPublishRefused>;
@@ -108,6 +116,7 @@ export class KinWorkerPublish extends Context.Service<
     readonly inspect: (input: {
       readonly workerId: KinWorkerId;
       readonly repositoryKey: string;
+      readonly onto?: PullRequestTarget;
     }) => Effect.Effect<Found, KinWorkerPublishRefused>;
   }
 >()("t3/kin/lead/workerPublish/KinWorkerPublish") {}
@@ -377,6 +386,11 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
       if (!safePath.test(input.worktreePath) || input.worktreePath.split("/").includes(".."))
         return yield* refuse("the worker environment reported an unusable worktree path");
       const branch = publishBranch(input.workerId);
+      const onto = input.onto;
+      if (onto !== undefined && !safeRef.test(onto.branch))
+        return yield* refuse("the pull request's branch has an unusable name");
+      // Where the commits land on GitHub: the worker's own branch, or the PR's it fixes.
+      const remoteBranch = onto?.branch ?? branch;
       const incoming = `refs/kin/incoming/${input.workerId}`;
       const failed = (step: string) => () => refuse(`git couldn't ${step}`);
       if (input.local !== undefined)
@@ -385,9 +399,10 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
 
       const about = yield* call("repos.get", "GET", "");
       const base =
-        about.status === 200 && typeof about.body === "object" && about.body !== null
+        onto?.branch ??
+        (about.status === 200 && typeof about.body === "object" && about.body !== null
           ? (about.body as { default_branch?: unknown }).default_branch
-          : undefined;
+          : undefined);
       if (typeof base !== "string" || !safeRef.test(base))
         return yield* refuse("GitHub didn't name the repository's default branch");
 
@@ -478,7 +493,7 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
 
       // Kin never force-pushes: a branch there with commits this one lacks stays as it is.
       const url = transport.github(repo);
-      const there = yield* remoteHead(cache, url, auth, branch);
+      const there = yield* remoteHead(cache, url, auth, remoteBranch);
       if (there !== head) {
         if (there !== undefined) {
           yield* git(
@@ -489,10 +504,10 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
               "--no-tags",
               "--",
               url,
-              `+refs/heads/${branch}:refs/kin/published`,
+              `+refs/heads/${remoteBranch}:refs/kin/published`,
             ],
             { env: auth },
-          ).pipe(Effect.mapError(failed(`fetch ${branch} from GitHub`)));
+          ).pipe(Effect.mapError(failed(`fetch ${remoteBranch} from GitHub`)));
           const missing = yield* git(cache, [
             "rev-list",
             "--count",
@@ -500,18 +515,42 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
           ]).pipe(Effect.mapError(failed("compare the branch with GitHub's")));
           if (missing !== "0")
             return yield* new KinWorkerPublishRefused({
-              reason: `${branch} on GitHub has commits the worker's branch doesn't, and Kin never force-pushes`,
+              reason: `${remoteBranch} on GitHub has commits the worker's branch doesn't, and Kin never force-pushes`,
               diverged: true,
             });
         }
         yield* input.progress.begin({ step: "push", sha: head });
         yield* git(
           cache,
-          ["push", "--quiet", "--no-verify", "--", url, `${head}:refs/heads/${branch}`],
+          ["push", "--quiet", "--no-verify", "--", url, `${head}:refs/heads/${remoteBranch}`],
           { env: auth },
-        ).pipe(Effect.mapError(failed(`push ${branch} to GitHub`)));
+        ).pipe(Effect.mapError(failed(`push ${remoteBranch} to GitHub`)));
       }
       yield* input.progress.done({ step: "push", sha: head });
+
+      if (onto !== undefined) {
+        const fixed = {
+          url: `https://github.com/${repo}/pull/${onto.number}`,
+          number: onto.number,
+        };
+        if (there !== head) {
+          yield* input.progress.begin({ step: "pull_request", sha: head });
+          const said = yield* call(
+            "issues.createComment",
+            "POST",
+            `/issues/${onto.number}/comments`,
+            {
+              body: `Kin pushed \`${head.slice(0, 12)}\` to this branch: ${input.title}. A Kin worker made the change; Kin pushed it.`,
+            },
+          );
+          if (said.status !== 201)
+            yield* Effect.logWarning("Kin pushed a fix but couldn't say so on the PR", {
+              status: said.status,
+            });
+        }
+        yield* input.progress.done({ step: "pull_request", ...fixed });
+        return { ...fixed, sha: head };
+      }
 
       const existing = yield* openPull(branch);
       if (existing !== null) {
@@ -538,10 +577,18 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
 
   const inspect: KinWorkerPublish["Service"]["inspect"] = Effect.fn("KinWorkerPublish.inspect")(
     function* (input) {
-      const branch = publishBranch(input.workerId);
+      const branch = input.onto?.branch ?? publishBranch(input.workerId);
       const { repo, auth, openPull } = yield* connect(input.repositoryKey);
       const cache = yield* scratch;
       const branchSha = (yield* remoteHead(cache, transport.github(repo), auth, branch)) ?? null;
+      if (input.onto !== undefined)
+        return {
+          branchSha,
+          pullRequest: {
+            url: `https://github.com/${repo}/pull/${input.onto.number}`,
+            number: input.onto.number,
+          },
+        };
       return { branchSha, pullRequest: yield* openPull(branch) };
     },
     Effect.scoped,

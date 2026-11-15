@@ -28,12 +28,16 @@ const KIN_PULSE_SENSES = [
   "client_quiet",
   "client_cold",
   "client_waiting_on_us",
+  "pr_open_long",
+  "pr_failing",
+  "pr_review_waiting",
+  "pr_ready",
 ] as const;
 export const KinPulseSense = Schema.Literals(KIN_PULSE_SENSES);
 export type KinPulseSense = typeof KinPulseSense.Type;
 
-/** Work facts are about tasks; money facts are the owner's alone; system facts are about Kin. */
-export const KinPulseFamily = Schema.Literals(["work", "money", "system"]);
+/** Work facts are about tasks; money facts are the owner's alone; code facts are about open PRs. */
+export const KinPulseFamily = Schema.Literals(["work", "money", "code", "system"]);
 export type KinPulseFamily = typeof KinPulseFamily.Type;
 
 /** `now` wakes the actor once; `sweep` waits for a check-in or a read; `brief` only in briefs. */
@@ -72,8 +76,8 @@ export const KinPulseFact = Schema.Struct({
   /** Sense, subject and episode: a moved due date is a new key, so a new fact. */
   key: TrimmedNonEmptyString.check(Schema.isMaxLength(300)),
   subject: Schema.Struct({
-    kind: Schema.Literals(["record", "worker", "budget", "agent"]),
-    /** A record's key (INV-4), a worker or agent id, or a budget's id. */
+    kind: Schema.Literals(["record", "worker", "budget", "agent", "pull_request"]),
+    /** A record's key (INV-4), a worker or agent id, a budget's id, or owner/name#12 for a PR. */
     key: TrimmedNonEmptyString,
     title: Schema.String.check(Schema.isMaxLength(280)),
     recordId: Schema.optional(KinRecordId),

@@ -34,7 +34,10 @@ import { KinBudget } from "./KinBudget.ts";
 import type { resolveLead } from "./LeadMemory.ts";
 import { isOrgPaused } from "./orgState.ts";
 import { toolAdmitted } from "./SharedTools.ts";
-import { buildBrief } from "./workerBrief.ts";
+import { buildBrief, type PullRequestWork } from "./workerBrief.ts";
+import { GitVcsDriver } from "../../vcs/GitVcsDriver.ts";
+import { NOT_CONNECTED } from "../github/KinRepoReads.ts";
+import { KinPullRequestCare } from "../github/PullRequestCare.ts";
 import { labelOf, resolveProject, type Checkout, type HostProject } from "./workerProjects.ts";
 import { workerHosts } from "./workerNetwork.ts";
 import { publishBranch } from "./workerPublish.ts";
@@ -67,9 +70,14 @@ type Input = typeof DelegateInput.Type;
 const STILL =
   "Nothing started. Say so once, in one line, and don't ask the owner to change your setup. You can still read repos, pull requests and CI yourself, or answer from memory.";
 /** What a lead hears for anything the local path doesn't do yet. */
-export const LOCAL_BUILD_ONLY = `On this host, workers do build tasks only, started from your direct chat with the owner: no review, research or follow-up from you yet. ${STILL}`;
+export const LOCAL_BUILD_ONLY = `On this host, workers do build tasks and reviews of a pull request (pullRequest), started from your direct chat with the owner or, for PR work, an owner-only check-in: no research, review of another worker or follow-up yet. ${STILL}`;
 export const LOCAL_DIRECT_ONLY = `On this host, work starts only from your direct chat with the owner, when only the owner is in the turn. If this came from somewhere else, say you'll pick it up there with the owner. ${STILL}`;
 const NOT_CLAUDE = `Workers on this host run on Claude only, which has the file wall they need. ${STILL}`;
+const FORK_PR = `That PR's branch is in another repository, so Kin can't push to it. Review it instead, or tell its author what to change. ${STILL}`;
+const NOT_GITHUB = `That project isn't a GitHub repository, so it has no pull requests here. ${STILL}`;
+const PR_UNREADABLE = `Kin couldn't fetch that PR's head on this host. ${STILL}`;
+/** PR care runs from check-ins and GitHub's own news, not only from the owner's chat. */
+const PR_CARE_EVENTS: ReadonlySet<string> = new Set(["pulse", "github", "worker.report"]);
 const LAUNCH_FAILED = `The worker couldn't start on this host. Retry the same call or tell the owner. ${STILL}`;
 
 const denied = (message: string) => new KinChatError({ reason: "not_allowed", message });
@@ -123,13 +131,16 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
   const projects = yield* ProjectService.ProjectService;
   const kinDirectory = path.join(stateDir, "kin");
   const fs = yield* FileSystem.FileSystem;
+  // Optional so runtimes built without GitHub or T3's git (most lead tests) still start.
+  const care = yield* Effect.serviceOption(KinPullRequestCare);
+  const git = yield* Effect.serviceOption(GitVcsDriver);
 
   /**
    * From stored rows only: the host owner's own lead, the turn owner-only, its event the owner's in
    * the lead's direct chat with them, and nothing in the turn from another chat or another lead.
    */
   const ownersDirectChat = Effect.fn("KinLocalWorkers.ownersDirectChat")(
-    function* (ctx: Lead, config: Config, event: KinEvent) {
+    function* (ctx: Lead, config: Config, event: KinEvent, prCare = false) {
       const { owner } = identity;
       if (
         ctx.orgId !== owner.orgId ||
@@ -144,8 +155,11 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
         event.reason === "assigned" &&
         event.provenance._tag === "human" &&
         event.provenance.personId === owner.personId;
+      const checkIn =
+        prCare && PR_CARE_EVENTS.has(event._tag) && event.provenance._tag === "system";
       if (
         !ownerAssigned &&
+        !checkIn &&
         ((event._tag !== "chat.message" &&
           event._tag !== "widget.action" &&
           event._tag !== "chat.reaction") ||
@@ -228,19 +242,62 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
     });
   });
 
+  /**
+   * An open PR in the checkout's repository, fetched at its head into the project's clone with
+   * T3's git, and its diff from GitHub. A fix needs the PR's branch in that same repository.
+   */
+  const pullRequestAt = Effect.fn("KinLocalWorkers.pullRequestAt")(function* (
+    target: Checkout,
+    number: number,
+    kind: Input["kind"],
+  ) {
+    if (target.slug === undefined) return yield* denied(NOT_GITHUB);
+    if (Option.isNone(care) || Option.isNone(git))
+      return yield* new KinChatError({ reason: "unavailable", message: NOT_CONNECTED });
+    const pull = yield* care.value.pull(target.slug, number);
+    if (kind === "build" && !pull.sameRepo) return yield* denied(FORK_PR);
+    const project = Option.getOrUndefined(
+      yield* projects.getById(target.projectId).pipe(Effect.orElseSucceed(() => Option.none())),
+    );
+    if (project === undefined)
+      return yield* new KinChatError({ reason: "unavailable", message: PR_UNREADABLE });
+    const fetched = yield* git.value
+      .fetchRefCommit({ cwd: project.workspaceRoot, ref: `refs/pull/${number}/head` })
+      .pipe(
+        Effect.mapError(() => new KinChatError({ reason: "unavailable", message: PR_UNREADABLE })),
+      );
+    return {
+      task: kind === "build" ? ("fix" as const) : ("review" as const),
+      repo: pull.repo,
+      number,
+      title: pull.title,
+      headSha: fetched.commitSha,
+      headRef: pull.headRef,
+      baseRef: pull.baseRef,
+      diff: pull.diff,
+    } satisfies PullRequestWork;
+  });
+
   const delegate = Effect.fn("KinLocalWorkers.delegate")(function* (
     scope: McpInvocationScope,
     input: Input,
   ) {
     const ctx = yield* shared.lead(scope);
     // Default-deny for everything this slice doesn't do, before anything is read.
-    if (input.kind !== "build" || input.reviewOf !== undefined)
+    const prNumber = input.pullRequest;
+    if (
+      input.kind === "research" ||
+      input.reviewOf !== undefined ||
+      (input.kind === "review" && prNumber === undefined)
+    )
       return yield* denied(LOCAL_BUILD_ONLY);
+    const prCare = prNumber !== undefined;
     const plan = yield* sql.withTransaction(
       Effect.gen(function* () {
         const config = yield* shared.leadConfig(ctx);
         const event = yield* shared.sourceEvent(ctx, input.sourceEventId);
-        if (!(yield* ownersDirectChat(ctx, config, event))) return yield* denied(LOCAL_DIRECT_ONLY);
+        if (!(yield* ownersDirectChat(ctx, config, event, prCare)))
+          return yield* denied(LOCAL_DIRECT_ONLY);
         return { config, event, open: yield* shared.open(ctx, [config.ownerChatId]) };
       }),
     );
@@ -260,6 +317,8 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
     const modelSelection = yield* shared.pick(input.model, plan.config.models);
     yield* claudeOnly(modelSelection);
     const target = yield* locate(input.project);
+    const pullRequest =
+      prNumber === undefined ? undefined : yield* pullRequestAt(target, prNumber, input.kind);
     const items = yield* Effect.forEach(input.memoryItemIds ?? [], (id) =>
       shared.memoryItem(ctx, id),
     );
@@ -278,7 +337,7 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
           !(yield* toolAdmitted(ctx, "kin_delegate", input).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
           )) ||
-          !(yield* ownersDirectChat(ctx, config, plan.event))
+          !(yield* ownersDirectChat(ctx, config, plan.event, prCare))
         )
           return yield* denied(LOCAL_DIRECT_ONLY);
         // Here, not before: the owner may have closed or taken back the work since.
@@ -298,11 +357,16 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
           kind, thread_id, review_of, model_json, provenance_json, status, report_json, started_at,
           ended_at, title, chat_id, project_id, environment_id, remote_project_id, repository_key,
           context)
-          VALUES (${workerId}, ${ctx.orgId}, ${ctx.agentId}, ${ctx.wakeupId}, 'build', ${threadId},
-          NULL, ${yield* encodeJson(modelSelection)}, ${yield* encodeJson(plan.event.provenance)},
-          'queued', NULL, ${startedAt}, NULL, ${input.title}, ${chatId}, ${target.projectId}, NULL,
-          NULL, ${target.repositoryKey}, 'private')
+          VALUES (${workerId}, ${ctx.orgId}, ${ctx.agentId}, ${ctx.wakeupId}, ${input.kind},
+          ${threadId}, NULL, ${yield* encodeJson(modelSelection)},
+          ${yield* encodeJson(plan.event.provenance)}, 'queued', NULL, ${startedAt}, NULL,
+          ${input.title}, ${chatId}, ${target.projectId}, NULL, NULL, ${target.repositoryKey},
+          'private')
           ON CONFLICT (worker_id) DO NOTHING RETURNING worker_id`;
+        if (inserted.length > 0 && pullRequest !== undefined)
+          yield* sql`UPDATE kin_workers SET target_pr = ${pullRequest.number},
+              target_branch = ${pullRequest.task === "fix" ? pullRequest.headRef : null}
+            WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId}`;
         if (inserted.length > 0) {
           yield* attemptBegun({
             orgId: ctx.orgId,
@@ -345,8 +409,10 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
       branch,
       local: true,
       memory: items,
+      ...(pullRequest === undefined ? {} : { pullRequest }),
     });
     const baseRef =
+      pullRequest?.headSha ??
       input.baseRef ??
       (yield* launcher
         .checkWorktreeBase({
@@ -383,7 +449,12 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
         modelSelection,
         runtimeMode: "auto-accept-edits",
         interactionMode: "default",
-        workspaceStrategy: { type: "worktree", baseRef, branch, startFromOrigin: true },
+        workspaceStrategy: {
+          type: "worktree",
+          baseRef,
+          branch,
+          startFromOrigin: pullRequest === undefined,
+        },
         initialMessage: {
           messageId: MessageId.make(`kin-work-msg:${workerId}`),
           text: brief,

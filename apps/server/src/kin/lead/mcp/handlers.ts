@@ -8,6 +8,9 @@ import * as Schema from "effect/Schema";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
 import { KinRepoReads } from "../../github/KinRepoReads.ts";
+import { KinPullRequestCare } from "../../github/PullRequestCare.ts";
+import { SHARED_REFUSAL } from "../Audience.ts";
+import { toolAdmitted } from "../SharedTools.ts";
 import { laneFor } from "../../reply/KinReplyBridge.ts";
 import { KinHandoff } from "../Handoff.ts";
 import { KinLevelGate } from "../LevelGate.ts";
@@ -22,6 +25,19 @@ const failure = (error: unknown) =>
   isKinChatError(error)
     ? error
     : new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
+
+const admitted = (
+  lead: Effect.Success<ReturnType<typeof resolveLead>>,
+  name: string,
+  args: unknown,
+) =>
+  toolAdmitted(lead, name, args).pipe(
+    Effect.flatMap((ok) =>
+      ok
+        ? Effect.void
+        : Effect.fail(new KinChatError({ reason: "not_allowed", message: SHARED_REFUSAL })),
+    ),
+  );
 
 const githubQuote = (value: unknown) => ({ quoted: quote("GitHub data (untrusted)", value, true) });
 
@@ -200,6 +216,20 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
     Effect.fn("KinLeadToolkit.githubRuns")(function* (input) {
       const lead = yield* resolveLead(yield* McpInvocationContext);
       return githubQuote(yield* (yield* KinRepoReads).runs(lead, input));
+    }, Effect.mapError(failure)),
+  ),
+  kin_github_review: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.githubReview")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      yield* admitted(lead, "kin_github_review", input);
+      return yield* (yield* KinPullRequestCare).review(lead, input);
+    }, Effect.mapError(failure)),
+  ),
+  kin_github_link: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.githubLink")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      yield* admitted(lead, "kin_github_link", input);
+      return yield* (yield* KinPullRequestCare).link(lead, input);
     }, Effect.mapError(failure)),
   ),
   kin_end: McpToolAccess.actsAsCaller(

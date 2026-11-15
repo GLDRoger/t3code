@@ -22,6 +22,8 @@ export interface SenseContext {
   readonly chief: KinAgentId | undefined;
   /** The Finance agent, else the Chief of staff. */
   readonly finance: KinAgentId | undefined;
+  /** The Tech agent (engineering), else the Chief of staff. */
+  readonly tech: KinAgentId | undefined;
   readonly liveAgents: ReadonlySet<string>;
 }
 
