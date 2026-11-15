@@ -4,7 +4,7 @@ import * as Predicate from "effect/Predicate";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
-import { aborted, askedIn, effectiveAudience, turnChat, turnPeople } from "./Audience.ts";
+import { aborted, askedIn, effectiveAudience, turnChat } from "./Audience.ts";
 
 type Turn = {
   readonly orgId: KinOrgId;
@@ -35,17 +35,6 @@ const inTurnChat: Condition = Effect.fnUntraced(function* (turn, args) {
 const inAskedChat: Condition = Effect.fnUntraced(function* (turn, args) {
   const chatId = field(args, "chatId");
   return typeof chatId === "string" && (yield* askedIn(turn, chatId));
-});
-
-/**
- * One person besides the owner is behind the turn, and they asked: what it makes is theirs, so
- * they see it (`personSees`, by assigner).
- */
-const oneAskerCreates: Condition = Effect.fnUntraced(function* (turn) {
-  const behind = yield* turnPeople(turn);
-  return (
-    (behind?.people.length === 1 && behind.askers.length === 1) || (yield* inCompanyChat(turn))
-  );
 });
 
 /** The turn answers in the company chat: what it makes is shared with the whole team. */
@@ -171,14 +160,15 @@ export const SHARED_TOOLS = {
   // A teammate's own contact with a client is theirs to report; the whole client is the owner's.
   touch_log: "allowed",
   client_read: "refused",
-  record_create: oneAskerCreates,
+  // Tasks, meetings and milestones for the people there, shared with the team (`viewGuard`).
+  record_create: "view",
   record_update: "view",
   // Work facts on tasks every person behind the turn may see; money and system facts are the owner's.
   pulse_read: "view",
   pulse_handle: "refused",
   pulse_nudge: "refused",
-  // Giving out work is the owner's turn's; handing back is the asker's own task, in their view.
-  record_assign: "refused",
+  // Giving out a task everyone there sees; handing back is the asker's own task, in their view.
+  record_assign: "view",
   record_hand_back: "view",
   // Docs every person behind the turn may see; writes as each of them may (a project's lead in
   // their project). Restoring stays the owner's.
