@@ -14,6 +14,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
 
 import { toPersistenceDecodeError, toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { CHAT_ANSWER_TAGS } from "./Audience.ts";
 
 // Approvals import this module, so it must not reach the chat service.
 
@@ -200,7 +201,7 @@ export const ownerPlaced = Effect.fn("KinLevels.ownerPlaced")(function* (
 });
 
 /**
- * The chats the wake-up's due deferrals and passed-on requests were first asked in, read from the
+ * The chats the wake-up's due deferrals, passed-on requests and teammates' tasks were first asked in, read from the
  * stored events only. Both the level cap and worker reach read this, so neither can drop one.
  */
 export const origins = Effect.fn("KinLevels.origins")(function* (input: {
@@ -218,7 +219,7 @@ export const origins = Effect.fn("KinLevels.origins")(function* (input: {
       json_extract(json, '$.origin.chatId') AS "chatId",
       json_extract(json, '$.origin.personId') AS "personId" FROM kin_events
     WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND wakeup_id = ${input.wakeupId}
-      AND tag IN ('deferral.due', 'chat.message', 'worker.report')
+      AND tag IN ('deferral.due', 'chat.message', 'worker.report', 'record.changed')
       AND json_extract(json, '$.origin.chatId') IS NOT NULL
     ORDER BY 1, 2, 3`.pipe(Effect.mapError(toPersistenceSqlError("KinLevels.origins")));
   return rows.map(({ personId, ...origin }): KinOrigin =>
@@ -275,7 +276,7 @@ export const wakeupLevel = Effect.fn("KinLevels.wakeupLevel")(function* (input: 
   const [lane] = yield* sql<{ chatId: string | null }>`
     SELECT COALESCE((SELECT json_extract(e.json, '$.chatId') FROM kin_events e
         WHERE e.org_id = l.org_id AND e.agent_id = l.agent_id AND e.wakeup_id = ${input.wakeupId}
-          AND e.tag IN ('chat.message', 'widget.action', 'chat.reaction', 'worker.report')
+          AND e.tag IN ${sql.in(CHAT_ANSWER_TAGS)}
           AND json_extract(e.json, '$.chatId') IS NOT NULL
         ORDER BY e.priority, e.received_at, e.event_id LIMIT 1), l.owner_chat_id) AS "chatId"
     FROM kin_leads l WHERE l.org_id = ${input.orgId} AND l.agent_id = ${input.agentId}

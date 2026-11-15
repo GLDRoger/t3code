@@ -324,6 +324,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.work.update": "kin-work",
   "kin.work.confirm": "kin-work",
   "kin.work.decline": "kin-work",
+  "kin.work.share": "kin-work",
   "kin.work.parties": "kin-work",
   "kin.work.party": "kin-work",
   "kin.work.projects": "kin-work",
