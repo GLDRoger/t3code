@@ -293,7 +293,8 @@ export interface KinClientRowView {
 export function kinClientRow(row: KinPartyRow, names: KinWorkNames, now: Date): KinClientRowView {
   const line = [
     row.kind === "vendor" ? "Vendor" : null,
-    row.active ? kinOwedLine(row) : "Closed",
+    // A teammate's row comes without counts (and without a contact day): it names, it doesn't count.
+    row.active ? (row.lastContactAt === undefined ? null : kinOwedLine(row)) : "Closed",
     row.active && row.kind === "client" ? kinLastContactLine(row.lastContactAt, now) : null,
   ]
     .filter((part) => part !== null)
@@ -313,7 +314,7 @@ export function kinClientRow(row: KinPartyRow, names: KinWorkNames, now: Date): 
     private: row.sensitive,
     closed: !row.active,
     accessibilityLabel: [row.name, line, next, row.sensitive ? "Private" : null]
-      .filter((part) => part !== null)
+      .filter((part) => part !== null && part !== "")
       .join(". "),
   };
 }
