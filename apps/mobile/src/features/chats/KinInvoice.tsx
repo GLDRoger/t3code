@@ -17,6 +17,12 @@ import {
   type KinInvoiceView,
 } from "@t3tools/client-runtime/kin/kinInvoices";
 import { KIN_LISTS, kinMoneyText } from "@t3tools/client-runtime/kin/kinLists";
+import {
+  KIN_LINES,
+  kinLineDrafts,
+  kinLinesInput,
+  type KinLineDraft,
+} from "@t3tools/client-runtime/kin/kinMoneyAnswers";
 import { kinDefaultTemplate } from "@t3tools/client-runtime/kin/kinTemplates";
 import { kinWorkDayOf, kinWorkDueLabel } from "@t3tools/client-runtime/kin/kinWork";
 import {
@@ -56,6 +62,7 @@ import { uuidv4 } from "../../lib/uuid";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAssetUrlState } from "../../state/assets";
 import { KinWorkFrame, KinWorkLoading, KinWorkTextField } from "./components/KinWorkPieces";
+import { KinLinesFields } from "./KinMoneyAnswers";
 import { kinClient } from "./state/kinClient";
 import {
   useKinMoneyActions,
@@ -63,6 +70,7 @@ import {
   useKinReceipts,
   useKinRecipes,
 } from "./state/useKinMoney";
+import { useKinEntryLines } from "./state/useKinMoneyAnswers";
 import { kinWorkChoicesAtom, type KinWorkTarget } from "./state/useKinWork";
 import { useKinWorkLink } from "./state/kinWorkLink";
 
@@ -93,6 +101,7 @@ export function KinInvoiceActions(
     readonly busy: boolean;
     /** The invoice's client, to edit when Make invoice needs a detail of theirs. */
     readonly party: { readonly key: string; readonly title: string } | null;
+    readonly currency?: string;
   },
 ) {
   const navigation = useNavigation();
@@ -131,6 +140,7 @@ export function KinInvoiceActions(
               environmentId,
               orgId,
               task: itemKey,
+              ...(props.currency === undefined ? {} : { currency: props.currency }),
               ...(props.party === null
                 ? {}
                 : { party: props.party.key, partyName: props.party.title }),
@@ -424,6 +434,10 @@ export type KinMakeDocumentParams = {
   /** The invoice's client key and name, to edit when a detail of theirs is missing. */
   readonly party?: string;
   readonly partyName?: string;
+  /** The list whose templates make it: invoices unless said. */
+  readonly list?: string;
+  /** The entry's currency: every line is in it. */
+  readonly currency?: string;
 };
 
 /** Pick a template, see the PDF as it would be made, then file it. */
@@ -441,17 +455,50 @@ export function KinMakeDocumentScreen({ route }: StaticScreenProps<KinMakeDocume
     route.params.party === undefined
       ? null
       : { key: route.params.party, title: route.params.partyName ?? route.params.party };
-  return <MakeDocument {...target} itemKey={key} party={party} />;
+  return (
+    <MakeDocument
+      {...target}
+      itemKey={key}
+      party={party}
+      list={route.params.list ?? INVOICES}
+      currency={route.params.currency ?? "INR"}
+    />
+  );
 }
 
 function MakeDocument(
   props: KinWorkTarget & {
     readonly itemKey: KinRecordKey;
     readonly party: { readonly key: string; readonly title: string } | null;
+    readonly list: string;
+    readonly currency: string;
   },
 ) {
   const navigation = useNavigation();
   const actions = useKinMoneyActions(props);
+  const readLines = useKinEntryLines(props);
+  const [lines, setLines] = useState<ReadonlyArray<KinLineDraft> | null>(null);
+  const [linesProblem, setLinesProblem] = useState<string | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the lines its last document was made with from the host once, when the sheet opens
+  useEffect(() => {
+    let live = true;
+    void readLines(props.itemKey).then((held) => {
+      if (live) setLines(kinLineDrafts(held));
+    });
+    return () => {
+      live = false;
+    };
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- once per entry; the reader is remade every render
+  }, [props.itemKey]);
+  const inputsOf = () => {
+    const checked = kinLinesInput(lines ?? [], props.currency);
+    if (!checked.ok) {
+      setLinesProblem(checked.problem);
+      return null;
+    }
+    setLinesProblem(null);
+    return checked.lines === null ? {} : { lines: checked.lines };
+  };
   const allowed = useAtomValue(kinClient.docRender.permissionAtom(props.environmentId));
   const recipes = useKinRecipes(props, allowed);
   const [picked, setPicked] = useState<string | null>(null);
@@ -464,7 +511,7 @@ function MakeDocument(
   } | null>(null);
   const [requestId] = useState(uuidv4);
   const close = () => navigation.goBack();
-  const title = KIN_INVOICES.makeInvoice;
+  const title = props.list === INVOICES ? KIN_INVOICES.makeInvoice : KIN_INVOICES.makePdf;
   if (!allowed)
     return (
       <KinWorkFrame title={title} onClose={close}>
@@ -472,13 +519,15 @@ function MakeDocument(
       </KinWorkFrame>
     );
   const { state } = recipes;
-  const templates = state._tag === "ready" ? kinTemplatesFor(state.value.recipes, INVOICES) : [];
+  const templates = state._tag === "ready" ? kinTemplatesFor(state.value.recipes, props.list) : [];
   const recipe = templates.find((one) => one.name === picked) ?? kinDefaultTemplate(templates);
   const missing = kinInvoiceMissingClient(actions.problem, props.party);
   const preview = async () => {
     if (recipe === null) return;
+    const inputs = inputsOf();
+    if (inputs === null) return;
     setFailed(null);
-    const files = await actions.preview(recipe.name, props.itemKey);
+    const files = await actions.preview(recipe.name, props.itemKey, inputs);
     const file = files?.[0];
     if (file === undefined) {
       if (files !== null) setFailed(KIN_INVOICES.previewFailed);
@@ -503,7 +552,10 @@ function MakeDocument(
               loading: actions.busy && ready,
               disabled: actions.busy || !ready,
               onPress: async () => {
-                if ((await actions.file(recipe.name, props.itemKey, requestId)) !== null) close();
+                const inputs = inputsOf();
+                if (inputs === null) return;
+                if ((await actions.file(recipe.name, props.itemKey, requestId, inputs)) !== null)
+                  close();
               },
             }
       }
@@ -552,6 +604,20 @@ function MakeDocument(
               {recipe.description}
             </Text>
           )}
+          {lines === null ? (
+            <KinWorkLoading label={KIN_LINES.title} />
+          ) : (
+            <KinLinesFields
+              lines={lines}
+              disabled={actions.busy}
+              onChange={(next) => {
+                setLines(next);
+                setLinesProblem(null);
+                setPreviewed(null);
+              }}
+            />
+          )}
+          {linesProblem === null ? null : <Notice message={linesProblem} tone="danger" />}
           <Button
             tone={ready ? "secondary" : "primary"}
             fullWidth

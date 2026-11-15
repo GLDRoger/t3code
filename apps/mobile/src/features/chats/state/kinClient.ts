@@ -46,6 +46,9 @@ import {
   type KinProjectPageInput,
   type KinWorkGetInput,
   type KinWorkSubscribeInput,
+  type KinCashInput,
+  type KinOutlookInput,
+  type KinMoneyBudgetsInput,
 } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -266,6 +269,24 @@ const workMoneyRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   tag: "kin.work.money",
 });
 const readWorkMoney = guardedRead(workMoneyRead);
+const readWorkCash = guardedRead(
+  createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:cash:read",
+    tag: "kin.work.cash",
+  }),
+);
+const readWorkOutlook = guardedRead(
+  createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:outlook:read",
+    tag: "kin.work.outlook",
+  }),
+);
+const readWorkBudgets = guardedRead(
+  createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:budgets:read",
+    tag: "kin.work.budgets",
+  }),
+);
 const workDatesRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "kin:work:dates:read",
   tag: "kin.work.dates",
@@ -968,6 +989,46 @@ export const kinClient = {
     }),
     staleTimeMs: 30_000,
     refreshTrigger: sessionGeneration,
+  }),
+  /** Bank balances from confirmed statements; read again when a statement or Work changes. */
+  workCash: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:work:cash",
+    execute: Effect.fn("KinClient.workCash")(function* (input: KinCashInput) {
+      return yield* readWorkCash(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: kinRefreshOn("moneyStatements"),
+  }),
+  /** What is expected in and out in the next 30 days, and runway. */
+  workOutlook: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:work:outlook",
+    execute: Effect.fn("KinClient.workOutlook")(function* (input: KinOutlookInput) {
+      return yield* readWorkOutlook(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: kinRefreshOn("moneyStatements"),
+  }),
+  workBudgets: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:work:budgets",
+    execute: Effect.fn("KinClient.workBudgets")(function* (input: KinMoneyBudgetsInput) {
+      return yield* readWorkBudgets(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: kinRefreshOn("moneyBudgets"),
+  }),
+  workSetBudget: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:budget:set",
+    tag: "kin.work.setBudget",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+  }),
+  workEntryLines: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:entry-lines:read",
+    tag: "kin.work.entryLines",
+  }),
+  workInvoiceFromQuote: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:invoice-from-quote",
+    tag: "kin.work.invoiceFromQuote",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
   }),
   /** One page of everything dated in a window; the Dates screen decides when. */
   workDates: workDatesRead,

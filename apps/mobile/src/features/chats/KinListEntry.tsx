@@ -1,3 +1,4 @@
+import { KIN_QUOTES_LIST, kinQuoteRow } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { kinHasNotesHistory } from "@t3tools/client-runtime/kin/kinTemplates";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -69,6 +70,7 @@ import {
   KinInvoicePayments,
   KinMoneyActionNotice,
 } from "./KinInvoice";
+import { KinQuoteActions } from "./KinMoneyAnswers";
 import { KinNotesVersions } from "./KinNotesVersions";
 import { KinMonthGrid } from "./components/KinMonthGrid";
 import {
@@ -243,8 +245,9 @@ export function KinListEntryBody(
   const def = kinListsOf(lists).find((one) => one.list === item.list) ?? null;
   const entry = kinListEntryView(item, def, context);
   const invoice = kinIsInvoice(item) ? kinInvoiceView(item, def, props.now) : null;
+  const quote = item.list === KIN_QUOTES_LIST ? kinQuoteRow(item, null, props.now) : null;
   const money = useKinMoneyActions(props);
-  const rates = useKinRates(props, invoice !== null);
+  const rates = useKinRates(props, invoice !== null || quote !== null);
   const changes = useKinEntryChanges(props, item.key);
   const agent = useKinAskAgent(props);
   const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
@@ -324,7 +327,7 @@ export function KinListEntryBody(
         <View className="flex-row flex-wrap items-center gap-2">
           <KinWorkStateSymbol state={entry.state} />
           <Text textRole="body" className="text-foreground">
-            {entry.stateLabel}
+            {quote?.stateLabel ?? entry.stateLabel}
           </Text>
           {invoice?.void === true ? (
             entry.stateLabel === KIN_INVOICES.void ? null : (
@@ -332,7 +335,7 @@ export function KinListEntryBody(
                 {KIN_INVOICES.void}
               </Text>
             )
-          ) : entry.late ? (
+          ) : entry.late && quote === null ? (
             <Text textRole="footnote" className="font-t3-medium text-danger-foreground">
               {KIN_LISTS.late}
             </Text>
@@ -370,7 +373,17 @@ export function KinListEntryBody(
           </View>
         )}
       </View>
-      {!canChange ? null : (
+      {quote !== null ? (
+        <KinQuoteActions
+          {...props}
+          item={item}
+          quote={quote}
+          def={def}
+          busy={busy}
+          canChange={canChange}
+          onState={(state) => void changes.update(item.rev, { state })}
+        />
+      ) : !canChange ? null : (
         <View className="gap-2">
           {finish === null ? null : (
             <Button
@@ -409,6 +422,7 @@ export function KinListEntryBody(
           actions={money}
           busy={busy}
           party={item.party ?? null}
+          currency={item.amount?.currency ?? def?.currency ?? "INR"}
         />
       )}
       <KinMoneyActionNotice actions={money} />
@@ -416,7 +430,7 @@ export function KinListEntryBody(
         <Notice message={changes.problem} tone="danger" onDismiss={changes.dismiss} />
       )}
       <ListSection>
-        {!canChange ? null : (
+        {!canChange || quote !== null ? null : (
           <Menu
             title={KIN_LISTS.entry.status}
             accessibilityRole="button"
