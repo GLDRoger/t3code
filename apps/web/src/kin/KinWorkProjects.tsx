@@ -10,31 +10,21 @@ import {
   KIN_PROJECTS,
   KIN_PROJECT_FAILED,
   KIN_PROJECT_GONE,
-  KIN_PROJECT_VIEWS,
   kinProjectPageView,
-  kinProjectRow,
-  kinProjectsNothing,
-  type KinProjectRowView,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import { kinWorkSend, type KinWorkFormProblem } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type { KinProjectPage, KinProjectState, KinRecordKey } from "@t3tools/contracts";
-import { LegendList } from "@legendapp/list/react";
 import { EllipsisIcon, ExternalLinkIcon, PencilIcon, PlusIcon } from "lucide-react";
 import { useId, useState } from "react";
 
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
-import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
-import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { Switch } from "../components/ui/switch";
-import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
-import { cn } from "../lib/utils";
 import { useAtomCommand } from "../state/use-atom-command";
-import { KinWorkProjectRow } from "./KinWorkClients";
 import { KinDocsUnder } from "./KinDocsList";
 import { KinProjectDialog } from "./KinWorkForms";
 import {
@@ -53,139 +43,11 @@ import { useNowMinuteMs } from "./useKinClock";
 import { kinHostConnected } from "./useKinHost";
 import {
   useKinProjectPage,
-  useKinProjectsList,
   type KinWorkChangesHandle,
   type KinWorkChoices,
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./useKinWork";
-
-/** Every project with how it is going, as the host works it out. */
-export function KinWorkProjectsList(
-  props: KinWorkTarget & {
-    readonly live: KinWorkLive;
-    readonly stale: boolean;
-    readonly directory: KinWorkDirectory;
-    readonly onOpen: (key: KinRecordKey) => void;
-    readonly onAdd: (() => void) | null;
-  },
-) {
-  const { names } = props.directory;
-  const now = new Date(useNowMinuteMs());
-  const { state, list } = useKinProjectsList(props, props.stale ? null : props.live.seq);
-  const { filter } = state;
-  const rows = state.records.map((row) => kinProjectRow(row, names, now));
-  const nothing = kinProjectsNothing(filter);
-  return (
-    <LegendList<KinProjectRowView>
-      data={rows}
-      keyExtractor={(row) => row.key}
-      extraData={state}
-      recycleItems
-      onEndReached={() => void list.loadMore()}
-      onEndReachedThreshold={0.5}
-      ListHeaderComponent={
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 pt-2 pb-1">
-          {props.stale || state.stale ? (
-            <p role="status" className="text-xs text-muted-foreground">
-              {KIN_WORK_STALE}
-            </p>
-          ) : null}
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <ToggleGroup
-              variant="pill"
-              size="sm"
-              aria-label="Show"
-              value={[filter.view]}
-              onValueChange={(value) => {
-                const view = KIN_PROJECT_VIEWS.find((held) => held.id === value[0]);
-                if (view !== undefined) list.setFilter({ ...filter, view: view.id });
-              }}
-            >
-              {KIN_PROJECT_VIEWS.map((view) => (
-                <Toggle key={view.id} value={view.id}>
-                  {view.label}
-                </Toggle>
-              ))}
-            </ToggleGroup>
-            <div className="min-w-0 flex-1">
-              <Input
-                type="search"
-                aria-label={KIN_PROJECTS.search}
-                placeholder={KIN_PROJECTS.search}
-                value={filter.text}
-                onChange={(event) => list.setFilter({ ...filter, text: event.currentTarget.value })}
-              />
-            </div>
-          </div>
-        </div>
-      }
-      ListEmptyComponent={
-        <div className="mx-auto w-full max-w-3xl px-4">
-          {state.loading ? (
-            <div role="status" aria-label="Loading projects">
-              <KinWorkRowSkeletons />
-            </div>
-          ) : state.failed !== null ? (
-            <div className="flex flex-col items-start gap-3 py-4">
-              <Alert variant="error">
-                <AlertDescription>
-                  {KIN_PROJECTS.loadFailed}. Check your connection.
-                </AlertDescription>
-              </Alert>
-              <Button size="sm" variant="outline" onClick={list.refresh}>
-                Retry
-              </Button>
-            </div>
-          ) : (
-            <KinWorkNotice
-              title={nothing.title}
-              detail={nothing.detail}
-              {...(nothing.offerNew && props.onAdd !== null
-                ? {
-                    action: (
-                      <Button onClick={props.onAdd}>
-                        <PlusIcon />
-                        {KIN_PROJECTS.add}
-                      </Button>
-                    ),
-                  }
-                : {})}
-            />
-          )}
-        </div>
-      }
-      ListFooterComponent={
-        !state.more ? null : (
-          <div className="mx-auto flex w-full max-w-3xl items-center gap-3 px-6 py-3">
-            <p className="text-xs text-muted-foreground" role="status">
-              {state.moreFailed
-                ? "Couldn't load more."
-                : `Showing ${rows.length} of ${state.total ?? rows.length}`}
-            </p>
-            <Button
-              size="xs"
-              variant="outline"
-              disabled={state.loadingMore}
-              aria-busy={state.loadingMore}
-              onClick={() => void list.loadMore()}
-            >
-              {state.moreFailed ? "Try again" : "Show more"}
-            </Button>
-          </div>
-        )
-      }
-      renderItem={({ item: row }) => (
-        <div className="mx-auto w-full max-w-3xl border-b border-border/60 px-4 py-1">
-          <KinWorkProjectRow row={row} onOpen={() => props.onOpen(row.key)} />
-        </div>
-      )}
-      estimatedItemSize={56}
-      drawDistance={640}
-      className={cn("min-h-0 flex-1 overscroll-contain pb-6", state.refreshing && "opacity-70")}
-    />
-  );
-}
 
 type PageProps = KinWorkTarget & {
   readonly projectKey: KinRecordKey;

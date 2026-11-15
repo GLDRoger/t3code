@@ -36,7 +36,10 @@ import {
 
 export const KIN_DOCS = {
   title: "Docs",
+  docsAndLists: "Docs and lists",
+  which: "Which",
   search: "Search docs",
+  searchWithLists: "Search docs and lists",
   loading: "Loading docs",
   loadFailed: "Couldn't load docs",
   archived: "Archived",

@@ -1,9 +1,7 @@
 import { kinChartView } from "@t3tools/client-runtime/kin/kinChart";
 import { kinDateRowView } from "@t3tools/client-runtime/kin/kinDates";
-import { KIN_LISTS } from "@t3tools/client-runtime/kin/kinLists";
 import {
   KIN_MONEY,
-  kinMoneyHeadline,
   kinMoneyView,
   type KinListOpen,
   type KinMoneyFigure,
@@ -108,32 +106,6 @@ function AmountRow(props: {
   );
 }
 
-/** Work's headline money lines, over the task list; they open Money. */
-export function KinMoneyHeadline(
-  props: KinWorkTarget & { readonly seq: number | null; readonly onOpen: () => void },
-) {
-  const { state } = useKinMoneySummary(props, { enabled: true, seq: props.seq });
-  if (state._tag !== "ready") return null;
-  const lines = kinMoneyHeadline(state.value);
-  if (lines.length === 0) return null;
-  return (
-    <button
-      type="button"
-      onClick={props.onOpen}
-      aria-label={`${KIN_MONEY.title}. ${lines.join(". ")}`}
-      className={cn("flex w-full flex-col gap-0.5 px-2 py-1.5 text-start", OPENS)}
-    >
-      <span className="text-xs font-medium text-muted-foreground">{KIN_MONEY.title}</span>
-      <span className="text-sm text-foreground tabular-nums">{lines.slice(0, 2).join(" · ")}</span>
-      {lines.length > 2 ? (
-        <span className="text-xs text-muted-foreground tabular-nums">
-          {lines.slice(2).join(" · ")}
-        </span>
-      ) : null}
-    </button>
-  );
-}
-
 /**
  * Money: who owes us and how late, what came in and went out, the year so far and what is due.
  * The host adds everything up; this only lays it out and says where each figure came from.
@@ -147,8 +119,6 @@ export function KinWorkMoney(
     readonly onOpenList: (open: KinListOpen) => void;
     readonly onOpenKey: (key: KinRecordKey) => void;
     readonly onDates: () => void;
-    readonly onLists: () => void;
-    readonly onClients: () => void;
     readonly onOpenDoc: (key: KinRecordKey) => void;
   },
 ) {
@@ -359,12 +329,6 @@ export function KinWorkMoney(
           ) : null}
         </KinWorkSection>
         <div className="flex flex-wrap gap-2 px-2">
-          <Button size="sm" variant="outline" onClick={props.onLists}>
-            {KIN_LISTS.title}
-          </Button>
-          <Button size="sm" variant="outline" onClick={props.onClients}>
-            {KIN_MONEY.clients}
-          </Button>
           {agent === null ? null : (
             <Button size="sm" variant="ghost" onClick={() => agent.ask("")}>
               <MessageSquareIcon />

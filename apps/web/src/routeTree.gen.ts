@@ -60,7 +60,12 @@ import { Route as ChatEnvironmentIdThreadIdRouteImport } from './routes/_chat.$e
 import { Route as ChatKinEnvironmentIdOrgIdWorkRouteImport } from './routes/_chat.kin.$environmentId.$orgId.work'
 import { Route as ChatKinEnvironmentIdOrgIdTeamRouteImport } from './routes/_chat.kin.$environmentId.$orgId.team'
 import { Route as ChatKinEnvironmentIdOrgIdMemoryRouteImport } from './routes/_chat.kin.$environmentId.$orgId.memory'
+import { Route as ChatKinEnvironmentIdOrgIdPlacesRouteImport } from './routes/_chat.kin.$environmentId.$orgId._places'
 import { Route as ChatKinEnvironmentIdOrgIdChatIdRouteImport } from './routes/_chat.kin.$environmentId.$orgId.$chatId'
+import { Route as ChatKinEnvironmentIdOrgIdPlacesTasksRouteImport } from './routes/_chat.kin.$environmentId.$orgId._places.tasks'
+import { Route as ChatKinEnvironmentIdOrgIdPlacesMoneyRouteImport } from './routes/_chat.kin.$environmentId.$orgId._places.money'
+import { Route as ChatKinEnvironmentIdOrgIdPlacesDocsRouteImport } from './routes/_chat.kin.$environmentId.$orgId._places.docs'
+import { Route as ChatKinEnvironmentIdOrgIdPlacesClientsRouteImport } from './routes/_chat.kin.$environmentId.$orgId._places.clients'
 
 const WelcomeRoute = WelcomeRouteImport.update({
   id: '/welcome',
@@ -325,11 +330,41 @@ const ChatKinEnvironmentIdOrgIdMemoryRoute =
     path: '/$environmentId/$orgId/memory',
     getParentRoute: () => ChatKinRoute,
   } as any)
+const ChatKinEnvironmentIdOrgIdPlacesRoute =
+  ChatKinEnvironmentIdOrgIdPlacesRouteImport.update({
+    id: '/$environmentId/$orgId/_places',
+    path: '/$environmentId/$orgId',
+    getParentRoute: () => ChatKinRoute,
+  } as any)
 const ChatKinEnvironmentIdOrgIdChatIdRoute =
   ChatKinEnvironmentIdOrgIdChatIdRouteImport.update({
     id: '/$environmentId/$orgId/$chatId',
     path: '/$environmentId/$orgId/$chatId',
     getParentRoute: () => ChatKinRoute,
+  } as any)
+const ChatKinEnvironmentIdOrgIdPlacesTasksRoute =
+  ChatKinEnvironmentIdOrgIdPlacesTasksRouteImport.update({
+    id: '/tasks',
+    path: '/tasks',
+    getParentRoute: () => ChatKinEnvironmentIdOrgIdPlacesRoute,
+  } as any)
+const ChatKinEnvironmentIdOrgIdPlacesMoneyRoute =
+  ChatKinEnvironmentIdOrgIdPlacesMoneyRouteImport.update({
+    id: '/money',
+    path: '/money',
+    getParentRoute: () => ChatKinEnvironmentIdOrgIdPlacesRoute,
+  } as any)
+const ChatKinEnvironmentIdOrgIdPlacesDocsRoute =
+  ChatKinEnvironmentIdOrgIdPlacesDocsRouteImport.update({
+    id: '/docs',
+    path: '/docs',
+    getParentRoute: () => ChatKinEnvironmentIdOrgIdPlacesRoute,
+  } as any)
+const ChatKinEnvironmentIdOrgIdPlacesClientsRoute =
+  ChatKinEnvironmentIdOrgIdPlacesClientsRouteImport.update({
+    id: '/clients',
+    path: '/clients',
+    getParentRoute: () => ChatKinEnvironmentIdOrgIdPlacesRoute,
   } as any)
 
 export interface FileRoutesByFullPath {
@@ -381,9 +416,14 @@ export interface FileRoutesByFullPath {
   '/threads/$environmentId/$threadId': typeof ThreadsEnvironmentIdThreadIdRoute
   '/kin/': typeof ChatKinIndexRoute
   '/kin/$environmentId/$orgId/$chatId': typeof ChatKinEnvironmentIdOrgIdChatIdRoute
+  '/kin/$environmentId/$orgId': typeof ChatKinEnvironmentIdOrgIdPlacesRouteWithChildren
   '/kin/$environmentId/$orgId/memory': typeof ChatKinEnvironmentIdOrgIdMemoryRoute
   '/kin/$environmentId/$orgId/team': typeof ChatKinEnvironmentIdOrgIdTeamRoute
   '/kin/$environmentId/$orgId/work': typeof ChatKinEnvironmentIdOrgIdWorkRoute
+  '/kin/$environmentId/$orgId/clients': typeof ChatKinEnvironmentIdOrgIdPlacesClientsRoute
+  '/kin/$environmentId/$orgId/docs': typeof ChatKinEnvironmentIdOrgIdPlacesDocsRoute
+  '/kin/$environmentId/$orgId/money': typeof ChatKinEnvironmentIdOrgIdPlacesMoneyRoute
+  '/kin/$environmentId/$orgId/tasks': typeof ChatKinEnvironmentIdOrgIdPlacesTasksRoute
 }
 export interface FileRoutesByTo {
   '/approve-agent': typeof ApproveAgentRoute
@@ -433,9 +473,14 @@ export interface FileRoutesByTo {
   '/threads/$environmentId/$threadId': typeof ThreadsEnvironmentIdThreadIdRoute
   '/kin': typeof ChatKinIndexRoute
   '/kin/$environmentId/$orgId/$chatId': typeof ChatKinEnvironmentIdOrgIdChatIdRoute
+  '/kin/$environmentId/$orgId': typeof ChatKinEnvironmentIdOrgIdPlacesRouteWithChildren
   '/kin/$environmentId/$orgId/memory': typeof ChatKinEnvironmentIdOrgIdMemoryRoute
   '/kin/$environmentId/$orgId/team': typeof ChatKinEnvironmentIdOrgIdTeamRoute
   '/kin/$environmentId/$orgId/work': typeof ChatKinEnvironmentIdOrgIdWorkRoute
+  '/kin/$environmentId/$orgId/clients': typeof ChatKinEnvironmentIdOrgIdPlacesClientsRoute
+  '/kin/$environmentId/$orgId/docs': typeof ChatKinEnvironmentIdOrgIdPlacesDocsRoute
+  '/kin/$environmentId/$orgId/money': typeof ChatKinEnvironmentIdOrgIdPlacesMoneyRoute
+  '/kin/$environmentId/$orgId/tasks': typeof ChatKinEnvironmentIdOrgIdPlacesTasksRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -488,9 +533,14 @@ export interface FileRoutesById {
   '/threads/$environmentId/$threadId': typeof ThreadsEnvironmentIdThreadIdRoute
   '/_chat/kin/': typeof ChatKinIndexRoute
   '/_chat/kin/$environmentId/$orgId/$chatId': typeof ChatKinEnvironmentIdOrgIdChatIdRoute
+  '/_chat/kin/$environmentId/$orgId/_places': typeof ChatKinEnvironmentIdOrgIdPlacesRouteWithChildren
   '/_chat/kin/$environmentId/$orgId/memory': typeof ChatKinEnvironmentIdOrgIdMemoryRoute
   '/_chat/kin/$environmentId/$orgId/team': typeof ChatKinEnvironmentIdOrgIdTeamRoute
   '/_chat/kin/$environmentId/$orgId/work': typeof ChatKinEnvironmentIdOrgIdWorkRoute
+  '/_chat/kin/$environmentId/$orgId/_places/clients': typeof ChatKinEnvironmentIdOrgIdPlacesClientsRoute
+  '/_chat/kin/$environmentId/$orgId/_places/docs': typeof ChatKinEnvironmentIdOrgIdPlacesDocsRoute
+  '/_chat/kin/$environmentId/$orgId/_places/money': typeof ChatKinEnvironmentIdOrgIdPlacesMoneyRoute
+  '/_chat/kin/$environmentId/$orgId/_places/tasks': typeof ChatKinEnvironmentIdOrgIdPlacesTasksRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -543,9 +593,14 @@ export interface FileRouteTypes {
     | '/threads/$environmentId/$threadId'
     | '/kin/'
     | '/kin/$environmentId/$orgId/$chatId'
+    | '/kin/$environmentId/$orgId'
     | '/kin/$environmentId/$orgId/memory'
     | '/kin/$environmentId/$orgId/team'
     | '/kin/$environmentId/$orgId/work'
+    | '/kin/$environmentId/$orgId/clients'
+    | '/kin/$environmentId/$orgId/docs'
+    | '/kin/$environmentId/$orgId/money'
+    | '/kin/$environmentId/$orgId/tasks'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/approve-agent'
@@ -595,9 +650,14 @@ export interface FileRouteTypes {
     | '/threads/$environmentId/$threadId'
     | '/kin'
     | '/kin/$environmentId/$orgId/$chatId'
+    | '/kin/$environmentId/$orgId'
     | '/kin/$environmentId/$orgId/memory'
     | '/kin/$environmentId/$orgId/team'
     | '/kin/$environmentId/$orgId/work'
+    | '/kin/$environmentId/$orgId/clients'
+    | '/kin/$environmentId/$orgId/docs'
+    | '/kin/$environmentId/$orgId/money'
+    | '/kin/$environmentId/$orgId/tasks'
   id:
     | '__root__'
     | '/_chat'
@@ -649,9 +709,14 @@ export interface FileRouteTypes {
     | '/threads/$environmentId/$threadId'
     | '/_chat/kin/'
     | '/_chat/kin/$environmentId/$orgId/$chatId'
+    | '/_chat/kin/$environmentId/$orgId/_places'
     | '/_chat/kin/$environmentId/$orgId/memory'
     | '/_chat/kin/$environmentId/$orgId/team'
     | '/_chat/kin/$environmentId/$orgId/work'
+    | '/_chat/kin/$environmentId/$orgId/_places/clients'
+    | '/_chat/kin/$environmentId/$orgId/_places/docs'
+    | '/_chat/kin/$environmentId/$orgId/_places/money'
+    | '/_chat/kin/$environmentId/$orgId/_places/tasks'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -1026,6 +1091,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatKinEnvironmentIdOrgIdMemoryRouteImport
       parentRoute: typeof ChatKinRoute
     }
+    '/_chat/kin/$environmentId/$orgId/_places': {
+      id: '/_chat/kin/$environmentId/$orgId/_places'
+      path: '/$environmentId/$orgId'
+      fullPath: '/kin/$environmentId/$orgId'
+      preLoaderRoute: typeof ChatKinEnvironmentIdOrgIdPlacesRouteImport
+      parentRoute: typeof ChatKinRoute
+    }
     '/_chat/kin/$environmentId/$orgId/$chatId': {
       id: '/_chat/kin/$environmentId/$orgId/$chatId'
       path: '/$environmentId/$orgId/$chatId'
@@ -1033,12 +1105,65 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatKinEnvironmentIdOrgIdChatIdRouteImport
       parentRoute: typeof ChatKinRoute
     }
+    '/_chat/kin/$environmentId/$orgId/_places/tasks': {
+      id: '/_chat/kin/$environmentId/$orgId/_places/tasks'
+      path: '/tasks'
+      fullPath: '/kin/$environmentId/$orgId/tasks'
+      preLoaderRoute: typeof ChatKinEnvironmentIdOrgIdPlacesTasksRouteImport
+      parentRoute: typeof ChatKinEnvironmentIdOrgIdPlacesRoute
+    }
+    '/_chat/kin/$environmentId/$orgId/_places/money': {
+      id: '/_chat/kin/$environmentId/$orgId/_places/money'
+      path: '/money'
+      fullPath: '/kin/$environmentId/$orgId/money'
+      preLoaderRoute: typeof ChatKinEnvironmentIdOrgIdPlacesMoneyRouteImport
+      parentRoute: typeof ChatKinEnvironmentIdOrgIdPlacesRoute
+    }
+    '/_chat/kin/$environmentId/$orgId/_places/docs': {
+      id: '/_chat/kin/$environmentId/$orgId/_places/docs'
+      path: '/docs'
+      fullPath: '/kin/$environmentId/$orgId/docs'
+      preLoaderRoute: typeof ChatKinEnvironmentIdOrgIdPlacesDocsRouteImport
+      parentRoute: typeof ChatKinEnvironmentIdOrgIdPlacesRoute
+    }
+    '/_chat/kin/$environmentId/$orgId/_places/clients': {
+      id: '/_chat/kin/$environmentId/$orgId/_places/clients'
+      path: '/clients'
+      fullPath: '/kin/$environmentId/$orgId/clients'
+      preLoaderRoute: typeof ChatKinEnvironmentIdOrgIdPlacesClientsRouteImport
+      parentRoute: typeof ChatKinEnvironmentIdOrgIdPlacesRoute
+    }
   }
 }
+
+interface ChatKinEnvironmentIdOrgIdPlacesRouteChildren {
+  ChatKinEnvironmentIdOrgIdPlacesClientsRoute: typeof ChatKinEnvironmentIdOrgIdPlacesClientsRoute
+  ChatKinEnvironmentIdOrgIdPlacesDocsRoute: typeof ChatKinEnvironmentIdOrgIdPlacesDocsRoute
+  ChatKinEnvironmentIdOrgIdPlacesMoneyRoute: typeof ChatKinEnvironmentIdOrgIdPlacesMoneyRoute
+  ChatKinEnvironmentIdOrgIdPlacesTasksRoute: typeof ChatKinEnvironmentIdOrgIdPlacesTasksRoute
+}
+
+const ChatKinEnvironmentIdOrgIdPlacesRouteChildren: ChatKinEnvironmentIdOrgIdPlacesRouteChildren =
+  {
+    ChatKinEnvironmentIdOrgIdPlacesClientsRoute:
+      ChatKinEnvironmentIdOrgIdPlacesClientsRoute,
+    ChatKinEnvironmentIdOrgIdPlacesDocsRoute:
+      ChatKinEnvironmentIdOrgIdPlacesDocsRoute,
+    ChatKinEnvironmentIdOrgIdPlacesMoneyRoute:
+      ChatKinEnvironmentIdOrgIdPlacesMoneyRoute,
+    ChatKinEnvironmentIdOrgIdPlacesTasksRoute:
+      ChatKinEnvironmentIdOrgIdPlacesTasksRoute,
+  }
+
+const ChatKinEnvironmentIdOrgIdPlacesRouteWithChildren =
+  ChatKinEnvironmentIdOrgIdPlacesRoute._addFileChildren(
+    ChatKinEnvironmentIdOrgIdPlacesRouteChildren,
+  )
 
 interface ChatKinRouteChildren {
   ChatKinIndexRoute: typeof ChatKinIndexRoute
   ChatKinEnvironmentIdOrgIdChatIdRoute: typeof ChatKinEnvironmentIdOrgIdChatIdRoute
+  ChatKinEnvironmentIdOrgIdPlacesRoute: typeof ChatKinEnvironmentIdOrgIdPlacesRouteWithChildren
   ChatKinEnvironmentIdOrgIdMemoryRoute: typeof ChatKinEnvironmentIdOrgIdMemoryRoute
   ChatKinEnvironmentIdOrgIdTeamRoute: typeof ChatKinEnvironmentIdOrgIdTeamRoute
   ChatKinEnvironmentIdOrgIdWorkRoute: typeof ChatKinEnvironmentIdOrgIdWorkRoute
@@ -1047,6 +1172,8 @@ interface ChatKinRouteChildren {
 const ChatKinRouteChildren: ChatKinRouteChildren = {
   ChatKinIndexRoute: ChatKinIndexRoute,
   ChatKinEnvironmentIdOrgIdChatIdRoute: ChatKinEnvironmentIdOrgIdChatIdRoute,
+  ChatKinEnvironmentIdOrgIdPlacesRoute:
+    ChatKinEnvironmentIdOrgIdPlacesRouteWithChildren,
   ChatKinEnvironmentIdOrgIdMemoryRoute: ChatKinEnvironmentIdOrgIdMemoryRoute,
   ChatKinEnvironmentIdOrgIdTeamRoute: ChatKinEnvironmentIdOrgIdTeamRoute,
   ChatKinEnvironmentIdOrgIdWorkRoute: ChatKinEnvironmentIdOrgIdWorkRoute,

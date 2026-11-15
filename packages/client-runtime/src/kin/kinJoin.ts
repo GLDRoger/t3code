@@ -133,21 +133,40 @@ export function kinAccessEnded(
   );
 }
 
-export type KinHomeTab = "chats" | "work" | "team" | "memory" | "settings";
-
-/** The tabs a Kin home's dock draws. Team and Memory are pages of Settings, not tabs. */
-export type KinDockTab = Extract<KinHomeTab, "chats" | "work" | "settings">;
-
-const isDockTab = (tab: KinHomeTab): tab is KinDockTab =>
-  tab === "chats" || tab === "work" || tab === "settings";
-
-/** Chats, Work and Settings for a session the host lets read Work; Chats and Settings otherwise. */
-export function kinDockTabs(session: SessionGrantInput | null): ReadonlyArray<KinDockTab> {
-  return kinHomeTabs(session).filter(isDockTab);
-}
-
 const grants = (session: SessionGrantInput | null) => (scope: AuthEnvironmentScope) =>
   session !== null && sessionGrantsScope(session, scope);
+
+export type KinHomeTab = "chats" | "work" | "team" | "memory" | "settings";
+
+/** The places a Kin home's dock draws. Settings is a button on Chats, Team and Memory its pages. */
+export type KinDockTab = "chats" | "tasks" | "money" | "clients" | "docs";
+
+/** Places the host has answered it won't show this viewer, which a grant can't tell apart. */
+export interface KinDockRefused {
+  readonly money: boolean;
+  readonly clients: boolean;
+  readonly docs: boolean;
+}
+
+/** Chats, then each place of Work the session's grant reaches and the host hasn't refused. */
+export function kinDockTabs(
+  session: SessionGrantInput | null,
+  refused: KinDockRefused,
+): ReadonlyArray<KinDockTab> {
+  const allowed = grants(session);
+  if (!allowed(KIN_WORK_RPC_SCOPES["kin.work.list"])) return ["chats"];
+  return [
+    "chats",
+    "tasks",
+    ...(refused.money || !allowed(KIN_FINANCE_RPC_SCOPES["kin.work.money"])
+      ? []
+      : (["money"] as const)),
+    ...(refused.clients || !allowed(KIN_WORK_RPC_SCOPES["kin.work.parties"])
+      ? []
+      : (["clients"] as const)),
+    ...(refused.docs || !allowed(KIN_DOCS_RPC_SCOPES["kin.docs.list"]) ? [] : (["docs"] as const)),
+  ];
+}
 
 /**
  * The tabs of a Kin-only home, in order, from what the session has been allowed: a tab whose page
@@ -161,23 +180,5 @@ export function kinHomeTabs(session: SessionGrantInput | null): ReadonlyArray<Ki
     ...(allowed(KIN_PEOPLE_RPC_SCOPES["kin.people.listInvites"]) ? (["team"] as const) : []),
     ...(allowed(KIN_MEMORY_RPC_SCOPES["kin.memory.list"]) ? (["memory"] as const) : []),
     "settings",
-  ];
-}
-
-/** One place of the Kin dock. Settings is a button on Chats, not a place. */
-export type KinPlace = "chats" | "tasks" | "money" | "clients" | "docs";
-
-/**
- * The dock's places, in order, each offered only when the host would answer its list for this
- * session. A teammate gets the ones their grant reaches; without money access there is no Money.
- */
-export function kinPlaces(session: SessionGrantInput | null): ReadonlyArray<KinPlace> {
-  const allowed = grants(session);
-  return [
-    "chats",
-    ...(allowed(KIN_WORK_RPC_SCOPES["kin.work.list"]) ? (["tasks"] as const) : []),
-    ...(allowed(KIN_FINANCE_RPC_SCOPES["kin.work.money"]) ? (["money"] as const) : []),
-    ...(allowed(KIN_WORK_RPC_SCOPES["kin.work.parties"]) ? (["clients"] as const) : []),
-    ...(allowed(KIN_DOCS_RPC_SCOPES["kin.docs.list"]) ? (["docs"] as const) : []),
   ];
 }

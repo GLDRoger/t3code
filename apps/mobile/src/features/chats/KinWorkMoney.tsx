@@ -5,37 +5,32 @@ import {
   kinDateRowView,
   type KinDateRowView,
 } from "@t3tools/client-runtime/kin/kinDates";
-import { KIN_LISTS, kinListsIndex } from "@t3tools/client-runtime/kin/kinLists";
 import {
   KIN_MONEY,
   kinMoneyView,
   type KinListOpen,
   type KinMoneyFigure,
 } from "@t3tools/client-runtime/kin/kinMoney";
-import {
-  KIN_WORK_HOME,
-  kinPlaceLists,
-  kinWorkAskDraft,
-  type KinWorkPlace,
-} from "@t3tools/client-runtime/kin/kinWorkHome";
+import { KIN_WORK_HOME, kinWorkAskDraft } from "@t3tools/client-runtime/kin/kinWorkHome";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
-import { useState } from "react";
+import { useAtomValue } from "@effect/atom-react";
 import { Pressable, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
+import type { AppBarMenuItem } from "../../components/ui/AppBar.types";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ListActionRow } from "../../components/ui/ListActionRow";
-import { ListRow } from "../../components/ui/ListRow";
 import { ListSection } from "../../components/ui/ListSection";
 import { KinReceiptsSection } from "./KinInvoice";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { cn } from "../../lib/cn";
 import { useNowMinuteMs } from "../../lib/clock";
+import { useKinTab } from "./components/KinTab";
 import { KinWorkLoading, KinWorkStaleNotice } from "./components/KinWorkPieces";
+import { kinClient } from "./state/kinClient";
 import { kinListsOf, useKinAskAgent, useKinLists, useKinMoneySummary } from "./state/useKinMoney";
 import { refreshKinWorkLive, type KinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 import { KinChart } from "./widgets/KinChart";
@@ -57,16 +52,44 @@ export function useKinOpenList(target: KinWorkTarget) {
     });
 }
 
-/** A place of Work that isn't a paged list, with its way to hand over to an agent in the bar. */
+/** Money's page, with its ways to add and to hand over to an agent in the bar. */
 function AreaFrame(props: {
   readonly target: KinWorkTarget;
-  readonly place: KinWorkPlace;
   readonly stale: boolean;
   readonly onRefresh: () => void;
   readonly children: React.ReactNode;
 }) {
   const navigation = useNavigation();
-  const agent = useKinAskAgent(props.target, props.place);
+  const tab = useKinTab();
+  const agent = useKinAskAgent(props.target, "money");
+  const canReceipt = useAtomValue(kinClient.makeReceipt.permissionAtom(props.target.environmentId));
+  const base = {
+    environmentId: String(props.target.environmentId),
+    orgId: String(props.target.orgId),
+  };
+  const addItems: ReadonlyArray<AppBarMenuItem> = [
+    ...(agent === null
+      ? []
+      : [
+          {
+            id: "expense",
+            title: KIN_WORK_HOME.addExpense,
+            subtitle: `${agent.name} logs it`,
+            icon: "tag" as const,
+            onPress: () => agent.ask("Log an expense: "),
+          },
+        ]),
+    ...(canReceipt
+      ? [
+          {
+            id: "receipt",
+            title: KIN_WORK_HOME.addReceipt,
+            icon: "doc.text" as const,
+            onPress: () => navigation.navigate("KinReceiptNew", base),
+          },
+        ]
+      : []),
+  ];
   // The counts may be what failed, so they are read again with the area's own figures.
   const refresh = () => {
     refreshKinWorkLive(props.target);
@@ -75,9 +98,9 @@ function AreaFrame(props: {
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
-        title={KIN_WORK_HOME.places[props.place]}
+        title={KIN_WORK_HOME.places.money}
         refresh={{ accessibilityLabel: "Refresh", onPress: refresh }}
-        onBack={() => navigation.goBack()}
+        {...(tab === null ? { onBack: () => navigation.goBack() } : {})}
         {...(agent === null
           ? {}
           : {
@@ -85,10 +108,13 @@ function AreaFrame(props: {
                 {
                   accessibilityLabel: `Ask ${agent.name}`,
                   icon: "bubble.left",
-                  onPress: () => agent.ask(kinWorkAskDraft(props.place)),
+                  onPress: () => agent.ask(kinWorkAskDraft("money")),
                 },
               ],
             })}
+        {...(addItems.length === 0
+          ? {}
+          : { menus: [{ title: KIN_WORK_HOME.add, icon: "plus", items: addItems }] })}
       />
       <ScreenContent surface="screen">
         <ScreenScrollView
@@ -96,7 +122,7 @@ function AreaFrame(props: {
           contentInsetAdjustmentBehavior="automatic"
           contentContainerStyle={{
             paddingTop: 8,
-            paddingBottom: 32,
+            paddingBottom: 32 + (tab?.bottomClearance ?? 0),
             gap: 20,
           }}
         >
@@ -266,7 +292,6 @@ export function KinMoneyArea(props: Shared) {
   const { state } = money;
   const frame = {
     target,
-    place: "money" as const,
     stale: props.stale,
     onRefresh: () => {
       money.refresh();
@@ -462,89 +487,5 @@ function MonthFigure(props: {
         {props.amount}
       </Text>
     </Pressable>
-  );
-}
-
-/** Every list an agent set up, and the one view across all their dates. */
-export function KinListsArea(props: Shared) {
-  const navigation = useNavigation();
-  const target = { environmentId: props.environmentId, orgId: props.orgId };
-  const seq = props.stale ? null : props.live.seq;
-  const [archived, setArchived] = useState(false);
-  const lists = useKinLists(target, { enabled: true, archived, seq });
-  const agent = useKinAskAgent(target, "lists");
-  const { state } = lists;
-  const frame = { target, place: "lists" as const, stale: props.stale, onRefresh: lists.refresh };
-  if (state._tag !== "ready") {
-    return (
-      <AreaFrame {...frame}>
-        {state._tag === "loading" ? (
-          <KinWorkLoading label="Loading lists" />
-        ) : state._tag === "refused" ? (
-          <EmptyState variant="plain" {...KIN_LISTS.onlyOwner} />
-        ) : (
-          <EmptyState
-            variant="plain"
-            title={KIN_LISTS.loadFailed}
-            detail="Check your connection to the server and try again."
-            action={<Button tone="secondary" label="Try again" onPress={lists.refresh} />}
-          />
-        )}
-      </AreaFrame>
-    );
-  }
-  const index = kinListsIndex(kinPlaceLists(state.value.lists));
-  const ask =
-    agent === null ? null : (
-      <Button
-        tone={index.active.length === 0 ? "primary" : "secondary"}
-        icon="bubble.left"
-        label={KIN_LISTS.ask}
-        onPress={() => agent.ask(KIN_LISTS.askMessage)}
-      />
-    );
-  const open = (list: string) => navigation.navigate("KinList", { ...target, list });
-  return (
-    <AreaFrame {...frame}>
-      {index.active.length === 0 && index.archived.length === 0 ? (
-        <EmptyState
-          variant="plain"
-          {...KIN_LISTS.none}
-          {...(ask === null ? {} : { action: ask })}
-        />
-      ) : (
-        <>
-          <ListSection title={KIN_LISTS.title}>
-            {index.active.map((row) => (
-              <ListRow
-                key={row.list}
-                label={row.name}
-                detail={row.line}
-                onPress={() => open(row.list)}
-              />
-            ))}
-          </ListSection>
-          {archived && index.archived.length > 0 ? (
-            <ListSection title={KIN_LISTS.archived}>
-              {index.archived.map((row) => (
-                <ListRow
-                  key={row.list}
-                  label={row.name}
-                  detail={row.line}
-                  onPress={() => open(row.list)}
-                />
-              ))}
-            </ListSection>
-          ) : null}
-          <ListSection>
-            <ListToggleRow
-              label={KIN_LISTS.showArchived}
-              value={archived}
-              onValueChange={setArchived}
-            />
-          </ListSection>
-        </>
-      )}
-    </AreaFrame>
   );
 }

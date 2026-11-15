@@ -1,9 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import { kinDockTabs, type KinDockTab } from "@t3tools/client-runtime/kin/kinJoin";
+import { kinWorkHostClients } from "@t3tools/client-runtime/kin/kinWork";
+import type { SessionGrantInput } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
-import { useState } from "react";
-import { Platform, View } from "react-native";
+import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -15,33 +16,26 @@ import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { environmentCatalog } from "../../connection/catalog";
 import { KIN_ONLY } from "../../lib/kinOnly";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
+import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentSession } from "../../state/session";
-import { SidebarTabBar } from "../layout/workspace/WorkspaceSidebarTabs";
-import { useFloatingWorkspaceTabs } from "../layout/workspace/useSystemWorkspaceTabBar";
-import { workspaceDockBottomClearance } from "../layout/workspace/workspace-tabs-state";
 import { KinChatsList } from "./KinChatsScreen";
-import { KinSettings } from "./KinSettings";
-import { KinWorkTab } from "./KinWorkScreen";
-import { KinScreenState } from "./components/KinScreenState";
+import { KinDock, kinDockClearance } from "./components/KinDock";
+import { KinPlace } from "./KinWorkScreen";
 import { KinTabContext } from "./components/KinTab";
+import { kinHomeTabAtom } from "./state/kinHomeTab";
 import { useKinAccessEnded, useKinAppShell } from "./state/kinChatOnly";
+import { useKinDocsLive } from "./state/useKinDocs";
 import { useKinHost } from "./state/useKinHost";
-import { useKinInbox } from "./state/useKinInbox";
+import { useKinMoneySummary } from "./state/useKinMoney";
+import { useKinWork, type KinWorkTarget } from "./state/useKinWork";
 
-/** The native dock's names for the Kin tabs; it draws the icon and label for each. */
-const KIN_DOCK_NAMES: Record<KinDockTab, string> = {
-  chats: "threads",
-  work: "work",
-  settings: "settings",
-};
 const noSessionAtom = Atom.make(null);
 
 /**
- * Kin as the whole app: Chats, Work and Settings as tabs of the dock the coding workspace uses.
- * Work is there for a session the host lets read it, so a teammate gets Chats and Settings.
+ * Kin as the whole app: Chats, then each place of Work as a tab of the dock the coding workspace
+ * uses, with Settings a button on Chats. A teammate, who can't read Work, gets Chats alone.
  */
 export function KinHomeScreen() {
-  const navigation = useNavigation();
   const host = useKinHost();
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
   const session = useAtomValue(
@@ -49,14 +43,6 @@ export function KinHomeScreen() {
       ? environmentSession.sessionStateValueAtom(host.environmentId)
       : noSessionAtom,
   );
-  const teammate = useKinAppShell() === "chatOnly";
-  const accessEnded = useKinAccessEnded().length > 0;
-  const insets = useSafeAreaInsets();
-  const compact = useFloatingWorkspaceTabs();
-  const [selected, setSelected] = useState<KinDockTab>("chats");
-  const tabs = kinDockTabs(session);
-  // Work leaves the dock when the session behind it does; fall back rather than show a ghost tab.
-  const tab = tabs.includes(selected) ? selected : "chats";
   const orgId =
     host._tag === "host" && host.probe._tag === "ready"
       ? (host.probe.orgs.me[0]?.orgId ?? null)
@@ -66,34 +52,56 @@ export function KinHomeScreen() {
 
   if (KIN_ONLY && !catalog.isReady) return <View className="flex-1 bg-screen" />;
   if (KIN_ONLY && catalog.entries.size === 0) return <KinWelcome />;
+  const chatsOnly = kinDockTabs(session, { money: false, clients: false, docs: false });
+  if (workTarget === null || chatsOnly.length === 1) {
+    return <KinHomeTabs tabs={["chats"]} workTarget={null} />;
+  }
+  return <KinHomeWithWork session={session} workTarget={workTarget} />;
+}
 
-  // Android has no dock here yet, so Work and Settings are buttons in the chat list's bar.
-  const docked = Platform.OS === "ios";
-  const bottomClearance = docked
-    ? workspaceDockBottomClearance({ bottomInset: insets.bottom, keyboardHeight: 0 })
-    : 0;
-  const actions: ReadonlyArray<AppBarAction> | undefined = docked
-    ? undefined
-    : [
-        ...(tabs.includes("work") && workTarget !== null
-          ? [
-              {
-                accessibilityLabel: "Work",
-                icon: "checkmark.circle",
-                onPress: () => navigation.navigate("KinWork", workTarget),
-              } as const,
-            ]
-          : []),
-        {
-          accessibilityLabel: "Settings",
-          icon: "gearshape",
-          onPress: () => navigation.navigate("Settings"),
-        } as const,
-      ];
+/** The dock for a viewer who may read Work: a place the host refuses them leaves it. */
+function KinHomeWithWork(props: {
+  readonly session: SessionGrantInput | null;
+  readonly workTarget: KinWorkTarget;
+}) {
+  const work = useKinWork(props.workTarget);
+  const seq = work._tag === "ready" && !work.stale ? work.live.seq : null;
+  const money = useKinMoneySummary(props.workTarget, { enabled: true, seq }).state;
+  const docs = useKinDocsLive(props.workTarget);
+  const tabs = kinDockTabs(props.session, {
+    money: money._tag === "refused",
+    // Only an answer from an older host takes Clients away, never one still on its way.
+    clients: work._tag === "ready" && !kinWorkHostClients(work.live.summary),
+    docs: docs.refused,
+  });
+  return <KinHomeTabs tabs={tabs} workTarget={props.workTarget} />;
+}
+
+function KinHomeTabs(props: {
+  readonly tabs: ReadonlyArray<KinDockTab>;
+  readonly workTarget: KinWorkTarget | null;
+}) {
+  const navigation = useNavigation();
+  const { tabs, workTarget } = props;
+  const teammate = useKinAppShell() === "chatOnly";
+  const accessEnded = useKinAccessEnded().length > 0;
+  const insets = useSafeAreaInsets();
+  const held = useAtomValue(kinHomeTabAtom);
+  // A place leaves the dock when the session behind it does; fall back rather than show a ghost tab.
+  const tab = tabs.includes(held.tab) ? held.tab : "chats";
+  const docked = tabs.length > 1;
+  const bottomClearance = docked ? kinDockClearance(insets.bottom) : 0;
+  const select = (next: KinDockTab) =>
+    appAtomRegistry.set(kinHomeTabAtom, { ...appAtomRegistry.get(kinHomeTabAtom), tab: next });
+  const settings: AppBarAction = {
+    accessibilityLabel: "Settings",
+    icon: "gearshape",
+    onPress: () => navigation.navigate("SettingsKin"),
+  };
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       {/* Home's route carries the coding workspace's brand title, and a tab's bar keeps what the
-          last tab set (Work's search), so each tab starts from a clean bar. */}
+          last tab set (a place's search), so each tab starts from a clean bar. */}
       <NativeStackScreenOptions
         key={tab}
         options={{
@@ -103,18 +111,17 @@ export function KinHomeScreen() {
         }}
       />
       <KinTabContext value={docked ? { bottomClearance } : null}>
-        {tab === "settings" ? (
-          <KinSettings />
-        ) : tab === "work" ? (
-          workTarget === null ? (
-            <KinHomeMessage title="Work" bottomClearance={bottomClearance}>
-              <KinWorkUnavailable />
-            </KinHomeMessage>
-          ) : (
-            <KinWorkTab {...workTarget} />
-          )
+        {tab !== "chats" && workTarget !== null ? (
+          <KinPlace
+            // Asked again to narrow Tasks, it starts again from what it was asked.
+            key={`${tab}:${held.opened}`}
+            {...workTarget}
+            place={{ place: tab, projects: false }}
+            party={tab === "tasks" ? (held.tasks?.party ?? null) : null}
+            project={tab === "tasks" ? (held.tasks?.project ?? null) : null}
+          />
         ) : accessEnded ? (
-          <KinHomeMessage title="Kin" bottomClearance={bottomClearance} actions={actions}>
+          <KinHomeMessage title="Kin" bottomClearance={bottomClearance} actions={[settings]}>
             <EmptyState
               variant="plain"
               title="You no longer have access"
@@ -126,7 +133,7 @@ export function KinHomeScreen() {
         ) : (
           <KinChatsList
             bottomClearance={bottomClearance}
-            actions={actions}
+            actions={[settings]}
             {...(teammate
               ? {
                   emptyDetail:
@@ -136,21 +143,7 @@ export function KinHomeScreen() {
           />
         )}
       </KinTabContext>
-      {docked ? (
-        <View
-          pointerEvents="box-none"
-          style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 128 }}
-        >
-          <SidebarTabBar
-            compact={compact}
-            reserveComposeSpace={false}
-            tabs={tabs}
-            selectedTab={tab}
-            onSelect={setSelected}
-            nativeTab={(candidate) => KIN_DOCK_NAMES[candidate]}
-          />
-        </View>
-      ) : null}
+      {docked ? <KinDock tabs={tabs} selectedTab={tab} onSelect={select} /> : null}
     </View>
   );
 }
@@ -179,22 +172,6 @@ function KinHomeMessage(props: {
         </ScreenScrollView>
       </ScreenContent>
     </>
-  );
-}
-
-/** Work before the Kin behind it has answered: the same reasons the chat list gives. */
-function KinWorkUnavailable() {
-  const { state, retry } = useKinInbox();
-  return (
-    <KinScreenState state={state} onRetry={retry}>
-      {() => (
-        <EmptyState
-          variant="plain"
-          title="Work isn't ready yet"
-          detail="Your Kin hasn't answered. Give it a moment, then open Work again."
-        />
-      )}
-    </KinScreenState>
   );
 }
 

@@ -12,7 +12,6 @@ import {
   kinChatOnlyEnvironments,
   kinDockTabs,
   kinHomeTabs,
-  kinPlaces,
   kinJoinFailureMessage,
   kinJoinOffersApp,
   kinJoinStanding,
@@ -124,16 +123,17 @@ describe("the app's shell", () => {
     expect(kinHomeTabs(null)).toEqual(["chats", "settings"]);
   });
 
-  it("docks Chats, Work and Settings for the owner and a teammate", () => {
-    expect(kinDockTabs(owner)).toEqual(["chats", "work", "settings"]);
-    expect(kinDockTabs(teammate)).toEqual(["chats", "work", "settings"]);
-    expect(kinDockTabs(null)).toEqual(["chats", "settings"]);
-  });
-
-  it("gives a teammate Tasks and no Money, and the owner every place", () => {
-    expect(kinPlaces(owner)).toEqual(["chats", "tasks", "money", "clients", "docs"]);
-    expect(kinPlaces(teammate)).toEqual(["chats", "tasks"]);
-    expect(kinPlaces(null)).toEqual(["chats"]);
+  it("docks Chats and every place of Work the grant reaches and the host has not refused", () => {
+    const none = { money: false, clients: false, docs: false };
+    expect(kinDockTabs(owner, none)).toEqual(["chats", "tasks", "money", "clients", "docs"]);
+    expect(kinDockTabs(owner, { ...none, money: true })).toEqual([
+      "chats",
+      "tasks",
+      "clients",
+      "docs",
+    ]);
+    expect(kinDockTabs(teammate, none)).toEqual(["chats", "tasks"]);
+    expect(kinDockTabs(null, none)).toEqual(["chats"]);
   });
 
   it("is only Kin when every saved environment is a teammate's", () => {
