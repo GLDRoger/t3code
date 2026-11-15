@@ -2,8 +2,8 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 /**
- * An agent's receipt that would record money received, kept exactly as asked until the owner
- * confirms its card; and statement password tries, counted per statement and per file in a chat,
+ * An agent's receipt that would record money received, kept as asked with the figures its card
+ * showed, until the owner's tap on that card records it or says no; and statement password tries, counted per statement and per file in a chat,
  * so sending the same file again or reading it again never refills them. Counts kept on each
  * statement before this carry over.
  */
@@ -16,12 +16,16 @@ export default Effect.gen(function* () {
     wakeup_id TEXT NOT NULL,
     chat_id TEXT NOT NULL,
     request_json TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL,
     widget_id TEXT,
     proposed_at INTEGER NOT NULL,
+    state TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open', 'made', 'declined')),
+    decided_at INTEGER,
     receipt_key TEXT,
-    applied_at INTEGER,
     PRIMARY KEY (org_id, proposal_id)
   )`;
+  yield* sql`CREATE INDEX IF NOT EXISTS kin_receipt_proposals_widgets
+    ON kin_receipt_proposals (org_id, widget_id)`;
   yield* sql`CREATE TABLE IF NOT EXISTS kin_statement_password_budget (
     org_id TEXT NOT NULL,
     budget_key TEXT NOT NULL,

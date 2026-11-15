@@ -295,6 +295,183 @@ describe("what the file itself proves", () => {
       ["unchecked", "Page 2 could not be checked against the file: it has no text Kin can read"],
     );
     assert.deepStrictEqual(rows(null).gaps, [2]);
+    // No rows at all prove nothing, though the opening and closing agree.
+    const none = prove(
+      bindRows({
+        kind: "account",
+        currency: "INR",
+        opening: 100_000,
+        texts: [""],
+        pages: [{ page: 1, rows: [] }],
+      }),
+      100_000,
+      100_000,
+    );
+    assert.deepStrictEqual(
+      [none.check.status, none.check.line.split(".")[0]],
+      ["unchecked", "Page 1 could not be checked against the file: it has no text Kin can read"],
+    );
+    // A page with no text between two printed balances that run on across it is covered.
+    const across = (balance: string | undefined) =>
+      bindRows({
+        kind: "account",
+        currency: "INR",
+        opening: 100_000,
+        texts: [
+          [
+            HEADER,
+            printed("02/04/26", "NEFT CR-NORTHWIND", { credit: "500.00", balance: "1,500.00" }),
+          ].join("\n"),
+          "",
+          printed("09/04/26", "POS FIGMA.COM", {
+            debit: "200.00",
+            ...(balance === undefined ? {} : { balance }),
+          }),
+        ],
+        pages: [
+          { page: 1, rows: [{ ...vendor("2026-04-02", 50_000, 150_000), description: "NEFT CR-NORTHWIND", reference: "123456", direction: "credit" }] },
+          { page: 2, rows: [] },
+          {
+            page: 3,
+            rows: [
+              {
+                ...vendor("2026-04-09", 20_000, 130_000),
+                description: "POS FIGMA.COM",
+                reference: "123456",
+                balanceMinor: balance === undefined ? null : 130_000,
+              },
+            ],
+          },
+        ],
+      });
+    assert.strictEqual(prove(across("1,300.00"), 100_000, 130_000).check.status, "adds_up");
+    assert.include(prove(across(undefined), 100_000, 130_000).check.line, "Page 2 could not be");
+  });
+
+  it("never turns a withdrawal into a deposit when a later page's columns sit elsewhere", () => {
+    const first = [
+      HEADER,
+      printed("02/04/26", "NEFT CR-NORTHWIND", { credit: "500.00", balance: "1,500.00" }),
+    ].join("\n");
+    // The same columns a few characters to the right, with no header of their own.
+    const shifted = (by: number) =>
+      [
+        printed("09/04/26", "POS FIGMA.COM", { debit: "200.00", balance: "1,300.00" }),
+        printed("12/04/26", "NEFT CR-SOUTHWIND", { credit: "300.00", balance: "1,600.00" }),
+      ]
+        .map((one) => `${one.slice(0, 50)}${" ".repeat(by)}${one.slice(50)}`)
+        .join("\n");
+    for (const by of [8, 12]) {
+      const bound = bindRows({
+        kind: "account",
+        currency: "INR",
+        opening: 100_000,
+        texts: [first, shifted(by)],
+        pages: [
+          {
+            page: 1,
+            rows: [
+              {
+                date: "2026-04-02",
+                description: "NEFT CR-NORTHWIND",
+                reference: "123456",
+                amountMinor: 50_000,
+                direction: "credit",
+                balanceMinor: 150_000,
+              },
+            ],
+          },
+          {
+            page: 2,
+            rows: [
+              {
+                date: "2026-04-09",
+                description: "POS FIGMA.COM",
+                reference: "123456",
+                amountMinor: 20_000,
+                direction: "debit",
+                balanceMinor: 130_000,
+              },
+              {
+                date: "2026-04-12",
+                description: "NEFT CR-SOUTHWIND",
+                reference: "123456",
+                amountMinor: 30_000,
+                direction: "credit",
+                balanceMinor: 160_000,
+              },
+            ],
+          },
+        ],
+      });
+      assert.deepStrictEqual(
+        [bound.problems, bound.pages[1]!.rows.map((one) => one.direction)],
+        [[], ["debit", "credit"]],
+        `shifted ${by}`,
+      );
+      assert.strictEqual(prove(bound, 100_000, 160_000).check.status, "adds_up", `shifted ${by}`);
+    }
+  });
+
+  it("reads whole amounts in a zero-decimal currency's money columns, never in its narration", () => {
+    const page = [
+      HEADER,
+      printed("02/04/26", "NEFT CR-NORTHWIND 4500", { credit: "500", balance: "1500" }),
+      printed("09/04/26", "POS FIGMA.COM", { debit: "1,200", balance: "300" }),
+    ].join("\n");
+    const bound = bindRows({
+      kind: "account",
+      currency: "JPY",
+      opening: 1_000,
+      texts: [page],
+      pages: [
+        {
+          page: 1,
+          rows: [
+            {
+              date: "2026-04-02",
+              description: "NEFT CR-NORTHWIND 4500",
+              reference: "123456",
+              amountMinor: 500,
+              direction: "credit",
+              balanceMinor: 1_500,
+            },
+            {
+              date: "2026-04-09",
+              description: "POS FIGMA.COM",
+              reference: "123456",
+              amountMinor: 1_200,
+              direction: "debit",
+              balanceMinor: 300,
+            },
+          ],
+        },
+      ],
+    });
+    assert.deepStrictEqual([bound.problems, bound.unproven], [[], []]);
+    // The narration's 4500 is no amount: a row claiming it finds no line printing it.
+    const claimed = bindRows({
+      kind: "account",
+      currency: "JPY",
+      opening: 1_000,
+      texts: [page],
+      pages: [
+        {
+          page: 1,
+          rows: [
+            {
+              date: "2026-04-02",
+              description: "NEFT CR-NORTHWIND 4500",
+              reference: "123456",
+              amountMinor: 4_500,
+              direction: "credit",
+              balanceMinor: null,
+            },
+          ],
+        },
+      ],
+    });
+    assert.include(claimed.problems[0]!.line, "prints ¥4,500");
   });
 
   it("adds up exactly past what a number holds, and refuses what it can't", () => {

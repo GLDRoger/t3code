@@ -54,8 +54,10 @@ export type Statement = {
   readonly closingMinor: number | null;
   readonly rows: ReadonlyArray<StatementRow>;
   readonly check: BalanceCheck;
+  /** The file doesn't prove its currency: read in `currency`, the owner picks one of these. */
+  readonly currencyChoice?: ReadonlyArray<string>;
 };
-export type StatementFacts = Omit<Statement, "rows" | "check" | "currency">;
+export type StatementFacts = Omit<Statement, "rows" | "check" | "currency" | "currencyChoice">;
 
 const SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 /** Whether a sum of minor units is still a number Kin keeps exactly. */
@@ -202,49 +204,75 @@ const UNAMBIGUOUS: ReadonlyArray<readonly [RegExp, string]> = [
   [/€/u, "EUR"],
   [/£/u, "GBP"],
 ];
-const LABELLED = /\bcurrency(?:\s+code)?\s*[:-]?\s*([A-Za-z]{3})\b/i;
+/** Symbols more than one currency prints: evidence of the family, never of one of them. */
+const AMBIGUOUS: ReadonlyArray<readonly [RegExp, ReadonlyArray<string>]> = [
+  [/(?<![A-Z])\$/u, ["USD", "SGD", "AUD", "CAD", "HKD", "NZD"]],
+  [/¥/u, ["JPY", "CNY"]],
+];
+const COMMON = ["INR", "USD", "EUR", "GBP", "AED", "SGD"];
+const LABELLED = /\bcurrency(?:\s+code)?\s*[:-]?\s*([A-Za-z]{3})\b/gi;
 const NAMED =
   /\((?:in\s+)?([A-Z]{3})\)|\bin\s+([A-Z]{3})\b|\b([A-Z]{3})\s+[-(]?\d[\d,]*\.\d|\d\.\d+\)?\s+([A-Z]{3})\b/g;
 const SUMMARY = /opening|closing|balance|total|summary/i;
-const printsCode = (text: string, code: string) =>
-  new RegExp(String.raw`\b${code}\b`).test(text) ||
-  UNAMBIGUOUS.some(([symbol, named]) => named === code && symbol.test(text));
+/** Indian banks' own statements, and IFSC codes, are in rupees unless they print otherwise. */
+const RUPEE_ACCOUNT =
+  /\b(hdfc|icici|axis bank|kotak|state bank of india|sbi|yes bank|idfc first|indusind|rbl bank|federal bank|bank of baroda|punjab national bank|canara bank|union bank of india|au small finance)\b|\bifsc\b|\b[A-Z]{4}0[A-Z0-9]{6}\b/i;
+
+export type CurrencyRead =
+  | { readonly currency: string; readonly choose?: ReadonlyArray<string> }
+  | { readonly refused: string };
 
 /**
- * The currency a statement's text gives its amounts in: a "Currency" label, else the codes or
- * unambiguous symbols its column header and summary lines print. `proposed` counts only where the
- * text prints it; with nothing printed, Kin's default. Refused when Kin can't keep it exactly.
+ * The currency a statement's amounts are in, from its own context: "Currency" labels, the codes
+ * and symbols its column header and summary lines print, else an Indian bank's account. Narration
+ * never counts. Unproven or conflicting, it is read in the likeliest one (`proposed` when it fits)
+ * and `choose` lists those the owner may pick, all with the same minor units, so a pick only
+ * relabels the figures. Refused only when Kin can't record it exactly.
  */
-export const currencyIn = (
-  text: string,
-  proposed?: string,
-): { readonly currency: string } | { readonly refused: string } => {
-  const exact = (code: string) =>
-    isCurrency(code) && currencyDigits(code) <= 4
-      ? { currency: code }
-      : {
-          refused: `The statement's amounts are in ${code.slice(0, 3)}, which Kin can't record exactly.`,
-        };
-  const labelled = LABELLED.exec(text)?.[1]?.toUpperCase();
-  if (labelled !== undefined) return exact(labelled);
+export const currencyIn = (text: string, proposed?: string): CurrencyRead => {
+  const recordable = (code: string) => isCurrency(code) && currencyDigits(code) <= 4;
   const found = new Set<string>();
+  const families: Array<ReadonlyArray<string>> = [];
+  for (const match of text.matchAll(LABELLED)) found.add(match[1]!.toUpperCase());
   for (const line of text.split("\n")) {
-    if (!isHeaderLine(line) && !SUMMARY.test(line)) continue;
+    // A summary line, not a row of the table, which starts with its date.
+    const summary = SUMMARY.test(line) && parseDay(line.trimStart()) === undefined;
+    if (!isHeaderLine(line) && !summary) continue;
     for (const match of line.matchAll(NAMED)) {
       const code = match.slice(1).find((one) => one !== undefined)!;
       if (isCurrency(code)) found.add(code);
     }
     for (const [symbol, code] of UNAMBIGUOUS) if (symbol.test(line)) found.add(code);
+    for (const [symbol, codes] of AMBIGUOUS) if (symbol.test(line)) families.push(codes);
   }
+  const fitting = families.filter((codes) => ![...found].some((code) => codes.includes(code)));
+  if (found.size === 1 && fitting.length === 0) {
+    const code = [...found][0]!;
+    return recordable(code)
+      ? { currency: code }
+      : {
+          refused: `The statement's amounts are in ${code.slice(0, 3)}, which Kin can't record exactly.`,
+        };
+  }
+  if (found.size === 0 && fitting.length === 0 && RUPEE_ACCOUNT.test(text))
+    return { currency: DEFAULT_CURRENCY };
+  const candidates = [
+    ...new Set(
+      (found.size > 0 ? [...found] : fitting.length > 0 ? fitting.flat() : COMMON).filter(
+        recordable,
+      ),
+    ),
+  ];
   const named = proposed?.toUpperCase();
-  if (named !== undefined && (found.has(named) || (found.size === 0 && printsCode(text, named))))
-    return exact(named);
-  if (found.size === 1) return exact([...found][0]!);
-  if (found.size > 1)
-    return {
-      refused: `The statement names more than one currency (${[...found].toSorted().join(", ")}), so Kin can't tell which its amounts are in.`,
-    };
-  return { currency: DEFAULT_CURRENCY };
+  const suggested =
+    named !== undefined && recordable(named) && (candidates.includes(named) || found.size === 0)
+      ? named
+      : (candidates[0] ?? DEFAULT_CURRENCY);
+  const choose = [suggested, ...candidates, ...(found.size === 0 ? COMMON : [])].filter(
+    (code, at, all) =>
+      all.indexOf(code) === at && currencyDigits(code) === currencyDigits(suggested),
+  );
+  return { currency: suggested, choose };
 };
 
 const BANKS: ReadonlyArray<readonly [RegExp, string]> = [
@@ -373,19 +401,24 @@ const placeCells = (line: Line, header: Header, digits: number): Map<Role, Array
         continue;
       }
     }
-    if (looksLikeMoney(cell.text, digits)) {
+    // A bare integer is money only right under a money column, as a yen amount is; never a
+    // cheque number.
+    const whole = /^\d{1,15}$/.test(cell.text.trim());
+    if (whole || looksLikeMoney(cell.text, digits)) {
       const right = cell.right ?? cell.x;
       const center = (cell.x + right) / 2;
       const numeric = byLeft.filter((column) => NUMERIC_ROLES.has(column.role));
       const nearest = numeric.toSorted(
         (left, other) => distance(left, right, center) - distance(other, right, center),
       )[0];
-      if (nearest !== undefined && distance(nearest, right, center) < 160) {
+      if (nearest !== undefined && distance(nearest, right, center) < (whole ? 12 : 160)) {
         put(nearest.role, cell);
         continue;
       }
     }
-    const column = byLeft.findLast((one) => one.x! <= cell.x! + 4) ?? byLeft[0]!;
+    const words = whole ? byLeft.filter((one) => !NUMERIC_ROLES.has(one.role)) : byLeft;
+    const column =
+      words.findLast((one) => one.x! <= cell.x! + 4) ?? words[0] ?? byLeft[0]!;
     put(column.role, cell);
   }
   return placed;

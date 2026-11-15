@@ -362,6 +362,11 @@ export const reviewCard = (
     hash: reviewHash(statementId, review),
     title: clamp(`${account}${period}`, 200),
     summary: [
+      ...(statement.currencyChoice === undefined
+        ? []
+        : [
+            `The file doesn't say which currency it is in; shown in ${currency}. Pick its currency on the card below: nothing is recorded until you do.`,
+          ]),
       `${statement.rows.length} rows: ${credits.length} in (${total(credits)}), ${debits.length} out (${total(debits)}).`,
       ...(statement.openingMinor === null || statement.closingMinor === null
         ? []

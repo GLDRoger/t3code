@@ -73,25 +73,53 @@ const columnsOf = (line: string): ReadonlyArray<Column> =>
 const CODES = new Set(
   "USD EUR GBP SGD AED AUD CAD JPY CHF HKD NZD SEK THB MYR CNY ZAR SAR QAR".split(" "),
 );
-/** The money printed on a line, where it sits; a foreign amount after its code isn't one. */
-const tokensOf = (line: string, digits: number): ReadonlyArray<Token> => {
+/** How far a token sits from a column, by right edge or centre, in characters. */
+const farFrom = (token: Pick<Token, "start" | "end">, column: Column) =>
+  Math.min(
+    Math.abs(column.end - token.end),
+    Math.abs((column.start + column.end) / 2 - (token.start + token.end) / 2),
+  );
+const nearestOf = (token: Pick<Token, "start" | "end">, columns: ReadonlyArray<Column>) =>
+  columns.toSorted((left, right) => farFrom(token, left) - farFrom(token, right))[0];
+/** A bare integer is money only right under a money column a header prints. */
+const INTEGER_SLACK = 4;
+
+/**
+ * The money printed on a line, where it sits; a foreign amount after its code isn't one. A whole
+ * number with no grouping counts only under one of `columns`, so a cheque number never does.
+ */
+const tokensOf = (
+  line: string,
+  digits: number,
+  columns: ReadonlyArray<Column> = [],
+): ReadonlyArray<Token> => {
   const words = [...line.matchAll(/\S+/g)];
   return words.flatMap((word, at) => {
-    if (!looksLikeMoney(word[0], digits) || CODES.has(words[at - 1]?.[0].toUpperCase() ?? ""))
-      return [];
+    if (CODES.has(words[at - 1]?.[0].toUpperCase() ?? "")) return [];
+    const place = { start: word.index, end: word.index + word[0].length };
+    const whole = /^\d{1,15}$/.test(word[0]);
+    if (whole) {
+      const column = nearestOf(place, columns);
+      if (column === undefined || farFrom(place, column) > INTEGER_SLACK) return [];
+    } else if (!looksLikeMoney(word[0], digits)) return [];
     const mark = /^(cr|dr)\.?$/i.test(words[at + 1]?.[0] ?? "") ? ` ${words[at + 1]![0]}` : "";
     const amount = parseAmount(`${word[0]}${mark}`, digits);
-    return amount === undefined
-      ? []
-      : [{ ...amount, start: word.index, end: word.index + word[0].length }];
+    return amount === undefined ? [] : [{ ...amount, ...place }];
   });
 };
 const roleOf = (token: Token, columns: ReadonlyArray<Column>): Role | undefined => {
-  const center = (token.start + token.end) / 2;
-  const far = (column: Column) =>
-    Math.min(Math.abs(column.end - token.end), Math.abs((column.start + column.end) / 2 - center));
-  const nearest = columns.toSorted((left, right) => far(left) - far(right))[0];
-  return nearest !== undefined && far(nearest) <= 30 ? nearest.role : undefined;
+  const nearest = nearestOf(token, columns);
+  return nearest !== undefined && farFrom(token, nearest) <= 30 ? nearest.role : undefined;
+};
+/** Whether a line's money sits under a layout as a whole: each near its own column, none shared. */
+const fitsLayout = (tokens: ReadonlyArray<Token>, columns: ReadonlyArray<Column>, slack: number) => {
+  const used = new Set<Column>();
+  for (const one of tokens) {
+    const column = nearestOf(one, columns);
+    if (column === undefined || farFrom(one, column) > slack || used.has(column)) return false;
+    used.add(column);
+  }
+  return true;
 };
 
 type Dated = {
@@ -129,7 +157,7 @@ const datedOf = (text: string, header: ReadonlyArray<Column>, digits: number) =>
           : "";
       current = {
         date,
-        own: tokensOf(line, digits),
+        own: tokensOf(line, digits, columns),
         wrapped: [],
         columns,
         said: squash(`${prior} ${line}`),
@@ -140,7 +168,7 @@ const datedOf = (text: string, header: ReadonlyArray<Column>, digits: number) =>
     } else if (current !== undefined) {
       if (END_OF_TABLE.test(line.trim())) current = undefined;
       else {
-        current.wrapped.push(...tokensOf(line, digits));
+        current.wrapped.push(...tokensOf(line, digits, current.columns));
         current.said += squash(line);
         current.raw += ` ${line.trim()}`;
       }
@@ -154,14 +182,17 @@ const valueOf = (one: Token) => (one.negative || one.marker === "debit" ? -one.m
 
 /**
  * Settles where a page's money sits, from the file alone: a header carried from an earlier page
- * holds where every dated line prints money under its columns; with no header, the balance is the
- * one place on each line that runs on from row to row, at least once and never broken.
+ * holds only where every dated line's money sits under its columns as closely as under the header
+ * itself (`slack`); otherwise, as with no header, the balance is the one place on each line that
+ * runs on from row to row, at least once and never broken.
  */
-const settleColumns = (dated: ReadonlyArray<Dated>, carried: ReadonlyArray<Column>) => {
+const settleColumns = (
+  dated: ReadonlyArray<Dated>,
+  carried: ReadonlyArray<Column>,
+  slack: number,
+) => {
   const onCarried = dated.filter((line) => line.columns === carried && carried.length > 0);
-  const fits = onCarried.every(
-    (line) => line.own.length === 0 || line.own.some((one) => roleOf(one, carried) !== undefined),
-  );
+  const fits = onCarried.every((line) => fitsLayout(line.own, carried, slack));
   const loose = fits ? [] : onCarried;
   const bare = [...dated.filter((line) => line.columns.length === 0), ...loose];
   if (bare.length === 0) return;
@@ -272,12 +303,29 @@ export const bindRows = (input: {
   const placed = new Set<number>();
   let index = 0;
   let undirected = 0;
-  const pages = input.pages.map(({ page, rows, notRows = [] }) => {
+  const read = input.pages.map(({ page }) => {
     const text = input.texts[page - 1] ?? "";
-    const blank = text.trim() === "";
+    return text.trim() === "" ? undefined : datedOf(text, header, digits);
+  });
+  // How closely money sits under a header on the pages that print one; a carried one must match.
+  const slack =
+    Math.max(
+      3,
+      ...read
+        .flatMap((dated) => dated ?? [])
+        .filter((line) => line.columns !== header && line.columns.length > 0)
+        .flatMap((line) =>
+          line.own.map((one) => {
+            const column = nearestOf(one, line.columns);
+            return column === undefined ? 0 : Math.min(farFrom(one, column), 30);
+          }),
+        ),
+    ) + 2;
+  const pages = input.pages.map(({ page, rows, notRows = [] }, at) => {
+    const blank = read[at] === undefined;
+    const dated = read[at] ?? [];
     if (blank && rows.length === 0) gaps.push(page);
-    const dated = blank ? [] : datedOf(text, header, digits);
-    settleColumns(dated, header);
+    settleColumns(dated, header, slack);
     let last = -1;
     const bound = rows.map((row): StatementRow => {
       const at = index++;
@@ -608,10 +656,25 @@ export const proveStatement = (input: {
   }
 
   const hasBalances = rows.some(({ row }) => row.balanceMinor !== null);
-  // A page with no text holds nothing Kin can see; only balances running on across it prove so.
-  const chained = complete && rows.every(({ row }) => row.balanceMinor !== null);
-  const gaps = chained ? [] : (input.bound?.gaps ?? []);
-  const unproven = [...(input.bound?.unproven ?? []), ...gaps.map(noText)];
+  // A page with no text holds nothing Kin can see; only printed balances running on across it
+  // prove so: the last one before it (or the opening) and the next after it (or the closing).
+  const covered = (gap: number) => {
+    const before = rows.findLast(({ page }) => page < gap);
+    const after = rows.find(({ page }) => page > gap);
+    const from = before === undefined ? input.opening : before.row.balanceMinor;
+    if (rows.length === 0 || from === null) return false;
+    if (after === undefined) return input.closing !== null && from === input.closing;
+    return (
+      after.row.balanceMinor !== null &&
+      BigInt(from) + sign(after.row) === BigInt(after.row.balanceMinor)
+    );
+  };
+  const gaps = (input.bound?.gaps ?? []).filter((gap) => !covered(gap));
+  const unproven = [
+    ...(input.bound?.unproven ?? []),
+    ...gaps.map(noText),
+    ...(rows.length === 0 && gaps.length === 0 ? ["Kin found no transactions to check."] : []),
+  ];
   const check: BalanceCheck =
     problems.length > 0
       ? {

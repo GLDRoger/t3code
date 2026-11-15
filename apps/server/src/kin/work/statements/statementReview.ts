@@ -28,6 +28,7 @@ import * as ServerSecretStore from "../../../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../../../config.ts";
 import { KinChatHub } from "../../chat/KinChatHub.ts";
 import { KinChatRepository } from "../../chat/KinChatRepository.ts";
+import { choiceCardState } from "../../widgets/choiceCard.ts";
 import { fieldText, parseFields } from "../lists.ts";
 import { dayIn } from "../money.ts";
 import { ownerZone } from "../recordRows.ts";
@@ -639,7 +640,79 @@ export const saveRead = Effect.fn("KinStatements.saveRead")(function* (input: {
     text: STATEMENT_REVIEW_TEXT,
     state: card,
   });
+  const choices = input.review.statement.currencyChoice;
+  if (choices !== undefined)
+    yield* postCard({
+      orgId: input.orgId,
+      chatId: input.chatId,
+      agentId: input.agentId,
+      widgetId: currencyCardId(input.statementId, card.hash),
+      type: "choice",
+      text: CURRENCY_QUESTION,
+      state: choiceCardState({
+        question: CURRENCY_QUESTION,
+        detail: `Kin couldn't tell from ${clamp(before?.fileName ?? "the file", 80)}. Kin's guess is ${choices[0]}.`,
+        options: choices.slice(0, 8).map((code) => ({ label: code })),
+      }),
+    });
   return card;
+});
+
+const CURRENCY_QUESTION = "Which currency is this statement in?";
+const CURRENCY_CARD = "kin-statement-currency:";
+const currencyCardId = (statementId: string, hash: string) =>
+  `${CURRENCY_CARD}${statementId}:${hash.slice(0, 12)}`;
+
+/**
+ * The owner's pick on a statement's currency card: its review, figures unchanged since every
+ * choice has the same minor units, is matched again in that currency on a fresh card.
+ */
+export const answerCurrencyCard = Effect.fn("KinStatements.answerCurrency")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly widgetId: string;
+  readonly personId: string;
+  readonly code: string;
+  readonly now: number;
+}) {
+  if (!input.widgetId.startsWith(CURRENCY_CARD)) return;
+  const statementId = input.widgetId.slice(CURRENCY_CARD.length).split(":")[0]!;
+  const stored = yield* statementRow(input.orgId, statementId);
+  if (stored === undefined) return;
+  if ((yield* ownerOf(input.orgId, stored.agentId)) !== input.personId)
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message: "Only the owner picks a statement's currency.",
+    });
+  const review = stored.reviewJson === null ? undefined : reviewOf(stored.reviewJson);
+  const choices = review?.statement.currencyChoice;
+  if (
+    review === undefined ||
+    stored.appliedAt !== null ||
+    currencyCardId(statementId, stored.reviewHash ?? "") !== input.widgetId ||
+    choices === undefined
+  )
+    return yield* new KinChatError({
+      reason: "widget_changed",
+      message: "This statement was read again or confirmed since; use its latest card.",
+    });
+  if (!choices.includes(input.code)) return yield* invalid("Pick one of the card's currencies.");
+  const { currencyChoice: _choice, ...rest } = review.statement;
+  const statement = { ...rest, currency: input.code };
+  const next = yield* buildReview(
+    input.orgId,
+    statement,
+    review.format,
+    review.source,
+    statementId,
+  );
+  yield* saveRead({
+    orgId: input.orgId,
+    statementId,
+    agentId: stored.agentId,
+    chatId: stored.chatId,
+    review: next,
+    now: input.now,
+  });
 });
 
 const PASSWORD_TEXT =

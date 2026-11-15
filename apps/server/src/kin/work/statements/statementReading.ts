@@ -365,7 +365,7 @@ export const submitPages = Effect.fn("KinStatements.submitPages")(function* (inp
       "Pass pages only while Kin says this statement waits for you to read it; call statement_read without them first.",
     );
   const texts = stored.pages.map((page) => page.text);
-  // The text's own currency; a scan has none to check one against, so it is Kin's default.
+  // The text's own currency; unproven, as a scan's always is, the owner picks it on the card.
   const said = currencyIn(texts.join("\n"), input.currency);
   if ("refused" in said) return yield* invalid(`${said.refused} Nothing was kept from this call.`);
   const { currency } = said;
@@ -552,6 +552,7 @@ export const submitPages = Effect.fn("KinStatements.submitPages")(function* (inp
     closingMinor: closing,
     rows,
     check: proof.check,
+    ...(said.choose === undefined ? {} : { currencyChoice: said.choose }),
   };
   const review = yield* buildReview(
     input.orgId,

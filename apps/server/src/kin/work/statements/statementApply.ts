@@ -39,6 +39,7 @@ import {
   statementRow,
   updateCard,
 } from "./statementReview.ts";
+import type { Review } from "./statementCard.ts";
 import type { StatementRow } from "./statementTable.ts";
 
 /**
@@ -128,6 +129,49 @@ type Action =
   | "transfer"
   | "ignore";
 
+/** A read's rows as the file gave them: two cards of the same file read the same. */
+const contentOf = (statement: Review["statement"]) =>
+  JSON.stringify([
+    statement.currency,
+    statement.rows.map((row) => [
+      row.date,
+      row.amountMinor,
+      row.direction,
+      row.description,
+      row.reference,
+      row.balanceMinor,
+    ]),
+  ]);
+
+/**
+ * Bank rows another statement of the very same rows already recorded, by row: the same file sent
+ * twice, whose account Kin couldn't identify, is still one file. Different files never match.
+ */
+const twinRows = Effect.fn("KinStatements.twinRows")(function* (
+  orgId: KinOrgId,
+  statementId: string,
+  statement: Review["statement"],
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const content = contentOf(statement);
+  const others = yield* sql<{ statementId: string; json: string }>`SELECT
+      s.statement_id AS "statementId", s.review_json AS json FROM kin_bank_statements s
+    WHERE s.org_id = ${orgId} AND s.statement_id <> ${statementId} AND s.review_json IS NOT NULL
+      AND EXISTS (SELECT 1 FROM kin_bank_statement_entries e
+        WHERE e.org_id = s.org_id AND e.statement_id = s.statement_id)
+    ORDER BY s.read_at DESC, s.statement_id LIMIT 200`;
+  const twin = others.find((one) => {
+    const read = reviewOf(one.json);
+    return read !== undefined && contentOf(read.statement) === content;
+  });
+  if (twin === undefined) return new Map<number, { recordId: string; key: string }>();
+  const rows = yield* sql<{ row: number; recordId: string; key: string }>`SELECT DISTINCT
+      e.row_index AS row, r.record_id AS "recordId", r.key FROM kin_bank_statement_entries e
+    JOIN kin_records r ON r.org_id = e.org_id AND r.record_id = e.bank_record_id
+    WHERE e.org_id = ${orgId} AND e.statement_id = ${twin.statementId} ORDER BY e.row_index`;
+  return new Map(rows.map((one) => [one.row, { recordId: one.recordId, key: one.key }]));
+});
+
 const ownerOf = Effect.fn("KinStatements.applyOwner")(function* (orgId: KinOrgId, agentId: string) {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{
@@ -163,6 +207,10 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
             "The card changed since you looked at it, so nothing was applied. Check it and confirm again.",
         });
       const { statement } = review;
+      if (statement.currencyChoice !== undefined)
+        return yield* invalid(
+          "Pick this statement's currency on its card first; nothing was applied.",
+        );
       const currency = statement.currency;
       const zone = yield* ownerZone(input.orgId);
       const categories = yield* expenseCategories(input.orgId);
@@ -230,6 +278,7 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
       // that row, whatever state its confirm left it in.
       const origins = statement.rows.map((row) => originKeyOf(fingerprints[row.index]!));
       const saved = new Map<string, { readonly recordId: string; readonly key: string }>();
+      const twins = yield* twinRows(input.orgId, input.statementId, statement);
       for (let at = 0; at < origins.length; at += 500)
         for (const one of yield* sql<{ recordId: string; key: string; originKey: string }>`
           SELECT record_id AS "recordId", key, origin_key AS "originKey" FROM kin_records
@@ -244,7 +293,7 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           bankRows.set(row.index, { recordId: still.recordId, key: still.key });
           continue;
         }
-        const already = saved.get(origins[row.index]!);
+        const already = saved.get(origins[row.index]!) ?? twins.get(row.index);
         if (already !== undefined) {
           bankRows.set(row.index, already);
           continue;

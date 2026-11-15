@@ -299,7 +299,6 @@ export const createsMoney = Effect.fn("KinReceipts.createsMoney")(function* (
   asked: {
     readonly key?: string | undefined;
     readonly advance?: unknown;
-    readonly against?: string | undefined;
   },
 ) {
   if (asked.advance !== undefined) return true;
@@ -307,9 +306,8 @@ export const createsMoney = Effect.fn("KinReceipts.createsMoney")(function* (
   const receipt = yield* (yield* KinRecords).get(orgId, asked.key);
   if (receipt === undefined || receipt.registerId !== RECEIPTS || receipt.state === "dropped")
     return false;
-  const stands = yield* standing(orgId, receipt);
-  // One taken back is refused as it is made, unless it is set against an invoice again.
-  return stands === "none" || (stands === "gone" && asked.against !== undefined);
+  // One taken back is refused as it is made, set against an invoice or not.
+  return (yield* standing(orgId, receipt)) === "none";
 });
 
 /**
@@ -471,11 +469,14 @@ const setAgainst = Effect.fn("KinReceipts.setAgainst")(function* (
     const [payment] = yield* sql<{ voidedAt: number | null; recordId: string }>`SELECT
         voided_at AS "voidedAt", record_id AS "recordId"
       FROM kin_record_payments WHERE org_id = ${orgId} AND payment_id = ${held}`;
+    // Void stays void: the money it stood on was taken back, so it stands on nothing new.
+    if (payment === undefined || payment.voidedAt !== null)
+      return yield* invalid(
+        `${receipt.key} stood on a payment that was taken back, so it is void. Nothing changed. If the money did come in, record it as a new payment or advance.`,
+      );
     // Its own payment moves onto the invoice; one an invoice already took was set before.
-    if (payment !== undefined && payment.voidedAt === null && payment.recordId === receipt.recordId)
-      own = held;
-    // Once its payment is taken back, the advance may be set against an invoice again.
-    else if (payment !== undefined && payment.voidedAt === null) {
+    if (payment.recordId === receipt.recordId) own = held;
+    else {
       if (fields.invoice === invoice.key) return receipt.key;
       return yield* invalid(
         `${receipt.key} is already set against ${String(fields.invoice)}. Nothing changed.`,
@@ -529,11 +530,9 @@ const setAgainst = Effect.fn("KinReceipts.setAgainst")(function* (
   );
 });
 
-/** The receipt and its PDF, made with the `receipt` recipe; a retry makes nothing more. */
-export const makeReceipt = Effect.fn("KinReceipts.make")(function* (input: {
+type ReceiptAsk = {
   readonly orgId: KinOrgId;
   readonly writer: Writer;
-  readonly requester: Requester;
   readonly paymentId?: string | undefined;
   readonly key?: string | undefined;
   readonly advance?:
@@ -546,8 +545,10 @@ export const makeReceipt = Effect.fn("KinReceipts.make")(function* (input: {
     | undefined;
   readonly against?: string | undefined;
   readonly extras: Extras;
-  readonly admit: Effect.Effect<void, KinChatError, SqlClient.SqlClient>;
-}) {
+};
+
+/** The receipt recorded and numbered, on the money it stands on; no PDF yet. */
+export const recordReceipt = Effect.fn("KinReceipts.record")(function* (input: ReceiptAsk) {
   const asked = [input.paymentId, input.key, input.advance].filter((one) => one !== undefined);
   if (asked.length !== 1)
     return yield* invalid(
@@ -556,7 +557,7 @@ export const makeReceipt = Effect.fn("KinReceipts.make")(function* (input: {
   const sql = yield* SqlClient.SqlClient;
   // Numbered and set against an invoice together, or neither: never a number on no money.
   const back = input.against === undefined;
-  const numbered = yield* sql.withTransaction(
+  return yield* sql.withTransaction(
     Effect.gen(function* () {
       const numbered =
         input.paymentId !== undefined
@@ -569,15 +570,42 @@ export const makeReceipt = Effect.fn("KinReceipts.make")(function* (input: {
       return numbered;
     }),
   );
-  const problems = numbered.problem === undefined ? [] : [numbered.problem];
-  const made = yield* makeDocument({
+});
+
+/** A numbered receipt's PDF, made with the `receipt` recipe; a retry makes nothing more. */
+export const receiptDocument = Effect.fn("KinReceipts.document")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly key: string;
+  readonly number: string | null;
+  readonly requester: Requester;
+  readonly admit: Effect.Effect<void, KinChatError, SqlClient.SqlClient>;
+}) {
+  return yield* makeDocument({
     orgId: input.orgId,
     recipe: "receipt",
-    entry: numbered.key,
+    entry: input.key,
     given: {},
-    title: `Receipt ${numbered.number ?? numbered.key}`,
+    title: `Receipt ${input.number ?? input.key}`,
     requester: input.requester,
-    jobKey: `receipt:${numbered.key}:${numbered.number ?? ""}`,
+    jobKey: `receipt:${input.key}:${input.number ?? ""}`,
+    admit: input.admit,
+  });
+});
+
+/** The receipt and its PDF; a retry makes nothing more. */
+export const makeReceipt = Effect.fn("KinReceipts.make")(function* (
+  input: ReceiptAsk & {
+    readonly requester: Requester;
+    readonly admit: Effect.Effect<void, KinChatError, SqlClient.SqlClient>;
+  },
+) {
+  const numbered = yield* recordReceipt(input);
+  const problems = numbered.problem === undefined ? [] : [numbered.problem];
+  const made = yield* receiptDocument({
+    orgId: input.orgId,
+    key: numbered.key,
+    number: numbered.number,
+    requester: input.requester,
     admit: input.admit,
   }).pipe(
     Effect.catchIf(isChatError, (error) =>

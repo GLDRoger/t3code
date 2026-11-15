@@ -62,6 +62,7 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import type * as Scope from "effect/Scope";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -119,6 +120,18 @@ type WidgetUpsertInput = {
   readonly awaiting?: ReadonlyArray<KinPersonId> | undefined;
   readonly closed?: boolean | undefined;
 };
+/**
+ * Server work an owner's answer on a choice card carries out, in the tap's own transaction:
+ * attached by the layer that has records and documents, which the chat layer sits under.
+ */
+export type ChoiceAnswerHandler = (input: {
+  readonly orgId: KinOrgId;
+  readonly widget: KinWidget;
+  readonly personId: KinPersonId;
+  readonly option: { readonly label: string; readonly kind?: "yes" | "no" | undefined };
+  readonly via: "tap" | "reaction";
+  readonly now: number;
+}) => Effect.Effect<void, KinChatError | SqlError.SqlError | Schema.SchemaError>;
 type WaitingInput = Pick<
   KinWaitingItem,
   "chatId" | "personId" | "messageId" | "widgetId" | "reason"
@@ -127,6 +140,9 @@ type WaitingInput = Pick<
 export class KinChatService extends Context.Service<
   KinChatService,
   {
+    readonly attachChoiceAnswers: (
+      handler: ChoiceAnswerHandler,
+    ) => Effect.Effect<void, never, Scope.Scope>;
     readonly notice: (input: {
       readonly messageId: KinMessageId;
       readonly orgId: KinOrgId;
@@ -410,6 +426,7 @@ const make = Effect.gen(function* () {
   const clearedAt = (clearedSeq: number) => (clearedSeq > 0 ? { clearedSeq } : {});
   const sql = yield* SqlClient.SqlClient;
   const refresh = yield* KinRefreshObserver;
+  let onChoice: ChoiceAnswerHandler | undefined;
   const transaction = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     sql
       .withTransaction(effect)
@@ -866,6 +883,15 @@ const make = Effect.gen(function* () {
         Effect.provideService(KinRefreshObserver, refresh),
         Effect.mapError(cardTapError),
       );
+    if (choice !== null && onChoice !== undefined)
+      yield* onChoice({
+        orgId: identity.orgId,
+        widget,
+        personId: identity.personId,
+        option: choice.option,
+        via: reaction === null ? "tap" : "reaction",
+        now: yield* Clock.currentTimeMillis,
+      }).pipe(Effect.mapError(cardTapError));
     const message = yield* post(identity, member, {
       chatId: widget.chatId,
       kind: "widget_action",
@@ -1250,6 +1276,17 @@ const make = Effect.gen(function* () {
       }
       return { message, waiting };
     }, transaction),
+    attachChoiceAnswers: Effect.fn("KinChatService.attachChoiceAnswers")(function* (handler) {
+      yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          onChoice = handler;
+        }),
+        () =>
+          Effect.sync(() => {
+            if (onChoice === handler) onChoice = undefined;
+          }),
+      );
+    }),
     resolveNotice: Effect.fn("KinChatService.resolveNotice")(function* (input) {
       const item = yield* requireRecord(repo.getWaiting(input));
       if (item.reason !== "question" || item.messageId === null) return yield* notAllowed;

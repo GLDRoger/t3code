@@ -120,7 +120,11 @@ export const readStatementFile = async (
     lines.map((line) => line.map((cell) => cell.text.trim()).join(" ")).join("\n"),
   );
   if ("refused" in said) return { _tag: "unreadable", reason: said.refused };
-  const table = readTable(lines, said.currency);
+  const read = readTable(lines, said.currency);
+  const table =
+    read._tag === "read" && "choose" in said && said.choose !== undefined
+      ? { ...read, statement: { ...read.statement, currencyChoice: said.choose } }
+      : read;
   if (table._tag === "no_table")
     return pages === undefined
       ? { _tag: "unreadable", reason: table.reason }
