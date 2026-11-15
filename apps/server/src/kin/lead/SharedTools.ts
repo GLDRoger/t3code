@@ -4,7 +4,7 @@ import * as Predicate from "effect/Predicate";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
-import { aborted, askedIn, effectiveAudience, turnChat } from "./Audience.ts";
+import { aborted, askedIn, effectiveAudience, turnChat, turnPeople } from "./Audience.ts";
 
 type Turn = {
   readonly orgId: KinOrgId;
@@ -17,11 +17,11 @@ type Condition = (
 ) => Effect.Effect<boolean, SqlError, SqlClient.SqlClient>;
 
 /**
- * What a tool may do in a turn someone besides the owner can read. The endpoint's gate refuses
- * any tool without a line here. Conditions read stored rows; arguments only name the subject.
- * `team_memory` admits the call and `LeadMemory` limits it to what the team can know.
+ * What a tool may do in a turn someone besides the owner can read; the gate refuses any tool
+ * without a line. Conditions read stored rows. `team_memory`: `LeadMemory` limits it to what the
+ * team can know. `view`: its handler sees only what every person behind the turn may (`viewSees`).
  */
-export type SharedToolPolicy = "allowed" | "team_memory" | "refused" | Condition;
+export type SharedToolPolicy = "allowed" | "team_memory" | "view" | "refused" | Condition;
 
 const field = (args: unknown, name: string) =>
   Predicate.hasProperty(args, name) ? args[name] : undefined;
@@ -35,6 +35,15 @@ const inTurnChat: Condition = Effect.fnUntraced(function* (turn, args) {
 const inAskedChat: Condition = Effect.fnUntraced(function* (turn, args) {
   const chatId = field(args, "chatId");
   return typeof chatId === "string" && (yield* askedIn(turn, chatId));
+});
+
+/**
+ * One person besides the owner is behind the turn, and they asked: what it makes is theirs, so
+ * they see it (`teamSees`, by assigner).
+ */
+const oneAskerCreates: Condition = Effect.fnUntraced(function* (turn) {
+  const behind = yield* turnPeople(turn);
+  return behind?.people.length === 1 && behind.askers.length === 1;
 });
 
 /** Every message, tap and reaction the turn answers is the owner's own, by stored author. */
@@ -134,11 +143,11 @@ export const SHARED_TOOLS = {
   kin_github_pr: "refused",
   kin_github_runs: "refused",
   request_action: "refused",
-  // Work is owner-only until the teammate view (slice 2) gives shared turns a filtered one.
-  records_query: "refused",
-  record_get: "refused",
-  record_create: "refused",
-  record_update: "refused",
+  // Work tasks every person behind the turn may see, shaped as their own screens show them.
+  records_query: "view",
+  record_get: "view",
+  record_create: oneAskerCreates,
+  record_update: "view",
   // Docs are owner-only too until the teammate view; restoring stays the owner's after it.
   doc_create: "refused",
   doc_read: "refused",
@@ -176,7 +185,7 @@ export const sharedToolAllowed = Effect.fn("KinSharedTools.allowed")(
       ? SHARED_TOOLS[name as keyof typeof SHARED_TOOLS]
       : undefined;
     if (policy === undefined || policy === "refused") return false;
-    if (policy === "allowed" || policy === "team_memory") return true;
+    if (policy === "allowed" || policy === "team_memory" || policy === "view") return true;
     return yield* policy(turn, args);
   },
   Effect.catchCause((cause) =>
