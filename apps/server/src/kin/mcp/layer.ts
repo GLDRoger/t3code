@@ -17,6 +17,7 @@ import { KinServer } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
 import * as KinApprovalsMcp from "../approvals/mcp.ts";
+import * as KinConnectionsMcp from "../connections/mcp.ts";
 import * as KinIssuedTokens from "./KinIssuedTokens.ts";
 import * as KinToolGate from "./KinToolGate.ts";
 
@@ -95,6 +96,9 @@ export const transport = (base: typeof McpHttpServer.layer) =>
               Layer.mergeAll(
                 registration,
                 KinApprovalsMcp.registration,
+                KinConnectionsMcp.registration.pipe(
+                  Layer.provide(Layer.succeedContext(kin.services.value)),
+                ),
                 KinLead.layerMcp.pipe(
                   Layer.provide(Layer.succeedContext(kin.services.value)),
                   Layer.provide(SqlitePersistence.layerConfig),
