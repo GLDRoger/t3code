@@ -84,11 +84,14 @@ const aboutOf = (stored: {
   return said.length === 0 ? "" : ` (${said.join(", ")})`;
 };
 
-/** Posts the owner's tap on a statement card, opening the chat's floor so the lead may answer. */
+/**
+ * Posts the owner's tap on a statement card, opening the chat's floor so the lead may answer. A
+ * statement with no card yet (`widgetId` null) gets the tap in its chat, answering no card.
+ */
 export const tellLead = Effect.fn("KinStatements.tellLead")(function* (input: {
   readonly orgId: KinOrgId;
   readonly statementId: string;
-  readonly widgetId: string;
+  readonly widgetId: string | null;
   readonly tap: StatementTap;
   readonly outcome: string;
 }) {
@@ -96,33 +99,35 @@ export const tellLead = Effect.fn("KinStatements.tellLead")(function* (input: {
   const hub = yield* KinChatHub;
   const floor = yield* KinFloor;
   const sql = yield* SqlClient.SqlClient;
-  const widget = yield* repo.getWidget({
-    orgId: input.orgId,
-    widgetId: KinWidgetId.make(input.widgetId),
-  });
-  if (Option.isNone(widget)) return yield* invalid("The statement's card is gone.");
+  const widget =
+    input.widgetId === null
+      ? undefined
+      : yield* repo.getWidget({ orgId: input.orgId, widgetId: KinWidgetId.make(input.widgetId) });
+  if (widget !== undefined && Option.isNone(widget))
+    return yield* invalid("The statement's card is gone.");
+  const card = widget === undefined ? undefined : Option.getOrUndefined(widget);
   const [owner] = yield* sql<{
     personId: string;
     memberId: string;
     agentId: string;
+    chatId: string;
     account: string | null;
     reviewJson: string | null;
     pagesJson: string | null;
   }>`SELECT a.owner_person_id AS "personId", m.member_id AS "memberId", s.agent_id AS "agentId",
-      s.account, s.review_json AS "reviewJson", s.pages_json AS "pagesJson"
+      s.chat_id AS "chatId", s.account, s.review_json AS "reviewJson", s.pages_json AS "pagesJson"
     FROM kin_bank_statements s
     JOIN kin_agents a ON a.org_id = s.org_id AND a.agent_id = s.agent_id
     JOIN kin_chat_members m ON m.org_id = s.org_id AND m.chat_id = s.chat_id
       AND m.principal_kind = 'person' AND m.person_id = a.owner_person_id AND m.left_at IS NULL
     WHERE s.org_id = ${input.orgId} AND s.statement_id = ${input.statementId}`;
   if (owner === undefined) return yield* invalid("The owner isn't in the statement's chat.");
-  const chatId = KinChatId.make(widget.value.chatId);
+  const chatId = KinChatId.make(card?.chatId ?? owner.chatId);
   const chat = yield* repo.getChat({ orgId: input.orgId, chatId });
   if (Option.isNone(chat)) return yield* invalid("The statement's chat is gone.");
   const now = yield* Clock.currentTimeMillis;
   const body = yield* encodeTap({
-    widgetId: input.widgetId,
-    revision: widget.value.revision,
+    ...(card === undefined ? {} : { widgetId: card.widgetId, revision: card.revision }),
     actionId: input.tap,
     text: `Tapped "${LABELS[input.tap]}" on statement ${input.statementId}${aboutOf(owner)}. ${input.outcome}`.slice(
       0,
@@ -143,8 +148,8 @@ export const tellLead = Effect.fn("KinStatements.tellLead")(function* (input: {
     body,
     intent: null,
     mentions: [],
-    replyTo: widget.value.messageId,
-    widgetId: widget.value.widgetId,
+    replyTo: card?.messageId ?? null,
+    widgetId: card?.widgetId ?? null,
     floorRunId: null,
     status: "posted",
     sentBy: null,

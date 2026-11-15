@@ -936,6 +936,33 @@ describe("bank statements", () => {
         }).pipe(Effect.provide(layer)),
     );
 
+    it.effect("tells the lead of a read again even when the statement has no card yet", () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const first = inState(yield* read(1, NAME, threePageStatement().bytes), "reading");
+        const before = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_widgets`;
+        const done = yield* OwnerStatements.rereadStatement({
+          orgId,
+          statementId: first.statement,
+        });
+        assert.strictEqual(done.status, "reading");
+        const tap = OwnerStatements.rereadTap(done, orgId)!;
+        assert.isNull(tap.widgetId);
+        const told = yield* sql.withTransaction(tellLead(tap));
+        yield* queueTap(told);
+        assert.deepStrictEqual(
+          [told.message.widgetId, told.message.replyTo, told.message.chatId],
+          [null, null, "lead-chat"],
+        );
+        assert.include((yield* taps).at(-1), 'Tapped "Read again" on statement st_');
+        assert.deepStrictEqual(yield* sql`SELECT COUNT(*) AS n FROM kin_widgets`, before);
+        const [queued] = yield* sql<{ tag: string; agentId: string }>`SELECT tag,
+          agent_id AS "agentId" FROM kin_events WHERE tag = 'widget.action'`;
+        assert.deepStrictEqual(queued, { tag: "widget.action", agentId: lead });
+      }).pipe(Effect.provide(layer)),
+    );
+
     it.effect(
       "reads an applied statement again: its 12 rows stay recorded and only 14 are offered",
       () =>
