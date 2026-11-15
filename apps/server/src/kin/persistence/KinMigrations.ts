@@ -46,6 +46,7 @@ import RecipeDefaults from "./migrations/K084_RecipeDefaults.ts";
 import StatementReading from "./migrations/K085_StatementReading.ts";
 import StatementChatPasswords from "./migrations/K086_StatementChatPasswords.ts";
 import TeamWork from "./migrations/K087_TeamWork.ts";
+import MoneyRecords from "./migrations/K088_MoneyRecords.ts";
 import ReceiptProposalsPasswordBudget from "./migrations/K101_ReceiptProposalsPasswordBudget.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
@@ -173,6 +174,7 @@ const loader = Migrator.fromRecord({
   "85_StatementReading": StatementReading,
   "86_StatementChatPasswords": StatementChatPasswords,
   "87_TeamWork": TeamWork,
+  "88_MoneyRecords": MoneyRecords,
   "101_ReceiptProposalsPasswordBudget": ReceiptProposalsPasswordBudget,
 });
 
