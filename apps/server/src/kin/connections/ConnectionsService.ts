@@ -2008,6 +2008,40 @@ const make = Effect.gen(function* () {
           Effect.asVoid,
         ),
     );
+    // A newer card for the same document, or the same thread and people, replaces the older.
+    const sameTo = (a: ReadonlyArray<string>, b: ReadonlyArray<string>) =>
+      a.length === b.length && a.every((one) => b.includes(one));
+    const older = (yield* sql<{
+      askId: string;
+      widgetId: string;
+      payload: string;
+      entry: string | null;
+    }>`
+      SELECT ask_id AS "askId", widget_id AS "widgetId", payload_json AS payload,
+        entry_record_id AS entry FROM kin_connection_asks
+      WHERE org_id = ${turn.orgId} AND ask_id <> ${askId} AND state = 'open'
+        AND widget_id IS NOT NULL
+      ORDER BY proposed_at LIMIT 50`).filter((row) => {
+      if (entryRecordId !== null && row.entry === entryRecordId) return true;
+      const before = Option.getOrUndefined(decodePrepared(row.payload));
+      return (
+        prepared._tag === "email" &&
+        before?._tag === "email" &&
+        prepared.threadId !== null &&
+        before.threadId === prepared.threadId &&
+        sameTo(before.to, prepared.to)
+      );
+    });
+    if (older.length > 0) {
+      yield* sql`UPDATE kin_connection_asks SET state = 'stale',
+          reason = 'Replaced by a newer card.', decided_at = ${now}
+        WHERE org_id = ${turn.orgId} AND state = 'open'
+          AND ask_id IN ${sql.in(older.map((row) => row.askId))}`;
+      yield* levelGate.closeReplaced(
+        turn,
+        older.map((row) => row.widgetId),
+      );
+    }
     yield* record(turn, { ...entry, status: "awaiting_approval" });
     return { note: ASKED };
   });

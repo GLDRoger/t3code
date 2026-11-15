@@ -92,6 +92,11 @@ const gateFor = (cards: Array<Card>) =>
         if (bind !== undefined) yield* bind(widget).pipe(Effect.orDie);
         return widget;
       }),
+    closeReplaced: (_agent, widgetIds) =>
+      Effect.sync(() => {
+        for (const widgetId of widgetIds)
+          cards.push({ ...cards[0]!, widgetId: `closed:${widgetId}` });
+      }),
   });
 
 const layerFor = (fake: FakeMail, cards: Array<Card>) =>
@@ -397,8 +402,22 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         assert.deepInclude(card.send?.thread, { subject: "Launch date", replyingTo: CLIENT });
         assert.lengthOf(fake.sent(), 0);
 
-        assert.deepStrictEqual(yield* tap(card.widgetId, owner), { state: "sent", reason: null });
-        const again = yield* tap(card.widgetId, owner).pipe(Effect.flip);
+        // A corrected reply on the same thread to the same person replaces the first card (H05).
+        yield* callTool(ACCOUNTS, "mail_reply", {
+          threadId: inbound.threadId,
+          body: "Friday works. I'll confirm 11:00 tomorrow.",
+        });
+        const corrected = cards.at(-2)!;
+        assert.strictEqual(cards.at(-1)!.widgetId, `closed:${card.widgetId}`);
+        assert.include(yield* tap(card.widgetId, owner).pipe(Effect.flip), {
+          reason: "widget_changed",
+        });
+        assert.lengthOf(fake.sent(), 0);
+        assert.deepStrictEqual(yield* tap(corrected.widgetId, owner), {
+          state: "sent",
+          reason: null,
+        });
+        const again = yield* tap(corrected.widgetId, owner).pipe(Effect.flip);
         assert.strictEqual(again.reason, "widget_changed");
         const sent = fake.sent();
         assert.lengthOf(sent, 1);
@@ -409,7 +428,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           subject: "Re: Launch date",
           to: ["ravi@lumen.example"],
         });
-        assert.include(sent[0]!.body, "Friday works.");
+        assert.include(sent[0]!.body, "11:00");
       }),
     ),
   );

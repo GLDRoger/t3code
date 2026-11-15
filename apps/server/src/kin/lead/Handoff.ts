@@ -27,7 +27,7 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
-import { SHARED_REFUSAL, aborted, effectiveAudience, turnAsker } from "./Audience.ts";
+import { SHARED_REFUSAL, aborted, effectiveAudience, turnPeople } from "./Audience.ts";
 import { wakeEvent } from "./ChatWake.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { resolveLead } from "./LeadMemory.ts";
@@ -477,8 +477,9 @@ const make = Effect.gen(function* () {
       };
     }
     // A teammate's turn: their request, to someone who decides for them.
-    const asker = yield* turnAsker(ctx).pipe(access);
-    if (asker === null)
+    const askers = (yield* turnPeople(ctx).pipe(access))?.askers ?? [];
+    const asker = askers.length === 1 ? askers[0] : undefined;
+    if (asker === undefined)
       return yield* refuse("Only one person's own request can be passed on from here.");
     const [leadsOne] = yield* sql`SELECT 1 FROM kin_records WHERE org_id = ${ctx.orgId}
       AND register_id = 'projects' AND owner_kind = 'person' AND owner_id = ${to.personId}

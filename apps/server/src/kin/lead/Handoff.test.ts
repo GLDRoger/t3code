@@ -610,3 +610,95 @@ it.effect(
       }),
     ),
 );
+
+// Run 3: Zoya asked the team agent to move W-7 for her leave; it said it would put it to the
+// owner and nothing reached him. A relay is the way in both directions.
+it.effect(
+  "a teammate's request reaches the owner quoted as theirs, and the owner's answer reaches them",
+  () =>
+    run(({ ctx, handoff }) =>
+      Effect.gen(function* () {
+        const { sql, orgId, owner } = ctx;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('zoya', ${orgId}, 'zoya', 'Zoya Sheikh', ${at})`;
+        yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+          VALUES (${orgId}, ${chief}, ${owner.personId}, 0)`;
+        const [me] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+          WHERE person_id = ${owner.personId}`;
+        const sent: Array<{ personId: string; chatId: string; body: string }> = [];
+        const postTo: Parameters<Handoff.KinHandoff["Service"]["relay"]>[2] = (
+          _agent,
+          personId,
+          input,
+        ) =>
+          Effect.sync(() => {
+            sent.push({ personId, chatId: input.chatId, body: input.body });
+          }).pipe(Effect.andThen(Effect.die("unused")));
+        // The owner's own turn: his answer goes to Zoya in her chat with the agent.
+        const answer = {
+          to: "Zoya",
+          text: "Ishaan moved W-7 to 1 February.",
+          sourceEventId: "ask-event",
+        };
+        yield* Effect.exit(handoff.relay(scopeFor(chief), answer, postTo));
+        const [theirs] = yield* sql<{ chatId: string }>`SELECT chat_id AS "chatId" FROM kin_chats
+          WHERE direct_key = ${`zoya:${chief}`}`;
+        assert.deepStrictEqual(sent, [
+          { personId: "zoya", chatId: theirs!.chatId, body: "Ishaan moved W-7 to 1 February." },
+        ]);
+        const toOwner = yield* Effect.flip(
+          handoff.relay(scopeFor(chief), { ...answer, to: me!.name }, postTo),
+        );
+        assert.include(toOwner.message, "tell them there");
+
+        // Zoya's own turn: her request waits on the owner in his chat, in her words.
+        const [asked] = yield* sql<{ memberId: string }>`SELECT member_id AS "memberId"
+          FROM kin_chat_members WHERE chat_id = ${theirs!.chatId} AND person_id = 'zoya'`;
+        const message = yield* ctx.chats.send(
+          { _tag: "person", orgId, personId: "zoya" as KinPersonId },
+          {
+            chatId: theirs!.chatId as KinChatId,
+            body: "Can W-7 move to 1 Feb? I'm on leave 20 to 29 January.",
+            clientMessageId: "zoya-ask",
+          },
+        );
+        yield* ctx.claim("zoya-event", chief, {
+          provenance: { _tag: "human", personId: "zoya", memberId: asked!.memberId },
+          chatId: theirs!.chatId,
+          messageId: message.messageId,
+        });
+        const relayed = yield* handoff.relay(
+          scopeFor(chief),
+          {
+            to: me!.name,
+            text: "Can W-7 move to 1 Feb? I'm on leave 20 to 29 January.",
+            sourceEventId: "zoya-event",
+          },
+          postTo,
+        );
+        assert.strictEqual(relayed.to, me!.name);
+        assert.deepStrictEqual(yield* systemRows(sql, orgId, ctx.chiefChat), [
+          {
+            body: 'Zoya Sheikh asked, in their chat with Chief of staff:\n"Can W-7 move to 1 Feb? I\'m on leave 20 to 29 January."',
+          },
+        ]);
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM kin_waiting WHERE person_id = ${owner.personId}
+            AND chat_id = ${ctx.chiefChat}`,
+          1,
+        );
+        // Not to someone who doesn't decide for her.
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('dev', ${orgId}, 'dev', 'Dev Kulkarni', ${at})`;
+        const sideways = yield* Effect.flip(
+          handoff.relay(
+            scopeFor(chief),
+            { to: "Dev", text: "Can you take W-7?", sourceEventId: "zoya-event" },
+            postTo,
+          ),
+        );
+        assert.include(sideways.message, "doesn't decide for others");
+        assert.lengthOf(sent, 1);
+      }),
+    ),
+);
