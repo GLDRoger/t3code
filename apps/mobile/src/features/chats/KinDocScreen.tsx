@@ -81,7 +81,7 @@ import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { ThreadMarkdownImage } from "../threads/ThreadMarkdownImage";
 import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
 import { KinDocFileRows } from "./KinInvoice";
-import { KinWorkShareRow } from "./KinWorkItemScreen";
+import { KinWorkShareRow } from "./KinWorkShareRow";
 import { kinClient } from "./state/kinClient";
 import { useKinDocLabel } from "./state/useKinDocLabel";
 import { useKinDoc } from "./state/useKinDocs";

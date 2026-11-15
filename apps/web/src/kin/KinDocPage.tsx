@@ -62,7 +62,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { KinDocChangesView } from "./KinDocChangesView";
 import { KinDocFileDialog } from "./KinDocFileDialog";
 import { KinDocReader } from "./KinDocReader";
-import { KinWorkShareRow } from "./KinWorkItemSheet";
+import { KinWorkShareRow } from "./KinWorkShareRow";
 import { KinWorkNotice } from "./KinWorkParts";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";

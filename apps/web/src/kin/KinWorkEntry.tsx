@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinHasNotesHistory } from "@t3tools/client-runtime/kin/kinTemplates";
 import {
   KIN_FIELD_FILES_MAX,
@@ -12,6 +13,7 @@ import {
   type KinPaymentDraft,
 } from "@t3tools/client-runtime/kin/kinLists";
 import {
+  KIN_ENTRY_SHARE,
   kinWorkDayOf,
   kinWorkDueChoices,
   type KinWorkItemView,
@@ -84,6 +86,9 @@ import { KinInvoiceCurrency } from "./KinMoneyEstimate";
 import { KinNotesVersions } from "./KinConfirm";
 import { KinEntryFilePicker, KinEntryPick, KinEntryText } from "./KinWorkEntryEdit";
 import { KinWorkPrivateMark, KinWorkSection as Section } from "./KinWorkParts";
+import { connectionAtomRuntime } from "../connection/runtime";
+import { KinWorkShareRow } from "./KinWorkShareRow";
+import { useKinOwnerLevel } from "./useKinOwnerLevel";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
 import {
@@ -511,7 +516,15 @@ export function KinListEntry(
   const rates = useKinRates(props, invoice !== null || quote !== null);
   const changes = useKinEntryChanges(props, item.key);
   const agent = useKinAskAgent(props);
-  const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
+  const mayUpdate = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
+  const ownerLevel = useKinOwnerLevel(environmentId);
+  const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
+  // A project's lead drafts its entries' words and figures; state, files and the rest are the owner's.
+  const leads =
+    item.project !== undefined &&
+    (me?.leads ?? []).some((project) => project.key === item.project?.key);
+  const canChange = mayUpdate && ownerLevel;
+  const canDraft = mayUpdate && (ownerLevel || leads);
   const canPay = useAtomValue(kinClient.workPaymentRecord.permissionAtom(environmentId));
   const [paying, setPaying] = useState(false);
   const [takingBack, setTakingBack] = useState<string | null>(null);
@@ -559,7 +572,7 @@ export function KinListEntry(
       </SheetHeader>
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
         <div className="flex flex-col gap-3">
-          {amountEdit !== null && canChange ? (
+          {amountEdit !== null && canDraft ? (
             <div>
               <KinEntryText
                 headline
@@ -829,7 +842,7 @@ export function KinListEntry(
                     {field.private ? <KinWorkPrivateMark /> : null}
                   </dt>
                   <dd className="flex min-w-0 flex-col items-start gap-1.5 text-foreground">
-                    {canChange && !field.retired ? (
+                    {canDraft && !field.retired && (canChange || field.type !== "file") ? (
                       <FieldEdit
                         {...props}
                         field={field}
@@ -883,11 +896,21 @@ export function KinListEntry(
                 </div>
               ))}
           </dl>
-          {view.privacy.private ? (
+          {view.privacy.private && ownerLevel && !view.shared ? (
             <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
               <KinWorkPrivateMark />
               {KIN_LISTS.entry.private}
             </p>
+          ) : null}
+          {ownerLevel && item.list !== "bank_transactions" ? (
+            <KinWorkShareRow
+              environmentId={environmentId}
+              orgId={props.orgId}
+              itemKey={item.key}
+              shared={view.shared}
+              disabled={busy}
+              copy={KIN_ENTRY_SHARE}
+            />
           ) : null}
         </div>
         {entry.otherFiles.length === 0 ? null : (

@@ -456,19 +456,21 @@ function ProjectPage(
           <p className="whitespace-pre-wrap text-sm text-foreground">{view.notes}</p>
         </KinWorkSection>
       )}
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex min-w-0 flex-col gap-0.5">
-          <Label htmlFor={privateId}>{KIN_PROJECTS.privateLabel}</Label>
-          <p className="text-xs text-muted-foreground">{view.privacy.note}</p>
+      {canChange ? (
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <Label htmlFor={privateId}>{KIN_PROJECTS.privateLabel}</Label>
+            <p className="text-xs text-muted-foreground">{view.privacy.note}</p>
+          </div>
+          <Switch
+            id={privateId}
+            checked={view.privacy.private}
+            // Its client keeps it private whatever its own label says, so there is nothing to change.
+            disabled={busy || view.privacy.inherited}
+            onCheckedChange={(checked) => void change({ sensitive: checked })}
+          />
         </div>
-        <Switch
-          id={privateId}
-          checked={view.privacy.private}
-          // Its client keeps it private whatever its own label says, so there is nothing to change.
-          disabled={!canChange || busy || view.privacy.inherited}
-          onCheckedChange={(checked) => void change({ sensitive: checked })}
-        />
-      </div>
+      ) : null}
       {view.money.length === 0 ? null : (
         <KinWorkSection title={KIN_PROJECTS.money}>
           <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">

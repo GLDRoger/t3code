@@ -270,7 +270,8 @@ function KinProjectBody(
                   : null
               }
               privacy={{
-                disabled: !canChange || busy || view.privacy.inherited,
+                shown: canChange,
+                disabled: busy || view.privacy.inherited,
                 onChange: (sensitive) => void change({ sensitive }),
               }}
               docs={
@@ -307,7 +308,12 @@ function KinProjectSummary(props: {
   readonly onOpenClient: (key: KinRecordKey) => void;
   /** The owner's way to pick who leads it; null for anyone else. */
   readonly onChangeLead: (() => void) | null;
-  readonly privacy: { readonly disabled: boolean; readonly onChange: (on: boolean) => void };
+  /** The owner's switch; anyone else sees only the private mark. */
+  readonly privacy: {
+    readonly shown: boolean;
+    readonly disabled: boolean;
+    readonly onChange: (on: boolean) => void;
+  };
   /** The docs linked to the project. */
   readonly docs: ReactNode;
 }) {
@@ -514,16 +520,18 @@ function KinProjectSummary(props: {
           </Text>
         </View>
       )}
-      <ListSection>
-        <ListToggleRow
-          icon="lock"
-          label={KIN_PROJECTS.privateLabel}
-          description={view.privacy.note}
-          value={view.privacy.private}
-          disabled={props.privacy.disabled}
-          onValueChange={props.privacy.onChange}
-        />
-      </ListSection>
+      {props.privacy.shown ? (
+        <ListSection>
+          <ListToggleRow
+            icon="lock"
+            label={KIN_PROJECTS.privateLabel}
+            description={view.privacy.note}
+            value={view.privacy.private}
+            disabled={props.privacy.disabled}
+            onValueChange={props.privacy.onChange}
+          />
+        </ListSection>
+      ) : null}
       <Text textRole="footnote" className="px-2 text-foreground-muted">
         {KIN_PROJECTS.tasks}
       </Text>
