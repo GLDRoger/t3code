@@ -730,7 +730,12 @@ export function kinWorkPrivacy(input: {
   };
 }
 
-const CATEGORY_LABEL = { task: null, issue: "Issue", obligation: "Commitment" } as const;
+const CATEGORY_LABEL = {
+  task: null,
+  issue: "Issue",
+  obligation: "Commitment",
+  meeting: "Meeting",
+} as const;
 
 export const kinWorkActorName = (actor: KinWorkActor, names: KinWorkNames) =>
   actor._tag === "system" ? "Kin" : kinWorkName(actor, names);

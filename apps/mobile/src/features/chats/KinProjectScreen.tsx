@@ -31,6 +31,7 @@ import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRow } from "../../components/ui/ListRow";
+import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
 import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { useNowMinuteMs } from "../../lib/clock";
@@ -321,6 +322,11 @@ function KinProjectSummary(props: {
         <Text textRole="footnote" className="text-foreground-muted">
           {[party?.title, view.target, view.ledBy].filter((part) => part != null).join(" · ")}
         </Text>
+        {view.terms === null ? null : (
+          <Text textRole="footnote" className="text-foreground-muted">
+            {view.terms}
+          </Text>
+        )}
         {view.privacy.private ? <KinWorkPrivateMark /> : null}
         {view.why.map((line) => (
           <Text key={line} textRole="body" className="text-foreground">
@@ -341,6 +347,61 @@ function KinProjectSummary(props: {
             label={party.title}
             onPress={() => props.onOpenClient(party.key)}
           />
+        </ListSection>
+      )}
+      {view.specChanged.length === 0 ? null : (
+        <ListSection title={KIN_PROJECTS.specChanged}>
+          {view.specChanged.map((row) => (
+            <ListRow
+              key={row.key}
+              label={row.title}
+              description={row.line}
+              onPress={() => props.onOpenTask(row.key)}
+            />
+          ))}
+        </ListSection>
+      )}
+      <ListSection title={KIN_PROJECTS.milestones}>
+        {view.milestones.length === 0 ? (
+          <ListRowLayout label={KIN_PROJECTS.noMilestones} disabled />
+        ) : (
+          view.milestones.map((row) => (
+            <ListRow
+              key={row.key}
+              label={row.title}
+              description={row.line}
+              {...(row.badge === null ? {} : { detail: row.badge })}
+              onPress={() => props.onOpenTask(row.key)}
+            />
+          ))
+        )}
+      </ListSection>
+      {view.people.length === 0 ? null : (
+        <ListSection title={KIN_PROJECTS.people}>
+          {view.people.map((row) => (
+            <ListRowLayout key={row.key} label={row.name} detail={row.line} />
+          ))}
+        </ListSection>
+      )}
+      {view.meetings.length === 0 ? null : (
+        <ListSection title={KIN_PROJECTS.meetings}>
+          {view.meetings.map((row) => (
+            <KinWorkTaskRow
+              key={row.key}
+              inset
+              row={row}
+              saving={false}
+              onPress={() => props.onOpenTask(row.key)}
+              onAct={null}
+            />
+          ))}
+        </ListSection>
+      )}
+      {view.money.length === 0 ? null : (
+        <ListSection title={KIN_PROJECTS.money}>
+          {view.money.map((line) => (
+            <ListRowLayout key={line.label} label={line.label} detail={line.value} />
+          ))}
         </ListSection>
       )}
       {props.docs}
