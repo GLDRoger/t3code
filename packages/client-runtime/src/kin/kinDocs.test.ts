@@ -321,6 +321,14 @@ describe("kinDocRestoreOutcome", () => {
         AsyncResult.failure(Cause.fail(new Error("offline"))) as AtomCommandResult<never, unknown>,
       ),
     ).toMatchObject({ _tag: "refused", moved: false });
+    const playbook = "D-4: chase invoice after days must be 1 to 120 days; nothing was changed.";
+    expect(
+      kinDocRestoreOutcome(
+        AsyncResult.failure(
+          Cause.fail(new KinChatError({ reason: "invalid_state", message: playbook })),
+        ) as AtomCommandResult<never, unknown>,
+      ),
+    ).toMatchObject({ _tag: "refused", text: playbook });
   });
 });
 

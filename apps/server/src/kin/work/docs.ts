@@ -30,6 +30,7 @@ import {
 import { keepDocFiles } from "./docFiles.ts";
 import { KinRecords, type Writer } from "./KinRecords.ts";
 import { fieldText, listOf, parseFields } from "./lists.ts";
+import { guardPlaybook } from "./playbooks.ts";
 import { actorOf, iso, principal, type RecordRow, toRecord, unavailable } from "./recordRows.ts";
 import { indexRecord } from "./searchIndex.ts";
 import { SensitiveRefusal, turnSensitive } from "./workerAttempts.ts";
@@ -375,6 +376,7 @@ export const create = Effect.fn("KinDocs.create")(function* (
         originKey: input.originKey,
         now,
       });
+      yield* guardPlaybook(orgId, row.recordId);
       yield* indexRecord(orgId, row.recordId);
       return { ...(yield* settle(orgId, row.recordId)), created };
     }),
@@ -420,6 +422,7 @@ const revise = Effect.fn("KinDocs.revise")(function* (
     undefined,
     [{ field: "version", from: String(current.version), to: String(version) }],
   );
+  yield* guardPlaybook(orgId, row.recordId);
   return { ...(yield* settle(orgId, row.recordId)), created: true };
 });
 
@@ -671,6 +674,8 @@ export const move = Effect.fn("KinDocs.move")(function* (
         },
         expectedRev,
       );
+      // A doc made a playbook, filed elsewhere or brought back is checked as one.
+      yield* guardPlaybook(orgId, row.recordId);
       return yield* settle(orgId, row.recordId);
     }),
   );
