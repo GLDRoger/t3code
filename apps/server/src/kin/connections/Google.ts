@@ -6,6 +6,18 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 
 import { KinGatewayError } from "./McpGateway.ts";
+import {
+  addressesIn,
+  firstLines,
+  isPlainAddress,
+  MAIL_TOOL,
+  type MailEvent,
+  type Mailbox,
+  type MailProvider,
+  ownAddress,
+  quoteOf,
+  receivedAmong,
+} from "./MailProvider.ts";
 import { looksLikeSignInMail, messageBody, senderCheck, htmlToText, WITHHELD } from "./MailText.ts";
 import type { AuthServer } from "./OAuth.ts";
 import type { ListedTool } from "./Pinning.ts";
@@ -61,14 +73,14 @@ const calendarId = {
 /** Kin's own Google tools: reads only, each pinned like any server's tools. */
 export const GOOGLE_TOOLS: ReadonlyArray<ListedTool> = [
   {
-    name: "gmail_list_threads",
+    name: MAIL_TOOL.list,
     title: "List mail",
     description:
       "List recent mail threads in this account's inbox, newest first. Each says which account it is in and which of its addresses received it.",
     inputSchema: { type: "object", properties: { max: max(25), pageToken } },
   },
   {
-    name: "gmail_search",
+    name: MAIL_TOOL.search,
     title: "Search mail",
     description:
       "Search this account's mail with Gmail search words, for example from:ana@example.com newer_than:7d is:unread. With several Google accounts, connection google searches them all.",
@@ -79,7 +91,7 @@ export const GOOGLE_TOOLS: ReadonlyArray<ListedTool> = [
     },
   },
   {
-    name: "gmail_read_thread",
+    name: MAIL_TOOL.read,
     title: "Read a mail thread",
     description:
       "Read one mail thread in this account: each message's sender, recipients, date, subject and text, and which of the account's addresses received it.",
@@ -90,7 +102,7 @@ export const GOOGLE_TOOLS: ReadonlyArray<ListedTool> = [
     },
   },
   {
-    name: "calendar_list_events",
+    name: MAIL_TOOL.events,
     title: "List calendar events",
     description:
       "List calendar events between two times, soonest first. Without times, the next 7 days.",
@@ -107,7 +119,7 @@ export const GOOGLE_TOOLS: ReadonlyArray<ListedTool> = [
     },
   },
   {
-    name: "calendar_get_event",
+    name: MAIL_TOOL.event,
     title: "Read a calendar event",
     description: "Read one calendar event in full: time, place, guests and notes.",
     inputSchema: {
@@ -140,7 +152,7 @@ const attachments = {
 /** Kin's own Google tools that send: every call is a card the owner confirms. */
 export const GOOGLE_SEND_TOOLS: ReadonlyArray<ListedTool> = [
   {
-    name: "gmail_send",
+    name: MAIL_TOOL.send,
     title: "Send an email",
     description:
       "Send a new plain-text email from this Gmail account. Pick the account, and from among its addresses, by what each is for. Nothing is sent until the owner taps Confirm on a card showing it in full.",
@@ -162,7 +174,7 @@ export const GOOGLE_SEND_TOOLS: ReadonlyArray<ListedTool> = [
     },
   },
   {
-    name: "gmail_reply",
+    name: MAIL_TOOL.reply,
     title: "Reply in a mail thread",
     description:
       "Reply in a mail thread of this account, to whoever wrote last. It goes from the address the mail was sent to, in the same thread, quoting the last message. Nothing is sent until the owner taps Confirm on a card showing it in full.",
@@ -178,7 +190,7 @@ export const GOOGLE_SEND_TOOLS: ReadonlyArray<ListedTool> = [
     },
   },
   {
-    name: "calendar_save_event",
+    name: MAIL_TOOL.saveEvent,
     title: "Add or change a calendar event",
     description:
       "Add an event to this account's calendar, or change one with eventId, and send the invitations from it. Nothing is saved until the owner taps Confirm on a card showing it.",
@@ -203,9 +215,6 @@ export const GOOGLE_SEND_TOOLS: ReadonlyArray<ListedTool> = [
   definition: { name, ...rest, annotations: write },
   openWorld: false,
 }));
-export const GOOGLE_SEND_TOOL_NAMES: ReadonlySet<string> = new Set(
-  GOOGLE_SEND_TOOLS.map((tool) => tool.name),
-);
 
 export const field = (value: unknown, ...path: ReadonlyArray<string>): unknown =>
   path.reduce<unknown>(
@@ -276,34 +285,17 @@ const headerValues = (message: unknown, name: string) =>
     .flatMap((header) => text(field(header, "value")) ?? []);
 export const header = (message: unknown, name: string) => headerValues(message, name)[0] ?? null;
 
-/** The account a mail tool reads: its address and every address it sends as. */
-export type Mailbox = {
-  readonly account: string | null;
-  readonly addresses: ReadonlyArray<string>;
-};
-const PLAIN = /^[^\s<>@,;"]+@[^\s<>@,;"]+$/;
-/** Every address in a header such as `Ana <ana@example.com>, bo@example.com`. */
-export const addressesIn = (value: string | null): ReadonlyArray<string> =>
-  (value ?? "").split(",").flatMap((one) => {
-    const inside = (/<([^<>]+)>/.exec(one)?.[1] ?? one).trim();
-    return PLAIN.test(inside) ? [inside] : [];
-  });
-const ownAddress = (mailbox: Mailbox, address: string) =>
-  mailbox.addresses.some((own) => own.toLowerCase() === address.toLowerCase()) ||
-  mailbox.account?.toLowerCase() === address.toLowerCase();
 /** Whether the account itself sent this message, from any of its addresses. */
-export const sentByMailbox = (mailbox: Mailbox, message: unknown) =>
+const sentByMailbox = (mailbox: Mailbox, message: unknown) =>
   addressesIn(header(message, "From")).some((address) => ownAddress(mailbox, address));
 /** Which of the account's addresses this message was sent to, as the account knows it. */
-export const receivedBy = (mailbox: Mailbox, message: unknown) => {
-  const named = ["To", "Cc", "X-Original-To", "Delivered-To"].flatMap((name) =>
-    headerValues(message, name).flatMap(addressesIn),
+const receivedBy = (mailbox: Mailbox, message: unknown) =>
+  receivedAmong(
+    mailbox,
+    ["To", "Cc", "X-Original-To", "Delivered-To"].flatMap((name) =>
+      headerValues(message, name).flatMap(addressesIn),
+    ),
   );
-  const found = named.find((address) => ownAddress(mailbox, address));
-  return found === undefined
-    ? mailbox.account
-    : (mailbox.addresses.find((own) => own.toLowerCase() === found.toLowerCase()) ?? found);
-};
 const RECIPIENT_HEADERS = ["To", "Cc", "Delivered-To", "X-Original-To"];
 
 const threadSummary = (mailbox: Mailbox) => (thread: unknown) => {
@@ -448,7 +440,7 @@ export const callGoogle = Effect.fn("KinGoogle.call")(function* (
       : Effect.succeed(value);
   };
   switch (tool) {
-    case "gmail_list_threads":
+    case MAIL_TOOL.list:
       return json(
         yield* listThreads(http, token, mailbox, {
           labelIds: "INBOX",
@@ -456,7 +448,7 @@ export const callGoogle = Effect.fn("KinGoogle.call")(function* (
           ...(arg(args, "pageToken") === undefined ? {} : { pageToken: arg(args, "pageToken")! }),
         }),
       );
-    case "gmail_search":
+    case MAIL_TOOL.search:
       return json(
         yield* listThreads(http, token, mailbox, {
           q: yield* need("query"),
@@ -464,9 +456,9 @@ export const callGoogle = Effect.fn("KinGoogle.call")(function* (
           ...(arg(args, "pageToken") === undefined ? {} : { pageToken: arg(args, "pageToken")! }),
         }),
       );
-    case "gmail_read_thread":
+    case MAIL_TOOL.read:
       return json(yield* readThread(http, token, mailbox, yield* need("threadId")));
-    case "calendar_list_events": {
+    case MAIL_TOOL.events: {
       const calendar = arg(args, "calendarId") || "primary";
       const page = yield* api(http, token, `${CALENDAR}/${encodeURIComponent(calendar)}/events`, {
         timeMin: arg(args, "timeMin") || iso(now),
@@ -483,7 +475,7 @@ export const callGoogle = Effect.fn("KinGoogle.call")(function* (
         nextPage: text(field(page, "nextPageToken")) ?? null,
       });
     }
-    case "calendar_get_event": {
+    case MAIL_TOOL.event: {
       const calendar = arg(args, "calendarId") || "primary";
       const eventId = yield* need("eventId");
       return json({
@@ -520,7 +512,7 @@ export const googleSendAs = Effect.fn("KinGoogle.sendAs")(function* (
   const addresses = list(field(listed, "sendAs")).flatMap((entry) => {
     const address = text(field(entry, "sendAsEmail"))?.trim();
     const primary = field(entry, "isPrimary") === true;
-    if (address === undefined || !PLAIN.test(address)) return [];
+    if (address === undefined || !isPlainAddress(address)) return [];
     if (!primary && text(field(entry, "verificationStatus")) !== "accepted") return [];
     const name = text(field(entry, "displayName"))?.trim();
     return [
@@ -573,3 +565,141 @@ export const googleActivity = Effect.fn("KinGoogle.activity")(function* (
     })),
   };
 });
+
+const LINE_BREAK = /[\r\n]/;
+const MAX_RECIPIENTS = 10;
+
+/**
+ * The thread's last message from someone else: who a reply goes to, what it answers, and which of
+ * the account's addresses received it. Read with the account's own token: a thread of another
+ * account isn't found.
+ */
+const replyTarget = Effect.fn("KinGoogle.replyTarget")(function* (
+  http: HttpClient.HttpClient,
+  token: string,
+  mailbox: Mailbox,
+  threadId: string,
+) {
+  const thread = yield* api(http, token, `${GMAIL}/threads/${encodeURIComponent(threadId)}`, {
+    format: "full",
+  }).pipe(
+    Effect.catchIf(
+      (error) => error.reason === "protocol" && error.message.includes("404"),
+      () =>
+        Effect.fail(
+          failure(
+            "protocol",
+            `${mailbox.account ?? "This account"} has no thread ${threadId.slice(0, 40)}. Reply from the account the mail is in.`,
+          ),
+        ),
+    ),
+  );
+  const messages = list(field(thread, "messages"));
+  if (messages.length === 0) return yield* failure("protocol", "That mail thread has no messages.");
+  const mine = (message: unknown) => sentByMailbox(mailbox, message);
+  const last = messages.findLast((message) => !mine(message)) ?? messages.at(-1)!;
+  const to = mine(last)
+    ? addressesIn(header(last, "To"))
+    : [addressesIn(header(last, "Reply-To"))[0] ?? addressesIn(header(last, "From"))[0]].flatMap(
+        (one) => one ?? [],
+      );
+  if (to.length === 0)
+    return yield* failure("protocol", "Kin couldn't tell who to reply to in that thread.");
+  const subject = (header(messages[0], "Subject") ?? "").replace(LINE_BREAK, " ").trim();
+  const messageId = header(last, "Message-ID");
+  const references = [header(last, "References"), messageId].filter((one) => one !== null);
+  const who = (header(last, "From") ?? "").replace(/[\r\n]+/g, " ").trim();
+  const date = header(last, "Date");
+  const body = messageBody(field(last, "payload")).text;
+  const withheld = looksLikeSignInMail(header(last, "Subject") ?? "", body);
+  return {
+    to: to.slice(0, MAX_RECIPIENTS),
+    subject: /^re:/i.test(subject) ? subject : `Re: ${subject}`,
+    inReplyTo: messageId,
+    references: references.length === 0 ? null : references.join(" "),
+    // A follow-up to the account's own message goes from the address that sent it.
+    receivedAt: mine(last)
+      ? (addressesIn(header(last, "From"))[0] ?? null)
+      : receivedBy(mailbox, last),
+    thread: {
+      subject: subject.slice(0, 400),
+      replyingTo: who.slice(0, 400),
+      date: date === null ? null : date.slice(0, 100),
+      lines: withheld ? "" : firstLines(body),
+    },
+    quoted: withheld || body.trim() === "" ? null : quoteOf(date, who, body),
+  };
+});
+
+const sendMessage = Effect.fn("KinGoogle.sendMessage")(function* (
+  http: HttpClient.HttpClient,
+  token: string,
+  message: { readonly raw: string; readonly threadId: string | null },
+) {
+  const raw = Buffer.from(message.raw).toString("base64url");
+  const sent = yield* api(
+    http,
+    token,
+    `${GMAIL}/messages/send`,
+    {},
+    {
+      method: "POST",
+      json: message.threadId === null ? { raw } : { raw, threadId: message.threadId },
+    },
+  );
+  return {
+    messageId: text(field(sent, "id")) ?? null,
+    threadId: text(field(sent, "threadId")) ?? message.threadId,
+    eventId: null,
+  };
+});
+
+const saveEvent = Effect.fn("KinGoogle.saveEvent")(function* (
+  http: HttpClient.HttpClient,
+  token: string,
+  event: MailEvent,
+) {
+  const zone = event.timeZone === null ? {} : { timeZone: event.timeZone };
+  const body = {
+    summary: event.title,
+    start: { dateTime: event.start, ...zone },
+    end: { dateTime: event.end, ...zone },
+    ...(event.location === null ? {} : { location: event.location }),
+    ...(event.notes === null ? {} : { description: event.notes }),
+    attendees: event.invitees.map((email) => ({ email })),
+  };
+  const events = `${CALENDAR}/${encodeURIComponent(event.calendarId)}/events`;
+  const saved = yield* api(
+    http,
+    token,
+    event.eventId === null ? events : `${events}/${encodeURIComponent(event.eventId)}`,
+    { sendUpdates: "all" },
+    { method: event.eventId === null ? "POST" : "PATCH", json: body },
+  );
+  return { messageId: null, threadId: null, eventId: text(field(saved, "id")) ?? event.eventId };
+});
+
+/** Gmail and Google Calendar behind Kin's mail tools. */
+export const googleMail: MailProvider = {
+  preset: "google",
+  name: "Google",
+  mailService: "Gmail",
+  calendarService: "Google Calendar",
+  signIn: {
+    server: GOOGLE_SERVER,
+    scope: GOOGLE_SCOPES,
+    extra: GOOGLE_AUTH_EXTRA,
+    clientId: /^[\w.-]+\.apps\.googleusercontent\.com$/,
+    notClient: "That isn't a Google client ID. It ends in .apps.googleusercontent.com.",
+  },
+  canSend,
+  tools: GOOGLE_TOOLS,
+  sendTools: GOOGLE_SEND_TOOLS,
+  account: googleAccount,
+  sendAs: googleSendAs,
+  call: callGoogle,
+  activity: googleActivity,
+  replyTarget,
+  sendMessage,
+  saveEvent,
+};

@@ -86,19 +86,13 @@ import { CONNECTION_LIMITS } from "./limits.ts";
 import { KinGatewayError, KinMcpGateway, type GatewayTarget } from "./McpGateway.ts";
 import { credentialForms } from "./Inbound.ts";
 import {
-  callGoogle,
-  canSend,
-  GOOGLE_AUTH_EXTRA,
-  GOOGLE_SCOPES,
-  GOOGLE_SEND_TOOL_NAMES,
-  GOOGLE_SEND_TOOLS,
-  GOOGLE_SERVER,
-  GOOGLE_TOOLS,
-  googleAccount,
-  googleActivity,
-  googleSendAs,
+  ACROSS_ACCOUNTS,
+  MAIL_SEND_TOOL_NAMES,
+  MAIL_TOOL,
   type Mailbox,
-} from "./Google.ts";
+  type MailProvider,
+} from "./MailProvider.ts";
+import { MAIL_PRESETS, mailProviderOf } from "./mailProviders.ts";
 import * as OAuth from "./OAuth.ts";
 import { instructionsDigest, pinDigest, reconcile, suggestedMode } from "./Pinning.ts";
 import {
@@ -120,11 +114,11 @@ import {
   type FromChoice,
   fromOf,
   MAX_CARD_ARGS,
-  prepareGoogle,
+  prepareMail,
   type Prepared,
   PreparedJson,
   sendCard,
-  sendGoogle,
+  sendMail,
   sentToClient,
 } from "./Sending.ts";
 
@@ -135,16 +129,12 @@ export const ALWAYS_ASK =
 export const ASKED =
   "Nothing was sent. The owner sees a card with exactly this; their tap on Confirm sends it. Tell them in one short line to check the card. A typed yes doesn't send it.";
 export const OFFERED = "The owner will see a card to connect it.";
-/** Reads that answer for every Google account at once when the agent names just "google". */
-const ACROSS_ACCOUNTS = new Set(["gmail_list_threads", "gmail_search", "calendar_list_events"]);
-const SEVERAL_GOOGLE =
-  "There are several Google accounts: name one by its id or address. Connection google on a mail search, inbox list or calendar list reads every account. A reply goes from the thread's own account. For a new email or event, pick the account and from address by the owner's notes and where earlier mail with that person went; when that doesn't settle it, ask the owner in one line.";
+const severalAccounts = (provider: MailProvider) =>
+  `There are several ${provider.name} accounts: name one by its id or address. Connection ${provider.preset} on a mail search, inbox list or calendar list reads every one of them. A reply goes from the thread's own account. For a new email or event, pick the account and from address by the owner's notes and where earlier mail with that person went; when that doesn't settle it, ask the owner in one line.`;
 const paused = (label: string) => `The owner paused ${label}. Only the owner can resume it.`;
 const signedOut = (label: string) =>
   `${label}'s sign-in expired. The owner can sign in again in Settings.`;
 const SIGN_IN_TTL = Duration.minutes(10);
-const GOOGLE_CLIENT_ID = /^[\w.-]+\.apps\.googleusercontent\.com$/;
-const NOT_GOOGLE_CLIENT = "That isn't a Google client ID. It ends in .apps.googleusercontent.com.";
 /** How long before an access token's expiry Kin refreshes it. */
 const REFRESH_EARLY = Duration.minutes(1);
 // The return page reads only this prefix of `state` to pick where to hand the result back.
@@ -235,7 +225,7 @@ type People = ReadonlyArray<PersonIdentity>;
  */
 export type KinConnectionActivity =
   | {
-      readonly _tag: "google";
+      readonly _tag: "mail";
       readonly connectionId: KinConnectionId;
       readonly since: number;
       readonly until: number;
@@ -414,9 +404,9 @@ type PendingSignIn = {
     | { readonly _tag: "again"; readonly connectionId: KinConnectionId };
 };
 
-/** Kin's own Google tools that send are never marked Read. */
+/** Kin's own mail tools that send are never marked Read. */
 const alwaysAsk = (row: Pick<ConnectionRow, "kind">, tool: string) =>
-  row.kind === "builtin" && GOOGLE_SEND_TOOL_NAMES.has(tool);
+  row.kind === "builtin" && MAIL_SEND_TOOL_NAMES.has(tool);
 const usable = (tool: Parameters<typeof callable>[0]) =>
   callable(tool) && (tool.mode === "read" || tool.mode === "ask");
 
@@ -474,16 +464,17 @@ const make = Effect.gen(function* () {
       ),
     };
   });
-  /** A Google sign-in from before Kin sent anything shows "Sign in again to allow sending". */
+  /** A mail sign-in from before Kin sent anything shows "Sign in again to allow sending". */
   const withSendState = Effect.fnUntraced(function* (
     row: ConnectionRow,
     view: ReturnType<typeof connectionView>,
   ) {
-    if (row.kind !== "builtin" || row.auth !== "oauth") return view;
+    const provider = mailProviderOf(row);
+    if (provider === undefined || row.auth !== "oauth") return view;
     const stored = yield* secrets
       .getSignIn(row.connectionId)
       .pipe(Effect.orElseSucceed(Option.none));
-    return Option.isNone(stored) || canSend(Redacted.value(stored.value).scope)
+    return Option.isNone(stored) || provider.canSend(Redacted.value(stored.value).scope)
       ? view
       : { ...view, needsSignInToSend: true };
   });
@@ -502,7 +493,7 @@ const make = Effect.gen(function* () {
       signInAddress,
     } satisfies KinConnectionsView;
   });
-  /** Google waits on the owner's own client: until it is saved, it shows "Needs setup". */
+  /** A service that signs in with the owner's own client shows "Needs setup" until it is saved. */
   const servicesFor = Effect.fn("KinConnections.services")(function* () {
     const missing = new Set<string>();
     for (const service of OWNER_CLIENT_PRESETS) {
@@ -666,17 +657,18 @@ const make = Effect.gen(function* () {
       ),
     );
   const listFor = Effect.fnUntraced(function* (orgId: KinOrgId, row: ConnectionRow) {
-    if (row.kind === "builtin")
+    const provider = mailProviderOf(row);
+    if (provider !== undefined)
       return {
         protocolVersion: null,
         instructions: undefined,
-        tools: [...GOOGLE_TOOLS, ...GOOGLE_SEND_TOOLS],
+        tools: [...provider.tools, ...provider.sendTools],
       };
     return yield* withSignIn(orgId, row, (force) =>
       target(orgId, row, force).pipe(Effect.flatMap((to) => gateway.listTools(to))),
     );
   });
-  const googleToken = (orgId: KinOrgId, row: ConnectionRow, force: boolean) =>
+  const tokenOf = (orgId: KinOrgId, row: ConnectionRow, force: boolean) =>
     signInOf(orgId, row, force).pipe(Effect.map((secret) => secret.accessToken));
   const mailboxOf = (row: ConnectionRow): Mailbox => ({
     account: row.accountLabel,
@@ -688,11 +680,12 @@ const make = Effect.gen(function* () {
     tool: McpSchema.Tool,
     args: Readonly<Record<string, unknown>>,
   ) {
-    if (row.kind === "builtin")
+    const provider = mailProviderOf(row);
+    if (provider !== undefined)
       return yield* withSignIn(orgId, row, (force) =>
-        Effect.all([googleToken(orgId, row, force), Clock.currentTimeMillis]).pipe(
+        Effect.all([tokenOf(orgId, row, force), Clock.currentTimeMillis]).pipe(
           Effect.flatMap(([token, now]) =>
-            callGoogle(http, token, mailboxOf(row), tool.name, args, now),
+            provider.call(http, token, mailboxOf(row), tool.name, args, now),
           ),
         ),
       );
@@ -701,15 +694,15 @@ const make = Effect.gen(function* () {
     );
   });
   const accountOf = Effect.fnUntraced(function* (
-    row: Pick<ConnectionRow, "kind">,
+    provider: MailProvider | undefined,
     accessToken: string,
   ) {
-    if (row.kind !== "builtin") return null;
-    return yield* googleAccount(http, accessToken).pipe(Effect.orElseSucceed(() => null));
+    if (provider === undefined) return null;
+    return yield* provider.account(http, accessToken).pipe(Effect.orElseSucceed(() => null));
   });
-  /** The account's From addresses as JSON, or `null` when Gmail didn't list them. */
-  const sendAsJsonOf = (accessToken: string) =>
-    googleSendAs(http, accessToken).pipe(
+  /** The account's From addresses as JSON, or `null` when the provider didn't list them. */
+  const sendAsJsonOf = (provider: MailProvider, accessToken: string) =>
+    provider.sendAs(http, accessToken).pipe(
       Effect.map((listed) => (listed.length === 0 ? null : toJson(listed))),
       Effect.orElseSucceed(() => null),
     );
@@ -770,14 +763,17 @@ const make = Effect.gen(function* () {
       return yield* fail("unavailable", message);
     }
     const { tools, instructions, protocolVersion } = listed.success;
-    // Kin's own Google tools are Kin's words, not a server's: a new wording needs no review.
-    const ours = row.kind === "builtin";
-    const signedIn = ours && Option.isSome(yield* secrets.getSignIn(row.connectionId).pipe(
-      Effect.orElseSucceed(Option.none),
-    ));
+    // Kin's own mail tools are Kin's words, not a server's: a new wording needs no review.
+    const provider = mailProviderOf(row);
+    const ours = provider !== undefined;
+    const signedIn =
+      ours &&
+      Option.isSome(
+        yield* secrets.getSignIn(row.connectionId).pipe(Effect.orElseSucceed(Option.none)),
+      );
     const sendAsJson = signedIn
-      ? yield* withSignIn(orgId, row, (force) => googleToken(orgId, row, force)).pipe(
-          Effect.flatMap(sendAsJsonOf),
+      ? yield* withSignIn(orgId, row, (force) => tokenOf(orgId, row, force)).pipe(
+          Effect.flatMap((token) => sendAsJsonOf(provider!, token)),
           Effect.orElseSucceed(() => null),
         )
       : null;
@@ -1109,9 +1105,10 @@ const make = Effect.gen(function* () {
       let client: OAuth.Client;
       let url: string | null = null;
       let secretUrl: string | undefined;
-      if (preset.kind === "builtin") {
-        if (input.client !== undefined && !GOOGLE_CLIENT_ID.test(input.client.clientId))
-          return yield* fail("invalid_state", NOT_GOOGLE_CLIENT);
+      const provider = mailProviderOf({ kind: preset.kind, preset: service });
+      if (provider !== undefined) {
+        if (input.client !== undefined && !provider.signIn.clientId.test(input.client.clientId))
+          return yield* fail("invalid_state", provider.signIn.notClient);
         const shared = Option.getOrUndefined(yield* secrets.getClient(service));
         const stored =
           again === undefined
@@ -1135,7 +1132,11 @@ const make = Effect.gen(function* () {
             "invalid_state",
             `${preset.label} needs setting up first. Follow the steps in Settings, then sign in.`,
           );
-        plan = { server: GOOGLE_SERVER, resource: undefined, scope: GOOGLE_SCOPES };
+        plan = {
+          server: provider.signIn.server,
+          resource: undefined,
+          scope: provider.signIn.scope,
+        };
         client = chosen;
       } else {
         const stored =
@@ -1182,7 +1183,7 @@ const make = Effect.gen(function* () {
         redirectUri: signInAddress,
         state,
         verifier,
-        ...(preset.kind === "builtin" ? { extra: GOOGLE_AUTH_EXTRA } : {}),
+        ...(provider === undefined ? {} : { extra: provider.signIn.extra }),
       });
       return {
         signInId: state,
@@ -1260,7 +1261,7 @@ const make = Effect.gen(function* () {
       );
       if (target._tag === "again") {
         const row = yield* live(input.orgId, target.connectionId);
-        const account = yield* accountOf(row, tokens.accessToken);
+        const account = yield* accountOf(mailProviderOf(row), tokens.accessToken);
         // Its threads and events belong to one account: another account is another connection.
         if (
           account !== null &&
@@ -1284,7 +1285,8 @@ const make = Effect.gen(function* () {
       }
       const preset = SIGN_IN_PRESETS[target.service]!;
       const connectionId = newConnectionId();
-      const account = yield* accountOf({ kind: preset.kind }, tokens.accessToken);
+      const provider = mailProviderOf({ kind: preset.kind, preset: target.service });
+      const account = yield* accountOf(provider, tokens.accessToken);
       if (
         account !== null &&
         (yield* liveConnections(input.orgId).pipe(provideSql)).some(
@@ -1295,13 +1297,13 @@ const make = Effect.gen(function* () {
       )
         return yield* fail(
           "invalid_state",
-          `${account} is already connected. To connect another account, choose it at Google's sign-in.`,
+          `${account} is already connected. To connect another account, choose it at ${provider?.name ?? preset.label}'s sign-in.`,
         );
       const base: ConnectionRow = {
         connectionId,
         preset: target.service,
         // Several accounts of one service read apart by their address.
-        label: target.label ?? (preset.kind === "builtin" ? account : null) ?? preset.label,
+        label: target.label ?? (provider === undefined ? null : account) ?? preset.label,
         kind: preset.kind,
         url: target.url,
         urlHost:
@@ -1316,7 +1318,8 @@ const make = Effect.gen(function* () {
         state: "active",
         accountLabel: account,
         note: null,
-        sendAsJson: preset.kind === "builtin" ? yield* sendAsJsonOf(tokens.accessToken) : null,
+        sendAsJson:
+          provider === undefined ? null : yield* sendAsJsonOf(provider, tokens.accessToken),
         protocolVersion: null,
         instructionsText: null,
         instructionsDigest: null,
@@ -1351,8 +1354,13 @@ const make = Effect.gen(function* () {
   const setSignInClient = ownerOp("setSignInClient", (input: KinConnectionSetSignInClientInput) =>
     Effect.gen(function* () {
       const client = input.client;
-      if (client !== null && !GOOGLE_CLIENT_ID.test(client.clientId))
-        return yield* fail("invalid_state", NOT_GOOGLE_CLIENT);
+      const provider = mailProviderOf({ kind: "builtin", preset: input.service });
+      if (
+        client !== null &&
+        provider !== undefined &&
+        !provider.signIn.clientId.test(client.clientId)
+      )
+        return yield* fail("invalid_state", provider.signIn.notClient);
       yield* secrets.setClient(
         input.service,
         client === null
@@ -1379,27 +1387,28 @@ const make = Effect.gen(function* () {
         ORDER BY connection_id`;
     const since = cursor?.checkedUntil ?? row.createdAt;
     const until = yield* Clock.currentTimeMillis;
-    if (row.kind === "builtin" && row.preset === "google") {
+    const provider = mailProviderOf(row);
+    if (provider !== undefined) {
       // Only what the owner marked Read: the server reads no more than an agent may.
       const read = new Set(
         (yield* toolsOf(orgId, row.connectionId).pipe(provideSql))
           .filter((tool) => tool.mode === "read" && tool.removedAt === null)
           .map((tool) => tool.name),
       );
-      const mail = read.has("gmail_list_threads") || read.has("gmail_search");
-      const calendar = read.has("calendar_list_events");
+      const mail = read.has(MAIL_TOOL.list) || read.has(MAIL_TOOL.search);
+      const calendar = read.has(MAIL_TOOL.events);
       const found =
         mail || calendar
           ? yield* withSignIn(orgId, row, (force) =>
               signInOf(orgId, row, force).pipe(
                 Effect.flatMap((secret) =>
-                  googleActivity(http, secret.accessToken, mailboxOf(row), since),
+                  provider.activity(http, secret.accessToken, mailboxOf(row), since),
                 ),
               ),
             )
           : { mail: [], calendar: [] };
       return {
-        _tag: "google",
+        _tag: "mail",
         connectionId: row.connectionId,
         since,
         until,
@@ -1538,7 +1547,13 @@ const make = Effect.gen(function* () {
           ),
         );
         const connected = new Set(rows.map((row) => row.preset));
-        const google = rows.filter((row) => row.preset === "google").length;
+        const several = MAIL_PRESETS.flatMap((preset) => {
+          const provider = mailProviderOf({ kind: "builtin", preset });
+          return provider !== undefined &&
+            rows.filter((row) => mailProviderOf(row) === provider).length > 1
+            ? [severalAccounts(provider)]
+            : [];
+        });
         return {
           connections,
           canConnect: SERVICES.filter(
@@ -1546,7 +1561,7 @@ const make = Effect.gen(function* () {
           ).map((service) => service.service),
           note: [
             "Call with connection to see its tools; kin_connection_offer asks the owner to connect a service.",
-            ...(google > 1 ? [SEVERAL_GOOGLE] : []),
+            ...several,
           ].join(" "),
         };
       }
@@ -1800,11 +1815,11 @@ const make = Effect.gen(function* () {
       const several = found.live.filter(
         (row) => row.preset === wanted || row.label.toLowerCase() === wanted,
       );
-      // A read across every Google account answers as one, each part labelled by its account.
+      // A read across every account of a provider answers as one, each part labelled by account.
       if (
         found._tag === "ambiguous" &&
         ACROSS_ACCOUNTS.has(input.tool) &&
-        several.every((row) => row.kind === "builtin")
+        several.every((row) => mailProviderOf(row) !== undefined)
       ) {
         const parts = yield* Effect.forEach(several, (row) =>
           callOn(turn, row, input, base).pipe(
@@ -1845,9 +1860,10 @@ const make = Effect.gen(function* () {
     args: Readonly<Record<string, unknown>>,
     entry: Omit<Parameters<typeof record>[1], "status">,
   ) {
-    if (row.kind === "builtin") {
+    const provider = mailProviderOf(row);
+    if (provider !== undefined) {
       const stored = yield* secrets.getSignIn(row.connectionId);
-      if (Option.isSome(stored) && !canSend(Redacted.value(stored.value).scope))
+      if (Option.isSome(stored) && !provider.canSend(Redacted.value(stored.value).scope))
         return yield* refuse(
           turn,
           entry,
@@ -1858,10 +1874,11 @@ const make = Effect.gen(function* () {
         );
     }
     const prepared: Prepared =
-      row.kind === "builtin"
-        ? yield* prepareGoogle({
+      provider !== undefined
+        ? yield* prepareMail({
+            provider,
             http,
-            token: googleToken(turn.orgId, row, false),
+            token: tokenOf(turn.orgId, row, false),
             orgId: turn.orgId,
             account: row.accountLabel,
             sendAs: sendAsOf(row),
@@ -1889,6 +1906,7 @@ const make = Effect.gen(function* () {
       return yield* refuse(turn, entry, fail("not_allowed", "This turn has no chat to ask in."));
     const card = sendCard({
       service: row.label,
+      ...(provider === undefined ? {} : { mail: provider }),
       account: row.accountLabel,
       tool: tool.name,
       prepared,
@@ -1936,19 +1954,19 @@ const make = Effect.gen(function* () {
 
   /**
    * The Froms a mail card may switch to: a reply only among its own account's addresses; a new
-   * email among every Google account whose sending is marked Ask me.
+   * email among every mail account whose sending is marked Ask me.
    */
   const choicesFor = Effect.fn("KinConnections.choices")(function* (
     orgId: KinOrgId,
     row: ConnectionRow,
     prepared: Prepared,
   ) {
-    if (prepared._tag !== "email" || row.kind !== "builtin") return [];
+    if (prepared._tag !== "email" || mailProviderOf(row) === undefined) return [];
     const rows =
       prepared.threadId !== null
         ? [row]
         : yield* Effect.filter(yield* liveConnections(orgId).pipe(provideSql), (candidate) =>
-            candidate.kind !== "builtin" ||
+            mailProviderOf(candidate) === undefined ||
             candidate.pausedAt !== null ||
             candidate.state === "needs_sign_in"
               ? Effect.succeed(false)
@@ -1959,7 +1977,7 @@ const make = Effect.gen(function* () {
                     Effect.map((tools) =>
                       tools.some(
                         (tool) =>
-                          tool.name === "gmail_send" && callable(tool) && tool.mode === "ask",
+                          tool.name === MAIL_TOOL.send && callable(tool) && tool.mode === "ask",
                       ),
                     ),
                   ),
@@ -2012,8 +2030,10 @@ const make = Effect.gen(function* () {
         yield* sql`UPDATE kin_connection_asks SET connection_id = ${chosen.row.connectionId},
             pin_digest = ${tool.pinDigest}, payload_json = ${encodePrepared(next)}
           WHERE org_id = ${input.orgId} AND ask_id = ${ask.askId} AND state = 'open'`;
+        const mail = mailProviderOf(chosen.row);
         const card = sendCard({
           service: chosen.row.label,
+          ...(mail === undefined ? {} : { mail }),
           account: chosen.row.accountLabel,
           tool: ask.toolName,
           prepared: next,
@@ -2139,8 +2159,10 @@ const make = Effect.gen(function* () {
       FROM kin_connection_asks WHERE org_id = ${orgId} AND ask_id = ${stale.row.askId}
       ON CONFLICT (org_id, ask_id) DO NOTHING`;
     const connection = yield* connectionById(orgId, stale.row.connectionId).pipe(provideSql);
+    const mail = connection === undefined ? undefined : mailProviderOf(connection);
     const card = sendCard({
       service: stale.label,
+      ...(mail === undefined ? {} : { mail }),
       account: stale.account,
       tool: stale.row.toolName,
       prepared,
@@ -2206,13 +2228,18 @@ const make = Effect.gen(function* () {
               return yield* fail("unavailable", `${connection.label} answered with an error.`);
             return { messageId: null, threadId: null, eventId: null };
           })
-        : withSignIn(orgId, connection, (force) =>
-            googleToken(orgId, connection, force).pipe(
-              Effect.flatMap((token) =>
-                sendGoogle(http, token, prepared).pipe(provideSql, Effect.provide(files)),
+        : Effect.gen(function* () {
+            const provider = mailProviderOf(connection);
+            if (provider === undefined)
+              return yield* fail("unavailable", `${connection.label} can't send mail.`);
+            return yield* withSignIn(orgId, connection, (force) =>
+              tokenOf(orgId, connection, force).pipe(
+                Effect.flatMap((token) =>
+                  sendMail(provider, http, token, prepared).pipe(provideSql, Effect.provide(files)),
+                ),
               ),
-            ),
-          )
+            );
+          })
     ).pipe(Effect.result);
     if (sent._tag === "Failure")
       return yield* finish(
