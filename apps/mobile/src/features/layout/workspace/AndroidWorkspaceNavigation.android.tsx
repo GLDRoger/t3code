@@ -16,10 +16,7 @@ import { useToolbarLayout } from "../../../components/ui/useToolbarLayout";
 import { rootNavigationRef } from "../../../lib/rootNavigation";
 import { useWorkspaceConnectionState } from "../../../state/workspace";
 import { androidWorkspaceNavigationColors } from "./android-workspace-navigation-colors";
-import {
-  androidWorkspaceTabNavigationState,
-  type AndroidWorkspaceNavigationTab,
-} from "./android-workspace-tabs";
+import { androidWorkspaceTabNavigationState } from "./android-workspace-tabs";
 import { useAppearancePreferences } from "../../settings/appearance/AppearancePreferencesProvider";
 import { useSoftKeyboardShowing } from "../../keyboard/useSoftKeyboardShowing";
 import { useAdaptiveWorkspaceLayout } from "../adaptive-workspace-context";
@@ -35,7 +32,7 @@ interface NativeNavigationProps extends ViewProps {
   readonly rail: boolean;
   readonly floating: boolean;
   readonly tabs: readonly string[];
-  readonly selectedTab: AndroidWorkspaceNavigationTab;
+  readonly selectedTab: string;
   readonly dark: boolean;
   readonly textScale: number;
   readonly newEnabled: boolean;
@@ -48,9 +45,7 @@ interface NativeNavigationProps extends ViewProps {
   readonly unselectedColor: number;
   readonly actionColor: number;
   readonly actionContentColor: number;
-  readonly onTabSelected: (
-    event: NativeSyntheticEvent<{ readonly tab: AndroidWorkspaceNavigationTab }>,
-  ) => void;
+  readonly onTabSelected: (event: NativeSyntheticEvent<{ readonly tab: string }>) => void;
   readonly onNewThread: () => void;
   readonly onOverlayChange: (event: NativeSyntheticEvent<{ readonly overlay: boolean }>) => void;
 }
@@ -87,7 +82,7 @@ export function AndroidWorkspaceNavigation(props: {
   const window = useWindowDimensions();
   const rail = Boolean(props.rail);
   const floating = !rail && Boolean(props.floating);
-  const tabs = [...visibleNavigationTabs(order, hidden, rail ? 5 : 4), "settings"];
+  const tabs = [...visibleNavigationTabs(order, hidden, rail ? 5 : 4), "settings" as const];
   const { containerColor, indicatorColor, selectedColor, unselectedColor } =
     androidWorkspaceNavigationColors(colors, rail, floating);
   const selectedTab = selectedNavigationTab(
@@ -135,7 +130,8 @@ export function AndroidWorkspaceNavigation(props: {
         actionContentColor={nativeColor(colors["--color-primary-foreground"])}
         onTabSelected={(event) => {
           Keyboard.dismiss();
-          const tab = event.nativeEvent.tab;
+          const tab = tabs.find((candidate) => candidate === event.nativeEvent.tab);
+          if (tab === undefined) return;
           if (tab !== "settings") workspace.dispatch({ type: "select", tab });
           // Reset the root stack even when a nested settings navigator has focus.
           // The provider renders inside the root stack's layout, so the container's root state is
@@ -190,6 +186,52 @@ export function FloatingWorkspaceTabs(props: {
       }}
     >
       <AndroidWorkspaceNavigation {...props} floating />
+    </View>
+  );
+}
+
+/** The native bottom bar for any set of tabs it can draw; the workspace and the Kin home share it. */
+export function AndroidTabBar<Tab extends string>(props: {
+  readonly tabs: ReadonlyArray<Tab>;
+  readonly selectedTab: Tab;
+  readonly onSelect: (tab: Tab) => void;
+}) {
+  const insets = useSafeAreaInsets();
+  const toolbar = useToolbarLayout();
+  const keyboardVisible = useSoftKeyboardShowing();
+  const { themeAppearance, themeVariables: colors } = useAppearancePreferences();
+  const { scale } = useAndroidControlSizing();
+  const { containerColor, indicatorColor, selectedColor, unselectedColor } =
+    androidWorkspaceNavigationColors(colors, false, false);
+  if (keyboardVisible) return null;
+  return (
+    <View style={{ backgroundColor: containerColor, paddingBottom: insets.bottom }}>
+      <NativeNavigation
+        rail={false}
+        floating={false}
+        tabs={props.tabs}
+        selectedTab={props.selectedTab}
+        dark={themeAppearance === "dark"}
+        textScale={scale}
+        newEnabled={false}
+        safeAreaTop={toolbar.paddingTop}
+        safeAreaBottom={insets.bottom}
+        headerHeight={toolbar.height}
+        containerColor={nativeColor(containerColor)}
+        selectedColor={nativeColor(selectedColor)}
+        indicatorColor={nativeColor(indicatorColor)}
+        unselectedColor={nativeColor(unselectedColor)}
+        actionColor={nativeColor(colors["--color-primary"])}
+        actionContentColor={nativeColor(colors["--color-primary-foreground"])}
+        onTabSelected={(event) => {
+          Keyboard.dismiss();
+          const tab = props.tabs.find((candidate) => candidate === event.nativeEvent.tab);
+          if (tab !== undefined) props.onSelect(tab);
+        }}
+        onNewThread={() => undefined}
+        onOverlayChange={() => undefined}
+        style={{ height: 80 * Math.max(1, scale) }}
+      />
     </View>
   );
 }

@@ -7,11 +7,10 @@ import type {
   KinRecord,
   KinRecordKey,
   KinWaitingItem,
-  KinWorkSummary,
 } from "@t3tools/contracts";
 
-import { kinListsIndex, kinTotalsText } from "./kinLists.ts";
-import { kinInMoney, kinMoneyAgent, kinMoneyView, type KinListOpen } from "./kinMoney.ts";
+import { kinTotalsText } from "./kinLists.ts";
+import { kinInMoney, kinMoneyAgent, kinMoneyView } from "./kinMoney.ts";
 import { kinWaitingRowView } from "./kinScreenState.ts";
 import {
   kinWorkName,
@@ -21,35 +20,23 @@ import {
   type KinWorkNames,
 } from "./kinWork.ts";
 
-/**
- * Work on a phone is one page: what needs you, then a row per place with its own live summary.
- * A place is a row, never a tab, so adding one never crowds the others.
- */
-export type KinWorkPlace = "tasks" | "money" | "clients" | "docs" | "lists";
+/** The places of Work, each a tab of the Kin home: its list first, then a record. */
+export type KinWorkPlace = "tasks" | "money" | "clients" | "docs";
 
 export const KIN_WORK_HOME = {
   needsYou: "Needs you",
   nothingNeedsYou: "Nothing needs you right now.",
   seeAll: (count: number) => `See all ${count}`,
   seeFewer: "Show fewer",
-  search: "Search Work",
   add: "Add",
-  addTask: "Task",
-  addClient: "Client",
   addReceipt: "Receipt",
   addExpense: "Expense",
-  askAgent: "Ask an agent",
-  empty: {
-    title: "Nothing here yet",
-    detail:
-      "Tasks, clients, money and docs show up here as you and your agents add them. Start with a task, or ask an agent to set things up.",
-  },
+  elsewhere: "Clients, projects and docs",
   places: {
     tasks: "Tasks",
     money: "Money",
     clients: "Clients",
     docs: "Docs",
-    lists: "Lists",
   } satisfies Record<KinWorkPlace, string>,
   filter: "Filter",
   show: "Show",
@@ -63,32 +50,24 @@ export const KIN_WORK_HOME = {
   noClient: "No client",
 };
 
-/** Rows "Needs you" shows before "See all", so the places stay on the first screen. */
+/** Rows "Needs you" shows before "See all", so the first tasks stay on the first screen. */
 export const KIN_NEEDS_YOU_SHOWN = 4;
 
-/** A `show` in a Work link: the place it opens, or null for the Work page itself. */
-export function kinWorkPlaceParam(
-  show: string | undefined,
-): { readonly place: KinWorkPlace; readonly projects: boolean } | null {
+/** A `show` in a Work link: the place it opens, Tasks for a link from before places. */
+export function kinWorkPlaceParam(show: string | undefined): {
+  readonly place: KinWorkPlace;
+  readonly projects: boolean;
+} {
   if (show === "projects") return { place: "clients", projects: true };
-  return show === "tasks" ||
-    show === "money" ||
-    show === "clients" ||
-    show === "docs" ||
-    show === "lists"
+  // A list is a structured doc, so Lists became part of Docs.
+  if (show === "lists") return { place: "docs", projects: false };
+  return show === "money" || show === "clients" || show === "docs"
     ? { place: show, projects: false }
-    : null;
+    : { place: "tasks", projects: false };
 }
 
 const plural = (count: number, one: string, many = `${one}s`) =>
   `${count} ${count === 1 ? one : many}`;
-
-export function kinTasksLine(summary: KinWorkSummary): string {
-  if (summary.open === 0) return "Nothing open";
-  return [`${summary.open} open`, summary.late > 0 ? `${summary.late} late` : null]
-    .filter((part) => part !== null)
-    .join(", ");
-}
 
 export function kinMoneyLine(money: KinMoneySummary): string {
   if (money.owed.total.length === 0) return "Nobody owes you anything";
@@ -117,27 +96,14 @@ export function kinDocsLine(total: number, rows: ReadonlyArray<KinDocRow>, now: 
     : `${plural(total, "doc")}, ${changed} changed this week`;
 }
 
-/** The lists Work's Lists place shows: the ones people made that Money doesn't already open. */
+/** The lists Docs shows beside the docs: the ones people made that Money doesn't already open. */
 export const kinPlaceLists = (lists: ReadonlyArray<KinListDefinition>) =>
   lists.filter((def) => !kinInMoney(def));
-
-/** Null when there are no such lists at all, archived ones included. */
-export function kinListsLine(lists: ReadonlyArray<KinListDefinition>): string | null {
-  const shown = kinPlaceLists(lists);
-  const index = kinListsIndex(shown);
-  if (index.active.length === 0 && index.archived.length === 0) return null;
-  if (index.active.length === 0) return plural(index.archived.length, "archived list");
-  const open = shown
-    .filter((def) => !def.builtIn && def.archivedAt === null)
-    .reduce((sum, def) => sum + def.open, 0);
-  return `${plural(index.active.length, "list")}, ${open} open`;
-}
 
 // What needs you
 
 export type KinNeedsYouOpen =
   | { readonly type: "task"; readonly key: KinRecordKey }
-  | { readonly type: "list"; readonly open: KinListOpen }
   | { readonly type: "money" }
   | { readonly type: "chat"; readonly chatId: KinChatId };
 
@@ -182,7 +148,7 @@ export function kinNeedsYou(input: {
   const late = input.mine.filter((record) => record.late).map(task);
   const today = input.mine.filter((record) => !record.late).map(task);
   const overdue = input.money === null ? null : kinMoneyView(input.money, input.lists).overdue;
-  // Every overdue invoice is one row, which opens them all; Money splits them by client.
+  // Every overdue invoice is one row, which opens Money; Money splits them by client.
   const owed: ReadonlyArray<KinNeedsYouRow> =
     overdue === null || !overdue.late
       ? []
@@ -193,7 +159,7 @@ export function kinNeedsYou(input: {
             title: `${overdue.note ?? "Invoices"} overdue`,
             detail: overdue.lines.join(" and "),
             late: true,
-            open: overdue.open === null ? { type: "money" } : { type: "list", open: overdue.open },
+            open: { type: "money" },
           },
         ];
   const waiting = [...input.waiting]
@@ -210,29 +176,6 @@ export function kinNeedsYou(input: {
       };
     });
   return [...late, ...owed, ...waiting, ...today];
-}
-
-/** Nothing anywhere yet: the page explains itself instead of showing rows of zeros. */
-export function kinWorkEmpty(input: {
-  readonly summary: KinWorkSummary;
-  /** Null for a place this viewer can't see; undefined while it is still being read. */
-  readonly clients: number | null | undefined;
-  readonly docs: number | null | undefined;
-  readonly moneyEmpty: boolean | null | undefined;
-  readonly lists: number | null | undefined;
-  readonly needsYou: number;
-}): boolean {
-  const { summary } = input;
-  const none = (count: number | null | undefined) => count === null || count === 0;
-  return (
-    summary.open === 0 &&
-    (summary.closed ?? 0) === 0 &&
-    input.needsYou === 0 &&
-    none(input.clients) &&
-    none(input.docs) &&
-    none(input.lists) &&
-    (input.moneyEmpty === null || input.moneyEmpty === true)
-  );
 }
 
 // Tasks' one filter
@@ -286,8 +229,7 @@ export function kinWorkAskDraft(place: KinWorkPlace | null, narrowed?: string | 
     tasks: "our tasks",
     money: "our money",
     clients: "our clients",
-    docs: "our docs",
-    lists: "our lists",
+    docs: "our docs and lists",
   }[place];
   return narrowed == null || narrowed === ""
     ? `About ${about}: `
