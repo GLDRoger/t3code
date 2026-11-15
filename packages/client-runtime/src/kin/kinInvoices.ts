@@ -12,7 +12,7 @@ import type {
   KinRecordKey,
 } from "@t3tools/contracts";
 
-import { kinWorkDueLabel } from "./kinWork.ts";
+import { kinWorkDayOfTime, kinWorkDueLabel } from "./kinWork.ts";
 import { kinMoneyText, kinParseMoney } from "./kinLists.ts";
 
 /**
@@ -22,6 +22,8 @@ import { kinMoneyText, kinParseMoney } from "./kinLists.ts";
 
 export const KIN_INVOICES = {
   number: "Invoice number",
+  sentTo: (to: string, day: string) =>
+    `Sent to ${to} ${/^(today|yesterday)$/.test(day) ? day : `on ${day}`}`,
   draft: "Draft",
   void: "Void",
   voidNote: "Kept with its number so the series stays complete. It counts for nothing.",
@@ -185,6 +187,8 @@ export interface KinInvoiceView {
   readonly documents: ReadonlyArray<{ readonly key: KinRecordKey; readonly title: string }>;
   /** The series prefix the next number comes from, for Issue's confirmation. */
   readonly prefix: string | null;
+  /** "Sent to ana@client.com on 15 Nov", newest first. */
+  readonly sent: ReadonlyArray<string>;
 }
 
 const receiptOf = (payment: KinPayment): KinPaymentReceiptView => {
@@ -250,6 +254,12 @@ export function kinInvoiceView(
     }),
     documents: documents.reverse(),
     prefix: def?.numbering?.prefix ?? null,
+    sent: (item.sent ?? []).map((mail) =>
+      KIN_INVOICES.sentTo(
+        mail.to.join(", "),
+        kinWorkDayOfTime(mail.at, now) ?? mail.at.slice(0, 10),
+      ),
+    ),
   };
 }
 

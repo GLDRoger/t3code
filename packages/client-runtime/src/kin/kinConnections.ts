@@ -19,6 +19,7 @@ import {
   type KinConnectionsView,
   type KinConnectionTool,
   type KinConnectionToolDefinition,
+  type KinConnectionToolMode,
   type KinOrgId,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
@@ -85,10 +86,16 @@ export const KIN_CONNECTIONS_COPY = {
   changeClient: "Use a different Google client",
   toolsTitle: "Tools",
   toolsDetail:
-    "Off: agents can't use it. Read: agents use it when they need to, in chats only you can see.",
+    "Off: agents can't use it. Read: agents use it when they need to, in chats only you can see. Ask me: nothing happens until you tap Confirm on a card showing exactly what it will do.",
+  modeOff: "Off",
+  modeRead: "Read",
+  modeAsk: "Ask me",
+  alwaysAsk: "Sends from your account: always asks you",
+  sendSignInLabel: "Sign in to send",
+  sendSignInDetail: "Sign in again to allow sending. Reading keeps working.",
   noTools: "This service lists no tools.",
   suggested: "Turn on suggested",
-  suggestedDetail: "Tools the service says only read.",
+  suggestedDetail: "Tools the service says only read, and sending set to ask you first.",
   refresh: "Check for changes",
   refreshing: "Checking…",
   changedTitle: "Changed since you allowed it",
@@ -182,6 +189,15 @@ export function kinConnectionStatus(connection: KinConnection): KinConnectionSta
   const instructions =
     connection.instructionsDigest !== null &&
     connection.instructions !== connection.acceptedInstructions;
+  if (
+    connection.needsSignInToSend === true &&
+    !(connection.state === "needs_review" || changed > 0 || instructions)
+  )
+    return {
+      tone: "attention",
+      label: KIN_CONNECTIONS_COPY.sendSignInLabel,
+      detail: KIN_CONNECTIONS_COPY.sendSignInDetail,
+    };
   if (connection.state === "needs_review" || changed > 0 || instructions)
     return {
       tone: "attention",
@@ -219,8 +235,12 @@ export interface KinToolRow {
   readonly description: string | null;
   readonly state: KinToolState;
   readonly on: boolean;
-  /** The service says it only reads: Kin suggests Read. */
-  readonly suggested: boolean;
+  readonly mode: KinConnectionToolMode;
+  /** The marks this tool can take: a tool that sends is never Read. */
+  readonly modes: ReadonlyArray<KinConnectionToolMode>;
+  readonly alwaysAsk: boolean;
+  /** What one tap on "suggested" sets: Read for a tool that only reads, Ask me for sending. */
+  readonly suggested: KinConnectionToolMode | null;
   readonly openWeb: boolean;
   readonly change: KinToolChange | null;
   readonly digest: string;
@@ -253,7 +273,13 @@ export function kinToolRows(tools: ReadonlyArray<KinConnectionTool>): ReadonlyAr
         description: tool.definition.description,
         state: tool.changed ? "changed" : on ? "on" : "off",
         on,
-        suggested: tool.suggestedMode === "read",
+        mode: tool.mode,
+        modes: tool.alwaysAsk === true ? ["off", "ask"] : ["off", "read", "ask"],
+        alwaysAsk: tool.alwaysAsk === true,
+        suggested:
+          tool.suggestedMode === "read" || (tool.alwaysAsk === true && tool.suggestedMode === "ask")
+            ? tool.suggestedMode
+            : null,
         openWeb: tool.openWorld,
         change: tool.changed ? toolChange(tool.definition, tool.accepted) : null,
         digest: tool.pinDigest,
@@ -264,15 +290,24 @@ export function kinToolRows(tools: ReadonlyArray<KinConnectionTool>): ReadonlyAr
 
 type Modes = KinConnectionSetToolModesInput["modes"];
 
-/** Switching one tool: turning it on names the definition shown, so a later change waits. */
-export const kinToolSwitch = (row: KinToolRow, on: boolean): Modes =>
-  on ? [{ tool: row.name, mode: "read", digest: row.digest }] : [{ tool: row.name, mode: "off" }];
+/** Marking one tool: any mark but Off names the definition shown, so a later change waits. */
+export const kinToolMark = (row: KinToolRow, mode: KinConnectionToolMode): Modes =>
+  mode === "off" ? [{ tool: row.name, mode }] : [{ tool: row.name, mode, digest: row.digest }];
 
-/** The off tools the service says only read, unchanged since shown: one tap turns them on. */
+export const kinToolModeLabel = (mode: KinConnectionToolMode) =>
+  mode === "off"
+    ? KIN_CONNECTIONS_COPY.modeOff
+    : mode === "read"
+      ? KIN_CONNECTIONS_COPY.modeRead
+      : KIN_CONNECTIONS_COPY.modeAsk;
+
+/** The off tools with a suggested mark, unchanged since shown: one tap sets them. */
 export const kinSuggestedModes = (rows: ReadonlyArray<KinToolRow>): Modes =>
-  rows
-    .filter((row) => !row.on && row.suggested && row.state !== "changed")
-    .map((row) => ({ tool: row.name, mode: "read", digest: row.digest }));
+  rows.flatMap((row) =>
+    !row.on && row.suggested !== null && row.state !== "changed"
+      ? [{ tool: row.name, mode: row.suggested, digest: row.digest }]
+      : [],
+  );
 
 /** Accepting every change on screen, the server's notes included when they changed. */
 export function kinAcceptAll(
@@ -456,7 +491,7 @@ export function kinCallRow(
       : call.status === "offered"
         ? "Asked you to connect it"
         : call.status === "awaiting_approval"
-          ? "Waiting for you"
+          ? "Waiting for your Confirm"
           : call.status === "refused"
             ? `Not allowed${call.refusedReason === null ? "" : `: ${call.refusedReason}`}`
             : `Failed${call.refusedReason === null ? "" : `: ${kinConnectionErrorText(call.refusedReason)}`}`;
