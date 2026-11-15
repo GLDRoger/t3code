@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Fixtures build times relative to a fixed clock.
 import { describe, expect, it } from "vite-plus/test";
 
 import { kinLastContactLine, kinTouchAt } from "./kinWorkClients.ts";
