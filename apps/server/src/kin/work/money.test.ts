@@ -151,6 +151,14 @@ const gate = Layer.unwrap(
           if (bind !== undefined) yield* bind({ widgetId } as never);
           return { widgetId } as never;
         }).pipe(sql.withTransaction, Effect.orDie),
+      // As KinChatService.closeReplaced marks the card.
+      closeReplaced: (_agent, widgetIds) =>
+        Effect.forEach(
+          widgetIds,
+          (widgetId) => sql`UPDATE kin_widgets SET closed_at = ${at},
+            state_json = json_set(state_json, '$.replaced', json('true'))
+            WHERE widget_id = ${widgetId}`,
+        ).pipe(Effect.asVoid, Effect.orDie),
     }),
   ),
 );
@@ -1885,21 +1893,33 @@ describe("the company profile", () => {
       assert.deepStrictEqual([after.lutNumber, after.lutDate], ["AD2904260012345", "2026-04-01"]);
       assert.include(yield* Effect.flip(answer(ownerId, true)), { reason: "widget_changed" });
 
-      // Cancel changes nothing, and a card made before another change is refused, not merged.
+      // A newer card replaces the older one: closed as replaced, and never confirmable.
       const next = yield* turn(2, "Our trade name is Invented");
       yield* LeadMoney.profile(scope, { sourceEventId: next, set: { tradeName: "Invented" } });
       yield* LeadMoney.profile(scope, { sourceEventId: next, set: { address: "1 Invented Road" } });
-      const [cancelled, outdated] = (yield* sql<{ widgetId: string }>`SELECT widget_id AS
+      const [replaced, outdated] = (yield* sql<{ widgetId: string }>`SELECT widget_id AS
           "widgetId" FROM kin_profile_changes WHERE applied_at IS NULL ORDER BY proposed_at,
           json_extract(patch_json, '$.address') IS NOT NULL`).map((one) => one.widgetId);
-      yield* answerChange({
-        orgId,
-        widgetId: cancelled!,
-        personId: ownerId,
-        confirmed: false,
-        via: "tap",
-        now: NOW,
-      });
+      const shown = yield* sql<{ widgetId: string; closed: number; replaced: number | null }>`
+        SELECT widget_id AS "widgetId", closed_at IS NOT NULL AS closed,
+          json_extract(state_json, '$.replaced') AS replaced
+        FROM kin_widgets WHERE widget_id IN ${sql.in([replaced!, outdated!])} ORDER BY closed DESC`;
+      assert.deepStrictEqual(shown, [
+        { widgetId: replaced!, closed: 1, replaced: 1 },
+        { widgetId: outdated!, closed: 0, replaced: null },
+      ]);
+      const late = yield* Effect.flip(
+        answerChange({
+          orgId,
+          widgetId: replaced!,
+          personId: ownerId,
+          confirmed: true,
+          via: "tap",
+          now: NOW,
+        }),
+      );
+      assert.include(late.message, "replaced by a newer one");
+      // A card made before another change is refused, not merged; Cancel changes nothing.
       yield* OwnerMoney.setCompanyProfile(people, { orgId, rev: 2, sac: "998314" });
       const refused = yield* Effect.flip(
         answerChange({
@@ -1913,6 +1933,14 @@ describe("the company profile", () => {
       );
       assert.include(refused, { reason: "conflict" });
       assert.include(refused.message, "Ask for the change again");
+      yield* answerChange({
+        orgId,
+        widgetId: outdated!,
+        personId: ownerId,
+        confirmed: false,
+        via: "tap",
+        now: NOW,
+      });
       const last = yield* OwnerMoney.companyProfile(people, { orgId });
       assert.deepStrictEqual(
         [last.tradeName, last.address, last.sac, last.rev],

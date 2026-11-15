@@ -14,7 +14,8 @@ import * as Schema from "effect/Schema";
 import { type KinCardNotice, kinActionFailureNotice } from "./kinDeferralPresentation.ts";
 import { kinSentences } from "./kinScreenState.ts";
 
-export const KIN_CHOICE_EXPIRED_TEXT = "This question expired. Answer in the chat instead.";
+const KIN_CHOICE_EXPIRED_TEXT = "This question expired. Answer in the chat instead.";
+const KIN_CHOICE_REPLACED_TEXT = "Replaced by a newer one.";
 
 export interface KinChoiceCardView {
   readonly orgId: KinWidget["orgId"];
@@ -36,6 +37,8 @@ export interface KinChoiceCardView {
   /** When an unanswered card stops taking taps; the host refuses later ones. */
   readonly expiresAtMs: number;
   readonly closed: boolean;
+  /** What a closed or expired card says instead of its buttons. */
+  readonly closedText: string;
 }
 
 export interface KinSendView {
@@ -182,6 +185,7 @@ export function kinChoiceCardView(widget: KinWidget): KinChoiceCardView | null {
     // Unanswered cards are never rewritten, so `updatedAt` is still the time it was posted.
     expiresAtMs: Date.parse(widget.updatedAt) + KIN_CHOICE_CARD_TTL_MS,
     closed: widget.closedAt !== null,
+    closedText: card.replaced === true ? KIN_CHOICE_REPLACED_TEXT : KIN_CHOICE_EXPIRED_TEXT,
   };
 }
 

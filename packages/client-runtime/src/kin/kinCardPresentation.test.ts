@@ -260,6 +260,15 @@ describe("choice cards", () => {
     expect(kinChoicePhase(choice({ closedAt: "2026-11-08T10:00:00.000Z" }), posted)).toBe(
       "expired",
     );
+    expect(choice().closedText).toBe("This question expired. Answer in the chat instead.");
+    const replaced = choice({
+      closedAt: "2026-11-08T10:00:00.000Z",
+      state: { ...choiceState(), replaced: true },
+    });
+    expect([kinChoicePhase(replaced, posted), replaced.closedText]).toEqual([
+      "expired",
+      "Replaced by a newer one.",
+    ]);
     expect(
       kinCardView(
         widget({ type: "choice", state: { ...choiceState(), options: [] } }),

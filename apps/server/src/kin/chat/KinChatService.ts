@@ -252,6 +252,11 @@ export class KinChatService extends Context.Service<
       readonly threadId: ThreadId;
       readonly closed: boolean;
     }) => Effect.Effect<KinWidget, ServiceError>;
+    /** Server-only: closes an unanswered choice card a newer one for the same thing replaced. */
+    readonly closeReplaced: (input: {
+      readonly orgId: KinOrgId;
+      readonly widgetId: KinWidgetId;
+    }) => Effect.Effect<void, ServiceError>;
     /** Server-only: what became of a send card's Confirm: sending, then sent or failed. */
     readonly setSendOutcome: (input: {
       readonly orgId: KinOrgId;
@@ -2148,6 +2153,27 @@ const make = Effect.gen(function* () {
       yield* sql.afterCommit(cards.track(widget));
       yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
       return widget;
+    }, transaction),
+    closeReplaced: Effect.fn("KinChatService.closeReplaced")(function* (input) {
+      const existing = yield* repo.getWidget(input);
+      if (Option.isNone(existing) || existing.value.type !== "choice") return;
+      const card = yield* decodeChoiceCard(existing.value.state).pipe(
+        Effect.mapError(() => invalidState),
+      );
+      if (card.answer !== null || existing.value.closedAt !== null) return;
+      const at = yield* now;
+      const widget = yield* repo.updateWidget({
+        ...existing.value,
+        // Closing writes no words.
+        audience: "chat",
+        state: { ...card, replaced: true },
+        awaiting: [],
+        expectedRevision: existing.value.revision,
+        closedAt: at,
+        updatedAt: at,
+      });
+      for (const item of yield* repo.waitingForWidget(widget)) yield* resolve(item, "closed");
+      yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
     }, transaction),
     setSendOutcome: Effect.fn("KinChatService.setSendOutcome")(function* (input) {
       const existing = yield* requireRecord(
