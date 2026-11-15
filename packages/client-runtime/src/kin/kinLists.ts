@@ -23,7 +23,7 @@ import type {
 import { AsyncResult } from "effect/reactivity";
 
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
-import { formatKinChartValue } from "./kinChart.ts";
+import { formatKinChartValue, KIN_CURRENCY_SYMBOLS } from "./kinChart.ts";
 import {
   isKinChatError,
   isKinWorkAuthorizationError,
@@ -156,7 +156,7 @@ export const KIN_LISTS = {
 const moneyUnit = (currency: string) => ({ kind: "money" as const, currency });
 
 /** How many digits follow the point in `currency`: 2 for rupees, 0 for yen. */
-const kinMinorDigits = (currency: string) =>
+export const kinMinorDigits = (currency: string) =>
   (formatKinChartValue(moneyUnit(currency), 1, "full", true).split(".")[1] ?? "").length;
 
 /** An exact amount: "₹4,20,000", with paise only when there are some unless `paise` keeps them. */
@@ -183,11 +183,14 @@ const afterLabel = (when: string) =>
 export const kinTotalsText = (totals: KinMoneyTotals, nothing = KIN_MONEY_NOTHING) =>
   totals.length === 0 ? nothing : kinTotalsLines(totals).join(" and ");
 
+// Longest first, so "S$" is Singapore dollars before "$" is read as US ones.
 const SYMBOLS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/US\$/, "USD"],
+  ...Object.entries(KIN_CURRENCY_SYMBOLS)
+    .filter(([code]) => code !== "INR")
+    .sort(([, a], [, b]) => b.length - a.length)
+    .map(([code, sign]) => [new RegExp(sign.replace(/[$]/g, "\\$&")), code] as const),
   [/₹|\brs\.?(?=\s|\d|$)/i, "INR"],
-  [/\$/, "USD"],
-  [/€/, "EUR"],
-  [/£/, "GBP"],
 ];
 
 /**

@@ -1,6 +1,8 @@
 import {
+  KIN_DOC_KINDS,
   KinChatError,
   KinChatId,
+  type KinDocKind,
   KinMessageId,
   KinDocFile,
   type KinDocOperation,
@@ -27,7 +29,8 @@ import {
 } from "./docBody.ts";
 import { keepDocFiles } from "./docFiles.ts";
 import { KinRecords, type Writer } from "./KinRecords.ts";
-import { listOf } from "./lists.ts";
+import { fieldText, listOf, parseFields } from "./lists.ts";
+import { guardPlaybook } from "./playbooks.ts";
 import { actorOf, iso, principal, type RecordRow, toRecord, unavailable } from "./recordRows.ts";
 import { indexRecord } from "./searchIndex.ts";
 import { SensitiveRefusal, turnSensitive } from "./workerAttempts.ts";
@@ -194,6 +197,16 @@ export const docRow = Effect.fn("KinDocs.row")(function* (
   return row;
 });
 
+/** A doc's kind as stored; one stored before kinds, or by no one, is `other`. */
+export const kindOf = (row: Pick<RecordRow, "category">): KinDocKind =>
+  KIN_DOC_KINDS.find((kind) => kind === row.category) ?? "other";
+/** Filed as the company's own: its `home` field, and no client or project. */
+export const isCompanyDoc = (row: Pick<RecordRow, "fieldsJson" | "partyId" | "projectId">) =>
+  row.partyId === null &&
+  row.projectId === null &&
+  fieldText(parseFields(row.fieldsJson), "home") === "company";
+const COMPANY_HOME = { home: "company" } as const;
+
 export const toDocRow = (row: RecordRow, latest: VersionRow, now: number): KinDocRow => {
   const record = toRecord(row, now);
   return {
@@ -203,6 +216,8 @@ export const toDocRow = (row: RecordRow, latest: VersionRow, now: number): KinDo
     owner: record.owner,
     ...(record.party === undefined ? {} : { party: record.party }),
     ...(record.project === undefined ? {} : { project: record.project }),
+    kind: kindOf(row),
+    ...(isCompanyDoc(row) ? { company: true as const } : {}),
     sensitive: record.sensitive,
     ...(record.sensitiveInherited === true ? { sensitiveInherited: true as const } : {}),
     archived: row.state === "dropped",
@@ -317,12 +332,19 @@ export const create = Effect.fn("KinDocs.create")(function* (
     readonly summary: string;
     readonly partyId?: string | null;
     readonly projectId?: string | null;
+    readonly kind?: KinDocKind;
+    /** The company's own; ignored with a client or project. */
+    readonly company?: boolean;
     readonly sensitive?: boolean;
     readonly originKey: string;
     readonly source?: { readonly chatId: KinChatId; readonly messageId: KinMessageId };
   },
 ) {
   const body = normalize(input.body);
+  const company =
+    input.company === true &&
+    (input.partyId ?? null) === null &&
+    (input.projectId ?? null) === null;
   if (body.length > DOC_BODY_MAX) return yield* tooLong(body.length);
   return yield* transaction(
     Effect.gen(function* () {
@@ -335,6 +357,8 @@ export const create = Effect.fn("KinDocs.create")(function* (
         owner: input.owner,
         ...(input.partyId === undefined ? {} : { partyId: input.partyId }),
         ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
+        ...(input.kind === undefined ? {} : { category: input.kind }),
+        ...(company ? { fields: COMPANY_HOME } : {}),
         ...(sensitive ? { sensitive: true } : {}),
         ...(input.source === undefined ? {} : { source: input.source }),
       });
@@ -352,6 +376,7 @@ export const create = Effect.fn("KinDocs.create")(function* (
         originKey: input.originKey,
         now,
       });
+      yield* guardPlaybook(orgId, row.recordId);
       yield* indexRecord(orgId, row.recordId);
       return { ...(yield* settle(orgId, row.recordId)), created };
     }),
@@ -397,6 +422,7 @@ const revise = Effect.fn("KinDocs.revise")(function* (
     undefined,
     [{ field: "version", from: String(current.version), to: String(version) }],
   );
+  yield* guardPlaybook(orgId, row.recordId);
   return { ...(yield* settle(orgId, row.recordId)), created: true };
 });
 
@@ -614,19 +640,42 @@ export const move = Effect.fn("KinDocs.move")(function* (
     readonly owner?: KinWorkPrincipal;
     readonly sensitive?: boolean;
     readonly archived?: boolean;
+    readonly kind?: KinDocKind;
+    /** `true` files it as the company's own, clearing its client and project. */
+    readonly company?: boolean;
   },
+  expectedRev?: number,
 ) {
   return yield* transaction(
     Effect.gen(function* () {
       const records = yield* KinRecords;
       const row = yield* docRow(orgId, ref);
-      yield* records.update(orgId, writer, row.key, {
-        ...(patch.partyId === undefined ? {} : { partyId: patch.partyId }),
-        ...(patch.projectId === undefined ? {} : { projectId: patch.projectId }),
-        ...(patch.owner === undefined ? {} : { owner: patch.owner }),
-        ...(patch.sensitive === undefined ? {} : { sensitive: patch.sensitive }),
-        ...(patch.archived === undefined ? {} : { state: patch.archived ? "dropped" : "open" }),
-      });
+      // A doc has one home: the company, or a client and project.
+      const toClient =
+        (patch.partyId !== undefined && patch.partyId !== null) ||
+        (patch.projectId !== undefined && patch.projectId !== null);
+      const company = patch.company === true ? true : toClient ? false : patch.company;
+      yield* records.update(
+        orgId,
+        writer,
+        row.key,
+        {
+          ...(company === true
+            ? { partyId: null, projectId: null }
+            : {
+                ...(patch.partyId === undefined ? {} : { partyId: patch.partyId }),
+                ...(patch.projectId === undefined ? {} : { projectId: patch.projectId }),
+              }),
+          ...(company === undefined ? {} : { fields: company ? COMPANY_HOME : { home: null } }),
+          ...(patch.kind === undefined ? {} : { category: patch.kind }),
+          ...(patch.owner === undefined ? {} : { owner: patch.owner }),
+          ...(patch.sensitive === undefined ? {} : { sensitive: patch.sensitive }),
+          ...(patch.archived === undefined ? {} : { state: patch.archived ? "dropped" : "open" }),
+        },
+        expectedRev,
+      );
+      // A doc made a playbook, filed elsewhere or brought back is checked as one.
+      yield* guardPlaybook(orgId, row.recordId);
       return yield* settle(orgId, row.recordId);
     }),
   );

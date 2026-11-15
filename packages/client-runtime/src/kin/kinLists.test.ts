@@ -483,5 +483,11 @@ describe("a list by its definition", () => {
       { minor: 1200, currency: "JPY" },
     ])
       expect(kinParseMoney(kinMoneyDraft(money, "INR"), "INR")).toEqual(money);
+    // Each symbol an amount is shown with reads back as its own currency, not as dollars.
+    expect(
+      ["S$40", "A$40", "CA$40", "HK$40", "NZ$40", "US$40", "$40", "€40", "¥40", "CN¥40"].map(
+        (text) => kinParseMoney(text, "INR")?.currency,
+      ),
+    ).toEqual(["SGD", "AUD", "CAD", "HKD", "NZD", "USD", "USD", "EUR", "JPY", "CNY"]);
   });
 });

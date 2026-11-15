@@ -8,18 +8,33 @@ import {
 } from "@t3tools/client-runtime/kin/kinMoney";
 import { KIN_WORK_STALE } from "@t3tools/client-runtime/kin/kinWork";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
+import {
+  kinEstimatesByLine,
+  kinMissingRates,
+  kinTotalsEstimate,
+  type KinEstimate,
+} from "@t3tools/client-runtime/kin/kinCurrency";
 import type { KinRecordKey } from "@t3tools/contracts";
-import { MessageSquareIcon } from "lucide-react";
+import { ArrowLeftRightIcon, MessageSquareIcon } from "lucide-react";
+import { useState } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import { cn } from "../lib/utils";
 import { KinChart } from "./KinChart";
+import { KinEstimateText, KinRatesDialog, KinSetRateButton } from "./KinMoneyEstimate";
+import { KinSubscriptionsSection } from "./KinSubscriptions";
 import { KinReceiptsSection } from "./KinReceipts";
 import { KinDateRow } from "./KinWorkDates";
 import { useNowMinuteMs } from "./useKinClock";
 import { KinWorkNotice, KinWorkRowSkeletons, KinWorkSection } from "./KinWorkParts";
-import { kinListsOf, useKinAskAgent, useKinMoneySummary, type KinListsHandle } from "./useKinMoney";
+import {
+  kinListsOf,
+  useKinAskAgent,
+  useKinMoneySummary,
+  useKinRates,
+  type KinListsHandle,
+} from "./useKinMoney";
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
 
 const OPENS =
@@ -29,6 +44,8 @@ const OPENS =
 function Figure(props: {
   readonly figure: KinMoneyFigure;
   readonly onOpen: (open: KinListOpen) => void;
+  /** Each foreign line's "about ₹x", by line. */
+  readonly estimates: ReadonlyMap<string, KinEstimate>;
 }) {
   const { figure } = props;
   const { open } = figure;
@@ -44,6 +61,12 @@ function Figure(props: {
           )}
         >
           {line}
+          {/* Inside a button that opens the entries; the rate it is from shows beside the totals. */}
+          {props.estimates.get(line) === undefined ? null : (
+            <span className="block text-xs font-normal tracking-normal text-muted-foreground">
+              {props.estimates.get(line)?.text}
+            </span>
+          )}
         </span>
       ))}
       {figure.note === null ? null : (
@@ -72,6 +95,7 @@ function AmountRow(props: {
   readonly note?: string | null;
   readonly late?: boolean;
   readonly amounts: ReadonlyArray<string>;
+  readonly estimates: ReadonlyMap<string, KinEstimate>;
   readonly onOpen: (() => void) | null;
 }) {
   const body = (
@@ -91,7 +115,14 @@ function AmountRow(props: {
       </span>
       <span className="flex shrink-0 flex-col items-end text-sm text-foreground tabular-nums">
         {props.amounts.map((amount) => (
-          <span key={amount}>{amount}</span>
+          <span key={amount} className="flex flex-col items-end">
+            {amount}
+            {props.estimates.get(amount) === undefined ? null : (
+              <span className="text-xs text-muted-foreground">
+                {props.estimates.get(amount)?.text}
+              </span>
+            )}
+          </span>
         ))}
       </span>
     </>
@@ -119,6 +150,7 @@ export function KinWorkMoney(
     readonly onOpenList: (open: KinListOpen) => void;
     readonly onOpenKey: (key: KinRecordKey) => void;
     readonly onDates: () => void;
+    readonly onSubscriptions: () => void;
     readonly onOpenDoc: (key: KinRecordKey) => void;
   },
 ) {
@@ -129,6 +161,8 @@ export function KinWorkMoney(
     seq: props.stale ? null : props.live.seq,
   });
   const agent = useKinAskAgent(props);
+  const rates = useKinRates(props);
+  const [ratesOpen, setRatesOpen] = useState(false);
   if (state._tag === "refused") return <KinWorkNotice {...KIN_MONEY.onlyOwner} />;
   if (state._tag === "failed" || state._tag === "gone") {
     return (
@@ -169,6 +203,29 @@ export function KinWorkMoney(
     );
   }
   const upcoming = summary.upcoming.map((row) => kinDateRowView(row, names, now));
+  // Every exact figure stays in its own currency; beside a foreign one, "about ₹x" when a rate is set.
+  const estimates = kinEstimatesByLine(
+    [
+      ...summary.owed.total,
+      ...summary.owed.overdue,
+      ...summary.received.thisMonth,
+      ...summary.received.lastMonth,
+      ...summary.spent.thisMonth.total,
+      ...summary.receivedThisFinancialYear,
+      ...summary.spentThisFinancialYear,
+      ...summary.owed.byClient.flatMap((client) => client.owed),
+    ],
+    rates,
+  );
+  const owedAll = kinTotalsEstimate(summary.owed.total, rates);
+  const missing = kinMissingRates(
+    [
+      ...summary.owed.total,
+      ...summary.spentThisFinancialYear,
+      ...summary.receivedThisFinancialYear,
+    ],
+    rates,
+  );
   return (
     <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-8 scrollbar-gutter-both">
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-7 px-4 pt-4">
@@ -179,9 +236,20 @@ export function KinWorkMoney(
         ) : null}
         <section className="flex flex-col gap-3">
           <div className="grid grid-cols-2 gap-x-6 gap-y-2">
-            <Figure figure={view.owed} onOpen={props.onOpenList} />
-            <Figure figure={view.overdue} onOpen={props.onOpenList} />
+            <Figure figure={view.owed} onOpen={props.onOpenList} estimates={estimates} />
+            <Figure figure={view.overdue} onOpen={props.onOpenList} estimates={estimates} />
           </div>
+          {owedAll?.all == null && missing.length === 0 ? null : (
+            <div className="flex flex-wrap items-center gap-x-3 px-2">
+              {owedAll?.all == null ? null : (
+                <KinEstimateText
+                  text={`${owedAll.all} owed (estimate)`}
+                  basis={owedAll.basis.map((line) => `At ${line}.`)}
+                />
+              )}
+              <KinSetRateButton {...props} currencies={missing} />
+            </div>
+          )}
           <KinWorkSection title={KIN_MONEY.byClient}>
             {view.clients.length === 0 ? (
               <p className="px-2 text-sm text-muted-foreground">{KIN_MONEY.nothingOwed}</p>
@@ -196,6 +264,7 @@ export function KinWorkMoney(
                         note={client.overdue ?? client.invoices}
                         late={client.overdue !== null}
                         amounts={client.owed}
+                        estimates={estimates}
                         onOpen={open === null ? null : () => props.onOpenList(open)}
                       />
                     </li>
@@ -208,10 +277,10 @@ export function KinWorkMoney(
         <section className="flex flex-col gap-3">
           <h2 className="px-2 text-sm font-medium text-foreground">{view.monthLabel}</h2>
           <div className="grid grid-cols-2 gap-x-6 gap-y-2">
-            <Figure figure={view.received} onOpen={props.onOpenList} />
-            <Figure figure={view.spent} onOpen={props.onOpenList} />
+            <Figure figure={view.received} onOpen={props.onOpenList} estimates={estimates} />
+            <Figure figure={view.spent} onOpen={props.onOpenList} estimates={estimates} />
             {view.tdsDeducted === null ? null : (
-              <Figure figure={view.tdsDeducted} onOpen={props.onOpenList} />
+              <Figure figure={view.tdsDeducted} onOpen={props.onOpenList} estimates={estimates} />
             )}
           </div>
           {view.categories.length === 0 ? null : (
@@ -224,6 +293,7 @@ export function KinWorkMoney(
                       <AmountRow
                         label={category.label}
                         amounts={[category.amount]}
+                        estimates={estimates}
                         onOpen={open === null ? null : () => props.onOpenList(open)}
                       />
                     </li>
@@ -233,13 +303,25 @@ export function KinWorkMoney(
             </KinWorkSection>
           )}
         </section>
+        <KinSubscriptionsSection
+          {...props}
+          lists={kinListsOf(props.lists)}
+          seq={props.stale ? null : props.live.seq}
+          rates={rates}
+          onOpen={props.onSubscriptions}
+          onOpenKey={props.onOpenKey}
+        />
         <section className="flex flex-col gap-3">
           <h2 className="px-2 text-sm font-medium text-foreground">{view.yearLabel}</h2>
           <div className="grid grid-cols-2 gap-x-6 gap-y-2">
-            <Figure figure={view.yearReceived} onOpen={props.onOpenList} />
-            <Figure figure={view.yearSpent} onOpen={props.onOpenList} />
+            <Figure figure={view.yearReceived} onOpen={props.onOpenList} estimates={estimates} />
+            <Figure figure={view.yearSpent} onOpen={props.onOpenList} estimates={estimates} />
             {view.yearTdsDeducted === null ? null : (
-              <Figure figure={view.yearTdsDeducted} onOpen={props.onOpenList} />
+              <Figure
+                figure={view.yearTdsDeducted}
+                onOpen={props.onOpenList}
+                estimates={estimates}
+              />
             )}
           </div>
         </section>
@@ -329,6 +411,12 @@ export function KinWorkMoney(
           ) : null}
         </KinWorkSection>
         <div className="flex flex-wrap gap-2 px-2">
+          {rates === null ? null : (
+            <Button size="sm" variant="ghost" onClick={() => setRatesOpen(true)}>
+              <ArrowLeftRightIcon />
+              Exchange rates
+            </Button>
+          )}
           {agent === null ? null : (
             <Button size="sm" variant="ghost" onClick={() => agent.ask("")}>
               <MessageSquareIcon />
@@ -337,6 +425,7 @@ export function KinWorkMoney(
           )}
         </div>
       </div>
+      {ratesOpen ? <KinRatesDialog {...props} onClose={() => setRatesOpen(false)} /> : null}
     </div>
   );
 }

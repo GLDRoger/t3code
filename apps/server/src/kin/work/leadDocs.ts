@@ -3,6 +3,7 @@ import {
   KinAgentId,
   KinChatError,
   KinChatId,
+  KinDocKind,
   KinDocSectionId,
   type KinDocCardState,
   KinMessageId,
@@ -69,6 +70,19 @@ const OutlineEntry = Schema.Struct({
   hash: Schema.String,
 });
 const Marks = { sensitive: Schema.optional(Schema.Literal(true)) };
+const Kind = KinDocKind.annotate({
+  description: "What it is: prd, proposal, quote, spec, notes, report, playbook, policy, or other.",
+});
+const Company = Schema.Boolean.annotate({
+  description:
+    "true files it as the company's own (playbooks, policies, company plans) rather than a client's.",
+});
+/** Where the doc is filed, for the result: a client and project, the company, or nowhere yet. */
+const Filed = {
+  kind: Schema.String,
+  company: Schema.optional(Schema.Literal(true)),
+  unfiled: Schema.optional(Schema.String),
+};
 
 export const CreateInput = Schema.Struct({
   sourceEventId: SourceEvent,
@@ -76,8 +90,10 @@ export const CreateInput = Schema.Struct({
   body: Body,
   summary: Schema.optional(Summary),
   owner: Schema.optional(Who),
+  kind: Schema.optional(Kind),
   client: Schema.optional(Client),
   project: Schema.optional(Project),
+  company: Schema.optional(Company),
   sensitive: Schema.optional(Schema.Literal(true)),
   links: Schema.optional(Schema.Array(KinRecordKey).check(Schema.isMaxLength(20))).annotate({
     description: "Keys of entries or docs to link it to.",
@@ -91,6 +107,7 @@ export const WriteResult = Schema.Struct({
   /** False when the call changed nothing: a retry, or text already as asked. */
   changed: Schema.Boolean,
   outline: Schema.Array(OutlineEntry),
+  ...Filed,
   ...Marks,
 });
 
@@ -170,8 +187,10 @@ export const RewriteInput = Schema.Struct({
 export const MoveInput = Schema.Struct({
   key: Key,
   sourceEventId: SourceEvent,
+  kind: Schema.optional(Kind),
   client: Schema.optional(Schema.NullOr(Client)),
   project: Schema.optional(Schema.NullOr(Project)),
+  company: Schema.optional(Company),
   owner: Schema.optional(Who),
   sensitive: Schema.optional(Schema.Literal(true)),
   archived: Schema.optional(Schema.Boolean),
@@ -183,6 +202,7 @@ export const MoveResult = Schema.Struct({
   client: Schema.optional(Schema.String),
   project: Schema.optional(Schema.String),
   archived: Schema.Boolean,
+  ...Filed,
   ...Marks,
 });
 export const LinkInput = Schema.Struct({
@@ -331,7 +351,17 @@ const writeResult = (
   version: written.version.version,
   changed,
   outline: [...outlineOf(written.version.body)],
+  ...filedOf(written.row),
   ...(sensitiveOf(written.row) ? { sensitive: true as const } : {}),
+});
+const UNFILED =
+  "Not filed: give it a client and project, or company true, with doc_move so people find it.";
+const filedOf = (row: RecordRow) => ({
+  kind: Docs.kindOf(row),
+  ...(Docs.isCompanyDoc(row) ? { company: true as const } : {}),
+  ...(row.partyId === null && row.projectId === null && !Docs.isCompanyDoc(row)
+    ? { unfiled: UNFILED }
+    : {}),
 });
 const sensitiveOf = (row: RecordRow) => row.sensitive === 1 || row.inheritedSensitive === 1;
 const ownerOf = (row: RecordRow): KinWorkPrincipal =>
@@ -385,6 +415,8 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
     summary: input.summary ?? "Created",
     ...(partyId === undefined ? {} : { partyId }),
     ...(projectId === undefined ? {} : { projectId }),
+    ...(input.kind === undefined ? {} : { kind: input.kind }),
+    ...(input.company === true ? { company: true } : {}),
     ...(input.sensitive === true ? { sensitive: true } : {}),
     originKey: context.originKey,
     ...(context.answered?.tag === "chat.message"
@@ -485,6 +517,8 @@ const runMove = Effect.fnUntraced(function* (lead: Lead, input: typeof MoveInput
     ...(partyId === undefined ? {} : { partyId }),
     ...(projectId === undefined ? {} : { projectId }),
     ...(owner === undefined ? {} : { owner }),
+    ...(input.kind === undefined ? {} : { kind: input.kind }),
+    ...(input.company === undefined ? {} : { company: input.company }),
     ...(input.sensitive === true ? { sensitive: true } : {}),
     ...(input.archived === undefined ? {} : { archived: input.archived }),
   });
@@ -496,6 +530,7 @@ const runMove = Effect.fnUntraced(function* (lead: Lead, input: typeof MoveInput
     ...(row.partyKey === null ? {} : { client: `${row.partyTitle} (${row.partyKey})` }),
     ...(row.projectKey === null ? {} : { project: `${row.projectTitle} (${row.projectKey})` }),
     archived: row.state === "dropped",
+    ...filedOf(row),
     ...(sensitiveOf(row) ? { sensitive: true as const } : {}),
   };
 });
