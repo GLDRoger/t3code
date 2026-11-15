@@ -18,7 +18,7 @@ import { issueEntry } from "./amounts.ts";
 import type { DocumentInput } from "./DocJobs.ts";
 import { canonical, makeDocument, remakeForEntry, type Requester } from "./make.ts";
 import * as Numbers from "./numbering.ts";
-import { invoiceFromQuote } from "./quotes.ts";
+import { invoiceFromQuote, quotedInputs } from "./quotes.ts";
 import { makeReceipt } from "./receipts.ts";
 import { defaultRecipes } from "./recipeDefaults.ts";
 import { recipeLabelled, undoRecipe as undoLabelled } from "./recipeLabels.ts";
@@ -165,7 +165,10 @@ export const make = leadTool("KinDocuments.make", (lead, input: DocumentInput) =
   }),
 );
 
-/** An invoice draft from a quote, and the quote's own inputs the invoice recipe takes, yours on top. */
+/**
+ * An invoice draft from a quote, with the quote's own inputs the invoice recipe takes: its lines and
+ * client exactly as quoted. Only what a quote doesn't carry may be given beside them.
+ */
 const fromQuote = Effect.fn("KinDocuments.fromQuote")(function* (
   lead: Lead,
   input: DocumentInput,
@@ -181,15 +184,21 @@ const fromQuote = Effect.fn("KinDocuments.fromQuote")(function* (
       "A quote is invoiced with the invoices list's recipe, such as invoice. Nothing was made.",
     );
   const own = new Set(recipe.inputs.filter((one) => one.from === "agent").map((one) => one.name));
+  const quoted = yield* quotedInputs(lead.orgId, input.from!);
+  const copied = Object.fromEntries(Object.entries(quoted).filter(([name]) => own.has(name)));
+  const overriding = Object.keys(input.inputs ?? {}).filter(
+    (name) => Object.hasOwn(copied, name) || QUOTED.has(name),
+  );
+  if (overriding.length > 0)
+    return yield* invalid(
+      `from copies ${input.from}'s lines and client exactly, so ${overriding.join(", ")} can't be given with it. Make the invoice from the quote first, then change the draft. Nothing was made.`,
+    );
   const made = yield* invoiceFromQuote(lead.orgId, requester.writer, input.from!);
-  return {
-    entry: made.entry.key,
-    given: {
-      ...Object.fromEntries(Object.entries(made.given).filter(([name]) => own.has(name))),
-      ...input.inputs,
-    },
-  };
+  return { entry: made.entry.key, given: { ...copied, ...input.inputs } };
 });
+
+/** The invoice's inputs that say what is billed, and to whom: a quote's, never given beside it. */
+const QUOTED = new Set(["lines", "billTo", "gstRate", "exportUnderLut"]);
 
 export const IssueInput = Schema.Struct({
   entry: KinRecordKey.annotate({

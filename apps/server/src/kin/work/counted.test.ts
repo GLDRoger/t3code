@@ -5,7 +5,7 @@ import * as NodePath from "node:path";
 import { assert, describe, it } from "@effect/vitest";
 
 /**
- * Every SQL read of an amount in Kin either counts by the one rule (`countedEntry`,
+ * Every SQL read of an amount in Kin, or fragment that names one, either counts by the one rule (`countedEntry`,
  * `countedPayment` in `recordRows.ts`) or is one of the reads of a single entry's own money below.
  * A new query that adds up or exports amounts fails here until it uses the rule.
  */
@@ -19,8 +19,10 @@ const OWN_READS: Readonly<Record<string, number>> = {
   "gendocs/receipts.ts": 2,
   // The columns every read selects, with an entry's own paid and withheld; one entry's payments.
   "work/recordRows.ts": 2,
-  // One entry's payments, read to check a retry and to void one.
-  "work/KinRecords.ts": 2,
+  // One entry's payments, read to check a retry and to void one; a totals query's has-amount filter.
+  "work/KinRecords.ts": 3,
+  // One settlement's parts, read to check a retry.
+  "work/leadMoney.ts": 1,
   // A statement's own rows, and the entries one row may match, each shown with its state.
   "work/statements/bankList.ts": 1,
   "work/statements/statementReview.ts": 3,
@@ -68,15 +70,28 @@ const templateAt = (text: string, start: number): { body: string; end: number } 
   return { body, end: at };
 };
 
-/** Each `sql` template in `text` that reads an amount without the rule. */
+/** SQL comments and string literals' contents, so neither a rule's name nor a word in them counts. */
+const stripped = (body: string) =>
+  body
+    .replace(/--[^\n]*/g, " ")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/'(?:[^']|'')*'/g, "''");
+
+// Limits: SQL outside a `sql`/`db` template (plain strings, `sql.unsafe`) and a fragment imported from
+// another file are not seen; a rule interpolated but not applied (say inside a CASE) still passes.
+/** Each `sql` or `db` template in `text`, whole or a fragment, that reads an amount without the rule. */
 const uncounted = (text: string) => {
   const found: Array<string> = [];
-  for (const match of text.matchAll(/\bsql(?:<[^`]*?>)?`/g)) {
-    const { body } = templateAt(text, match.index + match[0].length - 1);
-    if (!body.includes("amount_minor") || !/\bSELECT\b/.test(body)) continue;
-    if (/^\s*(?:INSERT|UPDATE|DELETE)\b/.test(body)) continue;
-    if (/\bcounted(?:Entry|Payment)\(/.test(body)) continue;
-    found.push(body.trim().slice(0, 120));
+  for (const match of text.matchAll(/\b(?:sql|db)(?:<[^`]*?>)?`/g)) {
+    const { body: raw } = templateAt(text, match.index + match[0].length - 1);
+    const body = stripped(raw);
+    const reads =
+      /\bamount_minor\b/i.test(body) ||
+      (/\bselect\s+(?:\w+\.)?\*/i.test(body) && /\bkin_record(?:s|_payments)\b/i.test(body));
+    if (!reads) continue;
+    if (/^\s*(?:insert|update|delete)\b/i.test(body)) continue;
+    if (/\$\{\s*counted(?:Entry|Payment)\(/.test(body)) continue;
+    found.push(raw.trim().slice(0, 120));
   }
   return found;
 };
@@ -93,5 +108,23 @@ describe("what a figure counts", () => {
     );
     const expected = Object.fromEntries(Object.entries(OWN_READS).filter(([, n]) => n > 0));
     assert.deepStrictEqual(counts, expected, JSON.stringify(seen, null, 2));
+  });
+
+  it("sees a read however it is written", () => {
+    const tick = "`";
+    const read = (body: string, tag = "sql") => uncounted(`${tag}${tick}${body}${tick}`).length;
+    assert.deepStrictEqual(
+      [
+        read("select sum(amount_minor) from kin_records r"),
+        read("SELECT SUM(amount_minor) FROM kin_records r", "db"),
+        read("SELECT SUM(amount_minor) FROM kin_records r -- ${countedEntry(sql)}"),
+        read("SELECT * FROM kin_records r WHERE org_id = ${orgId}"),
+        read("r.amount_minor > 0"),
+        read("SELECT SUM(amount_minor) FROM kin_records r WHERE ${countedEntry(sql)}"),
+        read("UPDATE kin_records SET amount_minor = ${minor}"),
+        read("SELECT title FROM kin_records r WHERE note = 'amount_minor'"),
+      ],
+      [1, 1, 1, 1, 1, 0, 0, 0],
+    );
   });
 });

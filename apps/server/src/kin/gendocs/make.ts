@@ -15,12 +15,21 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Docs from "../work/docs.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
-import { dayIn } from "../work/money.ts";
+import { isMoney, parseFields } from "../work/lists.ts";
+import { dayIn, formatMoney } from "../work/money.ts";
 import { ownerZone, type RecordRow } from "../work/recordRows.ts";
 import { turnSensitive } from "../work/workerAttempts.ts";
 import { gatherFacts, jobSensitive } from "./facts.ts";
 import { issuedNumber } from "./numbering.ts";
-import { assembleInputs, needsEntry, type Value } from "./recipe.ts";
+import { computeData } from "./compute.ts";
+import {
+  amountProblem,
+  assembleInputs,
+  declaredFigures,
+  issuable,
+  needsEntry,
+  type Value,
+} from "./recipe.ts";
 import { recipeLabelled } from "./recipeLabels.ts";
 import { KinDocRenderer } from "./render.ts";
 import type { Taken } from "./returnPath.ts";
@@ -126,7 +135,6 @@ type Plan = {
   readonly logo: { readonly bytes: Uint8Array; readonly extension: string } | null;
 };
 
-/** The exact inputs from stored rows and the requester's own, and what follows from them. */
 /** The doc's latest text as the body (and its title as the title) of a recipe that lays out Markdown. */
 const fromDoc = Effect.fn("KinDocMaker.fromDoc")(function* (
   request: MakeRequest,
@@ -155,6 +163,46 @@ const fromDoc = Effect.fn("KinDocMaker.fromDoc")(function* (
   };
 });
 
+/**
+ * What an issued document comes to, as its recipe declares it, when that is what its entry
+ * records: a document never shows a total its entry doesn't. `undefined` for any other document.
+ */
+const issuedFigures = (recipe: StoredRecipe, final: Plan) => {
+  const entry = final.entry;
+  if (entry === undefined || final.number === null || final.draft || !issuable(recipe))
+    return undefined;
+  const problem = amountProblem(recipe);
+  if (problem !== undefined) return invalid(`${NOTHING} ${problem}`);
+  const computed = computeData(final.inputs, recipe.computed);
+  if ("error" in computed) return invalid(`${NOTHING} ${computed.error}`);
+  const figures = declaredFigures(recipe, computed.data);
+  if ("error" in figures) return invalid(`${NOTHING} The ${recipe.name} recipe: ${figures.error}.`);
+  const recorded =
+    entry.amountMinor === null
+      ? null
+      : { minor: entry.amountMinor, currency: entry.currency ?? "" };
+  if (
+    recorded === null ||
+    recorded.minor !== figures.total.minor ||
+    recorded.currency !== figures.total.currency
+  )
+    return invalid(
+      `${NOTHING} ${final.number}'s document comes to ${formatMoney(figures.total)}, but ${entry.key} is recorded at ${recorded === null ? "no amount" : formatMoney(recorded)}. Correct whichever is wrong, then make it again.`,
+    );
+  const stored = parseFields(entry.fieldsJson).tax;
+  if (
+    stored !== undefined &&
+    stored !== null &&
+    isMoney(stored) &&
+    (stored.minor !== figures.tax.minor || stored.currency !== figures.tax.currency)
+  )
+    return invalid(
+      `${NOTHING} ${final.number}'s document charges ${formatMoney(figures.tax)} of tax, but ${entry.key} records ${formatMoney(stored)}. Correct whichever is wrong, then make it again.`,
+    );
+  return figures;
+};
+
+/** The exact inputs from stored rows and the requester's own, and what follows from them. */
 const plan = Effect.fn("KinDocMaker.plan")(function* (request: MakeRequest, recipe: StoredRecipe) {
   const records = yield* KinRecords;
   const entry =
@@ -300,6 +348,8 @@ export const makeDocument = Effect.fn("KinDocMaker.make")(function* (request: Ma
       if (final.inputsHash !== first.inputsHash)
         return yield* invalid(`${NOTHING} The figures changed while Kin was rendering; ask again.`);
       const sensitive = final.sensitive || first.sensitive;
+      const figures = issuedFigures(recipe, final);
+      if (isChatError(figures)) return yield* figures;
       const inserted = yield* sql`INSERT INTO kin_doc_jobs (org_id, worker_id, agent_id, wakeup_id,
           mode, recipe, recipe_commit, entry_record_id, inputs_sha256, number, sensitive,
           doc_origin, worktree_path, branch, chat_id, audience, answered_message_id,
@@ -318,6 +368,12 @@ export const makeDocument = Effect.fn("KinDocMaker.make")(function* (request: Ma
         ON CONFLICT (org_id, worker_id) DO NOTHING RETURNING worker_id`;
       if (inserted.length === 0)
         return yield* invalid(`${NOTHING} This request is already being made; ask again.`);
+      if (figures !== undefined)
+        yield* sql`INSERT INTO kin_doc_job_figures (org_id, worker_id, entry_record_id, number,
+            total_minor, tax_minor, currency, taxes_json, rendered_at)
+          VALUES (${request.orgId}, ${jobId}, ${final.entry!.recordId}, ${final.number},
+            ${figures.total.minor}, ${figures.tax.minor}, ${figures.total.currency},
+            ${canonical(figures.taxes)}, ${now})`;
       const owner: KinWorkPrincipal =
         requester._tag === "agent"
           ? { _tag: "agent", agentId: requester.agentId }

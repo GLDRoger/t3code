@@ -974,6 +974,7 @@ describe("invoices", () => {
         [retried.paymentId, retried.tdsPaymentId],
         [settled.paymentId, settled.tdsPaymentId],
       );
+
       const settledMoney = yield* OwnerMoney.money(people, { orgId });
       const minor = (money: ReadonlyArray<{ readonly minor: number }>) => money[0]?.minor ?? 0;
       assert.deepStrictEqual(
@@ -997,6 +998,21 @@ describe("invoices", () => {
         withheld: "101",
       }).pipe(Effect.flip);
       assert.strictEqual((yield* records.get(orgId, "INV-3"))!.paid, 0);
+      // Review 45: ₹900 and ₹100 TDS, retried as ₹900 and ₹101, is refused: TDS stays ₹100.
+      yield* LeadWork.create(scope, {
+        sourceEventId: overpaid,
+        records: [
+          { list: "invoices", title: "Invented part", client: "Invented Acme", amount: "2,000" },
+        ],
+      });
+      const part = { ...tds, key: "INV-4", amount: "900", withheld: "100" };
+      yield* LeadMoney.payment(scope, part);
+      for (const changed of [{ withheld: "101" }, { amount: "901" }, { withheld: undefined }])
+        assert.include(yield* LeadMoney.payment(scope, { ...part, ...changed }).pipe(Effect.flip), {
+          reason: "not_allowed",
+        });
+      const parted = (yield* records.get(orgId, "INV-4"))!;
+      assert.deepStrictEqual([parted.paid, parted.withheld], [100_000, 10_000]);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -1115,9 +1131,17 @@ describe("invoices", () => {
         });
         const backdated = yield* OwnerMoney.issue(people, { orgId, key: "INV-6" });
         const notice =
-          "INV/27-28/002 is dated 20 Mar 2027, before INV/27-28/001 (1 Apr 2027), which was issued first: its number comes after invoices dated later.";
+          "INV/27-28/002 is dated 20 Mar 2027, before INV/27-28/001 (1 Apr 2027), which was issued first: its number comes after entries dated later.";
         assert.deepStrictEqual([backdated.number, backdated.notice], ["INV/27-28/002", notice]);
         assert.strictEqual((yield* records.get(orgId, "INV-6"))!.notes, notice);
+        // Kin's own words, written as Kin's: not the owner's, whatever the list calls its entries.
+        const sql = yield* SqlClient.SqlClient;
+        assert.deepStrictEqual(
+          yield* sql`SELECT c.actor_kind AS kind FROM kin_record_changes c
+            JOIN kin_records r ON r.org_id = c.org_id AND r.record_id = c.record_id
+            WHERE r.org_id = ${orgId} AND r.key = 'INV-6' AND c.fields_json LIKE '%"notes"%'`,
+          [{ kind: "system" }],
+        );
       }).pipe(Effect.provide(layer)),
   );
 });

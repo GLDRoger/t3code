@@ -23,8 +23,9 @@ RECIPE.md starts with front matter between --- lines:
 - numbered (optional): the document carries the number Kin issues for the entry.
 - sensitive (optional): Kin labels a document confidential by where its inputs come from; true
   labels it so anyway.
-- inputs: each input's type (text, integer, decimal, money, date, month, boolean or table with
-  columns), whether it is required, a description, and from:
+- inputs: each input's type (text, integer, decimal, money, date, month, boolean, code for a
+  SAC or HSN code of 4 to 8 digits, or table with columns), whether it is required, a
+  description, and from:
   - nothing, for a value the agent gives;
   - entry.key, entry.title, entry.state, entry.amount, entry.tax, entry.date, entry.due,
     entry.notes, entry.number or entry.fields.<field>: the entry it is for;
@@ -50,6 +51,10 @@ RECIPE.md starts with front matter between --- lines:
   each column it sets, never a table), words amount,
   date [day, format], gst { taxable, total, recordedTax, rate, supplierGstin, supplierPlace,
   clientGstin, clientPlace, exportUnderLut } and markdown text.
+- amount (numbered): which figure is the amount the document asks for, its tax and its tax
+  lines, such as { total: tax.total, tax: tax.tax, taxes: tax.taxes }. Issuing an entry records
+  that total, and refuses when the entry already holds another. A numbered recipe without it
+  can't issue.
 - sheets and workbook (table): each sheet's name, the table input it shows, its CSV file name,
   its columns (header and field) and the states left out of totals.
 - outputs: the file names it makes, {month} for an input's value.
@@ -121,7 +126,7 @@ inputs:
     type: table
     required: false
     description: "What was supplied, one row each, as the owner said it: quantity times rate is the taxable value; sac is the line's SAC or HSN code when the owner gave one, else the company's prints. Leave out to bill the entry's amount as one line."
-    columns: { description: text, sac: text, quantity: decimal, unit: text, rate: money }
+    columns: { description: text, sac: code, quantity: decimal, unit: text, rate: money }
   gstRate: { type: decimal, required: false, description: "GST percent; 18 unless the owner said otherwise" }
   exportUnderLut: { type: boolean, required: false, description: "For an export: false only when the owner said IGST is paid on it" }
   notes: { type: text, required: false }
@@ -158,6 +163,7 @@ computed:
         paidText: { date: [paidOn, "D MMM YYYY"] }
   paidTotal: { sum: paid.amount }
   balance: { minus: [tax.total, paidTotal] }
+amount: { total: tax.total, tax: tax.tax, taxes: tax.taxes }
 default: true
 outputs: [invoice.pdf]
 ---
@@ -413,7 +419,7 @@ inputs:
     type: table
     required: false
     description: "What is offered, one row each, as the owner said it: quantity times rate is the value before tax; sac is the line's SAC or HSN code when the owner gave one. Leave out to quote the entry's amount as one line."
-    columns: { description: text, sac: text, quantity: decimal, unit: text, rate: money }
+    columns: { description: text, sac: code, quantity: decimal, unit: text, rate: money }
   gstRate: { type: decimal, required: false, description: "GST percent; 18 unless the owner said otherwise" }
   exportUnderLut: { type: boolean, required: false, description: "For an export: false only when the owner said IGST will be paid on it" }
   terms: { type: text, required: false, description: "Payment terms or conditions, as the owner gave them" }
@@ -443,6 +449,7 @@ computed:
   datedText: { date: [datedDay, "D MMM YYYY"] }
   validText: { date: [validUntil, "D MMM YYYY"] }
   billedAt: { first: [billTo, clientAddress] }
+amount: { total: tax.total, tax: tax.tax, taxes: tax.taxes }
 outputs: [quotation.pdf]
 ---
 
@@ -659,6 +666,7 @@ computed:
   day: { first: [receivedOn, today] }
   dayText: { date: [day, "D MMM YYYY"] }
   payer: { first: [receivedFrom, client] }
+amount: { total: amount }
 outputs: [receipt.pdf]
 ---
 

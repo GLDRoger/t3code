@@ -9,10 +9,10 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import type { Figures } from "./amounts.ts";
+import type { Documented } from "./amounts.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import { isMoney, parseFields } from "../work/lists.ts";
-import { dayIn, financialYearOf } from "../work/money.ts";
+import { dayIn, financialYearOf, formatMoney } from "../work/money.ts";
 import {
   endOfDay,
   notFound,
@@ -143,8 +143,8 @@ export const issue = Effect.fn("KinNumbers.issue")(function* (
   orgId: KinOrgId,
   writer: Writer,
   key: string,
-  /** What the entry's own document comes to (`amounts.ts`): its amount and tax once issued. */
-  figures?: Figures,
+  /** What the entry's documents come to (`amounts.ts`): the amount and tax it is issued with. */
+  documented?: Documented,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
@@ -161,7 +161,12 @@ export const issue = Effect.fn("KinNumbers.issue")(function* (
         return answered({ key: row.key, number: had, state: row.state, issued: false });
       if (row.state === "dropped")
         return yield* invalid(`${row.key} is void, so it gets no number. Make a new one instead.`);
-      const priced = def.amount ? pricedBy(row, def, figures) : {};
+      // An issued entry always carries its amount, whatever its list says about amounts.
+      if (!def.amount)
+        return yield* invalid(
+          `${def.name} keeps no amounts, and an issued entry always carries its amount, so ${row.key} wasn't issued. Nothing was issued.`,
+        );
+      const priced = pricedBy(row, def, documented);
       if (isChatError(priced)) return yield* priced;
       const { now, zone, day, year, series, floor } = yield* seriesToday(orgId, def.id, rule);
       if (floor > 0)
@@ -205,10 +210,11 @@ export const issue = Effect.fn("KinNumbers.issue")(function* (
               WHERE n.org_id = ${orgId} AND n.register_id = ${def.id} AND n.series = ${series}
                 AND n.record_id <> ${row.recordId} AND r.date_at > ${dated}
               ORDER BY r.date_at DESC, n.seq DESC LIMIT 1`;
+      // Kin's own words from its own values (a number is letters, digits, / and -), never a list's.
       const notice =
         later === undefined || dated === null || dayIn(later.dateAt, zone) <= dayIn(dated, zone)
           ? undefined
-          : `${number} is dated ${shownDay(dayIn(dated, zone))}, before ${later.number} (${shownDay(dayIn(later.dateAt, zone))}), which was issued first: its number comes after ${def.noun}s dated later.`;
+          : `${number} is dated ${shownDay(dayIn(dated, zone))}, before ${later.number} (${shownDay(dayIn(later.dateAt, zone))}), which was issued first: its number comes after entries dated later.`;
       const updated = yield* records.update(
         orgId,
         writer,
@@ -221,13 +227,14 @@ export const issue = Effect.fn("KinNumbers.issue")(function* (
             ? { dateAt: endOfDay(day, zone), dateAllDay: true }
             : {}),
           ...priced,
-          ...(notice === undefined
-            ? {}
-            : { notes: row.notes === "" ? notice : `${row.notes}\n\n${notice}` }),
         },
         undefined,
         [{ field: "number", from: null, to: number }],
       );
+      if (notice !== undefined)
+        yield* records.update(orgId, { actor: { _tag: "system" }, via: writer.via }, row.key, {
+          notes: updated.notes === "" ? notice : `${updated.notes}\n\n${notice}`,
+        });
       return answered({
         key: updated.key,
         number,
@@ -244,25 +251,43 @@ const shownDay = (day: string) =>
   `${Number(day.slice(8, 10))} ${MONTHS[Number(day.slice(5, 7)) - 1]} ${day.slice(0, 4)}`;
 
 /**
- * What issuing writes to an entry with an amount: its document's total and tax when it has one,
- * else its own amount. One with neither is refused: an issued entry always carries its amount.
+ * What issuing writes to an entry: the total and tax its documents come to, which must be what it
+ * already records when it records them; else its own amount. One with neither is refused.
  */
-const pricedBy = (row: RecordRow, def: ListDef, figures: Figures | undefined) => {
-  if (figures?._tag === "figures") {
-    const taxField = def.fields.some((field) => field.key === "tax" && field.type === "money");
-    const stored = parseFields(row.fieldsJson).tax;
-    const taxed = stored !== undefined && isMoney(stored) && stored.minor === figures.tax.minor;
-    return {
-      ...(row.amountMinor === null ? { amount: figures.total } : {}),
-      ...(taxField && !taxed ? { fields: { tax: figures.tax } } : {}),
-    };
+const pricedBy = (row: RecordRow, def: ListDef, documented: Documented | undefined) => {
+  if (documented?._tag === "refused")
+    return invalid(`${row.key} wasn't issued: ${documented.reason} Nothing was issued.`);
+  if (documented === undefined) {
+    if (row.amountMinor !== null) return {};
+    return invalid(
+      `${row.key} has no amount. Make its document from its lines, or give it its amount, then issue it. Nothing was issued.`,
+    );
   }
-  if (row.amountMinor !== null) return {};
-  return invalid(
-    figures?._tag === "unworkable"
-      ? `${row.key} has no amount, and Kin can't work it out from its document: ${figures.reason} Nothing was issued.`
-      : `${row.key} has no amount. Make its document from its lines, or give it its amount, then issue it. Nothing was issued.`,
-  );
+  const { total, tax } = documented.figures;
+  const recorded =
+    row.amountMinor === null ? undefined : { minor: row.amountMinor, currency: row.currency ?? "" };
+  if (
+    recorded !== undefined &&
+    (recorded.minor !== total.minor || recorded.currency !== total.currency)
+  )
+    return invalid(
+      `${row.key} is recorded at ${formatMoney(recorded)}, but its document comes to ${formatMoney(total)}. Correct whichever is wrong, the entry's amount or the document's lines or recipe, then issue it. Nothing was issued.`,
+    );
+  const taxField = def.fields.some((field) => field.key === "tax" && field.type === "money");
+  const stored = parseFields(row.fieldsJson).tax;
+  const storedTax = stored !== undefined && stored !== null && isMoney(stored) ? stored : undefined;
+  if (
+    taxField &&
+    storedTax !== undefined &&
+    (storedTax.minor !== tax.minor || storedTax.currency !== tax.currency)
+  )
+    return invalid(
+      `${row.key} records ${formatMoney(storedTax)} of tax, but its document charges ${formatMoney(tax)}. Correct whichever is wrong, then issue it. Nothing was issued.`,
+    );
+  return {
+    ...(recorded === undefined ? { amount: total } : {}),
+    ...(taxField && storedTax === undefined ? { fields: { tax } } : {}),
+  };
 };
 
 /**

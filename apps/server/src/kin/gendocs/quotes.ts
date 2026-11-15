@@ -11,6 +11,23 @@ const decodeGiven = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
 );
 
+/** What the quote's latest document was made with; `{}` when it has none. */
+export const quotedInputs = Effect.fn("KinQuotes.inputs")(function* (
+  orgId: KinOrgId,
+  quoteKey: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const quote = yield* (yield* KinRecords).get(orgId, quoteKey);
+  if (quote === undefined) return yield* notFound(quoteKey);
+  const [job] = yield* sql<{ givenJson: string }>`SELECT given_json AS "givenJson"
+    FROM kin_doc_jobs
+    WHERE org_id = ${orgId} AND entry_record_id = ${quote.recordId} AND recipe IS NOT NULL
+      AND given_json IS NOT NULL AND outcome_json IS NOT NULL
+    ORDER BY created_at DESC, worker_id DESC LIMIT 1`;
+  const decoded = job === undefined ? undefined : decodeGiven(job.givenJson);
+  return decoded?._tag === "Some" ? decoded.value : {};
+});
+
 /**
  * An invoice draft made from a quote: its client, project and title, and what the quote's latest
  * document was made with, so the invoice carries the same lines. Once per quote: asking again
@@ -21,7 +38,6 @@ export const invoiceFromQuote = Effect.fn("KinQuotes.invoiceFrom")(function* (
   writer: Writer,
   quoteKey: string,
 ) {
-  const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
   const quote = yield* records.get(orgId, quoteKey);
   if (quote === undefined) return yield* notFound(quoteKey);
@@ -29,13 +45,7 @@ export const invoiceFromQuote = Effect.fn("KinQuotes.invoiceFrom")(function* (
     return yield* invalid(`${quote.key} isn't a quote. Nothing was made.`);
   if (quote.state === "dropped")
     return yield* invalid(`${quote.key} is void, so no invoice is made from it.`);
-  const [job] = yield* sql<{ givenJson: string }>`SELECT given_json AS "givenJson"
-    FROM kin_doc_jobs
-    WHERE org_id = ${orgId} AND entry_record_id = ${quote.recordId} AND recipe IS NOT NULL
-      AND given_json IS NOT NULL AND outcome_json IS NOT NULL
-    ORDER BY created_at DESC, worker_id DESC LIMIT 1`;
-  const decoded = job === undefined ? undefined : decodeGiven(job.givenJson);
-  const given = decoded?._tag === "Some" ? decoded.value : {};
+  const given = yield* quotedInputs(orgId, quote.key);
   const owner = principal(quote.ownerKind, quote.ownerId);
   if (owner === null) return yield* invalid(`${quote.key} has no owner. Nothing was made.`);
   const amount = amountOf(quote);

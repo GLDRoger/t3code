@@ -735,6 +735,10 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
     return yield* invalid(`${input.name ?? named} is one of Kin's own lists already.`);
   const name = preset?.name ?? input.name ?? named;
   const amount = input.amount ?? preset?.amount ?? false;
+  if (!amount && preset?.numbering !== undefined)
+    return yield* invalid(
+      `${name} entries are numbered when issued, and an issued one always carries its amount, so this list keeps amounts.`,
+    );
   const states = input.states ?? preset?.states ?? ["open", "done", "dropped"];
   const definition: StoredDefinition = {
     noun: input.noun ?? preset?.noun ?? name.toLowerCase().replace(/s$/, ""),

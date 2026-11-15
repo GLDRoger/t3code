@@ -1,4 +1,4 @@
-import { isCalendarDay, KinChatError } from "@t3tools/contracts";
+import { isCalendarDay, KinChatError, KinSacCode } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { parseDocument } from "yaml";
 
@@ -12,7 +12,15 @@ import { FUNCTIONS } from "./compute.ts";
  * by Kin from a stored row named by `from`; the server renders exactly the declared inputs.
  */
 
-const ScalarType = Schema.Literals(["text", "integer", "decimal", "money", "date", "boolean"]);
+const ScalarType = Schema.Literals([
+  "text",
+  "integer",
+  "decimal",
+  "money",
+  "date",
+  "boolean",
+  "code",
+]);
 type ScalarType = typeof ScalarType.Type;
 const InputType = Schema.Literals([...ScalarType.literals, "month", "table"]);
 export type InputType = typeof InputType.Type;
@@ -45,6 +53,17 @@ const SheetDecl = Schema.Struct({
   ),
 });
 export type Sheet = typeof SheetDecl.Type;
+/** A computed field or input, or one part of it, such as `tax.total`. */
+const FigurePath = Schema.String.check(
+  Schema.isPattern(/^[a-z][a-zA-Z0-9_]{0,39}(?:\.[a-z][a-zA-Z0-9_]{0,39})?$/),
+);
+const AmountDecl = Schema.Struct({
+  total: FigurePath,
+  tax: Schema.optional(FigurePath),
+  taxes: Schema.optional(FigurePath),
+});
+/** Which of a document's figures is the amount it asks for: what its entry is issued with. */
+type AmountDecl = typeof AmountDecl.Type;
 const FrontMatter = Schema.Struct({
   name: Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9-]{1,39}$/)),
   kind: Schema.optional(Schema.Literals(["typst", "table"])),
@@ -56,6 +75,7 @@ const FrontMatter = Schema.Struct({
   default: Schema.optional(Schema.Boolean),
   inputs: Schema.optional(Schema.Record(Name, Declared)),
   computed: Schema.optional(Schema.Record(Name, Schema.Unknown)),
+  amount: Schema.optional(AmountDecl),
   workbook: Schema.optional(FileName),
   sheets: Schema.optional(Schema.Array(SheetDecl).check(Schema.isMaxLength(20))),
   outputs: Schema.Array(
@@ -87,6 +107,8 @@ export type Recipe = {
   readonly inputs: ReadonlyArray<InputDecl>;
   /** Fields Kin works out, in order, each `{ <function>: <arguments> }` (`compute.ts`). */
   readonly computed: ReadonlyArray<readonly [string, unknown]>;
+  /** The figure its entry is issued with; `null` in a recipe written before recipes declared it. */
+  readonly amount: AmountDecl | null;
   readonly sheets: ReadonlyArray<Sheet>;
   readonly workbook: string | null;
   readonly outputs: ReadonlyArray<string>;
@@ -246,6 +268,14 @@ export const parseRecipe = (text: string): Recipe | RecipeProblem => {
     if (fn === undefined || !(FUNCTIONS as ReadonlyArray<string>).includes(fn))
       return problem(`computed field ${name} names none of ${FUNCTIONS.join(", ")}`);
   }
+  if (front.amount !== undefined) {
+    const named = new Set([...inputs.map((one) => one.name), ...computed.map(([name]) => name)]);
+    const unknown = [front.amount.total, front.amount.tax, front.amount.taxes].find(
+      (path) => path !== undefined && !named.has(path.split(".")[0]!),
+    );
+    if (unknown !== undefined)
+      return problem(`amount names ${unknown}, which is no input or computed field`);
+  }
   const sheets = front.sheets ?? [];
   if (kind === "typst") {
     if (sheets.length > 0 || front.workbook !== undefined)
@@ -277,6 +307,7 @@ export const parseRecipe = (text: string): Recipe | RecipeProblem => {
     default: front.default ?? false,
     inputs,
     computed,
+    amount: front.amount ?? null,
     sheets,
     workbook: front.workbook ?? null,
     outputs: front.outputs,
@@ -314,6 +345,7 @@ const isExactMoney = (value: unknown): value is Money =>
   /^[A-Z]{3}$/.test(String(Reflect.get(value, "currency")));
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+const isSacCode = Schema.is(KinSacCode);
 const MAX_TEXT = 60_000;
 /** A year of a busy company's rows; what a recipe makes from them is bounded by work and size. */
 export const MAX_ROWS = 50_000;
@@ -357,6 +389,8 @@ const agentValue = (
         : { error: "a month such as 2026-11" };
     case "boolean":
       return typeof value === "boolean" ? value : { error: "true or false" };
+    case "code":
+      return isSacCode(value) ? value : { error: "a SAC or HSN code, 4 to 8 digits" };
   }
 };
 
@@ -484,4 +518,66 @@ export const assembleInputs = (
       ),
     };
   return { inputs };
+};
+
+/** A recipe for a numbered list's entry: what it makes is issued, so it says what its amount is. */
+export const issuable = (recipe: Recipe) => recipe.numbered && recipe.list !== null;
+
+/** Why a recipe can't make an issued document, or `undefined`: one that is issued declares its amount. */
+export const amountProblem = (recipe: Recipe) =>
+  issuable(recipe) && recipe.amount === null
+    ? `The ${recipe.name} recipe doesn't say which of its figures is the amount its document asks for, so Kin can't issue with it. Change the recipe (writeRecipe) to declare it in its front matter, such as amount: { total: tax.total, tax: tax.tax, taxes: tax.taxes }.`
+    : undefined;
+
+type TaxLine = { readonly name: string; readonly rate: string; readonly amount: Money };
+/** What an issued document comes to, as its recipe declares it. */
+export type Figures = {
+  readonly total: Money;
+  readonly tax: Money;
+  readonly taxes: ReadonlyArray<TaxLine>;
+};
+
+const at = (data: Readonly<Record<string, unknown>>, path: string): unknown => {
+  const [head, part] = path.split(".");
+  const value = data[head!];
+  return part === undefined
+    ? value
+    : typeof value === "object" && value !== null && !Array.isArray(value)
+      ? Reflect.get(value, part)
+      : undefined;
+};
+
+/**
+ * The figures the recipe declares, read from what Kin computed for a document: the total, its tax
+ * and tax lines, all in one currency, the lines adding up to the tax. A string says what is wrong.
+ */
+export const declaredFigures = (
+  recipe: Recipe,
+  data: Readonly<Record<string, unknown>>,
+): Figures | { readonly error: string } => {
+  const declared = recipe.amount;
+  if (declared === null) return { error: amountProblem(recipe) ?? "it declares no amount" };
+  const total = at(data, declared.total);
+  if (!isExactMoney(total)) return { error: `its amount, ${declared.total}, is no amount` };
+  const currency = total.currency;
+  const rawTaxes = declared.taxes === undefined ? [] : at(data, declared.taxes);
+  if (!Array.isArray(rawTaxes)) return { error: `its tax lines, ${declared.taxes}, are no list` };
+  const taxes: Array<TaxLine> = [];
+  for (const line of rawTaxes as ReadonlyArray<unknown>) {
+    const name: unknown = typeof line === "object" && line !== null ? Reflect.get(line, "name") : 0;
+    const rate: unknown = typeof line === "object" && line !== null ? Reflect.get(line, "rate") : 0;
+    const amount: unknown =
+      typeof line === "object" && line !== null ? Reflect.get(line, "amount") : 0;
+    if (typeof name !== "string" || typeof rate !== "string" || !isExactMoney(amount))
+      return { error: `its tax lines, ${declared.taxes}, aren't each a name, rate and amount` };
+    if (amount.currency !== currency) return { error: `its tax lines aren't in ${currency}` };
+    taxes.push({ name, rate, amount: { minor: amount.minor, currency } });
+  }
+  const summed = taxes.reduce((sum, line) => sum + line.amount.minor, 0);
+  const tax = declared.tax === undefined ? { minor: summed, currency } : at(data, declared.tax);
+  if (!isExactMoney(tax) || tax.currency !== currency)
+    return { error: `its tax, ${declared.tax}, is no amount in ${currency}` };
+  if (declared.taxes !== undefined && tax.minor !== summed)
+    return { error: "its tax lines don't add up to its tax" };
+  return { total: { minor: total.minor, currency }, tax: { minor: tax.minor, currency }, taxes };
 };
