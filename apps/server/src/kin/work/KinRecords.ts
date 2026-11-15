@@ -54,6 +54,7 @@ import {
   amountOf,
   byId,
   byKey,
+  countedEntry,
   effectivelySensitive,
   encodeRepeat,
   type FieldChange,
@@ -1690,8 +1691,10 @@ const make = Effect.gen(function* () {
           everyEntry === true
             ? filterOf(orgId, input, now)
             : sql.and([filterOf(orgId, input, now), sql`r.amount_minor IS NOT NULL`]);
+        // A void entry's amount is no money: a total leaves it out unless the filter names it.
+        const asked = input.states ?? (input.open === false ? ["done", "dropped"] : undefined);
         const [count] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records r
-          WHERE ${filter}`;
+          WHERE ${filter} AND ${countedEntry(sql, asked)}`;
         const counted = count?.n ?? 0;
         if (counted > TOTALS_CAP)
           return yield* invalid(
@@ -1719,7 +1722,8 @@ const make = Effect.gen(function* () {
             (SELECT COALESCE(SUM(p.amount_minor), 0) ${live} AND p.withheld = 0
               AND p.paid_on >= ${input.paidFrom ?? "0000-00-00"}
               AND p.paid_on <= ${input.paidTo ?? "9999-12-31"}) AS received
-          FROM kin_records r WHERE ${filter} ORDER BY r.record_id`;
+          FROM kin_records r WHERE ${filter} AND ${countedEntry(sql, asked)}
+          ORDER BY r.record_id`;
         const listDef = yield* resolveList(orgId, input.list ?? "work");
         const paidOverTime = listDef.payments === true;
         const amounts = (members: typeof rows): Sums => {

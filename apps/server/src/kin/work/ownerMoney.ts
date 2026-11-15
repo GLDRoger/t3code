@@ -30,6 +30,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { readableFrom } from "../chat/sharing.ts";
 import { remakeForEntry } from "../gendocs/make.ts";
+import { issueEntry } from "../gendocs/amounts.ts";
 import * as Numbers from "../gendocs/numbering.ts";
 import { listReceipts, makeReceipt as makeReceiptFor } from "../gendocs/receipts.ts";
 import { readProfile, setProfile } from "./companyProfile.ts";
@@ -246,7 +247,7 @@ export const issue = Effect.fn("KinMoney.issue")(function* (
 ) {
   const person = yield* theOwner(people, input.orgId);
   const writer = ownerWriter(person);
-  const issued = yield* Numbers.issue(input.orgId, writer, input.key);
+  const issued = yield* issueEntry(input.orgId, writer, input.key);
   const remade =
     issued.number !== null && issued.state !== "dropped"
       ? yield* remakeForEntry({
