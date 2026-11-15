@@ -749,7 +749,7 @@ describe("WakeupRunner", () => {
             yield* Fiber.join(yield* run());
             if (wait !== undefined) yield* TestClock.adjust(wait);
           }
-          assert.deepStrictEqual(outcomes, said);
+          assert.deepStrictEqual(outcomes, [...said]);
           assert.deepStrictEqual(yield* sql`SELECT state, attempts FROM kin_events`, [
             { state: "failed", attempts: 3 },
           ]);

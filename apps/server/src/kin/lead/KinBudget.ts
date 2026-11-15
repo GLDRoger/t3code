@@ -197,27 +197,13 @@ const make = Effect.gen(function* () {
       GROUP BY w.agent_id ORDER BY "leadUnits" DESC, w.agent_id`;
   });
   // A turn is a teammate's when any event in it was asked by someone besides its lead's owner.
-  const askedByTeammates = Effect.fn("KinBudget.askedByTeammates")(function* (
-    orgId: KinOrgId,
-    wakeupId: KinWakeupId,
-  ) {
-    const rows = yield* sql`SELECT 1 FROM kin_events e
+  const askedByTeammates = (orgId: KinOrgId, wakeupId: KinWakeupId) =>
+    sql`EXISTS (SELECT 1 FROM kin_events e
       JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
       WHERE e.org_id = ${orgId} AND e.wakeup_id = ${wakeupId}
         AND (json_extract(e.json, '$.origin.personId') IS NOT NULL
           OR (json_extract(e.json, '$.provenance._tag') = 'human'
-            AND json_extract(e.json, '$.provenance.personId') <> a.owner_person_id))
-      LIMIT 1`;
-    return rows.length > 0;
-  });
-  const teammateUnits = Effect.fn("KinBudget.teammateUnits")(function* (
-    orgId: KinOrgId,
-    day: string,
-  ) {
-    const [row] = yield* sql<{ units: number }>`SELECT COALESCE(SUM(units), 0) AS units
-      FROM kin_budget_charges WHERE org_id = ${orgId} AND day = ${day} AND teammate = 1`;
-    return row?.units ?? 0;
-  });
+            AND json_extract(e.json, '$.provenance.personId') <> a.owner_person_id)))`;
   const waiting = (orgId: KinOrgId) =>
     heldWork(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
   const limitsOf = Effect.fn("KinBudget.limitsOf")(function* (stored: string | null) {
@@ -231,12 +217,19 @@ const make = Effect.gen(function* () {
     day: string,
     full = false,
   ) {
-    const [row] = yield* sql<{ leadUnits: number; workerUnits: number; limits: string | null }>`
-      SELECT b.lead_units AS "leadUnits", b.worker_units AS "workerUnits", l.limits_json AS limits
+    const [row] = yield* sql<{
+      leadUnits: number;
+      workerUnits: number;
+      limits: string | null;
+      teammates: number;
+    }>`
+      SELECT b.lead_units AS "leadUnits", b.worker_units AS "workerUnits", l.limits_json AS limits,
+        (SELECT COALESCE(SUM(c.units), 0) FROM kin_budget_charges c
+          WHERE c.org_id = b.org_id AND c.day = b.day AND c.teammate = 1) AS teammates
       FROM kin_budget b LEFT JOIN kin_budget_limits l ON l.org_id = b.org_id
       WHERE b.org_id = ${orgId} AND b.day = ${day}`;
     if (row === undefined) return yield* notFound;
-    const teammates = yield* teammateUnits(orgId, day);
+    const teammates = row.teammates;
     return {
       orgId,
       day,
@@ -597,11 +590,14 @@ const make = Effect.gen(function* () {
           yield* ensure(input.orgId, day);
           const before = yield* snapshot(input.orgId, day);
           if (!Number.isFinite(before.leadUnits + delta)) return yield* invalid;
-          const teammate = (yield* askedByTeammates(input.orgId, input.wakeupId)) ? 1 : 0;
-          yield* sql`INSERT INTO kin_budget_charges (org_id, wakeup_id, day, units, tokens_json, teammate)
-            VALUES (${input.orgId}, ${input.wakeupId}, ${day}, ${chargedUnits}, ${tokensJson}, ${teammate})
+          const [charged] = yield* sql<{ teammate: number }>`INSERT INTO kin_budget_charges
+              (org_id, wakeup_id, day, units, tokens_json, teammate)
+            VALUES (${input.orgId}, ${input.wakeupId}, ${day}, ${chargedUnits}, ${tokensJson},
+              ${askedByTeammates(input.orgId, input.wakeupId)})
             ON CONFLICT (org_id, wakeup_id) DO UPDATE SET units = excluded.units,
-              tokens_json = excluded.tokens_json, teammate = excluded.teammate`;
+              tokens_json = excluded.tokens_json, teammate = excluded.teammate
+            RETURNING teammate`;
+          const teammate = charged?.teammate === 1 ? 1 : 0;
           yield* sql`UPDATE kin_budget SET lead_units = lead_units + ${delta} WHERE org_id = ${input.orgId} AND day = ${day}`;
           const limit = before.limits.leadUnits;
           const ownerSpent =
