@@ -88,6 +88,8 @@ export const OUTSIDE_TOOLS = {
   record_get: "allowed",
   record_create: "allowed",
   record_update: "allowed",
+  client_read: "allowed",
+  touch_log: "allowed",
   doc_create: "allowed",
   doc_read: "allowed",
   doc_edit: "allowed",

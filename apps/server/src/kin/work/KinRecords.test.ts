@@ -408,9 +408,16 @@ it.effect("a turn others read gets only Work's tasks, and a chat-only session ge
     yield* seed;
     yield* turn("mate", "shared");
     const shared = { orgId, agentId: lead, wakeupId: "wake" };
-    // Tasks are read and changed at the teammate's view; lists and money stay the owner's.
-    const view = new Set(["records_query", "record_get", "record_create", "record_update"]);
-    assert.lengthOf(Object.keys(KinWorkToolkit.tools), 11);
+    // Tasks are read and changed at the teammate's view, and contact logged; lists, money and a
+    // client's whole read stay the owner's.
+    const view = new Set([
+      "records_query",
+      "record_get",
+      "record_create",
+      "record_update",
+      "touch_log",
+    ]);
+    assert.lengthOf(Object.keys(KinWorkToolkit.tools), 13);
     for (const tool of Object.keys(KinWorkToolkit.tools))
       assert.strictEqual(yield* sharedToolAllowed(shared, tool, {}), view.has(tool), tool);
     // Only the owner names who else holds a task.
@@ -451,7 +458,7 @@ it.effect("a turn others read gets only Work's tasks, and a chat-only session ge
       ...Object.values(KIN_WORK_WS_METHODS),
       ...KinFinanceRpcs.map((rpc) => rpc._tag),
     ];
-    assert.lengthOf(methods, 36);
+    assert.lengthOf(methods, 38);
     for (const method of methods)
       assert.strictEqual(
         (yield* Effect.exit(authorizeRpc([AuthKinChatScope], method, { orgId })))._tag ===

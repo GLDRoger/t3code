@@ -43,6 +43,9 @@ type TouchSql = {
 const paidAt = (sql: Sql) =>
   sql`CAST((julianday(p.paid_on) - 2440587.5) * 86400000 AS INTEGER) + 43200000`;
 
+const touchColumns = (sql: Sql) =>
+  sql`"partyId", id, at, kind, note, who, logged, "byKind", "byName", "recordId", key, title`;
+
 /** Every contact with these clients, or all of them, up to `now`, one row each, unordered. */
 const touchUnion = (
   sql: Sql,
@@ -52,7 +55,7 @@ const touchUnion = (
 ) => {
   const of = (column: Statement.Fragment) =>
     partyIds === "all" ? sql`${column} IS NOT NULL` : sql`${column} IN ${sql.in(partyIds)}`;
-  return sql`SELECT * FROM (
+  return sql`SELECT ${touchColumns(sql)} FROM (
     SELECT t.party_id AS "partyId", t.touch_id AS id, t.at, t.kind, t.note,
       COALESCE(wp.display_name, lp.display_name) AS who, 1 AS logged,
       t.logged_by_kind AS "byKind", COALESCE(lp.handle, t.logged_by_id) AS "byName",
@@ -167,7 +170,7 @@ export const logTouch = Effect.fn("KinTouches.log")(function* (
       message: "That retry names a different client.",
     });
   const [row] =
-    yield* sql<TouchSql>`SELECT * FROM (${touchUnion(sql, orgId, [input.partyId], input.now + DAY_MS)})
+    yield* sql<TouchSql>`SELECT ${touchColumns(sql)} FROM (${touchUnion(sql, orgId, [input.partyId], input.now + DAY_MS)})
     WHERE id = ${stored.touchId}`;
   return toTouch(row!);
 });
@@ -273,7 +276,8 @@ export const touchesBetween = Effect.fn("KinTouches.between")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<TouchSql & { clientKey: string; clientName: string }>`
-    SELECT u.*, c.key AS "clientKey", c.title AS "clientName"
+    SELECT u."partyId", u.id, u.at, u.kind, u.note, u.who, u.logged, u."byKind", u."byName",
+      u."recordId", u.key, u.title, c.key AS "clientKey", c.title AS "clientName"
     FROM (${touchUnion(sql, orgId, "all", until)}) u
     JOIN kin_records c ON c.org_id = ${orgId} AND c.record_id = u."partyId"
     WHERE u.at > ${from} ORDER BY u.at, u.id`;
