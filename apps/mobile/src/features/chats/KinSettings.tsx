@@ -4,6 +4,13 @@ import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import { KIN_DAILY_LIMIT, kinDailyLimitChoices } from "@t3tools/client-runtime/kin/kinBudget";
 import { KIN_COMPANY } from "@t3tools/client-runtime/kin/kinCompanyProfile";
 import { KIN_CONNECTIONS_COPY } from "@t3tools/client-runtime/kin/kinConnections";
+import {
+  KIN_PROFILE_COPY,
+  KIN_TEAM_AGENT_COPY,
+  kinRoleLine,
+  kinTeamAgentChoices,
+  kinTeamAgentLabel,
+} from "@t3tools/client-runtime/kin/kinProfiles";
 import { kinHomeTabs } from "@t3tools/client-runtime/kin/kinJoin";
 import type { EnvironmentId, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -31,28 +38,10 @@ import { openKinNotificationSettings } from "./notifications/installKinNotificat
 import { useChatOnlyEnvironments } from "./state/kinChatOnly";
 import { kinClient } from "./state/kinClient";
 import { useKinInbox } from "./state/useKinInbox";
+import { useKinProfiles } from "./state/useKinProfiles";
 import { useKinReconnect } from "./state/useKinReconnect";
 
-const noMembersAtom = Atom.make(null);
 const noSessionAtom = Atom.make(null);
-
-/** The name the team knows the viewer by; a chat's member list is the only place a teammate's session can read it. */
-function useMyName(): string | null {
-  const { host, state } = useKinInbox();
-  const chatId = state._tag === "ready" ? (state.inbox.value.chats[0]?.chatId ?? null) : null;
-  const members = useAtomValue(
-    state._tag !== "ready" || chatId === null
-      ? noMembersAtom
-      : kinClient.chatMembers({ environmentId: state.environmentId, input: { chatId } }),
-  );
-  if (members === null || host._tag !== "host" || host.probe._tag !== "ready") return null;
-  const me = new Set<string>(host.probe.orgs.me.map((mine) => mine.personId));
-  return (
-    Option.getOrNull(AsyncResult.value(members))?.members.find(
-      (member) => member.principal._tag === "person" && me.has(member.principal.personId),
-    )?.displayName ?? null
-  );
-}
 
 const CONNECTION_LABEL: Record<EnvironmentPresentation["connection"]["phase"], string> = {
   connected: "Connected",
@@ -83,7 +72,6 @@ export function KinSettings(props: {
   const { environments } = useEnvironments();
   const teammateIds = useChatOnlyEnvironments();
   const { host, state } = useKinInbox();
-  const name = useMyName();
   const session = useAtomValue(
     host._tag === "host"
       ? environmentSession.sessionStateValueAtom(host.environmentId)
@@ -92,6 +80,12 @@ export function KinSettings(props: {
   const probe = host._tag === "host" && host.probe._tag === "ready" ? host.probe : null;
   const team = probe?.orgs.orgs[0]?.name ?? null;
   const orgId = probe?.orgs.me[0]?.orgId ?? null;
+  const myPersonId = probe?.orgs.me[0]?.personId ?? null;
+  const { held: profiles } = useKinProfiles(
+    host._tag === "host" ? host.environmentId : null,
+    orgId,
+  );
+  const mine = profiles?.profiles.find((profile) => profile.personId === myPersonId) ?? null;
   const owned = environments.filter(
     (held) =>
       !teammateIds.includes(held.environmentId) &&
@@ -150,15 +144,20 @@ export function KinSettings(props: {
           contentInsetAdjustmentBehavior="automatic"
           contentContainerStyle={{ padding: 16, paddingBottom: 32 + bottomClearance, gap: 20 }}
         >
-          {teammateIds.length === 0 || (name === null && team === null) ? null : (
-            <SettingsSection>
-              <View accessible className="bg-grouped-card">
-                <ListRowLayout
-                  icon="person.crop.circle"
-                  label={name ?? "You"}
-                  description={team ?? undefined}
-                />
-              </View>
+          {host._tag !== "host" || orgId === null || mine === null ? null : (
+            <SettingsSection title={team ?? undefined}>
+              <SettingsRow
+                icon="person.crop.circle"
+                label={mine.displayName}
+                value={kinRoleLine(mine.roleTags) || KIN_PROFILE_COPY.mine}
+                onPress={() =>
+                  navigation.navigate("KinProfile", {
+                    environmentId: host.environmentId,
+                    orgId,
+                    personId: mine.personId,
+                  })
+                }
+              />
             </SettingsSection>
           )}
           {owned.length === 0 ? null : (
@@ -208,6 +207,9 @@ export function KinSettings(props: {
                   label="Scheduled tasks"
                   onPress={() => navigation.navigate("SettingsScheduledTasks")}
                 />
+              </SettingsSection>
+              <SettingsSection footer={KIN_TEAM_AGENT_COPY.detail}>
+                <KinTeamAgentRow {...company} />
               </SettingsSection>
               <SettingsSection footer={KIN_DAILY_LIMIT.detail}>
                 <KinDailyLimitRow {...company} />
@@ -347,6 +349,54 @@ function KinDailyLimitRow(props: {
         value={label}
         valuePosition="trailing"
         disabled={!canSet || budget === null}
+      />
+    </Menu>
+  );
+}
+
+/** Which agent every teammate can chat with, or Off. Picked here, beside the team it serves. */
+function KinTeamAgentRow(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+}) {
+  const leadsAtom = kinClient.leads({
+    environmentId: props.environmentId,
+    input: { orgId: props.orgId },
+  });
+  const result = useAtomValue(leadsAtom);
+  const refresh = useAtomRefresh(leadsAtom);
+  const canSet = useAtomValue(kinClient.teamAgentSet.permissionAtom(props.environmentId));
+  const set = useAtomCommand(kinClient.teamAgentSet, { reportFailure: false });
+  const list = Option.getOrNull(AsyncResult.value(result));
+  const leads = list?.leads ?? [];
+  const current = list?.teamAgentId ?? null;
+  const choices = kinTeamAgentChoices(leads);
+  return (
+    <Menu
+      actions={choices.map((choice) => ({
+        id: choice.agentId ?? "off",
+        title: choice.label,
+        ...(choice.suggested ? { subtitle: KIN_TEAM_AGENT_COPY.suggested } : {}),
+        state: choice.agentId === current ? ("on" as const) : ("off" as const),
+      }))}
+      onPressAction={({ nativeEvent }) => {
+        const picked = choices.find((choice) => (choice.agentId ?? "off") === nativeEvent.event);
+        if (picked === undefined || picked.agentId === current) return;
+        void set({
+          environmentId: props.environmentId,
+          input: { orgId: props.orgId, agentId: picked.agentId },
+        }).then((outcome) => {
+          if (AsyncResult.isFailure(outcome)) Dialog.alert(KIN_TEAM_AGENT_COPY.failed);
+          refresh();
+        });
+      }}
+    >
+      <SettingsRow
+        icon="bubble.left.and.bubble.right"
+        label={KIN_TEAM_AGENT_COPY.label}
+        value={list === null ? "…" : kinTeamAgentLabel(leads, current)}
+        valuePosition="trailing"
+        disabled={!canSet || list === null}
       />
     </Menu>
   );

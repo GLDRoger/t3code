@@ -252,6 +252,9 @@ export const KIN_RPC_AGGREGATES = {
   "kin.people.removeAccess": "kin-people",
   "kin.people.setGithubLogin": "kin-people",
   "kin.people.setOwnerName": "kin-people",
+  "kin.people.profiles": "kin-people",
+  "kin.people.updateProfile": "kin-people",
+  "kin.org.setTeamAgent": "kin-people",
 
   "kin.refreshes.subscribe": "kin-refreshes",
   "kin.refreshes.announce": "kin-refreshes",

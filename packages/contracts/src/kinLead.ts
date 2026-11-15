@@ -18,6 +18,7 @@ import {
   KinOrgId,
   KinPersonId,
   KinReactionEmoji,
+  KinRoleTags,
   KinWidgetId,
 } from "./kinChat.ts";
 import { TimeOfDay, TimeZone } from "./kinTime.ts";
@@ -122,6 +123,8 @@ export const KinLeadProfile = Schema.Struct({
   charter: KinLeadCharter,
   // Absent from a host that predates it; empty when the owner wrote none.
   intro: Schema.optional(KinLeadIntro),
+  // Absent from a host that predates them.
+  roleTags: Schema.optional(KinRoleTags),
   // The model it thinks with, as the provider names it.
   model: TrimmedNonEmptyString,
   // The owner's direct chat with it.
@@ -163,6 +166,8 @@ export type KinLeadContact = typeof KinLeadContact.Type;
 export const KinLeadsListResult = Schema.Struct({
   leads: Schema.Array(KinLeadProfile),
   contacts: Schema.optional(Schema.Array(KinLeadContact)),
+  // The agent every teammate may message; null when off. Older hosts leave it out.
+  teamAgentId: Schema.optional(Schema.NullOr(KinAgentId)),
 });
 export type KinLeadsListResult = typeof KinLeadsListResult.Type;
 /** Omitted fields stay as they are. */
@@ -173,6 +178,7 @@ export const KinLeadUpdateInput = Schema.Struct({
   domain: Schema.optional(KinLeadDomain),
   charter: Schema.optional(KinLeadCharter),
   intro: Schema.optional(KinLeadIntro),
+  roleTags: Schema.optional(KinRoleTags),
 });
 export type KinLeadUpdateInput = typeof KinLeadUpdateInput.Type;
 /** Retire or restore one agent. Both are idempotent and answer with its profile. */

@@ -1830,6 +1830,14 @@ const make = Effect.gen(function* () {
     }, transaction),
     attachmentReadable: Effect.fn("KinChatService.attachmentReadable")(
       function* (caller, attachmentId) {
+        // Anyone's current picture is for everyone in their org.
+        const orgs = "_tag" in caller ? [caller.orgId] : caller.map((viewer) => viewer.orgId);
+        const pictures = yield* sql`SELECT 1 FROM kin_people
+          WHERE org_id IN ${sql.in(orgs)} AND lower(avatar_attachment_id) = ${attachmentId}
+          LIMIT 1`.pipe(
+          Effect.mapError(toPersistenceSqlError("KinChatService.attachmentReadable")),
+        );
+        if (pictures.length > 0) return true;
         const owner = yield* repo.attachmentChat(attachmentId);
         if (Option.isNone(owner)) return yield* docFileReadable(caller, attachmentId);
         const identity =

@@ -104,7 +104,7 @@ describe("KinRefreshHub", () => {
   );
 
   it.effect(
-    "tells a teammate only about their own lead list and the time zone, never the owner's reads",
+    "tells a teammate only about their own lead list, people and the time zone, never the owner's reads",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -121,7 +121,7 @@ describe("KinRefreshHub", () => {
           capacity: "unbounded",
         });
         const start = yield* Queue.take(ownerSees);
-        assert.deepStrictEqual(yield* Queue.take(priyaSees), { timeZone: 0, leads: 0 });
+        assert.deepStrictEqual(yield* Queue.take(priyaSees), { timeZone: 0, people: 0, leads: 0 });
 
         // Things only the owner reads: the company, and a lead Priya can't message.
         yield* setProfile(
@@ -152,7 +152,7 @@ describe("KinRefreshHub", () => {
           personId: priya.personId,
         });
         yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
-        assert.deepStrictEqual(yield* Queue.take(priyaSees), { timeZone: 0, leads: 1 });
+        assert.deepStrictEqual(yield* Queue.take(priyaSees), { timeZone: 0, people: 0, leads: 1 });
         assert.strictEqual(yield* Queue.size(priyaSees), 0);
       }).pipe(Effect.scoped, Effect.provide(paired)),
   );
@@ -241,6 +241,7 @@ describe("KinRefreshHub", () => {
       // The runner's thread and the hidden level are never part of a lead's list.
       kin_leads: ["lead/KinLeadProvision.ts", "lead/WakeupRunner.ts", "lead/KinLevels.ts"],
       kin_lead_access: ["lead/KinLeadProvision.ts", "people/KinPeople.ts"],
+      kin_team_agents: ["lead/KinLeadProvision.ts"],
       kin_trigger_settings: ["triggers/routines.ts"],
       kin_visual_hosts: ["chat/KinVisualHosts.ts"],
       kin_money_budgets: ["work/budgets.ts"],

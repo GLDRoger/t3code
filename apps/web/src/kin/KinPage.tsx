@@ -10,6 +10,8 @@ import { KinGroupDialogHost } from "./KinGroupDialog";
 import { KinLeadDialogHost } from "./KinLeadDialog";
 import { KinNewLeadButton } from "./KinNewLeadButton";
 import { startKinOutbox } from "./kinOutbox";
+import { KinPicturesHost } from "./kinPictures";
+import { KinProfileSheetHost } from "./KinProfileSheet";
 
 /** Kin's page: the open chat. The chat list is the app sidebar (see `KinSidebar`). */
 export function KinPage() {
@@ -19,6 +21,8 @@ export function KinPage() {
       <Outlet />
       <KinLeadDialogHost />
       <KinGroupDialogHost />
+      <KinPicturesHost />
+      <KinProfileSheetHost />
     </SidebarInset>
   );
 }

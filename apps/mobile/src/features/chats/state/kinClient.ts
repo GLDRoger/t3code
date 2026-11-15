@@ -181,6 +181,11 @@ const invitesRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   tag: KIN_PEOPLE_WS_METHODS.peopleListInvites,
 });
 const readInvites = guardedRead(invitesRead);
+const profilesRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:profiles:read",
+  tag: KIN_PEOPLE_WS_METHODS.peopleProfiles,
+});
+const readProfiles = guardedRead(profilesRead);
 const memoryRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "kin:memory:read",
   tag: "kin.memory.list",
@@ -513,6 +518,25 @@ export const kinClient = {
     }),
     staleTimeMs: 30_000,
     refreshTrigger: kinRefreshOn("people"),
+  }),
+  /** Everyone's profile; any person of the org reads them. */
+  profiles: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:profiles",
+    execute: Effect.fn("KinClient.profiles")(function* (input: KinPeopleListInput) {
+      return yield* readProfiles(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: kinRefreshOn("people"),
+  }),
+  profileUpdate: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:profile:update",
+    tag: KIN_PEOPLE_WS_METHODS.peopleUpdateProfile,
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.personId },
+  }),
+  teamAgentSet: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:team-agent:set",
+    tag: KIN_PEOPLE_WS_METHODS.orgSetTeamAgent,
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
   }),
   /** The invite links nobody has opened yet. The owner's Team page reads them. */
   invites: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {

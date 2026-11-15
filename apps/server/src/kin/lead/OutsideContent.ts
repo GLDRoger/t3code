@@ -61,6 +61,7 @@ export const OUTSIDE_TOOLS = {
   kin_visual: "allowed",
   kin_chat_read: "allowed",
   kin_leads: "allowed",
+  people_read: "allowed",
   kin_end: "allowed",
   // Workers have a shell and the network: outside text could steer either.
   kin_delegate: "refused",
