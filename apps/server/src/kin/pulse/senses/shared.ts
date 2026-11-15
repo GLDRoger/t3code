@@ -46,13 +46,15 @@ export interface EntryRow {
   readonly projectTitle: string | null;
   readonly clientKey: string | null;
   readonly clientTitle: string | null;
+  readonly clientId: string | null;
 }
 
 export const entryColumns = (sql: SqlClient.SqlClient) => sql`r.record_id AS "recordId", r.key,
   r.title, r.owner_kind AS "ownerKind", r.owner_id AS "ownerId", r.due_at AS "dueAt",
   r.date_at AS "dateAt", r.created_at AS "createdAt", r.updated_at AS "updatedAt",
   r.amount_minor AS "amountMinor", r.currency, ${sensitiveNow(sql)} AS sensitive,
-  p.key AS "projectKey", p.title AS "projectTitle", c.key AS "clientKey", c.title AS "clientTitle"`;
+  p.key AS "projectKey", p.title AS "projectTitle", c.key AS "clientKey", c.title AS "clientTitle",
+  c.record_id AS "clientId"`;
 
 export const entryJoins = (sql: SqlClient.SqlClient) => sql`kin_records r
   LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.project_id

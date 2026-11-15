@@ -1,32 +1,44 @@
-import type { KinOrgId } from "@t3tools/contracts";
+import type { KinOrgId, KinPulseThresholdSource } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
-/** The closed registry of pulse thresholds: each key's unit, bounds and code default. */
-const THRESHOLDS = {
-  late_grace_hours: { unit: "hours", min: 0, max: 168, default: 0 },
-  due_soon_hours: { unit: "hours", min: 1, max: 336, default: 24 },
-  stalled_after_days: { unit: "days", min: 1, max: 60, default: 4 },
-  waiting_too_long_days: { unit: "days", min: 1, max: 60, default: 5 },
-  chase_invoice_after_days: { unit: "days", min: 1, max: 120, default: 10 },
-  quote_follow_up_days: { unit: "days", min: 1, max: 60, default: 5 },
-  retainer_heads_up_days: { unit: "days", min: 1, max: 60, default: 5 },
-  renewal_heads_up_days: { unit: "days", min: 1, max: 180, default: 30 },
+import { type PlaybookKey, playbookThreshold } from "../work/playbooks.ts";
+
+/** Pulse thresholds playbooks don't declare: their unit and code default. */
+const PULSE_ONLY = {
+  late_grace_hours: { unit: "hours", default: 0 },
+  retainer_heads_up_days: { unit: "days", default: 5 },
 } as const;
-export type ThresholdKey = keyof typeof THRESHOLDS;
+const PLAYBOOK_UNITS = {
+  due_soon_hours: "hours",
+  stalled_after_days: "days",
+  waiting_too_long_days: "days",
+  chase_invoice_after_days: "days",
+  quote_follow_up_days: "days",
+  renewal_heads_up_days: "days",
+} as const satisfies Partial<Record<PlaybookKey, "hours" | "days">>;
+export type ThresholdKey = keyof typeof PULSE_ONLY | keyof typeof PLAYBOOK_UNITS;
 
 export interface Threshold {
   readonly value: number;
   readonly unit: "hours" | "days";
-  readonly from: "default";
+  readonly from: KinPulseThresholdSource;
 }
 
-/** A threshold's value for an org. Playbooks (slice 2) set values behind this; today, the default. */
-export const threshold = (_orgId: KinOrgId, key: ThresholdKey) =>
-  Effect.succeed({
-    value: THRESHOLDS[key].default,
-    unit: THRESHOLDS[key].unit,
-    from: "default",
-  } satisfies Threshold);
+/** A threshold for an org, and for one client where its playbook may set it; else the default. */
+export const threshold = Effect.fn("KinPulse.threshold")(function* (
+  orgId: KinOrgId,
+  key: ThresholdKey,
+  clientId?: string,
+) {
+  if (key === "late_grace_hours" || key === "retainer_heads_up_days")
+    return {
+      value: PULSE_ONLY[key].default,
+      unit: PULSE_ONLY[key].unit,
+      from: { _tag: "default" },
+    } satisfies Threshold;
+  const found = yield* playbookThreshold(orgId, key, clientId);
+  return { value: found.value, unit: PLAYBOOK_UNITS[key], from: found.from } satisfies Threshold;
+});
 
 export const HOUR_MS = 60 * 60 * 1000;
 export const DAY_MS = 24 * HOUR_MS;

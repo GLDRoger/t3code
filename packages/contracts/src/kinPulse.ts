@@ -57,6 +57,12 @@ export const KinPulseHandled = Schema.Struct({
 });
 export type KinPulseHandled = typeof KinPulseHandled.Type;
 
+export const KinPulseThresholdSource = Schema.Union([
+  Schema.TaggedStruct("default", {}),
+  Schema.TaggedStruct("playbook", { key: Schema.String, title: Schema.String }),
+]);
+export type KinPulseThresholdSource = typeof KinPulseThresholdSource.Type;
+
 export const KinPulseFact = Schema.Struct({
   sense: KinPulseSense,
   family: KinPulseFamily,
@@ -82,8 +88,8 @@ export const KinPulseFact = Schema.Struct({
       value: Schema.Finite,
       unit: Schema.Literals(["hours", "days", "percent", "count"]),
       threshold: Schema.Finite,
-      /** Where the threshold came from: the code default until playbooks set one. */
-      from: Schema.Literal("default"),
+      /** Where the threshold came from: the code default, or the playbook doc that sets it. */
+      from: KinPulseThresholdSource,
     }),
   ),
   /** Built by code from stored fields, such as "₹1,77,000 owed, 10 days past due". */

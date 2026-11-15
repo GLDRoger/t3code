@@ -52,6 +52,9 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
     about: `${fact.subject.key === fact.subject.title ? fact.subject.title : `${fact.subject.key} ${fact.subject.title}`}`,
     consequence: fact.consequence,
     acts: who(fact.actor),
+    ...(fact.measure?.from._tag === "playbook"
+      ? { playbook: `${fact.measure.from.title} (${fact.measure.from.key})` }
+      : {}),
     ...(fact.sensitive ? { sensitive: true } : {}),
     ...(woke.has(fact.key) ? { wokeYou: true } : {}),
   });

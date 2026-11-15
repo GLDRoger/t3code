@@ -50,10 +50,14 @@ interface Entry {
   readonly confirmed?: number;
   readonly teamShared?: number;
   readonly createdAt?: number;
+  readonly partyId?: string;
+  readonly title?: string;
 }
 
 const PREFIX: Record<string, string> = {
   work: "W",
+  docs: "D",
+  clients: "C",
   invoices: "INV",
   quotes: "QT",
   dates: "DT",
@@ -64,11 +68,11 @@ const insert = Effect.fn("test.insert")(function* (entry: Entry) {
   const sql = yield* SqlClient.SqlClient;
   const created = entry.createdAt ?? B - 30 * DAY;
   yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
-      owner_id, side, category, due_at, date_at, amount_minor, currency, repeat_json, confirmed,
+      owner_id, side, category, party_id, due_at, date_at, amount_minor, currency, repeat_json, confirmed,
       team_shared, created_by_kind, created_by_id, origin_key, created_at, updated_at)
     VALUES (${orgId}, ${`r-${entry.id}`}, ${entry.list ?? "work"}, ${entry.id},
-      ${`Invented ${entry.id}`}, ${entry.state ?? "open"}, ${entry.ownerKind ?? "agent"},
-      ${entry.ownerId ?? chief}, ${entry.side ?? "ours"}, ${entry.category ?? null},
+      ${entry.title ?? `Invented ${entry.id}`}, ${entry.state ?? "open"}, ${entry.ownerKind ?? "agent"},
+      ${entry.ownerId ?? chief}, ${entry.side ?? "ours"}, ${entry.category ?? null}, ${entry.partyId ?? null},
       ${entry.dueAt ?? null}, ${entry.dateAt ?? null}, ${entry.amount ?? null},
       ${entry.amount === undefined ? null : "INR"}, ${entry.repeat ?? null},
       ${entry.confirmed ?? 1}, ${entry.teamShared ?? 0}, 'person', ${owner}, ${`origin-${entry.id}`},
@@ -138,6 +142,20 @@ const seed = Effect.gen(function* () {
     dateAt: B + 15 * DAY,
   });
   yield* insert({ id: "QT-1", list: "quotes", state: "waiting", amount: 600_000_00, createdAt: B });
+  yield* insert({ id: "C-1", list: "clients", title: "Lumen" });
+  yield* insert({ id: "D-1", list: "docs", category: "playbook", partyId: "r-C-1" });
+  yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body, title, kind, summary,
+      operations_json, actor_kind, actor_id, via, origin_key, created_at)
+    VALUES (${orgId}, 'r-D-1', 1, ${"# Chasing Lumen\n\n```kin\nchase_invoice_after_days: 7\n```\n"},
+      'Chasing Lumen', 'created', 'Seeded', '[]', 'person', ${owner}, 'owner', 'seed-D-1', 0)`;
+  yield* insert({
+    id: "INV-5",
+    list: "invoices",
+    state: "waiting",
+    amount: 20_000_00,
+    dueAt: B + 2 * DAY,
+    partyId: "r-C-1",
+  });
   yield* insert({ id: "DT-1", list: "dates", category: "renewal", dueAt: B + 40 * DAY });
   yield* insert({
     id: "EXP-1",
@@ -181,14 +199,16 @@ const keyed = (facts: ReadonlyArray<KinPulseFact>, sense: string, subject: strin
 const SENSES: ReadonlyArray<readonly [string, string, number]> = [
   ["task_late", "W-1", B + 10 * DAY],
   ["task_due_soon", "W-2", B + 20 * DAY - 24 * HOUR],
-  ["task_stalled", "W-3", B + 4 * DAY],
+  ["task_stalled", "W-3", B + 3 * DAY],
   ["waiting_long", "W-4", B + 5 * DAY],
   ["theirs_late", "W-5", B + 3 * DAY],
   ["to_confirm", "W-6", B + DAY],
   ["invoice_overdue", "INV-1", B + 12 * DAY],
   ["quote_unanswered", "QT-1", B + 5 * DAY],
   ["retainer_due", "INV-3", B + 10 * DAY],
-  ["renewal_due", "DT-1", B + 10 * DAY],
+  ["renewal_due", "DT-1", B + 26 * DAY],
+  // Lumen's own playbook chases at 7 days, not the company's 10.
+  ["invoice_overdue", "INV-5", B + 9 * DAY],
   // Budgets read this month's spending, so they turn on when the month does.
   ["budget_near", "b-software", B],
   ["budget_over", "b-travel", B],
@@ -223,6 +243,13 @@ describe("KinPulse", () => {
       const overdue = keyed((yield* read(B + 12 * DAY)).facts, "invoice_overdue", "INV-1")[0]!;
       assert.strictEqual(overdue.consequence, "₹1,77,000.00 owed, 10 days past due (2026-11-03).");
       assert.deepStrictEqual(overdue.actor, { _tag: "agent", agentId: finance });
+      assert.deepStrictEqual(overdue.measure?.from, { _tag: "default" });
+      const lumen = keyed((yield* read(B + 9 * DAY)).facts, "invoice_overdue", "INV-5")[0]!;
+      assert.deepStrictEqual(lumen.measure?.from, {
+        _tag: "playbook",
+        key: "D-1",
+        title: "Invented D-1",
+      });
     }).pipe(Effect.provide(layer)),
   );
 

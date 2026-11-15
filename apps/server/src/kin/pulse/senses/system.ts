@@ -66,7 +66,7 @@ export const systemSenses = Effect.fn("KinPulse.systemSenses")(function* (ctx: S
       subject: { kind: "agent", key: agent.agentId, title: agent.name },
       scope: {},
       since: iso(at),
-      measure: { value: total, unit: "count", threshold: 1, from: "default" },
+      measure: { value: total, unit: "count", threshold: 1, from: { _tag: "default" } },
       consequence: `${total} ${total === 1 ? "piece" : "pieces"} of ${agent.name}'s work wait on the daily limit${held.until === null ? "" : ` until ${held.until}`}.`,
       actor: { _tag: "owner" },
       sensitive: true,
