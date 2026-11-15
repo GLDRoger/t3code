@@ -7,6 +7,7 @@ import {
   type KinBlockedOn,
   type KinContact,
   type KinOrgId,
+  type KinPersonId,
   type KinPartyDetail,
   type KinPartyKind,
   type KinPartyPage,
@@ -40,6 +41,7 @@ import {
   peopleOf,
   principalOfText,
   projectSpecChanges,
+  seenBy,
 } from "./projectSpine.ts";
 import {
   actorOf,
@@ -221,6 +223,7 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
   order: "target" | "attention",
   limit: number,
   offset = 0,
+  viewers?: ReadonlyArray<KinPersonId>,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const filter = sql.and([sql`p.org_id = ${orgId}`, sql`p.register_id = 'projects'`, ...where]);
@@ -236,12 +239,12 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
     FROM kin_records p
     LEFT JOIN kin_records pa ON pa.org_id = p.org_id AND pa.record_id = p.party_id
     LEFT JOIN (
-      SELECT w.project_id, COUNT(*) AS open,
-        SUM(w.due_at IS NOT NULL AND w.due_at < ${now}) AS late,
-        SUM(w.state = 'waiting' AND ${waitingSince(sql, "w")} < ${now - WEEK_MS}) AS "waitingLong"
-      FROM kin_records w WHERE w.org_id = ${orgId} AND w.register_id = 'work'
-        AND w.state IN ${sql.in(OPEN)} AND w.project_id IS NOT NULL
-      GROUP BY w.project_id) n ON n.project_id = p.record_id
+      SELECT r.project_id, COUNT(*) AS open,
+        SUM(r.due_at IS NOT NULL AND r.due_at < ${now}) AS late,
+        SUM(r.state = 'waiting' AND ${waitingSince(sql, "r")} < ${now - WEEK_MS}) AS "waitingLong"
+      FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'work'
+        AND r.state IN ${sql.in(OPEN)} AND r.project_id IS NOT NULL AND ${seenBy(sql, viewers)}
+      GROUP BY r.project_id) n ON n.project_id = p.record_id
     WHERE ${filter}
     ORDER BY ${
       order === "target"
@@ -339,14 +342,14 @@ export const projects = Effect.fn("KinCrm.projects")(function* (
     readonly cursor?: string | undefined;
     readonly limit?: number | undefined;
   },
-  /** Only these, for someone besides the owner (`personSeesAs` over `p`). */
-  sees?: Statement.Fragment,
+  /** Only these, for someone besides the owner (`personSeesAs` over `p`), counting what they see. */
+  sees?: { readonly projects: Statement.Fragment; readonly viewers: ReadonlyArray<KinPersonId> },
 ) {
   const sql = yield* SqlClient.SqlClient;
   const offset = yield* pageOf(input.cursor);
   const limit = Math.min(input.limit ?? 50, KIN_RECORDS_PAGE_CAP);
   const where = [
-    ...(sees === undefined ? [] : [sees]),
+    ...(sees === undefined ? [] : [sees.projects]),
     sql`p.state = ${input.state ?? "open"}`,
     ...(input.partyId === undefined ? [] : [sql`p.party_id = ${input.partyId}`]),
     ...(input.text === undefined || input.text.trim() === ""
@@ -355,7 +358,7 @@ export const projects = Effect.fn("KinCrm.projects")(function* (
   ];
   const [count] = yield* sql<{ total: number }>`SELECT COUNT(*) AS total FROM kin_records p
     WHERE ${sql.and([sql`p.org_id = ${orgId}`, sql`p.register_id = 'projects'`, ...where])}`;
-  const rows = yield* projectRowsWhere(orgId, now, where, "target", limit, offset);
+  const rows = yield* projectRowsWhere(orgId, now, where, "target", limit, offset, sees?.viewers);
   const total = count?.total ?? 0;
   const next = offset + rows.length;
   return { rows: rows.map((row) => row.row), total, nextCursor: next < total ? `o:${next}` : null };
@@ -447,6 +450,7 @@ export const partyDetail = Effect.fn("KinCrm.partyDetail")(function* (row: Recor
 export const projectDetail = Effect.fn("KinCrm.projectDetail")(function* (
   row: RecordRow,
   now: number,
+  viewers?: ReadonlyArray<KinPersonId>,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const orgId = row.orgId as KinOrgId;
@@ -456,6 +460,8 @@ export const projectDetail = Effect.fn("KinCrm.projectDetail")(function* (
     [sql`p.record_id = ${row.recordId}`],
     "target",
     1,
+    0,
+    viewers,
   );
   const fields = parseFields(row.fieldsJson);
   const billing = fieldText(fields, "billing");
@@ -506,6 +512,7 @@ const capped = Effect.fn("KinCrm.capped")(function* (
 export const history = Effect.fn("KinCrm.history")(function* (
   anchor: RecordRow,
   input: { readonly beforeSeq?: number; readonly sinceAt?: number; readonly limit: number },
+  viewers?: ReadonlyArray<KinPersonId>,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const orgId = anchor.orgId as KinOrgId;
@@ -518,6 +525,7 @@ export const history = Effect.fn("KinCrm.history")(function* (
     sql`(r.record_id = ${anchor.recordId} OR ${pointing})`,
     // A doc's history is its versions (`kin.docs.history`); clients older than Docs can't read it.
     sql`r.register_id != 'docs'`,
+    seenBy(sql, viewers),
     ...(input.beforeSeq === undefined ? [] : [sql`c.seq < ${input.beforeSeq}`]),
     ...(input.sinceAt === undefined ? [] : [sql`c.at >= ${input.sinceAt}`]),
   ]);
@@ -560,6 +568,7 @@ export const partyPage = Effect.fn("KinCrm.partyPage")(function* (
   row: RecordRow,
   now: number,
   seq: number,
+  viewers?: ReadonlyArray<KinPersonId>,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const orgId = row.orgId as KinOrgId;
@@ -580,6 +589,8 @@ export const partyPage = Effect.fn("KinCrm.partyPage")(function* (
     [sql`p.party_id = ${row.recordId}`],
     "target",
     KIN_RECORDS_PAGE_CAP,
+    0,
+    viewers,
   );
   return {
     party: yield* partyDetail(row, now),
@@ -603,15 +614,17 @@ const pullNumber = (url: string) => {
   return found === undefined ? undefined : Number.parseInt(found, 10);
 };
 
+/** For anyone besides the owner, `viewers` are those it is read for: only what all of them see. */
 export const projectPage = Effect.fn("KinCrm.projectPage")(function* (
   row: RecordRow,
   now: number,
   seq: number,
+  viewers?: ReadonlyArray<KinPersonId>,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const orgId = row.orgId as KinOrgId;
   const inProject = sql`r.org_id = ${orgId} AND r.register_id = 'work'
-    AND r.project_id = ${row.recordId}`;
+    AND r.project_id = ${row.recordId} AND ${seenBy(sql, viewers)}`;
   const [counts] = yield* sql<{
     open: number | null;
     doing: number | null;
@@ -664,10 +677,10 @@ export const projectPage = Effect.fn("KinCrm.projectPage")(function* (
     seen.add(pull.url.toLowerCase());
     return [{ url: pull.url, number, record: ref(pull.recordId, pull.key, pull.title) }];
   });
-  const week = yield* history(row, { sinceAt: now - WEEK_MS, limit: 20 });
-  const milestones = yield* milestonesOf(orgId, row.recordId, now);
+  const week = yield* history(row, { sinceAt: now - WEEK_MS, limit: 20 }, viewers);
+  const milestones = yield* milestonesOf(orgId, row.recordId, now, viewers);
   return {
-    project: yield* projectDetail(row, now),
+    project: yield* projectDetail(row, now, viewers),
     counts: {
       open: counts?.open ?? 0,
       doing: counts?.doing ?? 0,
@@ -687,10 +700,10 @@ export const projectPage = Effect.fn("KinCrm.projectPage")(function* (
     pullRequests,
     changedThisWeek: { items: week.items, total: week.total ?? week.items.length },
     milestones,
-    people: yield* peopleOf(row, now),
-    meetings: yield* meetingsOf(orgId, row.recordId, now),
-    specChanged: yield* projectSpecChanges(orgId, row.recordId),
-    money: yield* moneyOf(orgId, row.recordId),
+    people: yield* peopleOf(row, now, viewers),
+    meetings: yield* meetingsOf(orgId, row.recordId, now, viewers),
+    specChanged: yield* projectSpecChanges(orgId, row.recordId, viewers),
+    money: yield* moneyOf(orgId, row.recordId, viewers),
     seq,
     asOf: iso(now),
   } satisfies KinProjectPage;

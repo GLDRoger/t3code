@@ -134,7 +134,10 @@ export const projects = Effect.fn("KinWork.projects")(function* (
           ),
         );
   const sql = yield* SqlClient.SqlClient;
-  const sees = team === undefined ? undefined : personSeesAs(sql, team, "p");
+  const sees =
+    team === undefined
+      ? undefined
+      : { projects: personSeesAs(sql, team, "p"), viewers: [team] as const };
   const page = yield* read(
     Crm.projects(input.orgId, now, { ...input, partyId: party?.recordId }, sees),
   );
@@ -155,7 +158,7 @@ export const party = Effect.fn("KinWork.party")(function* (
   const row = yield* opened(input, "clients");
   yield* unseen(team, row, input);
   const { now, seq } = yield* asOf(input.orgId, team);
-  const page = yield* read(Crm.partyPage(row, now, seq));
+  const page = yield* read(Crm.partyPage(row, now, seq, team === undefined ? undefined : [team]));
   if (team === undefined) return page;
   // Its name, contacts and the projects they lead; never terms, tax, notes, contact log or what's owed.
   const shown = yield* read(
@@ -190,10 +193,10 @@ export const project = Effect.fn("KinWork.project")(function* (
 ) {
   const team = yield* reader(people, input.orgId);
   const row = yield* opened(input, "projects");
-  // Only its lead sees a project, and then all of it (`personSees`).
+  // Its lead sees it, and in it only what `personSees` shows them.
   yield* unseen(team, row, input);
   const { now, seq } = yield* asOf(input.orgId, team);
-  return yield* read(Crm.projectPage(row, now, seq));
+  return yield* read(Crm.projectPage(row, now, seq, team === undefined ? undefined : [team]));
 });
 
 /** `s:<seq>`: the next page is everything older than the last line shown. */

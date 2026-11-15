@@ -5,6 +5,7 @@ import {
   KinRecordKey,
   type KinMoney,
   type KinOrgId,
+  type KinPersonId,
   type KinWorkPrincipal,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
@@ -17,7 +18,7 @@ import { sectionsOf } from "./docBody.ts";
 import { versionOf } from "./docs.ts";
 import { type FieldValue, fieldList, fieldText, isMoney, parseFields } from "./lists.ts";
 import { formatMoney, parseAmount } from "./money.ts";
-import { principalOfText, principalText, specChangesOf } from "./projectSpine.ts";
+import { principalOfText, principalText, seenBy, specChangesOf } from "./projectSpine.ts";
 import { type RecordRow, selectRecords, toRecord } from "./recordRows.ts";
 
 /**
@@ -312,12 +313,15 @@ export const projectRead = Effect.fn("KinLeadSpine.projectRead")(function* (
   row: RecordRow,
   now: number,
   name: (who: KinWorkPrincipal | null) => string | undefined,
+  /** The people a turn others read is for; only what all of them see. */
+  viewers?: ReadonlyArray<KinPersonId>,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const page = yield* projectPage(row, now, 0);
+  const page = yield* projectPage(row, now, 0, viewers);
   const open = yield* sql<RecordRow>`${selectRecords(sql)}
     WHERE r.org_id = ${row.orgId} AND r.register_id = 'work' AND r.project_id = ${row.recordId}
       AND r.state IN ${sql.in(OPEN)} AND COALESCE(r.category, '') != 'meeting'
+      AND ${seenBy(sql, viewers)}
     ORDER BY json_extract(r.fields_json, '$.milestone') IS NULL,
       json_extract(r.fields_json, '$.milestone'), r.due_at IS NULL, r.due_at, r.key LIMIT 60`;
   const ids = (page.meetings ?? []).map((one) => one.recordId);
@@ -330,10 +334,10 @@ export const projectRead = Effect.fn("KinLeadSpine.projectRead")(function* (
   const changed = new Set(
     (yield* specChangesOf(row.orgId as KinOrgId, open)).map((one) => one.record.key),
   );
-  const docs = yield* sql<{ key: string; title: string; kind: string | null }>`SELECT key, title,
-      category AS kind FROM kin_records
-    WHERE org_id = ${row.orgId} AND register_id = 'docs' AND project_id = ${row.recordId}
-      AND state = 'open' ORDER BY category, key LIMIT 50`;
+  const docs = yield* sql<{ key: string; title: string; kind: string | null }>`SELECT r.key,
+      r.title, r.category AS kind FROM kin_records r
+    WHERE r.org_id = ${row.orgId} AND r.register_id = 'docs' AND r.project_id = ${row.recordId}
+      AND r.state = 'open' AND ${seenBy(sql, viewers)} ORDER BY r.category, r.key LIMIT 50`;
   const day = (at: string | null, allDay: boolean) =>
     at === null ? undefined : allDay ? at.slice(0, 10) : at;
   const line = (task: RecordRow) => {

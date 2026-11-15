@@ -1202,7 +1202,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
   const list = row.registerId;
   const sensitive = new Set(marksOf(view.lists, row).sensitiveFields ?? []);
   const page = list === "clients" ? yield* partyPage(row, now, 0) : undefined;
-  const project = list === "projects" ? yield* projectDetail(row, now) : undefined;
+  const project = list === "projects" ? yield* projectDetail(row, now, team?.people) : undefined;
   const specChanged = list === "work" && (yield* taskSpecChanged(row));
   const goal =
     list === "goals"
@@ -1212,7 +1212,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
     ...rowFor(view, row, now),
     ...(goal === undefined ? {} : { progress: goalLine(goal) }),
     ...(specChanged ? { specChanged: true as const } : {}),
-    ...(project === undefined ? {} : { plan: yield* projectRead(row, now, name) }),
+    ...(project === undefined ? {} : { plan: yield* projectRead(row, now, name, team?.people) }),
     ...(page === undefined
       ? {}
       : {

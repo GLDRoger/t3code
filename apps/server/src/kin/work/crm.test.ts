@@ -1264,6 +1264,31 @@ it.effect(
         ["W-2"],
       );
 
+      // The owner marks the agent's W-2 private while it waits: its project's lead, Mate, no
+      // longer finds it anywhere on the project page, nor in the counts.
+      yield* sql`UPDATE kin_records SET owner_kind = 'person', owner_id = ${mateId}
+        WHERE key = 'P-1'`;
+      yield* sql`UPDATE kin_records SET sensitive = 1, state = 'waiting' WHERE key = 'W-2'`;
+      const theirs = yield* Clients.project([mate], { orgId, key: "P-1" });
+      const ours = yield* Clients.project([owner], { orgId, key: "P-1" });
+      assert.deepStrictEqual(
+        ours.blocked.map((one) => one.record.key),
+        ["W-2"],
+      );
+      assert.deepStrictEqual(theirs.blocked, []);
+      assert.strictEqual(ours.counts.waiting, 1);
+      assert.strictEqual(theirs.counts.waiting, 0);
+      assert.strictEqual(ours.milestones?.[0]?.total, 2);
+      assert.strictEqual(theirs.milestones?.[0]?.total, 1);
+      assert.notInclude(
+        theirs.changedThisWeek.items.map((one) => one.record.key),
+        "W-2",
+      );
+      assert.notInclude(
+        (yield* Clients.projects([mate], { orgId })).projects.map((one) => one.open),
+        ours.project.open,
+      );
+
       // The milestone rule: late once passed while open; at risk within the heads-up days (3 by
       // default) with late or later work.
       const day = (n: number) => n * DAY;
