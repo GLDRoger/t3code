@@ -35,10 +35,12 @@ import type { resolveLead } from "./LeadMemory.ts";
 import { isOrgPaused } from "./orgState.ts";
 import { toolAdmitted } from "./SharedTools.ts";
 import { buildBrief, type PullRequestWork } from "./workerBrief.ts";
+import { PreviewBrowser } from "../../preview/PreviewBrowser.ts";
 import { GitVcsDriver } from "../../vcs/GitVcsDriver.ts";
 import { NOT_CONNECTED } from "../github/KinRepoReads.ts";
 import { KinPullRequestCare } from "../github/PullRequestCare.ts";
 import { labelOf, resolveProject, type Checkout, type HostProject } from "./workerProjects.ts";
+import { workerBrowser } from "./workerBrowser.ts";
 import { workerHosts } from "./workerNetwork.ts";
 import { publishBranch } from "./workerPublish.ts";
 import { grantHosts } from "./workNetwork.ts";
@@ -76,6 +78,7 @@ const NOT_CLAUDE = `Workers on this host run on Claude only, which has the file 
 const FORK_PR = `That PR's branch is in another repository, so Kin can't push to it. Review it instead, or tell its author what to change. ${STILL}`;
 const NOT_GITHUB = `That project isn't a GitHub repository, so it has no pull requests here. ${STILL}`;
 const PR_UNREADABLE = `Kin couldn't fetch that PR's head on this host. ${STILL}`;
+const UI_TEST_NEEDS_PR = `A UI test runs on an open pull request: call again with kind review, pullRequest and uiTest. ${STILL}`;
 /** PR care runs from check-ins and GitHub's own news, not only from the owner's chat. */
 const PR_CARE_EVENTS: ReadonlySet<string> = new Set(["pulse", "github", "worker.report"]);
 const LAUNCH_FAILED = `The worker couldn't start on this host. Retry the same call or tell the owner. ${STILL}`;
@@ -134,6 +137,7 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
   // Optional so runtimes built without GitHub or T3's git (most lead tests) still start.
   const care = yield* Effect.serviceOption(KinPullRequestCare);
   const git = yield* Effect.serviceOption(GitVcsDriver);
+  const browser = yield* Effect.serviceOption(PreviewBrowser);
 
   /**
    * From stored rows only: the host owner's own lead, the turn owner-only, its event the owner's in
@@ -250,6 +254,7 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
     target: Checkout,
     number: number,
     kind: Input["kind"],
+    uiTest: boolean,
   ) {
     if (target.slug === undefined) return yield* denied(NOT_GITHUB);
     if (Option.isNone(care) || Option.isNone(git))
@@ -267,7 +272,8 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
         Effect.mapError(() => new KinChatError({ reason: "unavailable", message: PR_UNREADABLE })),
       );
     return {
-      task: kind === "build" ? ("fix" as const) : ("review" as const),
+      task:
+        kind === "build" ? ("fix" as const) : uiTest ? ("ui_test" as const) : ("review" as const),
       repo: pull.repo,
       number,
       title: pull.title,
@@ -275,6 +281,7 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
       headRef: pull.headRef,
       baseRef: pull.baseRef,
       diff: pull.diff,
+      ...(uiTest ? { browser: yield* workerBrowser(browser) } : {}),
     } satisfies PullRequestWork;
   });
 
@@ -291,6 +298,9 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
       (input.kind === "review" && prNumber === undefined)
     )
       return yield* denied(LOCAL_BUILD_ONLY);
+    const uiTest = input.uiTest === true;
+    if (uiTest && (input.kind !== "review" || prNumber === undefined))
+      return yield* denied(UI_TEST_NEEDS_PR);
     const prCare = prNumber !== undefined;
     const plan = yield* sql.withTransaction(
       Effect.gen(function* () {
@@ -318,7 +328,9 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
     yield* claudeOnly(modelSelection);
     const target = yield* locate(input.project);
     const pullRequest =
-      prNumber === undefined ? undefined : yield* pullRequestAt(target, prNumber, input.kind);
+      prNumber === undefined
+        ? undefined
+        : yield* pullRequestAt(target, prNumber, input.kind, uiTest);
     const items = yield* Effect.forEach(input.memoryItemIds ?? [], (id) =>
       shared.memoryItem(ctx, id),
     );

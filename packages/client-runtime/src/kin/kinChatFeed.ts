@@ -292,7 +292,8 @@ const messageRowKey = (message: KinMessage) =>
 // A card tap shows as the button's label, never its JSON, and never repeats the card it answered.
 const shownMessage = (message: KinMessage): KinMessage => {
   // A host card's body is its inbox summary; the card says the same, so it isn't repeated.
-  if (isSystem(message)) return message.body === "" ? message : { ...message, body: "" };
+  if (isSystem(message) && message.widgetId !== null)
+    return message.body === "" ? message : { ...message, body: "" };
   if (message.kind !== "widget_action") return message;
   return { ...message, body: kinTapText(message.body), widgetId: null };
 };
@@ -401,8 +402,13 @@ export function buildKinFeedRows(
 
   const pushMessage = (message: KinMessage) => {
     startDay(message);
-    // Host cards (memory changes, routines) arrive as system messages carrying a widget.
-    if (isSystem(message) && message.widgetId === null) {
+    // Host cards (memory changes, routines) arrive as system messages carrying a widget, and a
+    // worker's screenshots as one carrying files: both draw as messages, not a line.
+    if (
+      isSystem(message) &&
+      message.widgetId === null &&
+      (message.attachments ?? []).length === 0
+    ) {
       const notice = retryNotice(message);
       const retry = notice ? lastOwnText : null;
       if (notice) {
