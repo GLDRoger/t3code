@@ -48,7 +48,8 @@ const KIN_RECORD_STATES = ["open", "doing", "waiting", "done", "dropped"] as con
 export const KinRecordState = Schema.Literals(KIN_RECORD_STATES);
 export type KinRecordState = typeof KinRecordState.Type;
 /** The Work list's kinds: one field, so a request that turns out to be a bug keeps its key. */
-export const KinRecordCategory = Schema.Literals(["task", "issue", "obligation"]);
+/** A `meeting` has its start as `dateAt` and the people in it as `attendees`. */
+export const KinRecordCategory = Schema.Literals(["task", "issue", "obligation", "meeting"]);
 export type KinRecordCategory = typeof KinRecordCategory.Type;
 /** Who has to do it: `theirs` when the other party owes it and the owner is whoever chases. */
 export const KinRecordSide = Schema.Literals(["ours", "theirs"]);
@@ -69,8 +70,14 @@ export type KinWorkActor = typeof KinWorkActor.Type;
 
 const KinPullRequestRef = Schema.Struct({ url: Schema.String, number: NonNegativeInt });
 
-/** The built-in lists. Only `work` entries are tasks; the other three are the light CRM. */
-export const KinWorkListName = Schema.Literals(["work", "clients", "contacts", "projects"]);
+/** The built-in lists. Only `work` entries are tasks; milestones belong to projects. */
+export const KinWorkListName = Schema.Literals([
+  "work",
+  "clients",
+  "contacts",
+  "projects",
+  "milestones",
+]);
 export type KinWorkListName = typeof KinWorkListName.Type;
 /** A client or a vendor: one list, by kind. */
 export const KinPartyKind = Schema.Literals(["client", "vendor"]);
@@ -401,6 +408,8 @@ export type KinWorkEvent = typeof KinWorkEvent.Type;
 /** The owner's "New": a short form. Long text belongs in chat. */
 export const KinWorkCreateInput = Schema.Struct({
   orgId: KinOrgId,
+  /** `milestones` adds a milestone to `project`; default a Work entry. */
+  list: Schema.optional(Schema.Literal("milestones")),
   title: KinTrimmedText.check(Schema.isMaxLength(280)),
   /** Defaults to the owner. A lead given work this way is woken to do it. */
   owner: Schema.optional(KinWorkPrincipal),
@@ -549,6 +558,7 @@ export const KIN_GST_STATES: Readonly<Record<string, string>> = {
 export const KIN_SENSITIVE_FIELDS = {
   clients: ["terms"],
   contacts: ["email", "phone"],
+  projects: ["value"],
 } as const;
 const SensitiveFields = Schema.Array(TrimmedNonEmptyString);
 const Name = KinTrimmedText.check(Schema.isMaxLength(200));
@@ -653,10 +663,21 @@ export const KinProjectRow = Schema.Struct({
   rev: NonNegativeInt,
 });
 export type KinProjectRow = typeof KinProjectRow.Type;
+export const KIN_PROJECT_BILLING = ["fixed", "hourly", "retainer"] as const;
+export const KinProjectBilling = Schema.Literals(KIN_PROJECT_BILLING);
+export type KinProjectBilling = typeof KinProjectBilling.Type;
 export const KinProjectDetail = Schema.Struct({
   ...KinProjectRow.fields,
   notes: KinText,
   repos: Schema.Array(KinRepoName),
+  // Absent from hosts before the project spine.
+  billing: Schema.optional(Schema.NullOr(KinProjectBilling)),
+  value: Schema.optional(Schema.NullOr(KinMoney)),
+  startsOn: Schema.optional(Schema.NullOr(KinDay)),
+  /** A retainer's next renewal day. */
+  renewsOn: Schema.optional(Schema.NullOr(KinDay)),
+  /** The people and agents on it besides its lead (`owner`). Membership only; it grants nothing. */
+  members: Schema.optional(Schema.Array(KinWorkPrincipal)),
   /** Why `health` is what it is. */
   healthBecause: Schema.Struct({
     targetPassed: Schema.Boolean,
@@ -707,6 +728,46 @@ export type KinPartyPage = typeof KinPartyPage.Type;
 
 export const KinProjectPageInput = KinRecordLookup;
 export type KinProjectPageInput = typeof KinProjectPageInput.Type;
+/** A milestone with its tasks' progress. `atRisk`: due within a week with late or later work. */
+export const KinMilestone = Schema.Struct({
+  ...KinRecordRef.fields,
+  state: KinRecordState,
+  dueAt: Schema.NullOr(IsoDateTime),
+  dueAllDay: Schema.Boolean,
+  total: NonNegativeInt,
+  done: NonNegativeInt,
+  late: Schema.Boolean,
+  atRisk: Schema.Boolean,
+  rev: NonNegativeInt,
+});
+export type KinMilestone = typeof KinMilestone.Type;
+/** A task made from a doc section that has changed since the task was written from it. */
+export const KinSpecChange = Schema.Struct({
+  record: KinRecordRef,
+  doc: KinRecordRef,
+  section: Schema.String,
+  /** The section is no longer in the doc. */
+  gone: Schema.Boolean,
+});
+export type KinSpecChange = typeof KinSpecChange.Type;
+/** One person or agent on the project, with what they hold in it. */
+export const KinProjectPerson = Schema.Struct({
+  who: KinWorkPrincipal,
+  lead: Schema.Boolean,
+  member: Schema.Boolean,
+  open: NonNegativeInt,
+  late: NonNegativeInt,
+});
+export type KinProjectPerson = typeof KinProjectPerson.Type;
+/** Money against the project, per currency: never summed across currencies. */
+export const KinProjectMoney = Schema.Struct({
+  quoted: Schema.Array(KinMoney),
+  invoiced: Schema.Array(KinMoney),
+  received: Schema.Array(KinMoney),
+  unpaid: Schema.Array(KinMoney),
+});
+export type KinProjectMoney = typeof KinProjectMoney.Type;
+
 /** The project page. Its full entry list is `kin.work.list` with `project`. */
 export const KinProjectPage = Schema.Struct({
   project: KinProjectDetail,
@@ -733,6 +794,15 @@ export const KinProjectPage = Schema.Struct({
     items: Schema.Array(KinWorkHistoryItem),
     total: NonNegativeInt,
   }),
+  // Absent from hosts before the project spine.
+  /** By due date, undated last. */
+  milestones: Schema.optional(Schema.Array(KinMilestone)),
+  /** Its lead, members, then anyone else holding its open tasks. */
+  people: Schema.optional(Schema.Array(KinProjectPerson)),
+  /** Meetings from a day ago onwards, soonest first; a passed one stays until it is closed. */
+  meetings: Schema.optional(Schema.Array(KinRecord)),
+  specChanged: Schema.optional(Schema.Array(KinSpecChange)),
+  money: Schema.optional(KinProjectMoney),
   seq: NonNegativeInt,
   asOf: IsoDateTime,
 });
@@ -874,6 +944,12 @@ export const KinProjectCreateInput = Schema.Struct({
   targetAt: Schema.optional(IsoDateTime),
   targetAllDay: Schema.optional(Schema.Boolean),
   repos: Schema.optional(Schema.Array(KinRepoName).check(Schema.isMaxLength(20))),
+  billing: Schema.optional(Schema.NullOr(KinProjectBilling)),
+  /** `null` clears. */
+  value: Schema.optional(Schema.NullOr(KinMoney)),
+  startsOn: Schema.optional(Schema.NullOr(KinDay)),
+  renewsOn: Schema.optional(Schema.NullOr(KinDay)),
+  members: Schema.optional(Schema.Array(KinWorkPrincipal).check(Schema.isMaxLength(50))),
   notes: Schema.optional(Notes),
   sensitive: Schema.optional(Schema.Boolean),
   clientRequestId: RequestId,
@@ -891,6 +967,12 @@ export const KinProjectUpdateInput = Schema.Struct({
   targetAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   targetAllDay: Schema.optional(Schema.Boolean),
   repos: Schema.optional(Schema.Array(KinRepoName).check(Schema.isMaxLength(20))),
+  billing: Schema.optional(Schema.NullOr(KinProjectBilling)),
+  /** `null` clears. */
+  value: Schema.optional(Schema.NullOr(KinMoney)),
+  startsOn: Schema.optional(Schema.NullOr(KinDay)),
+  renewsOn: Schema.optional(Schema.NullOr(KinDay)),
+  members: Schema.optional(Schema.Array(KinWorkPrincipal).check(Schema.isMaxLength(50))),
   notes: Schema.optional(Notes),
   sensitive: Schema.optional(Schema.Boolean),
   state: Schema.optional(KinProjectState),

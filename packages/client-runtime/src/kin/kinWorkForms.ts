@@ -12,6 +12,7 @@ import {
   type KinPartyUpdateInput,
   type KinProjectCreateInput,
   type KinProjectDetail,
+  type KinProjectBilling,
   type KinProjectUpdateInput,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -27,6 +28,7 @@ import {
   type KinWorkRef,
   kinWorkDueLabel,
 } from "./kinWork.ts";
+import { kinMoneyDraft, kinParseMoney } from "./kinLists.ts";
 import { kinContactEmailOk, kinContactPhoneOk, KIN_PROJECTS } from "./kinWorkClients.ts";
 import { KIN_WORK_OFFLINE_CHANGE } from "./kinWorkChanges.ts";
 import type { KinWorkLive } from "./kinWorkStream.ts";
@@ -97,6 +99,12 @@ export const KIN_WORK_FORM_COPY = {
     target: "Target date",
     repos: "Repos",
     reposPlaceholder: "owner/name, one per line",
+    billing: "Billing",
+    noBilling: "Not set",
+    value: "Value",
+    valuePlaceholder: "600000 or $12,000",
+    startsOn: "Starts",
+    renewsOn: "Renews on",
     notes: "Notes",
     notesPlaceholder: "What done looks like",
   },
@@ -290,7 +298,19 @@ export interface KinProjectDraft {
   readonly repos: string;
   readonly notes: string;
   readonly private: boolean;
+  readonly billing: KinProjectBilling | null;
+  /** As typed: "600000", "$12,000"; empty for none. */
+  readonly value: string;
+  readonly startsOn: string | null;
+  readonly renewsOn: string | null;
 }
+
+const VALUE_CURRENCY = "INR";
+export const KIN_PROJECT_BILLING_LABELS: Readonly<Record<KinProjectBilling, string>> = {
+  fixed: "Fixed price",
+  hourly: "Hourly",
+  retainer: "Retainer",
+};
 
 export const kinProjectDraftOf = (
   project?: KinProjectDetail,
@@ -310,7 +330,16 @@ export const kinProjectDraftOf = (
   repos: project?.repos.join("\n") ?? "",
   notes: project?.notes ?? "",
   private: project?.sensitive ?? false,
+  billing: project?.billing ?? null,
+  value:
+    project?.value === undefined || project.value === null
+      ? ""
+      : kinMoneyDraft(project.value, VALUE_CURRENCY),
+  startsOn: project?.startsOn ?? null,
+  renewsOn: project?.renewsOn ?? null,
 });
+const valueOf = (text: string) =>
+  text.trim() === "" ? null : kinParseMoney(text.trim(), VALUE_CURRENCY);
 
 const isRepo = Schema.is(KinRepoName);
 const reposOf = (text: string) =>
@@ -334,6 +363,10 @@ export const kinProjectDraftCheck = (draft: KinProjectDraft): string | null => {
   if (!repos.every((repo) => isRepo(repo))) return "Write each repo as owner/name, one per line.";
   if (repos.length > 20) return "A project can have up to 20 repos.";
   if (draft.target !== null && !kinRealDay(draft.target)) return NOT_A_DAY;
+  if (draft.startsOn !== null && !kinRealDay(draft.startsOn)) return NOT_A_DAY;
+  if (draft.renewsOn !== null && !kinRealDay(draft.renewsOn)) return NOT_A_DAY;
+  if (draft.value.trim() !== "" && valueOf(draft.value) === null)
+    return "Write the value as an amount, such as 600000 or $12,000.";
   return tooLong(draft.name, NAME_MAX, "the name") ?? tooLong(draft.notes, NOTES_MAX, "the notes");
 };
 
@@ -348,6 +381,10 @@ export const kinProjectCreateInput = (
   ...(repoNames(draft.repos).length === 0 ? {} : { repos: repoNames(draft.repos) }),
   ...(draft.notes.trim() === "" ? {} : { notes: draft.notes.trim() }),
   ...(draft.private ? { sensitive: true } : {}),
+  ...(draft.billing === null ? {} : { billing: draft.billing }),
+  ...(valueOf(draft.value) === null ? {} : { value: valueOf(draft.value) }),
+  ...(draft.startsOn === null ? {} : { startsOn: draft.startsOn }),
+  ...(draft.renewsOn === null ? {} : { renewsOn: draft.renewsOn }),
 });
 
 export const kinProjectUpdateInput = (
@@ -363,6 +400,10 @@ export const kinProjectUpdateInput = (
   ...(changed.repos === undefined ? {} : { repos: repoNames(changed.repos) }),
   ...(changed.notes === undefined ? {} : { notes: changed.notes.trim() }),
   ...(changed.private === undefined ? {} : { sensitive: changed.private }),
+  ...(changed.billing === undefined ? {} : { billing: changed.billing }),
+  ...(changed.value === undefined ? {} : { value: valueOf(changed.value) }),
+  ...(changed.startsOn === undefined ? {} : { startsOn: changed.startsOn }),
+  ...(changed.renewsOn === undefined ? {} : { renewsOn: changed.renewsOn }),
 });
 
 // Why a change didn't go through

@@ -35,6 +35,9 @@ import * as LeadWork from "./leadWork.ts";
 import { KinWorkToolkit } from "./mcp/tools.ts";
 import * as Clients from "./ownerClients.ts";
 import * as OwnerWork from "./ownerWork.ts";
+import * as Docs from "./docs.ts";
+import { sectionsOf } from "./docBody.ts";
+import { milestoneRisk } from "./projectSpine.ts";
 import { effectivelySensitive } from "./recordRows.ts";
 import { PRESETS } from "./registers.ts";
 import { buildWorkSection } from "./workPrompt.ts";
@@ -975,4 +978,186 @@ it.effect("a teammate gets none of the client calls, and a client change ticks s
     const [, tick] = yield* Fiber.join(ticks);
     assert.strictEqual(tick?.key, "C-1");
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a project's plan: milestones, tasks from spec sections that flag when the section changes",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const spec = [
+        "# Invented spec",
+        "",
+        "## Login",
+        "",
+        "Email and password.",
+        "",
+        "## Billing",
+        "",
+        "Monthly invoices.",
+        "",
+      ].join("\n");
+      const doc = yield* Docs.create(
+        orgId,
+        { actor: { _tag: "agent", agentId: lead }, via: "lead", askedBy: ownerId },
+        {},
+        {
+          title: "Invented spec",
+          body: spec,
+          owner: { _tag: "agent", agentId: lead },
+          summary: "Created",
+          originKey: "test:spec",
+          kind: "spec",
+        },
+      );
+      const made = yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [
+          {
+            list: "projects",
+            title: "Invented app",
+            due: "1970-03-01",
+            billing: "fixed",
+            value: "6 lakh",
+            members: ["Mate", "me"],
+          },
+          {
+            list: "milestones",
+            title: "Invented beta",
+            project: "Invented app",
+            due: "1970-01-20",
+          },
+          {
+            title: "Invented login form",
+            milestone: "Invented beta",
+            owner: "Mate",
+            size: "M",
+            reason: "Mate: tech, free this week",
+            from: { doc: doc.row.key, section: "login" },
+          },
+          {
+            title: "Invented password reset",
+            milestone: "M-1",
+            size: "S",
+            from: { doc: doc.row.key, section: "login" },
+          },
+          {
+            title: "Invented invoice run",
+            project: "Invented app",
+            from: { doc: doc.row.key, section: "billing" },
+          },
+          {
+            title: "Invented kickoff",
+            project: "Invented app",
+            category: "meeting",
+            at: "1970-01-02T15:00+05:30",
+            attendees: ["Mate"],
+          },
+        ],
+      });
+      assert.deepStrictEqual(
+        made.records.map((row) => row.key),
+        ["P-1", "M-1", "W-1", "W-2", "W-3", "W-4"],
+      );
+      const sql = yield* SqlClient.SqlClient;
+      const [projectRow] = yield* sql<{ id: string }>`SELECT record_id AS id FROM kin_records
+      WHERE key = 'P-1'`;
+      yield* Docs.move(
+        orgId,
+        { actor: { _tag: "agent", agentId: lead }, via: "lead", askedBy: ownerId },
+        { key: doc.row.key },
+        { projectId: projectRow!.id },
+      );
+      const first = (yield* LeadWork.get(scope, { key: "P-1" })).plan!;
+      // A milestone brings its project; its tasks count towards it.
+      assert.deepStrictEqual(first.milestones, [
+        { key: "M-1", title: "Invented beta", state: "open", due: "1970-01-20", done: 0, total: 2 },
+      ]);
+      assert.include(
+        first.people.find((one) => one.name === "Mate"),
+        { member: true, open: 1 },
+      );
+      assert.deepStrictEqual(first.docs, [
+        { key: doc.row.key, title: "Invented spec", kind: "spec" },
+      ]);
+      assert.deepStrictEqual(
+        first.meetings.map((one) => one.key),
+        ["W-4"],
+      );
+      assert.deepStrictEqual(first.specChanged, []);
+      assert.include(yield* LeadWork.get(scope, { key: "W-1" }), {
+        milestone: "M-1",
+        size: "M",
+        reason: "Mate: tech, free this week",
+        project: "Invented app (P-1)",
+      });
+      // An unknown section is refused, naming the ones there are.
+      const refused = yield* Effect.flip(
+        LeadWork.create(scope, {
+          sourceEventId: "again-event",
+          records: [{ title: "Invented", from: { doc: doc.row.key, section: "nope" } }],
+        }),
+      );
+      assert.include(refused.message, "login, billing");
+
+      // Editing the login section flags exactly the two tasks written from it.
+      yield* Docs.edit(
+        orgId,
+        { actor: { _tag: "agent", agentId: lead }, via: "lead", askedBy: ownerId },
+        {},
+        { key: doc.row.key },
+        {
+          operations: [
+            {
+              op: "replace_section",
+              section: "login",
+              hash: sectionsOf(spec).find((one) => one.id === "login")!.hash,
+              text: "Email, password and a magic link.",
+            },
+          ],
+          summary: "Magic link",
+          originKey: "test:magic",
+        },
+      );
+      const changed = (yield* LeadWork.get(scope, { key: "P-1" })).plan!;
+      assert.deepStrictEqual(
+        changed.specChanged.map((one) => one.task),
+        ["W-1", "W-2"],
+      );
+      assert.include(yield* LeadWork.get(scope, { key: "W-1" }), { specChanged: true });
+      const page = yield* Clients.project([owner], { orgId, key: "P-1" });
+      assert.deepStrictEqual(
+        page.specChanged!.map((one) => one.record.key),
+        ["W-1", "W-2"],
+      );
+      assert.deepStrictEqual(page.project.billing, "fixed");
+      assert.deepStrictEqual(page.project.value, { minor: 60_000_000, currency: "INR" });
+
+      // Re-anchoring one clears it; the other stays flagged until it is looked at.
+      yield* LeadWork.update(scope, {
+        key: "W-1",
+        sourceEventId: "again-event",
+        from: { doc: doc.row.key, section: "login" },
+      });
+      assert.deepStrictEqual(
+        (yield* LeadWork.get(scope, { key: "P-1" })).plan!.specChanged.map((one) => one.task),
+        ["W-2"],
+      );
+
+      // The milestone rule: late once passed while open; at risk within the heads-up days (3 by
+      // default) with late or later work.
+      const day = (n: number) => n * DAY;
+      for (const [state, dueAt, tasks, late, atRisk] of [
+        ["open", day(4), [{ dueAt: day(8), open: true }], false, false],
+        ["open", day(2), [{ dueAt: day(3), open: true }], false, true],
+        ["open", day(2), [{ dueAt: day(-1), open: true }], false, true],
+        ["open", day(2), [{ dueAt: day(3), open: false }], false, false],
+        ["open", day(-1), [], true, false],
+        ["done", day(-1), [], false, false],
+      ] as const)
+        assert.deepStrictEqual(milestoneRisk({ state, dueAt, now: 0, headsUpDays: 3, tasks }), {
+          late,
+          atRisk,
+        });
+    }).pipe(Effect.provide(layer)),
 );

@@ -148,7 +148,8 @@ export const inList = Effect.fn("KinWork.inList")(function* (
   // Work's edits also reach the lists defined in chat, whose own fields are typed there.
   const inIt =
     row !== undefined &&
-    (row.registerId === list || (list === "work" && !isBuiltIn(row.registerId)));
+    (row.registerId === list ||
+      (list === "work" && (!isBuiltIn(row.registerId) || row.registerId === "milestones")));
   if (row === undefined || !inIt) return yield* missing(key, list);
   return row;
 });
@@ -463,6 +464,12 @@ export const create = Effect.fn("KinWork.create")(function* (
   const owner: KinWorkPrincipal = input.owner ?? { _tag: "person", personId: person.personId };
   const partyId = yield* refId(viewer, input.orgId, input.party, "clients");
   const projectId = yield* refId(viewer, input.orgId, input.project, "projects");
+  const milestone = input.list === "milestones";
+  if (milestone && (viewer.teammate || projectId === undefined))
+    return yield* new KinChatError({
+      reason: "invalid_state",
+      message: "A milestone belongs to a project, and only the owner adds one.",
+    });
   // Before anything about the task is read, so its outcome turns on the agent alone.
   if (viewer.teammate) yield* teamAgent(person, owner);
   const write = Effect.gen(function* () {
@@ -472,6 +479,7 @@ export const create = Effect.fn("KinWork.create")(function* (
         ? `member:${person.personId}:${input.clientRequestId}`
         : `owner:${input.clientRequestId}`,
       requestHash: requestHashOf(input),
+      ...(milestone ? { list: "milestones" } : {}),
       title: input.title,
       owner,
       dueAt,
