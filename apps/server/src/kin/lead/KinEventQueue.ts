@@ -647,7 +647,7 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis;
           const none = { failedEventIds: [], stranded: 0, retried: 0 };
-          // Aborted for its audience (`abortPrivateTurns`): whatever it ran to, a fresh
+          // Aborted for its audience (`abortChatTurns`): whatever it ran to, a fresh
           // wake-up answers its events, without spending an attempt or telling anyone.
           const requeued = yield* sql`UPDATE kin_wakeups SET status = 'released', ended_at = ${now}
             WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND status = 'running'

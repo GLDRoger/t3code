@@ -156,9 +156,6 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.docs.label": Effect.fn("KinDocs.rpc.label")(function* (input) {
         return yield* call((people) => Docs.label(people, input));
       }),
-      "kin.docs.file": Effect.fn("KinDocs.rpc.file")(function* (input) {
-        return yield* call((people) => Docs.file(people, input));
-      }),
       "kin.docs.clearRecipeLabel": Effect.fn("KinDocs.rpc.clearRecipeLabel")(function* (input) {
         return yield* call((people) => Docs.labelRecipe(people, { ...input, sensitive: false }));
       }),

@@ -49,6 +49,7 @@ import {
   audienceChanged,
   effectiveAudience,
   recordedAudience,
+  turnChat,
 } from "./Audience.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import { nonClaudeLeadModel } from "./leadModels.ts";
@@ -100,7 +101,7 @@ export class WakeupRunner extends Context.Service<
   WakeupRunner,
   {
     readonly runOnce: (orgId: KinOrgId, agentId: KinAgentId) => Effect.Effect<void, KinWakeupError>;
-    /** Stops a wake-up `abortPrivateTurns` marked: its line and draft go, then its run. */
+    /** Stops a wake-up `abortChatTurns` marked: its line and draft go, then its run. */
     readonly abort: (orgId: KinOrgId, wakeupId: KinWakeupId) => Effect.Effect<void>;
     readonly recover: Effect.Effect<void, KinWakeupError>;
     readonly start: Effect.Effect<void, never, Scope.Scope>;
@@ -267,10 +268,19 @@ const make = Effect.gen(function* () {
               }),
             ),
           );
-    if (record.threadId !== null) {
-      const stopped = yield* threads.forceStopThread({ threadId: record.threadId });
+    // The owner's thread and every chat's.
+    const live = yield* sql<{ threadId: ThreadId }>`SELECT thread_id AS "threadId"
+      FROM kin_agent_threads WHERE org_id = ${record.orgId} AND agent_id = ${record.agentId}
+        AND ended_at IS NULL ORDER BY thread_id`;
+    for (const threadId of new Set([
+      ...(record.threadId === null ? [] : [record.threadId]),
+      ...live.map((row) => row.threadId),
+    ])) {
+      const stopped = yield* threads.forceStopThread({ threadId });
       if (stopped.outcome === "releasing") return;
-      yield* identity.endAgentThread({ orgId: record.orgId, threadId: record.threadId });
+      yield* identity
+        .endAgentThread({ orgId: record.orgId, threadId })
+        .pipe(Effect.catchTags({ KinChatError: () => Effect.succeed(false) }));
     }
     retired.add(pass);
   });
@@ -910,30 +920,25 @@ const make = Effect.gen(function* () {
               workspaceRoot: pinned.read,
               title: `Kin · ${record.orgName} · ${record.name}`,
             });
-            let existingThreadId = current.threadId;
-            // Retiring ended its thread, which can't be registered again: a restored lead
-            // launches a fresh one.
-            if (
-              existingThreadId !== null &&
-              (yield* sql`SELECT 1 FROM kin_agent_threads WHERE org_id = ${orgId}
-                AND thread_id = ${existingThreadId} AND ended_at IS NOT NULL`).length > 0
-            ) {
-              yield* sql`UPDATE kin_leads SET thread_id = NULL WHERE org_id = ${orgId} AND agent_id = ${agentId} AND thread_id = ${existingThreadId}`;
-              existingThreadId = null;
-            }
+            // The owner's turns share one thread; any other runs on its chat's own, so no
+            // model context crosses chats. Ended threads can't be registered again.
+            const chatId = shared
+              ? ((yield* turnChat(row).pipe(provideSql))?.chatId ?? null)
+              : null;
+            const prefix = shared ? SHARED_THREAD_PREFIX : "kin:";
+            const [live] = yield* sql<{ threadId: ThreadId }>`SELECT thread_id AS "threadId"
+              FROM kin_agent_threads WHERE org_id = ${orgId} AND agent_id = ${agentId}
+                AND ended_at IS NULL AND chat_id IS ${chatId}
+                AND substr(thread_id, 1, ${prefix.length}) = ${prefix}
+              ORDER BY started_at DESC, thread_id DESC LIMIT 1`;
+            let existingThreadId = shared && chatId === null ? null : (live?.threadId ?? null);
             if (existingThreadId !== null) {
               const existing = yield* threads
                 .getThreadProjection(existingThreadId)
                 .pipe(Effect.option);
-              // A thread keeps its cwd and its tools: one from another project, or made for the
-              // other audience, ends so this wake-up launches its own.
-              if (
-                Option.isSome(existing) &&
-                (existing.value.thread.projectId !== project.id ||
-                  existingThreadId.startsWith(SHARED_THREAD_PREFIX) !== shared)
-              ) {
+              // A thread keeps its cwd: one from another project ends so this launches its own.
+              if (Option.isSome(existing) && existing.value.thread.projectId !== project.id) {
                 yield* identity.endAgentThread({ orgId, threadId: existingThreadId });
-                yield* sql`UPDATE kin_leads SET thread_id = NULL WHERE org_id = ${orgId} AND agent_id = ${agentId} AND thread_id = ${existingThreadId}`;
                 existingThreadId = null;
               }
             }
@@ -972,7 +977,13 @@ const make = Effect.gen(function* () {
                       : [],
                   ),
                 });
-                yield* identity.registerAgentThread({ orgId, agentId, threadId });
+                yield* identity.registerAgentThread({
+                  orgId,
+                  agentId,
+                  threadId,
+                  ...(chatId === null ? {} : { chatId }),
+                });
+                // The running turn's thread: one wake-up runs per lead at a time.
                 yield* sql`UPDATE kin_leads SET thread_id = ${threadId} WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
                 yield* sql`UPDATE kin_wakeups SET thread_id = ${threadId}, model = ${modelSelection.model},
                 prepared_at = ${preparedAt}

@@ -24,6 +24,44 @@ export const teamSees = (sql: SqlClient.SqlClient, personId: KinPersonId | State
     OR (r.created_by_kind = 'person' AND r.created_by_id = ${personId})
     OR r.assigned_by_person_id = ${personId}))`;
 
+/** What every one of these people sees: a turn's view (`turnPeople`). None sees nothing. */
+export const viewSees = (sql: SqlClient.SqlClient, people: ReadonlyArray<KinPersonId>) =>
+  people.length === 0
+    ? sql`0 = 1`
+    : sql`(${sql.and(people.map((person) => teamSees(sql, person)))})`;
+
+/** Whether every one of these people may see this entry now. */
+export const viewVisible = Effect.fn("KinTeamView.viewVisible")(function* (
+  orgId: KinOrgId,
+  people: ReadonlyArray<KinPersonId>,
+  recordId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql`SELECT 1 FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.record_id = ${recordId} AND ${viewSees(sql, people)} LIMIT 1`;
+  return rows.length > 0;
+});
+
+/**
+ * A turn's write in a chat others read, inside its transaction: every person behind it still sees
+ * the task, and each who asked for the change may make it, as their own screens would let them.
+ */
+export const viewGuard = Effect.fn("KinTeamView.viewGuard")(function* (
+  orgId: KinOrgId,
+  view: {
+    readonly people: ReadonlyArray<KinPersonId>;
+    readonly askers: ReadonlyArray<KinPersonId>;
+  },
+  write: Parameters<typeof teamGuard>[2],
+) {
+  if (view.people.length === 0) return yield* noLongerTeam;
+  for (const person of view.people)
+    yield* teamGuard(orgId, person, {
+      ...write,
+      changes: write.changes && view.askers.includes(person),
+    });
+});
+
 /** A teammate changes only a task they hold or gave to whoever holds it, never one they only see. */
 const teamWrites = (sql: SqlClient.SqlClient, personId: KinPersonId) =>
   sql`(${teamSees(sql, personId)} AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
@@ -231,7 +269,7 @@ const TEAM_FIELDS = new Set([
   "confirmed",
 ]);
 /** Numbered among themselves, newest highest: the org's numbers would show what they can't see. */
-const teamChanges = (changes: ReadonlyArray<KinRecordChange>) => {
+export const teamChanges = (changes: ReadonlyArray<KinRecordChange>) => {
   const shown = changes.flatMap((change): ReadonlyArray<KinRecordChange> => {
     if (change.kind === "linked") return [];
     const fields = change.fields.filter((field) => TEAM_FIELDS.has(field.field));

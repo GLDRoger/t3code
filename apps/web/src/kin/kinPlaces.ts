@@ -14,13 +14,12 @@ export const KIN_PLACE_PATH = {
   docs: "/kin/$environmentId/$orgId/docs",
 } as const satisfies Record<KinPlace, string>;
 
-/** The record open beside a place's list: a client, project, list, the coming dates, the subscriptions, or a doc. */
+/** The record open beside a place's list: a client, project, list, the coming dates, or a doc. */
 export type KinRecordWhere =
   | { readonly party: KinRecordKey }
   | { readonly project: KinRecordKey }
   | { readonly list: KinListId }
   | { readonly dates: true }
-  | { readonly subscriptions: true }
   | KinDocWhere;
 
 export interface KinPlaceSearch {
@@ -30,7 +29,6 @@ export interface KinPlaceSearch {
   client?: KinRecordKey;
   project?: KinRecordKey;
   dates?: true;
-  subscriptions?: true;
   /** The open doc: the version read, the section arrived at, or the versions compared. */
   doc?: KinRecordKey;
   v?: number;
@@ -60,7 +58,6 @@ export function validateKinPlaceSearch(raw: Record<string, unknown>): KinPlaceSe
     ...(isKey(raw[CLIENT]) ? { client: raw[CLIENT] } : {}),
     ...(isKey(raw.project) ? { project: raw.project } : {}),
     ...(raw.dates === true ? { dates: true } : {}),
-    ...(raw.subscriptions === true ? { subscriptions: true } : {}),
     ...(isKey(raw.doc) ? { doc: raw.doc } : {}),
     ...(v === undefined ? {} : { v }),
     ...(isSection(raw.section) ? { section: raw.section } : {}),
@@ -90,7 +87,6 @@ export function kinRecordOf(search: KinPlaceSearch): KinRecordWhere | null {
   if (search.project !== undefined) return { project: search.project };
   if (search.list !== undefined) return { list: search.list };
   if (search.dates === true) return { dates: true };
-  if (search.subscriptions === true) return { subscriptions: true };
   return null;
 }
 
@@ -100,7 +96,6 @@ export function kinSearchOf(record: KinRecordWhere | null): KinPlaceSearch {
   if ("project" in record) return { project: record.project };
   if ("list" in record) return { list: record.list };
   if ("dates" in record) return { dates: true };
-  if ("subscriptions" in record) return { subscriptions: true };
   return {
     doc: record.doc,
     ...(record.version === undefined ? {} : { v: record.version }),
@@ -119,7 +114,7 @@ export function kinSearchOf(record: KinRecordWhere | null): KinPlaceSearch {
 export function kinPlaceOfRecord(record: KinRecordWhere | null): KinPlace {
   if (record === null) return "tasks";
   if ("party" in record || "project" in record) return "clients";
-  if ("dates" in record || "subscriptions" in record) return "money";
+  if ("dates" in record) return "money";
   if ("list" in record) return kinInMoney(record) ? "money" : "docs";
   return "docs";
 }

@@ -1,4 +1,3 @@
-import { kinRatesOf } from "@t3tools/client-runtime/kin/kinCurrency";
 import { useAtomValue } from "@effect/atom-react";
 import { kinReadDates, type KinDatesWindow } from "@t3tools/client-runtime/kin/kinDates";
 import {
@@ -401,14 +400,6 @@ export function useKinCompanyProfile(target: KinWorkTarget, enabled: boolean) {
   });
   const state = kinWorkReadState(useAtomValue(enabled ? atom : noCompanyAtom));
   return { state, refresh: () => appAtomRegistry.refresh(atom) };
-}
-
-/** The owner's home currency and rates, for the estimates beside foreign amounts. Null for a teammate. */
-export function useKinRates(target: KinWorkTarget, enabled = true) {
-  // A teammate never asks: the host would refuse, and no figure reaches them anyway.
-  const allowed = useAtomValue(kinClient.companyRead.permissionAtom(target.environmentId));
-  const profile = useKinCompanyProfile(target, enabled && allowed);
-  return profile.state._tag === "ready" ? kinRatesOf(profile.state.value) : null;
 }
 
 const noReceiptsAtom: ReturnType<typeof kinClient.receipts> = Atom.make(AsyncResult.initial());
