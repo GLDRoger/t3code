@@ -425,7 +425,8 @@ function KinTeammatePlaces(props: {
       setProblem("That didn't save. Check your connection and try again.");
     await refreshKinTeam(target);
     setAsked((held) => {
-      const { [place]: _done, ...rest } = held;
+      const rest = { ...held };
+      delete rest[place];
       return rest;
     });
   };
