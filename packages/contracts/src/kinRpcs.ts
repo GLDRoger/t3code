@@ -28,6 +28,7 @@ import { KinFinanceRpcs, KIN_FINANCE_RPC_SCOPES } from "./kinFinance.ts";
 import { KinStatementRpcs, KIN_STATEMENT_RPC_SCOPES } from "./kinStatements.ts";
 import { KinMoneyAnswerRpcs, KIN_MONEY_ANSWER_RPC_SCOPES } from "./kinMoneyAnswers.ts";
 import { KinRefreshRpcs, KIN_REFRESH_RPC_SCOPES } from "./kinRefresh.ts";
+import { KinPulseRpcs, KIN_PULSE_RPC_SCOPES } from "./kinPulse.ts";
 import {
   KinChatError,
   KinChatRpcs,
@@ -184,6 +185,7 @@ export const KinRpcs = [
   ...KinWorkerNetworkRpcs,
   ...KinConnectionRpcs,
   ...KinRefreshRpcs,
+  ...KinPulseRpcs,
 ] as const;
 export const KIN_RPC_SCOPES = {
   ...KIN_CHAT_RPC_SCOPES,
@@ -201,6 +203,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_WORKER_NETWORK_RPC_SCOPES,
   ...KIN_CONNECTION_RPC_SCOPES,
   ...KIN_REFRESH_RPC_SCOPES,
+  ...KIN_PULSE_RPC_SCOPES,
   "kin.budget.get": AuthKinChatScope,
   "kin.budget.set": AuthKinChatScope,
   "kin.org.get": AuthKinChatScope,
@@ -388,6 +391,11 @@ const KIN_RPC_ACCESS = {
   "kin.workers.network.allow": "owner_level",
   "kin.workers.network.remove": "owner_level",
   "kin.refreshes.subscribe": "person",
+  // Needs attention and goals: the service shows a member only what they may see.
+  "kin.pulse.read": "person",
+  "kin.pulse.handle": "person",
+  "kin.goals.list": "person",
+  "kin.goals.save": "owner_level",
   "kin.people.setOwnerName": "org_owner",
   // The host CLI's own writes, from the owner's session.
   "kin.refreshes.announce": "org_owner",
@@ -431,6 +439,10 @@ export const KIN_RPC_AGGREGATES = {
 
   "kin.refreshes.subscribe": "kin-refreshes",
   "kin.refreshes.announce": "kin-refreshes",
+  "kin.pulse.read": "kin-pulse",
+  "kin.pulse.handle": "kin-pulse",
+  "kin.goals.list": "kin-pulse",
+  "kin.goals.save": "kin-pulse",
   "kin.budget.get": "kin-budget",
   "kin.budget.set": "kin-budget",
   "kin.org.get": "kin-org",

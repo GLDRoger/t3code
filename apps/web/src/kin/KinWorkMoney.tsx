@@ -37,6 +37,8 @@ import {
 import { KinSubscriptionsSection } from "./KinSubscriptions";
 import { KinReceiptsSection } from "./KinReceipts";
 import { KinDateRow } from "./KinWorkDates";
+import { KinAttentionSection } from "./KinAttention";
+import { KinGoals } from "./KinGoals";
 import { useNowMinuteMs } from "./useKinClock";
 import { KinWorkNotice, KinWorkRowSkeletons, KinWorkSection } from "./KinWorkParts";
 import {
@@ -173,6 +175,19 @@ export function KinWorkMoney(
   });
   const agent = useKinAskAgent(props);
   const rates = useKinRates(props);
+  const top = (
+    <>
+      <KinGoals {...props} seq={props.stale ? null : props.live.seq} />
+      <KinAttentionSection
+        {...props}
+        scope={{ type: "money" }}
+        names={names}
+        onOpen={(to) => {
+          if (to.type === "record") props.onOpenKey(to.key);
+        }}
+      />
+    </>
+  );
   const [ratesOpen, setRatesOpen] = useState(false);
   const [yearOpen, setYearOpen] = useState(false);
   const seq = props.stale ? null : props.live.seq;
@@ -200,19 +215,22 @@ export function KinWorkMoney(
   const view = kinMoneyView(summary, kinListsOf(props.lists));
   if (view.empty) {
     return (
-      <KinWorkNotice
-        {...KIN_MONEY.none}
-        {...(agent === null
-          ? {}
-          : {
-              action: (
-                <Button onClick={() => agent.ask(KIN_MONEY.askMessage)}>
-                  <MessageSquareIcon />
-                  {KIN_MONEY.ask}
-                </Button>
-              ),
-            })}
-      />
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-8 scrollbar-gutter-both">
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-7 px-4 pt-4">{top}</div>
+        <KinWorkNotice
+          {...KIN_MONEY.none}
+          {...(agent === null
+            ? {}
+            : {
+                action: (
+                  <Button onClick={() => agent.ask(KIN_MONEY.askMessage)}>
+                    <MessageSquareIcon />
+                    {KIN_MONEY.ask}
+                  </Button>
+                ),
+              })}
+        />
+      </div>
     );
   }
   const upcoming = summary.upcoming.map((row) => kinDateRowView(row, names, now));
@@ -247,6 +265,7 @@ export function KinWorkMoney(
             {KIN_WORK_STALE}
           </p>
         ) : null}
+        {top}
         <section className="flex flex-col gap-3">
           <div className="grid grid-cols-2 gap-x-6 gap-y-2">
             <Figure figure={view.owed} onOpen={props.onOpenList} estimates={estimates} />

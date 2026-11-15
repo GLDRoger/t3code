@@ -4,6 +4,8 @@ export interface KinDockProps {
   readonly tabs: ReadonlyArray<KinDockTab>;
   readonly selectedTab: KinDockTab;
   readonly onSelect: (tab: KinDockTab) => void;
+  /** A short count on a tab: what needs attention, on Tasks. iOS only for now. */
+  readonly badges?: Partial<Readonly<Record<KinDockTab, string>>>;
 }
 
 /** The Kin home's dock; each platform draws the native bar its workspace uses. */
