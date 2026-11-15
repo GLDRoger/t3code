@@ -235,7 +235,19 @@ describe("kinWorkItemView", () => {
     const view = kinWorkItemView(
       detail({
         owner: lead,
+        reason: "You know the auth flow best",
         changes: [
+          {
+            seq: 5,
+            at,
+            by: priya,
+            via: "owner",
+            kind: "updated",
+            fields: [
+              { field: "owner", from: `person:${priya.personId}`, to: `agent:${lead.agentId}` },
+              { field: "handedBack", from: `person:${priya.personId}`, to: "On the release" },
+            ],
+          },
           {
             seq: 4,
             at,
@@ -273,7 +285,10 @@ describe("kinWorkItemView", () => {
       50,
       place,
     );
+    expect(view.given).toMatch(/^Priya handed this back · /);
+    expect(view.reason).toBe("On the release");
     expect(view.history.map((line) => line.text)).toEqual([
+      "Priya handed it back to Tech lead: “On the release”",
       "Tech lead marked it waiting on Priya",
       "You gave it to Tech lead",
       "Tech lead updated it",

@@ -3,6 +3,7 @@ import { kinHasNotesHistory } from "@t3tools/client-runtime/kin/kinTemplates";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_WORK_GONE,
+  KIN_WORK_HAND_BACK,
   KIN_WORK_ITEM_FAILED,
   KIN_WORK_NEW_COPY,
   KIN_WORK_NOTES_MAX,
@@ -394,12 +395,13 @@ function KinWorkItemBody(props: ItemTarget) {
             </Text>
           ) : null}
         </View>
-        {[view.given, ...view.remarks].map((line) =>
-          line === null ? null : (
-            <Text key={line} textRole="footnote" className="text-foreground-muted">
-              {line}
-            </Text>
-          ),
+        {[view.given, view.reason === null ? null : `“${view.reason}”`, ...view.remarks].map(
+          (line) =>
+            line === null ? null : (
+              <Text key={line} textRole="footnote" className="text-foreground-muted">
+                {line}
+              </Text>
+            ),
         )}
       </View>
       {act === null || view.suggestion === null ? null : (
@@ -490,6 +492,20 @@ function KinWorkItemBody(props: ItemTarget) {
             disabled={saving}
             onPress={() =>
               navigation.navigate("KinWorkAssign", { environmentId, orgId, task: itemKey })
+            }
+          />
+        ) : null}
+        {act !== null && view.handBackTo !== null ? (
+          <ListActionRow
+            label={KIN_WORK_HAND_BACK.button}
+            disabled={saving}
+            onPress={() =>
+              navigation.navigate("KinWorkHandBack", {
+                environmentId,
+                orgId,
+                task: itemKey,
+                to: view.handBackTo ?? "",
+              })
             }
           />
         ) : null}

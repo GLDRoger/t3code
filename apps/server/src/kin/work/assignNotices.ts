@@ -64,7 +64,9 @@ const bodyFor = (agent: string, notices: ReadonlyArray<AssignNotice>, zone: stri
       ? `${agent} gave you ${line(given[0]!, zone)}.`
       : `${agent} ${line(other[0]!, zone)}.`;
   return [
-    given.length === 0 ? `${agent}:` : `${agent} gave you ${given.length === 1 ? "a task" : `${given.length} tasks`}:`,
+    given.length === 0
+      ? `${agent}:`
+      : `${agent} gave you ${given.length === 1 ? "a task" : `${given.length} tasks`}:`,
     ...given.map((notice) => `• ${line(notice, zone)}`),
     ...other.map((notice) => `• It ${line(notice, zone)}`),
   ].join("\n");

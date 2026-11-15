@@ -1223,10 +1223,10 @@ export const workEventText = Effect.fn("KinLeadPrompt.workEvent")(function* (inp
     : handedBack
       ? HANDED_BACK_WORK
       : !ownerOnly
-      ? TEAMMATE_WORK
-      : theirs.size > 0
-        ? ASSIGNED_OTHERS_WORDS
-        : ASSIGNED_WORK;
+        ? TEAMMATE_WORK
+        : theirs.size > 0
+          ? ASSIGNED_OTHERS_WORDS
+          : ASSIGNED_WORK;
   return [
     intro,
     quote(

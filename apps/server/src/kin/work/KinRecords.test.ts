@@ -32,6 +32,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { authorizeRpc } from "../../auth/RpcAuthorization.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import * as ChatRepository from "../chat/KinChatRepository.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { turnAudience, turnChat, turnPeople } from "../lead/Audience.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -40,6 +41,7 @@ import * as LeadAccess from "../lead/LeadAccess.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { TEAMMATE_WORDS, workEventText } from "../lead/LeadPrompt.ts";
 import { sharedToolAllowed } from "../lead/SharedTools.ts";
+import { readPeople } from "../lead/peopleRead.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { importWork } from "./importWork.ts";
 import * as KinRecords from "./KinRecords.ts";
@@ -409,8 +411,14 @@ it.effect("a turn others read gets only Work's tasks, and a chat-only session ge
     yield* turn("mate", "shared");
     const shared = { orgId, agentId: lead, wakeupId: "wake" };
     // Tasks are read and changed at the teammate's view; lists and money stay the owner's.
-    const view = new Set(["records_query", "record_get", "record_create", "record_update"]);
-    assert.lengthOf(Object.keys(KinWorkToolkit.tools), 11);
+    const view = new Set([
+      "records_query",
+      "record_get",
+      "record_create",
+      "record_update",
+      "record_hand_back",
+    ]);
+    assert.lengthOf(Object.keys(KinWorkToolkit.tools), 13);
     for (const tool of Object.keys(KinWorkToolkit.tools))
       assert.strictEqual(yield* sharedToolAllowed(shared, tool, {}), view.has(tool), tool);
     // Only the owner names who else holds a task.
@@ -445,13 +453,14 @@ it.effect("a turn others read gets only Work's tasks, and a chat-only session ge
       "kin.work.subscribe",
       "kin.work.create",
       "kin.work.assign",
+      "kin.work.handBack",
       "kin.work.update",
     ]);
     const methods = [
       ...Object.values(KIN_WORK_WS_METHODS),
       ...KinFinanceRpcs.map((rpc) => rpc._tag),
     ];
-    assert.lengthOf(methods, 36);
+    assert.lengthOf(methods, 37);
     for (const method of methods)
       assert.strictEqual(
         (yield* Effect.exit(authorizeRpc([AuthKinChatScope], method, { orgId })))._tag ===
@@ -1205,10 +1214,11 @@ it.effect(
       const shared = yield* task("shared");
       const priced = yield* task("priced", { amount: { minor: 500_000, currency: "INR" } });
       yield* task("theirs", { owner: { _tag: "person", personId: mateId } });
-      yield* task("theirs but sensitive", {
+      // Never given to them private: labelled after it was theirs.
+      const labelled = yield* task("theirs but sensitive", {
         owner: { _tag: "person", personId: mateId },
-        sensitive: true,
       });
+      yield* records.update(orgId, ownerWrites, labelled.key, { sensitive: true });
       const client = (yield* records.create(orgId, ownerWrites, {
         list: "clients",
         originKey: "client",
@@ -1233,8 +1243,9 @@ it.effect(
       })).row;
       const forPlain = yield* task("for the plain project", { projectId: project.recordId });
       const before = yield* OwnerWork.summary([mate], { orgId });
-      // Their change number counts only changes to what they could see: the one task theirs.
-      assert.include(before, { open: 1, seq: 1 });
+      // Their change number counts only changes to what they could see: their two tasks, until
+      // one was labelled.
+      assert.include(before, { open: 1, seq: 3 });
       yield* OwnerWork.share([owner], {
         orgId,
         keys: [shared.key, priced.key, forClient.key, forPlain.key],
@@ -1873,4 +1884,80 @@ it.effect("a teammate's live changes name only tasks they see, and one hidden fr
     assert.strictEqual((yield* OwnerWork.summary([mate], { orgId })).seq, seq);
     assert.strictEqual(yield* Queue.size(heard), 0);
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "an agent gives out a plan: no private task to a teammate, one message each, and a hand back wakes it",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* mateMayMessage;
+      yield* turn();
+      const sql = yield* SqlClient.SqlClient;
+      const scope = scopeOf("lead");
+      yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [
+          { title: "Invented: draft the onboarding copy" },
+          { title: "Invented: fix the login screen", size: "M", due: "2026-11-20" },
+          { title: "Invented: salary review", sensitive: true },
+        ],
+      });
+      const plan = yield* LeadWork.assign(scope, {
+        sourceEventId: "ask-event",
+        tasks: ["W-1", "W-2", "W-3"].map((key) => ({ key, to: "Mate", reason: "iOS, 0 open" })),
+      });
+      assert.deepStrictEqual(plan.told, ["Mate"]);
+      assert.include(plan.tasks[2]!.refused, "Mate can't see this task");
+      // One message for the whole plan, in their chat with the agent, with why and when.
+      const told = yield* sql<{ body: string }>`SELECT body FROM kin_messages
+        WHERE chat_id = 'mate-chat' ORDER BY seq`;
+      assert.lengthOf(told, 1);
+      assert.include(told[0]!.body, "gave you 2 tasks");
+      assert.include(told[0]!.body, "W-2 Invented: fix the login screen, due Fri 20 Nov. Why: iOS");
+      // The authority is the owner who asked; the agent that gave it is kept beside it.
+      const given = yield* OwnerWork.get([mate], { orgId, key: "W-2" });
+      assert.deepInclude(given, {
+        assignedBy: { _tag: "person", personId: ownerId },
+        assignedByAgent: lead,
+        reason: "iOS, 0 open",
+      });
+      // The owner's own turn reads what each holds; a turn others read doesn't.
+      const turnOf = { orgId, agentId: lead, wakeupId: "wake" };
+      yield* TestClock.setTime(Date.parse("2026-11-16T00:00:00.000Z"));
+      assert.include(
+        (yield* readPeople(turnOf)).quoted,
+        '"load":{"open":2,"late":0,"dueThisWeek":1,"openBySize":{"S":0,"M":1,"L":0,"unsized":1},"overloaded":false}',
+      );
+      yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake'`;
+      assert.notInclude((yield* readPeople(turnOf)).quoted, '"load"');
+      // Handed back from the app, it goes to the agent that gave it, woken where the owner reads.
+      assert.deepStrictEqual(
+        yield* OwnerWork.handBack([mate], { orgId, key: "W-2", note: "I'm on the release" }),
+        { key: "W-2", to: { _tag: "agent", agentId: lead } },
+      );
+      const back = (yield* assignedEvents)
+        .map((row) => decodeEvent(JSON.parse(row.json)))
+        .find((event) => event._tag === "record.changed" && event.reason === "handed_back");
+      assert.deepInclude(back, {
+        agentId: lead,
+        key: "W-2",
+        note: "I'm on the release",
+        provenance: { _tag: "human", personId: ownerId, memberId: "lead-chat-owner" },
+      });
+      assert.deepInclude(yield* OwnerWork.get([owner], { orgId, key: "W-2" }), {
+        owner: { _tag: "agent", agentId: lead },
+        assignedBy: { _tag: "person", personId: ownerId },
+        state: "open",
+      });
+      // Only whoever holds it hands it back.
+      assert.include(
+        yield* Effect.flip(
+          OwnerWork.handBack([mate], { orgId, key: "W-1" }).pipe(
+            Effect.andThen(OwnerWork.handBack([mate], { orgId, key: "W-1" })),
+          ),
+        ),
+        { reason: "not_found" },
+      );
+    }).pipe(Effect.provide(Layer.provideMerge(ChatRepository.layer, layer))),
 );

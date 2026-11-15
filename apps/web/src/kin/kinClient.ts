@@ -924,6 +924,12 @@ export const kinClient = {
     label: "kin:work:update",
     tag: "kin.work.update",
   }),
+  /** The holder gives a task back to whoever gave it. */
+  workHandBack: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:handBack",
+    tag: "kin.work.handBack",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+  }),
   /** The owner shares tasks with the team, or takes them back. */
   workShare: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:work:share",

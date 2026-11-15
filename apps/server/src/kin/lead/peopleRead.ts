@@ -101,9 +101,7 @@ export const readPeople = Effect.fn("KinPeopleRead.read")(function* (turn: {
   const sql = yield* SqlClient.SqlClient;
   const now = yield* Clock.currentTimeMillis;
   const load =
-    (yield* effectiveAudience(turn)) === "owner_only"
-      ? yield* loads(orgId, now)
-      : undefined;
+    (yield* effectiveAudience(turn)) === "owner_only" ? yield* loads(orgId, now) : undefined;
   const rows = yield* sql<{
     id: string;
     name: string;

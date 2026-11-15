@@ -1334,7 +1334,11 @@ const reasonOf = (row: RecordRow) => {
 /** Who to tell that a task came to them or left them, and why. */
 const movedNotices = (before: RecordRow | undefined, after: RecordRow): Array<AssignNotice> => {
   if (after.registerId !== "work") return [];
-  if (before !== undefined && before.ownerKind === after.ownerKind && before.ownerId === after.ownerId)
+  if (
+    before !== undefined &&
+    before.ownerKind === after.ownerKind &&
+    before.ownerId === after.ownerId
+  )
     return [];
   const why = reasonOf(after);
   return [
@@ -1418,8 +1422,19 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, input: typeof Update
     ...money,
     ...spine.at,
   };
-  // As in create; a state, owner or confirmation alone carries nothing the turn read.
-  const carries = Object.keys(written).some((field) => !UNCARRYING.has(field));
+  // As in create; a state, owner or confirmation alone carries nothing the turn read. Nor does
+  // an assignment's who, why, size and when: what the one it goes to is told.
+  const assigning = input.owner !== undefined;
+  const carries = Object.entries(written).some(
+    ([field, value]) =>
+      !UNCARRYING.has(field) &&
+      !(assigning && (field === "dueAt" || field === "dueAllDay")) &&
+      !(
+        assigning &&
+        field === "fields" &&
+        Object.keys(value as object).every((key) => key === "reason" || key === "size")
+      ),
+  );
   const full: Patch =
     carries && (yield* turnSensitive(lead.orgId, lead.wakeupId))
       ? { ...written, sensitive: true }
@@ -1438,7 +1453,13 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, input: typeof Update
         ];
   const lists = yield* allLists(lead.orgId);
   return {
-    result: { key: after.key, rev: after.rev, state: after.state, changed, ...marksOf(lists, after) },
+    result: {
+      key: after.key,
+      rev: after.rev,
+      state: after.state,
+      changed,
+      ...marksOf(lists, after),
+    },
     notices: movedNotices(before, after),
   };
 });

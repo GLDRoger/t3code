@@ -1376,7 +1376,9 @@ const make = Effect.gen(function* () {
             });
           set(
             "assigned_by_agent_id",
-            writer.actor._tag === "agent" && patch.handedBack === undefined
+            writer.actor._tag === "agent" &&
+              patch.handedBack === undefined &&
+              !samePrincipal(writer.actor, patch.owner)
               ? writer.actor.agentId
               : null,
           );
@@ -1630,6 +1632,11 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const row = yield* byKey(orgId, key).pipe(provideSql);
         if (row === undefined) return yield* notFound(key);
+        // What a teammate can't see is no task at all, before anything says who holds it.
+        if (writer.teammate === true && writer.actor._tag === "person")
+          yield* teamGuard(orgId, writer.actor.personId, { row, changes: false, input: {} }).pipe(
+            provideSql,
+          );
         const held = toRecord(row, yield* Clock.currentTimeMillis);
         if (row.registerId !== "work" || !samePrincipal(held.owner, holder))
           return yield* new KinChatError({
@@ -1656,7 +1663,13 @@ const make = Effect.gen(function* () {
             reason: "invalid_state",
             message: `Nobody else gave ${row.key} to its holder, so there is no one to hand it back to. Drop it or give it to someone.`,
           });
-        return yield* update(orgId, writer, key, { owner: to, state: "open", handedBack: { note } });
+        return yield* update(orgId, writer, key, {
+          owner: to,
+          state: "open",
+          // Why it was given no longer holds; the holder's words are in its history.
+          fields: { reason: null },
+          handedBack: { note },
+        });
       }),
     );
   });
