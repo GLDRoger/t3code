@@ -57,6 +57,7 @@ export const KIN_LISTS = {
   showArchived: "Show lists you put away",
   all: "All",
   late: "Overdue",
+  expired: "Expired",
   noCategory: "No category",
   noClient: "No client",
   anyCategory: "Any category",
@@ -909,7 +910,7 @@ export function kinListRow(
       amount,
       owed,
       ...parts.slice(1),
-      record.late ? KIN_LISTS.late : null,
+      record.late ? (def?.list === "quotes" ? KIN_LISTS.expired : KIN_LISTS.late) : null,
     ]
       .filter((part) => part !== null)
       .join(". "),
