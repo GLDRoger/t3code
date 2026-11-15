@@ -51,6 +51,7 @@ const MEMBER = [
   "kin.messages.send",
   "kin.org.get",
   "kin.orgs.list",
+  "kin.people.list",
   "kin.people.profiles",
   "kin.people.setGithubLogin",
   "kin.people.updateProfile",

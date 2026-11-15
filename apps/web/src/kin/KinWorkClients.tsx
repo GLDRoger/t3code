@@ -676,10 +676,12 @@ function ClientPage(
                   </li>
                 ))}
               </ul>
-              <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <KinWorkPrivateMark />
-                {KIN_CLIENTS.detailsPrivate}
-              </p>
+              {canChange ? (
+                <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <KinWorkPrivateMark />
+                  {KIN_CLIENTS.detailsPrivate}
+                </p>
+              ) : null}
             </>
           )}
         </KinWorkSection>

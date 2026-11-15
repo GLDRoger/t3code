@@ -274,6 +274,7 @@ const gateFor = (cards: Array<Card>) =>
         if (bind !== undefined) yield* bind(widget).pipe(Effect.orDie);
         return widget;
       }),
+    closeReplaced: () => Effect.void,
   });
 
 const layerFor = (

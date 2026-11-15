@@ -474,8 +474,16 @@ it.effect(
       });
       assert.deepInclude(switched, { clients: true, docs: false, money: true, leads: [] });
       assert.deepEqual(yield* placesOf(raviSession), { clients: true, docs: false, money: true });
+      // H12: a member names the team, as their profiles do; who may do what stays the owner's.
+      const named = yield* service.list(raviSession, orgId);
+      assert.includeMembers(
+        named.people.map((one) => one.displayName),
+        ["Ravi", "Meera"],
+      );
+      assert.isUndefined(named.places);
+      assert.isTrue(named.people.every((one) => one.access === undefined));
       assert.deepInclude(
-        (yield* service.list(ownerSession, orgId)).places.find(
+        (yield* service.list(ownerSession, orgId)).places?.find(
           (one) => one.personId === ravi.person.personId,
         ),
         { money: true },

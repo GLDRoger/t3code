@@ -155,6 +155,22 @@ const addressOf = (who: string | null) => {
 
 const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+const AUTOMATED_SENDER =
+  /^(?:no-?reply|do-?not-?reply|donotreply|notifications?|notify|mailer-daemon|postmaster|bounces?|news(?:letter)?|marketing|digest|alerts?|updates?)(?:[+._-]|@)/i;
+const BULK_DOMAIN = /@(?:em|email|mail|mailer|bounce|news|newsletter|marketing|send|e)\d*\./i;
+/**
+ * A person writing to the company, as far as the sender line can tell: not an automated or bulk
+ * sender, not the company's own domain, and sent to one of its connected addresses directly.
+ */
+const personToUs = (line: KinPulseOutsideLine, from: string | undefined) => {
+  if (from === undefined || line.to === undefined) return false;
+  if (AUTOMATED_SENDER.test(from) || BULK_DOMAIN.test(from)) return false;
+  const domainOf = (address: string) => address.slice(address.lastIndexOf("@") + 1);
+  return domainOf(from) !== domainOf(line.to.toLowerCase());
+};
+/** First mail from someone Kin doesn't know wakes the Chief of staff, a few a poll at most. */
+const NEW_SENDERS_PER_POLL = 3;
+
 export interface Matched {
   readonly line: KinPulseOutsideLine;
   /** Money threads go to Finance; client mail and meetings to the Chief of staff. */
@@ -165,7 +181,8 @@ export interface Matched {
 
 /**
  * The playbook watches, as code over stored rows: mail from a client contact's address, mail
- * naming a sent invoice or quote, and a calendar change to a meeting or a client Kin knows.
+ * naming a sent invoice or quote, a person Kin doesn't know writing to the company, and a
+ * calendar change to a meeting or a client Kin knows.
  */
 export const matchLines = Effect.fn("KinPulseOutside.match")(function* (
   orgId: KinOrgId,
@@ -199,6 +216,7 @@ export const matchLines = Effect.fn("KinPulseOutside.match")(function* (
     ORDER BY key`;
   const byEmail = new Map(contacts.map((row) => [row.email, row]));
   const matched: Array<Matched> = [];
+  let newSenders = 0;
   for (const line of lines) {
     const subject = (line.subject ?? "").toLowerCase();
     if (line.source === "mail") {
@@ -225,6 +243,13 @@ export const matchLines = Effect.fn("KinPulseOutside.match")(function* (
           domain: "chief",
           ...client,
         });
+      else if (newSenders < NEW_SENDERS_PER_POLL && personToUs(line, addressOf(line.who))) {
+        newSenders += 1;
+        matched.push({
+          line: { ...line, matched: "a sender Kin doesn't know yet: maybe a new enquiry" },
+          domain: "chief",
+        });
+      }
     } else if (line.source === "calendar") {
       const meeting =
         meetings.find(

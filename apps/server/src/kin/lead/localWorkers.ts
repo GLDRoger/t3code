@@ -647,7 +647,7 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
             return yield* denied(LOCAL_DIRECT_ONLY);
           return { startedAt: stored.startedAt, fresh: false };
         }
-        const sensitive = yield* workerJobSensitive(ctx.orgId, ctx.wakeupId, job).pipe(
+        const sensitive = yield* workerJobSensitive(ctx.orgId, job).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.provideService(KinRecords, records),
         );

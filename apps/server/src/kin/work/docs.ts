@@ -35,7 +35,7 @@ import { guardPlaybook } from "./playbooks.ts";
 import { actorOf, iso, principal, type RecordRow, toRecord, unavailable } from "./recordRows.ts";
 import { indexRecord } from "./searchIndex.ts";
 import { teamVisible } from "./teamView.ts";
-import { SensitiveRefusal, turnSensitive } from "./workerAttempts.ts";
+import { SensitiveRefusal } from "./workerAttempts.ts";
 
 /**
  * Docs over the records engine: a doc is a `docs` entry, so owner, client, project, label, links
@@ -319,16 +319,12 @@ const settle = Effect.fn("KinDocs.settle")(function* (orgId: KinOrgId, recordId:
 });
 
 /**
- * An agent writing in a turn that was shown something sensitive: the text may carry it, so the doc
- * is labelled whatever the agent said. Only a person lowers the label again.
+ * Kinds that carry prices or terms: private from the start. Any other doc is private only by its
+ * own label, never by what the turn that wrote it had read; agents keep prices out of the rest.
  */
-const carriesSensitive = Effect.fn("KinDocs.carriesSensitive")(function* (
-  orgId: KinOrgId,
-  writer: Writer,
-) {
-  if (writer.actor._tag !== "agent" || writer.wakeupId === undefined) return false;
-  return yield* turnSensitive(orgId, writer.wakeupId);
-});
+const MONEY_DOC_KINDS: ReadonlyArray<KinDocKind> = ["quote", "proposal"];
+const moneyKind = (kind: KinDocKind | undefined) =>
+  kind !== undefined && MONEY_DOC_KINDS.includes(kind);
 
 export const create = Effect.fn("KinDocs.create")(function* (
   orgId: KinOrgId,
@@ -358,7 +354,7 @@ export const create = Effect.fn("KinDocs.create")(function* (
   return yield* transaction(
     Effect.gen(function* () {
       const records = yield* KinRecords;
-      const sensitive = input.sensitive === true || (yield* carriesSensitive(orgId, writer));
+      const sensitive = input.sensitive ?? moneyKind(input.kind);
       const { row, created } = yield* records.create(orgId, writer, {
         list: "docs",
         originKey: input.originKey,
@@ -413,7 +409,6 @@ const revise = Effect.fn("KinDocs.revise")(function* (
   const records = yield* KinRecords;
   const now = yield* Clock.currentTimeMillis;
   const version = current.version + 1;
-  const labelled = row.sensitive === 0 && (yield* carriesSensitive(orgId, writer));
   yield* insertVersion(orgId, row.recordId, writer, provenance, {
     ...next,
     version,
@@ -424,10 +419,7 @@ const revise = Effect.fn("KinDocs.revise")(function* (
     orgId,
     writer,
     row.key,
-    {
-      ...(next.title === row.title ? {} : { title: next.title }),
-      ...(labelled ? { sensitive: true } : {}),
-    },
+    next.title === row.title ? {} : { title: next.title },
     undefined,
     [{ field: "version", from: String(current.version), to: String(version) }],
   );
@@ -678,7 +670,11 @@ export const move = Effect.fn("KinDocs.move")(function* (
           ...(company === undefined ? {} : { fields: company ? COMPANY_HOME : { home: null } }),
           ...(patch.kind === undefined ? {} : { category: patch.kind }),
           ...(patch.owner === undefined ? {} : { owner: patch.owner }),
-          ...(patch.sensitive === undefined ? {} : { sensitive: patch.sensitive }),
+          ...(patch.sensitive === undefined
+            ? moneyKind(patch.kind)
+              ? { sensitive: true }
+              : {}
+            : { sensitive: patch.sensitive }),
           ...(patch.archived === undefined ? {} : { state: patch.archived ? "dropped" : "open" }),
         },
         expectedRev,

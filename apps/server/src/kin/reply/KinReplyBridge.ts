@@ -62,6 +62,7 @@ import {
   type SetupFailure,
 } from "./classify.ts";
 import { KinPresence, syncQueued } from "./KinPresence.ts";
+import { unkeptPromise } from "./promises.ts";
 
 /** One rescue turn asks for the reply the run owed; its text is posted like any other. */
 const RESCUE_PROMPT =
@@ -875,6 +876,24 @@ const make = Effect.gen(function* () {
     return rows.length > 0;
   });
 
+  // "I'll tell Ishaan" with nothing sent: the asker hears it didn't reach him, not a false promise.
+  const keptPromises = Effect.fn("KinReplyBridge.keptPromises")(
+    function* (wake: Wake) {
+      const name = yield* unkeptPromise({ ...wake, chatId: wake.lane.chatId }).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      if (name === undefined) return;
+      yield* chat.notice({
+        orgId: wake.orgId,
+        chatId: wake.lane.chatId,
+        audience: "chat",
+        messageId: KinMessageId.make(`kin-unsent:${wake.wakeupId}`),
+        body: `That did not reach ${name}; ask again or tell them directly.`,
+      });
+    },
+    Effect.catchCause((cause) => Effect.logWarning("Kin promise check failed", { cause })),
+  );
+
   const flushOverflow = Effect.fn("KinReplyBridge.flushOverflow")(function* (wake: Wake) {
     if (wake.overflow.length === 0) return;
     const room = Math.max(0, KIN_WAKEUP_CHAR_LIMIT - wake.chars);
@@ -965,6 +984,7 @@ const make = Effect.gen(function* () {
             yield* post(wake, note);
           }
           yield* flushOverflow(wake);
+          yield* keptPromises(wake);
           return yield* answered(wake);
         }),
       );

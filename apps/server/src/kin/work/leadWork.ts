@@ -87,7 +87,7 @@ import {
   viewSees,
   viewVisible,
 } from "./teamView.ts";
-import { type AssignNotice, tellPeople } from "./assignNotices.ts";
+import { type AssignNotice, movedNotices, tellPeople } from "./assignNotices.ts";
 import { bankStates, findBankList } from "./statements/bankList.ts";
 
 /** The lead tools' inputs, results and the one call each makes. Model-facing text lives in `mcp/tools.ts`. */
@@ -1320,7 +1320,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
   const list = row.registerId;
   const sensitive = new Set(marksOf(view.lists, row).sensitiveFields ?? []);
   const page = list === "clients" ? yield* partyPage(row, now, 0) : undefined;
-  const project = list === "projects" ? yield* projectDetail(row, now) : undefined;
+  const project = list === "projects" ? yield* projectDetail(row, now, team?.people) : undefined;
   const specChanged = list === "work" && (yield* taskSpecChanged(row));
   const goal =
     list === "goals"
@@ -1332,7 +1332,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
     ...(mailed.length === 0 ? {} : { mailed }),
     ...(goal === undefined ? {} : { progress: goalLine(goal) }),
     ...(specChanged ? { specChanged: true as const } : {}),
-    ...(project === undefined ? {} : { plan: yield* projectRead(row, now, name) }),
+    ...(project === undefined ? {} : { plan: yield* projectRead(row, now, name, team?.people) }),
     ...(page === undefined
       ? {}
       : {
@@ -1541,29 +1541,6 @@ const sameNamed = Effect.fn("KinWorkTools.sameNamed")(function* (
   return row;
 });
 
-const reasonOf = (row: RecordRow) => {
-  const reason = parseFields(row.fieldsJson).reason;
-  return typeof reason === "string" ? reason : null;
-};
-/** Who to tell that a task came to them or left them, and why. */
-const movedNotices = (before: RecordRow | undefined, after: RecordRow): Array<AssignNotice> => {
-  if (after.registerId !== "work") return [];
-  if (
-    before !== undefined &&
-    before.ownerKind === after.ownerKind &&
-    before.ownerId === after.ownerId
-  )
-    return [];
-  const why = reasonOf(after);
-  return [
-    ...(after.ownerKind === "person"
-      ? [{ personId: KinPersonId.make(after.ownerId), kind: "given" as const, row: after, why }]
-      : []),
-    ...(before?.ownerKind === "person"
-      ? [{ personId: KinPersonId.make(before.ownerId), kind: "taken" as const, row: after, why }]
-      : []),
-  ];
-};
 /** Sends this call's notices; the write already committed, so a failed message fails nothing. */
 const tell = Effect.fnUntraced(function* (lead: Lead, notices: ReadonlyArray<AssignNotice>) {
   const told = yield* tellPeople(lead, notices).pipe(

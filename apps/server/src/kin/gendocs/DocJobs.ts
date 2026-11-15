@@ -39,7 +39,6 @@ import * as Docs from "../work/docs.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import type { RecordRow } from "../work/recordRows.ts";
 import { listDef } from "../work/registers.ts";
-import { turnSensitive } from "../work/workerAttempts.ts";
 import { entrySensitive } from "./facts.ts";
 import { canonical } from "./make.ts";
 import { issuable, type Value } from "./recipe.ts";
@@ -244,16 +243,18 @@ export const planJob = Effect.fn("KinDocJobs.plan")(function* (
   } satisfies Plan;
 });
 
+/** A recipe for a document of money or terms: its job is private whatever it reads. */
+const MONEY_RECIPE = /quote|invoice|receipt|statement|contract|proposal/i;
+
 /**
- * A worker job's label as of now, inside the write that admits it: the plan's, anything the turn
- * has read, or the entry's own. A brief or a recipe the agent writes may carry what it read.
+ * A worker job's label as of now, inside the write that admits it: the plan's or the entry's own,
+ * never what the turn had read (as with docs, `MONEY_DOC_KINDS`).
  */
 export const workerJobSensitive = Effect.fn("KinDocJobs.sensitive")(function* (
   orgId: KinOrgId,
-  wakeupId: string,
   plan: Plan,
 ) {
-  if (plan.sensitive || (yield* turnSensitive(orgId, wakeupId))) return true;
+  if (plan.sensitive || MONEY_RECIPE.test(plan.recipeName ?? "")) return true;
   if (plan.entry === undefined) return false;
   const entry = yield* (yield* KinRecords).getById(orgId, plan.entry.recordId);
   return entry !== undefined && entrySensitive(entry, yield* listDef(orgId, entry.registerId));

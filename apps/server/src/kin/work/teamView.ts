@@ -61,6 +61,13 @@ const onProject = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.F
     WHERE mp.org_id = r.org_id AND mp.register_id = 'projects' AND mp.record_id = r.project_id
       AND m.value = 'person:' || ${personId})`;
 
+/** `r` is filed under a project this person leads, is a member of, or holds a task in. */
+const projectPerson = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
+  sql`(${onProject(sql, personId)} OR EXISTS (SELECT 1 FROM kin_records pw
+    WHERE pw.org_id = r.org_id AND pw.owner_kind = 'person' AND pw.owner_id = ${personId}
+      AND ((pw.register_id = 'work' AND pw.project_id = r.project_id)
+        OR (pw.register_id = 'projects' AND pw.record_id = r.project_id))))`;
+
 /** `r` is a meeting this person is one of the people at (`fields.attendees`). */
 const attends = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
   sql`EXISTS (SELECT 1 FROM json_each(r.fields_json, '$.attendees') a
@@ -69,7 +76,8 @@ const attends = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fra
 /**
  * What a person who isn't owner-level may see, on every screen, count, search and turn of theirs.
  * A task they hold or attend, always. Unlabelled, a task they made or gave, or one shared or on a
- * project they're on. Their led project's own entries and held tasks. Places they have switched on.
+ * project they're on; a doc of a project they lead, are on or hold work in. Their led project's
+ * own entries and held tasks. Places they have switched on: Docs shows company and shared docs.
  */
 export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
   sql`((r.register_id = 'work' AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
@@ -82,7 +90,10 @@ export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Sta
     AND ${inLedProject(sql, personId)})
   OR (NOT ${sensitiveNow(sql)} AND (
     (r.register_id IN ('clients', 'contacts') AND ${placeOn(sql, personId, "sees_clients")})
-    OR (r.register_id = 'docs' AND r.team_shared = 1 AND ${placeOn(sql, personId, "sees_docs")})))
+    OR (r.register_id = 'docs' AND r.project_id IS NOT NULL AND ${projectPerson(sql, personId)})
+    OR (r.register_id = 'docs' AND (r.team_shared = 1
+      OR json_extract(r.fields_json, '$.home') = 'company')
+      AND ${placeOn(sql, personId, "sees_docs")})))
   OR (r.register_id NOT IN ${sql.in(NOT_LISTS)} AND r.team_shared = 1 AND ${ownLabelOff(sql)}
     AND NOT ${inheritedSensitive(sql)} AND ${placeOn(sql, personId, "sees_money")}))`;
 
@@ -102,6 +113,10 @@ export const placesOf = Effect.fn("KinTeamView.placesOf")(function* (
     FROM kin_people WHERE org_id = ${orgId} AND person_id = ${personId}`;
   const leads = yield* ledProjects(orgId, personId);
   const lead = leads.length > 0;
+  // Someone on a project reads its docs without the Docs place, so they reach the screen too.
+  const [onOne] = yield* sql`SELECT 1 FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.register_id = 'docs' AND r.project_id IS NOT NULL
+      AND ${projectPerson(sql, personId)} LIMIT 1`;
   return {
     clients: row?.clients === 1,
     docs: row?.docs === 1,
@@ -110,7 +125,7 @@ export const placesOf = Effect.fn("KinTeamView.placesOf")(function* (
     /** Whether they have the place at all: switched on, or leading a project that has one. */
     reaches: {
       clients: row?.clients === 1 || lead,
-      docs: row?.docs === 1 || lead,
+      docs: row?.docs === 1 || lead || onOne !== undefined,
       money: row?.money === 1 || lead,
     },
   };
@@ -511,4 +526,45 @@ export const teamDetail = Effect.fn("KinTeamView.detail")(function* (
     seq,
   };
   return sheet;
+});
+
+const AMOUNT =
+  /[₹$€£]\s?\d|\b(?:rs\.?|inr|usd|eur|gbp)\s?\d|\d[\d,.]*\s?(?:lakhs?|lacs?|crores?|rupees|inr|usd|eur|gbp)\b/i;
+const MONEY_NUMBER = /\b[A-Z]{2,5}\/\d{2}-\d{2}\/\d+\b/;
+const ENTRY_KEY = /\b[A-Z]{1,4}-\d{1,6}\b/g;
+const fold = (text: string) => text.toLowerCase().replace(/\s+/g, " ");
+
+/**
+ * Why `text` can't go to this person, or undefined when it can: what an owner-level turn writes
+ * to someone else holds no amount, no invoice or quote number, no client's terms, and no key or
+ * title of an entry they don't see. Checked on the text, so the message stands on its own.
+ */
+export const unreadableBy = Effect.fn("KinTeamView.unreadableBy")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  text: string,
+) {
+  if (AMOUNT.test(text) || MONEY_NUMBER.test(text))
+    return "it names an amount or a money document. Keep amounts out of a message to a teammate";
+  const sql = yield* SqlClient.SqlClient;
+  const keys = [...new Set(text.match(ENTRY_KEY) ?? [])];
+  if (keys.length > 0) {
+    const rows = yield* sql<{ key: string }>`SELECT r.key FROM kin_records r
+      WHERE r.org_id = ${orgId} AND r.key IN ${sql.in(keys)} AND NOT ${personSees(sql, personId)}
+      ORDER BY r.key LIMIT 1`;
+    if (rows[0] !== undefined) return `${rows[0].key} is something they can't see`;
+  }
+  const folded = fold(text);
+  // Labelled entries they can't see, and every client's terms, by their words.
+  const hidden = yield* sql<{ words: string | null }>`SELECT r.title AS words FROM kin_records r
+      WHERE r.org_id = ${orgId} AND ${sensitiveNow(sql)} AND NOT ${personSees(sql, personId)}
+        AND length(r.title) >= 6
+    UNION ALL SELECT json_extract(r.fields_json, '$.terms') FROM kin_records r
+      WHERE r.org_id = ${orgId} AND r.register_id = 'clients'
+        AND length(json_extract(r.fields_json, '$.terms')) >= 10
+    LIMIT 2000`;
+  const named = hidden.find((row) => row.words !== null && folded.includes(fold(row.words)));
+  return named === undefined
+    ? undefined
+    : "it repeats a private entry or a client's terms they can't see";
 });

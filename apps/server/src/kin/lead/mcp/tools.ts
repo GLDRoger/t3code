@@ -123,6 +123,14 @@ export const KinLeadToolkit = Toolkit.make(
     parameters: Handoff.TakePrivateInput,
     success: Handoff.TakePrivateResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("kin_relay", {
+    ...handoff,
+    dependencies: [...handoff.dependencies, KinLevelGate],
+    description:
+      "Carry a message between a teammate and whoever decides for them, through you. In a teammate's chat: put their request (moving a date, handing a task on, a decision they need) in front of the owner, a co-owner or the project's lead; Kin posts it quoted as their words in that person's chat with you, waiting on them. In the owner's chat: send a teammate your message, such as the owner's answer or a question about their work, in their own chat with you; it can't hold amounts or anything they can't see. Whenever you say you'll tell, ask or pass something to someone, call this first; if you don't, Kin tells the asker it didn't reach them. For a late task in their hours, pulse_nudge.",
+    parameters: Handoff.RelayInput,
+    success: Handoff.RelayResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_ask", {
     ...chat,
     description:

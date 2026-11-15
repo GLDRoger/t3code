@@ -141,6 +141,8 @@ export const SHARED_TOOLS = {
   kin_hand_off: "allowed",
   // Posts only the person's own stored words in their own direct chat; nothing of this turn.
   kin_take_private: "allowed",
+  // The asker's request, quoted as theirs, to someone who decides for them (`KinHandoff.relay`).
+  kin_relay: "allowed",
   memory_search: "team_memory",
   memory_read: "team_memory",
   memory_write: "team_memory",
