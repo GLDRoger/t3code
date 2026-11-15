@@ -208,6 +208,7 @@ export const SHARED_TOOLS = {
   kin_connection_tools: "refused",
   kin_connection_call: "refused",
   kin_connection_offer: "refused",
+  kin_connection_note: "refused",
 } satisfies Record<string, SharedToolPolicy>;
 
 /** Whether `name` may run with these arguments in a turn someone besides the owner reads. */

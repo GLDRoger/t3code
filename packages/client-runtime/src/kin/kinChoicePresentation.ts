@@ -17,6 +17,7 @@ import { kinSentences } from "./kinScreenState.ts";
 export const KIN_CHOICE_EXPIRED_TEXT = "This question expired. Answer in the chat instead.";
 
 export interface KinChoiceCardView {
+  readonly orgId: KinWidget["orgId"];
   readonly widgetId: KinWidget["widgetId"];
   readonly revision: number;
   readonly question: string;
@@ -40,13 +41,35 @@ export interface KinChoiceCardView {
 export interface KinSendView {
   /** "Email from owner@company.com", "Event in Google Calendar". */
   readonly heading: string;
-  /** Labelled lines, in order: To, Cc, Subject or Event. */
+  /** Labelled lines, in order: From, Account, To, Cc, Subject; or Event, Calendar, Invites. */
   readonly lines: ReadonlyArray<{ readonly label: string; readonly value: string }>;
+  /** A reply's thread as it stands, so the owner sees it is the right one. */
+  readonly thread: {
+    readonly subject: string;
+    readonly replyingTo: string;
+    readonly date: string | null;
+    readonly lines: string;
+  } | null;
   readonly body: string;
+  /** The earlier message quoted under the body, as it goes. */
+  readonly quoted: string | null;
+  /** Other Froms the owner may pick before Confirm, with the one in use; empty when none. */
+  readonly fromChoices: ReadonlyArray<KinSendFromChoice>;
   readonly attachments: ReadonlyArray<{ readonly name: string; readonly detail: string }>;
   /** After the tap: "Sending…", "Sent", or why it wasn't sent. */
   readonly outcome: { readonly tone: "pending" | "ok" | "error"; readonly text: string } | null;
 }
+
+export interface KinSendFromChoice {
+  readonly id: string;
+  /** "Billing <billing@work.example>" */
+  readonly label: string;
+  readonly account: string;
+  readonly current: boolean;
+}
+
+const fromLabel = (address: string, name: string | null | undefined) =>
+  name === null || name === undefined || name.trim() === "" ? address : `${name} <${address}>`;
 
 const kb = (bytes: number) =>
   bytes < 1024 * 1024
@@ -54,30 +77,56 @@ const kb = (bytes: number) =>
     : `${(bytes / 1048576).toFixed(1)} MB`;
 
 function kinSendView(send: KinSendCard): KinSendView {
-  const account = send.from === null ? "" : ` from ${send.from}`;
+  // Cards from before accounts carry only the account, in `from`.
+  const account = send.account === undefined ? send.from : send.account;
+  const legacy = send.account === undefined ? (send.from === null ? "" : ` from ${send.from}`) : "";
   const heading =
     send.action === "event"
-      ? `Event in ${send.service}${account}`
+      ? `Event in ${send.service}${legacy}`
       : send.action === "call"
-        ? `${send.service}${account}`
-        : `${send.action === "reply" ? "Reply" : "Email"}${account}`;
+        ? `${send.service}${legacy}`
+        : `${send.action === "reply" ? "Reply in this thread" : "New email"}${legacy}`;
+  const fromLines =
+    send.account === undefined || send.from === null
+      ? []
+      : [
+          { label: "From", value: fromLabel(send.from, send.fromName) },
+          ...(account === null || account.toLowerCase() === send.from.toLowerCase()
+            ? []
+            : [{ label: "Account", value: account }]),
+        ];
   const lines =
     send.action === "event"
       ? [
           { label: "Event", value: send.subject },
+          ...(send.account === undefined || account === null
+            ? []
+            : [{ label: "Calendar", value: account }]),
           { label: "Invites", value: send.to.length === 0 ? "No one" : send.to.join(", ") },
         ]
       : send.action === "call"
         ? [{ label: "Tool", value: send.subject }]
         : [
+            ...fromLines,
             { label: "To", value: send.to.join(", ") },
             ...(send.cc.length === 0 ? [] : [{ label: "Cc", value: send.cc.join(", ") }]),
             { label: "Subject", value: send.subject },
           ];
+  const choices = send.fromChoices ?? [];
   return {
     heading,
     lines,
+    thread: send.thread ?? null,
     body: send.body,
+    quoted: send.quoted ?? null,
+    fromChoices: choices.map((choice) => ({
+      id: choice.id,
+      label: fromLabel(choice.address, choice.name),
+      account: choice.account,
+      current:
+        choice.address.toLowerCase() === (send.from ?? "").toLowerCase() &&
+        choice.account === account,
+    })),
     attachments: send.attachments.map((file) => ({
       name: file.name,
       detail: [file.label, kb(file.bytes)].filter((part) => part !== null).join(" · "),
@@ -113,6 +162,7 @@ export function kinChoiceCardView(widget: KinWidget): KinChoiceCardView | null {
       ? undefined
       : options.find((option) => option.id === card.answer?.optionId);
   return {
+    orgId: widget.orgId,
     widgetId: widget.widgetId,
     revision: widget.revision,
     question: line(card.question),

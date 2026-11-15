@@ -299,8 +299,34 @@ export const KIN_CHOICE_CARD_TTL_MS = 24 * 60 * 60 * 1000;
 export const KinSendCard = Schema.Struct({
   service: KinTrimmedText.check(Schema.isMaxLength(80)),
   action: Schema.Literals(["email", "reply", "event", "call"]),
-  /** The signed-in account it goes from, when known. */
+  /** The address it goes from; on cards from before accounts, the signed-in account. */
   from: Schema.NullOr(KinText.check(Schema.isMaxLength(320))),
+  /** The From name shown beside the address, such as "Ana Rao". */
+  fromName: Schema.optionalKey(Schema.NullOr(KinText.check(Schema.isMaxLength(200)))),
+  /** The connected account it goes from, or whose calendar an event is on. */
+  account: Schema.optionalKey(Schema.NullOr(KinText.check(Schema.isMaxLength(320)))),
+  /** What the owner may switch From to before Confirm; `id` is what the switch names. */
+  fromChoices: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        id: KinTrimmedText.check(Schema.isMaxLength(400)),
+        account: KinText.check(Schema.isMaxLength(320)),
+        address: KinText.check(Schema.isMaxLength(320)),
+        name: Schema.NullOr(KinText.check(Schema.isMaxLength(200))),
+      }),
+    ).check(Schema.isMaxLength(30)),
+  ),
+  /** A reply's thread as it stands: so the owner sees it is the right one. */
+  thread: Schema.optionalKey(
+    Schema.Struct({
+      subject: KinText.check(Schema.isMaxLength(400)),
+      replyingTo: KinText.check(Schema.isMaxLength(400)),
+      date: Schema.NullOr(KinText.check(Schema.isMaxLength(100))),
+      lines: KinText.check(Schema.isMaxLength(600)),
+    }),
+  ),
+  /** The earlier message quoted under the body, as Gmail quotes it; sent after the body. */
+  quoted: Schema.optionalKey(Schema.NullOr(KinText.check(Schema.isMaxLength(6_000)))),
   to: Schema.Array(KinText.check(Schema.isMaxLength(320))).check(Schema.isMaxLength(50)),
   cc: Schema.Array(KinText.check(Schema.isMaxLength(320))).check(Schema.isMaxLength(50)),
   /** The subject, or an event's title, or the tool for a plain call. */
