@@ -4,11 +4,14 @@ import { KinChatError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import { LeadMemory } from "../../lead/LeadMemory.ts";
+import * as Clients from "../leadClients.ts";
 import * as Money from "../leadMoney.ts";
 import * as Work from "../leadWork.ts";
 import { KinWorkToolkit } from "./tools.ts";
 
 const isKinChatError = Schema.is(KinChatError);
+const RELATIONSHIP_ITEMS = 5;
 const failure = (error: unknown) =>
   isKinChatError(error)
     ? error
@@ -24,6 +27,28 @@ export const handlers = McpToolAccess.toLayer(KinWorkToolkit, {
   record_get: McpToolAccess.reads(
     Effect.fn("KinWorkToolkit.get")(function* (input) {
       return yield* Work.get(yield* McpInvocationContext, input);
+    }, Effect.mapError(failure)),
+  ),
+  client_read: McpToolAccess.reads(
+    Effect.fn("KinWorkToolkit.clientRead")(function* (input) {
+      const scope = yield* McpInvocationContext;
+      const record = yield* Work.get(scope, input);
+      const contact = yield* Clients.contact(scope, input);
+      const memory = yield* LeadMemory;
+      const items = yield* memory.search(scope, {
+        kind: "relationship",
+        linksTo: `client:${record.key}`,
+        limit: RELATIONSHIP_ITEMS,
+      });
+      const relationship = yield* Effect.forEach(items, (item) =>
+        memory.read(scope, { id: item.id }),
+      );
+      return { record, ...contact, relationship };
+    }, Effect.mapError(failure)),
+  ),
+  touch_log: McpToolAccess.actsAsCaller(
+    Effect.fn("KinWorkToolkit.touchLog")(function* (input) {
+      return yield* Clients.logTouch(yield* McpInvocationContext, input);
     }, Effect.mapError(failure)),
   ),
   record_create: McpToolAccess.actsAsCaller(

@@ -144,6 +144,7 @@ const itemKinds = new Map<string, MemoryItemKind>([
   ["decisions", "decision"],
   ["people", "person"],
   ["claims", "claim"],
+  ["relationships", "relationship"],
 ]);
 
 const isPurgePath = (path: string) =>

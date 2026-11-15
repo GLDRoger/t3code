@@ -25,6 +25,9 @@ const KIN_PULSE_SENSES = [
   "budget_near",
   "worker_failed",
   "work_held",
+  "client_quiet",
+  "client_cold",
+  "client_waiting_on_us",
 ] as const;
 export const KinPulseSense = Schema.Literals(KIN_PULSE_SENSES);
 export type KinPulseSense = typeof KinPulseSense.Type;

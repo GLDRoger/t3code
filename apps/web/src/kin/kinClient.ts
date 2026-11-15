@@ -872,6 +872,15 @@ export const kinClient = {
     label: "kin:work:contact:update",
     tag: "kin.work.updateContact",
   }),
+  workTouchLog: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:touch:log",
+    tag: "kin.work.logTouch",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+  }),
+  workTouchRemove: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:touch:remove",
+    tag: "kin.work.removeTouch",
+  }),
   workProjectCreate: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:work:project:create",
     tag: "kin.work.createProject",
