@@ -3621,7 +3621,10 @@ it.effect("K088 lets a Dates list take an amount, keeps rendered figures, and re
           definition_json, created_at)
         VALUES ('org', ${id}, ${id}, ${prefix}, 0, '{"noun":"date","amount":false}', 1)`;
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 88`;
-    assert.deepStrictEqual(yield* runKinMigrations(), [[88, "MoneyRecords"]]);
+    assert.deepStrictEqual(yield* runKinMigrations(), [
+      [88, "MoneyRecords"],
+      [101, "ReceiptProposalsPasswordBudget"],
+    ]);
     yield* K088MoneyRecords;
     // What an issued document showed is never edited or removed.
     yield* sql`INSERT INTO kin_doc_jobs (org_id, worker_id, agent_id, wakeup_id, mode,
