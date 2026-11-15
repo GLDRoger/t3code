@@ -39,7 +39,7 @@ export const KIN_MONEY = {
   uncategorised: "No category",
   year: "This financial year",
   months: "The last 12 months",
-  upcoming: "Due in the next 30 days",
+  upcoming: "Coming-up dates",
   nothingUpcoming: "Nothing is due in the next 30 days.",
   allDates: "All dates",
   lists: "Lists",
@@ -63,7 +63,7 @@ const EXPENSES = "expenses";
 
 /** The lists Money already opens from its own figures, which Work's Lists leaves out. */
 export const kinInMoney = (def: Pick<KinListDefinition, "list">): boolean =>
-  def.list === INVOICES || def.list === EXPENSES;
+  def.list === INVOICES || def.list === EXPENSES || def.list === "quotes";
 
 /** A list to open, already narrowed to the entries behind a figure. */
 export interface KinListOpen {

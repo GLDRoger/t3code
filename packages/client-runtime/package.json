@@ -703,6 +703,10 @@
       "types": "./src/kin/kinMoney.ts",
       "default": "./src/kin/kinMoney.ts"
     },
+    "./kin/kinMoneyAnswers": {
+      "types": "./src/kin/kinMoneyAnswers.ts",
+      "default": "./src/kin/kinMoneyAnswers.ts"
+    },
     "./kin/kinDates": {
       "types": "./src/kin/kinDates.ts",
       "default": "./src/kin/kinDates.ts"

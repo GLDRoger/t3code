@@ -169,6 +169,7 @@ export const SHARED_TOOLS = {
   // Work facts on tasks every person behind the turn may see; money and system facts are the owner's.
   pulse_read: "view",
   pulse_handle: "refused",
+  pulse_nudge: "refused",
   // Giving out work is the owner's turn's; handing back is the asker's own task, in their view.
   record_assign: "refused",
   record_hand_back: "view",
