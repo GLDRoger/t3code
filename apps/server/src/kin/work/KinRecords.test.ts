@@ -1972,6 +1972,7 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
       parties.parties.map((party) => party.name),
       ["Invented Acme"],
     );
+    assert.notProperty(parties.parties[0]!, "lastContactAt");
     const page = yield* OwnerClients.party([mate], { orgId, key: client.key });
     assert.deepStrictEqual(
       page.contacts.map((one) => [one.name, one.email]),
