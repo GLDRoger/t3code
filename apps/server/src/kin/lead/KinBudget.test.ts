@@ -335,16 +335,8 @@ describe("KinBudget", () => {
         },
       ];
       yield* sql`INSERT INTO kin_orgs VALUES (${defaultOrg}, 'Default', '1970-01-01T00:00:00.000Z')`;
-      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('kin-default-owner', ${defaultOrg}, 'owner', 'Owner', '1970-01-01T00:00:00.000Z'), ('other-owner', ${defaultOrg}, 'other', 'Other', '1970-01-01T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access) VALUES ('kin-default-owner', ${defaultOrg}, 'owner', 'Owner', '1970-01-01T00:00:00.000Z', 'owner')`;
       const defaults = { orgId: defaultOrg, limits: input.limits };
-      assert.deepStrictEqual((yield* budget.set(bootstrap, defaults)).limits, stored);
-      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at) VALUES ('default-lead', ${defaultOrg}, 'Lead', 'lead', 'other-owner', '1970-01-01T00:00:00.000Z')`;
-      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES ('default-chat', ${defaultOrg}, 'team_group', 0, '1970-01-01T00:00:00.000Z')`;
-      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id) SELECT 'default-lead', ${defaultOrg}, name, level_since, models_json, worker_projects_json, 'default-chat' FROM kin_leads WHERE org_id = ${orgId}`;
-      assert.include(yield* budget.set(bootstrap, defaults).pipe(Effect.flip), {
-        reason: "not_allowed",
-      });
-      yield* sql`UPDATE kin_agents SET owner_person_id = 'kin-default-owner' WHERE org_id = ${defaultOrg}`;
       assert.deepStrictEqual((yield* budget.set(bootstrap, defaults)).limits, stored);
     }).pipe(Effect.provide(layer)),
   );

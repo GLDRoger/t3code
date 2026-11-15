@@ -28,10 +28,13 @@ export const CHAT_ANSWER_TAGS = [
  * A chat's people, for the owner tier: `others`, those in it now who are not owner-level, and
  * `formerOthers`, everyone who ever was. A chat someone else could once read stays below it.
  */
-const othersIn = (sql: SqlClient.SqlClient, current: boolean) =>
-  sql.literal(`(SELECT COUNT(*) FROM kin_chat_members m
+const othersIn = (sql: SqlClient.SqlClient, current: boolean, agentId: string) =>
+  sql`(SELECT COUNT(*) FROM kin_chat_members m
     WHERE m.org_id = c.org_id AND m.chat_id = c.chat_id AND m.principal_kind = 'person'
-      ${current ? "AND m.left_at IS NULL" : ""} AND NOT ${ownerLevelSql("m.org_id", "m.person_id")})`);
+      ${sql.literal(current ? "AND m.left_at IS NULL" : "")}
+      AND m.person_id IS NOT (SELECT a.owner_person_id FROM kin_agents a
+        WHERE a.org_id = c.org_id AND a.agent_id = ${agentId})
+      AND NOT ${sql.literal(ownerLevelSql("m.org_id", "m.person_id"))})`;
 
 /**
  * `owner_only` when only owner-level people can read the reply: no one else is or ever was in a
@@ -52,7 +55,7 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
         AND a.role = 'lead' AND a.retired_at IS NULL
       ORDER BY l.agent_id`;
     if (lead === undefined) return "shared" as const;
-    const level = yield* ownerLevelPeople(input.orgId);
+    const level = (yield* ownerLevelPeople(input.orgId)).add(lead.owner);
     const events = yield* sql<{
       tag: string;
       chatId: string | null;
@@ -114,7 +117,8 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
     }
     if (!answersChat) chats.add(lead.ownerChatId);
     const rows = yield* sql<{ others: number; formerOthers: number }>`
-      SELECT ${othersIn(sql, true)} AS others, ${othersIn(sql, false)} AS "formerOthers"
+      SELECT ${othersIn(sql, true, input.agentId)} AS others,
+        ${othersIn(sql, false, input.agentId)} AS "formerOthers"
       FROM kin_chats c WHERE c.org_id = ${input.orgId} AND c.chat_id IN ${sql.in([...chats])}
       ORDER BY c.chat_id`;
     return rows.length === chats.size &&
@@ -190,7 +194,7 @@ const peopleBehind = Effect.fn("KinAudience.peopleBehind")(function* (turn: Turn
     owner: KinPersonId.make(lead.owner),
     readers: new Set(members.map((row) => KinPersonId.make(row.personId))),
     askers,
-    level: yield* ownerLevelPeople(turn.orgId),
+    level: (yield* ownerLevelPeople(turn.orgId)).add(lead.owner),
   };
 });
 
@@ -333,7 +337,8 @@ export const ownerOnlyChat = Effect.fn("KinAudience.ownerOnlyChat")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ others: number; formerOthers: number }>`
-    SELECT ${othersIn(sql, true)} AS others, ${othersIn(sql, false)} AS "formerOthers"
+    SELECT ${othersIn(sql, true, turn.agentId)} AS others,
+      ${othersIn(sql, false, turn.agentId)} AS "formerOthers"
     FROM kin_chats c WHERE c.org_id = ${turn.orgId} AND c.chat_id = ${chatId}
     ORDER BY c.chat_id`;
   return rows.every((row) => row.others === 0 && row.formerOthers === 0);

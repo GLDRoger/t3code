@@ -555,6 +555,10 @@
       "types": "./src/kinPush.ts",
       "default": "./src/kinPush.ts"
     },
+    "./kin/kinAccess": {
+      "types": "./src/kin/kinAccess.ts",
+      "default": "./src/kin/kinAccess.ts"
+    },
     "./kin/kinAgentRetire": {
       "types": "./src/kin/kinAgentRetire.ts",
       "default": "./src/kin/kinAgentRetire.ts"

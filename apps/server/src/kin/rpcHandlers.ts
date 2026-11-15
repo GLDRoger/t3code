@@ -35,7 +35,7 @@ const ownerOnly = refusal("Only the owner can do that.");
 const unavailable = refusal("Kin is unavailable.");
 
 /** `KIN_RPC_ACCESS` for this session's person, from their stored kind, before any handler runs. */
-const admits = Effect.fn("KinRpc.admits")(function* (
+export const admits = Effect.fn("KinRpc.admits")(function* (
   session: AuthenticatedSession,
   services: Option.Option<Context.Context<Services>>,
   access: KinRpcAccess | undefined,

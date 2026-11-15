@@ -110,7 +110,7 @@ export function createKinRefreshTriggers<R, ER>(
 }
 
 /** The orgs the directory (`kin.orgs.list`) last named per environment; see `kinDirectoryTrigger`. */
-const kinDirectoryOrgsAtom = Atom.family((_environmentId: EnvironmentId) =>
+export const kinDirectoryOrgsAtom = Atom.family((_environmentId: EnvironmentId) =>
   Atom.make<ReadonlyArray<KinOrgId>>([]).pipe(Atom.keepAlive),
 );
 

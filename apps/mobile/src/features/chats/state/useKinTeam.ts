@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { kinAccessAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
 import {
   KIN_TEAM_NO_EDITS,
@@ -21,6 +22,7 @@ import type {
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 
+import { connectionAtomRuntime } from "../../../connection/runtime";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { kinClient } from "./kinClient";
 import { useKinHostAt } from "./useKinHost";
@@ -76,6 +78,7 @@ function actionsFor(target: KinTeamTarget): KinTeamActions {
     createInvite: (input) => send(kinClient.inviteCreate, { environmentId, input }),
     revokeInvite: (input) => send(kinClient.inviteCancel, { environmentId, input }),
     removeAccess: (input) => send(kinClient.personRemoveAccess, { environmentId, input }),
+    setAccess: (input) => send(kinClient.personSetAccess, { environmentId, input }),
     update: (change) => appAtomRegistry.set(edits, change(appAtomRegistry.get(edits))),
     refresh: () => refreshKinTeam(target),
   });
@@ -96,6 +99,7 @@ export function useKinTeam(target: KinTeamTarget) {
     host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
     orgId,
   );
+  const viewer = useAtomValue(kinAccessAtom(connectionAtomRuntime, environmentId));
   // What was last read stays up while it is read again.
   const heldPeople = Option.getOrNull(AsyncResult.value(people));
   const heldInvites = Option.getOrNull(AsyncResult.value(invites));
@@ -108,6 +112,8 @@ export function useKinTeam(target: KinTeamTarget) {
     list,
     failed: list === null && (AsyncResult.isFailure(people) || AsyncResult.isFailure(invites)),
     ownerPersonId: personId,
+    /** The viewer's own kind; a co-owner acts on members only. */
+    viewer: viewer ?? "member",
     edits,
     actions: actionsFor(target),
     refresh: () => void refreshKinTeam(target),

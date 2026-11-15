@@ -84,11 +84,11 @@ export const teamVisible = Effect.fn("KinTeamView.visible")(function* (
 
 export const TEAM_REFUSED = new KinChatError({
   reason: "not_allowed",
-  message: "Only the owner changes that.",
+  message: "Only the owner or a co-owner changes that.",
 });
 const noLongerTeam = new KinChatError({
   reason: "not_allowed",
-  message: "Only the owner can do that in Work.",
+  message: "Only the owner or a co-owner can do that in Work.",
 });
 
 /** What a teammate's write may never touch: labels, sharing, money, list detail, clients, projects. */

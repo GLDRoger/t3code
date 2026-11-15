@@ -41,6 +41,7 @@ import { sectionsOf } from "../work/docBody.ts";
 import { sensitiveNow } from "../work/recordRows.ts";
 import { messageForViewer } from "./messageView.ts";
 import { chatShared, readableBy, recordJoin } from "./sharing.ts";
+import { accessSql } from "../people/KinAccess.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlSchema from "effect/sql/SqlSchema";
 import {
@@ -147,7 +148,7 @@ const defaultOwnerId = Schema.decodeSync(KinPersonId)("kin-default-owner");
 const OrgRow = KinOrg;
 const orgColumns = `org_id AS "orgId", name AS "name", created_at AS "createdAt"`;
 const PersonRow = KinPerson;
-const personColumns = `person_id AS "personId", org_id AS "orgId", handle AS "handle", display_name AS "displayName", github_login AS "githubLogin", access`;
+const personColumns = `person_id AS "personId", org_id AS "orgId", handle AS "handle", display_name AS "displayName", github_login AS "githubLogin", ${accessSql("kin_people")} AS access`;
 const AgentIdentityRow = Schema.Struct({
   ...KinAgent.fields,
   retiredAt: Schema.NullOr(IsoDateTime),

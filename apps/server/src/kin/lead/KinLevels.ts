@@ -46,8 +46,8 @@ const OWNER_PLACED_LEVEL: KinLevel = "L2";
 /**
  * Whether the lead's owner placed it in `chatId`, from stored rows only: its owner chat (a direct
  * chat whose key binds exactly that person and that lead), a co-owner's own direct chat with it,
- * or a group the lead is in whose owner is owner-level. Only a chat's owner adds members, so the owner put the lead there. A chat
- * someone else owns keeps the lead's own level, the conservative default.
+ * or a group the lead is in whose owner is the lead's owner or owner-level. Only a chat's owner
+ * adds members, so they put the lead there. A chat someone else owns keeps the lead's own level.
  */
 const ownerPlacedSql = (sql: SqlClient.SqlClient, chatId: KinChatId | null) => sql`(EXISTS (
     SELECT 1 FROM kin_chats d WHERE d.org_id = l.org_id AND d.chat_id = l.owner_chat_id
@@ -61,7 +61,8 @@ const ownerPlacedSql = (sql: SqlClient.SqlClient, chatId: KinChatId | null) => s
     SELECT 1 FROM kin_chats g
     JOIN kin_chat_members o ON o.org_id = g.org_id AND o.chat_id = g.chat_id
       AND o.principal_kind = 'person' AND o.role = 'owner' AND o.left_at IS NULL
-      AND ${sql.literal(ownerLevelSql("o.org_id", "o.person_id"))}
+      AND (o.person_id = a.owner_person_id
+        OR ${sql.literal(ownerLevelSql("o.org_id", "o.person_id"))})
     JOIN kin_chat_members lm ON lm.org_id = g.org_id AND lm.chat_id = g.chat_id
       AND lm.principal_kind = 'agent' AND lm.agent_id = l.agent_id AND lm.left_at IS NULL
     WHERE g.org_id = l.org_id AND g.chat_id = ${chatId} AND g.kind <> 'direct'))`;
@@ -183,6 +184,9 @@ export const askers = Effect.fn("KinLevels.askers")(function* (input: {
     WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId}
       AND e.wakeup_id = ${input.wakeupId}
       AND e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
+      AND COALESCE(m.author_person_id,
+        CASE WHEN e.tag = 'chat.reaction' THEN json_extract(e.json, '$.provenance.personId') END)
+        <> a.owner_person_id
       AND NOT EXISTS (SELECT 1 FROM kin_people q WHERE q.org_id = e.org_id
         AND q.person_id = COALESCE(m.author_person_id,
           CASE WHEN e.tag = 'chat.reaction' THEN json_extract(e.json, '$.provenance.personId') END)

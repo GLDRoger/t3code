@@ -47,7 +47,7 @@ import { abortChatTurns } from "../lead/Audience.ts";
 import { onPersonRemoved } from "../lead/ChatSharing.ts";
 import { KinStop } from "../lead/KinStop.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
-import { accessOf, ownerLevel } from "./KinAccess.ts";
+import { accessOf, accessSql, ownerLevel } from "./KinAccess.ts";
 
 const isKinError = Schema.is(KinChatError);
 const isSqlError = Schema.is(PersistenceSqlError);
@@ -160,7 +160,7 @@ export const make = Effect.gen(function* () {
   const person = Effect.fn("KinPeople.person")(function* (orgId: KinOrgId, personId: KinPersonId) {
     const rows =
       yield* sql`SELECT person_id AS "personId", org_id AS "orgId", handle, display_name AS "displayName",
-      github_login AS "githubLogin", access, created_at AS "createdAt" FROM kin_people
+      github_login AS "githubLogin", ${sql.literal(accessSql("kin_people"))} AS access, created_at AS "createdAt" FROM kin_people
       WHERE org_id = ${orgId} AND person_id = ${personId} ORDER BY person_id`.pipe(
         Effect.mapError(toPersistenceSqlError("KinPeople.person")),
       );
@@ -260,8 +260,8 @@ export const make = Effect.gen(function* () {
           const personId = KinPersonId.make(row.person_id ?? NodeCrypto.randomUUID());
           if (!row.person_id) {
             const handle = yield* uniqueHandle(identity.owner.orgId, row.handle, now);
-            yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
-          VALUES (${personId}, ${orgId}, ${handle}, ${row.display_name}, ${DateTime.formatIso(DateTime.makeUnsafe(now))})`.pipe(
+            yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+          VALUES (${personId}, ${orgId}, ${handle}, ${row.display_name}, ${DateTime.formatIso(DateTime.makeUnsafe(now))}, 'member')`.pipe(
               Effect.mapError(toPersistenceSqlError("KinPeople.insertPerson")),
             );
           }
@@ -297,7 +297,7 @@ export const make = Effect.gen(function* () {
     yield* owner(session, orgId);
     const rows =
       yield* sql`SELECT person_id AS "personId", org_id AS "orgId", handle, display_name AS "displayName",
-      github_login AS "githubLogin", access, created_at AS "createdAt" FROM kin_people WHERE org_id = ${orgId} ORDER BY handle, person_id`.pipe(
+      github_login AS "githubLogin", ${sql.literal(accessSql("kin_people"))} AS access, created_at AS "createdAt" FROM kin_people WHERE org_id = ${orgId} ORDER BY handle, person_id`.pipe(
         Effect.mapError(toPersistenceSqlError("KinPeople.list")),
       );
     const now = DateTime.formatIso(yield* DateTime.now);
@@ -552,7 +552,7 @@ export const make = Effect.gen(function* () {
           const before = (yield* person(input.orgId, input.personId)).access;
           if (before === input.access) return yield* person(input.orgId, input.personId);
           yield* sql`UPDATE kin_people SET access = ${input.access}
-            WHERE org_id = ${input.orgId} AND person_id = ${input.personId} AND access <> 'owner'`.pipe(
+            WHERE org_id = ${input.orgId} AND person_id = ${input.personId} AND access IS NOT 'owner'`.pipe(
             Effect.mapError(toPersistenceSqlError("KinPeople.setAccess")),
           );
           // A co-owner talks to every agent in their own chat with it, never in the owner's.

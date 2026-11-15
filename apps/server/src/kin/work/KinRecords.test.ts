@@ -1437,7 +1437,7 @@ it.effect(
           yield* Effect.flip(
             OwnerWork.update([mate], { orgId, key: filed.key, rev: reopened.rev, ...owned }),
           ),
-          { reason: "not_allowed", message: "Only the owner changes that." },
+          { reason: "not_allowed", message: "Only the owner or a co-owner changes that." },
         );
       // A task the owner shared with them is theirs to read, not to change.
       yield* OwnerWork.share([owner], { orgId, keys: [owners.key], shared: true });

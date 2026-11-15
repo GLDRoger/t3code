@@ -27,7 +27,7 @@ import { useSettingsPageBack } from "../settings/useSettingsPageBack";
 import { useKinTab } from "./components/KinTab";
 import { useKinIsHome } from "./state/kinHome";
 import { openKinNotificationSettings } from "./notifications/installKinNotifications";
-import { useChatOnlyEnvironments } from "./state/kinChatOnly";
+import { useChatOnlyEnvironments, useKinOwnerLevel } from "./state/kinChatOnly";
 import { kinClient } from "./state/kinClient";
 import { useKinInbox } from "./state/useKinInbox";
 import { useKinReconnect } from "./state/useKinReconnect";
@@ -66,7 +66,7 @@ const CONNECTION_LABEL: Record<EnvironmentPresentation["connection"]["phase"], s
 /**
  * Settings where Kin is the whole app: only what this product needs. The owner gets the
  * connection to their Kin, the company (team, agents, memory, schedules), approvals and the app
- * itself; a teammate, whose session reaches none of the rest, gets the app and the way to leave.
+ * itself, and so does a co-owner; a member gets the app and the way to leave.
  * Drawn as a tab of the Kin home, or as a pushed page where there is no dock.
  */
 export function KinSettings(props: {
@@ -96,12 +96,13 @@ export function KinSettings(props: {
       !teammateIds.includes(held.environmentId) &&
       (!inCodingApp || (host._tag === "host" && held.environmentId === host.environmentId)),
   );
-  // The pages below belong to whoever runs this Kin; a teammate's session would be refused.
+  const ownerLevel = useKinOwnerLevel(host._tag === "host" ? host.environmentId : null, session);
+  // The pages below belong to whoever runs this Kin: the owner or a co-owner.
   const company =
-    host._tag === "host" && orgId !== null && !teammateIds.includes(host.environmentId)
+    host._tag === "host" && orgId !== null && ownerLevel
       ? { environmentId: host.environmentId, orgId }
       : null;
-  const pages = kinHomeTabs(session);
+  const pages = kinHomeTabs(session, ownerLevel);
   const waiting = state._tag === "ready" ? selectKinInboxView(state.inbox.value).waiting.length : 0;
 
   const leave = (environmentId: EnvironmentId) =>

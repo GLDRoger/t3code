@@ -1,14 +1,23 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
+  KIN_ACCESS_CHOICES,
+  kinAccessChangeCopy,
   kinRemoveAccessCopy,
   kinTeamView,
   kinTeammateActions,
+  kinTeammateKindEditable,
   kinTeammateLeadLine,
   type KinMadeInvite,
   type KinTeammate,
 } from "@t3tools/client-runtime/kin/kinTeam";
-import { EnvironmentId, KinOrgId, type KinLeadProfile, type KinPersonId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  KinOrgId,
+  type KinLeadProfile,
+  type KinPersonAccess,
+  type KinPersonId,
+} from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
@@ -22,6 +31,7 @@ import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ErrorBanner } from "../../components/ui/ErrorBanner";
 import { ListActionRow } from "../../components/ui/ListActionRow";
+import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListSection } from "../../components/ui/ListSection";
 import { ScreenContent } from "../../components/ui/ScreenContent";
@@ -125,6 +135,7 @@ function KinTeammateBody(props: KinTeamTarget & { readonly rowKey: string }) {
         target={props}
         teammate={teammate}
         actions={team.actions}
+        viewer={team.viewer}
         problem={team.edits.problem}
         onMade={setMade}
         onClose={close}
@@ -137,12 +148,13 @@ function KinTeammateDetails(props: {
   readonly target: KinTeamTarget;
   readonly teammate: KinTeammate;
   readonly actions: ReturnType<typeof useKinTeam>["actions"];
+  readonly viewer: KinPersonAccess;
   readonly problem: string | null;
   readonly onMade: (invite: KinMadeInvite) => void;
   readonly onClose: () => void;
 }) {
   const { teammate, actions } = props;
-  const offered = kinTeammateActions(teammate);
+  const offered = kinTeammateActions(teammate, props.viewer);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
 
@@ -173,6 +185,21 @@ function KinTeammateDetails(props: {
     });
   };
 
+  const askKind = (access: (typeof KIN_ACCESS_CHOICES)[number]["access"]) => {
+    const { personId } = teammate;
+    if (personId === null || access === teammate.access) return;
+    const copy = kinAccessChangeCopy(teammate.name, access);
+    Dialog.confirm({
+      title: copy.title,
+      message: copy.detail,
+      confirmText: copy.confirm,
+      onConfirm: () => {
+        setBusy(true);
+        void actions.setAccess(personId, access).finally(() => setBusy(false));
+      },
+    });
+  };
+
   const shown = problem ?? props.problem;
   return (
     <>
@@ -188,6 +215,21 @@ function KinTeammateDetails(props: {
         </View>
       </View>
       {shown === null ? null : <ErrorBanner message={shown} />}
+      {kinTeammateKindEditable(teammate, props.viewer) ? (
+        <ListSection title="What they can do">
+          {KIN_ACCESS_CHOICES.map((choice, index) => (
+            <ListChoiceRow
+              key={choice.access}
+              label={choice.label}
+              description={choice.detail}
+              selected={teammate.access === choice.access}
+              separated={index > 0}
+              disabled={busy}
+              onPress={() => askKind(choice.access)}
+            />
+          ))}
+        </ListSection>
+      ) : null}
       {teammate.personId === null ? (
         <ListSection
           title="Agents"

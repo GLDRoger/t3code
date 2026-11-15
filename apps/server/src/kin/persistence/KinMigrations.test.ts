@@ -3728,7 +3728,7 @@ it.effect("K126 makes the reserved owner the owner and everyone else a member, o
     yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
       VALUES ('kin-default-owner', 'org', 'asha', 'Asha', '2026-11-12T00:00:00.000Z'),
         ('ravi', 'org', 'ravi', 'Ravi', '2026-11-12T00:00:00.000Z')`;
-    yield* sql`UPDATE kin_people SET access = 'member'`;
+    yield* sql`UPDATE kin_people SET access = NULL`;
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 126`;
     assert.deepStrictEqual(yield* runKinMigrations(), [[126, "PersonAccess"]]);
     assert.deepStrictEqual(
