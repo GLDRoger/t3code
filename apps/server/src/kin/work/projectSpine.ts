@@ -1,0 +1,253 @@
+import {
+  KinRecordId,
+  type KinMilestone,
+  type KinMoney,
+  type KinOrgId,
+  type KinProjectMoney,
+  type KinProjectPerson,
+  type KinRecord,
+  type KinRecordRef,
+  type KinSpecChange,
+  type KinWorkPrincipal,
+} from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/sql/SqlClient";
+
+import { sectionsOf } from "./docBody.ts";
+import { latestOf } from "./docs.ts";
+import { KinRecords } from "./KinRecords.ts";
+import { fieldList, fieldText, parseFields } from "./lists.ts";
+import { iso, principal, type RecordRow, selectRecords, toRecord } from "./recordRows.ts";
+import { listDef } from "./registers.ts";
+
+/**
+ * The project spine on read: milestones and their progress, the people on it, its meetings, the
+ * tasks whose spec section changed, and its money. Computed from entries every time; nothing stored.
+ */
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const AT_RISK_WITHIN_MS = 7 * DAY_MS;
+const OPEN = ["open", "doing", "waiting"] as const;
+const titled = (title: string) => title as KinRecordRef["title"];
+const ref = (recordId: string, key: string, title: string): KinRecordRef => ({
+  recordId: KinRecordId.make(recordId),
+  key,
+  title: titled(title),
+});
+
+/** `person:<id>` or `agent:<id>`, as `members` and `attendees` store them. */
+export const principalOfText = (text: string): KinWorkPrincipal | null => {
+  const at = text.indexOf(":");
+  return at < 0 ? null : principal(text.slice(0, at), text.slice(at + 1));
+};
+export const principalText = (who: KinWorkPrincipal) =>
+  who._tag === "person" ? `person:${who.personId}` : `agent:${who.agentId}`;
+const sameWho = (a: KinWorkPrincipal, b: KinWorkPrincipal) => principalText(a) === principalText(b);
+
+/**
+ * The milestone rule: late once its day passed while open; at risk when it is due within a week
+ * and one of its open tasks is late or due after it.
+ */
+export const milestoneRisk = (input: {
+  readonly state: string;
+  readonly dueAt: number | null;
+  readonly now: number;
+  readonly tasks: ReadonlyArray<{ readonly dueAt: number | null; readonly open: boolean }>;
+}) => {
+  const open = input.state === "open";
+  const late = open && input.dueAt !== null && input.dueAt < input.now;
+  const atRisk =
+    open &&
+    !late &&
+    input.dueAt !== null &&
+    input.dueAt - input.now <= AT_RISK_WITHIN_MS &&
+    input.tasks.some(
+      (task) =>
+        task.open &&
+        task.dueAt !== null &&
+        (task.dueAt < input.now || task.dueAt > (input.dueAt ?? Number.POSITIVE_INFINITY)),
+    );
+  return { late, atRisk };
+};
+
+export const milestonesOf = Effect.fn("KinProjectSpine.milestones")(function* (
+  orgId: KinOrgId,
+  projectId: string,
+  now: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    recordId: string;
+    key: string;
+    title: string;
+    state: KinMilestone["state"];
+    dueAt: number | null;
+    dueAllDay: number;
+    rev: number;
+  }>`SELECT record_id AS "recordId", key, title, state, due_at AS "dueAt",
+      due_all_day AS "dueAllDay", rev
+    FROM kin_records WHERE org_id = ${orgId} AND register_id = 'milestones'
+      AND project_id = ${projectId}
+    ORDER BY state = 'dropped', due_at IS NULL, due_at, key LIMIT 50`;
+  if (rows.length === 0) return [];
+  const tasks = yield* sql<{ milestone: string; state: string; dueAt: number | null }>`
+    SELECT json_extract(fields_json, '$.milestone') AS milestone, state, due_at AS "dueAt"
+    FROM kin_records WHERE org_id = ${orgId} AND register_id = 'work'
+      AND json_extract(fields_json, '$.milestone') IN ${sql.in(rows.map((row) => row.key))}
+      AND state != 'dropped'
+    ORDER BY key`;
+  return rows.map((row): KinMilestone => {
+    const mine = tasks
+      .filter((task) => task.milestone === row.key)
+      .map((task) => ({
+        dueAt: task.dueAt,
+        open: (OPEN as ReadonlyArray<string>).includes(task.state),
+      }));
+    return {
+      ...ref(row.recordId, row.key, row.title),
+      state: row.state,
+      dueAt: row.dueAt === null ? null : iso(row.dueAt),
+      dueAllDay: row.dueAllDay === 1,
+      total: mine.length,
+      done: mine.filter((task) => !task.open).length,
+      ...milestoneRisk({ state: row.state, dueAt: row.dueAt, now, tasks: mine }),
+      rev: row.rev,
+    };
+  });
+});
+
+/** Its lead, its members, then whoever else holds its open tasks; each with what they hold. */
+export const peopleOf = Effect.fn("KinProjectSpine.people")(function* (
+  project: RecordRow,
+  now: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const held = yield* sql<{ kind: string; id: string; open: number; late: number }>`
+    SELECT owner_kind AS kind, owner_id AS id, COUNT(*) AS open,
+      SUM(due_at IS NOT NULL AND due_at < ${now}) AS late
+    FROM kin_records WHERE org_id = ${project.orgId} AND register_id = 'work'
+      AND project_id = ${project.recordId} AND state IN ${sql.in(OPEN)}
+    GROUP BY owner_kind, owner_id ORDER BY COUNT(*) DESC, owner_kind, owner_id`;
+  const lead = principal(project.ownerKind, project.ownerId);
+  const members = fieldList(parseFields(project.fieldsJson), "members").flatMap((text) => {
+    const who = principalOfText(text);
+    return who === null ? [] : [who];
+  });
+  const holders = held.flatMap((row) => {
+    const who = principal(row.kind, row.id);
+    return who === null ? [] : [{ who, open: row.open, late: row.late ?? 0 }];
+  });
+  const everyone: Array<KinWorkPrincipal> = [];
+  for (const who of [...(lead === null ? [] : [lead]), ...members, ...holders.map((h) => h.who)])
+    if (!everyone.some((one) => sameWho(one, who))) everyone.push(who);
+  return everyone.map((who): KinProjectPerson => {
+    const holds = holders.find((one) => sameWho(one.who, who));
+    return {
+      who,
+      lead: lead !== null && sameWho(lead, who),
+      member: members.some((one) => sameWho(one, who)),
+      open: holds?.open ?? 0,
+      late: holds?.late ?? 0,
+    };
+  });
+});
+
+/** Its meetings from a day ago on, and any earlier one nobody has closed yet. */
+export const meetingsOf = Effect.fn("KinProjectSpine.meetings")(function* (
+  orgId: KinOrgId,
+  projectId: string,
+  now: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<RecordRow>`${selectRecords(sql)}
+    WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.category = 'meeting'
+      AND r.project_id = ${projectId} AND r.state != 'dropped'
+      AND (r.state IN ${sql.in(OPEN)} OR r.date_at >= ${now - DAY_MS})
+    ORDER BY r.date_at IS NULL, r.date_at, r.key LIMIT 10`;
+  return rows.map((row): KinRecord => toRecord(row, now));
+});
+
+/**
+ * Open tasks written from a doc section that reads differently now. A task stores the doc's key,
+ * the section id and that section's hash when it was written; changing them re-anchors it.
+ */
+export const specChangesOf = Effect.fn("KinProjectSpine.specChanges")(function* (
+  orgId: KinOrgId,
+  tasks: ReadonlyArray<RecordRow>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const anchored = tasks.flatMap((task) => {
+    const fields = parseFields(task.fieldsJson);
+    const doc = fieldText(fields, "fromDoc");
+    const section = fieldText(fields, "fromSection");
+    const hash = fieldText(fields, "fromHash");
+    return doc === null || section === null || hash === null ? [] : [{ task, doc, section, hash }];
+  });
+  if (anchored.length === 0) return [];
+  const docs = yield* sql<{ recordId: string; key: string; title: string }>`
+    SELECT record_id AS "recordId", key, title FROM kin_records
+    WHERE org_id = ${orgId} AND register_id = 'docs'
+      AND key IN ${sql.in([...new Set(anchored.map((one) => one.doc))])}
+    ORDER BY key`;
+  const latest = yield* latestOf(
+    orgId,
+    docs.map((doc) => doc.recordId),
+  );
+  const sections = new Map(
+    docs.map((doc) => {
+      const body = latest.get(doc.recordId)?.body ?? "";
+      return [
+        doc.key,
+        { doc, hashes: new Map(sectionsOf(body).map((one) => [one.id, one.hash])) },
+      ] as const;
+    }),
+  );
+  return anchored.flatMap(({ task, doc, section, hash }): ReadonlyArray<KinSpecChange> => {
+    const found = sections.get(doc);
+    if (found === undefined) return [];
+    const now = found.hashes.get(section);
+    if (now === hash) return [];
+    return [
+      {
+        record: ref(task.recordId, task.key, task.title),
+        doc: ref(found.doc.recordId, found.doc.key, found.doc.title),
+        section,
+        gone: now === undefined,
+      },
+    ];
+  });
+});
+
+export const projectSpecChanges = Effect.fn("KinProjectSpine.projectSpecChanges")(function* (
+  orgId: KinOrgId,
+  projectId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const tasks = yield* sql<RecordRow>`${selectRecords(sql)}
+    WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.project_id = ${projectId}
+      AND r.state IN ${sql.in(OPEN)} AND json_extract(r.fields_json, '$.fromDoc') IS NOT NULL
+    ORDER BY r.key LIMIT 200`;
+  return yield* specChangesOf(orgId, tasks);
+});
+
+/** Quotes, invoices and receipts filed under the project, by the counted rule, per currency. */
+export const moneyOf = Effect.fn("KinProjectSpine.money")(function* (
+  orgId: KinOrgId,
+  projectId: string,
+) {
+  const records = yield* KinRecords;
+  const sums = Effect.fn("KinProjectSpine.sums")(function* (list: string) {
+    if ((yield* listDef(orgId, list)) === undefined) return undefined;
+    return yield* records.totals(orgId, { list, projectId });
+  });
+  const quotes = yield* sums("quotes");
+  const invoices = yield* sums("invoices");
+  const receipts = yield* sums("receipts");
+  const of = (money: ReadonlyArray<KinMoney> | undefined) => [...(money ?? [])];
+  return {
+    quoted: of(quotes?.total),
+    invoiced: of(invoices?.total),
+    received: of(receipts?.total),
+    unpaid: of(invoices?.owed),
+  } satisfies KinProjectMoney;
+});
