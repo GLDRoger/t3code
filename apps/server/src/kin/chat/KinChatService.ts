@@ -112,7 +112,10 @@ type SendInput = KinMessagesSendInput & {
   readonly floorGrant?: string | undefined;
   /** The authenticated session sending, set by the transport; only its own uploads are claimed. */
   readonly uploader?: PendingUploadOwner;
-  /** Words checked for everyone who reads the chat (`KinLevelGate.postTo`), not the owner's. */
+  /**
+   * A message for the one person in this direct chat (`KinLevelGate.postTo`): words checked for
+   * them, not the owner's, and admitted outside the chat's floor (`KinFloor.admitToPerson`).
+   */
   readonly forChat?: true;
 };
 type WidgetUpsertInput = {
@@ -1125,8 +1128,10 @@ const make = Effect.gen(function* () {
           message: "This wake-up has posted all it may in this chat.",
         });
     }
+    const toPerson = identity._tag === "agent" && input.forChat === true;
+    if (toPerson && Option.isNone(existing)) yield* floor.admitToPerson(identity, chat.chatId);
     const authorization =
-      identity._tag === "agent" && Option.isNone(existing)
+      identity._tag === "agent" && Option.isNone(existing) && !toPerson
         ? yield* floor.authorize(identity, chat, intent ?? "answer", input.floorGrant)
         : { runId: null, owed: false };
     const message = yield* post(identity, member, {
@@ -1140,7 +1145,7 @@ const make = Effect.gen(function* () {
       replyTo: request.replyTo ?? null,
       widgetId: null,
       clientId: { kind: "send", id: request.clientMessageId },
-      forChat: identity._tag === "agent" && input.forChat === true,
+      forChat: toPerson,
     });
     // A reply someone waits on doesn't use up the hourly room for unprompted notices.
     if (
