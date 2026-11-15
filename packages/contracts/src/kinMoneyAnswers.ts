@@ -1,11 +1,7 @@
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
-import {
-  AuthOrchestrationOperateScope,
-  AuthOrchestrationReadScope,
-  EnvironmentAuthorizationError,
-} from "./auth.ts";
+import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
 import { IsoDateTime, NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinChatError, KinOrgId, KinTrimmedText } from "./kinChat.ts";
 import { KinSacCode } from "./kinFinance.ts";
@@ -243,10 +239,10 @@ export const KinMoneyAnswerRpcs = [
 ] as const;
 
 export const KIN_MONEY_ANSWER_RPC_SCOPES = {
-  "kin.work.cash": AuthOrchestrationReadScope,
-  "kin.work.outlook": AuthOrchestrationReadScope,
-  "kin.work.budgets": AuthOrchestrationReadScope,
-  "kin.work.setBudget": AuthOrchestrationOperateScope,
-  "kin.work.entryLines": AuthOrchestrationReadScope,
-  "kin.work.invoiceFromQuote": AuthOrchestrationOperateScope,
+  "kin.work.cash": AuthKinChatScope,
+  "kin.work.outlook": AuthKinChatScope,
+  "kin.work.budgets": AuthKinChatScope,
+  "kin.work.setBudget": AuthKinChatScope,
+  "kin.work.entryLines": AuthKinChatScope,
+  "kin.work.invoiceFromQuote": AuthKinChatScope,
 } as const;
