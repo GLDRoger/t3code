@@ -30,12 +30,13 @@ import {
 } from "@t3tools/client-runtime/kin/kinWorkList";
 import {
   KIN_WORK_HOME,
+  kinWorkBesideNeedsYou,
   kinWorkFilterCleared,
   kinWorkFilterLabel,
   kinWorkOwnerSelected,
 } from "@t3tools/client-runtime/kin/kinWorkHome";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
-import type { KinRecordKey } from "@t3tools/contracts";
+import type { KinRecord, KinRecordKey } from "@t3tools/contracts";
 import { LegendList } from "@legendapp/list/react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
@@ -52,6 +53,7 @@ import { KinFilter, KinWorkNotice, KinWorkRowSkeletons, type KinFilterGroup } fr
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
+import { useKinMyDueTasks } from "./useKinPlaces";
 import {
   kinWorkLiveAtom,
   type KinWorkChangesHandle,
@@ -80,6 +82,8 @@ export function KinWorkTaskList(
     /** On a project's page the list is only that project's, under the project's own summary. */
     readonly within?: "project";
     readonly header?: React.ReactNode;
+    /** What needs you, over the whole company's open tasks; those tasks then leave the list. */
+    readonly renderNeedsYou?: (mine: ReadonlyArray<KinRecord> | null) => React.ReactNode;
   },
 ) {
   const { environmentId, orgId, live } = props;
@@ -127,14 +131,33 @@ export function KinWorkTaskList(
   const records = kinWorkShown(filter, listState.records, hostEdits).map((record) =>
     kinWorkApplied(record, changed),
   );
-  const rows = records.map((record) => kinWorkRow(record, names, now, filter));
+  const showsNeedsYou =
+    props.renderNeedsYou !== undefined &&
+    props.within === undefined &&
+    kinWorkFilterLabel(filter, names) === null &&
+    filter.text.trim() === "";
+  const mine = useKinMyDueTasks(
+    props,
+    showsNeedsYou ? names.me : null,
+    props.stale ? null : live.seq,
+  );
+  const rows = kinWorkBesideNeedsYou(records, showsNeedsYou ? mine : null).map((record) =>
+    kinWorkRow(record, names, now, filter),
+  );
   const act = (key: KinRecordKey, action: KinWorkAction) => {
     const record = records.find((held) => held.key === key);
     if (record !== undefined) void changes.run(record, action, names);
   };
   const notice = kinWorkListNotice(changed, props.openKey);
   const nothing = kinWorkNothing(filter, names);
-  const footer = kinWorkListFooter(filter, rows.length, listState.total, listState.more, hostEdits);
+  // Needs you shows the rest, so the count says how many are loaded in all.
+  const footer = kinWorkListFooter(
+    filter,
+    records.length,
+    listState.total,
+    listState.more,
+    hostEdits,
+  );
   return (
     <LegendList<KinWorkRowView>
       data={rows}
@@ -146,6 +169,7 @@ export function KinWorkTaskList(
       ListHeaderComponent={
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 pt-2 pb-1">
           {props.header}
+          {showsNeedsYou ? props.renderNeedsYou?.(mine) : null}
           {props.stale || listState.stale ? (
             <p role="status" className="text-xs text-muted-foreground">
               {KIN_WORK_STALE}
@@ -174,37 +198,42 @@ export function KinWorkTaskList(
         </div>
       }
       ListEmptyComponent={
-        <div className="mx-auto w-full max-w-3xl px-4">
-          {listState.loading ? (
-            <div role="status" aria-label="Loading tasks">
-              <KinWorkRowSkeletons />
-            </div>
-          ) : listState.failed !== null ? (
-            <div className="flex flex-col items-start gap-3 py-4">
-              <Alert variant="error">
-                <AlertDescription>{KIN_WORK_LOAD_FAILED}. Check your connection.</AlertDescription>
-              </Alert>
-              <Button size="sm" variant="outline" onClick={list.refresh}>
-                Retry
-              </Button>
-            </div>
-          ) : (
-            <KinWorkNotice
-              title={nothing.title}
-              detail={nothing.detail}
-              {...(nothing.offerNew && props.onAdd !== null
-                ? {
-                    action: (
-                      <Button onClick={props.onAdd}>
-                        <PlusIcon />
-                        {KIN_WORK_NEW}
-                      </Button>
-                    ),
-                  }
-                : {})}
-            />
-          )}
-        </div>
+        // Every open task is already under Needs you.
+        records.length > 0 ? null : (
+          <div className="mx-auto w-full max-w-3xl px-4">
+            {listState.loading ? (
+              <div role="status" aria-label="Loading tasks">
+                <KinWorkRowSkeletons />
+              </div>
+            ) : listState.failed !== null ? (
+              <div className="flex flex-col items-start gap-3 py-4">
+                <Alert variant="error">
+                  <AlertDescription>
+                    {KIN_WORK_LOAD_FAILED}. Check your connection.
+                  </AlertDescription>
+                </Alert>
+                <Button size="sm" variant="outline" onClick={list.refresh}>
+                  Retry
+                </Button>
+              </div>
+            ) : (
+              <KinWorkNotice
+                title={nothing.title}
+                detail={nothing.detail}
+                {...(nothing.offerNew && props.onAdd !== null
+                  ? {
+                      action: (
+                        <Button onClick={props.onAdd}>
+                          <PlusIcon />
+                          {KIN_WORK_NEW}
+                        </Button>
+                      ),
+                    }
+                  : {})}
+              />
+            )}
+          </div>
+        )
       }
       ListFooterComponent={
         footer === null ? null : (
@@ -229,6 +258,7 @@ export function KinWorkTaskList(
           <KinWorkRow
             row={row}
             saving={changed.pending[row.key] !== undefined}
+            selected={row.key === props.openKey}
             onOpen={() => props.onOpen(row.key)}
             onAct={canChange ? (action) => act(row.key, action) : null}
           />
@@ -383,6 +413,8 @@ const TICK_LABEL = { done: KIN_WORK_COPY.done, reopen: KIN_WORK_COPY.reopen } as
 export function KinWorkRow(props: {
   readonly row: KinWorkRowView;
   readonly saving: boolean;
+  /** The task open over the list. */
+  readonly selected?: boolean;
   readonly onOpen: () => void;
   /** Null where this browser or this host can't change a task. */
   readonly onAct: ((action: KinWorkAction) => void) | null;
@@ -412,8 +444,9 @@ export function KinWorkRow(props: {
       <button
         type="button"
         aria-label={row.accessibilityLabel}
+        aria-current={props.selected === true ? true : undefined}
         onClick={props.onOpen}
-        className="flex min-w-0 flex-1 items-start gap-3 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
+        className="flex min-w-0 flex-1 items-start gap-3 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset aria-[current=true]:bg-accent"
       >
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="line-clamp-2 text-sm text-foreground">{row.title}</span>

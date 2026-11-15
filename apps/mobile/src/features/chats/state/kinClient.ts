@@ -31,6 +31,7 @@ import {
   type KinChatId,
   type KinChatsSubscribeInput,
   type KinLeadAccessInput,
+  type KinBudgetGetInput,
   type KinMemoryListInput,
   type KinLeadsListInput,
   type KinVisualHostsInput,
@@ -66,7 +67,11 @@ import {
 import type { KinChatState } from "@t3tools/client-runtime/kin/kinInboxModel";
 import { KIN_DOCS_LABEL, kinDocsLiveStream } from "@t3tools/client-runtime/kin/kinDocsStream";
 import { KIN_WORK_LABEL, kinWorkLiveStream } from "@t3tools/client-runtime/kin/kinWorkStream";
-import { createKinRefreshTriggers } from "@t3tools/client-runtime/kin/kinRefresh";
+import {
+  createKinDirectoryTrigger,
+  createKinRefreshTriggers,
+  noteKinDirectoryOrgs,
+} from "@t3tools/client-runtime/kin/kinRefresh";
 
 export type { KinSynced } from "@t3tools/client-runtime/kin/kinStreams";
 
@@ -162,6 +167,11 @@ const memoryRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   tag: "kin.memory.list",
 });
 const readMemory = guardedRead(memoryRead);
+const budgetRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:budget:read",
+  tag: "kin.budget.get",
+});
+const readBudget = guardedRead(budgetRead);
 
 const workSummaryRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "kin:work:summary:read",
@@ -362,6 +372,8 @@ const refreshLeads = (environmentId: EnvironmentId, orgId: KinOrgId) => {
 
 /** Being let message a lead, or losing that, changes what `kin.leads.list` answers. */
 const rereadLeadsOnChange = onKinDirectChatsChange((environmentId, orgIds) => {
+  // A new direct chat may be with an agent the directory hasn't named yet.
+  appAtomRegistry.refresh(kinClient.orgs({ environmentId, input: {} }));
   for (const orgId of orgIds) refreshLeads(environmentId, orgId);
 });
 
@@ -373,6 +385,11 @@ export const kinClient = {
       const environmentId = yield* currentEnvironmentId;
       const result = yield* retryKinProbe(readOrgs(input), () => knownKinHosts.has(environmentId));
       markKinHostKnown(environmentId);
+      noteKinDirectoryOrgs(
+        appAtomRegistry,
+        environmentId,
+        result.orgs.map((org) => org.orgId),
+      );
       yield* syncKinCacheIdentity(environmentId, result.me[0]?.personId ?? null);
       yield* withKinCache(orgsCache.save(environmentId, ORGS_CACHE_KEY, result));
       appAtomRegistry.refresh(kinCachedOrgsAtom(environmentId));
@@ -384,8 +401,9 @@ export const kinClient = {
       return result;
     }),
     staleTimeMs: 60_000,
-    // A failed probe reruns when the next session comes up, not only after the stale time.
-    refreshTrigger: sessionGeneration,
+    // A failed probe reruns when the next session comes up, not only after the stale time; agent
+    // names come from here, so it is read again when an org's agents change too.
+    refreshTrigger: createKinDirectoryTrigger(connectionAtomRuntime),
   }),
   /** Chat list plus Waiting on you. Reconnecting replaces it with the host's fresh snapshot. */
   inbox: createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {
@@ -957,6 +975,20 @@ export const kinClient = {
     label: "kin:memory:forget",
     tag: "kin.memory.forget",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.itemId },
+  }),
+  /** The owner's daily limit. The host announces no change to it, so a set re-reads it here. */
+  budget: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:budget",
+    execute: Effect.fn("KinClient.budget")(function* (input: KinBudgetGetInput) {
+      return yield* readBudget(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: sessionGeneration,
+  }),
+  budgetSet: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:budget:set",
+    tag: "kin.budget.set",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
   }),
   /**
    * One pending action as this viewer may see it. `revision` is the card's own, only a cache key:

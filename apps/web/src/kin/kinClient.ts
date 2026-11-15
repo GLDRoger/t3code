@@ -10,7 +10,11 @@ import {
 } from "@t3tools/client-runtime/kin/kinStreams";
 import { KIN_DOCS_LABEL, kinDocsLiveStream } from "@t3tools/client-runtime/kin/kinDocsStream";
 import { KIN_WORK_LABEL, kinWorkLiveStream } from "@t3tools/client-runtime/kin/kinWorkStream";
-import { createKinRefreshTriggers } from "@t3tools/client-runtime/kin/kinRefresh";
+import {
+  createKinDirectoryTrigger,
+  createKinRefreshTriggers,
+  noteKinDirectoryOrgs,
+} from "@t3tools/client-runtime/kin/kinRefresh";
 import type { KinChatState } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
   createEnvironmentQueryAtomFamily,
@@ -36,6 +40,7 @@ import {
   type KinDocGetInput,
   type KinDocsListInput,
   type KinDocsSubscribeInput,
+  type KinBudgetGetInput,
   type KinMemoryListInput,
   type KinPeopleListInput,
   type KinLeadAccessInput,
@@ -134,6 +139,11 @@ const memoryRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   tag: "kin.memory.list",
 });
 const readMemory = guardedRead(memoryRead);
+const budgetRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:budget:read",
+  tag: "kin.budget.get",
+});
+const readBudget = guardedRead(budgetRead);
 
 const workSummaryRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "kin:work:summary:read",
@@ -308,6 +318,8 @@ const refreshLeads = (environmentId: EnvironmentId, orgId: KinOrgId) => {
 
 /** Being let message a lead, or losing that, changes what `kin.leads.list` answers. */
 const rereadLeadsOnChange = onKinDirectChatsChange((environmentId, orgIds) => {
+  // A new direct chat may be with an agent the directory hasn't named yet.
+  appAtomRegistry.refresh(kinClient.orgs({ environmentId, input: {} }));
   for (const orgId of orgIds) refreshLeads(environmentId, orgId);
 });
 
@@ -319,11 +331,16 @@ export const kinClient = {
       const environmentId = yield* currentEnvironmentId;
       const result = yield* retryKinProbe(readOrgs(input), () => knownKinHosts.has(environmentId));
       knownKinHosts.add(environmentId);
+      noteKinDirectoryOrgs(
+        appAtomRegistry,
+        environmentId,
+        result.orgs.map((org) => org.orgId),
+      );
       return result;
     }),
     staleTimeMs: 60_000,
-    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
-      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+    // Agent names come from here, so it is read again when an org's agents change.
+    refreshTrigger: createKinDirectoryTrigger(connectionAtomRuntime),
   }),
   leads,
   /** The phones that can approve, and the latest changes to them. */
@@ -602,6 +619,20 @@ export const kinClient = {
     label: "kin:memory:forget",
     tag: "kin.memory.forget",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.itemId },
+  }),
+  /** The owner's daily limit. The host announces no change to it, so a set re-reads it here. */
+  budget: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:budget",
+    execute: Effect.fn("KinWebClient.budget")(function* (input: KinBudgetGetInput) {
+      return yield* readBudget(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: kinRefreshOn("company"),
+  }),
+  budgetSet: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:budget:set",
+    tag: "kin.budget.set",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
   }),
   workLive,
   /** Its `permissionAtom` says whether this browser may read Work at all. */

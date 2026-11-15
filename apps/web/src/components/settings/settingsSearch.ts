@@ -1240,6 +1240,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["kin legal name address gstin pan tax bank account ifsc upi invoice"],
   },
   {
+    id: "kin-daily-limit",
+    title: "Daily limit",
+    to: "/settings/company",
+    searchTerms: ["kin budget agents usage spend limit"],
+  },
+  {
     id: "network-access",
     title: "Network access",
     to: "/settings/access",

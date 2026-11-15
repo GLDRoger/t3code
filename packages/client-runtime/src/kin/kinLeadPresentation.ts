@@ -4,6 +4,7 @@ import type {
   KinLeadProfile,
   KinLeadTracking,
   KinPerson,
+  ModelSelection,
   ServerProviderModel,
 } from "@t3tools/contracts";
 import { formatModelSlugName } from "@t3tools/shared/model";
@@ -163,6 +164,43 @@ export function kinLeadModelName(
   return formatModelSlugName(model);
 }
 
+/** The first agent a company is offered: the front door that hands work to the rest. */
+export const KIN_CHIEF_OF_STAFF: KinLeadDraft = {
+  name: "Chief of staff",
+  area: "Chief of staff",
+  charter:
+    "My front door for the whole company. Answers what it can, passes the rest to the right agent and tells me it has. Keeps track of what I've asked for and reminds me. Never spends money or sends anything outside the company on its own.",
+  intro: "",
+};
+
+/** Agents run only on Claude (the host refuses any other), so only its models are offered. */
+export const KIN_AGENT_DRIVER = "claudeAgent";
+
+/** An org's first agent is where the models come from: the host copies them to every later one. */
+export const KIN_LEAD_MODELS = {
+  title: "Models",
+  strong: "For harder work",
+  cheap: "For quick replies",
+  hint: "Your agents think with these. Agents you add later use the same ones.",
+  none: "Agents run on Claude, and this server has no Claude set up yet. Set it up under Settings, Providers, then come back.",
+};
+
+/**
+ * The models a first agent starts on, from the Claude models offered: the strongest for harder
+ * work and the quickest for small replies, both changeable. Null when none is offered.
+ */
+export function kinLeadStartingModels(
+  models: ReadonlyArray<ModelSelection>,
+): { readonly strong: ModelSelection; readonly cheap: ModelSelection } | null {
+  const [first] = models;
+  if (first === undefined) return null;
+  const named = (...names: ReadonlyArray<string>) =>
+    names
+      .map((name) => models.find((model) => model.model.toLowerCase().includes(name)))
+      .find((model) => model !== undefined);
+  return { strong: named("opus", "sonnet") ?? first, cheap: named("haiku", "sonnet") ?? first };
+}
+
 const INTRO_MAX = 320;
 
 /** The empty chat's text: what the owner made this lead for, else what any lead does. */
@@ -192,7 +230,7 @@ export function kinLeadSaveProblem(error: unknown, creating: boolean): string {
     case "not_found":
       return "This agent is no longer here.";
     case "no_models":
-      return "No model is set up for agents on this server yet, so the first agent can't be made from here. On the computer that runs Kin, run its “kin lead create” command with --strong and --cheap to choose the models. Agents you add after that use the same ones.";
+      return "Choose the models your agents think with, then create it again.";
     case "unavailable":
     case "disabled":
       return "Agents aren't running on this server right now. Try again in a moment.";
