@@ -395,4 +395,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.connections.setReach": "kin-connections",
   "kin.connections.remove": "kin-connections",
   "kin.connections.calls": "kin-connections",
+  "kin.connections.signInStart": "kin-connections",
+  "kin.connections.signInFinish": "kin-connections",
+  "kin.connections.setSignInClient": "kin-connections",
 } as const;
