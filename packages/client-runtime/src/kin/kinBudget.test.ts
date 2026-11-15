@@ -1,4 +1,4 @@
-import { KinOrgId, type KinBudget } from "@t3tools/contracts";
+import { KinAgentId, KinOrgId, type KinBudget } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { kinDailyLimitChoices, kinDailyLimitUse, kinDailyLimitWaiting } from "./kinBudget.ts";
@@ -45,18 +45,18 @@ describe("the daily limit", () => {
       "Today: you 50% of a usual day.",
     );
     expect(kinDailyLimitUse(budget(null, null))).toBeNull();
-    const waiting = {
+    const waiting: KinBudget = {
       ...budget(1, 1),
       waiting: {
         until: null,
         agents: [
-          { agentId: "a1", name: "Finance", requests: 2, tasks: 1, other: 0 },
-          { agentId: "a2", name: "Idle", requests: 0, tasks: 0, other: 0 },
+          { agentId: KinAgentId.make("a1"), name: "Finance", requests: 2, tasks: 1, other: 0 },
+          { agentId: KinAgentId.make("a2"), name: "Idle", requests: 0, tasks: 0, other: 0 },
         ],
       },
-    } as KinBudget;
+    };
     expect(kinDailyLimitWaiting(waiting)).toEqual([
-      { agentId: "a1", name: "Finance", line: "2 messages, 1 task" },
+      { agentId: KinAgentId.make("a1"), name: "Finance", line: "2 messages, 1 task" },
     ]);
   });
 });

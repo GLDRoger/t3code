@@ -369,7 +369,7 @@ function KinDailyLimitSection(props: {
           {waiting.map((agent) => (
             <SettingsRow
               key={agent.agentId}
-              icon="hourglass"
+              icon="moon"
               label={agent.name}
               value={agent.line}
               valuePosition="trailing"

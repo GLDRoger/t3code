@@ -937,6 +937,12 @@ export const kinClient = {
     label: "kin:work:update",
     tag: "kin.work.update",
   }),
+  /** The owner shares tasks with the team, or takes them back. */
+  workShare: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:share",
+    tag: "kin.work.share",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.keys.join(",") },
+  }),
   workConfirm: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:work:confirm",
     tag: "kin.work.confirm",
