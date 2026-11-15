@@ -41,6 +41,7 @@ import { sectionsOf } from "../work/docBody.ts";
 import { sensitiveNow } from "../work/recordRows.ts";
 import { messageForViewer } from "./messageView.ts";
 import { chatShared, readableBy, recordJoin } from "./sharing.ts";
+import { accessSql } from "../people/KinAccess.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlSchema from "effect/sql/SqlSchema";
 import {
@@ -147,7 +148,7 @@ const defaultOwnerId = Schema.decodeSync(KinPersonId)("kin-default-owner");
 const OrgRow = KinOrg;
 const orgColumns = `org_id AS "orgId", name AS "name", created_at AS "createdAt"`;
 const PersonRow = KinPerson;
-const personColumns = `person_id AS "personId", org_id AS "orgId", handle AS "handle", display_name AS "displayName", github_login AS "githubLogin"`;
+const personColumns = `person_id AS "personId", org_id AS "orgId", handle AS "handle", display_name AS "displayName", github_login AS "githubLogin", ${accessSql("kin_people")} AS access`;
 const AgentIdentityRow = Schema.Struct({
   ...KinAgent.fields,
   retiredAt: Schema.NullOr(IsoDateTime),
@@ -941,8 +942,8 @@ const make = Effect.gen(function* () {
  SELECT ${orgId}, ${input.orgName}, ${input.createdAt} WHERE NOT EXISTS (SELECT 1 FROM kin_orgs)
  ON CONFLICT (org_id) DO NOTHING RETURNING org_id`;
         if (inserted.length > 0) {
-          yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, github_login, created_at)
- VALUES (${personId}, ${orgId}, ${input.ownerHandle}, ${input.ownerDisplayName}, NULL, ${input.createdAt})
+          yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, github_login, created_at, access)
+ VALUES (${personId}, ${orgId}, ${input.ownerHandle}, ${input.ownerDisplayName}, NULL, ${input.createdAt}, 'owner')
  ON CONFLICT (person_id) DO NOTHING RETURNING person_id`;
         }
         // Never infer ownership from a handle or whichever person happens to sort first.

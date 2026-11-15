@@ -56,6 +56,8 @@ export const makeKinPeopleHandlers = Effect.fn("makeKinPeopleHandlers")(function
     "kin.people.revokeDevice": (input) => run((p) => p.revokeDevice(session, input)),
     "kin.people.removeAccess": (input) => run((p) => p.removeAccess(session, input)),
     "kin.people.setGithubLogin": (input) => run((p) => p.setGithubLogin(session, input)),
+    "kin.people.setAccess": (input) => run((p) => p.setAccess(session, input)),
+    "kin.access.me": (input) => run((p) => p.accessMe(session, input)),
     "kin.people.setOwnerName": (input) => run((p) => p.setOwnerName(session, input)),
     "kin.people.profiles": (input) => run((p) => p.profiles(session, input.orgId)),
     "kin.people.updateProfile": (input) => run((p) => p.updateProfile(session, input)),

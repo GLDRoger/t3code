@@ -300,7 +300,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
             if (!people.some((person) => person.orgId === input.orgId))
               return yield* new KinChatError({
                 reason: "not_allowed",
-                message: "Only the owner can create agents.",
+                message: "Only the owner or a co-owner can create agents.",
               });
             const { _tag, lead } = yield* LeadProvision.create({
               creator: { _tag: "session", session },

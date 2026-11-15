@@ -30,6 +30,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
@@ -194,17 +195,15 @@ export const make = Effect.gen(function* () {
   ) {
     const person = people.find((p) => p.orgId === orgId);
     if (person === undefined) return yield* notFound;
-    // Same rule as KinBudget.set: the lead's owner, or the bootstrap owner before any lead.
-    const owner =
-      yield* sql`SELECT 1 FROM kin_people p WHERE p.org_id = ${orgId} AND p.person_id = ${person.personId}
-      AND ((p.org_id = 'kin-default' AND p.person_id = 'kin-default-owner'
-        AND NOT EXISTS (SELECT 1 FROM kin_leads WHERE org_id = p.org_id)) OR EXISTS (
-        SELECT 1 FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
-        WHERE l.org_id = p.org_id AND a.owner_person_id = p.person_id))`.pipe(
-        Effect.mapError(toPersistenceSqlError("KinGithubWebhooks.requireOwner")),
-      );
-    if (owner.length === 0)
-      return yield* new KinChatError({ reason: "not_allowed", message: "Only the owner can." });
+    if (
+      !(yield* ownerLevel(orgId, person.personId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      ))
+    )
+      return yield* new KinChatError({
+        reason: "not_allowed",
+        message: "Only the owner or a co-owner can.",
+      });
   });
 
   const newSecret = random

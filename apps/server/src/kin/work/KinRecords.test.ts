@@ -4,7 +4,6 @@ import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ServerConfig } from "../../config.ts";
 import {
-  AuthKinChatScope,
   EnvironmentId,
   KIN_WORK_WS_METHODS,
   KinAgentId,
@@ -19,6 +18,7 @@ import {
   type MemoryItemHead,
   ProviderInstanceId,
   ThreadId,
+  kinRpcAccess,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
@@ -29,7 +29,6 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
-import { authorizeRpc } from "../../auth/RpcAuthorization.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
@@ -403,7 +402,7 @@ it.effect("work given away with no stored owner assigner is recorded and wakes n
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("a turn others read gets only Work's tasks, and a chat-only session gets no RPC", () =>
+it.effect("a turn others read gets only Work's tasks, and a member reaches only task RPCs", () =>
   Effect.gen(function* () {
     yield* seed;
     yield* turn("mate", "shared");
@@ -443,8 +442,8 @@ it.effect("a turn others read gets only Work's tasks, and a chat-only session ge
       yield* Effect.flip(LeadMoney.profile(scopeOf(lead), {})),
     ];
     for (const error of refused) assert.include(error, { reason: "not_allowed" });
-    // Every Work method declares whether a teammate's session reaches it: tasks do, and the
-    // service shows them only their view; clients, lists, money and the profile never do.
+    // Every Work method declares whether a member reaches it: tasks do, and the service shows
+    // them only their view; clients, lists, money and the profile are owner-level.
     const teammate = new Set([
       "kin.work.summary",
       "kin.work.list",
@@ -460,12 +459,7 @@ it.effect("a turn others read gets only Work's tasks, and a chat-only session ge
     ];
     assert.lengthOf(methods, 38);
     for (const method of methods)
-      assert.strictEqual(
-        (yield* Effect.exit(authorizeRpc([AuthKinChatScope], method, { orgId })))._tag ===
-          "Success",
-        teammate.has(method),
-        method,
-      );
+      assert.strictEqual(kinRpcAccess(method) === "person", teammate.has(method), method);
   }).pipe(Effect.provide(layer)),
 );
 
@@ -1465,7 +1459,7 @@ it.effect(
           yield* Effect.flip(
             OwnerWork.update([mate], { orgId, key: filed.key, rev: reopened.rev, ...owned }),
           ),
-          { reason: "not_allowed", message: "Only the owner changes that." },
+          { reason: "not_allowed", message: "Only the owner or a co-owner changes that." },
         );
       // A task the owner shared with them is theirs to read, not to change.
       yield* OwnerWork.share([owner], { orgId, keys: [owners.key], shared: true });

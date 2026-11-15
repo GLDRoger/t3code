@@ -93,8 +93,9 @@ it.effect("shows a doc labelled sensitive since as a private document to all but
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Invented Co', ${at})`;
-    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
-      VALUES (${ownerId}, ${orgId}, 'owner', 'Owner', ${at}), (${mateId}, ${orgId}, 'mate', 'Mate', ${at})`;
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+      VALUES (${ownerId}, ${orgId}, 'owner', 'Owner', ${at}, 'owner'),
+        (${mateId}, ${orgId}, 'mate', 'Mate', ${at}, 'member')`;
     yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
       VALUES ('lead', ${orgId}, 'Lead', 'lead', ${ownerId}, ${at})`;
     yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
