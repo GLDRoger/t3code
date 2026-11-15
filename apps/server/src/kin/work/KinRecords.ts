@@ -36,6 +36,7 @@ import { isSqlError } from "effect/sql/SqlError";
 import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { mentionsMoney } from "../memory/sensitivity.ts";
+import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
 import { indexRecord } from "./searchIndex.ts";
 import { SensitiveRefusal, withdrawAttempts } from "./workerAttempts.ts";
 import {
@@ -533,6 +534,15 @@ const make = Effect.gen(function* () {
         reason,
       })
       .pipe(
+        // Given out after an outside read: the receiving lead's turn starts outside-read too.
+        Effect.tap(({ event }) =>
+          writer.wakeupId === undefined
+            ? Effect.void
+            : outsideStamp({ orgId, wakeupId: writer.wakeupId }).pipe(
+                Effect.flatMap((source) => stampEvent(orgId, event.eventId, source)),
+                Effect.provideService(SqlClient.SqlClient, sql),
+              ),
+        ),
         Effect.as(true),
         Effect.catchTags({
           KinEventQueueRetiredAgent: () => Effect.succeed(false),

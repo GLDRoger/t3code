@@ -37,7 +37,7 @@ import { moneySection, moneySummary } from "../work/moneyViews.ts";
 import { buildWorkSection, MONEY_RULE, WITHDRAWN_WORK, WORK_RULE } from "../work/workPrompt.ts";
 import { entriesShown, sensitiveShown, sourcesShown } from "../work/workerAttempts.ts";
 import { promptLine as connectionsLine } from "../connections/ConnectionRows.ts";
-import { carryOutside } from "./OutsideContent.ts";
+import { inheritOutside } from "./OutsideContent.ts";
 import { askedWhereOthersRead } from "../triggers/deferralOrigin.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { groupRules } from "./instructions.ts";
@@ -515,10 +515,20 @@ export class KinLeadPrompt extends Context.Service<
           ),
         );
         // What an outside-read turn set up or passed on starts this one outside-read too.
-        yield* carryOutside({ orgId, wakeupId: input.wakeupId, eventIds: askedIn }).pipe(
+        // Not a warning: an unmarked turn could start a worker from what it shows.
+        yield* inheritOutside({
+          orgId,
+          wakeupId: input.wakeupId,
+          eventIds: [...input.events.map((event) => event.eventId), ...askedIn],
+        }).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
-          Effect.catch((cause) =>
-            Effect.logWarning("Kin couldn't record what a prompt's sources read", cause),
+          Effect.mapError(
+            (cause) =>
+              new KinLeadPromptError({
+                orgId,
+                reason: "Could not read what the turn shows",
+                cause,
+              }),
           ),
         );
         return { events, fromOwner: fromOwner && events.length > 0, replyDue };

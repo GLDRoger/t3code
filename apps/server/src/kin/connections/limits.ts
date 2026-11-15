@@ -16,8 +16,12 @@ export const CONNECTION_LIMITS = {
   /** What one turn may read from connections, counted from its call rows. */
   turnChars: 400_000,
   turnCalls: 200,
-  /** Arguments kept in the call log. */
+  /** Arguments kept in the call log, in UTF-8 bytes. */
   argsBytes: 8 * 1024,
+  /** How long the call log keeps a call, and how much one prune pass deletes. */
+  keepCalls: Duration.days(90),
+  pruneBatch: 5_000,
+  pruneBatches: 20,
   /** A listing older than this is refreshed when an agent asks for the tools. */
   relistAfter: Duration.minutes(10),
 } as const;

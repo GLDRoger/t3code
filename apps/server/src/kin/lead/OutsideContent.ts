@@ -19,8 +19,8 @@ type Condition = (
 
 /**
  * What a tool may do once its turn has read outside text (a connection's result, or an event an
- * outside-read turn made). Built like `SHARED_TOOLS`: the gate refuses any tool without a line.
- * Conditions read stored rows; arguments only name the subject.
+ * outside-read turn made). Built like `SHARED_TOOLS`: the gate refuses any tool
+ * without a line. Conditions read stored rows; arguments only name the subject.
  */
 export type OutsideToolPolicy = "allowed" | "refused" | Condition;
 
@@ -66,7 +66,7 @@ export const OUTSIDE_TOOLS = {
   kin_delegate: "refused",
   kin_follow_up: "refused",
   kin_worker_stop: "allowed",
-  // The turn each starts reads as outside too (`carryOutside`).
+  // The event each makes carries the turn's stamp, so the turn it starts reads as outside.
   kin_hand_off: "allowed",
   kin_defer: "allowed",
   kin_schedule: "allowed",
@@ -115,53 +115,72 @@ export const OUTSIDE_TOOLS = {
   kin_connection_offer: "allowed",
 } satisfies Record<string, OutsideToolPolicy>;
 
-/** Whether the turn has read outside text. Sticky: once read, it stays read until the turn ends. */
-export const outsideRead = Effect.fn("KinOutsideContent.read")(function* (
+/**
+ * Where the turn's outside text came from, or `undefined` while it has read none. Sticky: once
+ * read, it stays read until the turn ends. Events the turn makes carry it as their stamp.
+ */
+export const outsideStamp = Effect.fn("KinOutsideContent.stamp")(function* (
   turn: Pick<Turn, "orgId" | "wakeupId">,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql`SELECT 1 FROM kin_wakeup_outside_reads
-    WHERE org_id = ${turn.orgId} AND wakeup_id = ${turn.wakeupId} LIMIT 1`;
-  return rows.length > 0;
+  const [row] = yield* sql<{ source: string }>`SELECT source FROM kin_wakeup_outside_reads
+    WHERE org_id = ${turn.orgId} AND wakeup_id = ${turn.wakeupId}`;
+  return row?.source;
 });
 
-/** Run in the transaction that records the call whose result the agent now reads. */
+/** Whether the turn has read outside text. */
+export const outsideRead = (turn: Pick<Turn, "orgId" | "wakeupId">) =>
+  outsideStamp(turn).pipe(Effect.map((source) => source !== undefined));
+
+/**
+ * Marks the turn outside-read, before the outside text reaches it. The events it claimed carry
+ * the stamp too, so a retry that requeues them, and a reminder asked by one, start marked.
+ */
 export const markOutside = Effect.fn("KinOutsideContent.mark")(function* (
   turn: Pick<Turn, "orgId" | "wakeupId">,
+  source: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const at = yield* Clock.currentTimeMillis;
-  yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at)
-    VALUES (${turn.orgId}, ${turn.wakeupId}, ${at}) ON CONFLICT (org_id, wakeup_id) DO NOTHING`;
+  yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at, source)
+    VALUES (${turn.orgId}, ${turn.wakeupId}, ${at}, ${source})
+    ON CONFLICT (org_id, wakeup_id) DO NOTHING`;
+  yield* sql`INSERT INTO kin_event_outside (org_id, event_id, outside_from)
+    SELECT org_id, event_id, ${source} FROM kin_events
+    WHERE org_id = ${turn.orgId} AND wakeup_id = ${turn.wakeupId}
+    ON CONFLICT (org_id, event_id) DO NOTHING`;
+});
+
+/** An event an outside-read turn made carries its stamp; a retry or a requeue keeps it. */
+export const stampEvent = Effect.fn("KinOutsideContent.stampEvent")(function* (
+  orgId: KinOrgId,
+  eventId: string,
+  source: string | undefined,
+) {
+  if (source === undefined) return;
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_event_outside (org_id, event_id, outside_from)
+    VALUES (${orgId}, ${eventId}, ${source}) ON CONFLICT (org_id, event_id) DO NOTHING`;
 });
 
 /**
- * A turn starts outside-read when what it is shown was written by an outside-read turn: a
- * reminder or schedule asked for there (`eventIds`, its source events), or a hand-off passed on
- * from there. Errs towards outside: the source turn may have read after it wrote.
+ * A turn starts outside-read when an event it shows, or the event a reminder it shows was asked
+ * in, carries a stamp. Run before the prompt is sent; a failure stops the prompt.
  */
-export const carryOutside = Effect.fn("KinOutsideContent.carry")(function* (input: {
+export const inheritOutside = Effect.fn("KinOutsideContent.inherit")(function* (input: {
   readonly orgId: KinOrgId;
   readonly wakeupId: string;
   readonly eventIds: ReadonlyArray<string>;
 }) {
   const sql = yield* SqlClient.SqlClient;
-  const sources =
+  const events =
     input.eventIds.length === 0
-      ? sql`0`
-      : sql`EXISTS (SELECT 1 FROM kin_events e
-          JOIN kin_wakeup_outside_reads o ON o.org_id = e.org_id AND o.wakeup_id = e.wakeup_id
-          WHERE e.org_id = ${input.orgId} AND e.event_id IN ${sql.in(input.eventIds)})`;
-  const at = yield* Clock.currentTimeMillis;
-  yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at)
-    SELECT ${input.orgId}, ${input.wakeupId}, ${at}
-    WHERE ${sources} OR EXISTS (SELECT 1 FROM kin_events mine
-      JOIN kin_handoffs h ON h.org_id = mine.org_id AND h.event_id = mine.event_id
-      JOIN kin_events src ON src.org_id = h.org_id AND src.agent_id = h.from_agent_id
-        AND src.tag = 'chat.message' AND json_extract(src.json, '$.messageId') = h.message_id
-      JOIN kin_wakeup_outside_reads o ON o.org_id = src.org_id AND o.wakeup_id = src.wakeup_id
-      WHERE mine.org_id = ${input.orgId} AND mine.wakeup_id = ${input.wakeupId})
-    ON CONFLICT (org_id, wakeup_id) DO NOTHING`;
+      ? []
+      : yield* sql<{ source: string }>`SELECT outside_from AS source FROM kin_event_outside
+          WHERE org_id = ${input.orgId} AND event_id IN ${sql.in(input.eventIds)}
+          ORDER BY event_id LIMIT 1`;
+  const source = events[0]?.source;
+  if (source !== undefined) yield* markOutside(input, source);
 });
 
 /** Whether `name` may run with these arguments once the turn has read outside text. */

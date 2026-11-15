@@ -4,7 +4,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 /**
  * Connections the owner made to outside services, the tools each one lists with their pinned
  * definitions and the owner's marks, and every call an agent asked for. No credential is stored
- * here: it lives in the server's secret store. A wake-up's outside read is recorded once, sticky.
+ * here: it lives in the server's secret store. A wake-up's outside read is recorded once, sticky,
+ * and what each turn spent on connections is reserved before the call.
  */
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -83,6 +84,26 @@ export default Effect.gen(function* () {
     org_id TEXT NOT NULL REFERENCES kin_orgs(org_id),
     wakeup_id TEXT NOT NULL,
     read_at INTEGER NOT NULL,
+    -- The connection read, or the stamp of the stored content that carried it in.
+    source TEXT NOT NULL,
+    PRIMARY KEY (org_id, wakeup_id)
+  )`;
+  // Its own table: upstream migrations also alter kin_events. A retry that requeues an event
+  // keeps it, so the turn that claims it again starts outside-read too.
+  yield* sql`CREATE TABLE IF NOT EXISTS kin_event_outside (
+    org_id TEXT NOT NULL REFERENCES kin_orgs(org_id),
+    event_id TEXT NOT NULL,
+    outside_from TEXT NOT NULL,
+    PRIMARY KEY (org_id, event_id)
+  )`;
+  // Reserved before each call, so concurrent calls in one turn can't pass its bounds together.
+  yield* sql`CREATE TABLE IF NOT EXISTS kin_connection_turn_spend (
+    org_id TEXT NOT NULL REFERENCES kin_orgs(org_id),
+    wakeup_id TEXT NOT NULL,
+    calls INTEGER NOT NULL CHECK (calls >= 0),
+    chars INTEGER NOT NULL CHECK (chars >= 0),
+    last_reserved INTEGER NOT NULL CHECK (last_reserved >= 0),
+    updated_at INTEGER NOT NULL,
     PRIMARY KEY (org_id, wakeup_id)
   )`;
 });

@@ -1,12 +1,14 @@
 import { KinChatError } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
+import { ServerConfig } from "../../config.ts";
 
 /** A connection's key and the header it travels in. Redacted from the moment it is read. */
 export type ConnectionKey = { readonly header: string; readonly key: string };
@@ -22,6 +24,8 @@ const unavailable = new KinChatError({
 });
 
 const secretName = (connectionId: string) => `kin-connection-${connectionId}`;
+// The store keeps each secret as `<name>.bin`; connection ids are `conn_` and 24 hex digits.
+const storedName = /^kin-connection-(conn_[0-9a-f]{24})\.bin$/;
 
 /**
  * Connection credentials, kept only in the server's secret store (a 0600 file in its 0700
@@ -38,11 +42,15 @@ export class KinConnectionSecrets extends Context.Service<
       key: Redacted.Redacted<ConnectionKey>,
     ) => Effect.Effect<void, KinChatError>;
     readonly remove: (connectionId: string) => Effect.Effect<void, KinChatError>;
+    /** The connection ids that have a credential stored, for the sweep at start. */
+    readonly stored: () => Effect.Effect<ReadonlyArray<string>, KinChatError>;
   }
 >()("t3/kin/connections/ConnectionSecrets/KinConnectionSecrets") {}
 
 const make = Effect.gen(function* () {
   const store = yield* ServerSecretStore.ServerSecretStore;
+  const fs = yield* FileSystem.FileSystem;
+  const config = yield* ServerConfig;
   return KinConnectionSecrets.of({
     get: Effect.fn("KinConnectionSecrets.get")(function* (connectionId) {
       const bytes = yield* store
@@ -59,6 +67,15 @@ const make = Effect.gen(function* () {
     }),
     remove: Effect.fn("KinConnectionSecrets.remove")(function* (connectionId) {
       yield* store.remove(secretName(connectionId)).pipe(Effect.mapError(() => unavailable));
+    }),
+    stored: Effect.fn("KinConnectionSecrets.stored")(function* () {
+      const names = yield* fs
+        .readDirectory(config.secretsDir)
+        .pipe(Effect.mapError(() => unavailable));
+      return names.flatMap((name) => {
+        const match = storedName.exec(name);
+        return match === null ? [] : [match[1]!];
+      });
     }),
   });
 });

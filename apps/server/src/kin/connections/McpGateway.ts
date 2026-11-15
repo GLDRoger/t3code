@@ -1,4 +1,4 @@
-import { McpClient, McpClientError, McpProtocol, type McpSchema } from "effect/ai";
+import { McpClient, McpClientError, McpProtocol, McpSchema } from "effect/ai";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -11,8 +11,9 @@ import * as Semaphore from "effect/Semaphore";
 import * as HttpClient from "effect/http/HttpClient";
 
 import { EgressRefused } from "./EgressGuard.ts";
-import { capturing } from "./OpenWorldHints.ts";
+import { inbound, type ListedPage } from "./Inbound.ts";
 import { CONNECTION_LIMITS } from "./limits.ts";
+import { faithful, type ListedTool, sentOpenWorld } from "./Pinning.ts";
 
 export type GatewayTarget = {
   readonly connectionId: string;
@@ -20,6 +21,8 @@ export type GatewayTarget = {
   /** The version that last worked; tried first. */
   readonly protocolVersion: string | null;
   readonly headers: Redacted.Redacted<Readonly<Record<string, string>>> | undefined;
+  /** Each form of the credential, replaced wherever the server's replies echo it. */
+  readonly credentials: Redacted.Redacted<ReadonlyArray<string>>;
 };
 
 /**
@@ -45,9 +48,8 @@ export class KinMcpGateway extends Context.Service<
       {
         readonly protocolVersion: McpClient.ProtocolVersion;
         readonly instructions: string | undefined;
-        readonly tools: ReadonlyArray<McpSchema.Tool>;
-        /** `openWorldHint === true` as the server sent it, by tool name. */
-        readonly openWorld: ReadonlyMap<string, boolean>;
+        /** Each tool as sent, read from the same reply the client accepted. */
+        readonly tools: ReadonlyArray<ListedTool>;
       },
       KinGatewayError
     >;
@@ -123,6 +125,53 @@ const stale = (error: McpClientError.McpClientError) =>
 
 type Open = { readonly scope: Scope.Closeable; readonly client: McpClient.McpClient };
 
+const encodeTool = Schema.encodeSync(McpSchema.Tool);
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  Predicate.isObject(value) && !Array.isArray(value);
+
+/**
+ * The listing as sent, from the replies the client decoded: one answer per request and one tool
+ * per name, or the listing fails rather than guessing which one counts. A tool whose form as sent
+ * can't be read is pinned as decoded and counts as open-world.
+ */
+const asSent = Effect.fnUntraced(function* (
+  decoded: ReadonlyArray<McpSchema.Tool>,
+  pages: ReadonlyArray<ListedPage>,
+  host: string,
+) {
+  const refuse = (message: string) =>
+    Effect.fail(new KinGatewayError({ reason: "protocol", message }));
+  if (pages.some((page) => page.answers > 1))
+    return yield* refuse(`${host} answered one tool listing more than once, so Kin used neither.`);
+  const sent = new Map<string, Readonly<Record<string, unknown>>>();
+  for (const tool of pages.flatMap((page) => page.tools ?? [])) {
+    if (!isRecord(tool) || typeof tool.name !== "string") continue;
+    if (sent.has(tool.name))
+      return yield* refuse(`${host} listed two tools with the same name, so Kin used neither.`);
+    sent.set(tool.name, tool);
+  }
+  const names = new Set(decoded.map((tool) => tool.name));
+  if (names.size !== decoded.length)
+    return yield* refuse(`${host} listed two tools with the same name, so Kin used neither.`);
+  if ([...sent.keys()].some((name) => !names.has(name)))
+    return yield* refuse(`${host} sent a tool listing Kin can't read one way only.`);
+  const tools: Array<ListedTool> = [];
+  for (const tool of decoded) {
+    const raw = sent.get(tool.name);
+    if (raw !== undefined && !faithful(raw))
+      return yield* refuse(`${host} listed a tool with a number Kin can't store exactly.`);
+    const definition: Readonly<Record<string, unknown>> = raw ?? encodeTool(tool);
+    if (!faithful(definition))
+      return yield* refuse(`${host} listed a tool with a number Kin can't store exactly.`);
+    tools.push({
+      name: tool.name,
+      definition,
+      openWorld: raw === undefined || sentOpenWorld(raw),
+    });
+  }
+  return tools;
+});
+
 const make = Effect.gen(function* () {
   const http = yield* HttpClient.HttpClient;
   const open = new Map<string, Open>();
@@ -136,8 +185,9 @@ const make = Effect.gen(function* () {
   const connectWith = Effect.fnUntraced(function* (
     target: GatewayTarget,
     protocol: (typeof PROTOCOLS)[number],
-    through: HttpClient.HttpClient,
+    pages: Array<ListedPage> | undefined,
   ) {
+    const through = inbound(http, Redacted.value(target.credentials), pages);
     const scope = yield* Scope.make();
     return yield* McpClient.make({
       name: "kin",
@@ -165,14 +215,14 @@ const make = Effect.gen(function* () {
   });
 
   /** The stored version first, then the others, while the server says it speaks an older one. */
-  const connect = (target: GatewayTarget, through = http) => {
+  const connect = (target: GatewayTarget, pages?: Array<ListedPage>) => {
     const order = PROTOCOLS.toSorted(
       (a, b) =>
         Number(b.protocolVersion === target.protocolVersion) -
         Number(a.protocolVersion === target.protocolVersion),
     );
     const attempt = (index: number): Effect.Effect<Open, McpClientError.McpClientError> =>
-      connectWith(target, order[index]!, through).pipe(
+      connectWith(target, order[index]!, pages).pipe(
         Effect.catchIf(
           (error) => index < order.length - 1 && speaksOlder(error),
           () => attempt(index + 1),
@@ -181,7 +231,8 @@ const make = Effect.gen(function* () {
     return attempt(0);
   };
 
-  const client = Effect.fn("KinMcpGateway.client")(function* (target: GatewayTarget) {
+  // Untraced: the call's own span covers it, and ends with Kin's error, never the client's.
+  const client = Effect.fnUntraced(function* (target: GatewayTarget) {
     const held = open.get(target.connectionId);
     if (held !== undefined) return held.client;
     return yield* opening.withPermits(1)(
@@ -223,20 +274,21 @@ const make = Effect.gen(function* () {
   return KinMcpGateway.of({
     // Its own session each time: a server's instructions arrive only when a session starts.
     listTools: Effect.fn("KinMcpGateway.listTools")(function* (target) {
-      const openWorld = new Map<string, boolean>();
-      return yield* Effect.acquireUseRelease(
-        connect(target, capturing(http, openWorld)),
+      const host = new URL(target.url).host;
+      const pages: Array<ListedPage> = [];
+      const listed = yield* Effect.acquireUseRelease(
+        connect(target, pages),
         ({ client }) =>
           client.listTools().pipe(
             Effect.map((tools) => ({
               protocolVersion: client.protocolVersion,
               instructions: client.instructions,
               tools,
-              openWorld,
             })),
           ),
         ({ scope }) => Scope.close(scope, Exit.void),
-      ).pipe(Effect.mapError((error) => gatewayError(error, new URL(target.url).host)));
+      ).pipe(Effect.mapError((error) => gatewayError(error, host)));
+      return { ...listed, tools: yield* asSent(listed.tools, pages, host) };
     }),
     callTool: Effect.fn("KinMcpGateway.callTool")(function* (target, tool, args) {
       return yield* withClient(target, (client) =>

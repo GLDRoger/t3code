@@ -146,6 +146,11 @@ export type KinConnectionRef = typeof KinConnectionRef.Type;
 export const KinConnectionDetail = Schema.Struct({
   connection: KinConnection,
   tools: Schema.Array(KinConnectionTool),
+  /**
+   * `setToolModes` changed nothing: these tools' marks named no digest, or not the current
+   * `pinDigest`. `tools` holds their current definitions to show before marking again.
+   */
+  refused: Schema.optional(Schema.Array(Schema.String)),
 });
 export type KinConnectionDetail = typeof KinConnectionDetail.Type;
 
@@ -178,7 +183,10 @@ export type KinConnectionSetKeyInput = typeof KinConnectionSetKeyInput.Type;
 export const KinConnectionSetToolModesInput = Schema.Struct({
   orgId: KinOrgId,
   connectionId: KinConnectionId,
-  /** `digest`: the `pinDigest` shown; a tool never accepted is accepted as shown, or refused. */
+  /**
+   * `digest`: the `pinDigest` shown. Any mark but `off` needs it, and the current one; a tool
+   * never accepted is accepted as shown. Otherwise nothing changes (`refused`).
+   */
   modes: Schema.Array(
     Schema.Struct({
       tool: Schema.String,
