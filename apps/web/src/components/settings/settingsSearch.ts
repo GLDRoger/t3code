@@ -1263,6 +1263,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["kin budget agents usage spend limit"],
   },
   {
+    id: "kin-check-ins",
+    title: "Check-ins",
+    to: "/settings/company",
+    searchTerms: ["kin schedule morning afternoon weekly brief routine time run now"],
+  },
+  {
     id: "network-access",
     title: "Network access",
     to: "/settings/access",

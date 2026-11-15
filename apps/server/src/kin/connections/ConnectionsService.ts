@@ -119,8 +119,10 @@ import {
   PreparedJson,
   sendCard,
   sendMail,
+  markQuotesSent,
   sentToClient,
 } from "./Sending.ts";
+import { KinRecords } from "../work/KinRecords.ts";
 import { ownerZone } from "../work/recordRows.ts";
 
 export const SHARED_CONNECTIONS =
@@ -447,6 +449,8 @@ const make = Effect.gen(function* () {
     Config.withDefault(DEFAULT_SIGN_IN_ADDRESS),
   );
   const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
+  // Absent in tests that build connections alone; a sent quote then stays as it was.
+  const records = yield* Effect.serviceOption(KinRecords);
 
   const owner = Effect.fn("KinConnections.owner")(function* (people: People, orgId: KinOrgId) {
     if (!people.some((person) => person.orgId === orgId)) return yield* notFound;
@@ -2325,6 +2329,19 @@ const make = Effect.gen(function* () {
       );
     }
     const done = yield* finish("sent", null, sent.success);
+    if (prepared._tag === "email" && Option.isSome(records))
+      yield* markQuotesSent(records.value, {
+        orgId,
+        personId: row.owner,
+        entryRecordIds: prepared.attachments.flatMap((one) =>
+          one.entryRecordId === null ? [] : [one.entryRecordId],
+        ),
+      }).pipe(
+        provideSql,
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't mark a sent quote as sent", { cause }),
+        ),
+      );
     if (prepared._tag === "email")
       yield* sentToClient({
         orgId,

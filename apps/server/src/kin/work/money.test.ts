@@ -249,6 +249,8 @@ const defined = (n: number, input: Omit<typeof LeadMoney.DefineInput.Type, "sour
   Effect.gen(function* () {
     const asked = yield* turn(n, "Start tracking this");
     const proposed = yield* LeadMoney.define(scope, { sourceEventId: asked, ...input });
+    // Kin's own invoices and quotes lists need no yes.
+    if (proposed.status === "defined") return proposed;
     const yes = yield* turn(n + 1, "Yes, go ahead");
     return yield* LeadMoney.define(scope, { sourceEventId: yes, proposal: proposed.proposal! });
   });
@@ -577,10 +579,10 @@ describe("lists through the tools", () => {
       Effect.gen(function* () {
         yield* seed;
         const sql = yield* SqlClient.SqlClient;
-        const asked = yield* turn(1, "Track invoices and expenses, and dates too");
-        const invoices = yield* LeadMoney.define(scope, {
+        const asked = yield* turn(1, "Track receipts and expenses, and dates too");
+        const receipts = yield* LeadMoney.define(scope, {
           sourceEventId: asked,
-          template: "invoices",
+          template: "receipts",
         });
         const expenses = yield* LeadMoney.define(scope, {
           sourceEventId: asked,
@@ -591,18 +593,18 @@ describe("lists through the tools", () => {
         const [card] = yield* sql<{ widgetId: string; state: string }>`SELECT p.widget_id AS
             "widgetId", w.state_json AS state FROM kin_list_proposals p
           JOIN kin_widgets w ON w.widget_id = p.widget_id
-          WHERE p.proposal_id = ${invoices.proposal!}`;
-        assert.strictEqual(card!.widgetId, cardOf(`kin-list:${invoices.proposal!}`));
-        assert.include(JSON.parse(card!.state).question, "Invoices");
-        assert.include(JSON.parse(card!.state).detail, "Invoice number (text)");
+          WHERE p.proposal_id = ${receipts.proposal!}`;
+        assert.strictEqual(card!.widgetId, cardOf(`kin-list:${receipts.proposal!}`));
+        assert.include(JSON.parse(card!.state).question, "Receipts");
+        assert.include(JSON.parse(card!.state).detail, "Receipt number (text)");
         const define = (sourceEventId: string, proposal: string) =>
           LeadMoney.define(scope, { sourceEventId, proposal });
 
         // A teammate's tap is no answer, and nor is the owner's yes on some other question.
         yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
           VALUES ('mate', ${orgId}, 'mate', 'Mate', ${at})`;
-        const strangers = yield* tap(2, cardOf(`kin-list:${invoices.proposal!}`), "yes", "mate");
-        assert.include(yield* Effect.flip(define(strangers, invoices.proposal!)), {
+        const strangers = yield* tap(2, cardOf(`kin-list:${receipts.proposal!}`), "yes", "mate");
+        assert.include(yield* Effect.flip(define(strangers, receipts.proposal!)), {
           reason: "not_allowed",
         });
         const other = yield* tap(3, cardOf(`kin-list:${expenses.proposal!}`), "yes");
@@ -622,7 +624,7 @@ describe("lists through the tools", () => {
           reason: "not_allowed",
         });
         // One typed yes may answer every proposal still pending before it; the model judges it.
-        assert.strictEqual((yield* define(later, invoices.proposal!)).status, "defined");
+        assert.strictEqual((yield* define(later, receipts.proposal!)).status, "defined");
         assert.deepStrictEqual(
           yield* sql`SELECT register_id FROM kin_registers WHERE register_id = 'dates'`,
           [],
@@ -765,11 +767,16 @@ describe("a list proposed again", () => {
       const sql = yield* SqlClient.SqlClient;
       const cards = () =>
         sql`SELECT 1 FROM kin_widgets WHERE type = 'choice' AND state_json LIKE '%Create the list%'`;
-      const asked = yield* turn(1, "Track invoices");
-      const first = yield* LeadMoney.define(scope, { sourceEventId: asked, template: "invoices" });
+      // Kin's own quotes list is made at once, with no card to tap.
+      const quotes = yield* turn(9, "Track quotes");
+      const plain = yield* LeadMoney.define(scope, { sourceEventId: quotes, template: "quotes" });
+      assert.strictEqual(plain.status, "defined");
+      assert.lengthOf(yield* cards(), 0);
+      const asked = yield* turn(1, "Track dates");
+      const first = yield* LeadMoney.define(scope, { sourceEventId: asked, template: "dates" });
       // The owner taps Create it; the tap's turn proposes the same list instead of carrying it out.
       const yes = yield* tap(2, cardOf(`kin-list:${first.proposal!}`), "yes");
-      const again = yield* LeadMoney.define(scope, { sourceEventId: yes, template: "invoices" });
+      const again = yield* LeadMoney.define(scope, { sourceEventId: yes, template: "dates" });
       assert.strictEqual(again.proposal, first.proposal);
       assert.lengthOf(yield* cards(), 1);
       const made = yield* LeadMoney.define(scope, {
@@ -799,10 +806,10 @@ describe("who asked", () => {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
         VALUES ('mate', ${orgId}, 'mate', 'Mate', ${at})`;
-      const asked = yield* turn(1, "Track invoices");
+      const asked = yield* turn(1, "Track dates");
       const proposed = yield* LeadMoney.define(scope, {
         sourceEventId: asked,
-        template: "invoices",
+        template: "dates",
       });
       const askedBy = (n: number) =>
         LeadWork.askedBy({ orgId, agentId: lead, wakeupId: `wake-${n}` } as LeadWork.Lead);

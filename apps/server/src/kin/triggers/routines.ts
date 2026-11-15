@@ -186,7 +186,9 @@ const make = Effect.gen(function* () {
     for (const routine of routines) {
       const id = KinTriggerId.make(`routine:${routine}`);
       const existing = yield* store.get(settings.orgId, id);
-      yield* sql`INSERT INTO kin_routine_preferences (org_id, routine, enabled) VALUES (${settings.orgId}, ${routine}, ${existing?.enabled === false ? 0 : 1}) ON CONFLICT DO NOTHING RETURNING routine`;
+      // Off unless turned on: the check-ins (`pulse/checkInSeeds.ts`) carry the briefs now, the
+      // morning one with the morning brief's sections. K145 turned existing companies' off.
+      yield* sql`INSERT INTO kin_routine_preferences (org_id, routine, enabled) VALUES (${settings.orgId}, ${routine}, ${existing?.enabled === true ? 1 : 0}) ON CONFLICT DO NOTHING RETURNING routine`;
       const [preference] = yield* sql<{
         enabled: number;
         paused: number;
@@ -462,7 +464,7 @@ const make = Effect.gen(function* () {
           }>`SELECT enabled, paused FROM kin_routine_preferences WHERE org_id = ${orgId} AND routine = ${routine} ORDER BY routine`.pipe(
             Effect.mapError(toPersistenceSqlError("KinRoutines.isEnabled")),
           );
-          return row === undefined || (row.enabled === 1 && row.paused === 0);
+          return row !== undefined && row.enabled === 1 && row.paused === 0;
         }),
       ),
     ),

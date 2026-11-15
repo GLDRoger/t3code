@@ -63,6 +63,7 @@ const URGENT = new Set<KinPulseFact["sense"]>([
   "budget_over",
   "worker_failed",
   "goal_behind",
+  "milestone_late",
 ]);
 
 const inScope = (fact: KinPulseFact, scope: KinAttentionScope) => {

@@ -14,6 +14,7 @@ import {
   KinWorkerId,
   OrchestratorMcpFailure,
   type OrchestrationV2RunStatus,
+  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type OrchestrationV2StoredEvent,
   type OrchestrationV2Subagent,
   ModelSelection,
@@ -58,7 +59,9 @@ import { KinLeadRegistry } from "./KinLeadRegistry.ts";
 import * as KinLevels from "./KinLevels.ts";
 import { isOrgPaused, STOP_REASON } from "./orgState.ts";
 import { CONTINUED, KinDocCollector } from "../gendocs/DocJobs.ts";
-import { OWNER_DECLINED, parseReport, WAITING_FOR_OWNER } from "./workerBrief.ts";
+import { KinDocRenderer } from "../gendocs/render.ts";
+import { takeOutputs } from "../gendocs/returnPath.ts";
+import { MAX_SCREENSHOTS, OWNER_DECLINED, parseReport, WAITING_FOR_OWNER } from "./workerBrief.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
 import { failureSentence } from "./workerFailure.ts";
 import * as Publish from "./workerPublish.ts";
@@ -316,6 +319,7 @@ const make = Effect.gen(function* () {
   const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
   const publisher = yield* Effect.serviceOption(Publish.KinWorkerPublish);
   const documents = yield* Effect.serviceOption(KinDocCollector);
+  const renderer = yield* Effect.serviceOption(KinDocRenderer);
   const repo = yield* KinChatRepository;
   const hub = yield* KinChatHub;
   const environment = yield* Effect.serviceOption(ServerEnvironment);
@@ -1080,6 +1084,55 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * The screenshots a finished run named in its report, taken from its worktree's `out/` the way a
+   * document job's files are, and posted in its chat as one Kin message the owner can open.
+   */
+  const postScreenshots = Effect.fn("WorkerTracker.postScreenshots")(
+    function* (worker: WorkerRow, worktree: string | null, runId: string, report: WorkerReport) {
+      const named = report.evidence
+        .filter((item) => item.kind === "screenshot")
+        .map((item) => item.ref);
+      if (worktree === null || named.length === 0 || Option.isNone(renderer)) return;
+      const { taken } = yield* takeOutputs({
+        worktree,
+        named,
+        caps: {
+          files: MAX_SCREENSHOTS,
+          fileBytes: PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+          totalBytes: MAX_SCREENSHOTS * PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+        },
+      });
+      const attachments = yield* Effect.forEach(
+        taken.filter((file) => file.mimeType.startsWith("image/")),
+        (file) =>
+          renderer.value.store(worker.orgId, worker.workerId, file).pipe(
+            Effect.map((id) => ({
+              type: "image" as const,
+              id,
+              name: file.name,
+              mimeType: file.mimeType,
+              sizeBytes: file.bytes.length,
+            })),
+          ),
+      );
+      if (attachments.length === 0) return;
+      yield* card(worker, (chatId, audience) =>
+        chat.notice({
+          orgId: worker.orgId,
+          chatId,
+          audience,
+          messageId: KinMessageId.make(`kin-shots:${worker.workerId}:${runId}`),
+          body: `Screenshots from ${worker.title ?? "the worker"}`,
+          attachments,
+        }),
+      );
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin couldn't post a worker's screenshots", { cause }),
+    ),
+  );
+
+  /**
    * One wait on a worker's thread on this server; true once its latest run is reported. Kin, not
    * the worker, commits and publishes, and only after the run ended completed.
    */
@@ -1158,6 +1211,8 @@ const make = Effect.gen(function* () {
       : undefined;
     // Kin sent a recipe writer back to work: that next run's end reports instead.
     if (filed === CONTINUED) return false;
+    if (filed === undefined)
+      yield* postScreenshots(worker, projection.thread.worktreePath, run.id, report);
     if (filed !== undefined)
       return yield* settleRun(worker, {
         runId: run.id,

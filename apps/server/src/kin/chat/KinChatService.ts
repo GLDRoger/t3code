@@ -151,6 +151,8 @@ export class KinChatService extends Context.Service<
       readonly orgId: KinOrgId;
       readonly chatId: KinChatId;
       readonly body: string;
+      /** Files Kin already stored, such as a worker's screenshots; never a member's upload. */
+      readonly attachments?: ReadonlyArray<KinAttachment>;
       readonly waitingFor?: KinPersonId;
       /** Who `body` is for (`WriteAudience`), checked against the chat in the write's transaction. */
       readonly audience: WriteAudience;
@@ -1303,6 +1305,9 @@ const make = Effect.gen(function* () {
         audience: input.audience,
         kind: "system",
         body: input.body,
+        ...(input.attachments === undefined || input.attachments.length === 0
+          ? {}
+          : { attachments: input.attachments }),
         intent: null,
         mentions: [],
         replyTo: null,

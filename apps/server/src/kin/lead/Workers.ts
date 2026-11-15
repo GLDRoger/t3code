@@ -105,6 +105,10 @@ export const DelegateInput = Schema.Struct({
     description:
       "An open PR's number in project's repository, anyone's: review checks it out at the PR's head; build pushes fixes to the PR's own branch.",
   }),
+  uiTest: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "With kind review and pullRequest: the worker starts the app at the PR's head, clicks through it in a headless browser and reports what worked and what broke, with screenshots Kin posts in the chat.",
+  }),
   entry: Schema.optional(KinRecordKey).annotate({
     description:
       "The Work entry this works on, such as W-12. Without one, Kin tracks the worker as a new entry of yours.",
@@ -684,7 +688,7 @@ const make = Effect.gen(function* () {
           return yield* denied(SHARED_REFUSAL);
         const config = yield* leadConfig(ctx);
         const event = yield* sourceEvent(ctx, input.sourceEventId);
-        if (input.pullRequest !== undefined)
+        if (input.pullRequest !== undefined || input.uiTest === true)
           return yield* denied(
             "Work on a pull request runs on this host's own workers, not in a linked worker environment.",
           );

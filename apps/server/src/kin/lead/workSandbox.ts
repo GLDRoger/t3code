@@ -33,6 +33,7 @@ import { resolveClaudeHomePath } from "../../provider/Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../../provider/Drivers/CodexHomeLayout.ts";
 import { makeConfiner, type WorkerCredentials } from "../claudeConfinement.ts";
 import { documentWorktrees } from "../gendocs/workspace.ts";
+import { chromeBuildsDir, playwrightCoreDir } from "./workerBrowser.ts";
 import { ownerPath, serverVp, workerPaths } from "./workerPath.ts";
 import { grantedHosts, noteBlocked, refusedHosts } from "./workNetwork.ts";
 import { type CheckLine, type CheckResult, probe, type ShellPaths } from "./workSandboxProbe.ts";
@@ -701,7 +702,11 @@ export const layer = Layer.effect(
   KinWorkSandbox,
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const { stateDir, worktreesDir } = yield* ServerConfig;
+    const { baseDir, stateDir, worktreesDir } = yield* ServerConfig;
+    // What a UI test's commands drive (`workerBrowser.ts`): T3's Chrome and the server's Playwright.
+    const browserPaths = [chromeBuildsDir(baseDir), playwrightCoreDir()].filter(
+      (entry): entry is string => entry !== undefined && !isInside(stateDir, entry),
+    );
     const agentScope = yield* AgentScope;
     const settings = yield* Effect.serviceOption(ServerSettingsService);
     const context = yield* Effect.context<
@@ -837,7 +842,7 @@ export const layer = Layer.effect(
           place,
           paths,
           domains,
-          readPaths: host.readPaths,
+          readPaths: [...host.readPaths, ...browserPaths],
           providerHomes: homes,
         });
         if (checked._tag === "unresolved") return yield* fileOnlyBecause(checked.reason);
