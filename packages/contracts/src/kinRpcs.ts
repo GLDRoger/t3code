@@ -330,6 +330,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.work.subscribe": "kin-work",
   "kin.work.create": "kin-work",
   "kin.work.assign": "kin-work",
+  "kin.work.handBack": "kin-work",
   "kin.work.update": "kin-work",
   "kin.work.confirm": "kin-work",
   "kin.work.decline": "kin-work",

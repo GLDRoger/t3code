@@ -55,6 +55,7 @@ import ReceiptProposalsPasswordBudget from "./migrations/K131_ReceiptProposalsPa
 import PeopleProfiles from "./migrations/K132_PeopleProfiles.ts";
 import MoneyBudgets from "./migrations/K133_MoneyBudgets.ts";
 import ConnectionSignIn from "./migrations/K134_ConnectionSignIn.ts";
+import AssignedByAgent from "./migrations/K135_AssignedByAgent.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -190,6 +191,7 @@ const loader = Migrator.fromRecord({
   "132_PeopleProfiles": PeopleProfiles,
   "133_MoneyBudgets": MoneyBudgets,
   "134_ConnectionSignIn": ConnectionSignIn,
+  "135_AssignedByAgent": AssignedByAgent,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

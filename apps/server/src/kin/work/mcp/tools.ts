@@ -73,6 +73,18 @@ export const KinWorkToolkit = Toolkit.make(
     parameters: Work.UpdateInput,
     success: Work.UpdateResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("record_assign", {
+    ...shared,
+    description: `Give open tasks to people or agents, one call for a whole plan (up to 50): each with key, to ("me", an agent's agentId, or a person as people_read names them), reason (one line on why them) and optionally due. Taking a late or stalled task over is giving it to "me" or another agent with the reason. Kin shows the reason on the task and tells each person once, in their own chat with you (or the team agent), every task that came to them or was taken from them, with its due date; told names who heard, so don't message them again. A private task can't go to a teammate. Refused rows come back with why; the rest are given. Pass this turn's sourceEventId.`,
+    parameters: Work.AssignInput,
+    success: Work.AssignResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("record_hand_back", {
+    ...shared,
+    description: `Give a task back to whoever gave it: one you hold, or one held by the person asking you in this turn when they say they can't take it ("I'm on the release"). Pass their words as note. It goes back open to the agent or person that gave it; an agent is woken with the note to give it to someone else or ask the owner. Pass this turn's sourceEventId.`,
+    parameters: Work.HandBackInput,
+    success: Work.HandBackResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("list_define", {
     ...shared,
     description: `Start tracking something new as a list with typed fields, such as "start tracking expenses" or "track leave": a template (expenses, invoices, dates, receipts) or a name and fields (text, choice with choices, date, person, link to clients or projects, money, file), plus categories, the states it uses and what it calls them, and whether entries carry an amount. To add fields, choices or categories to a list you defined, pass list. The first call only proposes: it returns a proposal, creates nothing, and shows the owner its fields on a card to tap. Ask in one short line; once they tap yes or say yes in a later turn, call again with just proposal and sourceEventId to create exactly that. A no on the card ends that proposal. Never create a list the owner hasn't agreed to. Only the owner retires a field or archives a list.`,

@@ -123,7 +123,7 @@ export const SHARED_TOOLS = {
   kin_chat_read: inAskedChat,
   // Lists only the names of the leads in the asked chat (`KinHandoff.leads`).
   kin_leads: "allowed",
-  // What everyone in the org sees on profiles; no workload.
+  // What everyone in the org sees on profiles; workload only in the owner's own turns.
   people_read: "allowed",
   // Ends the turn; a shared turn's summary reaches no journal (`LeadMemory.end`).
   kin_end: "allowed",
@@ -150,6 +150,9 @@ export const SHARED_TOOLS = {
   record_get: "view",
   record_create: oneAskerCreates,
   record_update: "view",
+  // Giving out work is the owner's turn's; handing back is the asker's own task, in their view.
+  record_assign: "refused",
+  record_hand_back: "view",
   // Docs are owner-only too until the teammate view; restoring stays the owner's after it.
   doc_create: "refused",
   doc_read: "refused",
