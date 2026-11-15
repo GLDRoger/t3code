@@ -551,6 +551,31 @@ describe("KinBudget", () => {
       yield* budget.charge({ orgId, wakeupId: own, usage });
       assert.include(yield* budget.get(orgId), { ownerUnits: 55.5, teammateUnits: 111 });
       assert.strictEqual((yield* budget.admit(orgId, "P3", "owner")).remaining, 44.5 / 100);
+      // A co-owner's request spends as the owner's, not the teammates'.
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access) VALUES ('asha', ${orgId}, 'asha', 'Asha', '1970-01-01T00:00:00.000Z', 'co_owner')`;
+      const asked = {
+        _tag: "chat.message" as const,
+        orgId,
+        agentId,
+        eventId: KinEventId.make("asha"),
+        receivedAt: DateTime.makeUnsafe(0),
+        dedupeKey: null,
+        provenance: {
+          _tag: "human" as const,
+          personId: KinPersonId.make("asha"),
+          memberId: KinMemberId.make("asha-direct"),
+        },
+        chatId: KinChatId.make("asha-chat"),
+        messageId: KinMessageId.make("message-asha"),
+      };
+      assert.isFalse(Budget.askedByTeammate(asked, new Set(["owner", "asha"])));
+      assert.isTrue(Budget.askedByTeammate(asked, new Set(["owner"])));
+      yield* queue.enqueue(asked);
+      const hers = KinWakeupId.make("asha-turn");
+      yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids) VALUES (${orgId}, ${hers}, ${agentId}, 'cheap', 0, 'completed', '[]')`;
+      yield* sql`UPDATE kin_events SET wakeup_id = ${hers}, state = 'done' WHERE event_id = 'asha'`;
+      yield* budget.charge({ orgId, wakeupId: hers, usage });
+      assert.include(yield* budget.get(orgId), { ownerUnits: 111, teammateUnits: 111 });
     }).pipe(Effect.provide(layer)),
   );
   it.effect("a crash between holding work and saying so leaves neither, then says both once", () =>

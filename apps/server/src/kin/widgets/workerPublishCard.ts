@@ -21,6 +21,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import * as Attempts from "../work/workerAttempts.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 
 /**
  * The owner's card for a finished worker's commit that Kin holds instead of publishing: one per
@@ -223,13 +224,19 @@ export const applyPublishTap = Effect.fn("KinWorkerPublishCard.apply")(function*
   const sql = yield* SqlClient.SqlClient;
   const attempt = yield* Attempts.attemptOfCard(widget.orgId, widget.widgetId);
   if (attempt === undefined) return yield* invalid("This card is out of date.");
-  // The lead's own owner: no teammate, and no one but the person who owns the lead.
+  // The lead's owner or a co-owner; no teammate.
   const [owner] = yield* sql<{ personId: string }>`SELECT a.owner_person_id AS "personId"
     FROM kin_worker_attempts w JOIN kin_agents a ON a.org_id = w.org_id AND a.agent_id = w.agent_id
     JOIN kin_leads l ON l.org_id = a.org_id AND l.agent_id = a.agent_id
     WHERE w.org_id = ${attempt.orgId} AND w.worker_id = ${attempt.workerId}
       AND w.started_at = ${attempt.startedAt} AND l.owner_chat_id = ${widget.chatId}`;
-  if (owner === undefined || owner.personId !== personId)
+  if (
+    owner === undefined ||
+    (owner.personId !== personId &&
+      !(yield* ownerLevel(widget.orgId, KinPersonId.make(personId)).pipe(
+        Effect.orElseSucceed(() => false),
+      )))
+  )
     return yield* new KinChatError({
       reason: "not_allowed",
       message: "Only the owner publishes this.",

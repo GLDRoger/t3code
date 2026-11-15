@@ -5,6 +5,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
 import { aborted, askedIn, effectiveAudience, turnChat } from "./Audience.ts";
+import { ownerLevelSql } from "../people/KinAccess.ts";
 
 type Turn = {
   readonly orgId: KinOrgId;
@@ -48,18 +49,20 @@ export const inCompanyChat = Effect.fn("KinSharedTools.inCompanyChat")(function*
   return rows.length > 0;
 });
 
-/** Every message, tap and reaction the turn answers is the owner's own, by stored author. */
+/** Every message, tap and reaction the turn answers is the owner's or a co-owner's, by stored author. */
 const ownerAsked = Effect.fnUntraced(function* (turn: Turn) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ fromOwner: number }>`
     SELECT CASE
         WHEN json_extract(e.json, '$.origin.personId') IS NOT NULL THEN 0
         WHEN e.tag IN ('chat.message', 'widget.action') THEN
-          m.author_kind = 'human' AND m.author_person_id = a.owner_person_id
+          m.author_kind = 'human' AND (m.author_person_id = a.owner_person_id
+            OR ${sql.literal(ownerLevelSql("e.org_id", "m.author_person_id"))})
             AND m.chat_id = json_extract(e.json, '$.chatId')
         WHEN e.tag = 'chat.reaction' THEN
           json_extract(e.json, '$.provenance._tag') = 'human'
-            AND json_extract(e.json, '$.provenance.personId') = a.owner_person_id
+            AND (json_extract(e.json, '$.provenance.personId') = a.owner_person_id
+              OR ${sql.literal(ownerLevelSql("e.org_id", "json_extract(e.json, '$.provenance.personId')"))})
         ELSE 0 END AS "fromOwner"
     FROM kin_events e
     JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id

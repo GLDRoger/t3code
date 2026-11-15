@@ -30,6 +30,7 @@ import { KinPresence, queueLabel, syncQueued } from "../reply/KinPresence.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { RETIRED_NOTICE_PREFIX, retiredAgentNotice, retiredNoticeId } from "./Retirement.ts";
 import * as LeadAccess from "./LeadAccess.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 
 const decodeTap = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
@@ -255,10 +256,14 @@ const make = Effect.gen(function* () {
         const agentId = KinAgentId.make(target.agentId);
         const event = wakeEvent(message, agentId, Option.getOrUndefined(actionId));
         const dedupeKey = event.dedupeKey;
-        // The owner is never capped. Anyone else's turn is counted and enqueued in one step.
+        // The owner and co-owners are never capped. Anyone else's turn is counted and enqueued in one step.
         const personId = message.author.personId;
         const queued =
-          personId === target.ownerPersonId
+          personId === target.ownerPersonId ||
+          (yield* ownerLevel(message.orgId, personId).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.orElseSucceed(() => false),
+          ))
             ? yield* enqueue(event)
             : yield* sql
                 .withTransaction(
