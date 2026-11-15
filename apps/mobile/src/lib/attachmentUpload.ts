@@ -232,8 +232,10 @@ async function uploadFileBytes(
       signal,
       ...(onProgress
         ? {
+            // Typed as numbers, but iOS reports these Int64 counts as BigInt.
             onProgress: ({ bytesSent, totalBytes }) => {
-              if (totalBytes > 0) onProgress(bytesSent / totalBytes);
+              const total = Number(totalBytes);
+              if (total > 0) onProgress(Number(bytesSent) / total);
             },
           }
         : {}),

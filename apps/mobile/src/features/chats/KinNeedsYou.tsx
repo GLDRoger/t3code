@@ -9,6 +9,7 @@ import {
   type KinNeedsYouRow,
 } from "@t3tools/client-runtime/kin/kinWorkHome";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
+import type { KinRecord } from "@t3tools/contracts";
 import { useState } from "react";
 import { View } from "react-native";
 
@@ -23,7 +24,6 @@ import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinInbox } from "./state/useKinInbox";
 import { useKinLists, useKinMoneySummary } from "./state/useKinMoney";
 import type { KinWorkTarget } from "./state/useKinWork";
-import { useKinMyDueTasks } from "./state/useKinWorkHome";
 
 const NEEDS_ICON: Record<KinNeedsYouRow["kind"], AppSymbolName> = {
   task: "checkmark.circle",
@@ -37,6 +37,8 @@ export function KinNeedsYou(
     readonly live: KinWorkLive;
     readonly stale: boolean;
     readonly names: KinWorkNames;
+    /** Your open tasks due by the end of today; null until read. Tasks leaves them out below. */
+    readonly mine: ReadonlyArray<KinRecord> | null;
     /** An empty company has nothing to say here, and Tasks' own empty state says it. */
     readonly hideWhenNone: boolean;
   },
@@ -50,7 +52,7 @@ export function KinNeedsYou(
   const seq = props.stale ? null : props.live.seq;
   const money = useKinMoneySummary(target, { enabled: true, seq }).state;
   const lists = useKinLists(target, { enabled: true, archived: true, seq }).state;
-  const mine = useKinMyDueTasks(target, names.me, seq);
+  const { mine } = props;
   const inbox = useKinInbox();
   const [expanded, setExpanded] = useState(false);
 

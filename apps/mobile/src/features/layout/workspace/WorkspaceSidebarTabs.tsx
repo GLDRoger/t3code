@@ -15,6 +15,7 @@ export function SidebarTabBar<Tab extends string>(_props: {
   readonly onNewTask?: () => void;
   readonly compact?: boolean;
   readonly reserveComposeSpace?: boolean;
+  readonly showsLabels?: boolean;
 }) {
   return null;
 }

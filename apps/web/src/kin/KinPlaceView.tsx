@@ -24,6 +24,7 @@ import { KinOrgId, type EnvironmentId, type KinRecordKey } from "@t3tools/contra
 import {
   Link,
   useChildMatches,
+  useLocation,
   useNavigate,
   useParams,
   useRouter,
@@ -75,6 +76,13 @@ import {
 
 const PLACES_ROUTE = "/_chat/kin/$environmentId/$orgId/_places";
 
+declare module "@tanstack/react-router" {
+  interface HistoryState {
+    /** A record opened from its place's list, so the way back is one step back. */
+    kinFromList?: boolean;
+  }
+}
+
 /** The layout over Tasks, Money, Clients and Docs: one view, so moving between them keeps it. */
 export function KinPlacesRoute() {
   const { environmentId, orgId } = useParams({ from: PLACES_ROUTE });
@@ -84,6 +92,7 @@ export function KinPlacesRoute() {
     child === "money" || child === "clients" || child === "docs" ? child : "tasks";
   const navigate = useNavigate();
   const router = useRouter();
+  const location = useLocation();
   const record = kinRecordOf(search);
   const params = { environmentId, orgId };
   return (
@@ -94,9 +103,23 @@ export function KinPlacesRoute() {
       orgId={KinOrgId.make(orgId)}
       place={place}
       record={record}
-      onGo={(to, next) =>
-        void navigate({ to: KIN_PLACE_PATH[to], params, search: kinSearchOf(next) })
-      }
+      onGo={(to, next) => {
+        const fromList = location.state.kinFromList === true;
+        // Back from a record opened off this list is the browser's own Back, so the two agree.
+        if (to === place && next === null && record !== null && fromList) {
+          router.history.back();
+          return;
+        }
+        const within = to === place && record !== null;
+        void navigate({
+          to: KIN_PLACE_PATH[to],
+          params,
+          search: kinSearchOf(next),
+          // A record opened from a record takes its spot rather than stacking.
+          replace: within,
+          state: { kinFromList: next !== null && (within ? fromList : to === place) },
+        });
+      }}
       docLink={(key, section) =>
         new URL(
           router.history.createHref(
@@ -282,6 +305,15 @@ function KinPlaceView({
           lists={lists.state._tag === "ready" ? kinListsOf(lists) : null}
           onOpenList={(list) => openList({ list, filter: KIN_LIST_DEFAULT_FILTER })}
           onAskList={agent === null ? null : () => agent.ask(KIN_LISTS.askMessage)}
+          selected={
+            record === null
+              ? null
+              : "doc" in record
+                ? record.doc
+                : "list" in record
+                  ? record.list
+                  : null
+          }
         />
       );
     if (place === "clients")
@@ -303,6 +335,15 @@ function KinPlaceView({
           onOpen={openClient}
           onOpenProject={openProject}
           onAdd={addClient}
+          selected={
+            record === null
+              ? null
+              : "party" in record
+                ? record.party
+                : "project" in record
+                  ? record.project
+                  : null
+          }
         />
       );
     return (
@@ -319,11 +360,12 @@ function KinPlaceView({
         onAdd={addTask === null ? null : () => addTask(KIN_WORK_NO_DRAFT)}
         initial={narrowed}
         choices={hostClients ? choices : null}
-        header={
+        renderNeedsYou={(mine) => (
           <KinNeedsYou
             {...props}
             directory={directory}
             seq={seq}
+            mine={mine}
             onOpenTask={setOpenKey}
             onOpenList={(start) => {
               setListStart(start);
@@ -331,7 +373,7 @@ function KinPlaceView({
             }}
             onOpenMoney={() => onGo("money", null)}
           />
-        }
+        )}
       />
     );
   };
