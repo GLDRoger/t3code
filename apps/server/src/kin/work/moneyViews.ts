@@ -14,6 +14,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { addUp, dayIn, financialYearOf, formatMoney, monthOf, shiftMonth } from "./money.ts";
 import {
   countedEntry,
+  fieldDateAt,
   countedPayment,
   iso,
   moneyDay,
@@ -22,7 +23,8 @@ import {
   selectRecords,
   toRecord,
 } from "./recordRows.ts";
-import { allLists, type ListDef, stateLabel } from "./registers.ts";
+import { parseFields } from "./lists.ts";
+import { allLists, isFieldDate, type ListDef, stateLabel } from "./registers.ts";
 import { viewSees } from "./teamView.ts";
 
 /**
@@ -33,7 +35,74 @@ import { viewSees } from "./teamView.ts";
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DATES_CAP = 200;
 
-type DateHit = { readonly id: string; readonly kind: "due" | "date"; readonly at: number };
+type DateHit = {
+  readonly id: string;
+  readonly key: string;
+  readonly kind: "due" | "date";
+  readonly at: number;
+  readonly field?: { readonly key: string; readonly label: string; readonly allDay: boolean };
+};
+const order = (a: DateHit, b: DateHit) =>
+  a.at - b.at ||
+  (a.key < b.key ? -1 : a.key > b.key ? 1 : 0) ||
+  (a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0) ||
+  (a.field?.key ?? "").localeCompare(b.field?.key ?? "");
+
+/** The lists' own date fields with a value in `[from, to)`, read from each entry's fields. */
+const fieldHits = Effect.fn("KinMoneyViews.fieldHits")(function* (
+  orgId: KinOrgId,
+  lists: ReadonlyMap<string, ListDef>,
+  input: {
+    readonly from: number;
+    readonly to: number;
+    readonly lists?: ReadonlyArray<string> | undefined;
+    readonly open?: boolean | undefined;
+    readonly view?: ReadonlyArray<KinPersonId> | undefined;
+  },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const zone = yield* ownerZone(orgId);
+  const asked = input.lists === undefined || input.lists.length === 0 ? undefined : input.lists;
+  const hits: Array<DateHit> = [];
+  // By text first, a day either side, so the zone's exact edges are settled below.
+  const fromDay = dayIn(input.from - DAY_MS, zone);
+  const toDay = dayIn(input.to + DAY_MS, zone);
+  for (const def of lists.values()) {
+    if (asked !== undefined && !asked.includes(def.id)) continue;
+    const fields = def.fields.filter((one) => one.type === "date" && one.retired !== true);
+    if (fields.length === 0) continue;
+    const rows = yield* sql<{ id: string; key: string; fieldsJson: string }>`SELECT
+        r.record_id AS id, r.key, r.fields_json AS "fieldsJson" FROM kin_records r
+      WHERE r.org_id = ${orgId} AND r.register_id = ${def.id}
+        ${input.open === true ? sql`AND r.state NOT IN ('done', 'dropped')` : sql``}
+        ${input.view === undefined ? sql`` : sql`AND ${viewSees(sql, input.view)}`}
+        AND (${sql.or(
+          fields.map(
+            (one) =>
+              sql`(json_extract(r.fields_json, ${`$.${one.key}`}) >= ${fromDay}
+                AND json_extract(r.fields_json, ${`$.${one.key}`}) < ${toDay})`,
+          ),
+        )})
+      ORDER BY r.key`;
+    for (const row of rows) {
+      const values = parseFields(row.fieldsJson);
+      for (const one of fields) {
+        const value = values[one.key];
+        if (typeof value !== "string" || !isFieldDate(value)) continue;
+        const { at, allDay } = fieldDateAt(value, zone);
+        if (at >= input.from && at < input.to)
+          hits.push({
+            id: row.id,
+            key: row.key,
+            kind: "date",
+            at,
+            field: { key: one.key, label: one.label, allDay },
+          });
+      }
+    }
+  }
+  return hits;
+});
 
 /** Everything due or dated in `[from, to)`, across lists, soonest first. */
 export const dates = Effect.fn("KinMoneyViews.dates")(function* (
@@ -69,8 +138,16 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
       WHERE ${where("date_at")}`;
   const [count] = yield* sql<{ total: number }>`SELECT COUNT(*) AS total FROM (${hits})`;
   const limit = Math.min(Math.max(input.limit ?? 100, 1), DATES_CAP);
-  const page = yield* sql<DateHit>`SELECT id, kind, at FROM (${hits})
-    ORDER BY at, key, kind LIMIT ${limit} OFFSET ${Math.max(input.offset ?? 0, 0)}`;
+  const offset = Math.max(input.offset ?? 0, 0);
+  const lists = yield* allLists(orgId);
+  const fielded = yield* fieldHits(orgId, lists, input);
+  const page = [
+    ...(yield* sql<DateHit>`SELECT id, key, kind, at FROM (${hits})
+      ORDER BY at, key, kind LIMIT ${offset + limit}`),
+    ...fielded,
+  ]
+    .toSorted(order)
+    .slice(offset, offset + limit);
   const ids = [...new Set(page.map((hit) => hit.id))];
   const rows =
     ids.length === 0
@@ -78,9 +155,8 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
       : yield* sql<RecordRow>`${selectRecords(sql)}
           WHERE r.org_id = ${orgId} AND r.record_id IN ${sql.in(ids)} ORDER BY r.record_id`;
   const byId = new Map(rows.map((row) => [row.recordId, row]));
-  const lists = yield* allLists(orgId);
   return {
-    total: count?.total ?? 0,
+    total: (count?.total ?? 0) + fielded.length,
     rows: page.flatMap((hit): ReadonlyArray<KinDateRow> => {
       const row = byId.get(hit.id);
       const def = row === undefined ? undefined : lists.get(row.registerId);
@@ -94,9 +170,11 @@ const dateRow = (row: RecordRow, def: ListDef, hit: DateHit, now: number): KinDa
   listName: def.name,
   stateLabel: stateLabel(def, row.state),
   kind: hit.kind,
-  label: hit.kind === "due" ? (def.dueLabel ?? "Due") : (def.dateLabel ?? "Date"),
+  label:
+    hit.field?.label ?? (hit.kind === "due" ? (def.dueLabel ?? "Due") : (def.dateLabel ?? "Date")),
+  ...(hit.field === undefined ? {} : { field: hit.field.key }),
   at: iso(hit.at),
-  allDay: (hit.kind === "due" ? row.dueAllDay : row.dateAllDay) === 1,
+  allDay: hit.field?.allDay ?? (hit.kind === "due" ? row.dueAllDay : row.dateAllDay) === 1,
 });
 
 /** The first instant of a month (`2026-11`) in `zone`. */

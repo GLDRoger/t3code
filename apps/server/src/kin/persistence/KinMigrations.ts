@@ -58,7 +58,9 @@ import ConnectionSignIn from "./migrations/K134_ConnectionSignIn.ts";
 import PulseFacts from "./migrations/K135_PulseFacts.ts";
 import ConnectionAsks from "./migrations/K136_ConnectionAsks.ts";
 import PersonAccess from "./migrations/K137_PersonAccess.ts";
-import PersonPlaces from "./migrations/K138_PersonPlaces.ts";
+import PulseCheckIns from "./migrations/K138_PulseCheckIns.ts";
+import ClientTouches from "./migrations/K139_ClientTouches.ts";
+import PersonPlaces from "./migrations/K140_PersonPlaces.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -197,7 +199,9 @@ const loader = Migrator.fromRecord({
   "135_PulseFacts": PulseFacts,
   "136_ConnectionAsks": ConnectionAsks,
   "137_PersonAccess": PersonAccess,
-  "138_PersonPlaces": PersonPlaces,
+  "138_PulseCheckIns": PulseCheckIns,
+  "139_ClientTouches": ClientTouches,
+  "140_PersonPlaces": PersonPlaces,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

@@ -216,6 +216,8 @@ export const MemoryItemKind = Schema.Literals([
   "decision",
   "person",
   "claim",
+  // One client's lasting nature and dynamic with us, linked `client:<key>`.
+  "relationship",
 ]);
 export type MemoryItemKind = typeof MemoryItemKind.Type;
 export const MemoryTrust = Schema.Literals(["owner", "member", "external", "agent"]);
@@ -528,6 +530,23 @@ export const KinEventOrigin = Schema.Struct({
   chatId: KinChatId,
   personId: Schema.optional(KinPersonId),
 });
+const OutsideText = (max: number) => Schema.NullOr(Schema.String.check(Schema.isMaxLength(max)));
+/** One new item at a connection, as metadata: who, what, when and where. Never a body. */
+export const KinPulseOutsideLine = Schema.Struct({
+  source: Schema.Literals(["mail", "calendar", "github"]),
+  connection: Schema.String.check(Schema.isMaxLength(120)),
+  /** The service's id: a mail thread, a calendar event, a webhook delivery. */
+  id: Schema.String.check(Schema.isMaxLength(200)),
+  at: OutsideText(60),
+  who: OutsideText(300),
+  subject: OutsideText(300),
+  /** A repo, or a calendar event's start. */
+  where: OutsideText(200),
+  /** What it matched that Kin knows, such as "contact CT-2 of client C-1 Lumen". */
+  matched: Schema.optional(Schema.String.check(Schema.isMaxLength(300))),
+});
+export type KinPulseOutsideLine = typeof KinPulseOutsideLine.Type;
+
 export const KinEvent = Schema.Union([
   Schema.TaggedStruct("chat.message", {
     ...EventBase,
@@ -615,13 +634,26 @@ export const KinEvent = Schema.Union([
     finding: Schema.String,
     itemIds: Schema.Array(KinMemoryItemId),
   }),
-  // Code enqueues one per new pulse fact that matters now; the prompt reads the facts at turn time.
+  // Code enqueues one per new pulse fact that matters now, per check-in with something new, and
+  // per outside item a playbook watch matched; the prompt reads the facts at turn time.
   Schema.TaggedStruct("pulse", {
     ...EventBase,
     factKeys: Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(300))).check(
-      Schema.isMinLength(1),
       Schema.isMaxLength(50),
     ),
+    checkIn: Schema.optional(
+      Schema.Struct({
+        scheduleId: KinMemoryItemId,
+        title: Schema.String.check(Schema.isMaxLength(200)),
+        // The schedule's instruction, the owner's words: what this check-in is for.
+        what: Schema.String.check(Schema.isMaxLength(2000)),
+        slot: Schema.String.check(Schema.isMaxLength(200)),
+      }),
+    ),
+    // Metadata the server read from connections the owner marked Read: still outside text.
+    outside: Schema.optional(Schema.Array(KinPulseOutsideLine).check(Schema.isMaxLength(200))),
+    // A judgement call (money owed, a client waiting, replanning): the agent's main model.
+    strong: Schema.optional(Schema.Boolean),
   }),
   Schema.TaggedStruct("worker.report", {
     ...EventBase,
@@ -703,6 +735,8 @@ export const KinBudget = Schema.Struct({
   /** The owner's view: today's lead units on turns a teammate asked for, within `leadUnits`. */
   teammateUnits: Schema.optional(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
   limits: KinBudgetLimits,
+  /** The owner's view: the daily limit a client offers as "the usual", to scale its choices from. */
+  usual: Schema.optional(Schema.Struct({ leadUnits: KinBudgetUnits, workerUnits: KinBudgetUnits })),
   /** Work held for a limit, by agent: it runs when the day turns or a limit is raised. */
   waiting: Schema.optional(
     Schema.Struct({

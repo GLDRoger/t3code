@@ -54,7 +54,11 @@ export type KinMemoryUndoInput = typeof KinMemoryUndoInput.Type;
 export const KinMemoryUndoResult = Schema.Struct({ card: KinMemoryChangeCard });
 export type KinMemoryUndoResult = typeof KinMemoryUndoResult.Type;
 
-export const KinMemoryListInput = Schema.Struct({ orgId: KinOrgId });
+export const KinMemoryListInput = Schema.Struct({
+  orgId: KinOrgId,
+  /** The items the owner forgot instead, newest last, for `restore`. */
+  forgotten: Schema.optional(Schema.Boolean),
+});
 export type KinMemoryListInput = typeof KinMemoryListInput.Type;
 /**
  * Who may know an item. `team` only by the owner's own authorisation (or a teammate's own words,
@@ -143,12 +147,19 @@ export type KinMemoryForgetInput = typeof KinMemoryForgetInput.Type;
 export const KinMemoryForgetResult = Schema.Struct({ itemId: KinMemoryItemId });
 export type KinMemoryForgetResult = typeof KinMemoryForgetResult.Type;
 
+/** The way back from `forget`: the item is true again, known to the owner only until they say. */
+export const KinMemoryRestoreInput = Schema.Struct({ orgId: KinOrgId, itemId: KinMemoryItemId });
+export type KinMemoryRestoreInput = typeof KinMemoryRestoreInput.Type;
+export const KinMemoryRestoreResult = Schema.Struct({ itemId: KinMemoryItemId });
+export type KinMemoryRestoreResult = typeof KinMemoryRestoreResult.Type;
+
 const KIN_MEMORY_WS_METHODS = {
   undo: "kin.memory.undo",
   list: "kin.memory.list",
   setVisibility: "kin.memory.setVisibility",
   confirmSuggestions: "kin.memory.confirmSuggestions",
   forget: "kin.memory.forget",
+  restore: "kin.memory.restore",
 } as const;
 
 // Owner of the lead only, on the server; the scope gates the client's button.
@@ -178,6 +189,11 @@ export const KinMemoryRpcs = [
     success: KinMemoryForgetResult,
     error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
   }),
+  Rpc.make(KIN_MEMORY_WS_METHODS.restore, {
+    payload: KinMemoryRestoreInput,
+    success: KinMemoryRestoreResult,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
 ] as const;
 
 export const KIN_MEMORY_RPC_SCOPES = {
@@ -187,4 +203,5 @@ export const KIN_MEMORY_RPC_SCOPES = {
   [KIN_MEMORY_WS_METHODS.setVisibility]: AuthKinChatScope,
   [KIN_MEMORY_WS_METHODS.confirmSuggestions]: AuthKinChatScope,
   [KIN_MEMORY_WS_METHODS.forget]: AuthKinChatScope,
+  [KIN_MEMORY_WS_METHODS.restore]: AuthKinChatScope,
 } as const;

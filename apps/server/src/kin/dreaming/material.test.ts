@@ -260,3 +260,63 @@ it.effect(
       );
     }).pipe(Effect.provide(layer)),
 );
+
+it.effect("a client's touches are material, stated by whoever logged them", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES (${orgId}, 'Org', ${at})`;
+    for (const person of ["owner", "teammate"])
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES (${person}, ${orgId}, ${person}, ${person}, ${at})`;
+    yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+      VALUES ('lead', ${orgId}, 'Lead', 'lead', 'owner', ${at})`;
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+      VALUES (${orgId}, 'clients', 'Clients', 'C', 1, 0)`;
+    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+        owner_id, created_by_kind, origin_key, created_at, updated_at)
+      VALUES (${orgId}, 'c1', 'clients', 'C-1', 'Invented Harbour', 'person', 'owner', 'person',
+        'c1', 0, 0)`;
+    const day = Date.parse("2026-11-10T09:00:00.000Z");
+    for (const [id, kind, by, note] of [
+      ["t-owner", "person", "owner", "Invented: prefers calls to email"],
+      ["t-mate", "person", "teammate", "Invented: wants the revised quote by Friday"],
+      ["t-lead", "agent", "lead", "Invented: asked about Android"],
+    ] as const)
+      yield* sql`INSERT INTO kin_client_touches (org_id, touch_id, party_id, at, kind, note,
+          logged_by_kind, logged_by_id, origin_key, created_at)
+        VALUES (${orgId}, ${id}, 'c1', ${day}, 'call', ${note}, ${kind}, ${by}, ${id}, ${day})`;
+    const material = yield* collectMaterial({
+      orgId,
+      from: day - 1,
+      until: day + 1,
+      full: false,
+      timeZone: "UTC",
+      files: new Map(),
+    });
+    assert.deepStrictEqual(
+      material.entries
+        .filter((entry) => entry.kind === "touch")
+        .map(({ ref, saidBy, trust, text }) => ({ ref, saidBy, trust, text })),
+      [
+        {
+          ref: "kin:touch:t-lead",
+          saidBy: "lead",
+          trust: "agent",
+          text: "Invented Harbour (C-1): call: Invented: asked about Android",
+        },
+        {
+          ref: "kin:touch:t-mate",
+          saidBy: "teammate",
+          trust: "member",
+          text: "Invented Harbour (C-1): call with teammate: Invented: wants the revised quote by Friday",
+        },
+        {
+          ref: "kin:touch:t-owner",
+          saidBy: "owner",
+          trust: "owner",
+          text: "Invented Harbour (C-1): call with owner: Invented: prefers calls to email",
+        },
+      ],
+    );
+  }).pipe(Effect.provide(layer)),
+);

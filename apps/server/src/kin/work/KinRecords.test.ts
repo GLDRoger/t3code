@@ -414,7 +414,8 @@ it.effect(
       yield* seed;
       yield* turn("mate", "shared");
       const shared = { orgId, agentId: lead, wakeupId: "wake" };
-      // Read and changed at the teammate's view; defining lists, payments and the profile stay the owner's.
+      // Read and changed at the teammate's view, and contact logged; defining lists, payments and
+      // the profile stay the owner's.
       const view = new Set([
         "records_query",
         "record_get",
@@ -422,8 +423,9 @@ it.effect(
         "record_update",
         "money_summary",
         "dates_query",
+        "touch_log",
       ]);
-      assert.lengthOf(Object.keys(KinWorkToolkit.tools), 11);
+      assert.lengthOf(Object.keys(KinWorkToolkit.tools), 13);
       for (const tool of Object.keys(KinWorkToolkit.tools))
         assert.strictEqual(yield* sharedToolAllowed(shared, tool, {}), view.has(tool), tool);
       // Only the owner names who else holds a task.
@@ -470,7 +472,7 @@ it.effect(
         ...Object.values(KIN_WORK_WS_METHODS),
         ...KinFinanceRpcs.map((rpc) => rpc._tag),
       ];
-      assert.lengthOf(methods, 36);
+      assert.lengthOf(methods, 38);
       for (const method of methods)
         assert.strictEqual(kinRpcAccess(method) === "person", teammate.has(method), method);
     }).pipe(Effect.provide(layer)),

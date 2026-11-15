@@ -10,6 +10,8 @@ import {
   type KinProjectPageInput,
   type KinProjectsInput,
   type KinProjectUpdateInput,
+  type KinTouchLogInput,
+  type KinTouchRemoveInput,
   type KinWorkHistoryInput,
   type KinWorkPrincipal,
   type KinPartyPage,
@@ -30,6 +32,7 @@ import { dueMillis, found, inList, ownerWriter, theOwner, viewerOf } from "./own
 import { principalText } from "./projectSpine.ts";
 import { iso, notFound, type RecordRow, unavailable } from "./recordRows.ts";
 import { personSeesAs, placesOf, teamSeq, teamVisible } from "./teamView.ts";
+import * as Touches from "./touches.ts";
 
 /**
  * The light CRM's pages and edits. The owner and co-owners read and edit everything; anyone else
@@ -81,6 +84,7 @@ const nameOnly = <A extends KinPartyRow>(row: A): A => ({
   late: 0,
   overdue: 0,
   next: null,
+  ...(row.lastContactAt === undefined ? {} : { lastContactAt: null }),
 });
 const unseen = Effect.fn("KinWork.crm.unseen")(function* (
   team: KinPersonId | undefined,
@@ -157,7 +161,7 @@ export const party = Effect.fn("KinWork.party")(function* (
   const { now, seq } = yield* asOf(input.orgId, team);
   const page = yield* read(Crm.partyPage(row, now, seq));
   if (team === undefined) return page;
-  // Its name, contacts and the projects they lead; never terms, tax details, notes or what's owed.
+  // Its name, contacts and the projects they lead; never terms, tax, notes, contact log or what's owed.
   const shown = yield* read(
     teamVisible(input.orgId, team, [
       ...page.contacts.map((one) => one.recordId),
@@ -179,6 +183,8 @@ export const party = Effect.fn("KinWork.party")(function* (
     projects: page.projects.filter((one) => shown.has(one.recordId)),
     weOwe: none,
     theyOwe: none,
+    // The contact log carries the owner's notes on the relationship.
+    ...(page.touches === undefined ? {} : { touches: [] }),
   } satisfies KinPartyPage;
 });
 
@@ -443,4 +449,40 @@ export const updateProject = Effect.fn("KinWork.updateProject")(function* (
     input.rev,
   );
   return yield* projectOut(row);
+});
+
+/** The owner logs contact by hand; open client pages read again when it commits. */
+export const logTouch = Effect.fn("KinWork.logTouch")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinTouchLogInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  const party = yield* inList(input.orgId, input.party, "clients");
+  const now = yield* Clock.currentTimeMillis;
+  const at = input.at === undefined ? now : Date.parse(input.at);
+  const touch = yield* read(
+    Touches.logTouch(input.orgId, {
+      partyId: party.recordId,
+      kind: input.kind,
+      at,
+      note: input.note ?? "",
+      personId: person.personId,
+      by: { kind: "person", id: person.personId },
+      originKey: `owner:touch:${input.clientRequestId}`,
+      now,
+    }),
+  );
+  yield* (yield* KinRecords).announce(input.orgId);
+  return touch;
+});
+
+export const removeTouch = Effect.fn("KinWork.removeTouch")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinTouchRemoveInput,
+) {
+  yield* theOwner(people, input.orgId);
+  const now = yield* Clock.currentTimeMillis;
+  const removed = yield* read(Touches.removeTouch(input.orgId, input.touchId, now));
+  if (removed) yield* (yield* KinRecords).announce(input.orgId);
+  return { removed };
 });

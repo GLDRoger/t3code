@@ -973,7 +973,12 @@ const make = Effect.gen(function* () {
             const urgent =
               yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND priority IN ('P0', 'P1') LIMIT 1`;
             const modelSelection =
-              !cheapOnly && (urgent.length > 0 || events.some((event) => event._tag === "routine"))
+              !cheapOnly &&
+              (urgent.length > 0 ||
+                events.some(
+                  (event) =>
+                    event._tag === "routine" || (event._tag === "pulse" && event.strong === true),
+                ))
                 ? current.models.strong
                 : current.models.cheap;
             // A join aborted it while it prepared: nothing launches, a fresh wake-up answers.

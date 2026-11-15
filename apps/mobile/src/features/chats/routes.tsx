@@ -32,6 +32,7 @@ import { KinSettingsScreen } from "./KinSettings";
 import { KinInviteScreen } from "./KinInviteScreen";
 import { KinMakeDocumentScreen, KinReceiptApplyScreen, KinReceiptNewScreen } from "./KinInvoice";
 import { KinJoinScreen } from "./KinJoinScreen";
+import { KinBudgetScreen } from "./KinMoneyAnswers";
 import { KinTeamScreen } from "./KinTeamScreen";
 import { KinProfileEditScreen, KinProfileScreen } from "./KinProfileScreen";
 import { KinTeammateScreen } from "./KinTeammateScreen";
@@ -42,6 +43,7 @@ import {
   KinContactFormScreen,
   KinProjectFormScreen,
 } from "./KinWorkFormScreens";
+import { KinTouchFormScreen } from "./KinTouchFormScreen";
 import { KinWorkItemScreen } from "./KinWorkItemScreen";
 import { KinWorkNewScreen } from "./KinWorkNewScreen";
 import { KinWorkScreen } from "./KinWorkScreen";
@@ -96,6 +98,10 @@ export const KIN_SCREENS = {
   }),
   KinMakeDocument: createNativeStackScreen({
     screen: KinMakeDocumentScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinBudget: createNativeStackScreen({
+    screen: KinBudgetScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
   KinReceiptNew: createNativeStackScreen({
@@ -198,6 +204,10 @@ export const KIN_SCREENS = {
   KinContactForm: createNativeStackScreen({
     screen: KinContactFormScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinTouchForm: createNativeStackScreen({
+    screen: KinTouchFormScreen,
+    options: sheetRoute({ detent: 0.75 }),
   }),
   KinProjectForm: createNativeStackScreen({
     screen: KinProjectFormScreen,

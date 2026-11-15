@@ -42,7 +42,13 @@ import {
   MemoryDuplicateId,
   shadowBranch,
 } from "./Memory.ts";
-import { changedKeys, parseFrontMatter, MemoryItemError, schemaKeyFailure } from "./frontMatter.ts";
+import {
+  changedKeys,
+  endedBy,
+  parseFrontMatter,
+  MemoryItemError,
+  schemaKeyFailure,
+} from "./frontMatter.ts";
 import { journalEntry, MemoryJournalError, type JournalContext } from "./journal.ts";
 import { QUOTE_MISSING, quoteRefusal } from "./keeping.ts";
 import { isOwnerReviewedPath, kinShapeFailure } from "./lint.ts";
@@ -242,6 +248,14 @@ export class MemoryWriter extends Context.Service<
       input: { readonly itemId: KinMemoryItemId; readonly by: "owner" | "nightly" },
     ) => Effect.Effect<{ readonly retired: boolean }, Failure>;
     /**
+     * The owner's way back from forgetting: a default-branch item no longer true, and replaced by
+     * nothing, is true again. Who may know it stays ended; `restored` is false when it was current.
+     */
+    readonly restore: (
+      orgId: KinOrgId,
+      input: { readonly itemId: KinMemoryItemId },
+    ) => Effect.Effect<{ readonly restored: boolean }, Failure>;
+    /**
      * Ends who may know every item the default branch holds retired, whatever retired it: a
      * GitHub merge, a promoted shadow branch, or a grant older than retirement clearing one.
      */
@@ -256,7 +270,15 @@ export class MemoryWriter extends Context.Service<
 >()("t3/kin/memory/MemoryWriter") {}
 const isRepoSlug = Schema.is(RepoSlug);
 const dreamBranch = /^dream\/\d{4}-\d{2}-\d{2}$/;
-const folders = ["objectives", "commitments", "deferrals", "decisions", "people", "claims"];
+const folders = [
+  "objectives",
+  "commitments",
+  "deferrals",
+  "decisions",
+  "people",
+  "claims",
+  "relationships",
+];
 const render = (fields: object, body: string) => `---\n${stringify(fields)}---\n${body}`;
 const retired = (head: {
   readonly invalid_at: string | null;
@@ -1529,8 +1551,9 @@ const make = Effect.gen(function* () {
             return yield* new MemoryNotFound({ orgId, id: input.itemId });
           // First, so the team stops knowing it whatever the commit below does.
           yield* endSharing(orgId, [input.itemId]);
-          if (frontMatter.invalid_at !== null) return { retired: false };
-          const invalidAt = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+          const now = yield* Clock.currentTimeMillis;
+          if (endedBy(frontMatter, now)) return { retired: false };
+          const invalidAt = DateTime.formatIso(DateTime.makeUnsafe(now));
           yield* ownerCommit(orgId, {
             writer,
             repoUrl: repo.repoUrl,
@@ -1546,6 +1569,46 @@ const make = Effect.gen(function* () {
                 : `kin: nightly pass retires spent ${input.itemId}\n`,
           });
           return { retired: true };
+        }),
+      ),
+    ),
+    restore: Effect.fn("MemoryWriter.restore")((orgId, input) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const main = config.defaultBranch ?? "main";
+          const { writer } = yield* validate(orgId);
+          yield* refuseDuringPurge(orgId);
+          const repo = yield* repoFor(orgId);
+          if (mainWrites === "refused") return yield* refuseMainWrite(orgId);
+          if (mainWrites === "pull_request") yield* refuseOffGitHub(orgId);
+          const item = yield* memory.readItemQuietly(orgId, input.itemId);
+          const head = yield* branchHead(orgId, writer, main);
+          const headFiles = yield* filesAt(orgId, writer, head);
+          const current = headFiles.get(item.head.path);
+          if (current === undefined) return yield* new MemoryNotFound({ orgId, id: input.itemId });
+          const { frontMatter, body } = yield* parseFrontMatter(
+            orgId,
+            item.head.path,
+            current.toString("utf8"),
+          );
+          if (frontMatter.id !== input.itemId)
+            return yield* new MemoryNotFound({ orgId, id: input.itemId });
+          if (
+            !endedBy(frontMatter, yield* Clock.currentTimeMillis) ||
+            frontMatter.superseded_by !== null
+          )
+            return { restored: false };
+          yield* ownerCommit(orgId, {
+            writer,
+            repoUrl: repo.repoUrl,
+            branch: main,
+            head,
+            headFiles,
+            files: new Map([[item.head.path, render({ ...frontMatter, invalid_at: null }, body)]]),
+            message: `kin: owner restores ${input.itemId}\n`,
+          });
+          return { restored: true };
         }),
       ),
     ),
