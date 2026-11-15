@@ -3,7 +3,12 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { KinPersonId, KinRecordId, KinRecordKey, type KinPartyRow } from "@t3tools/contracts";
 
-import { kinClientRow, kinLastContactLine, kinTouchAt } from "./kinWorkClients.ts";
+import {
+  kinClientContactLine,
+  kinClientRow,
+  kinLastContactLine,
+  kinTouchAt,
+} from "./kinWorkClients.ts";
 
 describe("kinLastContactLine", () => {
   const now = new Date("2026-11-15T10:00:00.000Z");
@@ -16,6 +21,26 @@ describe("kinLastContactLine", () => {
     ["2026-09-01T10:00:00.000Z", "No logged contact for 75 days"],
   ] as const)("%s reads %s", (lastAt, line) => {
     expect(kinLastContactLine(lastAt, now)).toBe(line);
+  });
+});
+
+describe("kinClientContactLine", () => {
+  const now = new Date("2026-11-15T10:00:00.000Z");
+  const createdAt = "2026-09-30T10:00:00.000Z";
+  const day = (iso: string) =>
+    new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" }).format(new Date(iso));
+  const touch = { id: "t", title: "Invoice: INV-3", note: null, when: "", removable: false };
+  it.each([
+    [undefined, undefined, null],
+    // Never "yet" beside the pulse's "46 days": both count from when the client was added.
+    [null, undefined, `No contact logged since they were added ${day(createdAt)}, 46 days ago`],
+    [
+      "2026-11-13T09:00:00.000Z",
+      touch,
+      `Last contact ${day("2026-11-13T09:00:00.000Z")}, 2 days ago: Invoice: INV-3`,
+    ],
+  ] as const)("%s reads %s", (lastContactAt, latest, line) => {
+    expect(kinClientContactLine({ lastContactAt, createdAt }, latest, now)).toBe(line);
   });
 });
 

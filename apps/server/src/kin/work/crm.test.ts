@@ -1095,6 +1095,7 @@ it.effect(
         (one) => one.key === "C-1" && one.sense === "client_cold",
       );
       assert.strictEqual(cold?.episode, later?.episode);
+      assert.strictEqual(cold?.from, "contact");
       yield* Clients.logTouch([owner], {
         orgId,
         party: "C-1",
@@ -1127,6 +1128,12 @@ it.effect(
       });
       const harbour = (yield* LeadWork.get(scope, { key: "C-2" })).key;
       assert.include(yield* senses(harbour), "client_cold");
+      // Its fact says what the days count from, as the client page does.
+      const harbourCold = (yield* Touches.clientSenses(
+        orgId,
+        yield* Effect.clockWith((clock) => clock.currentTimeMillis),
+      )).find((one) => one.key === harbour && one.sense === "client_cold");
+      assert.strictEqual(harbourCold?.from, "project");
       for (const typed of [
         "INVENTED HARBOURLINE LOGISTICS",
         "Invented Harbor",

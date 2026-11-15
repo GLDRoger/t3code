@@ -188,6 +188,25 @@ const daysBetween = (at: string, now: Date) =>
   Math.max(0, Math.floor((now.getTime() - new Date(at).getTime()) / DAY_MS));
 
 /**
+ * A client page's one line on contact, counted as the pulse counts it: the last one, when and what
+ * it was ("Last contact 1 Oct, 46 days ago: Invoice: INV-3"), or none since they were added. Null
+ * from a host before contact logs.
+ */
+export function kinClientContactLine(
+  party: Pick<KinPartyPage["party"], "lastContactAt" | "createdAt">,
+  latest: KinTouchView | undefined,
+  now: Date,
+): string | null {
+  const at = party.lastContactAt;
+  if (at === undefined) return null;
+  const days = daysBetween(at ?? party.createdAt, now);
+  const ago = days === 0 ? "" : `, ${plural(days, "day")} ago`;
+  if (at === null)
+    return `No contact logged since they were added ${formatKinTime(new Date(party.createdAt), now)}${ago}`;
+  return `Last contact ${formatKinTime(new Date(at), now)}${ago}${latest === undefined ? "" : `: ${latest.title}`}`;
+}
+
+/**
  * "Last contact 3 days ago", or "No logged contact for 52 days" once a week has passed. Null
  * from a host before contact logs. Only what was logged counts, so it never says "no contact".
  */
@@ -436,6 +455,8 @@ export function kinClientPageView(
   const lookedAfter = kinWorkName(party.owner, names);
   const notes = party.notes.trim();
   const terms = party.terms?.trim() ?? "";
+  const touches =
+    page.touches === undefined ? null : page.touches.map((touch) => kinTouchView(touch, now));
   return {
     key: party.key,
     rev: party.rev,
@@ -466,9 +487,8 @@ export function kinClientPageView(
         .filter((part) => part !== null)
         .join(" · ") || null,
     notes: notes === "" ? null : notes,
-    touches:
-      page.touches === undefined ? null : page.touches.map((touch) => kinTouchView(touch, now)),
-    lastContact: party.kind === "client" ? kinLastContactLine(party.lastContactAt, now) : null,
+    touches,
+    lastContact: party.kind === "client" ? kinClientContactLine(party, touches?.[0], now) : null,
   };
 }
 

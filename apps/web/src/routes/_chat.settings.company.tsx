@@ -3,7 +3,6 @@ import { createFileRoute } from "@tanstack/react-router";
 import { SettingsPageContainer, SettingsSection } from "../components/settings/settingsLayout";
 import { searchableSetting } from "../components/settings/settingsSearch";
 import { KinCompanyProfileSettings } from "../kin/KinCompanyProfile";
-import { KinCheckInsSetting } from "../kin/KinCheckIns";
 import { KinCompanyTimeZoneSetting } from "../kin/KinCompanyTimeZone";
 import { KinDailyLimitSetting } from "../kin/KinDailyLimit";
 
@@ -15,7 +14,6 @@ function SettingsCompanyRoute() {
       </SettingsSection>
       <KinCompanyTimeZoneSetting />
       <KinDailyLimitSetting />
-      <KinCheckInsSetting />
     </SettingsPageContainer>
   );
 }
