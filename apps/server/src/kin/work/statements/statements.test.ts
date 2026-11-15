@@ -627,6 +627,61 @@ describe("bank statements", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("records a row once when two open cards of one statement are both confirmed", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const first = yield* read(1, "hdfc-account.pdf");
+      const second = yield* read(2, "hdfc-account.pdf");
+      // On both cards, before either is confirmed, the owner makes the same debit an expense.
+      const asExpense = (card: KinStatementReviewCard) => {
+        const debit = card.unmatched.find((one) => one.direction === "debit")!;
+        return choose(card, [
+          { _tag: "tickAll", ticked: false },
+          { _tag: "action", row: debit.row, action: "expense" },
+        ]).pipe(Effect.map(confirmOf));
+      };
+      const one = yield* asExpense((yield* reviewCardOf(first.statement)).card);
+      const two = yield* asExpense((yield* reviewCardOf(second.statement)).card);
+      const expenses = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records
+        WHERE register_id = 'expenses' AND origin_key LIKE 'statement:%' AND state <> 'dropped'`;
+      yield* OwnerStatements.apply(people, one);
+      assert.strictEqual((yield* expenses)[0]!.n, 1);
+      const applied = yield* OwnerStatements.apply(people, two);
+      assert.strictEqual((yield* expenses)[0]!.n, 1);
+      assert.lengthOf(yield* bankRows, 20);
+      assert.include(
+        applied.card.result!.join(" "),
+        "1 row was already recorded from another statement",
+      );
+      assert.lengthOf(
+        applied.card.unmatched.filter(
+          (row) => row.recorded === "Already recorded from another statement",
+        ),
+        1,
+      );
+      // Undoing the second takes back nothing the first recorded.
+      yield* OwnerStatements.undo(people, { orgId, statementId: second.statement });
+      assert.strictEqual((yield* expenses)[0]!.n, 1);
+      // And the same overlap with everything the cards propose still confirms, once.
+      const third = yield* read(3, "hdfc-account.pdf");
+      const all = yield* confirmAll((yield* reviewCardOf(third.statement)).card);
+      const fourth = yield* read(4, "hdfc-account.pdf");
+      yield* OwnerStatements.apply(people, all);
+      const [paid] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_record_payments
+        WHERE voided_at IS NULL`;
+      const again = yield* OwnerStatements.apply(
+        people,
+        yield* confirmAll((yield* reviewCardOf(fourth.statement)).card),
+      );
+      assert.strictEqual(again.card.status, "applied");
+      assert.deepStrictEqual(
+        yield* sql`SELECT COUNT(*) AS n FROM kin_record_payments WHERE voided_at IS NULL`,
+        [paid],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("adopts an existing Bank transactions list and knows its imported rows", () =>
     Effect.gen(function* () {
       yield* seed;

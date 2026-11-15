@@ -226,6 +226,16 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
 
       // Every row is saved, so what is left for later is there to see in Bank transactions.
       const bankRows = new Map<number, { readonly recordId: string; readonly key: string }>();
+      // A row saved since this card was read (another card of the same rows, confirmed first) is
+      // that row, whatever state its confirm left it in.
+      const origins = statement.rows.map((row) => originKeyOf(fingerprints[row.index]!));
+      const saved = new Map<string, { readonly recordId: string; readonly key: string }>();
+      for (let at = 0; at < origins.length; at += 500)
+        for (const one of yield* sql<{ recordId: string; key: string; originKey: string }>`
+          SELECT record_id AS "recordId", key, origin_key AS "originKey" FROM kin_records
+          WHERE org_id = ${input.orgId} AND register_id = ${def.id}
+            AND origin_key IN ${sql.in(origins.slice(at, at + 500))}`)
+          saved.set(one.originKey, one);
       for (const row of statement.rows) {
         const known = review.known.get(row.index);
         if (known !== undefined) {
@@ -234,11 +244,16 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           bankRows.set(row.index, { recordId: still.recordId, key: still.key });
           continue;
         }
+        const already = saved.get(origins[row.index]!);
+        if (already !== undefined) {
+          bankRows.set(row.index, already);
+          continue;
+        }
         const title = rowTitle(row);
         const { row: made } = yield* live(
           records.create(input.orgId, writer, {
             list: def.id,
-            originKey: originKeyOf(fingerprints[row.index]!),
+            originKey: origins[row.index]!,
             title,
             owner: { _tag: "person", personId: input.personId },
             state: states.open,
@@ -253,6 +268,20 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
         );
         bankRows.set(row.index, { recordId: made.recordId, key: made.key });
       }
+      // A row another statement's confirm already applied (two cards of one account, both open)
+      // is shown as recorded and left as it is: one bank row is answered once.
+      const elsewhere = new Set<number>();
+      const recordIds = [...new Set([...bankRows.values()].map((one) => one.recordId))];
+      for (let at = 0; at < recordIds.length; at += 500) {
+        const taken = new Set(
+          (yield* sql<{ id: string }>`SELECT DISTINCT bank_record_id AS id
+            FROM kin_bank_statement_entries WHERE org_id = ${input.orgId}
+              AND statement_id <> ${input.statementId}
+              AND bank_record_id IN ${sql.in(recordIds.slice(at, at + 500))}`).map((one) => one.id),
+        );
+        for (const [index, bank] of bankRows) if (taken.has(bank.recordId)) elsewhere.add(index);
+      }
+      const applying = decisions.filter((one) => !elsewhere.has(one.row));
 
       let seq =
         (yield* sql<{ seq: number | null }>`SELECT MAX(seq) AS seq FROM kin_bank_statement_entries
@@ -327,7 +356,7 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           500,
         );
 
-      for (const decision of decisions) {
+      for (const decision of applying) {
         const index = decision.row;
         const row = statement.rows[index]!;
         const match = review.matches.get(index)!;
@@ -479,6 +508,11 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
                 ...(tally.ignored === 0 ? [] : [`${tally.ignored} ignored`]),
               ].join(", ") + ".",
             ]),
+        ...(elsewhere.size === 0
+          ? []
+          : [
+              `${elsewhere.size} row${elsewhere.size === 1 ? " was" : "s were"} already recorded from another statement and left as ${elsewhere.size === 1 ? "it was" : "they were"}.`,
+            ]),
         ...(kept === 0
           ? []
           : [
@@ -490,12 +524,25 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
         ...(held.size === 0
           ? []
           : [
-              `Undo takes back all ${held.size + decisions.length} rows this statement recorded: ${held.size} from the earlier confirm and ${decisions.length} from this one.`,
+              `Undo takes back all ${held.size + applying.length} rows this statement recorded: ${held.size} from the earlier confirm and ${applying.length} from this one.`,
             ]),
       ];
-      const card = yield* cardState(input.orgId, stored.reviewWidgetId);
+      const card =
+        elsewhere.size === 0
+          ? ((yield* cardState(input.orgId, stored.reviewWidgetId)) ??
+            reviewCard(input.statementId, review, categories, selection, held))
+          : reviewCard(
+              input.statementId,
+              review,
+              categories,
+              selection,
+              held,
+              new Map(
+                [...elsewhere].map((row) => [row, "Already recorded from another statement"]),
+              ),
+            );
       const next = {
-        ...(card ?? reviewCard(input.statementId, review, categories, selection, held)),
+        ...card,
         status: "applied" as const,
         result,
         unexplained,
