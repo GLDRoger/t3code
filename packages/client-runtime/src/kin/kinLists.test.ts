@@ -129,6 +129,18 @@ describe("money", () => {
       ok: false,
       problem: "That's more than the ₹60,000.00 still owed.",
     });
+    // TDS counts towards what is owed, and alone it may settle the rest.
+    const day = { paidOn: "2026-11-12", note: "" };
+    expect(kinPaymentCheck({ ...day, amount: "54,000", tds: "6,000" }, left)).toEqual({
+      ok: true,
+      amount: { minor: 5_400_000, currency: "INR" },
+      tds: { minor: 600_000, currency: "INR" },
+    });
+    expect(kinPaymentCheck({ ...day, amount: "", tds: "6,000" }, left)).toMatchObject({
+      ok: true,
+      amount: { minor: 0 },
+    });
+    expect(kinPaymentCheck({ ...day, amount: "55,000", tds: "6,000" }, left).ok).toBe(false);
   });
 });
 

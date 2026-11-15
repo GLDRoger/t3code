@@ -11,6 +11,7 @@ import {
   kinChoiceAccessibilityLabel,
   kinChoiceActInput,
   kinChoiceAnswerText,
+  kinChoiceFailureNotice,
   kinChoicePhase,
   type KinChoiceCardView,
 } from "@t3tools/client-runtime/kin/kinChoicePresentation";
@@ -353,6 +354,7 @@ function KinChoiceCard(props: {
       actions.current = createKinCardActions<KinChoiceCardView, string>({
         newId: randomUUID,
         toInput: kinChoiceActInput,
+        failureNotice: kinChoiceFailureNotice,
         post,
       });
     const revision = choice.revision;

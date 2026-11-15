@@ -8,7 +8,11 @@ import {
   kinReminderCardView,
   kinScheduledTaskCardView,
 } from "./kinCardPresentation.ts";
-import { kinChoiceAnswerText, kinChoicePhase } from "./kinChoicePresentation.ts";
+import {
+  kinChoiceAnswerText,
+  kinChoiceFailureNotice,
+  kinChoicePhase,
+} from "./kinChoicePresentation.ts";
 import { kinCardStatusAfter, kinDeferralCountdown } from "./kinDeferralPresentation.ts";
 import { kinMemoryUndoFailureText } from "./kinMemoryChangesPresentation.ts";
 
@@ -284,6 +288,17 @@ describe("choice cards", () => {
     expect(kinChoiceAnswerText(answer("reaction", "👍").answer!, "owner" as never)).toBe(
       "You chose “Ship it” with 👍",
     );
+  });
+
+  it("says a refused answer in the host's words when its figures changed", () => {
+    const refusal = (reason: "conflict" | "widget_changed" | "not_allowed", message: string) =>
+      kinChoiceFailureNotice(new KinChatError({ reason, message }));
+    expect(refusal("conflict", "The figures changed since this card was made.")).toEqual({
+      kind: "error",
+      text: "The figures changed since this card was made.",
+    });
+    expect(refusal("widget_changed", "This receipt was already answered.").kind).toBe("stale");
+    expect(refusal("not_allowed", "Chat operation not allowed.").text).not.toContain("Chat");
   });
 });
 

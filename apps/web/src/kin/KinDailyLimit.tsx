@@ -1,5 +1,10 @@
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
-import { KIN_DAILY_LIMIT, kinDailyLimitChoices } from "@t3tools/client-runtime/kin/kinBudget";
+import {
+  KIN_DAILY_LIMIT,
+  kinDailyLimitChoices,
+  kinDailyLimitUse,
+  kinDailyLimitWaiting,
+} from "@t3tools/client-runtime/kin/kinBudget";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
@@ -38,16 +43,29 @@ function DailyLimit(props: KinWorkTarget) {
   const set = useAtomCommand(kinClient.budgetSet, { reportFailure: false });
   const [failed, setFailed] = useState(false);
   const budget = Option.getOrNull(AsyncResult.value(result));
+  // Only the owner reads the limit; a teammate's read is refused, so there is nothing to show.
+  if (!canSet || AsyncResult.isFailure(result)) return null;
   const { choices, current } = kinDailyLimitChoices(budget);
+  const use = kinDailyLimitUse(budget);
+  const waiting = kinDailyLimitWaiting(budget);
   return (
     <SettingsRow
       title={KIN_DAILY_LIMIT.title}
-      description={failed ? KIN_DAILY_LIMIT.failed : KIN_DAILY_LIMIT.detail}
+      description={
+        failed ? (
+          KIN_DAILY_LIMIT.failed
+        ) : (
+          <>
+            {KIN_DAILY_LIMIT.detail}
+            {use === null ? null : <span className="block pt-1">{use}</span>}
+          </>
+        )
+      }
       control={
         <Select
           items={choices.map(({ value, label }) => ({ value, label }))}
           value={current}
-          disabled={!canSet || budget === null}
+          disabled={budget === null}
           onValueChange={(value) => {
             const picked = choices.find((choice) => choice.value === value);
             if (picked === undefined || picked.value === current) return;
@@ -72,6 +90,19 @@ function DailyLimit(props: KinWorkTarget) {
           </SelectPopup>
         </Select>
       }
-    />
+    >
+      {waiting.length === 0 ? null : (
+        <div className="pt-2 text-xs text-muted-foreground">
+          <p className="font-medium text-foreground">{KIN_DAILY_LIMIT.waiting}</p>
+          <ul className="pt-1">
+            {waiting.map((agent) => (
+              <li key={agent.agentId}>
+                {agent.name}: {agent.line}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </SettingsRow>
   );
 }

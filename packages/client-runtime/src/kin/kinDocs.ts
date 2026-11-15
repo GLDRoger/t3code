@@ -6,6 +6,7 @@ import {
   type KinDocDetail,
   type KinDocDiff,
   type KinDocEmbed,
+  type KinDocRenderInput,
   type KinDocFileInput,
   KIN_DOC_KINDS,
   type KinDocKind,
@@ -49,6 +50,9 @@ export const KIN_DOCS = {
   copyLink: "Copy link",
   copied: "Link copied",
   export: "Export as Markdown",
+  exportPdf: "Export PDF",
+  exportingPdf: "Making the PDF…",
+  exportPdfFailed: "Couldn't make the PDF. Try again.",
   restore: "Restore this version",
   restoring: "Restoring…",
   compare: "Compare with the latest",
@@ -971,4 +975,14 @@ export function createKinSearch(options: {
       generation++;
     },
   };
+}
+
+/** A text doc laid out as a PDF by the report recipe; null for a doc that is already a file. */
+export function kinDocPdfInput(
+  orgId: KinOrgId,
+  doc: KinDocDetail,
+  clientRequestId: string,
+): KinDocRenderInput | null {
+  if (doc.version.file !== undefined) return null;
+  return { orgId, recipe: "report", doc: doc.key, title: doc.title.slice(0, 120), clientRequestId };
 }

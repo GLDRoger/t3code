@@ -134,6 +134,8 @@ export const KinRecord = Schema.Struct({
   repo: Schema.optional(KinRepoName),
   /** True when its project or client is labelled sensitive, whatever its own label says. */
   sensitiveInherited: Schema.optional(Schema.Literal(true)),
+  /** The owner shared it with the team (`kin.work.share`). */
+  shared: Schema.optional(Schema.Literal(true)),
   // Defined lists, such as expenses (slice 5); absent on Work and the light CRM.
   /** The defined list it is in. */
   list: Schema.optional(KinListId),
