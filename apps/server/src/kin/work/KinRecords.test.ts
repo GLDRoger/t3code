@@ -2306,6 +2306,25 @@ it.effect(
         ),
         { reason: "not_found" },
       );
+      // H15: the owner moving a task on his screen tells its holders as an agent would, and the
+      // agent's why goes with the agent's assignment.
+      yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+        VALUES (${orgId}, ${lead}, ${ownerId}, ${at})`;
+      const notices = sql<{ body: string }>`SELECT body FROM kin_messages
+        WHERE chat_id = 'mate-chat' AND message_id LIKE 'kin-assign-%' ORDER BY seq`;
+      const before = (yield* notices).length;
+      const mateHolds = { _tag: "person" as const, personId: mateId };
+      yield* OwnerWork.assign([owner], { orgId, key: "W-2", to: null });
+      yield* OwnerWork.assign([owner], { orgId, key: "W-3", to: null });
+      yield* OwnerWork.assign([owner], { orgId, key: "W-2", to: mateHolds });
+      assert.deepStrictEqual(
+        (yield* notices).slice(before).map((row) => row.body),
+        [
+          "Owner took over W-3 Invented: salary review.",
+          "Owner gave you W-2 Invented: fix the login screen, due Fri 20 Nov.",
+        ],
+      );
+      assert.isUndefined((yield* OwnerWork.get([owner], { orgId, key: "W-3" })).reason);
     }).pipe(Effect.provide(Layer.provideMerge(ChatRepository.layer, layer))),
 );
 

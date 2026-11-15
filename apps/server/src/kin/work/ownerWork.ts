@@ -38,6 +38,8 @@ import {
 } from "./KinRecords.ts";
 import { fieldList, LISTS, type ListName, parseFields } from "./lists.ts";
 import { isBuiltIn, listDef, unknownList } from "./registers.ts";
+import { movedNotices, tellPeople } from "./assignNotices.ts";
+import { teamAgent as theTeamAgent } from "../lead/LeadAccess.ts";
 import {
   endOfDay,
   isClosed,
@@ -529,9 +531,14 @@ export const create = Effect.fn("KinWork.create")(function* (
       ...(input.side === undefined ? {} : { side: input.side }),
       ...(input.repo === undefined ? {} : { repo: input.repo }),
     });
-    return yield* shownTo(viewer, yield* records.detail(row, KIN_RECORD_CHANGES_CAP), row, row);
+    return {
+      row,
+      shown: yield* shownTo(viewer, yield* records.detail(row, KIN_RECORD_CHANGES_CAP), row, row),
+    };
   });
-  return yield* asViewer(viewer, write);
+  const { row, shown } = yield* asViewer(viewer, write);
+  yield* tellMoved(person, undefined, row);
+  return shown;
 });
 
 /** A closed entry is refused: reopen it first. Taking it back (`to: null`) returns it to the owner. */
@@ -545,8 +552,44 @@ export const assign = Effect.fn("KinWork.assign")(function* (
   // A teammate's task is read only inside the write (`teamGuard`), after the agent's chat is open.
   if (viewer.teammate) yield* teamAgent(person, to);
   else yield* inList(input.orgId, input.key, "work");
-  return yield* change(viewer, input.orgId, input.key, { owner: to }, input.rev);
+  const records = yield* KinRecords;
+  // Read only to word the notices once the write is through; it decides nothing.
+  const before = yield* records.get(input.orgId, input.key);
+  const shown = yield* change(viewer, input.orgId, input.key, { owner: to }, input.rev);
+  yield* tellMoved(person, before, yield* records.get(input.orgId, input.key));
+  return shown;
 });
+
+/**
+ * Someone gives or takes a task on their own screen: its holders hear it as they would from an
+ * agent, from the team agent's chat. The write already committed, so a failed message fails nothing.
+ */
+const tellMoved = Effect.fn("KinWork.tellMoved")(
+  function* (person: PersonIdentity, before: RecordRow | undefined, after: RecordRow | undefined) {
+    if (after === undefined) return;
+    const notices = movedNotices(before, after).filter(
+      (notice) => notice.personId !== person.personId,
+    );
+    if (notices.length === 0) return;
+    const agentId = yield* theTeamAgent(person.orgId);
+    if (agentId === null) return;
+    const sql = yield* SqlClient.SqlClient;
+    const [me] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+      WHERE org_id = ${person.orgId} AND person_id = ${person.personId}`;
+    yield* tellPeople(
+      {
+        orgId: person.orgId,
+        agentId,
+        wakeupId: `screen:${after.recordId}:${after.rev}`,
+        by: me?.name ?? "The owner",
+      },
+      notices,
+    );
+  },
+  Effect.catchCause((cause) =>
+    Effect.logWarning("Kin couldn't tell people about their tasks", cause),
+  ),
+);
 
 /** The holder gives the task back to whoever gave it to them; it may then be out of their view. */
 export const handBack = Effect.fn("KinWork.handBack")(function* (

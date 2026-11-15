@@ -17,6 +17,7 @@ import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { turnChat } from "../lead/Audience.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
+import { parseFields } from "./lists.ts";
 import { ownerZone, type RecordRow } from "./recordRows.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 
@@ -33,7 +34,37 @@ export type AssignNotice = {
 type Turn = {
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
+  /** Keys the message, so a retry posts nothing more. */
   readonly wakeupId: string;
+  /** A person who gave it on their own screen: named in place of the agent, and no turn chat. */
+  readonly by?: string;
+};
+
+const reasonOf = (row: RecordRow) => {
+  const reason = parseFields(row.fieldsJson).reason;
+  return typeof reason === "string" ? reason : null;
+};
+/** Who to tell that a task came to them or left them, and why. */
+export const movedNotices = (
+  before: RecordRow | undefined,
+  after: RecordRow,
+): Array<AssignNotice> => {
+  if (after.registerId !== "work") return [];
+  if (
+    before !== undefined &&
+    before.ownerKind === after.ownerKind &&
+    before.ownerId === after.ownerId
+  )
+    return [];
+  const why = reasonOf(after);
+  return [
+    ...(after.ownerKind === "person"
+      ? [{ personId: KinPersonId.make(after.ownerId), kind: "given" as const, row: after, why }]
+      : []),
+    ...(before?.ownerKind === "person"
+      ? [{ personId: KinPersonId.make(before.ownerId), kind: "taken" as const, row: after, why }]
+      : []),
+  ];
 };
 
 const dueText = (row: RecordRow, zone: string) => {
@@ -95,7 +126,7 @@ export const tellPeople = Effect.fn("KinAssignNotices.tell")(function* (
   if (Option.isNone(repo)) return told;
   const chats = yield* Effect.serviceOption(KinChatService);
   const hub = yield* Effect.serviceOption(KinChatHub);
-  const here = yield* turnChat(turn);
+  const here = turn.by === undefined ? yield* turnChat(turn) : undefined;
   const [agent] = yield* sql<{ name: string; owner: string }>`SELECT display_name AS name,
       owner_person_id AS owner FROM kin_agents
     WHERE org_id = ${turn.orgId} AND agent_id = ${turn.agentId}`;
@@ -142,7 +173,7 @@ export const tellPeople = Effect.fn("KinAssignNotices.tell")(function* (
     if (chatId === undefined) continue;
     const [profile] = yield* sql<{ zone: string | null }>`SELECT time_zone AS zone FROM kin_people
       WHERE org_id = ${turn.orgId} AND person_id = ${person}`;
-    const body = bodyFor(agent.name, theirs, profile?.zone ?? fallbackZone);
+    const body = bodyFor(turn.by ?? agent.name, theirs, profile?.zone ?? fallbackZone);
     // The same lines from the same turn are one message, so a retried call posts nothing more.
     const messageId = KinMessageId.make(
       `kin-assign-${NodeCrypto.createHash("sha256")
