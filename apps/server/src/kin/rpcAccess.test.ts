@@ -86,7 +86,7 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
         const allowed = (person: string, method: string) =>
           admits(session(person), services, kinRpcAccess(method)).pipe(
             Effect.as(true),
-            Effect.catchTag("EnvironmentAuthorizationError", () => Effect.succeed(false)),
+            Effect.catchTags({ EnvironmentAuthorizationError: () => Effect.succeed(false) }),
           );
         const methods = KinRpcs.map((rpc) => rpc._tag).toSorted();
         const table = { owner: [] as string[], coOwner: [] as string[], member: [] as string[] };

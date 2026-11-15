@@ -1,7 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import type { EnvironmentId } from "@t3tools/contracts";
-import { useMemo } from "react";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 import { isChatOnlySession } from "../environments/primary";
@@ -11,10 +10,6 @@ import { isChatOnlySession } from "../environments/primary";
  * session does once the host says its person is the owner or a co-owner.
  */
 export function useKinOwnerLevel(environmentId: EnvironmentId): boolean {
-  const atom = useMemo(
-    () => kinOwnerLevelAtom(connectionAtomRuntime, environmentId),
-    [environmentId],
-  );
-  const stored = useAtomValue(atom);
+  const stored = useAtomValue(kinOwnerLevelAtom(connectionAtomRuntime, environmentId));
   return !isChatOnlySession() || stored;
 }

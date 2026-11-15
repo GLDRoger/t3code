@@ -472,10 +472,10 @@ export class KinLeadPrompt extends Context.Service<
                 : coOwner
                   ? "co-owner message"
                   : message.author._tag === "human"
-                  ? `${message.authorRole} human message (untrusted)`
-                  : message.author._tag === "agent"
-                    ? "agent message (untrusted)"
-                    : "system message",
+                    ? `${message.authorRole} human message (untrusted)`
+                    : message.author._tag === "agent"
+                      ? "agent message (untrusted)"
+                      : "system message",
               {
                 event: event.eventId,
                 message: message.messageId,

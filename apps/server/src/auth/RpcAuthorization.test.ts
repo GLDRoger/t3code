@@ -478,7 +478,9 @@ it("a chat-only grant reaches Kin's methods and nothing else", () => {
   // Kin's gate (`KIN_RPC_ACCESS`, rpcAccess.test.ts) decides per person which of these they reach.
   const methods = Object.keys(RPC_REQUIRED_SCOPES);
   expect(
-    methods.filter((method) => RPC_REQUIRED_SCOPES[method as keyof typeof RPC_REQUIRED_SCOPES] === "kin:chat"),
+    methods.filter(
+      (method) => RPC_REQUIRED_SCOPES[method as keyof typeof RPC_REQUIRED_SCOPES] === "kin:chat",
+    ),
   ).toEqual(methods.filter((method) => method.startsWith("kin.")));
   // Kin schedules live in T3's scheduled tasks: a teammate's session reaches none of them.
   const scheduledTasks = Object.entries(RPC_REQUIRED_SCOPES).filter(([method]) =>

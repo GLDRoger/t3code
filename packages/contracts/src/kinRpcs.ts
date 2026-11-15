@@ -234,7 +234,7 @@ export const KIN_RPC_SCOPES = {
  * the server applies before the handler and the clients read to offer a control.
  */
 export type KinRpcAccess = "person" | "owner_level" | "org_owner";
-export const KIN_RPC_ACCESS = {
+const KIN_RPC_ACCESS = {
   "kin.orgs.list": "person",
   "kin.chats.subscribe": "person",
   "kin.chats.createDirect": "person",

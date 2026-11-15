@@ -83,12 +83,19 @@ describe("kinTeamView", () => {
   it("shows the owner and co-owners, and lets only the owner act on a co-owner or change a kind", () => {
     const kinds: KinTeamList = {
       ...list,
-      people: [{ ...person(owner, "Olu"), access: "owner" }, { ...person(mira, "Mira"), access: "co_owner" }],
+      people: [
+        { ...person(owner, "Olu"), access: "owner" },
+        { ...person(mira, "Mira"), access: "co_owner" },
+      ],
     };
     // Mira, a co-owner, looking: the owner is shown as the owner, with nothing to do there.
     const [you, theOwner] = kinTeamView(kinds, KIN_TEAM_NO_EDITS, mira);
     expect([you?.detail, theOwner?.state, theOwner?.detail]).toEqual(["You", "owner", "Owner"]);
-    expect(kinTeammateActions(theOwner!, "co_owner")).toEqual({ link: null, cancel: null, remove: false });
+    expect(kinTeammateActions(theOwner!, "co_owner")).toEqual({
+      link: null,
+      cancel: null,
+      remove: false,
+    });
     expect(kinTeammateKindEditable(theOwner!, "owner")).toBe(false);
     const [, coOwner] = kinTeamView(kinds, KIN_TEAM_NO_EDITS, owner);
     expect(coOwner?.detail).toBe("Co-owner");

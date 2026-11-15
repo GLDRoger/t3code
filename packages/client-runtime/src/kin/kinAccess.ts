@@ -12,14 +12,11 @@ import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import type * as EnvironmentRegistry from "../connection/registry.ts";
 import type { EnvironmentRpcInput, EnvironmentUnaryRpcTag } from "../rpc/client.ts";
-import {
-  createEnvironmentQueryAtomFamily,
-  createEnvironmentRpcCommand,
-} from "../state/runtime.ts";
+import { createEnvironmentQueryAtomFamily, createEnvironmentRpcCommand } from "../state/runtime.ts";
 import { createKinRefreshTriggers, kinDirectoryOrgsAtom } from "./kinRefresh.ts";
 
 /** Whether a person of `kind` may call a method of `access` (`KIN_RPC_ACCESS`). */
-export function kinAccessAllows(kind: KinPersonAccess | null, access: KinRpcAccess | undefined) {
+function kinAccessAllows(kind: KinPersonAccess | null, access: KinRpcAccess | undefined) {
   if (access === undefined || access === "person") return true;
   if (kind === "owner") return true;
   return kind === "co_owner" && access === "owner_level";
@@ -58,22 +55,31 @@ function makeKinAccess<R, ER>(
       return AsyncResult.getOrElse(result, () => null)?.access ?? null;
     }).pipe(Atom.withLabel(`kin:access:${environmentId}`)),
   );
-  return accessAtom;
+  const ownerLevelAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make((get) => kinOwnerLevel(get(accessAtom(environmentId)) ?? undefined)),
+  );
+  return { accessAtom, ownerLevelAtom };
 }
 
 const accessByRuntime = new WeakMap<object, ReturnType<typeof makeKinAccess>>();
 
 /** One kind read per environment on a runtime. */
-export function kinAccessAtom<R, ER>(
+function kinAccessAtoms<R, ER>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
-  environmentId: EnvironmentId,
 ) {
   let atoms = accessByRuntime.get(runtime);
   if (atoms === undefined) {
     atoms = makeKinAccess(runtime);
     accessByRuntime.set(runtime, atoms);
   }
-  return atoms(environmentId);
+  return atoms;
+}
+
+export function kinAccessAtom<R, ER>(
+  runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
+  environmentId: EnvironmentId,
+) {
+  return kinAccessAtoms(runtime).accessAtom(environmentId);
 }
 
 /** Whether the viewer is the owner or a co-owner; false until known. */
@@ -81,8 +87,7 @@ export function kinOwnerLevelAtom<R, ER>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
   environmentId: EnvironmentId,
 ) {
-  const access = kinAccessAtom(runtime, environmentId);
-  return Atom.make((get) => kinOwnerLevel(get(access) ?? undefined));
+  return kinAccessAtoms(runtime).ownerLevelAtom(environmentId);
 }
 
 /**

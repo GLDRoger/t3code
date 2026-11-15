@@ -126,7 +126,13 @@ describe("the app's shell", () => {
   it("docks Chats and every place of Work the grant reaches and the host has not refused", () => {
     const none = { money: false, clients: false, docs: false };
     expect(kinDockTabs(owner, true, none)).toEqual(["chats", "tasks", "money", "clients", "docs"]);
-    expect(kinDockTabs(teammate, true, none)).toEqual(["chats", "tasks", "money", "clients", "docs"]);
+    expect(kinDockTabs(teammate, true, none)).toEqual([
+      "chats",
+      "tasks",
+      "money",
+      "clients",
+      "docs",
+    ]);
     expect(kinDockTabs(owner, true, { ...none, money: true })).toEqual([
       "chats",
       "tasks",

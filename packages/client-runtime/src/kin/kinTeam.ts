@@ -103,7 +103,7 @@ const ORDER: Record<KinTeammateState, number> = {
 };
 
 /** The words for each kind, as the Team screens say them. */
-export const KIN_ACCESS_LABELS: Record<KinPersonAccess, string> = {
+const KIN_ACCESS_LABELS: Record<KinPersonAccess, string> = {
   owner: "Owner",
   co_owner: "Co-owner",
   member: "Member",
@@ -132,8 +132,8 @@ export function kinTeamView(
       : access === "owner"
         ? "owner"
         : joined.has(person.personId) && !removed
-        ? "joined"
-        : "no_access";
+          ? "joined"
+          : "no_access";
     const until = invite === undefined ? "" : formatKinInviteDay(invite.expiresAt);
     rows.push({
       key: `person:${person.personId}`,
