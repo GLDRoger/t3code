@@ -15,6 +15,7 @@ import { kinChartView } from "@t3tools/client-runtime/kin/kinChart";
 import type { KinDocDetail, KinDocEmbed, KinDocSection, KinMessageRef } from "@t3tools/contracts";
 import {
   EllipsisIcon,
+  FileDownIcon,
   HistoryIcon,
   LinkIcon,
   ListIcon,
@@ -181,6 +182,8 @@ export function KinDocReader(
     readonly onSeeChanges: (to: number) => void;
     readonly onOpenLatest: () => void;
     readonly onHistory: () => void;
+    /** Null where the doc is a file already, or this browser may not make one. */
+    readonly onExportPdf: (() => void) | null;
     /** Null where this browser may not restore. */
     readonly onRestore: ((version: number) => void) | null;
     /** Where the page header's own buttons go. */
@@ -337,6 +340,12 @@ export function KinDocReader(
                     <ShareIcon />
                     {KIN_DOCS.export}
                   </MenuItem>
+                  {props.onExportPdf === null ? null : (
+                    <MenuItem onClick={props.onExportPdf}>
+                      <FileDownIcon />
+                      {KIN_DOCS.exportPdf}
+                    </MenuItem>
+                  )}
                   {label.action === null ? null : (
                     <MenuItem onClick={label.ask}>
                       {label.action.sensitive ? <LockIcon /> : <LockOpenIcon />}

@@ -3,12 +3,14 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_DOCS,
   kinDocDiffSummary,
+  kinDocPdfInput,
   kinDocRestoreOutcome,
   kinDocVersionView,
 } from "@t3tools/client-runtime/kin/kinDocs";
 import { KIN_DOC_CHANGES } from "@t3tools/client-runtime/kin/kinDocChanges";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { KinDocDetail, KinRecordKey } from "@t3tools/contracts";
+import { AsyncResult } from "effect/reactivity";
 import { ArrowLeftIcon, XIcon } from "lucide-react";
 import { useState } from "react";
 
@@ -49,6 +51,7 @@ import {
   resolveFileDiffPath,
 } from "../lib/diffRendering";
 import { PREFERRED_HIGHLIGHTER } from "../lib/syntaxHighlighting";
+import { randomUUID } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinDocChangesView } from "./KinDocChangesView";
@@ -95,6 +98,19 @@ export function KinDocPage(
   const { state, refresh } = useKinDoc(props, key, comparing?.to ?? where.version ?? null);
   const doc = state._tag === "ready" ? state.value : null;
   const canRestore = useAtomValue(kinClient.docRestore.permissionAtom(environmentId));
+  const canRender = useAtomValue(kinClient.docRender.permissionAtom(environmentId));
+  const render = useAtomCommand(kinClient.docRender, { reportFailure: false });
+  const canPdf = doc !== null && canRender && kinDocPdfInput(orgId, doc, "pdf") !== null;
+  const exportPdf = async () => {
+    const pdfInput = doc === null ? null : kinDocPdfInput(orgId, doc, randomUUID());
+    if (pdfInput === null) return;
+    const toast = toastManager.add({ type: "loading", title: KIN_DOCS.exportingPdf });
+    const result = await render({ environmentId, input: pdfInput });
+    toastManager.close(toast);
+    const made = AsyncResult.isSuccess(result) ? result.value.documents[0] : undefined;
+    if (made === undefined) return setProblem(KIN_DOCS.exportPdfFailed);
+    onGo({ doc: made.key });
+  };
   const restore = useAtomCommand(kinClient.docRestore, { reportFailure: false });
   const ask = useKinDocAsk(props, doc, names.me);
   const [actions, setActions] = useState<HTMLElement | null>(null);
@@ -272,6 +288,7 @@ export function KinDocPage(
           onSeeChanges={(to) => onGo({ doc: key, changes: { to } })}
           onOpenLatest={() => onGo({ doc: key })}
           onHistory={() => onGo({ ...where, history: true })}
+          onExportPdf={canPdf ? () => void exportPdf() : null}
           onRestore={
             canRestore ? (version) => setRestoring({ version, latest: doc.latest.version }) : null
           }
