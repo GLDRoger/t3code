@@ -23,7 +23,7 @@ import type { AuthServer } from "./OAuth.ts";
 import type { ListedTool } from "./Pinning.ts";
 
 /** Google's sign-in, fixed: Kin uses the owner's own Web client, never discovery. */
-export const GOOGLE_SERVER: AuthServer = {
+const GOOGLE_SERVER: AuthServer = {
   issuer: "https://accounts.google.com",
   authorizationEndpoint: "https://accounts.google.com/o/oauth2/v2/auth",
   tokenEndpoint: "https://oauth2.googleapis.com/token",
@@ -41,7 +41,7 @@ export const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/calendar.events.readonly",
   ...GOOGLE_SEND_SCOPES,
 ].join(" ");
-export const canSend = (granted: string | undefined) => {
+const canSend = (granted: string | undefined) => {
   const scopes = new Set((granted ?? "").split(/\s+/));
   return GOOGLE_SEND_SCOPES.every((scope) => scopes.has(scope));
 };
@@ -49,13 +49,13 @@ export const canSend = (granted: string | undefined) => {
  * Ask for a refresh token every time: Google gives one only with consent shown. The account
  * chooser comes first, so the owner picks which of his Google accounts this one is.
  */
-export const GOOGLE_AUTH_EXTRA = {
+const GOOGLE_AUTH_EXTRA = {
   access_type: "offline",
   prompt: "select_account consent",
 } as const;
 
-export const GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me";
-export const CALENDAR = "https://www.googleapis.com/calendar/v3/calendars";
+const GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me";
+const CALENDAR = "https://www.googleapis.com/calendar/v3/calendars";
 
 const read = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
 const max = (limit: number) => ({
@@ -71,7 +71,7 @@ const calendarId = {
 };
 
 /** Kin's own Google tools: reads only, each pinned like any server's tools. */
-export const GOOGLE_TOOLS: ReadonlyArray<ListedTool> = [
+const GOOGLE_TOOLS: ReadonlyArray<ListedTool> = [
   {
     name: MAIL_TOOL.list,
     title: "List mail",
@@ -150,7 +150,7 @@ const attachments = {
 };
 
 /** Kin's own Google tools that send: every call is a card the owner confirms. */
-export const GOOGLE_SEND_TOOLS: ReadonlyArray<ListedTool> = [
+const GOOGLE_SEND_TOOLS: ReadonlyArray<ListedTool> = [
   {
     name: MAIL_TOOL.send,
     title: "Send an email",
@@ -216,13 +216,13 @@ export const GOOGLE_SEND_TOOLS: ReadonlyArray<ListedTool> = [
   openWorld: false,
 }));
 
-export const field = (value: unknown, ...path: ReadonlyArray<string>): unknown =>
+const field = (value: unknown, ...path: ReadonlyArray<string>): unknown =>
   path.reduce<unknown>(
     (at, name) => (Predicate.hasProperty(at, name) ? at[name] : undefined),
     value,
   );
-export const text = (value: unknown) => (typeof value === "string" ? value : undefined);
-export const list = (value: unknown): ReadonlyArray<unknown> => (Array.isArray(value) ? value : []);
+const text = (value: unknown) => (typeof value === "string" ? value : undefined);
+const list = (value: unknown): ReadonlyArray<unknown> => (Array.isArray(value) ? value : []);
 const arg = (args: Readonly<Record<string, unknown>>, name: string) => text(args[name])?.trim();
 const limit = (args: Readonly<Record<string, unknown>>, top: number, fallback: number) => {
   const value = Number(args.max);
@@ -233,7 +233,7 @@ const failure = (reason: KinGatewayError["reason"], message: string) =>
   new KinGatewayError({ reason, message });
 
 /** One Google API call; its error text is Google's, so only the status reaches anyone. */
-export const api = Effect.fn("KinGoogle.api")(function* (
+const api = Effect.fn("KinGoogle.api")(function* (
   http: HttpClient.HttpClient,
   token: string,
   url: string,
@@ -283,7 +283,7 @@ const headerValues = (message: unknown, name: string) =>
   list(field(message, "payload", "headers"))
     .filter((header) => text(field(header, "name"))?.toLowerCase() === name.toLowerCase())
     .flatMap((header) => text(field(header, "value")) ?? []);
-export const header = (message: unknown, name: string) => headerValues(message, name)[0] ?? null;
+const header = (message: unknown, name: string) => headerValues(message, name)[0] ?? null;
 
 /** Whether the account itself sent this message, from any of its addresses. */
 const sentByMailbox = (mailbox: Mailbox, message: unknown) =>
@@ -423,7 +423,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
 /** Runs one Google tool and answers as an MCP result, so it is cut and quoted like any other. */
-export const callGoogle = Effect.fn("KinGoogle.call")(function* (
+const callGoogle = Effect.fn("KinGoogle.call")(function* (
   http: HttpClient.HttpClient,
   token: string,
   mailbox: Mailbox,
@@ -495,7 +495,7 @@ export const callGoogle = Effect.fn("KinGoogle.call")(function* (
 });
 
 /** The address the sign-in belongs to, shown to the owner beside the connection. */
-export const googleAccount = (http: HttpClient.HttpClient, token: string) =>
+const googleAccount = (http: HttpClient.HttpClient, token: string) =>
   api(http, token, `${GMAIL}/profile`).pipe(
     Effect.map((profile) => text(field(profile, "emailAddress")) ?? null),
   );
@@ -504,7 +504,7 @@ export const googleAccount = (http: HttpClient.HttpClient, token: string) =>
  * The account's From addresses: its own and each "Send mail as" alias Gmail accepted, the
  * default first. Read with the mail read scope.
  */
-export const googleSendAs = Effect.fn("KinGoogle.sendAs")(function* (
+const googleSendAs = Effect.fn("KinGoogle.sendAs")(function* (
   http: HttpClient.HttpClient,
   token: string,
 ) {
@@ -530,7 +530,7 @@ export const googleSendAs = Effect.fn("KinGoogle.sendAs")(function* (
  * What changed in Google since `since` (epoch ms): mail threads that arrived in the inbox and
  * calendar events changed or cancelled. Metadata only, and still outside text.
  */
-export const googleActivity = Effect.fn("KinGoogle.activity")(function* (
+const googleActivity = Effect.fn("KinGoogle.activity")(function* (
   http: HttpClient.HttpClient,
   token: string,
   mailbox: Mailbox,
