@@ -1,4 +1,9 @@
 import { useNavigation } from "@react-navigation/native";
+import {
+  kinAttention,
+  kinNeedsYouBeside,
+  type KinAttentionOpen,
+} from "@t3tools/client-runtime/kin/kinAttention";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import { kinDirectory } from "@t3tools/client-runtime/kin/kinScreenState";
 import type { KinWorkNames } from "@t3tools/client-runtime/kin/kinWork";
@@ -19,7 +24,9 @@ import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
 import { useNowMinuteMs } from "../../lib/clock";
+import { KinAttentionHandled, KinAttentionItem, kinAttentionNames } from "./KinAttention";
 import { useKinOpenPlace } from "./state/kinHomeTab";
+import { useKinAttention, useKinAttentionHandle } from "./state/useKinAttention";
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinInbox } from "./state/useKinInbox";
 import { useKinLists, useKinMoneySummary } from "./state/useKinMoney";
@@ -31,7 +38,7 @@ const NEEDS_ICON: Record<KinNeedsYouRow["kind"], AppSymbolName> = {
   waiting: "exclamationmark.circle",
 };
 
-/** The top of Tasks: your late and due-today tasks, overdue invoices, and what agents ask you. */
+/** The top of Tasks: what needs attention, your late and due-today tasks, and what agents ask. */
 export function KinNeedsYou(
   props: KinWorkTarget & {
     readonly live: KinWorkLive;
@@ -55,12 +62,19 @@ export function KinNeedsYou(
   const { mine } = props;
   const inbox = useKinInbox();
   const [expanded, setExpanded] = useState(false);
+  const attentionRead = useKinAttention(target);
+  const handler = useKinAttentionHandle(target);
+  const attention = kinAttention(attentionRead, {
+    scope: { type: "all" },
+    names: kinAttentionNames(names),
+    now,
+  });
 
   const inboxReady =
     inbox.state._tag === "ready" && inbox.state.environmentId === environmentId
       ? inbox.state
       : null;
-  const needs =
+  const before =
     mine === null
       ? null
       : kinNeedsYou({
@@ -79,7 +93,10 @@ export function KinNeedsYou(
           names,
           now,
         });
-  if (props.hideWhenNone && needs !== null && needs.length === 0) return null;
+  const needs = before === null ? null : kinNeedsYouBeside(before, attention.open);
+  const total = needs === null ? 0 : needs.length + attention.open.length;
+  if (props.hideWhenNone && needs !== null && total === 0 && attention.handled.length === 0)
+    return null;
 
   const base = { environmentId: String(environmentId), orgId: String(orgId) };
   const open = (row: KinNeedsYouRow) => {
@@ -89,31 +106,49 @@ export function KinNeedsYou(
     // Overdue invoices jump to Money, which splits them by client.
     else openPlace("money");
   };
-  const shown = needs === null ? [] : expanded ? needs : needs.slice(0, KIN_NEEDS_YOU_SHOWN);
+  const openAttention = (to: KinAttentionOpen) => {
+    if (to.type === "record") openRecord("KinWorkItem", { ...base, task: to.key });
+    else if (to.type === "money") openPlace("money");
+  };
+  const limit = expanded ? total : KIN_NEEDS_YOU_SHOWN;
+  const shownAttention = needs === null ? [] : attention.open.slice(0, limit);
+  const shown = needs === null ? [] : needs.slice(0, Math.max(0, limit - shownAttention.length));
   return (
     <View className="px-4">
       <ListSection title={KIN_WORK_HOME.needsYou}>
         {needs === null ? (
           <ListRowLayout label="Checking what needs you" disabled />
-        ) : needs.length === 0 ? (
+        ) : total === 0 ? (
           <ListRowLayout label={KIN_WORK_HOME.nothingNeedsYou} disabled />
         ) : (
-          shown.map((row) => (
-            <ListRow
-              key={row.id}
-              icon={NEEDS_ICON[row.kind]}
-              label={row.title}
-              description={row.detail}
-              onPress={() => open(row)}
-            />
-          ))
+          [
+            ...shownAttention.map((row) => (
+              <KinAttentionItem
+                key={row.id}
+                {...target}
+                row={row}
+                handler={handler}
+                onOpen={openAttention}
+              />
+            )),
+            ...shown.map((row) => (
+              <ListRow
+                key={row.id}
+                icon={NEEDS_ICON[row.kind]}
+                label={row.title}
+                description={row.detail}
+                onPress={() => open(row)}
+              />
+            )),
+          ]
         )}
-        {needs === null || needs.length <= KIN_NEEDS_YOU_SHOWN ? null : (
+        {needs === null || total <= KIN_NEEDS_YOU_SHOWN ? null : (
           <ListActionRow
-            label={expanded ? KIN_WORK_HOME.seeFewer : KIN_WORK_HOME.seeAll(needs.length)}
+            label={expanded ? KIN_WORK_HOME.seeFewer : KIN_WORK_HOME.seeAll(total)}
             onPress={() => setExpanded((held) => !held)}
           />
         )}
+        <KinAttentionHandled rows={attention.handled} handler={handler} />
       </ListSection>
     </View>
   );

@@ -1,3 +1,8 @@
+import {
+  kinAttention,
+  kinNeedsYouBeside,
+  type KinAttentionOpen,
+} from "@t3tools/client-runtime/kin/kinAttention";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
 import { kinDirectory } from "@t3tools/client-runtime/kin/kinScreenState";
@@ -15,7 +20,9 @@ import { useState } from "react";
 
 import { Button } from "../components/ui/button";
 import { cn } from "../lib/utils";
+import { KinAttentionHandled, KinAttentionItem, kinAttentionNames } from "./KinAttention";
 import { KinWorkSection } from "./KinWorkParts";
+import { useKinAttention, useKinAttentionHandle } from "./useKinAttention";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinInbox } from "./useKinHost";
 import { kinListsOf, useKinLists, useKinMoneySummary } from "./useKinMoney";
@@ -28,8 +35,8 @@ const ICON: Record<KinNeedsYouRow["kind"], LucideIcon> = {
 };
 
 /**
- * The top of Tasks: your late tasks, what clients owe past due, what an agent waits on you for,
- * then what is yours today. Each row opens the thing itself.
+ * The top of Tasks: what needs attention, then your late tasks, what clients owe past due, what an
+ * agent waits on you for, and what is yours today. Each row opens the thing itself.
  */
 export function KinNeedsYou(
   props: KinWorkTarget & {
@@ -50,13 +57,20 @@ export function KinNeedsYou(
   const money = useKinMoneySummary(props, { enabled: true, seq });
   const lists = useKinLists(props, { enabled: true, seq });
   const inbox = useKinInbox();
+  const attentionRead = useKinAttention(props);
+  const handler = useKinAttentionHandle(props);
   const [expanded, setExpanded] = useState(false);
   if (mine === null) return null;
+  const attention = kinAttention(attentionRead, {
+    scope: { type: "all" },
+    names: kinAttentionNames(names),
+    now,
+  });
   const ready =
     inbox.state._tag === "ready" && inbox.state.environmentId === environmentId
       ? inbox.state
       : null;
-  const rows = kinNeedsYou({
+  const before = kinNeedsYou({
     mine,
     // Where the host keeps money from this viewer, nothing owed shows here either.
     money: money.state._tag === "ready" ? money.state.value : null,
@@ -70,6 +84,11 @@ export function KinNeedsYou(
     names,
     now,
   });
+  const rows = kinNeedsYouBeside(before, attention.open);
+  const openAttention = (to: KinAttentionOpen) => {
+    if (to.type === "record") props.onOpenTask(to.key);
+    else if (to.type === "money") props.onOpenMoney();
+  };
   const open = (to: KinNeedsYouOpen) => {
     if (to.type === "task") props.onOpenTask(to.key);
     else if (to.type === "list") props.onOpenList(to.open);
@@ -80,22 +99,35 @@ export function KinNeedsYou(
         params: { environmentId, orgId, chatId: to.chatId },
       });
   };
-  const shown = expanded ? rows : rows.slice(0, KIN_NEEDS_YOU_SHOWN);
+  const total = attention.open.length + rows.length;
+  const limit = expanded ? total : KIN_NEEDS_YOU_SHOWN;
+  const shownAttention = attention.open.slice(0, limit);
+  const shown = rows.slice(0, Math.max(0, limit - shownAttention.length));
   return (
     <KinWorkSection
       title={KIN_WORK_HOME.needsYou}
       action={
-        rows.length <= KIN_NEEDS_YOU_SHOWN ? undefined : (
+        total <= KIN_NEEDS_YOU_SHOWN ? undefined : (
           <Button size="xs" variant="ghost" onClick={() => setExpanded(!expanded)}>
-            {expanded ? KIN_WORK_HOME.seeFewer : KIN_WORK_HOME.seeAll(rows.length)}
+            {expanded ? KIN_WORK_HOME.seeFewer : KIN_WORK_HOME.seeAll(total)}
           </Button>
         )
       }
     >
-      {rows.length === 0 ? (
+      {total === 0 ? (
         <p className="px-2 text-sm text-muted-foreground">{KIN_WORK_HOME.nothingNeedsYou}</p>
       ) : (
         <ul className="flex flex-col">
+          {shownAttention.map((row) => (
+            <KinAttentionItem
+              key={row.id}
+              environmentId={environmentId}
+              orgId={orgId}
+              row={row}
+              handler={handler}
+              onOpen={openAttention}
+            />
+          ))}
           {shown.map((row) => {
             const Icon = ICON[row.kind];
             return (
@@ -128,6 +160,12 @@ export function KinNeedsYou(
             );
           })}
         </ul>
+      )}
+      <KinAttentionHandled rows={attention.handled} handler={handler} />
+      {handler.problem === null ? null : (
+        <p role="alert" className="px-2 text-xs text-destructive-foreground">
+          {handler.problem}
+        </p>
       )}
     </KinWorkSection>
   );

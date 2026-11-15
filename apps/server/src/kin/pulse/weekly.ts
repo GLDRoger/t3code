@@ -145,7 +145,9 @@ export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (i
   const overloaded = load
     .filter((one) => one.open >= overloadAt || one.late >= LATE_OVERLOAD)
     .map((one) => `${one.name ?? "someone"}: ${one.open} open, ${one.late} late`);
-  const busy = new Set(load.filter((one) => one.kind === "person" && one.soon > 0).map((one) => one.id));
+  const busy = new Set(
+    load.filter((one) => one.kind === "person" && one.soon > 0).map((one) => one.id),
+  );
   const free = people.filter((person) => !busy.has(person.id)).map((person) => person.name);
 
   const next = yield* sql<{ key: string; title: string; dueAt: number; list: string }>`SELECT

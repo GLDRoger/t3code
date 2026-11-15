@@ -33,7 +33,14 @@ import { resolveLead } from "../lead/LeadMemory.ts";
 import { inCompanyChat, toolAdmitted } from "../lead/SharedTools.ts";
 import { partyPage, projectDetail } from "./crm.ts";
 import { KinRecords, type Patch, type TotalsBy, type Writer } from "./KinRecords.ts";
-import { GOAL_INPUTS, GoalInputs, goalFields, goalLine, goalsNow, isMoneyMeasure } from "./goals.ts";
+import {
+  GOAL_INPUTS,
+  GoalInputs,
+  goalFields,
+  goalLine,
+  goalsNow,
+  isMoneyMeasure,
+} from "./goals.ts";
 import { FieldInputs, turnFiles, typedFields } from "./leadFields.ts";
 import {
   OWNERS_SPINE,
@@ -1092,9 +1099,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
   const specChanged = list === "work" && (yield* taskSpecChanged(row));
   const goal =
     list === "goals"
-      ? (yield* goalsNow(lead.orgId, now, { money: true })).goals.find(
-          (one) => one.key === row.key,
-        )
+      ? (yield* goalsNow(lead.orgId, now, { money: true })).goals.find((one) => one.key === row.key)
       : undefined;
   return {
     ...rowFor(view, row, now),

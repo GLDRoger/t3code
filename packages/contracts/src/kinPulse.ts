@@ -155,7 +155,12 @@ export type KinPulseHandleInput = typeof KinPulseHandleInput.Type;
  * What a goal counts: money received in its period, clients won, tasks done, or a number someone
  * keeps up to date by hand (a release shipped, people hired).
  */
-export const KIN_GOAL_MEASURES = ["revenue_received", "clients_won", "tasks_done", "manual"] as const;
+export const KIN_GOAL_MEASURES = [
+  "revenue_received",
+  "clients_won",
+  "tasks_done",
+  "manual",
+] as const;
 export const KinGoalMeasure = Schema.Literals(KIN_GOAL_MEASURES);
 export type KinGoalMeasure = typeof KinGoalMeasure.Type;
 

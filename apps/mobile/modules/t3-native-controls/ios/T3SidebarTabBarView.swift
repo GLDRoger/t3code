@@ -48,6 +48,8 @@ final class T3SidebarTabBarView: ExpoView, UITabBarDelegate {
     didSet { if tabs != oldValue { updateItems() } }
   }
   var selectedTab = "threads" { didSet { updateSelection() } }
+  /// A small count on a tab, such as what needs attention on Tasks; absent tabs show none.
+  var badges: [String: String] = [:] { didSet { if badges != oldValue { updateBadges() } } }
   /// Titles under the icons, as a stock UITabBar draws them; the workspace dock stays icon-only.
   var showsLabels = false { didSet { if showsLabels != oldValue { updateItems() } } }
   var selectedColor: UIColor = .systemBlue { didSet { tabBar.tintColor = selectedColor } }
@@ -133,7 +135,12 @@ final class T3SidebarTabBarView: ExpoView, UITabBarDelegate {
       item.title = showsLabels ? labels[tab] : nil
       return item
     }
+    updateBadges()
     updateSelection()
+  }
+
+  private func updateBadges() {
+    for (tab, item) in itemsByTab { item.badgeValue = badges[tab] }
   }
 
   private func layoutCompose(alongside frame: CGRect) {

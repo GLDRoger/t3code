@@ -199,7 +199,10 @@ const seed = Effect.gen(function* () {
       dueAt: B + 30 * DAY - 1,
       fields: JSON.stringify({ startsOn: "2026-11-01", ...fields }),
     });
-  yield* goal("G-1", { measure: "revenue_received", target: { minor: 10_00_000_00, currency: "INR" } });
+  yield* goal("G-1", {
+    measure: "revenue_received",
+    target: { minor: 10_00_000_00, currency: "INR" },
+  });
   yield* goal("G-2", { measure: "clients_won", target: "4" });
   yield* goal("G-3", { measure: "tasks_done", target: "20" });
   yield* goal("G-4", { measure: "manual", target: "10", current: "3", unit: "hires" });

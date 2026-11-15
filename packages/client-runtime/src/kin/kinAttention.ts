@@ -1,9 +1,5 @@
-import type {
-  KinGoal,
-  KinPulseFact,
-  KinPulseRead,
-  KinRecordKey,
-} from "@t3tools/contracts";
+// @effect-diagnostics globalDate:off - Pure view helpers format host times and local days for React render, outside an Effect runtime.
+import type { KinGoal, KinPulseFact, KinPulseRead, KinRecordKey } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
 import { kinMoneyDraft, kinMoneyText } from "./kinLists.ts";
@@ -109,7 +105,7 @@ const handledText = (fact: KinPulseFact, names: ReadonlyMap<string, string>, now
     : `${by} has it until ${dayLabel(handled.until, now)}`;
 };
 
-export function kinAttentionRow(
+function kinAttentionRow(
   fact: KinPulseFact,
   input: {
     readonly scope: KinAttentionScope;
@@ -131,7 +127,8 @@ export function kinAttentionRow(
     title: subject.title,
     detail: fact.consequence,
     about:
-      [subject.kind === "record" ? subject.key : null, ...where].filter((part) => part !== null)
+      [subject.kind === "record" ? subject.key : null, ...where]
+        .filter((part) => part !== null)
         .join(" · ") || null,
     urgent: URGENT.has(fact.sense),
     open: openOf(fact),
@@ -152,7 +149,10 @@ export function kinAttention(
     readonly names: ReadonlyMap<string, string>;
     readonly now: Date;
   },
-): { readonly open: ReadonlyArray<KinAttentionRow>; readonly handled: ReadonlyArray<KinAttentionRow> } {
+): {
+  readonly open: ReadonlyArray<KinAttentionRow>;
+  readonly handled: ReadonlyArray<KinAttentionRow>;
+} {
   if (read === null) return { open: [], handled: [] };
   const facts = read.facts.filter((fact) => inScope(fact, input.scope));
   const rows = (list: ReadonlyArray<KinPulseFact>) =>
@@ -200,7 +200,7 @@ const plusDays = (date: Date, days: number) =>
 
 /** Snooze's three choices, as the days the host hides a row until. */
 export function kinSnoozeDays(now: Date) {
-  const toMonday = ((8 - now.getDay()) % 7) || 7;
+  const toMonday = (8 - now.getDay()) % 7 || 7;
   return [
     { label: KIN_ATTENTION.snoozeTomorrow, until: dayOf(plusDays(now, 1)) },
     { label: KIN_ATTENTION.snoozeMonday, until: dayOf(plusDays(now, toMonday)) },

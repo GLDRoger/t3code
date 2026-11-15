@@ -40,9 +40,9 @@ export const GoalInputs = {
   current: Schema.optional(Schema.NullOr(Schema.Finite)).annotate({
     description: "A manual goal's number now; say where it came from in notes.",
   }),
-  unit: Schema.optional(Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(40)))).annotate(
-    { description: 'What a manual goal counts, such as "hires".' },
-  ),
+  unit: Schema.optional(
+    Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(40))),
+  ).annotate({ description: 'What a manual goal counts, such as "hires".' }),
 };
 export const GOAL_INPUTS = ["measure", "target", "current", "unit"] as const;
 
@@ -83,8 +83,7 @@ export const goalFields = Effect.fn("KinGoals.fields")(function* (
   if (row.measure !== undefined) fields.measure = row.measure;
   if (row.target !== undefined && isMeasure(measure ?? null))
     fields.target = yield* goalTarget(measure as KinGoalMeasure, row.target);
-  if (row.current !== undefined)
-    fields.current = row.current === null ? null : String(row.current);
+  if (row.current !== undefined) fields.current = row.current === null ? null : String(row.current);
   if (row.unit !== undefined) fields.unit = row.unit;
   return fields;
 });

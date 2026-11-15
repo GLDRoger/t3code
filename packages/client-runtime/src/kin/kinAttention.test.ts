@@ -67,10 +67,7 @@ describe("kinAttention", () => {
       names,
       now,
     });
-    expect(project.open.map((row) => row.factKey)).toEqual([
-      "task_late:W-2",
-      "task_due_soon:W-1",
-    ]);
+    expect(project.open.map((row) => row.factKey)).toEqual(["task_late:W-2", "task_due_soon:W-1"]);
     expect(project.open[0]!.about).toBe("W-2");
     expect(project.handled.map((row) => row.handled)).toEqual([
       expect.stringMatching(/^Arjun has it until /),
@@ -82,11 +79,14 @@ describe("kinAttention", () => {
   });
 
   it("leaves out of Needs you what an attention row already covers", () => {
-    const attention = kinAttention(read([fact("task_late", "W-2"), fact("invoice_overdue", "INV-1")]), {
-      scope: { type: "all" },
-      names,
-      now,
-    }).open;
+    const attention = kinAttention(
+      read([fact("task_late", "W-2"), fact("invoice_overdue", "INV-1")]),
+      {
+        scope: { type: "all" },
+        names,
+        now,
+      },
+    ).open;
     const row = (id: string, open: KinNeedsYouRow["open"]): KinNeedsYouRow => ({
       id,
       kind: "task",

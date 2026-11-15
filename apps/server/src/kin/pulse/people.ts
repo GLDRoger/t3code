@@ -65,6 +65,8 @@ export const handle = Effect.fn("KinPulsePeople.handle")(function* (
     factKey: input.factKey,
     action: input.action,
     until:
-      input.until === undefined ? undefined : startOfDay(input.until, yield* ownerZone(input.orgId)),
+      input.until === undefined
+        ? undefined
+        : startOfDay(input.until, yield* ownerZone(input.orgId)),
   }).pipe(Effect.catchTags({ SqlError: unavailableOn, SchemaError: unavailableOn }));
 });

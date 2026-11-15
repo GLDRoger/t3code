@@ -53,6 +53,7 @@ import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { Switch } from "../components/ui/switch";
 import { cn } from "../lib/utils";
 import { useAtomCommand } from "../state/use-atom-command";
+import { KinAttentionSection } from "./KinAttention";
 import { KinDocsUnder } from "./KinDocsList";
 import { KinClientDialog, KinContactDialog, KinProjectDialog } from "./KinWorkForms";
 import { KinWorkPlaceLists } from "./KinWorkPlaceLists";
@@ -589,6 +590,15 @@ function ClientPage(
             <KinWorkProblem problem={problem} onOpenExisting={props.onOpenClient} />
           )}
         </div>
+        <KinAttentionSection
+          environmentId={environmentId}
+          orgId={orgId}
+          scope={{ type: "client", key: view.key }}
+          names={names}
+          onOpen={(to) => {
+            if (to.type === "record") props.onOpenTask(to.key);
+          }}
+        />
         {owed(
           KIN_CLIENTS.weOwe,
           view.weOwe,
