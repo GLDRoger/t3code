@@ -39,7 +39,7 @@ import { moneySection, moneySummary } from "../work/moneyViews.ts";
 import { buildWorkSection, MONEY_RULE, WITHDRAWN_WORK, WORK_RULE } from "../work/workPrompt.ts";
 import { buildStartedSection, STARTED_RULE } from "./startedSection.ts";
 import { buildPulseSection, checkInIndex, PULSE_RULE } from "../pulse/prompt.ts";
-import { buildWeeklySection, WEEKLY_RULE } from "../pulse/weekly.ts";
+import { buildWeeklySection, wantsWeekly, WEEKLY_RULE } from "../pulse/weekly.ts";
 import { playbookIndex } from "../work/playbooks.ts";
 import { entriesShown, sensitiveShown, sourcesShown } from "../work/workerAttempts.ts";
 import { personSees } from "../work/teamView.ts";
@@ -991,8 +991,7 @@ export class KinLeadPrompt extends Context.Service<
             : undefined;
         // The week, on the morning brief that is also the weekly one; owner-only like money.
         const weekly =
-          ownerOnly &&
-          input.events.some((event) => event._tag === "routine" && event.weekly === true)
+          ownerOnly && wantsWeekly(input.events)
             ? yield* buildWeeklySection({ orgId, now }).pipe(
                 Effect.tap(() => sensitiveShown({ orgId, wakeupId: input.wakeupId })),
                 Effect.provideService(SqlClient.SqlClient, sql),

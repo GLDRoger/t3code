@@ -1,4 +1,4 @@
-import type { KinMoney, KinOrgId } from "@t3tools/contracts";
+import type { KinEvent, KinMoney, KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -10,6 +10,14 @@ import { DAY_MS } from "./thresholds.ts";
 
 export const WEEKLY_RULE =
   "This is the weekly brief. Lead with the goals and where each stands, then only what changed this week and what needs a decision.";
+/** The seeded weekly check-in's schedule (`checkin-<slug>`), which arrives as a pulse event. */
+const WEEKLY_CHECK_IN = "checkin-weekly";
+export const wantsWeekly = (events: ReadonlyArray<KinEvent>) =>
+  events.some(
+    (event) =>
+      (event._tag === "routine" && event.weekly === true) ||
+      (event._tag === "pulse" && event.checkIn?.scheduleId === WEEKLY_CHECK_IN),
+  );
 const WEEK_MS = 7 * DAY_MS;
 const FREE_HORIZON_MS = 3 * DAY_MS;
 const LATE_OVERLOAD = 3;
