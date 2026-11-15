@@ -652,6 +652,8 @@ interface LocalRun {
   status: OrchestrationV2RunStatus;
   readonly completedAt: null;
   reply?: string;
+  /** What the provider said ended the run, as its failed error item carries it. */
+  error?: string;
 }
 /**
  * This server's own thread launch and runs, for workers that run here. Threads are created in
@@ -738,6 +740,11 @@ const fakeLocal = () => {
         messages: (runs.get(threadId) ?? []).flatMap((run) =>
           run.reply === undefined ? [] : [{ role: "assistant", runId: run.id, text: run.reply }],
         ),
+        turnItems: (runs.get(threadId) ?? []).flatMap((run) =>
+          run.error === undefined
+            ? []
+            : [{ type: "error", status: "failed", runId: run.id, failure: { message: run.error } }],
+        ),
       } as never),
     dispatch: (command: unknown) => Effect.sync(() => void dispatched.push(command) as never),
     interruptThread: (input: ThreadManagement.ThreadManagementInterruptInput) =>
@@ -758,11 +765,17 @@ const fakeLocal = () => {
       }),
   };
   /** Ends the thread's latest run here, as the worker's last turn or the owner's stop would. */
-  const finish = (threadId: ThreadId, status: OrchestrationV2RunStatus, reply?: string) =>
+  const finish = (
+    threadId: ThreadId,
+    status: OrchestrationV2RunStatus,
+    reply?: string,
+    error?: string,
+  ) =>
     Effect.gen(function* () {
       const last = runs.get(threadId)!.at(-1)!;
       last.status = status;
       if (reply !== undefined) last.reply = reply;
+      if (error !== undefined) last.error = error;
       yield* signal();
     });
   return { launches, runs, dispatched, interrupted, interrupts, hooks, launcher, threads, finish };
@@ -3168,6 +3181,27 @@ it.effect.each(["failed", "interrupted", "cancelled"] as const)(
         );
       }),
     ),
+);
+
+it.effect("a local run that fails without a report tells its lead what ended it", () =>
+  run(({ ctx, remote, local, workers, tracker }) =>
+    Effect.gen(function* () {
+      yield* goLocal(ctx, remote);
+      const { workerId } = yield* workers.delegate(scope, delegateInput);
+      yield* local.finish(
+        localThreadId(workerId),
+        "failed",
+        undefined,
+        "You've hit your usage limit. Try again at 3pm.",
+      );
+      yield* settled(tracker, ctx.orgId, workerId);
+      const [reported] = yield* reports(ctx.sql, ctx.orgId);
+      assert.strictEqual(
+        reported!.event.report.summary,
+        "Worker ended failed without a report. What Kin saw: You've hit your usage limit. Try again at 3pm.",
+      );
+    }),
+  ),
 );
 
 /** A direct chat between a teammate and the lead, where the owner isn't. */

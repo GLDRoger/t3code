@@ -16,6 +16,7 @@ import {
   type OrchestrationV2RunStatus,
   type OrchestrationV2StoredEvent,
   type OrchestrationV2Subagent,
+  type OrchestrationV2ThreadProjection,
   ModelSelection,
   ProjectId,
   ThreadId,
@@ -109,6 +110,21 @@ const LOCAL_WAIT_MS = 600_000;
 export const LOCAL_TASK_LIMIT_MS = 3_600_000;
 const TASK_LIMIT_REASON = "The worker ran past its one-hour limit.";
 const MAX_REPLY_CHARS = 200_000;
+const MAX_CAUSE_CHARS = 300;
+/** The provider's own words for what ended a run, so the lead reports a cause it saw. */
+const failureCause = (
+  projection: Pick<OrchestrationV2ThreadProjection, "turnItems">,
+  runId: string,
+) => {
+  const item = projection.turnItems.findLast(
+    (candidate) =>
+      candidate.type === "error" && candidate.status === "failed" && candidate.runId === runId,
+  );
+  const message = item?.type === "error" ? item.failure.message.trim() : "";
+  return message === ""
+    ? ""
+    : ` What Kin saw: ${Array.from(message).slice(0, MAX_CAUSE_CHARS).join("")}`;
+};
 const cardStateEquivalent = Schema.toEquivalence(
   KinTaskCardState.mapFields((fields) => ({
     status: fields.status,
@@ -1110,7 +1126,11 @@ const make = Effect.gen(function* () {
       ?.text.slice(-MAX_REPLY_CHARS);
     const report = withBlockedHosts(
       (reply === undefined ? undefined : parseReport(reply)) ??
-        blocked(worker, here, `Worker ended ${status} without a report.`),
+        blocked(
+          worker,
+          here,
+          `Worker ended ${status} without a report.${failureCause(projection, run.id)}`,
+        ),
       yield* takeBlocked(stateDir, worker.workerId).pipe(
         Effect.provideService(FileSystem.FileSystem, fs),
         Effect.orElseSucceed(() => []),
