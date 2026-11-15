@@ -1,6 +1,4 @@
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- undici's connect takes Node's own lookup.
 import * as NodeDns from "node:dns";
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- the type of that lookup.
 import type * as NodeNet from "node:net";
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import { isPublicFaviconHost, normalizeHostname } from "@t3tools/shared/hostClassification";

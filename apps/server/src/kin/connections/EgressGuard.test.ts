@@ -46,7 +46,7 @@ describe("EgressGuard", () => {
 
   const seen: Array<string> = [];
   const fetch: typeof globalThis.fetch = Object.assign(
-    (input: RequestInfo | URL, init?: RequestInit) => {
+    (input: string | URL | Request, init?: RequestInit) => {
       seen.push(new Request(input, init).url);
       return Promise.resolve(
         new Response(null, {

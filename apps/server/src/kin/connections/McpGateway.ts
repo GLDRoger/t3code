@@ -65,7 +65,6 @@ const PROTOCOLS = [McpProtocol.v2026_07_28, McpProtocol.v2025_11_25] as const;
 
 const egressRefusal = (error: unknown, depth = 0): string | undefined => {
   if (depth > 8 || !Predicate.isObject(error)) return undefined;
-  // @effect-diagnostics-next-line instanceOfSchema:off -- a plain Error class, not a schema.
   if (error instanceof EgressRefused) return error.message;
   return (
     egressRefusal(Reflect.get(error, "cause"), depth + 1) ??

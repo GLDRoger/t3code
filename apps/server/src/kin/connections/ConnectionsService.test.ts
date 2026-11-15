@@ -108,11 +108,14 @@ const SEARCH: FakeTool = {
 };
 const BASE: Spec = { instructions: "Use query for analytics.", tools: [QUERY, DELETE, SEARCH] };
 
+const serve = <A, E>(app: Layer.Layer<A, E, HttpRouter.HttpRouter>) =>
+  HttpRouter.toWebHandler(app, { disableLogger: true });
+
 /** A real `effect/ai` MCP server, served in-process; `set` swaps what it serves. */
 const makeFake = Effect.fnUntraced(function* (initial: Spec) {
   const requests: Array<Request> = [];
   let spec = initial;
-  let current: ReturnType<typeof HttpRouter.toWebHandler> | undefined;
+  let current: ReturnType<typeof serve> | undefined;
   const build = () => {
     const tools = Layer.effectDiscard(
       Effect.gen(function* () {
@@ -132,7 +135,7 @@ const makeFake = Effect.fnUntraced(function* (initial: Spec) {
           });
       }),
     );
-    return HttpRouter.toWebHandler(
+    return serve(
       tools.pipe(
         Layer.provideMerge(
           McpServer.layerHttp({
@@ -144,7 +147,6 @@ const makeFake = Effect.fnUntraced(function* (initial: Spec) {
           }),
         ),
       ),
-      { disableLogger: true },
     );
   };
   // Effect's server fills every hint's default; most servers send only the hints they set.
@@ -165,7 +167,7 @@ const makeFake = Effect.fnUntraced(function* (initial: Spec) {
   };
   yield* Effect.addFinalizer(() => Effect.promise(async () => current?.dispose()));
   const fetch: typeof globalThis.fetch = Object.assign(
-    (input: RequestInfo | URL, init?: RequestInit) => {
+    (input: string | URL | Request, init?: RequestInit) => {
       const request = new Request(input, init);
       requests.push(request.clone());
       if (spec.status !== undefined)
@@ -480,7 +482,9 @@ describe("KinConnections", () => {
         const connections = yield* KinConnections;
         const id = (yield* addPosthog).connection.connectionId;
         const ref = { orgId, connectionId: id };
-        const attempts = (people: typeof owner) => [
+        const attempts = (
+          people: typeof owner,
+        ): ReadonlyArray<Effect.Effect<unknown, KinChatError>> => [
           connections.list(people, { orgId }),
           connections.get(people, ref),
           connections.add(people, { orgId, service: "custom", url: "https://mcp.example.com/mcp" }),
@@ -493,9 +497,12 @@ describe("KinConnections", () => {
           connections.calls(people, { orgId }),
         ];
         for (const attempt of attempts(mate))
-          assert.strictEqual((yield* Effect.flip(attempt)).reason, "not_allowed");
+          assert.strictEqual(
+            (yield* attempt.pipe(Effect.asVoid, Effect.flip)).reason,
+            "not_allowed",
+          );
         for (const attempt of attempts(stranger))
-          assert.strictEqual((yield* Effect.flip(attempt)).reason, "not_found");
+          assert.strictEqual((yield* attempt.pipe(Effect.asVoid, Effect.flip)).reason, "not_found");
         assert.strictEqual((yield* connections.list(owner, { orgId })).connections.length, 1);
       }),
     ),
@@ -509,12 +516,16 @@ describe("KinConnections", () => {
         yield* markRead(id, ["query"]);
         const sql = yield* SqlClient.SqlClient;
         yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake'`;
-        for (const attempt of [
+        const shared: ReadonlyArray<Effect.Effect<unknown, KinChatError>> = [
           connections.tools(scope, {}),
           connections.call(scope, { connection: id, tool: "query" }),
           connections.offer(scope, { service: "github" }),
-        ])
-          assert.strictEqual((yield* Effect.flip(attempt)).message, SHARED_CONNECTIONS);
+        ];
+        for (const attempt of shared)
+          assert.strictEqual(
+            (yield* attempt.pipe(Effect.asVoid, Effect.flip)).message,
+            SHARED_CONNECTIONS,
+          );
         const [count] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_connection_calls
           WHERE org_id = ${orgId} AND status = 'refused'`;
         assert.strictEqual(count!.n, 3);
