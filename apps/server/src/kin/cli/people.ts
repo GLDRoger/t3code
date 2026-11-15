@@ -7,23 +7,18 @@ import {
 } from "@t3tools/contracts";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import { Argument, Command, Flag, GlobalFlag } from "effect/cli";
-import { FetchHttpClient } from "effect/http";
 import { RpcGroup } from "effect/rpc";
-import { openRemote } from "./openRemote.ts";
+import { openRemote, remoteLayer } from "./openRemote.ts";
 
 import {
   authLocationFlags,
   type CliAuthLocationFlags,
   resolveCliAuthConfig,
 } from "../../cli/config.ts";
-import * as ServerConfig from "../../config.ts";
 import { readPersistedServerRuntimeState } from "../../serverRuntimeState.ts";
-import * as EnvironmentAuth from "../auth/EnvironmentAuthRuntime.ts";
 import * as KinEnabled from "../KinEnabled.ts";
 
 const fail = (message: string) => Effect.fail(new KinChatError({ reason: "unavailable", message }));
@@ -61,18 +56,7 @@ const runOnHost = Effect.fn("kin.people.runOnHost")(
       if (Option.isNone(state))
         return yield* fail(`No running Kin server uses ${config.baseDir}. Start it, then retry.`);
       return yield* run(yield* openPeopleRemote(state.value.origin));
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(
-        Layer.merge(
-          EnvironmentAuth.layerRuntime.pipe(
-            Layer.provide(ServerConfig.layer(config)),
-            Layer.provide(Layer.succeed(References.MinimumLogLevel, "Warn")),
-          ),
-          FetchHttpClient.layer,
-        ),
-      ),
-    );
+    }).pipe(Effect.scoped, Effect.provide(remoteLayer(config)));
   },
   Effect.tapError((error) => (isCliError(error) ? Console.error(error.message) : Effect.void)),
 );

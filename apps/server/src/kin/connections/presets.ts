@@ -45,7 +45,12 @@ export const SERVICES: ReadonlyArray<KinConnectionService> = [
     setup: preset.setup,
   })),
   ...SIGN_IN_COMING.map(([service, label]) => ({ service, label, available: false, setup: null })),
-  { service: "custom", label: "Another MCP server", available: true, setup: null },
+  {
+    service: "custom",
+    label: "Another service",
+    available: true,
+    setup: "Paste the server address the service gives for connecting AI tools.",
+  },
 ];
 
 /** A custom server can reach anywhere until the owner says it only talks to its own vendor. */

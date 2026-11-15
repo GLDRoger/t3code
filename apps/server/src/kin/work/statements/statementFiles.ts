@@ -12,6 +12,7 @@ import { officeProblem } from "../../gendocs/officeCheck.ts";
 import {
   type Cell,
   cellBudget,
+  currencyIn,
   delimitedLines,
   EMPTY_CELL,
   htmlLines,
@@ -115,11 +116,19 @@ export const readStatementFile = async (
   const pageLines = format === "pdf" ? (read as ReadonlyArray<ReadonlyArray<Line>>) : undefined;
   const lines = pageLines === undefined ? (read as ReadonlyArray<Line>) : pageLines.flat();
   const pages = pageLines?.map(pageText);
-  const table = readTable(lines);
+  const said = currencyIn(
+    lines.map((line) => line.map((cell) => cell.text.trim()).join(" ")).join("\n"),
+  );
+  if ("refused" in said) return { _tag: "unreadable", reason: said.refused };
+  const parsed = readTable(lines, said.currency);
+  const table =
+    parsed._tag === "read" && "choose" in said && said.choose !== undefined
+      ? { ...parsed, statement: { ...parsed.statement, currencyChoice: said.choose } }
+      : parsed;
   if (table._tag === "no_table")
     return pages === undefined
       ? { _tag: "unreadable", reason: table.reason }
-      : { _tag: "pages", pages, facts: readFacts(lines) };
+      : { _tag: "pages", pages, facts: readFacts(lines, said.currency) };
   if (table.statement.rows.length > STATEMENT_CAPS.rows)
     return {
       _tag: "unreadable",

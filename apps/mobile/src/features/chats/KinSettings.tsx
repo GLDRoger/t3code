@@ -3,6 +3,7 @@ import { useNavigation, useRoute } from "@react-navigation/native";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import { KIN_DAILY_LIMIT, kinDailyLimitChoices } from "@t3tools/client-runtime/kin/kinBudget";
 import { KIN_COMPANY } from "@t3tools/client-runtime/kin/kinCompanyProfile";
+import { KIN_CONNECTIONS_COPY } from "@t3tools/client-runtime/kin/kinConnections";
 import {
   KIN_PROFILE_COPY,
   KIN_TEAM_AGENT_COPY,
@@ -191,6 +192,11 @@ export function KinSettings(props: {
                     onPress={() => navigation.navigate("KinMemory", company)}
                   />
                 ) : null}
+                <SettingsRow
+                  icon="link"
+                  label={KIN_CONNECTIONS_COPY.title}
+                  onPress={() => navigation.navigate("KinConnections", company)}
+                />
                 <SettingsRow
                   icon="doc.text"
                   label={KIN_COMPANY.title}

@@ -50,6 +50,9 @@ import {
   type KinOrgId,
   type KinPartyPageInput,
   type KinVisualHostsInput,
+  type KinConnectionCallsInput,
+  type KinConnectionRef,
+  type KinConnectionsInput,
   type KinProjectPageInput,
   type KinWorkGetInput,
   type KinWorkSubscribeInput,
@@ -117,6 +120,22 @@ const visualHostsRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   tag: "kin.visuals.hosts.list",
 });
 const readVisualHosts = guardedRead(visualHostsRead);
+
+const connectionsRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:connections:read",
+  tag: "kin.connections.list",
+});
+const readConnections = guardedRead(connectionsRead);
+const connectionRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:connection:read",
+  tag: "kin.connections.get",
+});
+const readConnection = guardedRead(connectionRead);
+const connectionCallsRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:connection-calls:read",
+  tag: "kin.connections.calls",
+});
+const readConnectionCalls = guardedRead(connectionCallsRead);
 
 const membersRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "kin:chat-members:read",
@@ -395,6 +414,72 @@ export const kinClient = {
     }),
     staleTimeMs: 30_000,
     refreshTrigger: kinRefreshOn("leads"),
+  }),
+  /** The owner's connections to outside services, live on the host's `connections` topic. */
+  connections: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:connections",
+    execute: Effect.fn("KinWebClient.connections")(function* (input: KinConnectionsInput) {
+      return yield* readConnections(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: kinRefreshOn("connections"),
+  }),
+  connection: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:connection",
+    execute: Effect.fn("KinWebClient.connection")(function* (input: KinConnectionRef) {
+      return yield* readConnection(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: kinRefreshOn("connections"),
+  }),
+  connectionCalls: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:connection-calls",
+    execute: Effect.fn("KinWebClient.connectionCalls")(function* (input: KinConnectionCallsInput) {
+      return yield* readConnectionCalls(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: kinRefreshOn("connections"),
+  }),
+  /** Adds a connection; the key travels once, redacted, and is never sent back. */
+  connectionAdd: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:connection:add",
+    tag: "kin.connections.add",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:add` },
+  }),
+  connectionSetKey: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:connection:setKey",
+    tag: "kin.connections.setKey",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.connectionId },
+  }),
+  connectionRefresh: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:connection:refreshTools",
+    tag: "kin.connections.refreshTools",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.connectionId },
+  }),
+  connectionSetToolModes: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:connection:setToolModes",
+    tag: "kin.connections.setToolModes",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.connectionId },
+  }),
+  connectionAccept: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:connection:acceptToolChanges",
+    tag: "kin.connections.acceptToolChanges",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.connectionId },
+  }),
+  connectionUpdate: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:connection:update",
+    tag: "kin.connections.update",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.connectionId },
+  }),
+  connectionSetReach: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:connection:setReach",
+    tag: "kin.connections.setReach",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.connectionId },
+  }),
+  connectionRemove: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:connection:remove",
+    tag: "kin.connections.remove",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.connectionId },
   }),
   /** The outside hosts the owner lets visuals load from. Owner only. */
   visualHosts: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
