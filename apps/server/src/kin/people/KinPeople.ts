@@ -119,7 +119,8 @@ export class KinPeople extends Context.Service<
       {
         people: ReadonlyArray<KinPerson>;
         joined: ReadonlyArray<KinPersonId>;
-        places: ReadonlyArray<KinPersonPlaces>;
+        /** Owner level only: a member reads names. */
+        places?: ReadonlyArray<KinPersonPlaces>;
       },
       Failure
     >;

@@ -1958,7 +1958,7 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
       owner: { _tag: "person", personId: ownerId },
       fields: { terms: "Invented net 30" },
     })).row;
-    yield* records.create(orgId, ownerWrites, {
+    const priya = yield* records.create(orgId, ownerWrites, {
       list: "contacts",
       originKey: "contact",
       title: "Invented Priya",
@@ -2045,6 +2045,23 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
     yield* places(1, 1, 1);
     const money = yield* OwnerMoney.money([mate], { orgId });
     assert.deepStrictEqual([money.owed.total, money.upcoming], [[], []]);
+    // H17: leading the client's project without Clients gives the people there by name only.
+    yield* records.create(orgId, ownerWrites, {
+      list: "projects",
+      originKey: "acme project",
+      title: "Invented Acme app",
+      owner: { _tag: "person", personId: mateId },
+      partyId: client.recordId,
+    });
+    yield* places(0, 1, 1);
+    const led = yield* OwnerClients.party([mate], { orgId, key: client.key });
+    assert.deepStrictEqual(
+      led.contacts.map((one) => [one.name, one.email]),
+      [["Invented Priya", null]],
+    );
+    const named = yield* OwnerWork.get([mate], { orgId, key: priya.row.key });
+    assert.strictEqual(named.title, "Invented Priya");
+    assert.notInclude(JSON.stringify(named), "priya@acme");
   }).pipe(Effect.provide(layer)),
 );
 

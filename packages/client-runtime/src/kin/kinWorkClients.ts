@@ -73,7 +73,7 @@ export const KIN_CLIENTS = {
   terms: "Terms",
   noTerms: "No terms noted.",
   termsPrivate: "Always private. Only you see the terms.",
-  detailsPrivate: "Emails and phone numbers are always private.",
+  detailsPrivate: "Only teammates with Clients see emails and phone numbers. Others see names.",
   notes: "Notes",
   noNotes: "No notes.",
   recentContact: "Recent contact",

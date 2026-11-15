@@ -168,6 +168,8 @@ export const party = Effect.fn("KinWork.party")(function* (
     ]),
   );
   const none = { records: [], total: 0 };
+  // With the Clients place they reach the people there; leading a project alone gives their names.
+  const reached = (yield* read(placesOf(input.orgId, team))).clients;
   return {
     ...page,
     party: {
@@ -178,7 +180,9 @@ export const party = Effect.fn("KinWork.party")(function* (
       gstin: null,
       placeOfSupply: null,
     },
-    contacts: page.contacts.filter((one) => shown.has(one.recordId)),
+    contacts: page.contacts
+      .filter((one) => shown.has(one.recordId))
+      .map((one) => (reached ? one : { ...one, email: null, phone: null })),
     projects: page.projects.filter((one) => shown.has(one.recordId)),
     weOwe: none,
     theyOwe: none,

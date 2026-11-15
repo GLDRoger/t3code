@@ -59,6 +59,7 @@ import {
   teamKeys,
   teamRecord,
   personSees,
+  placesOf,
   teamSeesKey,
   teamSeq,
   teamVisible,
@@ -365,9 +366,28 @@ const shownTo = Effect.fn("KinWork.shownTo")(function* (
   if (!seen.has(detail.recordId)) return yield* notFound("key" in ref ? ref.key : "with that id");
   const number = seq ?? (yield* teamSeq(detail.orgId, personId).pipe(workFailure));
   const whole = !plainTask(row, yield* ledIds(viewer));
-  // A client's terms and tax details are the owner's, whoever else sees its name.
+  // A client's terms and tax details are the owner's, whoever else sees its name; a contact's email
+  // and phone reach those with the Clients place, not a project's lead alone.
   const { fields: _fields, ...unfielded } = detail;
-  const shown = whole && row.registerId === "clients" ? unfielded : detail;
+  const named = () => {
+    const { email: _email, phone: _phone, ...rest } = detail.fields ?? {};
+    return {
+      ...detail,
+      fields: rest,
+      changes: detail.changes.map((change) => ({
+        ...change,
+        fields: change.fields.filter((one) => one.field !== "email" && one.field !== "phone"),
+      })),
+    };
+  };
+  const shown =
+    whole && row.registerId === "clients"
+      ? unfielded
+      : whole &&
+          row.registerId === "contacts" &&
+          !(yield* placesOf(detail.orgId, personId).pipe(workFailure)).clients
+        ? named()
+        : detail;
   return yield* teamDetail(shown, personId, number, whole).pipe(workFailure);
 });
 
