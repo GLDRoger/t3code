@@ -23,6 +23,7 @@ import * as Crm from "./crm.ts";
 import { KinRecords, requestHashOf, type Patch } from "./KinRecords.ts";
 import { type FieldValue, type ListName } from "./lists.ts";
 import { dueMillis, found, inList, ownerWriter, theOwner } from "./ownerWork.ts";
+import { principalText } from "./projectSpine.ts";
 import { iso, type RecordRow, unavailable } from "./recordRows.ts";
 
 /**
@@ -296,6 +297,15 @@ const targetOf = Effect.fn("KinWork.crm.target")(function* (
   return { dueAt: yield* dueMillis(orgId, targetAt, allDay), dueAllDay: allDay === true };
 });
 
+/** Billing, value, days and members, as the projects list stores them; `null` clears one. */
+const spineFields = (input: KinProjectCreateInput | KinProjectUpdateInput) => ({
+  billing: input.billing,
+  value: input.value,
+  startsOn: input.startsOn,
+  renewsOn: input.renewsOn,
+  members: input.members?.map(principalText),
+});
+
 export const createProject = Effect.fn("KinWork.createProject")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinProjectCreateInput,
@@ -312,7 +322,7 @@ export const createProject = Effect.fn("KinWork.createProject")(function* (
     ...(yield* targetOf(input.orgId, input.targetAt, input.targetAllDay)),
     ...(input.notes === undefined ? {} : { notes: input.notes }),
     ...(input.sensitive === undefined ? {} : { sensitive: input.sensitive }),
-    fields: fieldsOf({ repos: input.repos }),
+    fields: fieldsOf({ repos: input.repos, ...spineFields(input) }),
   });
   return yield* projectOut(row);
 });
@@ -343,7 +353,7 @@ export const updateProject = Effect.fn("KinWork.updateProject")(function* (
         partyId,
       }),
       ...(yield* targetOf(input.orgId, input.targetAt, input.targetAllDay)),
-      ...(input.repos === undefined ? {} : { fields: { repos: input.repos } }),
+      fields: fieldsOf({ repos: input.repos, ...spineFields(input) }),
     },
     input.rev,
   );

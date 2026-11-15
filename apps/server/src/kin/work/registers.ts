@@ -643,6 +643,9 @@ const checkDraft = (draft: Draft): KinChatError | undefined => {
     return invalid(`A new ${def.noun} starts ${def.defaultState}, which the list doesn't have.`);
   if (!/^[A-Z][A-Z0-9]{0,5}$/.test(draft.prefix))
     return invalid("A key prefix is one to six capital letters or digits, such as LV.");
+  // Built-in registers are written on first use, so their prefixes are reserved before then.
+  if (isBuiltIn(draft.id) || Object.values(LISTS).some((list) => list.prefix === draft.prefix))
+    return invalid(`The key prefix ${draft.prefix} is Kin's own. Propose another.`);
   if (!isCurrency(def.currency)) return invalid(`${def.currency} is not a currency code.`);
   return checkFieldDefs(def.fields);
 };
