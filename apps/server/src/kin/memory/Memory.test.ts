@@ -24,6 +24,7 @@ import * as MemoryConfig from "./MemoryConfig.ts";
 import * as ServerConfig from "../../config.ts";
 import { fixtureItem } from "./__fixtures__/items.ts";
 import { fakeRepository } from "./__fixtures__/repository.ts";
+import { unsetOwnerZone } from "../work/recordRows.ts";
 
 const memoryTestLayer = Memory.layer.pipe(
   Layer.provide(
@@ -546,14 +547,18 @@ it.effect(
             { zone: " Asia/Kolkata", expected: { _tag: "zone", zone: "Asia/Kolkata" } },
             { zone: "Asia/Kolkata", expected: { _tag: "zone", zone: "Asia/Kolkata" } },
             { zone: "Invented/Invalid", expected: { _tag: "invalid" } },
-            { zone: null, expected: { _tag: "missing" } },
+            { zone: null, expected: { _tag: "zone", zone: unsetOwnerZone() } },
           ]) {
             if (row.zone === null)
               yield* sql`DELETE FROM kin_trigger_settings WHERE org_id = ${orgA}`;
             else
               yield* sql`UPDATE kin_trigger_settings SET time_zone = ${row.zone} WHERE org_id = ${orgA}`;
             expect(yield* cache.readOwnerTimeZone(orgA)).toEqual(row.expected);
-            expect(yield* cache.readOwnerTimeZone(orgB)).toEqual({ _tag: "missing" });
+            // None set: the host's zone stands in.
+            expect(yield* cache.readOwnerTimeZone(orgB)).toEqual({
+              _tag: "zone",
+              zone: unsetOwnerZone(),
+            });
             yield* memory.record(
               orgA,
               "main",

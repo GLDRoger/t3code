@@ -202,6 +202,11 @@ it.effect("the owner's time zone reschedules routines from the defaults; only he
     const routines = yield* Routines.KinRoutines;
     const store = yield* TriggerStore.KinTriggerStore;
     const sql = yield* SqlClient.SqlClient;
+    // Unset, the host's zone would stand in; the defaults here are read in UTC.
+    yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
+      dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+    VALUES (${orgA}, 'UTC', '08:30', '18:30', '03:00', 0, 1, '09:00',
+      '{"from":"21:00","to":"08:00"}')`;
     const zones = yield* OwnerTimeZone.KinOwnerTimeZone;
     yield* zones.attach(routines);
     yield* TestClock.setTime(Date.parse("2026-11-09T00:00:00.000Z"));

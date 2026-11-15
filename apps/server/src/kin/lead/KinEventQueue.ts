@@ -315,10 +315,15 @@ const make = Effect.gen(function* () {
             WHERE org_id = ${event.orgId} AND chat_id = ${event.chatId}
               AND member_id = ${event.provenance.memberId} AND person_id = ${event.provenance.personId}
               AND principal_kind = 'person' AND left_at IS NULL
-              AND ((role = 'owner' AND EXISTS (SELECT 1 FROM kin_agents
-                WHERE org_id = ${event.orgId} AND agent_id = ${event.agentId}
-                  AND owner_person_id = ${event.provenance.personId} AND retired_at IS NULL))
-                OR ${sql.literal(ownerLevelSql("kin_chat_members.org_id", "kin_chat_members.person_id"))})
+              AND EXISTS (SELECT 1 FROM kin_agents
+                WHERE org_id = ${event.orgId} AND agent_id = ${event.agentId} AND retired_at IS NULL
+                  AND ((kin_chat_members.role = 'owner'
+                      AND owner_person_id = ${event.provenance.personId})
+                    -- A co-owner's own direct chat is owner-level.
+                    OR (kin_chat_members.role = 'member'
+                      AND ${sql.literal(ownerLevelSql("kin_chat_members.org_id", "kin_chat_members.person_id"))}
+                      AND EXISTS (SELECT 1 FROM kin_chats c WHERE c.org_id = ${event.orgId}
+                        AND c.chat_id = ${event.chatId} AND c.kind = 'direct'))))
               AND EXISTS (SELECT 1 FROM kin_chat_members
                 WHERE org_id = ${event.orgId} AND chat_id = ${event.chatId}
                   AND principal_kind = 'agent' AND agent_id = ${event.agentId} AND left_at IS NULL)
