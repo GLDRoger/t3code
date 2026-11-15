@@ -1,14 +1,11 @@
 import { CommonActions, StackActions, useNavigation } from "@react-navigation/native";
 import type { KinSearchHitView } from "@t3tools/client-runtime/kin/kinDocs";
 
+import { kinLinkKeeps } from "./kinLinkStack";
 import type { KinWorkTarget } from "./useKinWork";
 
 type Params = ReactNavigation.RootParamList;
 type RecordRoute = "KinWorkItem" | "KinClient" | "KinProject" | "KinDoc";
-
-/** Records drawn as sheets, and the search sheet, which a record opened from it takes over. */
-const SHEETS: ReadonlySet<string> = new Set(["KinWorkItem", "KinSearch"]);
-const RECORDS: ReadonlySet<string> = new Set([...SHEETS, "KinClient", "KinProject", "KinDoc"]);
 
 /**
  * Opens a task, client, project or doc. Followed from inside one, a page takes the place of
@@ -21,9 +18,10 @@ export function useKinWorkLink() {
   return <Name extends RecordRoute>(name: Name, params: Params[Name]) => {
     const state = navigation.getState();
     const routes = state?.routes ?? [];
-    const replaces = SHEETS.has(name) ? SHEETS : RECORDS;
-    let keep = routes.length;
-    while (keep > 0 && replaces.has(routes[keep - 1]?.name ?? "")) keep -= 1;
+    const keep = kinLinkKeeps(
+      routes.map((route) => route.name),
+      name,
+    );
     if (state === undefined || keep === routes.length) {
       navigation.dispatch(StackActions.push(name, params));
       return;
