@@ -287,17 +287,94 @@ function AddForm(props: {
   );
 }
 
-export type KinConnectionEditParams = KinConnectionParams & { readonly edit: "rename" | "key" };
+export type KinConnectionEditParams = KinConnectionParams & {
+  readonly edit: "rename" | "key" | "note";
+};
 
-/** Rename, or replace the key: one field, saved and checked by the host. */
+/** Rename, note what an account is for, or replace the key: one field, saved by the host. */
 export function KinConnectionEditScreen({ route }: StaticScreenProps<KinConnectionEditParams>) {
   const target = decodeConnectionsTarget(route.params);
   const connectionId = decodeConnectionId(route.params);
-  const rename = route.params.edit === "rename";
+  const edit = route.params.edit;
+  const title =
+    edit === "rename" ? COPY.renameTitle : edit === "note" ? COPY.noteTitle : COPY.replaceKeyTitle;
   return target === null || connectionId === null ? (
-    <KinConnectionsMissing title={rename ? COPY.renameTitle : COPY.replaceKeyTitle} sheet />
+    <KinConnectionsMissing title={title} sheet />
+  ) : edit === "note" ? (
+    <NoteForm target={target} connectionId={connectionId} />
   ) : (
-    <EditForm target={target} connectionId={connectionId} rename={rename} />
+    <EditForm target={target} connectionId={connectionId} rename={edit === "rename"} />
+  );
+}
+
+function NoteForm(props: {
+  readonly target: KinConnectionsTarget;
+  readonly connectionId: KinConnectionId;
+}) {
+  const navigation = useNavigation();
+  const { environmentId, orgId } = props.target;
+  const ref = { orgId, connectionId: props.connectionId };
+  const detail = Option.getOrNull(
+    AsyncResult.value(useAtomValue(kinClient.connection({ environmentId, input: ref }))),
+  );
+  const update = useAtomCommand(kinClient.connectionUpdate, { reportFailure: false });
+  const [value, setValue] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const shown = value ?? detail?.connection.note ?? "";
+
+  const save = async () => {
+    if (busy) return;
+    setBusy(true);
+    setProblem(null);
+    const note = shown.trim();
+    const failed = await kinConnectionChange<unknown>(
+      update({ environmentId, input: { ...ref, note: note === "" ? null : note } }),
+      "save the note",
+    );
+    setBusy(false);
+    if (failed === null) navigation.goBack();
+    else setProblem(failed);
+  };
+
+  return (
+    <View collapsable={false} className="flex-1 bg-screen">
+      <AppBar
+        title={COPY.noteTitle}
+        onClose={() => navigation.goBack()}
+        confirm={{
+          label: COPY.save,
+          onPress: () => void save(),
+          loading: busy,
+          disabled: busy || shown.trim().length > 200,
+        }}
+      />
+      <ScreenContent surface="screen">
+        <ScreenScrollView
+          className="flex-1"
+          keyboardShouldPersistTaps="handled"
+          contentInsetAdjustmentBehavior="automatic"
+          contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
+        >
+          {problem === null ? null : <ErrorBanner message={problem} />}
+          <Field label={COPY.noteLabel} hint={COPY.noteHint}>
+            <TextInput
+              accessibilityLabel={COPY.noteLabel}
+              value={shown}
+              editable={!busy}
+              autoFocus
+              maxLength={200}
+              returnKeyType="done"
+              placeholder={COPY.notePlaceholder}
+              placeholderTextColorClassName="accent-placeholder"
+              onChangeText={setValue}
+              onSubmitEditing={() => void save()}
+              className="min-h-8 font-sans text-base text-foreground"
+            />
+          </Field>
+        </ScreenScrollView>
+      </ScreenContent>
+    </View>
   );
 }
 

@@ -535,6 +535,10 @@ const OutsideText = (max: number) => Schema.NullOr(Schema.String.check(Schema.is
 export const KinPulseOutsideLine = Schema.Struct({
   source: Schema.Literals(["mail", "calendar", "github"]),
   connection: Schema.String.check(Schema.isMaxLength(120)),
+  /** The connected account it is in, such as a Gmail address. */
+  account: Schema.optional(Schema.String.check(Schema.isMaxLength(320))),
+  /** The account's address that received the mail: its own or an alias. */
+  to: Schema.optional(Schema.String.check(Schema.isMaxLength(320))),
   /** The service's id: a mail thread, a calendar event, a webhook delivery. */
   id: Schema.String.check(Schema.isMaxLength(200)),
   at: OutsideText(60),

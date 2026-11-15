@@ -174,6 +174,28 @@ function ConnectionRecord(props: {
           </ListSection>
           {problem === null ? null : <ErrorBanner message={problem} />}
 
+          {connection.kind === "builtin" ? (
+            <ListSection title={COPY.accountTitle} footer={COPY.noteHint}>
+              <ListActionRow
+                label={connection.note ?? COPY.noteAdd}
+                description={connection.note == null ? COPY.noteNone : COPY.noteEdit}
+                onPress={() =>
+                  navigation.navigate("KinConnectionEdit", { ...props.params, edit: "note" })
+                }
+              />
+              {(connection.sendAs ?? []).map((one) => (
+                <View key={one.address} accessible className="bg-grouped-card">
+                  <ListRowLayout
+                    label={one.name === null ? one.address : `${one.name} <${one.address}>`}
+                    description={
+                      one.isDefault ? `${COPY.sendsFrom} · ${COPY.defaultAddress}` : COPY.sendsFrom
+                    }
+                  />
+                </View>
+              ))}
+            </ListSection>
+          ) : null}
+
           <ListSection title={COPY.toolsTitle} footer={COPY.toolsDetail}>
             {changed.length > 1 ? (
               <ListActionRow
