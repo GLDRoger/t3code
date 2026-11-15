@@ -172,6 +172,7 @@ export const SHARED_TOOLS = {
   // Work facts on tasks every person behind the turn may see; money and system facts are the owner's.
   pulse_read: "view",
   pulse_handle: "refused",
+  pulse_nudge: "refused",
   // Docs are owner-only too until the teammate view; restoring stays the owner's after it.
   doc_create: "refused",
   doc_read: "refused",
