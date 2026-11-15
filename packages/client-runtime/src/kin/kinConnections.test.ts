@@ -19,6 +19,8 @@ import {
   kinConnectionAddCheck,
   kinConnectionDraft,
   kinConnectionStatus,
+  kinSignInCheck,
+  kinSignInClientCheck,
   kinSuggestedModes,
   kinToolRows,
   kinToolSwitch,
@@ -27,9 +29,51 @@ import {
 const orgId = KinOrgId.make("org");
 const connectionId = KinConnectionId.make("conn_1");
 const services: ReadonlyArray<KinConnectionService> = [
-  { service: "posthog", label: "PostHog", available: true, setup: "Make a key." },
-  { service: "sentry", label: "Sentry", available: false, setup: null },
-  { service: "custom", label: "Another service", available: true, setup: null },
+  {
+    service: "posthog",
+    label: "PostHog",
+    available: true,
+    setup: "Make a key.",
+    connect: "key",
+    fields: ["key"],
+    needsSetup: false,
+  },
+  {
+    service: "sentry",
+    label: "Sentry",
+    available: true,
+    setup: null,
+    connect: "sign_in",
+    fields: ["org"],
+    needsSetup: false,
+  },
+  {
+    service: "zoho_books",
+    label: "Zoho Books",
+    available: true,
+    setup: null,
+    connect: "sign_in",
+    fields: ["secretUrl"],
+    needsSetup: false,
+  },
+  {
+    service: "google",
+    label: "Google",
+    available: true,
+    setup: null,
+    connect: "sign_in",
+    fields: [],
+    needsSetup: true,
+  },
+  {
+    service: "custom",
+    label: "Another service",
+    available: true,
+    setup: null,
+    connect: "key",
+    fields: ["url", "key"],
+    needsSetup: false,
+  },
 ];
 
 const definition = (description: string, inputSchema: unknown = { type: "object" }) => ({
@@ -160,6 +204,55 @@ describe("kinConnectionAddCheck", () => {
   });
 });
 
+describe("kinSignInCheck", () => {
+  it.each([
+    [{ service: "posthog" as const }, "That service connects with a key."],
+    [{ service: "google" as const }, "Set up Google first."],
+    [
+      { service: "sentry" as const, org: "my org" },
+      "Use the organization's short name, as in its address.",
+    ],
+    [{ service: "zoho_books" as const }, "Paste the server address Zoho Books gave you."],
+    [
+      { service: "zoho_books" as const, secretUrl: "http://x.zohomcp.com/mcp" },
+      "The address should start with https://.",
+    ],
+  ])("asks for what is missing: %o", (fields, problem) => {
+    const draft = { ...kinConnectionDraft(fields.service), ...fields };
+    expect(kinSignInCheck(orgId, draft, services, "web")).toEqual({ ok: false, problem });
+  });
+
+  it("sends only the fields the service takes, the secret address redacted", () => {
+    const sentry = kinSignInCheck(
+      orgId,
+      { ...kinConnectionDraft("sentry"), org: " invented-co ", secretUrl: "https://x.example" },
+      services,
+      "app",
+    );
+    expect(sentry).toEqual({
+      ok: true,
+      input: { orgId, service: "sentry", returnTo: "app", org: "invented-co" },
+    });
+    const zoho = kinSignInCheck(
+      orgId,
+      { ...kinConnectionDraft("zoho_books"), secretUrl: "https://kin-1.zohomcp.com/mcp/k/message" },
+      services,
+      "web",
+    );
+    if (!zoho.ok) throw new Error(zoho.problem);
+    expect(Redacted.isRedacted(zoho.input.secretUrl)).toBe(true);
+    expect(JSON.stringify(zoho.input)).not.toContain("zohomcp");
+  });
+
+  it("checks the pasted Google client", () => {
+    expect(kinSignInClientCheck(orgId, "123-abc", "s").ok).toBe(false);
+    const ok = kinSignInClientCheck(orgId, " 123-abc.apps.googleusercontent.com ", " GOCSPX-x ");
+    if (!ok.ok) throw new Error(ok.problem);
+    expect(ok.input.client?.clientId).toBe("123-abc.apps.googleusercontent.com");
+    expect(Redacted.value(ok.input.client!.clientSecret)).toBe("GOCSPX-x");
+  });
+});
+
 describe("createKinConnectionActions", () => {
   it("adds and removes, answering a refusal in plain words", async () => {
     const sent: Array<KinConnectionAddInput> = [];
@@ -186,7 +279,17 @@ describe("createKinConnectionActions", () => {
         );
       },
       remove: () =>
-        Promise.resolve(AsyncResult.success({ orgId, connections: [], services: [...services] })),
+        Promise.resolve(
+          AsyncResult.success({
+            orgId,
+            connections: [],
+            services: [...services],
+            signInAddress: "https://kin.example/callback/",
+          }),
+        ),
+      signInStart: () => Promise.reject(new Error("not used")),
+      signInFinish: () => Promise.reject(new Error("not used")),
+      setSignInClient: () => Promise.reject(new Error("not used")),
       refresh: () => void refreshes.push(null),
     });
     const draft = { ...kinConnectionDraft("custom"), url: "https://mcp.example.com/mcp" };

@@ -10,7 +10,12 @@ import {
   type KinConnectionId,
   type KinConnectionRef,
   type KinConnectionService,
+  type KinConnectionSetSignInClientInput,
   type KinConnectionSetToolModesInput,
+  type KinConnectionSignInFinishInput,
+  type KinConnectionSignInReturn,
+  type KinConnectionSignInStart,
+  type KinConnectionSignInStartInput,
   type KinConnectionsView,
   type KinConnectionTool,
   type KinConnectionToolDefinition,
@@ -48,7 +53,36 @@ export const KIN_CONNECTIONS_COPY = {
   keyOptional: "Leave empty if the server needs no key.",
   connect: "Connect",
   connecting: "Connecting…",
-  soon: "Sign-in arrives in a later update",
+  soon: "Can't be added yet",
+  signIn: "Sign in",
+  signInAgain: "Sign in again",
+  signInTo: (label: string) => `Sign in to ${label}`,
+  signInOpens: (host: string) => `Opens ${host} to sign in. Kin never sees your password.`,
+  waiting: "Waiting for you to sign in…",
+  waitingDetail: (host: string) =>
+    `Finish signing in at ${host}. This page updates when you're back.`,
+  pasteLabel: "Didn't come back?",
+  pasteHint: "After signing in, copy the address of the page you land on and paste it here.",
+  pastePlaceholder: "https://…?code=…",
+  finish: "Finish",
+  needsSetup: "Needs setup",
+  orgLabel: "Organization",
+  orgPlaceholder: "Optional, for example my-company",
+  secretUrlLabel: "Server address",
+  secretUrlPlaceholder: "https://…zohomcp.com/mcp/…",
+  secretUrlHint:
+    "This address works like a password. It goes to your Kin's computer and is never shown again.",
+  googleSetupTitle: "Set up Google once",
+  googleSetupDetail:
+    "Google needs a sign-in client from your company's Google Cloud. It takes about ten minutes, on a computer, and you do it once.",
+  redirectLabel: "Return address",
+  copy: "Copy",
+  copied: "Copied",
+  clientIdLabel: "Client ID",
+  clientIdPlaceholder: "…apps.googleusercontent.com",
+  clientSecretLabel: "Client secret",
+  saveClient: "Save and continue",
+  changeClient: "Use a different Google client",
   toolsTitle: "Tools",
   toolsDetail:
     "Off: agents can't use it. Read: agents use it when they need to, in chats only you can see.",
@@ -265,17 +299,102 @@ export interface KinConnectionDraft {
   readonly label: string;
   readonly url: string;
   readonly key: string;
+  readonly org: string;
+  readonly secretUrl: string;
 }
 
 export const kinConnectionDraft = (
   service: KinConnectionService["service"],
-): KinConnectionDraft => ({ service, label: "", url: "", key: "" });
+): KinConnectionDraft => ({ service, label: "", url: "", key: "", org: "", secretUrl: "" });
+
+/** The service's line in the Add sheet's list: Google waits for its one-time setup. */
+export const kinServiceNote = (service: KinConnectionService) =>
+  !service.available
+    ? KIN_CONNECTIONS_COPY.soon
+    : service.needsSetup
+      ? KIN_CONNECTIONS_COPY.needsSetup
+      : service.connect === "sign_in"
+        ? KIN_CONNECTIONS_COPY.signIn
+        : undefined;
+
+/** The one-time Google setup, step by step; `address` is the exact return address to paste. */
+export const kinGoogleSetupSteps = (address: string): ReadonlyArray<string> => [
+  "In Google Cloud console (console.cloud.google.com), signed in to the company account, create a project named Kin.",
+  "In APIs & Services → Library, turn on the Gmail API and the Google Calendar API.",
+  "In Google Auth Platform → Branding, fill in the app name, and under Audience choose Internal.",
+  `In Clients → Create client, choose Web application, and under Authorized redirect URIs add exactly ${address}`,
+  "Copy the client ID and client secret Google shows, and paste them below.",
+];
+
+const makeSecret = Schema.decodeSync(KinConnectionKey);
+
+/** The Google client the owner pasted, checked before it goes to the host. */
+export function kinSignInClientCheck(
+  orgId: KinOrgId,
+  clientId: string,
+  clientSecret: string,
+):
+  | { readonly ok: true; readonly input: KinConnectionSetSignInClientInput }
+  | { readonly ok: false; readonly problem: string } {
+  const id = clientId.trim();
+  const secret = clientSecret.trim();
+  if (id === "" || secret === "")
+    return { ok: false, problem: "Paste both the client ID and the client secret." };
+  if (!/\.apps\.googleusercontent\.com$/.test(id))
+    return { ok: false, problem: "The client ID ends in .apps.googleusercontent.com." };
+  if (id.length > 512 || secret.length > 4096)
+    return { ok: false, problem: "That's too long to be a Google client." };
+  return {
+    ok: true,
+    input: { orgId, service: "google", client: { clientId: id, clientSecret: makeSecret(secret) } },
+  };
+}
+
+/** The sign-in to start for a draft, or the one thing to fix first. */
+export function kinSignInCheck(
+  orgId: KinOrgId,
+  draft: KinConnectionDraft,
+  services: ReadonlyArray<KinConnectionService>,
+  returnTo: KinConnectionSignInReturn,
+):
+  | { readonly ok: true; readonly input: KinConnectionSignInStartInput }
+  | { readonly ok: false; readonly problem: string } {
+  const service = services.find((entry) => entry.service === draft.service);
+  if (service === undefined || service.connect !== "sign_in" || draft.service === "custom")
+    return { ok: false, problem: "That service connects with a key." };
+  if (service.needsSetup) return { ok: false, problem: `Set up ${service.label} first.` };
+  const label = draft.label.trim();
+  const org = draft.org.trim();
+  const secretUrl = draft.secretUrl.trim();
+  if (label.length > 80) return { ok: false, problem: "Keep the name under 80 characters." };
+  if (org !== "" && !/^[\w.-]{1,100}(\/[\w.-]{1,100})?$/.test(org))
+    return { ok: false, problem: "Use the organization's short name, as in its address." };
+  if (service.fields.includes("secretUrl")) {
+    if (secretUrl === "")
+      return { ok: false, problem: `Paste the server address ${service.label} gave you.` };
+    if (!URL.canParse(secretUrl) || new URL(secretUrl).protocol !== "https:")
+      return { ok: false, problem: "The address should start with https://." };
+  }
+  return {
+    ok: true,
+    input: {
+      orgId,
+      service: draft.service,
+      returnTo,
+      ...(label === "" ? {} : { label }),
+      ...(org === "" || !service.fields.includes("org") ? {} : { org }),
+      ...(secretUrl === "" || !service.fields.includes("secretUrl")
+        ? {}
+        : { secretUrl: makeSecret(secretUrl) }),
+    },
+  };
+}
 
 /** The services the sheet offers: those Kin can add now, then those whose sign-in comes later. */
 export const kinAddableServices = (services: ReadonlyArray<KinConnectionService>) =>
   [...services].sort((a, b) => Number(b.available) - Number(a.available));
 
-const makeKey = Schema.decodeSync(KinConnectionKey);
+const makeKey = makeSecret;
 
 /** The Add input for a draft, or the one thing to fix first. */
 export function kinConnectionAddCheck(
@@ -288,6 +407,8 @@ export function kinConnectionAddCheck(
   const service = services.find((entry) => entry.service === draft.service);
   if (service === undefined || !service.available)
     return { ok: false, problem: `${service?.label ?? "That service"} can't be added yet.` };
+  if (service.connect === "sign_in")
+    return { ok: false, problem: `${service.label} connects by signing in.` };
   const label = draft.label.trim();
   const key = draft.key.trim();
   const url = draft.url.trim();
@@ -368,10 +489,45 @@ export function createKinConnectionActions(options: {
   readonly orgId: KinOrgId;
   readonly add: (input: KinConnectionAddInput) => Sent<KinConnectionDetail>;
   readonly remove: (input: KinConnectionRef) => Sent<KinConnectionsView>;
+  readonly signInStart: (input: KinConnectionSignInStartInput) => Sent<KinConnectionSignInStart>;
+  readonly signInFinish: (input: KinConnectionSignInFinishInput) => Sent<KinConnectionDetail>;
+  readonly setSignInClient: (input: KinConnectionSetSignInClientInput) => Sent<KinConnectionsView>;
   readonly refresh: () => void;
 }) {
   const { orgId } = options;
   return {
+    /** Starts signing in to a new service from the draft: the host answers with the page to open. */
+    signInNew: async (
+      draft: KinConnectionDraft,
+      services: ReadonlyArray<KinConnectionService>,
+      returnTo: KinConnectionSignInReturn,
+    ): Promise<Outcome<KinConnectionSignInStart>> => {
+      const checked = kinSignInCheck(orgId, draft, services, returnTo);
+      if (!checked.ok) return checked;
+      return settle(options.signInStart(checked.input), "start the sign-in");
+    },
+    /** Starts signing in again to a connection whose sign-in expired. */
+    signInAgain: (connectionId: KinConnectionId, returnTo: KinConnectionSignInReturn) =>
+      settle(options.signInStart({ orgId, connectionId, returnTo }), "start the sign-in"),
+    /** Hands the address the service sent the browser back to to the host, which finishes. */
+    signInFinish: async (response: string): Promise<Outcome<KinConnectionId>> => {
+      const text = response.trim();
+      if (text === "" || text.length > 16_384 || !/[?&]state=/.test(text))
+        return { ok: false, problem: "Paste the whole address of the page you landed on." };
+      const outcome = await settle(
+        options.signInFinish({ orgId, response: text }),
+        "finish the sign-in",
+      );
+      options.refresh();
+      return outcome.ok ? { ok: true, value: outcome.value.connection.connectionId } : outcome;
+    },
+    setGoogleClient: async (clientId: string, clientSecret: string): Promise<Outcome<null>> => {
+      const checked = kinSignInClientCheck(orgId, clientId, clientSecret);
+      if (!checked.ok) return checked;
+      const outcome = await settle(options.setSignInClient(checked.input), "save the client");
+      options.refresh();
+      return outcome.ok ? { ok: true, value: null } : outcome;
+    },
     /** Checks the draft, then connects: nothing is saved unless the service answered. */
     add: async (
       draft: KinConnectionDraft,
