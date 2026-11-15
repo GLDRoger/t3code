@@ -14,9 +14,11 @@ import { toolAdmitted } from "../lead/SharedTools.ts";
 import { shown } from "../work/leadDocs.ts";
 import { parseAmount } from "../work/money.ts";
 import { admitted, askedBy, type Lead, leadTool, sourceOf, writerFor } from "../work/leadWork.ts";
+import { issueEntry } from "./amounts.ts";
 import type { DocumentInput } from "./DocJobs.ts";
 import { canonical, makeDocument, remakeForEntry, type Requester } from "./make.ts";
 import * as Numbers from "./numbering.ts";
+import { invoiceFromQuote, quotedInputs } from "./quotes.ts";
 import { makeReceipt } from "./receipts.ts";
 import { defaultRecipes } from "./recipeDefaults.ts";
 import { recipeLabelled, undoRecipe as undoLabelled } from "./recipeLabels.ts";
@@ -88,6 +90,7 @@ export const recipes = leadTool("KinDocuments.recipes", (lead, _input: Record<st
 );
 
 const denied = (message: string) => new KinChatError({ reason: "not_allowed", message });
+const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 
 /** The agent as a requester: its turn, the chat it answers in and the owner's message there. */
 const requesterOf = Effect.fn("KinDocuments.requester")(function* (
@@ -130,14 +133,18 @@ export const make = leadTool("KinDocuments.make", (lead, input: DocumentInput) =
         "Kin is paused by the owner, so nothing new is made until they resume it.",
       );
     const requester = yield* requesterOf(lead, input.sourceEventId);
+    const quoted = input.from === undefined ? undefined : yield* fromQuote(lead, input, requester);
+    const entry = quoted?.entry ?? input.entry;
+    const given = quoted?.given ?? input.inputs ?? {};
     const made = yield* makeDocument({
       orgId: lead.orgId,
       recipe: input.recipe!,
-      entry: input.entry,
-      given: input.inputs ?? {},
+      entry,
+      given,
+      doc: input.doc,
       title: input.title,
       requester,
-      jobKey: `agent:${lead.wakeupId}:${input.sourceEventId}:${input.recipe}:${input.entry ?? ""}:${input.title}:${canonical(input.inputs ?? {})}`,
+      jobKey: `agent:${lead.wakeupId}:${input.sourceEventId}:${input.recipe}:${entry ?? ""}:${input.title}:${canonical(given)}${input.doc === undefined ? "" : `:${input.doc}`}`,
       admit: stillAdmitted(lead, "kin_document", input),
     });
     for (const written of made.written) yield* shown(lead, written, true);
@@ -153,9 +160,45 @@ export const make = leadTool("KinDocuments.make", (lead, input: DocumentInput) =
         version: doc.version,
       })),
       ...(made.sensitive ? { sensitive: true as const } : {}),
+      ...(quoted === undefined ? {} : { entry: quoted.entry }),
     };
   }),
 );
+
+/**
+ * An invoice draft from a quote, with the quote's own inputs the invoice recipe takes: its lines and
+ * client exactly as quoted. Only what a quote doesn't carry may be given beside them.
+ */
+const fromQuote = Effect.fn("KinDocuments.fromQuote")(function* (
+  lead: Lead,
+  input: DocumentInput,
+  requester: Requester,
+) {
+  if (input.entry !== undefined)
+    return yield* invalid("Pass from to invoice a quote, or entry, not both. Nothing was made.");
+  const recipe = (yield* (yield* KinWorkspace).recipes(lead.orgId)).find(
+    (one) => one.name === input.recipe,
+  );
+  if (recipe === undefined || recipe.list !== "invoices")
+    return yield* invalid(
+      "A quote is invoiced with the invoices list's recipe, such as invoice. Nothing was made.",
+    );
+  const own = new Set(recipe.inputs.filter((one) => one.from === "agent").map((one) => one.name));
+  const quoted = yield* quotedInputs(lead.orgId, input.from!);
+  const copied = Object.fromEntries(Object.entries(quoted).filter(([name]) => own.has(name)));
+  const overriding = Object.keys(input.inputs ?? {}).filter(
+    (name) => Object.hasOwn(copied, name) || QUOTED.has(name),
+  );
+  if (overriding.length > 0)
+    return yield* invalid(
+      `from copies ${input.from}'s lines and client exactly, so ${overriding.join(", ")} can't be given with it. Make the invoice from the quote first, then change the draft. Nothing was made.`,
+    );
+  const made = yield* invoiceFromQuote(lead.orgId, requester.writer, input.from!);
+  return { entry: made.entry.key, given: { ...copied, ...input.inputs } };
+});
+
+/** The invoice's inputs that say what is billed, and to whom: a quote's, never given beside it. */
+const QUOTED = new Set(["lines", "billTo", "gstRate", "exportUnderLut"]);
 
 export const IssueInput = Schema.Struct({
   entry: KinRecordKey.annotate({
@@ -163,6 +206,10 @@ export const IssueInput = Schema.Struct({
   }),
   void: Schema.optional(Schema.Boolean).annotate({
     description: "Void it instead: it keeps its number, and the number is never used again.",
+  }),
+  unvoid: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Take a void back: it is owed again with the number it had, or paid if its payments cover it.",
   }),
   sourceEventId: TrimmedNonEmptyString,
 });
@@ -177,6 +224,8 @@ export const IssueResult = Schema.Struct({
     Schema.Struct({ key: Schema.String, title: Schema.String, version: Schema.Number }),
   ),
   problems: Schema.Array(Schema.String),
+  /** Said plainly when its number follows entries dated after it: tell the owner. */
+  notice: Schema.optional(Schema.String),
 });
 
 export const issue = leadTool("KinDocuments.issue", (lead, input: typeof IssueInput.Type) =>
@@ -184,13 +233,23 @@ export const issue = leadTool("KinDocuments.issue", (lead, input: typeof IssueIn
     yield* admitted(lead, "kin_issue", input);
     yield* sourceOf(lead, input.sourceEventId);
     const writer = yield* writerFor(lead);
+    if (input.void === true && input.unvoid === true)
+      return yield* new KinChatError({
+        reason: "invalid_state",
+        message: "Pass void or unvoid, not both. Nothing changed.",
+      });
     const result =
       input.void === true
         ? yield* Numbers.voidEntry(lead.orgId, writer, input.entry)
-        : yield* Numbers.issue(lead.orgId, writer, input.entry);
+        : input.unvoid === true
+          ? yield* Numbers.unvoidEntry(lead.orgId, writer, input.entry)
+          : yield* issueEntry(lead.orgId, writer, input.entry);
     // Asked again, it makes any of its documents that don't carry the number yet.
     const remade =
-      input.void !== true && result.number !== null && result.state !== "dropped"
+      input.void !== true &&
+      input.unvoid !== true &&
+      result.number !== null &&
+      result.state !== "dropped"
         ? yield* remakeForEntry({
             orgId: lead.orgId,
             entryKey: result.key,
@@ -210,6 +269,7 @@ export const issue = leadTool("KinDocuments.issue", (lead, input: typeof IssueIn
         version: doc.version,
       })),
       problems: remade.problems,
+      ...("notice" in result && result.notice !== undefined ? { notice: result.notice } : {}),
     };
   }),
 );

@@ -11,7 +11,16 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { addUp, dayIn, financialYearOf, formatMoney, monthOf, shiftMonth } from "./money.ts";
-import { iso, moneyDay, ownerZone, type RecordRow, selectRecords, toRecord } from "./recordRows.ts";
+import {
+  countedEntry,
+  countedPayment,
+  iso,
+  moneyDay,
+  ownerZone,
+  type RecordRow,
+  selectRecords,
+  toRecord,
+} from "./recordRows.ts";
 import { allLists, type ListDef, stateLabel } from "./registers.ts";
 
 /**
@@ -134,8 +143,8 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
       r.due_at AS "dueAt"
     FROM kin_records r
     LEFT JOIN kin_records pa ON pa.org_id = r.org_id AND pa.record_id = r.party_id
-    WHERE r.org_id = ${orgId} AND r.register_id = 'invoices' AND r.state = 'waiting'
-      AND r.amount_minor IS NOT NULL
+    WHERE r.org_id = ${orgId} AND r.register_id = 'invoices' AND ${countedEntry(sql)}
+      AND r.state = 'waiting' AND r.amount_minor IS NOT NULL
     ORDER BY r.due_at, r.key`;
   const owing = invoices
     .map((invoice) => ({
@@ -170,7 +179,7 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
     SELECT p.amount_minor AS minor, p.currency, p.paid_on AS "paidOn", p.withheld
     FROM kin_record_payments p
     JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
-    WHERE p.org_id = ${orgId} AND p.voided_at IS NULL AND r.state <> 'dropped'
+    WHERE p.org_id = ${orgId} AND ${countedPayment(sql)}
       AND r.register_id IN ('invoices', 'receipts') AND p.paid_on >= ${since}
     ORDER BY p.paid_on, p.payment_id`;
   // TDS a client deducted settles the invoice, but no money came in: it is shown on its own.
@@ -188,8 +197,8 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
     at: number;
   }>`SELECT r.amount_minor AS minor, r.currency, r.category, ${moneyDay(sql)} AS at
     FROM kin_records r
-    WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state = 'done'
-      AND r.amount_minor IS NOT NULL AND ${moneyDay(sql)} >= ${monthStart(monthOf(since), zone)}
+    WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND ${countedEntry(sql)}
+      AND r.state = 'done' AND r.amount_minor IS NOT NULL AND ${moneyDay(sql)} >= ${monthStart(monthOf(since), zone)}
     ORDER BY at, category`;
   const spentRows = expenses.map((one) => ({ ...one, day: dayIn(one.at, zone) }));
   const spentIn = (month: string) => {

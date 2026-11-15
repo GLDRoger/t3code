@@ -46,7 +46,8 @@ import RecipeDefaults from "./migrations/K084_RecipeDefaults.ts";
 import StatementReading from "./migrations/K085_StatementReading.ts";
 import StatementChatPasswords from "./migrations/K086_StatementChatPasswords.ts";
 import TeamWork from "./migrations/K087_TeamWork.ts";
-import BudgetNotices from "./migrations/K095_BudgetNotices.ts";
+import MoneyRecords from "./migrations/K088_MoneyRecords.ts";
+import BudgetNotices from "./migrations/K110_BudgetNotices.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -173,7 +174,8 @@ const loader = Migrator.fromRecord({
   "85_StatementReading": StatementReading,
   "86_StatementChatPasswords": StatementChatPasswords,
   "87_TeamWork": TeamWork,
-  "95_BudgetNotices": BudgetNotices,
+  "88_MoneyRecords": MoneyRecords,
+  "110_BudgetNotices": BudgetNotices,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

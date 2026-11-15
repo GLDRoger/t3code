@@ -29,7 +29,7 @@ import { cardAnswer } from "./ownerCards.ts";
 
 export type FieldDef = KinListField;
 export type FieldType = FieldDef["type"];
-export const PRESET_IDS = ["expenses", "invoices", "dates", "receipts"] as const;
+export const PRESET_IDS = ["expenses", "invoices", "dates", "receipts", "quotes"] as const;
 export type PresetId = (typeof PRESET_IDS)[number];
 
 const Label = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(60));
@@ -172,6 +172,27 @@ export const PRESETS: Record<PresetId, StoredDefinition & { name: string; prefix
     dateLabel: "Received on",
     numbering: { prefix: "RCT", series: "financial_year", width: 3 },
   },
+  // What was offered before an invoice: numbered in its own series, valid until its due day.
+  quotes: {
+    name: "Quotes",
+    prefix: "QT",
+    noun: "quote",
+    states: ["open", "waiting", "done", "dropped"],
+    stateLabels: { open: "Draft", waiting: "Sent", done: "Accepted", dropped: "Void" },
+    defaultState: "open",
+    categories: [],
+    fields: [
+      field("number", "Quote number", "text"),
+      field("tax", "Tax", "money"),
+      field("file", "Quote file", "file", { sensitive: true }),
+    ],
+    sensitive: true,
+    amount: true,
+    currency: DEFAULT_CURRENCY,
+    dueLabel: "Valid until",
+    dateLabel: "Dated",
+    numbering: { prefix: "QT", series: "financial_year", width: 3 },
+  },
   dates: {
     name: "Dates",
     prefix: "DT",
@@ -189,7 +210,8 @@ export const PRESETS: Record<PresetId, StoredDefinition & { name: string; prefix
     categoryLabels: { gst: "GST", tds: "TDS" },
     fields: [field("form", "Form", "text"), field("period", "Period", "text")],
     sensitive: false,
-    amount: false,
+    // A renewal's fee or a filing's tax due; most dates have none.
+    amount: true,
     currency: DEFAULT_CURRENCY,
     dueLabel: "Due",
   },
@@ -435,10 +457,10 @@ export const verifyRefs = Effect.fn("KinRegisters.verifyRefs")(function* (
   }
 });
 
-/** How a list numbers what it issues; invoices and receipts without their own rule take the preset's. */
+/** How a list numbers what it issues; invoices, receipts and quotes without one take the preset's. */
 export const numberingOf = (def: ListDef): KinNumberingRule | undefined =>
   def.numbering ??
-  (def.builtIn === null && (def.id === "invoices" || def.id === "receipts")
+  (def.builtIn === null && (def.id === "invoices" || def.id === "receipts" || def.id === "quotes")
     ? PRESETS[def.id].numbering
     : undefined);
 
@@ -713,6 +735,10 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
     return yield* invalid(`${input.name ?? named} is one of Kin's own lists already.`);
   const name = preset?.name ?? input.name ?? named;
   const amount = input.amount ?? preset?.amount ?? false;
+  if (!amount && preset?.numbering !== undefined)
+    return yield* invalid(
+      `${name} entries are numbered when issued, and an issued one always carries its amount, so this list keeps amounts.`,
+    );
   const states = input.states ?? preset?.states ?? ["open", "done", "dropped"];
   const definition: StoredDefinition = {
     noun: input.noun ?? preset?.noun ?? name.toLowerCase().replace(/s$/, ""),
