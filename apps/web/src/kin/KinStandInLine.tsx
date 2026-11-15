@@ -7,6 +7,9 @@ import { environmentCatalog } from "../connection/catalog";
 import { environmentPresentations } from "../state/presentation";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useKinHost } from "./useKinHost";
+import { useKinOwnerLevel } from "./useKinOwnerLevel";
+
+const NO_HOST = "" as EnvironmentId;
 
 /**
  * "Showing Studio Mac. Office Mac can't be reached." while another computer's Kin stands in, with
@@ -19,7 +22,12 @@ export function KinStandInLine(props: {
   const host = useKinHost();
   const presentations = useAtomValue(environmentPresentations.presentationsAtom);
   const retry = useAtomCommand(environmentCatalog.retryNow, { reportFailure: false });
-  const line = kinStandInLine(host, (id) => presentations.get(id)?.entry.target.label ?? null);
+  const ownerLevel = useKinOwnerLevel(host._tag === "host" ? host.environmentId : NO_HOST);
+  const line = kinStandInLine(
+    host,
+    (id) => presentations.get(id)?.entry.target.label ?? null,
+    ownerLevel,
+  );
   if (line === null || host._tag !== "host") return null;
   if (props.environmentId !== undefined && props.environmentId !== host.environmentId) return null;
   return (

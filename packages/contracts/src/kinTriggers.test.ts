@@ -134,6 +134,10 @@ const samples = {
   KinTriggerSettings: [Kin.KinTriggerSettings, [settings, { ...settings, timeZone: "UTC" }]],
   KinOwnerTimeZoneGetInput: [Kin.KinOwnerTimeZoneGetInput, [{ orgId: "org-1" }]],
   KinOwnerTimeZone: [Kin.KinOwnerTimeZone, [{ orgId: "org-1", timeZone: "Asia/Kolkata" }]],
+  KinOwnerTimeZoneRead: [
+    Kin.KinOwnerTimeZoneRead,
+    [{ orgId: "org-1", timeZone: "Asia/Kolkata", fromHost: true }],
+  ],
   KinGithubWebhookSetupInput: [
     Kin.KinGithubWebhookSetupInput,
     [{ orgId: "org-1", projectId: "project-1" }],

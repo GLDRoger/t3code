@@ -18,6 +18,12 @@ import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
 import { environmentPresentations } from "../../../state/presentation";
 import { kinStandInLine } from "@t3tools/client-runtime/kin/kinHost";
+import { kinAccessAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinOwnerLevel, type KinPersonAccess } from "@t3tools/contracts";
+import { Atom } from "effect/reactivity";
+import { connectionAtomRuntime } from "../../../connection/runtime";
+
+const noAccessAtom = Atom.make<KinPersonAccess | null>(null);
 import {
   formatKinTime,
   kinInboxNotice,
@@ -195,7 +201,14 @@ export function KinOfflineState(props: {
 export function useKinStandIn(environmentId?: EnvironmentId) {
   const host = useKinHost();
   const presentations = useAtomValue(environmentPresentations.presentationsAtom);
-  const line = kinStandInLine(host, (id) => presentations.get(id)?.entry.target.label ?? null);
+  const access = useAtomValue(
+    host._tag === "host" ? kinAccessAtom(connectionAtomRuntime, host.environmentId) : noAccessAtom,
+  );
+  const line = kinStandInLine(
+    host,
+    (id) => presentations.get(id)?.entry.target.label ?? null,
+    kinOwnerLevel(access ?? undefined),
+  );
   const { status, reconnect } = useKinReconnect(line?.usual ?? null);
   if (line === null || host._tag !== "host") return null;
   if (environmentId !== undefined && environmentId !== host.environmentId) return null;

@@ -12,6 +12,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { unsetOwnerZone } from "../work/recordRows.ts";
 
 export interface MemoryItem {
   readonly head: MemoryItemHead;
@@ -25,7 +26,6 @@ export class MemoryHistoryError extends Schema.TaggedError<MemoryHistoryError>()
 
 export type OwnerTimeZone =
   | { readonly _tag: "zone"; readonly zone: string }
-  | { readonly _tag: "missing" }
   | { readonly _tag: "invalid" }
   | { readonly _tag: "unavailable" };
 
@@ -55,7 +55,7 @@ const make = Effect.gen(function* () {
       SELECT time_zone FROM kin_trigger_settings WHERE org_id = ${orgId} ORDER BY org_id
     `.pipe(Effect.mapError(toPersistenceSqlError("MemoryCache.readOwnerTimeZone")), Effect.result);
     if (result._tag === "Failure") return { _tag: "unavailable" };
-    if (result.success.length === 0) return { _tag: "missing" };
+    if (result.success.length === 0) return { _tag: "zone", zone: unsetOwnerZone() };
     const decoded = yield* decodeTimeZone(result.success[0]?.time_zone).pipe(Effect.result);
     return decoded._tag === "Success"
       ? { _tag: "zone", zone: decoded.success }

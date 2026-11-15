@@ -16,6 +16,7 @@ import {
   createKinRefreshTriggers,
   noteKinDirectoryOrgs,
 } from "@t3tools/client-runtime/kin/kinRefresh";
+import { createKinOwnerTimeZoneSync } from "@t3tools/client-runtime/kin/kinTimeZone";
 import type { KinChatState } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
   createEnvironmentQueryAtomFamily,
@@ -306,6 +307,7 @@ const readDocDiff = guardedRead(docDiffRead);
 
 /** A read refreshed on a new session and whenever the host says its topic changed. */
 const kinRefreshOn = createKinRefreshTriggers(connectionAtomRuntime);
+const syncKinOwnerTimeZone = createKinOwnerTimeZoneSync(connectionAtomRuntime);
 const readOrgs = guardedRead(orgsRead);
 const readLeads = guardedRead(leadsRead);
 const readHistory = guardedRead(historyRead);
@@ -323,8 +325,7 @@ const chatMembers = createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
     return yield* readMembers(input);
   }),
   staleTimeMs: 30_000,
-  refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
-    environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  refreshTrigger: createKinDirectoryTrigger(connectionAtomRuntime, "people"),
 });
 
 /** Reads a chat's members again whenever its stream says who is in it, its name or lead changed. */
@@ -389,6 +390,11 @@ export const kinClient = {
         appAtomRegistry,
         environmentId,
         result.orgs.map((org) => org.orgId),
+      );
+      syncKinOwnerTimeZone(
+        appAtomRegistry,
+        environmentId,
+        result.me.map((me) => me.orgId),
       );
       return result;
     }),
@@ -868,6 +874,12 @@ export const kinClient = {
     }),
     staleTimeMs: 5 * 60_000,
     refreshTrigger: kinRefreshOn("timeZone"),
+  }),
+  /** Stores the company's time zone; the owner and co-owners may. */
+  timeZoneSet: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:time-zone:set",
+    tag: "kin.triggers.setTimeZone",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
   }),
   /** One page of the clients list, or of the projects list; each list's controller decides when. */
   workClients: workClientsRead,

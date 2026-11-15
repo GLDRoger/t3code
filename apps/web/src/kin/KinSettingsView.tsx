@@ -11,6 +11,7 @@ import { Button } from "../components/ui/button";
 import { isElectron } from "../env";
 import { isChatOnlySession } from "../environments/primary";
 import { KinCompanyProfileSettings } from "./KinCompanyProfile";
+import { KinCompanyTimeZoneSetting } from "./KinCompanyTimeZone";
 import { KinDailyLimitSetting } from "./KinDailyLimit";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { useKinHost } from "./useKinHost";
@@ -71,6 +72,7 @@ export function KinSettingsView() {
           <SettingsSection {...searchableSetting("company-details")} variant="plain">
             <KinCompanyProfileSettings />
           </SettingsSection>
+          <KinCompanyTimeZoneSetting />
           <KinDailyLimitSetting />
         </SettingsPageContainer>
         <ApprovalsSettings />

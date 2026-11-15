@@ -559,6 +559,10 @@
       "types": "./src/kin/kinAccess.ts",
       "default": "./src/kin/kinAccess.ts"
     },
+    "./kin/kinTimeZone": {
+      "types": "./src/kin/kinTimeZone.ts",
+      "default": "./src/kin/kinTimeZone.ts"
+    },
     "./kin/kinAgentRetire": {
       "types": "./src/kin/kinAgentRetire.ts",
       "default": "./src/kin/kinAgentRetire.ts"

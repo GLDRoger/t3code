@@ -1251,6 +1251,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["kin connected services tools posthog github key agents read"],
   },
   {
+    id: "kin-time-zone",
+    title: "Time zone",
+    to: "/settings/company",
+    searchTerms: ["kin timezone zone check-ins due dates hours clock"],
+  },
+  {
     id: "kin-daily-limit",
     title: "Daily limit",
     to: "/settings/company",

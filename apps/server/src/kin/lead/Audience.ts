@@ -221,6 +221,12 @@ export const turnPeople = Effect.fn("KinAudience.turnPeople")(function* (turn: T
   };
 });
 
+/** The one person whose act the turn carries out, or null when there is none or more than one. */
+export const turnAsker = Effect.fn("KinAudience.turnAsker")(function* (turn: Turn) {
+  const askers = [...((yield* peopleBehind(turn))?.askers ?? [])];
+  return askers.length === 1 ? (askers[0] ?? null) : null;
+});
+
 /**
  * Whether the lead's owner alone is behind the turn: then it runs on the lead's one owner thread.
  * A co-owner's owner-tier turn runs on its chat's own, so the owner's chats stay his.

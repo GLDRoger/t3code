@@ -775,7 +775,9 @@ it.effect(
       const zone = { orgId: person.orgId, timeZone: "Asia/Kolkata" };
       assert.deepStrictEqual(yield* client["kin.triggers.getTimeZone"]({ orgId: person.orgId }), {
         ...zone,
-        timeZone: "UTC",
+        // None set: the host's zone stands in, and the answer says so.
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        fromHost: true,
       });
       assert.include(yield* memberClient["kin.triggers.setTimeZone"](zone).pipe(Effect.flip), {
         _tag: "EnvironmentAuthorizationError",
@@ -873,7 +875,8 @@ it.effect("lets only the owner stop and resume Kin over RPC; members may read th
     assert.deepStrictEqual(yield* teammate["kin.org.get"](input), { ...paused, reason: null });
     assert.deepStrictEqual(yield* teammate["kin.triggers.getTimeZone"](input), {
       ...input,
-      timeZone: "UTC",
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      fromHost: true,
     });
     // The budget's amounts stay with the owner's settings.
     assert.strictEqual(

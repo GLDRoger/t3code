@@ -245,7 +245,9 @@ describe("KinEventQueue", () => {
         );
         assert.equal(events.find((entry) => entry.eventId === "routine")?.priority, "P3");
         yield* finish("priority");
+        // A member's own words wait their turn; an owner-level person's would not.
         yield* sql`UPDATE kin_chat_members SET role = 'member'`;
+        yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = 'person-lead-a'`;
         yield* queue.enqueue(yield* event("member", "chat.message"));
         const forged = yield* event("forged", "widget.action", "a", "other");
         yield* queue.enqueue({
@@ -256,6 +258,7 @@ describe("KinEventQueue", () => {
           yield* sql`SELECT priority FROM kin_events WHERE state = 'queued' ORDER BY event_id`,
           [{ priority: "P2" }, { priority: "P2" }],
         );
+        yield* sql`UPDATE kin_people SET access = NULL WHERE person_id = 'person-lead-a'`;
         yield* seed("a", "lead-a2");
         yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
           VALUES ('group-owner', 'a', 'chat-lead-a', 'person', 'person-lead-a2', 'owner', '2026-11-07T00:00:00.000Z')`;
@@ -288,6 +291,8 @@ describe("KinEventQueue", () => {
         yield* sql`UPDATE kin_chat_members SET left_at = NULL WHERE member_id = 'group-owner'`;
         yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
           VALUES ('owner-other-chat', 'a', 'chat-lead-a2', 'person', 'person-lead-a', 'owner', '2026-11-07T00:00:00.000Z')`;
+        // Owning another lead is not the owner's level: only the stored kind is.
+        yield* sql`UPDATE kin_people SET access = 'member'`;
         for (const [id, chatId, memberId, personId] of [
           ["group-owner", "chat-lead-a", "group-owner", "person-lead-a2"],
           ["other-chat", "chat-lead-a2", "owner-other-chat", "person-lead-a"],

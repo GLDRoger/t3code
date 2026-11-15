@@ -56,6 +56,47 @@ export const onHostClock = (
   };
 };
 
+const seedSource = (orgId: KinOrgId) => `kin-seed:check-ins:${orgId}`;
+
+/**
+ * Keeps each default check-in the owner hasn't moved at its time in his zone as it is now: set
+ * after seeding, changed, or across a clock change. One moved in chat or on T3's screen stays put.
+ */
+export const followOwnerZone = Effect.fn("KinPulse.followOwnerZone")(function* (
+  orgId: KinOrgId,
+  schedules: KinSchedules.KinSchedules["Service"],
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const zone = yield* ownerZone(orgId);
+  const now = yield* Clock.currentTimeMillis;
+  for (const seed of CHECK_IN_SEEDS) {
+    const row = yield* KinSchedules.readSchedule(sql, orgId, `checkin-${seed.slug}`);
+    if (row === undefined || row.deletedAt !== null || row.sourceEvent !== seedSource(orgId))
+      continue;
+    const task = yield* KinSchedules.readNativeTask(sql, row.taskId);
+    if (task === undefined || row.looseAt === null) continue;
+    const current = KinSchedules.everyOf(task, row.looseAt);
+    if (current === undefined || current.at !== row.looseAt) continue;
+    const every = onHostClock(seed.at, seed.days, zone, KinSchedules.hostTimeZone(), now);
+    if (every.at === current.at && every.days.join() === current.days.join()) continue;
+    yield* schedules.save({
+      orgId,
+      agentId: row.agentId,
+      scheduleId: row.scheduleId,
+      existing: true,
+      chatId: row.chatId,
+      sourceEvent: row.sourceEvent,
+      saidBy: row.saidBy,
+      title: task.title,
+      prompt: task.prompt,
+      every,
+      around: true,
+      checkIn: true,
+      now,
+    });
+  }
+});
+
 /**
  * Writes the default check-ins once per company, for the Chief of staff, once it has one; true
  * once written, now or before. A company that removed them doesn't get them back.
@@ -82,7 +123,7 @@ export const seedCheckIns = Effect.fn("KinPulse.seedCheckIns")(function* (
       scheduleId: KinMemoryItemId.make(`checkin-${seed.slug}`),
       existing: false,
       chatId: KinChatId.make(chief.ownerChatId),
-      sourceEvent: `kin-seed:check-ins:${orgId}`,
+      sourceEvent: seedSource(orgId),
       saidBy: owner.personId,
       title: seed.title,
       prompt: seed.what,

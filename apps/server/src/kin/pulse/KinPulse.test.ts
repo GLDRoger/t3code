@@ -97,6 +97,10 @@ const change = Effect.fn("test.change")(function* (id: string, at: number, field
 const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Invented Studio', ${stamp})`;
+  // Unset, the host's zone would stand in; these lines are drawn in UTC.
+  yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
+      dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+    VALUES (${orgId}, 'UTC', '08:30', '18:00', '02:00', 0, 1, '09:00', '{}')`;
   yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
     VALUES (${owner}, ${orgId}, 'owner', 'Arjun', ${stamp}), (${mate}, ${orgId}, 'mate', 'Meera', ${stamp})`;
   for (const [agent, domain] of [

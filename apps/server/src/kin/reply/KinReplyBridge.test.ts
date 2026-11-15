@@ -682,6 +682,28 @@ it.effect("a teammate joining mid-draft sees none of it, and the draft ends unse
   }).pipe(Effect.provide(layer)),
 );
 
+// G01: a co-owner's chat is owner-level, so a reply with money in it posts there.
+it.effect.each(["co_owner", "member"] as const)(
+  "an owner-only reply posts where everyone reading is owner-level, never silently held (%s)",
+  (access) =>
+    Effect.gen(function* () {
+      const { fake, runId, complete, posted, sql, wakeupId } = yield* setup({
+        lane: "shared-group",
+        ask: "Draft the December retainer invoice",
+      });
+      yield* sql`UPDATE kin_people SET access = ${access} WHERE person_id = 'mate'`;
+      yield* sql`UPDATE kin_wakeups SET audience = 'owner_only' WHERE wakeup_id = ${wakeupId}`;
+      fake.items = [text("a", 1, "Draft INV-2 is ready: ₹40,000 + GST.", runId)];
+      yield* complete;
+      assert.deepStrictEqual(
+        (yield* posted).map((row) => `${row.authorKind}:${row.body}`),
+        access === "co_owner"
+          ? ["agent:Draft INV-2 is ready: ₹40,000 + GST."]
+          : ["system:Ada didn't reply: someone joined while it was working. Send it again."],
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
 // Review of cc5b670e33: a shared turn read the group from its latest join; a later one aborts it.
 it.effect("someone joining a shared group mid-draft sees none of it, and the turn is aborted", () =>
   Effect.gen(function* () {
@@ -1387,7 +1409,9 @@ it.effect("a reply Kin refused is not an answer: the owner sees that none came",
     yield* complete;
     assert.deepStrictEqual(
       (yield* posted).map((row) => `${row.authorKind}:${row.body}`),
-      ["system:Ada didn't reply."],
+      [
+        "system:Ada's reply couldn't be posted: it came after the time to answer ran out. Send your message again.",
+      ],
     );
     // The rescue's text would be refused the same way.
     assert.strictEqual(fake.rescues, 0);
