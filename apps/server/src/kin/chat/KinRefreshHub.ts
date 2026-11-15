@@ -25,6 +25,19 @@ export class KinRefreshObserver extends Context.Reference<{
   readonly touch: (orgId: KinOrgId, topic: KinRefreshTopic) => Effect.Effect<void>;
 }>("t3/kin/chat/KinRefreshObserver", { defaultValue: () => ({ touch: () => Effect.void }) }) {}
 
+/**
+ * Fails when `services` would run on the no-op observer: every notice would be dropped, and the
+ * screens it serves would stay stale with nothing to say why. The server checks it at startup.
+ */
+export const requireRefreshObserver = (services: Context.Context<never>) =>
+  Context.getOrUndefined(services, KinRefreshObserver) === undefined
+    ? Effect.die(
+        new Error(
+          "Kin's services were built without the refresh hub (KinRefreshHub.layer), so no change would reach open screens.",
+        ),
+      )
+    : Effect.void;
+
 /** The revisions clients read again on, per org. */
 export class KinRefreshHub extends Context.Service<
   KinRefreshHub,

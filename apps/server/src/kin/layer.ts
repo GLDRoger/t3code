@@ -24,6 +24,7 @@ import { KinChatService } from "./chat/KinChatService.ts";
 import * as FileSystem from "effect/FileSystem";
 import { ServerConfig } from "../config.ts";
 import { answerChoice } from "./work/cardAnswers.ts";
+import { requireRefreshObserver } from "./chat/KinRefreshHub.ts";
 
 import { KinServer, type Services } from "./KinServer.ts";
 export { KinServer } from "./KinServer.ts";
@@ -47,6 +48,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
     KinServer,
     Effect.gen(function* () {
       const services = yield* Effect.context<Services>();
+      yield* requireRefreshObserver(services);
       const hub = yield* KinChatHub;
       const scope = yield* Effect.scope;
       const files = yield* Effect.context<FileSystem.FileSystem | ServerConfig>();

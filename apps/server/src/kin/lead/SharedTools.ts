@@ -165,6 +165,8 @@ export const SHARED_TOOLS = {
   list_define: "refused",
   payment_record: "refused",
   money_summary: "refused",
+  money_query: "refused",
+  budget_set: "refused",
   dates_query: "refused",
   company_profile: "refused",
   // A statement is the owner's bank account; reading one marks the turn as a sensitive read.

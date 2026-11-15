@@ -257,6 +257,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.org.setTeamAgent": "kin-people",
 
   "kin.refreshes.subscribe": "kin-refreshes",
+  "kin.refreshes.announce": "kin-refreshes",
   "kin.budget.get": "kin-budget",
   "kin.budget.set": "kin-budget",
   "kin.org.get": "kin-org",

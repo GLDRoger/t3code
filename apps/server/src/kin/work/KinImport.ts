@@ -40,6 +40,7 @@ import {
   proposalFor,
   storedCategoryLabels,
 } from "./registers.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { undoBatch, type UndoReport } from "./importUndo.ts";
 
 // Everything an import makes is keyed `import:<batch>:<kind>:<source>`, so a rerun makes nothing
@@ -157,6 +158,7 @@ export class KinImport extends Context.Service<
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
+  const refreshes = yield* KinRefreshObserver;
   const fs = yield* FileSystem.FileSystem;
 
   const run = Effect.fn("KinImport.run")(function* (
@@ -885,9 +887,16 @@ const make = Effect.gen(function* () {
       );
     }),
     undo: Effect.fn("KinImport.undo.run")(function* (orgId, owner, batch, options) {
-      return yield* undoBatch(orgId, owner, batch, options).pipe(
+      const undone = yield* undoBatch(orgId, owner, batch, options).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
       );
+      // An undo deletes entries outright, so no logged change tells anyone it happened.
+      if (undone.applied) {
+        yield* records.announce(orgId);
+        if (undone.removes.clients + undone.removes.projects > 0)
+          yield* refreshes.touch(orgId, "workChoices");
+      }
+      return undone;
     }),
     fromFile,
   });

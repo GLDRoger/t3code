@@ -306,6 +306,29 @@ describe("accountant-pack", () => {
     assert.include(part, '<t xml:space="preserve">=HYPERLINK(&quot;x&quot;)</t>');
     assert.include(part, '<c r="B2" s="1"><v>-1.00</v></c>');
   });
+
+  it("totals bank rows per direction, never credits and debits together", () => {
+    const cells = sheetCells(
+      [
+        { key: "BNK-1", direction: "credit", amount: inr(11600000) },
+        { key: "BNK-2", direction: "debit", amount: inr(450000) },
+        { key: "BNK-3", direction: "debit", amount: inr(50) },
+      ],
+      {
+        name: "Bank",
+        input: "bank",
+        columns: [
+          { header: "Entry", field: "key" },
+          { header: "Amount", field: "amount" },
+        ],
+        totalsBy: "direction",
+      },
+    );
+    assert.strictEqual(
+      toCsv(cells),
+      "Entry,Amount\r\nBNK-1,116000.00\r\nBNK-2,4500.00\r\nBNK-3,0.50\r\nTotal credit,116000.00\r\nTotal debit,4500.50\r\n",
+    );
+  });
 });
 
 it("ships four recipes that parse, read only what Kin supplies, and make their samples", async () => {
@@ -345,9 +368,12 @@ it("ships four recipes that parse, read only what Kin supplies, and make their s
     files.map((file) => file.name),
     [
       "accounts-2026-10.xlsx",
-      "invoices-2026-10.csv",
-      "payments-2026-10.csv",
+      "sales-register-2026-10.csv",
+      "receipts-2026-10.csv",
+      "tds-2026-10.csv",
       "expenses-2026-10.csv",
+      "unpaid-expenses-2026-10.csv",
+      "bank-2026-10.csv",
     ],
   );
   for (const file of files)

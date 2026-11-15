@@ -12,12 +12,14 @@ import {
   countedEntry,
   countedPayment,
   fromImport,
+  moneyDay,
   notedReceiptNumbers,
   ownerZone,
   type RecordRow,
   sensitiveNow,
 } from "../work/recordRows.ts";
 import { type ListDef, listDef, sensitiveKeys, stateLabel } from "../work/registers.ts";
+import { findBankList } from "../work/statements/bankList.ts";
 import { issuedNumber } from "./numbering.ts";
 import {
   type Facts,
@@ -70,7 +72,17 @@ export type Gathered = {
 // Bank details and tax ids; a company's name, address and place of supply print on every invoice.
 const SENSITIVE_COMPANY = /^(?:bank\.|gstin$|pan$)/;
 const SENSITIVE_CLIENT = new Set(["gstin", "terms"]);
-const AMOUNT_COLUMNS = new Set(["amount", "tax"]);
+const AMOUNT_COLUMNS = new Set(["amount", "tax", "taxable"]);
+const BANK_LIST = "bank_transactions";
+const MATCHED_AS: Readonly<Record<string, string>> = {
+  payment: "payment on",
+  tds: "TDS on",
+  expense_paid: "paid",
+  expense_linked: "paid",
+  expense_new: "new expense",
+  transfer: "transfer between own accounts",
+  ignore: "ignored",
+};
 
 /** An entry's own label, one it inherits, or its list's. */
 export const entrySensitive = (entry: RecordRow, def: ListDef | undefined) =>
@@ -140,19 +152,27 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
     if (source._tag === "payments") {
       sensitiveTables.add(input.name);
       const rows = yield* sql<{
-        invoice: string;
+        invoice: string | null;
         client: string | null;
         minor: number;
         currency: string;
         paidOn: string;
-      }>`SELECT COALESCE(n.number, r.key) AS invoice, p2.title AS client, p.amount_minor AS minor,
-          p.currency, p.paid_on AS "paidOn"
+        receipt: string | null;
+      }>`SELECT CASE WHEN r.register_id = 'invoices' THEN COALESCE(n.number, r.key) END AS invoice,
+          p2.title AS client, p.amount_minor AS minor, p.currency, p.paid_on AS "paidOn",
+          CASE WHEN r.register_id = 'receipts' THEN COALESCE(n.number, r.key) ELSE
+          (SELECT COALESCE(rn.number, rc.key) FROM kin_records rc
+            LEFT JOIN kin_issued_numbers rn ON rn.org_id = rc.org_id AND rn.record_id = rc.record_id
+            WHERE rc.org_id = p.org_id AND rc.register_id = 'receipts' AND rc.state <> 'dropped'
+              AND json_extract(rc.fields_json, '$.payment') = p.payment_id
+            ORDER BY rc.created_at DESC, rc.record_id DESC LIMIT 1) END AS receipt
         FROM kin_record_payments p
         JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
         LEFT JOIN kin_records p2 ON p2.org_id = r.org_id AND p2.record_id = r.party_id
         LEFT JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
-        WHERE p.org_id = ${orgId} AND ${countedPayment(sql)} AND r.register_id = 'invoices'
-          AND p.withheld = 0 AND substr(p.paid_on, 1, 7) = ${month}
+        WHERE p.org_id = ${orgId} AND ${countedPayment(sql)}
+          AND r.register_id IN ('invoices', 'receipts')
+          AND p.withheld = ${source.tds ? 1 : 0} AND substr(p.paid_on, 1, 7) = ${month}
         ORDER BY p.paid_on, p.payment_id LIMIT ${MAX_ROWS}`;
       tables.set(
         input.name,
@@ -162,12 +182,16 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
             client: row.client,
             amount: { minor: row.minor, currency: row.currency },
             paidOn: row.paidOn,
+            receipt: row.receipt,
           }),
         ),
       );
       continue;
     }
-    const list = yield* listDef(orgId, source.list);
+    // Bank transactions may live in a list the owner kept before Kin made its own.
+    const list =
+      (yield* listDef(orgId, source.list)) ??
+      (source.list === BANK_LIST ? yield* findBankList(orgId) : undefined);
     // A list the org doesn't keep has no entries that month: an empty table, not a missing one.
     if (list === undefined) {
       tables.set(input.name, []);
@@ -184,6 +208,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
     )
       sensitiveTables.add(input.name);
     const rows = yield* sql<{
+      recordId: string;
       key: string;
       title: string;
       state: string;
@@ -194,31 +219,54 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
       category: string | null;
       fieldsJson: string;
       client: string | null;
+      clientFields: string | null;
       number: string | null;
       sensitive: number;
-    }>`SELECT r.key, r.title, r.state, r.amount_minor AS minor, r.currency, r.date_at AS "dateAt",
-        r.due_at AS "dueAt", r.category, r.fields_json AS "fieldsJson", p.title AS client,
+    }>`SELECT r.record_id AS "recordId", r.key, r.title, r.state, r.amount_minor AS minor,
+        r.currency, ${moneyDay(sql)} AS "dateAt", r.due_at AS "dueAt", r.category,
+        r.fields_json AS "fieldsJson", p.title AS client, p.fields_json AS "clientFields",
         n.number, ${sensitiveNow(sql)} AS sensitive
       FROM kin_records r
       LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.party_id
       LEFT JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
       WHERE r.org_id = ${orgId} AND r.register_id = ${list.id} AND ${countedEntry(sql)}
-        AND r.date_at IS NOT NULL AND r.date_at >= ${start} AND r.date_at < ${end}
-      ORDER BY r.date_at, r.key LIMIT ${MAX_ROWS * 2}`;
+        AND ${moneyDay(sql)} >= ${start} AND ${moneyDay(sql)} < ${end}
+        ${input.states === undefined ? sql`` : sql`AND r.state IN ${sql.in([...input.states])}`}
+      ORDER BY "dateAt", r.key LIMIT ${MAX_ROWS * 2}`;
     const inMonth = rows
       .filter((row) => dayIn(row.dateAt, zone).startsWith(month))
       .slice(0, MAX_ROWS);
     if (inMonth.some((row) => row.sensitive === 1)) sensitiveTables.add(input.name);
+    if ("clientGstin" in input.columns) sensitiveTables.add(input.name);
+    const matched =
+      "matched" in input.columns
+        ? yield* matchesOf(
+            orgId,
+            inMonth.map((row) => row.recordId),
+          )
+        : new Map<string, string>();
     tables.set(
       input.name,
       inMonth.map((row) => {
         const own = parseFields(row.fieldsJson);
+        const party = row.clientFields === null ? {} : parseFields(row.clientFields);
+        const amount = amountOf(row.minor, row.currency);
+        const tax = cellOf(own, "tax");
         return pick(input, {
+          clientGstin: cellOf(party, "gstin"),
+          placeOfSupply: cellOf(own, "placeOfSupply") ?? cellOf(party, "placeOfSupply"),
+          // Only what the entry holds: no tax, or another currency's, leaves it blank.
+          taxable:
+            amount !== null && isMoney(tax) && tax.currency === amount.currency
+              ? { minor: amount.minor - tax.minor, currency: amount.currency }
+              : null,
+          matched: matched.get(row.recordId) ?? null,
           key: row.key,
           title: row.title,
           state: stateLabel(list, row.state),
-          amount: amountOf(row.minor, row.currency),
-          tax: cellOf(own, "tax"),
+          stateKey: row.state,
+          amount,
+          tax,
           date: dayIn(row.dateAt, zone),
           due: day(row.dueAt),
           client: row.client,
@@ -380,6 +428,29 @@ const entryPayments = Effect.fn("KinDocFacts.entryPayments")(function* (
           ? "advance"
           : "received",
   }));
+});
+
+/** What each bank row became when the owner confirmed its statement, by the statement's entries. */
+const matchesOf = Effect.fn("KinDocFacts.matches")(function* (
+  orgId: KinOrgId,
+  recordIds: ReadonlyArray<string>,
+) {
+  if (recordIds.length === 0) return new Map<string, string>();
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ id: string; action: string; target: string | null }>`
+    SELECT e.bank_record_id AS id, e.action, t.key AS target
+    FROM kin_bank_statement_entries e
+    JOIN kin_bank_statements s ON s.org_id = e.org_id AND s.statement_id = e.statement_id
+    LEFT JOIN kin_records t ON t.org_id = e.org_id AND t.record_id = e.target_record_id
+    WHERE e.org_id = ${orgId} AND s.undone_at IS NULL AND e.action <> 'row'
+      AND e.bank_record_id IN ${sql.in([...new Set(recordIds)])}
+    ORDER BY e.bank_record_id, e.statement_id, e.seq`;
+  const matched = new Map<string, Array<string>>();
+  for (const row of rows) {
+    const said = [MATCHED_AS[row.action] ?? row.action, row.target].filter(Boolean).join(" ");
+    matched.set(row.id, [...(matched.get(row.id) ?? []), said]);
+  }
+  return new Map([...matched].map(([id, said]) => [id, [...new Set(said)].join("; ")]));
 });
 
 /** Only the columns the input declares, so a row carries nothing else Kin stores. */

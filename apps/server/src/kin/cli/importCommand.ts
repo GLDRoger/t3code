@@ -16,6 +16,7 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { isOrgOwner } from "../lead/orgState.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { formatMoney } from "../work/money.ts";
+import { announceToServer, cliChanges } from "./announce.ts";
 import type { UndoReport } from "../work/importUndo.ts";
 import * as KinImport from "../work/KinImport.ts";
 import * as KinRecords from "../work/KinRecords.ts";
@@ -149,6 +150,7 @@ export const importCommand = Command.make("import", {
         const config = yield* resolveCliAuthConfig(flags, logLevel, { quietLogs: flags.json });
         const progress: KinImport.Progress = (done, of) =>
           done % 5_000 === 0 || done === of ? Console.error(`${done} of ${of} rows`) : Effect.void;
+        const changes = cliChanges();
         const report = yield* Effect.gen(function* () {
           const owner = yield* ownerOf(flags.org, flags.person);
           const imports = yield* KinImport.KinImport;
@@ -157,6 +159,7 @@ export const importCommand = Command.make("import", {
               apply: flags.apply,
               includeChanged: flags.includeChanged,
             });
+            if (undone.applied) changes.records(flags.org);
             return flags.json ? encodeReport(undone) : describeUndo(undone);
           }
           const lines = imports.fromFile(Option.getOrElse(flags.file, () => ""));
@@ -166,6 +169,7 @@ export const importCommand = Command.make("import", {
             lines,
             progress,
           );
+          if (done.applied) changes.records(flags.org);
           return flags.json ? encodeReport(done) : describeImport(done);
         }).pipe(
           Effect.provide(
@@ -175,10 +179,12 @@ export const importCommand = Command.make("import", {
               Layer.provideMerge(KinPersistence.layer),
               Layer.provideMerge(SqlitePersistence.layerConfig),
               Layer.provideMerge(ServerConfig.layer(config)),
+              Layer.provide(changes.layer),
               Layer.provide(Layer.succeed(References.MinimumLogLevel, "Warn")),
             ),
           ),
         );
+        yield* announceToServer(config, changes.all());
         yield* Console.log(report);
       },
       Effect.tapError((error) =>
