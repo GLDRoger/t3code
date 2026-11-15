@@ -1006,13 +1006,13 @@ export function kinWorkItemView(
     lastMove !== undefined && handBack !== undefined
       ? `${kinWorkActorName(lastMove.by, names)} handed this back · ${formatKinTime(new Date(lastMove.at), now)}`
       : giver === null || kinWorkSamePrincipal(giver, item.owner)
-      ? null
-      : [
-          `${kinWorkName(giver, names)} gave this to ${kinWorkName(item.owner, names, "you")}`,
-          item.assignedAt === null ? null : formatKinTime(new Date(item.assignedAt), now),
-        ]
-          .filter((part) => part !== null)
-          .join(" · ");
+        ? null
+        : [
+            `${kinWorkName(giver, names)} gave this to ${kinWorkName(item.owner, names, "you")}`,
+            item.assignedAt === null ? null : formatKinTime(new Date(item.assignedAt), now),
+          ]
+            .filter((part) => part !== null)
+            .join(" · ");
   // The latest link to one target says the most: "PR #12 merged" over "PR #12".
   const links = new Map<string, KinWorkLinkView>();
   for (const link of item.links) {

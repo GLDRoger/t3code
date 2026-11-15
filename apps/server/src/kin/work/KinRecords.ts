@@ -1257,6 +1257,12 @@ const make = Effect.gen(function* () {
           if (value === null) delete merged[field];
           else merged[field] = value;
         }
+        // Why it was given no longer holds once it is handed back; the holder's words are in its history.
+        if (patch.handedBack !== undefined && merged.reason !== undefined) {
+          changes.push({ field: "reason", from: shownField(merged.reason), to: null });
+          delete merged.reason;
+          fieldsChanged = true;
+        }
         if (fieldsChanged) set("fields_json", yield* encodeFieldValues(merged));
         const amount = amountOf(row) ?? null;
         const byOwner = writer.via === "owner";
@@ -1666,8 +1672,6 @@ const make = Effect.gen(function* () {
         return yield* update(orgId, writer, key, {
           owner: to,
           state: "open",
-          // Why it was given no longer holds; the holder's words are in its history.
-          fields: { reason: null },
           handedBack: { note },
         });
       }),

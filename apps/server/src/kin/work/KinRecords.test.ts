@@ -1945,11 +1945,14 @@ it.effect(
         note: "I'm on the release",
         provenance: { _tag: "human", personId: ownerId, memberId: "lead-chat-owner" },
       });
-      assert.deepInclude(yield* OwnerWork.get([owner], { orgId, key: "W-2" }), {
+      const returned = yield* OwnerWork.get([owner], { orgId, key: "W-2" });
+      assert.deepInclude(returned, {
         owner: { _tag: "agent", agentId: lead },
         assignedBy: { _tag: "person", personId: ownerId },
         state: "open",
       });
+      // Why it was given no longer holds.
+      assert.isUndefined(returned.reason);
       // Only whoever holds it hands it back.
       assert.include(
         yield* Effect.flip(
