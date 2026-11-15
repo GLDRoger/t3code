@@ -1889,19 +1889,26 @@ describe("KinActionExecutor", () => {
     // nothing, since no shared context holds it (the production layer test checks the output).
     assert.notInclude(source("kin/KinServer.ts"), "KinActionExecutor");
 
-    // Leads are the owner's: the `kin lead` CLI, and RPCs that check the caller owns the lead
-    // (`create`, `update`, `retire`, `restore`, `access`, `allow`, `disallow`) or read only what's
-    // the caller's (`profiles`, `contacts`). Nothing else the server runs (MCP, agent toolkits,
-    // routes, schedules) reaches this module, and no RPC reaches what the CLI does unchecked.
+    // Leads are the owner's: the `kin lead` CLI, and RPCs that check who may change a lead or read
+    // only what's the caller's (`profiles`, `contacts`). Nothing else the server runs (MCP, agent
+    // toolkits, routes, schedules) reaches this module, and no RPC reaches what the CLI does unchecked.
     assert.deepStrictEqual(importers("kin/lead/KinLeadProvision.ts"), [
       "kin/chat/refreshes.ts",
       "kin/chat/rpcHandlers.ts",
       "kin/cli/lead.ts",
+      "kin/people/rpcHandlers.ts",
     ]);
-    assert.deepStrictEqual(importers("kin/chat/rpcHandlers.ts"), ["kin/rpcHandlers.ts"]);
+    assert.deepStrictEqual(importers("kin/chat/rpcHandlers.ts"), [
+      "kin/people/rpcHandlers.ts",
+      "kin/rpcHandlers.ts",
+    ]);
+    assert.notMatch(
+      source("kin/people/rpcHandlers.ts"),
+      /\bLeadProvision\.(?!setTeamAgent\b|ts\b)\w+/,
+    );
     assert.notMatch(
       source("kin/chat/rpcHandlers.ts"),
-      /\bLeadProvision\.(?!create\b|update\b|retire\b|restore\b|profiles\b|contacts\b|access\b|allow\b|disallow\b|KinLeadProvisionError\b|ts\b)\w+/,
+      /\bLeadProvision\.(?!create\b|update\b|retire\b|restore\b|profiles\b|contacts\b|access\b|allow\b|disallow\b|teamAgent\b|KinLeadProvisionError\b|ts\b)\w+/,
     );
     // The refresh stream reads only the caller's own lead list to tell them it moved.
     assert.deepStrictEqual(importers("kin/chat/refreshes.ts"), ["kin/work/rpcHandlers.ts"]);

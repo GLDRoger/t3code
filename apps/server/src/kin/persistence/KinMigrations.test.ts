@@ -3940,6 +3940,7 @@ it.effect(
         [130, "ConnectionPause"],
         [131, "ReceiptProposalsPasswordBudget"],
         [132, "PeopleProfiles"],
+        [133, "PersonAccess"],
       ]);
       yield* K107Connections;
       assert.deepStrictEqual(yield* sql`SELECT wakeup_id FROM kin_wakeup_outside_reads`, []);
@@ -3975,6 +3976,7 @@ it.effect("K131 carries each statement's wrong passwords into its budget, and re
     assert.deepStrictEqual(yield* runKinMigrations(), [
       [131, "ReceiptProposalsPasswordBudget"],
       [132, "PeopleProfiles"],
+      [133, "PersonAccess"],
     ]);
     const budget = sql`SELECT budget_key AS key, remaining, refill_at IS NOT NULL AS "refills"
       FROM kin_statement_password_budget ORDER BY budget_key`;
@@ -3989,6 +3991,7 @@ it.effect("K131 carries each statement's wrong passwords into its budget, and re
     assert.deepStrictEqual(yield* runKinMigrations(), [
       [131, "ReceiptProposalsPasswordBudget"],
       [132, "PeopleProfiles"],
+      [133, "PersonAccess"],
     ]);
     assert.deepStrictEqual(yield* budget, carried);
   }).pipe(Effect.provide(layer)),
