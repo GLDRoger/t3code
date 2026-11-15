@@ -26,6 +26,7 @@ import {
   kinContactUpdateInput,
   kinProjectCreateInput,
   kinProjectDraftCheck,
+  KIN_PROJECT_BILLING_LABELS,
   kinProjectDraftOf,
   kinProjectTargetHint,
   kinProjectUpdateInput,
@@ -56,6 +57,7 @@ import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { Menu } from "../../components/ui/Menu";
 import { Notice } from "../../components/ui/Notice";
+import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
 import { ListSection } from "../../components/ui/ListSection";
 import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { useNowMinuteMs } from "../../lib/clock";
@@ -832,6 +834,51 @@ function ProjectForm(
           hint={kinProjectTargetHint(target, opened)}
           onChangeText={(text) => form.edit({ target: text.trim() === "" ? null : text.trim() })}
         />
+      </ListSection>
+      <ListSection title={COPY.project.billing}>
+        {([null, "fixed", "hourly", "retainer"] as const).map((kind) => (
+          <ListChoiceRow
+            key={kind ?? "none"}
+            label={kind === null ? COPY.project.noBilling : KIN_PROJECT_BILLING_LABELS[kind]}
+            selected={draft.billing === kind}
+            disabled={state.saving}
+            onPress={() => form.edit({ billing: kind })}
+          />
+        ))}
+      </ListSection>
+      <ListSection>
+        <KinWorkTextField
+          label={COPY.project.value}
+          value={draft.value}
+          keyboard="numbers"
+          disabled={state.saving}
+          maxLength={40}
+          placeholder={COPY.project.valuePlaceholder}
+          moved={moved.value}
+          onChangeText={(value) => form.edit({ value })}
+        />
+        <KinWorkTextField
+          label={COPY.project.startsOn}
+          value={draft.startsOn ?? ""}
+          keyboard="numbers"
+          disabled={state.saving}
+          maxLength={10}
+          placeholder="2026-11-20"
+          onChangeText={(text) => form.edit({ startsOn: text.trim() === "" ? null : text.trim() })}
+        />
+        {draft.billing === "retainer" || draft.renewsOn !== null ? (
+          <KinWorkTextField
+            label={COPY.project.renewsOn}
+            value={draft.renewsOn ?? ""}
+            keyboard="numbers"
+            disabled={state.saving}
+            maxLength={10}
+            placeholder="2026-12-01"
+            onChangeText={(text) =>
+              form.edit({ renewsOn: text.trim() === "" ? null : text.trim() })
+            }
+          />
+        ) : null}
       </ListSection>
       <ListSection>
         <KinWorkTextField

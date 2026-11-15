@@ -2,6 +2,8 @@ import { LegendList } from "@legendapp/list/react-native";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import { EnvironmentId, type KinOrgId } from "@t3tools/contracts";
+import * as Option from "effect/Option";
+import { AsyncResult } from "effect/reactivity";
 import { useEffect, type ReactNode } from "react";
 import { View } from "react-native";
 
@@ -20,7 +22,12 @@ import { KinChatRow, KinChatRowSkeletons } from "./components/KinChatRow";
 import { KinInboxNotice, KinScreenState, KinStandInNotice } from "./components/KinScreenState";
 import { KinWaitingBanner } from "./components/KinWaitingBanner";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
-import { kinChatListRowLabel, kinChatListRows } from "@t3tools/client-runtime/kin/kinChatListRows";
+import {
+  kinChatListRowLabel,
+  kinChatListRows,
+  kinRoomLine,
+  type KinChatListRow,
+} from "@t3tools/client-runtime/kin/kinChatListRows";
 import {
   formatKinTime,
   kinDirectory,
@@ -255,11 +262,20 @@ export function KinChatsView(props: {
       recycleItems
       renderItem={({ item, index }) => (
         <>
-          <KinChatRow
-            row={item}
-            accessibilityLabel={kinChatListRowLabel(item, (date) => formatKinTime(date))}
-            onPress={() => onOpenChat(item.chat.chatId)}
-          />
+          {item.company ? (
+            <KinCompanyChatRow
+              row={item}
+              environmentId={state.environmentId}
+              me={props.directory.me}
+              onPress={() => onOpenChat(item.chat.chatId)}
+            />
+          ) : (
+            <KinChatRow
+              row={item}
+              accessibilityLabel={kinChatListRowLabel(item, (date) => formatKinTime(date))}
+              onPress={() => onOpenChat(item.chat.chatId)}
+            />
+          )}
           {index < rows.length - 1 ? <View className="ml-5 h-px bg-border-subtle" /> : null}
         </>
       )}
@@ -281,6 +297,36 @@ export function KinChatsView(props: {
           {props.memory}
         </>
       }
+    />
+  );
+}
+
+/** The company chat's row, with who is in it under its last line. */
+function KinCompanyChatRow(props: {
+  readonly row: KinChatListRow;
+  readonly environmentId: EnvironmentId;
+  readonly me: ReadonlySet<string>;
+  readonly onPress: () => void;
+}) {
+  const members = Option.getOrNull(
+    AsyncResult.value(
+      useAtomValue(
+        kinClient.chatMembers({
+          environmentId: props.environmentId,
+          input: { chatId: props.row.chat.chatId },
+        }),
+      ),
+    ),
+  )?.members;
+  const roomLine = members === undefined ? null : kinRoomLine(members, props.me);
+  return (
+    <KinChatRow
+      row={props.row}
+      roomLine={roomLine}
+      accessibilityLabel={[kinChatListRowLabel(props.row, (date) => formatKinTime(date)), roomLine]
+        .filter((part) => part !== null)
+        .join(" ")}
+      onPress={props.onPress}
     />
   );
 }

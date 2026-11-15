@@ -26,7 +26,7 @@ import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { Switch } from "../components/ui/switch";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinDocsUnder } from "./KinDocsList";
-import { KinProjectDialog } from "./KinWorkForms";
+import { KinMilestoneDialog, KinProjectDialog } from "./KinWorkForms";
 import {
   KinWorkHealthBadge,
   KinWorkNotice,
@@ -105,6 +105,7 @@ function ProjectPage(
   const update = useAtomCommand(kinClient.workProjectUpdate, { reportFailure: false });
   const now = new Date(useNowMinuteMs());
   const [editing, setEditing] = useState(false);
+  const [addingMilestone, setAddingMilestone] = useState(false);
   const [problem, setProblem] = useState<KinWorkFormProblem | null>(null);
   const [busy, setBusy] = useState(false);
   const privateId = useId();
@@ -165,6 +166,9 @@ function ProjectPage(
               {view.target}
               {view.ledBy === null ? null : ` · ${view.ledBy}`}
             </p>
+            {view.terms === null ? null : (
+              <p className="text-sm text-muted-foreground">{view.terms}</p>
+            )}
           </div>
           {canChange ? (
             <div className="flex shrink-0 items-center gap-1">
@@ -216,6 +220,107 @@ function ProjectPage(
           <KinWorkProblem problem={problem} onOpenExisting={props.onOpenProject} />
         )}
       </div>
+      {view.specChanged.length === 0 ? null : (
+        <KinWorkSection title={KIN_PROJECTS.specChanged}>
+          <ul className="-mx-2 flex flex-col">
+            {view.specChanged.map((row) => (
+              <li key={row.key}>
+                <button
+                  type="button"
+                  onClick={() => props.onOpenTask(row.key)}
+                  className="flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
+                >
+                  <span className="line-clamp-2 text-sm text-foreground">{row.title}</span>
+                  <span className="text-xs text-warning-foreground">{row.line}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </KinWorkSection>
+      )}
+      <KinWorkSection
+        title={KIN_PROJECTS.milestones}
+        action={
+          canChange && view.closed === null ? (
+            <Button size="xs" variant="ghost" onClick={() => setAddingMilestone(true)}>
+              <PlusIcon />
+              {KIN_PROJECTS.addMilestone}
+            </Button>
+          ) : null
+        }
+      >
+        {view.milestones.length === 0 ? (
+          <p className="text-sm text-muted-foreground">{KIN_PROJECTS.noMilestones}</p>
+        ) : (
+          <ul className="-mx-2 flex flex-col">
+            {view.milestones.map((row) => (
+              <li key={row.key}>
+                <button
+                  type="button"
+                  onClick={() => props.onOpenTask(row.key)}
+                  className="flex w-full flex-col gap-1.5 rounded-md px-2 py-2 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
+                >
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+                      {row.title}
+                    </span>
+                    {row.badge === null ? null : (
+                      <span
+                        className={
+                          row.tone === "late"
+                            ? "shrink-0 text-xs font-medium text-destructive-foreground"
+                            : row.tone === "at_risk"
+                              ? "shrink-0 text-xs font-medium text-warning-foreground"
+                              : "shrink-0 text-xs text-muted-foreground"
+                        }
+                      >
+                        {row.badge}
+                      </span>
+                    )}
+                  </span>
+                  <span aria-hidden className="h-1 w-full overflow-hidden rounded-full bg-muted">
+                    <span
+                      className="block h-full rounded-full bg-primary"
+                      style={{ width: `${Math.round(row.progress * 100)}%` }}
+                    />
+                  </span>
+                  <span className="text-xs text-muted-foreground tabular-nums">{row.line}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </KinWorkSection>
+      {view.people.length === 0 ? null : (
+        <KinWorkSection title={KIN_PROJECTS.people}>
+          <ul className="flex flex-col gap-1">
+            {view.people.map((row) => (
+              <li key={row.key} className="flex min-w-0 items-baseline justify-between gap-3">
+                <span className="truncate text-sm text-foreground">{row.name}</span>
+                <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                  {row.line}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </KinWorkSection>
+      )}
+      {view.meetings.length === 0 ? null : (
+        <KinWorkSection title={KIN_PROJECTS.meetings}>
+          <ul className="-mx-2 flex flex-col">
+            {view.meetings.map((row) => (
+              <li key={row.key}>
+                <KinWorkRow
+                  row={row}
+                  saving={false}
+                  onOpen={() => props.onOpenTask(row.key)}
+                  onAct={null}
+                />
+              </li>
+            ))}
+          </ul>
+        </KinWorkSection>
+      )}
       {view.blocked.length === 0 ? null : (
         <KinWorkSection title={KIN_PROJECTS.blocked}>
           <ul className="-mx-2 flex flex-col">
@@ -329,6 +434,18 @@ function ProjectPage(
           onCheckedChange={(checked) => void change({ sensitive: checked })}
         />
       </div>
+      {view.money.length === 0 ? null : (
+        <KinWorkSection title={KIN_PROJECTS.money}>
+          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+            {view.money.map((line) => (
+              <div key={line.label} className="contents">
+                <dt className="text-muted-foreground">{line.label}</dt>
+                <dd className="text-end text-foreground tabular-nums">{line.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </KinWorkSection>
+      )}
       <KinWorkPlaceLists
         environmentId={environmentId}
         orgId={orgId}
@@ -366,6 +483,22 @@ function ProjectPage(
         choices={null}
         header={summary}
       />
+      {addingMilestone ? (
+        <KinMilestoneDialog
+          environmentId={environmentId}
+          orgId={orgId}
+          project={view.key}
+          onSaved={() => {
+            setAddingMilestone(false);
+            props.onRefresh();
+          }}
+          onOpenExisting={(key) => {
+            setAddingMilestone(false);
+            props.onOpenTask(key);
+          }}
+          onClose={() => setAddingMilestone(false)}
+        />
+      ) : null}
       {editing ? (
         <KinProjectDialog
           environmentId={environmentId}
