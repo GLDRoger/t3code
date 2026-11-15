@@ -224,7 +224,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_github_review", {
     ...prCare,
     description:
-      "Post a review on a pull request in a connected repo: body (findings, plainly), event COMMENT (default) or REQUEST_CHANGES, and optional line comments (path and line on the PR's new side). Never approves. On the company's private repos it posts at once. On a public repo or one the company doesn't own it is a proposal: the owner sees it on a card and taps Post it, which wakes you; then call again with the proposal it returned to post exactly that. Returns status posted, proposed, waiting or declined.",
+      "Post a review on a pull request in a connected repo: body (findings, plainly), event COMMENT (default) or REQUEST_CHANGES, and optional line comments (path and line on the PR's new side). Never approves. On the company's private repos it posts at once. On a public repo or one the company doesn't own it is a proposal: the owner (or a co-owner, or that project's lead) sees it on a card, and their Post it posts exactly that review; calling again with the proposal says whether it is posted. Returns status posted, proposed, waiting or declined.",
     parameters: PullRequestCare.ReviewInput,
     success: PullRequestCare.ReviewResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

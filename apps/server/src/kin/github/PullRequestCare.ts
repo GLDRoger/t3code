@@ -1,6 +1,7 @@
 import {
   KinChatError,
-  type KinOrgId,
+  KinOrgId,
+  KinPersonId,
   KinRecordKey,
   RepoSlug,
   TrimmedNonEmptyString,
@@ -17,7 +18,9 @@ import { HttpClient, HttpClientRequest } from "effect/http";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
 
+import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { effectiveAudience, SHARED_GITHUB, turnChat } from "../lead/Audience.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import { KinGithubRepoScope } from "../triggers/githubEvents.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
@@ -108,6 +111,24 @@ const PullAnswer = Schema.Struct({
   base: Schema.Struct({ ref: Schema.String }),
 });
 const decodePullAnswer = Schema.decodeUnknownOption(PullAnswer);
+const BACKFILL_PAGE = 100;
+const decodeOpenPulls = Schema.decodeUnknownOption(
+  Schema.Array(
+    Schema.Struct({
+      number: Schema.Int,
+      title: Schema.String,
+      html_url: Schema.String,
+      draft: Schema.optional(Schema.Boolean),
+      created_at: Schema.String,
+      user: Schema.optional(Schema.NullOr(Schema.Struct({ login: Schema.String }))),
+      head: Schema.Struct({
+        sha: Schema.String,
+        ref: Schema.String,
+        repo: Schema.optional(Schema.NullOr(Schema.Struct({ full_name: Schema.String }))),
+      }),
+    }),
+  ),
+);
 const RepoAnswer = Schema.Struct({
   private: Schema.Boolean,
   owner: Schema.Struct({ login: Schema.String }),
@@ -148,6 +169,19 @@ export class KinPullRequestCare extends Context.Service<
       lead: Lead,
       input: typeof LinkInput.Type,
     ) => Effect.Effect<typeof LinkResult.Type, KinChatError>;
+    /**
+     * Posts a review the owner confirmed on its card, exactly as stored, once: the tap's own
+     * work. Nothing to post (not confirmed, or already posted) is no error.
+     */
+    readonly postConfirmed: (
+      orgId: KinOrgId,
+      postId: string,
+    ) => Effect.Effect<string | undefined, KinChatError>;
+    /**
+     * Open PRs in the connected repos as GitHub has them now, for PRs no webhook has told Kin of
+     * yet; a PR Kin holds as open that GitHub no longer lists is closed. Webhook state is kept.
+     */
+    readonly backfill: (orgId: KinOrgId) => Effect.Effect<number, KinChatError>;
     /** Closes each open issue linked to entries a merge closed; one failure never stops the rest. */
     readonly closeIssues: (
       orgId: KinOrgId,
@@ -275,6 +309,69 @@ const make = Effect.gen(function* () {
     return url;
   });
 
+  const postConfirmed: KinPullRequestCare["Service"]["postConfirmed"] = Effect.fn(
+    "KinPullRequestCare.postConfirmed",
+  )(function* (orgId, postId) {
+    // Claimed by the move to posted, so a tap and the agent's call never both post it.
+    const [claimed] = yield* sql<{ repo: string; number: number; json: string }>`UPDATE
+        kin_pr_review_posts SET state = 'posted'
+      WHERE org_id = ${orgId} AND post_id = ${postId} AND state = 'confirmed'
+      RETURNING repo, number, review_json AS json`.pipe(Effect.orDie);
+    if (claimed === undefined) return undefined;
+    const release = sql`UPDATE kin_pr_review_posts SET state = 'confirmed'
+      WHERE org_id = ${orgId} AND post_id = ${postId} AND url IS NULL`.pipe(Effect.orDie);
+    const stored = Option.getOrUndefined(decodeStored(claimed.json));
+    if (stored === undefined) {
+      yield* release;
+      return yield* unavailable("That proposal can't be read.");
+    }
+    const repo = yield* Effect.tapError(scoped(claimed.repo), () => release);
+    const url = yield* Effect.tapError(post(repo, claimed.number, stored), () => release);
+    yield* sql`UPDATE kin_pr_review_posts SET url = ${url}
+      WHERE org_id = ${orgId} AND post_id = ${postId}`.pipe(Effect.orDie);
+    return url;
+  });
+
+  const backfill: KinPullRequestCare["Service"]["backfill"] = Effect.fn(
+    "KinPullRequestCare.backfill",
+  )(function* (orgId) {
+    const now = yield* Clock.currentTimeMillis;
+    let found = 0;
+    for (const repo of scope.repos) {
+      if (!isRepoSlug(repo)) continue;
+      const token = yield* tokenFor(repo, { pull_requests: "read" });
+      const answer = yield* call(
+        token,
+        "pulls.list",
+        "GET",
+        `${repoPath(repo)}/pulls?state=open&per_page=${BACKFILL_PAGE}`,
+      );
+      const pulls = answer.status === 200 ? decodeOpenPulls(answer.body) : Option.none();
+      if (Option.isNone(pulls)) continue;
+      const slug = repo.toLowerCase();
+      for (const pull of pulls.value) {
+        const opened = Date.parse(pull.created_at);
+        yield* sql`INSERT INTO kin_pull_requests (org_id, repo, number, title, author, url, draft,
+            state, head_sha, head_ref, head_repo, opened_at, updated_at)
+          VALUES (${orgId}, ${slug}, ${pull.number}, ${pull.title}, ${pull.user?.login ?? null},
+            ${pull.html_url}, ${pull.draft === true ? 1 : 0}, 'open', ${pull.head.sha},
+            ${pull.head.ref}, ${pull.head.repo?.full_name ?? null},
+            ${Number.isFinite(opened) ? opened : now}, ${now})
+          ON CONFLICT (org_id, repo, number) DO NOTHING`.pipe(Effect.orDie);
+      }
+      found += pulls.value.length;
+      // A full list says which ones closed while no webhook reached Kin.
+      if (pulls.value.length < BACKFILL_PAGE)
+        yield* sql`UPDATE kin_pull_requests SET state = 'closed', ready_at = NULL,
+            updated_at = ${now}
+          WHERE org_id = ${orgId} AND repo = ${slug} AND state = 'open'
+            AND number NOT IN ${sql.in(pulls.value.length === 0 ? [0] : pulls.value.map((pull) => pull.number))}`.pipe(
+          Effect.orDie,
+        );
+    }
+    return found;
+  });
+
   const review: KinPullRequestCare["Service"]["review"] = Effect.fn("KinPullRequestCare.review")(
     function* (lead, input) {
       if (
@@ -293,7 +390,7 @@ const make = Effect.gen(function* () {
           return {
             status: "posted",
             url: row.url ?? "",
-            next: "It is already on the PR.",
+            next: "The owner's tap posted it; it is on the PR.",
           } as const;
         if (row.state === "declined")
           return {
@@ -306,12 +403,13 @@ const make = Effect.gen(function* () {
             proposal: input.proposal,
             next: "The owner hasn't confirmed yet. Their tap wakes you; call again then.",
           } as const;
-        const stored = Option.getOrUndefined(decodeStored(row.json));
-        if (stored === undefined) return yield* unavailable("That proposal can't be read.");
-        const url = yield* post(repo, input.number, stored);
-        yield* sql`UPDATE kin_pr_review_posts SET state = 'posted', url = ${url}
-          WHERE org_id = ${lead.orgId} AND post_id = ${input.proposal}`.pipe(Effect.orDie);
-        return { status: "posted", url, next: "Posted. Say so in one line." } as const;
+        yield* scoped(repo);
+        const url = yield* postConfirmed(lead.orgId, input.proposal);
+        return {
+          status: "posted",
+          url: url ?? "",
+          next: "Posted. Say so in one line.",
+        } as const;
       }
       if (input.body === undefined)
         return yield* new KinChatError({
@@ -372,7 +470,7 @@ const make = Effect.gen(function* () {
       return {
         status: "proposed",
         proposal: postId,
-        next: "Nothing is posted yet: this repo is public or not the company's. The owner sees it on a card; ask in one line to check it and tap Post it. Their tap wakes you: call kin_github_review again with this proposal to post it.",
+        next: "Nothing is posted yet: this repo is public or not the company's. The owner sees it on a card; ask in one line to check it and tap Post it. Their tap posts exactly this review; you need not call again.",
       } as const;
     },
     Effect.provideService(SqlClient.SqlClient, sql),
@@ -429,7 +527,7 @@ const make = Effect.gen(function* () {
   const closeIssues: KinPullRequestCare["Service"]["closeIssues"] = (orgId, issues) =>
     Effect.forEach(issues, (issue) => closeIssue(orgId, issue), { discard: true });
 
-  return KinPullRequestCare.of({ pull, review, link, closeIssues });
+  return KinPullRequestCare.of({ pull, review, postConfirmed, backfill, link, closeIssues });
 });
 
 export const layer = Layer.effect(KinPullRequestCare, make);
@@ -441,12 +539,22 @@ const closeNothing: KinPullRequestCare["Service"]["closeIssues"] = Effect.fn(
 /** Without the Kin App: every call answers that GitHub isn't connected, and closing does nothing. */
 export const notConnectedLayer = Layer.succeed(
   KinPullRequestCare,
-  KinPullRequestCare.of({ pull: off, review: off, link: off, closeIssues: closeNothing }),
+  KinPullRequestCare.of({
+    pull: off,
+    review: off,
+    postConfirmed: off,
+    backfill: Effect.fn("KinPullRequestCare.noBackfill")(function* () {
+      return 0;
+    }),
+    link: off,
+    closeIssues: closeNothing,
+  }),
 );
 
 /**
- * The owner's answer on a review card, in the tap's transaction: Post it marks the proposal
- * confirmed, and the agent the tap wakes posts exactly what was stored. Any other card isn't ours.
+ * An answer on a review card, in the tap's transaction, from the owner, a co-owner or the lead
+ * of a project on that repo: Post it marks the proposal confirmed and returns it, for the tap to
+ * post exactly what was stored once it commits. Any other card isn't ours.
  */
 export const answerReviewCard = Effect.fn("KinPullRequestCare.answerCard")(function* (input: {
   readonly orgId: KinOrgId;
@@ -456,13 +564,73 @@ export const answerReviewCard = Effect.fn("KinPullRequestCare.answerCard")(funct
   readonly now: number;
 }) {
   const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<{ postId: string; state: string; owner: string }>`SELECT
-      p.post_id AS "postId", p.state, a.owner_person_id AS owner
+  const coOwner = yield* ownerLevel(input.orgId, KinPersonId.make(input.personId));
+  const [row] = yield* sql<{ postId: string; state: string; allowed: number }>`SELECT
+      p.post_id AS "postId", p.state,
+      (a.owner_person_id = ${input.personId} OR ${coOwner ? 1 : 0} = 1
+        OR EXISTS (SELECT 1 FROM kin_records pr WHERE pr.org_id = p.org_id
+          AND pr.register_id = 'projects' AND pr.state = 'open' AND pr.owner_kind = 'person'
+          AND pr.owner_id = ${input.personId}
+          AND EXISTS (SELECT 1 FROM json_each(pr.fields_json, '$.repos') r
+            WHERE lower(r.value) = lower(p.repo)))) AS allowed
     FROM kin_pr_review_posts p
     JOIN kin_agents a ON a.org_id = p.org_id AND a.agent_id = p.agent_id
     WHERE p.org_id = ${input.orgId} AND p.widget_id = ${input.widgetId} ORDER BY p.post_id`;
-  if (row === undefined || row.state !== "open" || row.owner !== input.personId) return;
+  if (row === undefined || row.state !== "open" || row.allowed !== 1) return undefined;
   yield* sql`UPDATE kin_pr_review_posts
     SET state = ${input.confirmed ? "confirmed" : "declined"}, decided_at = ${input.now}
     WHERE org_id = ${input.orgId} AND post_id = ${row.postId} AND state = 'open'`;
+  return input.confirmed ? row.postId : undefined;
 });
+
+const POST_TRIES = 3;
+
+/**
+ * PR care's own work on the shared scheduler: once per start, open PRs no webhook has reported
+ * yet; and every tick, a review someone confirmed on its card is posted, exactly as stored.
+ */
+export const runtimeLayer = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const care = yield* KinPullRequestCare;
+    const ticks = yield* Scheduler.Scheduler;
+    const sql = yield* SqlClient.SqlClient;
+    const filled = new Set<string>();
+    const tries = new Map<string, number>();
+    yield* ticks.register(
+      "kin-pr-care",
+      Effect.gen(function* () {
+        // Scheduler maintenance scans organizations; every call below is org-scoped.
+        const orgs = yield* sql<{ orgId: string }>`SELECT org_id AS "orgId" FROM kin_orgs
+          ORDER BY org_id`;
+        for (const { orgId } of orgs) {
+          if (filled.has(orgId)) continue;
+          filled.add(orgId);
+          yield* care
+            .backfill(KinOrgId.make(orgId))
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Kin couldn't read open pull requests", { orgId, cause }),
+              ),
+            );
+        }
+        // Scheduler maintenance: confirmed reviews in every org, each posted in its own org.
+        const confirmed = yield* sql<{ orgId: string; postId: string }>`SELECT org_id AS "orgId",
+            post_id AS "postId" FROM kin_pr_review_posts WHERE state = 'confirmed'
+          ORDER BY decided_at, post_id LIMIT 20`;
+        for (const { orgId, postId } of confirmed) {
+          const tried = tries.get(postId) ?? 0;
+          // A review GitHub keeps refusing waits for the agent's own call, not every tick.
+          if (tried >= POST_TRIES) continue;
+          tries.set(postId, tried + 1);
+          yield* care
+            .postConfirmed(KinOrgId.make(orgId), postId)
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Kin couldn't post a confirmed review", { postId, cause }),
+              ),
+            );
+        }
+      }).pipe(Effect.catch((cause) => Effect.logWarning("Kin PR care tick failed", { cause }))),
+    );
+  }),
+);
