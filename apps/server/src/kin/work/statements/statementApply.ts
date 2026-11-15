@@ -39,6 +39,7 @@ import {
   statementRow,
   updateCard,
 } from "./statementReview.ts";
+import type { Review } from "./statementCard.ts";
 import type { StatementRow } from "./statementTable.ts";
 
 /**
@@ -128,6 +129,49 @@ type Action =
   | "transfer"
   | "ignore";
 
+/** A read's rows as the file gave them: two cards of the same file read the same. */
+const contentOf = (statement: Review["statement"]) =>
+  JSON.stringify([
+    statement.currency,
+    statement.rows.map((row) => [
+      row.date,
+      row.amountMinor,
+      row.direction,
+      row.description,
+      row.reference,
+      row.balanceMinor,
+    ]),
+  ]);
+
+/**
+ * Bank rows another statement of the very same rows already recorded, by row: the same file sent
+ * twice, whose account Kin couldn't identify, is still one file. Different files never match.
+ */
+const twinRows = Effect.fn("KinStatements.twinRows")(function* (
+  orgId: KinOrgId,
+  statementId: string,
+  statement: Review["statement"],
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const content = contentOf(statement);
+  const others = yield* sql<{ statementId: string; json: string }>`SELECT
+      s.statement_id AS "statementId", s.review_json AS json FROM kin_bank_statements s
+    WHERE s.org_id = ${orgId} AND s.statement_id <> ${statementId} AND s.review_json IS NOT NULL
+      AND EXISTS (SELECT 1 FROM kin_bank_statement_entries e
+        WHERE e.org_id = s.org_id AND e.statement_id = s.statement_id)
+    ORDER BY s.read_at DESC, s.statement_id LIMIT 200`;
+  const twin = others.find((one) => {
+    const read = reviewOf(one.json);
+    return read !== undefined && contentOf(read.statement) === content;
+  });
+  if (twin === undefined) return new Map<number, { recordId: string; key: string }>();
+  const rows = yield* sql<{ row: number; recordId: string; key: string }>`SELECT DISTINCT
+      e.row_index AS row, r.record_id AS "recordId", r.key FROM kin_bank_statement_entries e
+    JOIN kin_records r ON r.org_id = e.org_id AND r.record_id = e.bank_record_id
+    WHERE e.org_id = ${orgId} AND e.statement_id = ${twin.statementId} ORDER BY e.row_index`;
+  return new Map(rows.map((one) => [one.row, { recordId: one.recordId, key: one.key }]));
+});
+
 const ownerOf = Effect.fn("KinStatements.applyOwner")(function* (orgId: KinOrgId, agentId: string) {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{
@@ -163,6 +207,10 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
             "The card changed since you looked at it, so nothing was applied. Check it and confirm again.",
         });
       const { statement } = review;
+      if (statement.currencyChoice !== undefined)
+        return yield* invalid(
+          "Pick this statement's currency on its card first; nothing was applied.",
+        );
       const currency = statement.currency;
       const zone = yield* ownerZone(input.orgId);
       const categories = yield* expenseCategories(input.orgId);
@@ -205,7 +253,7 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
         statement.kind,
       );
       const label = accountLabel(statement);
-      const fingerprints = rowFingerprints(statement);
+      const fingerprints = rowFingerprints(statement, input.statementId);
       // An undone confirm's payments stay as void lines, so each undo starts a generation of keys.
       const retryKey = (index: number, what: string) =>
         `statement:${input.statementId}:g${stored.generation}:${index}:${what}`;
@@ -226,6 +274,17 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
 
       // Every row is saved, so what is left for later is there to see in Bank transactions.
       const bankRows = new Map<number, { readonly recordId: string; readonly key: string }>();
+      // A row saved since this card was read (another card of the same rows, confirmed first) is
+      // that row, whatever state its confirm left it in.
+      const origins = statement.rows.map((row) => originKeyOf(fingerprints[row.index]!));
+      const saved = new Map<string, { readonly recordId: string; readonly key: string }>();
+      const twins = yield* twinRows(input.orgId, input.statementId, statement);
+      for (let at = 0; at < origins.length; at += 500)
+        for (const one of yield* sql<{ recordId: string; key: string; originKey: string }>`
+          SELECT record_id AS "recordId", key, origin_key AS "originKey" FROM kin_records
+          WHERE org_id = ${input.orgId} AND register_id = ${def.id}
+            AND origin_key IN ${sql.in(origins.slice(at, at + 500))}`)
+          saved.set(one.originKey, one);
       for (const row of statement.rows) {
         const known = review.known.get(row.index);
         if (known !== undefined) {
@@ -234,11 +293,16 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           bankRows.set(row.index, { recordId: still.recordId, key: still.key });
           continue;
         }
+        const already = saved.get(origins[row.index]!) ?? twins.get(row.index);
+        if (already !== undefined) {
+          bankRows.set(row.index, already);
+          continue;
+        }
         const title = rowTitle(row);
         const { row: made } = yield* live(
           records.create(input.orgId, writer, {
             list: def.id,
-            originKey: originKeyOf(fingerprints[row.index]!),
+            originKey: origins[row.index]!,
             title,
             owner: { _tag: "person", personId: input.personId },
             state: states.open,
@@ -253,6 +317,20 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
         );
         bankRows.set(row.index, { recordId: made.recordId, key: made.key });
       }
+      // A row another statement's confirm already applied (two cards of one account, both open)
+      // is shown as recorded and left as it is: one bank row is answered once.
+      const elsewhere = new Set<number>();
+      const recordIds = [...new Set([...bankRows.values()].map((one) => one.recordId))];
+      for (let at = 0; at < recordIds.length; at += 500) {
+        const taken = new Set(
+          (yield* sql<{ id: string }>`SELECT DISTINCT bank_record_id AS id
+            FROM kin_bank_statement_entries WHERE org_id = ${input.orgId}
+              AND statement_id <> ${input.statementId}
+              AND bank_record_id IN ${sql.in(recordIds.slice(at, at + 500))}`).map((one) => one.id),
+        );
+        for (const [index, bank] of bankRows) if (taken.has(bank.recordId)) elsewhere.add(index);
+      }
+      const applying = decisions.filter((one) => !elsewhere.has(one.row));
 
       let seq =
         (yield* sql<{ seq: number | null }>`SELECT MAX(seq) AS seq FROM kin_bank_statement_entries
@@ -327,7 +405,7 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           500,
         );
 
-      for (const decision of decisions) {
+      for (const decision of applying) {
         const index = decision.row;
         const row = statement.rows[index]!;
         const match = review.matches.get(index)!;
@@ -479,6 +557,11 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
                 ...(tally.ignored === 0 ? [] : [`${tally.ignored} ignored`]),
               ].join(", ") + ".",
             ]),
+        ...(elsewhere.size === 0
+          ? []
+          : [
+              `${elsewhere.size} row${elsewhere.size === 1 ? " was" : "s were"} already recorded from another statement and left as ${elsewhere.size === 1 ? "it was" : "they were"}.`,
+            ]),
         ...(kept === 0
           ? []
           : [
@@ -490,12 +573,25 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
         ...(held.size === 0
           ? []
           : [
-              `Undo takes back all ${held.size + decisions.length} rows this statement recorded: ${held.size} from the earlier confirm and ${decisions.length} from this one.`,
+              `Undo takes back all ${held.size + applying.length} rows this statement recorded: ${held.size} from the earlier confirm and ${applying.length} from this one.`,
             ]),
       ];
-      const card = yield* cardState(input.orgId, stored.reviewWidgetId);
+      const card =
+        elsewhere.size === 0
+          ? ((yield* cardState(input.orgId, stored.reviewWidgetId)) ??
+            reviewCard(input.statementId, review, categories, selection, held))
+          : reviewCard(
+              input.statementId,
+              review,
+              categories,
+              selection,
+              held,
+              new Map(
+                [...elsewhere].map((row) => [row, "Already recorded from another statement"]),
+              ),
+            );
       const next = {
-        ...(card ?? reviewCard(input.statementId, review, categories, selection, held)),
+        ...card,
         status: "applied" as const,
         result,
         unexplained,

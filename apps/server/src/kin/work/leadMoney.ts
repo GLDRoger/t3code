@@ -63,7 +63,7 @@ const tooLongForCard = (detail: string) =>
  * was made for, bound to it by `bind` in the card's own commit. A retry with the same
  * `clientMessageId` finds the same card. Its detail is shown whole or not at all.
  */
-const askOwner = Effect.fn("KinOwnerCards.ask")(function* (
+export const askOwner = Effect.fn("KinOwnerCards.ask")(function* (
   lead: Lead,
   input: {
     readonly chatId: string;

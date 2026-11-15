@@ -20,6 +20,10 @@ import * as LevelControl from "./levels/LevelControl.ts";
 import * as MemoryChanges from "./memory/MemoryChanges.ts";
 import * as KinRecords from "./work/KinRecords.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
+import { KinChatService } from "./chat/KinChatService.ts";
+import * as FileSystem from "effect/FileSystem";
+import { ServerConfig } from "../config.ts";
+import { answerChoice } from "./work/cardAnswers.ts";
 
 import { KinServer, type Services } from "./KinServer.ts";
 export { KinServer } from "./KinServer.ts";
@@ -44,6 +48,12 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
     Effect.gen(function* () {
       const services = yield* Effect.context<Services>();
       const hub = yield* KinChatHub;
+      const scope = yield* Effect.scope;
+      const files = yield* Effect.context<FileSystem.FileSystem | ServerConfig>();
+      // Receipt and statement cards' answers carry out their work here, in the tap's transaction.
+      yield* (yield* KinChatService).attachChoiceAnswers((input) =>
+        answerChoice(input, scope).pipe(Effect.provide(services), Effect.provide(files)),
+      );
       const updaterServices = yield* Effect.context<
         KinChatRepository | TaskCardIndex | KinChatHub | SqlClient.SqlClient
       >();

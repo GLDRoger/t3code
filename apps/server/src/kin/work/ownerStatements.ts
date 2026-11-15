@@ -41,6 +41,7 @@ import {
   statementRow,
   updateCard,
 } from "./statements/statementReview.ts";
+import { clearTries, spentUntil, takeTry, waitLine } from "./statements/passwordBudget.ts";
 import { settledLine, tellLead } from "./statements/statementWake.ts";
 
 /**
@@ -49,8 +50,6 @@ import { settledLine, tellLead } from "./statements/statementWake.ts";
  */
 
 const notFound = new KinChatError({ reason: "not_found", message: "No such statement." });
-/** Wrong passwords one card takes before Kin stops trying the file. */
-const PASSWORD_TRIES = 5;
 const decodePasswordCard = Schema.decodeUnknownOption(KinStatementPasswordCard);
 
 const passwordCard = Effect.fn("KinStatements.passwordCard")(function* (
@@ -96,20 +95,27 @@ export const unlock = Effect.fn("KinStatements.unlock")(function* (
     fileName: stored.fileName,
     status: "locked",
   };
-  if (stored.passwordAttempts >= PASSWORD_TRIES) return { status: "limit" as const };
-  const outcome = yield* readWith(yield* attachmentBytes(stored.attachmentId), input.password);
-  if (outcome._tag === "wrong_password" || outcome._tag === "needs_password") {
-    const tries = stored.passwordAttempts + 1;
-    const status = tries >= PASSWORD_TRIES ? ("limit" as const) : ("wrong" as const);
-    yield* sql.withTransaction(
-      Effect.gen(function* () {
-        yield* sql`UPDATE kin_bank_statements SET password_attempts = ${tries}
-          WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId}`;
-        yield* setCard({ ...base, status }, status === "limit");
-      }),
+  const bytes = yield* attachmentBytes(stored.attachmentId);
+  const file = { statementId: input.statementId, chatId: stored.chatId, bytes };
+  // Taken before the file is opened, so tries at once can't all get through.
+  const waiting = yield* takeTry(input.orgId, "card", file, now);
+  // Out of tries, the card stays open for the right password once the wait is over.
+  const spent = (refillAt: number) =>
+    waitLine(input.orgId, refillAt).pipe(
+      Effect.flatMap((detail) =>
+        sql.withTransaction(setCard({ ...base, status: "locked", detail }, false)),
+      ),
+      Effect.as({ status: "limit" as const }),
     );
-    return { status };
+  if (waiting !== undefined) return yield* spent(waiting);
+  const outcome = yield* readWith(bytes, input.password);
+  if (outcome._tag === "wrong_password" || outcome._tag === "needs_password") {
+    const last = yield* spentUntil(input.orgId, "card", file, now);
+    if (last !== undefined) return yield* spent(last);
+    yield* sql.withTransaction(setCard({ ...base, status: "wrong" }, false));
+    return { status: "wrong" as const };
   }
+  yield* clearTries(input.orgId, file);
   if (outcome._tag === "unreadable") {
     yield* sql.withTransaction(
       Effect.gen(function* () {
@@ -180,11 +186,9 @@ export const rereadStatement = Effect.fn("KinStatements.reread")(function* (inpu
   const sql = yield* SqlClient.SqlClient;
   const now = yield* Clock.currentTimeMillis;
   if (outcome._tag === "needs_password" || outcome._tag === "wrong_password") {
-    // Read again starts the file's tries over, on the card and from the chat alike.
+    // Read again asks on a fresh card; the file's wrong tries stand, there and from the chat.
     yield* sql.withTransaction(
       Effect.gen(function* () {
-        yield* sql`UPDATE kin_bank_statements SET password_attempts = 0, chat_password_attempts = 0
-          WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId}`;
         const widgetId = yield* askPassword({
           orgId: input.orgId,
           statementId: input.statementId,
@@ -193,9 +197,25 @@ export const rereadStatement = Effect.fn("KinStatements.reread")(function* (inpu
           fileName: stored.fileName,
         });
         const card = yield* passwordCard(input.orgId, widgetId);
-        if (card?.detail !== undefined && card.status === "locked") {
+        const wait = yield* spentUntil(
+          input.orgId,
+          "card",
+          {
+            statementId: input.statementId,
+            chatId: stored.chatId,
+            bytes: yield* attachmentBytes(stored.attachmentId),
+          },
+          now,
+        );
+        const detail = wait === undefined ? undefined : yield* waitLine(input.orgId, wait);
+        if (card !== undefined && card.status === "locked" && card.detail !== detail) {
           const { detail: _detail, ...rest } = card;
-          yield* updateCard(input.orgId, widgetId, rest, false);
+          yield* updateCard(
+            input.orgId,
+            widgetId,
+            detail === undefined ? rest : { ...rest, detail },
+            false,
+          );
         }
       }),
     );

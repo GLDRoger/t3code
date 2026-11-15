@@ -28,11 +28,13 @@ import * as ServerSecretStore from "../../../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../../../config.ts";
 import { KinChatHub } from "../../chat/KinChatHub.ts";
 import { KinChatRepository } from "../../chat/KinChatRepository.ts";
+import { choiceCardState } from "../../widgets/choiceCard.ts";
 import { fieldText, parseFields } from "../lists.ts";
 import { dayIn } from "../money.ts";
 import { ownerZone } from "../recordRows.ts";
 import { listDef } from "../registers.ts";
 import { bankStates, directionOf, findBankList, type KnownRow, knownRows } from "./bankList.ts";
+import type { FileOutcome } from "./statementFiles.ts";
 import { readIsolated } from "./statementReader.ts";
 import { matchRows, type RowMatch } from "./statementMatch.ts";
 import {
@@ -307,16 +309,23 @@ const ownRows = Effect.fn("KinStatements.ownRows")(function* (
  */
 export const buildReview = Effect.fn("KinStatements.buildReview")(function* (
   orgId: KinOrgId,
-  statement: Statement,
+  read: Statement,
   format: string | null,
   source: "file" | "agent",
-  statementId?: string,
+  statementId: string,
 ) {
+  const before = yield* statementRow(orgId, statementId);
+  const stored = before?.reviewJson == null ? undefined : reviewOf(before.reviewJson);
+  // Read before account identities, a statement keeps its rows' old identity on every read again.
+  const { accountId: _accountId, ...legacy } = read;
+  const statement =
+    stored !== undefined && stored.statement.accountId === undefined ? legacy : read;
   const def = yield* findBankList(orgId);
-  const known = new Map(yield* knownRows(orgId, def, statement));
+  const found = yield* knownRows(orgId, def, statement, statementId);
+  const known = new Map(found.known);
   const missing: Array<Missing> = [];
   const used = new Set<number>();
-  for (const earlier of statementId === undefined ? [] : yield* ownRows(orgId, statementId)) {
+  for (const earlier of yield* ownRows(orgId, statementId)) {
     const fits = statement.rows.filter(
       (row) =>
         !used.has(row.index) &&
@@ -348,12 +357,26 @@ export const buildReview = Effect.fn("KinStatements.buildReview")(function* (
     return had === undefined || (states !== undefined && had.state === states.open);
   });
   const results = matchRows(open, yield* candidates(orgId, statement, statementId));
+  // A possible duplicate is the owner's call: nothing is ticked or matched for it.
+  const judged = open.map((row, index): RowMatch => {
+    const like = found.possible.get(row.index);
+    return like === undefined
+      ? results[index]!
+      : {
+          group: "unmatched",
+          candidates: [],
+          suggestion: {
+            action: "ignore",
+            why: `It may already be in Bank transactions as ${like.key}, from another statement or account; ignore it if it is.`,
+          },
+        };
+  });
   return {
     statement,
     format,
     source,
     known,
-    matches: new Map(open.map((row, index) => [row.index, results[index]!])),
+    matches: new Map(open.map((row, index) => [row.index, judged[index]!])),
     ...(missing.length === 0 ? {} : { missing }),
   } satisfies Review;
 });
@@ -617,7 +640,79 @@ export const saveRead = Effect.fn("KinStatements.saveRead")(function* (input: {
     text: STATEMENT_REVIEW_TEXT,
     state: card,
   });
+  const choices = input.review.statement.currencyChoice;
+  if (choices !== undefined)
+    yield* postCard({
+      orgId: input.orgId,
+      chatId: input.chatId,
+      agentId: input.agentId,
+      widgetId: currencyCardId(input.statementId, card.hash),
+      type: "choice",
+      text: CURRENCY_QUESTION,
+      state: choiceCardState({
+        question: CURRENCY_QUESTION,
+        detail: `Kin couldn't tell from ${clamp(before?.fileName ?? "the file", 80)}. Kin's guess is ${choices[0]}.`,
+        options: choices.slice(0, 8).map((code) => ({ label: code })),
+      }),
+    });
   return card;
+});
+
+const CURRENCY_QUESTION = "Which currency is this statement in?";
+const CURRENCY_CARD = "kin-statement-currency:";
+const currencyCardId = (statementId: string, hash: string) =>
+  `${CURRENCY_CARD}${statementId}:${hash.slice(0, 12)}`;
+
+/**
+ * The owner's pick on a statement's currency card: its review, figures unchanged since every
+ * choice has the same minor units, is matched again in that currency on a fresh card.
+ */
+export const answerCurrencyCard = Effect.fn("KinStatements.answerCurrency")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly widgetId: string;
+  readonly personId: string;
+  readonly code: string;
+  readonly now: number;
+}) {
+  if (!input.widgetId.startsWith(CURRENCY_CARD)) return;
+  const statementId = input.widgetId.slice(CURRENCY_CARD.length).split(":")[0]!;
+  const stored = yield* statementRow(input.orgId, statementId);
+  if (stored === undefined) return;
+  if ((yield* ownerOf(input.orgId, stored.agentId)) !== input.personId)
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message: "Only the owner picks a statement's currency.",
+    });
+  const review = stored.reviewJson === null ? undefined : reviewOf(stored.reviewJson);
+  const choices = review?.statement.currencyChoice;
+  if (
+    review === undefined ||
+    stored.appliedAt !== null ||
+    currencyCardId(statementId, stored.reviewHash ?? "") !== input.widgetId ||
+    choices === undefined
+  )
+    return yield* new KinChatError({
+      reason: "widget_changed",
+      message: "This statement was read again or confirmed since; use its latest card.",
+    });
+  if (!choices.includes(input.code)) return yield* invalid("Pick one of the card's currencies.");
+  const { currencyChoice: _choice, ...rest } = review.statement;
+  const statement = { ...rest, currency: input.code };
+  const next = yield* buildReview(
+    input.orgId,
+    statement,
+    review.format,
+    review.source,
+    statementId,
+  );
+  yield* saveRead({
+    orgId: input.orgId,
+    statementId,
+    agentId: stored.agentId,
+    chatId: stored.chatId,
+    review: next,
+    now: input.now,
+  });
 });
 
 const PASSWORD_TEXT =
@@ -640,8 +735,7 @@ export const askPassword = Effect.fn("KinStatements.askPassword")(function* (inp
   // Asked again after its card closed, as when the statement is read again: a fresh card below.
   const again = Option.isSome(shown) && shown.value.closedAt !== null;
   const widgetId = again ? `${first}:${yield* Clock.currentTimeMillis}` : current;
-  yield* sql`UPDATE kin_bank_statements SET status = 'needs_password', password_widget_id = ${widgetId},
-      password_attempts = CASE WHEN ${again ? 1 : 0} = 1 THEN 0 ELSE password_attempts END
+  yield* sql`UPDATE kin_bank_statements SET status = 'needs_password', password_widget_id = ${widgetId}
     WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId}`;
   yield* postCard({
     orgId: input.orgId,
@@ -705,7 +799,42 @@ export const tryKeptPasswords = Effect.fn("KinStatements.tryKept")(function* (
 
 /** Reads a statement file, with a password for a locked PDF; nothing of it leaves this call. */
 export const readWith = (bytes: Uint8Array, password?: Redacted.Redacted<string>) =>
-  readIsolated(bytes, password);
+  readIsolated(bytes, password).pipe(Effect.flatMap(identified));
+
+const ACCOUNT_KEY = "kin-bank-account-key";
+/**
+ * The file's full account number as its keyed identity with its bank, so two accounts that end
+ * in the same four digits stay two; the number itself is dropped here and never kept.
+ */
+const identified = Effect.fn("KinStatements.identified")(function* (outcome: FileOutcome) {
+  if (outcome._tag !== "read" && outcome._tag !== "pages") return outcome;
+  const facts = outcome._tag === "read" ? outcome.statement : outcome.facts;
+  const number = facts.accountNumber;
+  const bank = facts.bank;
+  const accountId =
+    number == null || bank === null
+      ? null
+      : yield* (yield* ServerSecretStore.ServerSecretStore).getOrCreateRandom(ACCOUNT_KEY, 32).pipe(
+          Effect.map((key) =>
+            NodeCrypto.createHmac("sha256", key)
+              .update(`${bank.toLowerCase()}|${number}`)
+              .digest("hex")
+              .slice(0, 32),
+          ),
+          // Without the key the account stays unidentified, whose rows Kin never merges on its own.
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin couldn't key a statement's account", { cause }).pipe(
+              Effect.as(null),
+            ),
+          ),
+        );
+  if (outcome._tag === "read") {
+    const { accountNumber: _number, ...statement } = outcome.statement;
+    return { ...outcome, statement: { ...statement, accountId } };
+  }
+  const { accountNumber: _number, ...kept } = outcome.facts;
+  return { ...outcome, facts: { ...kept, accountId } };
+});
 
 export const keepPassword = Effect.fn("KinStatements.keepPassword")(function* (
   orgId: KinOrgId,

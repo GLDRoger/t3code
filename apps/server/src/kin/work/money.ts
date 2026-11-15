@@ -13,7 +13,7 @@ const CURRENCIES: ReadonlySet<string> = new Set(Intl.supportedValuesOf("currency
 export const isCurrency = (code: string) => CURRENCIES.has(code);
 
 /** Minor units per major one, as a power of ten: 2 for INR and USD, 0 for JPY, 3 for KWD. */
-const currencyDigits = (currency: string) =>
+export const currencyDigits = (currency: string) =>
   new Intl.NumberFormat("en", { style: "currency", currency }).resolvedOptions()
     .maximumFractionDigits ?? 2;
 
