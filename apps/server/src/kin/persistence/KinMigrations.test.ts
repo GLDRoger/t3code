@@ -51,6 +51,7 @@ const tableNames = [
   "kin_chat_members",
   "kin_chats",
   "kin_company_profile",
+  "kin_connection_asks",
   "kin_connection_calls",
   "kin_connection_cursors",
   "kin_connection_tools",
@@ -1338,7 +1339,7 @@ describe("Kin migrations", () => {
           [134, "ConnectionSignIn"],
           [135, "ConnectionAsks"],
         ]);
-        assert.deepStrictEqual((yield* kinHistory).slice(-61), [
+        assert.deepStrictEqual((yield* kinHistory).slice(-62), [
           { migration_id: 32, name: "WorkerEnvironment" },
           { migration_id: 33, name: "ApproverKeyConfirmations" },
           { migration_id: 34, name: "PerLeadWakeups" },

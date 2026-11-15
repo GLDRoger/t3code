@@ -4066,7 +4066,7 @@ const upgradedFromK058 = (sql: SqlClient.SqlClient) =>
       (yield* runKinMigrations()).map(([id]) => id),
       [
         59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
-        82, 83, 84, 85, 86, 87, 88, 106, 107, 110, 130, 131, 132, 133,
+        82, 83, 84, 85, 86, 87, 88, 106, 107, 110, 130, 131, 132, 133, 134, 135,
       ],
     );
   }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);

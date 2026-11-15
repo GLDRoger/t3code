@@ -13,6 +13,8 @@ import { assert, describe, it } from "@effect/vitest";
 const KIN = NodePath.resolve(import.meta.dirname, "..");
 // Reads of one entry's own amount or payments, or a screen's list that shows each row's state.
 const OWN_READS: Readonly<Record<string, number>> = {
+  // The one entry an email attaches, for the card's label.
+  "connections/Sending.ts": 1,
   // A receipt's payment; one entry's payments on its document.
   "gendocs/facts.ts": 2,
   // A receipt's payment; the receipts list a screen shows, void ones marked.

@@ -36,7 +36,7 @@ export const KIN_CONNECTIONS_COPY = {
   title: "Connections",
   rowDetail: "Outside services your agents can read from.",
   intro:
-    "Services your agents can read from, in chats only you can see. You choose each tool they may use.",
+    "Services your agents can use, in chats only you can see. You choose each tool they may use, and nothing is sent without your Confirm.",
   add: "Add connection",
   emptyTitle: "Nothing connected yet",
   emptyDetail: "Connect a service and your agents can look things up in it for you.",
