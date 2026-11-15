@@ -1426,7 +1426,7 @@ function KinChatFeed(props: {
                 : props.agentName !== null
                   ? `Say hello to ${props.agentName}.`
                   : props.direct
-                    ? // As the chat list's row says, until this phone learns the agent's name.
+                    ? // Until this phone learns the agent's name.
                       "Say hello to get started"
                     : "No messages yet"
             }

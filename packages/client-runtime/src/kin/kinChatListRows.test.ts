@@ -70,7 +70,7 @@ describe("kinChatListRows", () => {
       "empty-new",
       "empty-old",
     ]);
-    expect(rows[2]).toMatchObject({ fresh: true, preview: "Say hello to get started" });
+    expect(rows[2]).toMatchObject({ fresh: true, preview: "No messages yet" });
   });
 
   it("lists a retired agent's chats last, and a group it is in where it was", () => {
