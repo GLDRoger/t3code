@@ -328,11 +328,13 @@ export const reviewCard = (
   categories: ReadonlyArray<string>,
   selection: KinStatementSelection = defaultSelection(review),
   held: Held = NONE,
+  elsewhere: Held = NONE,
 ): KinStatementReviewCard => {
   const { statement } = review;
   const currency = statement.currency;
+  const shown = elsewhere.size === 0 ? held : new Map([...elsewhere, ...held]);
   const page = (section: KinStatementSection) =>
-    rowsOf(review, section, 0, KIN_STATEMENT_CARD_ROWS, held);
+    rowsOf(review, section, 0, KIN_STATEMENT_CARD_ROWS, shown);
   const matched = page("matched");
   const choose = page("choose");
   const unmatched = page("unmatched");
@@ -360,6 +362,11 @@ export const reviewCard = (
     hash: reviewHash(statementId, review),
     title: clamp(`${account}${period}`, 200),
     summary: [
+      ...(statement.currencyChoice === undefined
+        ? []
+        : [
+            `The file doesn't say which currency it is in; shown in ${currency}. Pick its currency on the card below: nothing is recorded until you do.`,
+          ]),
       `${statement.rows.length} rows: ${credits.length} in (${total(credits)}), ${debits.length} out (${total(debits)}).`,
       ...(statement.openingMinor === null || statement.closingMinor === null
         ? []
@@ -395,7 +402,7 @@ export const reviewCard = (
     unmatched: unmatched.unmatched,
     counts: { matched: matched.total, choose: choose.total, unmatched: unmatched.total },
     selection,
-    chosen: chosenCounts(review, selection, held),
+    chosen: chosenCounts(review, selection, shown),
     ...(heldBack === undefined ? {} : { heldBack }),
     ...(held.size === 0 ? {} : { recordedHere: held.size }),
     recorded,

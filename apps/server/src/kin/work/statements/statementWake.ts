@@ -18,6 +18,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KinChatHub } from "../../chat/KinChatHub.ts";
 import { KinChatRepository } from "../../chat/KinChatRepository.ts";
 import { KinFloor } from "../../floor/KinFloor.ts";
+import { ownerOnlyChat } from "../../lead/Audience.ts";
 import { wakeEvent } from "../../lead/ChatWake.ts";
 import { KinEventQueue } from "../../lead/KinEventQueue.ts";
 import { formatMoney } from "../money.ts";
@@ -86,8 +87,8 @@ const aboutOf = (stored: {
 
 /**
  * Posts the owner's tap on a statement card, opening the chat's floor so the lead may answer. A
- * statement with no card yet (`widgetId` null) gets the tap in its lead's own chat with the owner,
- * written for the owner alone, so it never lands where a teammate reads.
+ * chat shared since the card was posted gets none of it: the lead's own chat with the owner does.
+ * A statement with no card yet (`widgetId` null) is told only there, written for the owner alone.
  */
 export const tellLead = Effect.fn("KinStatements.tellLead")(function* (input: {
   readonly orgId: KinOrgId;
@@ -100,50 +101,58 @@ export const tellLead = Effect.fn("KinStatements.tellLead")(function* (input: {
   const hub = yield* KinChatHub;
   const floor = yield* KinFloor;
   const sql = yield* SqlClient.SqlClient;
-  const widget =
+  const found =
     input.widgetId === null
       ? undefined
       : yield* repo.getWidget({ orgId: input.orgId, widgetId: KinWidgetId.make(input.widgetId) });
-  if (widget !== undefined && Option.isNone(widget))
+  if (found !== undefined && Option.isNone(found))
     return yield* invalid("The statement's card is gone.");
-  const card = widget === undefined ? undefined : Option.getOrUndefined(widget);
+  const card = found === undefined ? undefined : Option.getOrUndefined(found);
   const [owner] = yield* sql<{
     personId: string;
     agentId: string;
-    ownerChatId: string | null;
     account: string | null;
     reviewJson: string | null;
     pagesJson: string | null;
-  }>`SELECT a.owner_person_id AS "personId", s.agent_id AS "agentId",
-      l.owner_chat_id AS "ownerChatId", s.account, s.review_json AS "reviewJson",
-      s.pages_json AS "pagesJson"
+  }>`SELECT a.owner_person_id AS "personId", s.agent_id AS "agentId", s.account,
+      s.review_json AS "reviewJson", s.pages_json AS "pagesJson"
     FROM kin_bank_statements s
     JOIN kin_agents a ON a.org_id = s.org_id AND a.agent_id = s.agent_id
-    LEFT JOIN kin_leads l ON l.org_id = s.org_id AND l.agent_id = s.agent_id
     WHERE s.org_id = ${input.orgId} AND s.statement_id = ${input.statementId}`;
   if (owner === undefined) return yield* invalid("The statement is gone.");
-  const target = card?.chatId ?? owner.ownerChatId;
-  if (target === null) return yield* invalid("The statement's lead has no chat with the owner.");
-  const chatId = KinChatId.make(target);
-  const [member] = yield* sql<{ memberId: string }>`SELECT member_id AS "memberId"
-    FROM kin_chat_members WHERE org_id = ${input.orgId} AND chat_id = ${chatId}
-      AND principal_kind = 'person' AND person_id = ${owner.personId} AND left_at IS NULL
-    ORDER BY member_id`;
+  const memberIn = (chatId: string) =>
+    sql<{ memberId: string }>`SELECT member_id AS "memberId" FROM kin_chat_members
+      WHERE org_id = ${input.orgId} AND chat_id = ${chatId} AND principal_kind = 'person'
+        AND person_id = ${owner.personId} AND left_at IS NULL ORDER BY member_id`;
+  const shared =
+    card !== undefined &&
+    !(yield* ownerOnlyChat(
+      { orgId: input.orgId, agentId: KinAgentId.make(owner.agentId) },
+      card.chatId,
+    ));
+  const [own] = yield* sql<{ chatId: string }>`SELECT owner_chat_id AS "chatId" FROM kin_leads
+    WHERE org_id = ${input.orgId} AND agent_id = ${owner.agentId}`;
+  const onCard = card !== undefined && !shared;
+  const target = onCard ? card.chatId : own?.chatId;
+  if (target === undefined || (shared && target === card?.chatId))
+    return yield* invalid("The statement's chat is shared now, and its lead has no chat with you alone.");
+  const [member] = yield* memberIn(target);
   if (member === undefined) return yield* invalid("The owner isn't in that chat.");
+  const chatId = KinChatId.make(target);
   const chat = yield* repo.getChat({ orgId: input.orgId, chatId });
   if (Option.isNone(chat)) return yield* invalid("The statement's chat is gone.");
   const now = yield* Clock.currentTimeMillis;
   const body = yield* encodeTap({
     ...(card === undefined ? {} : { widgetId: card.widgetId, revision: card.revision }),
     actionId: input.tap,
-    text: `Tapped "${LABELS[input.tap]}" on statement ${input.statementId}${aboutOf(owner)}. ${input.outcome}`.slice(
+    text: `${shared ? "The chat this statement was sent in is shared now, so this is here instead. " : ""}Tapped "${LABELS[input.tap]}" on statement ${input.statementId}${aboutOf(owner)}. ${input.outcome}`.slice(
       0,
       3_000,
     ),
   });
   const message = yield* repo.insertMessage({
     orgId: input.orgId,
-    audience: card === undefined ? "owner" : "chat",
+    audience: onCard ? "chat" : "owner",
     chatId,
     messageId: KinMessageId.make(`kin-statement-tap:${input.statementId}:${input.tap}:${now}`),
     author: {
@@ -155,8 +164,8 @@ export const tellLead = Effect.fn("KinStatements.tellLead")(function* (input: {
     body,
     intent: null,
     mentions: [],
-    replyTo: card?.messageId ?? null,
-    widgetId: card?.widgetId ?? null,
+    replyTo: onCard ? card.messageId : null,
+    widgetId: onCard ? card.widgetId : null,
     floorRunId: null,
     status: "posted",
     sentBy: null,

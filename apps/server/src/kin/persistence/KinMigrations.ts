@@ -51,7 +51,8 @@ import ChatThreads from "./migrations/K106_ChatThreads.ts";
 import Connections from "./migrations/K107_Connections.ts";
 import BudgetNotices from "./migrations/K110_BudgetNotices.ts";
 import ConnectionPause from "./migrations/K130_ConnectionPause.ts";
-import MoneyBudgets from "./migrations/K131_MoneyBudgets.ts";
+import ReceiptProposalsPasswordBudget from "./migrations/K131_ReceiptProposalsPasswordBudget.ts";
+import MoneyBudgets from "./migrations/K132_MoneyBudgets.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -183,7 +184,8 @@ const loader = Migrator.fromRecord({
   "107_Connections": Connections,
   "110_BudgetNotices": BudgetNotices,
   "130_ConnectionPause": ConnectionPause,
-  "131_MoneyBudgets": MoneyBudgets,
+  "131_ReceiptProposalsPasswordBudget": ReceiptProposalsPasswordBudget,
+  "132_MoneyBudgets": MoneyBudgets,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

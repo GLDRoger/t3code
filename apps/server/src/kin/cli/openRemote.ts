@@ -9,11 +9,27 @@ import {
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as References from "effect/References";
 import * as Schema from "effect/Schema";
-import { HttpClient, HttpClientRequest } from "effect/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { RpcClient, RpcGroup, RpcSerialization, Rpc } from "effect/rpc";
 import { Socket } from "effect/socket";
+import * as ServerConfig from "../../config.ts";
 import * as EnvironmentAuth from "../auth/EnvironmentAuthRuntime.ts";
+
+/**
+ * What `openRemote` runs on: the host's auth over the running server's database as it stands,
+ * no setup or migration of it, and fetch for the token exchange.
+ */
+export const remoteLayer = (config: ServerConfig.ServerConfig["Service"]) =>
+  Layer.merge(
+    EnvironmentAuth.layerServerCli.pipe(
+      Layer.provide(ServerConfig.layer(config)),
+      Layer.provide(Layer.succeed(References.MinimumLogLevel, "Warn")),
+    ),
+    FetchHttpClient.layer,
+  );
+
 const AccessToken = Schema.Struct({ access_token: Schema.String });
 const Ticket = Schema.Struct({ ticket: Schema.String });
 
