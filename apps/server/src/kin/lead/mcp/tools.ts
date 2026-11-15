@@ -97,6 +97,13 @@ export const KinLeadToolkit = Toolkit.make(
     parameters: Handoff.HandOffInput,
     success: Handoff.HandOffResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("kin_take_private", {
+    ...handoff,
+    description:
+      "In a group, when a person's request needs what not everyone there may see, such as money, client terms or a sensitive task: Kin posts their own message in their direct chat with you (or with agent, another agent in the group), and that turn answers them there with their own access. It carries their message only, not the group's chat. Then say in one line in the group that you're answering them directly. Once per message.",
+    parameters: Handoff.TakePrivateInput,
+    success: Handoff.TakePrivateResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_ask", {
     ...chat,
     description:

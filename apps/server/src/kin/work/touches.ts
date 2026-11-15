@@ -188,18 +188,25 @@ export const removeTouch = Effect.fn("KinTouches.remove")(function* (
   return rows.length > 0;
 });
 
+type ClientLimitKey = "client_checkin_days" | "client_cold_after_days" | "reply_owed_hours";
+
 export type ClientSense = {
   readonly sense: "client_quiet" | "client_cold" | "client_waiting_on_us";
   readonly partyId: string;
   readonly key: string;
   readonly name: string;
+  readonly sensitive: boolean;
   /** Last contact, epoch ms, or null when there has been none. */
   readonly lastAt: number | null;
   readonly days: number;
+  /** When it became true, epoch ms. */
+  readonly since: number;
   /** What makes this one episode: a new contact starts another. */
   readonly episode: string;
   /** Hours the oldest thing we owe them is past due. */
   readonly late?: number;
+  /** The playbook value it crossed, and where that value came from. */
+  readonly limit: Effect.Success<ReturnType<typeof playbookThreshold>>;
 };
 
 /**
@@ -217,10 +224,11 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
     partyId: string;
     key: string;
     title: string;
+    sensitive: number;
     createdAt: number;
     openProjects: number;
     dueAt: number | null;
-  }>`SELECT c.record_id AS "partyId", c.key, c.title, c.created_at AS "createdAt",
+  }>`SELECT c.record_id AS "partyId", c.key, c.title, c.sensitive, c.created_at AS "createdAt",
       (SELECT COUNT(*) FROM kin_records p WHERE p.org_id = c.org_id
         AND p.register_id = 'projects' AND p.party_id = c.record_id AND p.state = 'open')
         AS "openProjects",
@@ -239,27 +247,45 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
   const senses: Array<ClientSense> = [];
   for (const client of clients) {
     const lastAt = last.get(client.partyId) ?? null;
-    const days = daysSince(lastAt ?? client.createdAt, now);
+    const from = lastAt ?? client.createdAt;
+    const days = daysSince(from, now);
     const base = {
       partyId: client.partyId,
       key: client.key,
       name: client.title,
+      sensitive: client.sensitive === 1,
       lastAt,
       days,
       episode: `${client.key}:${lastAt ?? "never"}`,
     };
-    const limit = (key: "client_checkin_days" | "client_cold_after_days" | "reply_owed_hours") =>
-      playbookThreshold(orgId, key, client.partyId).pipe(Effect.map((one) => one.value));
-    if (client.openProjects > 0 && days >= (yield* limit("client_checkin_days")))
-      senses.push({ ...base, sense: "client_quiet" });
-    if (client.openProjects === 0 && days >= (yield* limit("client_cold_after_days")))
-      senses.push({ ...base, sense: "client_cold" });
-    if (client.dueAt !== null && now - client.dueAt >= (yield* limit("reply_owed_hours")) * HOUR_MS)
+    const limit = (key: ClientLimitKey) => playbookThreshold(orgId, key, client.partyId);
+    const quiet = client.openProjects > 0 ? yield* limit("client_checkin_days") : undefined;
+    if (quiet !== undefined && days >= quiet.value)
+      senses.push({
+        ...base,
+        sense: "client_quiet",
+        since: from + quiet.value * DAY_MS,
+        limit: quiet,
+      });
+    const cold = client.openProjects === 0 ? yield* limit("client_cold_after_days") : undefined;
+    if (cold !== undefined && days >= cold.value)
+      senses.push({
+        ...base,
+        sense: "client_cold",
+        since: from + cold.value * DAY_MS,
+        limit: cold,
+      });
+    if (client.dueAt === null) continue;
+    const owed = yield* limit("reply_owed_hours");
+    const since = client.dueAt + owed.value * HOUR_MS;
+    if (now >= since)
       senses.push({
         ...base,
         sense: "client_waiting_on_us",
+        since,
         late: Math.floor((now - client.dueAt) / HOUR_MS),
         episode: `${client.key}:late:${client.dueAt}`,
+        limit: owed,
       });
   }
   return senses;

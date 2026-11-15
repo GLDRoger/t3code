@@ -23,6 +23,8 @@ export function KinChatRow(props: {
   readonly accessibilityLabel: string;
   /** Unset in static previews. */
   readonly onPress?: () => void;
+  /** Who is in the company chat, under its last line. */
+  readonly roomLine?: string | null;
 }) {
   const { row } = props;
   const { view } = row;
@@ -98,6 +100,11 @@ export function KinChatRow(props: {
             </View>
           ) : null}
         </View>
+        {props.roomLine ? (
+          <Text textRole="caption" numberOfLines={1} className="text-foreground-muted">
+            {props.roomLine}
+          </Text>
+        ) : null}
       </View>
     </>
   );
