@@ -431,7 +431,10 @@ export function KinDocsList(
         }
         ListFooterComponent={
           <>
-            {items.length > 0 && docItems.length === 0 && !state.loading ? (
+            {items.length > 0 &&
+            docItems.length === 0 &&
+            playbookItems.length === 0 &&
+            !state.loading ? (
               <div className="mx-auto w-full max-w-3xl px-4 pt-4">
                 <KinWorkNotice
                   {...(searching
