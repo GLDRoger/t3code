@@ -902,6 +902,7 @@ function KinChatFeed(props: {
   const attemptedSeq = useRef(0);
   const marking = useRef(false);
   const focused = useIsFocused();
+  const navigation = useNavigation();
   const dayStartMs = useLocalDayStartMs();
   const lastRequest = useRef(0);
   const reduceMotion = useReduceMotionEnabled();
@@ -1240,6 +1241,13 @@ function KinChatFeed(props: {
             ownMarkdownStyle={ownMarkdownStyle}
             direct={props.direct}
             onPressPreview={setPreviewFile}
+            onOpenPerson={(personId) =>
+              navigation.navigate("KinProfile", {
+                environmentId: props.environmentId,
+                orgId: props.orgId,
+                personId,
+              })
+            }
             onOpenActions={
               message.status !== "deleted" && (reactable || message.body.trim().length > 0)
                 ? () => openActions(message.messageId)

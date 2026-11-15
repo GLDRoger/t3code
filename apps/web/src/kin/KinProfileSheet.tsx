@@ -1,0 +1,496 @@
+import { useAtomValue } from "@effect/atom-react";
+import {
+  KIN_DAY_LABELS,
+  KIN_PROFILE_COPY,
+  KIN_PROFILE_NAME_MAX,
+  KIN_PROFILE_SKILLS_MAX,
+  kinHoursLine,
+  kinMayEditProfile,
+  kinPersonSeed,
+  kinProfileChanges,
+  kinProfileDraft,
+  type KinProfileDraft,
+} from "@t3tools/client-runtime/kin/kinProfiles";
+import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
+import type {
+  EnvironmentId,
+  KinAttachment,
+  KinOrgId,
+  KinPersonId,
+  KinPersonProfile,
+} from "@t3tools/contracts";
+import * as Option from "effect/Option";
+import { AsyncResult, Atom } from "effect/reactivity";
+import { useRef, useState } from "react";
+
+import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
+import { Sheet, SheetDescription, SheetHeader, SheetPopup, SheetTitle } from "../components/ui/sheet";
+import { Textarea } from "../components/ui/textarea";
+import { Toggle } from "../components/ui/toggle";
+import { type ComposerImageAttachment } from "../composerDraftStore";
+import {
+  awaitAttachmentUploads,
+  getUploadedAttachments,
+  releaseAttachmentUpload,
+  startAttachmentUpload,
+} from "../lib/attachmentUploadQueue";
+import { prepareImageForAttachment } from "../lib/imageCompression";
+import { randomUUID } from "../lib/utils";
+import { appAtomRegistry } from "../rpc/atomRegistry";
+import { useAtomCommand } from "../state/use-atom-command";
+import { KinAvatar } from "./KinAvatar";
+import { kinClient } from "./kinClient";
+import { useKinProfiles } from "./kinPictures";
+import { useKinHostAt } from "./useKinHost";
+
+export interface KinProfileTarget {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly personId: KinPersonId;
+}
+
+const kinProfileSheetAtom = Atom.make<KinProfileTarget | null>(null).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("kin:profile-sheet"),
+);
+
+/** Opens someone's profile over whatever is on screen: the Team list, a chat, the chat list. */
+export const openKinProfile = (target: KinProfileTarget) =>
+  appAtomRegistry.set(kinProfileSheetAtom, target);
+
+export function KinProfileSheetHost() {
+  const target = useAtomValue(kinProfileSheetAtom);
+  if (target === null) return null;
+  return (
+    <KinProfileSheet
+      key={`${target.environmentId}:${target.personId}`}
+      target={target}
+      onClose={() => appAtomRegistry.set(kinProfileSheetAtom, null)}
+    />
+  );
+}
+
+const PICTURE_EDGE = 512;
+const PICTURE_MAX_BYTES = 2 * 1024 * 1024;
+
+/** A square-ish picture no larger than 512 px on its long edge, as a JPEG. */
+async function pictureFile(file: File): Promise<File | null> {
+  const prepared = await prepareImageForAttachment(file, PICTURE_MAX_BYTES * 4).catch(() => null);
+  if (prepared === null || !prepared.ok) return null;
+  const bitmap = await createImageBitmap(prepared.file).catch(() => null);
+  if (bitmap === null) return prepared.file.size <= PICTURE_MAX_BYTES ? prepared.file : null;
+  const scale = Math.min(1, PICTURE_EDGE / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
+  canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  const blob = await new Promise<Blob | null>((resolve) =>
+    canvas.toBlob(resolve, "image/jpeg", 0.86),
+  );
+  return blob === null || blob.size > PICTURE_MAX_BYTES
+    ? null
+    : new File([blob], "picture.jpg", { type: "image/jpeg" });
+}
+
+/** Uploads through the composer's upload path; the host claims it when the profile saves. */
+async function uploadPicture(
+  environmentId: EnvironmentId,
+  file: File,
+): Promise<{ readonly attachment: KinAttachment; readonly release: () => void } | null> {
+  const image: ComposerImageAttachment = {
+    type: "image",
+    id: randomUUID(),
+    name: file.name,
+    mimeType: file.type,
+    sizeBytes: file.size,
+    previewUrl: "",
+    file,
+  };
+  startAttachmentUpload({ environmentId, image });
+  await awaitAttachmentUploads([image.id]);
+  const [uploaded] = getUploadedAttachments({ environmentId, images: [image] }) ?? [];
+  if (uploaded === undefined || uploaded.type !== "image") {
+    releaseAttachmentUpload(image.id);
+    return null;
+  }
+  const attachment: KinAttachment = {
+    type: "image",
+    id: uploaded.id,
+    name: uploaded.name,
+    mimeType: uploaded.mimeType,
+    sizeBytes: uploaded.sizeBytes,
+  };
+  return { attachment, release: () => releaseAttachmentUpload(image.id) };
+}
+
+function KinProfileSheet(props: { readonly target: KinProfileTarget; readonly onClose: () => void }) {
+  const { environmentId, orgId, personId } = props.target;
+  const host = useKinHostAt(environmentId);
+  const viewer = kinFeedViewer(
+    host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
+    orgId,
+  ).personId;
+  const result = useKinProfiles(environmentId, orgId);
+  const held = result === null ? null : Option.getOrNull(AsyncResult.value(result));
+  const profile = held?.profiles.find((entry) => entry.personId === personId) ?? null;
+  const mayEdit = kinMayEditProfile({
+    viewerPersonId: viewer,
+    ownerPersonId: held?.ownerPersonId ?? null,
+    personId,
+  });
+  const [editing, setEditing] = useState(false);
+  const mine = viewer === personId;
+  return (
+    <Sheet
+      open
+      onOpenChange={(open) => {
+        if (!open) props.onClose();
+      }}
+    >
+      <SheetPopup side="right">
+        <SheetHeader>
+          <SheetTitle>{mine ? KIN_PROFILE_COPY.mine : (profile?.displayName ?? KIN_PROFILE_COPY.title)}</SheetTitle>
+          {held?.ownerPersonId === personId ? <SheetDescription>Runs this workspace</SheetDescription> : null}
+        </SheetHeader>
+        <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
+          {profile === null ? (
+            <p className="text-sm text-muted-foreground">
+              {result !== null && AsyncResult.isFailure(result) ? KIN_PROFILE_COPY.loadFailed : "Loading…"}
+            </p>
+          ) : editing ? (
+            <KinProfileForm
+              environmentId={environmentId}
+              orgId={orgId}
+              profile={profile}
+              onDone={() => setEditing(false)}
+            />
+          ) : (
+            <KinProfileRead profile={profile} mayEdit={mayEdit} onEdit={() => setEditing(true)} />
+          )}
+        </div>
+      </SheetPopup>
+    </Sheet>
+  );
+}
+
+function Field(props: { readonly label: string; readonly children: React.ReactNode }) {
+  return (
+    <section className="flex flex-col gap-1">
+      <h3 className="text-xs font-medium text-muted-foreground">{props.label}</h3>
+      {props.children}
+    </section>
+  );
+}
+
+function KinProfileRead(props: {
+  readonly profile: KinPersonProfile;
+  readonly mayEdit: boolean;
+  readonly onEdit: () => void;
+}) {
+  const { profile } = props;
+  const hours = kinHoursLine(profile.workHours);
+  return (
+    <>
+      <div className="flex items-center gap-4">
+        <KinAvatar avatar={{ kind: "person", seed: kinPersonSeed(profile.personId) }} size="lg" />
+        <div className="flex min-w-0 flex-col gap-1.5">
+          <p className="truncate text-lg font-medium text-foreground">{profile.displayName}</p>
+          {profile.roleTags.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{KIN_PROFILE_COPY.noTags}</p>
+          ) : (
+            <div className="flex flex-wrap gap-1">
+              {profile.roleTags.map((tag) => (
+                <Badge key={tag} variant="secondary">
+                  {tag}
+                </Badge>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+      <Field label={KIN_PROFILE_COPY.skillsLabel}>
+        <p className="whitespace-pre-wrap text-sm text-foreground">
+          {profile.skills === "" ? (
+            <span className="text-muted-foreground">{KIN_PROFILE_COPY.noSkills}</span>
+          ) : (
+            profile.skills
+          )}
+        </p>
+      </Field>
+      <Field label={KIN_PROFILE_COPY.hoursLabel}>
+        <p className="text-sm text-foreground">
+          {hours === null ? (
+            <span className="text-muted-foreground">{KIN_PROFILE_COPY.noHours}</span>
+          ) : (
+            `${hours}${profile.timeZone === null ? "" : `, ${profile.timeZone}`}`
+          )}
+        </p>
+      </Field>
+      {props.mayEdit ? (
+        <Button variant="outline" className="self-start" onClick={props.onEdit}>
+          {KIN_PROFILE_COPY.edit}
+        </Button>
+      ) : null}
+    </>
+  );
+}
+
+const timeZones = (() => {
+  try {
+    return Intl.supportedValuesOf("timeZone");
+  } catch {
+    return [];
+  }
+})();
+
+function KinProfileForm(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly profile: KinPersonProfile;
+  readonly onDone: () => void;
+}) {
+  const { environmentId, orgId, profile } = props;
+  const update = useAtomCommand(kinClient.profileUpdate, { reportFailure: false });
+  const [draft, setDraft] = useState<KinProfileDraft>(() => kinProfileDraft(profile));
+  const [busy, setBusy] = useState<"saving" | "picture" | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const picker = useRef<HTMLInputElement>(null);
+  const set = (change: Partial<KinProfileDraft>) => setDraft((current) => ({ ...current, ...change }));
+
+  const save = async (picture?: KinAttachment | null) => {
+    const changes = kinProfileChanges(profile, draft);
+    if (!changes.ok) return setProblem(changes.problem);
+    const input = {
+      orgId,
+      personId: profile.personId,
+      ...changes.changes,
+      ...(picture === undefined ? {} : { picture }),
+    };
+    if (Object.keys(input).length === 2) return props.onDone();
+    setBusy("saving");
+    setProblem(null);
+    const outcome = await update({ environmentId, input });
+    setBusy(null);
+    if (AsyncResult.isSuccess(outcome)) props.onDone();
+    else setProblem(KIN_PROFILE_COPY.failed);
+  };
+
+  const choosePicture = async (file: File | undefined) => {
+    if (file === undefined) return;
+    setBusy("picture");
+    setProblem(null);
+    const resized = await pictureFile(file);
+    const uploaded = resized === null ? null : await uploadPicture(environmentId, resized);
+    if (uploaded === null) {
+      setBusy(null);
+      return setProblem(KIN_PROFILE_COPY.pictureFailed);
+    }
+    const outcome = await update({
+      environmentId,
+      input: { orgId, personId: profile.personId, picture: uploaded.attachment },
+    });
+    setBusy(null);
+    if (!AsyncResult.isSuccess(outcome)) {
+      uploaded.release();
+      setProblem(KIN_PROFILE_COPY.pictureFailed);
+    }
+  };
+
+  return (
+    <form
+      className="flex flex-col gap-5"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void save();
+      }}
+    >
+      <div className="flex items-center gap-4">
+        <KinAvatar avatar={{ kind: "person", seed: kinPersonSeed(profile.personId) }} size="lg" />
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={busy !== null}
+            aria-busy={busy === "picture"}
+            onClick={() => picker.current?.click()}
+          >
+            {busy === "picture"
+              ? "Uploading…"
+              : profile.pictureId === null
+                ? KIN_PROFILE_COPY.pictureAdd
+                : KIN_PROFILE_COPY.pictureChange}
+          </Button>
+          {profile.pictureId === null ? null : (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={busy !== null}
+              onClick={() =>
+                void update({
+                  environmentId,
+                  input: { orgId, personId: profile.personId, picture: null },
+                })
+              }
+            >
+              {KIN_PROFILE_COPY.pictureRemove}
+            </Button>
+          )}
+          <input
+            ref={picker}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(event) => {
+              void choosePicture(event.target.files?.[0]);
+              event.target.value = "";
+            }}
+          />
+        </div>
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="kin-profile-name">{KIN_PROFILE_COPY.nameLabel}</Label>
+        <Input
+          id="kin-profile-name"
+          value={draft.displayName}
+          maxLength={KIN_PROFILE_NAME_MAX}
+          onChange={(event) => set({ displayName: event.target.value })}
+        />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="kin-profile-tags">{KIN_PROFILE_COPY.tagsLabel}</Label>
+        <Input
+          id="kin-profile-tags"
+          value={draft.tags}
+          placeholder="tech, ios"
+          onChange={(event) => set({ tags: event.target.value })}
+        />
+        <p className="text-xs text-muted-foreground">{KIN_PROFILE_COPY.tagsHint}</p>
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="kin-profile-skills">{KIN_PROFILE_COPY.skillsLabel}</Label>
+        <Textarea
+          id="kin-profile-skills"
+          value={draft.skills}
+          maxLength={KIN_PROFILE_SKILLS_MAX}
+          placeholder="SwiftUI, App Store releases"
+          onChange={(event) => set({ skills: event.target.value })}
+        />
+        <p className="text-xs text-muted-foreground">{KIN_PROFILE_COPY.skillsHint}</p>
+      </div>
+      <fieldset className="flex flex-col gap-2">
+        <legend className="mb-1.5 text-sm font-medium text-foreground">
+          {KIN_PROFILE_COPY.hoursLabel}
+        </legend>
+        <div className="flex flex-wrap gap-1">
+          {KIN_DAY_LABELS.map((label, day) => (
+            <Toggle
+              key={label}
+              size="sm"
+              variant="outline"
+              pressed={draft.days.includes(day)}
+              onPressedChange={(pressed) =>
+                set({
+                  days: pressed
+                    ? [...draft.days, day]
+                    : draft.days.filter((held) => held !== day),
+                })
+              }
+            >
+              {label}
+            </Toggle>
+          ))}
+        </div>
+        <div className="flex items-center gap-2">
+          <Input
+            type="time"
+            aria-label="Starts"
+            value={draft.start}
+            disabled={draft.days.length === 0}
+            onChange={(event) => set({ start: event.target.value })}
+          />
+          <span className="text-sm text-muted-foreground">to</span>
+          <Input
+            type="time"
+            aria-label="Ends"
+            value={draft.end}
+            disabled={draft.days.length === 0}
+            onChange={(event) => set({ end: event.target.value })}
+          />
+        </div>
+      </fieldset>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="kin-profile-zone">{KIN_PROFILE_COPY.timeZoneLabel}</Label>
+        <Input
+          id="kin-profile-zone"
+          list="kin-profile-zones"
+          value={draft.timeZone}
+          placeholder="Asia/Kolkata"
+          onChange={(event) => set({ timeZone: event.target.value })}
+        />
+        <datalist id="kin-profile-zones">
+          {timeZones.map((zone) => (
+            <option key={zone} value={zone} />
+          ))}
+        </datalist>
+      </div>
+      {problem === null ? null : (
+        <p role="alert" className="text-sm text-destructive-foreground">
+          {problem}
+        </p>
+      )}
+      <div className="flex gap-2">
+        <Button type="submit" disabled={busy !== null} aria-busy={busy === "saving"}>
+          {busy === "saving" ? KIN_PROFILE_COPY.saving : KIN_PROFILE_COPY.save}
+        </Button>
+        <Button type="button" variant="ghost" disabled={busy !== null} onClick={props.onDone}>
+          Cancel
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+/** The chat list's way to the viewer's own profile: their face, name and roles. */
+export function KinProfileEntry(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly onOpen: () => void;
+}) {
+  const { environmentId, orgId } = props;
+  const host = useKinHostAt(environmentId);
+  const viewer = kinFeedViewer(
+    host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
+    orgId,
+  ).personId;
+  const result = useKinProfiles(environmentId, orgId);
+  const held = result === null ? null : Option.getOrNull(AsyncResult.value(result));
+  const profile = held?.profiles.find((entry) => entry.personId === viewer) ?? null;
+  if (viewer === null || profile === null) return null;
+  const personId = viewer;
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        props.onOpen();
+        openKinProfile({ environmentId, orgId, personId });
+      }}
+      className="flex items-center gap-2.5 rounded-md px-2 py-2 text-start outline-none ring-ring hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset"
+    >
+      <KinAvatar avatar={{ kind: "person", seed: kinPersonSeed(personId) }} />
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="truncate text-sm font-medium text-sidebar-foreground">
+          {profile.displayName}
+        </span>
+        <span className="truncate text-xs text-sidebar-muted-foreground">
+          {profile.roleTags.length === 0 ? KIN_PROFILE_COPY.mine : profile.roleTags.join(", ")}
+        </span>
+      </span>
+    </button>
+  );
+}

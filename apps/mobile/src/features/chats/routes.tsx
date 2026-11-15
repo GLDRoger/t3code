@@ -23,6 +23,7 @@ import { KinInviteScreen } from "./KinInviteScreen";
 import { KinMakeDocumentScreen, KinReceiptApplyScreen, KinReceiptNewScreen } from "./KinInvoice";
 import { KinJoinScreen } from "./KinJoinScreen";
 import { KinTeamScreen } from "./KinTeamScreen";
+import { KinProfileEditScreen, KinProfileScreen } from "./KinProfileScreen";
 import { KinTeammateScreen } from "./KinTeammateScreen";
 import { KinWaitingScreen } from "./KinWaitingScreen";
 import { KinWorkAssignScreen } from "./KinWorkAssignScreen";
@@ -167,6 +168,16 @@ export const KIN_SCREENS = {
   KinTeammate: createNativeStackScreen({
     screen: KinTeammateScreen,
     options: sheetRoute({ detent: 0.75 }),
+  }),
+  KinProfile: createNativeStackScreen({
+    screen: KinProfileScreen,
+    linking: "kin/:environmentId/:orgId/people/:personId",
+    options: sheetRoute({ detent: 0.75 }),
+  }),
+  // A full sheet, so the keyboard never covers the field being typed in.
+  KinProfileEdit: createNativeStackScreen({
+    screen: KinProfileEditScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
   // A full sheet, so the keyboard never covers the name being typed.
   KinInvite: createNativeStackScreen({

@@ -16,8 +16,10 @@ import {
   type KinAvatarView,
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import { KinAvatar } from "./KinAvatar";
+import { openKinProfile } from "./KinProfileSheet";
 import {
   KIN_REACTION_EMOJI,
+  KinOrgId,
   type EnvironmentId,
   type KinMessageRef,
   type KinPersonId,
@@ -54,15 +56,34 @@ const OTHER_BUBBLE =
   "min-w-0 max-w-[85%] rounded-2xl bg-accent px-3.5 py-2 text-sm text-foreground dark:bg-card";
 
 /** Who and when, over the first bubble of a group. The bubble's own label reads both aloud. */
-function HeadLine(props: { readonly label: string; readonly avatar?: KinAvatarView | null }) {
-  return (
-    <p
-      aria-hidden
-      className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground tabular-nums"
-    >
+function HeadLine(props: {
+  readonly label: string;
+  readonly avatar?: KinAvatarView | null;
+  /** A person's name opens their profile. */
+  readonly onOpen?: (() => void) | undefined;
+}) {
+  const content = (
+    <>
       {props.avatar == null ? null : <KinAvatar avatar={props.avatar} size="xs" />}
       {props.label}
-    </p>
+    </>
+  );
+  const line = "flex items-center gap-1.5 px-1 text-xs text-muted-foreground tabular-nums";
+  if (props.onOpen === undefined)
+    return (
+      <p aria-hidden className={line}>
+        {content}
+      </p>
+    );
+  return (
+    <button
+      type="button"
+      onClick={props.onOpen}
+      aria-label="Open profile"
+      className={cn(line, "rounded-md outline-none ring-ring hover:text-foreground focus-visible:ring-2")}
+    >
+      {content}
+    </button>
   );
 }
 
@@ -133,6 +154,7 @@ export function KinMessageRow(props: {
 }) {
   const { row, onReact } = props;
   const { message } = row;
+  const { author } = message;
   const deleted = message.status === "deleted";
   const suggested = message.status === "suggested";
   const hasBody = !deleted && message.body.trim().length > 0;
@@ -167,6 +189,16 @@ export function KinMessageRow(props: {
             row.showAuthor && !props.direct && message.author._tag !== "system"
               ? kinAuthorAvatar(message.author)
               : null
+          }
+          onOpen={
+            author._tag === "human" && !row.own
+              ? () =>
+                  openKinProfile({
+                    environmentId: props.environmentId,
+                    orgId: KinOrgId.make(props.orgId),
+                    personId: author.personId,
+                  })
+              : undefined
           }
         />
       )}

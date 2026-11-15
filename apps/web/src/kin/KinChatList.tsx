@@ -48,6 +48,7 @@ import { ApproveOnPhone } from "./KinCards";
 import { KinMemoryEntry } from "./KinMemoryView";
 import { KinPlaceEntries } from "./KinPlaceEntries";
 import { KinTeamEntry } from "./KinTeamView";
+import { KinProfileEntry } from "./KinProfileSheet";
 import { kinNewLeadTarget, openKinLeadForm } from "./KinNewLeadButton";
 import type { KinLeadFormTarget } from "./kinLeadForm";
 import { useNowMinuteMs } from "./useKinClock";
@@ -162,6 +163,11 @@ export function KinChatList() {
             environmentId={mine.environmentId}
             orgId={mine.orgId}
             active={memoryOpen}
+            onOpen={closeSidebar}
+          />
+          <KinProfileEntry
+            environmentId={mine.environmentId}
+            orgId={mine.orgId}
             onOpen={closeSidebar}
           />
           <KinTeamEntry

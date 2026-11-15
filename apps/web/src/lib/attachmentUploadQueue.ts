@@ -1,4 +1,5 @@
 import {
+  AuthKinChatScope,
   AuthOrchestrationOperateScope,
   PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES,
   type ChatAttachment,
@@ -31,6 +32,11 @@ import { readEnvironmentScope, readPreparedConnection } from "../state/session";
 import type { AttachmentUploadState, ReadyAttachmentUpload } from "./attachmentUploadState";
 
 const MAX_UPLOADS_PER_ENVIRONMENT = 3;
+
+// A Kin teammate's chat-only session uploads too: the host lets it ask for upload URLs.
+const mayUpload = (environmentId: EnvironmentId) =>
+  readEnvironmentScope(environmentId, AuthOrchestrationOperateScope) ||
+  readEnvironmentScope(environmentId, AuthKinChatScope);
 const UPLOAD_TIMEOUT_MS = 5 * 60_000;
 
 interface AttachmentUploadStore {
@@ -123,7 +129,7 @@ function stampDraftFileUpload(job: DraftFileOwner, attachmentId: string): void {
 }
 
 function deletePendingUpload(environmentId: EnvironmentId, attachmentId: string): void {
-  if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
+  if (!mayUpload(environmentId)) return;
   deletePendingAttachmentUpload({
     registry: appAtomRegistry,
     remove: attachmentEnvironment.remove,
@@ -165,7 +171,7 @@ function uploadBytes(input: {
 }
 
 async function runUpload(job: UploadJob): Promise<void> {
-  if (!readEnvironmentScope(job.environmentId, AuthOrchestrationOperateScope)) {
+  if (!mayUpload(job.environmentId)) {
     setUploadState(job.image.id, {
       status: "failed",
       environmentId: job.environmentId,
@@ -252,7 +258,7 @@ async function runUpload(job: UploadJob): Promise<void> {
   }
 
   let lastStep = -1;
-  if (!readEnvironmentScope(job.environmentId, AuthOrchestrationOperateScope)) {
+  if (!mayUpload(job.environmentId)) {
     setUploadState(job.image.id, {
       status: "failed",
       environmentId: job.environmentId,
@@ -275,7 +281,7 @@ async function runUpload(job: UploadJob): Promise<void> {
     resolveUploadUrl: (relativeUrl) => {
       if (
         job.cancelled ||
-        !readEnvironmentScope(job.environmentId, AuthOrchestrationOperateScope)
+        !mayUpload(job.environmentId)
       ) {
         return null;
       }
@@ -302,7 +308,7 @@ async function runUpload(job: UploadJob): Promise<void> {
         },
       }),
     onMinted: (attachmentId) => {
-      if (job.cancelled && readEnvironmentScope(job.environmentId, AuthOrchestrationOperateScope)) {
+      if (job.cancelled && mayUpload(job.environmentId)) {
         return "cancel";
       }
       job.attachmentId = attachmentId;
@@ -335,7 +341,7 @@ async function runUpload(job: UploadJob): Promise<void> {
       result.step === "mint"
         ? "Upload could not start"
         : result.step === "resolve-url"
-          ? readEnvironmentScope(job.environmentId, AuthOrchestrationOperateScope)
+          ? mayUpload(job.environmentId)
             ? "Not connected"
             : "This connection cannot upload attachments."
           : result.error instanceof Error
@@ -396,7 +402,7 @@ export function startAttachmentUpload(input: {
   readonly image: ComposerImageAttachment | ComposerFileAttachment;
   readonly draftTarget?: ComposerThreadTarget;
 }): void {
-  if (!readEnvironmentScope(input.environmentId, AuthOrchestrationOperateScope)) return;
+  if (!mayUpload(input.environmentId)) return;
   const existingJob = jobsByImageId.get(input.image.id);
   if (existingJob?.environmentId === input.environmentId) {
     return;
@@ -549,7 +555,7 @@ export function retryAttachmentUpload(input: {
   readonly image: ComposerImageAttachment | ComposerFileAttachment;
   readonly draftTarget?: ComposerThreadTarget;
 }): void {
-  if (!readEnvironmentScope(input.environmentId, AuthOrchestrationOperateScope)) return;
+  if (!mayUpload(input.environmentId)) return;
   const previous = readAttachmentUpload(input.image.id);
   cancelAttachmentUpload(input.image.id);
   if (previous?.status === "failed" && previous.attachmentId) {
