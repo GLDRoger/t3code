@@ -106,6 +106,7 @@ import {
   SIGN_IN_PRESETS,
 } from "./presets.ts";
 import { resultText } from "./ResultText.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import {
   attachmentOf,
   attachmentsCurrent,
@@ -137,7 +138,7 @@ const RETURN_PREFIX = { web: "w", app: "a", "app-dev": "d", "app-preview": "p" }
 const fail = (reason: KinChatError["reason"], message: string) =>
   new KinChatError({ reason, message });
 const notFound = fail("not_found", "Kin couldn't find that connection.");
-const notOwner = fail("not_allowed", "Only the organization owner manages connections.");
+const notOwner = fail("not_allowed", "Only the owner or a co-owner manages connections.");
 const isChatError = Schema.is(KinChatError);
 const isGatewayError = Schema.is(KinGatewayError);
 const unavailable = fail("unavailable", "Kin is unavailable.");
@@ -405,10 +406,9 @@ const make = Effect.gen(function* () {
 
   const owner = Effect.fn("KinConnections.owner")(function* (people: People, orgId: KinOrgId) {
     if (!people.some((person) => person.orgId === orgId)) return yield* notFound;
-    const isOwner = people.some(
-      (person) =>
-        person.orgId === identity.owner.orgId && person.personId === identity.owner.personId,
-    );
+    const caller = people.find((person) => person.orgId === identity.owner.orgId);
+    const isOwner =
+      caller !== undefined && (yield* ownerLevel(caller.orgId, caller.personId).pipe(provideSql));
     if (identity.owner.orgId !== orgId || !isOwner) return yield* notOwner;
   });
   const touched = (orgId: KinOrgId) => refresh.touch(orgId, "connections");

@@ -20,6 +20,7 @@ import {
   kinTeamEntrySummary,
   kinTeamView,
   kinTeammateActions,
+  kinTeammateKindEditable,
   type KinTeamEdits,
   type KinTeamList,
 } from "./kinTeam.ts";
@@ -78,6 +79,31 @@ describe("kinTeamView", () => {
     // An unopened link is still a way in, so it can be taken away.
     expect(kinTeammateActions(noAccess!)).toMatchObject({ remove: true });
   });
+
+  it("shows the owner and co-owners, and lets only the owner act on a co-owner or change a kind", () => {
+    const kinds: KinTeamList = {
+      ...list,
+      people: [
+        { ...person(owner, "Olu"), access: "owner" },
+        { ...person(mira, "Mira"), access: "co_owner" },
+      ],
+    };
+    // Mira, a co-owner, looking: the owner is shown as the owner, with nothing to do there.
+    const [you, theOwner] = kinTeamView(kinds, KIN_TEAM_NO_EDITS, mira);
+    expect([you?.detail, theOwner?.state, theOwner?.detail]).toEqual(["You", "owner", "Owner"]);
+    expect(kinTeammateActions(theOwner!, "co_owner")).toEqual({
+      link: null,
+      cancel: null,
+      remove: false,
+    });
+    expect(kinTeammateKindEditable(theOwner!, "owner")).toBe(false);
+    const [, coOwner] = kinTeamView(kinds, KIN_TEAM_NO_EDITS, owner);
+    expect(coOwner?.detail).toBe("Co-owner");
+    expect(kinTeammateActions(coOwner!, "co_owner").remove).toBe(false);
+    expect(kinTeammateActions(coOwner!, "owner").remove).toBe(true);
+    expect(kinTeammateKindEditable(coOwner!, "owner")).toBe(true);
+    expect(kinTeammateKindEditable(coOwner!, "co_owner")).toBe(false);
+  });
 });
 
 describe("kinInviteLink", () => {
@@ -128,6 +154,10 @@ function harness(answers: {
     removeAccess: async (input) => {
       calls.push(`remove:${input.personId}`);
       return (answers.remove ?? (() => ok<unknown>({ revoked: true })))();
+    },
+    setAccess: async (input) => {
+      calls.push(`access:${input.personId}:${input.access}`);
+      return ok<unknown>(input);
     },
     update: (change) => {
       edits = change(edits);

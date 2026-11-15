@@ -1,7 +1,7 @@
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
-import { AuthSettingsWriteScope, EnvironmentAuthorizationError } from "./auth.ts";
+import { EnvironmentAuthorizationError, AuthKinChatScope } from "./auth.ts";
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinChatError, KinOrgId, KinTrimmedText } from "./kinChat.ts";
 
@@ -54,7 +54,7 @@ export const KinVisualRpcs = [
 ] as const;
 
 export const KIN_VISUAL_RPC_SCOPES = {
-  "kin.visuals.hosts.list": AuthSettingsWriteScope,
-  "kin.visuals.hosts.allow": AuthSettingsWriteScope,
-  "kin.visuals.hosts.remove": AuthSettingsWriteScope,
+  "kin.visuals.hosts.list": AuthKinChatScope,
+  "kin.visuals.hosts.allow": AuthKinChatScope,
+  "kin.visuals.hosts.remove": AuthKinChatScope,
 } as const;

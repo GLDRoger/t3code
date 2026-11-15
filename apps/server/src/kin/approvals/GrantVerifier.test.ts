@@ -111,7 +111,7 @@ function harness() {
   // Runs inside check 9's read, between check 6 and check 10: a concurrent writer's slot.
   const race: { during?: Effect.Effect<unknown> } = {};
   const roles = Layer.succeed(KinOrgRoles, {
-    isOwner: (ref) => Effect.succeed(ref.orgId === orgId && ref.personId === owner),
+    isOwnerLevel: (ref) => Effect.succeed(ref.orgId === orgId && ref.personId === owner),
   });
   const live = Layer.succeed(KinLiveTargets, {
     resolve: ({ target }) =>
@@ -1389,12 +1389,12 @@ describe("GrantVerifier", () => {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`INSERT INTO kin_orgs (org_id, name, created_at)
         VALUES ('kin-default', 'Kin', '2026-11-07T00:00:00.000Z')`;
-      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
-        VALUES (${BOOTSTRAP_OWNER}, 'kin-default', 'owner', 'Owner', '2026-11-07T00:00:00.000Z'),
-          ('h_member', 'kin-default', 'priya', 'Priya', '2026-11-07T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+        VALUES (${BOOTSTRAP_OWNER}, 'kin-default', 'owner', 'Owner', '2026-11-07T00:00:00.000Z', 'owner'),
+          ('h_member', 'kin-default', 'priya', 'Priya', '2026-11-07T00:00:00.000Z', 'member')`;
       const roles = yield* KinOrgRoles;
       const ask = (org: string, person: string) =>
-        roles.isOwner({
+        roles.isOwnerLevel({
           orgId: decodeOrgId(org),
           personId: decodePersonId(person),
         });

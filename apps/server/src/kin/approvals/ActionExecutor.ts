@@ -317,7 +317,7 @@ export const make = Effect.gen(function* () {
         .pipe(Effect.mapError(() => new KinExecError({ reason: "unavailable", detail: "keys" })));
       if (!usable) return yield* new KinExecError({ reason: "revoked_key" });
       const owner = yield* roles
-        .isOwner({ orgId: action.orgId, personId: grant.approverHumanId })
+        .isOwnerLevel({ orgId: action.orgId, personId: grant.approverHumanId })
         .pipe(Effect.mapError(() => new KinExecError({ reason: "unavailable", detail: "roles" })));
       if (!owner) return yield* new KinExecError({ reason: "not_owner" });
       yield* handler.precheck(action);
@@ -391,7 +391,7 @@ export const make = Effect.gen(function* () {
     if (yield* paused(action.orgId)) return yield* held(action, "paused");
     // 2. The approver still meets the requirement (the claim re-checks key and grant expiry).
     const owner = yield* roles
-      .isOwner({ orgId: action.orgId, personId: grant.approverHumanId })
+      .isOwnerLevel({ orgId: action.orgId, personId: grant.approverHumanId })
       .pipe(Effect.option);
     if (Option.isNone(owner)) return yield* held(action, "roles_unavailable");
     if (!owner.value) return yield* voided("approver_not_owner");

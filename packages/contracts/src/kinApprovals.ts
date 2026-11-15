@@ -2,11 +2,9 @@ import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 
 import {
-  AuthAccessWriteScope,
-  AuthOrchestrationOperateScope,
-  AuthOrchestrationReadScope,
   EnvironmentAuthorizationError,
   type AuthEnvironmentScope,
+  AuthKinChatScope,
 } from "./auth.ts";
 import {
   AuthSessionId,
@@ -656,17 +654,17 @@ export const KinApprovalRpcs = [
 
 /** The outer gate only; person, key and signature checks are the real ones. */
 export const KIN_APPROVAL_RPC_SCOPES = {
-  [KIN_APPROVAL_WS_METHODS.list]: AuthOrchestrationReadScope,
-  [KIN_APPROVAL_WS_METHODS.get]: AuthOrchestrationReadScope,
-  [KIN_APPROVAL_WS_METHODS.challenge]: AuthOrchestrationOperateScope,
-  [KIN_APPROVAL_WS_METHODS.submitGrant]: AuthOrchestrationOperateScope,
-  [KIN_APPROVAL_WS_METHODS.reject]: AuthOrchestrationOperateScope,
-  [KIN_APPROVAL_WS_METHODS.keyChallenge]: AuthAccessWriteScope,
-  [KIN_APPROVAL_WS_METHODS.registerKey]: AuthAccessWriteScope,
-  [KIN_APPROVAL_WS_METHODS.listKeys]: AuthAccessWriteScope,
-  [KIN_APPROVAL_WS_METHODS.revokeKey]: AuthAccessWriteScope,
-  [KIN_APPROVAL_WS_METHODS.auditList]: AuthAccessWriteScope,
-  [KIN_APPROVAL_WS_METHODS.auditVerify]: AuthAccessWriteScope,
+  [KIN_APPROVAL_WS_METHODS.list]: AuthKinChatScope,
+  [KIN_APPROVAL_WS_METHODS.get]: AuthKinChatScope,
+  [KIN_APPROVAL_WS_METHODS.challenge]: AuthKinChatScope,
+  [KIN_APPROVAL_WS_METHODS.submitGrant]: AuthKinChatScope,
+  [KIN_APPROVAL_WS_METHODS.reject]: AuthKinChatScope,
+  [KIN_APPROVAL_WS_METHODS.keyChallenge]: AuthKinChatScope,
+  [KIN_APPROVAL_WS_METHODS.registerKey]: AuthKinChatScope,
+  [KIN_APPROVAL_WS_METHODS.listKeys]: AuthKinChatScope,
+  [KIN_APPROVAL_WS_METHODS.revokeKey]: AuthKinChatScope,
+  [KIN_APPROVAL_WS_METHODS.auditList]: AuthKinChatScope,
+  [KIN_APPROVAL_WS_METHODS.auditVerify]: AuthKinChatScope,
 } as const satisfies Record<
   (typeof KIN_APPROVAL_WS_METHODS)[keyof typeof KIN_APPROVAL_WS_METHODS],
   AuthEnvironmentScope

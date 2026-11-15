@@ -179,6 +179,7 @@ describe("KinChatRepository", () => {
           handle: "owner",
           displayName: "Owner",
           githubLogin: null,
+          access: "member" as const,
         };
         assert.deepStrictEqual(
           Option.getOrThrow(yield* repo.getPerson({ orgId, personId })),
