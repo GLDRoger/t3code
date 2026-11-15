@@ -88,16 +88,16 @@ const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
 const decodeKey = Schema.decodeUnknownOption(KinRecordKey);
 
-function targetOf(params: { readonly environmentId: string; readonly orgId: string }) {
+export function targetOf(params: { readonly environmentId: string; readonly orgId: string }) {
   const environmentId = Option.getOrNull(decodeEnvironmentId(params.environmentId));
   const orgId = Option.getOrNull(decodeOrgId(params.orgId));
   return environmentId === null || orgId === null ? null : { environmentId, orgId };
 }
 
-const keyParam = (key: string | undefined) => Option.getOrNull(decodeKey(key));
+export const keyParam = (key: string | undefined) => Option.getOrNull(decodeKey(key));
 
 /** Everything a form shows before it has what it edits. */
-function FormMessage(props: { readonly title: string; readonly children: React.ReactNode }) {
+export function FormMessage(props: { readonly title: string; readonly children: React.ReactNode }) {
   const navigation = useNavigation();
   return (
     <KinWorkFrame title={props.title} onClose={() => navigation.goBack()}>
@@ -106,7 +106,7 @@ function FormMessage(props: { readonly title: string; readonly children: React.R
   );
 }
 
-const NO_LINK = (
+export const NO_LINK = (
   <EmptyState
     variant="plain"
     title="This link doesn't open anything"
@@ -138,7 +138,7 @@ function waiting(
   );
 }
 
-function FormShell(props: {
+export function FormShell(props: {
   readonly title: string;
   readonly submit: string;
   readonly saving: boolean;

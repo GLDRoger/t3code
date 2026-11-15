@@ -27,6 +27,7 @@ export function KinDock(props: KinDockProps) {
         compact={compact}
         reserveComposeSpace={false}
         showsLabels
+        {...(props.badges === undefined ? {} : { badges: props.badges })}
         tabs={props.tabs}
         selectedTab={props.selectedTab}
         onSelect={props.onSelect}

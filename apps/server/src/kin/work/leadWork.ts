@@ -33,6 +33,14 @@ import { resolveLead } from "../lead/LeadMemory.ts";
 import { inCompanyChat, toolAdmitted } from "../lead/SharedTools.ts";
 import { partyPage, projectDetail } from "./crm.ts";
 import { KinRecords, type Patch, type TotalsBy, type Writer } from "./KinRecords.ts";
+import {
+  GOAL_INPUTS,
+  GoalInputs,
+  goalFields,
+  goalLine,
+  goalsNow,
+  isMoneyMeasure,
+} from "./goals.ts";
 import { FieldInputs, turnFiles, typedFields } from "./leadFields.ts";
 import {
   OWNERS_SPINE,
@@ -94,7 +102,7 @@ const Title = TrimmedNonEmptyString.check(Schema.isMaxLength(280));
 const Notes = Schema.String.check(Schema.isMaxLength(4_000));
 const List = KinListId.annotate({
   description:
-    "work (default), clients, contacts, projects, or a list defined with list_define, such as expenses, invoices or dates.",
+    "work (default), clients, contacts, projects, milestones, goals, or a list defined with list_define, such as expenses, invoices or dates.",
 });
 const Category = TrimmedNonEmptyString.check(Schema.isMaxLength(60)).annotate({
   description: "Work: task, issue or obligation. A defined list: one of its categories.",
@@ -226,6 +234,8 @@ export const QueryResult = Schema.Struct({
 export const GetInput = Schema.Struct({ key: KinRecordKey });
 export const GetResult = Schema.Struct({
   ...Row.fields,
+  /** A goal's progress, counted now. */
+  progress: Schema.optional(Schema.String),
   notes: Schema.String,
   assignedBy: Schema.optional(Schema.String),
   links: Schema.Array(
@@ -316,6 +326,7 @@ const CreateRow = Schema.Struct({
   sensitive: Schema.optional(Schema.Literal(true)),
   suggested: Schema.optional(Schema.Boolean),
   ...SpineInputs,
+  ...GoalInputs,
 });
 export const CreateInput = Schema.Struct({
   sourceEventId: TrimmedNonEmptyString,
@@ -366,6 +377,7 @@ export const UpdateInput = Schema.Struct({
   confirmed: Schema.optional(Schema.Boolean),
   expectedRev: Schema.optional(Schema.Int),
   ...SpineInputs,
+  ...GoalInputs,
 });
 export const UpdateResult = Schema.Struct({
   told: Told,
@@ -659,6 +671,17 @@ const viewFor = Effect.fn("KinWorkTools.view")(function* (
   } satisfies Shown;
 });
 
+/** A goal's own fields as an agent reads them; its progress is `record_get`'s. */
+const goalShown = (fields: ReturnType<typeof parseFields>) => {
+  const shown: Record<string, string> = {};
+  for (const key of ["measure", "target", "current", "unit", "startsOn"]) {
+    const value = fields[key];
+    if (typeof value === "string") shown[key] = value;
+    else if (value !== undefined && isMoney(value)) shown[key] = formatMoney(value);
+  }
+  return Object.keys(shown).length === 0 ? {} : { fields: shown };
+};
+
 const rowFor = (view: Shown, row: RecordRow, now: number) => {
   const { name } = view;
   const record = toRecord(row, now);
@@ -711,6 +734,7 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
     ...(record.repeat === undefined ? {} : { repeat: shownRepeatRule(record.repeat) }),
     ...shownFields(def, row, name, view.keys),
     ...(list === "work" || list === "projects" ? spineShown(row, name) : {}),
+    ...(list === "goals" ? goalShown(fields) : {}),
     ...marksOf(view.lists, row),
     rev: record.rev,
   } as typeof Row.Type;
@@ -841,6 +865,7 @@ type View = NonNullable<Effect.Success<ReturnType<typeof viewOf>>>;
 /** What only the owner sets in Work: clients, projects, money, list fields, labels, holders. */
 const OWNERS_INPUTS = [
   ...OWNERS_SPINE,
+  ...GOAL_INPUTS,
   "client",
   "project",
   "groupBy",
@@ -1130,8 +1155,13 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
   const page = list === "clients" ? yield* partyPage(row, now, 0) : undefined;
   const project = list === "projects" ? yield* projectDetail(row, now) : undefined;
   const specChanged = list === "work" && (yield* taskSpecChanged(row));
+  const goal =
+    list === "goals"
+      ? (yield* goalsNow(lead.orgId, now, { money: true })).goals.find((one) => one.key === row.key)
+      : undefined;
   return {
     ...rowFor(view, row, now),
+    ...(goal === undefined ? {} : { progress: goalLine(goal) }),
     ...(specChanged ? { specChanged: true as const } : {}),
     ...(project === undefined ? {} : { plan: yield* projectRead(row, now, name) }),
     ...(page === undefined
@@ -1268,7 +1298,10 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
           ? `${list}|${partyId ?? ""}|${titleKey(row.title)}`
           : `${list}|${partyId ?? ""}|${titleKey(row.title)}|${row.amount ?? ""}|${row.date ?? ""}|${row.due ?? ""}`;
     const originKey = `lead:${lead.agentId}:${input.sourceEventId}:${retryKey(rowKey)}`;
-    const fields = { ...fieldsFrom(row), ...spineSet };
+    if (list === "goals" && (row.measure === undefined || row.target === undefined))
+      return yield* invalid("A goal needs its measure and target, and due as its date.");
+    const goal = yield* goalFields(row);
+    const fields = { ...fieldsFrom(row), ...spineSet, ...goal };
     const inProject = projectId !== undefined ? projectId : spine.projectId;
     const { row: stored, created } = yield* records.create(lead.orgId, writer, {
       // A teammate files only Work, which is the default.
@@ -1279,7 +1312,11 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
       ...(partyId === undefined ? {} : { partyId }),
       ...(inProject === undefined ? {} : { projectId: inProject }),
       ...(row.repo === undefined ? {} : { repo: row.repo }),
-      ...(row.sensitive === undefined && !marked ? {} : { sensitive: true }),
+      ...(row.sensitive === undefined &&
+      !marked &&
+      !(row.measure !== undefined && isMoneyMeasure(row.measure))
+        ? {}
+        : { sensitive: true }),
       ...(Object.keys(fields).length === 0 ? {} : { fields }),
       ...(row.state === undefined ? {} : { state: row.state }),
       ...(waitingOn === undefined ? {} : { waitingOn }),
@@ -1443,7 +1480,11 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, input: typeof Update
     input,
     projectId === undefined ? before.projectId : projectId,
   );
-  const fields = { ...fieldsFrom(input), ...spine.fields };
+  const fields = {
+    ...fieldsFrom(input),
+    ...spine.fields,
+    ...(yield* goalFields(input, parseFields(before.fieldsJson))),
+  };
   const money = yield* moneyPatch(lead, def, input);
   const inProject = projectId !== undefined ? projectId : spine.projectId;
   const written: Patch = {

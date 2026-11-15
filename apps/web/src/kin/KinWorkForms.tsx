@@ -68,7 +68,7 @@ import {
 
 const COPY = KIN_WORK_FORM_COPY;
 
-function FormShell(props: {
+export function FormShell(props: {
   readonly title: string;
   readonly submit: string;
   readonly saving: boolean;
@@ -127,7 +127,7 @@ function FormShell(props: {
 }
 
 /** One labelled field, with what someone else changed it to while the owner was typing. */
-function Field(props: {
+export function Field(props: {
   readonly id: string;
   readonly label: string;
   readonly isPrivate?: boolean;
