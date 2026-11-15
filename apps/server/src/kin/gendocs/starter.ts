@@ -1,4 +1,4 @@
-/** The files a new workspace starts with, as they are copied into it: its README and four recipes. */
+/** The files a new workspace starts with, as they are copied into it: its README and its recipes. */
 export const STARTER_FILES: Readonly<Record<string, string>> = {
   "README.md": String.raw`# Kin workspace
 
@@ -371,6 +371,253 @@ endorsements and the footer) is at the top of template.typ.
   "lines": [{ "description": "Advisory", "sac": null, "quantity": "3", "unit": "days", "rate": { "minor": 3333300, "currency": "INR" } }],
   "gstRate": null,
   "exportUnderLut": null,
+  "notes": null
+}
+`,
+  "recipes/quotation/RECIPE.md": String.raw`---
+name: quotation
+title: Quotation
+description: A quotation or estimate for one quotes entry as a PDF, numbered in its own series, valid until the entry's due day, with GST worked out as an invoice would charge it. Not a tax invoice.
+kind: typst
+list: quotes
+numbered: true
+sensitive: true
+default: true
+inputs:
+  quoteKey: { type: text, from: entry.key }
+  title: { type: text, from: entry.title }
+  total: { type: money, from: entry.amount, required: false, description: "The entry's amount, tax included" }
+  taxRecorded: { type: money, from: entry.tax, required: false }
+  datedOn: { type: date, from: entry.date, required: false }
+  validUntil: { type: date, from: entry.due, required: false }
+  number: { type: text, from: system.number, required: false }
+  draft: { type: boolean, from: system.draft }
+  today: { type: date, from: system.today }
+  client: { type: text, from: client.name }
+  clientAddress: { type: text, from: client.address, required: false }
+  clientGstin: { type: text, from: client.gstin, required: false }
+  clientPlace: { type: text, from: client.placeOfSupply, required: false }
+  supplier: { type: text, from: company.legalName }
+  supplierTrade: { type: text, from: company.tradeName, required: false }
+  supplierAddress: { type: text, from: company.address, required: false }
+  supplierGstin: { type: text, from: company.gstin, required: false }
+  supplierPlace: { type: text, from: company.placeOfSupply, required: false }
+  sac: { type: text, from: company.sac, required: false }
+  logo: { type: text, from: company.logo, required: false }
+  brandPrimary: { type: text, from: company.brand.primaryColor, required: false }
+  brandSecondary: { type: text, from: company.brand.secondaryColor, required: false }
+  brandFont: { type: text, from: company.brand.font, required: false }
+  brandFooter: { type: text, from: company.brand.footer, required: false }
+  billTo: { type: text, required: false, description: "An address for this quote only, when the owner gives one other than the client's" }
+  lines:
+    type: table
+    required: false
+    description: "What is offered, one row each, as the owner said it: quantity times rate is the value before tax; sac is the line's SAC or HSN code when the owner gave one. Leave out to quote the entry's amount as one line."
+    columns: { description: text, sac: text, quantity: decimal, unit: text, rate: money }
+  gstRate: { type: decimal, required: false, description: "GST percent; 18 unless the owner said otherwise" }
+  exportUnderLut: { type: boolean, required: false, description: "For an export: false only when the owner said IGST will be paid on it" }
+  terms: { type: text, required: false, description: "Payment terms or conditions, as the owner gave them" }
+  notes: { type: text, required: false }
+computed:
+  gstPercent: { first: [gstRate, "18"] }
+  items:
+    each:
+      rows: lines
+      set:
+        quantity: { first: [quantity, "1"] }
+        amount: { times: [rate, quantity] }
+  linesTaxable: { sum: items.amount }
+  tax:
+    gst:
+      taxable: linesTaxable
+      total: total
+      recordedTax: taxRecorded
+      rate: gstPercent
+      supplierGstin: supplierGstin
+      supplierPlace: supplierPlace
+      clientGstin: clientGstin
+      clientPlace: clientPlace
+      exportUnderLut: exportUnderLut
+  words: { words: tax.total }
+  datedDay: { first: [datedOn, today] }
+  datedText: { date: [datedDay, "D MMM YYYY"] }
+  validText: { date: [validUntil, "D MMM YYYY"] }
+  billedAt: { first: [billTo, clientAddress] }
+outputs: [quotation.pdf]
+---
+
+One quotation PDF for a quotes entry: what is offered line by line, the GST it will carry (CGST and
+SGST in the same state, IGST between states, none for an export under a letter of undertaking),
+the total in figures and words, and the day it is valid until (the entry's due day). Kin works out
+every figure. A draft (no number yet) carries a DRAFT mark; issuing it (kin_issue) numbers it in
+the quotes series and records its total.
+
+To invoice it once the client agrees, make the invoice with from: the quote's key. Kin makes a
+draft invoice for the same client with the same lines.
+
+It is never a tax invoice: the heading says Quotation and nothing on it claims tax was charged.
+The wording the owner may change is at the top of template.typ.
+`,
+  "recipes/quotation/template.typ": String.raw`// Lays out what Kin computed; no arithmetic here.
+#let d = json("/inputs.json")
+#let heading-text = "Quotation"
+#let footer-text = "This is a quotation, not a tax invoice. Prices hold until the date above."
+
+#let ink = rgb("#1f2933")
+#let soft = rgb("#6b7280")
+#let accent = if d.brandPrimary != none { rgb(d.brandPrimary) } else { ink }
+#let rule = if d.brandSecondary != none { rgb(d.brandSecondary) } else { rgb("#d1d5db") }
+#let body-font = if d.brandFont != none { (d.brandFont, "Libertinus Serif") } else { "Libertinus Serif" }
+#let t = d.tax
+#let draft = d.draft != false or d.number == none
+#let lines = if d.items != none and d.items.len() > 0 {
+  d.items.map(l => (
+    str(l.n),
+    l.description,
+    if l.sac != none { l.sac } else if d.sac != none { d.sac } else { "" },
+    if l.unit != none { l.quantity + " " + l.unit } else { l.quantity },
+    l.rate.text,
+    l.amount.text,
+  ))
+} else {
+  ((
+    "1",
+    d.title,
+    if d.sac != none { d.sac } else { "" },
+    "1",
+    t.taxable.text,
+    t.taxable.text,
+  ),)
+}
+
+#set document(title: heading-text + if d.number != none { " " + d.number } else { "" })
+#set page(
+  paper: "a4",
+  margin: (x: 18mm, top: 18mm, bottom: 20mm),
+  background: if draft {
+    rotate(-35deg, text(size: 96pt, fill: rgb(220, 38, 38, 28), weight: "bold")[DRAFT])
+  },
+  footer: align(center, text(size: 7.5pt, fill: soft)[
+    #if d.brandFooter != none [#d.brandFooter \ ]
+    #footer-text
+  ]),
+)
+#set text(font: body-font, size: 9.5pt, fill: ink)
+#set par(leading: 0.55em)
+
+#let label(body) = text(size: 7.5pt, fill: soft, upper(body))
+
+#grid(
+  columns: (1fr, auto),
+  align: (left + top, right + top),
+  [
+    #if d.logo != none [#image(d.logo, height: 14mm) \ #v(1mm)]
+    #text(size: 15pt, weight: "bold", d.supplier)
+    #if d.supplierTrade != none [ \ #text(fill: soft, d.supplierTrade)]
+    #if d.supplierAddress != none [ \ #d.supplierAddress]
+    #if d.supplierGstin != none [ \ GSTIN #d.supplierGstin]
+  ],
+  [
+    #text(size: 17pt, weight: "bold", fill: accent, heading-text)
+    \ #if d.number != none and not draft [No. #d.number] else [#text(fill: rgb("#dc2626"), weight: "bold")[DRAFT · not numbered]]
+    \ Date: #d.datedText
+    #if d.validText != none [ \ Valid until: #text(weight: "bold", d.validText)]
+  ],
+)
+
+#v(6mm)
+#line(length: 100%, stroke: 0.8pt + accent)
+#v(3mm)
+
+#grid(
+  columns: (1fr, 1fr),
+  gutter: 8mm,
+  [
+    #label[Prepared for] \
+    #text(weight: "bold", d.client)
+    #if d.billedAt != none [ \ #d.billedAt]
+    #if d.clientGstin != none [ \ GSTIN #d.clientGstin]
+  ],
+  [
+    #if t.placeOfSupply != none [#label[Place of supply] \ #t.placeOfSupply]
+    #if t.country != none [#label[Country] \ #t.country]
+  ],
+)
+
+#v(6mm)
+
+#table(
+  columns: (auto, 1fr, auto, auto, auto, auto),
+  stroke: (x, y) => if y == 0 { (bottom: 0.8pt + accent) } else { (bottom: 0.4pt + rule) },
+  inset: (x: 5pt, y: 6pt),
+  align: (x, y) => if x >= 3 { right } else { left },
+  table.header(..("#", "Description", "HSN/SAC", "Qty", "Rate", "Value").map(h => text(weight: "bold", h))),
+  ..lines.flatten(),
+)
+
+#v(2mm)
+#align(right, box(width: 72mm, table(
+  columns: (1fr, auto),
+  stroke: none,
+  inset: (x: 5pt, y: 4pt),
+  align: (left, right),
+  [Value before tax], [#t.taxable.text],
+  ..t.taxes.map(x => ([#x.name at #x.rate%], [#x.amount.text])).flatten(),
+  table.hline(stroke: 0.8pt + accent),
+  text(weight: "bold")[#if t.taxes.len() > 0 [Total with GST] else [Total]], text(weight: "bold", t.total.text),
+)))
+
+#v(2mm)
+#label[Amount in words] \
+#d.words
+
+#if t.exportUnderLut [
+  #v(3mm)
+  #text(fill: soft)[An export: invoiced under a letter of undertaking, without IGST.]
+]
+
+#if d.terms != none [
+  #v(5mm)
+  #label[Terms] \
+  #d.terms
+]
+
+#if d.notes != none [
+  #v(4mm)
+  #label[Notes] \
+  #d.notes
+]
+`,
+  "recipes/quotation/sample.json": String.raw`{
+  "quoteKey": "QT-2",
+  "title": "Website refresh",
+  "total": null,
+  "taxRecorded": null,
+  "datedOn": "2026-11-02",
+  "validUntil": "2026-12-02",
+  "number": null,
+  "draft": true,
+  "today": "2026-11-02",
+  "client": "Example Client Pvt Ltd",
+  "clientAddress": "12 Sample Road, Pune 411001",
+  "clientGstin": "27BBBBB2222B1Z5",
+  "clientPlace": null,
+  "supplier": "Sample Studio Pvt Ltd",
+  "supplierTrade": null,
+  "supplierAddress": "4 Example Lane, Bengaluru 560001",
+  "supplierGstin": "29AAAAA1111A1Z5",
+  "supplierPlace": "Karnataka",
+  "sac": "998314",
+  "logo": "logo",
+  "brandPrimary": null,
+  "brandSecondary": null,
+  "brandFont": null,
+  "brandFooter": null,
+  "billTo": null,
+  "lines": [{ "description": "Design", "sac": "998391", "quantity": "5", "unit": "days", "rate": { "minor": 2000000, "currency": "INR" } }],
+  "gstRate": null,
+  "exportUnderLut": null,
+  "terms": "50% on acceptance, the rest on delivery.",
   "notes": null
 }
 `,

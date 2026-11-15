@@ -85,6 +85,10 @@ export const DocumentInput = Schema.Struct({
   entry: Schema.optional(KinRecordKey).annotate({
     description: "The entry it is for, such as INV-12, when the recipe reads one.",
   }),
+  from: Schema.optional(KinRecordKey).annotate({
+    description:
+      "A quote, such as QT-3, to invoice: with the invoice recipe and no entry, Kin makes a draft invoice for its client with the same lines, then its document.",
+  }),
   inputs: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)).annotate({
     description:
       "Only the recipe's inputs that come from you, by name, as the owner said them. Kin reads every stored figure and works out every sum itself.",
@@ -120,6 +124,8 @@ export const DocumentResult = Schema.Struct({
     Schema.Struct({ key: Schema.String, title: Schema.String, version: Schema.Number }),
   ),
   sensitive: Schema.optional(Schema.Literal(true)),
+  /** The draft a quote was invoiced as, made in the call. */
+  entry: Schema.optional(Schema.String),
 });
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });

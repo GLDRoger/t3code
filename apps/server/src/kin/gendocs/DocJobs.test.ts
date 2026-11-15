@@ -805,6 +805,73 @@ describe("recipe documents", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("quote in a series of their own, and invoice a quote with its lines", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const records = yield* KinRecords.KinRecords;
+      const asked = yield* turn(10, "Track quotes");
+      const proposed = yield* LeadMoney.define(scope, { sourceEventId: asked, template: "quotes" });
+      const yes = yield* turn(11, "Yes. Quote Invented Acme for the design work, valid a month");
+      yield* LeadMoney.define(scope, { sourceEventId: yes, proposal: proposed.proposal! });
+      yield* LeadWork.create(scope, {
+        sourceEventId: yes,
+        records: [
+          { list: "quotes", title: "Design work", client: "Invented Acme", due: "2026-12-12" },
+        ],
+      });
+      const lines = [{ description: "Design", sac: "998391", quantity: "2", rate: "₹1,00,000" }];
+      const quote = yield* LeadDocuments.make(scope, {
+        title: "Quotation QT-1",
+        recipe: "quotation",
+        entry: "QT-1",
+        inputs: { lines, terms: "Half on acceptance" },
+        sourceEventId: yes,
+      });
+      assert.deepStrictEqual(
+        [quote.draft, latestData().tax.total.text, latestData().validText],
+        [true, "₹2,36,000.00", "12 Dec 2026"],
+      );
+      const issued = yield* LeadDocuments.issue(scope, {
+        entry: KinRecordKey.make("QT-1"),
+        sourceEventId: yes,
+      });
+      const quoted = (yield* records.get(orgId, "QT-1"))!;
+      assert.deepStrictEqual(
+        [issued.number, quoted.state, quoted.amountMinor, latestData().number],
+        ["QT/26-27/001", "waiting", 23_600_000, "QT/26-27/001"],
+      );
+      // A quote is no money owed.
+      const money = yield* moneySummary(orgId, Date.parse("2026-11-12T06:00:00.000Z"));
+      assert.deepStrictEqual(money.owed.total, []);
+      // Invoiced once: a draft for the same client with the quote's lines; again, the same one.
+      const invoiceIt = LeadDocuments.make(scope, {
+        title: "Invoice for QT-1",
+        recipe: "invoice",
+        from: KinRecordKey.make("QT-1"),
+        sourceEventId: yes,
+      });
+      const made = yield* invoiceIt;
+      assert.deepStrictEqual(
+        [made.entry, made.draft, latestData().tax.total.text, latestData().items[0].sac],
+        ["INV-2", true, "₹2,36,000.00", "998391"],
+      );
+      assert.deepStrictEqual((yield* invoiceIt).entry, "INV-2");
+      const drafted = (yield* records.get(orgId, "INV-2"))!;
+      assert.deepStrictEqual(
+        [drafted.state, drafted.partyId, drafted.title],
+        ["open", quoted.partyId, "Design work"],
+      );
+      const billed = yield* LeadDocuments.issue(scope, {
+        entry: KinRecordKey.make("INV-2"),
+        sourceEventId: yes,
+      });
+      assert.deepStrictEqual(
+        [billed.number, (yield* records.get(orgId, "INV-2"))!.amountMinor],
+        ["INV/26-27/001", 23_600_000],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("are made for the owner from the client too, and only for the owner", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -845,13 +912,13 @@ describe("recipe documents", () => {
         Effect.map(OwnerDocs.recipes(people, { orgId }), (all) =>
           all.recipes.filter((one) => one.default === true).map((one) => one.name),
         );
-      assert.deepStrictEqual(yield* defaults(), ["invoice", "receipt"]);
+      assert.deepStrictEqual(yield* defaults(), ["invoice", "quotation", "receipt"]);
       const sql = yield* SqlClient.SqlClient;
       yield* sql`INSERT INTO kin_recipe_defaults (org_id, list, recipe, set_by_person_id, set_at)
         VALUES (${orgId}, 'invoices', 'gone', ${ownerId}, 0)`;
       assert.deepStrictEqual(
         yield* defaults(),
-        ["invoice", "receipt"],
+        ["invoice", "quotation", "receipt"],
         "a gone recipe is no default",
       );
       assert.match(

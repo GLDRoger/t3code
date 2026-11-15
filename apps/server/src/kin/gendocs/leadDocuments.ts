@@ -18,6 +18,7 @@ import { issueEntry } from "./amounts.ts";
 import type { DocumentInput } from "./DocJobs.ts";
 import { canonical, makeDocument, remakeForEntry, type Requester } from "./make.ts";
 import * as Numbers from "./numbering.ts";
+import { invoiceFromQuote } from "./quotes.ts";
 import { makeReceipt } from "./receipts.ts";
 import { defaultRecipes } from "./recipeDefaults.ts";
 import { recipeLabelled, undoRecipe as undoLabelled } from "./recipeLabels.ts";
@@ -89,6 +90,7 @@ export const recipes = leadTool("KinDocuments.recipes", (lead, _input: Record<st
 );
 
 const denied = (message: string) => new KinChatError({ reason: "not_allowed", message });
+const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 
 /** The agent as a requester: its turn, the chat it answers in and the owner's message there. */
 const requesterOf = Effect.fn("KinDocuments.requester")(function* (
@@ -131,14 +133,17 @@ export const make = leadTool("KinDocuments.make", (lead, input: DocumentInput) =
         "Kin is paused by the owner, so nothing new is made until they resume it.",
       );
     const requester = yield* requesterOf(lead, input.sourceEventId);
+    const quoted = input.from === undefined ? undefined : yield* fromQuote(lead, input, requester);
+    const entry = quoted?.entry ?? input.entry;
+    const given = quoted?.given ?? input.inputs ?? {};
     const made = yield* makeDocument({
       orgId: lead.orgId,
       recipe: input.recipe!,
-      entry: input.entry,
-      given: input.inputs ?? {},
+      entry,
+      given,
       title: input.title,
       requester,
-      jobKey: `agent:${lead.wakeupId}:${input.sourceEventId}:${input.recipe}:${input.entry ?? ""}:${input.title}:${canonical(input.inputs ?? {})}`,
+      jobKey: `agent:${lead.wakeupId}:${input.sourceEventId}:${input.recipe}:${entry ?? ""}:${input.title}:${canonical(given)}`,
       admit: stillAdmitted(lead, "kin_document", input),
     });
     for (const written of made.written) yield* shown(lead, written, true);
@@ -154,9 +159,36 @@ export const make = leadTool("KinDocuments.make", (lead, input: DocumentInput) =
         version: doc.version,
       })),
       ...(made.sensitive ? { sensitive: true as const } : {}),
+      ...(quoted === undefined ? {} : { entry: quoted.entry }),
     };
   }),
 );
+
+/** An invoice draft from a quote, and the quote's own inputs the invoice recipe takes, yours on top. */
+const fromQuote = Effect.fn("KinDocuments.fromQuote")(function* (
+  lead: Lead,
+  input: DocumentInput,
+  requester: Requester,
+) {
+  if (input.entry !== undefined)
+    return yield* invalid("Pass from to invoice a quote, or entry, not both. Nothing was made.");
+  const recipe = (yield* (yield* KinWorkspace).recipes(lead.orgId)).find(
+    (one) => one.name === input.recipe,
+  );
+  if (recipe === undefined || recipe.list !== "invoices")
+    return yield* invalid(
+      "A quote is invoiced with the invoices list's recipe, such as invoice. Nothing was made.",
+    );
+  const own = new Set(recipe.inputs.filter((one) => one.from === "agent").map((one) => one.name));
+  const made = yield* invoiceFromQuote(lead.orgId, requester.writer, input.from!);
+  return {
+    entry: made.entry.key,
+    given: {
+      ...Object.fromEntries(Object.entries(made.given).filter(([name]) => own.has(name))),
+      ...input.inputs,
+    },
+  };
+});
 
 export const IssueInput = Schema.Struct({
   entry: KinRecordKey.annotate({

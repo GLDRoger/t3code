@@ -118,7 +118,7 @@ export const DefineInput = Schema.Struct({
     description: "A proposal this tool returned in an earlier turn: creates exactly that.",
   }),
   template: Schema.optional(Schema.Literals(PRESET_IDS)).annotate({
-    description: "Start from Kin's expenses, invoices or dates list.",
+    description: "Start from Kin's expenses, invoices, dates, receipts or quotes list.",
   }),
   list: Schema.optional(KinListId).annotate({
     description: "An existing defined list to add fields, choices or categories to.",

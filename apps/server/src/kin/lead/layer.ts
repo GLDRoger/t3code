@@ -53,6 +53,7 @@ import { handlers as statementHandlers } from "../work/mcp/statementHandlers.ts"
 import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
 import { importWork } from "../work/importWork.ts";
 import { repairIssuedAmounts } from "../gendocs/amounts.ts";
+import { countedEntry } from "../work/recordRows.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
@@ -410,7 +411,7 @@ const issuedAmounts = Layer.effectDiscard(
     const orgs = yield* sql<{ orgId: KinOrgId }>`SELECT DISTINCT n.org_id AS "orgId"
       FROM kin_issued_numbers n
       JOIN kin_records r ON r.org_id = n.org_id AND r.record_id = n.record_id
-      WHERE n.register_id = 'invoices' AND r.amount_minor IS NULL
+      WHERE n.register_id = 'invoices' AND r.amount_minor IS NULL AND ${countedEntry(sql)}
       ORDER BY n.org_id`;
     yield* Effect.forEach(
       orgs,
