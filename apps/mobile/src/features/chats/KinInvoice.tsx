@@ -59,6 +59,7 @@ import { KinWorkFrame, KinWorkLoading, KinWorkTextField } from "./components/Kin
 import { kinClient } from "./state/kinClient";
 import { useKinMoneyActions, useKinReceipts, useKinRecipes } from "./state/useKinMoney";
 import { kinWorkChoicesAtom, type KinWorkTarget } from "./state/useKinWork";
+import { useKinWorkLink } from "./state/kinWorkLink";
 
 type MoneyActions = ReturnType<typeof useKinMoneyActions>;
 
@@ -227,7 +228,7 @@ export function KinInvoicePayments(
     readonly onTakeBack: (paymentId: string) => void;
   },
 ) {
-  const navigation = useNavigation();
+  const openRecord = useKinWorkLink();
   const { environmentId, orgId, invoice, actions } = props;
   const canReceipt = useAtomValue(kinClient.makeReceipt.permissionAtom(environmentId));
   const busy = props.busy || actions.busy;
@@ -261,7 +262,7 @@ export function KinInvoicePayments(
                 <ListActionRow
                   label={`${KIN_INVOICES.openPdf} ${number ?? ""}`.trim()}
                   onPress={() =>
-                    navigation.navigate("KinDoc", { environmentId, orgId, doc: receipt.document })
+                    openRecord("KinDoc", { environmentId, orgId, doc: receipt.document })
                   }
                 />
               ) : receipt === null || !canReceipt ? null : (
@@ -297,7 +298,7 @@ export function KinInvoicePayments(
 
 /** The PDFs made for it, newest first, each opened on its doc's page. */
 export function KinInvoiceDocuments(props: KinWorkTarget & { readonly invoice: KinInvoiceView }) {
-  const navigation = useNavigation();
+  const openRecord = useKinWorkLink();
   const { environmentId, orgId } = props;
   return (
     <ListSection title={KIN_INVOICES.documents}>
@@ -312,7 +313,7 @@ export function KinInvoiceDocuments(props: KinWorkTarget & { readonly invoice: K
             icon="doc.text"
             label={doc.title}
             detail={doc.key}
-            onPress={() => navigation.navigate("KinDoc", { environmentId, orgId, doc: doc.key })}
+            onPress={() => openRecord("KinDoc", { environmentId, orgId, doc: doc.key })}
           />
         ))
       )}
@@ -601,6 +602,7 @@ function MakeDocument(
 /** Money's receipts, inside Money. */
 export function KinReceiptsSection(props: KinWorkTarget & { readonly seq: number | null }) {
   const navigation = useNavigation();
+  const openRecord = useKinWorkLink();
   const { environmentId, orgId } = props;
   const canRead = useAtomValue(kinClient.receiptsRead.permissionAtom(environmentId));
   const canMake = useAtomValue(kinClient.makeReceipt.permissionAtom(environmentId));
@@ -643,7 +645,7 @@ export function KinReceiptsSection(props: KinWorkTarget & { readonly seq: number
                 label={`${KIN_INVOICES.openPdf} ${receipt.heading}`}
                 onPress={() =>
                   receipt.document !== null &&
-                  navigation.navigate("KinDoc", { environmentId, orgId, doc: receipt.document })
+                  openRecord("KinDoc", { environmentId, orgId, doc: receipt.document })
                 }
               />
             )}

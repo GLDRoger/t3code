@@ -12,7 +12,7 @@ import {
   kinIssueNotice,
   kinReceiptNotice,
 } from "@t3tools/client-runtime/kin/kinInvoices";
-import { kinMoneyAgent } from "@t3tools/client-runtime/kin/kinMoney";
+import { kinWorkAgent, type KinWorkPlace } from "@t3tools/client-runtime/kin/kinWorkHome";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
 import {
   createKinPagedList,
@@ -68,7 +68,7 @@ const refreshKinLists = (target: KinWorkTarget) => {
 };
 
 /** Reads again when Work says something changed; `seq` is null while that isn't known. */
-function useRereadOnChange(seq: number | null, reread: () => void) {
+export function useRereadOnChange(seq: number | null, reread: () => void) {
   const seen = useRef(seq);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the host's figures again when the host announces a change to Work
   useEffect(() => {
@@ -360,8 +360,11 @@ export function useKinListChanges(target: KinWorkTarget) {
   };
 }
 
-/** Opens the chat with the agent that keeps the books, with a message ready to send. */
-export function useKinAskAgent({ environmentId, orgId }: KinWorkTarget) {
+/** Opens the chat with the agent a place hands over to, with a message ready to send. */
+export function useKinAskAgent(
+  { environmentId, orgId }: KinWorkTarget,
+  place: KinWorkPlace | null = "money",
+) {
   const navigation = useNavigation();
   const canRestore = useAtomValue(kinClient.leadRestore.permissionAtom(environmentId));
   const result = useAtomValue(
@@ -369,7 +372,7 @@ export function useKinAskAgent({ environmentId, orgId }: KinWorkTarget) {
       ? kinClient.agents({ environmentId, orgId })
       : kinClient.leads({ environmentId, input: { orgId } }),
   );
-  const agent = kinMoneyAgent(Option.getOrNull(AsyncResult.value(result))?.leads ?? []);
+  const agent = kinWorkAgent(Option.getOrNull(AsyncResult.value(result))?.leads ?? [], place);
   if (agent === null) return null;
   return {
     name: agent.name,

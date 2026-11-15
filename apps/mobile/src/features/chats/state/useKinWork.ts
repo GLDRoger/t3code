@@ -268,10 +268,9 @@ export function useKinPagedList<Filter extends { readonly text: string }, Row>(
 export function useKinClientsList(
   { environmentId, orgId }: KinWorkTarget,
   seq: number | null,
-  /** What the search bar already holds when the list opens. */
-  text = "",
+  closed = false,
 ) {
-  const initial = { ...KIN_CLIENTS_DEFAULT_FILTER, text };
+  const initial = { ...KIN_CLIENTS_DEFAULT_FILTER, closed };
   return useKinPagedList<KinClientsFilter, KinPartyRow>(
     initial,
     (onChange) =>
@@ -298,10 +297,9 @@ export function useKinClientsList(
 export function useKinProjectsList(
   { environmentId, orgId }: KinWorkTarget,
   seq: number | null,
-  /** What the search bar already holds when the list opens. */
-  text = "",
+  view: KinProjectsFilter["view"] = "open",
 ) {
-  const initial = { ...KIN_PROJECTS_DEFAULT_FILTER, text };
+  const initial = { ...KIN_PROJECTS_DEFAULT_FILTER, view };
   return useKinPagedList<KinProjectsFilter, KinProjectRow>(
     initial,
     (onChange) =>

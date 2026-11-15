@@ -95,6 +95,7 @@ import {
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./state/useKinWork";
+import { useKinWorkLink } from "./state/kinWorkLink";
 
 const NO_PLAYBACK = () => {};
 const DAY = "day:";
@@ -233,6 +234,7 @@ export function KinListEntryBody(
   },
 ) {
   const navigation = useNavigation();
+  const openRecord = useKinWorkLink();
   const { item, view, environmentId, orgId } = props;
   const lists = useKinLists(props, { enabled: true, archived: true, seq: null });
   const context = useKinListContext(props, props.directory);
@@ -265,8 +267,8 @@ export function KinListEntryBody(
   const openPlace = (fact: KinListEntryView["facts"][number]) => {
     if (fact.opens === null) return;
     if (fact.id === "project")
-      return navigation.navigate("KinProject", { environmentId, orgId, project: fact.opens });
-    navigation.navigate("KinClient", { environmentId, orgId, party: fact.opens });
+      return openRecord("KinProject", { environmentId, orgId, project: fact.opens });
+    openRecord("KinClient", { environmentId, orgId, party: fact.opens });
   };
   const takeBack = (paymentId: string) =>
     Dialog.confirm({
@@ -547,12 +549,12 @@ export function KinListEntryBody(
                   ? undefined
                   : () =>
                       opens.list === "projects"
-                        ? navigation.navigate("KinProject", {
+                        ? openRecord("KinProject", {
                             environmentId,
                             orgId,
                             project: opens.key,
                           })
-                        : navigation.navigate("KinClient", {
+                        : openRecord("KinClient", {
                             environmentId,
                             orgId,
                             party: opens.key,

@@ -5,8 +5,10 @@ import {
   KIN_WORK_GONE,
   KIN_WORK_ITEM_FAILED,
   KIN_WORK_NEW_COPY,
+  KIN_WORK_NOTES_MAX,
   KIN_WORK_ONLY_OWNER,
   KIN_WORK_PRIVATE,
+  KIN_WORK_TITLE_MAX,
   kinWorkAssignees,
   kinWorkHostClients,
   kinWorkItemState,
@@ -17,6 +19,7 @@ import {
 import {
   KIN_WORK_COPY,
   kinWorkApplied,
+  kinWorkEditMoved,
   kinWorkItemNotice,
   type KinWorkNotice,
 } from "@t3tools/client-runtime/kin/kinWorkChanges";
@@ -31,7 +34,7 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
-import { View } from "react-native";
+import { TextInput, View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { AppBar } from "../../components/ui/AppBar";
@@ -74,6 +77,7 @@ import {
   useKinWorkPlace,
   type KinWorkTarget,
 } from "./state/useKinWork";
+import { useKinWorkLink } from "./state/kinWorkLink";
 
 export type KinWorkItemParams = {
   readonly environmentId: string;
@@ -127,6 +131,9 @@ function Frame(props: {
       <ScreenContent surface="screen">
         <ScreenScrollView
           className="flex-1"
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="interactive"
+          automaticallyAdjustKeyboardInsets
           contentInsetAdjustmentBehavior="automatic"
           contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
         >
@@ -155,6 +162,7 @@ function KinWorkItemGate(props: ItemTarget) {
 
 function KinWorkItemBody(props: ItemTarget) {
   const navigation = useNavigation();
+  const openRecord = useKinWorkLink();
   const openDetail = useOpenWorkspaceDetail();
   const { environmentId, orgId, itemKey } = props;
   const itemAtom = kinClient.workItem({ environmentId, input: { orgId, key: itemKey } });
@@ -233,7 +241,7 @@ function KinWorkItemBody(props: ItemTarget) {
                         });
                       }
                       if (open.type === "task")
-                        return navigation.navigate("KinWorkItem", {
+                        return openRecord("KinWorkItem", {
                           environmentId,
                           orgId,
                           task: open.key,
@@ -286,19 +294,92 @@ function KinWorkItemBody(props: ItemTarget) {
     if (open === null) return;
     if (open.type === "chat") return openChat(open.chatId);
     if (open.type === "task")
-      return navigation.navigate("KinWorkItem", { environmentId, orgId, task: open.key });
+      return openRecord("KinWorkItem", { environmentId, orgId, task: open.key });
     void tryOpenExternalUrl(open.href, "markdown-link");
+  };
+  const { edit } = changed;
+  const moved = edit === null ? null : kinWorkEditMoved(edit, item);
+  const saveEdit = async () => {
+    if (saving || edit === null || edit.title.trim() === "") return;
+    if (await changes.saveEdit(item, names)) appAtomRegistry.refresh(itemAtom);
   };
   return (
     <Frame title={view.heading} onClose={close}>
+      {edit === null ? null : (
+        <View className="gap-3">
+          <ListSection>
+            <View className="gap-2 px-4 py-3">
+              <Text className="text-sm text-foreground-muted">Title</Text>
+              <TextInput
+                accessibilityLabel="Title"
+                value={edit.title}
+                editable={!saving}
+                autoFocus
+                autoCapitalize="sentences"
+                returnKeyType="done"
+                maxLength={KIN_WORK_TITLE_MAX}
+                onChangeText={(title) => changes.setEdit({ title })}
+                textAlignVertical="center"
+                placeholder={KIN_WORK_NEW_COPY.titlePlaceholder}
+                placeholderTextColorClassName="accent-placeholder"
+                className="min-h-8 font-sans text-base text-foreground"
+              />
+            </View>
+            <View className="gap-2 px-4 py-3">
+              <Text className="text-sm text-foreground-muted">{KIN_WORK_NEW_COPY.notesLabel}</Text>
+              <TextInput
+                accessibilityLabel={KIN_WORK_NEW_COPY.notesLabel}
+                value={edit.notes}
+                editable={!saving}
+                multiline
+                maxLength={KIN_WORK_NOTES_MAX}
+                onChangeText={(notes) => changes.setEdit({ notes })}
+                textAlignVertical="top"
+                placeholder={KIN_WORK_NEW_COPY.notesPlaceholder}
+                placeholderTextColorClassName="accent-placeholder"
+                className="min-h-24 font-sans text-base text-foreground"
+              />
+            </View>
+          </ListSection>
+          {[
+            moved?.title == null ? null : `It now says: ${moved.title}`,
+            moved?.notes == null ? null : `The notes now say: ${moved.notes}`,
+          ].map((line) =>
+            line === null ? null : (
+              <Text key={line} textRole="footnote" className="px-2 text-foreground-muted">
+                {line}
+              </Text>
+            ),
+          )}
+          <View className="flex-row gap-2 px-2">
+            <Button
+              tone="primary"
+              size="compact"
+              label={KIN_WORK_COPY.save}
+              loading={saving}
+              disabled={saving || edit.title.trim() === ""}
+              onPress={() => void saveEdit()}
+            />
+            <Button
+              tone="secondary"
+              size="compact"
+              label="Cancel"
+              disabled={saving}
+              onPress={changes.cancelEdit}
+            />
+          </View>
+        </View>
+      )}
       <View className="gap-3 px-2">
-        <Text
-          textRole="headline"
-          accessibilityRole="header"
-          className="font-t3-bold text-foreground"
-        >
-          {view.title}
-        </Text>
+        {edit !== null ? null : (
+          <Text
+            textRole="headline"
+            accessibilityRole="header"
+            className="font-t3-bold text-foreground"
+          >
+            {view.title}
+          </Text>
+        )}
         <View className="flex-row flex-wrap items-center gap-2">
           <KinWorkStateSymbol state={view.state} />
           <Text textRole="body" className="text-foreground">
@@ -424,13 +505,11 @@ function KinWorkItemBody(props: ItemTarget) {
             onOpen={openChat}
           />
         ) : null}
-        {act === null ? null : (
+        {act === null || edit !== null ? null : (
           <ListActionRow
             label="Edit title and notes"
             disabled={saving}
-            onPress={() =>
-              navigation.navigate("KinWorkEdit", { environmentId, orgId, task: itemKey })
-            }
+            onPress={() => changes.startEdit(item)}
           />
         )}
       </ListSection>
@@ -443,7 +522,7 @@ function KinWorkItemBody(props: ItemTarget) {
                 label={KIN_WORK_NEW_COPY.clientLabel}
                 detail={view.party.title}
                 onPress={() =>
-                  navigation.navigate("KinClient", {
+                  openRecord("KinClient", {
                     environmentId,
                     orgId,
                     party: view.party?.key ?? "",
@@ -476,7 +555,7 @@ function KinWorkItemBody(props: ItemTarget) {
                 label={KIN_WORK_NEW_COPY.projectLabel}
                 detail={view.project.title}
                 onPress={() =>
-                  navigation.navigate("KinProject", {
+                  openRecord("KinProject", {
                     environmentId,
                     orgId,
                     project: view.project?.key ?? "",
@@ -499,7 +578,7 @@ function KinWorkItemBody(props: ItemTarget) {
             <ListActionRow
               label={`Open ${view.party.title}`}
               onPress={() =>
-                navigation.navigate("KinClient", {
+                openRecord("KinClient", {
                   environmentId,
                   orgId,
                   party: view.party?.key ?? "",
@@ -511,7 +590,7 @@ function KinWorkItemBody(props: ItemTarget) {
             <ListActionRow
               label={`Open ${view.project.title}`}
               onPress={() =>
-                navigation.navigate("KinProject", {
+                openRecord("KinProject", {
                   environmentId,
                   orgId,
                   project: view.project?.key ?? "",
@@ -531,7 +610,7 @@ function KinWorkItemBody(props: ItemTarget) {
           )}
         </ListSection>
       )}
-      {view.notes === null && !kinHasNotesHistory(item) ? null : (
+      {edit !== null || (view.notes === null && !kinHasNotesHistory(item)) ? null : (
         <View className="gap-2 px-2">
           <Text textRole="footnote" className="text-foreground-muted">
             Notes

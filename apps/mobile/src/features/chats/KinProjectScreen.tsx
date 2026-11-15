@@ -58,6 +58,7 @@ import {
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./state/useKinWork";
+import { useKinWorkLink } from "./state/kinWorkLink";
 
 export type KinProjectParams = {
   readonly environmentId: string;
@@ -155,6 +156,7 @@ function KinProjectBody(
   },
 ) {
   const navigation = useNavigation();
+  const openRecord = useKinWorkLink();
   const { environmentId, orgId } = props;
   const canChange = useAtomValue(kinClient.workProjectUpdate.permissionAtom(environmentId));
   const update = useAtomCommand(kinClient.workProjectUpdate, { reportFailure: false });
@@ -186,7 +188,7 @@ function KinProjectBody(
     }
   };
   const openTask = (task: KinRecordKey) =>
-    navigation.navigate("KinWorkItem", { environmentId, orgId, task });
+    openRecord("KinWorkItem", { environmentId, orgId, task });
   return (
     <KinWorkTaskList
       environmentId={environmentId}
@@ -196,7 +198,6 @@ function KinProjectBody(
       directory={props.directory}
       title="Project"
       onBack={() => navigation.goBack()}
-      areas={null}
       choices={null}
       initial={{ ...KIN_WORK_DEFAULT_FILTER, project: view.ref }}
       within={{
@@ -255,9 +256,7 @@ function KinProjectBody(
               problem={problem}
               onDismissProblem={() => setProblem(null)}
               onOpenTask={openTask}
-              onOpenClient={(to) =>
-                navigation.navigate("KinClient", { environmentId, orgId, party: to })
-              }
+              onOpenClient={(to) => openRecord("KinClient", { environmentId, orgId, party: to })}
               privacy={{
                 disabled: !canChange || busy || view.privacy.inherited,
                 onChange: (sensitive) => void change({ sensitive }),

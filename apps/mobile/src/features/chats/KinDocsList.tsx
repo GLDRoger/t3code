@@ -14,15 +14,14 @@ import {
   type KinSearchHitView,
   type KinSearchState,
 } from "@t3tools/client-runtime/kin/kinDocs";
-import { KIN_WORK_TITLE } from "@t3tools/client-runtime/kin/kinWork";
+import { KIN_WORK_HOME, kinWorkAskDraft } from "@t3tools/client-runtime/kin/kinWorkHome";
 import type { KinDocRow, KinRecordKey } from "@t3tools/contracts";
-import { useEffect, useState } from "react";
-import { Pressable, ScrollView, View } from "react-native";
+import { useState } from "react";
+import { Pressable, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
-import { Chip } from "../../components/ui/Chip";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ListSection } from "../../components/ui/ListSection";
 import { Notice } from "../../components/ui/Notice";
@@ -30,16 +29,11 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { cn } from "../../lib/cn";
 import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
-import { kinTabBar, useKinTab } from "./components/KinTab";
-import {
-  KinWorkAreaSwitch,
-  KinWorkLoading,
-  KinWorkPrivateMark,
-  KinWorkStaleNotice,
-  type KinWorkAreas,
-} from "./components/KinWorkPieces";
+import { KinWorkLoading, KinWorkPrivateMark, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { useKinDocsList, useKinDocsLive, useKinDocsUnder, useKinSearch } from "./state/useKinDocs";
+import { useKinAskAgent } from "./state/useKinMoney";
 import { refreshKinWorkLive, type KinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
+import { useKinWorkLink } from "./state/kinWorkLink";
 
 /** A doc as a row that opens it: its name, then when it last changed, by whom and how. */
 function KinDocRowButton(props: {
@@ -162,26 +156,17 @@ export function KinDocsList(
   props: KinWorkTarget & {
     readonly directory: KinWorkDirectory;
     readonly stale: boolean;
-    readonly areas: KinWorkAreas;
-    readonly onSearchAll: () => void;
   },
 ) {
   const navigation = useNavigation();
-  const tab = useKinTab();
+  const agent = useKinAskAgent(props, "docs");
   const { environmentId, orgId } = props;
   const { names } = props.directory;
   const now = new Date(useNowMinuteMs());
   const { refused, live } = useKinDocsLive(props);
-  const { state, list } = useKinDocsList(
-    props,
-    props.stale ? null : (live?.seq ?? null),
-    props.areas.words,
-  );
+  const { state, list } = useKinDocsList(props, props.stale ? null : (live?.seq ?? null));
   const { state: found, search } = useKinSearch(props, DOCS_ONLY);
   const [by, setBy] = useState<KinDocGrouping>("client");
-  const { words } = props.areas;
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the native search bar keeps words typed in another part of Work, so the docs search takes them up; setText ignores text it already has
-  useEffect(() => search.setText(words), [search, words]);
   const refresh = () => {
     refreshKinWorkLive(props);
     list.refresh();
@@ -210,29 +195,78 @@ export function KinDocsList(
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
-        title={KIN_WORK_TITLE}
+        title={KIN_WORK_HOME.places.docs}
         refresh={{ accessibilityLabel: "Refresh", onPress: refresh }}
-        actions={[
-          {
-            accessibilityLabel: KIN_SEARCH.hint.title,
-            icon: "magnifyingglass",
-            onPress: props.onSearchAll,
+        onBack={() => navigation.goBack()}
+        {...(agent === null
+          ? {}
+          : {
+              actions: [
+                {
+                  accessibilityLabel: `Ask ${agent.name}`,
+                  icon: "bubble.left",
+                  onPress: () => agent.ask(kinWorkAskDraft("docs")),
+                },
+              ],
+            })}
+        {...(refused
+          ? {}
+          : {
+              menus: [
+                {
+                  title: KIN_WORK_HOME.show,
+                  icon: "line.3.horizontal.decrease.circle",
+                  items: [
+                    {
+                      id: "which",
+                      title: KIN_WORK_HOME.show,
+                      inline: true,
+                      items: [
+                        {
+                          id: "current",
+                          title: KIN_DOCS.current,
+                          selected: !filter.archived,
+                          onPress: () => {
+                            list.setFilter({ ...filter, archived: false });
+                            search.setClosed(false);
+                          },
+                        },
+                        {
+                          id: "archived",
+                          title: KIN_DOCS.archived,
+                          selected: filter.archived,
+                          onPress: () => {
+                            list.setFilter({ ...filter, archived: true });
+                            search.setClosed(true);
+                          },
+                        },
+                      ],
+                    },
+                    {
+                      id: "by",
+                      title: "Group",
+                      inline: true,
+                      items: KIN_DOC_GROUPINGS.map((held) => ({
+                        id: `by:${held.id}`,
+                        title: `By ${held.label.toLowerCase()}`,
+                        selected: by === held.id,
+                        onPress: () => setBy(held.id),
+                      })),
+                    },
+                  ],
+                },
+              ],
+            })}
+        search={{
+          value: found.text,
+          onChangeText: (text) => {
+            search.setText(text);
+            list.setFilter({ ...filter, text });
           },
-        ]}
-        {...kinTabBar(tab, {
-          onBack: () => navigation.goBack(),
-          search: {
-            value: found.text,
-            onChangeText: (text) => {
-              props.areas.onWords(text);
-              search.setText(text);
-              list.setFilter({ ...filter, text });
-            },
-            placeholder: KIN_DOCS.search,
-            closeAccessibilityLabel: "Close search",
-            clearAccessibilityLabel: "Clear search",
-          },
-        })}
+          placeholder: KIN_DOCS.search,
+          closeAccessibilityLabel: "Close search",
+          clearAccessibilityLabel: "Clear search",
+        }}
       />
       <ScreenContent surface="screen">
         <LegendList<Item>
@@ -241,8 +275,8 @@ export function KinDocsList(
           contentInsetAdjustmentBehavior="automatic"
           keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled"
-          // The search field, or the tab dock, floats over the foot of the list.
-          contentContainerStyle={{ paddingBottom: tab === null ? 96 : 24 + tab.bottomClearance }}
+          // The search field floats over the foot of the list.
+          contentContainerStyle={{ paddingBottom: 96 }}
           data={items}
           keyExtractor={(item) => item.id}
           extraData={[state, by, found]}
@@ -251,48 +285,17 @@ export function KinDocsList(
           onEndReached={() => void list.loadMore()}
           onEndReachedThreshold={0.5}
           ListHeaderComponent={
-            <View className="gap-3 pb-1 pt-2">
-              <KinWorkAreaSwitch {...props.areas} />
-              {props.stale || state.stale ? (
-                <View className="px-4">
-                  <KinWorkStaleNotice environmentId={environmentId} onRetry={refresh} />
-                </View>
-              ) : null}
-              {refused ? null : (
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  keyboardShouldPersistTaps="handled"
-                  contentContainerStyle={{ paddingHorizontal: 16, gap: 8 }}
-                >
-                  <Chip
-                    label={KIN_DOCS.current}
-                    selected={!filter.archived}
-                    onPress={() => {
-                      list.setFilter({ ...filter, archived: false });
-                      search.setClosed(false);
-                    }}
-                  />
-                  <Chip
-                    label={KIN_DOCS.archived}
-                    selected={filter.archived}
-                    onPress={() => {
-                      list.setFilter({ ...filter, archived: true });
-                      search.setClosed(true);
-                    }}
-                  />
-                  {KIN_DOC_GROUPINGS.map((held) => (
-                    <Chip
-                      key={held.id}
-                      size="small"
-                      label={`By ${held.label.toLowerCase()}`}
-                      selected={by === held.id}
-                      onPress={() => setBy(held.id)}
-                    />
-                  ))}
-                </ScrollView>
-              )}
-            </View>
+            props.stale || state.stale ? (
+              <View className="px-4 pt-2">
+                <KinWorkStaleNotice environmentId={environmentId} onRetry={refresh} />
+              </View>
+            ) : filter.archived ? (
+              <View className="px-5 pt-2">
+                <Text textRole="footnote" className="text-foreground-muted">
+                  {KIN_DOCS.archived}
+                </Text>
+              </View>
+            ) : null
           }
           ListEmptyComponent={
             <View className="pt-4">
@@ -386,7 +389,7 @@ export function KinDocsUnder(
     readonly names: KinWorkDirectory["names"];
   },
 ) {
-  const navigation = useNavigation();
+  const openRecord = useKinWorkLink();
   const now = new Date(useNowMinuteMs());
   const docs = useKinDocsUnder(props, props.under);
   if (docs === null || docs.length === 0) return null;
@@ -399,7 +402,7 @@ export function KinDocsUnder(
           inset
           row={kinDocRow(doc, props.names, now)}
           onPress={() =>
-            navigation.navigate("KinDoc", {
+            openRecord("KinDoc", {
               environmentId: props.environmentId,
               orgId: props.orgId,
               doc: doc.key,

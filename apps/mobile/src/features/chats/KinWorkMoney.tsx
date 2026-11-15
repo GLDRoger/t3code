@@ -8,18 +8,21 @@ import {
 import { KIN_LISTS, kinListsIndex } from "@t3tools/client-runtime/kin/kinLists";
 import {
   KIN_MONEY,
-  kinMoneyHeadline,
   kinMoneyView,
   type KinListOpen,
   type KinMoneyFigure,
 } from "@t3tools/client-runtime/kin/kinMoney";
-import { KIN_WORK_TITLE } from "@t3tools/client-runtime/kin/kinWork";
+import {
+  KIN_WORK_HOME,
+  kinPlaceLists,
+  kinWorkAskDraft,
+  type KinWorkPlace,
+} from "@t3tools/client-runtime/kin/kinWorkHome";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import { useState } from "react";
 import { Pressable, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
-import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -32,13 +35,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { cn } from "../../lib/cn";
 import { useNowMinuteMs } from "../../lib/clock";
-import { useKinTab } from "./components/KinTab";
-import {
-  KinWorkAreaSwitch,
-  KinWorkLoading,
-  KinWorkStaleNotice,
-  type KinWorkAreas,
-} from "./components/KinWorkPieces";
+import { KinWorkLoading, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { kinListsOf, useKinAskAgent, useKinLists, useKinMoneySummary } from "./state/useKinMoney";
 import { refreshKinWorkLive, type KinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 import { KinChart } from "./widgets/KinChart";
@@ -47,7 +44,6 @@ type Shared = KinWorkTarget & {
   readonly live: KinWorkLive;
   readonly stale: boolean;
   readonly directory: KinWorkDirectory;
-  readonly areas: KinWorkAreas;
 };
 
 /** Where a figure's entries open: the list, narrowed to them. */
@@ -61,16 +57,16 @@ export function useKinOpenList(target: KinWorkTarget) {
     });
 }
 
-/** One part of Work that isn't a paged list: the switch, then whatever the part shows. */
+/** A place of Work that isn't a paged list, with its way to hand over to an agent in the bar. */
 function AreaFrame(props: {
   readonly target: KinWorkTarget;
-  readonly areas: KinWorkAreas;
+  readonly place: KinWorkPlace;
   readonly stale: boolean;
   readonly onRefresh: () => void;
   readonly children: React.ReactNode;
 }) {
   const navigation = useNavigation();
-  const tab = useKinTab();
+  const agent = useKinAskAgent(props.target, props.place);
   // The counts may be what failed, so they are read again with the area's own figures.
   const refresh = () => {
     refreshKinWorkLive(props.target);
@@ -79,9 +75,20 @@ function AreaFrame(props: {
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
-        title={KIN_WORK_TITLE}
+        title={KIN_WORK_HOME.places[props.place]}
         refresh={{ accessibilityLabel: "Refresh", onPress: refresh }}
-        {...(tab === null ? { onBack: () => navigation.goBack() } : {})}
+        onBack={() => navigation.goBack()}
+        {...(agent === null
+          ? {}
+          : {
+              actions: [
+                {
+                  accessibilityLabel: `Ask ${agent.name}`,
+                  icon: "bubble.left",
+                  onPress: () => agent.ask(kinWorkAskDraft(props.place)),
+                },
+              ],
+            })}
       />
       <ScreenContent surface="screen">
         <ScreenScrollView
@@ -89,11 +96,10 @@ function AreaFrame(props: {
           contentInsetAdjustmentBehavior="automatic"
           contentContainerStyle={{
             paddingTop: 8,
-            paddingBottom: 32 + (tab?.bottomClearance ?? 0),
+            paddingBottom: 32,
             gap: 20,
           }}
         >
-          <KinWorkAreaSwitch {...props.areas} />
           {props.stale ? (
             <View className="px-4">
               <KinWorkStaleNotice environmentId={props.target.environmentId} onRetry={refresh} />
@@ -260,7 +266,7 @@ export function KinMoneyArea(props: Shared) {
   const { state } = money;
   const frame = {
     target,
-    areas: props.areas,
+    place: "money" as const,
     stale: props.stale,
     onRefresh: () => {
       money.refresh();
@@ -431,20 +437,6 @@ export function KinMoneyArea(props: Shared) {
           onPress={() => navigation.navigate("KinDates", target)}
         />
       </ListSection>
-      <Button
-        tone="secondary"
-        icon="person.2"
-        label={KIN_MONEY.clients}
-        onPress={() => props.areas.onArea("clients")}
-      />
-      {agent === null ? null : (
-        <Button
-          tone="secondary"
-          icon="bubble.left"
-          label={`Ask ${agent.name}`}
-          onPress={() => agent.ask("")}
-        />
-      )}
     </AreaFrame>
   );
 }
@@ -480,9 +472,9 @@ export function KinListsArea(props: Shared) {
   const seq = props.stale ? null : props.live.seq;
   const [archived, setArchived] = useState(false);
   const lists = useKinLists(target, { enabled: true, archived, seq });
-  const agent = useKinAskAgent(target);
+  const agent = useKinAskAgent(target, "lists");
   const { state } = lists;
-  const frame = { target, areas: props.areas, stale: props.stale, onRefresh: lists.refresh };
+  const frame = { target, place: "lists" as const, stale: props.stale, onRefresh: lists.refresh };
   if (state._tag !== "ready") {
     return (
       <AreaFrame {...frame}>
@@ -501,7 +493,7 @@ export function KinListsArea(props: Shared) {
       </AreaFrame>
     );
   }
-  const index = kinListsIndex(state.value.lists);
+  const index = kinListsIndex(kinPlaceLists(state.value.lists));
   const ask =
     agent === null ? null : (
       <Button
@@ -514,14 +506,6 @@ export function KinListsArea(props: Shared) {
   const open = (list: string) => navigation.navigate("KinList", { ...target, list });
   return (
     <AreaFrame {...frame}>
-      <ListSection>
-        <ListRow
-          icon="calendar.badge.clock"
-          label={KIN_DATES.title}
-          description={KIN_DATES.summary}
-          onPress={() => navigation.navigate("KinDates", target)}
-        />
-      </ListSection>
       {index.active.length === 0 && index.archived.length === 0 ? (
         <EmptyState
           variant="plain"
@@ -559,43 +543,8 @@ export function KinListsArea(props: Shared) {
               onValueChange={setArchived}
             />
           </ListSection>
-          {ask}
         </>
       )}
     </AreaFrame>
-  );
-}
-
-/** Work's task list opens with what is owed and what moved this month; it leads to Money. */
-export function KinMoneyHeadlineRow(
-  props: KinWorkTarget & { readonly seq: number | null; readonly onOpen: () => void },
-) {
-  const money = useKinMoneySummary(props, { enabled: true, seq: props.seq });
-  if (money.state._tag !== "ready") return null;
-  const lines = kinMoneyHeadline(money.state.value);
-  if (lines.length === 0) return null;
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`${KIN_MONEY.title}. ${lines.join(". ")}`}
-      accessibilityHint="Opens Money"
-      onPress={props.onOpen}
-      className="mx-4 min-h-11 flex-row items-center gap-3 rounded-2xl bg-grouped-card px-4 py-3 active:opacity-60"
-    >
-      <View className="min-w-0 flex-1 gap-0.5">
-        {lines.map((line) => (
-          <Text key={line} textRole="footnote" className="tabular-nums text-foreground">
-            {line}
-          </Text>
-        ))}
-      </View>
-      <SymbolView
-        name="chevron.right"
-        size={14}
-        tintColorClassName="accent-chevron"
-        type="monochrome"
-        weight="semibold"
-      />
-    </Pressable>
   );
 }

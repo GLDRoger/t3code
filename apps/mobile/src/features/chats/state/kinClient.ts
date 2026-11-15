@@ -759,7 +759,12 @@ export const kinClient = {
         ],
         { concurrency: 2 },
       );
-      return { clients: clients.parties, projects: projects.projects };
+      return {
+        clients: clients.parties,
+        projects: projects.projects,
+        clientsTotal: clients.total,
+        projectsTotal: projects.total,
+      };
     }),
     staleTimeMs: 30_000,
     refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
