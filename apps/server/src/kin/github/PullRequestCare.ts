@@ -543,9 +543,7 @@ export const notConnectedLayer = Layer.succeed(
     pull: off,
     review: off,
     postConfirmed: off,
-    backfill: Effect.fn("KinPullRequestCare.noBackfill")(function* () {
-      return 0;
-    }),
+    backfill: Effect.fn("KinPullRequestCare.noBackfill")(() => Effect.succeed(0)),
     link: off,
     closeIssues: closeNothing,
   }),

@@ -52,7 +52,11 @@ const start = Date.parse("2026-11-09T09:00:00.000Z");
 const tuesday = Date.parse("2026-11-10T02:30:00.000Z");
 const wednesday = Date.parse("2026-11-11T02:30:00.000Z");
 const owner = { _tag: "person", orgId, personId: KinPersonId.make("owner-a") } as const;
-const identity = Layer.mock(KinIdentity)({ owner });
+const identity = Layer.mock(KinIdentity)({
+  owner,
+  isAgentThread: () => false,
+  isLeadThread: () => false,
+});
 
 /** Kin's consumer over the real native scheduler; `recorded` holds what would be bare threads. */
 const harness = () => {

@@ -920,15 +920,13 @@ const make = Effect.gen(function* () {
             // The morning check-in carries the retired morning brief's sections as facts.
             if (Option.isSome(routineContent))
               for (const event of events.filter(isMorningCheckIn)) {
-                const facts = yield* routineContent.value
-                  .morningFacts(orgId, agentId)
-                  .pipe(
-                    Effect.catch((error) =>
-                      Effect.logWarning("Kin morning facts unavailable", {
-                        cause: error.cause,
-                      }).pipe(Effect.as(null)),
-                    ),
-                  );
+                const facts = yield* routineContent.value.morningFacts(orgId, agentId).pipe(
+                  Effect.catch((error) =>
+                    Effect.logWarning("Kin morning facts unavailable", {
+                      cause: error.cause,
+                    }).pipe(Effect.as(null)),
+                  ),
+                );
                 if (facts !== null) routineFacts.set(event.eventId, facts);
               }
             if (Option.isSome(routineContent)) {
