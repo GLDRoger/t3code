@@ -1,0 +1,215 @@
+// @effect-diagnostics globalDate:off - Fixtures build days relative to a fixed clock.
+import { KinOrgId, type KinCash, type KinMoneyBudget, type KinRunway } from "@t3tools/contracts";
+import { describe, expect, it } from "vite-plus/test";
+
+import {
+  KIN_OUTLOOK,
+  kinBudgetInput,
+  kinBudgetRemoval,
+  kinBudgetsView,
+  kinCashView,
+  kinLinesInput,
+  kinQuoteActions,
+  kinQuoteState,
+  kinRunwayText,
+} from "./kinMoneyAnswers.ts";
+
+const orgId = KinOrgId.make("org");
+const now = new Date("2026-11-15T06:00:00.000Z");
+const rates = { home: "INR", rates: [{ currency: "USD", rate: "84", asOf: "2026-11-01" }] };
+const inr = (minor: number) => ({ minor, currency: "INR" });
+
+describe("kinQuoteState", () => {
+  it("reads draft, sent, expired, accepted and declined from the quote's state and valid-until", () => {
+    const at = (state: "open" | "waiting" | "done" | "dropped", dueAt: string | null) =>
+      kinQuoteState({ state, dueAt }, now);
+    expect([
+      at("open", null),
+      at("waiting", "2026-11-20T18:29:59.999Z"),
+      at("waiting", "2026-11-10T18:29:59.999Z"),
+      at("waiting", null),
+      at("done", "2026-11-10T18:29:59.999Z"),
+      at("dropped", null),
+    ]).toEqual(["draft", "sent", "expired", "sent", "accepted", "declined"]);
+  });
+
+  it("offers each way in with its way back", () => {
+    expect(kinQuoteActions("accepted", true)).toMatchObject({ unaccept: true, accept: false });
+    expect(kinQuoteActions("declined", true)).toMatchObject({
+      undecline: true,
+      makeInvoice: false,
+      decline: false,
+    });
+    expect(kinQuoteActions("draft", false).send).toBe(false);
+  });
+});
+
+describe("kinLinesInput", () => {
+  const line = {
+    description: "Design",
+    sac: "998391",
+    quantity: "5",
+    unit: "days",
+    rate: "20,000",
+  };
+  it("takes SAC or HSN codes of 4 to 8 digits, and drops empty rows", () => {
+    expect(kinLinesInput([line, { ...line, description: "", sac: "", rate: "" }], "INR")).toEqual({
+      ok: true,
+      lines: [
+        { description: "Design", sac: "998391", quantity: "5", unit: "days", rate: "₹20,000.00" },
+      ],
+    });
+    expect(kinLinesInput([{ ...line, sac: "" }], "INR")).toMatchObject({
+      ok: true,
+      lines: [{ sac: null }],
+    });
+    for (const sac of ["123", "123456789", "99A3"])
+      expect(kinLinesInput([{ ...line, sac }], "INR")).toEqual({
+        ok: false,
+        problem: "Line 1: a SAC or HSN code is 4 to 8 digits.",
+      });
+    expect(kinLinesInput([], "INR")).toEqual({ ok: true, lines: null });
+  });
+
+  it("refuses a zero quantity and a rate in another currency", () => {
+    expect(kinLinesInput([{ ...line, quantity: "0" }], "INR")).toMatchObject({ ok: false });
+    expect(kinLinesInput([{ ...line, rate: "$200" }], "INR")).toMatchObject({ ok: false });
+  });
+});
+
+describe("kinBudgets", () => {
+  const budget = (
+    budgetId: string,
+    spent: number,
+    limit: number,
+    status: KinMoneyBudget["status"],
+    currency = "INR",
+  ): KinMoneyBudget => ({
+    budgetId,
+    category: "travel",
+    project: null,
+    limit: { minor: limit, currency },
+    spent: { minor: spent, currency },
+    expenses: 1,
+    status,
+  });
+
+  it("puts over first, then near, each in its own currency with a foreign one's estimate", () => {
+    const view = kinBudgetsView(
+      {
+        month: "2026-11",
+        budgets: [budget("a", 100, 10_000, "ok", "USD"), budget("b", 1_200_000, 1_000_000, "over")],
+      },
+      null,
+      rates,
+    );
+    expect(view.map((one) => [one.id, one.standing, one.estimate])).toEqual([
+      ["b", "₹2,000 over", null],
+      ["a", "$99 left", "about ₹8,400"],
+    ]);
+  });
+
+  it("needs a target and a limit, and removes by the same target and currency", () => {
+    expect(
+      kinBudgetInput(orgId, { category: null, project: null, limit: "5k" }, "INR", "r"),
+    ).toMatchObject({ ok: false });
+    expect(
+      kinBudgetInput(orgId, { category: "travel", project: null, limit: "$200" }, "INR", "r"),
+    ).toMatchObject({ ok: true, input: { currency: "USD", limitMinor: 20_000 } });
+    expect(kinBudgetRemoval(orgId, budget("a", 0, 100, "ok", "USD"), "r")).toMatchObject({
+      currency: "USD",
+      limitMinor: null,
+    });
+  });
+});
+
+describe("kinCashView", () => {
+  it("keeps each currency apart and says when two accounts can't be told apart", () => {
+    const cash: KinCash = {
+      asOf: "2026-11-15T06:00:00.000Z",
+      today: "2026-11-15",
+      timeZone: "Asia/Kolkata",
+      known: true,
+      accounts: [
+        {
+          label: "Invented Bank Account ••1111",
+          kind: "account",
+          balance: inr(50_000_00),
+          on: "2026-10-31",
+          ageDays: 15,
+          stale: true,
+          check: "adds_up",
+          cannotTellApart: true,
+          newerRead: null,
+        },
+        {
+          label: "Invented Bank Account ••2222",
+          kind: "account",
+          balance: { minor: 1_000_00, currency: "USD" },
+          on: "2026-11-10",
+          ageDays: 5,
+          stale: false,
+          check: "adds_up",
+          cannotTellApart: false,
+          newerRead: {
+            balance: { minor: 900_00, currency: "USD" },
+            on: "2026-11-14",
+            standing: "not yet confirmed",
+          },
+        },
+      ],
+      notOfRecord: [],
+      byCurrency: [
+        {
+          currency: "INR",
+          accounts: 2,
+          total: null,
+          since: "2026-10-31",
+          sameDay: true,
+          stale: true,
+          receivedSince: inr(0),
+          spentSince: inr(0),
+          estimate: null,
+        },
+        {
+          currency: "USD",
+          accounts: 1,
+          total: { minor: 1_000_00, currency: "USD" },
+          since: "2026-11-10",
+          sameDay: true,
+          stale: false,
+          receivedSince: { minor: 0, currency: "USD" },
+          spentSince: { minor: 50_00, currency: "USD" },
+          estimate: { minor: 950_00, currency: "USD" },
+        },
+      ],
+    };
+    const view = kinCashView(cash, rates, now);
+    expect(view.accounts[0]!.notes[0]).toContain("can't tell this apart");
+    expect(view.accounts[1]!.notes[0]).toContain("not yet confirmed");
+    expect(view.accounts[1]!.estimate).toBe("about ₹84,000");
+    expect(view.currencies.map((one) => [one.currency, one.total, one.estimate])).toEqual([
+      ["INR", null, null],
+      ["USD", "$1,000.00", "$950"],
+    ]);
+  });
+});
+
+describe("kinRunwayText", () => {
+  const runway: KinRunway = {
+    currency: "INR",
+    months: [],
+    averageNet: inr(-100),
+    balance: { money: inr(1_000), oldest: "2026-11-01", stale: false },
+    withheld: false,
+    enoughHistory: true,
+    historySince: "2026-07-01",
+    runwayTenths: 45,
+  };
+  it("gives months only with three full months of history", () => {
+    expect(kinRunwayText(runway)).toBe(KIN_OUTLOOK.runwayMonths(45, "INR"));
+    expect(
+      kinRunwayText({ ...runway, runwayTenths: null, enoughHistory: false, historySince: null }),
+    ).toBe("Runway needs three full months of history.");
+  });
+});

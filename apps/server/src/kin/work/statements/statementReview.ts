@@ -27,6 +27,7 @@ import { resolveAttachmentPathById } from "../../../attachmentStore.ts";
 import * as ServerSecretStore from "../../../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../../../config.ts";
 import { KinChatHub } from "../../chat/KinChatHub.ts";
+import { KinRefreshObserver } from "../../chat/KinRefreshHub.ts";
 import { KinChatRepository } from "../../chat/KinChatRepository.ts";
 import { choiceCardState } from "../../widgets/choiceCard.ts";
 import { fieldText, parseFields } from "../lists.ts";
@@ -633,6 +634,7 @@ export const saveRead = Effect.fn("KinStatements.saveRead")(function* (input: {
       undone_at = NULL, pages_json = NULL, draft_json = NULL, proof_rounds = 0,
       generation = generation + ${earlier === undefined ? 0 : 1}
     WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId}`;
+  yield* (yield* KinRefreshObserver).touch(input.orgId, "moneyStatements");
   const previous = before?.reviewWidgetId ?? null;
   // The same review read again is the same card, back to Kin's proposal and open.
   if (previous === widgetId)

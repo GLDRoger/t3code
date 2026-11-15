@@ -27,6 +27,7 @@ const same = (a: KinRefreshes, b: KinRefreshes) =>
   a.visualHosts === b.visualHosts &&
   a.workChoices === b.workChoices &&
   a.moneyBudgets === b.moneyBudgets &&
+  a.moneyStatements === b.moneyStatements &&
   a.pulse === b.pulse &&
   a.budget === b.budget &&
   a.connections === b.connections;

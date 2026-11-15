@@ -24,6 +24,7 @@ export const KIN_REFRESH_TOPICS = [
   "connections",
   "workChoices",
   "moneyBudgets",
+  "moneyStatements",
   "pulse",
   "budget",
 ] as const;
@@ -45,6 +46,7 @@ export const KinRefreshes = Schema.Struct({
   connections: Schema.optional(NonNegativeInt),
   workChoices: Schema.optional(NonNegativeInt),
   moneyBudgets: Schema.optional(NonNegativeInt),
+  moneyStatements: Schema.optional(NonNegativeInt),
   pulse: Schema.optional(NonNegativeInt),
   budget: Schema.optional(NonNegativeInt),
 });

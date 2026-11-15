@@ -14,6 +14,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { KinRefreshObserver } from "../../chat/KinRefreshHub.ts";
 import { KinRecords, type Writer } from "../KinRecords.ts";
 import type { RecordRow } from "../recordRows.ts";
 import { type FieldValue, parseFields } from "../lists.ts";
@@ -558,6 +559,7 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
       yield* sql`UPDATE kin_bank_statements SET applied_at = ${input.now}, applied_by = ${input.personId},
           undone_at = NULL
         WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId}`;
+      yield* (yield* KinRefreshObserver).touch(input.orgId, "moneyStatements");
       const kept = [...held.keys()].filter((row) => review.matches.has(row)).length;
       const unexplained = yield* unexplainedCount(
         input.orgId,
@@ -808,6 +810,7 @@ export const undoStatement = Effect.fn("KinStatements.undo")(function* (input: {
       yield* sql`UPDATE kin_bank_statements SET applied_at = NULL, applied_by = NULL,
           undone_at = ${input.now}, generation = generation + 1
         WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId}`;
+      yield* (yield* KinRefreshObserver).touch(input.orgId, "moneyStatements");
       const review = stored.reviewJson === null ? undefined : reviewOf(stored.reviewJson);
       const categories = yield* expenseCategories(input.orgId);
       const held = yield* heldRows(input.orgId, input.statementId);

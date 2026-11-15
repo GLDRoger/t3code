@@ -238,6 +238,9 @@ export type KinConnectionActivity =
         readonly repo: string | null;
         readonly deliveryId: string | null;
         readonly receivedAt: number;
+        /** From the wake-up Kin queued for it, when GitHub's event was one it acts on. */
+        readonly eventName: string | null;
+        readonly summary: string | null;
       }>;
     }
   | { readonly _tag: "unsupported"; readonly connectionId: KinConnectionId };
@@ -1261,12 +1264,30 @@ const make = Effect.gen(function* () {
     const since = cursor?.checkedUntil ?? row.createdAt;
     const until = yield* Clock.currentTimeMillis;
     if (row.kind === "builtin" && row.preset === "google") {
-      const found = yield* withSignIn(orgId, row, (force) =>
-        signInOf(orgId, row, force).pipe(
-          Effect.flatMap((secret) => googleActivity(http, secret.accessToken, since)),
-        ),
+      // Only what the owner marked Read: the server reads no more than an agent may.
+      const read = new Set(
+        (yield* toolsOf(orgId, row.connectionId).pipe(provideSql))
+          .filter((tool) => tool.mode === "read" && tool.removedAt === null)
+          .map((tool) => tool.name),
       );
-      return { _tag: "google", connectionId: row.connectionId, since, until, ...found } as const;
+      const mail = read.has("gmail_list_threads") || read.has("gmail_search");
+      const calendar = read.has("calendar_list_events");
+      const found =
+        mail || calendar
+          ? yield* withSignIn(orgId, row, (force) =>
+              signInOf(orgId, row, force).pipe(
+                Effect.flatMap((secret) => googleActivity(http, secret.accessToken, since)),
+              ),
+            )
+          : { mail: [], calendar: [] };
+      return {
+        _tag: "google",
+        connectionId: row.connectionId,
+        since,
+        until,
+        mail: mail ? found.mail : [],
+        calendar: calendar ? found.calendar : [],
+      } as const;
     }
     if (row.preset === "github") {
       // Deliveries the GitHub webhooks recorded for the org; the connection adds no source.
@@ -1275,12 +1296,17 @@ const make = Effect.gen(function* () {
         repo: string | null;
         deliveryId: string | null;
         receivedAt: number;
+        eventName: string | null;
+        summary: string | null;
       }>`SELECT i.fire_id AS "fireId", s.repo AS repo,
             json_extract(i.payload_json, '$.payload.deliveryId') AS "deliveryId",
-            i.received_at AS "receivedAt"
+            i.received_at AS "receivedAt", json_extract(e.json, '$.eventName') AS "eventName",
+            json_extract(e.json, '$.summary') AS summary
           FROM kin_trigger_inbox i
             LEFT JOIN kin_webhook_sources s ON s.org_id = i.org_id
               AND s.source_id = json_extract(i.payload_json, '$.payload.sourceId')
+            LEFT JOIN kin_events e ON e.org_id = i.org_id AND e.tag = 'github'
+              AND e.dedupe_key = json_extract(i.payload_json, '$.payload.deliveryId')
           WHERE i.org_id = ${orgId} AND i.received_at > ${since} AND i.received_at <= ${until}
             AND json_extract(i.payload_json, '$.payload.kind') = 'github'
           ORDER BY i.received_at, i.fire_id LIMIT 200`;

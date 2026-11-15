@@ -143,8 +143,10 @@ class NoClaimableEvents extends Schema.TaggedError<NoClaimableEvents>()("NoClaim
 export class KinEventQueue extends Context.Service<
   KinEventQueue,
   {
+    /** `notBefore` holds a new event until then (a loose check-in's minute); a duplicate keeps its own. */
     readonly enqueue: (
       event: KinEvent,
+      options?: { readonly notBefore?: number },
     ) => Effect.Effect<
       { readonly event: KinEvent; readonly duplicate: boolean },
       | PersistenceSqlError
@@ -257,7 +259,7 @@ const make = Effect.gen(function* () {
   });
 
   const enqueue = Effect.fn("KinEventQueue.enqueue")(
-    function* (input: KinEvent) {
+    function* (input: KinEvent, options?: { readonly notBefore?: number }) {
       yield* validateEvent(input);
       if (
         input._tag === "github" &&
@@ -326,9 +328,10 @@ const make = Effect.gen(function* () {
           const json = yield* encodeEvent(event);
           const now = yield* Clock.currentTimeMillis;
           const inserted = yield* sql`
-      INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, dedupe_key, received_at, queued_at)
+      INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, dedupe_key, received_at, queued_at, not_before)
       VALUES (${event.eventId}, ${event.orgId}, ${event.agentId}, ${event._tag}, ${priority},
-        ${json}, ${event.dedupeKey}, ${DateTime.toEpochMillis(event.receivedAt)}, ${now})
+        ${json}, ${event.dedupeKey}, ${DateTime.toEpochMillis(event.receivedAt)}, ${now},
+        ${options?.notBefore !== undefined && options.notBefore > now ? options.notBefore : null})
       ON CONFLICT DO NOTHING
       RETURNING event_id
     `;
