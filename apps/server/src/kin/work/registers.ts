@@ -109,6 +109,7 @@ export const PRESETS: Record<PresetId, StoredDefinition & { name: string; prefix
       "rent",
       "fees",
       "taxes",
+      "salaries",
       "other",
     ],
     fields: [
@@ -383,7 +384,7 @@ export const checkFields = (
         if (typeof value !== "string" || !(spec.choices ?? []).includes(value)) return wrong;
         break;
       case "date":
-        if (typeof value !== "string" || !isCalendarDay(value)) return wrong;
+        if (typeof value !== "string" || !isFieldDate(value)) return wrong;
         break;
       case "person":
         if (typeof value !== "string" || !/^(?:person|agent):.{1,120}$/.test(value)) return wrong;
@@ -401,11 +402,16 @@ export const checkFields = (
   }
   return undefined;
 };
+/** A date field's value: a day, or a day and a time of day in the owner's zone. */
+export const isFieldDate = (value: string) =>
+  isCalendarDay(value.slice(0, 10)) &&
+  (value.length === 10 || /^.{10}T(?:[01]\d|2[0-3]):[0-5]\d$/.test(value));
+
 export const describe = (spec: FieldDef) =>
   spec.type === "choice"
     ? `one of ${(spec.choices ?? []).join(", ")}`
     : spec.type === "date"
-      ? "a day such as 2026-11-20"
+      ? "a day such as 2026-11-20, or a day and time such as 2026-11-18T15:00"
       : spec.type === "person"
         ? '"me", "owner" or an agentId'
         : spec.type === "link"

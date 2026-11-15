@@ -13,6 +13,8 @@ import { assert, describe, it } from "@effect/vitest";
 const KIN = NodePath.resolve(import.meta.dirname, "..");
 // Reads of one entry's own amount or payments, or a screen's list that shows each row's state.
 const OWN_READS: Readonly<Record<string, number>> = {
+  // The one entry an email attaches, for the card's label.
+  "connections/Sending.ts": 1,
   // A receipt's payment; one entry's payments on its document.
   "gendocs/facts.ts": 2,
   // A receipt's payment; the receipts list a screen shows, void ones marked.
@@ -25,9 +27,9 @@ const OWN_READS: Readonly<Record<string, number>> = {
   "pulse/senses/shared.ts": 1,
   // One settlement's parts, read to check a retry.
   "work/leadMoney.ts": 1,
-  // A statement's own rows, and the entries one row may match, each shown with its state.
+  // A statement's own rows, and the entries and recorded payments one row may match.
   "work/statements/bankList.ts": 1,
-  "work/statements/statementReview.ts": 3,
+  "work/statements/statementReview.ts": 4,
 };
 
 const sourcesUnder = (dir: string): ReadonlyArray<string> =>

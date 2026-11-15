@@ -23,6 +23,7 @@ import {
   kinTotalsEstimate,
   type KinEstimate,
 } from "@t3tools/client-runtime/kin/kinCurrency";
+import { useState } from "react";
 import { Pressable, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -36,6 +37,12 @@ import { KinAttentionSection } from "./KinAttention";
 import { KinGoals } from "./KinGoals";
 import { KinReceiptsSection } from "./KinInvoice";
 import { KinEstimateText, KinSetRateLink } from "./KinMoneyEstimate";
+import {
+  KinBudgetsSection,
+  KinCashSection,
+  KinOutlookSection,
+  KinQuotesSection,
+} from "./KinMoneyAnswers";
 import { KinSubscriptionsSection } from "./KinSubscriptions";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
@@ -326,6 +333,7 @@ export function KinMoneyArea(props: Shared) {
   const lists = useKinLists(target, { enabled: true, seq });
   const agent = useKinAskAgent(target);
   const rates = useKinRates(target);
+  const [yearOpen, setYearOpen] = useState(false);
   const openList = useKinOpenList(target);
   const now = new Date(useNowMinuteMs());
   const { names } = props.directory;
@@ -462,6 +470,9 @@ export function KinMoneyArea(props: Shared) {
           )}
         </ListSection>
       </View>
+      <KinCashSection {...target} seq={seq} rates={rates} />
+      <KinOutlookSection {...target} seq={seq} rates={rates} />
+      <KinQuotesSection {...target} seq={seq} rates={rates} lists={kinListsOf(lists)} />
       <View className="gap-4">
         <View className="px-2">
           <Heading>{view.monthLabel}</Heading>
@@ -491,6 +502,7 @@ export function KinMoneyArea(props: Shared) {
           </ListSection>
         )}
       </View>
+      <KinBudgetsSection {...target} seq={seq} rates={rates} lists={kinListsOf(lists)} />
       <KinSubscriptionsSection
         {...target}
         lists={kinListsOf(lists)}
@@ -498,53 +510,6 @@ export function KinMoneyArea(props: Shared) {
         seq={seq}
         rates={rates}
       />
-      <View className="gap-4">
-        <View className="px-2">
-          <Heading>{view.yearLabel}</Heading>
-        </View>
-        <View className="flex-row gap-4 px-2">
-          <Figure figure={view.yearReceived} onOpen={openList} estimates={estimates} />
-          <Figure figure={view.yearSpent} onOpen={openList} estimates={estimates} />
-        </View>
-        {view.yearTdsDeducted === null ? null : (
-          <View className="flex-row gap-4 px-2">
-            <Figure figure={view.yearTdsDeducted} onOpen={openList} />
-          </View>
-        )}
-      </View>
-      {view.charts.map((chart) => (
-        <View key={chart.unit.kind === "money" ? chart.unit.currency : ""} className="px-2">
-          <KinChart view={kinChartView(chart)} />
-        </View>
-      ))}
-      {view.charts.length === 0 ? null : (
-        <ListSection title={KIN_MONEY.months}>
-          {view.months.map((month) => {
-            const received = month.openReceived;
-            const spent = month.openSpent;
-            return (
-              <View key={month.month} className="gap-1 bg-grouped-card px-4 py-2.5">
-                <Text textRole="footnote" className="text-foreground-muted">
-                  {month.label}
-                </Text>
-                <View className="flex-row gap-4">
-                  <MonthFigure
-                    label={KIN_MONEY.received}
-                    amount={month.received}
-                    onOpen={received === null ? null : () => openList(received)}
-                  />
-                  <MonthFigure
-                    label={KIN_MONEY.spent}
-                    amount={month.spent}
-                    onOpen={spent === null ? null : () => openList(spent)}
-                  />
-                </View>
-              </View>
-            );
-          })}
-        </ListSection>
-      )}
-      <KinReceiptsSection {...target} seq={seq} />
       <ListSection title={KIN_MONEY.upcoming}>
         {upcoming.length === 0 ? (
           <Text textRole="body" className="px-4 py-3 text-foreground-muted">
@@ -560,6 +525,63 @@ export function KinMoneyArea(props: Shared) {
           onPress={() => navigation.navigate("KinDates", target)}
         />
       </ListSection>
+      <KinReceiptsSection {...target} seq={seq} />
+      <ListSection>
+        <ListActionRow
+          label={yearOpen ? `Hide ${view.yearLabel.toLowerCase()}` : view.yearLabel}
+          onPress={() => setYearOpen(!yearOpen)}
+        />
+      </ListSection>
+      {yearOpen ? (
+        <>
+          <View className="gap-4">
+            <View className="px-2">
+              <Heading>{view.yearLabel}</Heading>
+            </View>
+            <View className="flex-row gap-4 px-2">
+              <Figure figure={view.yearReceived} onOpen={openList} estimates={estimates} />
+              <Figure figure={view.yearSpent} onOpen={openList} estimates={estimates} />
+            </View>
+            {view.yearTdsDeducted === null ? null : (
+              <View className="flex-row gap-4 px-2">
+                <Figure figure={view.yearTdsDeducted} onOpen={openList} />
+              </View>
+            )}
+          </View>
+          {view.charts.map((chart) => (
+            <View key={chart.unit.kind === "money" ? chart.unit.currency : ""} className="px-2">
+              <KinChart view={kinChartView(chart)} />
+            </View>
+          ))}
+          {view.charts.length === 0 ? null : (
+            <ListSection title={KIN_MONEY.months}>
+              {view.months.map((month) => {
+                const received = month.openReceived;
+                const spent = month.openSpent;
+                return (
+                  <View key={month.month} className="gap-1 bg-grouped-card px-4 py-2.5">
+                    <Text textRole="footnote" className="text-foreground-muted">
+                      {month.label}
+                    </Text>
+                    <View className="flex-row gap-4">
+                      <MonthFigure
+                        label={KIN_MONEY.received}
+                        amount={month.received}
+                        onOpen={received === null ? null : () => openList(received)}
+                      />
+                      <MonthFigure
+                        label={KIN_MONEY.spent}
+                        amount={month.spent}
+                        onOpen={spent === null ? null : () => openList(spent)}
+                      />
+                    </View>
+                  </View>
+                );
+              })}
+            </ListSection>
+          )}
+        </>
+      ) : null}
       <ListSection title={KIN_CURRENCY.rates} footer={KIN_CURRENCY.ratesDetail}>
         <ListActionRow
           label={

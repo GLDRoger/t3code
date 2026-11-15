@@ -9,6 +9,15 @@ import {
   type KinInvoiceView,
 } from "@t3tools/client-runtime/kin/kinInvoices";
 import { KIN_LISTS, kinListSend } from "@t3tools/client-runtime/kin/kinLists";
+import {
+  KIN_LINES,
+  KIN_QUOTES,
+  kinLineDrafts,
+  kinLinesInput,
+  kinQuoteActions,
+  type KinLineDraft,
+  type KinQuoteRowView,
+} from "@t3tools/client-runtime/kin/kinMoneyAnswers";
 import { kinDefaultTemplate } from "@t3tools/client-runtime/kin/kinTemplates";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
@@ -18,10 +27,13 @@ import type {
   KinListDefinition,
   KinRecipe,
   KinPartyRef,
+  KinRecordDetail,
   KinRecordKey,
+  KinRecordState,
 } from "@t3tools/contracts";
 import {
   BanIcon,
+  CheckIcon,
   DownloadIcon,
   ExternalLinkIcon,
   FileTextIcon,
@@ -29,7 +41,7 @@ import {
   RotateCcwIcon,
   StampIcon,
 } from "lucide-react";
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 
 import { useAtomCommand } from "../state/use-atom-command";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -37,7 +49,7 @@ import { KinClientDialog } from "./KinWorkForms";
 import { kinHostConnected } from "./useKinHost";
 
 import { useAssetUrls } from "../assets/assetUrls";
-import { Alert, AlertDescription } from "../components/ui/alert";
+import { Alert, AlertAction, AlertDescription } from "../components/ui/alert";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -69,7 +81,9 @@ import { Spinner } from "../components/ui/spinner";
 import { cn, randomUUID } from "../lib/utils";
 import { KinWorkSection as Section } from "./KinWorkParts";
 import { kinClient } from "./kinClient";
+import { KinLinesEditor } from "./KinMoneyAnswers";
 import { useKinMoneyActions, useKinRecipes, type KinPreviewFile } from "./useKinMoney";
+import { useKinEntryLines, useKinInvoiceFromQuote } from "./useKinMoneyAnswers";
 import type { KinWorkTarget } from "./useKinWork";
 
 type MoneyActions = ReturnType<typeof useKinMoneyActions>;
@@ -94,6 +108,7 @@ export function KinInvoiceActions(
     readonly actions: MoneyActions;
     /** The invoice's client, to edit when Make invoice needs a detail of theirs. */
     readonly party: KinPartyRef | null;
+    readonly currency: string;
     readonly busy: boolean;
   },
 ) {
@@ -207,10 +222,158 @@ export function KinInvoiceActions(
         <KinMakeDocumentDialog
           {...props}
           list={props.def?.list ?? "invoices"}
+          currency={props.currency}
           onClose={() => setMaking(false)}
         />
       ) : null}
     </>
+  );
+}
+
+/** A quote's taps: its PDF, sent, accepted or declined and back, and its invoice made from it. */
+export function KinQuoteActions(
+  props: KinWorkTarget & {
+    readonly item: KinRecordDetail;
+    readonly quote: KinQuoteRowView;
+    readonly def: KinListDefinition | null;
+    readonly actions: MoneyActions;
+    readonly busy: boolean;
+    readonly canChange: boolean;
+    readonly onState: (state: KinRecordState) => void;
+    readonly onOpenKey: (key: KinRecordKey) => void;
+  },
+) {
+  const { environmentId, item, quote, actions } = props;
+  const allowed = {
+    render: useAtomValue(kinClient.docRender.permissionAtom(environmentId)),
+    issue: useAtomValue(kinClient.workIssue.permissionAtom(environmentId)),
+    invoice: useAtomValue(kinClient.workInvoiceFromQuote.permissionAtom(environmentId)),
+  };
+  const can = kinQuoteActions(quote.state, props.def?.numbering !== undefined);
+  const invoicing = useKinInvoiceFromQuote(props);
+  const [making, setMaking] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [requestId] = useState(randomUUID);
+  const busy = props.busy || actions.busy || invoicing.busy;
+  const numbered = quote.number !== item.key;
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        {can.makeInvoice && allowed.invoice ? (
+          <Button
+            size="sm"
+            disabled={busy}
+            aria-busy={invoicing.busy}
+            onClick={() => void invoicing.make(item.key, requestId)}
+          >
+            <FileTextIcon />
+            {invoicing.busy ? KIN_QUOTES.makingInvoice : KIN_QUOTES.makeInvoice}
+          </Button>
+        ) : null}
+        {can.send && allowed.issue ? (
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => setSending(true)}>
+            <StampIcon />
+            {KIN_QUOTES.send}
+          </Button>
+        ) : null}
+        {can.accept && props.canChange ? (
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => props.onState("done")}>
+            <CheckIcon />
+            {KIN_QUOTES.accept}
+          </Button>
+        ) : null}
+        {can.decline && allowed.issue ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={busy}
+            onClick={() => void actions.void(item.key)}
+          >
+            <BanIcon />
+            {KIN_QUOTES.decline}
+          </Button>
+        ) : null}
+        {can.unaccept && props.canChange ? (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={() => props.onState(numbered ? "waiting" : "open")}
+          >
+            <RotateCcwIcon />
+            {KIN_QUOTES.unaccept}
+          </Button>
+        ) : null}
+        {can.undecline && allowed.issue ? (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={() => void actions.unvoid(item.key)}
+          >
+            <RotateCcwIcon />
+            {KIN_QUOTES.undecline}
+          </Button>
+        ) : null}
+        {quote.state !== "declined" && allowed.render ? (
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => setMaking(true)}>
+            <FileTextIcon />
+            {KIN_INVOICES.makePdf}
+          </Button>
+        ) : null}
+      </div>
+      {invoicing.problem === null && invoicing.notice === null ? null : (
+        <Alert
+          variant={invoicing.problem === null ? "info" : "error"}
+          controlAlignment="first-line"
+        >
+          <AlertDescription>{invoicing.problem ?? invoicing.notice}</AlertDescription>
+          {invoicing.invoice === null ? null : (
+            <AlertAction>
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => props.onOpenKey(invoicing.invoice!)}
+              >
+                {KIN_QUOTES.openInvoice}
+              </Button>
+            </AlertAction>
+          )}
+        </Alert>
+      )}
+      <AlertDialog open={sending} onOpenChange={setSending}>
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{KIN_QUOTES.sendTitle}</AlertDialogTitle>
+            <AlertDialogDescription>{KIN_QUOTES.sendDetail}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" />}>
+              {KIN_WORK_COPY.cancel}
+            </AlertDialogClose>
+            <Button
+              onClick={() => {
+                setSending(false);
+                void actions.issue(item.key);
+              }}
+            >
+              {KIN_QUOTES.send}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+      {making ? (
+        <KinMakeDocumentDialog
+          {...props}
+          itemKey={item.key}
+          list={props.def?.list ?? "quotes"}
+          title={KIN_INVOICES.makePdf}
+          currency={item.amount?.currency ?? props.def?.currency ?? "INR"}
+          party={item.party ?? null}
+          onClose={() => setMaking(false)}
+        />
+      ) : null}
+    </div>
   );
 }
 
@@ -225,12 +388,38 @@ function KinMakeDocumentDialog(
   props: KinWorkTarget & {
     readonly itemKey: KinRecordKey;
     readonly list: string;
+    readonly title?: string;
+    /** The entry's currency: every line is in it. */
+    readonly currency: string;
     readonly actions: MoneyActions;
     readonly party: KinPartyRef | null;
     readonly onClose: () => void;
   },
 ) {
   const { actions } = props;
+  const readLines = useKinEntryLines(props);
+  const [lines, setLines] = useState<ReadonlyArray<KinLineDraft> | null>(null);
+  const [linesProblem, setLinesProblem] = useState<string | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the lines its last document was made with from the host once, when the form opens
+  useEffect(() => {
+    let live = true;
+    void readLines(props.itemKey).then((held) => {
+      if (live) setLines(kinLineDrafts(held));
+    });
+    return () => {
+      live = false;
+    };
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- once per entry; the reader is remade every render
+  }, [props.itemKey]);
+  const inputsOf = () => {
+    const checked = kinLinesInput(lines ?? [], props.currency);
+    if (!checked.ok) {
+      setLinesProblem(checked.problem);
+      return null;
+    }
+    setLinesProblem(null);
+    return checked.lines === null ? {} : { lines: checked.lines };
+  };
   const recipes = useKinRecipes(props, true);
   const templates: ReadonlyArray<KinRecipe> =
     recipes.state._tag === "ready" ? kinTemplatesFor(recipes.state.value.recipes, props.list) : [];
@@ -255,8 +444,10 @@ function KinMakeDocumentDialog(
   };
   const preview = async () => {
     if (recipe === null) return;
+    const inputs = inputsOf();
+    if (inputs === null) return;
     setFailed(false);
-    const files = await actions.preview(recipe.name, props.itemKey);
+    const files = await actions.preview(recipe.name, props.itemKey, inputs);
     const file = files?.[0];
     if (file === undefined) return setFailed(files !== null);
     show({ url: kinPreviewUrl(file), file });
@@ -270,7 +461,7 @@ function KinMakeDocumentDialog(
     >
       <DialogPopup className="max-w-3xl">
         <DialogHeader>
-          <DialogTitle>{KIN_INVOICES.makeInvoice}</DialogTitle>
+          <DialogTitle>{props.title ?? KIN_INVOICES.makeInvoice}</DialogTitle>
           {recipe === null ? null : <DialogDescription>{recipe.description}</DialogDescription>}
         </DialogHeader>
         <DialogPanel>
@@ -314,6 +505,26 @@ function KinMakeDocumentDialog(
                 </Select>
               </div>
             ) : null}
+            {recipe === null || shown !== null ? null : lines === null ? (
+              <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Spinner />
+                {KIN_LINES.title}…
+              </p>
+            ) : (
+              <KinLinesEditor
+                lines={lines}
+                disabled={actions.busy}
+                onChange={(next) => {
+                  setLines(next);
+                  setLinesProblem(null);
+                }}
+              />
+            )}
+            {linesProblem === null ? null : (
+              <Alert variant="error">
+                <AlertDescription>{linesProblem}</AlertDescription>
+              </Alert>
+            )}
             {shown !== null ? (
               // oxlint-disable-next-line react/iframe-missing-sandbox -- Chrome will not render a PDF in a sandboxed frame; the src is a blob made here
               <iframe
@@ -363,7 +574,9 @@ function KinMakeDocumentDialog(
               disabled={actions.busy}
               aria-busy={actions.busy}
               onClick={async () => {
-                const filed = await actions.file(recipe.name, props.itemKey, requestId);
+                const inputs = inputsOf();
+                if (inputs === null) return;
+                const filed = await actions.file(recipe.name, props.itemKey, requestId, inputs);
                 if (filed !== null) close();
               }}
             >
@@ -406,6 +619,18 @@ function KinEditClient(
       onOpenExisting={props.onDone}
       onClose={props.onDone}
     />
+  );
+}
+
+/** Where the invoice was sent from Kin, newest first. */
+export function KinInvoiceSent(props: { readonly invoice: KinInvoiceView }) {
+  if (props.invoice.sent.length === 0) return null;
+  return (
+    <ul className="flex flex-col gap-0.5 text-xs text-muted-foreground">
+      {props.invoice.sent.map((line) => (
+        <li key={line}>{line}</li>
+      ))}
+    </ul>
   );
 }
 

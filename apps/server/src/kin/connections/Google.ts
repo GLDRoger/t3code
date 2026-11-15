@@ -19,16 +19,25 @@ export const GOOGLE_SERVER: AuthServer = {
   issParameter: false,
   basicOnly: false,
 };
-// Read only; write scopes are asked for when the owner first allows a write (a later update).
+/** What sending needs; a sign-in from before Kin sent anything lacks these. */
+const GOOGLE_SEND_SCOPES = [
+  "https://www.googleapis.com/auth/gmail.send",
+  "https://www.googleapis.com/auth/calendar.events",
+];
 export const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/calendar.events.readonly",
+  ...GOOGLE_SEND_SCOPES,
 ].join(" ");
+export const canSend = (granted: string | undefined) => {
+  const scopes = new Set((granted ?? "").split(/\s+/));
+  return GOOGLE_SEND_SCOPES.every((scope) => scopes.has(scope));
+};
 /** Ask for a refresh token every time: Google gives one only with consent shown. */
 export const GOOGLE_AUTH_EXTRA = { access_type: "offline", prompt: "consent" } as const;
 
-const GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me";
-const CALENDAR = "https://www.googleapis.com/calendar/v3/calendars";
+export const GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me";
+export const CALENDAR = "https://www.googleapis.com/calendar/v3/calendars";
 
 const read = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
 const max = (limit: number) => ({
@@ -105,13 +114,93 @@ export const GOOGLE_TOOLS: ReadonlyArray<ListedTool> = [
   openWorld: false,
 }));
 
-const field = (value: unknown, ...path: ReadonlyArray<string>): unknown =>
+const write = { readOnlyHint: false, destructiveHint: false, openWorldHint: false };
+const addresses = (limit: number, description: string) => ({
+  type: "array",
+  items: { type: "string", description: "A plain address, such as ana@example.com." },
+  maxItems: limit,
+  description,
+});
+const attachments = {
+  type: "array",
+  items: { type: "string" },
+  maxItems: 5,
+  description:
+    "Kin's own files to attach, by key: an invoice, quote or receipt entry (its latest PDF) or a doc key.",
+};
+
+/** Kin's own Google tools that send: every call is a card the owner confirms. */
+export const GOOGLE_SEND_TOOLS: ReadonlyArray<ListedTool> = [
+  {
+    name: "gmail_send",
+    title: "Send an email",
+    description:
+      "Send a new plain-text email from the owner's Gmail. Nothing is sent until the owner taps Confirm on a card showing it in full.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        to: addresses(10, "Who it goes to; at least one."),
+        cc: addresses(10, "Who gets a copy."),
+        subject: { type: "string", maxLength: 300 },
+        body: { type: "string", maxLength: 20_000, description: "Plain text, in full." },
+        attachments,
+      },
+      required: ["to", "subject", "body"],
+    },
+  },
+  {
+    name: "gmail_reply",
+    title: "Reply in a mail thread",
+    description:
+      "Reply in an existing mail thread, to whoever wrote last, from the owner's Gmail. Nothing is sent until the owner taps Confirm on a card showing it in full.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        threadId: { type: "string" },
+        body: { type: "string", maxLength: 20_000, description: "Plain text, in full." },
+        cc: addresses(10, "Who else gets a copy."),
+        attachments,
+      },
+      required: ["threadId", "body"],
+    },
+  },
+  {
+    name: "calendar_save_event",
+    title: "Add or change a calendar event",
+    description:
+      "Add an event to the owner's calendar, or change one with eventId, and send the invitations. Nothing is saved until the owner taps Confirm on a card showing it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        eventId: { type: "string", description: "The event to change; leave out to add one." },
+        calendarId,
+        title: { type: "string", maxLength: 300 },
+        start: { type: "string", format: "date-time" },
+        end: { type: "string", format: "date-time" },
+        timeZone: { type: "string", description: "An IANA zone such as Asia/Kolkata." },
+        location: { type: "string", maxLength: 500 },
+        notes: { type: "string", maxLength: 8_000 },
+        invitees: addresses(50, "Who is invited; Google emails each one."),
+      },
+      required: ["title", "start", "end"],
+    },
+  },
+].map(({ name, ...rest }) => ({
+  name,
+  definition: { name, ...rest, annotations: write },
+  openWorld: false,
+}));
+export const GOOGLE_SEND_TOOL_NAMES: ReadonlySet<string> = new Set(
+  GOOGLE_SEND_TOOLS.map((tool) => tool.name),
+);
+
+export const field = (value: unknown, ...path: ReadonlyArray<string>): unknown =>
   path.reduce<unknown>(
     (at, name) => (Predicate.hasProperty(at, name) ? at[name] : undefined),
     value,
   );
-const text = (value: unknown) => (typeof value === "string" ? value : undefined);
-const list = (value: unknown): ReadonlyArray<unknown> => (Array.isArray(value) ? value : []);
+export const text = (value: unknown) => (typeof value === "string" ? value : undefined);
+export const list = (value: unknown): ReadonlyArray<unknown> => (Array.isArray(value) ? value : []);
 const arg = (args: Readonly<Record<string, unknown>>, name: string) => text(args[name])?.trim();
 const limit = (args: Readonly<Record<string, unknown>>, top: number, fallback: number) => {
   const value = Number(args.max);
@@ -122,13 +211,20 @@ const failure = (reason: KinGatewayError["reason"], message: string) =>
   new KinGatewayError({ reason, message });
 
 /** One Google API call; its error text is Google's, so only the status reaches anyone. */
-const api = Effect.fn("KinGoogle.api")(function* (
+export const api = Effect.fn("KinGoogle.api")(function* (
   http: HttpClient.HttpClient,
   token: string,
   url: string,
   params: Readonly<Record<string, string | ReadonlyArray<string> | undefined>> = {},
+  write?: { readonly method: "POST" | "PATCH"; readonly json: unknown },
 ) {
-  const request = HttpClientRequest.get(url).pipe(
+  const base =
+    write === undefined
+      ? HttpClientRequest.get(url)
+      : HttpClientRequest.make(write.method)(url).pipe(
+          HttpClientRequest.bodyJsonUnsafe(write.json),
+        );
+  const request = base.pipe(
     HttpClientRequest.acceptJson,
     HttpClientRequest.bearerToken(token),
     HttpClientRequest.setUrlParams(
@@ -165,7 +261,7 @@ const headerValues = (message: unknown, name: string) =>
   list(field(message, "payload", "headers"))
     .filter((header) => text(field(header, "name"))?.toLowerCase() === name.toLowerCase())
     .flatMap((header) => text(field(header, "value")) ?? []);
-const header = (message: unknown, name: string) => headerValues(message, name)[0] ?? null;
+export const header = (message: unknown, name: string) => headerValues(message, name)[0] ?? null;
 
 const threadSummary = (thread: unknown) => {
   const messages = list(field(thread, "messages"));

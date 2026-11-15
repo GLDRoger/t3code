@@ -14,6 +14,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { KinRefreshObserver } from "../../chat/KinRefreshHub.ts";
 import { KinRecords, type Writer } from "../KinRecords.ts";
 import type { RecordRow } from "../recordRows.ts";
 import { type FieldValue, parseFields } from "../lists.ts";
@@ -29,6 +30,7 @@ import {
   rowTitle,
 } from "./bankList.ts";
 import { changeSelection, decisionsOf, reviewCard, rowsOf } from "./statementCard.ts";
+import { SALARIES } from "./statementMatch.ts";
 import {
   cardState,
   encodeSelection,
@@ -247,6 +249,27 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           { _tag: "new", id: "expenses", ...PRESETS.expenses, definition: PRESETS.expenses },
           input.now,
         );
+      const before = yield* listDef(input.orgId, "expenses");
+      // A list made before salaries had a category gains it the first time one is confirmed.
+      if (
+        before !== undefined &&
+        !before.categories.includes(SALARIES) &&
+        decisions.some(
+          (one) => one.action?.action === "expense" && one.action.category === SALARIES,
+        )
+      )
+        yield* defineList(
+          input.orgId,
+          {
+            _tag: "extend",
+            id: "expenses",
+            fields: [],
+            categories: [SALARIES],
+            choices: {},
+            stateLabels: {},
+          },
+          input.now,
+        );
       const expenses = yield* listDef(input.orgId, "expenses");
       const paidWithChoice = paidWith(
         expenses?.fields.find((one) => one.key === "paidWith")?.choices,
@@ -392,6 +415,7 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
       });
       const tally = {
         payments: 0,
+        recorded: 0,
         tds: 0,
         paid: 0,
         linked: 0,
@@ -413,10 +437,25 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           const candidate = match.candidates[decision.option]!;
           const targetRow = yield* records.getById(input.orgId, candidate.recordId);
           if (targetRow === undefined) return yield* changed;
-          if (candidate.kind === "invoice") {
+          if (candidate.kind === "invoice" && candidate.paymentId !== undefined) {
+            yield* livePayment(candidate.paymentId);
+            const prior = yield* settleBank(row, states.explained, "payment received");
+            // The payment was there before this statement, so Undo leaves it be.
+            yield* entry(row, "payment", candidate.recordId, null, { bank: prior });
+            tally.recorded += 1;
+          } else if (candidate.kind === "invoice") {
+            const foreign =
+              targetRow.currency !== null &&
+              targetRow.currency !== currency &&
+              row.foreign?.currency === targetRow.currency
+                ? row.foreign
+                : undefined;
             const received = yield* live(
               records.pay(input.orgId, writer, targetRow.key, {
-                amount: { minor: row.amountMinor, currency },
+                amount:
+                  foreign === undefined
+                    ? { minor: row.amountMinor, currency }
+                    : { minor: foreign.amountMinor, currency: foreign.currency },
                 paidOn: row.date,
                 note: note(row),
                 originKey: retryKey(index, "received"),
@@ -520,6 +559,7 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
       yield* sql`UPDATE kin_bank_statements SET applied_at = ${input.now}, applied_by = ${input.personId},
           undone_at = NULL
         WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId}`;
+      yield* (yield* KinRefreshObserver).touch(input.orgId, "moneyStatements");
       const kept = [...held.keys()].filter((row) => review.matches.has(row)).length;
       const unexplained = yield* unexplainedCount(
         input.orgId,
@@ -531,6 +571,11 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           ? []
           : [
               `Recorded ${tally.payments} payment${tally.payments === 1 ? "" : "s"} on invoices${tally.tds === 0 ? "" : `, ${tally.tds} with TDS deducted`}.`,
+            ]),
+        ...(tally.recorded === 0
+          ? []
+          : [
+              `Matched ${tally.recorded} row${tally.recorded === 1 ? "" : "s"} to payments already recorded.`,
             ]),
         ...(tally.paid === 0
           ? []
@@ -765,6 +810,7 @@ export const undoStatement = Effect.fn("KinStatements.undo")(function* (input: {
       yield* sql`UPDATE kin_bank_statements SET applied_at = NULL, applied_by = NULL,
           undone_at = ${input.now}, generation = generation + 1
         WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId}`;
+      yield* (yield* KinRefreshObserver).touch(input.orgId, "moneyStatements");
       const review = stored.reviewJson === null ? undefined : reviewOf(stored.reviewJson);
       const categories = yield* expenseCategories(input.orgId);
       const held = yield* heldRows(input.orgId, input.statementId);

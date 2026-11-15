@@ -15,7 +15,12 @@ import {
   type KinEstimate,
 } from "@t3tools/client-runtime/kin/kinCurrency";
 import type { KinRecordKey } from "@t3tools/contracts";
-import { ArrowLeftRightIcon, MessageSquareIcon } from "lucide-react";
+import {
+  ArrowLeftRightIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
+  MessageSquareIcon,
+} from "lucide-react";
 import { useState } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
@@ -23,6 +28,12 @@ import { Button } from "../components/ui/button";
 import { cn } from "../lib/utils";
 import { KinChart } from "./KinChart";
 import { KinEstimateText, KinRatesDialog, KinSetRateButton } from "./KinMoneyEstimate";
+import {
+  KinBudgetsSection,
+  KinCashSection,
+  KinOutlookSection,
+  KinQuotesSection,
+} from "./KinMoneyAnswers";
 import { KinSubscriptionsSection } from "./KinSubscriptions";
 import { KinReceiptsSection } from "./KinReceipts";
 import { KinDateRow } from "./KinWorkDates";
@@ -178,6 +189,8 @@ export function KinWorkMoney(
     </>
   );
   const [ratesOpen, setRatesOpen] = useState(false);
+  const [yearOpen, setYearOpen] = useState(false);
+  const seq = props.stale ? null : props.live.seq;
   if (state._tag === "refused") return <KinWorkNotice {...KIN_MONEY.onlyOwner} />;
   if (state._tag === "failed" || state._tag === "gone") {
     return (
@@ -293,6 +306,16 @@ export function KinWorkMoney(
             )}
           </KinWorkSection>
         </section>
+        <KinCashSection {...props} seq={seq} rates={rates} />
+        <KinOutlookSection {...props} seq={seq} rates={rates} onOpenKey={props.onOpenKey} />
+        <KinQuotesSection
+          {...props}
+          lists={kinListsOf(props.lists)}
+          seq={seq}
+          rates={rates}
+          onOpenKey={props.onOpenKey}
+          onOpenList={props.onOpenList}
+        />
         <section className="flex flex-col gap-3">
           <h2 className="px-2 text-sm font-medium text-foreground">{view.monthLabel}</h2>
           <div className="grid grid-cols-2 gap-x-6 gap-y-2">
@@ -322,86 +345,13 @@ export function KinWorkMoney(
             </KinWorkSection>
           )}
         </section>
+        <KinBudgetsSection {...props} seq={seq} rates={rates} lists={props.lists} />
         <KinSubscriptionsSection
           {...props}
           lists={kinListsOf(props.lists)}
           seq={props.stale ? null : props.live.seq}
           rates={rates}
           onOpen={props.onSubscriptions}
-          onOpenKey={props.onOpenKey}
-        />
-        <section className="flex flex-col gap-3">
-          <h2 className="px-2 text-sm font-medium text-foreground">{view.yearLabel}</h2>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-2">
-            <Figure figure={view.yearReceived} onOpen={props.onOpenList} estimates={estimates} />
-            <Figure figure={view.yearSpent} onOpen={props.onOpenList} estimates={estimates} />
-            {view.yearTdsDeducted === null ? null : (
-              <Figure
-                figure={view.yearTdsDeducted}
-                onOpen={props.onOpenList}
-                estimates={estimates}
-              />
-            )}
-          </div>
-        </section>
-        {view.charts.map((chart) => (
-          <section key={chart.unit.kind === "money" ? chart.unit.currency : ""} className="px-2">
-            <KinChart view={kinChartView(chart)} />
-          </section>
-        ))}
-        {view.charts.length === 0 ? null : (
-          <KinWorkSection title={KIN_MONEY.months}>
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-xs text-muted-foreground">
-                  <th scope="col" className="px-2 py-1 text-start font-medium">
-                    Month
-                  </th>
-                  <th scope="col" className="px-2 py-1 text-end font-medium">
-                    {KIN_MONEY.received}
-                  </th>
-                  <th scope="col" className="px-2 py-1 text-end font-medium">
-                    {KIN_MONEY.spent}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {view.months.map((month) => (
-                  <tr key={month.month} className="border-t border-border/60">
-                    <th scope="row" className="px-2 py-1 text-start font-normal text-foreground">
-                      {month.label}
-                    </th>
-                    {(
-                      [
-                        [month.received, month.openReceived, KIN_MONEY.received],
-                        [month.spent, month.openSpent, KIN_MONEY.spent],
-                      ] as const
-                    ).map(([amount, open, label]) => (
-                      <td key={label} className="py-0.5 text-end tabular-nums">
-                        {open === null ? (
-                          <span className="px-2 text-muted-foreground">{amount}</span>
-                        ) : (
-                          <button
-                            type="button"
-                            aria-label={`${label} in ${month.label}: ${amount}. Show the entries`}
-                            onClick={() => props.onOpenList(open)}
-                            className={cn("px-2 py-0.5 text-foreground", OPENS)}
-                          >
-                            {amount}
-                          </button>
-                        )}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </KinWorkSection>
-        )}
-        <KinReceiptsSection
-          {...props}
-          seq={props.stale ? null : props.live.seq}
-          onOpenDoc={props.onOpenDoc}
           onOpenKey={props.onOpenKey}
         />
         <KinWorkSection
@@ -429,6 +379,102 @@ export function KinWorkMoney(
             </p>
           ) : null}
         </KinWorkSection>
+        <KinReceiptsSection
+          {...props}
+          seq={props.stale ? null : props.live.seq}
+          onOpenDoc={props.onOpenDoc}
+          onOpenKey={props.onOpenKey}
+        />
+        <div className="flex flex-col gap-7">
+          <div className="px-2">
+            <Button size="sm" variant="ghost" onClick={() => setYearOpen(!yearOpen)}>
+              {yearOpen ? <ChevronUpIcon /> : <ChevronDownIcon />}
+              {view.yearLabel}
+            </Button>
+          </div>
+          {yearOpen ? (
+            <>
+              <section className="flex flex-col gap-3">
+                <h2 className="px-2 text-sm font-medium text-foreground">{view.yearLabel}</h2>
+                <div className="grid grid-cols-2 gap-x-6 gap-y-2">
+                  <Figure
+                    figure={view.yearReceived}
+                    onOpen={props.onOpenList}
+                    estimates={estimates}
+                  />
+                  <Figure figure={view.yearSpent} onOpen={props.onOpenList} estimates={estimates} />
+                  {view.yearTdsDeducted === null ? null : (
+                    <Figure
+                      figure={view.yearTdsDeducted}
+                      onOpen={props.onOpenList}
+                      estimates={estimates}
+                    />
+                  )}
+                </div>
+              </section>
+              {view.charts.map((chart) => (
+                <section
+                  key={chart.unit.kind === "money" ? chart.unit.currency : ""}
+                  className="px-2"
+                >
+                  <KinChart view={kinChartView(chart)} />
+                </section>
+              ))}
+              {view.charts.length === 0 ? null : (
+                <KinWorkSection title={KIN_MONEY.months}>
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-xs text-muted-foreground">
+                        <th scope="col" className="px-2 py-1 text-start font-medium">
+                          Month
+                        </th>
+                        <th scope="col" className="px-2 py-1 text-end font-medium">
+                          {KIN_MONEY.received}
+                        </th>
+                        <th scope="col" className="px-2 py-1 text-end font-medium">
+                          {KIN_MONEY.spent}
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {view.months.map((month) => (
+                        <tr key={month.month} className="border-t border-border/60">
+                          <th
+                            scope="row"
+                            className="px-2 py-1 text-start font-normal text-foreground"
+                          >
+                            {month.label}
+                          </th>
+                          {(
+                            [
+                              [month.received, month.openReceived, KIN_MONEY.received],
+                              [month.spent, month.openSpent, KIN_MONEY.spent],
+                            ] as const
+                          ).map(([amount, open, label]) => (
+                            <td key={label} className="py-0.5 text-end tabular-nums">
+                              {open === null ? (
+                                <span className="px-2 text-muted-foreground">{amount}</span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  aria-label={`${label} in ${month.label}: ${amount}. Show the entries`}
+                                  onClick={() => props.onOpenList(open)}
+                                  className={cn("px-2 py-0.5 text-foreground", OPENS)}
+                                >
+                                  {amount}
+                                </button>
+                              )}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </KinWorkSection>
+              )}
+            </>
+          ) : null}
+        </div>
         <div className="flex flex-wrap gap-2 px-2">
           {rates === null ? null : (
             <Button size="sm" variant="ghost" onClick={() => setRatesOpen(true)}>

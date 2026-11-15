@@ -1,11 +1,7 @@
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
-import {
-  AuthOrchestrationOperateScope,
-  AuthSettingsWriteScope,
-  EnvironmentAuthorizationError,
-} from "./auth.ts";
+import { EnvironmentAuthorizationError, AuthKinChatScope } from "./auth.ts";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinAgentId, KinChatError, KinOrgId, KinWidgetId } from "./kinChat.ts";
 import { KinMemoryItemId, MemoryItemKind, MemoryTrust } from "./kinLead.ts";
@@ -58,7 +54,11 @@ export type KinMemoryUndoInput = typeof KinMemoryUndoInput.Type;
 export const KinMemoryUndoResult = Schema.Struct({ card: KinMemoryChangeCard });
 export type KinMemoryUndoResult = typeof KinMemoryUndoResult.Type;
 
-export const KinMemoryListInput = Schema.Struct({ orgId: KinOrgId });
+export const KinMemoryListInput = Schema.Struct({
+  orgId: KinOrgId,
+  /** The items the owner forgot instead, newest last, for `restore`. */
+  forgotten: Schema.optional(Schema.Boolean),
+});
 export type KinMemoryListInput = typeof KinMemoryListInput.Type;
 /**
  * Who may know an item. `team` only by the owner's own authorisation (or a teammate's own words,
@@ -147,12 +147,19 @@ export type KinMemoryForgetInput = typeof KinMemoryForgetInput.Type;
 export const KinMemoryForgetResult = Schema.Struct({ itemId: KinMemoryItemId });
 export type KinMemoryForgetResult = typeof KinMemoryForgetResult.Type;
 
+/** The way back from `forget`: the item is true again, known to the owner only until they say. */
+export const KinMemoryRestoreInput = Schema.Struct({ orgId: KinOrgId, itemId: KinMemoryItemId });
+export type KinMemoryRestoreInput = typeof KinMemoryRestoreInput.Type;
+export const KinMemoryRestoreResult = Schema.Struct({ itemId: KinMemoryItemId });
+export type KinMemoryRestoreResult = typeof KinMemoryRestoreResult.Type;
+
 const KIN_MEMORY_WS_METHODS = {
   undo: "kin.memory.undo",
   list: "kin.memory.list",
   setVisibility: "kin.memory.setVisibility",
   confirmSuggestions: "kin.memory.confirmSuggestions",
   forget: "kin.memory.forget",
+  restore: "kin.memory.restore",
 } as const;
 
 // Owner of the lead only, on the server; the scope gates the client's button.
@@ -182,13 +189,19 @@ export const KinMemoryRpcs = [
     success: KinMemoryForgetResult,
     error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
   }),
+  Rpc.make(KIN_MEMORY_WS_METHODS.restore, {
+    payload: KinMemoryRestoreInput,
+    success: KinMemoryRestoreResult,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
 ] as const;
 
 export const KIN_MEMORY_RPC_SCOPES = {
-  [KIN_MEMORY_WS_METHODS.undo]: AuthOrchestrationOperateScope,
+  [KIN_MEMORY_WS_METHODS.undo]: AuthKinChatScope,
   // What the leads remember is the owner's, and who may know it is an owner setting.
-  [KIN_MEMORY_WS_METHODS.list]: AuthSettingsWriteScope,
-  [KIN_MEMORY_WS_METHODS.setVisibility]: AuthSettingsWriteScope,
-  [KIN_MEMORY_WS_METHODS.confirmSuggestions]: AuthSettingsWriteScope,
-  [KIN_MEMORY_WS_METHODS.forget]: AuthSettingsWriteScope,
+  [KIN_MEMORY_WS_METHODS.list]: AuthKinChatScope,
+  [KIN_MEMORY_WS_METHODS.setVisibility]: AuthKinChatScope,
+  [KIN_MEMORY_WS_METHODS.confirmSuggestions]: AuthKinChatScope,
+  [KIN_MEMORY_WS_METHODS.forget]: AuthKinChatScope,
+  [KIN_MEMORY_WS_METHODS.restore]: AuthKinChatScope,
 } as const;

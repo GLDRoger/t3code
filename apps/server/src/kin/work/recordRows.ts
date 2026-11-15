@@ -501,12 +501,40 @@ const definedDetail = Effect.fn("KinRecords.definedDetail")(function* (row: Reco
         ];
   });
   const payments = row.takesPayments === 1 ? yield* paymentsOf(orgId, row.recordId) : undefined;
+  const sent = yield* sentWith(orgId, row.recordId);
   return {
     fields,
     ...(files.length === 0 ? {} : { files }),
     ...(payments === undefined ? {} : { payments }),
+    ...(sent.length === 0 ? {} : { sent }),
   };
 });
+
+/** Mail that carried this entry's file, sent on the owner's Confirm (`connections/Sending.ts`). */
+const sentWith = Effect.fn("KinRecords.sentWith")(function* (orgId: KinOrgId, recordId: string) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    to: string | null;
+    subject: string | null;
+    threadId: string | null;
+    at: number;
+  }>`
+    SELECT json_extract(payload_json, '$.to') AS "to",
+      json_extract(payload_json, '$.subject') AS subject,
+      json_extract(result_json, '$.threadId') AS "threadId", done_at AS at
+    FROM kin_connection_asks
+    WHERE org_id = ${orgId} AND entry_record_id = ${recordId} AND state = 'sent'
+    ORDER BY done_at DESC, ask_id LIMIT 20`;
+  return rows.map((sent) => ({
+    to: Option.getOrElse(decodeAddresses(sent.to ?? "[]"), () => []),
+    subject: sent.subject ?? "",
+    at: iso(sent.at),
+    threadId: sent.threadId,
+  }));
+});
+const decodeAddresses = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Array(Schema.String)),
+);
 
 const paymentsOf = Effect.fn("KinRecords.paymentsOf")(function* (
   orgId: KinOrgId,
@@ -655,6 +683,33 @@ const dayStart = (day: string, zone: string) => {
 /** A calendar day's last millisecond in `zone`: an all-day entry is late only once it is over. */
 export const endOfDay = (day: string, zone: string) =>
   DateTime.toEpochMillis(DateTime.add(dayStart(day, zone), { days: 1 })) - 1;
+/** A date field's value as an instant: a day is its last millisecond, as an all-day entry's is. */
+export const fieldDateAt = (value: string, zone: string) => {
+  if (value.length === 10) return { at: endOfDay(value, zone), allDay: true };
+  const [hour, minute] = value
+    .slice(11)
+    .split(":")
+    .map((part) => Number.parseInt(part, 10));
+  const [year, month, day] = value
+    .slice(0, 10)
+    .split("-")
+    .map((part) => Number.parseInt(part, 10));
+  return {
+    at: DateTime.toEpochMillis(
+      DateTime.makeZonedUnsafe(
+        {
+          year: year ?? 1970,
+          month: month ?? 1,
+          day: day ?? 1,
+          hour: hour ?? 0,
+          minute: minute ?? 0,
+        },
+        { timeZone: zone, adjustForTimeZone: true },
+      ),
+    ),
+    allDay: false,
+  };
+};
 /** A calendar day's first millisecond in `zone`. */
 export const startOfDay = (day: string, zone: string) =>
   DateTime.toEpochMillis(dayStart(day, zone));

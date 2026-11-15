@@ -3,7 +3,6 @@ import * as Schema from "effect/Schema";
 
 import {
   AuthKinChatScope,
-  AuthOrchestrationOperateScope,
   EnvironmentAuthorizationError,
 } from "./auth.ts";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
@@ -223,10 +222,8 @@ export const KinPulseRpcs = [
 ] as const;
 
 export const KIN_PULSE_RPC_SCOPES = {
-  // Any member: a teammate sees only Work facts on tasks they may see, and handles only those.
   "kin.pulse.read": AuthKinChatScope,
   "kin.pulse.handle": AuthKinChatScope,
-  // Any member reads goals; a money goal only reaches the owner.
   "kin.goals.list": AuthKinChatScope,
-  "kin.goals.save": AuthOrchestrationOperateScope,
+  "kin.goals.save": AuthKinChatScope,
 } as const;

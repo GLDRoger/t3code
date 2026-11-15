@@ -8,6 +8,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import { ownerZone, startOfDay } from "../work/recordRows.ts";
 import * as KinPulse from "./KinPulse.ts";
 
@@ -31,8 +32,16 @@ const viewerIn = Effect.fn("KinPulsePeople.viewer")(function* (
   if (person === undefined)
     return yield* new KinChatError({ reason: "not_found", message: "Kin couldn't find that." });
   const { owner } = yield* KinIdentity;
+  if (person.orgId !== owner.orgId)
+    return yield* new KinChatError({ reason: "not_found", message: "Kin couldn't find that." });
+  // Owner-level people (the owner and co-owners) see everything; a member, what they may see.
   const viewer: KinPulse.Viewer =
-    person.orgId === owner.orgId && person.personId === owner.personId
+    person.personId === owner.personId ||
+    (yield* ownerLevel(orgId, person.personId).pipe(
+      Effect.mapError(
+        () => new KinChatError({ reason: "unavailable", message: "Kin is unavailable." }),
+      ),
+    ))
       ? { _tag: "owner" }
       : { _tag: "people", people: [person.personId] };
   return { person, viewer };

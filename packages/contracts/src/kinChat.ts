@@ -135,6 +135,13 @@ export const KinOrg = Schema.Struct({
   createdAt: IsoDateTime,
 });
 export type KinOrg = typeof KinOrg.Type;
+/** What a person is in the company. Owner and co-owner are owner-level; a member is a teammate. */
+export const KIN_PERSON_ACCESS = ["owner", "co_owner", "member"] as const;
+export const KinPersonAccess = Schema.Literals(KIN_PERSON_ACCESS);
+export type KinPersonAccess = typeof KinPersonAccess.Type;
+export const kinOwnerLevel = (access: KinPersonAccess | undefined) =>
+  access === "owner" || access === "co_owner";
+
 /** A word for what someone does, such as tech, design or sales: a short lowercase slug. */
 export const KinRoleTag = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,23}$/));
 export const KIN_ROLE_TAGS_MAX = 6;
@@ -146,6 +153,8 @@ export const KinPerson = Schema.Struct({
   handle: KinTrimmedText,
   displayName: KinTrimmedText,
   githubLogin: Schema.NullOr(KinTrimmedText),
+  // Absent from a host older than kinds.
+  access: Schema.optional(KinPersonAccess),
 });
 export type KinPerson = typeof KinPerson.Type;
 export const KinAgent = Schema.Struct({
@@ -283,6 +292,38 @@ export const KIN_CHOICE_CARD_ACTION = "choose";
  * `updatedAt`): the same day-long window after which Kin stops waking a lead for old messages.
  */
 export const KIN_CHOICE_CARD_TTL_MS = 24 * 60 * 60 * 1000;
+/**
+ * What an "Ask me" call to a connection would send, in full, as the owner's Confirm will send
+ * it. `outcome` is set by the server after the tap: sending, then sent or failed with a reason.
+ */
+export const KinSendCard = Schema.Struct({
+  service: KinTrimmedText.check(Schema.isMaxLength(80)),
+  action: Schema.Literals(["email", "reply", "event", "call"]),
+  /** The signed-in account it goes from, when known. */
+  from: Schema.NullOr(KinText.check(Schema.isMaxLength(320))),
+  to: Schema.Array(KinText.check(Schema.isMaxLength(320))).check(Schema.isMaxLength(50)),
+  cc: Schema.Array(KinText.check(Schema.isMaxLength(320))).check(Schema.isMaxLength(50)),
+  /** The subject, or an event's title, or the tool for a plain call. */
+  subject: KinText.check(Schema.isMaxLength(400)),
+  /** The whole body, an event's time and notes, or a call's arguments. */
+  body: KinText.check(Schema.isMaxLength(24_000)),
+  attachments: Schema.Array(
+    Schema.Struct({
+      name: KinTrimmedText.check(Schema.isMaxLength(200)),
+      /** "Invoice INV/26-27/004 · ₹1,18,000.00", read by the server from the record. */
+      label: Schema.NullOr(KinText.check(Schema.isMaxLength(200))),
+      bytes: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    }),
+  ).check(Schema.isMaxLength(10)),
+  outcome: Schema.NullOr(
+    Schema.Struct({
+      state: Schema.Literals(["sending", "sent", "failed"]),
+      reason: Schema.NullOr(KinText.check(Schema.isMaxLength(500))),
+      at: IsoDateTime,
+    }),
+  ),
+});
+export type KinSendCard = typeof KinSendCard.Type;
 export const KinChoiceCardState = Schema.Struct({
   question: KinTrimmedText.check(Schema.isMaxLength(240)),
   detail: Schema.NullOr(KinText.check(Schema.isMaxLength(2000))),
@@ -294,6 +335,8 @@ export const KinChoiceCardState = Schema.Struct({
       mimeType: KinTrimmedText.check(Schema.isMaxLength(100)),
     }),
   ),
+  /** Set on a card that asks to send something out of the company: exactly what goes. */
+  send: Schema.optionalKey(KinSendCard),
   // The first answer settles the card.
   answer: Schema.NullOr(
     Schema.Struct({

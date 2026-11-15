@@ -16,6 +16,7 @@ import {
   kinWorkDueChoices,
   type KinWorkItemView,
 } from "@t3tools/client-runtime/kin/kinWork";
+import { KIN_QUOTES_LIST, kinQuoteRow } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
 import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
   KIN_INVOICE_NUMBER_FIELD,
@@ -72,8 +73,10 @@ import { SheetDescription, SheetHeader, SheetTitle } from "../components/ui/shee
 import { cn, randomUUID } from "../lib/utils";
 import {
   KinInvoiceActions,
+  KinQuoteActions,
   KinInvoiceDocuments,
   KinInvoiceFigures,
+  KinInvoiceSent,
   KinInvoicePayments,
   KinMoneyActionNotice,
 } from "./KinInvoice";
@@ -494,6 +497,7 @@ export function KinListEntry(
     readonly onOpenClient: (key: KinRecordKey) => void;
     readonly onOpenProject: (key: KinRecordKey) => void;
     readonly onOpenDoc: (key: KinRecordKey) => void;
+    readonly onOpenKey: (key: KinRecordKey) => void;
   },
 ) {
   const { item, view, environmentId } = props;
@@ -502,8 +506,9 @@ export function KinListEntry(
   const def = kinListsOf(lists).find((one) => one.list === item.list) ?? null;
   const entry = kinListEntryView(item, def, context);
   const invoice = kinIsInvoice(item) ? kinInvoiceView(item, def, props.now) : null;
+  const quote = item.list === KIN_QUOTES_LIST ? kinQuoteRow(item, null, props.now) : null;
   const money = useKinMoneyActions(props);
-  const rates = useKinRates(props, invoice !== null);
+  const rates = useKinRates(props, invoice !== null || quote !== null);
   const changes = useKinEntryChanges(props, item.key);
   const agent = useKinAskAgent(props);
   const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
@@ -579,14 +584,14 @@ export function KinListEntry(
           )}
           <div className="flex flex-wrap items-center gap-2 text-sm text-foreground">
             <KinWorkStateIcon state={entry.state} />
-            <span>{entry.stateLabel}</span>
+            <span>{quote?.stateLabel ?? entry.stateLabel}</span>
             {invoice?.void === true ? (
               entry.stateLabel === KIN_INVOICES.void ? null : (
                 <Badge size="sm" variant="secondary">
                   {KIN_INVOICES.void}
                 </Badge>
               )
-            ) : entry.late ? (
+            ) : entry.late && quote === null ? (
               <Badge size="sm" variant="error">
                 {KIN_LISTS.late}
               </Badge>
@@ -601,6 +606,7 @@ export function KinListEntry(
             <>
               <KinInvoiceCurrency {...props} item={item} rates={rates} settled={invoice.settled} />
               <KinInvoiceFigures invoice={invoice} />
+              <KinInvoiceSent invoice={invoice} />
             </>
           ) : entry.balance === null ? null : (
             <dl className="grid grid-cols-2 gap-x-6 text-sm">
@@ -616,7 +622,18 @@ export function KinListEntry(
               </div>
             </dl>
           )}
-          {!canChange ? null : (
+          {quote !== null ? (
+            <KinQuoteActions
+              {...props}
+              item={item}
+              quote={quote}
+              def={def}
+              actions={money}
+              busy={busy}
+              canChange={canChange}
+              onState={(state) => void changes.update(item.rev, { state })}
+            />
+          ) : !canChange ? null : (
             <div className="flex flex-wrap items-center gap-2">
               {finish === null ? null : (
                 <Button
@@ -670,6 +687,7 @@ export function KinListEntry(
               actions={money}
               busy={busy}
               party={item.party ?? null}
+              currency={item.amount?.currency ?? def?.currency ?? "INR"}
             />
           )}
           <KinMoneyActionNotice actions={money} />

@@ -555,13 +555,17 @@
       "types": "./src/kinPush.ts",
       "default": "./src/kinPush.ts"
     },
-    "./kin/kinAttention": {
-      "types": "./src/kin/kinAttention.ts",
-      "default": "./src/kin/kinAttention.ts"
+    "./kin/kinAccess": {
+      "types": "./src/kin/kinAccess.ts",
+      "default": "./src/kin/kinAccess.ts"
     },
     "./kin/kinAgentRetire": {
       "types": "./src/kin/kinAgentRetire.ts",
       "default": "./src/kin/kinAgentRetire.ts"
+    },
+    "./kin/kinAttention": {
+      "types": "./src/kin/kinAttention.ts",
+      "default": "./src/kin/kinAttention.ts"
     },
     "./kin/kinConnections": {
       "types": "./src/kin/kinConnections.ts",
@@ -702,6 +706,10 @@
     "./kin/kinMoney": {
       "types": "./src/kin/kinMoney.ts",
       "default": "./src/kin/kinMoney.ts"
+    },
+    "./kin/kinMoneyAnswers": {
+      "types": "./src/kin/kinMoneyAnswers.ts",
+      "default": "./src/kin/kinMoneyAnswers.ts"
     },
     "./kin/kinDates": {
       "types": "./src/kin/kinDates.ts",

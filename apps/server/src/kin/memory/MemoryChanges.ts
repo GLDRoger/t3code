@@ -10,6 +10,8 @@ import {
   type KinMemoryListInput,
   type KinMemoryListItem,
   type KinMemoryListResult,
+  type KinMemoryRestoreInput,
+  type KinMemoryRestoreResult,
   type KinMemorySetVisibilityInput,
   type KinMemorySetVisibilityResult,
   type KinMemoryUndoInput,
@@ -34,6 +36,8 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
+import { endedBy } from "./frontMatter.ts";
 import { readableSources } from "./quoteAccess.ts";
 import type { MemoryItem } from "./MemoryCache.ts";
 import type { MemoryWriter } from "./MemoryWriter.ts";
@@ -54,6 +58,7 @@ export interface KinMemoryPort {
   readonly undo: KinMemoryUndo;
   readonly relabel: MemoryWriter["Service"]["relabel"];
   readonly retire: MemoryWriter["Service"]["retire"];
+  readonly restore: MemoryWriter["Service"]["restore"];
   /** Every current item on the default branch, with its body. */
   readonly items: (
     orgId: KinOrgId,
@@ -98,6 +103,11 @@ export class KinMemoryChanges extends Context.Service<
       people: ReadonlyArray<PersonIdentity>,
       input: KinMemoryForgetInput,
     ) => Effect.Effect<KinMemoryForgetResult, KinChatError>;
+    /** The way back from `forget`, for an item the owner forgot; the owner only. */
+    readonly restore: (
+      people: ReadonlyArray<PersonIdentity>,
+      input: KinMemoryRestoreInput,
+    ) => Effect.Effect<KinMemoryRestoreResult, KinChatError>;
     readonly attachWriter: (port: KinMemoryPort) => Effect.Effect<void, never, Scope.Scope>;
   }
 >()("t3/kin/memory/MemoryChanges/KinMemoryChanges") {}
@@ -176,19 +186,27 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toPersistenceSqlError("KinMemoryChanges.provenance")),
   );
-  // Settled reminders and replaced notes are history, not something a lead still uses.
-  const current = (items: ReadonlyArray<MemoryItem>) =>
+  // Settled reminders and replaced notes are history; an `invalid_at` still ahead is true till then.
+  const current = (items: ReadonlyArray<MemoryItem>, now: number) =>
     items.filter(
-      ({ head }) =>
-        head.status === "open" && head.invalid_at === null && head.superseded_by === null,
+      ({ head }) => head.status === "open" && !endedBy(head, now) && head.superseded_by === null,
     );
+  const forgottenOnes = (items: ReadonlyArray<MemoryItem>, now: number) =>
+    items.filter(({ head }) => endedBy(head, now) && head.superseded_by === null);
   const ownerOf = Effect.fn("KinMemoryChanges.ownerOf")(function* (
     people: ReadonlyArray<PersonIdentity>,
     orgId: KinOrgId,
   ) {
     const person = people.find((candidate) => candidate.orgId === orgId);
     if (person === undefined) return yield* notFound;
-    if (person.orgId !== owner.orgId || person.personId !== owner.personId) return yield* ownerOnly;
+    if (
+      person.orgId !== owner.orgId ||
+      !(yield* ownerLevel(orgId, person.personId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.orElseSucceed(() => false),
+      ))
+    )
+      return yield* ownerOnly;
     if (port === undefined) return yield* unavailable;
     return { person, port };
   });
@@ -323,7 +341,9 @@ const make = Effect.gen(function* () {
     undo,
     list: Effect.fn("KinMemoryChanges.list")(function* (people, input) {
       const { person, port } = yield* ownerOf(people, input.orgId);
-      const items = current(yield* port.items(input.orgId));
+      const all = yield* port.items(input.orgId);
+      const at = yield* Clock.currentTimeMillis;
+      const items = input.forgotten === true ? forgottenOnes(all, at) : current(all, at);
       const labels = yield* storedLabels(input.orgId).pipe(
         Effect.flatMap((stored) => bindSuggestions(input.orgId, items, stored)),
         provideSql,
@@ -363,7 +383,7 @@ const make = Effect.gen(function* () {
     }, failed),
     confirmSuggestions: Effect.fn("KinMemoryChanges.confirmSuggestions")(function* (people, input) {
       const { person, port } = yield* ownerOf(people, input.orgId);
-      const items = current(yield* port.items(input.orgId));
+      const items = current(yield* port.items(input.orgId), yield* Clock.currentTimeMillis);
       const labels = yield* storedLabels(input.orgId).pipe(provideSql);
       const asked = new Set<string>(input.itemIds);
       // Confirmed only as the version listed; one sent without it stays suggested.
@@ -404,6 +424,16 @@ const make = Effect.gen(function* () {
       );
       if (known.length !== 1) return yield* notFound;
       yield* port.retire(input.orgId, { itemId: input.itemId, by: "owner" });
+      return { itemId: input.itemId };
+    }, failed),
+    restore: Effect.fn("KinMemoryChanges.restore")(function* (people, input) {
+      const { port } = yield* ownerOf(people, input.orgId);
+      const known = forgottenOnes(
+        yield* port.items(input.orgId),
+        yield* Clock.currentTimeMillis,
+      ).filter((item) => item.head.id === input.itemId);
+      if (known.length !== 1) return yield* notFound;
+      yield* port.restore(input.orgId, { itemId: input.itemId });
       return { itemId: input.itemId };
     }, failed),
     attachWriter: Effect.fn("KinMemoryChanges.attachWriter")(function* (next) {

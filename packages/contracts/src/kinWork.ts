@@ -1,12 +1,7 @@
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
-import {
-  AuthOrchestrationOperateScope,
-  AuthKinChatScope,
-  AuthOrchestrationReadScope,
-  EnvironmentAuthorizationError,
-} from "./auth.ts";
+import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
 import {
   EnvironmentId,
   IsoDateTime,
@@ -252,6 +247,18 @@ export const KinRecordDetail = Schema.Struct({
   files: Schema.optional(Schema.Array(KinFileRef)),
   /** An invoice's payments, newest first, voided ones included. */
   payments: Schema.optional(Schema.Array(KinPayment)),
+  /** Mail that carried its file, sent on the owner's Confirm, newest first. */
+  sent: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        to: Schema.Array(Schema.String),
+        subject: Schema.String,
+        at: IsoDateTime,
+        /** The mail thread it went in: a reminder replies there. */
+        threadId: Schema.NullOr(Schema.String),
+      }),
+    ),
+  ),
 });
 export type KinRecordDetail = typeof KinRecordDetail.Type;
 export const KIN_RECORD_CHANGES_CAP = 50;
@@ -1125,19 +1132,19 @@ export const KIN_WORK_RPC_SCOPES = {
   [KIN_WORK_WS_METHODS.assign]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.update]: AuthKinChatScope,
   // Keeping a lead's suggestion makes it the owner's word; only he does that, or shares.
-  [KIN_WORK_WS_METHODS.confirm]: AuthOrchestrationOperateScope,
-  [KIN_WORK_WS_METHODS.decline]: AuthOrchestrationOperateScope,
-  [KIN_WORK_WS_METHODS.share]: AuthOrchestrationOperateScope,
-  [KIN_WORK_WS_METHODS.parties]: AuthOrchestrationReadScope,
-  [KIN_WORK_WS_METHODS.party]: AuthOrchestrationReadScope,
-  [KIN_WORK_WS_METHODS.projects]: AuthOrchestrationReadScope,
-  [KIN_WORK_WS_METHODS.project]: AuthOrchestrationReadScope,
-  [KIN_WORK_WS_METHODS.history]: AuthOrchestrationReadScope,
+  [KIN_WORK_WS_METHODS.confirm]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.decline]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.share]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.parties]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.party]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.projects]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.project]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.history]: AuthKinChatScope,
   // Writes like the entry edits beside them; none of these starts agent work.
-  [KIN_WORK_WS_METHODS.createParty]: AuthOrchestrationOperateScope,
-  [KIN_WORK_WS_METHODS.updateParty]: AuthOrchestrationOperateScope,
-  [KIN_WORK_WS_METHODS.createContact]: AuthOrchestrationOperateScope,
-  [KIN_WORK_WS_METHODS.updateContact]: AuthOrchestrationOperateScope,
-  [KIN_WORK_WS_METHODS.createProject]: AuthOrchestrationOperateScope,
-  [KIN_WORK_WS_METHODS.updateProject]: AuthOrchestrationOperateScope,
+  [KIN_WORK_WS_METHODS.createParty]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.updateParty]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.createContact]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.updateContact]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.createProject]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.updateProject]: AuthKinChatScope,
 } as const;

@@ -246,6 +246,7 @@ const plainError = (stderr: string, root: string) =>
     .replaceAll(`${root}/recipe/`, "")
     .replaceAll(root, "")
     .replace(/(^|\s)recipe\//gm, "$1")
+    .replace(/^(\S+?):(\d+):\d+: (?:error|warning): /gm, "$1 line $2: ")
     .trim()
     .slice(0, 2000) || "Typst stopped without saying why";
 

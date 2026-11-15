@@ -2,12 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
-import {
-  AuthOrchestrationOperateScope,
-  AuthOrchestrationReadScope,
-  AuthSettingsWriteScope,
-  EnvironmentAuthorizationError,
-} from "./auth.ts";
+import { EnvironmentAuthorizationError, AuthKinChatScope } from "./auth.ts";
 import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinChatError, KinLabelText, KinOrgId, KinTrimmedText } from "./kinChat.ts";
 import {
@@ -162,6 +157,8 @@ export const KinDateRow = Schema.Struct({
   kind: Schema.Literals(["due", "date"]),
   /** What its list calls this date. */
   label: Label,
+  /** The list's own date field this row is for; absent for the entry's due date and date. */
+  field: Schema.optional(Schema.String),
   at: IsoDateTime,
   allDay: Schema.Boolean,
 });
@@ -289,6 +286,8 @@ export const KinReceipt = Schema.Struct({
   mode: Schema.NullOr(Schema.String),
   reference: Schema.NullOr(Schema.String),
   invoice: Schema.NullOr(KinRecordKey),
+  /** The issued number of `invoice` (INV/26-27/001), null while it has none. */
+  invoiceNumber: Schema.NullOr(Schema.String),
   paymentId: Schema.NullOr(TrimmedNonEmptyString),
   /** True when it was received before it was set against an invoice. */
   advance: Schema.Boolean,
@@ -622,23 +621,23 @@ export const KinFinanceRpcs = [
 ] as const;
 
 export const KIN_FINANCE_RPC_SCOPES = {
-  [KIN_FINANCE_WS_METHODS.lists]: AuthOrchestrationReadScope,
+  [KIN_FINANCE_WS_METHODS.lists]: AuthKinChatScope,
   // What a list is, like what a lead is for, is an owner setting.
-  [KIN_FINANCE_WS_METHODS.updateList]: AuthSettingsWriteScope,
-  [KIN_FINANCE_WS_METHODS.dates]: AuthOrchestrationReadScope,
-  [KIN_FINANCE_WS_METHODS.money]: AuthOrchestrationReadScope,
-  [KIN_FINANCE_WS_METHODS.recordPayment]: AuthOrchestrationOperateScope,
-  [KIN_FINANCE_WS_METHODS.voidPayment]: AuthOrchestrationOperateScope,
-  [KIN_FINANCE_WS_METHODS.files]: AuthOrchestrationReadScope,
+  [KIN_FINANCE_WS_METHODS.updateList]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.dates]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.money]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.recordPayment]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.voidPayment]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.files]: AuthKinChatScope,
   // Bank details: read and written only where owner settings are.
-  [KIN_FINANCE_WS_METHODS.companyProfile]: AuthSettingsWriteScope,
-  [KIN_FINANCE_WS_METHODS.setCompanyProfile]: AuthSettingsWriteScope,
+  [KIN_FINANCE_WS_METHODS.companyProfile]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.setCompanyProfile]: AuthKinChatScope,
   // A number is an entry change, like a payment; nothing leaves the host.
-  [KIN_FINANCE_WS_METHODS.issue]: AuthOrchestrationOperateScope,
-  [KIN_FINANCE_WS_METHODS.nextNumber]: AuthOrchestrationReadScope,
-  [KIN_FINANCE_WS_METHODS.void]: AuthOrchestrationOperateScope,
-  [KIN_FINANCE_WS_METHODS.unvoid]: AuthOrchestrationOperateScope,
-  [KIN_FINANCE_WS_METHODS.receipts]: AuthOrchestrationReadScope,
+  [KIN_FINANCE_WS_METHODS.issue]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.nextNumber]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.void]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.unvoid]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.receipts]: AuthKinChatScope,
   // A receipt is an entry with a number, like issuing one.
-  [KIN_FINANCE_WS_METHODS.makeReceipt]: AuthOrchestrationOperateScope,
+  [KIN_FINANCE_WS_METHODS.makeReceipt]: AuthKinChatScope,
 } as const;
