@@ -8,6 +8,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { ownerLevel } from "../people/KinAccess.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import { dayIn, formatMoney } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
@@ -135,7 +136,6 @@ type ProposalRow = {
   readonly snapshot: string;
   readonly state: "open" | "made" | "declined";
   readonly receiptKey: string | null;
-  readonly owner: string;
 };
 
 /**
@@ -153,14 +153,12 @@ export const answerReceiptCard = Effect.fn("KinReceipts.answerCard")(function* (
 }) {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<ProposalRow>`SELECT p.proposal_id AS "proposalId",
-      p.request_json AS json, p.snapshot_json AS snapshot, p.state, p.receipt_key AS "receiptKey",
-      a.owner_person_id AS owner
+      p.request_json AS json, p.snapshot_json AS snapshot, p.state, p.receipt_key AS "receiptKey"
     FROM kin_receipt_proposals p
-    JOIN kin_agents a ON a.org_id = p.org_id AND a.agent_id = p.agent_id
     WHERE p.org_id = ${input.orgId} AND p.widget_id = ${input.widgetId}`;
   if (row === undefined) return undefined;
-  if (row.owner !== input.personId)
-    return yield* refused("Only the owner confirms money received.");
+  if (!(yield* ownerLevel(input.orgId, KinPersonId.make(input.personId))))
+    return yield* refused("Only the owner or a co-owner confirms money received.");
   if (input.via === "reaction")
     return yield* refused("Tap Confirm or Cancel on the card to answer a receipt.");
   if (row.state !== "open")

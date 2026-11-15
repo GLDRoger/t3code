@@ -24,6 +24,7 @@ import {
   PersistenceSqlError,
   toPersistenceSqlError,
 } from "../../persistence/Errors.ts";
+import { ownerLevelSql } from "../people/KinAccess.ts";
 
 const EventJson = Schema.fromJsonString(KinEvent);
 const encodeEvent = Schema.encodeEffect(EventJson);
@@ -313,10 +314,11 @@ const make = Effect.gen(function* () {
             SELECT 1 FROM kin_chat_members
             WHERE org_id = ${event.orgId} AND chat_id = ${event.chatId}
               AND member_id = ${event.provenance.memberId} AND person_id = ${event.provenance.personId}
-              AND principal_kind = 'person' AND role = 'owner' AND left_at IS NULL
-              AND EXISTS (SELECT 1 FROM kin_agents
+              AND principal_kind = 'person' AND left_at IS NULL
+              AND ((role = 'owner' AND EXISTS (SELECT 1 FROM kin_agents
                 WHERE org_id = ${event.orgId} AND agent_id = ${event.agentId}
-                  AND owner_person_id = ${event.provenance.personId} AND retired_at IS NULL)
+                  AND owner_person_id = ${event.provenance.personId} AND retired_at IS NULL))
+                OR ${sql.literal(ownerLevelSql("kin_chat_members.org_id", "kin_chat_members.person_id"))})
               AND EXISTS (SELECT 1 FROM kin_chat_members
                 WHERE org_id = ${event.orgId} AND chat_id = ${event.chatId}
                   AND principal_kind = 'agent' AND agent_id = ${event.agentId} AND left_at IS NULL)

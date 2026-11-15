@@ -2013,8 +2013,6 @@ const make = Effect.gen(function* () {
         const [ask] = yield* sql<AskRow>`${askRow(sql, input.orgId)}
           AND k.widget_id = ${input.widgetId}`;
         if (ask === undefined) return yield* fail("not_found", "Kin couldn't find that card.");
-        if (!people.some((person) => person.personId === ask.owner))
-          return yield* fail("not_allowed", "Only the owner changes what Kin sends.");
         if (ask.state !== "open")
           return yield* new KinChatError({
             reason: "widget_changed",
@@ -2086,8 +2084,8 @@ const make = Effect.gen(function* () {
       const [row] =
         yield* tx<AskRow>`${askRow(tx, input.orgId)} AND k.widget_id = ${input.widgetId}`;
       if (row === undefined) return undefined;
-      if (row.owner !== input.personId)
-        return yield* fail("not_allowed", "Only the owner confirms what Kin sends.");
+      if (!(yield* ownerLevel(input.orgId, KinPersonId.make(input.personId))))
+        return yield* fail("not_allowed", "Only the owner or a co-owner confirms what Kin sends.");
       if (input.via === "reaction")
         return yield* fail("not_allowed", "Tap Confirm or Cancel on the card to answer it.");
       if (row.state !== "open")

@@ -602,6 +602,21 @@ const make = Effect.gen(function* () {
     if (!mayWrite(member, identity._tag === "agent", yield* Clock.currentTimeMillis))
       return yield* notAllowed;
   });
+  /** The chat's owner, or a co-owner in her own direct chat with a lead: owner-level there. */
+  const ownerSide = Effect.fn("KinChatService.ownerSide")(function* (
+    identity: Identity,
+    member: KinChatMember,
+  ) {
+    if (member.role === "owner") return true;
+    if (identity._tag !== "person" || member.role !== "member") return false;
+    const chat = yield* requireRecord(repo.getChat(member));
+    return (
+      chat.kind === "direct" &&
+      (yield* ownerLevel(identity.orgId, identity.personId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      ))
+    );
+  });
   /**
    * A generated doc's file is the owner's alone: the person whose agent's job made it, or who
    * asked. A file a doc's markdown shows is read by whoever reads Docs: the org's owner.
@@ -2386,8 +2401,9 @@ const make = Effect.gen(function* () {
           reason: "use_approvals",
           message: "Use the signed approvals service.",
         });
+      const owning = yield* ownerSide(identity, member);
       if (widget.type === "owner_check") {
-        if (member.role !== "owner") return yield* notAllowed;
+        if (!owning) return yield* notAllowed;
         const card = yield* decodeOwnerCheckCard(widget.state).pipe(
           Effect.mapError(() => invalidState),
         );
@@ -2402,14 +2418,14 @@ const make = Effect.gen(function* () {
         (widget.type === "reminder" ||
           widget.type === "scheduled_task" ||
           widget.type === KIN_WORKER_PUBLISH_CARD) &&
-        member.role !== "owner"
+        !owning
       )
         return yield* notAllowed;
       // Any writing member of the card's chat may undo; the other taps wait on the dispatcher.
       if (
         widget.type === "deferral" &&
         request.actionId !== "undo" &&
-        (member.role !== "owner" ||
+        (!owning ||
           !deferralCardActionsReady ||
           !deferralCardActions.some((action) => action === request.actionId))
       )
@@ -2517,8 +2533,8 @@ const make = Effect.gen(function* () {
       const eligible =
         !answered &&
         identity._tag === "person" &&
-        member.role === "owner" &&
         chat.kind === "direct" &&
+        (yield* ownerSide(identity, member)) &&
         message.author._tag === "agent" &&
         nowMs - Date.parse(message.createdAt) < SOFT_REPLY_WINDOW_MS;
       const answer = Reactions.reactionAnswer(request.emoji);
@@ -2725,7 +2741,7 @@ const make = Effect.gen(function* () {
         if (item.reason !== "question" || message === null) return yield* notAllowed;
         if (message.author._tag !== "agent" || message.author.agentId !== identity.agentId)
           return yield* notAllowed;
-      } else if (member.role !== "owner" && identity.personId !== item.personId) {
+      } else if (identity.personId !== item.personId && !(yield* ownerSide(identity, member))) {
         return yield* notAllowed;
       }
       return yield* resolve(item, input.resolution);

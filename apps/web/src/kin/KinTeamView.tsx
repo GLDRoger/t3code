@@ -15,6 +15,7 @@ import {
   KIN_PLACE_SWITCHES,
   kinAccessChangeCopy,
   kinTeammateActions,
+  kinTeammateAgentsLine,
   kinTeammateKindEditable,
   kinTeammateLeadLine,
   type KinMadeInvite,
@@ -507,6 +508,8 @@ function KinTeammateSheet(props: {
               <p className="text-sm text-muted-foreground">
                 Once {teammate.name} joins, open an agent's details to let them message it.
               </p>
+            ) : kinTeammateAgentsLine(teammate) !== null ? (
+              <p className="text-sm text-muted-foreground">{kinTeammateAgentsLine(teammate)}</p>
             ) : (
               <KinTeammateLeads
                 personId={teammate.personId}

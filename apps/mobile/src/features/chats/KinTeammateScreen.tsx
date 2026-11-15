@@ -7,6 +7,7 @@ import {
   kinRemoveAccessCopy,
   kinTeamView,
   kinTeammateActions,
+  kinTeammateAgentsLine,
   kinTeammateKindEditable,
   kinTeammateLeadLine,
   type KinMadeInvite,
@@ -267,6 +268,14 @@ function KinTeammateDetails(props: {
           <View className="px-4 py-3">
             <Text textRole="body" className="text-foreground-muted">
               None yet.
+            </Text>
+          </View>
+        </ListSection>
+      ) : kinTeammateAgentsLine(teammate) !== null ? (
+        <ListSection title="Agents">
+          <View className="px-4 py-3">
+            <Text textRole="body" className="text-foreground-muted">
+              {kinTeammateAgentsLine(teammate)}
             </Text>
           </View>
         </ListSection>

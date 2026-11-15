@@ -60,6 +60,7 @@ import {
   suggest,
   teamMemoryOn,
 } from "../memory/sensitivity.ts";
+import { ownerLevelSql } from "../people/KinAccess.ts";
 import { deferralOrigin } from "../triggers/deferralOrigin.ts";
 import { cancelDeferralRun } from "../triggers/KinTriggerService.ts";
 import { scheduledTaskTriggerId } from "../widgets/scheduledTaskCard.ts";
@@ -326,7 +327,8 @@ export const authority = Layer.effect(
                 ? (yield* sql<{
                     handle: string;
                     role: string;
-                  }>`SELECT p.handle, m.role FROM kin_people p JOIN kin_chat_members m ON m.org_id = p.org_id AND m.person_id = p.person_id WHERE p.org_id = ${orgId} AND p.person_id = ${who.personId} AND m.member_id = ${who.memberId}`)[0]
+                    level: number;
+                  }>`SELECT p.handle, m.role, ${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))} AS level FROM kin_people p JOIN kin_chat_members m ON m.org_id = p.org_id AND m.person_id = p.person_id WHERE p.org_id = ${orgId} AND p.person_id = ${who.personId} AND m.member_id = ${who.memberId}`)[0]
                 : undefined;
             if (who._tag === "human" && !person)
               return yield* new Writer.MemoryWriteRejected({ reason: "Unknown source person" });
@@ -340,7 +342,7 @@ export const authority = Layer.effect(
               ...(said === undefined ? {} : { text: said.body }),
               saidBy: person?.handle ?? (who._tag === "agent" ? who.agentId : "external"),
               trust: person
-                ? person.role === "owner"
+                ? person.role === "owner" || person.level === 1
                   ? "owner"
                   : "member"
                 : who._tag === "agent"
@@ -507,13 +509,14 @@ const make = Effect.gen(function* () {
     ctx: Effect.Success<ReturnType<typeof resolve>>,
     eventId: string,
   ) {
-    const [row] = yield* sql<{ owner: string }>`SELECT a.owner_person_id AS owner
+    const [row] = yield* sql<{ owner: string }>`SELECT m.author_person_id AS owner
       FROM kin_events e
       JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
       JOIN kin_messages m ON m.org_id = e.org_id AND m.author_kind = 'human'
         AND m.message_id = json_extract(e.json, '$.messageId')
         AND m.chat_id = json_extract(e.json, '$.chatId')
-        AND m.author_person_id = a.owner_person_id
+        AND (m.author_person_id = a.owner_person_id
+          OR ${sql.literal(ownerLevelSql("m.org_id", "m.author_person_id"))})
       WHERE e.org_id = ${ctx.orgId} AND e.agent_id = ${ctx.agentId}
         AND e.wakeup_id = ${ctx.wakeupId} AND e.event_id = ${eventId} AND e.tag = 'chat.message'
       ORDER BY e.event_id`;

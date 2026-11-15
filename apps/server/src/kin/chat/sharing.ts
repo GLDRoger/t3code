@@ -2,6 +2,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import type * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
+import { ownerLevelSql } from "../people/KinAccess.ts";
 
 /**
  * SQL over trusted column names: `person` is not the chat's owner, its `owner` member. Every
@@ -38,18 +39,21 @@ export const recordJoin = Effect.fn("KinChatSharing.recordJoin")(function* (
 });
 
 /**
- * Whether anyone but the owner of its leads reads the chat now, or anyone else ever did
- * (`shared_at`). Each person in it must be its owner member and own a lead; none found is shared.
+ * Whether anyone below owner level (`KinAccess`), other than the owner member of the chat's
+ * leads, reads the chat now, or did once it was shared (`shared_at`). A co-owner's own chat with a
+ * lead is theirs as the owner's is his. None found is shared.
  */
 export const chatShared = Effect.fn("KinChatSharing.chatShared")(function* (
   sql: SqlClient.SqlClient,
   input: { readonly orgId: string; readonly chatId: string },
 ) {
   const rows = yield* sql`SELECT 1 FROM kin_chats c
-    WHERE c.org_id = ${input.orgId} AND c.chat_id = ${input.chatId} AND c.shared_at IS NULL
+    WHERE c.org_id = ${input.orgId} AND c.chat_id = ${input.chatId}
       AND NOT EXISTS (SELECT 1 FROM kin_chat_members m WHERE m.org_id = c.org_id
-        AND m.chat_id = c.chat_id AND m.principal_kind = 'person' AND m.left_at IS NULL
-        AND (m.role <> 'owner' OR NOT EXISTS (SELECT 1 FROM kin_agents a
+        AND m.chat_id = c.chat_id AND m.principal_kind = 'person'
+        AND (m.left_at IS NULL OR c.shared_at IS NOT NULL)
+        AND NOT ${sql.literal(ownerLevelSql("m.org_id", "m.person_id"))}
+        AND NOT (m.role = 'owner' AND EXISTS (SELECT 1 FROM kin_agents a
           WHERE a.org_id = m.org_id AND a.owner_person_id = m.person_id)))
     LIMIT 1`;
   return rows.length === 0;
