@@ -20,7 +20,8 @@ import { goalsNow } from "../work/goals.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinPulse from "./KinPulse.ts";
-import { buildWeeklySection, wantsWeekly } from "./weekly.ts";
+import { buildPulseSection } from "./prompt.ts";
+import { buildWeeklySection, renderWeekly, wantsWeekly } from "./weekly.ts";
 
 // Invented org, people, entries and money only; nothing here reads a real database.
 const orgId = KinOrgId.make("org");
@@ -457,6 +458,25 @@ describe("KinPulse", () => {
         });
       const handled = yield* handle("got_it", at + DAY);
       assert.strictEqual(DateTime.toEpochMillis(handled.handled!.until!), at + DAY);
+      // A check-in still tells the owner, with who has it; other turns leave it out.
+      const shown = (when: number, checkIn: boolean) =>
+        buildPulseSection({ orgId, agentId: chief, now: when, wokeFor: [], checkIn }).pipe(
+          Effect.map((section) =>
+            section?.byProject.flatMap((group) => group.facts).find((one) => one.key === fact.key),
+          ),
+        );
+      assert.isUndefined(yield* shown(at, false));
+      const held = yield* shown(at, true);
+      assert.include(held, { sentIn: "no mail with it on record", rule: "10 days (now 10)" });
+      assert.match(String(held?.inHand), /^fin until /);
+      assert.notProperty(held, "toldBefore");
+      // Once a check-in has had it, the next one may say it in a "still" line.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+          dedupe_key, received_at, queued_at, state)
+        VALUES ('e-checkin', ${orgId}, ${chief}, 'pulse', 'P2', '{}',
+          'checkin:checkin-morning:2026-11-13', ${at + MINUTE}, ${at + MINUTE}, 'done')`;
+      assert.include(yield* shown(at + 2 * MINUTE, true), { toldBefore: true });
       assert.strictEqual(yield* open(at + DAY - MINUTE), 0);
       assert.strictEqual(yield* open(at + DAY), 1);
       yield* handle("got_it");
@@ -487,6 +507,18 @@ describe("KinPulse", () => {
       const both = (yield* read(at, { _tag: "people", people: [mate, KinPersonId.make("other")] }))
         .facts;
       assert.deepStrictEqual([...new Set(both.map((fact) => fact.subject.key))], ["W-9"]);
+      // H14: a meeting everyone sees asks only those who were in it how it went, in their words.
+      assert.include(
+        keyed(shown, "meeting_passed", "W-14")[0]!.consequence,
+        "no outcome is noted. How did it go?",
+      );
+      yield* sql`UPDATE kin_records SET team_shared = 1 WHERE record_id = 'r-W-14'`;
+      const outside = (yield* read(at, { _tag: "people", people: [KinPersonId.make("other")] }))
+        .facts;
+      assert.notInclude(
+        outside.map((fact) => fact.subject.key),
+        "W-14",
+      );
       // G10: the check-in snoozing Meera's late task hides it from the owner's view, not hers.
       const late = keyed(shown, "task_late", "W-8")[0]!;
       yield* KinPulse.handle({
@@ -543,6 +575,12 @@ describe("KinPulse", () => {
       // The weekly brief carries the renewal and the open quote it was missing.
       assert.include(week.money.renewalsThisMonth.join("\n"), "DT-1");
       assert.deepStrictEqual(week.money.openQuotes, ["QT-1: ₹6,00,000.00, sent, no answer yet"]);
+      // Kin posts these figures itself; none of the sections the run-3 brief dropped is missing.
+      const posted = renderWeekly(week);
+      assert.match(posted, /\nOverdue:\n- INV-1:.*days past due/);
+      assert.match(posted, /\nRenewals this month:\n- .*DT-1/);
+      assert.match(posted, /\nOpen quotes:\n- QT-1/);
+      assert.match(posted, /\nGoals:\n- G-1 /);
       // The seeded weekly check-in arrives as a pulse and gets the same section.
       const checkIn = (scheduleId: string) =>
         decodeEvent({

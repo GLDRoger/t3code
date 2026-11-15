@@ -62,6 +62,7 @@ import {
   type SetupFailure,
 } from "./classify.ts";
 import { KinPresence, syncQueued } from "./KinPresence.ts";
+import { unkeptPromise } from "./promises.ts";
 
 /** One rescue turn asks for the reply the run owed; its text is posted like any other. */
 const RESCUE_PROMPT =
@@ -269,19 +270,43 @@ const comparable = (text: string) =>
     .toLowerCase()
     .replace(/[?.]+$/u, "")
     .trimEnd();
-/** A reply less the sentences that only repeat a card's question, which the card already asks. */
+// Words that carry a sentence's meaning: three letters or more, or any with a digit.
+const meaningful = (text: string) =>
+  new Set(
+    normalized(text)
+      .toLowerCase()
+      .split(/[\s,;:!?()"“”]+/u)
+      .map((word) => word.replace(/^[.'’]+|[.'’]+$/gu, ""))
+      .filter((word) => word.length >= 3 || /\d/.test(word)),
+  );
+/** Most of what the sentence says, the question already says: a restatement, not news. */
+const restates = (sentence: string, question: ReadonlySet<string>) => {
+  const words = [...meaningful(sentence)];
+  return (
+    words.length >= 3 && words.filter((word) => question.has(word)).length / words.length >= 0.6
+  );
+};
+/**
+ * A reply less the sentences that repeat or restate a card's question, which the card already
+ * asks. Once one did, the card is the reply: what is left is cut to one short line.
+ */
 const withoutAsked = (text: string, questions: ReadonlyArray<string>) => {
   const wanted = new Set(questions.map(comparable).filter((one) => one !== ""));
   if (wanted.size === 0) return text;
+  const asked = questions.map(meaningful);
   // Odd entries are the separators, kept so the rest reads as it was written.
   const parts = text.split(/((?<=[.?!])[ \t]+|\n+)/);
-  let kept = "";
+  const kept: Array<string> = [];
   let dropped = false;
   for (let index = 0; index < parts.length; index += 2) {
-    if (wanted.has(comparable(parts[index]!))) dropped = true;
-    else kept += `${kept === "" ? "" : (parts[index - 1] ?? "")}${parts[index]}`;
+    const sentence = parts[index]!;
+    if (wanted.has(comparable(sentence)) || asked.some((words) => restates(sentence, words)))
+      dropped = true;
+    else if (sentence.trim() !== "")
+      kept.push(`${kept.length === 0 ? "" : (parts[index - 1] ?? "")}${sentence}`);
   }
-  return dropped ? kept.trim() : text;
+  if (!dropped) return text;
+  return (kept[0] ?? "").trim();
 };
 const capBody = (text: string) =>
   text.length <= KIN_MESSAGE_BODY_MAX_LENGTH
@@ -851,6 +876,24 @@ const make = Effect.gen(function* () {
     return rows.length > 0;
   });
 
+  // "I'll tell Ishaan" with nothing sent: the asker hears it didn't reach him, not a false promise.
+  const keptPromises = Effect.fn("KinReplyBridge.keptPromises")(
+    function* (wake: Wake) {
+      const name = yield* unkeptPromise({ ...wake, chatId: wake.lane.chatId }).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      if (name === undefined) return;
+      yield* chat.notice({
+        orgId: wake.orgId,
+        chatId: wake.lane.chatId,
+        audience: "chat",
+        messageId: KinMessageId.make(`kin-unsent:${wake.wakeupId}`),
+        body: `That did not reach ${name}; ask again or tell them directly.`,
+      });
+    },
+    Effect.catchCause((cause) => Effect.logWarning("Kin promise check failed", { cause })),
+  );
+
   const flushOverflow = Effect.fn("KinReplyBridge.flushOverflow")(function* (wake: Wake) {
     if (wake.overflow.length === 0) return;
     const room = Math.max(0, KIN_WAKEUP_CHAR_LIMIT - wake.chars);
@@ -941,6 +984,7 @@ const make = Effect.gen(function* () {
             yield* post(wake, note);
           }
           yield* flushOverflow(wake);
+          yield* keptPromises(wake);
           return yield* answered(wake);
         }),
       );

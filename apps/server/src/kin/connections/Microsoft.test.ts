@@ -97,6 +97,8 @@ const fakeGraph = () => {
           value: messages,
           "@odata.nextLink": `${ME}/mailFolders/inbox/messages?$skip=75`,
         });
+      if (path === "/messages" && request.method === "POST")
+        return json({ id: "d1", conversationId: "c9" }, 201);
       if (path === "/messages") {
         const filter = url.searchParams.get("$filter") ?? "";
         if (filter === "conversationId eq 'c1'")
@@ -105,7 +107,7 @@ const fakeGraph = () => {
           return json({ value: [{ id: "m1", conversationId: "c1" }] });
         return json({ value: [] });
       }
-      if (path === "/messages/m1/reply" || path === "/sendMail")
+      if (path === "/messages/m1/reply" || path === "/messages/d1/send")
         return new Response(null, { status: 202 });
       if (path === "/events") return json({ id: "ev-1" }, 201);
       return json({ error: { code: "ErrorItemNotFound" } }, 404);
@@ -192,8 +194,17 @@ describe("Microsoft mail", () => {
         .pipe(Effect.flip);
       assert.include(elsewhere.message, "couldn't find");
 
-      yield* microsoftMail.sendMessage(http, TOKEN, { raw, threadId: null });
-      assert.strictEqual(graph.seen.at(-1)!.url.pathname, "/v1.0/me/sendMail");
+      // A new mail is kept as a draft, then sent, so its conversation is known for a reminder.
+      const fresh = yield* microsoftMail.sendMessage(http, TOKEN, { raw, threadId: null });
+      assert.strictEqual(fresh.threadId, "c9");
+      assert.deepStrictEqual(
+        graph.seen.slice(-2).map((one) => [one.method, one.url.pathname]),
+        [
+          ["POST", "/v1.0/me/messages"],
+          ["POST", "/v1.0/me/messages/d1/send"],
+        ],
+      );
+      assert.strictEqual(Buffer.from(graph.seen.at(-2)!.body, "base64").toString(), raw);
     }).pipe(Effect.provide(graph.layer));
   });
 

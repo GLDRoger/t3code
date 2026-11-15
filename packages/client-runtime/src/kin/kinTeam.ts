@@ -117,7 +117,11 @@ export const KIN_PLACE_SWITCHES = [
     label: "Can see Clients",
     detail: "Client names and contacts. Never terms or what they owe.",
   },
-  { place: "docs", label: "Can see Docs", detail: "Docs you share with the team." },
+  {
+    place: "docs",
+    label: "Can see Docs",
+    detail: "Company docs and those you share. A project's people read its docs anyway.",
+  },
 ] as const;
 
 /** "Leads Atlas, Billing": the projects someone runs, or nothing. */

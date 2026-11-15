@@ -1242,8 +1242,13 @@ const make = Effect.gen(function* () {
           if (value === null) delete merged[field];
           else merged[field] = value;
         }
-        // Why it was given no longer holds once it is handed back; the holder's words are in its history.
-        if (patch.handedBack !== undefined && merged.reason !== undefined) {
+        // Why it was given no longer holds once it moves on with no new why; its history keeps the old.
+        const movedOn =
+          patch.handedBack !== undefined ||
+          (patch.owner !== undefined &&
+            !samePrincipal(patch.owner, before.owner) &&
+            patch.fields?.reason === undefined);
+        if (movedOn && merged.reason !== undefined) {
           changes.push({ field: "reason", from: shownField(merged.reason), to: null });
           delete merged.reason;
           fieldsChanged = true;

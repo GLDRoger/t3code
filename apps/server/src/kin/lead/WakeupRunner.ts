@@ -60,7 +60,7 @@ import * as RoutineContent from "./RoutineContent.ts";
 import * as LeadDelivery from "./LeadDelivery.ts";
 import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
 import { isOrgPaused } from "./orgState.ts";
-import { isMorningCheckIn } from "../pulse/weekly.ts";
+import { isMorningCheckIn, wantsWeekly } from "../pulse/weekly.ts";
 import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
 import { RETIRED_WORKER_REASON, retiredWorkerKey } from "./Retirement.ts";
 import { WorkerTracker } from "./WorkerTracker.ts";
@@ -935,6 +935,18 @@ const make = Effect.gen(function* () {
                 );
                 if (facts !== null) routineFacts.set(event.eventId, facts);
               }
+            // The weekly check-in's figures are Kin's to post; the lead adds judgement under them.
+            if (Option.isSome(routineContent))
+              for (const event of events.filter(
+                (one) => one._tag === "pulse" && wantsWeekly([one]),
+              ))
+                yield* routineContent.value
+                  .weeklyFigures(orgId, agentId, event.eventId)
+                  .pipe(
+                    Effect.catch((error) =>
+                      Effect.logWarning("Kin weekly figures unavailable", { cause: error.cause }),
+                    ),
+                  );
             if (Option.isSome(routineContent)) {
               events = events.filter(
                 (event) =>
@@ -990,8 +1002,15 @@ const make = Effect.gen(function* () {
                 existingThreadId = null;
               }
             }
-            const urgent =
-              yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND priority IN ('P0', 'P1') LIMIT 1`;
+            // Anyone writing to the agent one to one gets its strong model: what they ask may
+            // need a decision or a hand-over.
+            const urgent = yield* sql`SELECT 1 FROM kin_events e
+              WHERE e.org_id = ${orgId} AND e.wakeup_id = ${wakeupId}
+                AND (e.priority IN ('P0', 'P1') OR (e.tag = 'chat.message'
+                  AND json_extract(e.json, '$.provenance._tag') = 'human'
+                  AND EXISTS (SELECT 1 FROM kin_chats c WHERE c.org_id = e.org_id
+                    AND c.chat_id = json_extract(e.json, '$.chatId') AND c.kind = 'direct')))
+              LIMIT 1`;
             const modelSelection =
               !cheapOnly &&
               (urgent.length > 0 ||

@@ -201,36 +201,57 @@ describe("pulse check-ins", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("between check-ins, only mail a watch matches wakes an agent, once", () =>
-    Effect.gen(function* () {
-      yield* seed;
-      yield* record({ key: "C-1", list: "clients", title: "Lumen" });
-      yield* record({
-        key: "CT-1",
-        list: "contacts",
-        title: "Priya",
-        partyId: "r-C-1",
-        fields: '{"email":"priya@lumen.example"}',
-      });
-      yield* record({ key: "INV-4", list: "invoices", title: "October", state: "waiting" });
-      const lines = [
-        mail("t1:a", "Shop <news@shop.example>", "Weekend sale"),
-        mail("t2:a", "Priya <priya@lumen.example>", "Re: launch date"),
-        mail("t3:a", "accounts@lumen.example", "Re: INV-4 for October"),
-        // INV-40 is not INV-4.
-        mail("t4:a", "accounts@other.example", "INV-40 attached"),
-      ];
-      assert.lengthOf(yield* poll(orgId, SLOT, source([lines[0]!, lines[3]!])), 0);
-      assert.lengthOf(yield* pulseEvents, 0);
-      assert.sameMembers(yield* poll(orgId, SLOT, source(lines)), ["t2:a", "t3:a"]);
-      assert.lengthOf(yield* poll(orgId, SLOT + 3 * MINUTE, source(lines)), 0);
-      const events = yield* pulseEvents;
-      assert.sameMembers(
-        events.map((event) => event.agent),
-        [chief, finance],
-      );
-      assert.isTrue(events.every((event) => JSON.parse(event.json).strong === true));
-    }).pipe(Effect.provide(layer)),
+  it.effect(
+    "between check-ins, only mail a watch matches or a new person wakes an agent, once",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* record({ key: "C-1", list: "clients", title: "Lumen" });
+        yield* record({
+          key: "CT-1",
+          list: "contacts",
+          title: "Priya",
+          partyId: "r-C-1",
+          fields: '{"email":"priya@lumen.example"}',
+        });
+        yield* record({ key: "INV-4", list: "invoices", title: "October", state: "waiting" });
+        const lines = [
+          mail("t1:a", "Shop <news@shop.example>", "Weekend sale"),
+          mail("t2:a", "Priya <priya@lumen.example>", "Re: launch date"),
+          mail("t3:a", "accounts@lumen.example", "Re: INV-4 for October"),
+          // INV-40 is not INV-4.
+          mail("t4:a", "accounts@other.example", "INV-40 attached"),
+        ];
+        // Sent to one of the company's addresses: a person Kin doesn't know is maybe a new client
+        // (H07); a list, a no-reply sender or the company's own people are not.
+        const toUs = (line: KinPulseOutsideLine) => ({ ...line, to: "hello@studio.example" });
+        const unknown = [
+          toUs(
+            mail("t5:a", "Meera Iyer <meera@lumengrove.example>", "Booking app for our clinics"),
+          ),
+          toUs(mail("t6:a", "Shop <news@shop.example>", "Weekend sale")),
+          toUs(mail("t7:a", "Bank <no-reply@bank.example>", "Your statement")),
+          toUs(mail("t8:a", "Offers <deals@em.shop.example>", "Just for you")),
+          toUs(mail("t9:a", "Dev <dev@studio.example>", "Lunch?")),
+        ];
+        assert.lengthOf(
+          yield* poll(orgId, SLOT, source([lines[0]!, lines[3]!, ...unknown.slice(1)])),
+          0,
+        );
+        assert.lengthOf(yield* pulseEvents, 0);
+        assert.sameMembers(yield* poll(orgId, SLOT, source([...lines, ...unknown])), [
+          "t2:a",
+          "t3:a",
+          "t5:a",
+        ]);
+        assert.lengthOf(yield* poll(orgId, SLOT + 3 * MINUTE, source(lines)), 0);
+        const events = yield* pulseEvents;
+        assert.sameMembers(
+          events.map((event) => event.agent),
+          [chief, finance, chief],
+        );
+        assert.isTrue(events.every((event) => JSON.parse(event.json).strong === true));
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect(
@@ -271,7 +292,10 @@ describe("pulse check-ins", () => {
           viewer: { _tag: "people", people: [mate] },
         });
         const factKey = facts.find((fact) => fact.subject.key === "W-8")!.key;
-        assert.include(yield* send(MONDAY + 7 * HOUR, factKey), "outside their working hours");
+        // Before their hours: the refusal names when they start and how to ask them then (H16).
+        const early = yield* send(MONDAY + 7 * HOUR, factKey);
+        assert.match(early, /outside their working hours and starts at 2026-11-16T\d\d:\d\d/);
+        assert.include(early, "kin_defer");
         assert.include(yield* send(MONDAY + 10 * HOUR, "task_late:nope"), "can't see that fact");
         assert.strictEqual(yield* send(MONDAY + 10 * HOUR, factKey), "sent");
         assert.include(yield* send(MONDAY + 15 * HOUR, factKey), "already nudged today");

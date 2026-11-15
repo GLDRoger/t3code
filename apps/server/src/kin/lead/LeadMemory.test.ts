@@ -374,6 +374,7 @@ it.live(
           "people_update",
           "kin_hand_off",
           "kin_take_private",
+          "kin_relay",
           "kin_ask",
           "kin_chart",
           "kin_visual",

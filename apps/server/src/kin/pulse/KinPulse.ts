@@ -30,6 +30,7 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { CHIEF_OF_STAFF_DOMAIN, ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { ownerZone } from "../work/recordRows.ts";
+import { matchName } from "../work/nameMatch.ts";
 import { viewSees } from "../work/teamView.ts";
 import { clientSenses } from "./senses/clients.ts";
 import { goalSenses } from "./senses/goals.ts";
@@ -186,8 +187,10 @@ const withStored = (
   };
 };
 
+/** By key, or by name as typed: any case, a start of it, or a close spelling. */
 const matches = (text: string | undefined, key: string | undefined, wanted: string) =>
-  key?.toLowerCase() === wanted.toLowerCase() || text?.toLowerCase() === wanted.toLowerCase();
+  key?.toLowerCase() === wanted.toLowerCase() ||
+  (text !== undefined && matchName(wanted, [{ name: text }])._tag === "found");
 
 /** Only what this viewer may see; for people, Work facts on tasks every one of them sees. */
 const visibleTo = Effect.fn("KinPulse.visibleTo")(function* (
@@ -210,7 +213,31 @@ const visibleTo = Effect.fn("KinPulse.visibleTo")(function* (
         AND r.register_id IN ('work', 'milestones') AND ${viewSees(sql, viewer.people)}
       ORDER BY r.record_id`)
       seen.add(row.recordId);
-  return candidates.filter((fact) => seen.has(fact.subject.recordId!));
+  // A meeting's alert asks how it went: only for the people who were in it.
+  const meetingIds = [
+    ...new Set(
+      candidates
+        .filter((fact) => fact.sense.startsWith("meeting_") && seen.has(fact.subject.recordId!))
+        .map((fact) => fact.subject.recordId!),
+    ),
+  ];
+  const attended = new Set<string>();
+  if (meetingIds.length > 0)
+    for (const row of yield* sql<{ recordId: string }>`SELECT r.record_id AS "recordId"
+      FROM kin_records r WHERE r.org_id = ${orgId} AND r.record_id IN ${sql.in(meetingIds.slice(0, 500))}
+        AND ${sql.and(
+          viewer.people.map(
+            (person) => sql`EXISTS (SELECT 1 FROM json_each(r.fields_json, '$.attendees') a
+              WHERE a.value = 'person:' || ${person})`,
+          ),
+        )}
+      ORDER BY r.record_id`)
+      attended.add(row.recordId);
+  return candidates.filter(
+    (fact) =>
+      seen.has(fact.subject.recordId!) &&
+      (!fact.sense.startsWith("meeting_") || attended.has(fact.subject.recordId!)),
+  );
 });
 
 /** The facts that need attention as of `at`, for one viewer, filtered by scope. */

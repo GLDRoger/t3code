@@ -123,10 +123,18 @@ export const KinLeadToolkit = Toolkit.make(
     parameters: Handoff.TakePrivateInput,
     success: Handoff.TakePrivateResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("kin_relay", {
+    ...handoff,
+    dependencies: [...handoff.dependencies, KinLevelGate],
+    description:
+      "Carry a message between a teammate and whoever decides for them, through you. In a teammate's chat: put their request (moving a date, handing a task on, a decision they need) in front of the owner, a co-owner or the project's lead; Kin posts it quoted as their words in that person's chat with you, waiting on them. In the owner's chat: send a teammate your message, such as the owner's answer or a question about their work, in their own chat with you; it can't hold amounts or anything they can't see. Whenever you say you'll tell, ask or pass something to someone, call this first; if you don't, Kin tells the asker it didn't reach them. For a late task in their hours, pulse_nudge.",
+    parameters: Handoff.RelayInput,
+    success: Handoff.RelayResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_ask", {
     ...chat,
     description:
-      "Ask a question with 2-4 tap-to-answer options in the chat your reply goes to. Use it when the answer is one of a few choices; otherwise ask in plain text. Mark a yes/no pair with kind. It counts as your reply, and the tap arrives later as their answer. A choice is never an approval: privileged actions still need request_action.",
+      "Ask a question with 2-4 tap-to-answer options in the chat your reply goes to. Use it when the answer is one of a few choices; otherwise ask in plain text. Mark a yes/no pair with kind. It is your reply: don't restate it in a message, and add at most one short line it doesn't say. The tap arrives later as their answer. A choice is never an approval: privileged actions still need request_action.",
     parameters: ChoiceCard.AskInput,
     success: ChoiceCard.AskResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

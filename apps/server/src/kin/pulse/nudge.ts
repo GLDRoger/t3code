@@ -41,6 +41,18 @@ export const inHoursAt = (
     : !isQuiet(at, zone, KIN_DEFAULT_QUIET_HOURS);
 };
 
+const STEP_MS = 5 * 60 * 1000;
+/** The first moment after `at` inside this person's hours, within the next 8 days. */
+const nextInHours = (
+  person: { readonly timeZone: string | null; readonly workHours: string | null },
+  ownerZoneId: string,
+  at: number,
+) => {
+  for (let t = Math.ceil(at / STEP_MS) * STEP_MS; t < at + 8 * DAY_MS; t += STEP_MS)
+    if (inHoursAt(person, ownerZoneId, t)) return t;
+  return undefined;
+};
+
 /** Each teammate (not the owner), and whether they are inside their hours now. */
 export const teamHoursNow = Effect.fn("KinPulse.teamHoursNow")(function* (
   orgId: KinOrgId,
@@ -76,7 +88,11 @@ export const nudge = Effect.fn("KinPulse.nudge")(function* (input: {
   readonly factKey: string;
   readonly text: string;
   readonly chatFor: (personId: KinPersonId) => Effect.Effect<KinChatId, KinChatError>;
-  readonly post: (chatId: KinChatId, clientMessageId: string) => Effect.Effect<void, KinChatError>;
+  readonly post: (
+    chatId: KinChatId,
+    clientMessageId: string,
+    personId: KinPersonId,
+  ) => Effect.Effect<void, KinChatError>;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, at } = input;
@@ -114,10 +130,14 @@ export const nudge = Effect.fn("KinPulse.nudge")(function* (input: {
       `${person.name} can't see that fact, or it no longer needs attention. Nudge only about their own open Work; tell the owner about anything else.`,
     );
   const zone = person.timeZone ?? (yield* ownerZone(orgId));
-  if (!inHoursAt(person, zone, at))
+  if (!inHoursAt(person, zone, at)) {
+    const starts = nextInHours(person, zone, at);
     return yield* refuse(
-      `${person.name} is outside their working hours. Leave it for the next check-in in their hours.`,
+      starts === undefined
+        ? `${person.name} is outside their working hours. Leave it for the next check-in in their hours.`
+        : `${person.name} is outside their working hours and starts at ${iso(starts)}. To ask them then, set kin_defer (onDue "ask", due ${iso(starts)}) in your chat with the owner and nudge them when it wakes you; don't say you will without it.`,
     );
+  }
   const day = dayIn(at, zone);
   const [last] = yield* sql<{ day: string; chatId: string; factKey: string; sentAt: number }>`
     SELECT day, chat_id AS "chatId", fact_key AS "factKey", sent_at AS "sentAt"
@@ -143,7 +163,7 @@ export const nudge = Effect.fn("KinPulse.nudge")(function* (input: {
     ON CONFLICT (org_id, person_id, day) DO NOTHING RETURNING day`;
   if (claimed.length === 0)
     return yield* refuse(`${person.name} was already nudged today. One nudge a day: leave it.`);
-  yield* input.post(chatId, `pulse-nudge:${personId}:${day}`).pipe(
+  yield* input.post(chatId, `pulse-nudge:${personId}:${day}`, personId).pipe(
     Effect.tapError(() =>
       sql`DELETE FROM kin_pulse_nudges
           WHERE org_id = ${orgId} AND person_id = ${personId} AND day = ${day}`.pipe(Effect.ignore),

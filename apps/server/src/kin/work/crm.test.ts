@@ -244,7 +244,13 @@ it.effect(
         kind: "client",
         terms: "Invented retainer, monthly",
       });
-      assert.deepStrictEqual(client.owed, { weOwe: 4, theyOwe: 2, late: 0, overdue: 0 });
+      assert.deepStrictEqual(client.owed, {
+        tasksWeOwe: 4,
+        tasksTheyOwe: 2,
+        tasksWeOweLate: 0,
+        tasksTheyOweLate: 0,
+        money: { unpaid: [], overdue: [], invoices: [] },
+      });
       assert.deepStrictEqual(
         client.contacts!.map((row) => [row.title, row.role ?? row.email]),
         [
@@ -1097,6 +1103,52 @@ it.effect(
         clientRequestId: "check-in",
       });
       assert.notInclude(yield* senses("C-1"), "client_cold");
+
+      // What a client owes counts its unpaid invoices by the rule Money uses, not only its tasks.
+      yield* sql`UPDATE kin_records SET state = 'waiting', due_at = ${3 * DAY} WHERE key = 'INV-1'`;
+      const owes = (yield* LeadWork.get(scope, { key: "C-1" })).owed!;
+      assert.deepStrictEqual(owes.money.overdue, owes.money.unpaid);
+      assert.match(owes.money.invoices[0]!, /^INV-1: .*500.* overdue, \d+ days past due$/);
+
+      // A client added today with work that ended long ago reads cold from that day, and a typed
+      // name finds it: any case, a start of it, or a close spelling.
+      yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [
+          { list: "clients", title: "Invented Harbourline Logistics" },
+          {
+            list: "projects",
+            title: "Invented tracking app",
+            client: "invented harbourline",
+            state: "done",
+            finishedOn: "1970-01-02",
+          },
+        ],
+      });
+      const harbour = (yield* LeadWork.get(scope, { key: "C-2" })).key;
+      assert.include(yield* senses(harbour), "client_cold");
+      for (const typed of [
+        "INVENTED HARBOURLINE LOGISTICS",
+        "Invented Harbor",
+        "Invnted Harbourline",
+      ])
+        assert.include(
+          yield* LeadWork.get(scope, {
+            key: (yield* LeadWork.create(scope, {
+              sourceEventId: "ask-event",
+              records: [{ title: `Invented call ${typed}`, client: typed }],
+            })).records[0]!.key,
+          }),
+          { client: "Invented Harbourline Logistics (C-2)" },
+        );
+      // No match names the nearest instead of saying there is none.
+      const missed = yield* Effect.flip(
+        LeadWork.create(scope, {
+          sourceEventId: "ask-event",
+          records: [{ title: "Invented call", client: "Invented Harbourlime Freight" }],
+        }),
+      );
+      assert.include(missed.message, "Nearest: Invented Harbourline Logistics (C-2)");
     }).pipe(Effect.provide(layer)),
 );
 
@@ -1269,6 +1321,31 @@ it.effect(
       assert.deepStrictEqual(
         (yield* LeadWork.get(scope, { key: "P-1" })).plan!.specChanged.map((one) => one.task),
         ["W-2"],
+      );
+
+      // The owner marks the agent's W-2 private while it waits: its project's lead, Mate, no
+      // longer finds it anywhere on the project page, nor in the counts.
+      yield* sql`UPDATE kin_records SET owner_kind = 'person', owner_id = ${mateId}
+        WHERE key = 'P-1'`;
+      yield* sql`UPDATE kin_records SET sensitive = 1, state = 'waiting' WHERE key = 'W-2'`;
+      const theirs = yield* Clients.project([mate], { orgId, key: "P-1" });
+      const ours = yield* Clients.project([owner], { orgId, key: "P-1" });
+      assert.deepStrictEqual(
+        ours.blocked.map((one) => one.record.key),
+        ["W-2"],
+      );
+      assert.deepStrictEqual(theirs.blocked, []);
+      assert.strictEqual(ours.counts.waiting, 1);
+      assert.strictEqual(theirs.counts.waiting, 0);
+      assert.strictEqual(ours.milestones?.[0]?.total, 2);
+      assert.strictEqual(theirs.milestones?.[0]?.total, 1);
+      assert.notInclude(
+        theirs.changedThisWeek.items.map((one) => one.record.key),
+        "W-2",
+      );
+      assert.notInclude(
+        (yield* Clients.projects([mate], { orgId })).projects.map((one) => one.open),
+        ours.project.open,
       );
 
       // The milestone rule: late once passed while open; at risk within the heads-up days (3 by

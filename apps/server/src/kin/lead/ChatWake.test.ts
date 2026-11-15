@@ -439,6 +439,45 @@ describe("ChatWake", () => {
       }).pipe(Effect.provide(services)),
   );
 
+  it.effect("with no memory repository, each chat with an agent hears why once, in one line", () =>
+    Effect.gen(function* () {
+      yield* seed("a");
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_chats SET last_seq = 10 WHERE chat_id = 'chat-a'`;
+      const hub = yield* Hub.KinChatHub;
+      const pulled = yield* Queue.unbounded<string>();
+      yield* Layer.build(
+        ChatWake.unconfiguredLayer.pipe(
+          Layer.provide(
+            Layer.succeed(Hub.KinChatHub, {
+              ...hub,
+              subscribeAll: hub.subscribeAll.pipe(
+                Effect.map(
+                  Stream.tap((event) =>
+                    event.type === "message.posted"
+                      ? Queue.offer(pulled, event.message.messageId)
+                      : Effect.void,
+                  ),
+                ),
+              ),
+            }),
+          ),
+        ),
+      );
+      for (const id of ["first", "second"]) {
+        yield* post("a", id, { seq: id === "first" ? 2 : 3 });
+        while ((yield* Queue.take(pulled)) !== id);
+      }
+      const settle = "settle-no-memory";
+      yield* post("a", settle, { agent: true });
+      while ((yield* Queue.take(pulled)) !== settle);
+      const notices = yield* sql<{ body: string }>`SELECT body FROM kin_messages
+        WHERE org_id = 'a' AND author_kind = 'system' ORDER BY message_id`;
+      assert.lengthOf(notices, 1);
+      assert.match(notices[0]!.body, /^Lead can't answer: this server has no memory repository/);
+    }).pipe(Effect.provide(services)),
+  );
+
   it.effect("catches up on owner messages the lead has not answered since its last post", () =>
     Effect.gen(function* () {
       yield* seed("a");

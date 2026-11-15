@@ -73,6 +73,8 @@ export const OUTSIDE_TOOLS = {
   kin_hand_off: "allowed",
   // Carries only the person's stored message, never what the turn read.
   kin_take_private: "allowed",
+  // Words to one person of the company, checked for what they may read.
+  kin_relay: "allowed",
   kin_defer: "allowed",
   kin_schedule: "allowed",
   kin_cancel: "allowed",

@@ -378,7 +378,9 @@ function KinClientBody(
       )}
       <ListSection
         title={KIN_CLIENTS.contacts}
-        {...(view.contacts.length === 0 ? {} : { footer: KIN_CLIENTS.detailsPrivate })}
+        {...(view.contacts.length === 0 || !canChange
+          ? {}
+          : { footer: KIN_CLIENTS.detailsPrivate })}
       >
         {view.contacts.length === 0 ? (
           <ListRowLayout label={KIN_CLIENTS.noContacts} disabled />

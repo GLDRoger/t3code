@@ -582,7 +582,7 @@ it.effect(
 );
 
 it.effect(
-  "what an agent writes after a sensitive read is labelled, and only the owner lowers it",
+  "a doc is private by its own label or a money kind, never by what the turn read; the project's people read the rest",
   () =>
     Effect.gen(function* () {
       yield* seed;
@@ -590,65 +590,86 @@ it.effect(
       const sql = yield* SqlClient.SqlClient;
       const label = (key: string) =>
         Docs.docRow(orgId, { key }).pipe(Effect.map((row) => row.sensitive));
-      const write = (title: string) =>
-        LeadDocs.create(scopeOf(lead), { sourceEventId: "ask-event", title, body: plan });
-      const edited = yield* write("Invented edited plan");
-      const rewritten = yield* write("Invented rewritten plan");
-      const restored = yield* write("Invented restored plan");
+      // The turn has read a price: the PRD it writes and edits stays readable by the team (H04).
+      yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
+        VALUES (${orgId}, 'wake', 0)`;
+      const prd = yield* LeadDocs.create(scopeOf(lead), {
+        sourceEventId: "ask-event",
+        title: "Invented PRD",
+        kind: "prd",
+        body: plan,
+      });
       yield* LeadDocs.edit(scopeOf(lead), {
-        key: restored.key,
+        key: prd.key,
         sourceEventId: "ask-event",
         summary: "Moved the launch",
         operations: [{ op: "replace_phrase", find: "the 10th", replace: "the 12th" }],
       });
-      assert.strictEqual(yield* label(edited.key), 0);
-      yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
-        VALUES (${orgId}, 'wake', 0)`;
+      yield* LeadDocs.rewrite(scopeOf(lead), {
+        key: prd.key,
+        sourceEventId: "ask-event",
+        baseVersion: 2,
+        body: plan.replace("Intro for the invented launch.", "A new invented intro."),
+        summary: "Rewrote the intro",
+      });
+      assert.isUndefined(prd.sensitive);
+      assert.strictEqual(yield* label(prd.key), 0);
+      // A quote or proposal is private by its kind; anything the agent labels, by its label.
+      const quote = yield* LeadDocs.create(scopeOf(lead), {
+        sourceEventId: "ask-event",
+        title: "Invented quote",
+        kind: "quote",
+        body: "Invented: 10 credits",
+      });
       const made = yield* LeadDocs.create(scopeOf(lead), {
         sourceEventId: "ask-event",
         title: "Invented private note",
         body: "Invented confidential detail",
+        sensitive: true,
       });
-      assert.strictEqual((yield* Docs.docRow(orgId, { key: made.key })).sensitive, 1);
-      assert.isTrue(made.sensitive);
-      // Every write that adds text in that turn labels its doc, whatever the agent passed.
+      assert.deepStrictEqual([yield* label(quote.key), yield* label(made.key)], [1, 1]);
+
+      // Filed under a project, the PRD is read by whoever holds work in it, without the Docs
+      // place; the private note filed there too is not.
+      const records = yield* KinRecords.KinRecords;
+      const project = yield* records.create(orgId, agentWriter(lead), {
+        list: "projects",
+        title: "Invented app",
+        owner: { _tag: "agent", agentId: lead },
+        originKey: "test:project",
+      });
+      const task = yield* records.create(orgId, agentWriter(lead), {
+        title: "Invented login",
+        owner: { _tag: "person", personId: mateId },
+        projectId: project.row.recordId,
+        originKey: "test:task",
+      });
+      yield* sql`UPDATE kin_records SET project_id = ${project.row.recordId}
+        WHERE key IN (${prd.key}, ${made.key})`;
+      const seen = (key: string) =>
+        Docs.docRow(orgId, { key }, mateId).pipe(
+          Effect.as(true),
+          Effect.orElseSucceed(() => false),
+        );
+      assert.deepStrictEqual(
+        [yield* seen(prd.key), yield* seen(made.key), yield* seen(quote.key)],
+        [true, false, false],
+      );
+      yield* sql`UPDATE kin_records SET owner_kind = 'agent', owner_id = ${lead}
+        WHERE key = ${task.row.key}`;
+      assert.isFalse(yield* seen(prd.key));
+
+      // The owner lowers a label, and a later agent write leaves his call.
+      assert.isFalse(
+        (yield* OwnerDocs.label([owner], { orgId, key: quote.key, sensitive: false })).sensitive,
+      );
       yield* LeadDocs.edit(scopeOf(lead), {
-        key: edited.key,
+        key: quote.key,
         sourceEventId: "ask-event",
         summary: "Added a note",
         operations: [{ op: "append", text: "Invented detail." }],
       });
-      yield* LeadDocs.rewrite(scopeOf(lead), {
-        key: rewritten.key,
-        sourceEventId: "ask-event",
-        baseVersion: 1,
-        body: plan.replace("Intro for the invented launch.", "A new invented intro."),
-        summary: "Rewrote the intro",
-      });
-      yield* LeadDocs.restore(scopeOf(lead), {
-        key: restored.key,
-        sourceEventId: "ask-event",
-        version: 1,
-        latest: 2,
-      });
-      assert.deepStrictEqual(
-        [yield* label(edited.key), yield* label(rewritten.key), yield* label(restored.key)],
-        [1, 1, 1],
-      );
-      // The owner lowers it; a later write in a clean turn leaves the owner's call either way.
-      assert.isFalse(
-        (yield* OwnerDocs.label([owner], { orgId, key: edited.key, sensitive: false })).sensitive,
-      );
-      yield* OwnerDocs.label([owner], { orgId, key: made.key, sensitive: true });
-      yield* sql`DELETE FROM kin_wakeup_sensitive_reads`;
-      for (const key of [edited.key, made.key])
-        yield* LeadDocs.edit(scopeOf(lead), {
-          key,
-          sourceEventId: "ask-event",
-          summary: "Added another note",
-          operations: [{ op: "append", text: "Invented later detail." }],
-        });
-      assert.deepStrictEqual([yield* label(edited.key), yield* label(made.key)], [0, 1]);
+      assert.strictEqual(yield* label(quote.key), 0);
       // Only the owner: anyone else is refused, and the label stays.
       assert.strictEqual(
         reasonOf(
