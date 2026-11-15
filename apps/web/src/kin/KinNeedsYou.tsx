@@ -1,6 +1,7 @@
 import {
   kinAttention,
   kinNeedsYouBeside,
+  kinTasksAttention,
   type KinAttentionOpen,
 } from "@t3tools/client-runtime/kin/kinAttention";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
@@ -84,7 +85,12 @@ export function KinNeedsYou(
     names,
     now,
   });
-  const rows = kinNeedsYouBeside(before, attention);
+  // Money's own rows live on Money; here they are one row that opens it.
+  const split = kinTasksAttention(attention.open);
+  const rows = [
+    ...(split.moneyRow === null ? [] : [split.moneyRow]),
+    ...kinNeedsYouBeside(before, attention),
+  ];
   const openAttention = (to: KinAttentionOpen) => {
     if (to.type === "record") props.onOpenTask(to.key);
     else if (to.type === "money") props.onOpenMoney();
@@ -99,9 +105,9 @@ export function KinNeedsYou(
         params: { environmentId, orgId, chatId: to.chatId },
       });
   };
-  const total = attention.open.length + rows.length;
+  const total = split.rows.length + rows.length;
   const limit = expanded ? total : KIN_NEEDS_YOU_SHOWN;
-  const shownAttention = attention.open.slice(0, limit);
+  const shownAttention = split.rows.slice(0, limit);
   const shown = rows.slice(0, Math.max(0, limit - shownAttention.length));
   return (
     <KinWorkSection

@@ -2,6 +2,7 @@ import { useNavigation } from "@react-navigation/native";
 import {
   kinAttention,
   kinNeedsYouBeside,
+  kinTasksAttention,
   type KinAttentionOpen,
 } from "@t3tools/client-runtime/kin/kinAttention";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
@@ -93,8 +94,16 @@ export function KinNeedsYou(
           names,
           now,
         });
-  const needs = before === null ? null : kinNeedsYouBeside(before, attention);
-  const total = needs === null ? 0 : needs.length + attention.open.length;
+  // Money's own rows live on Money; here they are one row that opens it.
+  const split = kinTasksAttention(attention.open);
+  const needs =
+    before === null
+      ? null
+      : [
+          ...(split.moneyRow === null ? [] : [split.moneyRow]),
+          ...kinNeedsYouBeside(before, attention),
+        ];
+  const total = needs === null ? 0 : needs.length + split.rows.length;
   if (props.hideWhenNone && needs !== null && total === 0 && attention.handled.length === 0)
     return null;
 
@@ -111,7 +120,7 @@ export function KinNeedsYou(
     else if (to.type === "money") openPlace("money");
   };
   const limit = expanded ? total : KIN_NEEDS_YOU_SHOWN;
-  const shownAttention = needs === null ? [] : attention.open.slice(0, limit);
+  const shownAttention = needs === null ? [] : split.rows.slice(0, limit);
   const shown = needs === null ? [] : needs.slice(0, Math.max(0, limit - shownAttention.length));
   return (
     <View className="px-4">

@@ -45,6 +45,8 @@ export interface KinAttentionRow {
   readonly askDraft: string;
   /** In the Handled list: who has it, until when, or that it is not a problem. */
   readonly handled: string | null;
+  /** About money: Tasks counts these in one row that opens Money, which lists them. */
+  readonly money: boolean;
 }
 
 /** Which facts a screen is about: the whole company, one project, one client, or Money. */
@@ -165,6 +167,7 @@ function kinAttentionRow(
     agentId: fact.actor._tag === "agent" ? fact.actor.agentId : null,
     askDraft: `About ${label}: ${fact.consequence} `,
     handled: handledText(fact, input.names, input.now),
+    money: fact.family === "money",
   };
 }
 
@@ -192,6 +195,30 @@ export function kinAttention(
   return {
     open: rows(facts.filter((fact) => fact.handled === null)),
     handled: rows(facts.filter((fact) => fact.handled !== null)),
+  };
+}
+
+/** Tasks shows what isn't money row by row, and money as one count that opens Money. */
+export function kinTasksAttention(open: ReadonlyArray<KinAttentionRow>): {
+  readonly rows: ReadonlyArray<KinAttentionRow>;
+  readonly money: number;
+  readonly moneyRow: KinNeedsYouRow | null;
+} {
+  const money = open.filter((row) => row.money).length;
+  return {
+    rows: open.filter((row) => !row.money),
+    money,
+    moneyRow:
+      money === 0
+        ? null
+        : {
+            id: "attention:money",
+            kind: "money",
+            title: "Money",
+            detail: money === 1 ? "1 thing needs attention" : `${money} things need attention`,
+            late: open.some((row) => row.money && row.urgent),
+            open: { type: "money" },
+          },
   };
 }
 

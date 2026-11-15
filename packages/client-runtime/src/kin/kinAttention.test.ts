@@ -16,6 +16,7 @@ import {
   kinGoalView,
   kinNeedsYouBeside,
   kinPlainDates,
+  kinTasksAttention,
   kinSnoozeDays,
 } from "./kinAttention.ts";
 import type { KinNeedsYouRow } from "./kinWorkHome.ts";
@@ -77,6 +78,14 @@ describe("kinAttention", () => {
     expect(money.open).toHaveLength(0);
     expect(money.handled).toHaveLength(1);
     expect(kinAttentionCount(read(facts))).toBe(3);
+    const all = kinAttention(read([...facts.slice(0, 2), fact("invoice_overdue", "INV-2")]), {
+      scope: { type: "all" },
+      names,
+      now,
+    });
+    const tasks = kinTasksAttention(all.open);
+    expect(tasks.rows.map((row) => row.factKey)).toEqual(["task_late:W-2", "task_due_soon:W-1"]);
+    expect(tasks.money).toBe(1);
   });
 
   it("leaves out of Needs you what an attention row already covers", () => {
