@@ -1,7 +1,9 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- random ids for rows and secret names.
 import * as NodeCrypto from "node:crypto";
 import {
+  KinAgentId,
   KinChatError,
+  KinChatId,
   KinConnectionId,
   type KinConnectionAcceptInput,
   type KinConnectionAddInput,
@@ -24,6 +26,9 @@ import {
   type KinConnectionsView,
   type KinConnectionToolMode,
   type KinOrgId,
+  KinPersonId,
+  KinWakeupId,
+  ThreadId,
 } from "@t3tools/contracts";
 import { McpSchema } from "effect/ai";
 import * as Clock from "effect/Clock";
@@ -32,6 +37,7 @@ import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -41,12 +47,15 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as HttpClient from "effect/http/HttpClient";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as SqlError from "effect/sql/SqlError";
 
+import { ServerConfig } from "../../config.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
-import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
+import { type AgentIdentity, KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
-import { effectiveAudience } from "../lead/Audience.ts";
+import { effectiveAudience, turnChat } from "../lead/Audience.ts";
+import { KinLevelGate } from "../lead/LevelGate.ts";
 import { resolveLead } from "../lead/LeadMemory.ts";
 import { markOutside, outsideRead, OUTSIDE_REFUSAL } from "../lead/OutsideContent.ts";
 import { sensitiveShown } from "../work/workerAttempts.ts";
@@ -61,6 +70,7 @@ import {
   toolsOf,
   toolView,
   type ConnectionRow,
+  type ToolRow,
 } from "./ConnectionRows.ts";
 import {
   KinConnectionSecrets,
@@ -73,8 +83,11 @@ import { KinGatewayError, KinMcpGateway, type GatewayTarget } from "./McpGateway
 import { credentialForms } from "./Inbound.ts";
 import {
   callGoogle,
+  canSend,
   GOOGLE_AUTH_EXTRA,
   GOOGLE_SCOPES,
+  GOOGLE_SEND_TOOL_NAMES,
+  GOOGLE_SEND_TOOLS,
   GOOGLE_SERVER,
   GOOGLE_TOOLS,
   googleAccount,
@@ -94,10 +107,24 @@ import {
 } from "./presets.ts";
 import { resultText } from "./ResultText.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
+import {
+  attachmentOf,
+  attachmentsCurrent,
+  MAX_CARD_ARGS,
+  prepareGoogle,
+  type Prepared,
+  PreparedJson,
+  sendCard,
+  sendGoogle,
+  sentToClient,
+} from "./Sending.ts";
 
 export const SHARED_CONNECTIONS =
   "I don't use the company's connected services in chats with other people.";
-export const ASK_LATER = "Approvals for connection writes arrive in a later update.";
+export const ALWAYS_ASK =
+  "This tool sends something out of the company: it can be Off or Ask me, never Read.";
+export const ASKED =
+  "Nothing was sent. The owner sees a card with exactly this; their tap on Confirm sends it. Tell them in one short line to check the card. A typed yes doesn't send it.";
 export const OFFERED = "The owner will see a card to connect it.";
 const paused = (label: string) => `The owner paused ${label}. Only the owner can resume it.`;
 const signedOut = (label: string) =>
@@ -132,6 +159,8 @@ const settle = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 const decodeTool = Schema.decodeUnknownEffect(Schema.fromJsonString(McpSchema.Tool));
 const Json = Schema.fromJsonString(Schema.Unknown);
 const toJson = Schema.encodeSync(Json);
+const encodePrepared = Schema.encodeSync(PreparedJson);
+const decodePrepared = Schema.decodeOption(PreparedJson);
 const fromJson = Schema.decodeOption(Json);
 /** A stored definition: Kin wrote it, so it parses; a bad row reads as empty. */
 const stored = (json: string): unknown => Option.getOrUndefined(fromJson(json));
@@ -163,7 +192,10 @@ export const KinConnectionCallInput = Schema.Struct({
   arguments: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
   reason: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
 });
-export const KinConnectionCallResult = Schema.Struct({ quoted: Schema.String });
+export const KinConnectionCallResult = Schema.Struct({
+  quoted: Schema.optional(Schema.String),
+  note: Schema.optional(Schema.String),
+});
 export const KinConnectionOfferInput = Schema.Struct({
   service: Schema.String.check(Schema.isMaxLength(80)),
 });
@@ -209,6 +241,43 @@ export type KinConnectionActivity =
       }>;
     }
   | { readonly _tag: "unsupported"; readonly connectionId: KinConnectionId };
+type AskRow = {
+  readonly askId: string;
+  readonly connectionId: string;
+  readonly toolName: string;
+  readonly pinDigest: string;
+  readonly payload: string;
+  readonly agentId: string;
+  readonly chatId: string;
+  readonly state: string;
+  readonly entryRecordId: string | null;
+  readonly owner: string;
+  readonly threadId: string;
+};
+/** A confirmed mail whose file changed since its card: what a fresh card is made from. */
+export type StaleAsk = {
+  readonly prepared: Extract<Prepared, { readonly _tag: "email" }>;
+  readonly row: AskRow;
+  readonly label: string;
+  readonly account: string | null;
+};
+export type AskAnswer =
+  | { readonly _tag: "declined" | "send"; readonly askId: string }
+  | {
+      readonly _tag: "stale";
+      readonly askId: string;
+      readonly reason: string;
+      readonly fresh: StaleAsk | undefined;
+    };
+export type FreshAsk = {
+  readonly askId: string;
+  readonly chatId: KinChatId;
+  readonly agent: AgentIdentity;
+  readonly card: ReturnType<typeof sendCard>;
+  readonly bind: (widgetId: string) => Effect.Effect<void, SqlError.SqlError>;
+};
+export type AskOutcome = { readonly state: "sent" | "failed"; readonly reason: string | null };
+
 type Owner<I, A> = (people: People, input: I) => Effect.Effect<A, KinChatError>;
 type Lead<I, A> = (scope: McpInvocationScope, input: I) => Effect.Effect<A, KinChatError>;
 
@@ -246,6 +315,22 @@ export class KinConnections extends Context.Service<
     readonly tools: Lead<typeof KinConnectionToolsInput.Type, typeof KinConnectionToolsResult.Type>;
     readonly call: Lead<typeof KinConnectionCallInput.Type, typeof KinConnectionCallResult.Type>;
     readonly offer: Lead<typeof KinConnectionOfferInput.Type, typeof KinConnectionOfferResult.Type>;
+    /** The owner's tap on an ask card, run in the tap's own transaction. */
+    readonly answerAsk: (input: {
+      readonly orgId: KinOrgId;
+      readonly widgetId: string;
+      readonly personId: string;
+      readonly confirmed: boolean;
+      readonly via: "tap" | "reaction";
+      readonly now: number;
+    }) => Effect.Effect<AskAnswer | undefined, KinChatError, SqlClient.SqlClient>;
+    readonly freshAsk: (
+      orgId: KinOrgId,
+      stale: StaleAsk,
+      now: number,
+    ) => Effect.Effect<FreshAsk, KinChatError>;
+    /** After the tap commits: sends a confirmed ask, once. */
+    readonly sendAsk: (orgId: KinOrgId, askId: string) => Effect.Effect<AskOutcome, KinChatError>;
   }
 >()("t3/kin/connections/ConnectionsService/KinConnections") {}
 
@@ -283,6 +368,12 @@ type PendingSignIn = {
     | { readonly _tag: "again"; readonly connectionId: KinConnectionId };
 };
 
+/** Kin's own Google tools that send are never marked Read. */
+const alwaysAsk = (row: Pick<ConnectionRow, "kind">, tool: string) =>
+  row.kind === "builtin" && GOOGLE_SEND_TOOL_NAMES.has(tool);
+const usable = (tool: Parameters<typeof callable>[0]) =>
+  callable(tool) && (tool.mode === "read" || tool.mode === "ask");
+
 const firstLine = (text: string | null) => (text ?? "").split("\n")[0]!.trim().slice(0, 200);
 /** The arguments as sent, cut at `argsBytes` of UTF-8 on a character boundary. */
 const keptArgs = (args: unknown) => {
@@ -302,6 +393,8 @@ const make = Effect.gen(function* () {
   const refresh = yield* KinRefreshObserver;
   const secrets = yield* KinConnectionSecrets;
   const gateway = yield* KinMcpGateway;
+  const levelGate = yield* KinLevelGate;
+  const files = yield* Effect.context<FileSystem.FileSystem | ServerConfig>();
   const http = yield* HttpClient.HttpClient;
   const signInAddress = yield* Config.String("KIN_SIGN_IN_ADDRESS").pipe(
     Config.withDefault(DEFAULT_SIGN_IN_ADDRESS),
@@ -328,14 +421,32 @@ const make = Effect.gen(function* () {
   ) {
     const row = yield* live(orgId, connectionId);
     const tools = yield* toolsOf(orgId, connectionId).pipe(provideSql);
-    return { connection: connectionView(row, tools), tools: tools.map(toolView) };
+    return {
+      connection: yield* withSendState(row, connectionView(row, tools)),
+      tools: tools.map((tool) =>
+        alwaysAsk(row, tool.name) ? { ...toolView(tool), alwaysAsk: true } : toolView(tool),
+      ),
+    };
+  });
+  /** A Google sign-in from before Kin sent anything shows "Sign in again to allow sending". */
+  const withSendState = Effect.fnUntraced(function* (
+    row: ConnectionRow,
+    view: ReturnType<typeof connectionView>,
+  ) {
+    if (row.kind !== "builtin" || row.auth !== "oauth") return view;
+    const stored = yield* secrets
+      .getSignIn(row.connectionId)
+      .pipe(Effect.orElseSucceed(Option.none));
+    return Option.isNone(stored) || canSend(Redacted.value(stored.value).scope)
+      ? view
+      : { ...view, needsSignInToSend: true };
   });
   const view = Effect.fn("KinConnections.view")(function* (orgId: KinOrgId) {
     const rows = yield* liveConnections(orgId).pipe(provideSql);
     const connections = yield* Effect.forEach(rows, (row) =>
       toolsOf(orgId, row.connectionId).pipe(
         provideSql,
-        Effect.map((tools) => connectionView(row, tools)),
+        Effect.flatMap((tools) => withSendState(row, connectionView(row, tools))),
       ),
     );
     return {
@@ -510,7 +621,11 @@ const make = Effect.gen(function* () {
     );
   const listFor = Effect.fnUntraced(function* (orgId: KinOrgId, row: ConnectionRow) {
     if (row.kind === "builtin")
-      return { protocolVersion: null, instructions: undefined, tools: GOOGLE_TOOLS };
+      return {
+        protocolVersion: null,
+        instructions: undefined,
+        tools: [...GOOGLE_TOOLS, ...GOOGLE_SEND_TOOLS],
+      };
     return yield* withSignIn(orgId, row, (force) =>
       target(orgId, row, force).pipe(Effect.flatMap((to) => gateway.listTools(to))),
     );
@@ -736,11 +851,11 @@ const make = Effect.gen(function* () {
 
   const setToolModes = ownerOp("setToolModes", (input: KinConnectionSetToolModesInput) =>
     Effect.gen(function* () {
-      if (input.modes.some((entry) => entry.mode === "ask"))
-        return yield* fail("invalid_state", ASK_LATER);
       const refused = yield* sql.withTransaction(
         Effect.gen(function* () {
-          yield* live(input.orgId, input.connectionId);
+          const row = yield* live(input.orgId, input.connectionId);
+          if (input.modes.some((entry) => entry.mode === "read" && alwaysAsk(row, entry.tool)))
+            return yield* fail("invalid_state", ALWAYS_ASK);
           const tools = new Map(
             (yield* toolsOf(input.orgId, input.connectionId).pipe(provideSql)).map((tool) => [
               tool.name,
@@ -1303,7 +1418,7 @@ const make = Effect.gen(function* () {
         row = (yield* connectionById(turn.orgId, row.connectionId).pipe(provideSql)) ?? row;
       }
       const all = yield* toolsOf(turn.orgId, row.connectionId).pipe(provideSql);
-      const read = all.filter((tool) => callable(tool) && tool.mode === "read");
+      const read = all.filter(usable);
       // Instructions, names, descriptions and schemas are the server's words: the turn is
       // outside-read before any of them reaches it, even a listing with nothing to read.
       const connectionId = row.connectionId;
@@ -1323,7 +1438,7 @@ const make = Effect.gen(function* () {
           const description = Predicate.hasProperty(definition, "description")
             ? definition.description
             : undefined;
-          return `${tool.name}${typeof title === "string" ? ` (${title})` : ""}: ${firstLine(typeof description === "string" ? description : null)}`;
+          return `${tool.name}${typeof title === "string" ? ` (${title})` : ""}${tool.mode === "ask" ? " [asks the owner to confirm each call]" : ""}: ${firstLine(typeof description === "string" ? description : null)}`;
         });
         yield* mark;
         return {
@@ -1342,14 +1457,12 @@ const make = Effect.gen(function* () {
       );
       if (tool === undefined)
         return yield* fail("not_found", `${row.label} has no tool named ${input.tool}.`);
-      if (!callable(tool) || tool.mode !== "read")
+      if (!usable(tool))
         return {
           note:
             tool.mode === "off"
               ? `${tool.name} is off. Only the owner can turn it on.`
-              : tool.mode === "ask"
-                ? ASK_LATER
-                : `${tool.name} changed and waits for the owner's review.`,
+              : `${tool.name} changed and waits for the owner's review.`,
         };
       const definition = stored(tool.acceptedJson ?? tool.definitionJson);
       yield* mark;
@@ -1363,6 +1476,7 @@ const make = Effect.gen(function* () {
           inputSchema: Predicate.hasProperty(definition, "inputSchema")
             ? definition.inputSchema
             : null,
+          ...(tool.mode === "ask" ? { asks: "Each call waits for the owner's Confirm." } : {}),
         }),
       };
     }),
@@ -1461,7 +1575,6 @@ const make = Effect.gen(function* () {
           entry,
           fail("not_allowed", `${tool.name} is off. Only the owner can turn it on.`),
         );
-      if (tool.mode === "ask") return yield* refuse(turn, entry, fail("not_allowed", ASK_LATER));
       if (!callable(tool))
         return yield* refuse(
           turn,
@@ -1477,6 +1590,8 @@ const make = Effect.gen(function* () {
         (row.reach === "open" || tool.openWorld === 1)
       )
         return yield* refuse(turn, entry, fail("not_allowed", OUTSIDE_REFUSAL));
+      if (tool.mode === "ask" || alwaysAsk(row, tool.name))
+        return yield* askFor(turn, row, tool, args, entry);
       const definition = yield* decodeTool(tool.acceptedJson ?? tool.definitionJson).pipe(
         Effect.mapError(() => fail("unavailable", `Kin couldn't read ${tool.name}'s definition.`)),
       );
@@ -1524,6 +1639,296 @@ const make = Effect.gen(function* () {
       return { quoted: text.quoted };
     }),
   );
+
+  /**
+   * An "Ask me" call runs nothing: what it would send is fixed, stored and shown whole on a card
+   * in the owner's chat. Only the owner's tap on that card sends it (`answerAsk`, `sendAsk`).
+   */
+  const askFor = Effect.fn("KinConnections.askFor")(function* (
+    turn: Turn,
+    row: ConnectionRow,
+    tool: ToolRow,
+    args: Readonly<Record<string, unknown>>,
+    entry: Omit<Parameters<typeof record>[1], "status">,
+  ) {
+    if (row.kind === "builtin") {
+      const stored = yield* secrets.getSignIn(row.connectionId);
+      if (Option.isSome(stored) && !canSend(Redacted.value(stored.value).scope))
+        return yield* refuse(
+          turn,
+          entry,
+          fail(
+            "unavailable",
+            `${row.label} was signed in before Kin could send. The owner can sign in again in Settings to allow sending.`,
+          ),
+        );
+    }
+    const prepared: Prepared =
+      row.kind === "builtin"
+        ? yield* prepareGoogle({
+            http,
+            token: googleToken(turn.orgId, row, false),
+            orgId: turn.orgId,
+            account: row.accountLabel,
+            tool: tool.name,
+            args,
+          }).pipe(
+            provideSql,
+            Effect.catch((error) =>
+              refuse(
+                turn,
+                entry,
+                isChatError(error) ? error : fail("invalid_state", error.message),
+              ),
+            ),
+          )
+        : { _tag: "call", args };
+    if (prepared._tag === "call" && toJson(args).length > MAX_CARD_ARGS)
+      return yield* refuse(
+        turn,
+        entry,
+        fail("invalid_state", "These arguments are too long to show the owner on a card."),
+      );
+    const chat = yield* turnChat(turn).pipe(provideSql);
+    if (chat === undefined)
+      return yield* refuse(turn, entry, fail("not_allowed", "This turn has no chat to ask in."));
+    const card = sendCard({
+      service: row.label,
+      account: row.accountLabel,
+      tool: tool.name,
+      prepared,
+    });
+    const payload = encodePrepared(prepared);
+    const askId = `ask_${NodeCrypto.createHash("sha256")
+      .update(
+        [turn.orgId, turn.agentId, turn.wakeupId, row.connectionId, tool.name, payload].join("\n"),
+      )
+      .digest("hex")
+      .slice(0, 24)}`;
+    const entryRecordId =
+      prepared._tag === "email"
+        ? (prepared.attachments.find((one) => one.entryRecordId !== null)?.entryRecordId ?? null)
+        : null;
+    const now = yield* Clock.currentTimeMillis;
+    yield* sql`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name,
+        pin_digest, payload_json, agent_id, wakeup_id, chat_id, entry_record_id, proposed_at)
+      VALUES (${turn.orgId}, ${askId}, ${row.connectionId}, ${tool.name}, ${tool.pinDigest},
+        ${payload}, ${turn.agentId}, ${turn.wakeupId}, ${chat.chatId}, ${entryRecordId}, ${now})
+      ON CONFLICT (org_id, ask_id) DO NOTHING`;
+    yield* levelGate.ask(
+      { ...turn, wakeupId: KinWakeupId.make(turn.wakeupId) },
+      {
+        chatId: KinChatId.make(chat.chatId),
+        clientMessageId: `kin-connection-ask:${askId}`,
+        question: card.question,
+        detail: card.detail,
+        options: [
+          { label: "Confirm", kind: "yes" },
+          { label: "Cancel", kind: "no" },
+        ],
+        send: card.send,
+      },
+      (widget) =>
+        sql`UPDATE kin_connection_asks SET widget_id = ${widget.widgetId}
+          WHERE org_id = ${turn.orgId} AND ask_id = ${askId} AND widget_id IS NULL`.pipe(
+          Effect.asVoid,
+        ),
+    );
+    yield* record(turn, { ...entry, status: "awaiting_approval" });
+    return { note: ASKED };
+  });
+
+  const askRow = (sql: SqlClient.SqlClient, orgId: KinOrgId) => sql`SELECT k.ask_id AS "askId",
+      k.connection_id AS "connectionId", k.tool_name AS "toolName", k.pin_digest AS "pinDigest",
+      k.payload_json AS payload, k.agent_id AS "agentId", k.chat_id AS "chatId", k.state,
+      k.entry_record_id AS "entryRecordId", a.owner_person_id AS owner, l.thread_id AS "threadId"
+    FROM kin_connection_asks k
+    JOIN kin_agents a ON a.org_id = k.org_id AND a.agent_id = k.agent_id
+    JOIN kin_leads l ON l.org_id = k.org_id AND l.agent_id = k.agent_id
+    WHERE k.org_id = ${orgId}`;
+
+  /**
+   * The owner's answer on an ask card, in the tap's transaction. Confirm moves it to sending
+   * only while the tool and every attached file are still what the card showed; otherwise it
+   * is stale and nothing is sent. Any other card is not this one's business.
+   */
+  const answerAsk = Effect.fn("KinConnections.answerAsk")(
+    function* (input: {
+      readonly orgId: KinOrgId;
+      readonly widgetId: string;
+      readonly personId: string;
+      readonly confirmed: boolean;
+      readonly via: "tap" | "reaction";
+      readonly now: number;
+    }) {
+      const tx = yield* SqlClient.SqlClient;
+      const [row] =
+        yield* tx<AskRow>`${askRow(tx, input.orgId)} AND k.widget_id = ${input.widgetId}`;
+      if (row === undefined) return undefined;
+      if (row.owner !== input.personId)
+        return yield* fail("not_allowed", "Only the owner confirms what Kin sends.");
+      if (input.via === "reaction")
+        return yield* fail("not_allowed", "Tap Confirm or Cancel on the card to answer it.");
+      if (row.state !== "open")
+        return yield* new KinChatError({
+          reason: "widget_changed",
+          message: "This was already answered.",
+        });
+      const decide = (state: string, reason: string | null) =>
+        tx`UPDATE kin_connection_asks SET state = ${state}, reason = ${reason},
+          decided_at = ${input.now}
+        WHERE org_id = ${input.orgId} AND ask_id = ${row.askId} AND state = 'open'`;
+      if (!input.confirmed) {
+        yield* decide("declined", null);
+        return { _tag: "declined" as const, askId: row.askId };
+      }
+      const prepared = Option.getOrUndefined(decodePrepared(row.payload));
+      const connection = yield* connectionById(input.orgId, row.connectionId);
+      const [tool] = (yield* toolsOf(input.orgId, row.connectionId)).filter(
+        (candidate) => candidate.name === row.toolName,
+      );
+      const reason =
+        prepared === undefined
+          ? "Kin can no longer read what this card was for, so nothing was sent."
+          : connection === undefined || connection.pausedAt !== null
+            ? "The connection is removed or paused, so nothing was sent."
+            : tool === undefined ||
+                !callable(tool) ||
+                tool.mode !== "ask" ||
+                tool.pinDigest !== row.pinDigest
+              ? `${row.toolName} changed or was switched off since this card was made, so nothing was sent.`
+              : (yield* attachmentsCurrent(input.orgId, prepared))
+                ? null
+                : "The attached document changed since this card was made, so nothing was sent. A fresh card is below.";
+      if (reason !== null) {
+        yield* decide("stale", reason);
+        return {
+          _tag: "stale" as const,
+          askId: row.askId,
+          reason,
+          fresh:
+            prepared?._tag === "email" && reason.endsWith("A fresh card is below.")
+              ? {
+                  prepared,
+                  row,
+                  label: connection?.label ?? "Gmail",
+                  account: connection?.accountLabel ?? null,
+                }
+              : undefined,
+        };
+      }
+      yield* decide("sending", null);
+      return { _tag: "send" as const, askId: row.askId };
+    },
+    Effect.mapError((error) => (isChatError(error) ? error : unavailable)),
+  );
+
+  /** The fresh card for a stale ask: the same mail with each file as it is now. */
+  const freshAsk = Effect.fn("KinConnections.freshAsk")(function* (
+    orgId: KinOrgId,
+    stale: StaleAsk,
+    now: number,
+  ) {
+    const attachments = yield* Effect.forEach(stale.prepared.attachments, (one) =>
+      attachmentOf(orgId, one.key).pipe(provideSql),
+    );
+    const prepared = { ...stale.prepared, attachments };
+    const payload = encodePrepared(prepared);
+    const askId = `ask_${NodeCrypto.createHash("sha256")
+      .update([orgId, stale.row.askId, payload].join("\n"))
+      .digest("hex")
+      .slice(0, 24)}`;
+    yield* sql`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name,
+        pin_digest, payload_json, agent_id, wakeup_id, chat_id, entry_record_id, proposed_at)
+      SELECT org_id, ${askId}, connection_id, tool_name, pin_digest, ${payload}, agent_id,
+        wakeup_id, chat_id, ${attachments.find((one) => one.entryRecordId !== null)?.entryRecordId ?? null},
+        ${now}
+      FROM kin_connection_asks WHERE org_id = ${orgId} AND ask_id = ${stale.row.askId}
+      ON CONFLICT (org_id, ask_id) DO NOTHING`;
+    const card = sendCard({
+      service: stale.label,
+      account: stale.account,
+      tool: stale.row.toolName,
+      prepared,
+    });
+    return {
+      askId,
+      chatId: KinChatId.make(stale.row.chatId),
+      agent: {
+        _tag: "agent" as const,
+        orgId,
+        agentId: KinAgentId.make(stale.row.agentId),
+        ownerPersonId: KinPersonId.make(stale.row.owner),
+        threadId: ThreadId.make(stale.row.threadId),
+      },
+      card,
+      bind: (widgetId: string) =>
+        sql`UPDATE kin_connection_asks SET widget_id = ${widgetId}
+          WHERE org_id = ${orgId} AND ask_id = ${askId} AND widget_id IS NULL`.pipe(Effect.asVoid),
+    };
+  }, settle);
+
+  /**
+   * Sends what a confirmed ask holds, once: only an ask the owner's tap moved to sending. The
+   * outcome is kept on the ask and returned for its card.
+   */
+  const sendAsk = Effect.fn("KinConnections.sendAsk")(function* (orgId: KinOrgId, askId: string) {
+    const [row] = yield* sql<AskRow>`${askRow(sql, orgId)} AND k.ask_id = ${askId}`;
+    if (row === undefined || row.state !== "sending")
+      return { state: "failed" as const, reason: "This was not confirmed, so nothing was sent." };
+    const finish = Effect.fnUntraced(function* (
+      state: "sent" | "failed",
+      reason: string | null,
+      result: unknown,
+    ) {
+      const now = yield* Clock.currentTimeMillis;
+      yield* sql`UPDATE kin_connection_asks SET state = ${state}, reason = ${reason},
+          result_json = ${result === null ? null : toJson(result)}, done_at = ${now}
+        WHERE org_id = ${orgId} AND ask_id = ${askId} AND state = 'sending'`;
+      yield* touched(orgId);
+      return { state, reason } satisfies AskOutcome;
+    });
+    const connection = yield* connectionById(orgId, row.connectionId).pipe(provideSql);
+    const prepared = Option.getOrUndefined(decodePrepared(row.payload));
+    if (connection === undefined || prepared === undefined)
+      return yield* finish("failed", "The connection is gone, so nothing was sent.", null);
+    const sent = yield* (
+      prepared._tag === "call"
+        ? Effect.gen(function* () {
+            const [tool] = (yield* toolsOf(orgId, row.connectionId).pipe(provideSql)).filter(
+              (candidate) => candidate.name === row.toolName,
+            );
+            if (tool === undefined)
+              return yield* fail("unavailable", `${row.toolName} is gone, so nothing was sent.`);
+            const definition = yield* decodeTool(tool.acceptedJson ?? tool.definitionJson).pipe(
+              Effect.mapError(() => fail("unavailable", `Kin couldn't read ${tool.name}.`)),
+            );
+            const result = yield* callFor(orgId, connection, definition, prepared.args);
+            if (result.isError === true)
+              return yield* fail("unavailable", `${connection.label} answered with an error.`);
+            return { messageId: null, threadId: null, eventId: null };
+          })
+        : withSignIn(orgId, connection, (force) =>
+            googleToken(orgId, connection, force).pipe(
+              Effect.flatMap((token) =>
+                sendGoogle(http, token, prepared).pipe(provideSql, Effect.provide(files)),
+              ),
+            ),
+          )
+    ).pipe(Effect.result);
+    if (sent._tag === "Failure")
+      return yield* finish(
+        "failed",
+        isChatError(sent.failure) || isGatewayError(sent.failure)
+          ? sent.failure.message
+          : "Kin couldn't send it.",
+        null,
+      );
+    const done = yield* finish("sent", null, sent.success);
+    if (prepared._tag === "email" && row.entryRecordId !== null)
+      yield* sentToClient({ orgId, entryRecordId: row.entryRecordId, to: prepared.to });
+    return done;
+  }, settle);
 
   const offer = leadOp("offer", (scope, input: typeof KinConnectionOfferInput.Type) =>
     Effect.gen(function* () {
@@ -1641,6 +2046,9 @@ const make = Effect.gen(function* () {
     tools,
     call,
     offer,
+    answerAsk,
+    freshAsk,
+    sendAsk,
   });
 });
 

@@ -41,7 +41,7 @@ import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime"
 import type { EnvironmentId, KinPersonId, KinWidget } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
-import { SmartphoneIcon } from "lucide-react";
+import { FileTextIcon, SmartphoneIcon } from "lucide-react";
 import { memo, useRef, useState, type ReactNode } from "react";
 
 import { useAssetUrls } from "../assets/assetUrls";
@@ -381,7 +381,9 @@ function KinChoiceCard(props: {
   return (
     <CardFrame label={kinChoiceAccessibilityLabel(choice, answerText)}>
       <p className="font-medium text-foreground">{choice.question}</p>
-      {choice.detail === null ? null : (
+      {choice.send !== null ? (
+        <KinSendDetail send={choice.send} />
+      ) : choice.detail === null ? null : (
         <p className="whitespace-pre-line text-xs text-muted-foreground">{choice.detail}</p>
       )}
       {choice.image === null ? null : (
@@ -413,6 +415,64 @@ function KinChoiceCard(props: {
         </>
       )}
     </CardFrame>
+  );
+}
+
+/** Exactly what a send card sends: who, the subject, the whole body and each file. */
+function KinSendDetail(props: { readonly send: NonNullable<KinChoiceCardView["send"]> }) {
+  const { send } = props;
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-xs text-muted-foreground">{send.heading}</p>
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
+        {send.lines.map((line) => (
+          <div key={line.label} className="contents">
+            <dt className="text-muted-foreground">{line.label}</dt>
+            <dd className="break-words text-foreground">{line.value}</dd>
+          </div>
+        ))}
+      </dl>
+      <div
+        tabIndex={0}
+        aria-label="Message"
+        className="max-h-80 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 px-3 py-2 text-sm text-foreground"
+      >
+        {send.body}
+      </div>
+      {send.attachments.length === 0 ? null : (
+        <ul className="flex flex-col gap-1">
+          {send.attachments.map((file) => (
+            <li key={file.name} className="flex items-start gap-2 text-xs">
+              <FileTextIcon
+                aria-hidden
+                className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
+              />
+              <span className="min-w-0">
+                <span className="break-words text-foreground">{file.name}</span>
+                {file.detail === "" ? null : (
+                  <span className="block text-muted-foreground">{file.detail}</span>
+                )}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {send.outcome === null ? null : (
+        <p
+          role="status"
+          className={cn(
+            "text-xs font-medium",
+            send.outcome.tone === "error"
+              ? "text-destructive-foreground"
+              : send.outcome.tone === "ok"
+                ? "text-success-foreground"
+                : "text-muted-foreground",
+          )}
+        >
+          {send.outcome.text}
+        </p>
+      )}
+    </div>
   );
 }
 

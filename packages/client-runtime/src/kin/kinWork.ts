@@ -763,6 +763,9 @@ const principalFromText = (text: string | null): KinWorkPrincipal | null => {
       : null;
 };
 
+/** "today", "yesterday" or "15 Nov" for an ISO time, on this device's calendar. */
+export const kinWorkDayOfTime = (iso: string, now: Date) => dayFromText(iso, now, null);
+
 /** A due time from the history, as the day it is where the owner is, like the due date itself. */
 const dayFromText = (text: string | null, now: Date, zone: string | null) => {
   if (text === null) return null;

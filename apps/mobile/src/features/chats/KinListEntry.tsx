@@ -66,6 +66,7 @@ import {
   KinInvoiceActions,
   KinInvoiceDocuments,
   KinInvoiceFigures,
+  KinInvoiceSent,
   KinInvoicePayments,
   KinMoneyActionNotice,
 } from "./KinInvoice";
@@ -348,6 +349,7 @@ export function KinListEntryBody(
               settled={invoice.settled}
             />
             <KinInvoiceFigures invoice={invoice} />
+            <KinInvoiceSent invoice={invoice} />
           </>
         ) : entry.balance === null ? null : (
           <View className="flex-row gap-6">
