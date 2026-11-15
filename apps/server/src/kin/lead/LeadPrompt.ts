@@ -42,7 +42,7 @@ import { buildPulseSection, checkInIndex, PULSE_RULE } from "../pulse/prompt.ts"
 import { buildWeeklySection, WEEKLY_RULE } from "../pulse/weekly.ts";
 import { playbookIndex } from "../work/playbooks.ts";
 import { entriesShown, sensitiveShown, sourcesShown } from "../work/workerAttempts.ts";
-import { teamSees } from "../work/teamView.ts";
+import { personSees } from "../work/teamView.ts";
 import { promptLine as connectionsLine } from "../connections/ConnectionRows.ts";
 import { inheritOutside } from "./OutsideContent.ts";
 import { askedWhereOthersRead } from "../triggers/deferralOrigin.ts";
@@ -1285,7 +1285,7 @@ export const workEventText = Effect.fn("KinLeadPrompt.workEvent")(function* (inp
       ${writer("notes_by")} AS "notesBy"
     FROM kin_records r LEFT JOIN kin_agents a ON a.org_id = r.org_id AND a.agent_id = ${event.agentId}
     WHERE r.org_id = ${orgId} AND r.record_id = ${event.recordId}
-      AND ${ownerOnly || teammate === undefined ? sql`1 = 1` : teamSees(sql, teammate)}`.pipe(
+      AND ${ownerOnly || teammate === undefined ? sql`1 = 1` : personSees(sql, teammate)}`.pipe(
     Effect.orElseSucceed(() => []),
   );
   if (!ownerOnly && entry === undefined) return undefined;

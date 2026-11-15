@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
-import { kinAccessAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinAccessAtom, kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinPlaceReach, type KinPlaceReach } from "@t3tools/client-runtime/kin/kinJoin";
 import {
   kinAccessEnded,
   kinAppShell,
@@ -183,4 +184,9 @@ export function useKinOwnerLevel(
     environmentId === null ? noAccessAtom : kinAccessAtom(connectionAtomRuntime, environmentId),
   );
   return kinViewerOwnerLevel(access, session);
+}
+
+/** The places a member reaches (switched on, or a project they lead); null until the host says. */
+export function useKinPlaceReach(environmentId: EnvironmentId): KinPlaceReach | null {
+  return kinPlaceReach(useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId)));
 }

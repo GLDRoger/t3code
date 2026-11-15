@@ -104,6 +104,26 @@ describe("kinTeamView", () => {
     expect(kinTeammateKindEditable(coOwner!, "owner")).toBe(true);
     expect(kinTeammateKindEditable(coOwner!, "co_owner")).toBe(false);
   });
+
+  it("carries a member's places and says which projects they lead", () => {
+    const placed: KinTeamList = {
+      ...list,
+      people: [{ ...person(mira, "Mira"), access: "member" }],
+      joined: [mira],
+      invites: [],
+      places: [
+        {
+          personId: mira,
+          clients: true,
+          docs: false,
+          money: false,
+          leads: [{ recordId: "p1" as never, key: "P-1", title: "Atlas" as never }],
+        },
+      ],
+    };
+    const [row] = kinTeamView(placed, KIN_TEAM_NO_EDITS, owner);
+    expect([row?.detail, row?.places?.clients]).toEqual(["Leads Atlas", true]);
+  });
 });
 
 describe("kinInviteLink", () => {

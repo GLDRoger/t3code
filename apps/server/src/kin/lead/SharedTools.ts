@@ -39,7 +39,7 @@ const inAskedChat: Condition = Effect.fnUntraced(function* (turn, args) {
 
 /**
  * One person besides the owner is behind the turn, and they asked: what it makes is theirs, so
- * they see it (`teamSees`, by assigner).
+ * they see it (`personSees`, by assigner).
  */
 const oneAskerCreates: Condition = Effect.fnUntraced(function* (turn) {
   const behind = yield* turnPeople(turn);
@@ -176,24 +176,26 @@ export const SHARED_TOOLS = {
   // Giving out work is the owner's turn's; handing back is the asker's own task, in their view.
   record_assign: "refused",
   record_hand_back: "view",
-  // Docs are owner-only too until the teammate view; restoring stays the owner's after it.
-  doc_create: "refused",
-  doc_read: "refused",
-  doc_edit: "refused",
-  doc_rewrite: "refused",
-  doc_move: "refused",
-  doc_link: "refused",
-  docs_search: "refused",
-  doc_history: "refused",
+  // Docs every person behind the turn may see; writes as each of them may (a project's lead in
+  // their project). Restoring stays the owner's.
+  doc_create: "view",
+  doc_read: "view",
+  doc_edit: "view",
+  doc_rewrite: "view",
+  doc_move: "view",
+  doc_link: "view",
+  docs_search: "view",
+  doc_history: "view",
   doc_restore: "refused",
-  // Lists and money (design 9.3, 4.9): defining a list, amounts, payments and the company
-  // profile are the owner's; none reaches a turn anyone else reads.
+  // Defining a list, payments and the company profile are the owner's (design 9.3, 4.9).
   list_define: "refused",
   payment_record: "refused",
-  money_summary: "refused",
+  // Figures and dates of the money lines every person behind the turn sees, such as their
+  // project's; the bank, budgets and the company's own figures stay the owner's.
+  money_summary: "view",
   money_query: "refused",
   budget_set: "refused",
-  dates_query: "refused",
+  dates_query: "view",
   company_profile: "refused",
   // A statement is the owner's bank account; reading one marks the turn as a sensitive read.
   statement_read: "refused",
@@ -208,6 +210,7 @@ export const SHARED_TOOLS = {
   kin_connection_tools: "refused",
   kin_connection_call: "refused",
   kin_connection_offer: "refused",
+  kin_connection_note: "refused",
 } satisfies Record<string, SharedToolPolicy>;
 
 /** Whether `name` may run with these arguments in a turn someone besides the owner reads. */

@@ -36,11 +36,14 @@ import {
   refOrNull,
   resolveWho,
   retryKey,
+  viewOf,
+  viewWriter,
   Who,
   writerFor,
 } from "./leadWork.ts";
 import { iso, type RecordRow } from "./recordRows.ts";
 import { search } from "./search.ts";
+import { viewVisible } from "./teamView.ts";
 
 /** The doc tools' inputs, results and the one call each makes. Model-facing text is in `mcp/docTools.ts`. */
 
@@ -322,7 +325,10 @@ const writeContext = Effect.fn("KinDocTools.context")(function* (
 ) {
   yield* admitted(lead, tool, input);
   const answered = yield* answering(lead, input.sourceEventId);
-  const writer = yield* writerFor(lead);
+  // In a turn others read, the write's own check decides for every person behind it (`teamGuard`).
+  const team = yield* viewOf(lead);
+  const owned = yield* writerFor(lead);
+  const writer = team === undefined ? owned : viewWriter(owned, team);
   const audience = yield* effectiveAudience(lead);
   const provenance: Docs.Provenance = {
     audience,
@@ -435,8 +441,17 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
 });
 export const create = leadTool("KinDocTools.create", runCreate);
 
+/** A doc this turn may read: in one others read, only one they all see, else none at all. */
+const readable = Effect.fn("KinDocTools.readable")(function* (lead: Lead, key: string) {
+  const row = yield* Docs.docRow(lead.orgId, { key });
+  const team = yield* viewOf(lead);
+  if (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, row.recordId)))
+    return yield* Docs.docNotFound(key);
+  return row;
+});
+
 const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput.Type) {
-  const row = yield* Docs.docRow(lead.orgId, { key: input.key });
+  const row = yield* readable(lead, input.key);
   const latest = yield* Docs.versionOf(lead.orgId, row.recordId);
   const version = yield* Docs.versionOf(lead.orgId, row.recordId, input.version);
   if (latest === undefined) return yield* Docs.docNotFound(input.key);
@@ -551,12 +566,14 @@ const runLink = Effect.fnUntraced(function* (lead: Lead, input: typeof LinkInput
 export const link = leadTool("KinDocTools.link", runLink);
 
 const runSearch = Effect.fnUntraced(function* (lead: Lead, input: typeof SearchInput.Type) {
+  const team = yield* viewOf(lead);
   const { hits } = yield* search(lead.orgId, {
     text: input.text,
     kinds: input.kinds,
     closed: input.closed,
     limit: input.limit ?? 10,
-    viewer: "owner",
+    viewer: team === undefined ? "owner" : "team",
+    view: team?.people,
   });
   return {
     hits: hits.map((hit) => ({
@@ -573,7 +590,7 @@ const runSearch = Effect.fnUntraced(function* (lead: Lead, input: typeof SearchI
 export const searchTool = leadTool("KinDocTools.search", runSearch);
 
 const runHistory = Effect.fnUntraced(function* (lead: Lead, input: typeof HistoryInput.Type) {
-  const row = yield* Docs.docRow(lead.orgId, { key: input.key });
+  const row = yield* readable(lead, input.key);
   const latest = yield* Docs.versionOf(lead.orgId, row.recordId);
   if (latest === undefined) return yield* Docs.docNotFound(input.key);
   const rows = yield* Docs.history(lead.orgId, row.recordId, {

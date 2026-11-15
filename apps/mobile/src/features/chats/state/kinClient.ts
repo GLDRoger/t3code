@@ -596,6 +596,12 @@ export const kinClient = {
     concurrency: { mode: "singleFlight", key: ({ input }) => input.personId },
   }),
   /** The owner makes someone a co-owner or a member again. */
+  /** The owner turns a member's Clients, Docs and Money on or off. */
+  personSetPlaces: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:person:set-places",
+    tag: KIN_PEOPLE_WS_METHODS.peopleSetPlaces,
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.personId },
+  }),
   personSetAccess: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:person:set-access",
     tag: KIN_PEOPLE_WS_METHODS.peopleSetAccess,
@@ -750,6 +756,12 @@ export const kinClient = {
     label: "kin:connection:setSignInClient",
     tag: "kin.connections.setSignInClient",
     concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:client` },
+  }),
+  /** The owner switches an open send card's From before Confirm. */
+  connectionSetSendFrom: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:connection:setSendFrom",
+    tag: "kin.connections.setSendFrom",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.widgetId },
   }),
   /** The outside hosts the owner lets visuals load from. Owner only. */
   visualHosts: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {

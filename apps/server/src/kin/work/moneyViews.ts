@@ -3,6 +3,7 @@ import type {
   KinMoney,
   KinMoneySummary,
   KinOrgId,
+  KinPersonId,
   KinRecordRef,
 } from "@t3tools/contracts";
 import { KinRecordId } from "@t3tools/contracts";
@@ -24,10 +25,11 @@ import {
 } from "./recordRows.ts";
 import { parseFields } from "./lists.ts";
 import { allLists, isFieldDate, type ListDef, stateLabel } from "./registers.ts";
+import { viewSees } from "./teamView.ts";
 
 /**
  * Read views over every list: the dates view and the Money summary, computed from stored
- * integer amounts by code. Owner only; callers check that before calling.
+ * integer amounts by code. Whole for the owner; for anyone else, of what `personSees` gives them.
  */
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -55,6 +57,7 @@ const fieldHits = Effect.fn("KinMoneyViews.fieldHits")(function* (
     readonly to: number;
     readonly lists?: ReadonlyArray<string> | undefined;
     readonly open?: boolean | undefined;
+    readonly view?: ReadonlyArray<KinPersonId> | undefined;
   },
 ) {
   const sql = yield* SqlClient.SqlClient;
@@ -69,17 +72,18 @@ const fieldHits = Effect.fn("KinMoneyViews.fieldHits")(function* (
     const fields = def.fields.filter((one) => one.type === "date" && one.retired !== true);
     if (fields.length === 0) continue;
     const rows = yield* sql<{ id: string; key: string; fieldsJson: string }>`SELECT
-        record_id AS id, key, fields_json AS "fieldsJson" FROM kin_records
-      WHERE org_id = ${orgId} AND register_id = ${def.id}
-        ${input.open === true ? sql`AND state NOT IN ('done', 'dropped')` : sql``}
+        r.record_id AS id, r.key, r.fields_json AS "fieldsJson" FROM kin_records r
+      WHERE r.org_id = ${orgId} AND r.register_id = ${def.id}
+        ${input.open === true ? sql`AND r.state NOT IN ('done', 'dropped')` : sql``}
+        ${input.view === undefined ? sql`` : sql`AND ${viewSees(sql, input.view)}`}
         AND (${sql.or(
           fields.map(
             (one) =>
-              sql`(json_extract(fields_json, ${`$.${one.key}`}) >= ${fromDay}
-                AND json_extract(fields_json, ${`$.${one.key}`}) < ${toDay})`,
+              sql`(json_extract(r.fields_json, ${`$.${one.key}`}) >= ${fromDay}
+                AND json_extract(r.fields_json, ${`$.${one.key}`}) < ${toDay})`,
           ),
         )})
-      ORDER BY key`;
+      ORDER BY r.key`;
     for (const row of rows) {
       const values = parseFields(row.fieldsJson);
       for (const one of fields) {
@@ -110,24 +114,27 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
     readonly open?: boolean | undefined;
     readonly offset?: number | undefined;
     readonly limit?: number | undefined;
+    /** Only what every one of these people may see (`viewSees`). */
+    readonly view?: ReadonlyArray<KinPersonId> | undefined;
   },
   now: number,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const where = (column: "due_at" | "date_at") =>
     sql.and([
-      sql`org_id = ${orgId}`,
-      sql`${sql(column)} >= ${input.from}`,
-      sql`${sql(column)} < ${input.to}`,
+      sql`r.org_id = ${orgId}`,
+      sql`${sql("r")}.${sql(column)} >= ${input.from}`,
+      sql`${sql("r")}.${sql(column)} < ${input.to}`,
       ...(input.lists === undefined || input.lists.length === 0
         ? []
-        : [sql`register_id IN ${sql.in(input.lists)}`]),
-      ...(input.open === true ? [sql`state NOT IN ('done', 'dropped')`] : []),
+        : [sql`r.register_id IN ${sql.in(input.lists)}`]),
+      ...(input.open === true ? [sql`r.state NOT IN ('done', 'dropped')`] : []),
+      ...(input.view === undefined ? [] : [viewSees(sql, input.view)]),
     ]);
-  const hits = sql`SELECT record_id AS id, 'due' AS kind, due_at AS at, key FROM kin_records
+  const hits = sql`SELECT r.record_id AS id, 'due' AS kind, r.due_at AS at, r.key FROM kin_records r
       WHERE ${where("due_at")}
     UNION ALL
-    SELECT record_id AS id, 'date' AS kind, date_at AS at, key FROM kin_records
+    SELECT r.record_id AS id, 'date' AS kind, r.date_at AS at, r.key FROM kin_records r
       WHERE ${where("date_at")}`;
   const [count] = yield* sql<{ total: number }>`SELECT COUNT(*) AS total FROM (${hits})`;
   const limit = Math.min(Math.max(input.limit ?? 100, 1), DATES_CAP);
@@ -187,8 +194,11 @@ const monthStart = (month: string, zone: string) =>
 export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
   orgId: KinOrgId,
   now: number,
+  /** Figures of only what every one of these people may see (`viewSees`), never the company's. */
+  view?: ReadonlyArray<KinPersonId>,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  const seen = view === undefined ? sql`1 = 1` : viewSees(sql, view);
   const zone = yield* ownerZone(orgId);
   const today = dayIn(now, zone);
   const thisMonth = monthOf(today);
@@ -220,7 +230,7 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
     FROM kin_records r
     LEFT JOIN kin_records pa ON pa.org_id = r.org_id AND pa.record_id = r.party_id
     WHERE r.org_id = ${orgId} AND r.register_id = 'invoices' AND ${countedEntry(sql)}
-      AND r.state = 'waiting' AND r.amount_minor IS NOT NULL
+      AND r.state = 'waiting' AND r.amount_minor IS NOT NULL AND ${seen}
     ORDER BY r.due_at, r.key`;
   const owing = invoices
     .map((invoice) => ({
@@ -256,7 +266,7 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
     FROM kin_record_payments p
     JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     WHERE p.org_id = ${orgId} AND ${countedPayment(sql)}
-      AND r.register_id IN ('invoices', 'receipts') AND p.paid_on >= ${since}
+      AND r.register_id IN ('invoices', 'receipts') AND p.paid_on >= ${since} AND ${seen}
     ORDER BY p.paid_on, p.payment_id`;
   // TDS a client deducted settles the invoice, but no money came in: it is shown on its own.
   const payments = paid.filter((one) => one.withheld === 0);
@@ -273,7 +283,7 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
     at: number;
   }>`SELECT r.amount_minor AS minor, r.currency, r.category, ${moneyDay(sql)} AS at
     FROM kin_records r
-    WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND ${countedEntry(sql)}
+    WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND ${countedEntry(sql)} AND ${seen}
       AND r.state = 'done' AND r.amount_minor IS NOT NULL AND ${moneyDay(sql)} >= ${monthStart(monthOf(since), zone)}
     ORDER BY at, category`;
   const spentRows = expenses.map((one) => ({ ...one, day: dayIn(one.at, zone) }));
@@ -297,7 +307,7 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
 
   const upcoming = yield* dates(
     orgId,
-    { from: now, to: now + 30 * DAY_MS, open: true, limit: 50 },
+    { from: now, to: now + 30 * DAY_MS, open: true, limit: 50, view },
     now,
   );
   return {

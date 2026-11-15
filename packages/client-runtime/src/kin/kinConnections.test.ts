@@ -165,11 +165,11 @@ describe("kinToolRows", () => {
     expect(kinToolMark(rows[1]!, "off")).toEqual([{ tool: "alpha", mode: "off" }]);
     // A tool that sends is never offered Read, and "suggested" sets it to Ask me.
     const [send] = kinToolRows([
-      tool({ name: "gmail_send", suggestedMode: "ask", alwaysAsk: true }),
+      tool({ name: "mail_send", suggestedMode: "ask", alwaysAsk: true }),
     ]);
     expect(send!.modes).toEqual(["off", "ask"]);
     expect(kinSuggestedModes([send!])).toEqual([
-      { tool: "gmail_send", mode: "ask", digest: send!.digest },
+      { tool: "mail_send", mode: "ask", digest: send!.digest },
     ]);
   });
 
@@ -264,12 +264,35 @@ describe("kinSignInCheck", () => {
     expect(JSON.stringify(zoho.input)).not.toContain("zohomcp");
   });
 
-  it("checks the pasted Google client", () => {
-    expect(kinSignInClientCheck(orgId, "123-abc", "s").ok).toBe(false);
-    const ok = kinSignInClientCheck(orgId, " 123-abc.apps.googleusercontent.com ", " GOCSPX-x ");
+  it("checks the pasted Google client and Microsoft app", () => {
+    expect(kinSignInClientCheck(orgId, "google", "123-abc", "s").ok).toBe(false);
+    expect(kinSignInClientCheck(orgId, "google", "123-abc.apps.googleusercontent.com", "").ok).toBe(
+      false,
+    );
+    const ok = kinSignInClientCheck(
+      orgId,
+      "google",
+      " 123-abc.apps.googleusercontent.com ",
+      " GOCSPX-x ",
+    );
     if (!ok.ok) throw new Error(ok.problem);
     expect(ok.input.client?.clientId).toBe("123-abc.apps.googleusercontent.com");
-    expect(Redacted.value(ok.input.client!.clientSecret)).toBe("GOCSPX-x");
+    expect(Redacted.value(ok.input.client!.clientSecret!)).toBe("GOCSPX-x");
+
+    // Microsoft's app keeps no secret, so the ID alone is enough.
+    expect(kinSignInClientCheck(orgId, "microsoft", "kin-app", "").ok).toBe(false);
+    const app = kinSignInClientCheck(
+      orgId,
+      "microsoft",
+      " 00000000-1111-2222-3333-444444444444 ",
+      "",
+    );
+    if (!app.ok) throw new Error(app.problem);
+    expect(app.input).toEqual({
+      orgId,
+      service: "microsoft",
+      client: { clientId: "00000000-1111-2222-3333-444444444444" },
+    });
   });
 });
 

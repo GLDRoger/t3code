@@ -1,15 +1,18 @@
-import { KinChatError, KinConnectionRpcs } from "@t3tools/contracts";
+import { KinChatError, KinConnectionRpcs, KinWidgetId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as RpcGroup from "effect/rpc/RpcGroup";
+import * as Schema from "effect/Schema";
 
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinServer } from "../KinServer.ts";
 import { KinConnections } from "./ConnectionsService.ts";
 
 const group = RpcGroup.make(...KinConnectionRpcs);
+const isChatError = Schema.is(KinChatError);
 const disabled = new KinChatError({
   reason: "disabled",
   message: "Kin is not running on this host.",
@@ -24,12 +27,17 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
     run: (
       connections: KinConnections["Service"],
       people: ReadonlyArray<PersonIdentity>,
+      chat: KinChatService["Service"],
     ) => Effect.Effect<A, KinChatError>,
   ) {
     if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* disabled;
     const services = kin.value.services.value;
     const people = yield* Context.get(services, KinIdentity).resolve(session);
-    return yield* run(Context.get(services, KinConnections), people);
+    return yield* run(
+      Context.get(services, KinConnections),
+      people,
+      Context.get(services, KinChatService),
+    );
   });
   return group.of({
     "kin.connections.list": (input) => call((c, people) => c.list(people, input)),
@@ -48,5 +56,25 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
     "kin.connections.signInFinish": (input) => call((c, people) => c.signInFinish(people, input)),
     "kin.connections.setSignInClient": (input) =>
       call((c, people) => c.setSignInClient(people, input)),
+    "kin.connections.setSendFrom": (input) =>
+      call((c, people, chat) =>
+        c.setSendFrom(people, input, (card) =>
+          chat
+            .setSendCard({
+              orgId: input.orgId,
+              widgetId: KinWidgetId.make(card.widgetId),
+              revision: card.revision,
+              detail: card.detail,
+              send: card.send,
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                isChatError(error)
+                  ? error
+                  : new KinChatError({ reason: "unavailable", message: "Kin is unavailable." }),
+              ),
+            ),
+        ),
+      ),
   });
 });

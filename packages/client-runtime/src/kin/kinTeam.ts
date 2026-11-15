@@ -12,6 +12,7 @@ import {
   type KinPeopleSetAccessInput,
   type KinPersonAccess,
   type KinPersonId,
+  type KinPersonPlaces,
   type KinPersonProfile,
 } from "@t3tools/contracts";
 import { KIN_INVITE_LINK_PATH } from "@t3tools/shared/remote";
@@ -54,6 +55,8 @@ export interface KinTeamList {
   readonly invites: KinPeopleListInvitesResult["invites"];
   /** Everyone's roles, when read; rows show them under the name. */
   readonly profiles?: ReadonlyArray<KinPersonProfile> | undefined;
+  /** What each person sees beyond Tasks, from a host that has places. */
+  readonly places?: ReadonlyArray<KinPersonPlaces> | undefined;
 }
 
 /** What the owner did that the host hasn't confirmed yet, and the last refusal. */
@@ -89,6 +92,8 @@ export interface KinTeammate {
   readonly roles: string;
   /** "3 open, 1 late": what they hold now; empty when the host doesn't say. */
   readonly load: string;
+  /** Their places and the projects they lead; null for the owner-level and invites. */
+  readonly places: KinPersonPlaces | null;
 }
 
 /** "3 open, 1 late", "2 open" or "Nothing open". */
@@ -98,6 +103,27 @@ const kinLoadLine = (load: { readonly open: number; readonly late: number }) =>
     : load.late === 0
       ? `${load.open} open`
       : `${load.open} open, ${load.late} late`;
+
+/** The places a member's switches turn on, in the order the dock shows them. */
+export const KIN_PLACE_SWITCHES = [
+  {
+    place: "money",
+    label: "Can see Money",
+    detail: "Read-only figures of what you share with the team.",
+  },
+  {
+    place: "clients",
+    label: "Can see Clients",
+    detail: "Client names and contacts. Never terms or what they owe.",
+  },
+  { place: "docs", label: "Can see Docs", detail: "Docs you share with the team." },
+] as const;
+
+/** "Leads Atlas, Billing": the projects someone runs, or nothing. */
+const kinLeadsLine = (places: KinPersonPlaces | null) =>
+  places === null || places.leads.length === 0
+    ? ""
+    : `Leads ${places.leads.map((project) => project.title).join(", ")}`;
 
 const dayFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
 
@@ -150,6 +176,10 @@ export function kinTeamView(
           ? "joined"
           : "no_access";
     const until = invite === undefined ? "" : formatKinInviteDay(invite.expiresAt);
+    const places =
+      access === "member"
+        ? (list.places?.find((held) => held.personId === person.personId) ?? null)
+        : null;
     rows.push({
       key: `person:${person.personId}`,
       name: person.displayName,
@@ -160,13 +190,14 @@ export function kinTeamView(
       access,
       roles: roles.get(person.personId) ?? "",
       load: loads.get(person.personId) ?? "",
+      places,
       detail:
         state === "you"
           ? "You"
           : state === "owner"
             ? KIN_ACCESS_LABELS.owner
             : state === "joined"
-              ? `${access === "co_owner" ? "Co-owner" : "Joined"}${
+              ? `${access === "co_owner" ? "Co-owner" : kinLeadsLine(places) || "Joined"}${
                   invite === undefined
                     ? ""
                     : `. A link for another device hasn't been opened; it works until ${until}.`
@@ -188,6 +219,7 @@ export function kinTeamView(
       access: "member",
       roles: "",
       load: "",
+      places: null,
       detail: `Hasn't joined yet. The link works until ${formatKinInviteDay(invite.expiresAt)}.`,
     });
   }

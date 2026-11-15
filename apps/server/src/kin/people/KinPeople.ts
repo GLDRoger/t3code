@@ -22,6 +22,8 @@ import {
   type KinPeopleRemoveAccessInput,
   type KinPeopleSetGithubLoginInput,
   type KinPeopleSetAccessInput,
+  type KinPeopleSetPlacesInput,
+  type KinPersonPlaces,
   type KinAccessMeInput,
   type KinAccessMeResult,
   type KinPeopleUpdateProfileInput,
@@ -56,6 +58,7 @@ import { abortChatTurns } from "../lead/Audience.ts";
 import { onPersonRemoved } from "../lead/ChatSharing.ts";
 import { KinStop } from "../lead/KinStop.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
+import { placesOf } from "../work/teamView.ts";
 import { accessOf, accessSql, ownerLevel } from "./KinAccess.ts";
 
 const isKinError = Schema.is(KinChatError);
@@ -116,7 +119,11 @@ export class KinPeople extends Context.Service<
       session: AuthenticatedSession,
       orgId: KinOrgId,
     ) => Effect.Effect<
-      { people: ReadonlyArray<KinPerson>; joined: ReadonlyArray<KinPersonId> },
+      {
+        people: ReadonlyArray<KinPerson>;
+        joined: ReadonlyArray<KinPersonId>;
+        places: ReadonlyArray<KinPersonPlaces>;
+      },
       Failure
     >;
     readonly listDevices: (
@@ -140,6 +147,11 @@ export class KinPeople extends Context.Service<
       session: AuthenticatedSession,
       input: KinPeopleSetAccessInput,
     ) => Effect.Effect<KinPerson, Failure>;
+    /** The owner or a co-owner switches the places a member sees beyond Tasks. */
+    readonly setPlaces: (
+      session: AuthenticatedSession,
+      input: KinPeopleSetPlacesInput,
+    ) => Effect.Effect<KinPersonPlaces, Failure>;
     readonly accessMe: (
       session: AuthenticatedSession,
       input: KinAccessMeInput,
@@ -300,8 +312,10 @@ export const make = Effect.gen(function* () {
           const personId = KinPersonId.make(row.person_id ?? NodeCrypto.randomUUID());
           if (!row.person_id) {
             const handle = yield* uniqueHandle(identity.owner.orgId, row.handle, now);
-            yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
-          VALUES (${personId}, ${orgId}, ${handle}, ${row.display_name}, ${DateTime.formatIso(DateTime.makeUnsafe(now))}, 'member')`.pipe(
+            // A new teammate starts with client names and shared docs; money stays off.
+            yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access,
+            sees_clients, sees_docs, sees_money)
+          VALUES (${personId}, ${orgId}, ${handle}, ${row.display_name}, ${DateTime.formatIso(DateTime.makeUnsafe(now))}, 'member', 1, 1, 0)`.pipe(
               Effect.mapError(toPersistenceSqlError("KinPeople.insertPerson")),
             );
           }
@@ -361,7 +375,25 @@ export const make = Effect.gen(function* () {
       AND a.expires_at > ${now} ORDER BY b.person_id`.pipe(
       Effect.mapError(toPersistenceSqlError("KinPeople.joined")),
     );
-    return { people: rows.map(decodePerson), joined: joined.map((row) => row.personId) };
+    const people = rows.map(decodePerson);
+    const places = yield* Effect.forEach(people, (one) => placesFor(orgId, one.personId));
+    return { people, joined: joined.map((row) => row.personId), places };
+  });
+  const placesFor = Effect.fn("KinPeople.placesFor")(function* (
+    orgId: KinOrgId,
+    personId: KinPersonId,
+  ) {
+    const places = yield* placesOf(orgId, personId).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.mapError(toPersistenceSqlError("KinPeople.places")),
+    );
+    return {
+      personId,
+      clients: places.clients,
+      docs: places.docs,
+      money: places.money,
+      leads: places.leads,
+    } satisfies KinPersonPlaces;
   });
   const listInvites = Effect.fn("KinPeople.listInvites")(function* (
     session: AuthenticatedSession,
@@ -659,7 +691,47 @@ export const make = Effect.gen(function* () {
       Effect.provideService(SqlClient.SqlClient, sql),
     );
     if (access === undefined) return yield* missing;
-    return { personId: caller.personId, access };
+    const places = yield* placesFor(input.orgId, caller.personId);
+    const all = access === "owner" || access === "co_owner";
+    return {
+      personId: caller.personId,
+      access,
+      places: all
+        ? { clients: true, docs: true, money: true }
+        : { clients: places.clients, docs: places.docs, money: places.money },
+      leads: places.leads,
+    };
+  });
+  const setPlaces = Effect.fn("KinPeople.setPlaces")(function* (
+    session: AuthenticatedSession,
+    input: KinPeopleSetPlacesInput,
+  ) {
+    yield* owner(session, input.orgId);
+    if (yield* level(input.orgId, input.personId))
+      return yield* new KinChatError({
+        reason: "invalid_state",
+        message: "The owner and co-owners see every place.",
+      });
+    return yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const flag = (on: boolean | undefined) => (on === undefined ? null : on ? 1 : 0);
+          const changed = yield* sql`UPDATE kin_people SET
+              sees_clients = COALESCE(${flag(input.clients)}, sees_clients),
+              sees_docs = COALESCE(${flag(input.docs)}, sees_docs),
+              sees_money = COALESCE(${flag(input.money)}, sees_money)
+            WHERE org_id = ${input.orgId} AND person_id = ${input.personId}
+            RETURNING person_id`.pipe(
+            Effect.mapError(toPersistenceSqlError("KinPeople.setPlaces")),
+          );
+          if (changed.length === 0) return yield* missing;
+          yield* refresh.touch(input.orgId, "people");
+          // Their own screens read places from `kin.access.me`, which follows `leads`.
+          yield* refresh.touch(input.orgId, "leads");
+          return yield* placesFor(input.orgId, input.personId);
+        }),
+      )
+      .pipe(Effect.mapError(sqlError("KinPeople.setPlaces")));
   });
   const profileRows = (orgId: KinOrgId, personId?: KinPersonId) =>
     sql<Parameters<typeof decodeProfile>[0]>`SELECT person_id AS "personId",
@@ -815,6 +887,7 @@ export const make = Effect.gen(function* () {
   });
   return KinPeople.of({
     setAccess,
+    setPlaces,
     accessMe,
     profiles,
     updateProfile,

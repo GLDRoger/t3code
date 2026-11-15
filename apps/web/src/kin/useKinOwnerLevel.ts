@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
-import { kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinAccessMeAtom, kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinPlaceReach, type KinPlaceReach } from "@t3tools/client-runtime/kin/kinJoin";
 import type { EnvironmentId } from "@t3tools/contracts";
 
 import { connectionAtomRuntime } from "../connection/runtime";
@@ -12,4 +13,9 @@ import { isChatOnlySession } from "../environments/primary";
 export function useKinOwnerLevel(environmentId: EnvironmentId): boolean {
   const stored = useAtomValue(kinOwnerLevelAtom(connectionAtomRuntime, environmentId));
   return !isChatOnlySession() || stored;
+}
+
+/** The places a member reaches here (switched on, or a project they lead); null until known. */
+export function useKinPlaceReach(environmentId: EnvironmentId): KinPlaceReach | null {
+  return kinPlaceReach(useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId)));
 }

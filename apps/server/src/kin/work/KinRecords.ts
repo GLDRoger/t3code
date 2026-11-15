@@ -24,6 +24,7 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
@@ -95,9 +96,8 @@ import {
   bumpTeamSeqs,
   dependents,
   teamGuard,
-  teammateSees,
   teamPairs,
-  teamSees,
+  personSees,
   teamSeq,
   viewGuard,
   viewSees,
@@ -551,28 +551,25 @@ const make = Effect.gen(function* () {
         ${writer.chatId ?? null})
       RETURNING seq`;
     const seq = change?.seq ?? 0;
-    // Who sees it as this change leaves it, with its list, in one read: this runs on every change.
-    const seers = yield* sql<{ registerId: string; personId: string | null }>`
-      SELECT r.register_id AS "registerId", p.person_id AS "personId" FROM kin_records r
-      LEFT JOIN kin_people p ON p.org_id = r.org_id AND ${teammateSees(sql)}
-      WHERE r.org_id = ${orgId} AND r.record_id = ${row.recordId} ORDER BY p.person_id`;
-    const stored = seers[0];
-    // A teammate's number moves for a change to a task they saw before or see after it; a client's
-    // or project's moves it only where its label changed which of their tasks they see.
-    const own = stored?.registerId === "work";
+    // Who sees it as this change leaves it, and what else of theirs it showed or hid (`personSees`).
+    const [stored] = yield* sql<{ registerId: string }>`SELECT register_id AS "registerId"
+      FROM kin_records WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
     const before = team?.before ?? [];
-    const after = own
-      ? seers.flatMap(({ personId }) =>
-          personId === null ? [] : [{ personId, recordId: row.recordId }],
-        )
-      : yield* teamPairs(orgId, team?.scope ?? []).pipe(provideSql);
+    const after = yield* teamPairs(orgId, [
+      ...new Set([row.recordId, ...(team?.scope ?? [])]),
+    ]).pipe(provideSql);
     const seen = (pairs: typeof after, personId: string) =>
       pairs
         .filter((pair) => pair.personId === personId)
         .map((pair) => pair.recordId)
         .join(" ");
+    // Its own number moves for anyone who saw it before or sees it after, and for anyone whose
+    // view of the rest it moved, as a client's label or a project's lead does.
     const moved = [...new Set([...before, ...after].map((pair) => pair.personId))].filter(
-      (personId) => own || seen(before, personId) !== seen(after, personId),
+      (personId) =>
+        [...before, ...after].some(
+          (pair) => pair.personId === personId && pair.recordId === row.recordId,
+        ) || seen(before, personId) !== seen(after, personId),
     );
     const numbers = yield* bumpTeamSeqs(orgId, moved).pipe(provideSql);
     yield* sql.afterCommit(
@@ -750,7 +747,7 @@ const make = Effect.gen(function* () {
     if (registerId !== "work" || to._tag !== "person") return;
     const seen = yield* sql`SELECT 1 FROM kin_records r
       WHERE r.org_id = ${orgId} AND r.record_id = ${recordId} AND (EXISTS (SELECT 1 FROM kin_agents a
-        WHERE a.org_id = r.org_id AND a.owner_person_id = ${to.personId}) OR ${teamSees(sql, to.personId)})
+        WHERE a.org_id = r.org_id AND a.owner_person_id = ${to.personId}) OR ${personSees(sql, to.personId)})
       LIMIT 1`;
     if (seen.length > 0) return;
     const [person] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
@@ -1364,6 +1361,11 @@ const make = Effect.gen(function* () {
               message: `${row.key} is ${state}. Reopen it before giving it to someone.`,
             });
           yield* ownerExists(orgId, patch.owner);
+          // A project's lead sees more or less from now on; their places follow `leads`.
+          if (list === "projects") {
+            const refresh = yield* Effect.serviceOption(KinRefreshObserver);
+            if (Option.isSome(refresh)) yield* sql.afterCommit(refresh.value.touch(orgId, "leads"));
+          }
           changes.push({
             field: "owner",
             from: shownPrincipal(before.owner),
@@ -1511,14 +1513,17 @@ const make = Effect.gen(function* () {
         const rev = row.rev + 1;
         set("rev", rev);
         set("updated_at", now);
-        // Who saw what before this change, for who it moves; a client or project only by its label.
-        const scope =
-          list === "work"
-            ? [row.recordId]
-            : (list === "clients" || list === "projects") &&
-                (patch.sensitive !== undefined || patch.partyId !== undefined)
-              ? yield* dependents(orgId, row.recordId).pipe(provideSql)
-              : [];
+        // Who saw what before this change, for who it moves: the entry, and what a client's or
+        // project's label, client or lead shows or hides.
+        const scope = [
+          row.recordId,
+          ...((list === "clients" || list === "projects") &&
+          (patch.sensitive !== undefined ||
+            patch.partyId !== undefined ||
+            patch.owner !== undefined)
+            ? yield* dependents(orgId, row.recordId).pipe(provideSql)
+            : []),
+        ];
         const team: TeamScope = { scope, before: yield* teamPairs(orgId, scope).pipe(provideSql) };
         // Each update rewrites only the fields it changed, so two changes to one entry both land.
         yield* sql`UPDATE kin_records SET ${sql.csv(sets)}
@@ -1988,7 +1993,7 @@ const make = Effect.gen(function* () {
 
   const filterOf = (orgId: KinOrgId, input: QueryInput, now: number) => {
     const where = [sql`r.org_id = ${orgId}`, sql`r.register_id = ${input.list ?? "work"}`];
-    if (input.team !== undefined) where.push(teamSees(sql, input.team));
+    if (input.team !== undefined) where.push(personSees(sql, input.team));
     if (input.view !== undefined) where.push(viewSees(sql, input.view));
     if (input.partyId !== undefined) where.push(sql`r.party_id IS ${input.partyId}`);
     if (input.projectId !== undefined) where.push(sql`r.project_id = ${input.projectId}`);

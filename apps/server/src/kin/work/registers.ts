@@ -16,6 +16,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as Statement from "effect/sql/Statement";
 
 import { type FieldValue, isMoney, LISTS, type ListName, sensitiveFields } from "./lists.ts";
 import { DEFAULT_CURRENCY, isCurrency } from "./money.ts";
@@ -953,11 +954,15 @@ export const carryOut = Effect.fn("KinRegisters.carryOut")(function* (input: {
 });
 
 /** Open entries per list, for the definitions the owner sees. */
-export const openCounts = Effect.fn("KinRegisters.openCounts")(function* (orgId: KinOrgId) {
+export const openCounts = Effect.fn("KinRegisters.openCounts")(function* (
+  orgId: KinOrgId,
+  /** Only entries someone besides the owner may see (`personSees`), lists with none left out. */
+  sees?: Statement.Fragment,
+) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ id: string; open: number }>`SELECT register_id AS id,
-      COUNT(*) AS open FROM kin_records
-    WHERE org_id = ${orgId} AND state NOT IN ('done', 'dropped')
-    GROUP BY register_id ORDER BY register_id`;
+  const rows = yield* sql<{ id: string; open: number }>`SELECT r.register_id AS id,
+      SUM(r.state NOT IN ('done', 'dropped')) AS open FROM kin_records r
+    WHERE r.org_id = ${orgId} AND ${sees ?? sql`r.state NOT IN ('done', 'dropped')`}
+    GROUP BY r.register_id ORDER BY r.register_id`;
   return new Map(rows.map((row) => [row.id, row.open]));
 });

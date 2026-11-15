@@ -31,6 +31,7 @@ import {
   kinPendingRefKey,
   type KinDocAsk,
 } from "@t3tools/client-runtime/kin/kinDocs";
+import { KIN_DOC_SHARE } from "@t3tools/client-runtime/kin/kinWork";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import {
   EnvironmentId,
@@ -54,6 +55,7 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { FilePreviewModal, type FilePreviewSource } from "../../components/ui/FilePreviewModal";
+import { ListSection } from "../../components/ui/ListSection";
 import { Menu } from "../../components/ui/Menu";
 import { Chip } from "../../components/ui/Chip";
 import { Notice } from "../../components/ui/Notice";
@@ -79,6 +81,7 @@ import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { ThreadMarkdownImage } from "../threads/ThreadMarkdownImage";
 import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
 import { KinDocFileRows } from "./KinInvoice";
+import { KinWorkShareRow } from "./KinWorkShareRow";
 import { kinClient } from "./state/kinClient";
 import { useKinDocLabel } from "./state/useKinDocLabel";
 import { useKinDoc } from "./state/useKinDocs";
@@ -550,6 +553,19 @@ function KinDocBody(
                 )}
               </View>
             }
+            {doc.archived || doc.sensitive || doc.sensitiveInherited === true ? null : (
+              <ListSection>
+                <KinWorkShareRow
+                  environmentId={environmentId}
+                  orgId={orgId}
+                  itemKey={doc.key}
+                  shared={doc.shared === true}
+                  disabled={false}
+                  copy={KIN_DOC_SHARE}
+                  onSettled={props.onRefresh}
+                />
+              </ListSection>
+            )}
             {previous === null ? null : (
               <Pressable
                 accessibilityRole="button"

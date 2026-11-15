@@ -9,7 +9,6 @@ import {
   KIN_WORK_NOTES_MAX,
   KIN_WORK_ONLY_OWNER,
   KIN_WORK_PRIVATE,
-  KIN_WORK_SHARE,
   KIN_WORK_TITLE_MAX,
   kinWorkAssignees,
   kinWorkHostClients,
@@ -36,7 +35,6 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
-import { useState } from "react";
 import { TextInput, View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
@@ -56,7 +54,6 @@ import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { useNowMinuteMs } from "../../lib/clock";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { appAtomRegistry } from "../../state/atom-registry";
-import { useAtomCommand } from "../../state/use-atom-command";
 import { KIN_ONLY } from "../../lib/kinOnly";
 import { useOpenWorkspaceDetail } from "../layout/useOpenWorkspaceDetail";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
@@ -70,6 +67,7 @@ import {
   KinWorkStatusRow,
 } from "./components/KinWorkTaskMenus";
 import { KinListEntryBody } from "./KinListEntry";
+import { KinWorkShareRow } from "./KinWorkShareRow";
 import { kinClient } from "./state/kinClient";
 import {
   useKinWork,
@@ -678,46 +676,6 @@ function KinWorkItemBody(props: ItemTarget) {
 }
 
 /** What just happened to the task: said quietly when it worked, plainly when it didn't. */
-/** The owner's switch for whether teammates see the task; a teammate never gets it. */
-function KinWorkShareRow(
-  props: ItemTarget & { readonly shared: boolean; readonly disabled: boolean },
-) {
-  const { environmentId, orgId, itemKey } = props;
-  const canShare = useAtomValue(kinClient.workShare.permissionAtom(environmentId));
-  const share = useAtomCommand(kinClient.workShare, { reportFailure: false });
-  // What was asked, held only until the host's read moves off the value it was asked from.
-  const [asked, setAsked] = useState<{ readonly to: boolean; readonly from: boolean } | null>(null);
-  const [pending, setPending] = useState(false);
-  const [failed, setFailed] = useState(false);
-  if (!canShare) return null;
-  const shared = asked !== null && asked.from === props.shared ? asked.to : props.shared;
-  return (
-    <ListToggleRow
-      icon="person.2"
-      label={KIN_WORK_SHARE.label}
-      description={failed ? KIN_WORK_SHARE.failed : shared ? KIN_WORK_SHARE.on : KIN_WORK_SHARE.off}
-      value={shared}
-      disabled={props.disabled || pending}
-      onValueChange={(on) => {
-        setAsked({ to: on, from: props.shared });
-        setPending(true);
-        setFailed(false);
-        void share({ environmentId, input: { orgId, keys: [itemKey], shared: on } }).then(
-          (outcome) => {
-            const refused = AsyncResult.isFailure(outcome);
-            setFailed(refused);
-            setPending(false);
-            if (refused) setAsked(null);
-            appAtomRegistry.refresh(
-              kinClient.workItem({ environmentId, input: { orgId, key: itemKey } }),
-            );
-          },
-        );
-      }}
-    />
-  );
-}
-
 function KinWorkNoticeLine(props: {
   readonly notice: KinWorkNotice;
   readonly saving: boolean;

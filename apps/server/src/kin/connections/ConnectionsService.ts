@@ -20,12 +20,15 @@ import {
   type KinConnectionSignInStart,
   type KinConnectionSignInStartInput,
   type KinConnectionSetReachInput,
+  type KinConnectionSetSendFrom,
+  type KinConnectionSetSendFromInput,
   type KinConnectionSetToolModesInput,
   type KinConnectionUpdateInput,
   type KinConnectionsInput,
   type KinConnectionsView,
   type KinConnectionToolMode,
   type KinOrgId,
+  type KinSendCard,
   KinPersonId,
   KinWakeupId,
   ThreadId,
@@ -67,6 +70,7 @@ import {
   connectionView,
   liveConnections,
   resolveConnection,
+  sendAsOf,
   toolsOf,
   toolView,
   type ConnectionRow,
@@ -82,17 +86,13 @@ import { CONNECTION_LIMITS } from "./limits.ts";
 import { KinGatewayError, KinMcpGateway, type GatewayTarget } from "./McpGateway.ts";
 import { credentialForms } from "./Inbound.ts";
 import {
-  callGoogle,
-  canSend,
-  GOOGLE_AUTH_EXTRA,
-  GOOGLE_SCOPES,
-  GOOGLE_SEND_TOOL_NAMES,
-  GOOGLE_SEND_TOOLS,
-  GOOGLE_SERVER,
-  GOOGLE_TOOLS,
-  googleAccount,
-  googleActivity,
-} from "./Google.ts";
+  ACROSS_ACCOUNTS,
+  MAIL_SEND_TOOL_NAMES,
+  MAIL_TOOL,
+  type Mailbox,
+  type MailProvider,
+} from "./MailProvider.ts";
+import { MAIL_PRESETS, mailProviderOf } from "./mailProviders.ts";
 import * as OAuth from "./OAuth.ts";
 import { instructionsDigest, pinDigest, reconcile, suggestedMode } from "./Pinning.ts";
 import {
@@ -110,12 +110,15 @@ import { ownerLevel } from "../people/KinAccess.ts";
 import {
   attachmentOf,
   attachmentsCurrent,
+  choiceId,
+  type FromChoice,
+  fromOf,
   MAX_CARD_ARGS,
-  prepareGoogle,
+  prepareMail,
   type Prepared,
   PreparedJson,
   sendCard,
-  sendGoogle,
+  sendMail,
   sentToClient,
 } from "./Sending.ts";
 
@@ -126,6 +129,8 @@ export const ALWAYS_ASK =
 export const ASKED =
   "Nothing was sent. The owner sees a card with exactly this; their tap on Confirm sends it. Tell them in one short line to check the card. A typed yes doesn't send it.";
 export const OFFERED = "The owner will see a card to connect it.";
+const severalAccounts = (provider: MailProvider) =>
+  `There are several ${provider.name} accounts: name one by its id or address. Connection ${provider.preset} on a mail search, inbox list or calendar list reads every one of them. A reply goes from the thread's own account. For a new email or event, pick the account and from address by the owner's notes and where earlier mail with that person went; when that doesn't settle it, ask the owner in one line.`;
 const paused = (label: string) => `The owner paused ${label}. Only the owner can resume it.`;
 const signedOut = (label: string) =>
   `${label}'s sign-in expired. The owner can sign in again in Settings.`;
@@ -135,6 +140,11 @@ const REFRESH_EARLY = Duration.minutes(1);
 // The return page reads only this prefix of `state` to pick where to hand the result back.
 const RETURN_PREFIX = { web: "w", app: "a", "app-dev": "d", "app-preview": "p" } as const;
 
+/** A pasted client secret, or none: Microsoft's public clients have no secret. */
+const secretOf = (secret: Redacted.Redacted<string> | undefined) => {
+  const value = secret === undefined ? "" : Redacted.value(secret).trim();
+  return value === "" ? undefined : value;
+};
 const fail = (reason: KinChatError["reason"], message: string) =>
   new KinChatError({ reason, message });
 const notFound = fail("not_found", "Kin couldn't find that connection.");
@@ -176,6 +186,11 @@ export const KinConnectionToolsResult = Schema.Struct({
         connection: Schema.String,
         label: Schema.String,
         service: Schema.String,
+        /** The signed-in account, such as a Gmail address, and the addresses it sends as. */
+        account: Schema.optional(Schema.String),
+        sendsAs: Schema.optional(Schema.Array(Schema.String)),
+        /** The owner's own line on what the account is for. */
+        note: Schema.optional(Schema.String),
         state: Schema.String,
         readTools: Schema.Number,
       }),
@@ -200,6 +215,12 @@ export const KinConnectionOfferInput = Schema.Struct({
   service: Schema.String.check(Schema.isMaxLength(80)),
 });
 export const KinConnectionOfferResult = Schema.Struct({ note: Schema.String });
+export const KinConnectionNoteInput = Schema.Struct({
+  connection: Schema.String.check(Schema.isMaxLength(200)),
+  /** One line on what the account is for; empty clears it. */
+  note: Schema.String.check(Schema.isMaxLength(200)),
+});
+export const KinConnectionNoteResult = Schema.Struct({ note: Schema.String });
 
 type People = ReadonlyArray<PersonIdentity>;
 
@@ -209,12 +230,14 @@ type People = ReadonlyArray<PersonIdentity>;
  */
 export type KinConnectionActivity =
   | {
-      readonly _tag: "google";
+      readonly _tag: "mail";
       readonly connectionId: KinConnectionId;
       readonly since: number;
       readonly until: number;
+      readonly account: string | null;
       readonly mail: ReadonlyArray<{
         readonly threadId: string;
+        readonly receivedBy: string | null;
         readonly subject: string;
         readonly from: string | null;
         readonly date: string | null;
@@ -302,6 +325,20 @@ export class KinConnections extends Context.Service<
     readonly signInFinish: Owner<KinConnectionSignInFinishInput, KinConnectionDetail>;
     readonly setSignInClient: Owner<KinConnectionSetSignInClientInput, KinConnectionsView>;
     /**
+     * The owner switches an open send card's From, before Confirm. `rewrite` puts the new card
+     * in the chat in the same transaction, bound to the revision he saw.
+     */
+    readonly setSendFrom: (
+      people: People,
+      input: KinConnectionSetSendFromInput,
+      rewrite: (card: {
+        readonly widgetId: string;
+        readonly revision: number;
+        readonly detail: string;
+        readonly send: KinSendCard;
+      }) => Effect.Effect<{ readonly revision: number }, KinChatError>,
+    ) => Effect.Effect<KinConnectionSetSendFrom, KinChatError>;
+    /**
      * Server use only (a pulse, never an agent tool): what is new at a connection since it was
      * last marked seen, from the service's own API or, for GitHub, the webhooks Kin recorded.
      */
@@ -318,6 +355,7 @@ export class KinConnections extends Context.Service<
     readonly tools: Lead<typeof KinConnectionToolsInput.Type, typeof KinConnectionToolsResult.Type>;
     readonly call: Lead<typeof KinConnectionCallInput.Type, typeof KinConnectionCallResult.Type>;
     readonly offer: Lead<typeof KinConnectionOfferInput.Type, typeof KinConnectionOfferResult.Type>;
+    readonly note: Lead<typeof KinConnectionNoteInput.Type, typeof KinConnectionNoteResult.Type>;
     /** The owner's tap on an ask card, run in the tap's own transaction. */
     readonly answerAsk: (input: {
       readonly orgId: KinOrgId;
@@ -371,9 +409,9 @@ type PendingSignIn = {
     | { readonly _tag: "again"; readonly connectionId: KinConnectionId };
 };
 
-/** Kin's own Google tools that send are never marked Read. */
+/** Kin's own mail tools that send are never marked Read. */
 const alwaysAsk = (row: Pick<ConnectionRow, "kind">, tool: string) =>
-  row.kind === "builtin" && GOOGLE_SEND_TOOL_NAMES.has(tool);
+  row.kind === "builtin" && MAIL_SEND_TOOL_NAMES.has(tool);
 const usable = (tool: Parameters<typeof callable>[0]) =>
   callable(tool) && (tool.mode === "read" || tool.mode === "ask");
 
@@ -431,16 +469,17 @@ const make = Effect.gen(function* () {
       ),
     };
   });
-  /** A Google sign-in from before Kin sent anything shows "Sign in again to allow sending". */
+  /** A mail sign-in from before Kin sent anything shows "Sign in again to allow sending". */
   const withSendState = Effect.fnUntraced(function* (
     row: ConnectionRow,
     view: ReturnType<typeof connectionView>,
   ) {
-    if (row.kind !== "builtin" || row.auth !== "oauth") return view;
+    const provider = mailProviderOf(row);
+    if (provider === undefined || row.auth !== "oauth") return view;
     const stored = yield* secrets
       .getSignIn(row.connectionId)
       .pipe(Effect.orElseSucceed(Option.none));
-    return Option.isNone(stored) || canSend(Redacted.value(stored.value).scope)
+    return Option.isNone(stored) || provider.canSend(Redacted.value(stored.value).scope)
       ? view
       : { ...view, needsSignInToSend: true };
   });
@@ -459,7 +498,7 @@ const make = Effect.gen(function* () {
       signInAddress,
     } satisfies KinConnectionsView;
   });
-  /** Google waits on the owner's own client: until it is saved, it shows "Needs setup". */
+  /** A service that signs in with the owner's own client shows "Needs setup" until it is saved. */
   const servicesFor = Effect.fn("KinConnections.services")(function* () {
     const missing = new Set<string>();
     for (const service of OWNER_CLIENT_PRESETS) {
@@ -623,28 +662,36 @@ const make = Effect.gen(function* () {
       ),
     );
   const listFor = Effect.fnUntraced(function* (orgId: KinOrgId, row: ConnectionRow) {
-    if (row.kind === "builtin")
+    const provider = mailProviderOf(row);
+    if (provider !== undefined)
       return {
         protocolVersion: null,
         instructions: undefined,
-        tools: [...GOOGLE_TOOLS, ...GOOGLE_SEND_TOOLS],
+        tools: [...provider.tools, ...provider.sendTools],
       };
     return yield* withSignIn(orgId, row, (force) =>
       target(orgId, row, force).pipe(Effect.flatMap((to) => gateway.listTools(to))),
     );
   });
-  const googleToken = (orgId: KinOrgId, row: ConnectionRow, force: boolean) =>
+  const tokenOf = (orgId: KinOrgId, row: ConnectionRow, force: boolean) =>
     signInOf(orgId, row, force).pipe(Effect.map((secret) => secret.accessToken));
+  const mailboxOf = (row: ConnectionRow): Mailbox => ({
+    account: row.accountLabel,
+    addresses: sendAsOf(row).map((one) => one.address),
+  });
   const callFor = Effect.fnUntraced(function* (
     orgId: KinOrgId,
     row: ConnectionRow,
     tool: McpSchema.Tool,
     args: Readonly<Record<string, unknown>>,
   ) {
-    if (row.kind === "builtin")
+    const provider = mailProviderOf(row);
+    if (provider !== undefined)
       return yield* withSignIn(orgId, row, (force) =>
-        Effect.all([googleToken(orgId, row, force), Clock.currentTimeMillis]).pipe(
-          Effect.flatMap(([token, now]) => callGoogle(http, token, tool.name, args, now)),
+        Effect.all([tokenOf(orgId, row, force), Clock.currentTimeMillis]).pipe(
+          Effect.flatMap(([token, now]) =>
+            provider.call(http, token, mailboxOf(row), tool.name, args, now),
+          ),
         ),
       );
     return yield* withSignIn(orgId, row, (force) =>
@@ -652,12 +699,18 @@ const make = Effect.gen(function* () {
     );
   });
   const accountOf = Effect.fnUntraced(function* (
-    row: Pick<ConnectionRow, "kind">,
+    provider: MailProvider | undefined,
     accessToken: string,
   ) {
-    if (row.kind !== "builtin") return null;
-    return yield* googleAccount(http, accessToken).pipe(Effect.orElseSucceed(() => null));
+    if (provider === undefined) return null;
+    return yield* provider.account(http, accessToken).pipe(Effect.orElseSucceed(() => null));
   });
+  /** The account's From addresses as JSON, or `null` when the provider didn't list them. */
+  const sendAsJsonOf = (provider: MailProvider, accessToken: string) =>
+    provider.sendAs(http, accessToken).pipe(
+      Effect.map((listed) => (listed.length === 0 ? null : toJson(listed))),
+      Effect.orElseSucceed(() => null),
+    );
 
   /** A new connection's row and its tools as listed, in one transaction. */
   const insertConnection = (
@@ -670,12 +723,14 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const now = row.createdAt;
         yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url,
-            url_host, auth, auth_header, reach, state, account_label, issuer, resource,
-            protocol_version, instructions_text, instructions_digest, instructions_accepted_text,
-            instructions_accepted_digest, created_at, updated_at, listed_at, last_ok_at)
+            url_host, auth, auth_header, reach, state, account_label, send_as_json, issuer,
+            resource, protocol_version, instructions_text, instructions_digest,
+            instructions_accepted_text, instructions_accepted_digest, created_at, updated_at,
+            listed_at, last_ok_at)
           VALUES (${orgId}, ${row.connectionId}, ${row.preset}, ${row.label}, ${row.kind},
             ${row.url}, ${row.urlHost}, ${row.auth}, ${row.authHeader}, ${row.reach}, 'active',
-            ${row.accountLabel}, ${signIn?.issuer ?? null}, ${signIn?.resource ?? null},
+            ${row.accountLabel}, ${row.sendAsJson}, ${signIn?.issuer ?? null},
+            ${signIn?.resource ?? null},
             ${listed.protocolVersion}, ${listed.instructions ?? null},
             ${instructionsDigest(listed.instructions)}, ${listed.instructions ?? null},
             ${instructionsDigest(listed.instructions)}, ${now}, ${now}, ${now}, ${now})
@@ -713,6 +768,20 @@ const make = Effect.gen(function* () {
       return yield* fail("unavailable", message);
     }
     const { tools, instructions, protocolVersion } = listed.success;
+    // Kin's own mail tools are Kin's words, not a server's: a new wording needs no review.
+    const provider = mailProviderOf(row);
+    const ours = provider !== undefined;
+    const signedIn =
+      ours &&
+      Option.isSome(
+        yield* secrets.getSignIn(row.connectionId).pipe(Effect.orElseSucceed(Option.none)),
+      );
+    const sendAsJson = signedIn
+      ? yield* withSignIn(orgId, row, (force) => tokenOf(orgId, row, force)).pipe(
+          Effect.flatMap((token) => sendAsJsonOf(provider!, token)),
+          Effect.orElseSucceed(() => null),
+        )
+      : null;
     yield* sql.withTransaction(
       Effect.gen(function* () {
         const stored = yield* toolsOf(orgId, row.connectionId).pipe(provideSql);
@@ -737,14 +806,17 @@ const make = Effect.gen(function* () {
             yield* sql`UPDATE kin_connection_tools SET definition_json = ${json},
                 pin_digest = ${digest}, suggested_mode = ${suggestedMode(tool.definition)},
                 open_world = ${open}, removed_at = NULL,
-                changed_at = ${change._tag === "changed" ? now : sql`changed_at`}
+                changed_at = ${change._tag === "changed" ? now : sql`changed_at`},
+                accepted_digest = ${ours ? sql`CASE WHEN accepted_digest IS NULL THEN NULL ELSE ${digest} END` : sql`accepted_digest`},
+                accepted_json = ${ours ? sql`CASE WHEN accepted_digest IS NULL THEN NULL ELSE ${json} END` : sql`accepted_json`}
               WHERE org_id = ${orgId} AND connection_id = ${row.connectionId}
                 AND tool_name = ${tool.name}`;
         }
         yield* sql`UPDATE kin_connections SET protocol_version = ${protocolVersion},
             instructions_text = ${instructions ?? null},
             instructions_digest = ${instructionsDigest(instructions)},
-            listed_at = ${now}, last_ok_at = ${now}, last_error = NULL
+            listed_at = ${now}, last_ok_at = ${now}, last_error = NULL,
+            send_as_json = COALESCE(${sendAsJson}, send_as_json)
           WHERE org_id = ${orgId} AND connection_id = ${row.connectionId}`;
         yield* restate(orgId, row.connectionId, now);
         yield* touched(orgId);
@@ -794,6 +866,8 @@ const make = Effect.gen(function* () {
         reach: preset?.reach ?? CUSTOM_REACH,
         state: "active",
         accountLabel: null,
+        note: null,
+        sendAsJson: null,
         protocolVersion: null,
         instructionsText: null,
         instructionsDigest: null,
@@ -949,6 +1023,7 @@ const make = Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
       yield* sql`UPDATE kin_connections SET updated_at = ${now},
           label = ${input.label ?? sql`label`},
+          note = ${input.note === undefined ? sql`note` : input.note === null || input.note.trim() === "" ? null : input.note.replace(/\s+/g, " ").trim()},
           paused_at = ${input.paused === undefined ? sql`paused_at` : input.paused ? sql`COALESCE(paused_at, ${now})` : null}
         WHERE org_id = ${input.orgId} AND connection_id = ${input.connectionId}
           AND removed_at IS NULL`;
@@ -1035,15 +1110,39 @@ const make = Effect.gen(function* () {
       let client: OAuth.Client;
       let url: string | null = null;
       let secretUrl: string | undefined;
-      if (preset.kind === "builtin") {
-        const owned = yield* secrets.getClient(service);
-        if (Option.isNone(owned))
+      const provider = mailProviderOf({ kind: preset.kind, preset: service });
+      if (provider !== undefined) {
+        if (input.client !== undefined && !provider.signIn.clientId.test(input.client.clientId))
+          return yield* fail("invalid_state", provider.signIn.notClient);
+        const shared = Option.getOrUndefined(yield* secrets.getClient(service));
+        const stored =
+          again === undefined
+            ? undefined
+            : Option.getOrUndefined(yield* secrets.getSignIn(again.connectionId));
+        const previous = stored === undefined ? undefined : Redacted.value(stored);
+        // An account signed in with its own client (another Workspace) keeps it for sign-in again.
+        const own =
+          input.client !== undefined
+            ? {
+                clientId: input.client.clientId,
+                clientSecret: secretOf(input.client.clientSecret),
+              }
+            : previous !== undefined &&
+                (shared === undefined || Redacted.value(shared).clientId !== previous.clientId)
+              ? { clientId: previous.clientId, clientSecret: previous.clientSecret }
+              : undefined;
+        const chosen = own ?? (shared === undefined ? undefined : Redacted.value(shared));
+        if (chosen === undefined)
           return yield* fail(
             "invalid_state",
             `${preset.label} needs setting up first. Follow the steps in Settings, then sign in.`,
           );
-        plan = { server: GOOGLE_SERVER, resource: undefined, scope: GOOGLE_SCOPES };
-        client = Redacted.value(owned.value);
+        plan = {
+          server: provider.signIn.server,
+          resource: undefined,
+          scope: provider.signIn.scope,
+        };
+        client = { clientId: chosen.clientId, clientSecret: chosen.clientSecret };
       } else {
         const stored =
           again === undefined
@@ -1089,7 +1188,7 @@ const make = Effect.gen(function* () {
         redirectUri: signInAddress,
         state,
         verifier,
-        ...(preset.kind === "builtin" ? { extra: GOOGLE_AUTH_EXTRA } : {}),
+        ...(provider === undefined ? {} : { extra: provider.signIn.extra }),
       });
       return {
         signInId: state,
@@ -1167,9 +1266,19 @@ const make = Effect.gen(function* () {
       );
       if (target._tag === "again") {
         const row = yield* live(input.orgId, target.connectionId);
+        const account = yield* accountOf(mailProviderOf(row), tokens.accessToken);
+        // Its threads and events belong to one account: another account is another connection.
+        if (
+          account !== null &&
+          row.accountLabel !== null &&
+          account.toLowerCase() !== row.accountLabel.toLowerCase()
+        )
+          return yield* fail(
+            "invalid_state",
+            `That signed in as ${account}, but this connection is ${row.accountLabel}. Nothing changed. To connect ${account}, add it as another account.`,
+          );
         yield* secrets.setSignIn(row.connectionId, Redacted.make(secret));
         yield* gateway.invalidate(row.connectionId);
-        const account = yield* accountOf(row, tokens.accessToken);
         yield* sql`UPDATE kin_connections SET state = 'active', last_error = NULL,
             account_label = COALESCE(${account}, account_label), issuer = ${issuer},
             resource = ${entry.plan.resource ?? null}, updated_at = ${now}
@@ -1181,10 +1290,25 @@ const make = Effect.gen(function* () {
       }
       const preset = SIGN_IN_PRESETS[target.service]!;
       const connectionId = newConnectionId();
+      const provider = mailProviderOf({ kind: preset.kind, preset: target.service });
+      const account = yield* accountOf(provider, tokens.accessToken);
+      if (
+        account !== null &&
+        (yield* liveConnections(input.orgId).pipe(provideSql)).some(
+          (row) =>
+            row.preset === target.service &&
+            row.accountLabel?.toLowerCase() === account.toLowerCase(),
+        )
+      )
+        return yield* fail(
+          "invalid_state",
+          `${account} is already connected. To connect another account, choose it at ${provider?.name ?? preset.label}'s sign-in.`,
+        );
       const base: ConnectionRow = {
         connectionId,
         preset: target.service,
-        label: target.label ?? preset.label,
+        // Several accounts of one service read apart by their address.
+        label: target.label ?? (provider === undefined ? null : account) ?? preset.label,
         kind: preset.kind,
         url: target.url,
         urlHost:
@@ -1197,7 +1321,10 @@ const make = Effect.gen(function* () {
         authHeader: null,
         reach: "closed",
         state: "active",
-        accountLabel: null,
+        accountLabel: account,
+        note: null,
+        sendAsJson:
+          provider === undefined ? null : yield* sendAsJsonOf(provider, tokens.accessToken),
         protocolVersion: null,
         instructionsText: null,
         instructionsDigest: null,
@@ -1214,7 +1341,7 @@ const make = Effect.gen(function* () {
       const saved = Effect.gen(function* () {
         yield* secrets.setSignIn(connectionId, Redacted.make(secret));
         const listed = yield* listFor(input.orgId, base);
-        const row = { ...base, accountLabel: yield* accountOf(base, tokens.accessToken) };
+        const row = base;
         yield* insertConnection(input.orgId, row, listed, {
           issuer,
           resource: entry.plan.resource,
@@ -1232,11 +1359,13 @@ const make = Effect.gen(function* () {
   const setSignInClient = ownerOp("setSignInClient", (input: KinConnectionSetSignInClientInput) =>
     Effect.gen(function* () {
       const client = input.client;
-      if (client !== null && !/^[\w.-]+\.apps\.googleusercontent\.com$/.test(client.clientId))
-        return yield* fail(
-          "invalid_state",
-          "That isn't a Google client ID. It ends in .apps.googleusercontent.com.",
-        );
+      const provider = mailProviderOf({ kind: "builtin", preset: input.service });
+      if (
+        client !== null &&
+        provider !== undefined &&
+        !provider.signIn.clientId.test(client.clientId)
+      )
+        return yield* fail("invalid_state", provider.signIn.notClient);
       yield* secrets.setClient(
         input.service,
         client === null
@@ -1244,7 +1373,7 @@ const make = Effect.gen(function* () {
           : Option.some(
               Redacted.make({
                 clientId: client.clientId,
-                clientSecret: Redacted.value(client.clientSecret).trim(),
+                clientSecret: secretOf(client.clientSecret),
               }),
             ),
       );
@@ -1263,28 +1392,32 @@ const make = Effect.gen(function* () {
         ORDER BY connection_id`;
     const since = cursor?.checkedUntil ?? row.createdAt;
     const until = yield* Clock.currentTimeMillis;
-    if (row.kind === "builtin" && row.preset === "google") {
+    const provider = mailProviderOf(row);
+    if (provider !== undefined) {
       // Only what the owner marked Read: the server reads no more than an agent may.
       const read = new Set(
         (yield* toolsOf(orgId, row.connectionId).pipe(provideSql))
           .filter((tool) => tool.mode === "read" && tool.removedAt === null)
           .map((tool) => tool.name),
       );
-      const mail = read.has("gmail_list_threads") || read.has("gmail_search");
-      const calendar = read.has("calendar_list_events");
+      const mail = read.has(MAIL_TOOL.list) || read.has(MAIL_TOOL.search);
+      const calendar = read.has(MAIL_TOOL.events);
       const found =
         mail || calendar
           ? yield* withSignIn(orgId, row, (force) =>
               signInOf(orgId, row, force).pipe(
-                Effect.flatMap((secret) => googleActivity(http, secret.accessToken, since)),
+                Effect.flatMap((secret) =>
+                  provider.activity(http, secret.accessToken, mailboxOf(row), since),
+                ),
               ),
             )
           : { mail: [], calendar: [] };
       return {
-        _tag: "google",
+        _tag: "mail",
         connectionId: row.connectionId,
         since,
         until,
+        account: row.accountLabel,
         mail: mail ? found.mail : [],
         calendar: calendar ? found.calendar : [],
       } as const;
@@ -1403,22 +1536,38 @@ const make = Effect.gen(function* () {
         const rows = yield* liveConnections(turn.orgId).pipe(provideSql);
         const connections = yield* Effect.forEach(rows, (row) =>
           readable(turn.orgId, row).pipe(
-            Effect.map((read) => ({
-              connection: row.connectionId,
-              label: row.label,
-              service: row.preset ?? `custom (${row.urlHost})`,
-              state: row.pausedAt === null ? row.state : "paused",
-              readTools: read.length,
-            })),
+            Effect.map((read) => {
+              const sendsAs = sendAsOf(row).map((one) => one.address);
+              return {
+                connection: row.connectionId,
+                label: row.label,
+                service: row.preset ?? `custom (${row.urlHost})`,
+                ...(row.accountLabel === null ? {} : { account: row.accountLabel }),
+                ...(sendsAs.length === 0 ? {} : { sendsAs }),
+                ...(row.note === null ? {} : { note: row.note }),
+                state: row.pausedAt === null ? row.state : "paused",
+                readTools: read.length,
+              };
+            }),
           ),
         );
         const connected = new Set(rows.map((row) => row.preset));
+        const several = MAIL_PRESETS.flatMap((preset) => {
+          const provider = mailProviderOf({ kind: "builtin", preset });
+          return provider !== undefined &&
+            rows.filter((row) => mailProviderOf(row) === provider).length > 1
+            ? [severalAccounts(provider)]
+            : [];
+        });
         return {
           connections,
           canConnect: SERVICES.filter(
             (service) => service.service !== "custom" && !connected.has(service.service),
           ).map((service) => service.service),
-          note: "Call with connection to see its tools; kin_connection_offer asks the owner to connect a service.",
+          note: [
+            "Call with connection to see its tools; kin_connection_offer asks the owner to connect a service.",
+            ...several,
+          ].join(" "),
         };
       }
       const found = yield* resolveConnection(turn.orgId, input.connection).pipe(provideSql);
@@ -1553,6 +1702,106 @@ const make = Effect.gen(function* () {
       : sql`UPDATE kin_connection_turn_spend SET chars = MAX(0, chars - ${chars})
           WHERE org_id = ${turn.orgId} AND wakeup_id = ${turn.wakeupId}`.pipe(Effect.asVoid);
 
+  /** One connection's tool, called or put on a card, with its row in the call log. */
+  const callOn = Effect.fn("KinConnections.callOn")(function* (
+    turn: Turn,
+    row: ConnectionRow,
+    input: typeof KinConnectionCallInput.Type,
+    base: Omit<Parameters<typeof record>[1], "status">,
+  ) {
+    const args = input.arguments ?? {};
+    if (row.pausedAt !== null)
+      return yield* refuse(
+        turn,
+        { ...base, connectionId: row.connectionId },
+        fail("not_allowed", paused(row.label)),
+      );
+    if (row.state === "needs_sign_in")
+      return yield* refuse(
+        turn,
+        { ...base, connectionId: row.connectionId },
+        fail("unavailable", signedOut(row.label)),
+      );
+    const [tool] = (yield* toolsOf(turn.orgId, row.connectionId).pipe(provideSql)).filter(
+      (candidate) => candidate.name === input.tool,
+    );
+    const entry = { ...base, connectionId: row.connectionId, mode: tool?.mode ?? null };
+    if (tool === undefined || tool.removedAt !== null)
+      return yield* refuse(
+        turn,
+        entry,
+        fail("not_found", `${row.label} has no tool named ${input.tool}.`),
+      );
+    if (tool.mode === "off")
+      return yield* refuse(
+        turn,
+        entry,
+        fail("not_allowed", `${tool.name} is off. Only the owner can turn it on.`),
+      );
+    if (!callable(tool))
+      return yield* refuse(
+        turn,
+        entry,
+        fail(
+          "not_allowed",
+          `${tool.name} changed and waits for the owner's review before it can be called.`,
+        ),
+      );
+    // The gate checks the same before the call; this holds with the gate bypassed.
+    if (
+      (yield* outsideRead(turn).pipe(provideSql)) &&
+      (row.reach === "open" || tool.openWorld === 1)
+    )
+      return yield* refuse(turn, entry, fail("not_allowed", OUTSIDE_REFUSAL));
+    if (tool.mode === "ask" || alwaysAsk(row, tool.name))
+      return yield* askFor(turn, row, tool, args, entry);
+    const definition = yield* decodeTool(tool.acceptedJson ?? tool.definitionJson).pipe(
+      Effect.mapError(() => fail("unavailable", `Kin couldn't read ${tool.name}'s definition.`)),
+    );
+    const allowance = yield* reserve(turn);
+    if (allowance._tag === "refused") return yield* refuse(turn, entry, allowance.error);
+    const started = yield* Clock.currentTimeMillis;
+    const result = yield* callFor(turn.orgId, row, definition, args).pipe(Effect.result);
+    const durationMs = (yield* Clock.currentTimeMillis) - started;
+    if (result._tag === "Failure") {
+      yield* sql.withTransaction(
+        Effect.all([
+          record(turn, {
+            ...entry,
+            status: "error",
+            refusedReason: result.failure.message,
+            durationMs,
+          }),
+          release(turn, allowance.chars),
+        ]),
+      );
+      return yield* fail("unavailable", result.failure.message);
+    }
+    const text = resultText({
+      label: row.label,
+      tool: definition,
+      result: result.success,
+      limit: allowance.chars,
+    });
+    // The row and the outside mark commit together: no result reaches the agent unmarked.
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* record(turn, {
+          ...entry,
+          status: result.success.isError === true ? "error" : "ok",
+          resultChars: text.chars,
+          resultBytes: text.bytes,
+          durationMs,
+        });
+        yield* shown(turn, row.connectionId);
+        yield* release(turn, allowance.chars - text.chars);
+        yield* sql`UPDATE kin_connections SET last_ok_at = ${started}
+          WHERE org_id = ${turn.orgId} AND connection_id = ${row.connectionId}`;
+      }),
+    );
+    return { quoted: text.quoted };
+  });
+
   const call = leadOp("call", (scope, input: typeof KinConnectionCallInput.Type) =>
     Effect.gen(function* () {
       const { turn, ownerOnly } = yield* ownerTurn(scope);
@@ -1566,103 +1815,42 @@ const make = Effect.gen(function* () {
       };
       if (!ownerOnly) return yield* refuse(turn, base, fail("not_allowed", SHARED_CONNECTIONS));
       const found = yield* resolveConnection(turn.orgId, input.connection).pipe(provideSql);
-      if (found._tag !== "found")
-        return yield* refuse(
-          turn,
-          base,
-          fail("not_found", "No connection answers to that name. kin_connection_tools lists them."),
-        );
-      const row = found.row;
-      if (row.pausedAt !== null)
-        return yield* refuse(
-          turn,
-          { ...base, connectionId: row.connectionId },
-          fail("not_allowed", paused(row.label)),
-        );
-      if (row.state === "needs_sign_in")
-        return yield* refuse(
-          turn,
-          { ...base, connectionId: row.connectionId },
-          fail("unavailable", signedOut(row.label)),
-        );
-      const [tool] = (yield* toolsOf(turn.orgId, row.connectionId).pipe(provideSql)).filter(
-        (candidate) => candidate.name === input.tool,
+      if (found._tag === "found") return yield* callOn(turn, found.row, input, base);
+      const wanted = input.connection.trim().toLowerCase();
+      const several = found.live.filter(
+        (row) => row.preset === wanted || row.label.toLowerCase() === wanted,
       );
-      const entry = { ...base, connectionId: row.connectionId, mode: tool?.mode ?? null };
-      if (tool === undefined || tool.removedAt !== null)
-        return yield* refuse(
-          turn,
-          entry,
-          fail("not_found", `${row.label} has no tool named ${input.tool}.`),
-        );
-      if (tool.mode === "off")
-        return yield* refuse(
-          turn,
-          entry,
-          fail("not_allowed", `${tool.name} is off. Only the owner can turn it on.`),
-        );
-      if (!callable(tool))
-        return yield* refuse(
-          turn,
-          entry,
-          fail(
-            "not_allowed",
-            `${tool.name} changed and waits for the owner's review before it can be called.`,
+      // A read across every account of a provider answers as one, each part labelled by account.
+      if (
+        found._tag === "ambiguous" &&
+        ACROSS_ACCOUNTS.has(input.tool) &&
+        several.every((row) => mailProviderOf(row) !== undefined)
+      ) {
+        const parts = yield* Effect.forEach(several, (row) =>
+          callOn(turn, row, input, base).pipe(
+            Effect.map((result) => ("quoted" in result ? result.quoted : result.note)),
+            Effect.catch((error) =>
+              Effect.succeed(`${row.accountLabel ?? row.label}: ${error.message}`),
+            ),
           ),
         );
-      // The gate checks the same before the call; this holds with the gate bypassed.
-      if (
-        (yield* outsideRead(turn).pipe(provideSql)) &&
-        (row.reach === "open" || tool.openWorld === 1)
-      )
-        return yield* refuse(turn, entry, fail("not_allowed", OUTSIDE_REFUSAL));
-      if (tool.mode === "ask" || alwaysAsk(row, tool.name))
-        return yield* askFor(turn, row, tool, args, entry);
-      const definition = yield* decodeTool(tool.acceptedJson ?? tool.definitionJson).pipe(
-        Effect.mapError(() => fail("unavailable", `Kin couldn't read ${tool.name}'s definition.`)),
-      );
-      const allowance = yield* reserve(turn);
-      if (allowance._tag === "refused") return yield* refuse(turn, entry, allowance.error);
-      const started = yield* Clock.currentTimeMillis;
-      const result = yield* callFor(turn.orgId, row, definition, args).pipe(Effect.result);
-      const durationMs = (yield* Clock.currentTimeMillis) - started;
-      if (result._tag === "Failure") {
-        yield* sql.withTransaction(
-          Effect.all([
-            record(turn, {
-              ...entry,
-              status: "error",
-              refusedReason: result.failure.message,
-              durationMs,
-            }),
-            release(turn, allowance.chars),
-          ]),
-        );
-        return yield* fail("unavailable", result.failure.message);
+        return { quoted: parts.join("\n\n") };
       }
-      const text = resultText({
-        label: row.label,
-        tool: definition,
-        result: result.success,
-        limit: allowance.chars,
-      });
-      // The row and the outside mark commit together: no result reaches the agent unmarked.
-      yield* sql.withTransaction(
-        Effect.gen(function* () {
-          yield* record(turn, {
-            ...entry,
-            status: result.success.isError === true ? "error" : "ok",
-            resultChars: text.chars,
-            resultBytes: text.bytes,
-            durationMs,
-          });
-          yield* shown(turn, row.connectionId);
-          yield* release(turn, allowance.chars - text.chars);
-          yield* sql`UPDATE kin_connections SET last_ok_at = ${started}
-            WHERE org_id = ${turn.orgId} AND connection_id = ${row.connectionId}`;
-        }),
+      return yield* refuse(
+        turn,
+        base,
+        fail(
+          "not_found",
+          found._tag === "ambiguous"
+            ? `Several connections answer to that name: ${several
+                .map(
+                  (row) =>
+                    `${row.connectionId} (${row.accountLabel ?? row.label}${row.note === null ? "" : `, owner's note: ${row.note}`})`,
+                )
+                .join("; ")}. Name one by its id or address.`
+            : "No connection answers to that name. kin_connection_tools lists them.",
+        ),
       );
-      return { quoted: text.quoted };
     }),
   );
 
@@ -1677,9 +1865,10 @@ const make = Effect.gen(function* () {
     args: Readonly<Record<string, unknown>>,
     entry: Omit<Parameters<typeof record>[1], "status">,
   ) {
-    if (row.kind === "builtin") {
+    const provider = mailProviderOf(row);
+    if (provider !== undefined) {
       const stored = yield* secrets.getSignIn(row.connectionId);
-      if (Option.isSome(stored) && !canSend(Redacted.value(stored.value).scope))
+      if (Option.isSome(stored) && !provider.canSend(Redacted.value(stored.value).scope))
         return yield* refuse(
           turn,
           entry,
@@ -1690,12 +1879,14 @@ const make = Effect.gen(function* () {
         );
     }
     const prepared: Prepared =
-      row.kind === "builtin"
-        ? yield* prepareGoogle({
+      provider !== undefined
+        ? yield* prepareMail({
+            provider,
             http,
-            token: googleToken(turn.orgId, row, false),
+            token: tokenOf(turn.orgId, row, false),
             orgId: turn.orgId,
             account: row.accountLabel,
+            sendAs: sendAsOf(row),
             tool: tool.name,
             args,
           }).pipe(
@@ -1720,9 +1911,11 @@ const make = Effect.gen(function* () {
       return yield* refuse(turn, entry, fail("not_allowed", "This turn has no chat to ask in."));
     const card = sendCard({
       service: row.label,
+      ...(provider === undefined ? {} : { mail: provider }),
       account: row.accountLabel,
       tool: tool.name,
       prepared,
+      choices: (yield* choicesFor(turn.orgId, row, prepared)).map((one) => one.choice),
     });
     const payload = encodePrepared(prepared);
     const askId = `ask_${NodeCrypto.createHash("sha256")
@@ -1763,6 +1956,105 @@ const make = Effect.gen(function* () {
     yield* record(turn, { ...entry, status: "awaiting_approval" });
     return { note: ASKED };
   });
+
+  /**
+   * The Froms a mail card may switch to: a reply only among its own account's addresses; a new
+   * email among every mail account whose sending is marked Ask me.
+   */
+  const choicesFor = Effect.fn("KinConnections.choices")(function* (
+    orgId: KinOrgId,
+    row: ConnectionRow,
+    prepared: Prepared,
+  ) {
+    if (prepared._tag !== "email" || mailProviderOf(row) === undefined) return [];
+    const rows =
+      prepared.threadId !== null
+        ? [row]
+        : yield* Effect.filter(yield* liveConnections(orgId).pipe(provideSql), (candidate) =>
+            mailProviderOf(candidate) === undefined ||
+            candidate.pausedAt !== null ||
+            candidate.state === "needs_sign_in"
+              ? Effect.succeed(false)
+              : candidate.connectionId === row.connectionId
+                ? Effect.succeed(true)
+                : toolsOf(orgId, candidate.connectionId).pipe(
+                    provideSql,
+                    Effect.map((tools) =>
+                      tools.some(
+                        (tool) =>
+                          tool.name === MAIL_TOOL.send && callable(tool) && tool.mode === "ask",
+                      ),
+                    ),
+                  ),
+          );
+    return rows.flatMap((one) =>
+      sendAsOf(one).map((address) => ({
+        row: one,
+        choice: {
+          id: choiceId(one.connectionId, address.address),
+          account: one.accountLabel ?? one.label,
+          address: address.address,
+          name: address.name,
+        } satisfies FromChoice,
+      })),
+    );
+  });
+
+  const setSendFrom = Effect.fn("KinConnections.setSendFrom")(function* (
+    people: People,
+    input: KinConnectionSetSendFromInput,
+    rewrite: Parameters<KinConnections["Service"]["setSendFrom"]>[2],
+  ) {
+    yield* owner(people, input.orgId);
+    return yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const [ask] = yield* sql<AskRow>`${askRow(sql, input.orgId)}
+          AND k.widget_id = ${input.widgetId}`;
+        if (ask === undefined) return yield* fail("not_found", "Kin couldn't find that card.");
+        if (!people.some((person) => person.personId === ask.owner))
+          return yield* fail("not_allowed", "Only the owner changes what Kin sends.");
+        if (ask.state !== "open")
+          return yield* new KinChatError({
+            reason: "widget_changed",
+            message: "This was already answered.",
+          });
+        const prepared = Option.getOrUndefined(decodePrepared(ask.payload));
+        const row = yield* connectionById(input.orgId, ask.connectionId).pipe(provideSql);
+        if (prepared?._tag !== "email" || row === undefined)
+          return yield* fail("invalid_state", "This card's From can't be changed.");
+        const choices = yield* choicesFor(input.orgId, row, prepared);
+        const chosen = choices.find((one) => one.choice.id === input.choice);
+        if (chosen === undefined)
+          return yield* fail("invalid_state", "That address can't send this now.");
+        const [tool] = (yield* toolsOf(input.orgId, chosen.row.connectionId).pipe(
+          provideSql,
+        )).filter((candidate) => candidate.name === ask.toolName);
+        if (tool === undefined) return yield* fail("invalid_state", "That account can't send now.");
+        const from = fromOf(chosen.row.accountLabel, sendAsOf(chosen.row), chosen.choice.address);
+        const next = { ...prepared, from: from ?? null };
+        yield* sql`UPDATE kin_connection_asks SET connection_id = ${chosen.row.connectionId},
+            pin_digest = ${tool.pinDigest}, payload_json = ${encodePrepared(next)}
+          WHERE org_id = ${input.orgId} AND ask_id = ${ask.askId} AND state = 'open'`;
+        const mail = mailProviderOf(chosen.row);
+        const card = sendCard({
+          service: chosen.row.label,
+          ...(mail === undefined ? {} : { mail }),
+          account: chosen.row.accountLabel,
+          tool: ask.toolName,
+          prepared: next,
+          choices: choices.map((one) => one.choice),
+        });
+        const done = yield* rewrite({
+          widgetId: input.widgetId,
+          revision: input.revision,
+          detail: card.detail,
+          send: card.send,
+        });
+        yield* touched(input.orgId);
+        return { revision: done.revision } satisfies KinConnectionSetSendFrom;
+      }),
+    );
+  }, settle);
 
   const askRow = (sql: SqlClient.SqlClient, orgId: KinOrgId) => sql`SELECT k.ask_id AS "askId",
       k.connection_id AS "connectionId", k.tool_name AS "toolName", k.pin_digest AS "pinDigest",
@@ -1871,11 +2163,18 @@ const make = Effect.gen(function* () {
         ${now}
       FROM kin_connection_asks WHERE org_id = ${orgId} AND ask_id = ${stale.row.askId}
       ON CONFLICT (org_id, ask_id) DO NOTHING`;
+    const connection = yield* connectionById(orgId, stale.row.connectionId).pipe(provideSql);
+    const mail = connection === undefined ? undefined : mailProviderOf(connection);
     const card = sendCard({
       service: stale.label,
+      ...(mail === undefined ? {} : { mail }),
       account: stale.account,
       tool: stale.row.toolName,
       prepared,
+      choices:
+        connection === undefined
+          ? []
+          : (yield* choicesFor(orgId, connection, prepared)).map((one) => one.choice),
     });
     return {
       askId,
@@ -1934,13 +2233,18 @@ const make = Effect.gen(function* () {
               return yield* fail("unavailable", `${connection.label} answered with an error.`);
             return { messageId: null, threadId: null, eventId: null };
           })
-        : withSignIn(orgId, connection, (force) =>
-            googleToken(orgId, connection, force).pipe(
-              Effect.flatMap((token) =>
-                sendGoogle(http, token, prepared).pipe(provideSql, Effect.provide(files)),
+        : Effect.gen(function* () {
+            const provider = mailProviderOf(connection);
+            if (provider === undefined)
+              return yield* fail("unavailable", `${connection.label} can't send mail.`);
+            return yield* withSignIn(orgId, connection, (force) =>
+              tokenOf(orgId, connection, force).pipe(
+                Effect.flatMap((token) =>
+                  sendMail(provider, http, token, prepared).pipe(provideSql, Effect.provide(files)),
+                ),
               ),
-            ),
-          )
+            );
+          })
     ).pipe(Effect.result);
     if (sent._tag === "Failure")
       return yield* finish(
@@ -1951,8 +2255,21 @@ const make = Effect.gen(function* () {
         null,
       );
     const done = yield* finish("sent", null, sent.success);
-    if (prepared._tag === "email" && row.entryRecordId !== null)
-      yield* sentToClient({ orgId, entryRecordId: row.entryRecordId, to: prepared.to });
+    if (prepared._tag === "email")
+      yield* sentToClient({
+        orgId,
+        askId,
+        agentId: row.agentId,
+        personId: row.owner,
+        to: [...prepared.to, ...prepared.cc],
+        subject: prepared.subject,
+        now: yield* Clock.currentTimeMillis,
+      }).pipe(
+        provideSql,
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't note a sent mail on its client", { cause }),
+        ),
+      );
     return done;
   }, settle);
 
@@ -1989,6 +2306,45 @@ const make = Effect.gen(function* () {
         };
       yield* record(turn, { ...entry, status: "offered" });
       return { note: OFFERED };
+    }),
+  );
+
+  const note = leadOp("note", (scope, input: typeof KinConnectionNoteInput.Type) =>
+    Effect.gen(function* () {
+      const { turn, ownerOnly } = yield* ownerTurn(scope);
+      const entry = {
+        connectionId: null,
+        toolName: "kin_connection_note",
+        mode: null,
+        args: input,
+        reason: undefined,
+      };
+      if (!ownerOnly) return yield* refuse(turn, entry, fail("not_allowed", SHARED_CONNECTIONS));
+      // Mail could ask to relabel an account; only a turn that read none of it may.
+      if (yield* outsideRead(turn).pipe(provideSql))
+        return yield* refuse(turn, entry, fail("not_allowed", OUTSIDE_REFUSAL));
+      const found = yield* resolveConnection(turn.orgId, input.connection).pipe(provideSql);
+      if (found._tag !== "found")
+        return yield* refuse(
+          turn,
+          entry,
+          fail(
+            "not_found",
+            "Name one connection by its id or address; kin_connection_tools lists them.",
+          ),
+        );
+      const text = input.note.replace(/\s+/g, " ").trim();
+      const now = yield* Clock.currentTimeMillis;
+      yield* sql`UPDATE kin_connections SET note = ${text === "" ? null : text}, updated_at = ${now}
+        WHERE org_id = ${turn.orgId} AND connection_id = ${found.row.connectionId}
+          AND removed_at IS NULL`;
+      yield* record(turn, { ...entry, connectionId: found.row.connectionId, status: "ok" });
+      return {
+        note:
+          text === ""
+            ? `Cleared the note on ${found.row.accountLabel ?? found.row.label}.`
+            : `Saved: ${found.row.accountLabel ?? found.row.label} is "${text}".`,
+      };
     }),
   );
 
@@ -2067,11 +2423,13 @@ const make = Effect.gen(function* () {
     signInStart,
     signInFinish,
     setSignInClient,
+    setSendFrom,
     activity,
     activitySeen,
     tools,
     call,
     offer,
+    note,
     answerAsk,
     freshAsk,
     sendAsk,
