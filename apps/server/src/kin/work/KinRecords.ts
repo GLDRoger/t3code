@@ -115,6 +115,8 @@ export type Writer = {
   readonly askedBy?: KinPersonId | null;
   /** A teammate from their own app: `teamGuard` decides the write inside its transaction. */
   readonly teammate?: boolean;
+  /** Shared with the team when made: a lead's task made in the company chat. */
+  readonly teamShared?: boolean;
   /** A lead's turn others read: `viewGuard` decides the write inside its transaction. */
   readonly view?: {
     readonly people: ReadonlyArray<KinPersonId>;
@@ -986,7 +988,7 @@ const make = Effect.gen(function* () {
         ${yield* encodeFieldValues(fields)}, ${amount?.minor ?? null}, ${amount?.currency ?? null},
         ${input.dateAt ?? null}, ${input.dateAllDay === true ? 1 : 0},
         ${repeat === undefined ? null : yield* encodeRepeat(repeat)}, ${input.requestHash ?? null},
-        ${input.team === true || writer.teammate === true ? 1 : 0},
+        ${input.team === true || writer.teammate === true || writer.teamShared === true ? 1 : 0},
         ${options.authors === undefined ? author : options.authors.title},
         ${notes === "" ? null : options.authors === undefined ? author : options.authors.notes},
         ${givenAway && writer.actor._tag === "agent" ? writer.actor.agentId : null})`;

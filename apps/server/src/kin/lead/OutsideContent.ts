@@ -69,6 +69,8 @@ export const OUTSIDE_TOOLS = {
   kin_worker_stop: "allowed",
   // The event each makes carries the turn's stamp, so the turn it starts reads as outside.
   kin_hand_off: "allowed",
+  // Carries only the person's stored message, never what the turn read.
+  kin_take_private: "allowed",
   kin_defer: "allowed",
   kin_schedule: "allowed",
   kin_cancel: "allowed",

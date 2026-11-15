@@ -30,7 +30,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { SHARED_REFUSAL, effectiveAudience, turnChat, turnPeople } from "../lead/Audience.ts";
 import { resolveLead } from "../lead/LeadMemory.ts";
-import { toolAdmitted } from "../lead/SharedTools.ts";
+import { inCompanyChat, toolAdmitted } from "../lead/SharedTools.ts";
 import { partyPage, projectDetail } from "./crm.ts";
 import { KinRecords, type Patch, type TotalsBy, type Writer } from "./KinRecords.ts";
 import { FieldInputs, turnFiles, typedFields } from "./leadFields.ts";
@@ -1216,7 +1216,10 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
     return yield* TEAM_REFUSED;
   const source = yield* sourceOf(lead, input.sourceEventId);
   const owned = yield* writerFor(lead);
-  const writer = team === undefined ? owned : viewWriter(owned, team);
+  const writer =
+    team === undefined
+      ? owned
+      : { ...viewWriter(owned, team), teamShared: yield* inCompanyChat(lead) };
   const lists = yield* allLists(lead.orgId);
   // A turn shown something sensitive may be writing it down, so what it writes is labelled too.
   const marked = yield* turnSensitive(lead.orgId, lead.wakeupId);
