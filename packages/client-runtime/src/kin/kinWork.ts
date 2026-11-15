@@ -728,7 +728,7 @@ export function kinWorkPrivacy(input: {
       ? `Private because ${input.because} is.`
       : input.sensitive
         ? "Only you see this."
-        : "Teammates see it once you share it, or when it's theirs.",
+        : "Not kept from your team.",
   };
 }
 
