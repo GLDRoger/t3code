@@ -1,5 +1,6 @@
-import { StackActions, useNavigation } from "@react-navigation/native";
+import { CommonActions, StackActions, useNavigation } from "@react-navigation/native";
 import type { KinDockTab } from "@t3tools/client-runtime/kin/kinJoin";
+import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import type { KinWorkPlace } from "@t3tools/client-runtime/kin/kinWorkHome";
 import { Atom } from "effect/reactivity";
@@ -52,6 +53,33 @@ export function useKinOpenPlace(target: KinWorkTarget) {
           ? {}
           : { project: narrow.project.key, projectName: narrow.project.title }),
       }),
+    );
+  };
+}
+
+/**
+ * "See all" of a list shown on a record: where the places are tabs, the list over the tab it
+ * belongs to, with the record closed, so Back returns to that tab; a page over the record otherwise.
+ */
+export function useKinOpenPlaceList(target: KinWorkTarget) {
+  const navigation = useNavigation();
+  return (place: "money" | "docs", open: KinListOpen) => {
+    const params = {
+      environmentId: String(target.environmentId),
+      orgId: String(target.orgId),
+      list: open.list,
+      filter: JSON.stringify(open.filter),
+    };
+    const state = navigation.getState();
+    const home = state?.routes[0];
+    if (!readKinIsHome() || state === undefined || home === undefined) {
+      navigation.dispatch(StackActions.push("KinList", params));
+      return;
+    }
+    const held = appAtomRegistry.get(kinHomeTabAtom);
+    appAtomRegistry.set(kinHomeTabAtom, { ...held, tab: place });
+    navigation.dispatch(
+      CommonActions.reset({ ...state, index: 1, routes: [home, { name: "KinList", params }] }),
     );
   };
 }
