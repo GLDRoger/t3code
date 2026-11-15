@@ -3898,7 +3898,10 @@ it.effect("K131 carries each statement's wrong passwords into its budget, and re
           'needs_password', 1, ${card}, ${chat})`;
     yield* sql`DELETE FROM kin_statement_password_budget`;
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 131`;
-    assert.deepStrictEqual(yield* runKinMigrations(), [[131, "ReceiptProposalsPasswordBudget"]]);
+    assert.deepStrictEqual(yield* runKinMigrations(), [
+      [131, "ReceiptProposalsPasswordBudget"],
+      [132, "MoneyBudgets"],
+    ]);
     const budget = sql`SELECT budget_key AS key, remaining, refill_at IS NOT NULL AS "refills"
       FROM kin_statement_password_budget ORDER BY budget_key`;
     // One out of tries takes a password again at once, as sending the file again let it before.
@@ -3909,7 +3912,10 @@ it.effect("K131 carries each statement's wrong passwords into its budget, and re
     ];
     assert.deepStrictEqual(yield* budget, carried);
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 131`;
-    assert.deepStrictEqual(yield* runKinMigrations(), [[131, "ReceiptProposalsPasswordBudget"]]);
+    assert.deepStrictEqual(yield* runKinMigrations(), [
+      [131, "ReceiptProposalsPasswordBudget"],
+      [132, "MoneyBudgets"],
+    ]);
     assert.deepStrictEqual(yield* budget, carried);
   }).pipe(Effect.provide(layer)),
 );
