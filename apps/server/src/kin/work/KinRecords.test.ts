@@ -410,13 +410,15 @@ it.effect("a turn others read gets only Work's tasks, and a member reaches only 
     yield* seed;
     yield* turn("mate", "shared");
     const shared = { orgId, agentId: lead, wakeupId: "wake" };
-    // Tasks are read and changed at the teammate's view; lists and money stay the owner's.
+    // Tasks are read and changed at the teammate's view, and contact logged; lists, money and a
+    // client's whole read stay the owner's.
     const view = new Set([
       "records_query",
       "record_get",
       "record_create",
       "record_update",
       "record_hand_back",
+      "touch_log",
     ]);
     assert.lengthOf(Object.keys(KinWorkToolkit.tools), 13);
     for (const tool of Object.keys(KinWorkToolkit.tools))
@@ -460,7 +462,7 @@ it.effect("a turn others read gets only Work's tasks, and a member reaches only 
       ...Object.values(KIN_WORK_WS_METHODS),
       ...KinFinanceRpcs.map((rpc) => rpc._tag),
     ];
-    assert.lengthOf(methods, 37);
+    assert.lengthOf(methods, 39);
     for (const method of methods)
       assert.strictEqual(kinRpcAccess(method) === "person", teammate.has(method), method);
   }).pipe(Effect.provide(layer)),

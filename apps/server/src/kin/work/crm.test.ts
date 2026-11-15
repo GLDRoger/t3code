@@ -30,6 +30,7 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinRecords from "./KinRecords.ts";
+import * as LeadClients from "./leadClients.ts";
 import * as LeadMoney from "./leadMoney.ts";
 import * as LeadWork from "./leadWork.ts";
 import { KinWorkToolkit } from "./mcp/tools.ts";
@@ -40,6 +41,7 @@ import { sectionsOf } from "./docBody.ts";
 import { milestoneRisk } from "./projectSpine.ts";
 import { effectivelySensitive } from "./recordRows.ts";
 import { PRESETS } from "./registers.ts";
+import * as Touches from "./touches.ts";
 import { buildWorkSection } from "./workPrompt.ts";
 
 // Invented org, people, clients and work only; nothing here reads a real database.
@@ -732,6 +734,17 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
       ],
       dates_query: [LeadMoney.datesQuery(scope, { from: "1970-01-01", to: "2030-12-31" }), true],
       company_profile: [LeadMoney.profile(scope, {}), true],
+      // Its record part is record_get's; contact and memory show no entry of their own.
+      client_read: [LeadClients.contact(scope, { key: "C-1" }), false],
+      touch_log: [
+        LeadClients.logTouch(scope, {
+          sourceEventId: "ask-event",
+          client: "C-1",
+          kind: "call",
+          note: "Invented call",
+        }),
+        false,
+      ],
     } satisfies Record<
       keyof typeof KinWorkToolkit.tools,
       readonly [Effect.Effect<unknown, unknown, Services>, boolean]
@@ -990,6 +1003,107 @@ it.effect("a teammate gets none of the client calls, and a client change ticks s
     const [, tick] = yield* Fiber.join(ticks);
     assert.strictEqual(tick?.key, "C-1");
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "contact is what people logged and what Kin issued or received, never a draft or a chat",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed;
+      yield* setup("ask-event");
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at, definition_json)
+      VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(PRESETS.invoices)}),
+        (${orgId}, 'quotes', 'Quotes', 'QT', 0, 0, ${JSON.stringify(PRESETS.quotes)})`;
+      const senses = (key: string) =>
+        Effect.clockWith((clock) => clock.currentTimeMillis).pipe(
+          Effect.flatMap((now) => Touches.clientSenses(orgId, now)),
+          Effect.map((all) => all.filter((one) => one.key === key).map((one) => one.sense)),
+        );
+      // Its project is open: quiet after the playbook's 14 days with nothing logged, not on day 13.
+      yield* TestClock.adjust(13 * DAY);
+      assert.notInclude(yield* senses("C-1"), "client_quiet");
+      yield* TestClock.adjust(DAY);
+      assert.include(yield* senses("C-1"), "client_quiet");
+      // The chat that set the client up mentions it; a draft quote is not sent. Neither is contact.
+      yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [
+          { list: "quotes", title: "Invented redesign quote", client: "C-1", amount: "500" },
+        ],
+      });
+      const quiet = yield* Clients.parties([owner], { orgId });
+      assert.strictEqual(quiet.parties.find((row) => row.key === "C-1")?.lastContactAt, null);
+
+      const call = {
+        sourceEventId: "ask-event",
+        client: "Invented Acme",
+        kind: "call",
+        note: "Invented: wants the revised quote by Friday",
+        at: "1970-01-10",
+      } as const;
+      const logged = yield* LeadClients.logTouch(scope, call);
+      yield* LeadClients.logTouch(scope, call);
+      assert.include(logged.touch, { kind: "call", who: "Owner" });
+      // An issued invoice and a payment against it count by themselves.
+      yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [
+          { list: "invoices", title: "Invented November work", client: "C-1", amount: "900" },
+        ],
+      });
+      yield* LeadMoney.payment(scope, {
+        sourceEventId: "ask-event",
+        key: "INV-1",
+        amount: "400",
+        paidOn: "1970-01-10",
+      });
+      const page = yield* Clients.party([owner], { orgId, key: "C-1" });
+      assert.deepStrictEqual(page.touches?.map((touch) => touch.kind).toSorted(), [
+        "call",
+        "invoice",
+        "payment",
+      ]);
+      assert.isNotNull(page.party.lastContactAt);
+      assert.notInclude(yield* senses("C-1"), "client_quiet");
+
+      // The owner takes the logged call back; what Kin knows from its records stays.
+      const touchId = page.touches!.find((touch) => touch.logged)!.id;
+      assert.deepStrictEqual(yield* Clients.removeTouch([owner], { orgId, touchId }), {
+        removed: true,
+      });
+      assert.deepStrictEqual(yield* Clients.removeTouch([owner], { orgId, touchId }), {
+        removed: false,
+      });
+      const after = yield* Clients.party([owner], { orgId, key: "C-1" });
+      assert.deepStrictEqual(after.touches?.map((touch) => touch.kind).toSorted(), [
+        "invoice",
+        "payment",
+      ]);
+
+      // With no open project, cold at the playbook's 30 days: one episode per last contact.
+      yield* sql`UPDATE kin_records SET state = 'done' WHERE register_id = 'projects'`;
+      yield* TestClock.adjust(29 * DAY);
+      assert.notInclude(yield* senses("C-1"), "client_cold");
+      yield* TestClock.adjust(DAY);
+      const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      const cold = (yield* Touches.clientSenses(orgId, now)).find(
+        (one) => one.key === "C-1" && one.sense === "client_cold",
+      );
+      const later = (yield* Touches.clientSenses(orgId, now + DAY)).find(
+        (one) => one.key === "C-1" && one.sense === "client_cold",
+      );
+      assert.strictEqual(cold?.episode, later?.episode);
+      yield* Clients.logTouch([owner], {
+        orgId,
+        party: "C-1",
+        kind: "email",
+        note: "Invented check-in",
+        clientRequestId: "check-in",
+      });
+      assert.notInclude(yield* senses("C-1"), "client_cold");
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect(

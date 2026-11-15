@@ -307,6 +307,32 @@ function KinClientBody(
         label: KIN_CLIENTS.addTheyOwe,
         side: "theirs",
       })}
+      {view.touches === null ? null : (
+        <ListSection title={KIN_CLIENTS.recentContact}>
+          {view.lastContact === null ? null : <ListRowLayout label={view.lastContact} disabled />}
+          {view.touches.length === 0 ? (
+            <ListRowLayout label={KIN_CLIENTS.noTouches} disabled />
+          ) : (
+            view.touches.map((touch) => (
+              <ListRowLayout
+                key={touch.id}
+                label={touch.title}
+                {...(touch.note === null ? {} : { description: touch.note })}
+                detail={touch.when}
+                disabled
+              />
+            ))
+          )}
+          {canChange && !view.closed ? (
+            <ListActionRow
+              label={KIN_CLIENTS.logContact}
+              onPress={() =>
+                navigation.navigate("KinTouchForm", { environmentId, orgId, party: view.key })
+              }
+            />
+          ) : null}
+        </ListSection>
+      )}
       <KinPlaceLists
         environmentId={environmentId}
         orgId={orgId}

@@ -10,6 +10,8 @@ import {
   type KinProjectPageInput,
   type KinProjectsInput,
   type KinProjectUpdateInput,
+  type KinTouchLogInput,
+  type KinTouchRemoveInput,
   type KinWorkHistoryInput,
   type KinWorkPrincipal,
   KinChatError,
@@ -25,6 +27,7 @@ import { type FieldValue, type ListName } from "./lists.ts";
 import { dueMillis, found, inList, ownerWriter, theOwner } from "./ownerWork.ts";
 import { principalText } from "./projectSpine.ts";
 import { iso, type RecordRow, unavailable } from "./recordRows.ts";
+import * as Touches from "./touches.ts";
 
 /**
  * The owner's clients, contacts and projects: the light CRM's pages and edits. Owner only, like
@@ -358,4 +361,40 @@ export const updateProject = Effect.fn("KinWork.updateProject")(function* (
     input.rev,
   );
   return yield* projectOut(row);
+});
+
+/** The owner logs contact by hand; open client pages read again when it commits. */
+export const logTouch = Effect.fn("KinWork.logTouch")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinTouchLogInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  const party = yield* inList(input.orgId, input.party, "clients");
+  const now = yield* Clock.currentTimeMillis;
+  const at = input.at === undefined ? now : Date.parse(input.at);
+  const touch = yield* read(
+    Touches.logTouch(input.orgId, {
+      partyId: party.recordId,
+      kind: input.kind,
+      at,
+      note: input.note ?? "",
+      personId: person.personId,
+      by: { kind: "person", id: person.personId },
+      originKey: `owner:touch:${input.clientRequestId}`,
+      now,
+    }),
+  );
+  yield* (yield* KinRecords).announce(input.orgId);
+  return touch;
+});
+
+export const removeTouch = Effect.fn("KinWork.removeTouch")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinTouchRemoveInput,
+) {
+  yield* theOwner(people, input.orgId);
+  const now = yield* Clock.currentTimeMillis;
+  const removed = yield* read(Touches.removeTouch(input.orgId, input.touchId, now));
+  if (removed) yield* (yield* KinRecords).announce(input.orgId);
+  return { removed };
 });

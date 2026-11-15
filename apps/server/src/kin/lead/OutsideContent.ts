@@ -94,6 +94,8 @@ export const OUTSIDE_TOOLS = {
   pulse_read: "allowed",
   pulse_handle: "allowed",
   pulse_nudge: "allowed",
+  client_read: "allowed",
+  touch_log: "allowed",
   record_assign: "allowed",
   record_hand_back: "allowed",
   doc_create: "allowed",
