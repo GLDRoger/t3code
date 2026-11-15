@@ -34,6 +34,16 @@ import { inCompanyChat, toolAdmitted } from "../lead/SharedTools.ts";
 import { partyPage, projectDetail } from "./crm.ts";
 import { KinRecords, type Patch, type TotalsBy, type Writer } from "./KinRecords.ts";
 import { FieldInputs, turnFiles, typedFields } from "./leadFields.ts";
+import {
+  OWNERS_SPINE,
+  ProjectRead,
+  SpineInputs,
+  SpineShown,
+  projectRead,
+  spineFields,
+  spineShown,
+  taskSpecChanged,
+} from "./leadSpine.ts";
 import { fieldList, fieldText, isMoney, LISTS, listOf, parseFields } from "./lists.ts";
 import { formatMoney, parseAmount } from "./money.ts";
 import {
@@ -66,7 +76,7 @@ import { TEAM_REFUSED, teamChanges, viewVisible } from "./teamView.ts";
 
 export const Who = TrimmedNonEmptyString.check(Schema.isMaxLength(120)).annotate({
   description:
-    '"me" for you, "owner" for the owner, or an agent\'s agentId from kin_leads. Never a name.',
+    '"me" for you, "owner" for the owner, an agent\'s agentId from kin_leads, or a teammate\'s name exactly as people_read lists it.',
 });
 const Due = Schema.NullOr(
   Schema.String.check(
@@ -188,6 +198,7 @@ const Row = Schema.Struct({
   date: Schema.optional(Schema.String),
   repeat: Schema.optional(Schema.String),
   fields: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  ...SpineShown,
   ...Marks.fields,
   rev: Schema.Number,
 });
@@ -260,6 +271,8 @@ export const GetResult = Schema.Struct({
       }),
     ),
   ),
+  /** A project's whole plan, people, docs and money, computed now. */
+  plan: Schema.optional(ProjectRead),
   /** A project's, computed now. */
   status: Schema.optional(
     Schema.Struct({
@@ -300,6 +313,7 @@ const CreateRow = Schema.Struct({
   fields: Schema.optional(FieldInputs),
   sensitive: Schema.optional(Schema.Literal(true)),
   suggested: Schema.optional(Schema.Boolean),
+  ...SpineInputs,
 });
 export const CreateInput = Schema.Struct({
   sourceEventId: TrimmedNonEmptyString,
@@ -346,6 +360,7 @@ export const UpdateInput = Schema.Struct({
   sensitive: Schema.optional(Schema.Literal(true)),
   confirmed: Schema.optional(Schema.Boolean),
   expectedRev: Schema.optional(Schema.Int),
+  ...SpineInputs,
 });
 export const UpdateResult = Schema.Struct({
   key: Schema.String,
@@ -429,8 +444,40 @@ export const resolveWho = Effect.fn("KinWorkTools.resolveWho")(function* (lead: 
     if (row === undefined) return yield* invalid("No owner found.");
     return { _tag: "person", personId: KinPersonId.make(row.owner) } satisfies KinWorkPrincipal;
   }
+  const [agent] = yield* sql<{ id: string }>`SELECT agent_id AS id FROM kin_agents
+    WHERE org_id = ${lead.orgId} AND agent_id = ${who} ORDER BY agent_id`;
+  if (agent === undefined) {
+    const people = yield* sql<{ id: string }>`SELECT person_id AS id FROM kin_people
+      WHERE org_id = ${lead.orgId} AND lower(display_name) = lower(${who}) ORDER BY person_id
+      LIMIT 2`;
+    if (people.length > 1)
+      return yield* invalid(`Two people are named ${who.slice(0, 60)}; ask the owner which.`);
+    if (people[0] !== undefined)
+      return {
+        _tag: "person",
+        personId: KinPersonId.make(people[0].id),
+      } satisfies KinWorkPrincipal;
+  }
   return { _tag: "agent", agentId: KinAgentId.make(who) } satisfies KinWorkPrincipal;
 });
+
+const atOf = (text: string) => {
+  const ms = calendarTimeMillis(text);
+  return Number.isFinite(ms) && /T\d{2}:\d{2}/.test(text)
+    ? Effect.succeed(ms)
+    : Effect.fail(invalid(`at ${text.slice(0, 40)} is not a time with its offset.`));
+};
+const spineOf = (
+  lead: Lead,
+  def: ListDef,
+  row: Parameters<typeof spineFields>[1],
+  projectId: string | null | undefined,
+) =>
+  spineFields(lead.orgId, row, projectId, {
+    who: (text) => resolveWho(lead, text),
+    at: atOf,
+    currency: def.currency,
+  });
 
 const dueOf = Effect.fn("KinWorkTools.dueOf")(function* (orgId: KinOrgId, due: string | null) {
   if (due === null) return { dueAt: null, dueAllDay: false };
@@ -605,6 +652,7 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
       : { date: dayOrTime(record.dateAt, record.dateAllDay === true, view.zone) }),
     ...(record.repeat === undefined ? {} : { repeat: shownRepeatRule(record.repeat) }),
     ...shownFields(def, row, name, view.keys),
+    ...(list === "work" || list === "projects" ? spineShown(row, name) : {}),
     ...marksOf(view.lists, row),
     rev: record.rev,
   } as typeof Row.Type;
@@ -734,6 +782,7 @@ type View = NonNullable<Effect.Success<ReturnType<typeof viewOf>>>;
 
 /** What only the owner sets in Work: clients, projects, money, list fields, labels, holders. */
 const OWNERS_INPUTS = [
+  ...OWNERS_SPINE,
   "client",
   "project",
   "groupBy",
@@ -1022,8 +1071,11 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
   const sensitive = new Set(marksOf(view.lists, row).sensitiveFields ?? []);
   const page = list === "clients" ? yield* partyPage(row, now, 0) : undefined;
   const project = list === "projects" ? yield* projectDetail(row, now) : undefined;
+  const specChanged = list === "work" && (yield* taskSpecChanged(row));
   return {
     ...rowFor(view, row, now),
+    ...(specChanged ? { specChanged: true as const } : {}),
+    ...(project === undefined ? {} : { plan: yield* projectRead(row, now, name) }),
     ...(page === undefined
       ? {}
       : {
@@ -1145,6 +1197,10 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
       continue;
     }
     const money = yield* moneyPatch(lead, def, row);
+    const spine = yield* spineOf(lead, def, row, projectId);
+    const spineSet = Object.fromEntries(
+      Object.entries(spine.fields).filter((entry) => entry[1] !== null),
+    );
     // The same row from the same event is the same entry: a retry, or a repeat in one call.
     const rowKey =
       list === "work"
@@ -1153,7 +1209,8 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
           ? `${list}|${partyId ?? ""}|${titleKey(row.title)}`
           : `${list}|${partyId ?? ""}|${titleKey(row.title)}|${row.amount ?? ""}|${row.date ?? ""}|${row.due ?? ""}`;
     const originKey = `lead:${lead.agentId}:${input.sourceEventId}:${retryKey(rowKey)}`;
-    const fields = fieldsFrom(row);
+    const fields = { ...fieldsFrom(row), ...spineSet };
+    const inProject = projectId !== undefined ? projectId : spine.projectId;
     const { row: stored, created } = yield* records.create(lead.orgId, writer, {
       // A teammate files only Work, which is the default.
       ...(team === undefined ? { list } : {}),
@@ -1161,7 +1218,7 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
       title: row.title,
       owner,
       ...(partyId === undefined ? {} : { partyId }),
-      ...(projectId === undefined ? {} : { projectId }),
+      ...(inProject === undefined ? {} : { projectId: inProject }),
       ...(row.repo === undefined ? {} : { repo: row.repo }),
       ...(row.sensitive === undefined && !marked ? {} : { sensitive: true }),
       ...(Object.keys(fields).length === 0 ? {} : { fields }),
@@ -1169,6 +1226,7 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
       ...(waitingOn === undefined ? {} : { waitingOn }),
       ...due,
       ...money,
+      ...spine.at,
       ...(row.notes === undefined ? {} : { notes: row.notes }),
       ...categoryOf(list, row),
       ...(row.side === undefined ? {} : { side: row.side }),
@@ -1243,14 +1301,22 @@ const runUpdate = Effect.fnUntraced(function* (lead: Lead, input: typeof UpdateI
   };
   const partyId = yield* refOrNull(lead, input.client, "clients");
   const projectId = yield* refOrNull(lead, input.project, "projects");
-  const fields = fieldsFrom(input);
+  const spine = yield* spineOf(
+    lead,
+    def,
+    input,
+    projectId === undefined ? before.projectId : projectId,
+  );
+  const fields = { ...fieldsFrom(input), ...spine.fields };
   const money = yield* moneyPatch(lead, def, input);
+  const inProject = projectId !== undefined ? projectId : spine.projectId;
   const written: Patch = {
     ...patch,
     ...(partyId === undefined ? {} : { partyId }),
-    ...(projectId === undefined ? {} : { projectId }),
+    ...(inProject === undefined ? {} : { projectId: inProject }),
     ...(Object.keys(fields).length === 0 ? {} : { fields }),
     ...money,
+    ...spine.at,
   };
   // As in create; a state, owner or confirmation alone carries nothing the turn read.
   const carries = Object.keys(written).some((field) => !UNCARRYING.has(field));

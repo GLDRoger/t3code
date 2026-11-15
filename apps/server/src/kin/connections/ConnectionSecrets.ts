@@ -17,6 +17,35 @@ const Stored = Schema.fromJsonString(Schema.Struct({ header: Schema.String, key:
 const decode = Schema.decodeUnknownOption(Stored);
 const encode = Schema.encodeSync(Stored);
 
+const SignInFields = Schema.Struct({
+  accessToken: Schema.String,
+  refreshToken: Schema.optional(Schema.String),
+  expiresAt: Schema.optional(Schema.Number),
+  scope: Schema.optional(Schema.String),
+  issuer: Schema.String,
+  tokenEndpoint: Schema.String,
+  basicOnly: Schema.Boolean,
+  clientId: Schema.String,
+  clientSecret: Schema.optional(Schema.String),
+  resource: Schema.optional(Schema.String),
+  /** A server address that is itself a password (Zoho), kept here rather than in SQLite. */
+  secretUrl: Schema.optional(Schema.String),
+});
+/** A connection's sign-in: its tokens, and the client and server they belong to. */
+export type SignInSecret = typeof SignInFields.Type;
+const StoredSignIn = Schema.fromJsonString(Schema.Struct({ signIn: SignInFields }));
+const decodeSignIn = Schema.decodeUnknownOption(StoredSignIn);
+const encodeSignIn = Schema.encodeSync(StoredSignIn);
+
+/** A sign-in client the owner made at a service (Google) and pasted once. */
+export type SignInClient = { readonly clientId: string; readonly clientSecret: string };
+const StoredClient = Schema.fromJsonString(
+  Schema.Struct({ clientId: Schema.String, clientSecret: Schema.String }),
+);
+const decodeClient = Schema.decodeUnknownOption(StoredClient);
+const encodeClient = Schema.encodeSync(StoredClient);
+const clientName = (service: string) => `kin-oauth-client-${service}`;
+
 // The store's own errors name only the secret, never its value; callers see none of them.
 const unavailable = new KinChatError({
   reason: "unavailable",
@@ -42,6 +71,21 @@ export class KinConnectionSecrets extends Context.Service<
       key: Redacted.Redacted<ConnectionKey>,
     ) => Effect.Effect<void, KinChatError>;
     readonly remove: (connectionId: string) => Effect.Effect<void, KinChatError>;
+    readonly getSignIn: (
+      connectionId: string,
+    ) => Effect.Effect<Option.Option<Redacted.Redacted<SignInSecret>>, KinChatError>;
+    readonly setSignIn: (
+      connectionId: string,
+      secret: Redacted.Redacted<SignInSecret>,
+    ) => Effect.Effect<void, KinChatError>;
+    readonly getClient: (
+      service: string,
+    ) => Effect.Effect<Option.Option<Redacted.Redacted<SignInClient>>, KinChatError>;
+    /** `None` forgets the client. */
+    readonly setClient: (
+      service: string,
+      client: Option.Option<Redacted.Redacted<SignInClient>>,
+    ) => Effect.Effect<void, KinChatError>;
     /** The connection ids that have a credential stored, for the sweep at start. */
     readonly stored: () => Effect.Effect<ReadonlyArray<string>, KinChatError>;
   }
@@ -51,7 +95,32 @@ const make = Effect.gen(function* () {
   const store = yield* ServerSecretStore.ServerSecretStore;
   const fs = yield* FileSystem.FileSystem;
   const config = yield* ServerConfig;
+  const read = (name: string) =>
+    store.get(name).pipe(
+      Effect.mapError(() => unavailable),
+      Effect.map(Option.map((bytes) => new TextDecoder().decode(bytes))),
+    );
+  const write = (name: string, text: string) =>
+    store.set(name, new TextEncoder().encode(text)).pipe(Effect.mapError(() => unavailable));
   return KinConnectionSecrets.of({
+    getSignIn: Effect.fn("KinConnectionSecrets.getSignIn")(function* (connectionId) {
+      const text = yield* read(secretName(connectionId));
+      return Option.flatMap(text, (value) =>
+        decodeSignIn(value).pipe(Option.map((stored) => Redacted.make(stored.signIn))),
+      );
+    }),
+    setSignIn: Effect.fn("KinConnectionSecrets.setSignIn")(function* (connectionId, secret) {
+      yield* write(secretName(connectionId), encodeSignIn({ signIn: Redacted.value(secret) }));
+    }),
+    getClient: Effect.fn("KinConnectionSecrets.getClient")(function* (service) {
+      const text = yield* read(clientName(service));
+      return Option.flatMap(text, (value) => decodeClient(value).pipe(Option.map(Redacted.make)));
+    }),
+    setClient: Effect.fn("KinConnectionSecrets.setClient")(function* (service, client) {
+      if (Option.isNone(client))
+        return yield* store.remove(clientName(service)).pipe(Effect.mapError(() => unavailable));
+      yield* write(clientName(service), encodeClient(Redacted.value(client.value)));
+    }),
     get: Effect.fn("KinConnectionSecrets.get")(function* (connectionId) {
       const bytes = yield* store
         .get(secretName(connectionId))

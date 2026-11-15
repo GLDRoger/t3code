@@ -2,10 +2,11 @@ import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_CONNECTIONS_COPY as COPY,
-  createKinConnectionActions,
   kinAddableServices,
   kinConnectionChange,
   kinConnectionDraft,
+  kinGoogleSetupSteps,
+  kinServiceNote,
   type KinConnectionDraft,
 } from "@t3tools/client-runtime/kin/kinConnections";
 import { KinConnectionKey, type KinConnectionId } from "@t3tools/contracts";
@@ -23,9 +24,12 @@ import { ListChoiceRow } from "../../../components/ui/ListChoiceRow";
 import { ListSection } from "../../../components/ui/ListSection";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
+import { ListActionRow } from "../../../components/ui/ListActionRow";
 import { SecretTextInput } from "../../../components/ui/SecretTextInput";
+import { tryCopyTextWithHaptic } from "../../../lib/copyTextWithHaptic";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
+import { kinSignInInApp, kinSignInReturn, useKinConnectionActions } from "./kinConnectionSignIn";
 import {
   decodeConnectionId,
   decodeConnectionsTarget,
@@ -56,14 +60,7 @@ function AddForm(props: {
   const listAtom = kinClient.connections({ environmentId, input: { orgId } });
   const view = Option.getOrNull(AsyncResult.value(useAtomValue(listAtom)));
   const reload = useAtomRefresh(listAtom);
-  const add = useAtomCommand(kinClient.connectionAdd, { reportFailure: false });
-  const remove = useAtomCommand(kinClient.connectionRemove, { reportFailure: false });
-  const actions = createKinConnectionActions({
-    orgId,
-    add: (input) => add({ environmentId, input }),
-    remove: (input) => remove({ environmentId, input }),
-    refresh: reload,
-  });
+  const actions = useKinConnectionActions(environmentId, orgId, reload);
   const services = kinAddableServices(view?.services ?? []);
   const [draft, setDraft] = useState<KinConnectionDraft | null>(null);
   const [busy, setBusy] = useState(false);
@@ -72,12 +69,36 @@ function AddForm(props: {
     draft ?? kinConnectionDraft(services.find((entry) => entry.available)?.service ?? "custom");
   const service = services.find((entry) => entry.service === shown.service);
   const custom = shown.service === "custom";
+  const signIn = service?.connect === "sign_in";
+  const [changingClient, setChangingClient] = useState(false);
+  const setup = signIn && (service?.needsSetup === true || changingClient);
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
 
-  const connect = async (typed?: string) => {
-    if (busy || view === null) return;
+  const saveClient = async () => {
+    if (busy) return;
     setBusy(true);
     setProblem(null);
-    const outcome = await actions.add({ ...shown, key: typed ?? shown.key }, view.services);
+    const saved = await actions.setGoogleClient(clientId, clientSecret);
+    setBusy(false);
+    if (!saved.ok) return setProblem(saved.problem);
+    setChangingClient(false);
+  };
+
+  const connect = async (typed?: string) => {
+    if (busy || view === null || setup) return;
+    setBusy(true);
+    setProblem(null);
+    const outcome = signIn
+      ? await (async () => {
+          const started = await actions.signInNew(shown, view.services, kinSignInReturn());
+          if (!started.ok) return started;
+          const response = await kinSignInInApp(started.value.authorizationUrl);
+          if (response === null)
+            return { ok: false as const, problem: "The sign-in was closed before it finished." };
+          return actions.signInFinish(response);
+        })()
+      : await actions.add({ ...shown, key: typed ?? shown.key }, view.services);
     setBusy(false);
     if (!outcome.ok) return setProblem(outcome.problem);
     navigation.goBack();
@@ -93,10 +114,10 @@ function AddForm(props: {
         title={COPY.addTitle}
         onClose={() => navigation.goBack()}
         confirm={{
-          label: busy ? COPY.connecting : COPY.connect,
+          label: busy ? COPY.connecting : signIn ? COPY.signIn : COPY.connect,
           onPress: () => void connect(),
           loading: busy,
-          disabled: busy || view === null,
+          disabled: busy || view === null || setup,
         }}
       />
       <ScreenContent surface="screen">
@@ -120,12 +141,13 @@ function AddForm(props: {
                   <ListChoiceRow
                     key={entry.service}
                     label={entry.label}
-                    description={entry.available ? undefined : COPY.soon}
+                    description={kinServiceNote(entry)}
                     selected={entry.service === shown.service}
                     separated={index > 0}
                     disabled={!entry.available || busy}
                     onPress={() => {
                       setProblem(null);
+                      setChangingClient(false);
                       setDraft({ ...kinConnectionDraft(entry.service), key: shown.key });
                     }}
                   />
@@ -160,19 +182,103 @@ function AddForm(props: {
                   className="min-h-8 font-sans text-base text-foreground"
                 />
               </Field>
-              <Field
-                label={COPY.keyLabel}
-                hint={custom ? `${COPY.keyOptional} ${COPY.keyHint}` : COPY.keyHint}
-              >
-                <SecretTextInput
-                  accessibilityLabel={COPY.keyLabel}
-                  placeholder={COPY.keyPlaceholder}
-                  value={shown.key}
-                  editable={!busy}
-                  onChangeText={(key) => setDraft({ ...shown, key })}
-                  onSubmitEditing={(key) => void connect(key)}
-                />
-              </Field>
+              {signIn ? null : (
+                <Field
+                  label={COPY.keyLabel}
+                  hint={custom ? `${COPY.keyOptional} ${COPY.keyHint}` : COPY.keyHint}
+                >
+                  <SecretTextInput
+                    accessibilityLabel={COPY.keyLabel}
+                    placeholder={COPY.keyPlaceholder}
+                    value={shown.key}
+                    editable={!busy}
+                    onChangeText={(key) => setDraft({ ...shown, key })}
+                    onSubmitEditing={(key) => void connect(key)}
+                  />
+                </Field>
+              )}
+              {service?.fields.includes("org") === true ? (
+                <Field label={COPY.orgLabel}>
+                  <TextInput
+                    accessibilityLabel={COPY.orgLabel}
+                    value={shown.org}
+                    editable={!busy}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    placeholder={COPY.orgPlaceholder}
+                    placeholderTextColorClassName="accent-placeholder"
+                    onChangeText={(org) => setDraft({ ...shown, org })}
+                    className="min-h-8 font-sans text-base text-foreground"
+                  />
+                </Field>
+              ) : null}
+              {service?.fields.includes("secretUrl") === true ? (
+                <Field label={COPY.secretUrlLabel} hint={COPY.secretUrlHint}>
+                  <SecretTextInput
+                    accessibilityLabel={COPY.secretUrlLabel}
+                    placeholder={COPY.secretUrlPlaceholder}
+                    value={shown.secretUrl}
+                    editable={!busy}
+                    onChangeText={(secretUrl) => setDraft({ ...shown, secretUrl })}
+                    onSubmitEditing={() => void connect()}
+                  />
+                </Field>
+              ) : null}
+              {setup ? (
+                <>
+                  <ListSection title={COPY.googleSetupTitle} footer={COPY.googleSetupDetail}>
+                    {kinGoogleSetupSteps(view.signInAddress).map((step, index) => (
+                      <View key={step} className="flex-row gap-3 px-4 py-3">
+                        <Text className="text-foreground-muted">{index + 1}.</Text>
+                        <Text className="flex-1 text-foreground">{step}</Text>
+                      </View>
+                    ))}
+                    <ListActionRow
+                      label={`${COPY.copy}: ${COPY.redirectLabel}`}
+                      onPress={() =>
+                        void tryCopyTextWithHaptic(view.signInAddress, { target: "address" })
+                      }
+                    />
+                  </ListSection>
+                  <Field label={COPY.clientIdLabel}>
+                    <TextInput
+                      accessibilityLabel={COPY.clientIdLabel}
+                      value={clientId}
+                      editable={!busy}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      placeholder={COPY.clientIdPlaceholder}
+                      placeholderTextColorClassName="accent-placeholder"
+                      onChangeText={setClientId}
+                      className="min-h-8 font-sans text-base text-foreground"
+                    />
+                  </Field>
+                  <Field label={COPY.clientSecretLabel} hint={COPY.keyHint}>
+                    <SecretTextInput
+                      accessibilityLabel={COPY.clientSecretLabel}
+                      placeholder={COPY.clientSecretLabel}
+                      value={clientSecret}
+                      editable={!busy}
+                      onChangeText={setClientSecret}
+                      onSubmitEditing={() => void saveClient()}
+                    />
+                  </Field>
+                  <ListSection>
+                    <ListActionRow
+                      label={COPY.saveClient}
+                      loading={busy}
+                      onPress={() => void saveClient()}
+                    />
+                  </ListSection>
+                </>
+              ) : signIn && shown.service === "google" ? (
+                <ListSection>
+                  <ListActionRow
+                    label={COPY.changeClient}
+                    onPress={() => setChangingClient(true)}
+                  />
+                </ListSection>
+              ) : null}
             </>
           )}
         </ScreenScrollView>

@@ -739,7 +739,12 @@ export const KIN_WORK_SHARE = {
   failed: "Couldn't change who sees this. Try again.",
 };
 
-const CATEGORY_LABEL = { task: null, issue: "Issue", obligation: "Commitment" } as const;
+const CATEGORY_LABEL = {
+  task: null,
+  issue: "Issue",
+  obligation: "Commitment",
+  meeting: "Meeting",
+} as const;
 
 export const kinWorkActorName = (actor: KinWorkActor, names: KinWorkNames) =>
   actor._tag === "system" ? "Kin" : kinWorkName(actor, names);
