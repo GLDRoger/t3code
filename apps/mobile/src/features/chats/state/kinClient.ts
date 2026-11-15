@@ -963,7 +963,7 @@ export const kinClient = {
     tag: "kin.work.update",
   }),
   /** The holder gives a task back to whoever gave it. */
-  workHandBack: createEnvironmentRpcCommand(connectionAtomRuntime, {
+  workHandBack: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:work:handBack",
     tag: "kin.work.handBack",
     concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
