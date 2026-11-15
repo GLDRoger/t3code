@@ -189,7 +189,8 @@ export const PRESETS: Record<PresetId, StoredDefinition & { name: string; prefix
     categoryLabels: { gst: "GST", tds: "TDS" },
     fields: [field("form", "Form", "text"), field("period", "Period", "text")],
     sensitive: false,
-    amount: false,
+    // A renewal's fee or a filing's tax due; most dates have none.
+    amount: true,
     currency: DEFAULT_CURRENCY,
     dueLabel: "Due",
   },

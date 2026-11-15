@@ -20,6 +20,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import * as Memory from "../memory/Memory.ts";
@@ -51,6 +52,7 @@ import { handlers as docHandlers } from "../work/mcp/docHandlers.ts";
 import { handlers as statementHandlers } from "../work/mcp/statementHandlers.ts";
 import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
 import { importWork } from "../work/importWork.ts";
+import { repairIssuedAmounts } from "../gendocs/amounts.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
@@ -399,8 +401,42 @@ const workImport = Layer.effectDiscard(
     ).pipe(forkParked);
   }),
 );
+// At every start: an issued invoice left with no amount gets its own document's total, or is named
+// to the owner once (`gendocs/amounts.ts`).
+const issuedAmounts = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    // A startup scan across orgs: only those holding such an invoice.
+    const orgs = yield* sql<{ orgId: KinOrgId }>`SELECT DISTINCT n.org_id AS "orgId"
+      FROM kin_issued_numbers n
+      JOIN kin_records r ON r.org_id = n.org_id AND r.record_id = n.record_id
+      WHERE n.register_id = 'invoices' AND r.amount_minor IS NULL
+      ORDER BY n.org_id`;
+    yield* Effect.forEach(
+      orgs,
+      ({ orgId }) =>
+        repairIssuedAmounts(orgId).pipe(
+          Effect.tap((done) =>
+            Effect.logInfo("Kin checked issued invoices for missing amounts", {
+              orgId,
+              repaired: done.repaired.length,
+              left: done.left.length,
+            }),
+          ),
+        ),
+      { discard: true },
+    );
+  }).pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin couldn't repair issued invoice amounts; the next start tries again", {
+        cause: Cause.pretty(cause),
+      }),
+    ),
+    forkParked,
+  ),
+);
 const production = withServices(
-  Layer.mergeAll(runner, ChatWake.layer, registration, tracker, workImport).pipe(
+  Layer.mergeAll(runner, ChatWake.layer, registration, tracker, workImport, issuedAmounts).pipe(
     Layer.provideMerge(workers),
     Layer.provideMerge(Handoff.layer),
     Layer.provideMerge(toolkit),

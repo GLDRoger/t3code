@@ -1563,6 +1563,14 @@ describe("the owner's taps", () => {
       assert.strictEqual(plain.categoryLabels, undefined);
       // A preset's label cleared stays cleared.
       yield* defined(7, { template: "dates" });
+      // F53: a renewal created with its fee keeps it.
+      const renewal = yield* turn(70, "Domain renewal on 3 Jan, ₹1,299");
+      yield* LeadWork.create(scope, {
+        sourceEventId: renewal,
+        records: [{ list: "dates", title: "Domain renewal", date: "2027-01-03", amount: "₹1,299" }],
+      });
+      const renewed = yield* (yield* KinRecords.KinRecords).get(orgId, "DT-1");
+      assert.deepStrictEqual([renewed?.amountMinor, renewed?.currency], [129_900, "INR"]);
       const dates = () =>
         OwnerMoney.lists(people, { orgId }).pipe(
           Effect.map((all) => all.lists.find((one) => one.list === "dates")!),
