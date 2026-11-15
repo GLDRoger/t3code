@@ -373,7 +373,9 @@ function KinTeamRow(props: { readonly row: KinTeammate; readonly onOpen: () => v
         {row.roles === "" ? null : (
           <span className="truncate text-xs text-foreground/80">{row.roles}</span>
         )}
-        <span className="text-xs text-muted-foreground">{row.detail}</span>
+        <span className="text-xs text-muted-foreground">
+          {row.load === "" ? row.detail : `${row.detail} · ${row.load}`}
+        </span>
       </span>
     </>
   );

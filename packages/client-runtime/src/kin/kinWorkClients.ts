@@ -616,7 +616,7 @@ export function kinWorkTimeline(
       item,
       names,
       now,
-      item.record.list === "milestones" ? "work" : item.record.list,
+      item.record.list === "milestones" || item.record.list === "goals" ? "work" : item.record.list,
     ),
     about: item.record.key === own ? null : item.record.title,
     task: item.record.list === "work" || item.record.list === "milestones" ? item.record.key : null,

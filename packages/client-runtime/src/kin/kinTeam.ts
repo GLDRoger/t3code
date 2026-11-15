@@ -90,9 +90,19 @@ export interface KinTeammate {
   readonly detail: string;
   /** Their role tags, as one line; empty when none. */
   readonly roles: string;
+  /** "3 open, 1 late": what they hold now; empty when the host doesn't say. */
+  readonly load: string;
   /** Their places and the projects they lead; null for the owner-level and invites. */
   readonly places: KinPersonPlaces | null;
 }
+
+/** "3 open, 1 late", "2 open" or "Nothing open". */
+const kinLoadLine = (load: { readonly open: number; readonly late: number }) =>
+  load.open === 0
+    ? "Nothing open"
+    : load.late === 0
+      ? `${load.open} open`
+      : `${load.open} open, ${load.late} late`;
 
 /** The places a member's switches turn on, in the order the dock shows them. */
 export const KIN_PLACE_SWITCHES = [
@@ -147,6 +157,11 @@ export function kinTeamView(
   const roles = new Map(
     (list.profiles ?? []).map((profile) => [profile.personId, kinRoleLine(profile.roleTags)]),
   );
+  const loads = new Map(
+    (list.profiles ?? []).flatMap((profile) =>
+      profile.load === undefined ? [] : [[profile.personId, kinLoadLine(profile.load)] as const],
+    ),
+  );
   for (const person of list.people) {
     const you = person.personId === ownerPersonId;
     const access = person.access ?? "member";
@@ -174,6 +189,7 @@ export function kinTeamView(
       state,
       access,
       roles: roles.get(person.personId) ?? "",
+      load: loads.get(person.personId) ?? "",
       places,
       detail:
         state === "you"
@@ -202,6 +218,7 @@ export function kinTeamView(
       state: "invited",
       access: "member",
       roles: "",
+      load: "",
       places: null,
       detail: `Hasn't joined yet. The link works until ${formatKinInviteDay(invite.expiresAt)}.`,
     });

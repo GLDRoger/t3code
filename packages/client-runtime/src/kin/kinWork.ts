@@ -671,8 +671,12 @@ export interface KinWorkItemView {
   };
   /** "Fri 14 Nov"; null with no date. */
   readonly due: string | null;
-  /** "You gave this to Tech lead · Nov 7". */
+  /** "Tech lead gave this to you · Nov 7". */
   readonly given: string | null;
+  /** The one line on why its holder was picked. */
+  readonly reason: string | null;
+  /** Whoever gave it to you, when you can give it back to them; null otherwise. */
+  readonly handBackTo: string | null;
   /** Things worth a line of their own: unconfirmed, private, owed by the other side. */
   readonly remarks: ReadonlyArray<string>;
   readonly notes: string | null;
@@ -714,6 +718,17 @@ export interface KinWorkPrivacy {
 }
 
 export const KIN_WORK_PRIVATE = "Private";
+
+/** Giving a task back to whoever gave it, with an optional word on why. */
+export const KIN_WORK_HAND_BACK = {
+  button: "Hand back",
+  title: "Hand back this task?",
+  detail: (to: string) => `It goes back to ${to} to give to someone else.`,
+  reasonLabel: "Why (optional)",
+  reasonPlaceholder: "I'm on the release this week",
+  confirm: "Hand back",
+  failed: "Couldn't hand it back. Try again.",
+} as const;
 
 export function kinWorkPrivacy(input: {
   readonly sensitive: boolean;
@@ -822,11 +837,14 @@ export function kinWorkChangeText(
   const clauses: Array<string> = [];
   const owner = field("owner");
   const to = principalFromText(owner?.to ?? null);
+  const handedBack = field("handedBack");
   if (to !== null) {
     clauses.push(
-      change.by._tag !== "system" && kinWorkSamePrincipal(change.by, to)
-        ? "took it on"
-        : `gave it to ${kinWorkName(to, names, "you")}`,
+      handedBack !== undefined
+        ? `handed it back to ${kinWorkName(to, names, "you")}${handedBack.to === null ? "" : `: “${handedBack.to}”`}`
+        : change.by._tag !== "system" && kinWorkSamePrincipal(change.by, to)
+          ? "took it on"
+          : `gave it to ${kinWorkName(to, names, "you")}`,
     );
   }
   const state = field("state")?.to;
@@ -990,16 +1008,25 @@ export function kinWorkItemView(
   const row = kinWorkRow(item, names, now);
   const category = item.category === null ? null : CATEGORY_LABEL[item.category];
   const ownerName = kinWorkName(item.owner, names);
-  const giver = item.assignedBy;
+  // The agent that gave it says more than the authority it gave it with.
+  const giver: KinWorkPrincipal | null =
+    item.assignedByAgent === undefined
+      ? item.assignedBy
+      : { _tag: "agent", agentId: item.assignedByAgent };
+  // Handed back, it is with whoever gave it, and the holder's words say why.
+  const lastMove = item.changes.find((change) => change.fields.some((f) => f.field === "owner"));
+  const handBack = lastMove?.fields.find((f) => f.field === "handedBack");
   const given =
-    giver === null || kinWorkSamePrincipal(giver, item.owner)
-      ? null
-      : [
-          `${kinWorkName(giver, names)} gave this to ${kinWorkName(item.owner, names, "you")}`,
-          item.assignedAt === null ? null : formatKinTime(new Date(item.assignedAt), now),
-        ]
-          .filter((part) => part !== null)
-          .join(" · ");
+    lastMove !== undefined && handBack !== undefined
+      ? `${kinWorkActorName(lastMove.by, names)} handed this back · ${formatKinTime(new Date(lastMove.at), now)}`
+      : giver === null || kinWorkSamePrincipal(giver, item.owner)
+        ? null
+        : [
+            `${kinWorkName(giver, names)} gave this to ${kinWorkName(item.owner, names, "you")}`,
+            item.assignedAt === null ? null : formatKinTime(new Date(item.assignedAt), now),
+          ]
+            .filter((part) => part !== null)
+            .join(" · ");
   // The latest link to one target says the most: "PR #12 merged" over "PR #12".
   const links = new Map<string, KinWorkLinkView>();
   for (const link of item.links) {
@@ -1029,6 +1056,11 @@ export function kinWorkItemView(
     },
     due: kinWorkDueText(item, names, now),
     given,
+    reason: handBack !== undefined ? (handBack.to ?? null) : item.reason?.trim() || null,
+    handBackTo:
+      !isClosed && isMe(item.owner, names) && giver !== null && !isMe(giver, names)
+        ? kinWorkName(giver, names)
+        : null,
     remarks: [
       // A host that can't take the answer here still takes it in chat.
       suggested && !editable

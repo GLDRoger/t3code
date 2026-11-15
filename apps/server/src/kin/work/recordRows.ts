@@ -67,6 +67,7 @@ export type RecordRow = {
   readonly createdByKind: "person" | "agent" | "system";
   readonly createdById: string | null;
   readonly assignedBy: string | null;
+  readonly assignedByAgent: string | null;
   readonly assignedAt: number | null;
   readonly originKey: string;
   readonly createdAt: number;
@@ -196,7 +197,8 @@ export const selectRecords = (sql: SqlClient.SqlClient) => sql`
     r.confirmed, r.notes, r.title_by AS "titleBy", r.notes_by AS "notesBy", r.rev,
     r.source_chat_id AS "sourceChatId", r.source_message_id AS "sourceMessageId",
     r.created_by_kind AS "createdByKind", r.created_by_id AS "createdById",
-    r.assigned_by_person_id AS "assignedBy", r.assigned_at AS "assignedAt",
+    r.assigned_by_person_id AS "assignedBy", r.assigned_by_agent_id AS "assignedByAgent",
+    r.assigned_at AS "assignedAt",
     r.origin_key AS "originKey", r.created_at AS "createdAt", r.updated_at AS "updatedAt",
     r.closed_at AS "closedAt", r.party_id AS "partyId", r.project_id AS "projectId", r.repo,
     r.fields_json AS "fieldsJson",
@@ -444,6 +446,7 @@ export const toDetail = Effect.fn("KinRecords.toDetail")(function* (
   changeLimit?: number,
 ) {
   const orgId = row.orgId as KinOrgId;
+  const reason = row.registerId === "work" ? parseFields(row.fieldsJson).reason : undefined;
   return {
     ...toRecord(row, now),
     notes: row.notes,
@@ -453,6 +456,10 @@ export const toDetail = Effect.fn("KinRecords.toDetail")(function* (
     },
     assignedBy: principal("person", row.assignedBy),
     assignedAt: row.assignedAt === null ? null : iso(row.assignedAt),
+    ...(row.assignedByAgent === null
+      ? {}
+      : { assignedByAgent: KinAgentId.make(row.assignedByAgent) }),
+    ...(typeof reason === "string" ? { reason } : {}),
     createdBy: actorOf(row.createdByKind, row.createdById),
     links: yield* linksOf(orgId, row.recordId),
     changes: yield* changesOf(orgId, row.recordId, changeLimit),

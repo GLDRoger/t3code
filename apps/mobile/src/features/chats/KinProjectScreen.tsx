@@ -60,6 +60,7 @@ import {
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./state/useKinWork";
+import { KinAttentionSection } from "./KinAttention";
 import { useKinWorkLink } from "./state/kinWorkLink";
 
 export type KinProjectParams = {
@@ -284,6 +285,15 @@ function KinProjectBody(
               }
             />
             <View className="gap-5 px-4 pb-2">
+              <KinAttentionSection
+                environmentId={environmentId}
+                orgId={orgId}
+                scope={{ type: "project", key: view.key }}
+                names={props.directory.names}
+                onOpen={(to) => {
+                  if (to.type === "record") openTask(to.key);
+                }}
+              />
               <KinPlaceLists
                 environmentId={environmentId}
                 orgId={orgId}

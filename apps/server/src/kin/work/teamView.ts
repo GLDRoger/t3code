@@ -408,6 +408,7 @@ const TEAM_FIELDS = new Set([
   "repo",
   "notes",
   "confirmed",
+  "handedBack",
 ]);
 /** Numbered among themselves, newest highest: the org's numbers would show what they can't see. */
 export const teamChanges = (changes: ReadonlyArray<KinRecordChange>) => {

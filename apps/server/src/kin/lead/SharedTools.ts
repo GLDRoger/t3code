@@ -136,7 +136,7 @@ export const SHARED_TOOLS = {
   kin_chat_read: inAskedChat,
   // Lists only the names of the leads in the asked chat (`KinHandoff.leads`).
   kin_leads: "allowed",
-  // What everyone in the org sees on profiles; no workload.
+  // What everyone in the org sees on profiles; workload only in the owner's own turns.
   people_read: "allowed",
   // Ends the turn; a shared turn's summary reaches no journal (`LeadMemory.end`).
   kin_end: "allowed",
@@ -173,6 +173,9 @@ export const SHARED_TOOLS = {
   pulse_read: "view",
   pulse_handle: "refused",
   pulse_nudge: "refused",
+  // Giving out work is the owner's turn's; handing back is the asker's own task, in their view.
+  record_assign: "refused",
+  record_hand_back: "view",
   // Docs every person behind the turn may see; writes as each of them may (a project's lead in
   // their project). Restoring stays the owner's.
   doc_create: "view",

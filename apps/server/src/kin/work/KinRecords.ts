@@ -4,7 +4,7 @@ import { stableStringify } from "@t3tools/shared/relaySigning";
 import {
   KIN_RECORDS_PAGE_CAP,
   KinChatError,
-  type KinAgentId,
+  KinAgentId,
   KinChatId,
   type KinMessageId,
   type KinMoney,
@@ -171,7 +171,11 @@ export type CreateInput = Fields & {
   readonly createdAt?: number;
   readonly closedAt?: number;
 };
-export type Patch = Partial<Omit<Fields, "owner">> & { readonly owner?: KinWorkPrincipal };
+export type Patch = Partial<Omit<Fields, "owner">> & {
+  readonly owner?: KinWorkPrincipal;
+  /** The holder gives it back to `owner`, whoever gave it to them, in their own words. */
+  readonly handedBack?: { readonly note: string | null };
+};
 export type LinkInput = {
   readonly kind: KinRecordLinkKind;
   readonly target: string;
@@ -393,6 +397,17 @@ export class KinRecords extends Context.Service<
       expectedRev?: number,
       /** Logged with the change even when no column changes: a doc's new version. */
       also?: ReadonlyArray<FieldChange>,
+    ) => Effect.Effect<RecordRow, KinChatError>;
+    /**
+     * The holder gives an open task back to whoever gave it to them: the agent that did, else the
+     * person, else the owner. It reopens, and an agent it goes back to is woken with their words.
+     */
+    readonly handBack: (
+      orgId: KinOrgId,
+      writer: Writer,
+      key: string,
+      holder: KinWorkPrincipal,
+      note: string | null,
     ) => Effect.Effect<RecordRow, KinChatError>;
     readonly link: (
       orgId: KinOrgId,
@@ -638,12 +653,19 @@ const make = Effect.gen(function* () {
     assignedBy: KinPersonId | null,
     seq: number,
     now: number,
-    reason: "assigned" | "withdrawn" = "assigned",
+    reason: "assigned" | "withdrawn" | "handed_back" = "assigned",
+    note?: string | null,
   ) {
     // Looking after a client or leading a project is not an instruction to do anything.
     if (row.registerId !== "work") return false;
     if (to._tag !== "agent") return false;
-    if (writer.actor._tag === "agent" && writer.actor.agentId === to.agentId) return false;
+    // Handed back in its own turn others read, it is still woken to replan where the owner reads.
+    if (
+      reason !== "handed_back" &&
+      writer.actor._tag === "agent" &&
+      writer.actor.agentId === to.agentId
+    )
+      return false;
     if (assignedBy === null) return false;
     const [lead] = yield* sql<{ memberId: string; ownerPersonId: string }>`
       SELECT m.member_id AS "memberId", a.owner_person_id AS "ownerPersonId"
@@ -656,7 +678,7 @@ const make = Effect.gen(function* () {
     const teammate =
       lead.ownerPersonId === assignedBy
         ? undefined
-        : reason === "assigned"
+        : reason !== "withdrawn"
           ? yield* teammateWake(orgId, writer, to.agentId, assignedBy, now)
           : undefined;
     if (lead.ownerPersonId !== assignedBy && teammate === undefined) return false;
@@ -678,6 +700,7 @@ const make = Effect.gen(function* () {
         key: row.key,
         seq,
         reason,
+        ...(note === undefined || note === null ? {} : { note }),
         ...(teammate === undefined
           ? {}
           : {
@@ -701,6 +724,38 @@ const make = Effect.gen(function* () {
           KinEventQueueUnknownAgent: () => Effect.succeed(false),
         }),
       );
+  });
+
+  /** Whose agent this is: the authority a hand back wakes it with when none was stored. */
+  const agentOwner = Effect.fn("KinRecords.agentOwner")(function* (
+    orgId: KinOrgId,
+    who: KinWorkPrincipal,
+  ) {
+    if (who._tag !== "agent") return null;
+    const [row] = yield* sql<{ owner: string }>`SELECT owner_person_id AS owner FROM kin_agents
+      WHERE org_id = ${orgId} AND agent_id = ${who.agentId}`;
+    return row === undefined ? null : KinPersonId.make(row.owner);
+  });
+
+  /** A task given to a person is one they can see after the write: no private task to a teammate. */
+  const assigneeSees = Effect.fn("KinRecords.assigneeSees")(function* (
+    orgId: KinOrgId,
+    recordId: string,
+    registerId: string,
+    to: KinWorkPrincipal,
+  ) {
+    if (registerId !== "work" || to._tag !== "person") return;
+    const seen = yield* sql`SELECT 1 FROM kin_records r
+      WHERE r.org_id = ${orgId} AND r.record_id = ${recordId} AND (EXISTS (SELECT 1 FROM kin_agents a
+        WHERE a.org_id = r.org_id AND a.owner_person_id = ${to.personId}) OR ${personSees(sql, to.personId)})
+      LIMIT 1`;
+    if (seen.length > 0) return;
+    const [person] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+      WHERE org_id = ${orgId} AND person_id = ${to.personId}`;
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message: `${person?.name ?? "They"} can't see this task: it is private to the owner. Give it to the owner or an agent instead.`,
+    });
   });
 
   const ownerExists = Effect.fn("KinRecords.ownerExists")(function* (
@@ -919,7 +974,8 @@ const make = Effect.gen(function* () {
         sensitive, confirmed, notes, rev, source_chat_id, source_message_id, created_by_kind,
         created_by_id, assigned_by_person_id, assigned_at, origin_key, created_at, updated_at,
         closed_at, party_id, project_id, repo, fields_json, amount_minor, currency, date_at,
-        date_all_day, repeat_json, request_hash, team_shared, title_by, notes_by)
+        date_all_day, repeat_json, request_hash, team_shared, title_by, notes_by,
+        assigned_by_agent_id)
       VALUES (${orgId}, ${recordId}, ${list}, ${key}, ${input.title}, ${state},
         ${waitingOn?._tag ?? null}, ${waitingOn === null ? null : principalId(waitingOn)},
         ${input.owner._tag}, ${principalId(input.owner)}, ${input.side ?? "ours"},
@@ -936,7 +992,9 @@ const make = Effect.gen(function* () {
         ${repeat === undefined ? null : yield* encodeRepeat(repeat)}, ${input.requestHash ?? null},
         ${input.team === true || writer.teammate === true || writer.teamShared === true ? 1 : 0},
         ${options.authors === undefined ? author : options.authors.title},
-        ${notes === "" ? null : options.authors === undefined ? author : options.authors.notes})`;
+        ${notes === "" ? null : options.authors === undefined ? author : options.authors.notes},
+        ${givenAway && writer.actor._tag === "agent" ? writer.actor.agentId : null})`;
+    yield* assigneeSees(orgId, recordId, list, input.owner);
     const changes: Array<FieldChange> = [
       { field: "title", from: null, to: input.title },
       { field: "state", from: null, to: state },
@@ -1201,6 +1259,12 @@ const make = Effect.gen(function* () {
           if (value === null) delete merged[field];
           else merged[field] = value;
         }
+        // Why it was given no longer holds once it is handed back; the holder's words are in its history.
+        if (patch.handedBack !== undefined && merged.reason !== undefined) {
+          changes.push({ field: "reason", from: shownField(merged.reason), to: null });
+          delete merged.reason;
+          fieldsChanged = true;
+        }
         if (fieldsChanged) set("fields_json", yield* encodeFieldValues(merged));
         const amount = amountOf(row) ?? null;
         const byOwner = writer.via === "owner";
@@ -1310,8 +1374,27 @@ const make = Effect.gen(function* () {
           set("owner_kind", patch.owner._tag);
           set("owner_id", principalId(patch.owner));
           // Reassigning never launders authority: the assigner is whoever asked for this change.
-          set("assigned_by_person_id", writer.askedBy ?? null);
-          set("assigned_at", writer.askedBy === undefined || writer.askedBy === null ? null : now);
+          // Handed back, it keeps the authority it was given with; the holder's words go with it.
+          if (patch.handedBack === undefined) {
+            set("assigned_by_person_id", writer.askedBy ?? null);
+            set(
+              "assigned_at",
+              writer.askedBy === undefined || writer.askedBy === null ? null : now,
+            );
+          } else
+            changes.push({
+              field: "handedBack",
+              from: shownPrincipal(before.owner),
+              to: patch.handedBack.note,
+            });
+          set(
+            "assigned_by_agent_id",
+            writer.actor._tag === "agent" &&
+              patch.handedBack === undefined &&
+              !samePrincipal(writer.actor, patch.owner)
+              ? writer.actor.agentId
+              : null,
+          );
           reassigned = patch.owner;
         }
         // Reopened by a person, a lead's entry is given to it again, with that person's authority.
@@ -1480,7 +1563,22 @@ const make = Effect.gen(function* () {
             team,
           );
         }
-        if (reassigned !== undefined)
+        if (reassigned !== undefined) yield* assigneeSees(orgId, row.recordId, list, reassigned);
+        if (reassigned !== undefined && patch.handedBack !== undefined)
+          yield* wakeLead(
+            orgId,
+            writer,
+            row,
+            reassigned,
+            row.assignedBy === null
+              ? yield* agentOwner(orgId, reassigned)
+              : KinPersonId.make(row.assignedBy),
+            seq,
+            now,
+            "handed_back",
+            patch.handedBack.note,
+          );
+        else if (reassigned !== undefined)
           yield* wakeLead(orgId, writer, row, reassigned, writer.askedBy ?? null, seq, now);
         if (reopened)
           yield* wakeLead(orgId, writer, row, before.owner, writer.askedBy ?? null, seq, now);
@@ -1535,6 +1633,57 @@ const make = Effect.gen(function* () {
         if (!isClosed(row.state) && isClosed(updated.state))
           yield* spawnNext(orgId, writer, updated);
         return updated;
+      }),
+    );
+  });
+
+  const handBack = Effect.fn("KinRecords.handBack")(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+    key: string,
+    holder: KinWorkPrincipal,
+    note: string | null,
+  ) {
+    return yield* transaction(
+      Effect.gen(function* () {
+        const row = yield* byKey(orgId, key).pipe(provideSql);
+        if (row === undefined) return yield* notFound(key);
+        // What a teammate can't see is no task at all, before anything says who holds it.
+        if (writer.teammate === true && writer.actor._tag === "person")
+          yield* teamGuard(orgId, writer.actor.personId, { row, changes: false, input: {} }).pipe(
+            provideSql,
+          );
+        const held = toRecord(row, yield* Clock.currentTimeMillis);
+        if (row.registerId !== "work" || !samePrincipal(held.owner, holder))
+          return yield* new KinChatError({
+            reason: "not_allowed",
+            message: `Only whoever holds ${row.key} can hand it back.`,
+          });
+        if (isClosed(row.state))
+          return yield* new KinChatError({
+            reason: "invalid_state",
+            message: `${row.key} is ${row.state}. Reopen it first.`,
+          });
+        const [owner] = yield* sql<{ id: string }>`SELECT owner_person_id AS id FROM kin_agents
+          WHERE org_id = ${orgId} ORDER BY created_at, agent_id LIMIT 1`;
+        const to: KinWorkPrincipal | undefined =
+          row.assignedByAgent !== null
+            ? { _tag: "agent", agentId: KinAgentId.make(row.assignedByAgent) }
+            : row.assignedBy !== null
+              ? { _tag: "person", personId: KinPersonId.make(row.assignedBy) }
+              : owner === undefined
+                ? undefined
+                : { _tag: "person", personId: KinPersonId.make(owner.id) };
+        if (to === undefined || samePrincipal(to, holder))
+          return yield* new KinChatError({
+            reason: "invalid_state",
+            message: `Nobody else gave ${row.key} to its holder, so there is no one to hand it back to. Drop it or give it to someone.`,
+          });
+        return yield* update(orgId, writer, key, {
+          owner: to,
+          state: "open",
+          handedBack: { note },
+        });
       }),
     );
   });
@@ -1956,6 +2105,7 @@ const make = Effect.gen(function* () {
     }),
     create,
     update,
+    handBack,
     link,
     pay,
     voidPayment,

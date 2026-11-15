@@ -7,6 +7,7 @@ import {
   type KinWorkConfirmInput,
   type KinWorkCreateInput,
   type KinWorkGetInput,
+  type KinWorkHandBackInput,
   type KinWorkListInput,
   type KinWorkPrincipal,
   type KinWorkShareInput,
@@ -545,6 +546,21 @@ export const assign = Effect.fn("KinWork.assign")(function* (
   if (viewer.teammate) yield* teamAgent(person, to);
   else yield* inList(input.orgId, input.key, "work");
   return yield* change(viewer, input.orgId, input.key, { owner: to }, input.rev);
+});
+
+/** The holder gives the task back to whoever gave it to them; it may then be out of their view. */
+export const handBack = Effect.fn("KinWork.handBack")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinWorkHandBackInput,
+) {
+  const viewer = yield* viewerOf(people, input.orgId);
+  const records = yield* KinRecords;
+  const holder: KinWorkPrincipal = { _tag: "person", personId: viewer.person.personId };
+  const row = yield* asViewer(
+    viewer,
+    records.handBack(input.orgId, writerOf(viewer), input.key, holder, input.note ?? null),
+  );
+  return { key: row.key, to: toRecord(row, yield* Clock.currentTimeMillis).owner };
 });
 
 export const update = Effect.fn("KinWork.update")(function* (

@@ -63,6 +63,7 @@ import {
   useKinWorkHistory,
   type KinWorkTarget,
 } from "./state/useKinWork";
+import { KinAttentionSection } from "./KinAttention";
 import { useKinOpenPlace } from "./state/kinHomeTab";
 import { useKinWorkLink } from "./state/kinWorkLink";
 
@@ -299,6 +300,15 @@ function KinClientBody(
       {problem === null ? null : (
         <KinWorkProblemNotice problem={problem} onDismiss={() => setProblem(null)} />
       )}
+      <KinAttentionSection
+        {...target}
+        scope={{ type: "client", key: view.key }}
+        names={names}
+        onOpen={(to) => {
+          if (to.type === "record")
+            openRecord("KinWorkItem", { environmentId, orgId, task: to.key });
+        }}
+      />
       {/* What's owed, the contact log, tax, terms, notes and history are the owner's. */}
       {canChange
         ? owed(KIN_CLIENTS.weOwe, view.weOwe, KIN_CLIENTS.nothingOwed, {

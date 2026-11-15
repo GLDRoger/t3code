@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import { KIN_TEAMMATE_WELCOME } from "@t3tools/client-runtime/kin/kinChatListRows";
+import { kinAttentionBadge, kinAttentionCount } from "@t3tools/client-runtime/kin/kinAttention";
 import { kinDockTabs, type KinDockTab } from "@t3tools/client-runtime/kin/kinJoin";
 import { kinWorkHostClients } from "@t3tools/client-runtime/kin/kinWork";
 import type { SessionGrantInput } from "@t3tools/contracts";
@@ -20,7 +21,8 @@ import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentSession } from "../../state/session";
 import { KinChatsList } from "./KinChatsScreen";
-import { KinDock, kinDockClearance } from "./components/KinDock";
+import { KinDock, kinDockClearance, type KinDockProps } from "./components/KinDock";
+import { useKinAttention } from "./state/useKinAttention";
 import { KinPlace } from "./KinWorkScreen";
 import { KinTabContext } from "./components/KinTab";
 import { kinHomeTabAtom } from "./state/kinHomeTab";
@@ -151,8 +153,25 @@ function KinHomeTabs(props: {
           />
         )}
       </KinTabContext>
-      {docked ? <KinDock tabs={tabs} selectedTab={tab} onSelect={select} /> : null}
+      {!docked ? null : workTarget === null ? (
+        <KinDock tabs={tabs} selectedTab={tab} onSelect={select} />
+      ) : (
+        <KinBadgedDock {...workTarget} tabs={tabs} selectedTab={tab} onSelect={select} />
+      )}
     </View>
+  );
+}
+
+/** The dock, with what needs attention counted on Tasks. */
+function KinBadgedDock(props: KinWorkTarget & KinDockProps) {
+  const badge = kinAttentionBadge(kinAttentionCount(useKinAttention(props)));
+  return (
+    <KinDock
+      tabs={props.tabs}
+      selectedTab={props.selectedTab}
+      onSelect={props.onSelect}
+      {...(badge === null ? {} : { badges: { tasks: badge } })}
+    />
   );
 }
 

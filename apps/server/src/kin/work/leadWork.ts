@@ -33,6 +33,14 @@ import { resolveLead } from "../lead/LeadMemory.ts";
 import { inCompanyChat, toolAdmitted } from "../lead/SharedTools.ts";
 import { partyPage, projectDetail } from "./crm.ts";
 import { KinRecords, type Patch, type TotalsBy, type Writer } from "./KinRecords.ts";
+import {
+  GOAL_INPUTS,
+  GoalInputs,
+  goalFields,
+  goalLine,
+  goalsNow,
+  isMoneyMeasure,
+} from "./goals.ts";
 import { FieldInputs, turnFiles, typedFields } from "./leadFields.ts";
 import {
   OWNERS_SPINE,
@@ -71,13 +79,14 @@ import {
   turnSensitive,
 } from "./workerAttempts.ts";
 import { ledProjects, TEAM_REFUSED, teamChanges, viewSees, viewVisible } from "./teamView.ts";
+import { type AssignNotice, tellPeople } from "./assignNotices.ts";
 import { bankStates, findBankList } from "./statements/bankList.ts";
 
 /** The lead tools' inputs, results and the one call each makes. Model-facing text lives in `mcp/tools.ts`. */
 
 export const Who = TrimmedNonEmptyString.check(Schema.isMaxLength(120)).annotate({
   description:
-    '"me" for you, "owner" for the owner, an agent\'s agentId from kin_leads, or a teammate\'s name exactly as people_read lists it.',
+    '"me" for you, "owner" for the owner, an agent\'s agentId from kin_leads or people_read, or a teammate\'s name exactly as people_read lists it (or its personId when two share a name).',
 });
 const Due = Schema.NullOr(
   Schema.String.check(
@@ -93,7 +102,7 @@ const Title = TrimmedNonEmptyString.check(Schema.isMaxLength(280));
 const Notes = Schema.String.check(Schema.isMaxLength(4_000));
 const List = KinListId.annotate({
   description:
-    "work (default), clients, contacts, projects, or a list defined with list_define, such as expenses, invoices or dates.",
+    "work (default), clients, contacts, projects, milestones, goals, or a list defined with list_define, such as expenses, invoices or dates.",
 });
 const Category = TrimmedNonEmptyString.check(Schema.isMaxLength(60)).annotate({
   description: "Work: task, issue or obligation. A defined list: one of its categories.",
@@ -225,6 +234,8 @@ export const QueryResult = Schema.Struct({
 export const GetInput = Schema.Struct({ key: KinRecordKey });
 export const GetResult = Schema.Struct({
   ...Row.fields,
+  /** A goal's progress, counted now. */
+  progress: Schema.optional(Schema.String),
   notes: Schema.String,
   assignedBy: Schema.optional(Schema.String),
   links: Schema.Array(
@@ -315,12 +326,16 @@ const CreateRow = Schema.Struct({
   sensitive: Schema.optional(Schema.Literal(true)),
   suggested: Schema.optional(Schema.Boolean),
   ...SpineInputs,
+  ...GoalInputs,
 });
 export const CreateInput = Schema.Struct({
   sourceEventId: TrimmedNonEmptyString,
   records: Schema.Array(CreateRow).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
 });
+/** The people Kin told, in their own chat, what this call gave them or took from them. */
+const Told = Schema.optional(Schema.Array(Schema.String));
 export const CreateResult = Schema.Struct({
+  told: Told,
   records: Schema.Array(
     Schema.Struct({
       key: Schema.String,
@@ -362,8 +377,10 @@ export const UpdateInput = Schema.Struct({
   confirmed: Schema.optional(Schema.Boolean),
   expectedRev: Schema.optional(Schema.Int),
   ...SpineInputs,
+  ...GoalInputs,
 });
 export const UpdateResult = Schema.Struct({
+  told: Told,
   key: Schema.String,
   rev: Schema.Number,
   state: KinRecordState,
@@ -371,8 +388,43 @@ export const UpdateResult = Schema.Struct({
   ...Marks.fields,
 });
 
+const Why = TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
+  description:
+    'One line on why them, from what people_read shows, such as "iOS, 2 open, free Thursday". Kin shows it on the task and tells them.',
+});
+export const AssignInput = Schema.Struct({
+  sourceEventId: TrimmedNonEmptyString,
+  tasks: Schema.Array(
+    Schema.Struct({ key: KinRecordKey, to: Who, reason: Why, due: Schema.optional(Due) }),
+  ).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
+});
+export const AssignResult = Schema.Struct({
+  told: Told,
+  tasks: Schema.Array(
+    Schema.Struct({
+      key: Schema.String,
+      to: Schema.optional(Schema.String),
+      refused: Schema.optional(Schema.String),
+    }),
+  ),
+});
+export const HandBackInput = Schema.Struct({
+  key: KinRecordKey,
+  sourceEventId: TrimmedNonEmptyString,
+  note: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(280))).annotate({
+    description: "Why, in the holder's own words when a person is handing it back.",
+  }),
+});
+export const HandBackResult = Schema.Struct({
+  told: Told,
+  key: Schema.String,
+  to: Schema.String,
+  state: KinRecordState,
+});
+
 export type Lead = Effect.Success<ReturnType<typeof resolveLead>>;
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+const isKinChatError = Schema.is(KinChatError);
 const isDoc = (key: string) =>
   invalid(`${key.slice(0, 40)} is a doc: read it with doc_read and change it with doc_edit.`);
 
@@ -448,11 +500,19 @@ export const resolveWho = Effect.fn("KinWorkTools.resolveWho")(function* (lead: 
   const [agent] = yield* sql<{ id: string }>`SELECT agent_id AS id FROM kin_agents
     WHERE org_id = ${lead.orgId} AND agent_id = ${who} ORDER BY agent_id`;
   if (agent === undefined) {
-    const people = yield* sql<{ id: string }>`SELECT person_id AS id FROM kin_people
-      WHERE org_id = ${lead.orgId} AND lower(display_name) = lower(${who}) ORDER BY person_id
-      LIMIT 2`;
-    if (people.length > 1)
-      return yield* invalid(`Two people are named ${who.slice(0, 60)}; ask the owner which.`);
+    const people = yield* sql<{ id: string; name: string; tags: string }>`SELECT person_id AS id,
+        display_name AS name, role_tags_json AS tags FROM kin_people
+      WHERE org_id = ${lead.orgId} AND (person_id = ${who} OR lower(display_name) = lower(${who}))
+      ORDER BY person_id = ${who} DESC, person_id LIMIT 6`;
+    if (people.length > 1 && people[0]!.id !== who)
+      return yield* invalid(
+        `${people.length} people are named ${who.slice(0, 60)}: ${people
+          .map((one) => {
+            const tags = tagsOf(one.tags);
+            return `${one.name} (${tags.length === 0 ? "no roles" : tags.join(", ")}) is ${one.id}`;
+          })
+          .join("; ")}. Ask which one is meant, then pass their personId. Nothing was written.`,
+      );
     if (people[0] !== undefined)
       return {
         _tag: "person",
@@ -461,6 +521,15 @@ export const resolveWho = Effect.fn("KinWorkTools.resolveWho")(function* (lead: 
   }
   return { _tag: "agent", agentId: KinAgentId.make(who) } satisfies KinWorkPrincipal;
 });
+
+const tagsOf = (json: string): ReadonlyArray<string> => {
+  try {
+    const parsed: unknown = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed.filter((tag) => typeof tag === "string") : [];
+  } catch {
+    return [];
+  }
+};
 
 const atOf = (text: string) => {
   const ms = calendarTimeMillis(text);
@@ -602,6 +671,17 @@ const viewFor = Effect.fn("KinWorkTools.view")(function* (
   } satisfies Shown;
 });
 
+/** A goal's own fields as an agent reads them; its progress is `record_get`'s. */
+const goalShown = (fields: ReturnType<typeof parseFields>) => {
+  const shown: Record<string, string> = {};
+  for (const key of ["measure", "target", "current", "unit", "startsOn"]) {
+    const value = fields[key];
+    if (typeof value === "string") shown[key] = value;
+    else if (value !== undefined && isMoney(value)) shown[key] = formatMoney(value);
+  }
+  return Object.keys(shown).length === 0 ? {} : { fields: shown };
+};
+
 const rowFor = (view: Shown, row: RecordRow, now: number) => {
   const { name } = view;
   const record = toRecord(row, now);
@@ -654,6 +734,7 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
     ...(record.repeat === undefined ? {} : { repeat: shownRepeatRule(record.repeat) }),
     ...shownFields(def, row, name, view.keys),
     ...(list === "work" || list === "projects" ? spineShown(row, name) : {}),
+    ...(list === "goals" ? goalShown(fields) : {}),
     ...marksOf(view.lists, row),
     rev: record.rev,
   } as typeof Row.Type;
@@ -787,6 +868,7 @@ type View = NonNullable<Effect.Success<ReturnType<typeof viewOf>>>;
 /** What only the owner sets in Work: clients, projects, money, list fields, labels, holders. */
 const OWNERS_INPUTS = [
   ...OWNERS_SPINE,
+  ...GOAL_INPUTS,
   "client",
   "project",
   "groupBy",
@@ -1100,8 +1182,13 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
   const page = list === "clients" ? yield* partyPage(row, now, 0) : undefined;
   const project = list === "projects" ? yield* projectDetail(row, now) : undefined;
   const specChanged = list === "work" && (yield* taskSpecChanged(row));
+  const goal =
+    list === "goals"
+      ? (yield* goalsNow(lead.orgId, now, { money: true })).goals.find((one) => one.key === row.key)
+      : undefined;
   return {
     ...rowFor(view, row, now),
+    ...(goal === undefined ? {} : { progress: goalLine(goal) }),
     ...(specChanged ? { specChanged: true as const } : {}),
     ...(project === undefined ? {} : { plan: yield* projectRead(row, now, name) }),
     ...(page === undefined
@@ -1204,6 +1291,7 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
   // A turn shown something sensitive may be writing it down, so what it writes is labelled too.
   const marked = yield* turnSensitive(lead.orgId, lead.wakeupId);
   const results = [];
+  const notices: Array<AssignNotice> = [];
   for (const row of input.records) {
     const def = yield* listFor(lead, row.list ?? "work");
     const list = def.id;
@@ -1246,7 +1334,10 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
           ? `${list}|${partyId ?? ""}|${titleKey(row.title)}`
           : `${list}|${partyId ?? ""}|${titleKey(row.title)}|${row.amount ?? ""}|${row.date ?? ""}|${row.due ?? ""}`;
     const originKey = `lead:${lead.agentId}:${input.sourceEventId}:${retryKey(rowKey)}`;
-    const fields = { ...fieldsFrom(row), ...spineSet };
+    if (list === "goals" && (row.measure === undefined || row.target === undefined))
+      return yield* invalid("A goal needs its measure and target, and due as its date.");
+    const goal = yield* goalFields(row);
+    const fields = { ...fieldsFrom(row), ...spineSet, ...goal };
     const inProject = projectId !== undefined ? projectId : spine.projectId;
     const { row: stored, created } = yield* records.create(lead.orgId, writer, {
       // A teammate files only Work, which is the default; a project's lead in its lists too.
@@ -1257,7 +1348,11 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
       ...(partyId === undefined ? {} : { partyId }),
       ...(inProject === undefined ? {} : { projectId: inProject }),
       ...(row.repo === undefined ? {} : { repo: row.repo }),
-      ...(row.sensitive === undefined && !marked ? {} : { sensitive: true }),
+      ...(row.sensitive === undefined &&
+      !marked &&
+      !(row.measure !== undefined && isMoneyMeasure(row.measure))
+        ? {}
+        : { sensitive: true }),
       ...(Object.keys(fields).length === 0 ? {} : { fields }),
       ...(row.state === undefined ? {} : { state: row.state }),
       ...(waitingOn === undefined ? {} : { waitingOn }),
@@ -1275,9 +1370,10 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
       // Where it was first asked stays the owner's to know.
       ...(source === undefined || team !== undefined ? {} : { source }),
     });
+    if (created) notices.push(...movedNotices(undefined, stored));
     results.push({ key: stored.key, title: stored.title, created, ...marksOf(lists, stored) });
   }
-  return { records: results };
+  return { ...(yield* tell(lead, notices)), records: results };
 });
 export const create = leadTool("KinWorkTools.create", runCreate);
 
@@ -1305,6 +1401,47 @@ const sameNamed = Effect.fn("KinWorkTools.sameNamed")(function* (
 });
 
 const UNCARRYING = new Set(["state", "owner", "waitingOn", "confirmed"]);
+const reasonOf = (row: RecordRow) => {
+  const reason = parseFields(row.fieldsJson).reason;
+  return typeof reason === "string" ? reason : null;
+};
+/** Who to tell that a task came to them or left them, and why. */
+const movedNotices = (before: RecordRow | undefined, after: RecordRow): Array<AssignNotice> => {
+  if (after.registerId !== "work") return [];
+  if (
+    before !== undefined &&
+    before.ownerKind === after.ownerKind &&
+    before.ownerId === after.ownerId
+  )
+    return [];
+  const why = reasonOf(after);
+  return [
+    ...(after.ownerKind === "person"
+      ? [{ personId: KinPersonId.make(after.ownerId), kind: "given" as const, row: after, why }]
+      : []),
+    ...(before?.ownerKind === "person"
+      ? [{ personId: KinPersonId.make(before.ownerId), kind: "taken" as const, row: after, why }]
+      : []),
+  ];
+};
+/** Sends this call's notices; the write already committed, so a failed message fails nothing. */
+const tell = Effect.fnUntraced(function* (lead: Lead, notices: ReadonlyArray<AssignNotice>) {
+  const told = yield* tellPeople(lead, notices).pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin couldn't tell people about their tasks", cause).pipe(
+        Effect.as(new Set<string>()),
+      ),
+    ),
+  );
+  if (told.size === 0) return {};
+  const name = yield* namer(lead);
+  return {
+    told: [...told].map(
+      (id) => name({ _tag: "person", personId: KinPersonId.make(id) }) ?? "a person",
+    ),
+  };
+});
+
 // A bank row of these is explained by saying so; any other needs the entry that records its money.
 const SAID_SO = new Set(["transfer", "charges", "interest", "other"]);
 /** F35: a bank row is explained only when its money is recorded, or it is money no entry holds. */
@@ -1336,6 +1473,10 @@ const explainedHonestly = Effect.fn("KinWorkTools.explainedHonestly")(function* 
     );
 });
 const runUpdate = Effect.fnUntraced(function* (lead: Lead, input: typeof UpdateInput.Type) {
+  const { result, notices } = yield* updateCore(lead, input);
+  return { ...(yield* tell(lead, notices)), ...result };
+});
+const updateCore = Effect.fnUntraced(function* (lead: Lead, input: typeof UpdateInput.Type) {
   yield* admitted(lead, "record_update", input);
   const records = yield* KinRecords;
   const team = yield* viewOf(lead);
@@ -1381,7 +1522,11 @@ const runUpdate = Effect.fnUntraced(function* (lead: Lead, input: typeof UpdateI
     input,
     projectId === undefined ? before.projectId : projectId,
   );
-  const fields = { ...fieldsFrom(input), ...spine.fields };
+  const fields = {
+    ...fieldsFrom(input),
+    ...spine.fields,
+    ...(yield* goalFields(input, parseFields(before.fieldsJson))),
+  };
   const money = yield* moneyPatch(lead, def, input);
   const inProject = projectId !== undefined ? projectId : spine.projectId;
   const written: Patch = {
@@ -1392,8 +1537,19 @@ const runUpdate = Effect.fnUntraced(function* (lead: Lead, input: typeof UpdateI
     ...money,
     ...spine.at,
   };
-  // As in create; a state, owner or confirmation alone carries nothing the turn read.
-  const carries = Object.keys(written).some((field) => !UNCARRYING.has(field));
+  // As in create; a state, owner or confirmation alone carries nothing the turn read. Nor does
+  // an assignment's who, why, size and when: what the one it goes to is told.
+  const assigning = input.owner !== undefined;
+  const carries = Object.entries(written).some(
+    ([field, value]) =>
+      !UNCARRYING.has(field) &&
+      !(assigning && (field === "dueAt" || field === "dueAllDay")) &&
+      !(
+        assigning &&
+        field === "fields" &&
+        Object.keys(value as object).every((key) => key === "reason" || key === "size")
+      ),
+  );
   const full: Patch =
     carries && (yield* turnSensitive(lead.orgId, lead.wakeupId))
       ? { ...written, sensitive: true }
@@ -1411,6 +1567,90 @@ const runUpdate = Effect.fnUntraced(function* (lead: Lead, input: typeof UpdateI
           ),
         ];
   const lists = yield* allLists(lead.orgId);
-  return { key: after.key, rev: after.rev, state: after.state, changed, ...marksOf(lists, after) };
+  return {
+    result: {
+      key: after.key,
+      rev: after.rev,
+      state: after.state,
+      changed,
+      ...marksOf(lists, after),
+    },
+    notices: movedNotices(before, after),
+  };
 });
 export const update = leadTool("KinWorkTools.update", runUpdate);
+
+/** Several tasks given out at once: each person hears once, however many came to them. */
+const runAssign = Effect.fnUntraced(function* (lead: Lead, input: typeof AssignInput.Type) {
+  yield* admitted(lead, "record_assign", input);
+  if ((yield* viewOf(lead)) !== undefined) return yield* TEAM_REFUSED;
+  const name = yield* namer(lead);
+  const notices: Array<AssignNotice> = [];
+  const tasks = [];
+  for (const task of input.tasks) {
+    const outcome = yield* Effect.result(
+      updateCore(lead, {
+        key: task.key,
+        sourceEventId: input.sourceEventId,
+        owner: task.to,
+        reason: task.reason,
+        ...(task.due === undefined ? {} : { due: task.due }),
+      }),
+    );
+    if (outcome._tag === "Failure") {
+      if (!isKinChatError(outcome.failure)) return yield* outcome.failure;
+      tasks.push({ key: task.key, refused: outcome.failure.message });
+      continue;
+    }
+    notices.push(...outcome.success.notices);
+    const after = yield* (yield* KinRecords).get(lead.orgId, task.key);
+    tasks.push({
+      key: task.key,
+      ...(after === undefined ? {} : { to: name(toRecord(after, 0).owner) ?? "someone" }),
+    });
+  }
+  return { ...(yield* tell(lead, notices)), tasks };
+});
+export const assign = leadTool("KinWorkTools.assign", runAssign);
+
+/**
+ * The holder gives a task back to whoever gave it: this agent its own, or a person's when that
+ * person is who asked in this turn. Kin wakes the agent it goes back to with the note.
+ */
+const runHandBack = Effect.fnUntraced(function* (lead: Lead, input: typeof HandBackInput.Type) {
+  yield* admitted(lead, "record_hand_back", input);
+  const records = yield* KinRecords;
+  yield* sourceOf(lead, input.sourceEventId);
+  const team = yield* viewOf(lead);
+  const before = yield* records.get(lead.orgId, input.key);
+  if (before === undefined) return yield* notFound(input.key);
+  if (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, before.recordId)))
+    return yield* notFound(input.key);
+  const holder = toRecord(before, 0).owner;
+  const askers = team === undefined ? [yield* askedBy(lead)] : team.askers;
+  const mayHandBack =
+    holder._tag === "agent"
+      ? holder.agentId === lead.agentId
+      : askers.length === 1 && askers[0] === holder.personId;
+  const name = yield* namer(lead);
+  if (!mayHandBack)
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message: `${before.key} is with ${name(holder) ?? "someone else"}: only they can hand it back.`,
+    });
+  const owned = yield* writerFor(lead);
+  const writer = team === undefined ? owned : viewWriter(owned, team);
+  const after = yield* records.handBack(lead.orgId, writer, input.key, holder, input.note ?? null);
+  const to = toRecord(after, 0).owner;
+  const notices: Array<AssignNotice> =
+    to._tag === "person"
+      ? [{ personId: to.personId, kind: "returned", row: after, why: input.note ?? null }]
+      : [];
+  return {
+    ...(yield* tell(lead, notices)),
+    key: after.key,
+    to: name(to) ?? "someone",
+    state: after.state,
+  };
+});
+export const handBack = leadTool("KinWorkTools.handBack", runHandBack);

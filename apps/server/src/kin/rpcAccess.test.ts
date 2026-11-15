@@ -27,8 +27,9 @@ const session = (person: string): AuthenticatedSession => ({
   scopes: [AuthKinChatScope],
 });
 
-// What a member reaches: their own chats, Work shared with them, their phone and their GitHub login,
-// and the Clients, Docs and Money reads, where the service shows them only their places.
+// What a member reaches: their own chats, Work shared with them and what needs them in it, their
+// phone and their GitHub login, and the Clients, Docs and Money reads, where the service shows
+// them only their places.
 const MEMBER = [
   "kin.access.me",
   "kin.chat.history",
@@ -43,6 +44,7 @@ const MEMBER = [
   "kin.docs.history",
   "kin.docs.list",
   "kin.docs.subscribe",
+  "kin.goals.list",
   "kin.leads.list",
   "kin.messages.markRead",
   "kin.messages.react",
@@ -52,6 +54,8 @@ const MEMBER = [
   "kin.people.profiles",
   "kin.people.setGithubLogin",
   "kin.people.updateProfile",
+  "kin.pulse.handle",
+  "kin.pulse.read",
   "kin.push.registerDevice",
   "kin.push.unregisterDevice",
   "kin.push.watch",
@@ -62,6 +66,7 @@ const MEMBER = [
   "kin.work.assign",
   "kin.work.create",
   "kin.work.get",
+  "kin.work.handBack",
   "kin.work.list",
   "kin.work.lists",
   "kin.work.money",

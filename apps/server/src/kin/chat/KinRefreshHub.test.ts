@@ -104,7 +104,7 @@ describe("KinRefreshHub", () => {
   );
 
   it.effect(
-    "tells a teammate only about their own lead list, people and the time zone, never the owner's reads",
+    "tells a teammate only about their own lead list, people, the time zone and what needs attention, never the owner's reads",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -121,7 +121,12 @@ describe("KinRefreshHub", () => {
           capacity: "unbounded",
         });
         const start = yield* Queue.take(ownerSees);
-        assert.deepStrictEqual(yield* Queue.take(priyaSees), { timeZone: 0, people: 0, leads: 0 });
+        assert.deepStrictEqual(yield* Queue.take(priyaSees), {
+          timeZone: 0,
+          people: 0,
+          leads: 0,
+          pulse: 0,
+        });
 
         // Things only the owner reads: the company, and a lead Priya can't message.
         yield* setProfile(
@@ -152,7 +157,12 @@ describe("KinRefreshHub", () => {
           personId: priya.personId,
         });
         yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
-        assert.deepStrictEqual(yield* Queue.take(priyaSees), { timeZone: 0, people: 0, leads: 1 });
+        assert.deepStrictEqual(yield* Queue.take(priyaSees), {
+          timeZone: 0,
+          people: 0,
+          leads: 1,
+          pulse: 0,
+        });
         assert.strictEqual(yield* Queue.size(priyaSees), 0);
       }).pipe(Effect.scoped, Effect.provide(paired)),
   );

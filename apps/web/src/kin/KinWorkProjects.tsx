@@ -42,6 +42,7 @@ import {
 } from "../components/ui/sheet";
 import { Switch } from "../components/ui/switch";
 import { useAtomCommand } from "../state/use-atom-command";
+import { KinAttentionSection } from "./KinAttention";
 import { KinDocsUnder } from "./KinDocsList";
 import { KinMilestoneDialog, KinProjectDialog } from "./KinWorkForms";
 import {
@@ -255,6 +256,15 @@ function ProjectPage(
           </Button>
         ) : null}
       </div>
+      <KinAttentionSection
+        environmentId={environmentId}
+        orgId={orgId}
+        scope={{ type: "project", key: view.key }}
+        names={names}
+        onOpen={(to) => {
+          if (to.type === "record") props.onOpenTask(to.key);
+        }}
+      />
       {view.specChanged.length === 0 ? null : (
         <KinWorkSection title={KIN_PROJECTS.specChanged}>
           <ul className="-mx-2 flex flex-col">

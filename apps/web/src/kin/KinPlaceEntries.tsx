@@ -1,3 +1,4 @@
+import { kinAttentionBadge, kinAttentionCount } from "@t3tools/client-runtime/kin/kinAttention";
 import { kinWorkHostClients } from "@t3tools/client-runtime/kin/kinWork";
 import {
   KIN_WORK_HOME,
@@ -15,7 +16,9 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+import { Badge } from "../components/ui/badge";
 import { KIN_PLACE_PATH, type KinPlace } from "./kinPlaces";
+import { useKinAttention } from "./useKinAttention";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinMoneySummary } from "./useKinMoney";
 import { useKinClientCounts, useKinDocsRecent } from "./useKinPlaces";
@@ -33,6 +36,8 @@ function PlaceEntry(
   props: KinWorkTarget & {
     readonly place: KinPlace;
     readonly line: string | null;
+    /** What needs attention, on Tasks; null shows none. */
+    readonly badge?: string | null;
     readonly onOpen: () => void;
   },
 ) {
@@ -61,6 +66,11 @@ function PlaceEntry(
           </span>
         )}
       </span>
+      {props.badge == null ? null : (
+        <Badge size="sm" variant="error" aria-label={`${props.badge} need attention`}>
+          {props.badge}
+        </Badge>
+      )}
     </Link>
   );
 }
@@ -74,9 +84,7 @@ export function KinPlaceEntries(props: KinWorkTarget & { readonly onOpen: () => 
   if (state._tag === "refused" || state._tag === "failed") return null;
   const summary = state._tag === "ready" ? state.live.summary : null;
   const seq = state._tag === "ready" && !state.stale ? state.live.seq : null;
-  const tasks = (
-    <PlaceEntry {...props} place="tasks" line={summary === null ? null : kinTasksLine(summary)} />
-  );
+  const tasks = <TasksEntry {...props} line={summary === null ? null : kinTasksLine(summary)} />;
   // The owner and co-owners reach every place; a member those switched on or a project they lead.
   const reaches = (place: "money" | "clients" | "docs") => ownerLevel || reach?.[place] === true;
   return (
@@ -90,6 +98,15 @@ export function KinPlaceEntries(props: KinWorkTarget & { readonly onOpen: () => 
       )}
       {reaches("docs") ? <DocsEntry {...props} /> : null}
     </>
+  );
+}
+
+function TasksEntry(
+  props: KinWorkTarget & { readonly line: string | null; readonly onOpen: () => void },
+) {
+  const attention = useKinAttention(props);
+  return (
+    <PlaceEntry {...props} place="tasks" badge={kinAttentionBadge(kinAttentionCount(attention))} />
   );
 }
 

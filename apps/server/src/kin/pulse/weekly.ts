@@ -1,0 +1,181 @@
+import type { KinMoney, KinOrgId } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/sql/SqlClient";
+
+import { goalLine, goalsNow } from "../work/goals.ts";
+import { addUp, dayIn, formatMoney } from "../work/money.ts";
+import { playbookThreshold } from "../work/playbooks.ts";
+import { countedEntry, countedPayment, moneyDay, ownerZone } from "../work/recordRows.ts";
+import { DAY_MS } from "./thresholds.ts";
+
+export const WEEKLY_RULE =
+  "This is the weekly brief. Lead with the goals and where each stands, then only what changed this week and what needs a decision.";
+const WEEK_MS = 7 * DAY_MS;
+const FREE_HORIZON_MS = 3 * DAY_MS;
+const LATE_OVERLOAD = 3;
+const CAP = 20;
+const OPEN = ["open", "doing", "waiting"] as const;
+
+const totals = (amounts: ReadonlyArray<KinMoney>) => addUp(amounts).map(formatMoney);
+
+/**
+ * The week for the owner's weekly brief, counted from Kin's rows: goals first, then projects by
+ * how they moved, money in and out and what is overdue, who is overloaded or free, and next week.
+ */
+export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly now: number;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const { orgId, now } = input;
+  const zone = yield* ownerZone(orgId);
+  const weekAgo = now - WEEK_MS;
+  const goals = (yield* goalsNow(orgId, now, { money: true })).goals.filter(
+    (goal) => goal.state === "open",
+  );
+
+  const projects = yield* sql<{
+    key: string;
+    title: string;
+    state: string;
+    dueAt: number | null;
+    client: string | null;
+    open: number;
+    late: number;
+    done: number;
+    changes: number;
+  }>`SELECT p.key, p.title, p.state, p.due_at AS "dueAt", c.title AS client,
+      (SELECT COUNT(*) FROM kin_records t WHERE t.org_id = p.org_id
+        AND t.project_id = p.record_id AND t.register_id = 'work'
+        AND t.state IN ${sql.in(OPEN)}) AS open,
+      (SELECT COUNT(*) FROM kin_records t WHERE t.org_id = p.org_id
+        AND t.project_id = p.record_id AND t.register_id = 'work'
+        AND t.state IN ${sql.in(OPEN)} AND t.due_at < ${now}) AS late,
+      (SELECT COUNT(*) FROM kin_records t WHERE t.org_id = p.org_id
+        AND t.project_id = p.record_id AND t.register_id IN ('work', 'milestones')
+        AND t.state = 'done' AND t.closed_at >= ${weekAgo}) AS done,
+      (SELECT COUNT(*) FROM kin_record_changes ch
+        JOIN kin_records t ON t.org_id = ch.org_id AND t.record_id = ch.record_id
+        WHERE ch.org_id = p.org_id AND ch.at >= ${weekAgo}
+          AND (t.record_id = p.record_id OR t.project_id = p.record_id)) AS changes
+    FROM kin_records p
+    LEFT JOIN kin_records c ON c.org_id = p.org_id AND c.record_id = p.party_id
+    WHERE p.org_id = ${orgId} AND p.register_id = 'projects'
+      AND (p.state = 'open' OR (p.state = 'done' AND p.closed_at >= ${weekAgo}))
+    ORDER BY p.due_at IS NULL, p.due_at, p.key
+    LIMIT ${CAP}`;
+  const byStatus: Record<"behind" | "moving" | "quiet" | "done", Array<string>> = {
+    behind: [],
+    moving: [],
+    quiet: [],
+    done: [],
+  };
+  for (const project of projects) {
+    const status =
+      project.state === "done"
+        ? "done"
+        : project.late > 0 || (project.dueAt !== null && project.dueAt < now)
+          ? "behind"
+          : project.changes === 0
+            ? "quiet"
+            : "moving";
+    byStatus[status].push(
+      [
+        `${project.key} ${project.title}${project.client === null ? "" : ` (${project.client})`}`,
+        project.done > 0 ? `${project.done} done this week` : null,
+        project.state === "done" ? null : `${project.open} open`,
+        project.late > 0 ? `${project.late} late` : null,
+        project.dueAt === null ? null : `target ${dayIn(project.dueAt, zone)}`,
+      ]
+        .filter((part) => part !== null)
+        .join(", "),
+    );
+  }
+
+  const received = yield* sql<KinMoney>`SELECT p.amount_minor AS minor, p.currency
+    FROM kin_record_payments p
+    JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
+    WHERE p.org_id = ${orgId} AND ${countedPayment(sql)} AND p.withheld = 0
+      AND r.register_id IN ('invoices', 'receipts') AND p.paid_on >= ${dayIn(weekAgo, zone)}
+    ORDER BY p.paid_on, p.payment_id`;
+  const spent = yield* sql<KinMoney>`SELECT r.amount_minor AS minor, r.currency
+    FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND ${countedEntry(sql)}
+      AND r.state = 'done' AND r.amount_minor IS NOT NULL AND ${moneyDay(sql)} >= ${weekAgo}
+    ORDER BY r.key`;
+  const overdue = yield* sql<{
+    key: string;
+    client: string | null;
+    minor: number;
+    currency: string;
+    paid: number;
+    dueAt: number;
+  }>`SELECT r.key, c.title AS client, r.amount_minor AS minor, r.currency, r.due_at AS "dueAt",
+      (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
+        WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid
+    FROM kin_records r
+    LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
+    WHERE r.org_id = ${orgId} AND r.register_id = 'invoices' AND ${countedEntry(sql)}
+      AND r.state = 'waiting' AND r.amount_minor IS NOT NULL AND r.due_at < ${now}
+    ORDER BY r.due_at, r.key
+    LIMIT ${CAP}`;
+
+  const load = yield* sql<{
+    kind: string;
+    id: string;
+    name: string | null;
+    open: number;
+    late: number;
+    soon: number;
+  }>`SELECT r.owner_kind AS kind, r.owner_id AS id,
+      COALESCE(pe.display_name, a.display_name) AS name, COUNT(*) AS open,
+      SUM(r.due_at < ${now}) AS late,
+      SUM(r.due_at >= ${now} AND r.due_at < ${now + FREE_HORIZON_MS}) AS soon
+    FROM kin_records r
+    LEFT JOIN kin_people pe ON r.owner_kind = 'person' AND pe.org_id = r.org_id
+      AND pe.person_id = r.owner_id
+    LEFT JOIN kin_agents a ON r.owner_kind = 'agent' AND a.org_id = r.org_id
+      AND a.agent_id = r.owner_id
+    WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.state IN ${sql.in(OPEN)}
+    GROUP BY r.owner_kind, r.owner_id
+    ORDER BY open DESC, r.owner_id`;
+  const people = yield* sql<{ id: string; name: string }>`SELECT person_id AS id,
+      display_name AS name FROM kin_people WHERE org_id = ${orgId} ORDER BY display_name`;
+  const overloadAt = (yield* playbookThreshold(orgId, "overloaded_load")).value;
+  const overloaded = load
+    .filter((one) => one.open >= overloadAt || one.late >= LATE_OVERLOAD)
+    .map((one) => `${one.name ?? "someone"}: ${one.open} open, ${one.late} late`);
+  const busy = new Set(
+    load.filter((one) => one.kind === "person" && one.soon > 0).map((one) => one.id),
+  );
+  const free = people.filter((person) => !busy.has(person.id)).map((person) => person.name);
+
+  const next = yield* sql<{ key: string; title: string; dueAt: number; list: string }>`SELECT
+      r.key, r.title, r.due_at AS "dueAt", r.register_id AS list
+    FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.register_id IN ('work', 'milestones', 'invoices', 'projects')
+      AND r.state IN ${sql.in(OPEN)} AND r.due_at >= ${now} AND r.due_at < ${now + WEEK_MS}
+    ORDER BY r.due_at, r.key
+    LIMIT ${CAP}`;
+
+  return {
+    week: `${dayIn(weekAgo, zone)} to ${dayIn(now, zone)}`,
+    goals: goals.map(goalLine),
+    projects: Object.fromEntries(Object.entries(byStatus).filter(([, rows]) => rows.length > 0)),
+    money: {
+      inThisWeek: totals(received),
+      outThisWeek: totals(spent),
+      overdue: overdue
+        .filter((one) => one.minor > one.paid)
+        .map(
+          (one) =>
+            `${one.key}${one.client === null ? "" : ` ${one.client}`}: ${formatMoney({ minor: one.minor - one.paid, currency: one.currency })}, ${Math.floor((now - one.dueAt) / DAY_MS)} days past due`,
+        ),
+    },
+    people: { overloaded, free },
+    nextWeek: next.map(
+      (one) =>
+        `${dayIn(one.dueAt, zone)} ${one.key} ${one.title}${one.list === "milestones" ? " (milestone)" : one.list === "invoices" ? " (invoice due)" : one.list === "projects" ? " (project target)" : ""}`,
+    ),
+  };
+});

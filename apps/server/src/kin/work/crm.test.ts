@@ -701,6 +701,18 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
         }),
         true,
       ],
+      // Who holds it and why: no entry's content.
+      record_assign: [
+        LeadWork.assign(scope, {
+          sourceEventId: "ask-event",
+          tasks: [{ key: "W-2", to: "me", reason: "Invented: free today" }],
+        }),
+        false,
+      ],
+      record_hand_back: [
+        LeadWork.handBack(scope, { key: "W-2", sourceEventId: "ask-event", note: "Invented" }),
+        false,
+      ],
       list_define: [
         LeadMoney.define(scope, { sourceEventId: "ask-event", name: "Invented leave" }),
         false,
