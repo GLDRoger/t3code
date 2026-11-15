@@ -24,6 +24,7 @@ export const KIN_REFRESH_TOPICS = [
   "connections",
   "workChoices",
   "moneyBudgets",
+  "moneyStatements",
 ] as const;
 export const KinRefreshTopic = Schema.Literals(KIN_REFRESH_TOPICS);
 export type KinRefreshTopic = typeof KinRefreshTopic.Type;
@@ -43,6 +44,7 @@ export const KinRefreshes = Schema.Struct({
   connections: Schema.optional(NonNegativeInt),
   workChoices: Schema.optional(NonNegativeInt),
   moneyBudgets: Schema.optional(NonNegativeInt),
+  moneyStatements: Schema.optional(NonNegativeInt),
 });
 export type KinRefreshes = typeof KinRefreshes.Type;
 

@@ -267,6 +267,10 @@ export const cashPosition = Effect.fn("KinMoneyAnswers.cash")(function* (
 });
 export type CashPosition = Effect.Success<ReturnType<typeof cashPosition>>;
 
+/** A currency's balance now if every recorded movement since went through its accounts. */
+export const cashEstimate = (one: CashPosition["byCurrency"][number]) =>
+  one.total !== null && one.sameDay ? one.total + one.receivedSince - one.spentSince : null;
+
 const notRecordLine = (one: Read) => ({
   account: one.label,
   closingBalance: formatMinor(BigInt(one.minor), one.currency),
@@ -310,8 +314,7 @@ export const cashAnswer = (cash: CashPosition) => {
     ...(cards.length === 0 ? {} : { cardsOwed: cards.map(line) }),
     ...notOfRecord,
     byCurrency: cash.byCurrency.map((one) => {
-      const estimate =
-        one.total !== null && one.sameDay ? one.total + one.receivedSince - one.spentSince : null;
+      const estimate = cashEstimate(one);
       return {
         currency: one.currency,
         accounts: one.accounts,

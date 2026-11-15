@@ -26,6 +26,7 @@ import { KinWorkRpcs, KIN_WORK_RPC_SCOPES } from "./kinWork.ts";
 import { KinDocsRpcs, KIN_DOCS_RPC_SCOPES } from "./kinDocs.ts";
 import { KinFinanceRpcs, KIN_FINANCE_RPC_SCOPES } from "./kinFinance.ts";
 import { KinStatementRpcs, KIN_STATEMENT_RPC_SCOPES } from "./kinStatements.ts";
+import { KinMoneyAnswerRpcs, KIN_MONEY_ANSWER_RPC_SCOPES } from "./kinMoneyAnswers.ts";
 import { KinRefreshRpcs, KIN_REFRESH_RPC_SCOPES } from "./kinRefresh.ts";
 import {
   KinChatError,
@@ -181,6 +182,7 @@ export const KinRpcs = [
   ...KinWorkRpcs,
   ...KinDocsRpcs,
   ...KinFinanceRpcs,
+  ...KinMoneyAnswerRpcs,
   ...KinStatementRpcs,
   ...KinGithubWebhookRpcs,
   ...KinPushRpcs,
@@ -197,6 +199,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_WORK_RPC_SCOPES,
   ...KIN_DOCS_RPC_SCOPES,
   ...KIN_FINANCE_RPC_SCOPES,
+  ...KIN_MONEY_ANSWER_RPC_SCOPES,
   ...KIN_STATEMENT_RPC_SCOPES,
   ...KIN_PUSH_RPC_SCOPES,
   ...KIN_PEOPLE_RPC_SCOPES,
@@ -360,6 +363,12 @@ export const KIN_RPC_AGGREGATES = {
   "kin.work.nextNumber": "kin-work",
   "kin.work.receipts": "kin-work",
   "kin.work.makeReceipt": "kin-work",
+  "kin.work.cash": "kin-work",
+  "kin.work.outlook": "kin-work",
+  "kin.work.budgets": "kin-work",
+  "kin.work.setBudget": "kin-work",
+  "kin.work.entryLines": "kin-work",
+  "kin.work.invoiceFromQuote": "kin-work",
   "kin.work.statementUnlock": "kin-work",
   "kin.work.statementForgetPassword": "kin-work",
   "kin.work.statementApply": "kin-work",
