@@ -167,6 +167,7 @@ const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
   [/(?:^|__|\.)people_update$/, "Updating a profile"],
   [/(?:^|__|\.)kin_hand_off$/, "Passing this on"],
   [/(?:^|__|\.)kin_take_private$/, "Answering you directly"],
+  [/(?:^|__|\.)kin_relay$/, "Passing this on"],
   [/(?:^|__|\.)people_read$/, "Checking who's on the team"],
   [/(?:^|__|\.)pulse_read$/, "Checking what needs attention"],
   [/(?:^|__|\.)pulse_handle$/, null],

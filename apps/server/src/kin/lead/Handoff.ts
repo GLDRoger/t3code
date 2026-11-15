@@ -7,6 +7,7 @@ import {
   KinMemberId,
   KinMessageId,
   KinPersonId,
+  KinWakeupId,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
@@ -26,12 +27,16 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
-import { SHARED_REFUSAL, aborted, effectiveAudience } from "./Audience.ts";
+import { SHARED_REFUSAL, aborted, effectiveAudience, turnAsker } from "./Audience.ts";
 import { wakeEvent } from "./ChatWake.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { resolveLead } from "./LeadMemory.ts";
 import { messageBodyLimit } from "./LeadPrompt.ts";
 import { outsideStamp, stampEvent } from "./OutsideContent.ts";
+import type { KinLevelGate } from "./LevelGate.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
+import { relayPrefix } from "../reply/promises.ts";
+import { unreadableBy } from "../work/teamView.ts";
 
 export const LeadsResult = Schema.Struct({
   leads: Schema.Array(
@@ -79,6 +84,27 @@ export const TakePrivateResult = Schema.Struct({
   agent: Schema.String,
   continued: Schema.Literal(true),
 });
+
+export const RelayInput = Schema.Struct({
+  to: TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
+    description:
+      "The person, by name as people_read gives it. From a teammate's chat: the owner, a co-owner or a project's lead. From the owner's chat: the teammate.",
+  }),
+  text: TrimmedNonEmptyString.check(Schema.isMaxLength(1_000)).annotate({
+    description:
+      "From a teammate's chat: their request, in their words, with the task key. From the owner's chat: your message to the teammate, written for them.",
+  }),
+  sourceEventId: TrimmedNonEmptyString.annotate({
+    description: "The event of the message this answers or passes on.",
+  }),
+});
+export const RelayResult = Schema.Struct({
+  to: Schema.String,
+  sent: Schema.Literal(true),
+  note: Schema.String,
+});
+/** What `relay` posts with: the gate's message to one person (`KinLevelGate.postTo`). */
+type PostTo = KinLevelGate["Service"]["postTo"];
 
 const NOTHING = "Nothing was passed on.";
 const refuse = (message: string) =>
@@ -167,6 +193,17 @@ export class KinHandoff extends Context.Service<
       scope: McpInvocationScope,
       input: typeof TakePrivateInput.Type,
     ) => Effect.Effect<typeof TakePrivateResult.Type, KinChatError>;
+    /**
+     * A message between a person and the owner side, through this lead. In a teammate's turn,
+     * their request goes to the owner, a co-owner or a project's lead as Kin's row quoting them,
+     * in that person's chat with the lead, waiting on them. In an owner-level turn, the lead's
+     * own words go to a teammate in their chat with it (`postTo`). Once per person per turn.
+     */
+    readonly relay: (
+      scope: McpInvocationScope,
+      input: typeof RelayInput.Type,
+      postTo: PostTo,
+    ) => Effect.Effect<typeof RelayResult.Type, KinChatError>;
   }
 >()("t3/kin/lead/Handoff/KinHandoff") {}
 
@@ -373,6 +410,112 @@ const make = Effect.gen(function* () {
     return { person: ask.personName, agent: target.name, continued: true as const };
   }, guarded("KinHandoff.takePrivate"));
 
+  /** One person of the org by full name, handle or first name, when only one answers to it. */
+  const personNamed = Effect.fn("KinHandoff.personNamed")(function* (ctx: Lead, name: string) {
+    const wanted = fold(name);
+    const rows = yield* sql<{ personId: KinPersonId; name: string }>`SELECT
+        person_id AS "personId", display_name AS name FROM kin_people
+      WHERE org_id = ${ctx.orgId} AND (lower(display_name) = ${wanted} OR lower(handle) = ${wanted}
+        OR lower(display_name) LIKE ${`${wanted} %`})
+      ORDER BY lower(display_name) = ${wanted} DESC, person_id LIMIT 3`;
+    const exact = rows.filter((row) => fold(row.name) === wanted);
+    const one = exact.length === 1 ? exact[0] : rows.length === 1 ? rows[0] : undefined;
+    if (one === undefined)
+      return yield* new KinChatError({
+        reason: rows.length === 0 ? "not_found" : "invalid_state",
+        message: `${rows.length === 0 ? "No one" : "More than one person"} in the company answers to ${name}; people_read lists who is. Nothing was sent.`,
+      });
+    return one;
+  });
+
+  const relay = Effect.fn("KinHandoff.relay")(function* (
+    scope: McpInvocationScope,
+    input: typeof RelayInput.Type,
+    postTo: PostTo,
+  ) {
+    const ctx = yield* lead(scope);
+    const access = Effect.provideService(SqlClient.SqlClient, sql);
+    if (yield* aborted(ctx).pipe(access)) return yield* refuse(SHARED_REFUSAL);
+    const [source] = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${ctx.orgId}
+      AND agent_id = ${ctx.agentId} AND wakeup_id = ${ctx.wakeupId}
+      AND event_id = ${input.sourceEventId} LIMIT 1`;
+    if (source === undefined) return yield* missing();
+    const to = yield* personNamed(ctx, input.to);
+    const [self] = yield* sql<{ name: string; owner: KinPersonId; ownerChatId: KinChatId }>`
+      SELECT l.name, a.owner_person_id AS owner, l.owner_chat_id AS "ownerChatId" FROM kin_leads l
+      JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+      WHERE l.org_id = ${ctx.orgId} AND l.agent_id = ${ctx.agentId} ORDER BY l.agent_id`;
+    if (self === undefined) return yield* missing();
+    const messageId = KinMessageId.make(
+      `${relayPrefix(ctx.wakeupId)}${NodeCrypto.createHash("sha256").update(to.personId).digest("hex").slice(0, 16)}`,
+    );
+    const toOwnerSide =
+      (yield* ownerLevel(ctx.orgId, to.personId).pipe(access)) || to.personId === self.owner;
+    if ((yield* effectiveAudience(ctx).pipe(access)) === "owner_only") {
+      if (toOwnerSide)
+        return yield* refuse(`${to.name} reads your chats with the owner side; tell them there.`);
+      const direct = yield* chat
+        .createDirect(
+          { _tag: "person", orgId: ctx.orgId, personId: to.personId },
+          { orgId: ctx.orgId, agentId: ctx.agentId },
+        )
+        .pipe(
+          Effect.mapError(() =>
+            refuse(`${to.name} can't message you; ask the team agent to tell them.`),
+          ),
+        );
+      yield* postTo({ ...ctx, wakeupId: KinWakeupId.make(ctx.wakeupId) }, to.personId, {
+        chatId: direct.chatId,
+        clientMessageId: messageId,
+        body: input.text,
+        intent: "answer",
+      });
+      return {
+        to: to.name,
+        sent: true as const,
+        note: `Sent in ${to.name}'s chat with you; their answer arrives there.`,
+      };
+    }
+    // A teammate's turn: their request, to someone who decides for them.
+    const asker = yield* turnAsker(ctx).pipe(access);
+    if (asker === null)
+      return yield* refuse("Only one person's own request can be passed on from here.");
+    const [leadsOne] = yield* sql`SELECT 1 FROM kin_records WHERE org_id = ${ctx.orgId}
+      AND register_id = 'projects' AND owner_kind = 'person' AND owner_id = ${to.personId}
+      AND state = 'open' LIMIT 1`;
+    if (!toOwnerSide && leadsOne === undefined)
+      return yield* refuse(
+        `${to.name} doesn't decide for others. Pass it to the owner, a co-owner or the project's lead.`,
+      );
+    if (!toOwnerSide) {
+      const why = yield* unreadableBy(ctx.orgId, to.personId, input.text).pipe(access);
+      if (why !== undefined) return yield* refuse(`Not for ${to.name}: ${why}.`);
+    }
+    const [who] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+      WHERE org_id = ${ctx.orgId} AND person_id = ${asker} ORDER BY person_id`;
+    const chatId =
+      to.personId === self.owner
+        ? self.ownerChatId
+        : (yield* chat.createDirect(
+            { _tag: "person", orgId: ctx.orgId, personId: to.personId },
+            { orgId: ctx.orgId, agentId: ctx.agentId },
+          )).chatId;
+    // Their words, quoted and named as theirs: a request to decide, never the owner's instruction.
+    yield* chat.notice({
+      orgId: ctx.orgId,
+      chatId,
+      audience: "chat",
+      messageId,
+      waitingFor: to.personId,
+      body: `${who?.name ?? "A teammate"} asked, in their chat with ${self.name}:\n"${input.text.replace(/\s+/g, " ")}"`,
+    });
+    return {
+      to: to.name,
+      sent: true as const,
+      note: `It waits on ${to.name} in their chat with you, quoted as ${who?.name ?? "the asker"}'s words. Tell them it is with ${to.name}; the answer comes back through you.`,
+    };
+  }, guarded("KinHandoff.relay"));
+
   const leads = Effect.fn("KinHandoff.leads")(function* (scope: McpInvocationScope) {
     const ctx = yield* lead(scope);
     const all = yield* colleagues(ctx);
@@ -558,7 +701,7 @@ const make = Effect.gen(function* () {
     );
   }, guarded("KinHandoff.handOff"));
 
-  return KinHandoff.of({ leads, handOff, takePrivate });
+  return KinHandoff.of({ leads, handOff, takePrivate, relay });
 });
 
 export const layer = Layer.effect(KinHandoff, make);

@@ -649,7 +649,7 @@ it.effect(
       const seen = (key: string) =>
         Docs.docRow(orgId, { key }, mateId).pipe(
           Effect.as(true),
-          Effect.catch(() => Effect.succeed(false)),
+          Effect.orElseSucceed(() => false),
         );
       assert.deepStrictEqual(
         [yield* seen(prd.key), yield* seen(made.key), yield* seen(quote.key)],

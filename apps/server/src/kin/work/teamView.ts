@@ -527,3 +527,44 @@ export const teamDetail = Effect.fn("KinTeamView.detail")(function* (
   };
   return sheet;
 });
+
+const AMOUNT =
+  /[₹$€£]\s?\d|\b(?:rs\.?|inr|usd|eur|gbp)\s?\d|\d[\d,.]*\s?(?:lakhs?|lacs?|crores?|rupees|inr|usd|eur|gbp)\b/i;
+const MONEY_NUMBER = /\b[A-Z]{2,5}\/\d{2}-\d{2}\/\d+\b/;
+const ENTRY_KEY = /\b[A-Z]{1,4}-\d{1,6}\b/g;
+const fold = (text: string) => text.toLowerCase().replace(/\s+/g, " ");
+
+/**
+ * Why `text` can't go to this person, or undefined when it can: what an owner-level turn writes
+ * to someone else holds no amount, no invoice or quote number, no client's terms, and no key or
+ * title of an entry they don't see. Checked on the text, so the message stands on its own.
+ */
+export const unreadableBy = Effect.fn("KinTeamView.unreadableBy")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  text: string,
+) {
+  if (AMOUNT.test(text) || MONEY_NUMBER.test(text))
+    return "it names an amount or a money document. Keep amounts out of a message to a teammate";
+  const sql = yield* SqlClient.SqlClient;
+  const keys = [...new Set(text.match(ENTRY_KEY) ?? [])];
+  if (keys.length > 0) {
+    const rows = yield* sql<{ key: string }>`SELECT r.key FROM kin_records r
+      WHERE r.org_id = ${orgId} AND r.key IN ${sql.in(keys)} AND NOT ${personSees(sql, personId)}
+      ORDER BY r.key LIMIT 1`;
+    if (rows[0] !== undefined) return `${rows[0].key} is something they can't see`;
+  }
+  const folded = fold(text);
+  // Labelled entries they can't see, and every client's terms, by their words.
+  const hidden = yield* sql<{ words: string | null }>`SELECT r.title AS words FROM kin_records r
+      WHERE r.org_id = ${orgId} AND ${sensitiveNow(sql)} AND NOT ${personSees(sql, personId)}
+        AND length(r.title) >= 6
+    UNION ALL SELECT json_extract(r.fields_json, '$.terms') FROM kin_records r
+      WHERE r.org_id = ${orgId} AND r.register_id = 'clients'
+        AND length(json_extract(r.fields_json, '$.terms')) >= 10
+    LIMIT 2000`;
+  const named = hidden.find((row) => row.words !== null && folded.includes(fold(row.words)));
+  return named === undefined
+    ? undefined
+    : "it repeats a private entry or a client's terms they can't see";
+});

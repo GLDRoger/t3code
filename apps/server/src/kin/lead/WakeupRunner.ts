@@ -988,8 +988,15 @@ const make = Effect.gen(function* () {
                 existingThreadId = null;
               }
             }
-            const urgent =
-              yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND priority IN ('P0', 'P1') LIMIT 1`;
+            // Anyone writing to the agent one to one gets its strong model: what they ask may
+            // need a decision or a hand-over.
+            const urgent = yield* sql`SELECT 1 FROM kin_events e
+              WHERE e.org_id = ${orgId} AND e.wakeup_id = ${wakeupId}
+                AND (e.priority IN ('P0', 'P1') OR (e.tag = 'chat.message'
+                  AND json_extract(e.json, '$.provenance._tag') = 'human'
+                  AND EXISTS (SELECT 1 FROM kin_chats c WHERE c.org_id = e.org_id
+                    AND c.chat_id = json_extract(e.json, '$.chatId') AND c.kind = 'direct')))
+              LIMIT 1`;
             const modelSelection =
               !cheapOnly &&
               (urgent.length > 0 ||

@@ -271,7 +271,10 @@ describe("pulse check-ins", () => {
           viewer: { _tag: "people", people: [mate] },
         });
         const factKey = facts.find((fact) => fact.subject.key === "W-8")!.key;
-        assert.include(yield* send(MONDAY + 7 * HOUR, factKey), "outside their working hours");
+        // Before their hours: the refusal names when they start and how to ask them then (H16).
+        const early = yield* send(MONDAY + 7 * HOUR, factKey);
+        assert.match(early, /outside their working hours and starts at 2026-11-16T\d\d:\d\d/);
+        assert.include(early, "kin_defer");
         assert.include(yield* send(MONDAY + 10 * HOUR, "task_late:nope"), "can't see that fact");
         assert.strictEqual(yield* send(MONDAY + 10 * HOUR, factKey), "sent");
         assert.include(yield* send(MONDAY + 15 * HOUR, factKey), "already nudged today");

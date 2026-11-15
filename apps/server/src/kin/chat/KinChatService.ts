@@ -112,6 +112,8 @@ type SendInput = KinMessagesSendInput & {
   readonly floorGrant?: string | undefined;
   /** The authenticated session sending, set by the transport; only its own uploads are claimed. */
   readonly uploader?: PendingUploadOwner;
+  /** Words checked for everyone who reads the chat (`KinLevelGate.postTo`), not the owner's. */
+  readonly forChat?: true;
 };
 type WidgetUpsertInput = {
   readonly chatId: KinChatId;
@@ -718,6 +720,7 @@ const make = Effect.gen(function* () {
       readonly publish?: boolean;
       readonly floorRunId?: string | null;
       readonly clientId: { readonly kind: "send" | "act"; readonly id: string } | null;
+      readonly forChat?: boolean;
     },
   ) {
     // A reply the caller names must be one it may read; a hidden one reads as missing.
@@ -730,7 +733,7 @@ const make = Effect.gen(function* () {
     const messageId = yield* decodeMessageId(SecureRandom.uuidV4Unsafe()).pipe(Effect.orDie);
     const message = yield* repo.insertMessage({
       orgId: identity.orgId,
-      audience: yield* authorAudience(identity),
+      audience: input.forChat === true ? "chat" : yield* authorAudience(identity),
       caller: identity._tag === "agent" ? identity.caller : undefined,
       wakeupId: identity._tag === "agent" ? identity.wakeupId : undefined,
       chatId: input.chatId,
@@ -1137,6 +1140,7 @@ const make = Effect.gen(function* () {
       replyTo: request.replyTo ?? null,
       widgetId: null,
       clientId: { kind: "send", id: request.clientMessageId },
+      forChat: identity._tag === "agent" && input.forChat === true,
     });
     // A reply someone waits on doesn't use up the hourly room for unprompted notices.
     if (

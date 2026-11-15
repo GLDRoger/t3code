@@ -141,7 +141,7 @@ const runNudge = Effect.fnUntraced(function* (lead: Lead, input: typeof PulseNud
   if (Option.isNone(kin.services))
     return yield* new KinChatError({ reason: "disabled", message: "Kin is not running here." });
   const chat = Context.get(kin.services.value, KinChatService);
-  const { agent, post } = yield* agentServices;
+  const { agent, postTo } = yield* agentServices;
   const sent = yield* nudge({
     orgId: lead.orgId,
     agentId: lead.agentId,
@@ -168,11 +168,13 @@ const runNudge = Effect.fnUntraced(function* (lead: Lead, input: typeof PulseNud
               }),
           ),
         ),
-    post: (chatId, clientMessageId) =>
-      post(agent, { chatId, body: input.text, intent: "question", clientMessageId }).pipe(
-        Effect.asVoid,
-        Effect.mapError(failure),
-      ),
+    post: (chatId, clientMessageId, personId) =>
+      postTo(agent, personId, {
+        chatId,
+        body: input.text,
+        intent: "question",
+        clientMessageId,
+      }).pipe(Effect.asVoid, Effect.mapError(failure)),
   });
   return {
     person: sent.person,
