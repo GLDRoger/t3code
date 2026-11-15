@@ -23,7 +23,7 @@ type HostsError = KinChatError | PersistenceSqlError;
 const notFound = new KinChatError({ reason: "not_found", message: "Kin organization not found." });
 const notAllowed = new KinChatError({
   reason: "not_allowed",
-  message: "Only the organization owner can choose where visuals may load from.",
+  message: "Only the owner or a co-owner can choose where visuals may load from.",
 });
 const invalid = new KinChatError({
   reason: "invalid_state",

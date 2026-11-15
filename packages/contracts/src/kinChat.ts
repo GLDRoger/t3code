@@ -135,6 +135,13 @@ export const KinOrg = Schema.Struct({
   createdAt: IsoDateTime,
 });
 export type KinOrg = typeof KinOrg.Type;
+/** What a person is in the company. Owner and co-owner are owner-level; a member is a teammate. */
+export const KIN_PERSON_ACCESS = ["owner", "co_owner", "member"] as const;
+export const KinPersonAccess = Schema.Literals(KIN_PERSON_ACCESS);
+export type KinPersonAccess = typeof KinPersonAccess.Type;
+export const kinOwnerLevel = (access: KinPersonAccess | undefined) =>
+  access === "owner" || access === "co_owner";
+
 /** A word for what someone does, such as tech, design or sales: a short lowercase slug. */
 export const KinRoleTag = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,23}$/));
 export const KIN_ROLE_TAGS_MAX = 6;
@@ -146,6 +153,8 @@ export const KinPerson = Schema.Struct({
   handle: KinTrimmedText,
   displayName: KinTrimmedText,
   githubLogin: Schema.NullOr(KinTrimmedText),
+  // Absent from a host older than kinds.
+  access: Schema.optional(KinPersonAccess),
 });
 export type KinPerson = typeof KinPerson.Type;
 export const KinAgent = Schema.Struct({

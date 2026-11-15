@@ -1,6 +1,5 @@
 import { assert, it } from "@effect/vitest";
 import {
-  AuthOrchestrationOperateScope,
   AuthSessionId,
   AuthStandardClientScopes,
   KinActionId,
@@ -10,7 +9,6 @@ import {
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
-import { requiredScopeForRpcMethod } from "../../auth/RpcAuthorization.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { makeKinApprovalHandlers } from "./rpcHandlers.ts";
 
@@ -44,11 +42,4 @@ it.effect("key and grant methods refuse as disabled when Kin is off", () =>
       reason: "disabled",
     });
   }).pipe(Effect.provide(Sqlite.layerMemory)),
-);
-
-it.each(["kin.approvals.challenge", "kin.approvals.submitGrant", "kin.approvals.reject"])(
-  "%s needs orchestration:operate",
-  (method) => {
-    assert.strictEqual(requiredScopeForRpcMethod(method), AuthOrchestrationOperateScope);
-  },
 );

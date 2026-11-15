@@ -4,6 +4,7 @@ import { isElectron } from "../env";
 import { isChatOnlySession } from "../environments/primary";
 import { KinChatList } from "./KinChatList";
 import { KinNewLeadButton } from "./KinNewLeadButton";
+import { KinSettingsButton } from "./KinSettingsView";
 
 /** The app sidebar while Kin is the open list: the same chrome as threads, over Kin's chats. */
 export function KinSidebar() {
@@ -18,6 +19,7 @@ export function KinSidebar() {
               <h2 className="min-w-0 flex-1 text-sm font-medium text-sidebar-muted-foreground">
                 Chats
               </h2>
+              <KinSettingsButton />
               <KinNewLeadButton />
             </div>
           </SidebarGroup>
