@@ -137,7 +137,9 @@ export const actorOf = (kind: string, id: string | null): Actor =>
   kind === "system" ? { _tag: "system" } : (principal(kind, id) ?? { _tag: "system" });
 
 /** Whether `r`'s client, its project or its project's client is labelled sensitive (design 4.9). */
-const inheritedSensitive = (sql: SqlClient.SqlClient) => sql`EXISTS (SELECT 1 FROM kin_records s
+export const inheritedSensitive = (
+  sql: SqlClient.SqlClient,
+) => sql`EXISTS (SELECT 1 FROM kin_records s
     WHERE s.org_id = r.org_id AND s.sensitive = 1 AND s.record_id IN (r.party_id, r.project_id,
       (SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id AND p.record_id = r.project_id)))`;
 

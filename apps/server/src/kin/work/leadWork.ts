@@ -70,7 +70,7 @@ import {
   showsSensitive,
   turnSensitive,
 } from "./workerAttempts.ts";
-import { TEAM_REFUSED, teamChanges, viewVisible } from "./teamView.ts";
+import { ledProjects, TEAM_REFUSED, teamChanges, viewSees, viewVisible } from "./teamView.ts";
 
 /** The lead tools' inputs, results and the one call each makes. Model-facing text lives in `mcp/tools.ts`. */
 
@@ -665,11 +665,14 @@ const resolveRef = Effect.fn("KinWorkTools.resolveRef")(function* (
   list: "clients" | "projects",
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ recordId: string; key: string }>`SELECT record_id AS "recordId", key
-    FROM kin_records WHERE org_id = ${lead.orgId} AND register_id = ${list}
-      AND (key = ${text.toUpperCase()} OR (lower(title) = lower(${text})
-        AND state NOT IN ('done', 'dropped')))
-    ORDER BY key = ${text.toUpperCase()} DESC, key LIMIT 3`;
+  // In a turn others read, one they may not all see is no client or project at all.
+  const team = yield* viewOf(lead);
+  const rows = yield* sql<{ recordId: string; key: string }>`SELECT r.record_id AS "recordId", r.key
+    FROM kin_records r WHERE r.org_id = ${lead.orgId} AND r.register_id = ${list}
+      AND (r.key = ${text.toUpperCase()} OR (lower(r.title) = lower(${text})
+        AND r.state NOT IN ('done', 'dropped')))
+      AND ${team === undefined ? sql`1 = 1` : viewSees(sql, team.people)}
+    ORDER BY r.key = ${text.toUpperCase()} DESC, r.key LIMIT 3`;
   const noun = LISTS[list].noun;
   if (rows.length === 0)
     return yield* new KinChatError({
@@ -770,7 +773,7 @@ const moneyPatch = Effect.fn("KinWorkTools.moneyPatch")(function* (
  * In a turn others read, the people Work answers for (`turnPeople`): only tasks every one of them
  * sees, shaped as their own screens show them. `undefined` in the owner's own turn.
  */
-const viewOf = Effect.fn("KinWorkTools.viewOf")(function* (lead: Lead) {
+export const viewOf = Effect.fn("KinWorkTools.viewOf")(function* (lead: Lead) {
   if ((yield* effectiveAudience(lead)) === "owner_only") return undefined;
   const behind = yield* turnPeople(lead);
   // A chat once shared that only the owner reads now gets none of his Work either.
@@ -828,10 +831,34 @@ const teamRow = ({
 }: typeof Row.Type) => row;
 
 /** A writer acting for the people behind a shared turn; the one who asked is its assigner. */
-const viewWriter = (writer: Writer, view: View): Writer => ({
+export const viewWriter = (writer: Writer, view: View): Writer => ({
   ...writer,
   askedBy: view.askers.length === 1 ? view.askers[0]! : null,
   view: { people: view.people, askers: view.askers },
+});
+
+/** Whether every person behind a shared turn leads this project: it then runs at their level. */
+const viewLeads = Effect.fn("KinWorkTools.viewLeads")(function* (
+  lead: Lead,
+  view: View,
+  projectId: string | null | undefined,
+) {
+  if (projectId === null || projectId === undefined || view.people.length === 0) return false;
+  for (const person of view.people) {
+    const led = yield* ledProjects(lead.orgId, person);
+    if (!led.some((project) => project.recordId === projectId)) return false;
+  }
+  return true;
+});
+/** A row read whole in a shared turn: a doc or list entry they all see, or their led project's. */
+const viewWhole = Effect.fn("KinWorkTools.viewWhole")(function* (
+  lead: Lead,
+  view: View,
+  row: RecordRow,
+) {
+  if (row.registerId === "clients" || row.registerId === "contacts") return false;
+  if (row.registerId !== "work") return true;
+  return yield* viewLeads(lead, view, row.projectId);
 });
 
 /** Refused, as the gate does, if the turn became one others read since the call was admitted. */
@@ -882,10 +909,8 @@ const titleKey = (title: string) => title.trim().replace(/\s+/g, " ").toLowerCas
 const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInput.Type) {
   const records = yield* KinRecords;
   const team = yield* viewOf(lead);
-  if (
-    team !== undefined &&
-    ((input.list !== undefined && input.list !== "work") || ownersInput(input))
-  )
+  // Every row is limited to what they all see (`viewSees`), so a list or project only narrows it.
+  if (team !== undefined && ownersInput({ ...input, project: undefined }))
     return yield* TEAM_REFUSED;
   const list = input.list === undefined ? undefined : yield* listFor(lead, input.list);
   const owner = input.owner === undefined ? undefined : yield* resolveWho(lead, input.owner);
@@ -923,11 +948,12 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
   const now = yield* Clock.currentTimeMillis;
   const view = yield* viewFor(lead, page.rows);
   if (team !== undefined) {
-    const shown: typeof QueryResult.Type = {
-      asOf: iso(now),
-      total: page.total,
-      records: page.rows.map((row) => teamRow(rowFor(view, row, now))),
-    };
+    const records = [];
+    for (const row of page.rows) {
+      const shown = rowFor(view, row, now);
+      records.push((yield* viewWhole(lead, team, row)) ? shown : teamRow(shown));
+    }
+    const shown: typeof QueryResult.Type = { asOf: iso(now), total: page.total, records };
     return shown;
   }
   const withAmounts = list !== undefined && (list.amount || list.builtIn === "work");
@@ -1046,7 +1072,8 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
   const actor = (by: (typeof detail.changes)[number]["by"]) =>
     by._tag === "system" ? "Kin" : (name(by) ?? "someone");
   const assignedBy = name(detail.assignedBy);
-  if (team !== undefined) {
+  const whole = team !== undefined && (yield* viewWhole(lead, team, row));
+  if (team !== undefined && !whole) {
     const shown: typeof GetResult.Type = {
       ...teamRow(rowFor(view, row, now)),
       notes: detail.notes,
@@ -1147,16 +1174,25 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
   yield* admitted(lead, "record_create", input);
   const records = yield* KinRecords;
   const team = yield* viewOf(lead);
-  if (
-    team !== undefined &&
-    input.records.some(
-      (row) =>
+  // Inside a project everyone behind the turn leads, it files and assigns as they would; the
+  // write's own check (`teamGuard`) decides again for each of them.
+  const leads = new Set<string>();
+  if (team !== undefined)
+    for (const row of input.records) {
+      const projectId = yield* refOrNull(lead, row.project, "projects");
+      if (
+        projectId !== null &&
+        projectId !== undefined &&
+        (yield* viewLeads(lead, team, projectId))
+      )
+        leads.add(row.project ?? "");
+      else if (
         (row.list !== undefined && row.list !== "work") ||
         (row.owner !== undefined && row.owner !== "me") ||
-        ownersInput(row, ["suggested"]),
-    )
-  )
-    return yield* TEAM_REFUSED;
+        ownersInput(row, ["suggested"])
+      )
+        return yield* TEAM_REFUSED;
+    }
   const source = yield* sourceOf(lead, input.sourceEventId);
   const owned = yield* writerFor(lead);
   const writer =
@@ -1212,8 +1248,8 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
     const fields = { ...fieldsFrom(row), ...spineSet };
     const inProject = projectId !== undefined ? projectId : spine.projectId;
     const { row: stored, created } = yield* records.create(lead.orgId, writer, {
-      // A teammate files only Work, which is the default.
-      ...(team === undefined ? { list } : {}),
+      // A teammate files only Work, which is the default; a project's lead in its lists too.
+      ...(team === undefined || leads.has(row.project ?? "\u0000") ? { list } : {}),
       originKey,
       title: row.title,
       owner,
@@ -1272,8 +1308,6 @@ const runUpdate = Effect.fnUntraced(function* (lead: Lead, input: typeof UpdateI
   yield* admitted(lead, "record_update", input);
   const records = yield* KinRecords;
   const team = yield* viewOf(lead);
-  // Who holds a task is the owner's to change here: a new holder clears its assigner.
-  if (team !== undefined && ownersInput(input, ["owner"])) return yield* TEAM_REFUSED;
   yield* sourceOf(lead, input.sourceEventId);
   const owned = yield* writerFor(lead);
   const writer = team === undefined ? owned : viewWriter(owned, team);
@@ -1281,6 +1315,14 @@ const runUpdate = Effect.fnUntraced(function* (lead: Lead, input: typeof UpdateI
   if (before === undefined) return yield* notFound(input.key);
   if (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, before.recordId)))
     return yield* notFound(input.key);
+  // Who holds a task is the owner's to change here, and its lead's inside their project: a new
+  // holder clears its assigner. The write's own check (`teamGuard`) decides again.
+  if (
+    team !== undefined &&
+    ownersInput(input, ["owner"]) &&
+    !(yield* viewLeads(lead, team, before.projectId))
+  )
+    return yield* TEAM_REFUSED;
   if (listOf(before.registerId) === "docs") return yield* isDoc(input.key);
   const def = yield* listFor(lead, before.registerId);
   const patch: Patch = {

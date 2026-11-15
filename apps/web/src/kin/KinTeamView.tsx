@@ -12,6 +12,7 @@ import {
   kinTeamEntrySummary,
   kinTeamView,
   KIN_ACCESS_CHOICES,
+  KIN_PLACE_SWITCHES,
   kinAccessChangeCopy,
   kinTeammateActions,
   kinTeammateKindEditable,
@@ -30,6 +31,8 @@ import type {
   KinPeopleSetAccessInput,
   KinPersonAccess,
   KinPersonId,
+  KinPersonPlaceSwitches,
+  KinPersonPlaces,
 } from "@t3tools/contracts";
 import { Link, useNavigate } from "@tanstack/react-router";
 import * as Option from "effect/Option";
@@ -66,6 +69,7 @@ import {
   SheetTitle,
 } from "../components/ui/sheet";
 import { Skeleton } from "../components/ui/skeleton";
+import { Switch } from "../components/ui/switch";
 import { connectionAtomRuntime } from "../connection/runtime";
 import { isElectron } from "../env";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -120,6 +124,7 @@ function useKinTeam(target: KinTeamTarget) {
       : {
           people: heldPeople.people,
           joined: heldPeople.joined,
+          places: heldPeople.places,
           invites: heldInvites.invites,
           profiles,
         };
@@ -487,6 +492,14 @@ function KinTeammateSheet(props: {
               </RadioGroup>
             </Section>
           ) : null}
+          {teammate.places === null || teammate.personId === null ? null : (
+            <KinTeammatePlaces
+              places={teammate.places}
+              personId={teammate.personId}
+              environmentId={props.environmentId}
+              orgId={props.orgId}
+            />
+          )}
           <Section title="Agents">
             {teammate.personId === null ? (
               <p className="text-sm text-muted-foreground">
@@ -617,6 +630,76 @@ function KinTeammateSheet(props: {
         </AlertDialog>
       )}
     </Sheet>
+  );
+}
+
+/** A member's places beyond Tasks, and the projects they lead (set on each project's page). */
+function KinTeammatePlaces(props: {
+  readonly places: KinPersonPlaces;
+  readonly personId: KinPersonId;
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+}) {
+  const { places, personId, environmentId, orgId } = props;
+  const setPlaces = useAtomCommand(kinClient.personSetPlaces, { reportFailure: false });
+  // What the owner just switched, shown until the host's next read agrees or refuses.
+  const [asked, setAsked] = useState<Partial<KinPersonPlaceSwitches>>({});
+  const [problem, setProblem] = useState<string | null>(null);
+  const flip = async (place: keyof KinPersonPlaceSwitches, on: boolean) => {
+    setProblem(null);
+    setAsked((held) => ({ ...held, [place]: on }));
+    const result = await setPlaces({ environmentId, input: { orgId, personId, [place]: on } });
+    if (AsyncResult.isFailure(result))
+      setProblem("That didn't save. Check your connection and try again.");
+    await refreshKinTeam({ environmentId, orgId });
+    setAsked((held) => {
+      const { [place]: _done, ...rest } = held;
+      return rest;
+    });
+  };
+  return (
+    <>
+      <Section title="What they can see">
+        <p className="text-xs text-muted-foreground">Tasks shared with the team, always.</p>
+        {KIN_PLACE_SWITCHES.map((entry) => {
+          const id = `kin-place-${entry.place}`;
+          return (
+            <div key={entry.place} className="flex items-start justify-between gap-3">
+              <label htmlFor={id} className="flex min-w-0 flex-col gap-0.5">
+                <span className="text-sm text-foreground">{entry.label}</span>
+                <span className="text-xs text-muted-foreground">{entry.detail}</span>
+              </label>
+              <Switch
+                id={id}
+                checked={asked[entry.place] ?? places[entry.place]}
+                disabled={asked[entry.place] !== undefined}
+                onCheckedChange={(on) => void flip(entry.place, on)}
+              />
+            </div>
+          );
+        })}
+        {problem === null ? null : (
+          <p role="alert" className="text-xs text-destructive-foreground">
+            {problem}
+          </p>
+        )}
+      </Section>
+      <Section title="Projects they lead">
+        {places.leads.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            None. Make them a project's lead on that project's page.
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-1">
+            {places.leads.map((project) => (
+              <li key={project.recordId} className="truncate text-sm text-foreground">
+                {project.title}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Section>
+    </>
   );
 }
 

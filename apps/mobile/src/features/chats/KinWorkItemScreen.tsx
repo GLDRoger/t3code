@@ -662,9 +662,15 @@ function KinWorkItemBody(props: ItemTarget) {
 }
 
 /** What just happened to the task: said quietly when it worked, plainly when it didn't. */
-/** The owner's switch for whether teammates see the task; a teammate never gets it. */
-function KinWorkShareRow(
-  props: ItemTarget & { readonly shared: boolean; readonly disabled: boolean },
+/** The owner's switch for whether teammates see a task or doc; a teammate never gets it. */
+export function KinWorkShareRow(
+  props: ItemTarget & {
+    readonly shared: boolean;
+    readonly disabled: boolean;
+    readonly copy?: typeof KIN_WORK_SHARE;
+    /** Reads the record again once the host answers; the task by default. */
+    readonly onSettled?: () => void;
+  },
 ) {
   const { environmentId, orgId, itemKey } = props;
   const canShare = useAtomValue(kinClient.workShare.permissionAtom(environmentId));
@@ -673,13 +679,14 @@ function KinWorkShareRow(
   const [asked, setAsked] = useState<{ readonly to: boolean; readonly from: boolean } | null>(null);
   const [pending, setPending] = useState(false);
   const [failed, setFailed] = useState(false);
+  const copy = props.copy ?? KIN_WORK_SHARE;
   if (!canShare) return null;
   const shared = asked !== null && asked.from === props.shared ? asked.to : props.shared;
   return (
     <ListToggleRow
       icon="person.2"
-      label={KIN_WORK_SHARE.label}
-      description={failed ? KIN_WORK_SHARE.failed : shared ? KIN_WORK_SHARE.on : KIN_WORK_SHARE.off}
+      label={copy.label}
+      description={failed ? copy.failed : shared ? copy.on : copy.off}
       value={shared}
       disabled={props.disabled || pending}
       onValueChange={(on) => {
@@ -692,9 +699,11 @@ function KinWorkShareRow(
             setFailed(refused);
             setPending(false);
             if (refused) setAsked(null);
-            appAtomRegistry.refresh(
-              kinClient.workItem({ environmentId, input: { orgId, key: itemKey } }),
-            );
+            if (props.onSettled !== undefined) props.onSettled();
+            else
+              appAtomRegistry.refresh(
+                kinClient.workItem({ environmentId, input: { orgId, key: itemKey } }),
+              );
           },
         );
       }}

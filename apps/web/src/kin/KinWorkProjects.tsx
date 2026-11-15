@@ -6,16 +6,25 @@ import {
   kinWorkDraftFor,
   type KinWorkDraft,
 } from "@t3tools/client-runtime/kin/kinWork";
+import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
 import {
   KIN_PROJECTS,
   KIN_PROJECT_FAILED,
   KIN_PROJECT_GONE,
+  KIN_PROJECT_LEAD,
+  kinProjectLeadChoices,
   kinProjectPageView,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import { kinWorkSend, type KinWorkFormProblem } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
-import type { KinProjectPage, KinProjectState, KinRecordKey } from "@t3tools/contracts";
+import type {
+  KinPersonId,
+  KinProjectPage,
+  KinProjectState,
+  KinRecordKey,
+  KinWorkPrincipal,
+} from "@t3tools/contracts";
 import { EllipsisIcon, ExternalLinkIcon, PencilIcon, PlusIcon } from "lucide-react";
 import { useId, useState } from "react";
 
@@ -23,6 +32,14 @@ import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
 import { Button } from "../components/ui/button";
 import { Label } from "../components/ui/label";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
+import { Radio, RadioGroup } from "../components/ui/radio-group";
+import {
+  Sheet,
+  SheetDescription,
+  SheetHeader,
+  SheetPopup,
+  SheetTitle,
+} from "../components/ui/sheet";
 import { Switch } from "../components/ui/switch";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinDocsUnder } from "./KinDocsList";
@@ -108,14 +125,16 @@ function ProjectPage(
   const [addingMilestone, setAddingMilestone] = useState(false);
   const [problem, setProblem] = useState<KinWorkFormProblem | null>(null);
   const [busy, setBusy] = useState(false);
+  const [choosingLead, setChoosingLead] = useState(false);
   const privateId = useId();
   const view = kinProjectPageView(page, names, now);
   const { party } = view;
   const change = async (input: {
     readonly state?: KinProjectState;
     readonly sensitive?: boolean;
+    readonly owner?: KinWorkPrincipal;
   }) => {
-    if (busy) return;
+    if (busy) return false;
     setBusy(true);
     setProblem(null);
     const outcome = await kinWorkSend({
@@ -132,7 +151,12 @@ function ProjectPage(
       setProblem(outcome.problem);
       if (outcome.problem.kind === "conflict") props.onRefresh();
     }
+    return outcome.ok;
   };
+  // A project's lead adds its milestones too; the host checks they still lead it.
+  const leads =
+    view.lead.personId !== null &&
+    view.lead.personId === kinFeedViewer(props.directory.orgs, orgId).personId;
   const addTask =
     props.onAddTask === null || view.closed !== null
       ? null
@@ -220,6 +244,17 @@ function ProjectPage(
           <KinWorkProblem problem={problem} onOpenExisting={props.onOpenProject} />
         )}
       </div>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <h3 className="text-xs font-medium text-muted-foreground">{KIN_PROJECT_LEAD.title}</h3>
+          <p className="truncate text-sm text-foreground">{view.lead.name}</p>
+        </div>
+        {canChange ? (
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => setChoosingLead(true)}>
+            {KIN_PROJECT_LEAD.change}
+          </Button>
+        ) : null}
+      </div>
       {view.specChanged.length === 0 ? null : (
         <KinWorkSection title={KIN_PROJECTS.specChanged}>
           <ul className="-mx-2 flex flex-col">
@@ -241,7 +276,7 @@ function ProjectPage(
       <KinWorkSection
         title={KIN_PROJECTS.milestones}
         action={
-          canChange && view.closed === null ? (
+          (canChange || leads) && view.closed === null ? (
             <Button size="xs" variant="ghost" onClick={() => setAddingMilestone(true)}>
               <PlusIcon />
               {KIN_PROJECTS.addMilestone}
@@ -499,6 +534,17 @@ function ProjectPage(
           onClose={() => setAddingMilestone(false)}
         />
       ) : null}
+      {choosingLead ? (
+        <KinProjectLeadSheet
+          current={view.lead.personId}
+          people={props.directory.people}
+          busy={busy}
+          onSave={async (personId) => {
+            if (await change({ owner: { _tag: "person", personId } })) setChoosingLead(false);
+          }}
+          onClose={() => setChoosingLead(false)}
+        />
+      ) : null}
       {editing ? (
         <KinProjectDialog
           environmentId={environmentId}
@@ -518,5 +564,66 @@ function ProjectPage(
         />
       ) : null}
     </>
+  );
+}
+
+/** The owner picks who leads a project; the host applies it on the lead's next request. */
+function KinProjectLeadSheet(props: {
+  readonly current: KinPersonId | null;
+  readonly people: Parameters<typeof kinProjectLeadChoices>[0];
+  readonly busy: boolean;
+  readonly onSave: (personId: KinPersonId) => Promise<void>;
+  readonly onClose: () => void;
+}) {
+  const choices = kinProjectLeadChoices(props.people);
+  const [picked, setPicked] = useState<KinPersonId | null>(props.current);
+  return (
+    <Sheet
+      open
+      onOpenChange={(open) => {
+        if (!open && !props.busy) props.onClose();
+      }}
+    >
+      <SheetPopup side="right">
+        <SheetHeader>
+          <SheetTitle>{KIN_PROJECT_LEAD.choose}</SheetTitle>
+          <SheetDescription>{KIN_PROJECT_LEAD.detail}</SheetDescription>
+        </SheetHeader>
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pb-6">
+          <RadioGroup
+            value={picked ?? ""}
+            disabled={props.busy}
+            onValueChange={(value) => {
+              const choice = choices.find((held) => held.personId === value);
+              if (choice !== undefined) setPicked(choice.personId);
+            }}
+          >
+            {choices.map((choice) => (
+              <label
+                key={choice.personId}
+                className="flex min-h-11 cursor-pointer items-center gap-3 rounded-md px-2 hover:bg-accent"
+              >
+                <Radio value={choice.personId} />
+                <span className="truncate text-sm text-foreground">{choice.name}</span>
+              </label>
+            ))}
+          </RadioGroup>
+        </div>
+        <div className="flex justify-end gap-2 border-t border-border px-6 py-4">
+          <Button variant="outline" disabled={props.busy} onClick={props.onClose}>
+            Cancel
+          </Button>
+          <Button
+            disabled={props.busy || picked === null || picked === props.current}
+            aria-busy={props.busy}
+            onClick={() => {
+              if (picked !== null) void props.onSave(picked);
+            }}
+          >
+            {KIN_PROJECT_LEAD.save}
+          </Button>
+        </div>
+      </SheetPopup>
+    </Sheet>
   );
 }

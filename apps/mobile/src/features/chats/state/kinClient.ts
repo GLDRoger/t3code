@@ -563,6 +563,12 @@ export const kinClient = {
     concurrency: { mode: "singleFlight", key: ({ input }) => input.personId },
   }),
   /** The owner makes someone a co-owner or a member again. */
+  /** The owner turns a member's Clients, Docs and Money on or off. */
+  personSetPlaces: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:person:set-places",
+    tag: KIN_PEOPLE_WS_METHODS.peopleSetPlaces,
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.personId },
+  }),
   personSetAccess: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:person:set-access",
     tag: KIN_PEOPLE_WS_METHODS.peopleSetAccess,

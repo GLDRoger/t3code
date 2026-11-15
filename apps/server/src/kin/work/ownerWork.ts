@@ -44,16 +44,18 @@ import {
   notFound,
   ownerZone,
   principal,
+  type RecordRow,
   toRecord,
   unavailable,
   workFailure,
 } from "./recordRows.ts";
 import {
   TEAM_REFUSED,
+  ledProjects,
   teamDetail,
   teamKeys,
   teamRecord,
-  teamSees,
+  personSees,
   teamSeesKey,
   teamSeq,
   teamVisible,
@@ -80,7 +82,7 @@ export const theOwner = Effect.fn("KinWork.owner")(function* (
 });
 
 /** The caller in this org, and whether they are a teammate rather than owner-level. */
-const viewerOf = Effect.fn("KinWork.viewer")(function* (
+export const viewerOf = Effect.fn("KinWork.viewer")(function* (
   people: ReadonlyArray<PersonIdentity>,
   orgId: KinOrgId,
 ) {
@@ -95,7 +97,7 @@ const viewerOf = Effect.fn("KinWork.viewer")(function* (
         !(yield* ownerLevel(orgId, person.personId).pipe(Effect.mapError(() => ownerOnly)))),
   };
 });
-type Viewer = Effect.Success<ReturnType<typeof viewerOf>>;
+export type Viewer = Effect.Success<ReturnType<typeof viewerOf>>;
 const writerOf = (viewer: Viewer): Writer =>
   viewer.teammate ? { ...ownerWriter(viewer.person), teammate: true } : ownerWriter(viewer.person);
 /** A teammate's write and its answer run in one transaction: what it checks holds as it commits. */
@@ -164,10 +166,32 @@ const refId = Effect.fn("KinWork.refId")(function* (
   list: "clients" | "projects",
 ) {
   if (key === undefined) return undefined;
-  if (viewer.teammate) return yield* key === null ? ownerOnly : missing(key, list);
+  if (viewer.teammate) {
+    if (key === null) return yield* ownerOnly;
+    // A project's lead files its work under it.
+    const led = list === "projects" ? yield* ledIds(viewer) : new Set<string>();
+    const row = led.size === 0 ? undefined : yield* (yield* KinRecords).get(orgId, key);
+    if (row === undefined || row.registerId !== "projects" || !led.has(row.recordId))
+      return yield* missing(key, list);
+    return row.recordId;
+  }
   if (key === null) return null;
   return (yield* inList(orgId, key, list)).recordId;
 });
+
+/** The projects a teammate leads, read per request. */
+const ledIds = Effect.fn("KinWork.ledIds")(function* (viewer: Viewer) {
+  if (!viewer.teammate) return new Set<string>();
+  const led = yield* ledProjects(viewer.person.orgId, viewer.person.personId).pipe(workFailure);
+  return new Set<string>(led.map((project) => project.recordId));
+});
+
+/**
+ * A row a teammate may see, as they read it: a task outside the projects they lead keeps only
+ * what the task says (`teamRecord`); a client loses its terms; anything else reads whole.
+ */
+const plainTask = (row: Pick<RecordRow, "registerId" | "projectId">, led: Set<string>) =>
+  row.registerId === "work" && (row.projectId === null || !led.has(row.projectId));
 
 /**
  * An agent a teammate gives a task to: one whose owner lets them message it, and their direct
@@ -199,18 +223,20 @@ export const list = Effect.fn("KinWork.list")(function* (
   input: KinWorkListInput,
 ) {
   const viewer = yield* viewerOf(people, input.orgId);
-  if (viewer.teammate) {
-    if (input.list !== undefined && input.list !== "work") return yield* unknownList(input.list);
-    if (
-      input.totalsBy !== undefined ||
+  // A task's amount is the owner's, so sums and money filters over tasks are too; a list's
+  // entries a teammate sees whole (`personSees`), figures included.
+  if (
+    viewer.teammate &&
+    (input.list === undefined || input.list === "work") &&
+    (input.totalsBy !== undefined ||
       input.listCategory !== undefined ||
       input.dateFrom !== undefined ||
       input.dateTo !== undefined ||
       input.paidFrom !== undefined ||
-      input.paidTo !== undefined
-    )
-      return yield* ownerOnly;
-  }
+      input.paidTo !== undefined)
+  )
+    return yield* ownerOnly;
+  const led = yield* ledIds(viewer);
   const records = yield* KinRecords;
   const cursor = yield* parseCursor(input.cursor);
   const partyId = yield* refId(viewer, input.orgId, input.party, "clients");
@@ -271,7 +297,7 @@ export const list = Effect.fn("KinWork.list")(function* (
   return {
     records: page.rows.map((row): KinRecord => {
       const record = toRecord(row, at);
-      if (viewer.teammate) return teamRecord(record);
+      if (viewer.teammate && plainTask(row, led)) return teamRecord(record);
       const fields = isBuiltIn(row.registerId) ? {} : parseFields(row.fieldsJson);
       return Object.keys(fields).length === 0 ? record : { ...record, fields };
     }),
@@ -310,7 +336,13 @@ export const get = Effect.fn("KinWork.get")(function* (
     ? yield* teamSeq(input.orgId, viewer.person.personId).pipe(workFailure)
     : undefined;
   const row = yield* found(input.orgId, input);
-  return yield* shownTo(viewer, yield* records.detail(row, KIN_RECORD_CHANGES_CAP), input, seq);
+  return yield* shownTo(
+    viewer,
+    yield* records.detail(row, KIN_RECORD_CHANGES_CAP),
+    row,
+    input,
+    seq,
+  );
 });
 
 /**
@@ -320,6 +352,7 @@ export const get = Effect.fn("KinWork.get")(function* (
 const shownTo = Effect.fn("KinWork.shownTo")(function* (
   viewer: Viewer,
   detail: Effect.Success<ReturnType<KinRecords["Service"]["detail"]>>,
+  row: Pick<RecordRow, "registerId" | "projectId">,
   ref: { readonly key: string } | { readonly recordId: string },
   seq?: number,
 ) {
@@ -328,7 +361,11 @@ const shownTo = Effect.fn("KinWork.shownTo")(function* (
   const seen = yield* teamVisible(detail.orgId, personId, [detail.recordId]).pipe(workFailure);
   if (!seen.has(detail.recordId)) return yield* notFound("key" in ref ? ref.key : "with that id");
   const number = seq ?? (yield* teamSeq(detail.orgId, personId).pipe(workFailure));
-  return yield* teamDetail(detail, personId, number).pipe(workFailure);
+  const whole = !plainTask(row, yield* ledIds(viewer));
+  // A client's terms and tax details are the owner's, whoever else sees its name.
+  const { fields: _fields, ...unfielded } = detail;
+  const shown = whole && row.registerId === "clients" ? unfielded : detail;
+  return yield* teamDetail(shown, personId, number, whole).pipe(workFailure);
 });
 
 type Counts = { open: number; doing: number; waiting: number; late: number; dueThisWeek: number };
@@ -344,7 +381,7 @@ export const summary = Effect.fn("KinWork.summary")(function* (
   const seq = viewer.teammate
     ? yield* teamSeq(input.orgId, viewer.person.personId).pipe(workFailure)
     : yield* records.seq(input.orgId);
-  const team = viewer.teammate ? teamSees(sql, viewer.person.personId) : sql`1 = 1`;
+  const team = viewer.teammate ? personSees(sql, viewer.person.personId) : sql`1 = 1`;
   const [closed] = yield* sql<{ closed: number }>`SELECT COUNT(*) AS closed FROM kin_records r
     WHERE r.org_id = ${input.orgId} AND r.register_id = 'work' AND r.state IN ('done', 'dropped')
       AND ${team}`.pipe(Effect.mapError(() => unavailable));
@@ -465,10 +502,10 @@ export const create = Effect.fn("KinWork.create")(function* (
   const partyId = yield* refId(viewer, input.orgId, input.party, "clients");
   const projectId = yield* refId(viewer, input.orgId, input.project, "projects");
   const milestone = input.list === "milestones";
-  if (milestone && (viewer.teammate || projectId === undefined))
+  if (milestone && (projectId === undefined || projectId === null))
     return yield* new KinChatError({
       reason: "invalid_state",
-      message: "A milestone belongs to a project, and only the owner adds one.",
+      message: "A milestone belongs to a project, and only the owner or its lead adds one.",
     });
   // Before anything about the task is read, so its outcome turns on the agent alone.
   if (viewer.teammate) yield* teamAgent(person, owner);
@@ -491,7 +528,7 @@ export const create = Effect.fn("KinWork.create")(function* (
       ...(input.side === undefined ? {} : { side: input.side }),
       ...(input.repo === undefined ? {} : { repo: input.repo }),
     });
-    return yield* shownTo(viewer, yield* records.detail(row, KIN_RECORD_CHANGES_CAP), row);
+    return yield* shownTo(viewer, yield* records.detail(row, KIN_RECORD_CHANGES_CAP), row, row);
   });
   return yield* asViewer(viewer, write);
 });
@@ -516,17 +553,8 @@ export const update = Effect.fn("KinWork.update")(function* (
 ) {
   const viewer = yield* viewerOf(people, input.orgId);
   const { person } = viewer;
-  if (
-    viewer.teammate &&
-    (input.sensitive !== undefined ||
-      input.amount !== undefined ||
-      input.repeat !== undefined ||
-      input.dateAt !== undefined ||
-      input.dateAllDay !== undefined ||
-      input.listCategory !== undefined ||
-      input.fields !== undefined)
-  )
-    return yield* TEAM_REFUSED;
+  // The rest of a teammate's patch is `teamGuard`'s: a project's lead may set more inside it.
+  if (viewer.teammate && input.listCategory !== undefined) return yield* TEAM_REFUSED;
   const due: Patch =
     input.dueAt === undefined
       ? input.dueAllDay === undefined
@@ -676,10 +704,13 @@ const change = Effect.fn("KinWork.change")(function* (
     viewer,
     Effect.gen(function* () {
       const row = yield* records.update(orgId, writerOf(viewer), key, patch, rev);
-      return yield* shownTo(viewer, yield* records.detail(row, KIN_RECORD_CHANGES_CAP), row);
+      return yield* shownTo(viewer, yield* records.detail(row, KIN_RECORD_CHANGES_CAP), row, row);
     }),
   );
 });
+
+/** Clients, contacts and projects are seen by place and by lead; a milestone by its project. */
+const UNSHARED = new Set(["clients", "contacts", "projects", "milestones", "bank_transactions"]);
 
 /**
  * The owner shares tasks with the team or takes them back; taken back, a task stays visible only
@@ -695,16 +726,16 @@ export const share = Effect.fn("KinWork.share")(function* (
   const rows = yield* sql
     .withTransaction(
       Effect.forEach([...new Set(input.keys)], (key) =>
-        inList(input.orgId, key, "work").pipe(
+        found(input.orgId, { key }).pipe(
           Effect.flatMap((row) =>
-            row.registerId === "work"
-              ? records.update(input.orgId, ownerWriter(person), key, { team: input.shared })
-              : Effect.fail(
+            UNSHARED.has(row.registerId)
+              ? Effect.fail(
                   new KinChatError({
                     reason: "invalid_state",
-                    message: `${key.slice(0, 40)} is in a list, and only tasks are shared yet.`,
+                    message: `${key.slice(0, 40)} isn't shared on its own: tasks, docs and list entries are.`,
                   }),
-                ),
+                )
+              : records.update(input.orgId, ownerWriter(person), key, { team: input.shared }),
           ),
         ),
       ),

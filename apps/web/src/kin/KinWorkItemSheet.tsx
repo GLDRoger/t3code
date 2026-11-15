@@ -221,12 +221,15 @@ export function KinWorkItemSheet(
   );
 }
 
-/** The owner's switch for whether teammates see the task; a teammate never gets it. */
-function KinWorkShareRow(
+/** The owner's switch for whether teammates see a task or doc; a teammate never gets it. */
+export function KinWorkShareRow(
   props: KinWorkTarget & {
     readonly itemKey: KinRecordKey;
     readonly shared: boolean;
     readonly disabled: boolean;
+    readonly copy?: typeof KIN_WORK_SHARE;
+    /** Reads the record again once the host answers; a task's sheet by default. */
+    readonly onSettled?: () => void;
   },
 ) {
   const { environmentId, orgId, itemKey } = props;
@@ -237,14 +240,15 @@ function KinWorkShareRow(
   const [pending, setPending] = useState(false);
   const [failed, setFailed] = useState(false);
   const shareId = useId();
+  const copy = props.copy ?? KIN_WORK_SHARE;
   if (!canShare) return null;
   const shared = asked !== null && asked.from === props.shared ? asked.to : props.shared;
   return (
     <div className="flex items-start justify-between gap-4">
       <div className="flex min-w-0 flex-col gap-0.5">
-        <Label htmlFor={shareId}>{KIN_WORK_SHARE.label}</Label>
+        <Label htmlFor={shareId}>{copy.label}</Label>
         <p className="text-xs text-muted-foreground">
-          {failed ? KIN_WORK_SHARE.failed : shared ? KIN_WORK_SHARE.on : KIN_WORK_SHARE.off}
+          {failed ? copy.failed : shared ? copy.on : copy.off}
         </p>
       </div>
       <Switch
@@ -264,9 +268,11 @@ function KinWorkShareRow(
             setFailed(refused);
             setPending(false);
             if (refused) setAsked(null);
-            appAtomRegistry.refresh(
-              kinClient.workItem({ environmentId, input: { orgId, key: itemKey } }),
-            );
+            if (props.onSettled !== undefined) props.onSettled();
+            else
+              appAtomRegistry.refresh(
+                kinClient.workItem({ environmentId, input: { orgId, key: itemKey } }),
+              );
           });
         }}
       />

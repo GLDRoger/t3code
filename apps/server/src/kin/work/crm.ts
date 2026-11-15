@@ -22,6 +22,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as Statement from "effect/sql/Statement";
 
 import {
   fieldList,
@@ -301,11 +302,14 @@ export const parties = Effect.fn("KinCrm.parties")(function* (
     readonly cursor?: string | undefined;
     readonly limit?: number | undefined;
   },
+  /** Only these, for someone besides the owner (`personSeesAs` over `c`). */
+  sees?: Statement.Fragment,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const offset = yield* pageOf(input.cursor);
   const limit = Math.min(input.limit ?? 50, KIN_RECORDS_PAGE_CAP);
   const where = [
+    ...(sees === undefined ? [] : [sees]),
     input.active === false ? sql`c.state != 'open'` : sql`c.state = 'open'`,
     ...(input.kind === undefined ? [] : [sql`c.category = ${input.kind}`]),
     ...(input.text === undefined || input.text.trim() === ""
@@ -331,11 +335,14 @@ export const projects = Effect.fn("KinCrm.projects")(function* (
     readonly cursor?: string | undefined;
     readonly limit?: number | undefined;
   },
+  /** Only these, for someone besides the owner (`personSeesAs` over `p`). */
+  sees?: Statement.Fragment,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const offset = yield* pageOf(input.cursor);
   const limit = Math.min(input.limit ?? 50, KIN_RECORDS_PAGE_CAP);
   const where = [
+    ...(sees === undefined ? [] : [sees]),
     sql`p.state = ${input.state ?? "open"}`,
     ...(input.partyId === undefined ? [] : [sql`p.party_id = ${input.partyId}`]),
     ...(input.text === undefined || input.text.trim() === ""

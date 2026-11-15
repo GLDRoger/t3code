@@ -584,6 +584,12 @@ export const kinClient = {
     tag: KIN_PEOPLE_WS_METHODS.peopleSetAccess,
     concurrency: { mode: "singleFlight", key: ({ input }) => input.personId },
   }),
+  /** The owner turns a member's Clients, Docs and Money on or off. */
+  personSetPlaces: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:person:set-places",
+    tag: KIN_PEOPLE_WS_METHODS.peopleSetPlaces,
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.personId },
+  }),
   groupCreate: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:group:create",
     tag: "kin.groups.create",

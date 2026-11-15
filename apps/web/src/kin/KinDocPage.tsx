@@ -12,6 +12,7 @@ import {
   kinDocVersionView,
 } from "@t3tools/client-runtime/kin/kinDocs";
 import { KIN_DOC_CHANGES } from "@t3tools/client-runtime/kin/kinDocChanges";
+import { KIN_DOC_SHARE } from "@t3tools/client-runtime/kin/kinWork";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { KinDocDetail, KinRecordKey } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
@@ -61,6 +62,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { KinDocChangesView } from "./KinDocChangesView";
 import { KinDocFileDialog } from "./KinDocFileDialog";
 import { KinDocReader } from "./KinDocReader";
+import { KinWorkShareRow } from "./KinWorkItemSheet";
 import { KinWorkNotice } from "./KinWorkParts";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
@@ -243,6 +245,23 @@ export function KinDocPage(
       )}
       {doc === null || comparing !== undefined ? null : (
         <KinDocFiling doc={doc} canFile={canFile} onFile={() => setFiling(true)} />
+      )}
+      {doc === null ||
+      comparing !== undefined ||
+      doc.archived ||
+      doc.sensitive ||
+      doc.sensitiveInherited === true ? null : (
+        <div className="mx-auto w-full max-w-3xl px-6 pt-3">
+          <KinWorkShareRow
+            environmentId={environmentId}
+            orgId={orgId}
+            itemKey={doc.key}
+            shared={doc.shared === true}
+            disabled={busy}
+            copy={KIN_DOC_SHARE}
+            onSettled={refresh}
+          />
+        </div>
       )}
       {filing && doc !== null ? (
         <KinDocFileDialog {...props} doc={doc} onClose={() => setFiling(false)} />

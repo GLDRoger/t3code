@@ -111,6 +111,7 @@ export function useKinTeam(target: KinTeamTarget) {
       : {
           people: heldPeople.people,
           joined: heldPeople.joined,
+          places: heldPeople.places,
           invites: heldInvites.invites,
           profiles,
         };

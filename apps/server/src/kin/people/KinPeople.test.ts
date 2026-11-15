@@ -442,7 +442,7 @@ it.effect(
 );
 
 it.effect(
-  "the owner alone makes a co-owner or a member; a co-owner acts on members but changes no kind",
+  "the owner alone makes a co-owner or a member; a co-owner acts on members but changes no kind; places switch per member",
   () =>
     Effect.gen(function* () {
       const service = yield* People.KinPeople;
@@ -461,6 +461,40 @@ it.effect(
         service.accessMe(session, { orgId }).pipe(Effect.map((me) => me.access));
       assert.equal(yield* kind(raviSession), "member");
       assert.equal(yield* kind(ownerSession), "owner");
+      // A new teammate starts with client names and shared docs; money stays off until switched.
+      const placesOf = (session: Parameters<typeof service.accessMe>[0]) =>
+        service.accessMe(session, { orgId }).pipe(Effect.map((me) => me.places));
+      assert.deepEqual(yield* placesOf(raviSession), { clients: true, docs: true, money: false });
+      assert.deepEqual(yield* placesOf(ownerSession), { clients: true, docs: true, money: true });
+      const switched = yield* service.setPlaces(ownerSession, {
+        orgId,
+        personId: ravi.person.personId,
+        money: true,
+        docs: false,
+      });
+      assert.deepInclude(switched, { clients: true, docs: false, money: true, leads: [] });
+      assert.deepEqual(yield* placesOf(raviSession), { clients: true, docs: false, money: true });
+      assert.deepInclude(
+        (yield* service.list(ownerSession, orgId)).places.find(
+          (one) => one.personId === ravi.person.personId,
+        ),
+        { money: true },
+      );
+      // Only the owner or a co-owner switches places, and the owner's are always all on.
+      assert.propertyVal(
+        yield* service
+          .setPlaces(raviSession, { orgId, personId: meera.person.personId, money: true })
+          .pipe(Effect.flip),
+        "reason",
+        "not_allowed",
+      );
+      assert.propertyVal(
+        yield* service
+          .setPlaces(ownerSession, { orgId, personId: identity.owner.personId, money: false })
+          .pipe(Effect.flip),
+        "reason",
+        "invalid_state",
+      );
 
       const promoted = yield* service.setAccess(ownerSession, {
         orgId,

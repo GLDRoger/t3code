@@ -27,7 +27,8 @@ const session = (person: string): AuthenticatedSession => ({
   scopes: [AuthKinChatScope],
 });
 
-// What a member reaches: their own chats, Work shared with them, their phone and their GitHub login.
+// What a member reaches: their own chats, Work shared with them, their phone and their GitHub login,
+// and the Clients, Docs and Money reads, where the service shows them only their places.
 const MEMBER = [
   "kin.access.me",
   "kin.chat.history",
@@ -37,6 +38,11 @@ const MEMBER = [
   "kin.chats.createDirect",
   "kin.chats.mute",
   "kin.chats.subscribe",
+  "kin.docs.diff",
+  "kin.docs.get",
+  "kin.docs.history",
+  "kin.docs.list",
+  "kin.docs.subscribe",
   "kin.leads.list",
   "kin.messages.markRead",
   "kin.messages.react",
@@ -50,12 +56,19 @@ const MEMBER = [
   "kin.push.unregisterDevice",
   "kin.push.watch",
   "kin.refreshes.subscribe",
+  "kin.search",
   "kin.triggers.getTimeZone",
   "kin.widgets.act",
   "kin.work.assign",
   "kin.work.create",
   "kin.work.get",
   "kin.work.list",
+  "kin.work.lists",
+  "kin.work.money",
+  "kin.work.parties",
+  "kin.work.party",
+  "kin.work.project",
+  "kin.work.projects",
   "kin.work.subscribe",
   "kin.work.summary",
   "kin.work.update",
@@ -109,11 +122,11 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
 
         // Kinds are stored data: a demotion holds from the very next call, a promotion likewise.
         yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = 'ravi'`;
-        assert.isFalse(yield* allowed("ravi", "kin.work.money"));
+        assert.isFalse(yield* allowed("ravi", "kin.work.recordPayment"));
         yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = 'meera'`;
-        assert.isTrue(yield* allowed("meera", "kin.work.money"));
+        assert.isTrue(yield* allowed("meera", "kin.work.recordPayment"));
         // Someone the org doesn't know is refused, not admitted as a member of nothing.
-        assert.isFalse(yield* allowed("stranger", "kin.work.money"));
+        assert.isFalse(yield* allowed("stranger", "kin.work.recordPayment"));
       }),
   );
 });
