@@ -50,12 +50,12 @@ export function KinChatsScreen() {
 
 /** The chat list under its own bar: a page over coding threads, or the first tab of the Kin home. */
 export function KinChatsList({
-  emptyDetail,
+  empty,
   bottomClearance = 0,
   ...bar
 }: Pick<AppBarProps, "onBack" | "actions"> & {
-  /** What an empty list says, for a viewer who can't start chats with leads. */
-  readonly emptyDetail?: string;
+  /** What an empty list says, for a viewer who can't start chats with agents. */
+  readonly empty?: { readonly title: string; readonly detail: string };
   readonly bottomClearance?: number;
 }) {
   const navigation = useNavigation();
@@ -82,7 +82,7 @@ export function KinChatsList({
           directory={kinDirectory(host)}
           onRetry={retry}
           bottomClearance={bottomClearance}
-          {...(emptyDetail === undefined ? {} : { emptyDetail })}
+          {...(empty === undefined ? {} : { empty })}
           memory={
             // Where Kin is the whole app these are Settings pages and a tab, and the list is chats.
             newLeadAt === null || KIN_ONLY ? null : (
@@ -184,8 +184,8 @@ export function KinChatsView(props: {
   readonly onRetry: () => void;
   /** The owner's way in to what the leads remember, above the chats. */
   readonly memory?: ReactNode;
-  /** What an empty list says, for a viewer who can't start chats with leads. */
-  readonly emptyDetail?: string;
+  /** What an empty list says, for a viewer who can't start chats with agents. */
+  readonly empty?: { readonly title: string; readonly detail: string };
   /** Room under the last row for a tab dock drawn over the list. */
   readonly bottomClearance?: number;
   readonly onOpenWaiting: () => void;
@@ -220,8 +220,8 @@ export function KinChatsView(props: {
               {props.memory == null ? null : <View className="-mx-4">{props.memory}</View>}
               {props.onCreateFirstAgent === undefined ? (
                 <EmptyState
-                  title="No chats yet"
-                  detail={props.emptyDetail ?? "Chats with your agents show up here."}
+                  title={props.empty?.title ?? "No chats yet"}
+                  detail={props.empty?.detail ?? "Chats with your agents show up here."}
                 />
               ) : (
                 <EmptyState

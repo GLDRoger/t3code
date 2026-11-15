@@ -40,6 +40,7 @@ import {
   type KinDocGetInput,
   type KinDocsListInput,
   type KinDocsSubscribeInput,
+  type KinBudgetGetInput,
   type KinMemoryListInput,
   type KinPeopleListInput,
   type KinLeadAccessInput,
@@ -138,6 +139,11 @@ const memoryRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   tag: "kin.memory.list",
 });
 const readMemory = guardedRead(memoryRead);
+const budgetRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:budget:read",
+  tag: "kin.budget.get",
+});
+const readBudget = guardedRead(budgetRead);
 
 const workSummaryRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "kin:work:summary:read",
@@ -613,6 +619,20 @@ export const kinClient = {
     label: "kin:memory:forget",
     tag: "kin.memory.forget",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.itemId },
+  }),
+  /** The owner's daily limit. The host announces no change to it, so a set re-reads it here. */
+  budget: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:budget",
+    execute: Effect.fn("KinWebClient.budget")(function* (input: KinBudgetGetInput) {
+      return yield* readBudget(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: kinRefreshOn("company"),
+  }),
+  budgetSet: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:budget:set",
+    tag: "kin.budget.set",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
   }),
   workLive,
   /** Its `permissionAtom` says whether this browser may read Work at all. */
