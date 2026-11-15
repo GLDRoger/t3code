@@ -48,6 +48,7 @@ import StatementChatPasswords from "./migrations/K086_StatementChatPasswords.ts"
 import TeamWork from "./migrations/K087_TeamWork.ts";
 import MoneyRecords from "./migrations/K088_MoneyRecords.ts";
 import ChatThreads from "./migrations/K106_ChatThreads.ts";
+import Connections from "./migrations/K107_Connections.ts";
 import ReceiptProposalsPasswordBudget from "./migrations/K116_ReceiptProposalsPasswordBudget.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
@@ -177,6 +178,7 @@ const loader = Migrator.fromRecord({
   "87_TeamWork": TeamWork,
   "88_MoneyRecords": MoneyRecords,
   "106_ChatThreads": ChatThreads,
+  "107_Connections": Connections,
   "116_ReceiptProposalsPasswordBudget": ReceiptProposalsPasswordBudget,
 });
 
