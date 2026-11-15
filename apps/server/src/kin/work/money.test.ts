@@ -1278,6 +1278,34 @@ describe("the owner's taps", () => {
       assert.deepInclude(logged.fields, { field: "tax", from: null, to: "₹9,000.00" });
       assert.deepInclude(logged.fields, { field: "category", from: null, to: "gst" });
 
+      // F54: a date field keeps a time, and its days are on All dates under the list's name.
+      const timed = yield* edit({ fields: { paidDay: "2026-11-18T15:00" } });
+      assert.strictEqual(timed.fields?.paidDay, "2026-11-18T15:00");
+      const onDates = (from: string, to: string) =>
+        OwnerMoney.dates(people, { orgId, from, to }).pipe(
+          Effect.map(({ rows, total }) => ({
+            total,
+            rows: rows
+              .filter((row) => row.field !== undefined)
+              .map(({ record, label, field, at, allDay }) => ({
+                key: record.key,
+                label,
+                field,
+                at,
+                allDay,
+              })),
+          })),
+        );
+      const shown = yield* onDates("2026-11-18T00:00:00.000Z", "2026-11-19T00:00:00.000Z");
+      assert.deepStrictEqual(shown.rows, [
+        { key, label: "Paid day", field: "paidDay", at: "2026-11-18T09:30:00.000Z", allDay: false },
+      ]);
+      assert.deepStrictEqual(
+        (yield* onDates("2026-11-18T09:31:00.000Z", "2026-11-19T00:00:00.000Z")).rows,
+        [],
+      );
+      yield* edit({ fields: { paidDay: "2026-11-10" } });
+
       // A file on a message in a chat the owner is not in is not the owner's to keep.
       const sql = yield* SqlClient.SqlClient;
       yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)

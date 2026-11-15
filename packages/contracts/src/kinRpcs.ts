@@ -309,6 +309,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.memory.setVisibility": "kin-memory",
   "kin.memory.confirmSuggestions": "kin-memory",
   "kin.memory.forget": "kin-memory",
+  "kin.memory.restore": "kin-memory",
   "kin.docs.list": "kin-docs",
   "kin.docs.get": "kin-docs",
   "kin.docs.history": "kin-docs",

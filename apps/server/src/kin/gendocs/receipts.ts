@@ -636,6 +636,7 @@ type ReceiptRow = {
   readonly docTitle: string | null;
   readonly originKey: string;
   readonly invoiceKey: string | null;
+  readonly invoiceNumber: string | null;
   readonly paymentGone: number;
 };
 
@@ -650,6 +651,7 @@ export const listReceipts = Effect.fn("KinReceipts.listReceipts")(function* (
       r.amount_minor AS minor, r.currency, r.fields_json AS "fieldsJson", r.party_id AS "partyId",
       p.key AS "partyKey", p.title AS "partyTitle", d.key AS "docKey", d.title AS "docTitle",
       r.origin_key AS "originKey", i.key AS "invoiceKey",
+      inum.number AS "invoiceNumber",
       CASE WHEN json_extract(r.fields_json, '$.payment') IS NOT NULL
         AND (pay.payment_id IS NULL OR pay.voided_at IS NOT NULL) THEN 1 ELSE 0 END AS "paymentGone"
     FROM kin_records r
@@ -658,6 +660,7 @@ export const listReceipts = Effect.fn("KinReceipts.listReceipts")(function* (
       AND pay.payment_id = json_extract(r.fields_json, '$.payment')
     LEFT JOIN kin_records i ON i.org_id = pay.org_id AND i.record_id = pay.record_id
       AND i.register_id <> ${RECEIPTS}
+    LEFT JOIN kin_issued_numbers inum ON inum.org_id = i.org_id AND inum.record_id = i.record_id
     LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.party_id
     LEFT JOIN kin_records d ON d.org_id = r.org_id AND d.record_id = (
       SELECT v.record_id FROM kin_doc_jobs j
@@ -694,6 +697,7 @@ export const listReceipts = Effect.fn("KinReceipts.listReceipts")(function* (
       mode: text(fields.mode),
       reference: text(fields.reference),
       invoice: invoice === null ? null : KinRecordKey.make(invoice),
+      invoiceNumber: invoice === null ? null : row.invoiceNumber,
       paymentId: payment,
       // Made on its own, not for a payment an invoice already had: an advance.
       advance: !row.originKey.startsWith("receipt:payment:"),

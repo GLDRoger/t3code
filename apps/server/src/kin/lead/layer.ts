@@ -216,6 +216,7 @@ const runner = Layer.effectDiscard(
         undo: writer.value.undoChange,
         relabel: writer.value.relabel,
         retire: writer.value.retire,
+        restore: writer.value.restore,
         items: (orgId) => memory.items(orgId),
       });
     yield* Effect.gen(function* () {

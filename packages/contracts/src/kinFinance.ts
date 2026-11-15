@@ -162,6 +162,8 @@ export const KinDateRow = Schema.Struct({
   kind: Schema.Literals(["due", "date"]),
   /** What its list calls this date. */
   label: Label,
+  /** The list's own date field this row is for; absent for the entry's due date and date. */
+  field: Schema.optional(Schema.String),
   at: IsoDateTime,
   allDay: Schema.Boolean,
 });
@@ -287,6 +289,8 @@ export const KinReceipt = Schema.Struct({
   mode: Schema.NullOr(Schema.String),
   reference: Schema.NullOr(Schema.String),
   invoice: Schema.NullOr(KinRecordKey),
+  /** The issued number of `invoice` (INV/26-27/001), null while it has none. */
+  invoiceNumber: Schema.NullOr(Schema.String),
   paymentId: Schema.NullOr(TrimmedNonEmptyString),
   /** True when it was received before it was set against an invoice. */
   advance: Schema.Boolean,

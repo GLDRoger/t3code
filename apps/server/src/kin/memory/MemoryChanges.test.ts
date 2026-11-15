@@ -142,6 +142,7 @@ it.effect("only the owner can undo an item on an earlier memory change card", ()
         }),
       relabel: () => Effect.die("Unused"),
       retire: () => Effect.die("Unused"),
+      restore: () => Effect.die("Unused"),
       items: () => Effect.succeed([]),
     });
     const member = [{ _tag: "person" as const, orgId, personId: KinPersonId.make("priya") }];
@@ -204,7 +205,9 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
       head("team", { sensitive: false }),
       head("terms", { sensitive: true }),
       head("legacy", { what: "Invented summary." }),
-      head("gone", { sensitive: false, invalid_at: "2026-11-02T00:00:00.000Z" }),
+      head("gone", { sensitive: false, invalid_at: "1970-01-01T00:00:00.000Z" }),
+      // F45: true until a day still ahead.
+      head("leave", { invalid_at: "2026-12-06" }),
       head("said", {
         sensitive: false,
         trust: "member",
@@ -225,6 +228,7 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
     ].map((item) => ({ head: item, body }));
     const relabelled: Array<{ itemId: string; sensitive: boolean; person: string }> = [];
     const retired: Array<{ itemId: string; by: string }> = [];
+    const restored: Array<string> = [];
     const memory = Context.get(services, KinMemoryChanges);
     yield* memory.attachWriter({
       undo: () => Effect.die("Unused"),
@@ -232,6 +236,11 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
         Effect.sync(() => {
           retired.push(input);
           return { retired: true };
+        }),
+      restore: (_org, input) =>
+        Effect.sync(() => {
+          restored.push(input.itemId);
+          return { restored: true };
         }),
       items: () => Effect.succeed(items),
       relabel: (_org, input) =>
@@ -309,7 +318,22 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
       later: "only_owner",
       claimed: "only_owner",
       migrated: "only_owner",
+      leave: "only_owner",
     });
+    // What the owner forgot is listed apart, with its way back; nothing current comes back.
+    assert.deepStrictEqual(
+      (yield* memory.list([owner], { orgId, forgotten: true })).items.map((item) => item.itemId),
+      ["gone"],
+    );
+    const back = (id: string) => ({ orgId, itemId: KinMemoryItemId.make(id) });
+    assert.include(yield* memory.restore(member, back("gone")).pipe(Effect.flip), {
+      reason: "not_allowed",
+    });
+    assert.include(yield* memory.restore([owner], back("leave")).pipe(Effect.flip), {
+      reason: "not_found",
+    });
+    assert.deepStrictEqual(yield* memory.restore([owner], back("gone")), { itemId: "gone" });
+    assert.deepStrictEqual(restored, ["gone"]);
     const listed = (yield* memory.list([owner], { orgId })).items;
     assert.deepStrictEqual(listed.find((item) => item.itemId === "said")?.from, {
       name: "Invented person",
@@ -518,6 +542,7 @@ it.effect(
       yield* memory.attachWriter({
         undo: () => Effect.die("Unused"),
         retire: () => Effect.die("Unused"),
+        restore: () => Effect.die("Unused"),
         relabel: () => Effect.die("Unused"),
         items: () => Effect.succeed(items),
       });
@@ -589,6 +614,7 @@ it.effect("a yes takes only the items and words the owner was shown", () =>
     yield* memory.attachWriter({
       undo: () => Effect.die("Unused"),
       retire: () => Effect.die("Unused"),
+      restore: () => Effect.die("Unused"),
       items: () => Effect.succeed(items),
       relabel: (_org, input) =>
         Effect.succeed({ head: items.find((each) => each.head.id === input.itemId)!.head }),
