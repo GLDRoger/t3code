@@ -7,9 +7,15 @@ import * as SqlClient from "effect/sql/SqlClient";
  */
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* sql`ALTER TABLE kin_schedules ADD COLUMN loose_at TEXT`;
-  yield* sql`ALTER TABLE kin_schedules ADD COLUMN check_in INTEGER NOT NULL DEFAULT 0
-    CHECK (check_in IN (0, 1))`;
+  const columns = new Set(
+    (yield* sql<{ name: string }>`SELECT name FROM pragma_table_info('kin_schedules')`).map(
+      (row) => row.name,
+    ),
+  );
+  if (!columns.has("loose_at")) yield* sql`ALTER TABLE kin_schedules ADD COLUMN loose_at TEXT`;
+  if (!columns.has("check_in"))
+    yield* sql`ALTER TABLE kin_schedules ADD COLUMN check_in INTEGER NOT NULL DEFAULT 0
+      CHECK (check_in IN (0, 1))`;
   yield* sql`CREATE TABLE IF NOT EXISTS kin_pulse_nudges (
     org_id TEXT NOT NULL REFERENCES kin_orgs(org_id),
     person_id TEXT NOT NULL,
