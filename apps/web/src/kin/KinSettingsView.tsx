@@ -11,6 +11,7 @@ import { Button } from "../components/ui/button";
 import { isElectron } from "../env";
 import { isChatOnlySession } from "../environments/primary";
 import { KinCompanyProfileSettings } from "./KinCompanyProfile";
+import { KinCheckInsSetting } from "./KinCheckIns";
 import { KinDailyLimitSetting } from "./KinDailyLimit";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { useKinHost } from "./useKinHost";
@@ -46,7 +47,7 @@ function OwnerLevelSettingsButton(props: {
   );
 }
 
-/** The company's settings: its details, the daily limit, and approvals on this person's phone. */
+/** The company's settings: its details, the daily limit, check-ins, and approvals on this phone. */
 export function KinSettingsView() {
   return (
     <>
@@ -72,6 +73,7 @@ export function KinSettingsView() {
             <KinCompanyProfileSettings />
           </SettingsSection>
           <KinDailyLimitSetting />
+          <KinCheckInsSetting />
         </SettingsPageContainer>
         <ApprovalsSettings />
       </div>

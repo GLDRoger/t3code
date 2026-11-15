@@ -29,6 +29,7 @@ import { KinSubscriptionsScreen } from "./KinSubscriptions";
 import { KinProjectLeadScreen } from "./KinProjectLeadScreen";
 import { KinProjectScreen } from "./KinProjectScreen";
 import { KinSettingsScreen } from "./KinSettings";
+import { KinCheckInFormScreen } from "./KinCheckIns";
 import { KinGoalFormScreen } from "./KinGoals";
 import { KinInviteScreen } from "./KinInviteScreen";
 import { KinMakeDocumentScreen, KinReceiptApplyScreen, KinReceiptNewScreen } from "./KinInvoice";
@@ -206,6 +207,10 @@ export const KIN_SCREENS = {
   }),
   KinGoalForm: createNativeStackScreen({
     screen: KinGoalFormScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinCheckInForm: createNativeStackScreen({
+    screen: KinCheckInFormScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
   KinClientForm: createNativeStackScreen({

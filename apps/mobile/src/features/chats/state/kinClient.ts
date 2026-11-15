@@ -32,6 +32,7 @@ import {
   type KinChatsSubscribeInput,
   type KinLeadAccessInput,
   type KinBudgetGetInput,
+  type KinCheckInsInput,
   type KinGoalsInput,
   type KinPulseListInput,
   type KinMemoryListInput,
@@ -201,6 +202,11 @@ const budgetRead = createKinRpcCommand(connectionAtomRuntime, {
   tag: "kin.budget.get",
 });
 const readBudget = guardedRead(budgetRead);
+const checkInsRead = createKinRpcCommand(connectionAtomRuntime, {
+  label: "kin:checkIns:read",
+  tag: "kin.checkIns.list",
+});
+const readCheckIns = guardedRead(checkInsRead);
 const pulseRead = createKinRpcCommand(connectionAtomRuntime, {
   label: "kin:pulse:read",
   tag: "kin.pulse.read",
@@ -1253,6 +1259,24 @@ export const kinClient = {
     label: "kin:goals:save",
     tag: "kin.goals.save",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.key ?? input.clientRequestId },
+  }),
+  /** The company's check-ins in the owner's time, for Settings. */
+  checkIns: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:checkIns",
+    execute: Effect.fn("KinClient.checkIns")(function* (input: KinCheckInsInput) {
+      return yield* readCheckIns(input);
+    }),
+    staleTimeMs: 30_000,
+  }),
+  checkInSave: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:checkIns:save",
+    tag: "kin.checkIns.save",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.scheduleId ?? "new" },
+  }),
+  checkInAct: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:checkIns:act",
+    tag: "kin.checkIns.act",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.scheduleId },
   }),
   budget: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:budget",
