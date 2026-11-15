@@ -508,12 +508,40 @@ const definedDetail = Effect.fn("KinRecords.definedDetail")(function* (row: Reco
         ];
   });
   const payments = row.takesPayments === 1 ? yield* paymentsOf(orgId, row.recordId) : undefined;
+  const sent = yield* sentWith(orgId, row.recordId);
   return {
     fields,
     ...(files.length === 0 ? {} : { files }),
     ...(payments === undefined ? {} : { payments }),
+    ...(sent.length === 0 ? {} : { sent }),
   };
 });
+
+/** Mail that carried this entry's file, sent on the owner's Confirm (`connections/Sending.ts`). */
+const sentWith = Effect.fn("KinRecords.sentWith")(function* (orgId: KinOrgId, recordId: string) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    to: string | null;
+    subject: string | null;
+    threadId: string | null;
+    at: number;
+  }>`
+    SELECT json_extract(payload_json, '$.to') AS "to",
+      json_extract(payload_json, '$.subject') AS subject,
+      json_extract(result_json, '$.threadId') AS "threadId", done_at AS at
+    FROM kin_connection_asks
+    WHERE org_id = ${orgId} AND entry_record_id = ${recordId} AND state = 'sent'
+    ORDER BY done_at DESC, ask_id LIMIT 20`;
+  return rows.map((sent) => ({
+    to: Option.getOrElse(decodeAddresses(sent.to ?? "[]"), () => []),
+    subject: sent.subject ?? "",
+    at: iso(sent.at),
+    threadId: sent.threadId,
+  }));
+});
+const decodeAddresses = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Array(Schema.String)),
+);
 
 const paymentsOf = Effect.fn("KinRecords.paymentsOf")(function* (
   orgId: KinOrgId,

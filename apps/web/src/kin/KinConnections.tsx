@@ -11,7 +11,8 @@ import {
   kinServiceNote,
   kinSuggestedModes,
   kinToolRows,
-  kinToolSwitch,
+  kinToolMark,
+  kinToolModeLabel,
   type KinConnectionDraft,
   type KinConnectionTone,
   type KinToolRow,
@@ -22,6 +23,7 @@ import {
   type KinConnection,
   type KinConnectionId,
   type KinConnectionService,
+  type KinConnectionToolMode,
   type KinOrgId,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -62,6 +64,7 @@ import {
   SelectValue,
 } from "../components/ui/select";
 import { Switch } from "../components/ui/switch";
+import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinConfirm } from "./KinConfirm";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
@@ -536,9 +539,9 @@ function ConnectionRecord(props: {
       opened: popup !== null,
     });
   };
-  const switchTool = (row: KinToolRow, on: boolean) =>
+  const markTool = (row: KinToolRow, mode: KinConnectionToolMode) =>
     run(`tool:${row.name}`, "change that tool", () =>
-      setModes({ environmentId, input: { ...ref, modes: kinToolSwitch(row, on) } }),
+      setModes({ environmentId, input: { ...ref, modes: kinToolMark(row, mode) } }),
     );
 
   return (
@@ -573,7 +576,9 @@ function ConnectionRecord(props: {
             <AlertDescription role="alert">{problem}</AlertDescription>
           </Alert>
         )}
-        {connection.auth === "oauth" && connection.state === "needs_sign_in" && waiting === null ? (
+        {connection.auth === "oauth" &&
+        (connection.state === "needs_sign_in" || connection.needsSignInToSend === true) &&
+        waiting === null ? (
           <Button
             size="sm"
             className="self-start"
@@ -661,7 +666,7 @@ function ConnectionRecord(props: {
                   key={row.name}
                   row={row}
                   disabled={busy !== null}
-                  onSwitch={(on) => void switchTool(row, on)}
+                  onMark={(mode) => void markTool(row, mode)}
                   onAccept={() =>
                     void run(`accept:${row.name}`, "allow the new version", () =>
                       accept({
@@ -815,7 +820,7 @@ function ConnectionRecord(props: {
 function ToolItem(props: {
   readonly row: KinToolRow;
   readonly disabled: boolean;
-  readonly onSwitch: (on: boolean) => void;
+  readonly onMark: (mode: KinConnectionToolMode) => void;
   readonly onAccept: () => void;
 }) {
   const { row } = props;
@@ -831,17 +836,28 @@ function ToolItem(props: {
             <p className="line-clamp-3 text-xs text-muted-foreground">{row.description}</p>
           )}
           <div className="flex flex-wrap gap-1">
+            {row.alwaysAsk ? <Badge variant="outline">{COPY.alwaysAsk}</Badge> : null}
             {row.openWeb ? <Badge variant="outline">{COPY.openWeb}</Badge> : null}
             {row.state === "changed" ? <Badge variant="warning">{COPY.changedTitle}</Badge> : null}
           </div>
         </div>
-        <Switch
+        <ToggleGroup
           id={id}
-          aria-label={`${row.title}: ${row.on ? "Read" : "Off"}`}
-          checked={row.on}
+          aria-label={`${row.title}: ${kinToolModeLabel(row.mode)}`}
+          className="shrink-0"
+          value={[row.mode]}
           disabled={props.disabled}
-          onCheckedChange={props.onSwitch}
-        />
+          onValueChange={(next) => {
+            const mode = row.modes.find((one) => one === next[0]);
+            if (mode !== undefined && mode !== row.mode) props.onMark(mode);
+          }}
+        >
+          {row.modes.map((mode) => (
+            <Toggle key={mode} value={mode}>
+              {kinToolModeLabel(mode)}
+            </Toggle>
+          ))}
+        </ToggleGroup>
       </div>
       {row.change === null ? null : (
         <div className="flex flex-col gap-2 rounded-md bg-muted/40 p-3 text-xs">

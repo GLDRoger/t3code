@@ -1270,6 +1270,16 @@ const WAKE_KINDS: Record<KinEvent["_tag"] | "hand-over", WakeCase> = {
         itemIds: [],
       })),
   },
+  pulse: {
+    owed: false,
+    event: () =>
+      Effect.succeed((base) => ({
+        ...base,
+        _tag: "pulse",
+        provenance: { _tag: "system" },
+        factKeys: ["task_late:W-1:due=0"],
+      })),
+  },
   "action.resolved": {
     owed: false,
     event: () =>

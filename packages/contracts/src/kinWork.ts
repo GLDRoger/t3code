@@ -255,6 +255,18 @@ export const KinRecordDetail = Schema.Struct({
   files: Schema.optional(Schema.Array(KinFileRef)),
   /** An invoice's payments, newest first, voided ones included. */
   payments: Schema.optional(Schema.Array(KinPayment)),
+  /** Mail that carried its file, sent on the owner's Confirm, newest first. */
+  sent: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        to: Schema.Array(Schema.String),
+        subject: Schema.String,
+        at: IsoDateTime,
+        /** The mail thread it went in: a reminder replies there. */
+        threadId: Schema.NullOr(Schema.String),
+      }),
+    ),
+  ),
 });
 export type KinRecordDetail = typeof KinRecordDetail.Type;
 export const KIN_RECORD_CHANGES_CAP = 50;
