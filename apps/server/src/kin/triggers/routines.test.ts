@@ -196,6 +196,27 @@ it.effect(
     }).pipe(Effect.provide(fixture())),
 );
 
+it.effect("a new company's routines stay off: the check-ins carry the briefs", () =>
+  Effect.gen(function* () {
+    yield* seed();
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`DELETE FROM kin_routine_preferences WHERE org_id = ${orgA}`;
+    const routines = yield* Routines.KinRoutines;
+    const store = yield* TriggerStore.KinTriggerStore;
+    yield* TestClock.setTime(Date.parse("2026-11-09T00:00:00.000Z"));
+    assert.isFalse(yield* routines.isEnabled(orgA, "morning_brief"));
+    // Any reconcile writes the missing preferences, off.
+    yield* routines.setEnabled(orgA, "owner_check", false);
+    for (const routine of ["morning_brief", "evening_summary", "owner_check"] as const) {
+      assert.isFalse(yield* routines.isEnabled(orgA, routine));
+      assert.notEqual(
+        (yield* store.get(orgA, KinTriggerId.make(`routine:${routine}`)))?.enabled,
+        true,
+      );
+    }
+  }).pipe(Effect.provide(fixture())),
+);
+
 it.effect("the owner's time zone reschedules routines from the defaults; only he sets it", () =>
   Effect.gen(function* () {
     yield* seed();

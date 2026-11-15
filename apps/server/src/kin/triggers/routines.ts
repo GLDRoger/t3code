@@ -28,11 +28,6 @@ import * as OwnerCheck from "./ownerCheck.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 
 const routines = ["morning_brief", "evening_summary", "owner_check"] as const;
-/**
- * Retired for every company: the check-ins (`pulse/checkInSeeds.ts`) carry the briefs now, the
- * morning one with the morning brief's sections, so nobody gets two. K145 turned them off.
- */
-const RETIRED: ReadonlySet<KinLeadRoutine> = new Set(routines);
 const iso = (now: number) => DateTime.formatIso(DateTime.makeUnsafe(now));
 const decodeSettings = Schema.decodeUnknownEffect(KinTriggerSettings);
 const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
@@ -190,16 +185,14 @@ const make = Effect.gen(function* () {
     for (const routine of routines) {
       const id = KinTriggerId.make(`routine:${routine}`);
       const existing = yield* store.get(settings.orgId, id);
-      yield* sql`INSERT INTO kin_routine_preferences (org_id, routine, enabled) VALUES (${settings.orgId}, ${routine}, ${existing?.enabled === false ? 0 : 1}) ON CONFLICT DO NOTHING RETURNING routine`;
+      // Off unless turned on: the check-ins (`pulse/checkInSeeds.ts`) carry the briefs now, the
+      // morning one with the morning brief's sections. K145 turned existing companies' off.
+      yield* sql`INSERT INTO kin_routine_preferences (org_id, routine, enabled) VALUES (${settings.orgId}, ${routine}, ${existing?.enabled === true ? 1 : 0}) ON CONFLICT DO NOTHING RETURNING routine`;
       const [preference] = yield* sql<{
         enabled: number;
         paused: number;
       }>`SELECT enabled, paused FROM kin_routine_preferences WHERE org_id = ${settings.orgId} AND routine = ${routine} ORDER BY routine`;
-      const enabled =
-        !RETIRED.has(routine) &&
-        activeLead.length > 0 &&
-        preference?.enabled === 1 &&
-        preference.paused === 0;
+      const enabled = activeLead.length > 0 && preference?.enabled === 1 && preference.paused === 0;
       if (existing !== undefined && existing.enabled === enabled) continue;
       const timing = schedule(routine, settings);
       const next = enabled
@@ -470,9 +463,7 @@ const make = Effect.gen(function* () {
           }>`SELECT enabled, paused FROM kin_routine_preferences WHERE org_id = ${orgId} AND routine = ${routine} ORDER BY routine`.pipe(
             Effect.mapError(toPersistenceSqlError("KinRoutines.isEnabled")),
           );
-          return (
-            !RETIRED.has(routine) && (row === undefined || (row.enabled === 1 && row.paused === 0))
-          );
+          return row !== undefined && row.enabled === 1 && row.paused === 0;
         }),
       ),
     ),
