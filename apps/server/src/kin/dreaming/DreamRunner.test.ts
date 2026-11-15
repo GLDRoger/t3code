@@ -307,6 +307,7 @@ const fixture = <A, E>(
                 cheapOnly: false,
                 nextReset: 0,
                 remaining: 1,
+                heldBy: budgetAllowed ? null : ("org" as const),
               })),
           }),
           Layer.succeed(Scheduler.Scheduler, { register: () => Effect.void }),

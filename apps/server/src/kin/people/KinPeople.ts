@@ -24,6 +24,7 @@ import {
   KinPersonProfile,
   KinRoleTags,
   KinWorkHours,
+  type KinPeopleSetOwnerNameInput,
   type AuthSessionId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -133,6 +134,11 @@ export class KinPeople extends Context.Service<
       session: AuthenticatedSession,
       input: KinPeopleUpdateProfileInput,
     ) => Effect.Effect<KinPersonProfile, Failure>;
+    /** The owner's own name: what agents call them and teammates see. */
+    readonly setOwnerName: (
+      session: AuthenticatedSession,
+      input: KinPeopleSetOwnerNameInput,
+    ) => Effect.Effect<KinPerson, Failure>;
   }
 >()("t3/kin/people/KinPeople") {}
 
@@ -587,7 +593,10 @@ export const make = Effect.gen(function* () {
     if (!self && caller.personId !== identity.owner.personId) return yield* denied;
     const picture = input.picture;
     if (picture != null && picture.type !== "image")
-      return yield* new KinChatError({ reason: "invalid_state", message: "A picture is an image." });
+      return yield* new KinChatError({
+        reason: "invalid_state",
+        message: "A picture is an image.",
+      });
     const claimed =
       picture == null
         ? undefined
@@ -597,7 +606,10 @@ export const make = Effect.gen(function* () {
     const pictureId =
       picture === undefined ? undefined : picture === null ? null : claimed?.attachments[0]?.id;
     if (picture != null && pictureId === undefined)
-      return yield* new KinChatError({ reason: "invalid_state", message: "The picture didn't upload." });
+      return yield* new KinChatError({
+        reason: "invalid_state",
+        message: "The picture didn't upload.",
+      });
     const written = yield* sql
       .withTransaction(
         Effect.gen(function* () {
@@ -649,6 +661,29 @@ export const make = Effect.gen(function* () {
       yield* store.value.discardPending([picture]);
     return written.profile;
   });
+  const setOwnerName = Effect.fn("KinPeople.setOwnerName")(function* (
+    session: AuthenticatedSession,
+    input: KinPeopleSetOwnerNameInput,
+  ) {
+    const people = yield* identity.resolve(session);
+    const owner = people.find(
+      (p) => p.orgId === input.orgId && p.personId === identity.owner.personId,
+    );
+    if (owner === undefined)
+      return yield* people.some((p) => p.orgId === input.orgId) ? denied : missing;
+    return yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          yield* sql`UPDATE kin_people SET display_name = ${input.displayName}
+            WHERE org_id = ${input.orgId} AND person_id = ${owner.personId}`.pipe(
+            Effect.mapError(toPersistenceSqlError("KinPeople.setOwnerName")),
+          );
+          yield* refresh.touch(input.orgId, "people");
+          return yield* person(input.orgId, owner.personId);
+        }),
+      )
+      .pipe(Effect.mapError(sqlError("KinPeople.setOwnerName")));
+  });
   return KinPeople.of({
     profiles,
     updateProfile,
@@ -661,6 +696,7 @@ export const make = Effect.gen(function* () {
     revokeDevice,
     removeAccess,
     setGithubLogin,
+    setOwnerName,
   });
 });
 export const layer = Layer.effect(KinPeople, make);

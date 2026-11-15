@@ -60,6 +60,7 @@ import { isOrgPaused, STOP_REASON } from "./orgState.ts";
 import { CONTINUED, KinDocCollector } from "../gendocs/DocJobs.ts";
 import { OWNER_DECLINED, parseReport, WAITING_FOR_OWNER } from "./workerBrief.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
+import { failureSentence } from "./workerFailure.ts";
 import * as Publish from "./workerPublish.ts";
 import { releaseHosts, takeBlocked } from "./workNetwork.ts";
 import { localThreadId, workThreadPrefix } from "./workThread.ts";
@@ -1108,9 +1109,22 @@ const make = Effect.gen(function* () {
     const reply = projection.messages
       .findLast((message) => message.role === "assistant" && message.runId === run.id)
       ?.text.slice(-MAX_REPLY_CHARS);
+    const parsed = reply === undefined ? undefined : parseReport(reply);
+    // A run that died before its first turn item, such as one whose provider never started,
+    // leaves its cause only on the thread.
+    const lastError =
+      parsed !== undefined
+        ? null
+        : ((yield* orchestrator
+            .getThreadShell(worker.threadId)
+            .pipe(Effect.orElseSucceed(() => null)))?.lastError ?? null);
     const report = withBlockedHosts(
-      (reply === undefined ? undefined : parseReport(reply)) ??
-        blocked(worker, here, `Worker ended ${status} without a report.`),
+      parsed ??
+        blocked(
+          worker,
+          here,
+          `Worker ended ${status} without a report.${failureSentence(projection, run.id, lastError)}`,
+        ),
       yield* takeBlocked(stateDir, worker.workerId).pipe(
         Effect.provideService(FileSystem.FileSystem, fs),
         Effect.orElseSucceed(() => []),

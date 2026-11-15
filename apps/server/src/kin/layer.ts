@@ -33,6 +33,10 @@ import * as Vcs from "../vcs/VcsProcess.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { FetchHttpClient } from "effect/http";
 import * as GithubWebhooks from "./triggers/githubWebhooks.ts";
+import * as Connections from "./connections/ConnectionsService.ts";
+import * as ConnectionSecrets from "./connections/ConnectionSecrets.ts";
+import * as EgressGuard from "./connections/EgressGuard.ts";
+import * as McpGateway from "./connections/McpGateway.ts";
 
 const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
   Layer.effect(
@@ -84,6 +88,11 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           ),
         ),
         GithubWebhooks.lockLayer,
+        // Every request to a connection goes through the egress guard.
+        Connections.layer.pipe(
+          Layer.provide(ConnectionSecrets.layer),
+          Layer.provide(McpGateway.layer.pipe(Layer.provide(EgressGuard.layer))),
+        ),
       ).pipe(Layer.provideMerge(KinChat.layer)),
     ),
     // Inside `enabled`: built only with Kin on, and a secret store failure disables Kin, not the server.

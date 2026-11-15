@@ -1248,6 +1248,10 @@ const make = Effect.gen(function* () {
         ctx.agentId,
         Effect.gen(function* () {
           const ctx = yield* resolve(scope, true);
+          // The turn already ended: a second kin_end, whatever its summary, changes nothing.
+          const [done] = yield* sql`SELECT 1 FROM kin_lead_tool_calls
+            WHERE org_id = ${ctx.orgId} AND wakeup_id = ${ctx.wakeupId} AND call_key = 'end'`;
+          if (done !== undefined) return;
           // The turn still ends; only an owner-only turn's own words reach the journal.
           const shared =
             (yield* effectiveAudience(ctx).pipe(

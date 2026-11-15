@@ -10,7 +10,7 @@ import { kinClient } from "./kinClient";
 import { useKinHost } from "./useKinHost";
 
 /** The pictures people chose, by avatar seed. `KinPicturesHost` keeps it current. */
-export const kinPictures = createKinPictures();
+const kinPictures = createKinPictures();
 
 export function useKinPicture(seed: string): string | undefined {
   return useSyncExternalStore(kinPictures.subscribe, () => kinPictures.get(seed));
@@ -32,9 +32,11 @@ export function useKinProfiles(environmentId: EnvironmentId | null, orgId: KinOr
 export function KinPicturesHost() {
   const host = useKinHost();
   const ready = host._tag === "host" && host.probe._tag === "ready" ? host : null;
-  const orgId = ready !== null && ready.probe._tag === "ready" ? (ready.probe.orgs.me[0]?.orgId ?? null) : null;
+  const orgId =
+    ready !== null && ready.probe._tag === "ready" ? (ready.probe.orgs.me[0]?.orgId ?? null) : null;
   const result = useKinProfiles(ready?.environmentId ?? null, orgId);
-  const profiles = result === null ? [] : (Option.getOrNull(AsyncResult.value(result))?.profiles ?? []);
+  const profiles =
+    result === null ? [] : (Option.getOrNull(AsyncResult.value(result))?.profiles ?? []);
   if (ready === null) return null;
   return <PictureUrls environmentId={ready.environmentId} profiles={profiles} />;
 }
@@ -59,10 +61,16 @@ function PictureUrls(props: {
   const key = entries.map(([seed, url]) => `${seed}=${url}`).join("\n");
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- publishes the signed picture URLs to the avatar store every avatar slot reads
   useEffect(() => {
-    kinPictures.set(new Map(key === "" ? [] : key.split("\n").map((line) => {
-      const at = line.indexOf("=");
-      return [line.slice(0, at), line.slice(at + 1)] as const;
-    })));
+    kinPictures.set(
+      new Map(
+        key === ""
+          ? []
+          : key.split("\n").map((line) => {
+              const at = line.indexOf("=");
+              return [line.slice(0, at), line.slice(at + 1)] as const;
+            }),
+      ),
+    );
   }, [key]);
   return null;
 }

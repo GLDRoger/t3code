@@ -831,10 +831,8 @@ it.live(
         // The reply bridge owns owed replies now, so ending before any post is allowed.
         yield* service.end(scope, { summary: "Finished fixture" });
         yield* service.end(scope, { summary: "Finished fixture" });
-        assert.strictEqual(
-          (yield* service.end(scope, { summary: "Changed" }).pipe(Effect.flip)).reason,
-          "not_allowed",
-        );
+        // F08: a second kin_end, after Claude's "no visible output" nudge, changes nothing.
+        yield* service.end(scope, { summary: "Changed" });
         // After kin_end the refusal is about authority, so it stays unexplained.
         assert.strictEqual(
           (yield* service.write(scope, input).pipe(Effect.flip)).message,
@@ -901,6 +899,17 @@ it.live(
         assert.include(journal, "Summary: Finished fixture");
         assert.strictEqual(journal.split("Summary: Finished fixture").length, 2);
         const writerService = yield* Writer.MemoryWriter;
+        // F08: after the commit, a late kin_end and the bridge's note on text after it are no
+        // restart, even when the branch they would check no longer shows the commit.
+        yield* sql`UPDATE kin_leads SET level = 'L0' WHERE agent_id = ${agentId}`;
+        yield* sql`INSERT INTO kin_chat_levels (org_id, agent_id, chat_id, level, level_since) VALUES (${orgId}, ${agentId}, ${chat.chatId}, 'L0', 0)`;
+        yield* service.end(scope, { summary: "After the nudge" });
+        yield* writerService.appendJournal(orgId, "fixture-wakeup", [
+          "Dropped after kin_end: Done.",
+        ]);
+        assert.isFalse(notices.some((notice) => notice.includes("lost on restart")));
+        yield* sql`DELETE FROM kin_chat_levels WHERE org_id = ${orgId} AND chat_id = ${chat.chatId}`;
+        yield* sql`UPDATE kin_leads SET level = 'L1' WHERE agent_id = ${agentId}`;
         yield* writerService.discard(orgId, "fixture-wakeup");
         yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'fixture-wakeup'`;
         yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids, audience) SELECT 'restart-wakeup', org_id, agent_id, thread_id, run_id, model, started_at, 'running', event_ids, audience FROM kin_wakeups WHERE wakeup_id = 'fixture-wakeup'`;

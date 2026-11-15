@@ -273,6 +273,8 @@ it.effect(
         `${base}/codex-relocated`,
         `${base}/claude-instance/projects`,
         `${home}/.t3/userdata`,
+        // Where connection keys live (`ServerConfig.secretsDir`).
+        `${state}/secrets`,
         `${base}/data/vault/inner`,
         `${base}/data`,
         `${base}/homes`,

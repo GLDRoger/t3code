@@ -158,6 +158,18 @@ it.effect(
         personId: member.person.personId,
         githubLogin: "suraj-ios",
       });
+      // F12: the owner names themself; a teammate can't rename the owner.
+      assert.equal(
+        (yield* service.setOwnerName(ownerSession, { orgId: input.orgId, displayName: "Arjun" }))
+          .displayName,
+        "Arjun",
+      );
+      assert.include(
+        yield* service
+          .setOwnerName(verified, { orgId: input.orgId, displayName: "Not the owner" })
+          .pipe(Effect.flip),
+        { reason: "not_allowed" },
+      );
       assert.lengthOf(
         (yield* service.listDevices(ownerSession, {
           orgId: input.orgId,
@@ -839,10 +851,12 @@ it.effect(
       const setTeamAgent = (
         session: typeof ownerSession | ReturnType<typeof memberSession>,
         agentId: KinAgentId | null,
-      ) =>
-        LeadProvision.setTeamAgent({ editor: { _tag: "session", session }, orgId, agentId });
-      const contacts = (person: { readonly _tag: "person"; readonly orgId: KinOrgId; readonly personId: KinPersonId }) =>
-        LeadProvision.contacts(person).pipe(Effect.map((rows) => rows.map((row) => row.name)));
+      ) => LeadProvision.setTeamAgent({ editor: { _tag: "session", session }, orgId, agentId });
+      const contacts = (person: {
+        readonly _tag: "person";
+        readonly orgId: KinOrgId;
+        readonly personId: KinPersonId;
+      }) => LeadProvision.contacts(person).pipe(Effect.map((rows) => rows.map((row) => row.name)));
       const role = (personId: KinPersonId, agentId: KinAgentId) =>
         sql<{ role: string; leftAt: string | null }>`SELECT m.role, m.left_at AS "leftAt"
           FROM kin_chats c JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
@@ -852,7 +866,9 @@ it.effect(
 
       // Off until the owner picks one.
       assert.deepStrictEqual(yield* contacts(asha.person), []);
-      assert.isFalse(yield* LeadAccess.allowed({ orgId, agentId: chief, personId: asha.person.personId }));
+      assert.isFalse(
+        yield* LeadAccess.allowed({ orgId, agentId: chief, personId: asha.person.personId }),
+      );
       assert.propertyVal(
         yield* setTeamAgent(asha.session, chief).pipe(Effect.flip),
         "reason",
@@ -920,8 +936,12 @@ it.effect(
       // his leaves the list.
       yield* setTeamAgent(ownerSession, ops);
       assert.deepStrictEqual(yield* contacts(asha.person), ["Ops"]);
-      assert.isFalse(yield* LeadAccess.allowed({ orgId, agentId: chief, personId: asha.person.personId }));
-      assert.deepStrictEqual(yield* role(asha.person.personId, chief), [{ role: "guest", leftAt: null }]);
+      assert.isFalse(
+        yield* LeadAccess.allowed({ orgId, agentId: chief, personId: asha.person.personId }),
+      );
+      assert.deepStrictEqual(yield* role(asha.person.personId, chief), [
+        { role: "guest", leftAt: null },
+      ]);
       assert.strictEqual((yield* role(ravi.person.personId, chief))[0]?.leftAt === null, false);
       const history = yield* chats.history([asha.person], {
         chatId: ashaChief.chatId,
@@ -929,17 +949,23 @@ it.effect(
         limit: 100,
       });
       assert.deepStrictEqual(
-        history.messages.map((message) => message.body).filter((body) => !body.startsWith("Invented")),
+        history.messages
+          .map((message) => message.body)
+          .filter((body) => !body.startsWith("Invented")),
         ["The team agent is now Ops. Message Ops instead."],
       );
 
       // Switching back reopens the old chats; off closes them again.
       yield* setTeamAgent(ownerSession, chief);
       assert.deepStrictEqual(yield* contacts(asha.person), ["Chief of staff"]);
-      assert.deepStrictEqual(yield* role(asha.person.personId, chief), [{ role: "member", leftAt: null }]);
+      assert.deepStrictEqual(yield* role(asha.person.personId, chief), [
+        { role: "member", leftAt: null },
+      ]);
       assert.deepStrictEqual(yield* contacts(ravi.person), ["Chief of staff"]);
       yield* setTeamAgent(ownerSession, null);
       assert.deepStrictEqual(yield* contacts(asha.person), []);
-      assert.deepStrictEqual(yield* role(asha.person.personId, chief), [{ role: "guest", leftAt: null }]);
+      assert.deepStrictEqual(yield* role(asha.person.personId, chief), [
+        { role: "guest", leftAt: null },
+      ]);
     }).pipe(Effect.provide(teamLayer)),
 );
