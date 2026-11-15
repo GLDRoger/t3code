@@ -28,7 +28,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
-import { SHARED_REFUSAL, turnChat } from "../lead/Audience.ts";
+import { SHARED_REFUSAL, effectiveAudience, turnChat, turnPeople } from "../lead/Audience.ts";
 import { resolveLead } from "../lead/LeadMemory.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import { partyPage, projectDetail } from "./crm.ts";
@@ -60,6 +60,7 @@ import {
   showsSensitive,
   turnSensitive,
 } from "./workerAttempts.ts";
+import { TEAM_REFUSED, teamChanges, viewVisible } from "./teamView.ts";
 
 /** The lead tools' inputs, results and the one call each makes. Model-facing text lives in `mcp/tools.ts`. */
 
@@ -512,7 +513,7 @@ const linkKeys = Effect.fn("KinWorkTools.linkKeys")(function* (
   return new Map(found.map((row) => [row.id, row.label]));
 });
 
-type View = {
+type Shown = {
   readonly name: (who: KinWorkPrincipal | null) => string | undefined;
   readonly lists: Lists;
   readonly keys: ReadonlyMap<string, string>;
@@ -528,10 +529,10 @@ const viewFor = Effect.fn("KinWorkTools.view")(function* (
     lists,
     keys: yield* linkKeys(lead, rows, lists),
     zone: yield* ownerZone(lead.orgId),
-  } satisfies View;
+  } satisfies Shown;
 });
 
-const rowFor = (view: View, row: RecordRow, now: number) => {
+const rowFor = (view: Shown, row: RecordRow, now: number) => {
   const { name } = view;
   const record = toRecord(row, now);
   const waitingOn = name(record.waitingOn);
@@ -695,6 +696,73 @@ const moneyPatch = Effect.fn("KinWorkTools.moneyPatch")(function* (
   };
 });
 
+/**
+ * In a turn others read, the people Work answers for (`turnPeople`): only tasks every one of them
+ * sees, shaped as their own screens show them. `undefined` in the owner's own turn.
+ */
+const viewOf = Effect.fn("KinWorkTools.viewOf")(function* (lead: Lead) {
+  if ((yield* effectiveAudience(lead)) === "owner_only") return undefined;
+  const behind = yield* turnPeople(lead);
+  // A chat once shared that only the owner reads now gets none of his Work either.
+  if (behind === undefined || behind.people.length === 0)
+    return yield* new KinChatError({ reason: "not_allowed", message: SHARED_REFUSAL });
+  return behind;
+});
+type View = NonNullable<Effect.Success<ReturnType<typeof viewOf>>>;
+
+/** What only the owner sets in Work: clients, projects, money, list fields, labels, holders. */
+const OWNERS_INPUTS = [
+  "client",
+  "project",
+  "groupBy",
+  "dateFrom",
+  "dateTo",
+  "amount",
+  "currency",
+  "date",
+  "repeat",
+  "fields",
+  "sensitive",
+  "confirmed",
+  "kind",
+  "role",
+  "email",
+  "phone",
+  "terms",
+  "repos",
+  "address",
+  "gstin",
+  "placeOfSupply",
+] as const;
+const ownersInput = (input: object, also: ReadonlyArray<string> = []) =>
+  [...OWNERS_INPUTS, ...also].some(
+    (field) => (input as Record<string, unknown>)[field] !== undefined,
+  );
+
+/** A row as a teammate's own Work shows it: no client, project, money, list fields or labels. */
+const teamRow = ({
+  client: _client,
+  project: _project,
+  amount: _amount,
+  balance: _balance,
+  date: _date,
+  repeat: _repeat,
+  fields: _fields,
+  listName: _listName,
+  stateLabel: _stateLabel,
+  category: _category,
+  sensitive: _sensitive,
+  sensitiveFields: _sensitiveFields,
+  ...row
+}: typeof Row.Type) => row;
+
+/** A writer acting for the people behind a shared turn; the one who asked is its assigner. */
+const viewWriter = (writer: Writer, view: View): Writer => ({
+  ...writer,
+  askedBy: view.askers.length === 1 ? view.askers[0]! : null,
+  view: { people: view.people, askers: view.askers },
+});
+
 /** Refused, as the gate does, if the turn became one others read since the call was admitted. */
 export const admitted = Effect.fn("KinWorkTools.admitted")(function* (
   lead: Lead,
@@ -742,6 +810,12 @@ const titleKey = (title: string) => title.trim().replace(/\s+/g, " ").toLowerCas
 
 const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInput.Type) {
   const records = yield* KinRecords;
+  const team = yield* viewOf(lead);
+  if (
+    team !== undefined &&
+    ((input.list !== undefined && input.list !== "work") || ownersInput(input))
+  )
+    return yield* TEAM_REFUSED;
   const list = input.list === undefined ? undefined : yield* listFor(lead, input.list);
   const owner = input.owner === undefined ? undefined : yield* resolveWho(lead, input.owner);
   const dueBy = input.dueBefore === undefined ? undefined : calendarTimeMillis(input.dueBefore);
@@ -770,9 +844,21 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
     ...(input.text === undefined ? {} : { text: input.text }),
     ...(input.keys === undefined ? {} : { keys: input.keys }),
   };
-  const page = yield* records.query(lead.orgId, { ...filter, limit: input.limit ?? 20 });
+  const page = yield* records.query(lead.orgId, {
+    ...filter,
+    ...(team === undefined ? {} : { view: team.people }),
+    limit: input.limit ?? 20,
+  });
   const now = yield* Clock.currentTimeMillis;
   const view = yield* viewFor(lead, page.rows);
+  if (team !== undefined) {
+    const shown: typeof QueryResult.Type = {
+      asOf: iso(now),
+      total: page.total,
+      records: page.rows.map((row) => teamRow(rowFor(view, row, now))),
+    };
+    return shown;
+  }
   const withAmounts = list !== undefined && (list.amount || list.builtIn === "work");
   const totals =
     withAmounts || input.groupBy === "month" || input.groupBy === "financialYear"
@@ -816,7 +902,7 @@ type By = NonNullable<typeof QueryInput.Type.groupBy>;
 /** Groups' raw keys as a lead reads them: names, `Acme (C-1)`, or the period itself. */
 const labelGroups = Effect.fn("KinWorkTools.labelGroups")(function* (
   lead: Lead,
-  view: View,
+  view: Shown,
   by: By,
   rows: ReadonlyArray<{
     readonly group: string | null;
@@ -864,7 +950,7 @@ const labelGroups = Effect.fn("KinWorkTools.labelGroups")(function* (
 
 const groupsFor = Effect.fn("KinWorkTools.groups")(function* (
   lead: Lead,
-  view: View,
+  view: Shown,
   filter: Parameters<KinRecords["Service"]["groups"]>[1],
   by: By,
 ) {
@@ -876,8 +962,11 @@ const groupsFor = Effect.fn("KinWorkTools.groups")(function* (
 
 const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.Type) {
   const records = yield* KinRecords;
+  const team = yield* viewOf(lead);
   const row = yield* records.get(lead.orgId, input.key);
   if (row === undefined) return yield* notFound(input.key);
+  if (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, row.recordId)))
+    return yield* notFound(input.key);
   if (listOf(row.registerId) === "docs") return yield* isDoc(input.key);
   const detail = yield* records.detail(row, 10);
   const now = yield* Clock.currentTimeMillis;
@@ -886,6 +975,27 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
   const actor = (by: (typeof detail.changes)[number]["by"]) =>
     by._tag === "system" ? "Kin" : (name(by) ?? "someone");
   const assignedBy = name(detail.assignedBy);
+  if (team !== undefined) {
+    const shown: typeof GetResult.Type = {
+      ...teamRow(rowFor(view, row, now)),
+      notes: detail.notes,
+      ...(assignedBy === undefined ? {} : { assignedBy }),
+      links: detail.links.flatMap((link) =>
+        link.kind === "pull_request" || link.kind === "url"
+          ? [{ kind: link.kind, relation: link.relation, target: link.label ?? link.target }]
+          : [],
+      ),
+      history: teamChanges(detail.changes).map((change) => ({
+        at: change.at,
+        by: actor(change.by),
+        change:
+          change.kind === "created"
+            ? "created"
+            : change.fields.map((field) => `${field.field}: ${field.to ?? "cleared"}`).join("; "),
+      })),
+    };
+    return shown;
+  }
   const list = row.registerId;
   const sensitive = new Set(marksOf(view.lists, row).sensitiveFields ?? []);
   const page = list === "clients" ? yield* partyPage(row, now, 0) : undefined;
@@ -962,8 +1072,20 @@ export const get = leadTool("KinWorkTools.get", runGet);
 const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateInput.Type) {
   yield* admitted(lead, "record_create", input);
   const records = yield* KinRecords;
+  const team = yield* viewOf(lead);
+  if (
+    team !== undefined &&
+    input.records.some(
+      (row) =>
+        (row.list !== undefined && row.list !== "work") ||
+        (row.owner !== undefined && row.owner !== "me") ||
+        ownersInput(row, ["suggested"]),
+    )
+  )
+    return yield* TEAM_REFUSED;
   const source = yield* sourceOf(lead, input.sourceEventId);
-  const writer = yield* writerFor(lead);
+  const owned = yield* writerFor(lead);
+  const writer = team === undefined ? owned : viewWriter(owned, team);
   const lists = yield* allLists(lead.orgId);
   // A turn shown something sensitive may be writing it down, so what it writes is labelled too.
   const marked = yield* turnSensitive(lead.orgId, lead.wakeupId);
@@ -1008,7 +1130,8 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
     const originKey = `lead:${lead.agentId}:${input.sourceEventId}:${retryKey(rowKey)}`;
     const fields = fieldsFrom(row);
     const { row: stored, created } = yield* records.create(lead.orgId, writer, {
-      list,
+      // A teammate files only Work, which is the default.
+      ...(team === undefined ? { list } : {}),
       originKey,
       title: row.title,
       owner,
@@ -1024,9 +1147,13 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
       ...(row.notes === undefined ? {} : { notes: row.notes }),
       ...categoryOf(list, row),
       ...(row.side === undefined ? {} : { side: row.side }),
-      // What the owner asked for is confirmed; what a lead inferred waits for the owner.
-      confirmed: row.suggested !== true && writer.askedBy !== null,
-      ...(source === undefined ? {} : { source }),
+      // What the owner asked for is confirmed; what a lead inferred waits for the owner. Only
+      // the owner confirms in Work, so a teammate's task keeps the default.
+      ...(team === undefined
+        ? { confirmed: row.suggested !== true && writer.askedBy !== null }
+        : {}),
+      // Where it was first asked stays the owner's to know.
+      ...(source === undefined || team !== undefined ? {} : { source }),
     });
     results.push({ key: stored.key, title: stored.title, created, ...marksOf(lists, stored) });
   }
@@ -1061,10 +1188,16 @@ const UNCARRYING = new Set(["state", "owner", "waitingOn", "confirmed"]);
 const runUpdate = Effect.fnUntraced(function* (lead: Lead, input: typeof UpdateInput.Type) {
   yield* admitted(lead, "record_update", input);
   const records = yield* KinRecords;
+  const team = yield* viewOf(lead);
+  // Who holds a task is the owner's to change here: a new holder clears its assigner.
+  if (team !== undefined && ownersInput(input, ["owner"])) return yield* TEAM_REFUSED;
   yield* sourceOf(lead, input.sourceEventId);
-  const writer = yield* writerFor(lead);
+  const owned = yield* writerFor(lead);
+  const writer = team === undefined ? owned : viewWriter(owned, team);
   const before = yield* records.get(lead.orgId, input.key);
   if (before === undefined) return yield* notFound(input.key);
+  if (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, before.recordId)))
+    return yield* notFound(input.key);
   if (listOf(before.registerId) === "docs") return yield* isDoc(input.key);
   const def = yield* listFor(lead, before.registerId);
   const patch: Patch = {

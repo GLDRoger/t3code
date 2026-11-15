@@ -96,7 +96,8 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const repo = yield* Repository.KinChatRepository;
   const hub = yield* Hub.KinChatHub;
-  const { owner } = yield* KinIdentity;
+  const identity = yield* KinIdentity;
+  const { owner } = identity;
   const presence = yield* Effect.serviceOption(KinPresence);
   const stop = yield* Effect.serviceOption(KinStop);
   const now = DateTime.now.pipe(Effect.map(DateTime.formatIso));
@@ -270,6 +271,15 @@ const make = Effect.gen(function* () {
         ),
       );
     }
+    if (shared.threads.length > 0)
+      yield* sql.afterCommit(
+        Effect.forEach(
+          shared.threads,
+          (threadId) =>
+            identity.endAgentThread({ orgId: chat.orgId, threadId }).pipe(Effect.ignore),
+          { discard: true },
+        ),
+      );
     if (shared.turns.length === 0 || Option.isNone(stop)) return;
     yield* sql.afterCommit(
       stop.value.abortTurns(

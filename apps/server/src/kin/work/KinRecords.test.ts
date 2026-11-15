@@ -33,7 +33,7 @@ import { authorizeRpc } from "../../auth/RpcAuthorization.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
-import { turnAudience, turnChat } from "../lead/Audience.ts";
+import { turnAudience, turnChat, turnPeople } from "../lead/Audience.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
@@ -403,63 +403,63 @@ it.effect("work given away with no stored owner assigner is recorded and wakes n
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect(
-  "every Work tool is refused in a turn others read, and a chat-only session gets no RPC",
-  () =>
-    Effect.gen(function* () {
-      yield* seed;
-      yield* turn("mate", "shared");
-      const shared = { orgId, agentId: lead, wakeupId: "wake" };
-      // Slice 5's list and money tools too: none of them is shared-safe yet.
-      assert.lengthOf(Object.keys(KinWorkToolkit.tools), 9);
-      for (const tool of Object.keys(KinWorkToolkit.tools))
-        assert.isFalse(yield* sharedToolAllowed(shared, tool, {}), tool);
-      assert.include(
-        yield* Effect.flip(
-          LeadWork.create(scopeOf(lead), { sourceEventId: "ask-event", records: steps }),
-        ),
-        { reason: "not_allowed" },
+it.effect("a turn others read gets only Work's tasks, and a chat-only session gets no RPC", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* turn("mate", "shared");
+    const shared = { orgId, agentId: lead, wakeupId: "wake" };
+    // Tasks are read and changed at the teammate's view; lists and money stay the owner's.
+    const view = new Set(["records_query", "record_get", "record_create", "record_update"]);
+    assert.lengthOf(Object.keys(KinWorkToolkit.tools), 9);
+    for (const tool of Object.keys(KinWorkToolkit.tools))
+      assert.strictEqual(yield* sharedToolAllowed(shared, tool, {}), view.has(tool), tool);
+    // Only the owner names who else holds a task.
+    assert.include(
+      yield* Effect.flip(
+        LeadWork.create(scopeOf(lead), { sourceEventId: "ask-event", records: steps }),
+      ),
+      { reason: "not_allowed" },
+    );
+    // The services check again, so a turn that became shared since the gate is refused too.
+    const refused = [
+      yield* Effect.flip(
+        LeadMoney.define(scopeOf(lead), { sourceEventId: "ask-event", template: "expenses" }),
+      ),
+      yield* Effect.flip(
+        LeadMoney.payment(scopeOf(lead), {
+          sourceEventId: "ask-event",
+          key: "INV-1",
+          amount: "100",
+          paidOn: "2026-11-11",
+        }),
+      ),
+      yield* Effect.flip(LeadMoney.profile(scopeOf(lead), {})),
+    ];
+    for (const error of refused) assert.include(error, { reason: "not_allowed" });
+    // Every Work method declares whether a teammate's session reaches it: tasks do, and the
+    // service shows them only their view; clients, lists, money and the profile never do.
+    const teammate = new Set([
+      "kin.work.summary",
+      "kin.work.list",
+      "kin.work.get",
+      "kin.work.subscribe",
+      "kin.work.create",
+      "kin.work.assign",
+      "kin.work.update",
+    ]);
+    const methods = [
+      ...Object.values(KIN_WORK_WS_METHODS),
+      ...KinFinanceRpcs.map((rpc) => rpc._tag),
+    ];
+    assert.lengthOf(methods, 36);
+    for (const method of methods)
+      assert.strictEqual(
+        (yield* Effect.exit(authorizeRpc([AuthKinChatScope], method, { orgId })))._tag ===
+          "Success",
+        teammate.has(method),
+        method,
       );
-      // The services check again, so a turn that became shared since the gate is refused too.
-      const refused = [
-        yield* Effect.flip(
-          LeadMoney.define(scopeOf(lead), { sourceEventId: "ask-event", template: "expenses" }),
-        ),
-        yield* Effect.flip(
-          LeadMoney.payment(scopeOf(lead), {
-            sourceEventId: "ask-event",
-            key: "INV-1",
-            amount: "100",
-            paidOn: "2026-11-11",
-          }),
-        ),
-        yield* Effect.flip(LeadMoney.profile(scopeOf(lead), {})),
-      ];
-      for (const error of refused) assert.include(error, { reason: "not_allowed" });
-      // Every Work method declares whether a teammate's session reaches it: tasks do, and the
-      // service shows them only their view; clients, lists, money and the profile never do.
-      const teammate = new Set([
-        "kin.work.summary",
-        "kin.work.list",
-        "kin.work.get",
-        "kin.work.subscribe",
-        "kin.work.create",
-        "kin.work.assign",
-        "kin.work.update",
-      ]);
-      const methods = [
-        ...Object.values(KIN_WORK_WS_METHODS),
-        ...KinFinanceRpcs.map((rpc) => rpc._tag),
-      ];
-      assert.lengthOf(methods, 36);
-      for (const method of methods)
-        assert.strictEqual(
-          (yield* Effect.exit(authorizeRpc([AuthKinChatScope], method, { orgId })))._tag ===
-            "Success",
-          teammate.has(method),
-          method,
-        );
-    }).pipe(Effect.provide(layer)),
+  }).pipe(Effect.provide(layer)),
 );
 
 const head = (id: string, fields: Partial<MemoryItemHead>) =>
@@ -1011,6 +1011,164 @@ const ownerWrites = {
 };
 const keysOf = (page: { readonly records: ReadonlyArray<{ readonly key: string }> }) =>
   page.records.map((record) => record.key).toSorted();
+const ownerTask = (title: string, extra: Partial<KinRecords.CreateInput> = {}) =>
+  KinRecords.KinRecords.pipe(
+    Effect.flatMap((records) =>
+      records.create(orgId, ownerWrites, {
+        originKey: title,
+        title: `Invented ${title}`,
+        owner: { _tag: "person", personId: ownerId },
+        ...extra,
+      }),
+    ),
+    Effect.map(({ row }) => row),
+  );
+
+it.effect(
+  "the people behind a turn come from stored authors, reactors, assigners and origins",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* turn("owner");
+      const sql = yield* SqlClient.SqlClient;
+      const behind = (
+        events: ReadonlyArray<{ readonly tag: string; readonly json: Record<string, unknown> }>,
+      ) =>
+        Effect.gen(function* () {
+          yield* sql`DELETE FROM kin_events WHERE event_id != 'ask-event'`;
+          for (const [index, event] of events.entries())
+            yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+              received_at, queued_at, state, wakeup_id)
+            VALUES (${`extra-${index}`}, ${orgId}, ${lead}, ${event.tag}, 'P2',
+              ${JSON.stringify(event.json)}, 0, 0, 'claimed', 'wake')`;
+          return yield* turnPeople({ orgId, agentId: lead, wakeupId: "wake" });
+        });
+      const human = (personId: string) => ({ _tag: "human", personId, memberId: "m" });
+      const rows = [
+        { why: "the owner alone", events: [], people: [], askers: [] },
+        {
+          why: "the owner's message and a teammate's reaction",
+          events: [
+            { tag: "chat.reaction", json: { chatId: "lead-chat", provenance: human(mateId) } },
+          ],
+          people: [mateId],
+          askers: [mateId],
+        },
+        {
+          why: "a task a teammate gave it",
+          events: [{ tag: "record.changed", json: { provenance: human(mateId) } }],
+          people: [mateId],
+          askers: [mateId],
+        },
+        {
+          why: "a deferral a teammate's turn set up",
+          events: [
+            { tag: "deferral.due", json: { origin: { chatId: "lead-chat", personId: mateId } } },
+          ],
+          people: [mateId],
+          askers: [mateId],
+        },
+      ];
+      for (const row of rows)
+        assert.deepInclude(
+          yield* behind(row.events),
+          { people: row.people, askers: row.askers },
+          row.why,
+        );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("in a teammate's turn the lead reads and changes Work as their own screens do", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* turn("mate", "shared");
+    const hidden = yield* ownerTask("private");
+    const shared = yield* ownerTask("shared", { amount: { minor: 500_000, currency: "INR" } });
+    const theirs = yield* ownerTask("theirs", { owner: { _tag: "person", personId: mateId } });
+    yield* OwnerWork.share([owner], { orgId, keys: [shared.key], shared: true });
+    const scope = scopeOf(lead);
+    const listed = yield* LeadWork.query(scope, {});
+    assert.deepStrictEqual(keysOf(listed), keysOf(yield* OwnerWork.list([mate], { orgId })));
+    assert.deepStrictEqual(keysOf(listed), [shared.key, theirs.key]);
+    for (const row of listed.records) assert.notProperty(row, "amount");
+    assert.include(yield* Effect.flip(LeadWork.query(scope, { groupBy: "client" })), {
+      reason: "not_allowed",
+    });
+    // A task they can't see is answered exactly as one that never was, read or changed.
+    const unknown = (key: string) =>
+      new KinChatError({ reason: "not_found", message: `No entry ${key} in Work.` });
+    assert.deepStrictEqual(
+      yield* Effect.flip(LeadWork.get(scope, { key: "W-99" })),
+      unknown("W-99"),
+    );
+    assert.deepStrictEqual(
+      yield* Effect.flip(LeadWork.get(scope, { key: hidden.key })),
+      unknown(hidden.key),
+    );
+    assert.deepStrictEqual(
+      yield* Effect.flip(
+        LeadWork.update(scope, { key: hidden.key, sourceEventId: "ask-event", state: "done" }),
+      ),
+      unknown(hidden.key),
+    );
+    assert.notProperty(yield* LeadWork.get(scope, { key: shared.key }), "amount");
+    assert.include(
+      yield* LeadWork.update(scope, {
+        key: theirs.key,
+        sourceEventId: "ask-event",
+        state: "doing",
+      }),
+      { state: "doing" },
+    );
+    // Shared with them is theirs to read, not to change.
+    assert.include(
+      yield* Effect.flip(
+        LeadWork.update(scope, { key: shared.key, sourceEventId: "ask-event", state: "done" }),
+      ),
+      { reason: "not_allowed" },
+    );
+    // What it files for them is theirs, so they see it.
+    const made = yield* LeadWork.create(scope, {
+      sourceEventId: "ask-event",
+      records: [{ title: "Invented: fix the login bug" }],
+    });
+    assert.include(keysOf(yield* OwnerWork.list([mate], { orgId })), made.records[0]!.key);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "in a group the lead reads only what every teammate there may see, and files nothing",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* turn("mate", "shared");
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES ('mate-2', ${orgId}, 'mate2', 'Mate Two', ${at})`;
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+      VALUES ('mate-2-session', ${orgId}, 'mate-2', 0)`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+      VALUES ('lead-chat-mate-2', ${orgId}, 'lead-chat', 'person', 'mate-2', 'member', ${at})`;
+      const theirs = yield* ownerTask("theirs", { owner: { _tag: "person", personId: mateId } });
+      yield* ownerTask("the other's", {
+        owner: { _tag: "person", personId: KinPersonId.make("mate-2") },
+      });
+      const shared = yield* ownerTask("shared");
+      yield* OwnerWork.share([owner], { orgId, keys: [shared.key], shared: true });
+      const scope = scopeOf(lead);
+      assert.deepStrictEqual(keysOf(yield* LeadWork.query(scope, {})), [shared.key]);
+      // Even the asker's own task: the other teammate may not see it.
+      assert.include(
+        yield* Effect.flip(
+          LeadWork.update(scope, { key: theirs.key, sourceEventId: "ask-event", state: "done" }),
+        ),
+        { reason: "not_found" },
+      );
+      assert.isFalse(
+        yield* sharedToolAllowed({ orgId, agentId: lead, wakeupId: "wake" }, "record_create", {}),
+      );
+    }).pipe(Effect.provide(layer)),
+);
 
 it.effect(
   "a teammate sees only tasks shared with them or theirs, never a sensitive one or any money",
