@@ -28,6 +28,7 @@ import { SHARED_REFUSAL, effectiveAudience } from "./Audience.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { resolveLead } from "./LeadMemory.ts";
 import { messageBodyLimit } from "./LeadPrompt.ts";
+import { outsideStamp, stampEvent } from "./OutsideContent.ts";
 
 export const LeadsResult = Schema.Struct({
   leads: Schema.Array(
@@ -355,6 +356,11 @@ const make = Effect.gen(function* () {
           messageId: message.messageId,
           origin: { agentId: ctx.agentId, chatId: self.ownerChatId },
         });
+        // Passed on after an outside read: the other lead's turn starts outside-read too.
+        yield* outsideStamp(ctx).pipe(
+          Effect.flatMap((source) => stampEvent(ctx.orgId, `handoff-${id}`, source)),
+          Effect.provideService(SqlClient.SqlClient, sql),
+        );
         return { to: target!.name, passed: true as const };
       }),
     );

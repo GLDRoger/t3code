@@ -38,6 +38,8 @@ import { buildWorkSection, MONEY_RULE, WITHDRAWN_WORK, WORK_RULE } from "../work
 import { buildStartedSection, STARTED_RULE } from "./startedSection.ts";
 import { entriesShown, sensitiveShown, sourcesShown } from "../work/workerAttempts.ts";
 import { teamSees } from "../work/teamView.ts";
+import { promptLine as connectionsLine } from "../connections/ConnectionRows.ts";
+import { inheritOutside } from "./OutsideContent.ts";
 import { askedWhereOthersRead } from "../triggers/deferralOrigin.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { groupRules } from "./instructions.ts";
@@ -490,6 +492,23 @@ export class KinLeadPrompt extends Context.Service<
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.catch((cause) =>
             Effect.logWarning("Kin couldn't record what a prompt's reminders carry", cause),
+          ),
+        );
+        // What an outside-read turn set up or passed on starts this one outside-read too.
+        // Not a warning: an unmarked turn could start a worker from what it shows.
+        yield* inheritOutside({
+          orgId,
+          wakeupId: input.wakeupId,
+          eventIds: [...input.events.map((event) => event.eventId), ...askedIn],
+        }).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError(
+            (cause) =>
+              new KinLeadPromptError({
+                orgId,
+                reason: "Could not read what the turn shows",
+                cause,
+              }),
           ),
         );
         return { events, fromOwner: fromOwner && events.length > 0, replyDue };
@@ -964,6 +983,16 @@ export class KinLeadPrompt extends Context.Service<
             Effect.logWarning("Kin couldn't record the Work a prompt shows", cause),
           ),
         );
+        const connected = ownerOnly
+          ? yield* connectionsLine(orgId).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.catch((cause) =>
+                Effect.logWarning("Kin connections line unavailable", cause).pipe(
+                  Effect.as(undefined),
+                ),
+              ),
+            )
+          : undefined;
         const zone = yield* cache.readOwnerTimeZone(orgId);
         const timeZone = zone._tag === "zone" ? zone.zone : undefined;
         const lines = snapshot === undefined ? 0 : indexLines(snapshot.index);
@@ -1027,6 +1056,7 @@ export class KinLeadPrompt extends Context.Service<
           ...(Number.isFinite(budgetLeft) && budgetLeft <= BUDGET_LOW_PERCENT
             ? [ownerPart(`Budget: ${input.budgetContext}. Keep this turn light.`)]
             : []),
+          ...(connected === undefined ? [] : [ownerPart(connected)]),
         ];
         const parts: ReadonlyArray<Part> = [
           ...(snapshot === undefined

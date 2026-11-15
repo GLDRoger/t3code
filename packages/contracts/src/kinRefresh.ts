@@ -17,6 +17,7 @@ export const KIN_REFRESH_TOPICS = [
   "leads",
   "timeZone",
   "visualHosts",
+  "connections",
 ] as const;
 export const KinRefreshTopic = Schema.Literals(KIN_REFRESH_TOPICS);
 export type KinRefreshTopic = typeof KinRefreshTopic.Type;
@@ -33,6 +34,7 @@ export const KinRefreshes = Schema.Struct({
   leads: Schema.optional(NonNegativeInt),
   timeZone: Schema.optional(NonNegativeInt),
   visualHosts: Schema.optional(NonNegativeInt),
+  connections: Schema.optional(NonNegativeInt),
 });
 export type KinRefreshes = typeof KinRefreshes.Type;
 
