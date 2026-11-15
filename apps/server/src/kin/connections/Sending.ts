@@ -1,7 +1,13 @@
 // @effect-diagnostics nodeBuiltinImport:off -- a stored file's hash, and a MIME boundary.
 import * as NodeCrypto from "node:crypto";
 
-import { type KinChatError, KinDocFile, type KinOrgId, type KinSendCard } from "@t3tools/contracts";
+import {
+  type KinChatError,
+  KinDocFile,
+  type KinMailAddress,
+  type KinOrgId,
+  type KinSendCard,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -10,8 +16,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { readStoredFile } from "../gendocs/brand.ts";
 import { formatMoney } from "../work/money.ts";
+import { logTouch } from "../work/touches.ts";
 import { KinGatewayError } from "./McpGateway.ts";
-import { api, CALENDAR, field, GMAIL, header, list, text } from "./Google.ts";
+import { MAIL_TOOL, type Mailbox, type MailProvider } from "./MailProvider.ts";
 
 /**
  * What an "Ask me" call sends, fixed when the agent asks and shown whole on the owner's card.
@@ -30,8 +37,18 @@ const Attachment = Schema.Struct({
   entryRecordId: Schema.NullOr(Schema.String),
 });
 export type Attachment = typeof Attachment.Type;
+const From = Schema.Struct({ address: Schema.String, name: Schema.NullOr(Schema.String) });
+export type From = typeof From.Type;
+const Thread = Schema.Struct({
+  subject: Schema.String,
+  replyingTo: Schema.String,
+  date: Schema.NullOr(Schema.String),
+  lines: Schema.String,
+});
 export const Prepared = Schema.Union([
   Schema.TaggedStruct("email", {
+    /** Missing on asks from before accounts: the account's default From. */
+    from: Schema.optionalKey(Schema.NullOr(From)),
     to: Schema.Array(Schema.String),
     cc: Schema.Array(Schema.String),
     subject: Schema.String,
@@ -39,6 +56,9 @@ export const Prepared = Schema.Union([
     threadId: Schema.NullOr(Schema.String),
     inReplyTo: Schema.NullOr(Schema.String),
     references: Schema.NullOr(Schema.String),
+    /** A reply's thread as the card shows it, and the last message quoted under the body. */
+    thread: Schema.optionalKey(Schema.NullOr(Thread)),
+    quoted: Schema.optionalKey(Schema.NullOr(Schema.String)),
     attachments: Schema.Array(Attachment),
   }),
   Schema.TaggedStruct("event", {
@@ -64,7 +84,7 @@ const MAX_RECIPIENTS = 10;
 const MAX_INVITEES = 50;
 const MAX_BODY = 20_000;
 const MAX_ATTACHMENTS = 5;
-// Gmail takes the message inline as base64; a few invoices fit well inside its limit.
+// Providers take the message inline as base64; a few invoices fit well inside their limits.
 const MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024;
 // Plain ASCII addresses only: no names, no comments, nothing a header could hide.
 const ADDRESS =
@@ -86,14 +106,6 @@ const checkAddresses = (values: ReadonlyArray<string>, what: string, max: number
   return bad === undefined
     ? undefined
     : refused(`${bad.slice(0, 80)} in ${what} isn't a plain address such as ana@example.com.`);
-};
-
-/** The address inside `Ana <ana@example.com>`, or the value when it is a bare address. */
-const addressOf = (value: string | null) => {
-  if (value === null) return undefined;
-  const inside = /<([^<>]+)>/.exec(value)?.[1] ?? value;
-  const address = inside.trim();
-  return ADDRESS.test(address) ? address : undefined;
 };
 
 const docLabels: Readonly<Record<string, string>> = {
@@ -204,55 +216,47 @@ export const attachmentsCurrent = Effect.fn("KinSending.current")(function* (
   return true;
 });
 
-/** The thread's last message from someone else: who a reply goes to, and what it answers. */
-const replyTarget = Effect.fn("KinSending.replyTarget")(function* (
-  http: HttpClient.HttpClient,
-  token: string,
-  threadId: string,
+/** One of the account's addresses, with its From name; the default when `wanted` is null. */
+export const fromOf = (
   account: string | null,
-) {
-  const thread = yield* api(http, token, `${GMAIL}/threads/${encodeURIComponent(threadId)}`, {
-    format: "metadata",
-    metadataHeaders: ["From", "Reply-To", "To", "Subject", "Message-ID", "References"],
-  });
-  const messages = list(field(thread, "messages"));
-  if (messages.length === 0) return yield* refused("That mail thread has no messages.");
-  const mine = (message: unknown) =>
-    account !== null && addressOf(header(message, "From"))?.toLowerCase() === account.toLowerCase();
-  const last = messages.findLast((message) => !mine(message)) ?? messages.at(-1)!;
-  const to = mine(last)
-    ? (header(last, "To") ?? "").split(",").flatMap((one) => addressOf(one) ?? [])
-    : [addressOf(header(last, "Reply-To")) ?? addressOf(header(last, "From"))].flatMap(
-        (one) => one ?? [],
-      );
-  if (to.length === 0) return yield* refused("Kin couldn't tell who to reply to in that thread.");
-  const subject = (header(messages[0], "Subject") ?? "").replace(LINE_BREAK, " ").trim();
-  const messageId = header(last, "Message-ID");
-  const references = [header(last, "References"), messageId].filter((one) => one !== null);
-  return {
-    to: to.slice(0, MAX_RECIPIENTS),
-    subject: /^re:/i.test(subject) ? subject : `Re: ${subject}`,
-    inReplyTo: messageId,
-    references: references.length === 0 ? null : references.join(" "),
-  };
-});
+  sendAs: ReadonlyArray<KinMailAddress>,
+  wanted: string | null,
+): From | undefined => {
+  const own =
+    sendAs.length > 0
+      ? sendAs
+      : account === null
+        ? []
+        : [{ address: account, name: null, isDefault: true }];
+  const found =
+    wanted === null
+      ? (own.find((one) => one.isDefault) ?? own[0])
+      : own.find((one) => one.address.toLowerCase() === wanted.toLowerCase());
+  return found === undefined ? undefined : { address: found.address, name: found.name };
+};
 
-/** What a Google send tool would send, checked and filled in from the thread it answers. */
-export const prepareGoogle = Effect.fn("KinSending.prepareGoogle")(function* (input: {
+/** What a mail send tool would send, checked and filled in from the thread it answers. */
+export const prepareMail = Effect.fn("KinSending.prepareMail")(function* (input: {
+  readonly provider: MailProvider;
   readonly http: HttpClient.HttpClient;
   readonly token: Effect.Effect<string, KinGatewayError | KinChatError>;
   readonly orgId: KinOrgId;
   readonly account: string | null;
+  readonly sendAs: ReadonlyArray<KinMailAddress>;
   readonly tool: string;
   readonly args: Readonly<Record<string, unknown>>;
 }) {
   const { args } = input;
-  if (input.tool === "calendar_save_event") {
+  const mailbox: Mailbox = {
+    account: input.account,
+    addresses: input.sendAs.map((one) => one.address),
+  };
+  if (input.tool === MAIL_TOOL.saveEvent) {
     const title = optional(args, "title");
     const start = optional(args, "start");
     const end = optional(args, "end");
     if (title === null || start === null || end === null)
-      return yield* refused("calendar_save_event needs title, start and end.");
+      return yield* refused(`${MAIL_TOOL.saveEvent} needs title, start and end.`);
     if ([start, end].some((when) => Number.isNaN(Date.parse(when))))
       return yield* refused("start and end are date-times such as 2026-11-20T15:00:00+05:30.");
     if (Date.parse(end) <= Date.parse(start)) return yield* refused("end is after start.");
@@ -279,12 +283,24 @@ export const prepareGoogle = Effect.fn("KinSending.prepareGoogle")(function* (in
   const badCc = checkAddresses(cc, "cc", MAX_RECIPIENTS);
   if (badCc !== undefined) return yield* badCc;
   const attachments = yield* attachmentsOf(input.orgId, strings(args.attachments));
-  if (input.tool === "gmail_reply") {
+  if (input.tool === MAIL_TOOL.reply) {
     const threadId = optional(args, "threadId");
-    if (threadId === null) return yield* refused("gmail_reply needs threadId.");
-    const target = yield* replyTarget(input.http, yield* input.token, threadId, input.account);
+    if (threadId === null) return yield* refused(`${MAIL_TOOL.reply} needs threadId.`);
+    if (optional(args, "from") !== null)
+      return yield* refused("A reply goes from the address the mail was sent to; leave from out.");
+    const target = yield* input.provider.replyTarget(
+      input.http,
+      yield* input.token,
+      mailbox,
+      threadId,
+    );
+    const from =
+      fromOf(input.account, input.sendAs, target.receivedAt) ??
+      fromOf(input.account, input.sendAs, null) ??
+      null;
     return {
       _tag: "email",
+      from,
       to: target.to,
       cc,
       subject: target.subject,
@@ -292,20 +308,32 @@ export const prepareGoogle = Effect.fn("KinSending.prepareGoogle")(function* (in
       threadId,
       inReplyTo: target.inReplyTo,
       references: target.references,
+      thread: target.thread,
+      quoted: target.quoted,
       attachments,
     } satisfies Prepared;
   }
-  if (input.tool !== "gmail_send") return yield* refused(`Google has no tool named ${input.tool}.`);
+  if (input.tool !== MAIL_TOOL.send)
+    return yield* refused(`${input.provider.name} has no tool named ${input.tool}.`);
   const to = strings(args.to);
-  if (to.length === 0) return yield* refused("gmail_send needs to.");
+  if (to.length === 0) return yield* refused(`${MAIL_TOOL.send} needs to.`);
   const badTo = checkAddresses(to, "to", MAX_RECIPIENTS);
   if (badTo !== undefined) return yield* badTo;
   const subject = optional(args, "subject");
-  if (subject === null) return yield* refused("gmail_send needs subject.");
+  if (subject === null) return yield* refused(`${MAIL_TOOL.send} needs subject.`);
   if (LINE_BREAK.test(subject) || subject.length > 300)
     return yield* refused("The subject is one line of at most 300 characters.");
+  const wanted = optional(args, "from");
+  const from = fromOf(input.account, input.sendAs, wanted);
+  if (from === undefined && wanted !== null)
+    return yield* refused(
+      `${wanted.slice(0, 80)} isn't one of ${input.account ?? "this account"}'s addresses: ${
+        input.sendAs.map((one) => one.address).join(", ") || input.account || "none known"
+      }.`,
+    );
   return {
     _tag: "email",
+    from: from ?? null,
     to,
     cc,
     subject,
@@ -313,6 +341,8 @@ export const prepareGoogle = Effect.fn("KinSending.prepareGoogle")(function* (in
     threadId: null,
     inReplyTo: null,
     references: null,
+    thread: null,
+    quoted: null,
     attachments,
   } satisfies Prepared;
 });
@@ -320,19 +350,33 @@ export const prepareGoogle = Effect.fn("KinSending.prepareGoogle")(function* (in
 const when = (prepared: Extract<Prepared, { _tag: "event" }>) =>
   `When: ${prepared.start} to ${prepared.end}${prepared.timeZone === null ? "" : ` (${prepared.timeZone})`}`;
 
+/** One From the owner may switch a send card to; `id` names it in the switch. */
+export type FromChoice = NonNullable<KinSendCard["fromChoices"]>[number];
+export const choiceId = (connectionId: string, address: string) => `${connectionId} ${address}`;
+const fromLine = (from: From) =>
+  from.name === null ? from.address : `${from.name} <${from.address}>`;
+
 /** The card: everything that goes, as it goes. */
 export const sendCard = (input: {
   readonly service: string;
+  /** The mail provider of a mail or calendar card; a call card names `service`. */
+  readonly mail?: Pick<MailProvider, "mailService" | "calendarService">;
   readonly account: string | null;
   readonly tool: string;
   readonly prepared: Prepared;
+  readonly choices?: ReadonlyArray<FromChoice>;
 }): { readonly question: string; readonly detail: string; readonly send: KinSendCard } => {
   const { prepared } = input;
   if (prepared._tag === "email") {
     const reply = prepared.threadId !== null;
+    const from = prepared.from ?? null;
+    const thread = prepared.thread ?? null;
+    const quoted = prepared.quoted ?? null;
     return {
-      question: reply ? "Send this reply from Gmail?" : "Send this email from Gmail?",
+      question: `Send this ${reply ? "reply" : "email"} from ${input.mail?.mailService ?? input.service}?`,
       detail: [
+        ...(from === null ? [] : [`From: ${fromLine(from)}`]),
+        ...(input.account === null ? [] : [`Account: ${input.account}`]),
         `To: ${prepared.to.join(", ")}`,
         ...(prepared.cc.length === 0 ? [] : [`Cc: ${prepared.cc.join(", ")}`]),
         `Subject: ${prepared.subject}`,
@@ -341,9 +385,16 @@ export const sendCard = (input: {
         .join("\n")
         .slice(0, 2000),
       send: {
-        service: "Gmail",
+        service: input.mail?.mailService ?? input.service,
         action: reply ? "reply" : "email",
-        from: input.account,
+        from: from?.address ?? input.account,
+        fromName: from?.name ?? null,
+        account: input.account,
+        ...(input.choices === undefined || input.choices.length < 2
+          ? {}
+          : { fromChoices: input.choices.slice(0, 30) }),
+        ...(thread === null ? {} : { thread }),
+        quoted,
         to: prepared.to,
         cc: prepared.cc,
         subject: prepared.subject,
@@ -370,9 +421,10 @@ export const sendCard = (input: {
           : "Change this event and tell the guests?",
       detail: [`Event: ${prepared.title}`, when(prepared)].join("\n").slice(0, 2000),
       send: {
-        service: "Google Calendar",
+        service: input.mail?.calendarService ?? input.service,
         action: "event",
         from: input.account,
+        account: input.account,
         to: prepared.invitees,
         cc: [],
         subject: prepared.title,
@@ -411,14 +463,25 @@ const base64Lines = (bytes: Uint8Array) =>
 const encodedWord = (value: string) =>
   /^[\x20-\x7e]*$/.test(value) ? value : `=?UTF-8?B?${Buffer.from(value).toString("base64")}?=`;
 const fileName = (name: string) => name.replace(/["\\\r\n]/g, "_");
+const fromHeader = (from: From) => {
+  const name = (from.name ?? "").replace(/["\\\r\n]/g, "").trim();
+  if (name === "") return from.address;
+  return /^[\x20-\x7e]*$/.test(name)
+    ? `"${name}" <${from.address}>`
+    : `${encodedWord(name)} <${from.address}>`;
+};
+/** What goes as the text: the body, then the quoted message under it. */
+const sentText = (prepared: Extract<Prepared, { _tag: "email" }>) =>
+  prepared.quoted == null ? prepared.body : `${prepared.body}\n\n${prepared.quoted}`;
 
-/** The message as Gmail takes it: plain text, then each file, in one multipart. */
+/** The whole RFC 822 message: plain text, then each file, in one multipart. */
 const mime = (
   prepared: Extract<Prepared, { _tag: "email" }>,
   files: ReadonlyArray<{ readonly attachment: Attachment; readonly bytes: Uint8Array }>,
 ) => {
   const boundary = `kin_${NodeCrypto.randomBytes(12).toString("hex")}`;
   const headers = [
+    ...(prepared.from == null ? [] : [`From: ${fromHeader(prepared.from)}`]),
     `To: ${prepared.to.join(", ")}`,
     ...(prepared.cc.length === 0 ? [] : [`Cc: ${prepared.cc.join(", ")}`]),
     `Subject: ${encodedWord(prepared.subject)}`,
@@ -432,7 +495,7 @@ const mime = (
       'Content-Type: text/plain; charset="UTF-8"',
       "Content-Transfer-Encoding: base64",
       "",
-      base64Lines(new TextEncoder().encode(prepared.body)),
+      base64Lines(new TextEncoder().encode(sentText(prepared))),
     ],
     ...files.map(({ attachment, bytes }) => [
       `Content-Type: ${attachment.mimeType}; name="${fileName(attachment.name)}"`,
@@ -467,63 +530,49 @@ const filesOf = Effect.fn("KinSending.files")(function* (attachments: ReadonlyAr
   );
 });
 
-/** Sends exactly what was prepared, once. Returns the ids Google gave it. */
-export const sendGoogle = Effect.fn("KinSending.sendGoogle")(function* (
+/** Sends exactly what was prepared, once, through the account's provider. */
+export const sendMail = Effect.fn("KinSending.sendMail")(function* (
+  provider: MailProvider,
   http: HttpClient.HttpClient,
   token: string,
   prepared: Exclude<Prepared, { _tag: "call" }>,
 ) {
-  if (prepared._tag === "email") {
-    const raw = Buffer.from(mime(prepared, yield* filesOf(prepared.attachments))).toString(
-      "base64url",
-    );
-    const sent = yield* api(
-      http,
-      token,
-      `${GMAIL}/messages/send`,
-      {},
-      {
-        method: "POST",
-        json: prepared.threadId === null ? { raw } : { raw, threadId: prepared.threadId },
-      },
-    );
-    return {
-      messageId: text(field(sent, "id")) ?? null,
-      threadId: text(field(sent, "threadId")) ?? prepared.threadId,
-      eventId: null,
-    };
-  }
-  const event = {
-    summary: prepared.title,
-    start: {
-      dateTime: prepared.start,
-      ...(prepared.timeZone === null ? {} : { timeZone: prepared.timeZone }),
-    },
-    end: {
-      dateTime: prepared.end,
-      ...(prepared.timeZone === null ? {} : { timeZone: prepared.timeZone }),
-    },
-    ...(prepared.location === null ? {} : { location: prepared.location }),
-    ...(prepared.notes === null ? {} : { description: prepared.notes }),
-    attendees: prepared.invitees.map((email) => ({ email })),
-  };
-  const events = `${CALENDAR}/${encodeURIComponent(prepared.calendarId)}/events`;
-  const saved = yield* api(
-    http,
-    token,
-    prepared.eventId === null ? events : `${events}/${encodeURIComponent(prepared.eventId)}`,
-    { sendUpdates: "all" },
-    { method: prepared.eventId === null ? "POST" : "PATCH", json: event },
-  );
-  return { messageId: null, threadId: null, eventId: text(field(saved, "id")) ?? prepared.eventId };
+  if (prepared._tag === "event") return yield* provider.saveEvent(http, token, prepared);
+  const raw = mime(prepared, yield* filesOf(prepared.attachments));
+  return yield* provider.sendMessage(http, token, { raw, threadId: prepared.threadId });
 });
 
 /**
- * Hook: a mail that carried an invoice, quote or receipt is a contact with that client. Kin has
- * no client contact log yet; when it does, this records the touch.
+ * A sent mail is a contact with each client whose contact it went to: one email touch per client,
+ * by the owner who confirmed it, with the subject as its note. A retry finds the same touch.
  */
-export const sentToClient = (_sent: {
+export const sentToClient = Effect.fn("KinSending.sentToClient")(function* (sent: {
   readonly orgId: KinOrgId;
-  readonly entryRecordId: string;
+  readonly askId: string;
+  readonly agentId: string;
+  readonly personId: string;
   readonly to: ReadonlyArray<string>;
-}) => Effect.void;
+  readonly subject: string;
+  readonly now: number;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const addresses = [...new Set(sent.to.map((one) => one.toLowerCase()))];
+  if (addresses.length === 0) return;
+  const clients = yield* sql<{ partyId: string }>`SELECT DISTINCT c.record_id AS "partyId"
+    FROM kin_records r JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
+      AND c.register_id = 'clients'
+    WHERE r.org_id = ${sent.orgId} AND r.register_id = 'contacts'
+      AND lower(json_extract(r.fields_json, '$.email')) IN ${sql.in(addresses)}
+    ORDER BY c.record_id`;
+  for (const { partyId } of clients)
+    yield* logTouch(sent.orgId, {
+      partyId,
+      kind: "email",
+      at: sent.now,
+      note: sent.subject.slice(0, 300),
+      personId: sent.personId,
+      by: { kind: "agent", id: sent.agentId },
+      originKey: `mail:${sent.askId}:${partyId}`,
+      now: sent.now,
+    });
+});

@@ -2,12 +2,14 @@ import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import {
   KIN_CONNECTIONS_COPY as COPY,
   createKinConnectionActions,
+  KIN_OWNER_CLIENT_SETUP,
   kinAcceptAll,
   kinAddableServices,
   kinCallRow,
   kinConnectionChange,
   kinConnectionDraft,
   kinConnectionStatus,
+  kinIsOwnerClientService,
   kinServiceNote,
   kinSuggestedModes,
   kinToolRows,
@@ -70,7 +72,7 @@ import { KinConfirm } from "./KinConfirm";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { KinVisualHosts } from "./KinVisualHosts";
 import { kinClient } from "./kinClient";
-import { GoogleSetup, openSignInWindow, SignInWaiting } from "./KinConnectionSignIn";
+import { OwnerClientSetup, openSignInWindow, SignInWaiting } from "./KinConnectionSignIn";
 import { useKinHost } from "./useKinHost";
 import { useNowMinuteMs } from "./useKinClock";
 
@@ -189,7 +191,7 @@ function ConnectionsList(props: Target) {
               <SettingsRow
                 key={connection.connectionId}
                 title={connection.label}
-                description={`${connection.urlHost} · ${status.detail}`}
+                description={`${connection.note ?? connection.urlHost} · ${status.detail}`}
                 status={<Badge variant={TONE_BADGE[status.tone]}>{status.label}</Badge>}
                 control={
                   <Button
@@ -238,7 +240,10 @@ function AddDialog(props: {
   const [problem, setProblem] = useState<string | null>(null);
   const [waiting, setWaiting] = useState<Waiting | null>(null);
   const [changingClient, setChangingClient] = useState(false);
+  const [ownClient, setOwnClient] = useState(false);
   const ids = {
+    clientId: useId(),
+    clientSecret: useId(),
     service: useId(),
     name: useId(),
     url: useId(),
@@ -249,7 +254,9 @@ function AddDialog(props: {
   const service = services.find((entry) => entry.service === draft.service);
   const custom = draft.service === "custom";
   const signIn = service?.connect === "sign_in";
-  const setup = signIn && (service?.needsSetup === true || changingClient);
+  const ownerClient =
+    service !== undefined && kinIsOwnerClientService(service.service) ? service.service : null;
+  const setup = signIn && !ownClient && (service?.needsSetup === true || changingClient);
 
   const submit = async () => {
     if (busy || setup) return;
@@ -335,7 +342,9 @@ function AddDialog(props: {
                 {signIn && !setup && waiting === null && service !== undefined ? (
                   <p className="text-xs text-muted-foreground">
                     {COPY.signInOpens(
-                      service.service === "google" ? "accounts.google.com" : service.label,
+                      ownerClient === null
+                        ? service.label
+                        : KIN_OWNER_CLIENT_SETUP[ownerClient].host,
                     )}
                   </p>
                 ) : null}
@@ -411,27 +420,86 @@ function AddDialog(props: {
                   <p className="text-xs text-muted-foreground">{COPY.secretUrlHint}</p>
                 </div>
               ) : null}
-              {setup ? (
-                <GoogleSetup
+              {setup && ownerClient !== null ? (
+                <OwnerClientSetup
+                  key={ownerClient}
+                  service={ownerClient}
                   signInAddress={props.signInAddress}
                   disabled={busy}
                   onSave={async (clientId, clientSecret) => {
-                    const saved = await props.actions.setGoogleClient(clientId, clientSecret);
+                    const saved = await props.actions.setOwnerClient(
+                      ownerClient,
+                      clientId,
+                      clientSecret,
+                    );
                     if (!saved.ok) return saved.problem;
                     setChangingClient(false);
                     return null;
                   }}
                 />
-              ) : signIn && service?.service === "google" ? (
-                <Button
-                  type="button"
-                  size="xs"
-                  variant="ghost"
-                  className="self-start"
-                  onClick={() => setChangingClient(true)}
-                >
-                  {COPY.changeClient}
-                </Button>
+              ) : signIn && ownerClient !== null && !ownClient ? (
+                <div className="flex flex-wrap gap-1">
+                  <Button
+                    type="button"
+                    size="xs"
+                    variant="ghost"
+                    onClick={() => setChangingClient(true)}
+                  >
+                    {KIN_OWNER_CLIENT_SETUP[ownerClient].changeClient}
+                  </Button>
+                  {ownerClient === "google" ? (
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="ghost"
+                      onClick={() => setOwnClient(true)}
+                    >
+                      {COPY.ownClient}
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
+              {signIn && service?.service === "google" && ownClient ? (
+                <fieldset className="flex flex-col gap-3 rounded-md border border-border p-3">
+                  <legend className="px-1 text-xs font-medium text-foreground">
+                    {COPY.ownClient}
+                  </legend>
+                  <p className="text-xs text-muted-foreground">{COPY.ownClientDetail}</p>
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor={ids.clientId}>{COPY.clientIdLabel}</Label>
+                    <Input
+                      id={ids.clientId}
+                      value={draft.clientId}
+                      placeholder={KIN_OWNER_CLIENT_SETUP.google.clientIdPlaceholder}
+                      autoComplete="off"
+                      spellCheck={false}
+                      onChange={(event) => setDraft({ ...draft, clientId: event.target.value })}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor={ids.clientSecret}>{COPY.clientSecretLabel}</Label>
+                    <Input
+                      id={ids.clientSecret}
+                      type="password"
+                      value={draft.clientSecret}
+                      autoComplete="off"
+                      spellCheck={false}
+                      onChange={(event) => setDraft({ ...draft, clientSecret: event.target.value })}
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    size="xs"
+                    variant="ghost"
+                    className="self-start"
+                    onClick={() => {
+                      setOwnClient(false);
+                      setDraft({ ...draft, clientId: "", clientSecret: "" });
+                    }}
+                  >
+                    Use the usual client
+                  </Button>
+                </fieldset>
               ) : null}
               {waiting === null ? null : (
                 <SignInWaiting
@@ -470,7 +538,7 @@ function AddDialog(props: {
   );
 }
 
-type Editing = "rename" | "key" | null;
+type Editing = "rename" | "key" | "note" | null;
 
 function ConnectionRecord(props: {
   readonly environmentId: EnvironmentId;
@@ -603,6 +671,39 @@ function ConnectionRecord(props: {
             }}
           />
         )}
+
+        {connection.kind === "builtin" ? (
+          <Section
+            title={COPY.accountTitle}
+            action={
+              <Button size="xs" variant="ghost" onClick={() => setEditing("note")}>
+                {connection.note == null ? COPY.noteAdd : COPY.noteEdit}
+              </Button>
+            }
+          >
+            <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-sm">
+              <dt className="text-muted-foreground">{COPY.noteLabel}</dt>
+              <dd className={connection.note == null ? "text-muted-foreground" : "text-foreground"}>
+                {connection.note ?? COPY.noteNone}
+              </dd>
+              {(connection.sendAs ?? []).length === 0 ? null : (
+                <>
+                  <dt className="text-muted-foreground">{COPY.sendsFrom}</dt>
+                  <dd className="flex min-w-0 flex-col gap-0.5">
+                    {(connection.sendAs ?? []).map((one) => (
+                      <span key={one.address} className="break-words text-foreground">
+                        {one.name === null ? one.address : `${one.name} <${one.address}>`}
+                        {one.isDefault ? (
+                          <span className="text-muted-foreground"> · {COPY.defaultAddress}</span>
+                        ) : null}
+                      </span>
+                    ))}
+                  </dd>
+                </>
+              )}
+            </dl>
+          </Section>
+        ) : null}
 
         <Section
           title={COPY.toolsTitle}
@@ -780,14 +881,23 @@ function ConnectionRecord(props: {
       {editing === null ? null : (
         <EditDialog
           editing={editing}
-          label={connection.label}
+          label={editing === "note" ? (connection.note ?? "") : connection.label}
           onClose={() => setEditing(null)}
           onSave={async (value) => {
             const failed = await kinConnectionChange(
               editing === "rename"
                 ? update({ environmentId, input: { ...ref, label: value.trim() } })
-                : setKey({ environmentId, input: { ...ref, key: makeKey(value.trim()) } }),
-              editing === "rename" ? "rename it" : "replace the key",
+                : editing === "note"
+                  ? update({
+                      environmentId,
+                      input: { ...ref, note: value.trim() === "" ? null : value.trim() },
+                    })
+                  : setKey({ environmentId, input: { ...ref, key: makeKey(value.trim()) } }),
+              editing === "rename"
+                ? "rename it"
+                : editing === "note"
+                  ? "save the note"
+                  : "replace the key",
             );
             reload();
             if (failed === null) setEditing(null);
@@ -890,17 +1000,20 @@ function ToolItem(props: {
 }
 
 function EditDialog(props: {
-  readonly editing: "rename" | "key";
+  readonly editing: "rename" | "key" | "note";
   readonly label: string;
   readonly onSave: (value: string) => Promise<string | null>;
   readonly onClose: () => void;
 }) {
   const rename = props.editing === "rename";
-  const [value, setValue] = useState(rename ? props.label : "");
+  const note = props.editing === "note";
+  const text = rename || note;
+  const [value, setValue] = useState(text ? props.label : "");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const id = useId();
-  const valid = value.trim() !== "" && value.trim().length <= (rename ? 80 : 4096);
+  const max = rename ? 80 : note ? 200 : 4096;
+  const valid = (note || value.trim() !== "") && value.trim().length <= max;
   return (
     <Dialog
       open
@@ -923,25 +1036,37 @@ function EditDialog(props: {
           }}
         >
           <DialogHeader>
-            <DialogTitle>{rename ? COPY.renameTitle : COPY.replaceKeyTitle}</DialogTitle>
-            {rename ? null : <DialogDescription>{COPY.replaceKeyDetail}</DialogDescription>}
+            <DialogTitle>
+              {rename ? COPY.renameTitle : note ? COPY.noteTitle : COPY.replaceKeyTitle}
+            </DialogTitle>
+            {rename ? null : (
+              <DialogDescription>{note ? COPY.noteHint : COPY.replaceKeyDetail}</DialogDescription>
+            )}
           </DialogHeader>
           <DialogPanel>
             <div className="flex flex-col gap-4">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor={id}>{rename ? COPY.nameLabel : COPY.keyLabel}</Label>
+                <Label htmlFor={id}>
+                  {rename ? COPY.nameLabel : note ? COPY.noteLabel : COPY.keyLabel}
+                </Label>
                 <Input
                   id={id}
-                  type={rename ? "text" : "password"}
+                  type={text ? "text" : "password"}
                   value={value}
-                  maxLength={rename ? 80 : 4096}
-                  placeholder={rename ? COPY.namePlaceholder : COPY.keyPlaceholder}
+                  maxLength={max}
+                  placeholder={
+                    rename
+                      ? COPY.namePlaceholder
+                      : note
+                        ? COPY.notePlaceholder
+                        : COPY.keyPlaceholder
+                  }
                   autoComplete="off"
                   spellCheck={false}
                   autoFocus
                   onChange={(event) => setValue(event.target.value)}
                 />
-                {rename ? null : <p className="text-xs text-muted-foreground">{COPY.keyHint}</p>}
+                {text ? null : <p className="text-xs text-muted-foreground">{COPY.keyHint}</p>}
               </div>
               {problem === null ? null : (
                 <Alert variant="error">

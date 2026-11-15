@@ -10,7 +10,14 @@ import { KinChatError, KinOrgId } from "./kinChat.ts";
  * Only the owner reads or changes them; agents reach a connection's tools through Kin's own
  * connection tools, and never see a credential.
  */
-const KIN_CONNECTION_PRESETS = ["github", "posthog", "sentry", "google", "zoho_books"] as const;
+const KIN_CONNECTION_PRESETS = [
+  "github",
+  "posthog",
+  "sentry",
+  "google",
+  "zoho_books",
+  "microsoft",
+] as const;
 export const KinConnectionPreset = Schema.Literals(KIN_CONNECTION_PRESETS);
 export type KinConnectionPreset = typeof KinConnectionPreset.Type;
 
@@ -60,6 +67,14 @@ export const KinConnectionService = Schema.Struct({
 });
 export type KinConnectionService = typeof KinConnectionService.Type;
 
+/** One address a mail account sends as: its own, or a Gmail "Send mail as" alias. */
+export const KinMailAddress = Schema.Struct({
+  address: Schema.String,
+  name: Schema.NullOr(Schema.String),
+  isDefault: Schema.Boolean,
+});
+export type KinMailAddress = typeof KinMailAddress.Type;
+
 export const KinConnection = Schema.Struct({
   connectionId: KinConnectionId,
   preset: Schema.NullOr(KinConnectionPreset),
@@ -89,6 +104,10 @@ export const KinConnection = Schema.Struct({
   lastError: Schema.NullOr(Schema.String),
   /** Signed in before Kin asked to send: sending needs one more sign-in. */
   needsSignInToSend: Schema.optional(Schema.Boolean),
+  /** The owner's one line on what this account is for, which agents see. */
+  note: Schema.optional(Schema.NullOr(Schema.String)),
+  /** A mail account's From addresses: its own and its aliases. */
+  sendAs: Schema.optional(Schema.Array(KinMailAddress)),
 });
 export type KinConnection = typeof KinConnection.Type;
 
@@ -234,11 +253,12 @@ export const KinConnectionAcceptInput = Schema.Struct({
 });
 export type KinConnectionAcceptInput = typeof KinConnectionAcceptInput.Type;
 
-/** Renames or pauses a connection; a field left out stays as it is. */
+/** Renames, notes or pauses a connection; a field left out stays as it is, `note: null` clears. */
 export const KinConnectionUpdateInput = Schema.Struct({
   orgId: KinOrgId,
   connectionId: KinConnectionId,
   label: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(80))),
+  note: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isMaxLength(200)))),
   paused: Schema.optional(Schema.Boolean),
 });
 export type KinConnectionUpdateInput = typeof KinConnectionUpdateInput.Type;
@@ -278,6 +298,13 @@ export const KinConnectionSignInStartInput = Schema.Struct({
     TrimmedNonEmptyString.check(Schema.isPattern(/^[\w.-]{1,100}(\/[\w.-]{1,100})?$/)),
   ),
   secretUrl: Schema.optional(KinConnectionKey),
+  /** Google: this account's own client, for a Workspace whose client is Internal to it. */
+  client: Schema.optional(
+    Schema.Struct({
+      clientId: TrimmedNonEmptyString.check(Schema.isMaxLength(512)),
+      clientSecret: Schema.optional(KinConnectionKey),
+    }),
+  ),
   returnTo: KinConnectionSignInReturn,
 });
 export type KinConnectionSignInStartInput = typeof KinConnectionSignInStartInput.Type;
@@ -301,15 +328,27 @@ export type KinConnectionSignInFinishInput = typeof KinConnectionSignInFinishInp
 /** The owner's own sign-in client for a service (Google); `null` forgets it. */
 export const KinConnectionSetSignInClientInput = Schema.Struct({
   orgId: KinOrgId,
-  service: Schema.Literal("google"),
+  service: Schema.Literals(["google", "microsoft"]),
   client: Schema.NullOr(
     Schema.Struct({
       clientId: TrimmedNonEmptyString.check(Schema.isMaxLength(512)),
-      clientSecret: KinConnectionKey,
+      clientSecret: Schema.optional(KinConnectionKey),
     }),
   ),
 });
 export type KinConnectionSetSignInClientInput = typeof KinConnectionSetSignInClientInput.Type;
+
+/** The owner picks another From on a send card before Confirm: one of `send.fromChoices`. */
+export const KinConnectionSetSendFromInput = Schema.Struct({
+  orgId: KinOrgId,
+  widgetId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  /** The card revision the owner saw; a card that changed since is refused. */
+  revision: NonNegativeInt,
+  choice: TrimmedNonEmptyString.check(Schema.isMaxLength(400)),
+});
+export type KinConnectionSetSendFromInput = typeof KinConnectionSetSendFromInput.Type;
+export const KinConnectionSetSendFrom = Schema.Struct({ revision: NonNegativeInt });
+export type KinConnectionSetSendFrom = typeof KinConnectionSetSendFrom.Type;
 
 const KinError = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
 export const KinConnectionRpcs = [
@@ -383,6 +422,11 @@ export const KinConnectionRpcs = [
     success: KinConnectionsView,
     error: KinError,
   }),
+  Rpc.make("kin.connections.setSendFrom", {
+    payload: KinConnectionSetSendFromInput,
+    success: KinConnectionSetSendFrom,
+    error: KinError,
+  }),
 ] as const;
 
 // Owner-level settings (`KIN_RPC_ACCESS`): what outside services agents reach, and with what key.
@@ -401,4 +445,5 @@ export const KIN_CONNECTION_RPC_SCOPES = {
   "kin.connections.signInStart": AuthKinChatScope,
   "kin.connections.signInFinish": AuthKinChatScope,
   "kin.connections.setSignInClient": AuthKinChatScope,
+  "kin.connections.setSendFrom": AuthKinChatScope,
 } as const;

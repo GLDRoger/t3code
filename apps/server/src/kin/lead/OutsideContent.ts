@@ -126,6 +126,8 @@ export const OUTSIDE_TOOLS = {
   // could carry what the outside text asked for.
   kin_connection_call: closedRead,
   kin_connection_offer: "allowed",
+  // Outside text could relabel which account is for what.
+  kin_connection_note: "refused",
 } satisfies Record<string, OutsideToolPolicy>;
 
 /**

@@ -34,7 +34,7 @@ export const KEY_PRESETS: Partial<Record<KinConnectionPreset, KeyPreset>> = {
 /**
  * A preset the owner connects by signing in at the service. `remote` ones are MCP servers whose
  * sign-in Kin discovers; `url: null` means the owner's own address, which is itself a secret.
- * Google is Kin's own tools on Google's APIs, signed in with the owner's own Google client.
+ * Google and Microsoft are Kin's own mail tools, signed in with a client the owner made there.
  */
 type SignInPreset = {
   readonly label: string;
@@ -69,7 +69,16 @@ export const SIGN_IN_PRESETS: Partial<Record<KinConnectionPreset, SignInPreset>>
     url: null,
     host: "googleapis.com",
     fields: [],
-    setup: "Mail and calendar, read only. Agents can't send anything.",
+    setup: "Mail and calendar. Nothing is sent until you tap Confirm.",
+  },
+  microsoft: {
+    label: "Microsoft",
+    kind: "builtin",
+    url: null,
+    host: "graph.microsoft.com",
+    fields: [],
+    setup:
+      "Outlook mail and calendar, for a work or school account or an outlook.com one. Nothing is sent until you tap Confirm.",
   },
 };
 
@@ -105,7 +114,7 @@ export const SERVICES: ReadonlyArray<KinConnectionService> = [
 ];
 
 /** Presets whose sign-in uses a client the owner made at the service and pasted once. */
-export const OWNER_CLIENT_PRESETS: ReadonlyArray<KinConnectionPreset> = ["google"];
+export const OWNER_CLIENT_PRESETS: ReadonlyArray<KinConnectionPreset> = ["google", "microsoft"];
 
 /** The redirect every service sends the browser back to: Kin's static sign-in return page. */
 export const DEFAULT_SIGN_IN_ADDRESS = "https://gldroger.github.io/t3code/kin/oauth/callback/";
