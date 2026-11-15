@@ -386,7 +386,9 @@ export type KinWorkSummary = typeof KinWorkSummary.Type;
 
 /**
  * Live updates without lists on the socket: the latest change number now, then again after each
- * change. A client with a list, entry or count open refetches it, debounced.
+ * change. A client with a list, entry or count open refetches it, debounced. Numbers are the
+ * viewer's own: a teammate's count only changes to tasks they could see, so compare a number only
+ * with others from the same session (summary, list, entry and these events share one count).
  */
 export const KinWorkSubscribeInput = Schema.Struct({ orgId: KinOrgId });
 export type KinWorkSubscribeInput = typeof KinWorkSubscribeInput.Type;

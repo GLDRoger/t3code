@@ -58,6 +58,9 @@ export type RecordRow = {
   readonly teamShared: number;
   readonly confirmed: number;
   readonly notes: string;
+  /** The person whose words the title and the notes are (`KinRecords` sets them on each write). */
+  readonly titleBy: string | null;
+  readonly notesBy: string | null;
   readonly rev: number;
   readonly sourceChatId: string | null;
   readonly sourceMessageId: string | null;
@@ -175,7 +178,7 @@ export const selectRecords = (sql: SqlClient.SqlClient) => sql`
     r.waiting_on_kind AS "waitingOnKind", r.waiting_on_id AS "waitingOnId",
     r.owner_kind AS "ownerKind", r.owner_id AS "ownerId", r.side, r.category,
     r.due_at AS "dueAt", r.due_all_day AS "dueAllDay", r.sensitive, r.team_shared AS "teamShared",
-    r.confirmed, r.notes, r.rev,
+    r.confirmed, r.notes, r.title_by AS "titleBy", r.notes_by AS "notesBy", r.rev,
     r.source_chat_id AS "sourceChatId", r.source_message_id AS "sourceMessageId",
     r.created_by_kind AS "createdByKind", r.created_by_id AS "createdById",
     r.assigned_by_person_id AS "assignedBy", r.assigned_at AS "assignedAt",

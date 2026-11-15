@@ -116,6 +116,7 @@ const tableNames = [
   "kin_session_bindings",
   "kin_shadow_entries",
   "kin_statement_passwords",
+  "kin_team_seqs",
   "kin_trigger_fires",
   "kin_trigger_inbox",
   "kin_trigger_settings",

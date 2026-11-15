@@ -3578,6 +3578,8 @@ it.effect("a teammate's change stops nothing, and the owner's reopen restarts no
       const entry = yield* entryOf(ctx);
       yield* ctx.sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
         VALUES ('teammate', ${ctx.orgId}, 'teammate', 'Teammate', '1970-01-01T00:00:00.000Z')`;
+      yield* ctx.sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('teammate-session', ${ctx.orgId}, 'teammate', 0)`;
       const teammate = { ...ctx.person, personId: KinPersonId.make("teammate") };
       // The owner's entry is no entry to a teammate.
       assert.include(

@@ -87,7 +87,15 @@ import {
   verifyRefs,
 } from "./registers.ts";
 import { anchorOf, nextDates } from "./repeat.ts";
-import { teamSees, teamSeq } from "./teamView.ts";
+import {
+  bumpTeamSeqs,
+  dependents,
+  teamGuard,
+  teammateSees,
+  teamPairs,
+  teamSees,
+  teamSeq,
+} from "./teamView.ts";
 
 /** Who is writing and how: a lead in its turn, the owner from a client, or Kin from an event. */
 export type Writer = {
@@ -100,7 +108,12 @@ export type Writer = {
   readonly chatId?: KinChatId;
   /** The human who asked for this, from stored rows: becomes the assigner of work given away. */
   readonly askedBy?: KinPersonId | null;
+  /** A teammate from their own app: `teamGuard` decides the write inside its transaction. */
+  readonly teammate?: boolean;
 };
+/** Whose words a write's text is: the person writing, else the human a lead wrote it for. */
+const textBy = (writer: Writer) =>
+  writer.actor._tag === "person" ? writer.actor.personId : (writer.askedBy ?? null);
 
 export type Fields = {
   readonly title: string;
@@ -212,10 +225,14 @@ export type Tick = {
   readonly seq: number;
   readonly key?: string;
   readonly registerId?: string;
-  readonly seenBy?: ReadonlyArray<string>;
+  /** Each person who could see what changed, before or after it, and their own number now. */
+  readonly team?: ReadonlyMap<string, number>;
 };
-const SeenBy = Schema.fromJsonString(Schema.Array(Schema.String));
-const decodeSeenBy = Schema.decodeUnknownEffect(SeenBy);
+/** Whose view of Work a change can move: the entries it may show or hide, and who saw them before. */
+type TeamScope = {
+  readonly scope: ReadonlyArray<string>;
+  readonly before: ReadonlyArray<{ readonly personId: string; readonly recordId: string }>;
+};
 export type GroupBy = "party" | "project" | "side" | "owner" | "state" | "category";
 export type TotalsBy = GroupBy | "month" | "financialYear";
 /** Past this many entries with an amount, totals ask for a narrower filter instead of guessing. */
@@ -477,6 +494,7 @@ const make = Effect.gen(function* () {
     kind: "created" | "updated" | "linked",
     fields: ReadonlyArray<FieldChange>,
     now: number,
+    team?: TeamScope,
   ) {
     const actorId =
       writer.actor._tag === "agent"
@@ -491,20 +509,37 @@ const make = Effect.gen(function* () {
         ${writer.chatId ?? null})
       RETURNING seq`;
     const seq = change?.seq ?? 0;
-    // Who may see it is read as this change leaves it, so a notice that it was hidden can't lag.
-    const [after] = yield* sql<{ registerId: string; seenBy: string }>`
-      SELECT r.register_id AS "registerId", (SELECT json_group_array(p.person_id)
-          FROM kin_people p WHERE p.org_id = r.org_id AND ${teamSees(sql, sql`p.person_id`)})
-        AS "seenBy"
-      FROM kin_records r WHERE r.org_id = ${orgId} AND r.record_id = ${row.recordId}`;
-    const seenBy = after === undefined ? [] : yield* decodeSeenBy(after.seenBy);
+    // Who sees it as this change leaves it, with its list, in one read: this runs on every change.
+    const seers = yield* sql<{ registerId: string; personId: string | null }>`
+      SELECT r.register_id AS "registerId", p.person_id AS "personId" FROM kin_records r
+      LEFT JOIN kin_people p ON p.org_id = r.org_id AND ${teammateSees(sql)}
+      WHERE r.org_id = ${orgId} AND r.record_id = ${row.recordId} ORDER BY p.person_id`;
+    const stored = seers[0];
+    // A teammate's number moves for a change to a task they saw before or see after it; a client's
+    // or project's moves it only where its label changed which of their tasks they see.
+    const own = stored?.registerId === "work";
+    const before = team?.before ?? [];
+    const after = own
+      ? seers.flatMap(({ personId }) =>
+          personId === null ? [] : [{ personId, recordId: row.recordId }],
+        )
+      : yield* teamPairs(orgId, team?.scope ?? []).pipe(provideSql);
+    const seen = (pairs: typeof after, personId: string) =>
+      pairs
+        .filter((pair) => pair.personId === personId)
+        .map((pair) => pair.recordId)
+        .join(" ");
+    const moved = [...new Set([...before, ...after].map((pair) => pair.personId))].filter(
+      (personId) => own || seen(before, personId) !== seen(after, personId),
+    );
+    const numbers = yield* bumpTeamSeqs(orgId, moved).pipe(provideSql);
     yield* sql.afterCommit(
       PubSub.publish(ticks, {
         orgId,
         seq,
         key: row.key,
-        ...(after === undefined ? {} : { registerId: after.registerId }),
-        seenBy,
+        ...(stored === undefined ? {} : { registerId: stored.registerId }),
+        team: numbers,
       }),
     );
     return seq;
@@ -760,10 +795,21 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     writer: Writer,
     input: CreateInput,
-    options: { readonly wake: boolean; readonly repeat?: StoredRepeat },
+    options: {
+      readonly wake: boolean;
+      readonly repeat?: StoredRepeat;
+      /** Whose words the copied title and notes are, for an occurrence copied from another. */
+      readonly authors?: { readonly title: string | null; readonly notes: string | null };
+    },
   ) {
     const recordId = recordIdFor(orgId, input.originKey);
     const existing = yield* byId(orgId, recordId).pipe(provideSql);
+    if (writer.teammate === true && writer.actor._tag === "person")
+      yield* teamGuard(orgId, writer.actor.personId, {
+        row: existing,
+        changes: false,
+        input,
+      }).pipe(provideSql);
     if (existing !== undefined) {
       const [stored] = yield* sql<{ hash: string | null }>`SELECT request_hash AS hash
         FROM kin_records WHERE org_id = ${orgId} AND record_id = ${recordId}`;
@@ -825,18 +871,20 @@ const make = Effect.gen(function* () {
       !(writer.actor._tag === "person" && samePrincipal(writer.actor, input.owner));
     const assignedBy = writer.askedBy ?? null;
     const amount = input.amount ?? null;
+    const notes = input.notes ?? "";
+    const author = textBy(writer);
     yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
         waiting_on_kind, waiting_on_id, owner_kind, owner_id, side, category, due_at, due_all_day,
         sensitive, confirmed, notes, rev, source_chat_id, source_message_id, created_by_kind,
         created_by_id, assigned_by_person_id, assigned_at, origin_key, created_at, updated_at,
         closed_at, party_id, project_id, repo, fields_json, amount_minor, currency, date_at,
-        date_all_day, repeat_json, request_hash, team_shared)
+        date_all_day, repeat_json, request_hash, team_shared, title_by, notes_by)
       VALUES (${orgId}, ${recordId}, ${list}, ${key}, ${input.title}, ${state},
         ${waitingOn?._tag ?? null}, ${waitingOn === null ? null : principalId(waitingOn)},
         ${input.owner._tag}, ${principalId(input.owner)}, ${input.side ?? "ours"},
         ${input.category ?? null}, ${input.dueAt ?? null}, ${input.dueAllDay === true ? 1 : 0},
         ${input.sensitive === true || def.sensitive ? 1 : 0}, ${input.confirmed === false ? 0 : 1},
-        ${input.notes ?? ""}, 1, ${input.source?.chatId ?? null},
+        ${notes}, 1, ${input.source?.chatId ?? null},
         ${input.source?.messageId ?? null}, ${writer.actor._tag},
         ${writer.actor._tag === "agent" ? writer.actor.agentId : writer.actor._tag === "person" ? writer.actor.personId : null},
         ${assignedBy}, ${assignedBy === null ? null : now}, ${input.originKey},
@@ -845,7 +893,9 @@ const make = Effect.gen(function* () {
         ${yield* encodeFieldValues(fields)}, ${amount?.minor ?? null}, ${amount?.currency ?? null},
         ${input.dateAt ?? null}, ${input.dateAllDay === true ? 1 : 0},
         ${repeat === undefined ? null : yield* encodeRepeat(repeat)}, ${input.requestHash ?? null},
-        ${input.team === true ? 1 : 0})`;
+        ${input.team === true || writer.teammate === true ? 1 : 0},
+        ${options.authors === undefined ? author : options.authors.title},
+        ${notes === "" ? null : options.authors === undefined ? author : options.authors.notes})`;
     const changes: Array<FieldChange> = [
       { field: "title", from: null, to: input.title },
       { field: "state", from: null, to: state },
@@ -969,7 +1019,7 @@ const make = Effect.gen(function* () {
         ...(amount === undefined ? {} : { amount }),
         links: [{ kind: "record", target: row.recordId, relation: "relates", label: row.key }],
       },
-      { wake: false, repeat },
+      { wake: false, repeat, authors: { title: row.titleBy, notes: row.notesBy } },
     );
   });
 
@@ -1003,6 +1053,12 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const row = yield* byKey(orgId, key).pipe(provideSql);
         if (row === undefined) return yield* notFound(key);
+        if (writer.teammate === true && writer.actor._tag === "person")
+          yield* teamGuard(orgId, writer.actor.personId, {
+            row,
+            changes: true,
+            input: patch,
+          }).pipe(provideSql);
         const now = yield* Clock.currentTimeMillis;
         const before = toRecord(row, now);
         const def = yield* resolveList(orgId, row.registerId);
@@ -1079,9 +1135,11 @@ const make = Effect.gen(function* () {
           changes.push({ field: "repo", from: row.repo, to: patch.repo });
           set("repo", patch.repo);
         }
+        const author = textBy(writer);
         if (patch.title !== undefined && patch.title !== row.title) {
           changes.push({ field: "title", from: row.title, to: patch.title });
           set("title", patch.title);
+          set("title_by", author ?? row.titleBy);
         }
         if (patch.title !== undefined || partyId !== row.partyId)
           yield* sameName(orgId, list, patch.title ?? row.title, partyId, row.recordId);
@@ -1279,6 +1337,7 @@ const make = Effect.gen(function* () {
         if (patch.notes !== undefined && patch.notes !== row.notes) {
           changes.push({ field: "notes", from: row.notes, to: patch.notes });
           set("notes", patch.notes);
+          set("notes_by", patch.notes === "" ? null : (author ?? row.notesBy));
         }
         if (patch.category !== undefined && patch.category !== row.category) {
           changes.push({ field: "category", from: row.category, to: patch.category });
@@ -1320,6 +1379,15 @@ const make = Effect.gen(function* () {
         const rev = row.rev + 1;
         set("rev", rev);
         set("updated_at", now);
+        // Who saw what before this change, for who it moves; a client or project only by its label.
+        const scope =
+          list === "work"
+            ? [row.recordId]
+            : (list === "clients" || list === "projects") &&
+                (patch.sensitive !== undefined || patch.partyId !== undefined)
+              ? yield* dependents(orgId, row.recordId).pipe(provideSql)
+              : [];
+        const team: TeamScope = { scope, before: yield* teamPairs(orgId, scope).pipe(provideSql) };
         // Each update rewrites only the fields it changed, so two changes to one entry both land.
         yield* sql`UPDATE kin_records SET ${sql.csv(sets)}
           WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
@@ -1331,6 +1399,7 @@ const make = Effect.gen(function* () {
           "updated",
           changes,
           now,
+          team,
         );
         // Only a person lowers what is sensitive: any other write that would, labels the entry
         // instead, as Kin's own change. What inherits through it then stays sensitive too.
@@ -1353,6 +1422,7 @@ const make = Effect.gen(function* () {
             "updated",
             [{ field: "sensitive", from: "false", to: "true" }],
             now,
+            team,
           );
         }
         if (reassigned !== undefined)
@@ -1755,6 +1825,9 @@ const make = Effect.gen(function* () {
     return yield* failed(
       Effect.gen(function* () {
         const now = input.at ?? (yield* Clock.currentTimeMillis);
+        // A teammate's number is read first: a change landing during the read then reads as newer.
+        const team =
+          input.team === undefined ? undefined : yield* teamSeq(orgId, input.team).pipe(provideSql);
         const filter = filterOf(orgId, input, now);
         const [count] = yield* sql<{ total: number }>`SELECT COUNT(*) AS total FROM kin_records r
           WHERE ${filter}`;
@@ -1773,8 +1846,8 @@ const make = Effect.gen(function* () {
         const rows = yield* sql<RecordRow>`${selectRecords(sql)} WHERE ${filter}
           ORDER BY ${order}
           LIMIT ${limit} OFFSET ${Math.max(input.offset ?? 0, 0)}`;
-        const seq = input.team === undefined ? latestSeq(orgId) : teamSeq(orgId, input.team);
-        return { rows, total: count?.total ?? 0, seq: yield* seq.pipe(provideSql) };
+        const seq = team ?? (yield* latestSeq(orgId).pipe(provideSql));
+        return { rows, total: count?.total ?? 0, seq };
       }),
     );
   });
