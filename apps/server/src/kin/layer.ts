@@ -20,6 +20,7 @@ import * as LevelControl from "./levels/LevelControl.ts";
 import * as MemoryChanges from "./memory/MemoryChanges.ts";
 import * as KinRecords from "./work/KinRecords.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
+import { requireRefreshObserver } from "./chat/KinRefreshHub.ts";
 
 import { KinServer, type Services } from "./KinServer.ts";
 export { KinServer } from "./KinServer.ts";
@@ -39,6 +40,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
     KinServer,
     Effect.gen(function* () {
       const services = yield* Effect.context<Services>();
+      yield* requireRefreshObserver(services);
       const hub = yield* KinChatHub;
       const updaterServices = yield* Effect.context<
         KinChatRepository | TaskCardIndex | KinChatHub | SqlClient.SqlClient

@@ -7,7 +7,9 @@ import {
   KinPersonId,
   ProviderInstanceId,
 } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -153,6 +155,17 @@ describe("KinRefreshHub", () => {
         assert.deepStrictEqual(yield* Queue.take(priyaSees), { timeZone: 0, leads: 1 });
         assert.strictEqual(yield* Queue.size(priyaSees), 0);
       }).pipe(Effect.scoped, Effect.provide(paired)),
+  );
+
+  it.effect(
+    "refuses to start Kin's services on the no-op observer, which would drop every notice",
+    () =>
+      Effect.gen(function* () {
+        const bare = yield* Effect.exit(RefreshHub.requireRefreshObserver(Context.empty()));
+        assert.isTrue(Exit.hasDies(bare));
+        const wired = yield* Effect.context<never>();
+        assert.isTrue(Exit.isSuccess(yield* Effect.exit(RefreshHub.requireRefreshObserver(wired))));
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect(
