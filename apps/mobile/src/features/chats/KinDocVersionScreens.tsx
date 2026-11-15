@@ -6,7 +6,6 @@ import {
   KIN_SEARCH,
   kinDocDiffSummary,
   kinDocVersionView,
-  type KinSearchHitView,
 } from "@t3tools/client-runtime/kin/kinDocs";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { EnvironmentId, KinOrgId, KinRecordKey, type KinDocDetail } from "@t3tools/contracts";
@@ -27,6 +26,7 @@ import { useNowMinuteMs } from "../../lib/clock";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { PatchDiffView } from "../review/PatchDiffView";
 import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
+import { useKinOpenHit } from "./state/kinWorkLink";
 import { KinDocChangesView } from "./KinDocChangesView";
 import { KinSearchHits } from "./KinDocsList";
 import { kinDocVersionParam, useKinDocRestore } from "./KinDocScreen";
@@ -64,7 +64,7 @@ export function KinDocChangesScreen({ route }: StaticScreenProps<KinDocChangesPa
   const target = docTarget(route.params);
   if (target === null)
     return (
-      <KinWorkFrame title="Changes" onBack={() => navigation.goBack()}>
+      <KinWorkFrame title="Changes" onClose={() => navigation.goBack()}>
         <EmptyState variant="plain" {...NO_DOC} />
       </KinWorkFrame>
     );
@@ -101,7 +101,7 @@ function KinDocChanges(
   // The earlier version's own words, to read the two as one document.
   const before = useKinDoc(target, key, fromVersion ?? to);
   const frame = (children: React.ReactNode) => (
-    <KinWorkFrame title="Changes" onBack={() => navigation.goBack()}>
+    <KinWorkFrame title="Changes" onClose={() => navigation.goBack()}>
       {children}
     </KinWorkFrame>
   );
@@ -357,23 +357,9 @@ export function KinSearchScreen({ route }: StaticScreenProps<KinSearchParams>) {
 
 function KinSearch(props: KinWorkTarget) {
   const navigation = useNavigation();
-  const { environmentId, orgId } = props;
   const { state, search } = useKinSearch(props, null);
   const input = useRef<TextInputInstance>(null);
-  const open = (hit: KinSearchHitView) => {
-    const base = { environmentId, orgId };
-    if (hit.kind === "docs")
-      navigation.navigate("KinDoc", {
-        ...base,
-        doc: hit.key,
-        ...(hit.section === null ? {} : { section: hit.section.id }),
-      });
-    else if (hit.kind === "clients") navigation.navigate("KinClient", { ...base, party: hit.key });
-    else if (hit.kind === "projects")
-      navigation.navigate("KinProject", { ...base, project: hit.key });
-    // A contact has no page of its own; its entry lists who it is with.
-    else navigation.navigate("KinWorkItem", { ...base, task: hit.key });
-  };
+  const open = useKinOpenHit(props);
   return (
     <KinWorkFrame form title={KIN_SEARCH.title} onClose={() => navigation.goBack()}>
       <View className="flex-row">
