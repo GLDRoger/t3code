@@ -249,7 +249,7 @@ export function KinDocsList(
   const shownLists = allLists ? lists : lists.slice(0, LISTS_FOLDED);
   // Lists sit beside every doc, not inside a narrowed view of them.
   const listItems: ReadonlyArray<Item> =
-    !everything || props.lists === null || (lists.length === 0 && onAsk === null)
+    !everything || props.lists === null || (lists.length === 0 && (onAsk === null || searching))
       ? []
       : [
           {

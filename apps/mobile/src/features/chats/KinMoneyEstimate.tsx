@@ -358,7 +358,7 @@ export function KinInvoiceCurrency(
       ) : (
         <View className="gap-1 pt-1">
           <Text textRole="footnote" className="text-foreground">
-            {`Received ${settled.received}${bankDay === null ? "" : ` on ${bankDay}`}, ${settled.implied}.`}
+            {`Received ${settled.received}, ${settled.implied}.`}
           </Text>
           {settled.difference === null ? null : (
             <Text textRole="footnote" className="text-foreground-muted">

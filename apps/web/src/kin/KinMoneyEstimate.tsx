@@ -49,7 +49,7 @@ export function KinEstimateText(props: {
         render={
           <button
             type="button"
-            aria-label={`${props.text}, ${KIN_CURRENCY.estimate.toLowerCase()}. Show the rate`}
+            aria-label={`${props.text}${props.text.includes(KIN_CURRENCY.estimate.toLowerCase()) ? "" : `, ${KIN_CURRENCY.estimate.toLowerCase()}`}. Show the rate`}
             className={cn(
               "rounded-sm text-xs text-muted-foreground tabular-nums underline decoration-dotted underline-offset-2 outline-none ring-ring hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset",
               props.className,
@@ -358,7 +358,7 @@ export function KinInvoiceCurrency(
       ) : (
         <div className="flex flex-col items-start gap-0.5 pt-1">
           <p className="text-xs text-foreground">
-            Received {settled.received} on {bankDay}, {settled.implied}.
+            Received {settled.received}, {settled.implied}.
           </p>
           {settled.difference === null ? null : (
             <p className="text-xs text-muted-foreground">{settled.difference}</p>
