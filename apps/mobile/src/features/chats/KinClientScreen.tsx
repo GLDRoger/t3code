@@ -352,28 +352,30 @@ function KinClientBody(
             label: KIN_CLIENTS.addTheyOwe,
             side: "theirs",
           })}
-      <ListSection title={KIN_CLIENTS.projects}>
-        {view.projects.length === 0 ? (
-          <ListRowLayout label={KIN_CLIENTS.noProjects} disabled />
-        ) : (
-          view.projects.map((row) => (
-            <KinWorkNamedRow
-              key={row.key}
-              inset
-              row={row}
-              onPress={() => openRecord("KinProject", { environmentId, orgId, project: row.key })}
+      {!canChange && view.projects.length === 0 ? null : (
+        <ListSection title={KIN_CLIENTS.projects}>
+          {view.projects.length === 0 ? (
+            <ListRowLayout label={KIN_CLIENTS.noProjects} disabled />
+          ) : (
+            view.projects.map((row) => (
+              <KinWorkNamedRow
+                key={row.key}
+                inset
+                row={row}
+                onPress={() => openRecord("KinProject", { environmentId, orgId, project: row.key })}
+              />
+            ))
+          )}
+          {canChange && !view.closed ? (
+            <ListActionRow
+              label={KIN_PROJECTS.add}
+              onPress={() =>
+                navigation.navigate("KinProjectForm", { environmentId, orgId, ...about })
+              }
             />
-          ))
-        )}
-        {canChange && !view.closed ? (
-          <ListActionRow
-            label={KIN_PROJECTS.add}
-            onPress={() =>
-              navigation.navigate("KinProjectForm", { environmentId, orgId, ...about })
-            }
-          />
-        ) : null}
-      </ListSection>
+          ) : null}
+        </ListSection>
+      )}
       <ListSection
         title={KIN_CLIENTS.contacts}
         {...(view.contacts.length === 0 ? {} : { footer: KIN_CLIENTS.detailsPrivate })}

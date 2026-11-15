@@ -620,29 +620,31 @@ function ClientPage(
               KIN_CLIENTS.nothingOwing,
               addTask("theirs", KIN_CLIENTS.addTheyOwe),
             )}
-        <KinWorkSection
-          title={KIN_CLIENTS.projects}
-          action={
-            canChange && !view.closed ? (
-              <Button size="xs" variant="ghost" onClick={() => setDialog({ type: "project" })}>
-                <PlusIcon />
-                {KIN_PROJECTS.add}
-              </Button>
-            ) : undefined
-          }
-        >
-          {view.projects.length === 0 ? (
-            <p className="text-sm text-muted-foreground">{KIN_CLIENTS.noProjects}</p>
-          ) : (
-            <ul className="-mx-2 flex flex-col">
-              {view.projects.map((row) => (
-                <li key={row.key}>
-                  <KinWorkProjectRow row={row} onOpen={() => props.onOpenProject(row.key)} />
-                </li>
-              ))}
-            </ul>
-          )}
-        </KinWorkSection>
+        {!canChange && view.projects.length === 0 ? null : (
+          <KinWorkSection
+            title={KIN_CLIENTS.projects}
+            action={
+              canChange && !view.closed ? (
+                <Button size="xs" variant="ghost" onClick={() => setDialog({ type: "project" })}>
+                  <PlusIcon />
+                  {KIN_PROJECTS.add}
+                </Button>
+              ) : undefined
+            }
+          >
+            {view.projects.length === 0 ? (
+              <p className="text-sm text-muted-foreground">{KIN_CLIENTS.noProjects}</p>
+            ) : (
+              <ul className="-mx-2 flex flex-col">
+                {view.projects.map((row) => (
+                  <li key={row.key}>
+                    <KinWorkProjectRow row={row} onOpen={() => props.onOpenProject(row.key)} />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </KinWorkSection>
+        )}
         <KinWorkSection
           title={KIN_CLIENTS.contacts}
           action={
