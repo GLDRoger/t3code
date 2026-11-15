@@ -349,7 +349,10 @@ function KinDailyLimitRow(props: {
 }
 
 /** Which agent every teammate can chat with, or Off. Picked here, beside the team it serves. */
-function KinTeamAgentRow(props: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId }) {
+function KinTeamAgentRow(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+}) {
   const leadsAtom = kinClient.leads({
     environmentId: props.environmentId,
     input: { orgId: props.orgId },

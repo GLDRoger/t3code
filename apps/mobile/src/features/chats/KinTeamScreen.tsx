@@ -191,7 +191,11 @@ function KinTeamRow(props: { readonly row: KinTeammate; readonly onPress: () => 
     <ListRow
       label={row.name}
       description={
-        row.roles === "" ? row.detail : row.state === "joined" ? row.roles : `${row.roles}. ${row.detail}`
+        row.roles === ""
+          ? row.detail
+          : row.state === "joined"
+            ? row.roles
+            : `${row.roles}. ${row.detail}`
       }
       leading={<KinAvatar avatar={row.avatar} size="small" />}
       onPress={props.onPress}

@@ -80,7 +80,10 @@ function HeadLine(props: {
       type="button"
       onClick={props.onOpen}
       aria-label="Open profile"
-      className={cn(line, "rounded-md outline-none ring-ring hover:text-foreground focus-visible:ring-2")}
+      className={cn(
+        line,
+        "rounded-md outline-none ring-ring hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset",
+      )}
     >
       {content}
     </button>

@@ -933,13 +933,17 @@ const teammates = Effect.fn("KinLeadProvision.teammates")(function* (
   const rows = yield* sql<{ personId: KinPersonId }>`
     SELECT DISTINCT b.person_id AS "personId" FROM kin_session_bindings b
     WHERE b.org_id = ${orgId} AND b.revoked_at IS NULL AND b.person_id <> ${ownerPersonId}
-    ORDER BY b.person_id`.pipe(Effect.mapError(toPersistenceSqlError("KinLeadProvision.teammates")));
+    ORDER BY b.person_id`.pipe(
+    Effect.mapError(toPersistenceSqlError("KinLeadProvision.teammates")),
+  );
   return rows.map((row) => row.personId);
 });
 
 /** The agent every teammate may message, or null when the owner has none. */
 export const teamAgent = (orgId: KinOrgId) =>
-  LeadAccess.teamAgent(orgId).pipe(Effect.mapError(toPersistenceSqlError("KinLeadProvision.teamAgent")));
+  LeadAccess.teamAgent(orgId).pipe(
+    Effect.mapError(toPersistenceSqlError("KinLeadProvision.teamAgent")),
+  );
 
 /**
  * The owner picks the agent every teammate may message, or none. Each teammate gets a direct

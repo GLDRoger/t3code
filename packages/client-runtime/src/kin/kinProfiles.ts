@@ -20,7 +20,8 @@ export const KIN_PROFILE_COPY = {
   loadFailed: "Couldn't load this profile.",
   nameLabel: "Name",
   tagsLabel: "Roles",
-  tagsHint: "Short words for what you do, such as tech, design or sales. Separate them with commas.",
+  tagsHint:
+    "Short words for what you do, such as tech, design or sales. Separate them with commas.",
   skillsLabel: "Skills",
   skillsHint: "In your own words. Everyone on the team and their agents can read this.",
   hoursLabel: "Working hours",
@@ -37,8 +38,7 @@ export const KIN_PROFILE_COPY = {
 export const KIN_TEAM_AGENT_COPY = {
   label: "Team agent",
   off: "Off",
-  detail:
-    "Everyone on your team can chat with this agent. It sees only what each person may see.",
+  detail: "Everyone on your team can chat with this agent. It sees only what each person may see.",
   suggested: "Suggested",
   failed: "Couldn't change the team agent. Try again.",
 } as const;
@@ -66,9 +66,10 @@ export function kinParseRoleTags(text: string): ReadonlyArray<string> {
 /** "Mon–Fri 10:00–19:00", or the days listed when they don't run on. */
 export function kinHoursLine(hours: KinWorkHours | null): string | null {
   if (hours === null || hours.days.length === 0) return null;
-  const days = [...new Set(hours.days)].toSorted((a, b) => a - b);
+  const days = [...new Set(hours.days)].sort((a, b) => a - b);
   const run =
-    days.length > 2 && days.every((day, index) => index === 0 || day === (days[index - 1] ?? 0) + 1);
+    days.length > 2 &&
+    days.every((day, index) => index === 0 || day === (days[index - 1] ?? 0) + 1);
   const named = run
     ? `${KIN_DAY_LABELS[days[0] ?? 0]}–${KIN_DAY_LABELS[days.at(-1) ?? 0]}`
     : days.map((day) => KIN_DAY_LABELS[day]).join(", ");
@@ -157,7 +158,7 @@ export function kinProfileChanges(
     draft.days.length === 0
       ? null
       : {
-          days: [...new Set(draft.days)].toSorted((a, b) => a - b),
+          days: [...new Set(draft.days)].sort((a, b) => a - b),
           start: draft.start,
           end: draft.end,
         };

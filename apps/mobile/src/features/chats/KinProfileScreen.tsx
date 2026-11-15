@@ -138,7 +138,10 @@ export function KinProfileScreen({ route }: StaticScreenProps<KinProfileParams>)
   return (
     <Frame title={title} onClose={close}>
       <View className="items-center gap-3 pt-2">
-        <KinAvatar avatar={{ kind: "person", seed: kinPersonSeed(profile.personId) }} size="profile" />
+        <KinAvatar
+          avatar={{ kind: "person", seed: kinPersonSeed(profile.personId) }}
+          size="profile"
+        />
         <View className="items-center gap-1">
           <Text textRole="title" className="text-center font-t3-bold text-foreground">
             {profile.displayName}
@@ -169,7 +172,10 @@ export function KinProfileScreen({ route }: StaticScreenProps<KinProfileParams>)
       </ListSection>
       <ListSection title={KIN_PROFILE_COPY.hoursLabel}>
         <View className="gap-0.5 px-4 py-3">
-          <Text textRole="body" className={hours === null ? "text-foreground-muted" : "text-foreground"}>
+          <Text
+            textRole="body"
+            className={hours === null ? "text-foreground-muted" : "text-foreground"}
+          >
             {hours ?? KIN_PROFILE_COPY.noHours}
           </Text>
           {profile.timeZone === null ? null : (
@@ -278,11 +284,18 @@ function ProfileForm(props: {
     >
       {problem === null ? null : <ErrorBanner message={problem} />}
       <View className="items-center gap-2">
-        <KinAvatar avatar={{ kind: "person", seed: kinPersonSeed(profile.personId) }} size="profile" />
+        <KinAvatar
+          avatar={{ kind: "person", seed: kinPersonSeed(profile.personId) }}
+          size="profile"
+        />
       </View>
       <ListSection>
         <ListActionRow
-          label={profile.pictureId === null ? KIN_PROFILE_COPY.pictureAdd : KIN_PROFILE_COPY.pictureChange}
+          label={
+            profile.pictureId === null
+              ? KIN_PROFILE_COPY.pictureAdd
+              : KIN_PROFILE_COPY.pictureChange
+          }
           icon="photo"
           loading={busy === "picture"}
           disabled={busy !== null}

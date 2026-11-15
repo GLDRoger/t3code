@@ -16,7 +16,8 @@ export const PeopleReadResult = Schema.Struct({ quoted: Schema.String });
 const describeHours = (hours: KinWorkHours) => {
   const days = [...new Set(hours.days)].toSorted((a, b) => a - b);
   const run =
-    days.length > 2 && days.every((day, index) => index === 0 || day === (days[index - 1] ?? 0) + 1);
+    days.length > 2 &&
+    days.every((day, index) => index === 0 || day === (days[index - 1] ?? 0) + 1);
   const named = run
     ? `${DAYS[days[0] ?? 0]}–${DAYS[days.at(-1) ?? 0]}`
     : days.map((day) => DAYS[day]).join(", ");

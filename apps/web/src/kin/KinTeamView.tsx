@@ -433,7 +433,11 @@ function KinTeammateSheet(props: {
                 const personId = teammate.personId;
                 if (personId === null) return;
                 props.onClose();
-                openKinProfile({ environmentId: props.environmentId, orgId: props.orgId, personId });
+                openKinProfile({
+                  environmentId: props.environmentId,
+                  orgId: props.orgId,
+                  personId,
+                });
               }}
             >
               Profile

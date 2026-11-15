@@ -1,7 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
 import { KinPersonId } from "@t3tools/contracts";
 
-import { kinHoursLine, kinParseRoleTags, kinProfileChanges, kinProfileDraft } from "./kinProfiles.ts";
+import {
+  kinHoursLine,
+  kinParseRoleTags,
+  kinProfileChanges,
+  kinProfileDraft,
+} from "./kinProfiles.ts";
 
 const profile = {
   personId: KinPersonId.make("asha"),

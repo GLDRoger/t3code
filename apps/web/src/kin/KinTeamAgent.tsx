@@ -55,9 +55,7 @@ export function KinTeamAgentRow(props: {
           {KIN_TEAM_AGENT_COPY.label}
         </span>
         <Menu>
-          <MenuTrigger
-            render={<Button size="sm" variant="outline" aria-busy={pending !== null} />}
-          >
+          <MenuTrigger render={<Button size="sm" variant="outline" aria-busy={pending !== null} />}>
             {label}
             <ChevronDownIcon aria-hidden />
           </MenuTrigger>

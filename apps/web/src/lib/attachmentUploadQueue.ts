@@ -279,10 +279,7 @@ async function runUpload(job: UploadJob): Promise<void> {
       sizeBytes: file.size,
     },
     resolveUploadUrl: (relativeUrl) => {
-      if (
-        job.cancelled ||
-        !mayUpload(job.environmentId)
-      ) {
+      if (job.cancelled || !mayUpload(job.environmentId)) {
         return null;
       }
       const connection = readPreparedConnection(job.environmentId);

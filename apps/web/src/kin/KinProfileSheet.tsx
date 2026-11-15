@@ -27,7 +27,13 @@ import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
-import { Sheet, SheetDescription, SheetHeader, SheetPopup, SheetTitle } from "../components/ui/sheet";
+import {
+  Sheet,
+  SheetDescription,
+  SheetHeader,
+  SheetPopup,
+  SheetTitle,
+} from "../components/ui/sheet";
 import { Textarea } from "../components/ui/textarea";
 import { Toggle } from "../components/ui/toggle";
 import { type ComposerImageAttachment } from "../composerDraftStore";
@@ -127,7 +133,10 @@ async function uploadPicture(
   return { attachment, release: () => releaseAttachmentUpload(image.id) };
 }
 
-function KinProfileSheet(props: { readonly target: KinProfileTarget; readonly onClose: () => void }) {
+function KinProfileSheet(props: {
+  readonly target: KinProfileTarget;
+  readonly onClose: () => void;
+}) {
   const { environmentId, orgId, personId } = props.target;
   const host = useKinHostAt(environmentId);
   const viewer = kinFeedViewer(
@@ -153,13 +162,19 @@ function KinProfileSheet(props: { readonly target: KinProfileTarget; readonly on
     >
       <SheetPopup side="right">
         <SheetHeader>
-          <SheetTitle>{mine ? KIN_PROFILE_COPY.mine : (profile?.displayName ?? KIN_PROFILE_COPY.title)}</SheetTitle>
-          {held?.ownerPersonId === personId ? <SheetDescription>Runs this workspace</SheetDescription> : null}
+          <SheetTitle>
+            {mine ? KIN_PROFILE_COPY.mine : (profile?.displayName ?? KIN_PROFILE_COPY.title)}
+          </SheetTitle>
+          {held?.ownerPersonId === personId ? (
+            <SheetDescription>Runs this workspace</SheetDescription>
+          ) : null}
         </SheetHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
           {profile === null ? (
             <p className="text-sm text-muted-foreground">
-              {result !== null && AsyncResult.isFailure(result) ? KIN_PROFILE_COPY.loadFailed : "Loading…"}
+              {result !== null && AsyncResult.isFailure(result)
+                ? KIN_PROFILE_COPY.loadFailed
+                : "Loading…"}
             </p>
           ) : editing ? (
             <KinProfileForm
@@ -259,7 +274,8 @@ function KinProfileForm(props: {
   const [busy, setBusy] = useState<"saving" | "picture" | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const picker = useRef<HTMLInputElement>(null);
-  const set = (change: Partial<KinProfileDraft>) => setDraft((current) => ({ ...current, ...change }));
+  const set = (change: Partial<KinProfileDraft>) =>
+    setDraft((current) => ({ ...current, ...change }));
 
   const save = async (picture?: KinAttachment | null) => {
     const changes = kinProfileChanges(profile, draft);
@@ -396,9 +412,7 @@ function KinProfileForm(props: {
               pressed={draft.days.includes(day)}
               onPressedChange={(pressed) =>
                 set({
-                  days: pressed
-                    ? [...draft.days, day]
-                    : draft.days.filter((held) => held !== day),
+                  days: pressed ? [...draft.days, day] : draft.days.filter((held) => held !== day),
                 })
               }
             >

@@ -24,7 +24,9 @@ export function KinAvatar(props: {
       : null;
   const url = useAssetUrl(
     pictureId === null ? null : environmentId,
-    pictureId === null ? null : { _tag: "attachment", attachmentId: pictureId, fileName: "picture" },
+    pictureId === null
+      ? null
+      : { _tag: "attachment", attachmentId: pictureId, fileName: "picture" },
   );
   return (
     <View accessible={false} importantForAccessibility="no-hide-descendants">
