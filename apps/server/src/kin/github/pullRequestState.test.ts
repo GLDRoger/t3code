@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as DateTime from "effect/DateTime";
 
 import { nextPullRow, type PullRow } from "./pullRequestState.ts";
 
@@ -14,7 +15,7 @@ const pull = (fields: Record<string, unknown> = {}) => ({
   head: { sha: "sha-1", ref: "feature", repo: { full_name: "acme/app" } },
   ...fields,
 });
-const at = (hour: number) => new Date(Date.UTC(2026, 10, 1, hour)).toISOString();
+const at = (hour: number) => DateTime.formatIso(DateTime.makeUnsafe(Date.UTC(2026, 10, 1, hour)));
 const step = (
   stored: PullRow | undefined,
   event: string,
