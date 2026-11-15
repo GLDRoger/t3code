@@ -55,6 +55,7 @@ import { MemoryPullRequests } from "./MemoryPullRequests.ts";
 export const LEAD_ENDED_WITHOUT_KIN_END = "Agent ended without calling kin_end.";
 export const RESTART_JOURNAL_LINE =
   "Kin restarted during this turn; what was noted before the restart may not have been saved.";
+const FINISHED_KEPT = 1_000;
 const RESTART_OWNER_NOTICE =
   "Kin restarted while an agent was working, so something it said it saved may not have been kept. If it matters, tell it again.";
 
@@ -324,6 +325,17 @@ const make = Effect.gen(function* () {
   };
   const sessions = new Map<string, SessionState>();
   const sessionKey = (orgId: KinOrgId, wakeupId: string) => `${orgId}\u0000${wakeupId}`;
+  // Wake-ups this process already committed: a late write for one (a second kin_end,
+  // text streamed after it) finds no session, and that is not a restart. Oldest go first.
+  const finished = new Set<string>();
+  const finish = (orgId: KinOrgId, wakeupId: string) => {
+    const key = sessionKey(orgId, wakeupId);
+    sessions.delete(key);
+    finished.delete(key);
+    finished.add(key);
+    const oldest = finished.values().next();
+    if (finished.size > FINISHED_KEPT && oldest.done !== true) finished.delete(oldest.value);
+  };
   const io = <A, E, R>(orgId: KinOrgId, effect: Effect.Effect<A, E, R>) =>
     effect.pipe(Effect.mapError((cause) => new MemoryError({ orgId, operation: "writer", cause })));
   const git = Effect.fn("MemoryWriter.git")(function* (
@@ -475,7 +487,7 @@ const make = Effect.gen(function* () {
       supersessions: new Map<string, string>(),
       changes: new Map<string, MemoryChange>(),
     };
-    if (!previous && ctx.stagedReceipts) {
+    if (!previous && ctx.stagedReceipts && !finished.has(key)) {
       const { writer } = yield* validate(orgId);
       const branch =
         ctx.level === "L0" ? shadowBranch(ctx.agentId) : (config.defaultBranch ?? "main");
@@ -1016,6 +1028,9 @@ const make = Effect.gen(function* () {
       locked(
         orgId,
         Effect.gen(function* () {
+          // Its journal is already written: lines that come after it have nowhere to go.
+          const key = sessionKey(orgId, wakeupId);
+          if (finished.has(key) && !sessions.has(key)) return;
           const { ctx, state } = yield* session(orgId, wakeupId);
           if (lines.length === 1 && lines[0] === LEAD_ENDED_WITHOUT_KIN_END) {
             const { writer } = yield* validate(orgId);
@@ -1236,9 +1251,7 @@ const make = Effect.gen(function* () {
               if (viaPullRequest) yield* lander.signal(orgId);
               else yield* push(commit);
               return { commit };
-            }).pipe(
-              Effect.ensuring(Effect.sync(() => sessions.delete(sessionKey(orgId, wakeupId)))),
-            );
+            }).pipe(Effect.ensuring(Effect.sync(() => finish(orgId, wakeupId))));
           }),
         ),
       ),

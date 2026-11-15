@@ -1,6 +1,7 @@
 import {
   CommandId,
   KinAgentId,
+  type KinEvent,
   KinLead,
   KinMessageId,
   KinOrgId,
@@ -169,7 +170,7 @@ const make = Effect.gen(function* () {
     const outcome =
       finished.stranded > 0
         ? "partway"
-        : lane.value.mode !== "reply"
+        : !lane.value.owed
           ? undefined
           : setup !== null
             ? setup
@@ -190,6 +191,42 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
   const budget = yield* KinBudget.KinBudget;
+  /**
+   * The budget's say on claimed events, by priority and by who asked: a teammate's request
+   * counts against the teammates' limit, never as the owner's.
+   */
+  const admitEvents = Effect.fn("WakeupRunner.admitEvents")(function* <
+    E extends KinEvent & { readonly priority: "P0" | "P1" | "P2" | "P3" },
+  >(orgId: KinOrgId, agentId: KinAgentId, events: ReadonlyArray<E>) {
+    const [agent] = yield* sql<{ owner: string }>`SELECT owner_person_id AS owner
+      FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${agentId} ORDER BY agent_id`;
+    const groups = new Map<string, Array<E>>();
+    for (const event of events) {
+      const asker = KinBudget.askedByTeammate(event, agent?.owner ?? "") ? "teammate" : "owner";
+      const key = `${event.priority}:${asker}`;
+      groups.set(key, [...(groups.get(key) ?? []), event]);
+    }
+    const cheap: Array<boolean> = [];
+    const held: Array<{
+      readonly events: ReadonlyArray<E>;
+      readonly heldBy: KinBudget.HeldBy;
+      readonly nextReset: number;
+    }> = [];
+    for (const [key, group] of groups) {
+      const [priority, asker] = key.split(":") as ["P0" | "P1" | "P2" | "P3", "owner" | "teammate"];
+      const admission = yield* budget.admit(orgId, priority, asker);
+      if (admission.allowed) cheap.push(admission.cheapOnly);
+      else
+        held.push({
+          events: group,
+          heldBy: admission.heldBy ?? "org",
+          nextReset: admission.nextReset,
+        });
+    }
+    // The strong model runs while any work it takes still has room: a teammate's spending never
+    // moves the owner's own message to the cheaper one.
+    return { cheapOnly: cheap.length > 0 && cheap.every(Boolean), held };
+  });
   const memory = yield* Memory.Memory;
   const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
   const hooks = yield* Effect.serviceOption(KinWakeupHooks);
@@ -332,18 +369,10 @@ const make = Effect.gen(function* () {
       const steer = Effect.fn("WakeupRunner.steer")(function* () {
         if (!steering.open || steering.steers >= MAX_STEERS) return;
         let events = yield* queue.steer({ orgId, agentId, wakeupId });
-        for (const priority of new Set(events.map((event) => event.priority))) {
-          const admission = yield* budget.admit(orgId, priority);
-          if (admission.allowed) continue;
-          yield* queue.release({
-            orgId,
-            wakeupId,
-            eventIds: events.filter((event) => event.priority === priority).map((e) => e.eventId),
-            notBefore: admission.nextReset,
-            countAttempt: false,
-            budgetDeferred: true,
-          });
-          events = events.filter((event) => event.priority !== priority);
+        for (const group of (yield* admitEvents(orgId, agentId, events)).held) {
+          const ids = new Set(group.events.map((event) => event.eventId));
+          yield* budget.defer({ orgId, agentId, wakeupId, ...group });
+          events = events.filter((event) => !ids.has(event.eventId));
         }
         if (events.length === 0) return;
         // An owner-only turn takes no message that would let someone else read its reply, and a
@@ -740,14 +769,11 @@ const make = Effect.gen(function* () {
             const notClaude = nonClaudeLeadModel(yield* settings.getSettings, current.models);
             if (notClaude !== undefined)
               return yield* new KinWakeupError({ orgId, agentId, cause: notClaude });
-            let cheapOnly = false;
-            for (const priority of new Set(events.map((item) => item.priority))) {
-              const admission = yield* budget.admit(orgId, priority);
-              cheapOnly ||= admission.cheapOnly;
-              if (!admission.allowed) {
-                const deferred = new Set(
-                  events.filter((item) => item.priority === priority).map((item) => item.eventId),
-                );
+            const admitted = yield* admitEvents(orgId, agentId, events);
+            const cheapOnly = admitted.cheapOnly;
+            for (const group of admitted.held) {
+              {
+                const deferred = new Set(group.events.map((item) => item.eventId));
                 // A brief can't wait for tomorrow's budget: Kin sends its own line, saying so.
                 if (Option.isSome(routineContent))
                   for (const event of events) {
@@ -774,19 +800,20 @@ const make = Effect.gen(function* () {
                       events = events.filter((item) => item.eventId !== event.eventId);
                     }
                   }
-                yield* queue.release({
+                const waits = events.filter((event) => deferred.has(event.eventId));
+                yield* budget.defer({
                   orgId,
+                  agentId,
                   wakeupId,
-                  eventIds: events
-                    .filter((event) => deferred.has(event.eventId))
-                    .map((event) => event.eventId),
-                  notBefore: admission.nextReset,
-                  countAttempt: false,
-                  budgetDeferred: true,
+                  events: waits,
+                  heldBy: group.heldBy,
+                  nextReset: group.nextReset,
                 });
                 events = events.filter((event) => !deferred.has(event.eventId));
               }
             }
+            // The owner's own messages run on the cheaper model at the limit: they hear why once.
+            if (cheapOnly) yield* budget.notifyOwner(orgId, "org");
             const routines = yield* Effect.serviceOption(Routines.KinRoutines);
             if (Option.isSome(routines))
               events = yield* Effect.filter(events, (event) =>

@@ -84,6 +84,10 @@ const event = Effect.fn("test.event")(function* (
     subject: { type: "reminder", itemId: "reminder" },
     lateByMs: 0,
     workerId: id,
+    recordId: id,
+    key: "W-1",
+    seq: 1,
+    reason: "assigned",
     report: {
       result: "done",
       summary: "Done",
@@ -175,6 +179,19 @@ describe("KinEventQueue", () => {
         { event_ids: '["first","second"]' },
         { event_ids: '["later"]' },
       ]);
+      yield* finish("second-batch");
+      // F52: 22 tasks from one bulk paste, a couple of seconds apart, wake the lead once.
+      const tasks = Array.from({ length: 22 }, (_, n) => `task-${n}`);
+      const bulk = yield* Effect.scoped(queue.claim(input("bulk"))).pipe(Effect.forkChild);
+      for (const id of tasks) {
+        yield* queue.enqueue(yield* event(id, "record.changed"));
+        yield* TestClock.adjust("2 seconds");
+      }
+      yield* TestClock.adjust("20 seconds");
+      assert.deepStrictEqual(
+        (yield* Fiber.join(bulk)).map((entry) => entry.eventId),
+        tasks,
+      );
     }).pipe(Effect.provide(layer)),
   );
 

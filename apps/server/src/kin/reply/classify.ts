@@ -147,6 +147,7 @@ export const isEndCall = (item: OrchestrationV2TurnItem) =>
 // arguments or model text, and never a tool's name or how Kin works inside.
 export const PHASE_LABELS = {
   queued: "Finishing something else",
+  held: "Waiting until tomorrow",
   preparing: "Catching up",
   thinking: "Thinking",
   writing: "Writing",
