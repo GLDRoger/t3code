@@ -441,6 +441,81 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect(
+  "the owner alone makes a co-owner or a member; a co-owner acts on members but changes no kind",
+  () =>
+    Effect.gen(function* () {
+      const service = yield* People.KinPeople;
+      const identity = yield* KinIdentity;
+      const sessions = yield* SessionStore;
+      const orgId = identity.owner.orgId;
+      yield* pairSession(ownerSession.sessionId);
+      const join = (displayName: string) =>
+        service
+          .createInvite(ownerSession, { orgId, displayName })
+          .pipe(Effect.flatMap((invite) => service.accept({ secret: invite.secret })));
+      const ravi = yield* join("Ravi");
+      const meera = yield* join("Meera");
+      const raviSession = yield* sessions.verify(ravi.accessToken);
+      const kind = (session: Parameters<typeof service.accessMe>[0]) =>
+        service.accessMe(session, { orgId }).pipe(Effect.map((me) => me.access));
+      assert.equal(yield* kind(raviSession), "member");
+      assert.equal(yield* kind(ownerSession), "owner");
+
+      const promoted = yield* service.setAccess(ownerSession, {
+        orgId,
+        personId: ravi.person.personId,
+        access: "co_owner",
+      });
+      assert.equal(promoted.access, "co_owner");
+      assert.equal(yield* kind(raviSession), "co_owner");
+      // A co-owner hands out links and takes a member's access away like the owner...
+      const link = yield* service.createInvite(raviSession, {
+        orgId,
+        displayName: "Meera",
+        personId: meera.person.personId,
+      });
+      yield* service.revokeInvite(raviSession, { orgId, inviteId: link.inviteId });
+      // ...but changes nobody's kind, their own included, and never acts on the owner.
+      for (const change of [
+        { personId: meera.person.personId, access: "co_owner" as const },
+        { personId: ravi.person.personId, access: "member" as const },
+      ])
+        assert.propertyVal(
+          yield* service.setAccess(raviSession, { orgId, ...change }).pipe(Effect.flip),
+          "reason",
+          "not_allowed",
+        );
+      assert.propertyVal(
+        yield* service
+          .removeAccess(raviSession, { orgId, personId: identity.owner.personId })
+          .pipe(Effect.flip),
+        "reason",
+        "not_allowed",
+      );
+      assert.propertyVal(
+        yield* service
+          .setAccess(ownerSession, { orgId, personId: identity.owner.personId, access: "member" })
+          .pipe(Effect.flip),
+        "reason",
+        "not_allowed",
+      );
+
+      // Back to member: the next request reads it, and owner-level work is refused again.
+      yield* service.setAccess(ownerSession, {
+        orgId,
+        personId: ravi.person.personId,
+        access: "member",
+      });
+      assert.equal(yield* kind(raviSession), "member");
+      assert.propertyVal(
+        yield* service.listInvites(raviSession, orgId).pipe(Effect.flip),
+        "reason",
+        "not_allowed",
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
 const at = "1970-01-01T00:00:00.000Z";
 const teamLayer = Layer.mergeAll(People.layer, Groups.layer).pipe(
   Layer.provideMerge(Service.layer),

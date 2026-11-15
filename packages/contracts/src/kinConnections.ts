@@ -1,7 +1,7 @@
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
-import { AuthSettingsWriteScope, EnvironmentAuthorizationError } from "./auth.ts";
+import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinChatError, KinOrgId } from "./kinChat.ts";
 
@@ -19,7 +19,10 @@ export const KinConnectionId = TrimmedNonEmptyString.check(Schema.isMaxLength(64
 );
 export type KinConnectionId = typeof KinConnectionId.Type;
 
-/** `off`: never called. `read`: agents call it in owner-only turns. `ask`: a card per call (later). */
+/**
+ * `off`: never called. `read`: agents call it in owner-only turns. `ask`: a call runs only when
+ * the owner taps Confirm on a card showing exactly what it sends.
+ */
 export const KinConnectionToolMode = Schema.Literals(["off", "read", "ask"]);
 export type KinConnectionToolMode = typeof KinConnectionToolMode.Type;
 
@@ -84,6 +87,8 @@ export const KinConnection = Schema.Struct({
   listedAt: Schema.NullOr(NonNegativeInt),
   lastOkAt: Schema.NullOr(NonNegativeInt),
   lastError: Schema.NullOr(Schema.String),
+  /** Signed in before Kin asked to send: sending needs one more sign-in. */
+  needsSignInToSend: Schema.optional(Schema.Boolean),
 });
 export type KinConnection = typeof KinConnection.Type;
 
@@ -107,6 +112,8 @@ export const KinConnectionTool = Schema.Struct({
   pinDigest: Schema.String,
   mode: KinConnectionToolMode,
   suggestedMode: KinConnectionToolMode,
+  /** It sends something out of the company: only `off` or `ask`, never run without asking. */
+  alwaysAsk: Schema.optional(Schema.Boolean),
   openWorld: Schema.Boolean,
   changed: Schema.Boolean,
   firstSeenAt: NonNegativeInt,
@@ -378,20 +385,20 @@ export const KinConnectionRpcs = [
   }),
 ] as const;
 
-// Owner settings: what outside services agents reach, and with which credential.
+// Owner-level settings (`KIN_RPC_ACCESS`): what outside services agents reach, and with what key.
 export const KIN_CONNECTION_RPC_SCOPES = {
-  "kin.connections.list": AuthSettingsWriteScope,
-  "kin.connections.get": AuthSettingsWriteScope,
-  "kin.connections.add": AuthSettingsWriteScope,
-  "kin.connections.setKey": AuthSettingsWriteScope,
-  "kin.connections.refreshTools": AuthSettingsWriteScope,
-  "kin.connections.setToolModes": AuthSettingsWriteScope,
-  "kin.connections.acceptToolChanges": AuthSettingsWriteScope,
-  "kin.connections.update": AuthSettingsWriteScope,
-  "kin.connections.setReach": AuthSettingsWriteScope,
-  "kin.connections.remove": AuthSettingsWriteScope,
-  "kin.connections.calls": AuthSettingsWriteScope,
-  "kin.connections.signInStart": AuthSettingsWriteScope,
-  "kin.connections.signInFinish": AuthSettingsWriteScope,
-  "kin.connections.setSignInClient": AuthSettingsWriteScope,
+  "kin.connections.list": AuthKinChatScope,
+  "kin.connections.get": AuthKinChatScope,
+  "kin.connections.add": AuthKinChatScope,
+  "kin.connections.setKey": AuthKinChatScope,
+  "kin.connections.refreshTools": AuthKinChatScope,
+  "kin.connections.setToolModes": AuthKinChatScope,
+  "kin.connections.acceptToolChanges": AuthKinChatScope,
+  "kin.connections.update": AuthKinChatScope,
+  "kin.connections.setReach": AuthKinChatScope,
+  "kin.connections.remove": AuthKinChatScope,
+  "kin.connections.calls": AuthKinChatScope,
+  "kin.connections.signInStart": AuthKinChatScope,
+  "kin.connections.signInFinish": AuthKinChatScope,
+  "kin.connections.setSignInClient": AuthKinChatScope,
 } as const;

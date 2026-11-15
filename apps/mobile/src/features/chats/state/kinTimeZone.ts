@@ -1,14 +1,14 @@
-import { createEnvironmentRpcCommand } from "@t3tools/client-runtime/state/runtime";
+import { createKinRpcCommand } from "@t3tools/client-runtime/kin/kinAccess";
 import { canonicalTimeZone, type EnvironmentId, type KinOrgId } from "@t3tools/contracts";
 import type { AtomRegistry } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../../../connection/runtime";
 
-const timeZoneRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+const timeZoneRead = createKinRpcCommand(connectionAtomRuntime, {
   label: "kin:time-zone:read",
   tag: "kin.triggers.getTimeZone",
 });
-const timeZoneSet = createEnvironmentRpcCommand(connectionAtomRuntime, {
+const timeZoneSet = createKinRpcCommand(connectionAtomRuntime, {
   label: "kin:time-zone:set",
   tag: "kin.triggers.setTimeZone",
 });

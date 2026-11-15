@@ -1,7 +1,7 @@
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
-import { AuthSettingsWriteScope, EnvironmentAuthorizationError } from "./auth.ts";
+import { EnvironmentAuthorizationError, AuthKinChatScope } from "./auth.ts";
 import { KinChatError, KinOrgId } from "./kinChat.ts";
 
 const hostName = /^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
@@ -127,7 +127,7 @@ export const KinWorkerNetworkRpcs = [
 
 // Reading names what the sandbox lacks on the host, so it is an owner setting like the writes.
 export const KIN_WORKER_NETWORK_RPC_SCOPES = {
-  "kin.workers.network.get": AuthSettingsWriteScope,
-  "kin.workers.network.allow": AuthSettingsWriteScope,
-  "kin.workers.network.remove": AuthSettingsWriteScope,
+  "kin.workers.network.get": AuthKinChatScope,
+  "kin.workers.network.allow": AuthKinChatScope,
+  "kin.workers.network.remove": AuthKinChatScope,
 } as const;

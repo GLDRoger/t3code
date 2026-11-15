@@ -21,6 +21,7 @@ import {
   KinMessagesSendInput,
   KinWidgetsActInput,
   KinChoiceCardState,
+  type KinSendCard,
   KinAgentIntent,
   type KinAuthor,
   type KinAgentId,
@@ -97,8 +98,10 @@ import { KinAttachmentStore } from "./KinAttachmentStore.ts";
 import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
 import * as Reactions from "./reactions.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import { memberReads } from "./sharing.ts";
 
+const decodeChoiceCard = Schema.decodeUnknownEffect(KinChoiceCardState);
 type Identity = PersonIdentity | AgentIdentity;
 type Viewers = ReadonlyArray<PersonIdentity>;
 type Caller = Identity | Viewers;
@@ -248,6 +251,12 @@ export class KinChatService extends Context.Service<
       readonly audience: WriteAudience;
       readonly threadId: ThreadId;
       readonly closed: boolean;
+    }) => Effect.Effect<KinWidget, ServiceError>;
+    /** Server-only: what became of a send card's Confirm: sending, then sent or failed. */
+    readonly setSendOutcome: (input: {
+      readonly orgId: KinOrgId;
+      readonly widgetId: KinWidgetId;
+      readonly outcome: NonNullable<KinSendCard["outcome"]>;
     }) => Effect.Effect<KinWidget, ServiceError>;
     /** Server-only: a remote card's live fields, which no thread here can refresh. */
     readonly setTaskCardState: (input: {
@@ -1757,9 +1766,13 @@ const make = Effect.gen(function* () {
       const agent = yield* requireRecord(repo.getAgent(input));
       if (agent.retiredAt !== null) return yield* notAllowed;
       const own = agent.ownerPersonId === person.personId;
-      // Someone else's lead: only while its owner lets this person message it.
+      // Someone else's lead: a co-owner messages every one, anyone else while its owner allows.
       if (
         !own &&
+        !(yield* ownerLevel(input.orgId, person.personId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError(toPersistenceSqlError("KinChatService.createDirect")),
+        )) &&
         !(yield* LeadAccess.allowed({ ...input, personId: person.personId }).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.mapError(toPersistenceSqlError("KinChatService.createDirect")),
@@ -2107,6 +2120,26 @@ const make = Effect.gen(function* () {
       if (input.closed)
         for (const item of yield* repo.waitingForWidget(widget)) yield* resolve(item, "closed");
       yield* sql.afterCommit(cards.track(widget));
+      yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
+      return widget;
+    }, transaction),
+    setSendOutcome: Effect.fn("KinChatService.setSendOutcome")(function* (input) {
+      const existing = yield* requireRecord(
+        repo.getWidget({ orgId: input.orgId, widgetId: input.widgetId }),
+      );
+      if (existing.type !== "choice") return yield* notFound;
+      const card = yield* decodeChoiceCard(existing.state).pipe(
+        Effect.mapError(() => invalidState),
+      );
+      if (card.send === undefined) return yield* notFound;
+      const updatedAt = yield* now;
+      const widget = yield* repo.updateWidget({
+        ...existing,
+        audience: "owner",
+        state: { ...card, send: { ...card.send, outcome: input.outcome } },
+        expectedRevision: existing.revision,
+        updatedAt,
+      });
       yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
       return widget;
     }, transaction),

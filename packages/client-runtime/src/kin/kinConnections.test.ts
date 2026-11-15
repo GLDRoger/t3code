@@ -23,7 +23,7 @@ import {
   kinSignInClientCheck,
   kinSuggestedModes,
   kinToolRows,
-  kinToolSwitch,
+  kinToolMark,
 } from "./kinConnections.ts";
 
 const orgId = KinOrgId.make("org");
@@ -160,8 +160,23 @@ describe("kinToolRows", () => {
     ]);
     // A changed tool is never switched on by "suggested"; switching names the digest shown.
     expect(kinSuggestedModes(rows)).toEqual([]);
-    expect(kinToolSwitch(rows[1]!, true)).toEqual([{ tool: "alpha", mode: "read", digest: "d1" }]);
-    expect(kinToolSwitch(rows[1]!, false)).toEqual([{ tool: "alpha", mode: "off" }]);
+    expect(kinToolMark(rows[1]!, "read")).toEqual([{ tool: "alpha", mode: "read", digest: "d1" }]);
+    expect(kinToolMark(rows[1]!, "ask")).toEqual([{ tool: "alpha", mode: "ask", digest: "d1" }]);
+    expect(kinToolMark(rows[1]!, "off")).toEqual([{ tool: "alpha", mode: "off" }]);
+    // A tool that sends is never offered Read, and "suggested" sets it to Ask me.
+    const [send] = kinToolRows([
+      tool({ name: "gmail_send", suggestedMode: "ask", alwaysAsk: true }),
+    ]);
+    expect(send!.modes).toEqual(["off", "ask"]);
+    expect(kinSuggestedModes([send!])).toEqual([
+      { tool: "gmail_send", mode: "ask", digest: send!.digest },
+    ]);
+  });
+
+  it("asks a sign-in from before sending to sign in again", () => {
+    expect(kinConnectionStatus(connection({ needsSignInToSend: true })).label).toBe(
+      "Sign in to send",
+    );
   });
 
   it("says paused or broken before anything else", () => {

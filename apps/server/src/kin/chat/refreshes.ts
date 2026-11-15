@@ -1,5 +1,6 @@
 import {
   KinChatError,
+  kinOwnerLevel,
   type KinRefreshes,
   type KinRefreshesAnnounceInput,
   type KinRefreshesSubscribeInput,
@@ -8,6 +9,7 @@ import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 
 import * as LeadProvision from "../lead/KinLeadProvision.ts";
+import { accessOf } from "../people/KinAccess.ts";
 import { KinIdentity, type PersonIdentity } from "./KinIdentity.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { theOwner } from "../work/ownerWork.ts";
@@ -30,9 +32,10 @@ const same = (a: KinRefreshes, b: KinRefreshes) =>
   a.connections === b.connections;
 
 /**
- * The revisions this viewer may see. The owner reads every topic. A teammate reads only the time
- * zone, people's profiles and their own lead list, which moves only when what that list shows them changed, so a
- * change to something they can't read never reaches them, not even as a moved number.
+ * The revisions this viewer may see, by their kind at each change, so making someone a co-owner
+ * or a member again moves what they hear at once. Owner-level people read every topic. A member
+ * reads only the time zone, people's profiles and their own lead list, which moves only when what
+ * it shows them (or their own kind) changed, so a change they can't read never reaches them.
  */
 export const subscribeRefreshes = (
   people: ReadonlyArray<PersonIdentity>,
@@ -43,12 +46,15 @@ export const subscribeRefreshes = (
       const person = people.find((candidate) => candidate.orgId === input.orgId);
       if (person === undefined) return yield* notFound;
       const { owner } = yield* KinIdentity;
+      if (person.orgId !== owner.orgId) return yield* notFound;
       const changes = (yield* KinRefreshHub).changes(input.orgId);
-      if (person.orgId === owner.orgId && person.personId === owner.personId)
-        return changes.pipe(Stream.changesWith(same));
+      const kind = accessOf(person.orgId, person.personId).pipe(
+        Effect.orElseSucceed(() => undefined),
+      );
       const view = Effect.all([
         LeadProvision.profiles(person),
         LeadProvision.contacts(person),
+        kind,
       ]).pipe(
         Effect.map((shown) => JSON.stringify(shown)),
         // An unreadable list counts as changed; the client's own read then reports the failure.
@@ -60,6 +66,10 @@ export const subscribeRefreshes = (
       return changes.pipe(
         Stream.mapEffect((now) =>
           Effect.gen(function* () {
+            if (kinOwnerLevel(yield* kind)) {
+              heard = undefined;
+              return now satisfies KinRefreshes;
+            }
             if (heard === undefined || heard.leads !== now.leads || heard.people !== now.people) {
               const next = yield* view;
               if (shown !== undefined && (next === null || next !== shown)) leads += 1;

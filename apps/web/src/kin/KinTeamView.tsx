@@ -11,7 +11,10 @@ import {
   kinRemoveAccessCopy,
   kinTeamEntrySummary,
   kinTeamView,
+  KIN_ACCESS_CHOICES,
+  kinAccessChangeCopy,
   kinTeammateActions,
+  kinTeammateKindEditable,
   kinTeammateLeadLine,
   type KinMadeInvite,
   type KinTeamActions,
@@ -19,7 +22,15 @@ import {
   type KinTeammate,
 } from "@t3tools/client-runtime/kin/kinTeam";
 import { executeAtomQuery } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, KinLeadProfile, KinOrgId, KinPersonId } from "@t3tools/contracts";
+import { kinAccessAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import type {
+  EnvironmentId,
+  KinLeadProfile,
+  KinOrgId,
+  KinPeopleSetAccessInput,
+  KinPersonAccess,
+  KinPersonId,
+} from "@t3tools/contracts";
 import { Link, useNavigate } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
@@ -39,6 +50,7 @@ import {
 } from "../components/ui/alert-dialog";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
+import { Radio, RadioGroup } from "../components/ui/radio-group";
 import {
   Empty,
   EmptyContent,
@@ -54,6 +66,7 @@ import {
   SheetTitle,
 } from "../components/ui/sheet";
 import { Skeleton } from "../components/ui/skeleton";
+import { connectionAtomRuntime } from "../connection/runtime";
 import { isElectron } from "../env";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -98,6 +111,7 @@ function useKinTeam(target: KinTeamTarget) {
     host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
     orgId,
   );
+  const viewer = useAtomValue(kinAccessAtom(connectionAtomRuntime, environmentId));
   const heldPeople = Option.getOrNull(AsyncResult.value(people));
   const heldInvites = Option.getOrNull(AsyncResult.value(invites));
   const list: KinTeamList | null =
@@ -113,6 +127,8 @@ function useKinTeam(target: KinTeamTarget) {
     list,
     failed: list === null && (AsyncResult.isFailure(people) || AsyncResult.isFailure(invites)),
     ownerPersonId: personId,
+    /** The viewer's own kind; a co-owner acts on members only. */
+    viewer: viewer ?? "member",
     refresh: () => void refreshKinTeam(target),
   };
 }
@@ -211,6 +227,7 @@ function KinTeamBody(
   const createInvite = useAtomCommand(kinClient.inviteCreate, { reportFailure: false });
   const revokeInvite = useAtomCommand(kinClient.inviteCancel, { reportFailure: false });
   const removeAccess = useAtomCommand(kinClient.personRemoveAccess, { reportFailure: false });
+  const setAccess = useAtomCommand(kinClient.personSetAccess, { reportFailure: false });
   const [edits, setEdits] = useState(KIN_TEAM_NO_EDITS);
   const [actions] = useState(() =>
     createKinTeamActions({
@@ -218,6 +235,7 @@ function KinTeamBody(
       createInvite: (input) => createInvite({ environmentId, input }),
       revokeInvite: (input) => revokeInvite({ environmentId, input }),
       removeAccess: (input) => removeAccess({ environmentId, input }),
+      setAccess: (input) => setAccess({ environmentId, input }),
       update: setEdits,
       refresh: () => refreshKinTeam({ environmentId, orgId }),
     }),
@@ -319,6 +337,7 @@ function KinTeamBody(
           environmentId={environmentId}
           orgId={orgId}
           actions={actions}
+          viewer={team.viewer}
           onMade={(invite) => {
             setOpenKey(null);
             setMade({ stage: "link", invite });
@@ -380,11 +399,14 @@ function KinTeammateSheet(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
   readonly actions: KinTeamActions;
+  readonly viewer: KinPersonAccess;
   readonly onMade: (invite: KinMadeInvite) => void;
   readonly onClose: () => void;
 }) {
   const { teammate, actions } = props;
-  const offered = kinTeammateActions(teammate);
+  const offered = kinTeammateActions(teammate, props.viewer);
+  const [kindAsked, setKindAsked] = useState<KinPeopleSetAccessInput["access"] | null>(null);
+  const kindCopy = kindAsked === null ? null : kinAccessChangeCopy(teammate.name, kindAsked);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -442,6 +464,29 @@ function KinTeammateSheet(props: {
               Profile
             </Button>
           )}
+          {kinTeammateKindEditable(teammate, props.viewer) ? (
+            <Section title="What they can do">
+              <RadioGroup
+                value={teammate.access}
+                disabled={busy}
+                onValueChange={(value) => {
+                  const choice = KIN_ACCESS_CHOICES.find((held) => held.access === value);
+                  if (choice !== undefined && choice.access !== teammate.access)
+                    setKindAsked(choice.access);
+                }}
+              >
+                {KIN_ACCESS_CHOICES.map((choice) => (
+                  <label key={choice.access} className="flex cursor-pointer items-start gap-3">
+                    <Radio value={choice.access} className="mt-0.5" />
+                    <span className="flex min-w-0 flex-col gap-0.5">
+                      <span className="text-sm text-foreground">{choice.label}</span>
+                      <span className="text-xs text-muted-foreground">{choice.detail}</span>
+                    </span>
+                  </label>
+                ))}
+              </RadioGroup>
+            </Section>
+          ) : null}
           <Section title="Agents">
             {teammate.personId === null ? (
               <p className="text-sm text-muted-foreground">
@@ -502,6 +547,28 @@ function KinTeammateSheet(props: {
           ) : null}
         </div>
       </SheetPopup>
+      <AlertDialog open={kindCopy !== null} onOpenChange={(open) => !open && setKindAsked(null)}>
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{kindCopy?.title}</AlertDialogTitle>
+            <AlertDialogDescription>{kindCopy?.detail}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+            <Button
+              onClick={() => {
+                const access = kindAsked;
+                setKindAsked(null);
+                if (teammate.personId === null || access === null) return;
+                setBusy(true);
+                void actions.setAccess(teammate.personId, access).finally(() => setBusy(false));
+              }}
+            >
+              {kindCopy?.confirm}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
       <AlertDialog open={confirming} onOpenChange={setConfirming}>
         <AlertDialogPopup>
           <AlertDialogHeader>

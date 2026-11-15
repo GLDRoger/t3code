@@ -34,6 +34,57 @@ import {
 // A mid grey: a white logo and a black one both stand out on it, in light and dark themes.
 const IMAGE_GROUND = "#8c8c8c";
 
+/** Exactly what a send card sends: who, the subject, the whole body and each file. */
+function SendDetail(props: { readonly send: NonNullable<KinChoiceCardView["send"]> }) {
+  const { send } = props;
+  return (
+    <View className="gap-2">
+      <Text textRole="footnote" className="text-foreground-muted">
+        {send.heading}
+      </Text>
+      <View className="gap-0.5">
+        {send.lines.map((line) => (
+          <Text key={line.label} textRole="footnote" className="text-foreground">
+            <Text textRole="footnote" className="text-foreground-muted">
+              {line.label}{" "}
+            </Text>
+            {line.value}
+          </Text>
+        ))}
+      </View>
+      <View className="rounded-xl bg-subtle px-3 py-2">
+        <Text textRole="body" className="text-foreground" selectable>
+          {send.body}
+        </Text>
+      </View>
+      {send.attachments.map((file) => (
+        <View key={file.name} className="gap-0.5">
+          <Text textRole="footnote" className="font-t3-medium text-foreground">
+            Attached: {file.name}
+          </Text>
+          {file.detail === "" ? null : (
+            <Text textRole="caption" className="text-foreground-muted">
+              {file.detail}
+            </Text>
+          )}
+        </View>
+      ))}
+      {send.outcome === null ? null : (
+        <Text
+          accessibilityRole="text"
+          textRole="footnote"
+          className={cn(
+            "font-t3-medium",
+            send.outcome.tone === "error" ? "text-danger-foreground" : "text-foreground",
+          )}
+        >
+          {send.outcome.text}
+        </Text>
+      )}
+    </View>
+  );
+}
+
 /** The card's picture, such as a logo to confirm, at a bounded size. */
 function ChoiceImage(props: {
   readonly environmentId: EnvironmentId;
@@ -147,7 +198,9 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
         <Text textRole="headline" className="font-t3-bold text-foreground">
           {choice.question}
         </Text>
-        {choice.detail === null ? null : (
+        {choice.send !== null ? (
+          <SendDetail send={choice.send} />
+        ) : choice.detail === null ? null : (
           <Text textRole="footnote" className="text-foreground-secondary">
             {choice.detail}
           </Text>
