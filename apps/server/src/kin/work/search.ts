@@ -118,7 +118,8 @@ export const search = Effect.fn("KinSearch.search")(function* (
     return {
       recordId: row.recordId,
       key: row.key,
-      kind: listOf(row.registerId),
+      // A milestone opens as an entry does.
+      kind: ((list) => (list === "milestones" ? "work" : list))(listOf(row.registerId)),
       title: row.title,
       snippet: row.snippet.trim() === "" ? row.title : row.snippet,
       ...(section === undefined || section.id === "top"

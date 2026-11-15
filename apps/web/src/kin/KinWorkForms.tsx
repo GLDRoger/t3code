@@ -14,6 +14,7 @@ import {
   kinContactDraftCheck,
   kinContactDraftOf,
   kinContactUpdateInput,
+  KIN_PROJECT_BILLING_LABELS,
   kinProjectCreateInput,
   kinProjectDraftCheck,
   kinProjectDraftOf,
@@ -568,6 +569,7 @@ export function KinContactDialog(
 }
 
 const NO_CLIENT = "none";
+const NO_BILLING = "none";
 
 /** A project, new or being edited. Its health is worked out by the host, so there is none here. */
 export function KinProjectDialog(
@@ -622,7 +624,15 @@ export function KinProjectDialog(
   }, [form, editing]);
   const { draft } = state;
   const moved = kinWorkFormMoved(state);
-  const ids = { name: useId(), target: useId(), repos: useId(), notes: useId() };
+  const ids = {
+    name: useId(),
+    target: useId(),
+    repos: useId(),
+    notes: useId(),
+    value: useId(),
+    startsOn: useId(),
+    renewsOn: useId(),
+  };
   // The client it already has stays pickable after that client closes.
   const clients =
     draft.party === null || props.choices.clients.some((row) => row.key === draft.party?.key)
@@ -695,6 +705,72 @@ export function KinProjectDialog(
           />
         </Field>
       </div>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="flex flex-col gap-1.5">
+          <Label>{COPY.project.billing}</Label>
+          <Select
+            value={draft.billing ?? NO_BILLING}
+            onValueChange={(value) =>
+              form.edit({
+                billing:
+                  value === "fixed" || value === "hourly" || value === "retainer" ? value : null,
+              })
+            }
+          >
+            <SelectTrigger className="w-full min-w-0" aria-label={COPY.project.billing}>
+              <SelectValue>
+                {draft.billing === null
+                  ? COPY.project.noBilling
+                  : KIN_PROJECT_BILLING_LABELS[draft.billing]}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectPopup alignItemWithTrigger={false}>
+              <SelectItem value={NO_BILLING}>{COPY.project.noBilling}</SelectItem>
+              {(["fixed", "hourly", "retainer"] as const).map((kind) => (
+                <SelectItem key={kind} value={kind}>
+                  {KIN_PROJECT_BILLING_LABELS[kind]}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+        </div>
+        <Field id={ids.value} label={COPY.project.value} moved={moved.value}>
+          <Input
+            id={ids.value}
+            value={draft.value}
+            inputMode="decimal"
+            placeholder={COPY.project.valuePlaceholder}
+            autoComplete="off"
+            onChange={(event) => form.edit({ value: event.target.value })}
+          />
+        </Field>
+        <Field id={ids.startsOn} label={COPY.project.startsOn} moved={moved.startsOn ?? undefined}>
+          <Input
+            id={ids.startsOn}
+            type="date"
+            value={draft.startsOn ?? ""}
+            onChange={(event) =>
+              form.edit({ startsOn: event.target.value === "" ? null : event.target.value })
+            }
+          />
+        </Field>
+        {draft.billing === "retainer" || draft.renewsOn !== null ? (
+          <Field
+            id={ids.renewsOn}
+            label={COPY.project.renewsOn}
+            moved={moved.renewsOn ?? undefined}
+          >
+            <Input
+              id={ids.renewsOn}
+              type="date"
+              value={draft.renewsOn ?? ""}
+              onChange={(event) =>
+                form.edit({ renewsOn: event.target.value === "" ? null : event.target.value })
+              }
+            />
+          </Field>
+        ) : null}
+      </div>
       <Field id={ids.repos} label={COPY.project.repos} moved={moved.repos}>
         <Textarea
           id={ids.repos}
@@ -723,6 +799,83 @@ export function KinProjectDialog(
         disabled={state.saving}
         onChange={(checked) => form.edit({ private: checked })}
       />
+    </FormShell>
+  );
+}
+
+/** A milestone on a project: a name and the day it is due. Its tasks are given to it in chat. */
+export function KinMilestoneDialog(
+  props: KinWorkTarget & {
+    readonly project: KinRecordKey;
+    readonly onSaved: (key: KinRecordKey) => void;
+    readonly onOpenExisting: (key: KinRecordKey) => void;
+    readonly onClose: () => void;
+  },
+) {
+  const { environmentId, orgId } = props;
+  const create = useAtomCommand(kinClient.workCreate, { reportFailure: false });
+  const [requestId] = useState(randomUUID);
+  const [name, setName] = useState("");
+  const [due, setDue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [problem, setProblem] = useState<KinWorkFormProblem | null>(null);
+  const ids = { name: useId(), due: useId() };
+  const save = async () => {
+    if (saving || name.trim() === "") return;
+    setSaving(true);
+    setProblem(null);
+    const outcome = await kinWorkSend({
+      online: () => kinHostConnected(environmentId),
+      send: () =>
+        create({
+          environmentId,
+          input: {
+            orgId,
+            list: "milestones",
+            title: name.trim(),
+            project: props.project,
+            ...(due === "" ? {} : { dueAt: due, dueAllDay: true }),
+            clientRequestId: requestId,
+          },
+        }),
+      noun: "project",
+      name: name.trim(),
+      own: null,
+    });
+    setSaving(false);
+    if (outcome.ok) props.onSaved(outcome.value.key);
+    else setProblem(outcome.problem);
+  };
+  return (
+    <FormShell
+      title={KIN_PROJECTS.addMilestone}
+      submit={KIN_PROJECTS.addMilestone}
+      saving={saving}
+      canSave={name.trim() !== ""}
+      problem={problem}
+      onOpenExisting={props.onOpenExisting}
+      onSave={() => void save()}
+      onClose={props.onClose}
+    >
+      <Field id={ids.name} label={COPY.project.name}>
+        <Input
+          id={ids.name}
+          value={name}
+          maxLength={KIN_WORK_FORM_LIMITS.name}
+          placeholder="Beta to the client"
+          autoComplete="off"
+          autoFocus
+          onChange={(event) => setName(event.target.value)}
+        />
+      </Field>
+      <Field id={ids.due} label="Due">
+        <Input
+          id={ids.due}
+          type="date"
+          value={due}
+          onChange={(event) => setDue(event.target.value)}
+        />
+      </Field>
     </FormShell>
   );
 }
