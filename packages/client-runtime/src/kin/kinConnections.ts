@@ -99,7 +99,7 @@ function kinConnectionErrorText(message: string): string {
     return `${message} Use the service's public https address.`;
   if (/redirect/i.test(message)) return `${message} Use the address the redirect points to.`;
   if (/HTTP (404|405)/.test(message))
-    return `${message} Check the server address; it should be the service's MCP address.`;
+    return `${message} Check the server address the service gave you.`;
   return message;
 }
 
@@ -321,8 +321,13 @@ export interface KinCallRow {
 }
 
 /** One line of what an agent asked: who, which tool, how it went, when. */
-export function kinCallRow(call: KinConnectionCall, now: Date): KinCallRow {
+export function kinCallRow(
+  call: KinConnectionCall,
+  now: Date,
+  tools: ReadonlyArray<Pick<KinToolRow, "name" | "title">> = [],
+): KinCallRow {
   const who = call.agentName ?? "An agent";
+  const tool = tools.find((row) => row.name === call.toolName)?.title ?? call.toolName;
   const outcome =
     call.status === "ok"
       ? "Done"
@@ -335,7 +340,7 @@ export function kinCallRow(call: KinConnectionCall, now: Date): KinCallRow {
             : `Failed${call.refusedReason === null ? "" : `: ${kinConnectionErrorText(call.refusedReason)}`}`;
   return {
     key: call.callId,
-    title: call.status === "offered" ? `${who} · ${call.toolName}` : `${who} used ${call.toolName}`,
+    title: call.status === "offered" ? `${who} · ${tool}` : `${who} used ${tool}`,
     detail: outcome,
     ok: call.status === "ok" || call.status === "offered",
     // @effect-diagnostics-next-line globalDate:off - the shared clock-and-day label takes a Date.

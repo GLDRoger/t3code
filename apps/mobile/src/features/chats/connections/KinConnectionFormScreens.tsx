@@ -73,11 +73,11 @@ function AddForm(props: {
   const service = services.find((entry) => entry.service === shown.service);
   const custom = shown.service === "custom";
 
-  const connect = async (key: string = shown.key) => {
+  const connect = async (typed?: string) => {
     if (busy || view === null) return;
     setBusy(true);
     setProblem(null);
-    const outcome = await actions.add({ ...shown, key }, view.services);
+    const outcome = await actions.add({ ...shown, key: typed ?? shown.key }, view.services);
     setBusy(false);
     if (!outcome.ok) return setProblem(outcome.problem);
     navigation.goBack();
@@ -214,7 +214,8 @@ function EditForm(props: {
   const shown = value ?? (props.rename ? (detail?.connection.label ?? "") : "");
   const valid = shown.trim() !== "" && shown.trim().length <= (props.rename ? 80 : 4096);
 
-  const save = async (text: string = shown) => {
+  const save = async (typed?: string) => {
+    const text = typed ?? shown;
     if (busy || text.trim() === "") return;
     setBusy(true);
     setProblem(null);

@@ -29,7 +29,7 @@ const connectionId = KinConnectionId.make("conn_1");
 const services: ReadonlyArray<KinConnectionService> = [
   { service: "posthog", label: "PostHog", available: true, setup: "Make a key." },
   { service: "sentry", label: "Sentry", available: false, setup: null },
-  { service: "custom", label: "Another MCP server", available: true, setup: null },
+  { service: "custom", label: "Another service", available: true, setup: null },
 ];
 
 const definition = (description: string, inputSchema: unknown = { type: "object" }) => ({

@@ -266,7 +266,7 @@ function ConnectionRecord(props: {
               </View>
             ) : (
               calls.calls.map((call) => {
-                const line = kinCallRow(call, new Date(nowMs));
+                const line = kinCallRow(call, new Date(nowMs), rows);
                 return (
                   <View key={line.key} accessible className="bg-grouped-card">
                     <ListRowLayout

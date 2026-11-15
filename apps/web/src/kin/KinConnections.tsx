@@ -27,7 +27,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
-import { PlusIcon, RefreshCwIcon } from "lucide-react";
+import { ChevronLeftIcon, PlusIcon, RefreshCwIcon } from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
 
 import { SettingsRow, SettingsSection } from "../components/settings/settingsLayout";
@@ -60,13 +60,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../components/ui/select";
-import {
-  Sheet,
-  SheetDescription,
-  SheetHeader,
-  SheetPopup,
-  SheetTitle,
-} from "../components/ui/sheet";
 import { Switch } from "../components/ui/switch";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinConfirm } from "./KinConfirm";
@@ -119,6 +112,21 @@ function ConnectionsList(props: Target) {
   });
   const connections = view?.connections ?? [];
   const openConnection = connections.find((entry) => entry.connectionId === open) ?? null;
+
+  if (openConnection !== null)
+    return (
+      <ConnectionRecord
+        environmentId={environmentId}
+        orgId={orgId}
+        connection={openConnection}
+        onRemove={async () => {
+          const outcome = await actions.remove(openConnection.connectionId);
+          if (outcome.ok) setOpen(null);
+          return outcome.ok ? null : outcome.problem;
+        }}
+        onClose={() => setOpen(null)}
+      />
+    );
 
   return (
     <>
@@ -190,19 +198,6 @@ function ConnectionsList(props: Target) {
           }}
         />
       ) : null}
-      {openConnection === null ? null : (
-        <ConnectionSheet
-          environmentId={environmentId}
-          orgId={orgId}
-          connection={openConnection}
-          onRemove={async () => {
-            const outcome = await actions.remove(openConnection.connectionId);
-            if (outcome.ok) setOpen(null);
-            return outcome.ok ? null : outcome.problem;
-          }}
-          onClose={() => setOpen(null)}
-        />
-      )}
     </>
   );
 }
@@ -347,7 +342,7 @@ function AddDialog(props: {
 
 type Editing = "rename" | "key" | null;
 
-function ConnectionSheet(props: {
+function ConnectionRecord(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
   readonly connection: KinConnection;
@@ -402,201 +397,197 @@ function ConnectionSheet(props: {
     );
 
   return (
-    <Sheet
-      open
-      onOpenChange={(open) => {
-        if (!open) props.onClose();
-      }}
-    >
-      <SheetPopup side="right">
-        <SheetHeader>
-          <div className="flex flex-col gap-1 pe-8">
-            <SheetTitle>{connection.label}</SheetTitle>
-            <SheetDescription>
-              {connection.urlHost} · <span className="text-foreground">{status.label}</span>
-            </SheetDescription>
+    <>
+      <div className="flex flex-col gap-6 px-3 sm:px-4">
+        <div className="flex flex-col items-start gap-2">
+          <Button size="xs" variant="ghost" onClick={props.onClose}>
+            <ChevronLeftIcon />
+            {COPY.title}
+          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-base font-semibold text-foreground">{connection.label}</h2>
+            <Badge variant={TONE_BADGE[status.tone]}>{status.label}</Badge>
           </div>
-        </SheetHeader>
-        <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
-          {status.tone === "error" || status.tone === "attention" || connection.paused ? (
-            <Alert
-              variant={
-                status.tone === "error" ? "error" : status.tone === "attention" ? "warning" : "info"
-              }
-            >
-              <AlertDescription>{status.detail}</AlertDescription>
-            </Alert>
-          ) : null}
-          {problem === null ? null : (
-            <Alert variant="error">
-              <AlertDescription role="alert">{problem}</AlertDescription>
-            </Alert>
-          )}
-
-          <Section
-            title={COPY.toolsTitle}
-            action={
-              <Button
-                size="xs"
-                variant="ghost"
-                disabled={busy !== null}
-                onClick={() =>
-                  void run("refresh", "check for changes", () =>
-                    refresh({ environmentId, input: ref }),
-                  )
-                }
-              >
-                <RefreshCwIcon />
-                {busy === "refresh" ? COPY.refreshing : COPY.refresh}
-              </Button>
+          <p className="text-xs text-muted-foreground">{connection.urlHost}</p>
+        </div>
+        {status.tone === "error" || status.tone === "attention" || connection.paused ? (
+          <Alert
+            variant={
+              status.tone === "error" ? "error" : status.tone === "attention" ? "warning" : "info"
             }
           >
-            <p className="text-xs text-muted-foreground">{COPY.toolsDetail}</p>
-            {changed.length > 1 ? (
+            <AlertDescription>{status.detail}</AlertDescription>
+          </Alert>
+        ) : null}
+        {problem === null ? null : (
+          <Alert variant="error">
+            <AlertDescription role="alert">{problem}</AlertDescription>
+          </Alert>
+        )}
+
+        <Section
+          title={COPY.toolsTitle}
+          action={
+            <Button
+              size="xs"
+              variant="ghost"
+              disabled={busy !== null}
+              onClick={() =>
+                void run("refresh", "check for changes", () =>
+                  refresh({ environmentId, input: ref }),
+                )
+              }
+            >
+              <RefreshCwIcon />
+              {busy === "refresh" ? COPY.refreshing : COPY.refresh}
+            </Button>
+          }
+        >
+          <p className="text-xs text-muted-foreground">{COPY.toolsDetail}</p>
+          {changed.length > 1 ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="self-start"
+              disabled={busy !== null}
+              onClick={() =>
+                void run("accept", "allow the changes", () =>
+                  accept({ environmentId, input: kinAcceptAll(ref, connection, rows) }),
+                )
+              }
+            >
+              {COPY.acceptAll}
+            </Button>
+          ) : null}
+          {suggested.length > 0 ? (
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs text-muted-foreground">{COPY.suggestedDetail}</p>
               <Button
-                size="sm"
+                size="xs"
                 variant="outline"
-                className="self-start"
                 disabled={busy !== null}
                 onClick={() =>
-                  void run("accept", "allow the changes", () =>
-                    accept({ environmentId, input: kinAcceptAll(ref, connection, rows) }),
+                  void run("suggested", "turn those on", () =>
+                    setModes({ environmentId, input: { ...ref, modes: suggested } }),
                   )
                 }
               >
-                {COPY.acceptAll}
+                {COPY.suggested} ({suggested.length})
               </Button>
-            ) : null}
-            {suggested.length > 0 ? (
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-xs text-muted-foreground">{COPY.suggestedDetail}</p>
-                <Button
-                  size="xs"
-                  variant="outline"
+            </div>
+          ) : null}
+          {detail === null ? (
+            <p className="text-sm text-muted-foreground">Loading…</p>
+          ) : rows.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{COPY.noTools}</p>
+          ) : (
+            <ul className="flex flex-col">
+              {rows.map((row) => (
+                <ToolItem
+                  key={row.name}
+                  row={row}
                   disabled={busy !== null}
-                  onClick={() =>
-                    void run("suggested", "turn those on", () =>
-                      setModes({ environmentId, input: { ...ref, modes: suggested } }),
+                  onSwitch={(on) => void switchTool(row, on)}
+                  onAccept={() =>
+                    void run(`accept:${row.name}`, "allow the new version", () =>
+                      accept({
+                        environmentId,
+                        input: { ...ref, tools: [{ tool: row.name, digest: row.digest }] },
+                      }),
                     )
                   }
-                >
-                  {COPY.suggested} ({suggested.length})
-                </Button>
-              </div>
-            ) : null}
-            {detail === null ? (
-              <p className="text-sm text-muted-foreground">Loading…</p>
-            ) : rows.length === 0 ? (
-              <p className="text-sm text-muted-foreground">{COPY.noTools}</p>
-            ) : (
-              <ul className="flex flex-col">
-                {rows.map((row) => (
-                  <ToolItem
-                    key={row.name}
-                    row={row}
-                    disabled={busy !== null}
-                    onSwitch={(on) => void switchTool(row, on)}
-                    onAccept={() =>
-                      void run(`accept:${row.name}`, "allow the new version", () =>
-                        accept({
-                          environmentId,
-                          input: { ...ref, tools: [{ tool: row.name, digest: row.digest }] },
-                        }),
-                      )
-                    }
-                  />
-                ))}
-              </ul>
-            )}
-          </Section>
+                />
+              ))}
+            </ul>
+          )}
+        </Section>
 
-          <Section title={COPY.callsTitle}>
-            {calls === null ? null : calls.calls.length === 0 ? (
-              <p className="text-sm text-muted-foreground">{COPY.noCalls}</p>
-            ) : (
-              <ul className="flex flex-col">
-                {calls.calls.map((call) => {
-                  const line = kinCallRow(call, new Date(nowMs));
-                  return (
-                    <li
-                      key={line.key}
-                      className="flex items-start justify-between gap-3 border-b border-border/60 py-2 last:border-b-0"
-                    >
-                      <div className="flex min-w-0 flex-col">
-                        <span className="truncate text-sm">{line.title}</span>
-                        <span
-                          className={
-                            line.ok
-                              ? "text-xs text-muted-foreground"
-                              : "text-xs text-destructive-foreground"
-                          }
-                        >
-                          {line.detail}
-                        </span>
-                      </div>
-                      <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-                        {line.time}
+        <Section title={COPY.callsTitle}>
+          {calls === null ? null : calls.calls.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{COPY.noCalls}</p>
+          ) : (
+            <ul className="flex flex-col">
+              {calls.calls.map((call) => {
+                const line = kinCallRow(call, new Date(nowMs), rows);
+                return (
+                  <li
+                    key={line.key}
+                    className="flex items-start justify-between gap-3 border-b border-border/60 py-2 last:border-b-0"
+                  >
+                    <div className="flex min-w-0 flex-col">
+                      <span className="truncate text-sm">{line.title}</span>
+                      <span
+                        className={
+                          line.ok
+                            ? "text-xs text-muted-foreground"
+                            : "text-xs text-destructive-foreground"
+                        }
+                      >
+                        {line.detail}
                       </span>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </Section>
+                    </div>
+                    <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                      {line.time}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </Section>
 
-          <Section title="Connection">
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex flex-col gap-0.5">
-                <Label htmlFor={reachId}>{COPY.reachTitle}</Label>
-                <p className="text-xs text-muted-foreground">{COPY.reachDetail}</p>
-              </div>
-              <Switch
-                id={reachId}
-                checked={connection.reach === "closed"}
-                disabled={busy !== null}
-                onCheckedChange={(checked) =>
-                  void run("reach", "change that", () =>
-                    setReach({
-                      environmentId,
-                      input: { ...ref, reach: checked ? "closed" : "open" },
-                    }),
-                  )
-                }
-              />
+        <Section title="Connection">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex flex-col gap-0.5">
+              <Label htmlFor={reachId}>{COPY.reachTitle}</Label>
+              <p className="text-xs text-muted-foreground">{COPY.reachDetail}</p>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <Button size="sm" variant="outline" onClick={() => setEditing("rename")}>
-                {COPY.rename}
+            <Switch
+              id={reachId}
+              checked={connection.reach === "closed"}
+              disabled={busy !== null}
+              onCheckedChange={(checked) =>
+                void run("reach", "change that", () =>
+                  setReach({
+                    environmentId,
+                    input: { ...ref, reach: checked ? "closed" : "open" },
+                  }),
+                )
+              }
+            />
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" onClick={() => setEditing("rename")}>
+              {COPY.rename}
+            </Button>
+            {connection.auth === "key" ? (
+              <Button size="sm" variant="outline" onClick={() => setEditing("key")}>
+                {COPY.replaceKey}
               </Button>
-              {connection.auth === "key" ? (
-                <Button size="sm" variant="outline" onClick={() => setEditing("key")}>
-                  {COPY.replaceKey}
-                </Button>
-              ) : null}
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={busy !== null}
-                onClick={() =>
-                  void run("pause", connection.paused ? "resume it" : "pause it", () =>
-                    update({ environmentId, input: { ...ref, paused: !connection.paused } }),
-                  )
-                }
-              >
-                {connection.paused ? COPY.resume : COPY.pause}
-              </Button>
-              <Button
-                size="sm"
-                variant="destructive-outline"
-                disabled={busy !== null}
-                onClick={() => setConfirming(true)}
-              >
-                {COPY.remove}
-              </Button>
-            </div>
-          </Section>
-        </div>
-      </SheetPopup>
+            ) : null}
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy !== null}
+              onClick={() =>
+                void run("pause", connection.paused ? "resume it" : "pause it", () =>
+                  update({ environmentId, input: { ...ref, paused: !connection.paused } }),
+                )
+              }
+            >
+              {connection.paused ? COPY.resume : COPY.pause}
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive-outline"
+              disabled={busy !== null}
+              onClick={() => setConfirming(true)}
+            >
+              {COPY.remove}
+            </Button>
+          </div>
+        </Section>
+      </div>
       {editing === null ? null : (
         <EditDialog
           editing={editing}
@@ -633,7 +624,7 @@ function ConnectionSheet(props: {
         }
         onClose={() => setConfirming(false)}
       />
-    </Sheet>
+    </>
   );
 }
 
