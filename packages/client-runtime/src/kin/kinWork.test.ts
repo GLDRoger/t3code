@@ -2,6 +2,7 @@
 import {
   KinAgentId,
   KinChatError,
+  KinListId,
   KinOrgId,
   KinPersonId,
   KinRecordId,
@@ -277,6 +278,34 @@ describe("kinWorkItemView", () => {
       "You gave it to Tech lead",
       "Tech lead updated it",
       "You added this",
+    ]);
+  });
+
+  it("says an invoice was issued, paid or voided, not marked waiting, finished or dropped", () => {
+    const at = "2026-11-10T09:00:00.000Z";
+    const closed = (seq: number, to: string) =>
+      ({
+        seq,
+        at,
+        by: lead,
+        via: "lead",
+        kind: "updated",
+        fields: [{ field: "state", from: "open", to }],
+      }) as const;
+    const view = kinWorkItemView(
+      detail({
+        list: KinListId.make("invoices"),
+        changes: [closed(3, "dropped"), closed(2, "done"), closed(1, "waiting")],
+      }),
+      names,
+      now,
+      50,
+      place,
+    );
+    expect(view.history.map((line) => line.text)).toEqual([
+      "Tech lead voided it",
+      "Tech lead marked it paid",
+      "Tech lead issued it",
     ]);
   });
 

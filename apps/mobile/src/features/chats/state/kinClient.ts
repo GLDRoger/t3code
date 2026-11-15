@@ -31,6 +31,7 @@ import {
   type KinChatId,
   type KinChatsSubscribeInput,
   type KinLeadAccessInput,
+  type KinBudgetGetInput,
   type KinMemoryListInput,
   type KinLeadsListInput,
   type KinVisualHostsInput,
@@ -166,6 +167,11 @@ const memoryRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   tag: "kin.memory.list",
 });
 const readMemory = guardedRead(memoryRead);
+const budgetRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:budget:read",
+  tag: "kin.budget.get",
+});
+const readBudget = guardedRead(budgetRead);
 
 const workSummaryRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "kin:work:summary:read",
@@ -969,6 +975,20 @@ export const kinClient = {
     label: "kin:memory:forget",
     tag: "kin.memory.forget",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.itemId },
+  }),
+  /** The owner's daily limit. The host announces no change to it, so a set re-reads it here. */
+  budget: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:budget",
+    execute: Effect.fn("KinClient.budget")(function* (input: KinBudgetGetInput) {
+      return yield* readBudget(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: sessionGeneration,
+  }),
+  budgetSet: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:budget:set",
+    tag: "kin.budget.set",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
   }),
   /**
    * One pending action as this viewer may see it. `revision` is the card's own, only a cache key:

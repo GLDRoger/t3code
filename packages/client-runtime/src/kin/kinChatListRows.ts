@@ -37,7 +37,7 @@ const CARD_PREVIEWS: ReadonlyArray<readonly [prefix: string, preview: string]> =
 
 function previewOf(chat: KinChatSummary, view: KinChatRowView): string {
   const last = chat.lastMessage;
-  if (last === null) return "Say hello to get started";
+  if (last === null) return "No messages yet";
   if (last.status === "deleted") return view.preview;
   if (last.body.trim() === "" && last.widgetId !== null) {
     const { widgetId } = last;
@@ -93,3 +93,9 @@ export function kinChatListRowLabel(row: KinChatListRow, time: (date: Date) => s
     .filter((part) => part !== null)
     .join(" ");
 }
+
+/** A teammate's first look, before anyone has started a chat with them. */
+export const KIN_TEAMMATE_WELCOME = {
+  title: "Welcome to the team",
+  detail: "When someone on your team starts a chat with you, it shows up here.",
+};
