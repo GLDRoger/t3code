@@ -115,7 +115,9 @@ const setupNotice = (lead: string, failure: SetupFailure, ownerOnly: boolean) =>
       ? `${lead} couldn't start: its model account needs signing in again on the server.`
       : failure === "model"
         ? `${lead} couldn't start: its model account doesn't offer the model it's set to use. Choose another model for it.`
-        : `${lead} couldn't start: its model account can't use its model. Check the account on the server.`;
+        : failure === "program"
+          ? `${lead} couldn't start: the server couldn't run its model program. Check the provider's binary path in Settings.`
+          : `${lead} couldn't start: its model account can't use its model. Check the account on the server.`;
 
 type Outcome = "posted" | "note" | "silent" | "empty" | "withheld" | "overflow" | "dropped";
 
@@ -286,10 +288,7 @@ const restates = (sentence: string, question: ReadonlySet<string>) => {
     words.length >= 3 && words.filter((word) => question.has(word)).length / words.length >= 0.6
   );
 };
-/**
- * A reply less the sentences that repeat or restate a card's question, which the card already
- * asks. Once one did, the card is the reply: what is left is cut to one short line.
- */
+/** A reply less the sentences that repeat or restate a card's question, which the card asks. */
 const withoutAsked = (text: string, questions: ReadonlyArray<string>) => {
   const wanted = new Set(questions.map(comparable).filter((one) => one !== ""));
   if (wanted.size === 0) return text;
@@ -305,8 +304,7 @@ const withoutAsked = (text: string, questions: ReadonlyArray<string>) => {
     else if (sentence.trim() !== "")
       kept.push(`${kept.length === 0 ? "" : (parts[index - 1] ?? "")}${sentence}`);
   }
-  if (!dropped) return text;
-  return (kept[0] ?? "").trim();
+  return dropped ? kept.join("").trim() : text;
 };
 const capBody = (text: string) =>
   text.length <= KIN_MESSAGE_BODY_MAX_LENGTH
@@ -1027,6 +1025,28 @@ const make = Effect.gen(function* () {
       yield* wake.lock.withPermits(1)(Effect.sync(() => (wake.lane = found.value)));
   });
 
+  // Once per burst: a line this lead already left in the chat, with nobody writing since, stands.
+  const standing = Effect.fnUntraced(function* (
+    input: { readonly orgId: KinOrgId; readonly lane: Lane },
+    agentId: KinAgentId,
+    prefixes: ReadonlyArray<string>,
+  ) {
+    const rows = yield* sql`SELECT 1 FROM kin_messages n
+      JOIN kin_wakeups w ON w.org_id = n.org_id
+        AND substr(n.message_id, instr(n.message_id, ':') + 1) = w.wakeup_id
+        AND substr(n.message_id, 1, instr(n.message_id, ':') - 1) IN ${sql.in(prefixes)}
+      WHERE n.org_id = ${input.orgId} AND n.chat_id = ${input.lane.chatId} AND w.agent_id = ${agentId}
+        AND NOT EXISTS (SELECT 1 FROM kin_messages h WHERE h.org_id = n.org_id
+          AND h.chat_id = n.chat_id AND h.author_kind = 'human' AND h.seq > n.seq)
+      LIMIT 1`;
+    return rows.length > 0;
+  });
+  const agentOf = Effect.fnUntraced(function* (orgId: KinOrgId, wakeupId: KinWakeupId) {
+    const [wakeup] = yield* sql<{ agentId: KinAgentId }>`SELECT agent_id AS "agentId"
+      FROM kin_wakeups WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} ORDER BY wakeup_id`;
+    return wakeup?.agentId;
+  });
+
   const failed = Effect.fn("KinReplyBridge.failed")(
     function* (input: {
       readonly orgId: KinOrgId;
@@ -1034,9 +1054,19 @@ const make = Effect.gen(function* () {
       readonly lane: Lane;
       readonly outcome: FailedOutcome;
     }) {
-      if (input.outcome === "signin" || input.outcome === "access" || input.outcome === "model")
+      if (
+        input.outcome === "signin" ||
+        input.outcome === "access" ||
+        input.outcome === "model" ||
+        input.outcome === "program"
+      )
         return yield* setupFailed({ ...input, outcome: input.outcome });
       const notice = failedNotices[input.outcome];
+      if (input.outcome === "retrying") {
+        const agentId = yield* agentOf(input.orgId, input.wakeupId);
+        if (agentId === undefined) return;
+        if (yield* standing(input, agentId, ["kin-retrying", "kin-setup"])) return;
+      }
       yield* chat.notice({
         messageId: KinMessageId.make(`${notice.prefix}:${input.wakeupId}`),
         orgId: input.orgId,
@@ -1048,7 +1078,6 @@ const make = Effect.gen(function* () {
     Effect.catchCause((cause) => Effect.logWarning("Kin failure notice failed", { cause })),
   );
 
-  // Once per burst: a line this lead already left in the chat, with nobody writing since, stands.
   const setupFailed = Effect.fn("KinReplyBridge.setupFailed")(function* (input: {
     readonly orgId: KinOrgId;
     readonly wakeupId: KinWakeupId;
@@ -1056,17 +1085,10 @@ const make = Effect.gen(function* () {
     readonly outcome: SetupFailure;
   }) {
     const { orgId, wakeupId, lane } = input;
-    const [wakeup] = yield* sql<{ agentId: KinAgentId }>`SELECT agent_id AS "agentId"
-      FROM kin_wakeups WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} ORDER BY wakeup_id`;
-    if (wakeup === undefined) return;
-    const standing = yield* sql`SELECT 1 FROM kin_messages n
-      JOIN kin_wakeups w ON w.org_id = n.org_id AND n.message_id = 'kin-setup:' || w.wakeup_id
-      WHERE n.org_id = ${orgId} AND n.chat_id = ${lane.chatId} AND w.agent_id = ${wakeup.agentId}
-        AND NOT EXISTS (SELECT 1 FROM kin_messages h WHERE h.org_id = n.org_id
-          AND h.chat_id = n.chat_id AND h.author_kind = 'human' AND h.seq > n.seq)
-      LIMIT 1`;
-    if (standing.length > 0) return;
-    const ownerOnly = yield* ownerOnlyChat({ orgId, agentId: wakeup.agentId }, lane.chatId).pipe(
+    const agentId = yield* agentOf(orgId, wakeupId);
+    if (agentId === undefined) return;
+    if (yield* standing(input, agentId, ["kin-setup"])) return;
+    const ownerOnly = yield* ownerOnlyChat({ orgId, agentId }, lane.chatId).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
     );
     const setup = (ownerOnly: boolean) =>

@@ -294,8 +294,11 @@ const withServices = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
 // KIN_MEMORY_DIRECT_PUSH=true, because the memory repo's ruleset rejects a direct push.
 const memoryPullRequests = Layer.unwrap(
   Effect.gen(function* () {
+    const { directMainPush } = yield* MemoryConfig.MemoryConfig;
     const off =
-      "memory writes to the default branch are refused unless KIN_MEMORY_DIRECT_PUSH=true";
+      directMainPush === true
+        ? "memory writes push straight to the default branch"
+        : "memory writes to the default branch are refused unless KIN_MEMORY_DIRECT_PUSH=true";
     if (Option.isNone(yield* Config.option(Config.String("KIN_GITHUB_APP_ID")))) {
       yield* Effect.logWarning(`Kin memory PRs are off: KIN_GITHUB_APP_ID is unset, so ${off}`);
       return Layer.empty;

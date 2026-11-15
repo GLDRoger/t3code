@@ -529,7 +529,14 @@ export const teamDetail = Effect.fn("KinTeamView.detail")(function* (
 });
 
 const AMOUNT =
-  /[₹$€£]\s?\d|\b(?:rs\.?|inr|usd|eur|gbp)\s?\d|\d[\d,.]*\s?(?:lakhs?|lacs?|crores?|rupees|inr|usd|eur|gbp)\b/i;
+  /[₹$€£]\s?\d|\b(?:rs\.?|inr|usd|eur|gbp)\s?\d|\d[\d,.]*\s?(?:k|lakhs?|lacs?|crores?|cr|rupees|dollars|euros|pounds|bucks|inr|usd|eur|gbp)\b/i;
+const NUMBER_WORD =
+  "(?:a|half|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion)";
+// "forty thousand rupees", "five lakh": an amount in words is an amount.
+const AMOUNT_WORDS = new RegExp(
+  `\\b${NUMBER_WORD}(?:[\\s-]+(?:and[\\s-]+)?${NUMBER_WORD})*[\\s-]+(?:lakhs?|lacs?|crores?|rupees|dollars|euros|pounds|bucks)\\b`,
+  "i",
+);
 const MONEY_NUMBER = /\b[A-Z]{2,5}\/\d{2}-\d{2}\/\d+\b/;
 const ENTRY_KEY = /\b[A-Z]{1,4}-\d{1,6}\b/g;
 const fold = (text: string) => text.toLowerCase().replace(/\s+/g, " ");
@@ -544,7 +551,7 @@ export const unreadableBy = Effect.fn("KinTeamView.unreadableBy")(function* (
   personId: KinPersonId,
   text: string,
 ) {
-  if (AMOUNT.test(text) || MONEY_NUMBER.test(text))
+  if (AMOUNT.test(text) || AMOUNT_WORDS.test(text) || MONEY_NUMBER.test(text))
     return "it names an amount or a money document. Keep amounts out of a message to a teammate";
   const sql = yield* SqlClient.SqlClient;
   const keys = [...new Set(text.match(ENTRY_KEY) ?? [])];
