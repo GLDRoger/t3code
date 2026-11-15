@@ -46,6 +46,12 @@ export default Effect.gen(function* () {
   )`;
   yield* sql`CREATE INDEX IF NOT EXISTS idx_kin_pr_review_posts_widget
     ON kin_pr_review_posts (org_id, widget_id)`;
-  yield* sql`ALTER TABLE kin_workers ADD COLUMN target_pr INTEGER`;
-  yield* sql`ALTER TABLE kin_workers ADD COLUMN target_branch TEXT`;
+  const columns = new Set(
+    (yield* sql<{ name: string }>`SELECT name FROM pragma_table_info('kin_workers')`).map(
+      (column) => column.name,
+    ),
+  );
+  if (!columns.has("target_pr")) yield* sql`ALTER TABLE kin_workers ADD COLUMN target_pr INTEGER`;
+  if (!columns.has("target_branch"))
+    yield* sql`ALTER TABLE kin_workers ADD COLUMN target_branch TEXT`;
 });

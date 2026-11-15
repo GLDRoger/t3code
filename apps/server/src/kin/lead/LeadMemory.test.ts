@@ -389,6 +389,8 @@ it.live(
           "kin_github_prs",
           "kin_github_pr",
           "kin_github_runs",
+          "kin_github_review",
+          "kin_github_link",
           "kin_end",
         ]);
         for (const thread of [

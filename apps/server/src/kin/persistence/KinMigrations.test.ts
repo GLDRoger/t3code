@@ -100,7 +100,9 @@ const tableNames = [
   "kin_ping_escalations",
   "kin_ping_items",
   "kin_ping_ledger",
+  "kin_pr_review_posts",
   "kin_profile_changes",
+  "kin_pull_requests",
   "kin_pulse_facts",
   "kin_pulse_nudges",
   "kin_pulse_seeds",
@@ -556,6 +558,8 @@ describe("Kin migrations", () => {
           { name: "idx_kin_people_org_person" },
           { name: "idx_kin_ping_items_item" },
           { name: "idx_kin_ping_items_pending" },
+          { name: "idx_kin_pr_review_posts_widget" },
+          { name: "idx_kin_pull_requests_state" },
           { name: "idx_kin_pulse_facts_open" },
           { name: "idx_kin_push_devices_person" },
           { name: "idx_kin_reaction_wakes_chat" },
@@ -752,6 +756,8 @@ describe("Kin migrations", () => {
       yield* sql`DROP TABLE kin_auth_key_repairs`;
       yield* sql`DROP TABLE kin_auth_session_keys`;
       yield* sql`DROP TABLE kin_worker_charges`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN target_pr`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN target_branch`;
       yield* sql`ALTER TABLE kin_workers DROP COLUMN environment_id`;
       yield* sql`ALTER TABLE kin_workers DROP COLUMN remote_project_id`;
       yield* sql`ALTER TABLE kin_workers DROP COLUMN repository_key`;
@@ -1394,7 +1400,7 @@ describe("Kin migrations", () => {
           [140, "AssignedByAgent"],
           [141, "PullRequestCare"],
         ]);
-        assert.deepStrictEqual((yield* kinHistory).slice(-67), [
+        assert.deepStrictEqual((yield* kinHistory).slice(-68), [
           { migration_id: 32, name: "WorkerEnvironment" },
           { migration_id: 33, name: "ApproverKeyConfirmations" },
           { migration_id: 34, name: "PerLeadWakeups" },
@@ -2282,7 +2288,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 140");
+      assert.include(String(exit), "below the latest applied migration 141");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -2395,6 +2401,8 @@ describe("Kin migrations", () => {
           pull_request_number: null,
           context: null,
           moved_at: null,
+          target_pr: null,
+          target_branch: null,
         },
         kin_memory_reads: { org_id: "org", item_id: "fixture-id", last_read_at: 1794009600000 },
         kin_cursor: { org_id: "org", consumer: "worker-tracker", after_sequence: 42 },
