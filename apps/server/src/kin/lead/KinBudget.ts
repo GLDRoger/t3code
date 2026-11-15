@@ -24,6 +24,7 @@ import { isSqlError } from "effect/sql/SqlError";
 import * as SqlClient from "effect/sql/SqlClient";
 import { toPersistenceSqlError, PersistenceSqlError } from "../../persistence/Errors.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
@@ -71,6 +72,7 @@ const usageJsonValue = (value: unknown): unknown => {
 };
 // No limit until the owner sets one: a limit nobody chose must never hold the company back.
 const defaults: KinBudgetLimits = { leadUnits: null, workerUnits: null, teammateUnits: null };
+export const USUAL_LIMITS = { leadUnits: 2_000_000, workerUnits: 6_000_000 };
 const WARN_AT = 0.8;
 const CHAT_TAGS = ["chat.message", "widget.action", "chat.reaction"];
 const decodeLimits = Schema.decodeUnknownEffect(KinBudgetLimits);
@@ -241,6 +243,7 @@ const make = Effect.gen(function* () {
         ? {
             ownerUnits: Math.max(0, row.leadUnits - teammates),
             teammateUnits: teammates,
+            usual: USUAL_LIMITS,
             waiting: yield* waiting(orgId),
           }
         : {}),
@@ -473,6 +476,7 @@ const make = Effect.gen(function* () {
           yield* sql`INSERT INTO kin_budget_limits (org_id, limits_json) VALUES (${input.orgId}, ${json}) ON CONFLICT DO NOTHING RETURNING org_id`;
           yield* sql`UPDATE kin_budget_limits SET limits_json = ${json} WHERE org_id = ${input.orgId}`;
           yield* queue.reconsiderBudget(input.orgId);
+          yield* (yield* KinRefreshObserver).touch(input.orgId, "budget");
           const { teammates: _teammates, ...budget } = yield* snapshot(input.orgId, day, true);
           return budget;
         }),
