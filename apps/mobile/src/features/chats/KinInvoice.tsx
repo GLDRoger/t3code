@@ -57,7 +57,12 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { useAssetUrlState } from "../../state/assets";
 import { KinWorkFrame, KinWorkLoading, KinWorkTextField } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
-import { useKinMoneyActions, useKinReceipts, useKinRecipes } from "./state/useKinMoney";
+import {
+  useKinMoneyActions,
+  useKinRates,
+  useKinReceipts,
+  useKinRecipes,
+} from "./state/useKinMoney";
 import { kinWorkChoicesAtom, type KinWorkTarget } from "./state/useKinWork";
 import { useKinWorkLink } from "./state/kinWorkLink";
 
@@ -697,6 +702,8 @@ export function KinReceiptNewScreen({ route }: StaticScreenProps<KinReceiptNewPa
 function ReceiptForm(props: KinWorkTarget) {
   const navigation = useNavigation();
   const actions = useKinMoneyActions(props);
+  // A plain number is in the home currency; a typed symbol or code still names its own.
+  const home = useKinRates(props)?.home ?? "INR";
   const now = new Date(useNowMinuteMs());
   const today = kinWorkDayOf(now);
   const [draft, setDraft] = useState<KinAdvanceDraft>(() => kinAdvanceDraft(today));
@@ -712,7 +719,7 @@ function ReceiptForm(props: KinWorkTarget) {
   });
   const close = () => navigation.goBack();
   const save = async () => {
-    const checked = kinAdvanceInput(props.orgId, draft, "INR", requestId);
+    const checked = kinAdvanceInput(props.orgId, draft, home, requestId);
     if (!checked.ok) return setProblem(checked.problem);
     setProblem(null);
     const { orgId: _orgId, clientRequestId, ...input } = checked.input;

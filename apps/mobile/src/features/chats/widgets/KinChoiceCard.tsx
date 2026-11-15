@@ -21,6 +21,7 @@ import {
   kinChoiceAccessibilityLabel,
   kinChoiceActInput,
   kinChoiceAnswerText,
+  kinChoiceFailureNotice,
   kinChoicePhase,
   type KinChoiceCardView,
 } from "@t3tools/client-runtime/kin/kinChoicePresentation";
@@ -107,6 +108,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
       actions.current = createKinCardActions<KinChoiceCardView, string>({
         newId: uuidv4,
         toInput: kinChoiceActInput,
+        failureNotice: kinChoiceFailureNotice,
         post: async (input) => {
           const result = await post({ environmentId, input });
           return AsyncResult.isFailure(result)

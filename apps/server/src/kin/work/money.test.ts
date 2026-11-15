@@ -28,7 +28,7 @@ import { KinWorkspace } from "../gendocs/workspace.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
-import { answerChange } from "./companyProfile.ts";
+import { answerChange, changeLines } from "./companyProfile.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadMoney from "./leadMoney.ts";
 import * as LeadWork from "./leadWork.ts";
@@ -1425,6 +1425,22 @@ describe("the owner's taps", () => {
           currency: "INR",
         },
       );
+      // The owner's cash and the TDS the client kept settle it together, as one payment form.
+      const settled = yield* OwnerMoney.recordPayment(people, {
+        orgId,
+        key: "INV-1",
+        amount: { minor: 4_000_000, currency: "INR" },
+        tds: { minor: 1_000_000, currency: "INR" },
+        paidOn: "2026-11-06",
+        clientRequestId: "p2",
+      });
+      assert.strictEqual(settled.state, "done");
+      assert.deepStrictEqual(
+        settled.payments
+          ?.map((payment) => `${payment.amount.minor}${payment.withheld === true ? " TDS" : ""}`)
+          .toSorted(),
+        ["1000000 TDS", "4000000", "4000000"],
+      );
     }).pipe(Effect.provide(layer)),
   );
 
@@ -1776,6 +1792,36 @@ describe("another org", () => {
 });
 
 describe("the company profile", () => {
+  it.effect("keeps the owner's home currency and rates, which no agent card proposes", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const set = yield* OwnerMoney.setCompanyProfile(people, {
+        orgId,
+        rev: 0,
+        legalName: "Invented Private Limited",
+      });
+      // A profile stored before home currencies reads as rupees with no rates.
+      assert.deepStrictEqual([set.homeCurrency, set.rates], ["INR", []]);
+      const rated = yield* OwnerMoney.setCompanyProfile(people, {
+        orgId,
+        rev: set.rev,
+        rates: [{ currency: "USD", rate: "84.25", asOf: "2026-11-10" }],
+      });
+      assert.deepStrictEqual(rated.rates, [{ currency: "USD", rate: "84.25", asOf: "2026-11-10" }]);
+      const unrated = yield* OwnerMoney.setCompanyProfile(people, {
+        orgId,
+        rev: rated.rev,
+        rates: [],
+      });
+      assert.deepStrictEqual([unrated.rates, unrated.legalName], [[], "Invented Private Limited"]);
+      // Rates never reach what an agent is shown it could change.
+      assert.deepStrictEqual(
+        changeLines(unrated, { homeCurrency: "USD", rates: [], pan: "ABCDE1234F" }),
+        ["PAN: none → ABCDE1234F"],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("is set by the owner, and by a lead only through a card the owner confirms", () =>
     Effect.gen(function* () {
       yield* seed;
