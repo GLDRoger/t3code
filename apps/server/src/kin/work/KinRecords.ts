@@ -59,6 +59,7 @@ import {
   byKey,
   countedEntry,
   effectivelySensitive,
+  OWN_LABEL_LISTS,
   encodeRepeat,
   type FieldChange,
   type Principal,
@@ -98,6 +99,7 @@ import {
   teamGuard,
   teamPairs,
   personSees,
+  ROOM_LISTS,
   teamSeq,
   viewGuard,
   viewSees,
@@ -116,7 +118,7 @@ export type Writer = {
   readonly askedBy?: KinPersonId | null;
   /** A teammate from their own app: `teamGuard` decides the write inside its transaction. */
   readonly teammate?: boolean;
-  /** Shared with the team when made: a lead's task made in the company chat. */
+  /** Shared with the team when made; a turn others read shares its tasks too (`ROOM_LISTS`). */
   readonly teamShared?: boolean;
   /** A lead's turn others read: `viewGuard` decides the write inside its transaction. */
   readonly view?: {
@@ -737,27 +739,6 @@ const make = Effect.gen(function* () {
     return row === undefined ? null : KinPersonId.make(row.owner);
   });
 
-  /** A task given to a person is one they can see after the write: no private task to a teammate. */
-  const assigneeSees = Effect.fn("KinRecords.assigneeSees")(function* (
-    orgId: KinOrgId,
-    recordId: string,
-    registerId: string,
-    to: KinWorkPrincipal,
-  ) {
-    if (registerId !== "work" || to._tag !== "person") return;
-    const seen = yield* sql`SELECT 1 FROM kin_records r
-      WHERE r.org_id = ${orgId} AND r.record_id = ${recordId} AND (EXISTS (SELECT 1 FROM kin_agents a
-        WHERE a.org_id = r.org_id AND a.owner_person_id = ${to.personId}) OR ${personSees(sql, to.personId)})
-      LIMIT 1`;
-    if (seen.length > 0) return;
-    const [person] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
-      WHERE org_id = ${orgId} AND person_id = ${to.personId}`;
-    return yield* new KinChatError({
-      reason: "not_allowed",
-      message: `${person?.name ?? "They"} can't see this task: it is private to the owner. Give it to the owner or an agent instead.`,
-    });
-  });
-
   const ownerExists = Effect.fn("KinRecords.ownerExists")(function* (
     orgId: KinOrgId,
     who: KinWorkPrincipal,
@@ -990,11 +971,10 @@ const make = Effect.gen(function* () {
         ${yield* encodeFieldValues(fields)}, ${amount?.minor ?? null}, ${amount?.currency ?? null},
         ${input.dateAt ?? null}, ${input.dateAllDay === true ? 1 : 0},
         ${repeat === undefined ? null : yield* encodeRepeat(repeat)}, ${input.requestHash ?? null},
-        ${input.team === true || writer.teammate === true || writer.teamShared === true ? 1 : 0},
+        ${input.team === true || writer.teammate === true || writer.teamShared === true || (writer.view !== undefined && (ROOM_LISTS as ReadonlyArray<string>).includes(list)) ? 1 : 0},
         ${options.authors === undefined ? author : options.authors.title},
         ${notes === "" ? null : options.authors === undefined ? author : options.authors.notes},
         ${givenAway && writer.actor._tag === "agent" ? writer.actor.agentId : null})`;
-    yield* assigneeSees(orgId, recordId, list, input.owner);
     const changes: Array<FieldChange> = [
       { field: "title", from: null, to: input.title },
       { field: "state", from: null, to: state },
@@ -1543,6 +1523,7 @@ const make = Effect.gen(function* () {
         // instead, as Kin's own change. What inherits through it then stays sensitive too.
         if (
           writer.actor._tag !== "person" &&
+          !(OWN_LABEL_LISTS as ReadonlyArray<string>).includes(list) &&
           (row.sensitive === 1 || row.inheritedSensitive === 1) &&
           (yield* effectivelySensitive(orgId, row.recordId).pipe(provideSql)) === false
         ) {
@@ -1563,7 +1544,6 @@ const make = Effect.gen(function* () {
             team,
           );
         }
-        if (reassigned !== undefined) yield* assigneeSees(orgId, row.recordId, list, reassigned);
         if (reassigned !== undefined && patch.handedBack !== undefined)
           yield* wakeLead(
             orgId,
