@@ -611,6 +611,14 @@ export const KinEvent = Schema.Union([
     finding: Schema.String,
     itemIds: Schema.Array(KinMemoryItemId),
   }),
+  // Code enqueues one per new pulse fact that matters now; the prompt reads the facts at turn time.
+  Schema.TaggedStruct("pulse", {
+    ...EventBase,
+    factKeys: Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(300))).check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(50),
+    ),
+  }),
   Schema.TaggedStruct("worker.report", {
     ...EventBase,
     workerId: KinWorkerId,

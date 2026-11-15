@@ -61,6 +61,7 @@ const NOTICE_TAGS = [
   "deferral.due",
   "worker.report",
   "watchdog",
+  "pulse",
   "action.resolved",
   "resume",
   "record.changed",

@@ -150,6 +150,9 @@ export const SHARED_TOOLS = {
   record_get: "view",
   record_create: oneAskerCreates,
   record_update: "view",
+  // Work facts on tasks every person behind the turn may see; money and system facts are the owner's.
+  pulse_read: "view",
+  pulse_handle: "refused",
   // Docs are owner-only too until the teammate view; restoring stays the owner's after it.
   doc_create: "refused",
   doc_read: "refused",

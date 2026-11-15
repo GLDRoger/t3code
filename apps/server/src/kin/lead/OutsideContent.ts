@@ -88,6 +88,9 @@ export const OUTSIDE_TOOLS = {
   record_get: "allowed",
   record_create: "allowed",
   record_update: "allowed",
+  // Kin's own facts and the hold on one; nothing leaves the company.
+  pulse_read: "allowed",
+  pulse_handle: "allowed",
   doc_create: "allowed",
   doc_read: "allowed",
   doc_edit: "allowed",
