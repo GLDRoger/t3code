@@ -28,7 +28,7 @@ import { buildTeamIndex } from "../memory/buildIndex.ts";
 import { reaches, reaching, shareable, storedLabels } from "../memory/sensitivity.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
 import { PRIVATE_DOC, sensitiveDocs } from "../chat/privateDocs.ts";
-import { accessSql, ownerLevel } from "../people/KinAccess.ts";
+import { accessSql, ownerLevel, ownerLevelPeople } from "../people/KinAccess.ts";
 import { liveReactions, reactionAnswer } from "../chat/reactions.ts";
 import { historyFloor } from "../chat/sharing.ts";
 
@@ -1193,6 +1193,13 @@ export class KinLeadPrompt extends Context.Service<
                     timeZone,
                     notice: input.lane?.mode !== "reply",
                     names,
+                    // As with events: a co-owner speaks with authority only at the owner's level.
+                    coOwners: ownerOnly
+                      ? yield* ownerLevelPeople(orgId).pipe(
+                          Effect.provideService(SqlClient.SqlClient, sql),
+                          Effect.orElseSucceed(() => new Set<string>()),
+                        )
+                      : undefined,
                   }),
                 ),
               ]),
@@ -1574,6 +1581,8 @@ function boundedRecent(
     readonly notice: boolean;
     /** In a group, each member's name; a direct chat needs none. */
     readonly names?: ReadonlyMap<string, string> | undefined;
+    /** Owner-level people, in a turn at the owner's level. */
+    readonly coOwners?: ReadonlySet<string> | undefined;
   },
 ): string {
   const window = options.notice ? RECENT_WINDOW.notice : RECENT_WINDOW.reply;
@@ -1595,7 +1604,9 @@ function boundedRecent(
         ? `agent${who} (untrusted)`
         : message.authorRole === "owner"
           ? `owner${who}`
-          : `${message.authorRole}${who} (untrusted)`;
+          : message.author._tag === "human" && options.coOwners?.has(message.author.personId)
+            ? `co-owner${who}`
+            : `${message.authorRole}${who} (untrusted)`;
     const limit = !own
       ? RECENT_BODY_LIMIT.other
       : ownSeen
