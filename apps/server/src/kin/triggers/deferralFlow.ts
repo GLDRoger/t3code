@@ -329,6 +329,10 @@ const make = Effect.gen(function* () {
       reminderLead === undefined
         ? false
         : (yield* budget.admit(orgId, "P1").pipe(
+            // Held for a limit: the owner hears it once a day, with what waits.
+            Effect.tap((admission) =>
+              admission.allowed ? Effect.void : budget.notifyOwner(orgId, "org"),
+            ),
             Effect.map((admission) => admission.allowed),
             Effect.orElseSucceed(() => false),
           )) && !(yield* isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)));

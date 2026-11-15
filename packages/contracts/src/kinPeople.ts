@@ -118,6 +118,13 @@ export const KinPeopleSetGithubLoginInput = Schema.Struct({
 });
 export type KinPeopleSetGithubLoginInput = typeof KinPeopleSetGithubLoginInput.Type;
 
+/** The owner's own name, as agents address them and teammates see them. Owner only. */
+export const KinPeopleSetOwnerNameInput = Schema.Struct({
+  orgId: KinOrgId,
+  displayName: KinTrimmedText.check(Schema.isMaxLength(80)),
+});
+export type KinPeopleSetOwnerNameInput = typeof KinPeopleSetOwnerNameInput.Type;
+
 /** POSTed to `/kin/invites/accept` by a device with no session yet. The secret is never logged. */
 export const KinInviteAcceptRequest = Schema.Struct({
   secret: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
@@ -154,6 +161,7 @@ export const KIN_PEOPLE_WS_METHODS = {
   peopleRevokeDevice: "kin.people.revokeDevice",
   peopleRemoveAccess: "kin.people.removeAccess",
   peopleSetGithubLogin: "kin.people.setGithubLogin",
+  peopleSetOwnerName: "kin.people.setOwnerName",
 } as const;
 
 const KinPeopleError = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -199,6 +207,11 @@ export const KinPeopleRpcs = [
     success: KinPerson,
     error: KinPeopleError,
   }),
+  Rpc.make(KIN_PEOPLE_WS_METHODS.peopleSetOwnerName, {
+    payload: KinPeopleSetOwnerNameInput,
+    success: KinPerson,
+    error: KinPeopleError,
+  }),
 ] as const;
 
 export const KIN_PEOPLE_RPC_SCOPES = {
@@ -212,6 +225,8 @@ export const KIN_PEOPLE_RPC_SCOPES = {
   [KIN_PEOPLE_WS_METHODS.peopleRemoveAccess]: AuthAccessWriteScope,
   // A member links their own handle from a chat-only session; the service checks ownership.
   [KIN_PEOPLE_WS_METHODS.peopleSetGithubLogin]: AuthKinChatScope,
+  // The owner names themself from their phone's chat session; the service checks ownership.
+  [KIN_PEOPLE_WS_METHODS.peopleSetOwnerName]: AuthKinChatScope,
 } as const satisfies Record<
   (typeof KIN_PEOPLE_WS_METHODS)[keyof typeof KIN_PEOPLE_WS_METHODS],
   AuthEnvironmentScope
