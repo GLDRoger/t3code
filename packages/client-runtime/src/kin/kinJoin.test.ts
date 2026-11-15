@@ -123,10 +123,17 @@ describe("the app's shell", () => {
     expect(kinHomeTabs(null)).toEqual(["chats", "settings"]);
   });
 
-  it("docks Chats, Work and Settings for the owner, and no Work for a teammate", () => {
-    expect(kinDockTabs(owner)).toEqual(["chats", "work", "settings"]);
-    expect(kinDockTabs(teammate)).toEqual(["chats", "settings"]);
-    expect(kinDockTabs(null)).toEqual(["chats", "settings"]);
+  it("docks Chats and every place of Work the owner may see, and Chats alone for a teammate", () => {
+    const none = { money: false, clients: false, docs: false };
+    expect(kinDockTabs(owner, none)).toEqual(["chats", "tasks", "money", "clients", "docs"]);
+    expect(kinDockTabs(owner, { ...none, money: true })).toEqual([
+      "chats",
+      "tasks",
+      "clients",
+      "docs",
+    ]);
+    expect(kinDockTabs(teammate, none)).toEqual(["chats"]);
+    expect(kinDockTabs(null, none)).toEqual(["chats"]);
   });
 
   it("is only Kin when every saved environment is a teammate's", () => {

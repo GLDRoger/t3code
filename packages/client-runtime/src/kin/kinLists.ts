@@ -73,6 +73,7 @@ export const KIN_LISTS = {
     month: "Month",
     financialYear: "Financial year",
   } satisfies Record<KinListGroupBy, string>,
+  view: "View",
   rows: "Rows",
   table: "Table",
   entry: {
@@ -533,6 +534,23 @@ export function kinListNarrowings(
       : [{ id: "project", label: filter.project.title, cleared: { ...filter, project: null } }]),
   ];
 }
+
+/** Everything a list is narrowed to, as the one chip its Filter shows; null on the whole list. */
+export function kinListFilterLabel(def: KinListDefinition, filter: KinListFilter): string | null {
+  const state = kinListChips(def, filter).find((chip) => chip.selected && chip.id !== "all");
+  const parts = [
+    ...(state === undefined ? [] : [state.label]),
+    ...kinListNarrowings(filter, def).map((narrowing) => narrowing.label),
+  ];
+  return parts.length === 0 ? null : parts.join(" · ");
+}
+
+/** The whole list again, keeping what is typed in search and how the totals split. */
+export const kinListFilterCleared = (filter: KinListFilter): KinListFilter => ({
+  ...KIN_LIST_DEFAULT_FILTER,
+  text: filter.text,
+  groupBy: filter.groupBy,
+});
 
 /** Which ways this list's totals can split: only by what it has. */
 export const kinListGroupings = (def: KinListDefinition): ReadonlyArray<KinListGroupBy> => [

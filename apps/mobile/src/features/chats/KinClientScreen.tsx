@@ -63,6 +63,7 @@ import {
   useKinWorkHistory,
   type KinWorkTarget,
 } from "./state/useKinWork";
+import { useKinOpenPlace } from "./state/kinHomeTab";
 import { useKinWorkLink } from "./state/kinWorkLink";
 
 export type KinClientParams = {
@@ -148,6 +149,7 @@ function KinClientBody(
   const openRecord = useKinWorkLink();
   const { environmentId, orgId, page } = props;
   const target = { environmentId, orgId };
+  const openPlace = useKinOpenPlace(target);
   const work = useKinWork(target);
   const directory = useKinWorkDirectory(target, true);
   const { names } = directory;
@@ -230,7 +232,9 @@ function KinClientBody(
       {side.more === null ? null : (
         <ListActionRow
           label={side.more}
-          onPress={() => openRecord("KinWork", { environmentId, orgId, ...about })}
+          onPress={() =>
+            openPlace("tasks", { party: { key: view.key, title: view.name }, project: null })
+          }
         />
       )}
       {canAddTask && !view.closed ? (
