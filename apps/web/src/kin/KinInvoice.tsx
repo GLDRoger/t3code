@@ -49,7 +49,7 @@ import { KinClientDialog } from "./KinWorkForms";
 import { kinHostConnected } from "./useKinHost";
 
 import { useAssetUrls } from "../assets/assetUrls";
-import { Alert, AlertDescription } from "../components/ui/alert";
+import { Alert, AlertAction, AlertDescription } from "../components/ui/alert";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -323,10 +323,13 @@ export function KinQuoteActions(
         ) : null}
       </div>
       {invoicing.problem === null && invoicing.notice === null ? null : (
-        <Alert variant={invoicing.problem === null ? "info" : "error"}>
+        <Alert
+          variant={invoicing.problem === null ? "info" : "error"}
+          controlAlignment="first-line"
+        >
           <AlertDescription>{invoicing.problem ?? invoicing.notice}</AlertDescription>
           {invoicing.invoice === null ? null : (
-            <div>
+            <AlertAction>
               <Button
                 size="xs"
                 variant="outline"
@@ -334,7 +337,7 @@ export function KinQuoteActions(
               >
                 {KIN_QUOTES.openInvoice}
               </Button>
-            </div>
+            </AlertAction>
           )}
         </Alert>
       )}

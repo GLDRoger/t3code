@@ -226,7 +226,20 @@ export const entryLines = Effect.fn("KinMoneyAnswers.rpc.entryLines")(function* 
 ) {
   yield* theOwner(people, input.orgId);
   const given = yield* quotedInputs(input.orgId, input.key);
-  return { lines: Option.getOrNull(decodeLines(given.lines)) };
+  // Lines are kept as they were given; an agent may have said a quantity or rate as a number.
+  const said = Array.isArray(given.lines)
+    ? given.lines.map((row: unknown) =>
+        typeof row === "object" && row !== null
+          ? Object.fromEntries(
+              Object.entries(row).map(([name, cell]) => [
+                name,
+                typeof cell === "number" ? String(cell) : cell,
+              ]),
+            )
+          : row,
+      )
+    : null;
+  return { lines: Option.getOrNull(decodeLines(said)) };
 }, workFailure);
 
 /**

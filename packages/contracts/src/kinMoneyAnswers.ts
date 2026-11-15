@@ -194,7 +194,8 @@ export const KinDocumentLine = Schema.Struct({
   /** A decimal, such as `3` or `2.5`. */
   quantity: Schema.String.check(Schema.isPattern(/^\d{1,9}(\.\d{1,3})?$/)),
   unit: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isMaxLength(20)))),
-  rate: KinMoney,
+  /** As said, such as "₹1,200": templates read amounts the way an agent gives them. */
+  rate: Schema.String.check(Schema.isMaxLength(40)),
 });
 export type KinDocumentLine = typeof KinDocumentLine.Type;
 export const KinEntryLinesInput = Schema.Struct({ orgId: KinOrgId, key: KinRecordKey });

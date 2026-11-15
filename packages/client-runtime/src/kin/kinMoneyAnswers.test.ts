@@ -56,7 +56,7 @@ describe("kinLinesInput", () => {
     expect(kinLinesInput([line, { ...line, description: "", sac: "", rate: "" }], "INR")).toEqual({
       ok: true,
       lines: [
-        { description: "Design", sac: "998391", quantity: "5", unit: "days", rate: inr(2_000_000) },
+        { description: "Design", sac: "998391", quantity: "5", unit: "days", rate: "₹20,000.00" },
       ],
     });
     expect(kinLinesInput([{ ...line, sac: "" }], "INR")).toMatchObject({

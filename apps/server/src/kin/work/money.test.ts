@@ -2295,9 +2295,19 @@ describe("money answers", () => {
         yield* seed;
         yield* defined(1, { template: "invoices" });
         yield* defined(3, { template: "expenses" });
+        yield* defined(7, { template: "quotes" });
         const records = yield* KinRecords.KinRecords;
         const create = (key: string, input: Omit<KinRecords.CreateInput, "originKey" | "owner">) =>
           records.create(orgId, system, { owner, originKey: key, ...input });
+        // A quote we sent is neither owed by us nor counted as coming in.
+        yield* create("quote", {
+          list: "quotes",
+          title: "Invented quoted work",
+          amount: inr(70_000),
+          state: "waiting",
+          dueAt: dueOn("2026-11-20"),
+          dueAllDay: true,
+        });
         const invoices = [
           ["Invented retainer", inr(118_000), "2026-11-30", "waiting"],
           ["Invented build", inr(50_000), "2026-12-25", "waiting"],

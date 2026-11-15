@@ -548,7 +548,7 @@ export const kinLineDrafts = (lines: ReadonlyArray<KinDocumentLine> | null): Kin
     sac: line.sac ?? "",
     quantity: line.quantity,
     unit: line.unit ?? "",
-    rate: kinMoneyText(line.rate, true),
+    rate: line.rate,
   }));
 
 const QUANTITY = /^\d{1,9}(\.\d{1,3})?$/;
@@ -585,7 +585,7 @@ export function kinLinesInput(
       sac: sac === "" ? null : sac,
       quantity,
       ...(unit === "" ? {} : { unit }),
-      rate,
+      rate: kinMoneyText(rate, true),
     });
   }
   return { ok: true, lines: lines.length === 0 ? null : lines };

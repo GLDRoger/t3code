@@ -372,7 +372,7 @@ export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
   const ends = horizons.map((one) => ({ days: one, end: endOfDay(shift(today, one), zone) }));
   const last = Math.max(...ends.map((one) => one.end));
   const bank = (yield* findBankList(orgId))?.id ?? "bank_transactions";
-  const notOutgoing = ["invoices", "receipts", "clients", "contacts", "projects", bank];
+  const notOutgoing = ["invoices", "quotes", "receipts", "clients", "contacts", "projects", bank];
 
   const invoices = yield* sql<{
     key: string;
