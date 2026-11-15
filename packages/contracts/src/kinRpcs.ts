@@ -386,6 +386,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.connections.refreshTools": "kin-connections",
   "kin.connections.setToolModes": "kin-connections",
   "kin.connections.acceptToolChanges": "kin-connections",
+  "kin.connections.update": "kin-connections",
   "kin.connections.setReach": "kin-connections",
   "kin.connections.remove": "kin-connections",
   "kin.connections.calls": "kin-connections",

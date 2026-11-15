@@ -40,6 +40,7 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
     "kin.connections.setToolModes": (input) => call((c, people) => c.setToolModes(people, input)),
     "kin.connections.acceptToolChanges": (input) =>
       call((c, people) => c.acceptToolChanges(people, input)),
+    "kin.connections.update": (input) => call((c, people) => c.update(people, input)),
     "kin.connections.setReach": (input) => call((c, people) => c.setReach(people, input)),
     "kin.connections.remove": (input) => call((c, people) => c.remove(people, input)),
     "kin.connections.calls": (input) => call((c, people) => c.calls(people, input)),

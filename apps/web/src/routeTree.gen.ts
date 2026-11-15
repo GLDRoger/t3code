@@ -39,6 +39,7 @@ import { Route as ChatSettingsProjectsRouteImport } from './routes/_chat.setting
 import { Route as ChatSettingsOpenSourceLicensesRouteImport } from './routes/_chat.settings.open-source-licenses'
 import { Route as ChatSettingsMaintenanceRouteImport } from './routes/_chat.settings.maintenance'
 import { Route as ChatSettingsLabsRouteImport } from './routes/_chat.settings.labs'
+import { Route as ChatSettingsKinConnectionsRouteImport } from './routes/_chat.settings.kin-connections'
 import { Route as ChatSettingsKeybindingsRouteImport } from './routes/_chat.settings.keybindings'
 import { Route as ChatSettingsIntegrationsRouteImport } from './routes/_chat.settings.integrations'
 import { Route as ChatSettingsGeneralRouteImport } from './routes/_chat.settings.general'
@@ -220,6 +221,12 @@ const ChatSettingsLabsRoute = ChatSettingsLabsRouteImport.update({
   path: '/labs',
   getParentRoute: () => ChatSettingsRoute,
 } as any)
+const ChatSettingsKinConnectionsRoute =
+  ChatSettingsKinConnectionsRouteImport.update({
+    id: '/kin-connections',
+    path: '/kin-connections',
+    getParentRoute: () => ChatSettingsRoute,
+  } as any)
 const ChatSettingsKeybindingsRoute = ChatSettingsKeybindingsRouteImport.update({
   id: '/keybindings',
   path: '/keybindings',
@@ -400,6 +407,7 @@ export interface FileRoutesByFullPath {
   '/settings/general': typeof ChatSettingsGeneralRoute
   '/settings/integrations': typeof ChatSettingsIntegrationsRoute
   '/settings/keybindings': typeof ChatSettingsKeybindingsRoute
+  '/settings/kin-connections': typeof ChatSettingsKinConnectionsRoute
   '/settings/labs': typeof ChatSettingsLabsRoute
   '/settings/maintenance': typeof ChatSettingsMaintenanceRoute
   '/settings/open-source-licenses': typeof ChatSettingsOpenSourceLicensesRoute
@@ -457,6 +465,7 @@ export interface FileRoutesByTo {
   '/settings/general': typeof ChatSettingsGeneralRoute
   '/settings/integrations': typeof ChatSettingsIntegrationsRoute
   '/settings/keybindings': typeof ChatSettingsKeybindingsRoute
+  '/settings/kin-connections': typeof ChatSettingsKinConnectionsRoute
   '/settings/labs': typeof ChatSettingsLabsRoute
   '/settings/maintenance': typeof ChatSettingsMaintenanceRoute
   '/settings/open-source-licenses': typeof ChatSettingsOpenSourceLicensesRoute
@@ -517,6 +526,7 @@ export interface FileRoutesById {
   '/_chat/settings/general': typeof ChatSettingsGeneralRoute
   '/_chat/settings/integrations': typeof ChatSettingsIntegrationsRoute
   '/_chat/settings/keybindings': typeof ChatSettingsKeybindingsRoute
+  '/_chat/settings/kin-connections': typeof ChatSettingsKinConnectionsRoute
   '/_chat/settings/labs': typeof ChatSettingsLabsRoute
   '/_chat/settings/maintenance': typeof ChatSettingsMaintenanceRoute
   '/_chat/settings/open-source-licenses': typeof ChatSettingsOpenSourceLicensesRoute
@@ -577,6 +587,7 @@ export interface FileRouteTypes {
     | '/settings/general'
     | '/settings/integrations'
     | '/settings/keybindings'
+    | '/settings/kin-connections'
     | '/settings/labs'
     | '/settings/maintenance'
     | '/settings/open-source-licenses'
@@ -634,6 +645,7 @@ export interface FileRouteTypes {
     | '/settings/general'
     | '/settings/integrations'
     | '/settings/keybindings'
+    | '/settings/kin-connections'
     | '/settings/labs'
     | '/settings/maintenance'
     | '/settings/open-source-licenses'
@@ -693,6 +705,7 @@ export interface FileRouteTypes {
     | '/_chat/settings/general'
     | '/_chat/settings/integrations'
     | '/_chat/settings/keybindings'
+    | '/_chat/settings/kin-connections'
     | '/_chat/settings/labs'
     | '/_chat/settings/maintenance'
     | '/_chat/settings/open-source-licenses'
@@ -942,6 +955,13 @@ declare module '@tanstack/react-router' {
       path: '/labs'
       fullPath: '/settings/labs'
       preLoaderRoute: typeof ChatSettingsLabsRouteImport
+      parentRoute: typeof ChatSettingsRoute
+    }
+    '/_chat/settings/kin-connections': {
+      id: '/_chat/settings/kin-connections'
+      path: '/kin-connections'
+      fullPath: '/settings/kin-connections'
+      preLoaderRoute: typeof ChatSettingsKinConnectionsRouteImport
       parentRoute: typeof ChatSettingsRoute
     }
     '/_chat/settings/keybindings': {
@@ -1199,6 +1219,7 @@ interface ChatSettingsRouteChildren {
   ChatSettingsGeneralRoute: typeof ChatSettingsGeneralRoute
   ChatSettingsIntegrationsRoute: typeof ChatSettingsIntegrationsRoute
   ChatSettingsKeybindingsRoute: typeof ChatSettingsKeybindingsRoute
+  ChatSettingsKinConnectionsRoute: typeof ChatSettingsKinConnectionsRoute
   ChatSettingsLabsRoute: typeof ChatSettingsLabsRoute
   ChatSettingsMaintenanceRoute: typeof ChatSettingsMaintenanceRoute
   ChatSettingsOpenSourceLicensesRoute: typeof ChatSettingsOpenSourceLicensesRoute
@@ -1231,6 +1252,7 @@ const ChatSettingsRouteChildren: ChatSettingsRouteChildren = {
   ChatSettingsGeneralRoute: ChatSettingsGeneralRoute,
   ChatSettingsIntegrationsRoute: ChatSettingsIntegrationsRoute,
   ChatSettingsKeybindingsRoute: ChatSettingsKeybindingsRoute,
+  ChatSettingsKinConnectionsRoute: ChatSettingsKinConnectionsRoute,
   ChatSettingsLabsRoute: ChatSettingsLabsRoute,
   ChatSettingsMaintenanceRoute: ChatSettingsMaintenanceRoute,
   ChatSettingsOpenSourceLicensesRoute: ChatSettingsOpenSourceLicensesRoute,
