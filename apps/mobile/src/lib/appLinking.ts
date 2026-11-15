@@ -12,6 +12,8 @@ export function shouldHandleAppLink(url: string, cloudConfigured: boolean): bool
   return (
     !route.includes("expo-development-client") &&
     !route.includes("://expo-sharing") &&
+    // A service's sign-in hands its result back here; the open sign-in sheet takes it.
+    !route.includes("://kin-oauth") &&
     !/^t3code(-dev|-preview)?:\/*$/.test(url) &&
     (cloudConfigured || !CLOUD_ONLY_LINK_PATH.test(route))
   );
