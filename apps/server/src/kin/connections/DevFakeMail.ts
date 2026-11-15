@@ -5,6 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
+import * as HttpClient from "effect/http/HttpClient";
 
 import { ServerConfig } from "../../config.ts";
 import { KinConnections } from "./ConnectionsService.ts";
@@ -39,10 +40,17 @@ export const egress = Layer.unwrap(
     const dev = yield* devFakeMail;
     if (dev === undefined) return EgressGuard.layer;
     yield* Effect.logWarning(`Kin mail goes to the fake mailbox at ${dev.path}`);
-    return EgressGuard.guarded.pipe(
-      Layer.provide(FetchHttpClient.layer),
-      Layer.provide(Layer.succeed(FetchHttpClient.Fetch, dev.fake.handle(globalThis.fetch))),
-    );
+    const fetch = dev.fake.handle(globalThis.fetch);
+    // `Fetch` is read from each request's own fiber, so it is set per request, not on the layer.
+    const fake = Layer.effect(
+      HttpClient.HttpClient,
+      Effect.map(HttpClient.HttpClient, (client) =>
+        client.pipe(
+          HttpClient.transformResponse(Effect.provideService(FetchHttpClient.Fetch, fetch)),
+        ),
+      ),
+    ).pipe(Layer.provide(FetchHttpClient.layer));
+    return EgressGuard.guarded.pipe(Layer.provide(fake));
   }),
 );
 
