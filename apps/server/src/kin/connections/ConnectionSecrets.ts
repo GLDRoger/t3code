@@ -37,10 +37,13 @@ const StoredSignIn = Schema.fromJsonString(Schema.Struct({ signIn: SignInFields 
 const decodeSignIn = Schema.decodeUnknownOption(StoredSignIn);
 const encodeSignIn = Schema.encodeSync(StoredSignIn);
 
-/** A sign-in client the owner made at a service (Google) and pasted once. */
-export type SignInClient = { readonly clientId: string; readonly clientSecret: string };
+/** A sign-in client the owner made at a service and pasted once; Microsoft's needs no secret. */
+export type SignInClient = {
+  readonly clientId: string;
+  readonly clientSecret?: string | undefined;
+};
 const StoredClient = Schema.fromJsonString(
-  Schema.Struct({ clientId: Schema.String, clientSecret: Schema.String }),
+  Schema.Struct({ clientId: Schema.String, clientSecret: Schema.optional(Schema.String) }),
 );
 const decodeClient = Schema.decodeUnknownOption(StoredClient);
 const encodeClient = Schema.encodeSync(StoredClient);

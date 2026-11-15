@@ -10,7 +10,14 @@ import { KinChatError, KinOrgId } from "./kinChat.ts";
  * Only the owner reads or changes them; agents reach a connection's tools through Kin's own
  * connection tools, and never see a credential.
  */
-const KIN_CONNECTION_PRESETS = ["github", "posthog", "sentry", "google", "zoho_books"] as const;
+const KIN_CONNECTION_PRESETS = [
+  "github",
+  "posthog",
+  "sentry",
+  "google",
+  "zoho_books",
+  "microsoft",
+] as const;
 export const KinConnectionPreset = Schema.Literals(KIN_CONNECTION_PRESETS);
 export type KinConnectionPreset = typeof KinConnectionPreset.Type;
 
@@ -295,7 +302,7 @@ export const KinConnectionSignInStartInput = Schema.Struct({
   client: Schema.optional(
     Schema.Struct({
       clientId: TrimmedNonEmptyString.check(Schema.isMaxLength(512)),
-      clientSecret: KinConnectionKey,
+      clientSecret: Schema.optional(KinConnectionKey),
     }),
   ),
   returnTo: KinConnectionSignInReturn,
@@ -321,11 +328,11 @@ export type KinConnectionSignInFinishInput = typeof KinConnectionSignInFinishInp
 /** The owner's own sign-in client for a service (Google); `null` forgets it. */
 export const KinConnectionSetSignInClientInput = Schema.Struct({
   orgId: KinOrgId,
-  service: Schema.Literal("google"),
+  service: Schema.Literals(["google", "microsoft"]),
   client: Schema.NullOr(
     Schema.Struct({
       clientId: TrimmedNonEmptyString.check(Schema.isMaxLength(512)),
-      clientSecret: KinConnectionKey,
+      clientSecret: Schema.optional(KinConnectionKey),
     }),
   ),
 });

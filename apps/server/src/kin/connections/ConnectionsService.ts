@@ -140,6 +140,11 @@ const REFRESH_EARLY = Duration.minutes(1);
 // The return page reads only this prefix of `state` to pick where to hand the result back.
 const RETURN_PREFIX = { web: "w", app: "a", "app-dev": "d", "app-preview": "p" } as const;
 
+/** A pasted client secret, or none: Microsoft's public clients have no secret. */
+const secretOf = (secret: Redacted.Redacted<string> | undefined) => {
+  const value = secret === undefined ? "" : Redacted.value(secret).trim();
+  return value === "" ? undefined : value;
+};
 const fail = (reason: KinChatError["reason"], message: string) =>
   new KinChatError({ reason, message });
 const notFound = fail("not_found", "Kin couldn't find that connection.");
@@ -1120,7 +1125,7 @@ const make = Effect.gen(function* () {
           input.client !== undefined
             ? {
                 clientId: input.client.clientId,
-                clientSecret: Redacted.value(input.client.clientSecret).trim(),
+                clientSecret: secretOf(input.client.clientSecret),
               }
             : previous !== undefined &&
                 (shared === undefined || Redacted.value(shared).clientId !== previous.clientId)
@@ -1137,7 +1142,7 @@ const make = Effect.gen(function* () {
           resource: undefined,
           scope: provider.signIn.scope,
         };
-        client = chosen;
+        client = { clientId: chosen.clientId, clientSecret: chosen.clientSecret };
       } else {
         const stored =
           again === undefined
@@ -1368,7 +1373,7 @@ const make = Effect.gen(function* () {
           : Option.some(
               Redacted.make({
                 clientId: client.clientId,
-                clientSecret: Redacted.value(client.clientSecret).trim(),
+                clientSecret: secretOf(client.clientSecret),
               }),
             ),
       );

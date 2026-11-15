@@ -26,7 +26,7 @@ import type { ListedTool } from "./Pinning.ts";
  * Microsoft's sign-in for work or school accounts in any organization and personal accounts.
  * The owner's app registration is a public client, so the code is redeemed with PKCE alone.
  */
-export const MICROSOFT_SERVER: AuthServer = {
+const MICROSOFT_SERVER: AuthServer = {
   issuer: "https://login.microsoftonline.com/common/v2.0",
   authorizationEndpoint: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
   tokenEndpoint: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
@@ -104,7 +104,7 @@ const MICROSOFT_TOOLS = tools(read, [
     name: MAIL_TOOL.search,
     title: "Search mail",
     description:
-      'Search this Outlook account\'s mail with Outlook search words, for example from:ana@example.com subject:invoice received>=2026-11-01. With several Microsoft accounts, connection microsoft searches them all.',
+      "Search this Outlook account's mail with Outlook search words, for example from:ana@example.com subject:invoice received>=2026-11-01. With several Microsoft accounts, connection microsoft searches them all.",
     inputSchema: {
       type: "object",
       properties: { query: { type: "string" }, max: max(25), pageToken },
@@ -261,8 +261,7 @@ const api = Effect.fn("KinMicrosoft.api")(function* (
   const params = Object.entries(request.params ?? {}).filter(
     (entry): entry is [string, string] => entry[1] !== undefined,
   );
-  if (params.length > 0)
-    built = HttpClientRequest.setUrlParams(built, Object.fromEntries(params));
+  if (params.length > 0) built = HttpClientRequest.setUrlParams(built, Object.fromEntries(params));
   if (request.prefer !== undefined)
     built = HttpClientRequest.setHeader(built, "prefer", request.prefer);
   if (request.json !== undefined) built = HttpClientRequest.bodyJsonUnsafe(built, request.json);
@@ -307,7 +306,9 @@ const pageOr = (args: Readonly<Record<string, unknown>>, first: string) => {
 const addressOf = (recipient: unknown) => text(field(recipient, "emailAddress", "address")) ?? null;
 const nameOf = (recipient: unknown) => {
   const address = addressOf(recipient);
-  const name = text(field(recipient, "emailAddress", "name"))?.replace(/[\r\n"]+/g, " ").trim();
+  const name = text(field(recipient, "emailAddress", "name"))
+    ?.replace(/[\r\n"]+/g, " ")
+    .trim();
   if (address === null) return name ?? null;
   return name === undefined || name === "" || name === address ? address : `${name} <${address}>`;
 };
@@ -327,7 +328,10 @@ const sentByMailbox = (mailbox: Mailbox, message: unknown) => {
   return from !== null && ownAddress(mailbox, from);
 };
 const receivedBy = (mailbox: Mailbox, message: unknown) =>
-  receivedAmong(mailbox, [...recipients(message, "toRecipients"), ...recipients(message, "ccRecipients")]);
+  receivedAmong(mailbox, [
+    ...recipients(message, "toRecipients"),
+    ...recipients(message, "ccRecipients"),
+  ]);
 
 const bodyText = (message: unknown) => {
   const content = text(field(message, "body", "content")) ?? "";
@@ -620,9 +624,7 @@ const microsoftSendAs = Effect.fn("KinMicrosoft.sendAs")(function* (
     const match = /^smtp:(.+)$/i.exec(text(entry) ?? "");
     const address = match?.[1]?.trim();
     // Routing addresses on onmicrosoft.com exist in every tenant but nobody writes from them.
-    return address === undefined ||
-      !isPlainAddress(address) ||
-      /\.onmicrosoft\.com$/i.test(address)
+    return address === undefined || !isPlainAddress(address) || /\.onmicrosoft\.com$/i.test(address)
       ? []
       : [{ address, isDefault: (text(entry) ?? "").startsWith("SMTP:") }];
   });
@@ -796,7 +798,9 @@ const saveEvent = Effect.fn("KinMicrosoft.saveEvent")(function* (
   const saved = yield* api(
     http,
     token,
-    event.eventId === null ? `${base}/events` : `${base}/events/${encodeURIComponent(event.eventId)}`,
+    event.eventId === null
+      ? `${base}/events`
+      : `${base}/events/${encodeURIComponent(event.eventId)}`,
     { method: event.eventId === null ? "POST" : "PATCH", json: body },
   );
   return { messageId: null, threadId: null, eventId: text(field(saved, "id")) ?? event.eventId };
