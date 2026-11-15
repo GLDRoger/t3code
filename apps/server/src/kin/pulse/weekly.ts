@@ -8,14 +8,15 @@ import { playbookThreshold } from "../work/playbooks.ts";
 import {
   countedEntry,
   countedPayment,
-  invoiceDue,
   moneyDay,
+  owedInvoices,
   ownerZone,
 } from "../work/recordRows.ts";
+import * as KinPulse from "./KinPulse.ts";
 import { DAY_MS } from "./thresholds.ts";
 
 export const WEEKLY_RULE =
-  "This is the weekly brief. Lead with the goals and where each stands, then what changed this week, money still to come in, open quotes, renewals ahead, and what needs a decision. Write short headed sections of one or two lines each, not one paragraph. A meeting that already happened is not coming up; a follow-up you set is not a meeting. Ask each decision as one plain question.";
+  "This is the weekly brief. Kin posted the week's figures from these rows in the chat just before your turn: goals, money still to come and overdue, open quotes, renewals this month, cold clients and meetings. Don't retype them. Add your judgement under it in a few short lines: what matters most this week and why, what you would do, and each decision as one plain question. A meeting that already happened is not coming up; a follow-up you set is not a meeting.";
 /** The seeded weekly check-in's schedule (`checkin-<slug>`), which arrives as a pulse event. */
 const WEEKLY_CHECK_IN = "checkin-weekly";
 export const wantsWeekly = (events: ReadonlyArray<KinEvent>) =>
@@ -133,25 +134,8 @@ export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (i
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND ${countedEntry(sql)}
       AND r.state = 'done' AND r.amount_minor IS NOT NULL AND ${moneyDay(sql)} >= ${weekAgo}
     ORDER BY r.key`;
-  const unpaid = yield* sql<{
-    key: string;
-    client: string | null;
-    minor: number;
-    currency: string;
-    paid: number;
-    dueAt: number | null;
-  }>`SELECT r.key, c.title AS client, r.amount_minor AS minor, r.currency,
-      ${invoiceDue(sql)} AS "dueAt",
-      (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
-        WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid
-    FROM kin_records r
-    LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
-    WHERE r.org_id = ${orgId} AND r.register_id = 'invoices' AND ${countedEntry(sql)}
-      AND r.state = 'waiting' AND r.amount_minor IS NOT NULL
-    ORDER BY "dueAt", r.key
-    LIMIT ${CAP}`;
-  const owed = unpaid.filter((one) => one.minor > one.paid);
-  const isOverdue = (one: (typeof owed)[number]) => one.dueAt !== null && one.dueAt < now;
+  const owed = (yield* owedInvoices({ orgId, now })).slice(0, CAP);
+  const isOverdue = (one: (typeof owed)[number]) => one.overdue;
 
   const quotes = yield* sql<{
     key: string;
@@ -229,6 +213,16 @@ export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (i
     ORDER BY r.due_at, r.key
     LIMIT ${CAP}`;
 
+  // Cold and quiet clients as the pulse has them, held ones included: the week is the owner's.
+  const clientFacts = (yield* KinPulse.read({
+    orgId,
+    at: now,
+    viewer: { _tag: "owner" },
+    scope: { family: "work" },
+    includeHandled: true,
+    limit: CAP,
+  })).facts.filter((fact) => fact.sense === "client_cold" || fact.sense === "client_quiet");
+
   return {
     week: `${dayIn(weekAgo, zone)} to ${dayIn(now, zone)}`,
     goals: goals.map(goalLine),
@@ -236,16 +230,14 @@ export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (i
     money: {
       inThisWeek: totals(received),
       outThisWeek: totals(spent),
-      unpaidTotal: totals(
-        owed.map((one) => ({ minor: one.minor - one.paid, currency: one.currency })),
-      ),
+      unpaidTotal: totals(owed.map((one) => one.balance)),
       unpaid: owed.map(
         (one) =>
-          `${one.key}${one.client === null ? "" : ` ${one.client}`}: ${formatMoney({ minor: one.minor - one.paid, currency: one.currency })} ${
+          `${one.key}${one.partyTitle === null ? "" : ` ${one.partyTitle}`}: ${formatMoney(one.balance)} ${
             one.dueAt === null
               ? "unpaid, no due date"
               : isOverdue(one)
-                ? `unpaid, ${Math.floor((now - one.dueAt) / DAY_MS)} days past due`
+                ? `unpaid, ${one.daysOverdue} days past due`
                 : `due ${dayIn(one.dueAt, zone)}`
           }`,
       ),
@@ -269,6 +261,14 @@ export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (i
         .filter((one) => one.at >= now)
         .map((one) => `${when(one.at)} ${one.key} ${one.title}`),
     },
+    clients: {
+      cold: clientFacts
+        .filter((fact) => fact.sense === "client_cold")
+        .map((fact) => `${fact.subject.title}: ${fact.consequence}`),
+      quiet: clientFacts
+        .filter((fact) => fact.sense === "client_quiet")
+        .map((fact) => `${fact.subject.title}: ${fact.consequence}`),
+    },
     people: { overloaded, free },
     nextWeek: next.map(
       (one) =>
@@ -276,3 +276,47 @@ export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (i
     ),
   };
 });
+
+type Week = Effect.Success<ReturnType<typeof buildWeeklySection>>;
+
+/** The week's figures as Kin posts them before the agent's judgement: every section, plain. */
+export const renderWeekly = (week: Week) => {
+  const section = (title: string, lines: ReadonlyArray<string>, empty?: string) =>
+    lines.length === 0
+      ? empty === undefined
+        ? []
+        : [`${title}: ${empty}`]
+      : [`${title}:`, ...lines.map((line) => `- ${line}`)];
+  const overdue = week.money.unpaid.filter((line) => line.includes("past due"));
+  const coming = week.money.unpaid.filter((line) => !line.includes("past due"));
+  return [
+    `The week, ${week.week}, from Kin's records`,
+    ...section("Goals", week.goals, "none set"),
+    ...section(
+      "Money",
+      [
+        week.money.inThisWeek.length === 0
+          ? null
+          : `In this week: ${week.money.inThisWeek.join(", ")}`,
+        week.money.outThisWeek.length === 0
+          ? null
+          : `Out this week: ${week.money.outThisWeek.join(", ")}`,
+        week.money.unpaidTotal.length === 0
+          ? null
+          : `Still to come in: ${week.money.unpaidTotal.join(", ")}`,
+      ].filter((line) => line !== null),
+    ),
+    ...section("Overdue", overdue, "nothing"),
+    ...section("Invoices not yet due", coming),
+    ...section("Open quotes", week.money.openQuotes, "none"),
+    ...section("Renewals this month", week.money.renewalsThisMonth, "none"),
+    ...section("Cold clients", week.clients.cold),
+    ...section("Quiet clients", week.clients.quiet),
+    ...section("Behind", week.projects.behind ?? []),
+    ...section(
+      "Meetings with no outcome noted",
+      week.meetings.lastWeek.filter((line) => line.endsWith("no outcome noted yet")),
+    ),
+    ...section("Coming up", week.meetings.comingUp),
+  ].join("\n");
+};

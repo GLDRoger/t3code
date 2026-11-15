@@ -29,6 +29,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as Statement from "effect/sql/Statement";
 
 import { parseFields } from "./lists.ts";
 import { isBuiltIn } from "./registers.ts";
@@ -196,6 +197,57 @@ export const countedPayment = (sql: SqlClient.SqlClient) =>
  * day. Overdue is past it, the same in the pulse, Money, the client page and every brief.
  */
 export const invoiceDue = (sql: SqlClient.SqlClient) => sql`COALESCE(r.due_at, r.date_at)`;
+
+const DAY = 86_400_000;
+
+/**
+ * Issued invoices still owed, oldest due first: counted, issued (waiting), with an amount and a
+ * balance after payments not taken back. Overdue is past `invoiceDue`. What a client owes, the
+ * Money tab and the weekly brief all read owed money here; the pulse chases on the same rows.
+ */
+export const owedInvoices = Effect.fn("KinRecordRows.owedInvoices")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly now: number;
+  readonly partyId?: string | undefined;
+  /** A viewer filter over `r`, such as `viewSees`; the company's own figures with none. */
+  readonly seen?: Statement.Fragment | undefined;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    recordId: string;
+    key: string;
+    title: string;
+    partyId: string | null;
+    partyKey: string | null;
+    partyTitle: string | null;
+    minor: number;
+    currency: string;
+    paid: number;
+    dueAt: number | null;
+  }>`SELECT r.record_id AS "recordId", r.key, r.title, r.party_id AS "partyId",
+      pa.key AS "partyKey", pa.title AS "partyTitle", r.amount_minor AS minor, r.currency,
+      (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
+        WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid,
+      ${invoiceDue(sql)} AS "dueAt"
+    FROM kin_records r
+    LEFT JOIN kin_records pa ON pa.org_id = r.org_id AND pa.record_id = r.party_id
+    WHERE r.org_id = ${input.orgId} AND r.register_id = 'invoices' AND ${countedEntry(sql)}
+      AND r.state = 'waiting' AND r.amount_minor IS NOT NULL
+      ${input.partyId === undefined ? sql`` : sql`AND r.party_id = ${input.partyId}`}
+      ${input.seen === undefined ? sql`` : sql`AND ${input.seen}`}
+    ORDER BY r.due_at, r.key`;
+  return rows
+    .map((row) => {
+      const overdue = row.dueAt !== null && row.dueAt < input.now;
+      return {
+        ...row,
+        balance: { minor: row.minor - row.paid, currency: row.currency },
+        overdue,
+        daysOverdue: overdue ? Math.floor((input.now - row.dueAt!) / DAY) : 0,
+      };
+    })
+    .filter((row) => row.balance.minor > 0);
+});
 
 /** Payment days written in a client's terms, such as "Net 30" or "15 days"; undefined if none. */
 export const termsDays = (terms: string | null | undefined) => {

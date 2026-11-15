@@ -71,6 +71,7 @@ const credential = Effect.fn("MemoryConfig.credential")(function* (
 
 export const layer = (
   repositories: ReadonlyArray<{ readonly orgId: KinOrgId; readonly repoUrl: string }>,
+  options: { readonly directMainPush?: boolean } = {},
 ) =>
   Layer.effect(
     MemoryConfig,
@@ -83,9 +84,9 @@ export const layer = (
         isCredentialHelperReference,
       );
       const sshCommand = yield* credential("KIN_MEMORY_SSH_COMMAND", isSshCommandReference);
-      const directMainPush = yield* Config.Boolean("KIN_MEMORY_DIRECT_PUSH").pipe(
-        Config.withDefault(false),
-      );
+      const directMainPush =
+        options.directMainPush ??
+        (yield* Config.Boolean("KIN_MEMORY_DIRECT_PUSH").pipe(Config.withDefault(false)));
       const configured = yield* Effect.forEach(repositories, (repo) =>
         Effect.gen(function* () {
           const githubRepo = githubRepoOf(repo.repoUrl);

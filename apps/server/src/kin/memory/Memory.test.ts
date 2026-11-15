@@ -21,6 +21,7 @@ import * as Chat from "../chat/KinChatRepository.ts";
 import { KinLeadPrompt } from "../lead/LeadPrompt.ts";
 import * as MemoryCache from "./MemoryCache.ts";
 import * as MemoryConfig from "./MemoryConfig.ts";
+import { devMemoryRepository } from "./devMemory.ts";
 import * as ServerConfig from "../../config.ts";
 import { fixtureItem } from "./__fixtures__/items.ts";
 import { fakeRepository } from "./__fixtures__/repository.ts";
@@ -697,6 +698,49 @@ it.effect.each([
       ServerConfig.ServerConfig.layerTest(process.cwd(), { prefix: "kin-memory-config-" }).pipe(
         Layer.provideMerge(NodeServices.layer),
       ),
+    ),
+  ),
+);
+
+it.live("a dev server with no memory repository set makes a seeded local one, once", () =>
+  Effect.gen(function* () {
+    const vcs = yield* VcsProcess.VcsProcess;
+    const installed = yield* devMemoryRepository();
+    assert.isUndefined(installed);
+    const asDev = Effect.provideService(ServerConfig.ServerConfig, {
+      ...(yield* ServerConfig.ServerConfig),
+      devUrl: new URL("http://localhost:5733"),
+    });
+    const first = yield* devMemoryRepository().pipe(asDev);
+    const repo = first![0].repoUrl;
+    const head = () =>
+      vcs
+        .run({
+          operation: "test.devMemory",
+          command: "git",
+          cwd: "/",
+          args: [`--git-dir=${repo}`, "rev-parse", "main"],
+        })
+        .pipe(Effect.map((result) => result.stdout.trim()));
+    const seeded = yield* head();
+    const rules = yield* vcs.run({
+      operation: "test.devMemory",
+      command: "git",
+      cwd: "/",
+      args: [`--git-dir=${repo}`, "show", "main:rules.md"],
+    });
+    expect(rules.stdout).toBe("# Rules\n");
+    expect(first).toStrictEqual([{ orgId: KinOrgId.make("kin-default"), repoUrl: repo }]);
+    // A restart keeps what memory wrote: the repo and its branch stay as they are.
+    expect(yield* devMemoryRepository().pipe(asDev)).toStrictEqual(first);
+    expect(yield* head()).toBe(seeded);
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(
+      Layer.mergeAll(
+        ServerConfig.ServerConfig.layerTest(process.cwd(), { prefix: "kin-dev-memory-" }),
+        gitLayer,
+      ).pipe(Layer.provideMerge(NodeServices.layer)),
     ),
   ),
 );

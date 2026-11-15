@@ -490,6 +490,57 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             yield* sql`SELECT state FROM kin_connection_asks WHERE entry_record_id = 'rec_inv'`,
             [{ state: "sent" }],
           );
+
+          // Every account sends on a Confirm, and what went out reads back: who, which account,
+          // which thread, which document, with the file as the mailbox holds it.
+          const gmailSent = fake.sent()[0]!;
+          const after = yield* connections.tools(scope, {});
+          for (const one of after.connections ?? [])
+            assert.includeMembers([...(one.withConfirm ?? [])], ["mail_send", "mail_reply"]);
+          assert.deepInclude(after.recentlySent?.[0], {
+            account: ACCOUNTS,
+            from: ACCOUNTS,
+            to: ["ravi@lumen.example"],
+            threadId: gmailSent.threadId,
+            reply: false,
+            documents: ["Invoice INV/26-27/001 (INV-26-27-001.pdf)"],
+          });
+          const gmailThread = yield* callTool(ACCOUNTS, "mail_read_thread", {
+            threadId: gmailSent.threadId,
+          });
+          assert.include(gmailThread.quoted ?? "", "INV-26-27-001.pdf");
+          assert.include(gmailThread.quoted ?? "", "application/pdf");
+
+          // From Outlook too, and its reminder later replies in that same thread.
+          yield* callTool(HELLO, "mail_send", {
+            to: ["ravi@lumen.example"],
+            subject: "Invoice INV/26-27/001",
+            body: "Hi Ravi,\n\nThe invoice again, from our other address.\n\nArjun",
+            attachments: ["INV-1"],
+          });
+          assert.deepStrictEqual(yield* tap(cards.at(-1)!.widgetId, owner), {
+            state: "sent",
+            reason: null,
+          });
+          const outlookSent = fake.sent()[1]!;
+          assert.deepInclude(outlookSent, { account: HELLO, attachments: ["INV-26-27-001.pdf"] });
+          const outlookThread = yield* callTool(HELLO, "mail_read_thread", {
+            threadId: outlookSent.threadId,
+          });
+          assert.include(outlookThread.quoted ?? "", "INV-26-27-001.pdf");
+          const searched = yield* callTool(HELLO, "mail_search", { query: "INV/26-27/001" });
+          assert.include(searched.quoted ?? "", outlookSent.threadId);
+          const latest = (yield* connections.tools(scope, {})).recentlySent?.[0];
+          assert.deepInclude(latest, { account: HELLO, threadId: outlookSent.threadId });
+          yield* callTool(HELLO, "mail_reply", {
+            threadId: latest!.threadId,
+            body: "A gentle reminder that this invoice is now due.",
+          });
+          assert.deepStrictEqual(yield* tap(cards.at(-1)!.widgetId, owner), {
+            state: "sent",
+            reason: null,
+          });
+          assert.deepInclude(fake.sent()[2], { account: HELLO, threadId: outlookSent.threadId });
         }),
       ),
   );

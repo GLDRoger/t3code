@@ -740,9 +740,23 @@ const sendMessage = Effect.fn("KinMicrosoft.sendMessage")(function* (
   token: string,
   message: { readonly raw: string; readonly threadId: string | null },
 ) {
+  // A new mail goes as a draft first, so its conversation is known for a later reply in it.
   if (message.threadId === null) {
-    yield* api(http, token, `${GRAPH}/sendMail`, { method: "POST", mime: message.raw });
-    return { messageId: null, threadId: null, eventId: null };
+    const draft = yield* api(http, token, `${GRAPH}/messages`, {
+      method: "POST",
+      mime: message.raw,
+    });
+    const id = text(field(draft, "id"));
+    if (id === undefined)
+      return yield* failure("protocol", "Microsoft didn't keep the mail to send.");
+    yield* api(http, token, `${GRAPH}/messages/${encodeURIComponent(id)}/send`, {
+      method: "POST",
+    });
+    return {
+      messageId: null,
+      threadId: text(field(draft, "conversationId")) ?? null,
+      eventId: null,
+    };
   }
   const answered = inReplyToOf(message.raw);
   const found =
