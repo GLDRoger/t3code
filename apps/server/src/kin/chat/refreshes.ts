@@ -24,7 +24,8 @@ const same = (a: KinRefreshes, b: KinRefreshes) =>
   a.timeZone === b.timeZone &&
   a.visualHosts === b.visualHosts &&
   a.workChoices === b.workChoices &&
-  a.moneyBudgets === b.moneyBudgets;
+  a.moneyBudgets === b.moneyBudgets &&
+  a.connections === b.connections;
 
 /**
  * The revisions this viewer may see. The owner reads every topic. A teammate reads only the time

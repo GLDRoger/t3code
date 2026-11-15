@@ -39,6 +39,7 @@ import { KinPushRpcs, KIN_PUSH_RPC_SCOPES } from "./kinPush.ts";
 import { KinPeopleRpcs, KIN_PEOPLE_RPC_SCOPES } from "./kinPeople.ts";
 import { KinVisualRpcs, KIN_VISUAL_RPC_SCOPES } from "./kinVisual.ts";
 import { KinWorkerNetworkRpcs, KIN_WORKER_NETWORK_RPC_SCOPES } from "./kinWorkerNetwork.ts";
+import { KinConnectionRpcs, KIN_CONNECTION_RPC_SCOPES } from "./kinConnections.ts";
 import {
   KinGithubWebhookOrgInput,
   KinGithubWebhookSecretInput,
@@ -185,6 +186,7 @@ export const KinRpcs = [
   ...KinPushRpcs,
   ...KinPeopleRpcs,
   ...KinWorkerNetworkRpcs,
+  ...KinConnectionRpcs,
   ...KinRefreshRpcs,
 ] as const;
 export const KIN_RPC_SCOPES = {
@@ -200,6 +202,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_PEOPLE_RPC_SCOPES,
   ...KIN_VISUAL_RPC_SCOPES,
   ...KIN_WORKER_NETWORK_RPC_SCOPES,
+  ...KIN_CONNECTION_RPC_SCOPES,
   ...KIN_REFRESH_RPC_SCOPES,
   "kin.budget.get": AuthOrchestrationReadScope,
   "kin.budget.set": AuthSettingsWriteScope,
@@ -377,4 +380,14 @@ export const KIN_RPC_AGGREGATES = {
   "kin.workers.network.get": "kin-workers",
   "kin.workers.network.allow": "kin-workers",
   "kin.workers.network.remove": "kin-workers",
+  "kin.connections.list": "kin-connections",
+  "kin.connections.get": "kin-connections",
+  "kin.connections.add": "kin-connections",
+  "kin.connections.setKey": "kin-connections",
+  "kin.connections.refreshTools": "kin-connections",
+  "kin.connections.setToolModes": "kin-connections",
+  "kin.connections.acceptToolChanges": "kin-connections",
+  "kin.connections.setReach": "kin-connections",
+  "kin.connections.remove": "kin-connections",
+  "kin.connections.calls": "kin-connections",
 } as const;

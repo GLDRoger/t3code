@@ -58,6 +58,7 @@ import { KinStatementToolkit } from "../../apps/server/src/kin/work/mcp/statemen
 import { KinWorkToolkit } from "../../apps/server/src/kin/work/mcp/tools.ts";
 import { KinDocsToolkit } from "../../apps/server/src/kin/work/mcp/docTools.ts";
 import { KinDocumentToolkit } from "../../apps/server/src/kin/gendocs/mcp.ts";
+import { KinConnectionsToolkit } from "../../apps/server/src/kin/connections/mcp.ts";
 import { WITHDRAWN_WORK, WORK_RULE } from "../../apps/server/src/kin/work/workPrompt.ts";
 import { OWNER_DECLINED, WAITING_FOR_OWNER } from "../../apps/server/src/kin/lead/workerBrief.ts";
 import { SHARED_TURN_LINE } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
@@ -455,6 +456,7 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   KinStatementToolkit,
   KinDocsToolkit,
   KinDocumentToolkit,
+  KinConnectionsToolkit,
 ].flatMap((toolkit): ReadonlyArray<Tool.Any> => Object.values(toolkit.tools));
 // McpHttpServer decodes arguments with each tool's JSON codec, which drops undeclared keys.
 const t3InputDecoders = new Map(
