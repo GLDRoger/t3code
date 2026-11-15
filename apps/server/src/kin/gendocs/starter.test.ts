@@ -54,6 +54,7 @@ const computeInvoice = (given: Readonly<Record<string, Value>>) => {
     };
     readonly words: string;
     readonly issuedText: string;
+    readonly lutText: string | null;
   };
 };
 
@@ -115,6 +116,17 @@ describe("invoice", () => {
     }
     const exported = computeInvoice({ ...base, clientPlace: "United States" }).tax;
     assert.deepStrictEqual([exported.exportUnderLut, exported.country], [true, "United States"]);
+    // The LUT it goes under is the company's own, printed as stored, never made up.
+    const lut = computeInvoice({
+      ...base,
+      clientPlace: "United States",
+      lutNumber: "AD2904260012345",
+      lutDate: "2026-04-01",
+    });
+    assert.deepStrictEqual(
+      [lut.lutText, computeInvoice({ ...base, clientPlace: "United States" }).lutText],
+      ["1 Apr 2026", null],
+    );
     const paid = computeInvoice({ ...base, clientPlace: "United States", exportUnderLut: false });
     assert.deepStrictEqual(
       paid.tax.taxes.map((line) => [line.name, line.amount.text]),

@@ -233,6 +233,8 @@ export const GetResult = Schema.Struct({
         amount: Schema.String,
         paidOn: Schema.String,
         note: Schema.optional(Schema.String),
+        /** TDS the client deducted: it settles the invoice, but no cash came in. */
+        withheld: Schema.optional(Schema.Literal(true)),
         voided: Schema.optional(Schema.Literal(true)),
       }),
     ),
@@ -952,6 +954,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
             amount: formatMoney(payment.amount),
             paidOn: payment.paidOn,
             ...(payment.note === "" ? {} : { note: payment.note }),
+            ...(payment.withheld === true ? { withheld: true as const } : {}),
             ...(payment.voidedAt === null ? {} : { voided: true as const }),
           })),
         }),

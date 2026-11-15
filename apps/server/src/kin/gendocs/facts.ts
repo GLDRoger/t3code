@@ -9,6 +9,8 @@ import { KinRecords } from "../work/KinRecords.ts";
 import { type FieldValues, parseFields } from "../work/lists.ts";
 import { dayIn } from "../work/money.ts";
 import {
+  countedEntry,
+  countedPayment,
   fromImport,
   moneyDay,
   notedReceiptNumbers,
@@ -168,7 +170,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
         JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
         LEFT JOIN kin_records p2 ON p2.org_id = r.org_id AND p2.record_id = r.party_id
         LEFT JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
-        WHERE p.org_id = ${orgId} AND p.voided_at IS NULL AND r.state <> 'dropped'
+        WHERE p.org_id = ${orgId} AND ${countedPayment(sql)}
           AND r.register_id IN ('invoices', 'receipts')
           AND p.withheld = ${source.tds ? 1 : 0} AND substr(p.paid_on, 1, 7) = ${month}
         ORDER BY p.paid_on, p.payment_id LIMIT ${MAX_ROWS}`;
@@ -227,7 +229,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
       FROM kin_records r
       LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.party_id
       LEFT JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
-      WHERE r.org_id = ${orgId} AND r.register_id = ${list.id}
+      WHERE r.org_id = ${orgId} AND r.register_id = ${list.id} AND ${countedEntry(sql)}
         AND ${moneyDay(sql)} >= ${start} AND ${moneyDay(sql)} < ${end}
         ${input.states === undefined ? sql`` : sql`AND r.state IN ${sql.in([...input.states])}`}
       ORDER BY "dateAt", r.key LIMIT ${MAX_ROWS * 2}`;

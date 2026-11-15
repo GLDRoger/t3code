@@ -81,7 +81,7 @@ export const KinWorkToolkit = Toolkit.make(
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("payment_record", {
     ...shared,
-    description: `Record money received against an invoice (INV-4): amount as said, in the invoice's currency, and paidOn, the day it came in. A part payment leaves the rest owed; paying the balance marks it paid. It refuses more than is owed. void with a paymentId from record_get takes a wrong one back. Returns the amount, what has been received and the balance, exact. Pass this turn's sourceEventId; a retry records nothing more. Reply in one line.`,
+    description: `Record money received against an invoice (INV-4): amount as said, in the invoice's currency, and paidOn, the day it came in. TDS the client deducted goes in withheld, never in amount: it settles the invoice but is not cash received. A part payment leaves the rest owed; paying the balance marks it paid. It refuses more than is owed. void with a paymentId from record_get takes a wrong one back. Returns the amount, what has been received and the balance, exact. Pass this turn's sourceEventId; a retry records nothing more. Reply in one line.`,
     parameters: Money.PaymentInput,
     success: Money.PaymentResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

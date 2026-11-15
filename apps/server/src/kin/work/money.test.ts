@@ -975,6 +975,76 @@ describe("invoices", () => {
           reason: "not_allowed",
         });
       assert.strictEqual((yield* records.pay(orgId, system, "INV-1", once)).row.paid, 6_000_100);
+
+      // F20: "paid ₹1,00,000, deducted ₹18,000 TDS" is one settlement: cash, and tax withheld.
+      yield* LeadWork.create(scope, {
+        sourceEventId: overpaid,
+        records: [
+          {
+            list: "invoices",
+            title: "Invented November retainer",
+            client: "Invented Acme",
+            amount: "1,18,000",
+          },
+        ],
+      });
+      const unsettled = yield* OwnerMoney.money(people, { orgId });
+      const tds = {
+        sourceEventId: overpaid,
+        key: "INV-2",
+        amount: "1,00,000",
+        withheld: "18,000",
+        paidOn: "2026-11-09",
+      };
+      const settled = yield* LeadMoney.payment(scope, tds);
+      assert.deepStrictEqual(
+        [settled.received, settled.tdsWithheld, settled.balance, settled.state],
+        ["₹1,00,000.00", "₹18,000.00", "₹0.00", "done"],
+      );
+      const retried = yield* LeadMoney.payment(scope, tds);
+      assert.deepStrictEqual(
+        [retried.paymentId, retried.tdsPaymentId],
+        [settled.paymentId, settled.tdsPaymentId],
+      );
+
+      const settledMoney = yield* OwnerMoney.money(people, { orgId });
+      const minor = (money: ReadonlyArray<{ readonly minor: number }>) => money[0]?.minor ?? 0;
+      assert.deepStrictEqual(
+        [
+          minor(settledMoney.received.thisMonth) - minor(unsettled.received.thisMonth),
+          settledMoney.tdsDeducted?.thisMonth,
+        ],
+        [10_000_000, [{ minor: 1_800_000, currency: "INR" }]],
+      );
+      // More than is owed records neither part.
+      yield* LeadWork.create(scope, {
+        sourceEventId: overpaid,
+        records: [
+          { list: "invoices", title: "Invented extra", client: "Invented Acme", amount: "1,000" },
+        ],
+      });
+      yield* LeadMoney.payment(scope, {
+        ...tds,
+        key: "INV-3",
+        amount: "900",
+        withheld: "101",
+      }).pipe(Effect.flip);
+      assert.strictEqual((yield* records.get(orgId, "INV-3"))!.paid, 0);
+      // Review 45: ₹900 and ₹100 TDS, retried as ₹900 and ₹101, is refused: TDS stays ₹100.
+      yield* LeadWork.create(scope, {
+        sourceEventId: overpaid,
+        records: [
+          { list: "invoices", title: "Invented part", client: "Invented Acme", amount: "2,000" },
+        ],
+      });
+      const part = { ...tds, key: "INV-4", amount: "900", withheld: "100" };
+      yield* LeadMoney.payment(scope, part);
+      for (const changed of [{ withheld: "101" }, { amount: "901" }, { withheld: undefined }])
+        assert.include(yield* LeadMoney.payment(scope, { ...part, ...changed }).pipe(Effect.flip), {
+          reason: "not_allowed",
+        });
+      const parted = (yield* records.get(orgId, "INV-4"))!;
+      assert.deepStrictEqual([parted.paid, parted.withheld], [100_000, 10_000]);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -1077,6 +1147,33 @@ describe("invoices", () => {
         const records = yield* KinRecords.KinRecords;
         const row = yield* records.get(orgId, "INV-5");
         assert.include(row!.fieldsJson, "INV/27-28/001");
+        // F22: dated before one issued already, it still takes the next number, and says so.
+        yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [
+            {
+              list: "invoices",
+              title: "Invented March work",
+              client: "Invented Acme",
+              amount: "1 lakh",
+              state: "open",
+              date: "2027-03-20",
+            },
+          ],
+        });
+        const backdated = yield* OwnerMoney.issue(people, { orgId, key: "INV-6" });
+        const notice =
+          "INV/27-28/002 is dated 20 Mar 2027, before INV/27-28/001 (1 Apr 2027), which was issued first: its number comes after entries dated later.";
+        assert.deepStrictEqual([backdated.number, backdated.notice], ["INV/27-28/002", notice]);
+        assert.strictEqual((yield* records.get(orgId, "INV-6"))!.notes, notice);
+        // Kin's own words, written as Kin's: not the owner's, whatever the list calls its entries.
+        const sql = yield* SqlClient.SqlClient;
+        assert.deepStrictEqual(
+          yield* sql`SELECT c.actor_kind AS kind FROM kin_record_changes c
+            JOIN kin_records r ON r.org_id = c.org_id AND r.record_id = c.record_id
+            WHERE r.org_id = ${orgId} AND r.key = 'INV-6' AND c.fields_json LIKE '%"notes"%'`,
+          [{ kind: "system" }],
+        );
       }).pipe(Effect.provide(layer)),
   );
 });
@@ -1522,6 +1619,14 @@ describe("the owner's taps", () => {
       assert.strictEqual(plain.categoryLabels, undefined);
       // A preset's label cleared stays cleared.
       yield* defined(7, { template: "dates" });
+      // F53: a renewal created with its fee keeps it.
+      const renewal = yield* turn(70, "Domain renewal on 3 Jan, ₹1,299");
+      yield* LeadWork.create(scope, {
+        sourceEventId: renewal,
+        records: [{ list: "dates", title: "Domain renewal", date: "2027-01-03", amount: "₹1,299" }],
+      });
+      const renewed = yield* (yield* KinRecords.KinRecords).get(orgId, "DT-1");
+      assert.deepStrictEqual([renewed?.amountMinor, renewed?.currency], [129_900, "INR"]);
       const dates = () =>
         OwnerMoney.lists(people, { orgId }).pipe(
           Effect.map((all) => all.lists.find((one) => one.list === "dates")!),
@@ -1633,6 +1738,8 @@ describe("the company profile", () => {
       // A lead's set writes nothing: it shows the owner the exact change, old beside new.
       const change = {
         pan: "ABCDE1234F",
+        lutNumber: "AD2904260012345",
+        lutDate: "2026-04-01",
         bank: { accountNumber: "1234567890", ifsc: "ABCD0123456" },
       };
       const proposed = yield* LeadMoney.profile(scope, { sourceEventId: asked, set: change });
@@ -1640,6 +1747,8 @@ describe("the company profile", () => {
       assert.deepStrictEqual(proposed.proposed, [
         "Bank account number: none → 1234567890",
         "PAN: none → ABCDE1234F",
+        "LUT number: none → AD2904260012345",
+        "LUT date: none → 2026-04-01",
       ]);
       const unchanged = yield* OwnerMoney.companyProfile(people, { orgId });
       assert.deepStrictEqual([unchanged.pan, unchanged.rev], [null, 1]);
@@ -1664,6 +1773,7 @@ describe("the company profile", () => {
         [after.legalName, after.pan, after.bank.accountNumber, after.bank.ifsc, after.rev],
         ["Invented Private Limited", "ABCDE1234F", "1234567890", "ABCD0123456", 2],
       );
+      assert.deepStrictEqual([after.lutNumber, after.lutDate], ["AD2904260012345", "2026-04-01"]);
       assert.include(yield* Effect.flip(answer(ownerId, true)), { reason: "widget_changed" });
 
       // Cancel changes nothing, and a card made before another change is refused, not merged.

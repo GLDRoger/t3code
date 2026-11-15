@@ -328,6 +328,8 @@ export const KinDocRenderInput = Schema.Struct({
   entry: Schema.optional(KinRecordKey),
   /** Only the recipe's inputs that aren't read from stored rows, such as `month`. */
   inputs: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  /** A doc whose text the recipe lays out, such as a PRD as a PDF with `report`. */
+  doc: Schema.optional(KinRecordKey),
   title: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(120))),
   preview: Schema.optional(Schema.Boolean),
   /** The same id again returns what that request made. */

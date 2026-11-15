@@ -2,13 +2,16 @@ import {
   KinChatError,
   KinCompanyBank,
   KinCompanyBrand,
+  KinCompanyProfileSetInput,
   KinDay,
   KinGstin,
   KinListFieldType,
   KinListId,
+  type KinMoney,
   KinRecordKey,
   KinChatId,
   KinRecordState,
+  KinSacCode,
   KinWakeupId,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
@@ -128,7 +131,7 @@ export const DefineInput = Schema.Struct({
     description: "A proposal this tool returned in an earlier turn: creates exactly that.",
   }),
   template: Schema.optional(Schema.Literals(PRESET_IDS)).annotate({
-    description: "Start from Kin's expenses, invoices or dates list.",
+    description: "Start from Kin's expenses, invoices, dates, receipts or quotes list.",
   }),
   list: Schema.optional(KinListId).annotate({
     description: "An existing defined list to add fields, choices or categories to.",
@@ -285,7 +288,11 @@ export const PaymentInput = Schema.Struct({
   key: KinRecordKey.annotate({ description: "The invoice, such as INV-4." }),
   amount: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(60))).annotate({
     description:
-      'What was received, as said: "1,20,000" or "1.2 lakh". In the invoice\'s currency.',
+      'The cash that came in, as said: "1,20,000" or "1.2 lakh". In the invoice\'s currency.',
+  }),
+  withheld: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(60))).annotate({
+    description:
+      'TDS the client deducted, as said, such as "18,000": it settles the invoice but is not cash received.',
   }),
   paidOn: Schema.optional(KinDay).annotate({
     description: "The day it was received, in the owner's time zone.",
@@ -299,9 +306,12 @@ export const PaymentResult = Schema.Struct({
   key: Schema.String,
   state: Schema.String,
   amount: Schema.String,
+  /** Cash received only; TDS the client deducted is `tdsWithheld`. */
   received: Schema.String,
+  tdsWithheld: Schema.optional(Schema.String),
   balance: Schema.String,
   paymentId: Schema.optional(Schema.String),
+  tdsPaymentId: Schema.optional(Schema.String),
   sensitive: Schema.Literal(true),
 });
 
@@ -313,19 +323,61 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
   const before = yield* records.get(lead.orgId, input.key);
   if (before === undefined) return yield* notFound(input.key);
   let paymentId: string | undefined;
+  let tdsPaymentId: string | undefined;
   if (input.void !== undefined) {
     yield* records.voidPayment(lead.orgId, writer, input.key, input.void);
   } else {
-    if (input.amount === undefined || input.paidOn === undefined)
-      return yield* invalid("A payment needs amount and paidOn, or void to take one back.");
-    const parsed = parseAmount(input.amount, before.currency ?? "INR");
-    if ("error" in parsed) return yield* parsed.error;
-    paymentId = (yield* records.pay(lead.orgId, writer, input.key, {
-      amount: parsed.money,
-      paidOn: input.paidOn,
-      ...(input.note === undefined ? {} : { note: input.note }),
-      originKey: `lead:${lead.agentId}:${input.sourceEventId}:${retryKey(`${input.key}|${parsed.money.minor}|${input.paidOn}`)}`,
-    })).paymentId;
+    const paidOn = input.paidOn;
+    if ((input.amount === undefined && input.withheld === undefined) || paidOn === undefined)
+      return yield* invalid(
+        "A payment needs amount (cash received), withheld (TDS) or both, and paidOn; or void to take one back.",
+      );
+    const parsed = (text: string | undefined) => {
+      if (text === undefined) return Effect.undefined;
+      const one = parseAmount(text, before.currency ?? "INR");
+      return "error" in one ? Effect.fail(one.error) : Effect.succeed(one.money);
+    };
+    const cash = yield* parsed(input.amount);
+    const tds = yield* parsed(input.withheld);
+    // One settlement per owner message, entry and day, whatever its parts: a retry finds it.
+    const settlement = `lead:${lead.agentId}:${input.sourceEventId}:${retryKey(`${input.key}|settlement|${paidOn}`)}`;
+    const sql = yield* SqlClient.SqlClient;
+    // The cash and the tax withheld are recorded together or not at all.
+    const settled = yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const earlier = yield* sql<{ part: string; minor: number; note: string }>`SELECT
+            substr(origin_key, ${settlement.length + 2}) AS part, amount_minor AS minor, note
+          FROM kin_record_payments
+          WHERE org_id = ${lead.orgId} AND origin_key IN (${`${settlement}:cash`},
+            ${`${settlement}:tds`})
+          ORDER BY origin_key`;
+        const was = (part: string) => earlier.find((one) => one.part === part);
+        const same = (part: string, money: KinMoney | undefined) =>
+          money === undefined
+            ? was(part) === undefined
+            : was(part)?.minor === money.minor && was(part)?.note === (input.note ?? "");
+        if (earlier.length > 0 && !(same("cash", cash) && same("tds", tds)))
+          return yield* new KinChatError({
+            reason: "not_allowed",
+            message: `This message already recorded a different payment on ${before.key} for ${paidOn}. Nothing was recorded. To correct it, void the earlier payment and record the right one from the owner's next message.`,
+          });
+        const one = (money: KinMoney | undefined, withheld: boolean) =>
+          money === undefined
+            ? Effect.undefined
+            : records
+                .pay(lead.orgId, writer, input.key, {
+                  amount: money,
+                  paidOn,
+                  ...(input.note === undefined ? {} : { note: input.note }),
+                  ...(withheld ? { withheld: true } : {}),
+                  originKey: `${settlement}:${withheld ? "tds" : "cash"}`,
+                })
+                .pipe(Effect.map((paid) => paid.paymentId));
+        return { cash: yield* one(cash, false), tds: yield* one(tds, true) };
+      }),
+    );
+    paymentId = settled.cash ?? settled.tds;
+    tdsPaymentId = settled.tds;
   }
   const after = yield* records.get(lead.orgId, input.key);
   if (after === undefined) return yield* notFound(input.key);
@@ -335,9 +387,13 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
     key: after.key,
     state: after.state,
     amount: formatMoney({ minor: amount, currency }),
-    received: formatMoney({ minor: after.paid, currency }),
+    received: formatMoney({ minor: after.paid - after.withheld, currency }),
+    ...(after.withheld === 0
+      ? {}
+      : { tdsWithheld: formatMoney({ minor: after.withheld, currency }) }),
     balance: formatMoney({ minor: Math.max(amount - after.paid, 0), currency }),
     ...(paymentId === undefined ? {} : { paymentId }),
+    ...(tdsPaymentId === undefined ? {} : { tdsPaymentId }),
     sensitive: true as const,
   };
 });
@@ -548,7 +604,9 @@ export const ProfileInput = Schema.Struct({
         Schema.NullOr(Schema.String.check(Schema.isPattern(/^[A-Z]{5}\d{4}[A-Z]$/))),
       ),
       placeOfSupply: Schema.optional(ProfileText),
-      sac: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isPattern(/^\d{4,8}$/)))),
+      sac: Schema.optional(Schema.NullOr(KinSacCode)),
+      lutNumber: KinCompanyProfileSetInput.fields.lutNumber,
+      lutDate: KinCompanyProfileSetInput.fields.lutDate,
       bank: Schema.optional(
         Schema.Struct({
           accountName: Schema.optional(KinCompanyBank.fields.accountName),
