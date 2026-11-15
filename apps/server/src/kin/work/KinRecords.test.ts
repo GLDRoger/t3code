@@ -48,7 +48,12 @@ import * as KinRecords from "./KinRecords.ts";
 import * as LeadMoney from "./leadMoney.ts";
 import * as LeadWork from "./leadWork.ts";
 import { KinWorkToolkit } from "./mcp/tools.ts";
+import * as Docs from "./docs.ts";
+import * as OwnerClients from "./ownerClients.ts";
+import * as OwnerDocs from "./ownerDocs.ts";
+import * as OwnerMoney from "./ownerMoney.ts";
 import * as OwnerWork from "./ownerWork.ts";
+import { PRESETS } from "./registers.ts";
 import { buildWorkSection } from "./workPrompt.ts";
 
 // Invented org, people and work only; nothing here reads a real database or memory.
@@ -405,67 +410,77 @@ it.effect("work given away with no stored owner assigner is recorded and wakes n
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("a turn others read gets only Work's tasks, and a member reaches only task RPCs", () =>
-  Effect.gen(function* () {
-    yield* seed;
-    yield* turn("mate", "shared");
-    const shared = { orgId, agentId: lead, wakeupId: "wake" };
-    // Tasks are read and changed at the teammate's view, and contact logged; lists, money and a
-    // client's whole read stay the owner's.
-    const view = new Set([
-      "records_query",
-      "record_get",
-      "record_create",
-      "record_update",
-      "record_hand_back",
-      "touch_log",
-    ]);
-    assert.lengthOf(Object.keys(KinWorkToolkit.tools), 15);
-    for (const tool of Object.keys(KinWorkToolkit.tools))
-      assert.strictEqual(yield* sharedToolAllowed(shared, tool, {}), view.has(tool), tool);
-    // Only the owner names who else holds a task.
-    assert.include(
-      yield* Effect.flip(
-        LeadWork.create(scopeOf(lead), { sourceEventId: "ask-event", records: steps }),
-      ),
-      { reason: "not_allowed" },
-    );
-    // The services check again, so a turn that became shared since the gate is refused too.
-    const refused = [
-      yield* Effect.flip(
-        LeadMoney.define(scopeOf(lead), { sourceEventId: "ask-event", template: "expenses" }),
-      ),
-      yield* Effect.flip(
-        LeadMoney.payment(scopeOf(lead), {
-          sourceEventId: "ask-event",
-          key: "INV-1",
-          amount: "100",
-          paidOn: "2026-11-11",
-        }),
-      ),
-      yield* Effect.flip(LeadMoney.profile(scopeOf(lead), {})),
-    ];
-    for (const error of refused) assert.include(error, { reason: "not_allowed" });
-    // Every Work method declares whether a member reaches it: tasks do, and the service shows
-    // them only their view; clients, lists, money and the profile are owner-level.
-    const teammate = new Set([
-      "kin.work.summary",
-      "kin.work.list",
-      "kin.work.get",
-      "kin.work.subscribe",
-      "kin.work.create",
-      "kin.work.assign",
-      "kin.work.handBack",
-      "kin.work.update",
-    ]);
-    const methods = [
-      ...Object.values(KIN_WORK_WS_METHODS),
-      ...KinFinanceRpcs.map((rpc) => rpc._tag),
-    ];
-    assert.lengthOf(methods, 39);
-    for (const method of methods)
-      assert.strictEqual(kinRpcAccess(method) === "person", teammate.has(method), method);
-  }).pipe(Effect.provide(layer)),
+it.effect(
+  "a turn others read gets only what they all see, and a member reaches only their reads",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* turn("mate", "shared");
+      const shared = { orgId, agentId: lead, wakeupId: "wake" };
+      // Read and changed at the teammate's view, and contact logged; defining lists, payments and
+      // the profile stay the owner's.
+      const view = new Set([
+        "records_query",
+        "record_get",
+        "record_create",
+        "record_update",
+        "record_hand_back",
+        "money_summary",
+        "dates_query",
+        "touch_log",
+      ]);
+      assert.lengthOf(Object.keys(KinWorkToolkit.tools), 15);
+      for (const tool of Object.keys(KinWorkToolkit.tools))
+        assert.strictEqual(yield* sharedToolAllowed(shared, tool, {}), view.has(tool), tool);
+      // Only the owner names who else holds a task.
+      assert.include(
+        yield* Effect.flip(
+          LeadWork.create(scopeOf(lead), { sourceEventId: "ask-event", records: steps }),
+        ),
+        { reason: "not_allowed" },
+      );
+      // The services check again, so a turn that became shared since the gate is refused too.
+      const refused = [
+        yield* Effect.flip(
+          LeadMoney.define(scopeOf(lead), { sourceEventId: "ask-event", template: "expenses" }),
+        ),
+        yield* Effect.flip(
+          LeadMoney.payment(scopeOf(lead), {
+            sourceEventId: "ask-event",
+            key: "INV-1",
+            amount: "100",
+            paidOn: "2026-11-11",
+          }),
+        ),
+        yield* Effect.flip(LeadMoney.profile(scopeOf(lead), {})),
+      ];
+      for (const error of refused) assert.include(error, { reason: "not_allowed" });
+      // Every Work method declares whether a member reaches it: tasks, and the Clients and Money
+      // reads, where the service shows them only their view; every other write is owner-level.
+      const teammate = new Set([
+        "kin.work.parties",
+        "kin.work.party",
+        "kin.work.projects",
+        "kin.work.project",
+        "kin.work.lists",
+        "kin.work.money",
+        "kin.work.summary",
+        "kin.work.list",
+        "kin.work.get",
+        "kin.work.subscribe",
+        "kin.work.create",
+        "kin.work.assign",
+        "kin.work.handBack",
+        "kin.work.update",
+      ]);
+      const methods = [
+        ...Object.values(KIN_WORK_WS_METHODS),
+        ...KinFinanceRpcs.map((rpc) => rpc._tag),
+      ];
+      assert.lengthOf(methods, 39);
+      for (const method of methods)
+        assert.strictEqual(kinRpcAccess(method) === "person", teammate.has(method), method);
+    }).pipe(Effect.provide(layer)),
 );
 
 const head = (id: string, fields: Partial<MemoryItemHead>) =>
@@ -1369,7 +1384,7 @@ it.effect(
         ),
         { reason: "not_found" },
       );
-      // Lists, sums and money filters are the owner's.
+      // Sums and money filters over tasks are the owner's, and a list they see nothing of is none.
       assert.include(yield* Effect.flip(OwnerWork.list([mate], { orgId, list: "expenses" })), {
         reason: "not_found",
       });
@@ -1404,7 +1419,7 @@ it.effect(
       assert.include(
         yield* Effect.flip(OwnerWork.share([owner], { orgId, keys: ["C-1"], shared: true })),
         {
-          reason: "not_found",
+          reason: "invalid_state",
         },
       );
     }).pipe(Effect.provide(layer)),
@@ -1881,6 +1896,284 @@ it.effect("a teammate's live changes name only tasks they see, and one hidden fr
     assert.strictEqual((yield* OwnerWork.summary([mate], { orgId })).seq, seq);
     assert.strictEqual(yield* Queue.size(heard), 0);
   }).pipe(Effect.provide(layer)),
+);
+
+const places = (clients: number, docs: number, money: number) =>
+  SqlClient.SqlClient.pipe(
+    Effect.flatMap(
+      (sql) => sql`UPDATE kin_people SET sees_clients = ${clients}, sees_docs = ${docs},
+        sees_money = ${money} WHERE person_id = ${mateId}`,
+    ),
+  );
+const flipped = <A, R>(effect: Effect.Effect<A, KinChatError, R>) =>
+  Effect.flip(effect).pipe(Effect.map((error) => [error.reason, error.message]));
+
+it.effect("a member sees a place only while it is on, and nothing of it while it is off", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const records = yield* KinRecords.KinRecords;
+    const client = (yield* records.create(orgId, ownerWrites, {
+      list: "clients",
+      originKey: "client",
+      title: "Invented Acme",
+      owner: { _tag: "person", personId: ownerId },
+      fields: { terms: "Invented net 30" },
+    })).row;
+    yield* records.create(orgId, ownerWrites, {
+      list: "contacts",
+      originKey: "contact",
+      title: "Invented Priya",
+      owner: { _tag: "person", personId: ownerId },
+      partyId: client.recordId,
+      fields: { email: "priya@acme.example" },
+    });
+    yield* records.create(orgId, ownerWrites, {
+      list: "clients",
+      originKey: "secret client",
+      title: "Invented Secret Client",
+      owner: { _tag: "person", personId: ownerId },
+      sensitive: true,
+    });
+    const doc = (text: string) =>
+      Docs.create(
+        orgId,
+        ownerWrites,
+        {},
+        {
+          title: `Invented ${text}`,
+          body: `# Invented ${text}\n\nThe invented zebra plan.\n`,
+          owner: { _tag: "person", personId: ownerId },
+          summary: "Created",
+          originKey: text,
+        },
+      ).pipe(Effect.map(({ row }) => row));
+    const shared = yield* doc("handbook");
+    const secret = yield* doc("salaries");
+    yield* OwnerWork.share([owner], { orgId, keys: [shared.key], shared: true });
+
+    // Everything off, as every teammate already here: refused at the door, no trace inside.
+    yield* places(0, 0, 0);
+    for (const refused of [
+      yield* Effect.flip(OwnerClients.parties([mate], { orgId })),
+      yield* Effect.flip(OwnerDocs.list([mate], { orgId })),
+      yield* Effect.flip(OwnerMoney.money([mate], { orgId })),
+    ])
+      assert.include(refused, { reason: "not_allowed" });
+    assert.lengthOf((yield* OwnerDocs.search([mate], { orgId, text: "zebra" })).hits, 0);
+    assert.deepStrictEqual(yield* flipped(OwnerWork.get([mate], { orgId, key: client.key })), [
+      "not_found",
+      `No entry ${client.key} in Work.`,
+    ]);
+
+    // Clients on: names and contacts, never terms, the sensitive client or what's owed.
+    yield* places(1, 0, 0);
+    const parties = yield* OwnerClients.parties([mate], { orgId });
+    assert.deepStrictEqual(
+      parties.parties.map((party) => party.name),
+      ["Invented Acme"],
+    );
+    const page = yield* OwnerClients.party([mate], { orgId, key: client.key });
+    assert.deepStrictEqual(
+      page.contacts.map((one) => [one.name, one.email]),
+      [["Invented Priya", "priya@acme.example"]],
+    );
+    assert.isNull(page.party.terms);
+    assert.notInclude(JSON.stringify(page), "net 30");
+    assert.include(yield* Effect.flip(OwnerDocs.list([mate], { orgId })), {
+      reason: "not_allowed",
+    });
+
+    // Docs on: the shared doc in the list, by key and in search; the other is no doc at all.
+    yield* places(1, 1, 0);
+    const unknownDoc = yield* flipped(OwnerDocs.get([mate], { orgId, key: "D-99" }));
+    assert.deepStrictEqual(
+      (yield* OwnerDocs.list([mate], { orgId })).docs.map((one) => one.key),
+      [shared.key],
+    );
+    assert.strictEqual((yield* OwnerDocs.get([mate], { orgId, key: shared.key })).key, shared.key);
+    assert.deepStrictEqual(yield* flipped(OwnerDocs.get([mate], { orgId, key: secret.key })), [
+      unknownDoc[0],
+      unknownDoc[1]!.replace("D-99", secret.key),
+    ]);
+    assert.deepStrictEqual(
+      (yield* OwnerDocs.search([mate], { orgId, text: "zebra" })).hits.map((hit) => hit.key),
+      [shared.key],
+    );
+    // Their Tasks stay tasks, whatever else they see.
+    assert.deepStrictEqual(keysOf(yield* OwnerWork.list([mate], { orgId })), []);
+    // Money on: figures of only what is shared with them, here none.
+    yield* places(1, 1, 1);
+    const money = yield* OwnerMoney.money([mate], { orgId });
+    assert.deepStrictEqual([money.owed.total, money.upcoming], [[], []]);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a project's lead runs their project and no other, drafts but never issues money, until it is taken away",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at, definition_json)
+        VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(PRESETS.invoices)})`;
+      const project = (title: string, lead: KinPersonId) =>
+        records
+          .create(orgId, ownerWrites, {
+            list: "projects",
+            originKey: title,
+            title: `Invented ${title}`,
+            owner: { _tag: "person", personId: lead },
+          })
+          .pipe(Effect.map(({ row }) => row));
+      const mine = yield* project("Atlas", mateId);
+      const theirs = yield* project("Borealis", ownerId);
+      const mineTask = yield* ownerTask("atlas task", { projectId: mine.recordId });
+      const theirTask = yield* ownerTask("borealis task", { projectId: theirs.recordId });
+      const draft = (yield* records.create(orgId, ownerWrites, {
+        list: "invoices",
+        originKey: "draft",
+        title: "Invented Atlas retainer",
+        owner: { _tag: "person", personId: ownerId },
+        projectId: mine.recordId,
+        amount: { minor: 100_000, currency: "INR" },
+        state: "open",
+      })).row;
+      yield* places(0, 0, 0);
+
+      // Their project, all of it, from Tasks, the project page and Money; never the other one.
+      const tasks = yield* OwnerWork.list([mate], { orgId });
+      assert.deepStrictEqual(keysOf(tasks), [mineTask.key]);
+      assert.strictEqual(tasks.records[0]!.project?.key, mine.key);
+      assert.strictEqual(
+        (yield* OwnerClients.project([mate], { orgId, key: mine.key })).project.key,
+        mine.key,
+      );
+      const unknown = yield* flipped(OwnerClients.project([mate], { orgId, key: "P-99" }));
+      assert.deepStrictEqual(
+        yield* flipped(OwnerClients.project([mate], { orgId, key: theirs.key })),
+        [unknown[0], unknown[1]!.replace("P-99", theirs.key)],
+      );
+      assert.deepStrictEqual(
+        (yield* OwnerClients.projects([mate], { orgId })).projects.map((one) => one.key),
+        [mine.key],
+      );
+      assert.deepStrictEqual(
+        (yield* OwnerWork.list([mate], { orgId, list: "invoices" })).records.map((one) => [
+          one.key,
+          one.amount?.minor,
+        ]),
+        [[draft.key, 100_000]],
+      );
+      assert.include(yield* Effect.flip(OwnerWork.get([mate], { orgId, key: theirTask.key })), {
+        reason: "not_found",
+      });
+
+      // They file, date and hand out its work, and add milestones, without asking.
+      const filed = yield* OwnerWork.create([mate], {
+        orgId,
+        title: "Invented atlas launch",
+        project: mine.key,
+        owner: { _tag: "person", personId: ownerId },
+        dueAt: "2026-12-01",
+        dueAllDay: true,
+        clientRequestId: "atlas-launch",
+      });
+      assert.strictEqual(filed.project?.key, mine.key);
+      yield* OwnerWork.create([mate], {
+        orgId,
+        list: "milestones",
+        title: "Invented atlas beta",
+        project: mine.key,
+        clientRequestId: "atlas-beta",
+      });
+      const moved = yield* OwnerWork.update([mate], {
+        orgId,
+        key: mineTask.key,
+        rev: mineTask.rev,
+        dueAt: "2026-12-02",
+        dueAllDay: true,
+      });
+      assert.isDefined(moved.dueAt);
+      assert.include(
+        yield* Effect.flip(
+          OwnerWork.create([mate], {
+            orgId,
+            title: "Invented",
+            project: theirs.key,
+            clientRequestId: "borealis",
+          }),
+        ),
+        { reason: "not_found" },
+      );
+      // A draft's figures are theirs to change; issuing, sending or marking it paid never is.
+      const drafted = yield* OwnerWork.update([mate], {
+        orgId,
+        key: draft.key,
+        rev: draft.rev,
+        amount: { minor: 120_000, currency: "INR" },
+      });
+      assert.strictEqual(drafted.amount?.minor, 120_000);
+      assert.include(
+        yield* Effect.flip(
+          OwnerWork.update([mate], { orgId, key: draft.key, rev: drafted.rev, state: "done" }),
+        ),
+        {
+          reason: "not_allowed",
+          message:
+            "Only the owner or a co-owner issues, sends or marks a quote or invoice paid; a project's lead keeps it a draft (state open).",
+        },
+      );
+      for (const method of ["kin.work.issue", "kin.work.recordPayment", "kin.work.void"])
+        assert.strictEqual(kinRpcAccess(method), "owner_level", method);
+
+      // Their agent works at the same level in their chat with it, and no further.
+      yield* turn("mate", "shared");
+      const made = yield* LeadWork.create(scopeOf(lead), {
+        sourceEventId: "ask-event",
+        records: [{ title: "Invented atlas QA", project: mine.key, owner: "owner" }],
+      });
+      assert.isTrue(made.records[0]!.created);
+      assert.include(
+        yield* Effect.flip(
+          LeadWork.create(scopeOf(lead), {
+            sourceEventId: "ask-event",
+            records: [{ title: "Invented", project: theirs.key }],
+          }),
+        ),
+        { reason: "not_found" },
+      );
+      assert.include(
+        yield* Effect.flip(
+          LeadWork.update(scopeOf(lead), {
+            key: draft.key,
+            sourceEventId: "ask-event",
+            state: "done",
+          }),
+        ),
+        { reason: "not_allowed" },
+      );
+
+      // Taken away, it is gone from the very next request; what they filed stays theirs, bare.
+      const current = yield* records.get(orgId, mine.key);
+      yield* records.update(
+        orgId,
+        ownerWrites,
+        mine.key,
+        { owner: { _tag: "person", personId: ownerId } },
+        current!.rev,
+      );
+      const left = yield* OwnerWork.list([mate], { orgId });
+      assert.deepStrictEqual(keysOf(left), [filed.key, made.records[0]!.key].toSorted());
+      for (const record of left.records) assert.notProperty(record, "project");
+      assert.include(yield* Effect.flip(OwnerClients.projects([mate], { orgId })), {
+        reason: "not_allowed",
+      });
+      assert.include(yield* Effect.flip(OwnerWork.get([mate], { orgId, key: mineTask.key })), {
+        reason: "not_found",
+      });
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect(

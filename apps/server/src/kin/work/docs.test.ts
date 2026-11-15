@@ -458,7 +458,7 @@ it.effect("a version's provenance comes from stored rows, never from what the ag
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("every doc tool is refused in a turn others read, and a member reaches no doc RPC", () =>
+it.effect("a turn others read reaches only docs they all see, and restores none", () =>
   Effect.gen(function* () {
     yield* seed;
     const created = yield* newDoc();
@@ -467,10 +467,19 @@ it.effect("every doc tool is refused in a turn others read, and a member reaches
     const tools = Object.keys(KinDocsToolkit.tools);
     assert.lengthOf(tools, 9);
     for (const tool of tools) {
-      assert.strictEqual(SHARED_TOOLS[tool as keyof typeof SHARED_TOOLS], "refused", tool);
-      assert.isFalse(yield* sharedToolAllowed(shared, tool, {}), tool);
+      const restore = tool === "doc_restore";
+      assert.strictEqual(
+        SHARED_TOOLS[tool as keyof typeof SHARED_TOOLS],
+        restore ? "refused" : "view",
+        tool,
+      );
+      assert.strictEqual(yield* sharedToolAllowed(shared, tool, {}), !restore, tool);
     }
-    // The writes check again inside, so a turn that turned shared mid-call writes nothing.
+    // A doc a teammate may not see is no doc at all to read, and a write to it writes nothing.
+    assert.strictEqual(
+      reasonOf(yield* Effect.flip(LeadDocs.read(scopeOf(lead), { key: created.row.key }))),
+      "not_found",
+    );
     const edited = yield* Effect.flip(
       LeadDocs.edit(scopeOf(lead), {
         key: created.row.key,
@@ -481,8 +490,14 @@ it.effect("every doc tool is refused in a turn others read, and a member reaches
     );
     assert.strictEqual(reasonOf(edited), "not_allowed");
     assert.strictEqual((yield* Docs.versionOf(orgId, created.row.recordId))!.version, 1);
+    // A member reaches the doc reads, where the service shows them only their docs.
+    const reads = ["kin.docs.list", "kin.docs.get", "kin.docs.history", "kin.docs.diff"];
     for (const rpc of KinDocsRpcs)
-      assert.notStrictEqual(kinRpcAccess(rpc._tag), "person", rpc._tag);
+      assert.strictEqual(
+        kinRpcAccess(rpc._tag) === "person",
+        [...reads, "kin.docs.subscribe", "kin.search"].includes(rpc._tag),
+        rpc._tag,
+      );
   }).pipe(Effect.provide(layer)),
 );
 

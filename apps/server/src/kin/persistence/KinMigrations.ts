@@ -63,6 +63,7 @@ import ClientTouches from "./migrations/K139_ClientTouches.ts";
 import AssignedByAgent from "./migrations/K140_AssignedByAgent.ts";
 import ConnectionAccounts from "./migrations/K141_ConnectionAccounts.ts";
 import MicrosoftConnections from "./migrations/K142_MicrosoftConnections.ts";
+import PersonPlaces from "./migrations/K143_PersonPlaces.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -206,6 +207,7 @@ const loader = Migrator.fromRecord({
   "140_AssignedByAgent": AssignedByAgent,
   "141_ConnectionAccounts": ConnectionAccounts,
   "142_MicrosoftConnections": MicrosoftConnections,
+  "143_PersonPlaces": PersonPlaces,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

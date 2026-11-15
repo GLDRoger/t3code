@@ -600,19 +600,24 @@ function ClientPage(
             if (to.type === "record") props.onOpenTask(to.key);
           }}
         />
-        {owed(
-          KIN_CLIENTS.weOwe,
-          view.weOwe,
-          KIN_CLIENTS.nothingOwed,
-          addTask("ours", KIN_CLIENTS.addWeOwe),
-        )}
-        {owed(
-          KIN_CLIENTS.theyOwe,
-          view.theyOwe,
-          KIN_CLIENTS.nothingOwing,
-          addTask("theirs", KIN_CLIENTS.addTheyOwe),
-        )}
-        {view.touches === null ? null : (
+        {/* What's owed, the contact log, tax, terms, notes and history are the owner's. */}
+        {canChange
+          ? owed(
+              KIN_CLIENTS.weOwe,
+              view.weOwe,
+              KIN_CLIENTS.nothingOwed,
+              addTask("ours", KIN_CLIENTS.addWeOwe),
+            )
+          : null}
+        {canChange
+          ? owed(
+              KIN_CLIENTS.theyOwe,
+              view.theyOwe,
+              KIN_CLIENTS.nothingOwing,
+              addTask("theirs", KIN_CLIENTS.addTheyOwe),
+            )
+          : null}
+        {view.touches === null || !canChange ? null : (
           <KinClientContact
             environmentId={environmentId}
             orgId={orgId}
@@ -705,7 +710,7 @@ function ClientPage(
             <p className="whitespace-pre-wrap text-sm text-foreground">{view.address}</p>
           </KinWorkSection>
         )}
-        {view.vendor && view.tax === null ? null : (
+        {!canChange || (view.vendor && view.tax === null) ? null : (
           <KinWorkSection title={KIN_CLIENTS.tax}>
             <p
               className={cn(
@@ -717,66 +722,70 @@ function ClientPage(
             </p>
           </KinWorkSection>
         )}
-        <KinWorkSection title={KIN_CLIENTS.terms} action={<KinWorkPrivateMark />}>
-          {view.terms === null ? (
-            <p className="text-sm text-muted-foreground">{KIN_CLIENTS.noTerms}</p>
-          ) : (
-            <p className="whitespace-pre-wrap text-sm text-foreground">{view.terms}</p>
-          )}
-          <p className="text-xs text-muted-foreground">{KIN_CLIENTS.termsPrivate}</p>
-        </KinWorkSection>
-        <KinWorkSection title={KIN_CLIENTS.notes}>
-          {view.notes === null ? (
-            <p className="text-sm text-muted-foreground">{KIN_CLIENTS.noNotes}</p>
-          ) : (
-            <p className="whitespace-pre-wrap text-sm text-foreground">{view.notes}</p>
-          )}
-        </KinWorkSection>
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex min-w-0 flex-col gap-0.5">
-            <Label htmlFor={privateId}>{KIN_CLIENTS.privateLabel}</Label>
-            <p className="text-xs text-muted-foreground">{view.privacy.note}</p>
-          </div>
-          <Switch
-            id={privateId}
-            checked={view.privacy.private}
-            disabled={!canChange || busy}
-            onCheckedChange={(checked) => void change({ sensitive: checked })}
-          />
-        </div>
-        <KinWorkSection title={KIN_CLIENTS.history}>
-          {history.state.loading ? (
-            <div role="status" aria-label="Loading history">
-              <KinWorkRowSkeletons />
+        {canChange ? (
+          <>
+            <KinWorkSection title={KIN_CLIENTS.terms} action={<KinWorkPrivateMark />}>
+              {view.terms === null ? (
+                <p className="text-sm text-muted-foreground">{KIN_CLIENTS.noTerms}</p>
+              ) : (
+                <p className="whitespace-pre-wrap text-sm text-foreground">{view.terms}</p>
+              )}
+              <p className="text-xs text-muted-foreground">{KIN_CLIENTS.termsPrivate}</p>
+            </KinWorkSection>
+            <KinWorkSection title={KIN_CLIENTS.notes}>
+              {view.notes === null ? (
+                <p className="text-sm text-muted-foreground">{KIN_CLIENTS.noNotes}</p>
+              ) : (
+                <p className="whitespace-pre-wrap text-sm text-foreground">{view.notes}</p>
+              )}
+            </KinWorkSection>
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <Label htmlFor={privateId}>{KIN_CLIENTS.privateLabel}</Label>
+                <p className="text-xs text-muted-foreground">{view.privacy.note}</p>
+              </div>
+              <Switch
+                id={privateId}
+                checked={view.privacy.private}
+                disabled={busy}
+                onCheckedChange={(checked) => void change({ sensitive: checked })}
+              />
             </div>
-          ) : history.state.failed !== null ? (
-            <div>
-              <Button size="xs" variant="outline" onClick={history.list.refresh}>
-                Retry
-              </Button>
-            </div>
-          ) : history.state.records.length === 0 ? (
-            <p className="text-sm text-muted-foreground">{KIN_CLIENTS.noHistory}</p>
-          ) : (
-            <KinWorkTimeline
-              lines={kinWorkTimeline(history.state.records, names, now, view.key)}
-              onOpenTask={props.onOpenTask}
-            />
-          )}
-          {history.state.more ? (
-            <div>
-              <Button
-                size="xs"
-                variant="outline"
-                disabled={history.state.loadingMore}
-                aria-busy={history.state.loadingMore}
-                onClick={() => void history.list.loadMore()}
-              >
-                {history.state.moreFailed ? "Try again" : KIN_CLIENTS.earlier}
-              </Button>
-            </div>
-          ) : null}
-        </KinWorkSection>
+            <KinWorkSection title={KIN_CLIENTS.history}>
+              {history.state.loading ? (
+                <div role="status" aria-label="Loading history">
+                  <KinWorkRowSkeletons />
+                </div>
+              ) : history.state.failed !== null ? (
+                <div>
+                  <Button size="xs" variant="outline" onClick={history.list.refresh}>
+                    Retry
+                  </Button>
+                </div>
+              ) : history.state.records.length === 0 ? (
+                <p className="text-sm text-muted-foreground">{KIN_CLIENTS.noHistory}</p>
+              ) : (
+                <KinWorkTimeline
+                  lines={kinWorkTimeline(history.state.records, names, now, view.key)}
+                  onOpenTask={props.onOpenTask}
+                />
+              )}
+              {history.state.more ? (
+                <div>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={history.state.loadingMore}
+                    aria-busy={history.state.loadingMore}
+                    onClick={() => void history.list.loadMore()}
+                  >
+                    {history.state.moreFailed ? "Try again" : KIN_CLIENTS.earlier}
+                  </Button>
+                </div>
+              ) : null}
+            </KinWorkSection>
+          </>
+        ) : null}
       </div>
       {dialog?.type === "edit" ? (
         <KinClientDialog

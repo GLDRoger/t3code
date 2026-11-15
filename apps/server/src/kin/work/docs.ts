@@ -10,6 +10,7 @@ import {
   type KinDocVersion,
   type KinDocVersionKind,
   type KinOrgId,
+  type KinPersonId,
   type KinRecordRelation,
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
@@ -33,6 +34,7 @@ import { fieldText, listOf, parseFields } from "./lists.ts";
 import { guardPlaybook } from "./playbooks.ts";
 import { actorOf, iso, principal, type RecordRow, toRecord, unavailable } from "./recordRows.ts";
 import { indexRecord } from "./searchIndex.ts";
+import { teamVisible } from "./teamView.ts";
 import { SensitiveRefusal, turnSensitive } from "./workerAttempts.ts";
 
 /**
@@ -188,11 +190,17 @@ export const versionOf = Effect.fn("KinDocs.version")(function* (
 export const docRow = Effect.fn("KinDocs.row")(function* (
   orgId: KinOrgId,
   ref: { readonly key: string } | { readonly recordId: string },
+  /** Someone besides the owner: a doc they may not see is no doc at all (`personSees`). */
+  team?: KinPersonId,
 ) {
   const records = yield* KinRecords;
   const row =
     "key" in ref ? yield* records.get(orgId, ref.key) : yield* records.getById(orgId, ref.recordId);
-  if (row === undefined || listOf(row.registerId) !== "docs")
+  const hidden =
+    row !== undefined &&
+    team !== undefined &&
+    !(yield* teamVisible(orgId, team, [row.recordId])).has(row.recordId);
+  if (row === undefined || hidden || listOf(row.registerId) !== "docs")
     return yield* docNotFound("key" in ref ? ref.key : "with that id");
   return row;
 });
@@ -220,6 +228,7 @@ export const toDocRow = (row: RecordRow, latest: VersionRow, now: number): KinDo
     ...(isCompanyDoc(row) ? { company: true as const } : {}),
     sensitive: record.sensitive,
     ...(record.sensitiveInherited === true ? { sensitiveInherited: true as const } : {}),
+    ...(record.shared === true ? { shared: true as const } : {}),
     archived: row.state === "dropped",
     bodyKind: latest.bodyKind,
     latest: toVersion(latest),

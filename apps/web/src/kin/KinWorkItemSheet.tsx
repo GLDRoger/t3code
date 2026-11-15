@@ -8,7 +8,6 @@ import {
   KIN_WORK_NEW_COPY,
   KIN_WORK_NOTES_MAX,
   KIN_WORK_PRIVATE,
-  KIN_WORK_SHARE,
   KIN_WORK_TITLE_MAX,
   kinWorkAssignees,
   kinWorkDayOf,
@@ -95,6 +94,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
 import { KinNotesVersions } from "./KinConfirm";
 import { KinListEntry } from "./KinWorkEntry";
+import { KinWorkShareRow } from "./KinWorkShareRow";
 import { KinWorkSection as Section } from "./KinWorkParts";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
@@ -229,59 +229,6 @@ export function KinWorkItemSheet(
         )}
       </SheetPopup>
     </Sheet>
-  );
-}
-
-/** The owner's switch for whether teammates see the task; a teammate never gets it. */
-function KinWorkShareRow(
-  props: KinWorkTarget & {
-    readonly itemKey: KinRecordKey;
-    readonly shared: boolean;
-    readonly disabled: boolean;
-  },
-) {
-  const { environmentId, orgId, itemKey } = props;
-  const canShare = useAtomValue(kinClient.workShare.permissionAtom(environmentId));
-  const share = useAtomCommand(kinClient.workShare, { reportFailure: false });
-  // What was asked, held only until the host's read moves off the value it was asked from.
-  const [asked, setAsked] = useState<{ readonly to: boolean; readonly from: boolean } | null>(null);
-  const [pending, setPending] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const shareId = useId();
-  if (!canShare) return null;
-  const shared = asked !== null && asked.from === props.shared ? asked.to : props.shared;
-  return (
-    <div className="flex items-start justify-between gap-4">
-      <div className="flex min-w-0 flex-col gap-0.5">
-        <Label htmlFor={shareId}>{KIN_WORK_SHARE.label}</Label>
-        <p className="text-xs text-muted-foreground">
-          {failed ? KIN_WORK_SHARE.failed : shared ? KIN_WORK_SHARE.on : KIN_WORK_SHARE.off}
-        </p>
-      </div>
-      <Switch
-        id={shareId}
-        size="sm"
-        checked={shared}
-        disabled={props.disabled || pending}
-        onCheckedChange={(checked) => {
-          setAsked({ to: checked, from: props.shared });
-          setPending(true);
-          setFailed(false);
-          void share({
-            environmentId,
-            input: { orgId, keys: [itemKey], shared: checked },
-          }).then((outcome) => {
-            const refused = AsyncResult.isFailure(outcome);
-            setFailed(refused);
-            setPending(false);
-            if (refused) setAsked(null);
-            appAtomRegistry.refresh(
-              kinClient.workItem({ environmentId, input: { orgId, key: itemKey } }),
-            );
-          });
-        }}
-      />
-    </div>
   );
 }
 

@@ -1,4 +1,4 @@
-import type { KinOrgId, KinSearchKind } from "@t3tools/contracts";
+import type { KinOrgId, KinPersonId, KinSearchKind } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -7,6 +7,7 @@ import { latestOf } from "./docs.ts";
 import { listOf } from "./lists.ts";
 import { sensitiveNow } from "./recordRows.ts";
 import { searchIndexed } from "./searchIndex.ts";
+import { viewSees } from "./teamView.ts";
 
 /**
  * One search over entries and docs. `team` is what a teammate may find (design 9.1): nothing of
@@ -75,6 +76,8 @@ export const search = Effect.fn("KinSearch.search")(function* (
     readonly closed?: boolean | undefined;
     readonly limit: number;
     readonly viewer: Viewer;
+    /** Only what every one of these people may see (`viewSees`). */
+    readonly view?: ReadonlyArray<KinPersonId> | undefined;
   },
 ) {
   const sql = yield* SqlClient.SqlClient;
@@ -87,6 +90,7 @@ export const search = Effect.fn("KinSearch.search")(function* (
     sql`r.register_id IN ${sql.in(kinds)}`,
     ...(input.closed === true ? [] : [sql`r.state NOT IN ('done', 'dropped')`]),
     ...(input.viewer === "team" ? [sql`NOT ${sensitiveNow(sql)}`] : []),
+    ...(input.view === undefined ? [] : [viewSees(sql, input.view)]),
   ];
   const columns = sql`r.record_id AS "recordId", r.register_id AS "registerId", r.key, r.title,
     r.state, r.updated_at AS "updatedAt", ${sensitiveNow(sql)} AS sensitive`;

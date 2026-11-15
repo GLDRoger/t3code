@@ -26,7 +26,12 @@ import { useKinAttention } from "./state/useKinAttention";
 import { KinPlace } from "./KinWorkScreen";
 import { KinTabContext } from "./components/KinTab";
 import { kinHomeTabAtom } from "./state/kinHomeTab";
-import { useKinAccessEnded, useKinAppShell, useKinOwnerLevel } from "./state/kinChatOnly";
+import {
+  useKinAccessEnded,
+  useKinAppShell,
+  useKinOwnerLevel,
+  useKinPlaceReach,
+} from "./state/kinChatOnly";
 import { useKinDocsLive } from "./state/useKinDocs";
 import { useKinHost } from "./state/useKinHost";
 import { useKinMoneySummary } from "./state/useKinMoney";
@@ -72,12 +77,18 @@ function KinHomeWithWork(props: {
   const money = useKinMoneySummary(props.workTarget, { enabled: true, seq }).state;
   const docs = useKinDocsLive(props.workTarget);
   const ownerLevel = useKinOwnerLevel(props.workTarget.environmentId, props.session);
-  const tabs = kinDockTabs(props.session, ownerLevel, {
-    money: money._tag === "refused",
-    // Only an answer from an older host takes Clients away, never one still on its way.
-    clients: work._tag === "ready" && !kinWorkHostClients(work.live.summary),
-    docs: docs.refused,
-  });
+  const reach = useKinPlaceReach(props.workTarget.environmentId);
+  const tabs = kinDockTabs(
+    props.session,
+    ownerLevel,
+    {
+      money: money._tag === "refused",
+      // Only an answer from an older host takes Clients away, never one still on its way.
+      clients: work._tag === "ready" && !kinWorkHostClients(work.live.summary),
+      docs: docs.refused,
+    },
+    reach,
+  );
   return <KinHomeTabs tabs={tabs} workTarget={props.workTarget} />;
 }
 

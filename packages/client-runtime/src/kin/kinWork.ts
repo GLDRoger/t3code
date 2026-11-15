@@ -754,6 +754,20 @@ export const KIN_WORK_SHARE = {
   failed: "Couldn't change who sees this. Try again.",
 };
 
+export const KIN_ENTRY_SHARE: typeof KIN_WORK_SHARE = {
+  label: "Share with team",
+  on: "Teammates who can see Money read its figures.",
+  off: "Only the owner and co-owners see this, and the lead of its project.",
+  failed: "Couldn't change who sees this. Try again.",
+};
+
+export const KIN_DOC_SHARE: typeof KIN_WORK_SHARE = {
+  label: "Share with team",
+  on: "Teammates who can see Docs read this one.",
+  off: "Only the owner and co-owners see this doc, and the lead of its project.",
+  failed: "Couldn't change who sees this. Try again.",
+};
+
 const CATEGORY_LABEL = {
   task: null,
   issue: "Issue",

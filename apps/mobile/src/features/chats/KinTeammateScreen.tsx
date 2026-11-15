@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_ACCESS_CHOICES,
+  KIN_PLACE_SWITCHES,
   kinAccessChangeCopy,
   kinRemoveAccessCopy,
   kinTeamView,
@@ -17,11 +18,14 @@ import {
   type KinLeadProfile,
   type KinPersonAccess,
   type KinPersonId,
+  type KinPersonPlaceSwitches,
+  type KinPersonPlaces,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
+import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import { View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
@@ -33,13 +37,16 @@ import { ErrorBanner } from "../../components/ui/ErrorBanner";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
 import { ListRow } from "../../components/ui/ListRow";
+import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
+import { ListToggleRow } from "../../components/ui/ListToggleRow";
+import { appAtomRegistry } from "../../state/atom-registry";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinInviteLink } from "./components/KinInviteLink";
 import { kinClient } from "./state/kinClient";
-import { useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
+import { refreshKinTeam, useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
 
 export type KinTeammateParams = {
   readonly environmentId: string;
@@ -245,6 +252,13 @@ function KinTeammateDetails(props: {
           ))}
         </ListSection>
       ) : null}
+      {teammate.places === null || teammate.personId === null ? null : (
+        <KinTeammatePlaces
+          target={props.target}
+          personId={teammate.personId}
+          places={teammate.places}
+        />
+      )}
       {teammate.personId === null ? (
         <ListSection
           title="Agents"
@@ -382,5 +396,86 @@ function KinTeammateLead(props: {
         })
       }
     />
+  );
+}
+
+/** A member's places beyond Tasks, and the projects they lead (set on each project's page). */
+function KinTeammatePlaces(props: {
+  readonly target: KinTeamTarget;
+  readonly personId: KinPersonId;
+  readonly places: KinPersonPlaces;
+}) {
+  const { target, personId, places } = props;
+  // What the owner just switched, shown until the host's next read agrees or refuses.
+  const [asked, setAsked] = useState<Partial<KinPersonPlaceSwitches>>({});
+  const [problem, setProblem] = useState<string | null>(null);
+  const flip = async (place: keyof KinPersonPlaceSwitches, on: boolean) => {
+    setProblem(null);
+    setAsked((held) => ({ ...held, [place]: on }));
+    const result = await runAtomCommand(
+      appAtomRegistry,
+      kinClient.personSetPlaces,
+      {
+        environmentId: target.environmentId,
+        input: { orgId: target.orgId, personId, [place]: on },
+      },
+      { label: "kin:person:set-places", reportFailure: false, reportDefect: true },
+    );
+    if (AsyncResult.isFailure(result))
+      setProblem("That didn't save. Check your connection and try again.");
+    await refreshKinTeam(target);
+    setAsked((held) => {
+      const rest = { ...held };
+      delete rest[place];
+      return rest;
+    });
+  };
+  return (
+    <>
+      <ListSection
+        title="What they can see"
+        footer={problem ?? "Tasks shared with the team, always."}
+      >
+        {KIN_PLACE_SWITCHES.map((entry, index) => (
+          <View
+            key={entry.place}
+            className={index === 0 ? undefined : "border-t border-border-subtle"}
+          >
+            <ListToggleRow
+              label={entry.label}
+              description={entry.detail}
+              value={asked[entry.place] ?? places[entry.place]}
+              disabled={asked[entry.place] !== undefined}
+              onValueChange={(on) => void flip(entry.place, on)}
+            />
+          </View>
+        ))}
+      </ListSection>
+      <ListSection
+        title="Projects they lead"
+        footer={
+          places.leads.length === 0
+            ? "Make them a project's lead on that project's page."
+            : undefined
+        }
+      >
+        {places.leads.length === 0 ? (
+          <View className="px-4 py-3">
+            <Text textRole="body" className="text-foreground-muted">
+              None.
+            </Text>
+          </View>
+        ) : (
+          places.leads.map((project, index) => (
+            <View
+              key={project.recordId}
+              className={index === 0 ? undefined : "border-t border-border-subtle"}
+            >
+              <ListRowLayout label={project.title} />
+            </View>
+          ))
+        )}
+      </ListSection>
+    </>
   );
 }
