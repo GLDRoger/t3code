@@ -20,3 +20,11 @@ export function FloatingWorkspaceTabs(_props: {
 }) {
   return null;
 }
+
+export function AndroidTabBar<Tab extends string>(_props: {
+  readonly tabs: ReadonlyArray<Tab>;
+  readonly selectedTab: Tab;
+  readonly onSelect: (tab: Tab) => void;
+}) {
+  return null;
+}
