@@ -1,6 +1,8 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
+  KIN_AGENT_DRIVER,
   KIN_LEAD_CHARTER_MAX,
+  KIN_LEAD_MODELS,
   KIN_LEAD_INTRO_MAX,
   KIN_LEAD_NAME_MAX,
   kinDomainSlug,
@@ -8,11 +10,16 @@ import {
   kinLeadDraftCheck,
   kinLeadDraftOf,
   kinLeadSaveProblem,
+  kinLeadStartingModels,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import type { ModelSelection } from "@t3tools/contracts";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { useNavigate } from "@tanstack/react-router";
+import { AsyncResult } from "effect/reactivity";
 import { useId, useState } from "react";
 
+import { ProviderModelPicker } from "../components/chat/ProviderModelPicker";
+import { SETTINGS_PICKER_TRIGGER_CLASSNAME } from "../components/settings/settingsLayout";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import {
@@ -27,7 +34,11 @@ import {
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
+import { useEnvironmentSettings } from "../hooks/useSettings";
+import { getCustomModelOptionsByInstance } from "../modelSelection";
+import { providerInstanceEntriesFor } from "../providerInstances";
 import { appAtomRegistry } from "../rpc/atomRegistry";
+import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../state/server";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient, refreshKinAgents } from "./kinClient";
 import { kinLeadFormAtom, type KinLeadFormTarget } from "./kinLeadForm";
@@ -42,13 +53,41 @@ export function KinLeadDialogHost() {
 }
 
 function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
-  const { environmentId, orgId, lead } = props.target;
+  const { environmentId, orgId, lead, suggested } = props.target;
   const navigate = useNavigate();
   const create = useAtomCommand(kinClient.leadCreate, { reportFailure: false });
   const update = useAtomCommand(kinClient.leadUpdate, { reportFailure: false });
   const [initial] = useState(() =>
-    lead === null ? { name: "", area: "", charter: "", intro: "" } : kinLeadDraftOf(lead),
+    lead === null
+      ? (suggested ?? { name: "", area: "", charter: "", intro: "" })
+      : kinLeadDraftOf(lead),
   );
+  // The org's first agent picks the models; the host gives every later one the same.
+  const leads = useAtomValue(kinClient.leads({ environmentId, input: { orgId } }));
+  const [noModels, setNoModels] = useState(false);
+  const firstAgent =
+    lead === null &&
+    (noModels ||
+      (AsyncResult.isSuccess(leads) &&
+        leads.value.leads.every((held) => held.retired !== undefined)));
+  const settings = useEnvironmentSettings(environmentId);
+  const providers =
+    useAtomValue(serverEnvironment.providersValueAtom(environmentId)) ?? EMPTY_SERVER_PROVIDERS;
+  const instanceEntries = providerInstanceEntriesFor(providers, settings, null).filter(
+    (entry) => entry.driverKind === KIN_AGENT_DRIVER && entry.enabled && entry.isAvailable,
+  );
+  const modelOptionsByInstance = getCustomModelOptionsByInstance(settings, providers);
+  const offered = instanceEntries.flatMap((entry) =>
+    (modelOptionsByInstance.get(entry.instanceId) ?? []).map((model): ModelSelection => ({
+      instanceId: entry.instanceId,
+      model: model.slug,
+    })),
+  );
+  const [pickedModels, setPickedModels] = useState<{
+    readonly strong: ModelSelection;
+    readonly cheap: ModelSelection;
+  } | null>(null);
+  const models = pickedModels ?? kinLeadStartingModels(offered);
   const [name, setName] = useState(initial.name);
   const [area, setArea] = useState(initial.area);
   const [charter, setCharter] = useState(initial.charter);
@@ -62,7 +101,7 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
 
   const checked = kinLeadDraftCheck({ name, area, charter, intro });
   const areaInvalid = area.trim() !== "" && kinDomainSlug(area) === null;
-  const canSave = checked.ok && !busy;
+  const canSave = checked.ok && !busy && !(firstAgent && models === null);
 
   const save = async () => {
     if (!checked.ok || busy) return;
@@ -82,6 +121,7 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
               domain,
               charter: leadCharter,
               ...(leadIntro === "" ? undefined : { intro: leadIntro }),
+              ...(firstAgent && models !== null ? { models } : undefined),
             },
           }).then((result) =>
             result._tag === "Success"
@@ -98,7 +138,12 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
           );
     setBusy(false);
     if ("cause" in saved) {
-      setError(kinLeadSaveProblem(saved.cause, lead === null));
+      const { cause } = saved;
+      // Another device retired the last agent meanwhile: the models are this form's to choose.
+      if (typeof cause === "object" && cause !== null && "reason" in cause) {
+        if (cause.reason === "no_models") setNoModels(true);
+      }
+      setError(kinLeadSaveProblem(cause, lead === null));
       return;
     }
     // The list names chats from the directory and the profile reads the lead list.
@@ -189,6 +234,41 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
                     : "The agent reads this before every reply. You can change it later."}
                 </p>
               </div>
+              {firstAgent ? (
+                <fieldset className="flex flex-col gap-2">
+                  <legend className="mb-1.5 text-sm font-medium">{KIN_LEAD_MODELS.title}</legend>
+                  {models === null ? (
+                    <p className="text-xs text-destructive-foreground">{KIN_LEAD_MODELS.none}</p>
+                  ) : (
+                    <>
+                      {(["strong", "cheap"] as const).map((role) => (
+                        <div
+                          key={role}
+                          className="flex flex-wrap items-center justify-between gap-2"
+                        >
+                          <Label>{KIN_LEAD_MODELS[role]}</Label>
+                          <ProviderModelPicker
+                            environmentId={environmentId}
+                            disabled={busy}
+                            activeInstanceId={models[role].instanceId}
+                            model={models[role].model}
+                            lockedProvider={null}
+                            instanceEntries={instanceEntries}
+                            modelOptionsByInstance={modelOptionsByInstance}
+                            isComposerOwned={false}
+                            triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                            triggerAriaLabel={KIN_LEAD_MODELS[role]}
+                            onInstanceModelChange={(instanceId, model) =>
+                              setPickedModels({ ...models, [role]: { instanceId, model } })
+                            }
+                          />
+                        </div>
+                      ))}
+                      <p className="text-xs text-muted-foreground">{KIN_LEAD_MODELS.hint}</p>
+                    </>
+                  )}
+                </fieldset>
+              ) : null}
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor={introId}>What teammates see</Label>
                 <Textarea

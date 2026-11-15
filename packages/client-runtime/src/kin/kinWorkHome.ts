@@ -188,6 +188,19 @@ export function kinNeedsYou(input: {
   return [...late, ...owed, ...waiting, ...today];
 }
 
+/**
+ * Tasks' list under "Needs you", without the tasks it already shows. Null `mine` while Needs you
+ * is hidden (a narrowed or searched list) or still loading: then every task stays in the list.
+ */
+export function kinWorkBesideNeedsYou<Item extends { readonly key: KinRecordKey }>(
+  items: ReadonlyArray<Item>,
+  mine: ReadonlyArray<Pick<KinRecord, "key">> | null,
+): ReadonlyArray<Item> {
+  if (mine === null || mine.length === 0) return items;
+  const shown = new Set(mine.map((record) => record.key));
+  return items.filter((item) => !shown.has(item.key));
+}
+
 // Tasks' one filter
 
 /** What a narrowed task list is narrowed to, as one chip; null on the default, open tasks. */

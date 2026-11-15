@@ -107,6 +107,8 @@ export function KinWorkClientsList(
     readonly onOpen: (key: KinRecordKey) => void;
     readonly onOpenProject: (key: KinRecordKey) => void;
     readonly onAdd: (() => void) | null;
+    /** The client or project showing beside the list, marked in it. */
+    readonly selected?: KinRecordKey | null;
   },
 ) {
   const { names } = props.directory;
@@ -301,15 +303,20 @@ export function KinWorkClientsList(
           <KinClientsGroup title={item.title} party={item.party} onOpen={props.onOpen} />
         ) : item.type === "project" ? (
           <div className="mx-auto w-full max-w-3xl border-b border-border/60 py-0.5 ps-8 pe-4">
-            <KinWorkProjectRow row={item.row} onOpen={() => props.onOpenProject(item.row.key)} />
+            <KinWorkProjectRow
+              row={item.row}
+              selected={props.selected === item.row.key}
+              onOpen={() => props.onOpenProject(item.row.key)}
+            />
           </div>
         ) : (
           <div className="mx-auto w-full max-w-3xl border-b border-border/60 px-4 py-1">
             <button
               type="button"
               aria-label={item.row.accessibilityLabel}
+              aria-current={props.selected === item.row.key ? true : undefined}
               onClick={() => props.onOpen(item.row.key)}
-              className="flex w-full items-start gap-3 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
+              className="flex w-full items-start gap-3 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset aria-[current=true]:bg-accent"
             >
               <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                 <span className="flex min-w-0 items-center gap-1.5">
@@ -362,6 +369,7 @@ function KinClientsGroup(props: {
 /** A project as a row that opens it, on a client's page and under its client. */
 function KinWorkProjectRow(props: {
   readonly row: KinProjectRowView;
+  readonly selected?: boolean;
   readonly onOpen: () => void;
 }) {
   const { row } = props;
@@ -369,8 +377,9 @@ function KinWorkProjectRow(props: {
     <button
       type="button"
       aria-label={row.accessibilityLabel}
+      aria-current={props.selected === true ? true : undefined}
       onClick={props.onOpen}
-      className="flex w-full items-start gap-3 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
+      className="flex w-full items-start gap-3 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset aria-[current=true]:bg-accent"
     >
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span className="flex min-w-0 items-center gap-1.5">

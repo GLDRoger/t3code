@@ -8,7 +8,7 @@ import {
   type KinNeedsYouOpen,
   type KinNeedsYouRow,
 } from "@t3tools/client-runtime/kin/kinWorkHome";
-import type { KinRecordKey } from "@t3tools/contracts";
+import type { KinRecord, KinRecordKey } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { BanknoteIcon, CircleAlertIcon, CircleCheckIcon, type LucideIcon } from "lucide-react";
 import { useState } from "react";
@@ -19,7 +19,6 @@ import { KinWorkSection } from "./KinWorkParts";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinInbox } from "./useKinHost";
 import { kinListsOf, useKinLists, useKinMoneySummary } from "./useKinMoney";
-import { useKinMyDueTasks } from "./useKinPlaces";
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
 
 const ICON: Record<KinNeedsYouRow["kind"], LucideIcon> = {
@@ -37,16 +36,17 @@ export function KinNeedsYou(
     readonly directory: KinWorkDirectory;
     /** The host's latest change number; null while what is held may be behind. */
     readonly seq: number | null;
+    /** Your open tasks due by the end of today; null until read. Tasks leaves them out below. */
+    readonly mine: ReadonlyArray<KinRecord> | null;
     readonly onOpenTask: (key: KinRecordKey) => void;
     readonly onOpenList: (open: KinListOpen) => void;
     readonly onOpenMoney: () => void;
   },
 ) {
-  const { environmentId, orgId, seq } = props;
+  const { environmentId, orgId, seq, mine } = props;
   const { names } = props.directory;
   const navigate = useNavigate();
   const now = new Date(useNowMinuteMs());
-  const mine = useKinMyDueTasks(props, names.me, seq);
   const money = useKinMoneySummary(props, { enabled: true, seq });
   const lists = useKinLists(props, { enabled: true, seq });
   const inbox = useKinInbox();

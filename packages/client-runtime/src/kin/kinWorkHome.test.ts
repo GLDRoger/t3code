@@ -16,6 +16,7 @@ import { KIN_WORK_DEFAULT_FILTER, type KinWorkNames } from "./kinWork.ts";
 import {
   kinPlaceLists,
   kinNeedsYou,
+  kinWorkBesideNeedsYou,
   kinWorkFilterLabel,
   kinWorkPlaceParam,
 } from "./kinWorkHome.ts";
@@ -137,6 +138,11 @@ describe("Needs you", () => {
   });
   it("shows a viewer kept from money nothing about money", () => {
     expect(kinNeedsYou({ ...input, money: null }).some((row) => row.kind === "money")).toBe(false);
+  });
+  it("leaves the tasks it shows out of the list below, and only while it shows", () => {
+    const open = [task("W-1"), task("W-2"), task("W-3")];
+    expect(kinWorkBesideNeedsYou(open, input.mine).map((row) => row.key)).toEqual(["W-3"]);
+    expect(kinWorkBesideNeedsYou(open, null)).toEqual(open);
   });
 });
 

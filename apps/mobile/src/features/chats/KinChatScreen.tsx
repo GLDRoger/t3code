@@ -79,7 +79,12 @@ import { kinStackWithoutChat } from "./state/kinChatStack";
 import { resetRootStack } from "../../lib/root-stack-reset";
 import { KinMessageSheet } from "./components/KinMessageSheet";
 import { KinChatTitle } from "./components/KinChatTitle";
-import { KinOfflineState, KinStaleNoticeView, KinStandInNotice } from "./components/KinScreenState";
+import {
+  KinOfflineState,
+  KinStaleNoticeView,
+  KinStandInLine,
+  useKinStandIn,
+} from "./components/KinScreenState";
 import { KinIntro } from "./components/KinIntro";
 import {
   KinPresenceLine,
@@ -900,7 +905,11 @@ function KinChatFeed(props: {
   const dayStartMs = useLocalDayStartMs();
   const lastRequest = useRef(0);
   const reduceMotion = useReduceMotionEnabled();
-  const barOverlap = useBarOverlap();
+  // A stand-in computer's chat says whose it is before anyone types into it, in its own room
+  // under the bar so it never covers a message.
+  const standIn = useKinStandIn(props.environmentId);
+  const barSpace = useBarOverlap();
+  const barOverlap = standIn === null ? barSpace : 0;
   const markdownStyle = useMarkdownPreviewStyles().nativeTextStyle;
   const ownMarkdownStyle = useOwnBubbleMarkdownStyle(markdownStyle);
   // Each open gets its own sheet, so a dismissal the list never heard of can't block the next.
@@ -1390,11 +1399,8 @@ function KinChatFeed(props: {
   );
 
   // Above the composer, so a long chat opened at its end still shows why it stopped updating.
-  // A stand-in computer's chat says whose it is before anyone types into it.
   const noticeBar =
-    notice === null ? (
-      <KinStandInNotice environmentId={props.environmentId} floating className="px-4 pb-3" />
-    ) : (
+    notice === null ? null : (
       <View className="px-4 pb-3">
         <KinStaleNoticeView
           notice={notice}
@@ -1446,6 +1452,11 @@ function KinChatFeed(props: {
 
   return (
     <View className="flex-1">
+      {standIn === null ? null : (
+        <View className="px-4 pb-1" style={{ paddingTop: barSpace }}>
+          <KinStandInLine line={standIn} />
+        </View>
+      )}
       {/* oxlint-disable-next-line t3code/require-registered-list-scroll -- KinFeedScrollView is passed through the iOS-only spread below, as in the thread feed. */}
       <KeyboardAwareLegendList
         ref={listRef}

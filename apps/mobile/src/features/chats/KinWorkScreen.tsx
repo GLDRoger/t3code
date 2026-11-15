@@ -36,6 +36,7 @@ import {
   kinDocsLine,
   kinMoneyLine,
   kinWorkAskDraft,
+  kinWorkBesideNeedsYou,
   kinWorkFilterCleared,
   kinWorkFilterLabel,
   kinWorkOwnerSelected,
@@ -94,7 +95,7 @@ import {
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./state/useKinWork";
-import { useKinClientCounts, useKinDocsRecent } from "./state/useKinWorkHome";
+import { useKinClientCounts, useKinDocsRecent, useKinMyDueTasks } from "./state/useKinWorkHome";
 
 /** What the Tasks search finds besides tasks, which the list itself already narrows to. */
 const ELSEWHERE = ["clients", "contacts", "projects", "docs"] as const;
@@ -412,7 +413,6 @@ export function KinWorkTaskList(
   const records = kinWorkShown(filter, listState.records, hostEdits).map((record) =>
     kinWorkApplied(record, changed),
   );
-  const rows = records.map((record) => kinWorkRow(record, names, now, filter));
   const act = (key: KinRecordKey, action: KinWorkAction) => {
     const record = records.find((held) => held.key === key);
     if (record !== undefined) void changes.run(record, action, names);
@@ -423,8 +423,26 @@ export function KinWorkTaskList(
     props.within === undefined ? filter : { ...filter, party: null, project: null },
     names,
   );
+  // The whole company's open tasks, unsearched, start with what needs you.
+  const showsNeedsYou =
+    props.within === undefined && narrowed === null && filter.text.trim() === "";
+  const mine = useKinMyDueTasks(
+    props,
+    showsNeedsYou ? names.me : null,
+    props.stale ? null : live.seq,
+  );
+  const rows = kinWorkBesideNeedsYou(records, showsNeedsYou ? mine : null).map((record) =>
+    kinWorkRow(record, names, now, filter),
+  );
   const nothing = kinWorkNothing(filter, names);
-  const footer = kinWorkListFooter(filter, rows.length, listState.total, listState.more, hostEdits);
+  // Needs you shows the rest, so the count says how many are loaded in all.
+  const footer = kinWorkListFooter(
+    filter,
+    records.length,
+    listState.total,
+    listState.more,
+    hostEdits,
+  );
   const add = canAdd
     ? () =>
         navigation.navigate("KinWorkNew", {
@@ -508,11 +526,12 @@ export function KinWorkTaskList(
           ListHeaderComponent={
             <View className="gap-3 pt-2">
               {within?.header}
-              {everywhere && narrowed === null && filter.text.trim() === "" ? (
+              {showsNeedsYou ? (
                 <KinNeedsYou
                   {...props}
                   names={names}
-                  hideWhenNone={rows.length === 0 && !listState.loading}
+                  mine={mine}
+                  hideWhenNone={records.length === 0 && !listState.loading}
                 />
               ) : null}
               {props.stale || listState.stale ? (
@@ -562,34 +581,37 @@ export function KinWorkTaskList(
             </View>
           }
           ListEmptyComponent={
-            <View className="px-4 pt-4">
-              {listState.loading ? (
-                <View
-                  className="items-center py-12"
-                  accessible
-                  accessibilityRole="progressbar"
-                  accessibilityLabel="Loading tasks"
-                >
-                  <AppActivityIndicator />
-                </View>
-              ) : listState.failed !== null ? (
-                <EmptyState
-                  variant="plain"
-                  title={KIN_WORK_LOAD_FAILED}
-                  detail="Check your connection to the server and try again."
-                  action={<Button tone="secondary" label="Try again" onPress={list.refresh} />}
-                />
-              ) : (
-                <EmptyState
-                  variant="plain"
-                  title={nothing.title}
-                  detail={nothing.detail}
-                  {...(nothing.offerNew && add !== null
-                    ? { action: <Button tone="primary" label={KIN_WORK_NEW} onPress={add} /> }
-                    : {})}
-                />
-              )}
-            </View>
+            // Every open task is already under Needs you.
+            records.length > 0 ? null : (
+              <View className="px-4 pt-4">
+                {listState.loading ? (
+                  <View
+                    className="items-center py-12"
+                    accessible
+                    accessibilityRole="progressbar"
+                    accessibilityLabel="Loading tasks"
+                  >
+                    <AppActivityIndicator />
+                  </View>
+                ) : listState.failed !== null ? (
+                  <EmptyState
+                    variant="plain"
+                    title={KIN_WORK_LOAD_FAILED}
+                    detail="Check your connection to the server and try again."
+                    action={<Button tone="secondary" label="Try again" onPress={list.refresh} />}
+                  />
+                ) : (
+                  <EmptyState
+                    variant="plain"
+                    title={nothing.title}
+                    detail={nothing.detail}
+                    {...(nothing.offerNew && add !== null
+                      ? { action: <Button tone="primary" label={KIN_WORK_NEW} onPress={add} /> }
+                      : {})}
+                  />
+                )}
+              </View>
+            )
           }
           ListFooterComponent={
             <>
