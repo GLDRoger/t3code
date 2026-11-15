@@ -53,6 +53,7 @@ import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { Switch } from "../components/ui/switch";
 import { cn } from "../lib/utils";
 import { useAtomCommand } from "../state/use-atom-command";
+import { KinClientContact } from "./KinClientTouches";
 import { KinAttentionSection } from "./KinAttention";
 import { KinDocsUnder } from "./KinDocsList";
 import { KinClientDialog, KinContactDialog, KinProjectDialog } from "./KinWorkForms";
@@ -610,6 +611,17 @@ function ClientPage(
           view.theyOwe,
           KIN_CLIENTS.nothingOwing,
           addTask("theirs", KIN_CLIENTS.addTheyOwe),
+        )}
+        {view.touches === null ? null : (
+          <KinClientContact
+            environmentId={environmentId}
+            orgId={orgId}
+            clientKey={view.key}
+            touches={view.touches}
+            lastContact={view.lastContact}
+            canChange={canChange && !view.closed}
+            onChanged={props.onRefresh}
+          />
         )}
         <KinWorkPlaceLists
           environmentId={environmentId}

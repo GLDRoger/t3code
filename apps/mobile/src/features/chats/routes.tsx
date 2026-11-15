@@ -43,6 +43,7 @@ import {
   KinContactFormScreen,
   KinProjectFormScreen,
 } from "./KinWorkFormScreens";
+import { KinTouchFormScreen } from "./KinTouchFormScreen";
 import { KinWorkItemScreen } from "./KinWorkItemScreen";
 import { KinWorkNewScreen } from "./KinWorkNewScreen";
 import { KinWorkScreen } from "./KinWorkScreen";
@@ -207,6 +208,10 @@ export const KIN_SCREENS = {
   KinContactForm: createNativeStackScreen({
     screen: KinContactFormScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinTouchForm: createNativeStackScreen({
+    screen: KinTouchFormScreen,
+    options: sheetRoute({ detent: 0.75 }),
   }),
   KinProjectForm: createNativeStackScreen({
     screen: KinProjectFormScreen,

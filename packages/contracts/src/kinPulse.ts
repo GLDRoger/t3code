@@ -1,10 +1,7 @@
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
-import {
-  AuthKinChatScope,
-  EnvironmentAuthorizationError,
-} from "./auth.ts";
+import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinAgentId, KinChatError, KinOrgId, KinPersonId } from "./kinChat.ts";
 import { CanonicalUtcTimestamp } from "./kinLead.ts";
@@ -31,6 +28,9 @@ const KIN_PULSE_SENSES = [
   "budget_near",
   "worker_failed",
   "work_held",
+  "client_quiet",
+  "client_cold",
+  "client_waiting_on_us",
   "goal_behind",
 ] as const;
 export const KinPulseSense = Schema.Literals(KIN_PULSE_SENSES);

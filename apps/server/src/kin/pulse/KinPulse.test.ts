@@ -162,6 +162,7 @@ const seed = Effect.gen(function* () {
     dueAt: B + 2 * DAY,
     partyId: "r-C-1",
   });
+  yield* insert({ id: "W-10", dueAt: B + 5 * DAY, partyId: "r-C-1" });
   yield* insert({ id: "DT-1", list: "dates", category: "renewal", dueAt: B + 40 * DAY });
   yield* insert({
     id: "EXP-1",
@@ -207,7 +208,7 @@ const seed = Effect.gen(function* () {
   yield* goal("G-3", { measure: "tasks_done", target: "20" });
   yield* goal("G-4", { measure: "manual", target: "10", current: "3", unit: "hires" });
   yield* insert({ id: "C-2", list: "clients", createdAt: B + DAY });
-  yield* insert({ id: "W-10", state: "done", closedAt: B + 2 * DAY });
+  yield* insert({ id: "W-11", state: "done", closedAt: B + 2 * DAY });
 
   yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
       status, event_ids)
@@ -244,6 +245,9 @@ const SENSES: ReadonlyArray<readonly [string, string, number]> = [
   ["budget_near", "b-software", B],
   ["budget_over", "b-travel", B],
   ["worker_failed", "worker-1", B + DAY],
+  // Lumen's last contact is INV-5, issued at B - 30 days; cold at the default 30 days.
+  ["client_cold", "C-1", B],
+  ["client_waiting_on_us", "C-1", B + 5 * DAY + 24 * HOUR],
   // ₹1L of ₹10L: behind once a straight line would be past ₹1.25L (20 % under it).
   ["goal_behind", "G-1", B + 3.75 * DAY],
 ];

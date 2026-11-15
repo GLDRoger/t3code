@@ -1,5 +1,6 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import type {
+  KinClientTouch,
   KinContact,
   KinOrgId,
   KinPartiesInput,
@@ -57,6 +58,16 @@ export const KIN_CLIENTS = {
   detailsPrivate: "Emails and phone numbers are always private.",
   notes: "Notes",
   noNotes: "No notes.",
+  recentContact: "Recent contact",
+  logContact: "Log contact",
+  noTouches: "Nothing logged yet. Log a call, meeting or email here, or tell an agent about it.",
+  touchNote: "What happened",
+  touchNotePlaceholder: "Spoke to Asha, they want the revised quote by Friday",
+  touchWhen: "When",
+  touchKind: "How",
+  touchSave: "Log it",
+  touchRemove: "Remove",
+  touchFailed: "Couldn't log that. Check your connection and try again.",
   history: "History",
   noHistory: "Nothing has happened yet.",
   earlier: "Show earlier",
@@ -129,6 +140,81 @@ export const KIN_CLIENTS_OLDER_HOST = {
 const plural = (count: number, one: string, many = `${one}s`) =>
   `${count} ${count === 1 ? one : many}`;
 
+// Contact
+
+export const KIN_TOUCH_KINDS = [
+  { id: "call", label: "Call" },
+  { id: "meeting", label: "Meeting" },
+  { id: "email", label: "Email" },
+  { id: "message", label: "Message" },
+  { id: "other", label: "Other" },
+] as const;
+
+const TOUCH_TITLES: Record<KinClientTouch["kind"], string> = {
+  call: "Call",
+  meeting: "Meeting",
+  email: "Email",
+  message: "Message",
+  other: "Contact",
+  invoice: "Invoice issued",
+  quote: "Quote sent",
+  payment: "Payment received",
+};
+
+const daysBetween = (at: string, now: Date) =>
+  Math.max(0, Math.floor((now.getTime() - new Date(at).getTime()) / DAY_MS));
+
+/**
+ * "Last contact 3 days ago", or "No logged contact for 52 days" once a week has passed. Null
+ * from a host before contact logs. Only what was logged counts, so it never says "no contact".
+ */
+export function kinLastContactLine(lastAt: string | null | undefined, now: Date): string | null {
+  if (lastAt === undefined) return null;
+  if (lastAt === null) return "No logged contact yet";
+  const days = daysBetween(lastAt, now);
+  if (days >= 7) return `No logged contact for ${days} days`;
+  return days === 0
+    ? "Last contact today"
+    : days === 1
+      ? "Last contact yesterday"
+      : `Last contact ${days} days ago`;
+}
+
+/** The device's own day, as a date field holds it. */
+export const kinLocalDay = (date: Date) =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+
+/** When a touch logged for `day` happened: now for today, else midday that day, never ahead. */
+export function kinTouchAt(day: string, now: Date): string | undefined {
+  if (day === "" || day >= kinLocalDay(now)) return undefined;
+  const [year, month, date] = day.split("-").map(Number);
+  return new Date(year!, month! - 1, date!, 12).toISOString();
+}
+
+export interface KinTouchView {
+  readonly id: string;
+  /** "Call with Asha", "Invoice issued: INV-3". */
+  readonly title: string;
+  readonly note: string | null;
+  readonly when: string;
+  /** Logged by a person or an agent; what Kin read from its own records can't be removed. */
+  readonly removable: boolean;
+}
+
+function kinTouchView(touch: KinClientTouch, now: Date): KinTouchView {
+  const base = TOUCH_TITLES[touch.kind];
+  const note = touch.note.trim();
+  return {
+    id: touch.id,
+    title: touch.logged
+      ? `${base}${touch.who === null ? "" : ` with ${touch.who}`}`
+      : `${base}${touch.record === null ? "" : `: ${touch.record.key}`}`,
+    note: touch.logged ? (note === "" ? null : note) : (touch.record?.title ?? null),
+    when: formatKinTime(new Date(touch.at), now),
+    removable: touch.logged,
+  };
+}
+
 // Clients
 
 /** What the clients list shows: who is active, or who was closed, optionally matching words. */
@@ -182,7 +268,11 @@ export interface KinClientRowView {
 }
 
 export function kinClientRow(row: KinPartyRow, names: KinWorkNames, now: Date): KinClientRowView {
-  const line = [row.kind === "vendor" ? "Vendor" : null, row.active ? kinOwedLine(row) : "Closed"]
+  const line = [
+    row.kind === "vendor" ? "Vendor" : null,
+    row.active ? kinOwedLine(row) : "Closed",
+    row.active && row.kind === "client" ? kinLastContactLine(row.lastContactAt, now) : null,
+  ]
     .filter((part) => part !== null)
     .join(" · ");
   const day = row.next === null ? null : kinWorkDueText(row.next, names, now);
@@ -300,6 +390,9 @@ export interface KinClientPageView {
   /** "GSTIN 27ABCDE1234F1Z5 · Maharashtra"; null when neither is set. */
   readonly tax: string | null;
   readonly notes: string | null;
+  /** Newest first; null from a host before contact logs. */
+  readonly touches: ReadonlyArray<KinTouchView> | null;
+  readonly lastContact: string | null;
 }
 
 export function kinClientPageView(
@@ -349,6 +442,9 @@ export function kinClientPageView(
         .filter((part) => part !== null)
         .join(" · ") || null,
     notes: notes === "" ? null : notes,
+    touches:
+      page.touches === undefined ? null : page.touches.map((touch) => kinTouchView(touch, now)),
+    lastContact: party.kind === "client" ? kinLastContactLine(party.lastContactAt, now) : null,
   };
 }
 

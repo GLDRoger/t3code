@@ -603,6 +603,8 @@ export const KinPartyRow = Schema.Struct({
   active: Schema.Boolean,
   sensitive: Schema.Boolean,
   ...KinPartyCounts,
+  /** The latest contact Kin knows of (`KinClientTouch`); absent from hosts before contact logs. */
+  lastContactAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   /** The soonest open entry we owe them. */
   next: Schema.NullOr(
     Schema.Struct({
@@ -725,6 +727,27 @@ export type KinBlockedOn = typeof KinBlockedOn.Type;
 
 export const KinPartyPageInput = KinRecordLookup;
 export type KinPartyPageInput = typeof KinPartyPageInput.Type;
+/** What someone logged by hand or a lead was told of. */
+export const KinTouchKind = Schema.Literals(["call", "meeting", "email", "message", "other"]);
+export type KinTouchKind = typeof KinTouchKind.Type;
+/**
+ * One contact with a client: logged, or what Kin already knows (an invoice or quote issued, a
+ * payment received, a meeting that has passed). A chat mentioning them is not one.
+ */
+export const KinClientTouch = Schema.Struct({
+  /** A logged one's id; Kin's own are `record:<key>` or `payment:<id>` and can't be removed. */
+  id: TrimmedNonEmptyString,
+  at: IsoDateTime,
+  kind: Schema.Literals([...KinTouchKind.literals, "invoice", "quote", "payment"]),
+  note: KinText,
+  /** Who on our side, by name, when known. */
+  who: Schema.NullOr(KinTrimmedText),
+  logged: Schema.Boolean,
+  /** The entry it comes from, for Kin's own. */
+  record: Schema.NullOr(KinRecordRef),
+});
+export type KinClientTouch = typeof KinClientTouch.Type;
+
 /** The client page. `weOwe` is soonest due first; `theyOwe` is overdue first, then soonest. */
 export const KinPartyPage = Schema.Struct({
   party: KinPartyDetail,
@@ -734,6 +757,8 @@ export const KinPartyPage = Schema.Struct({
   projects: Schema.Array(KinProjectRow),
   weOwe: Capped(KinRecord),
   theyOwe: Capped(KinRecord),
+  /** Newest first, a few; absent from hosts before contact logs. */
+  touches: Schema.optional(Schema.Array(KinClientTouch)),
   seq: NonNegativeInt,
   asOf: IsoDateTime,
 });
@@ -930,6 +955,23 @@ export const KinContactCreateInput = Schema.Struct({
   clientRequestId: RequestId,
 });
 export type KinContactCreateInput = typeof KinContactCreateInput.Type;
+export const KinTouchLogInput = Schema.Struct({
+  orgId: KinOrgId,
+  party: KinRecordKey,
+  kind: KinTouchKind,
+  /** When it happened; now if left out. */
+  at: Schema.optional(IsoDateTime),
+  note: Schema.optional(Notes),
+  clientRequestId: RequestId,
+});
+export type KinTouchLogInput = typeof KinTouchLogInput.Type;
+export const KinTouchRemoveInput = Schema.Struct({
+  orgId: KinOrgId,
+  touchId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+});
+export type KinTouchRemoveInput = typeof KinTouchRemoveInput.Type;
+export const KinTouchRemoveResult = Schema.Struct({ removed: Schema.Boolean });
+export type KinTouchRemoveResult = typeof KinTouchRemoveResult.Type;
 export const KinContactUpdateInput = Schema.Struct({
   orgId: KinOrgId,
   key: KinRecordKey,
@@ -1014,6 +1056,8 @@ export const KIN_WORK_WS_METHODS = {
   updateContact: "kin.work.updateContact",
   createProject: "kin.work.createProject",
   updateProject: "kin.work.updateProject",
+  logTouch: "kin.work.logTouch",
+  removeTouch: "kin.work.removeTouch",
 } as const;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -1118,6 +1162,16 @@ export const KinWorkRpcs = [
     success: KinProjectDetail,
     error,
   }),
+  Rpc.make(KIN_WORK_WS_METHODS.logTouch, {
+    payload: KinTouchLogInput,
+    success: KinClientTouch,
+    error,
+  }),
+  Rpc.make(KIN_WORK_WS_METHODS.removeTouch, {
+    payload: KinTouchRemoveInput,
+    success: KinTouchRemoveResult,
+    error,
+  }),
 ] as const;
 
 export const KIN_WORK_RPC_SCOPES = {
@@ -1147,4 +1201,6 @@ export const KIN_WORK_RPC_SCOPES = {
   [KIN_WORK_WS_METHODS.updateContact]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.createProject]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.updateProject]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.logTouch]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.removeTouch]: AuthKinChatScope,
 } as const;
