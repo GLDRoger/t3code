@@ -510,12 +510,18 @@ export const resolveWho = Effect.fn("KinWorkTools.resolveWho")(function* (lead: 
     return { _tag: "agent", agentId: KinAgentId.make(agent.id) } satisfies KinWorkPrincipal;
   if (agent === undefined) {
     // A full name, a handle, or a first name only one person has ("Zoya" for Zoya Sheikh).
-    const people = yield* sql<{ id: string; name: string; tags: string }>`SELECT person_id AS id,
-        display_name AS name, role_tags_json AS tags FROM kin_people
+    const found = yield* sql<{ id: string; name: string; tags: string; exact: number }>`SELECT
+        person_id AS id, display_name AS name, role_tags_json AS tags,
+        (person_id = ${who} OR lower(display_name) = lower(${who})
+          OR lower(handle) = lower(${who})) AS exact
+      FROM kin_people
       WHERE org_id = ${lead.orgId} AND (person_id = ${who} OR lower(display_name) = lower(${who})
         OR lower(handle) = lower(${who}) OR lower(display_name) LIKE lower(${who}) || ' %')
-      ORDER BY person_id = ${who} DESC, lower(display_name) = lower(${who}) DESC, person_id
+      ORDER BY person_id = ${who} DESC, person_id
       LIMIT 6`;
+    // A first name counts only when no one is called exactly that.
+    const exact = found.filter((one) => one.exact === 1);
+    const people = exact.length > 0 ? exact : found;
     if (people.length > 1 && people[0]!.id !== who)
       return yield* invalid(
         `${people.length} people are named ${who.slice(0, 60)}: ${people
