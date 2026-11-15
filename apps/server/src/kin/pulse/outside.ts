@@ -15,6 +15,7 @@ import * as NodeCrypto from "node:crypto";
 import type { KinConnectionActivity, KinConnections } from "../connections/ConnectionsService.ts";
 import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { logTouch } from "../work/touches.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 
 /** What is new at an org's connections since its last check-in, and the cursors that marks. */
@@ -158,6 +159,8 @@ export interface Matched {
   readonly line: KinPulseOutsideLine;
   /** Money threads go to Finance; client mail and meetings to the Chief of staff. */
   readonly domain: "finance" | "chief";
+  /** The client whose contact wrote it: mail from a client is contact with that client. */
+  readonly clientId?: string;
 }
 
 /**
@@ -174,10 +177,11 @@ export const matchLines = Effect.fn("KinPulseOutside.match")(function* (
     email: string;
     key: string;
     title: string;
+    clientId: string | null;
     clientKey: string | null;
     clientTitle: string | null;
   }>`SELECT lower(json_extract(r.fields_json, '$.email')) AS email, r.key, r.title,
-      c.key AS "clientKey", c.title AS "clientTitle"
+      c.record_id AS "clientId", c.key AS "clientKey", c.title AS "clientTitle"
     FROM kin_records r
       LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
         AND c.register_id = 'clients'
@@ -202,6 +206,7 @@ export const matchLines = Effect.fn("KinPulseOutside.match")(function* (
       const named = money.find((row) =>
         new RegExp(`(^|[^a-z0-9-])${escaped(row.key.toLowerCase())}($|[^a-z0-9])`).test(subject),
       );
+      const client = contact?.clientId == null ? {} : { clientId: contact.clientId };
       if (named !== undefined)
         matched.push({
           line: {
@@ -209,6 +214,7 @@ export const matchLines = Effect.fn("KinPulseOutside.match")(function* (
             matched: `${named.list === "invoices" ? "invoice" : "quote"} ${named.key}`,
           },
           domain: "finance",
+          ...client,
         });
       else if (contact !== undefined)
         matched.push({
@@ -217,6 +223,7 @@ export const matchLines = Effect.fn("KinPulseOutside.match")(function* (
             matched: `contact ${contact.key} ${contact.title}${contact.clientKey === null ? "" : ` of client ${contact.clientKey} ${contact.clientTitle ?? ""}`.trimEnd()}`,
           },
           domain: "chief",
+          ...client,
         });
     } else if (line.source === "calendar") {
       const meeting =
@@ -268,10 +275,25 @@ export const poll = Effect.fn("KinPulseOutside.poll")(function* (
       AND a.role = 'lead' AND a.retired_at IS NULL
     WHERE l.org_id = ${orgId} AND l.domain = 'finance' ORDER BY a.created_at, l.agent_id LIMIT 1`;
   const woke: Array<string> = [];
-  for (const { line, domain } of matched) {
+  for (const { line, domain, clientId } of matched) {
     const agentId = domain === "finance" ? (finance?.agentId ?? chief?.agentId) : chief?.agentId;
     if (agentId === undefined) continue;
     const key = `outside:${shortHash(`${line.connection}\0${line.source}\0${line.id}`)}`;
+    if (clientId !== undefined) {
+      const sent = line.at === null ? Number.NaN : Date.parse(line.at);
+      yield* logTouch(orgId, {
+        partyId: clientId,
+        kind: "email",
+        at: Number.isFinite(sent) && sent >= 0 ? Math.min(sent, at) : at,
+        note: (line.subject ?? "").slice(0, 300),
+        personId: null,
+        by: { kind: "agent", id: agentId },
+        originKey: `mail-in:${key}`,
+        now: at,
+      }).pipe(
+        Effect.catch((cause) => Effect.logWarning("Kin couldn't note client mail", { cause })),
+      );
+    }
     const queued = yield* queue
       .enqueue(
         yield* decodeEvent({

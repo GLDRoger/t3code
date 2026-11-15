@@ -92,7 +92,7 @@ import {
   type Mailbox,
   type MailProvider,
 } from "./MailProvider.ts";
-import { MAIL_PRESETS, mailProviderOf } from "./mailProviders.ts";
+import { mailProviderOf } from "./mailProviders.ts";
 import * as OAuth from "./OAuth.ts";
 import { instructionsDigest, pinDigest, reconcile, suggestedMode } from "./Pinning.ts";
 import {
@@ -130,8 +130,8 @@ export const ALWAYS_ASK =
 export const ASKED =
   "Nothing was sent. The owner sees a card with exactly this; their tap on Confirm sends it. Tell them in one short line to check the card. A typed yes doesn't send it.";
 export const OFFERED = "The owner will see a card to connect it.";
-const severalAccounts = (provider: MailProvider) =>
-  `There are several ${provider.name} accounts: name one by its id or address. Connection ${provider.preset} on a mail search, inbox list or calendar list reads every one of them. A reply goes from the thread's own account. For a new email or event, pick the account and from address by the owner's notes and where earlier mail with that person went; when that doesn't settle it, ask the owner in one line.`;
+const SEVERAL_ACCOUNTS =
+  "There are several mail accounts: name one by its id or address. Connection mail on a mail search, inbox list or calendar list reads every one of them (connection google or microsoft reads that provider's). A reply always goes from the account its thread is in, whatever you name. For a new email or event, pick the account and from address by the owner's notes, then by the account earlier mail with that person or client went through; with neither, use the first account listed. The card shows the owner the account and From, and he can switch them there.";
 const paused = (label: string) => `The owner paused ${label}. Only the owner can resume it.`;
 const signedOut = (label: string) =>
   `${label}'s sign-in expired. The owner can sign in again in Settings.`;
@@ -303,7 +303,12 @@ export type FreshAsk = {
   readonly card: ReturnType<typeof sendCard>;
   readonly bind: (widgetId: string) => Effect.Effect<void, SqlError.SqlError>;
 };
-export type AskOutcome = { readonly state: "sent" | "failed"; readonly reason: string | null };
+export type AskOutcome = {
+  readonly state: "sent" | "failed";
+  readonly reason: string | null;
+  /** A mail its account's sign-in refused: the same mail again, for after the sign-in. */
+  readonly fresh?: StaleAsk;
+};
 
 type Owner<I, A> = (people: People, input: I) => Effect.Effect<A, KinChatError>;
 type Lead<I, A> = (scope: McpInvocationScope, input: I) => Effect.Effect<A, KinChatError>;
@@ -1553,13 +1558,10 @@ const make = Effect.gen(function* () {
           ),
         );
         const connected = new Set(rows.map((row) => row.preset));
-        const several = MAIL_PRESETS.flatMap((preset) => {
-          const provider = mailProviderOf({ kind: "builtin", preset });
-          return provider !== undefined &&
-            rows.filter((row) => mailProviderOf(row) === provider).length > 1
-            ? [severalAccounts(provider)]
+        const several =
+          rows.filter((row) => mailProviderOf(row) !== undefined).length > 1
+            ? [SEVERAL_ACCOUNTS]
             : [];
-        });
         return {
           connections,
           canConnect: SERVICES.filter(
@@ -1803,6 +1805,41 @@ const make = Effect.gen(function* () {
     return { quoted: text.quoted };
   });
 
+  /**
+   * The mail account a reply's thread is in: the one named first, then every other. A thread is
+   * read with each account's own token, so another account's thread isn't found there.
+   */
+  const threadHome = Effect.fn("KinConnections.threadHome")(function* (
+    orgId: KinOrgId,
+    named: ConnectionRow | undefined,
+    threadId: unknown,
+  ) {
+    if (typeof threadId !== "string" || threadId === "") return undefined;
+    if (named !== undefined && (named.pausedAt !== null || named.state === "needs_sign_in"))
+      return named;
+    const live = (yield* liveConnections(orgId).pipe(provideSql)).filter(
+      (row) =>
+        mailProviderOf(row) !== undefined &&
+        row.pausedAt === null &&
+        row.state !== "needs_sign_in" &&
+        row.connectionId !== named?.connectionId,
+    );
+    for (const row of named === undefined ? live : [named, ...live]) {
+      const provider = mailProviderOf(row);
+      if (provider === undefined) continue;
+      const has = yield* withSignIn(orgId, row, (force) =>
+        tokenOf(orgId, row, force).pipe(
+          Effect.flatMap((token) => provider.replyTarget(http, token, mailboxOf(row), threadId)),
+        ),
+      ).pipe(
+        Effect.as(true),
+        Effect.orElseSucceed(() => false),
+      );
+      if (has) return row;
+    }
+    return undefined;
+  });
+
   const call = leadOp("call", (scope, input: typeof KinConnectionCallInput.Type) =>
     Effect.gen(function* () {
       const { turn, ownerOnly } = yield* ownerTurn(scope);
@@ -1816,14 +1853,26 @@ const make = Effect.gen(function* () {
       };
       if (!ownerOnly) return yield* refuse(turn, base, fail("not_allowed", SHARED_CONNECTIONS));
       const found = yield* resolveConnection(turn.orgId, input.connection).pipe(provideSql);
-      if (found._tag === "found") return yield* callOn(turn, found.row, input, base);
       const wanted = input.connection.trim().toLowerCase();
+      if (input.tool === MAIL_TOOL.reply) {
+        const home = yield* threadHome(
+          turn.orgId,
+          found._tag === "found" ? found.row : undefined,
+          args["threadId"],
+        );
+        if (home !== undefined) return yield* callOn(turn, home, input, base);
+      }
+      if (found._tag === "found") return yield* callOn(turn, found.row, input, base);
       const several = found.live.filter(
-        (row) => row.preset === wanted || row.label.toLowerCase() === wanted,
+        (row) =>
+          row.preset === wanted ||
+          row.label.toLowerCase() === wanted ||
+          (wanted === "mail" && mailProviderOf(row) !== undefined),
       );
-      // A read across every account of a provider answers as one, each part labelled by account.
+      // A read across every mail account, or a provider's, answers as one, labelled by account.
       if (
-        found._tag === "ambiguous" &&
+        (found._tag === "ambiguous" || wanted === "mail") &&
+        several.length > 0 &&
         ACROSS_ACCOUNTS.has(input.tool) &&
         several.every((row) => mailProviderOf(row) !== undefined)
       ) {
@@ -2103,6 +2152,12 @@ const make = Effect.gen(function* () {
       }
       const prepared = Option.getOrUndefined(decodePrepared(row.payload));
       const connection = yield* connectionById(input.orgId, row.connectionId);
+      // Refused before the tap counts, so the card stays open for after the sign-in.
+      if (connection?.state === "needs_sign_in")
+        return yield* fail(
+          "unavailable",
+          `${connection.accountLabel ?? connection.label} needs signing in again in Settings › Connections. Nothing was sent; tap Confirm again once it's back.`,
+        );
       const [tool] = (yield* toolsOf(input.orgId, row.connectionId)).filter(
         (candidate) => candidate.name === row.toolName,
       );
@@ -2248,7 +2303,19 @@ const make = Effect.gen(function* () {
             );
           })
     ).pipe(Effect.result);
-    if (sent._tag === "Failure")
+    if (sent._tag === "Failure") {
+      const after = yield* connectionById(orgId, row.connectionId).pipe(provideSql);
+      if (after?.state === "needs_sign_in" && prepared._tag === "email") {
+        const failed = yield* finish(
+          "failed",
+          `${after.accountLabel ?? after.label} needs signing in again in Settings › Connections, so nothing was sent. The same mail is below to Confirm once it's back.`,
+          null,
+        );
+        return {
+          ...failed,
+          fresh: { prepared, row, label: after.label, account: after.accountLabel },
+        };
+      }
       return yield* finish(
         "failed",
         isChatError(sent.failure) || isGatewayError(sent.failure)
@@ -2256,6 +2323,7 @@ const make = Effect.gen(function* () {
           : "Kin couldn't send it.",
         null,
       );
+    }
     const done = yield* finish("sent", null, sent.success);
     if (prepared._tag === "email")
       yield* sentToClient({

@@ -2057,7 +2057,7 @@ describe("KinConnections accounts", () => {
             [WORK_MAIL, ["billing@work.example", WORK_MAIL], "billing and invoices"],
           ],
         );
-        assert.include(listing.note ?? "", "several Google accounts");
+        assert.include(listing.note ?? "", "several mail accounts");
         const line = yield* promptLine(orgId);
         assert.include(line ?? "", `"${WORK_MAIL}" sends as "billing@work.example"`);
         assert.include(line ?? "", `owner's note "billing and invoices"`);
@@ -2085,19 +2085,17 @@ describe("KinConnections accounts", () => {
         );
 
         // A reply: only in its own account, from the alias it reached, quoted as Gmail does.
-        const which = yield* sendCall("mail_reply", { threadId: "t2", body: "Resent." }).pipe(
+        const unknown = yield* sendCall("mail_reply", { threadId: "t9", body: "Resent." }).pipe(
           Effect.flip,
         );
-        assert.include(which.message, "Several connections answer");
-        assert.include(which.message, "billing and invoices");
-        const elsewhere = yield* connections
-          .call(scope, {
-            connection: OWNER_MAIL,
-            tool: "mail_reply",
-            arguments: { threadId: "t2", body: "Resent." },
-          })
-          .pipe(Effect.flip);
-        assert.include(elsewhere.message, `${OWNER_MAIL} has no thread t2`);
+        assert.include(unknown.message, "Several connections answer");
+        assert.include(unknown.message, "billing and invoices");
+        yield* connections.call(scope, {
+          connection: OWNER_MAIL,
+          tool: "mail_reply",
+          arguments: { threadId: "t2", body: "Resent." },
+        });
+        assert.strictEqual(cards.at(-1)!.send?.account, WORK_MAIL);
         yield* connections.call(scope, {
           connection: WORK_MAIL,
           tool: "mail_reply",
