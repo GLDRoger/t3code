@@ -40,7 +40,7 @@ export const scheduleTaskId = (orgId: KinOrgId, scheduleId: string) =>
 export const LOOSE_BEFORE_MINUTES = 5;
 export const LOOSE_AFTER_MINUTES = 20;
 /** The native task's time for a loose one: five minutes earlier, never before midnight. */
-export const windowStart = (at: string) => {
+const windowStart = (at: string) => {
   const [hours, minutes] = at.split(":").map(Number);
   const start = Math.max(0, hours! * 60 + minutes! - LOOSE_BEFORE_MINUTES);
   return `${String(Math.floor(start / 60)).padStart(2, "0")}:${String(start % 60).padStart(2, "0")}`;

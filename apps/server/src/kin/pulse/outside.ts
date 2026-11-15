@@ -40,7 +40,7 @@ const cut = (text: string | null | undefined, max: number) =>
 const isoOf = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
 /** One connection's answer as lines: who, what, when, where. */
-export const linesOf = (
+const linesOf = (
   label: string,
   activity: KinConnectionActivity,
 ): ReadonlyArray<KinPulseOutsideLine> => {
@@ -48,35 +48,32 @@ export const linesOf = (
   switch (activity._tag) {
     case "google":
       return [
-        ...activity.mail.map(
-          (mail): KinPulseOutsideLine => ({
-            source: "mail",
-            connection,
-            id: cut(`${mail.threadId}:${mail.date ?? ""}`, 200)!,
-            at: cut(mail.date, 60),
-            who: cut(mail.from, 300),
-            subject: cut(mail.subject, 300),
-            where: null,
-          }),
-        ),
-        ...activity.calendar.map(
-          (event): KinPulseOutsideLine => ({
-            source: "calendar",
-            connection,
-            id: cut(`${event.eventId}:${event.updated ?? ""}`, 200)!,
-            at: cut(event.updated, 60),
-            who: null,
-            subject: cut(
-              `${event.summary ?? "(no title)"}${event.status === "cancelled" ? " (cancelled)" : ""}`,
-              300,
-            ),
-            where: cut(event.start, 200),
-          }),
-        ),
+        ...activity.mail.map((mail): KinPulseOutsideLine => ({
+          source: "mail",
+          connection,
+          id: cut(`${mail.threadId}:${mail.date ?? ""}`, 200)!,
+          at: cut(mail.date, 60),
+          who: cut(mail.from, 300),
+          subject: cut(mail.subject, 300),
+          where: null,
+        })),
+        ...activity.calendar.map((event): KinPulseOutsideLine => ({
+          source: "calendar",
+          connection,
+          id: cut(`${event.eventId}:${event.updated ?? ""}`, 200)!,
+          at: cut(event.updated, 60),
+          who: null,
+          subject: cut(
+            `${event.summary ?? "(no title)"}${event.status === "cancelled" ? " (cancelled)" : ""}`,
+            300,
+          ),
+          where: cut(event.start, 200),
+        })),
       ].slice(0, LINES_PER_CONNECTION);
     case "github":
-      return activity.deliveries.slice(0, LINES_PER_CONNECTION).map(
-        (delivery): KinPulseOutsideLine => ({
+      return activity.deliveries
+        .slice(0, LINES_PER_CONNECTION)
+        .map((delivery): KinPulseOutsideLine => ({
           source: "github",
           connection,
           id: cut(delivery.deliveryId ?? delivery.fireId, 200)!,
@@ -88,8 +85,7 @@ export const linesOf = (
             300,
           ),
           where: cut(delivery.repo, 200),
-        }),
-      );
+        }));
     case "unsupported":
       return [];
   }
@@ -100,34 +96,37 @@ export const fromConnections = (
   connections: KinConnections["Service"],
   sql: SqlClient.SqlClient,
 ): OutsideSource => ({
-  read: Effect.fn("KinPulseOutside.read")(function* (orgId: KinOrgId) {
-    const rows = yield* sql<{ connectionId: string; label: string }>`SELECT connection_id AS
+  read: Effect.fn("KinPulseOutside.read")(
+    function* (orgId: KinOrgId) {
+      const rows = yield* sql<{ connectionId: string; label: string }>`SELECT connection_id AS
         "connectionId", label FROM kin_connections
       WHERE org_id = ${orgId} AND removed_at IS NULL AND paused_at IS NULL AND state = 'active'
         AND preset IN ('google', 'github')
       ORDER BY created_at, connection_id`;
-    const lines: Array<KinPulseOutsideLine> = [];
-    const seen: Array<{ connectionId: string; until: number }> = [];
-    for (const row of rows) {
-      const activity = yield* connections.activity(orgId, row.connectionId).pipe(
-        Effect.catch((cause) =>
-          Effect.logWarning("Kin pulse couldn't read a connection", {
-            orgId,
-            connectionId: row.connectionId,
-            cause,
-          }).pipe(Effect.as(undefined)),
-        ),
-      );
-      if (activity === undefined || activity._tag === "unsupported") continue;
-      lines.push(...linesOf(row.label, activity));
-      seen.push({ connectionId: row.connectionId, until: activity.until });
-    }
-    return { lines, seen } satisfies OutsideRead;
-  }, Effect.catch((cause) =>
-    Effect.logWarning("Kin pulse outside read failed", { cause }).pipe(
-      Effect.as({ lines: [], seen: [] } satisfies OutsideRead),
+      const lines: Array<KinPulseOutsideLine> = [];
+      const seen: Array<{ connectionId: string; until: number }> = [];
+      for (const row of rows) {
+        const activity = yield* connections.activity(orgId, row.connectionId).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Kin pulse couldn't read a connection", {
+              orgId,
+              connectionId: row.connectionId,
+              cause,
+            }).pipe(Effect.as(undefined)),
+          ),
+        );
+        if (activity === undefined || activity._tag === "unsupported") continue;
+        lines.push(...linesOf(row.label, activity));
+        seen.push({ connectionId: row.connectionId, until: activity.until });
+      }
+      return { lines, seen } satisfies OutsideRead;
+    },
+    Effect.catch((cause) =>
+      Effect.logWarning("Kin pulse outside read failed", { cause }).pipe(
+        Effect.as({ lines: [], seen: [] } satisfies OutsideRead),
+      ),
     ),
-  )),
+  ),
   seen: (orgId, seen) =>
     Effect.forEach(
       seen,
@@ -217,9 +216,16 @@ export const matchLines = Effect.fn("KinPulseOutside.match")(function* (
         });
     } else if (line.source === "calendar") {
       const meeting =
-        meetings.find((row) => row.registerId === "work" && row.title.toLowerCase() === subject.replace(/ \(cancelled\)$/, "")) ??
         meetings.find(
-          (row) => row.registerId === "clients" && row.title.length >= 3 && subject.includes(row.title.toLowerCase()),
+          (row) =>
+            row.registerId === "work" &&
+            row.title.toLowerCase() === subject.replace(/ \(cancelled\)$/, ""),
+        ) ??
+        meetings.find(
+          (row) =>
+            row.registerId === "clients" &&
+            row.title.length >= 3 &&
+            subject.includes(row.title.toLowerCase()),
         );
       if (meeting !== undefined)
         matched.push({

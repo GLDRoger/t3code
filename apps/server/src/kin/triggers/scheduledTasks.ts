@@ -43,6 +43,7 @@ import {
 } from "../widgets/scheduledTaskCard.ts";
 import { KinConnections } from "../connections/ConnectionsService.ts";
 import { queueCheckIn } from "../pulse/checkIn.ts";
+import { seedCheckIns } from "../pulse/checkInSeeds.ts";
 import { fromConnections, noOutside } from "../pulse/outside.ts";
 import { cardChatFor, firingOrigin } from "./deferralOrigin.ts";
 import { hex } from "./deferrals.ts";
@@ -300,7 +301,10 @@ const make = Effect.gen(function* () {
   const schedules = yield* KinSchedules.KinSchedules;
   const eventQueue = yield* KinEventQueue.KinEventQueue;
   const withQueue = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-    effect.pipe(Effect.provideService(KinEventQueue.KinEventQueue, eventQueue));
+    effect.pipe(
+      Effect.provideService(KinEventQueue.KinEventQueue, eventQueue),
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
   const outsideSource = Option.match(yield* Effect.serviceOption(KinConnections), {
     onNone: () => noOutside,
     onSome: (connections) => fromConnections(connections, sql),
@@ -441,19 +445,21 @@ const make = Effect.gen(function* () {
         if (lead === undefined) return yield* skip("there is no agent to run it.");
         if (!admitted) return yield* skip("today's budget is used up.");
         if (row.checkIn === 1 && confirmed && outside !== undefined) {
-          const result = yield* withQueue(queueCheckIn({
-            orgId,
-            agentId: lead.agentId,
-            scheduleId: itemId,
-            title,
-            what: task.prompt,
-            dueAt: Date.parse(fire.dueAt),
-            loose: row.looseAt !== null,
-            manualId: manual ? fire.fireId : undefined,
-            zone: KinSchedules.hostTimeZone(),
-            at: now,
-            outside,
-          }));
+          const result = yield* withQueue(
+            queueCheckIn({
+              orgId,
+              agentId: lead.agentId,
+              scheduleId: itemId,
+              title,
+              what: task.prompt,
+              dueAt: Date.parse(fire.dueAt),
+              loose: row.looseAt !== null,
+              manualId: manual ? fire.fireId : undefined,
+              zone: KinSchedules.hostTimeZone(),
+              at: now,
+              outside,
+            }),
+          );
           checkedIn = true;
           yield* settleCard(
             result._tag === "nothing_new"
@@ -784,18 +790,32 @@ const make = Effect.gen(function* () {
       ),
   );
 
+  const seeded = new Set<string>();
   yield* ticks.register(
     "kin-scheduled-tasks",
     Effect.gen(function* () {
       const orgs = yield* sql<{
         orgId: string;
       }>`SELECT org_id AS "orgId" FROM kin_orgs ORDER BY org_id`;
-      for (const { orgId } of orgs)
+      for (const { orgId } of orgs) {
+        if (!seeded.has(orgId))
+          yield* seedCheckIns(KinOrgId.make(orgId), schedules).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.tap((wrote) =>
+              Effect.sync(() => {
+                if (wrote) seeded.add(orgId);
+              }),
+            ),
+            Effect.catch((cause) =>
+              Effect.logWarning("Kin default check-ins not written", { orgId, cause }),
+            ),
+          );
         yield* drain(KinOrgId.make(orgId)).pipe(
           Effect.catch((cause) =>
             Effect.logWarning("Kin scheduled tasks tick failed", { orgId, cause }),
           ),
         );
+      }
     }).pipe(
       Effect.catch((cause) => Effect.logWarning("Kin scheduled tasks scan failed", { cause })),
     ),

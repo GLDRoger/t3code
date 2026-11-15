@@ -10,7 +10,7 @@ import { ownerZone } from "../work/recordRows.ts";
 
 const WEEKDAYS = [1, 2, 3, 4, 5];
 /** The check-ins every company starts with, in the owner's time; he moves or removes them in chat. */
-export const CHECK_IN_SEEDS = [
+const CHECK_IN_SEEDS = [
   {
     slug: "morning",
     title: "Morning check-in",
@@ -57,8 +57,8 @@ export const onHostClock = (
 };
 
 /**
- * Writes the default check-ins once per company, for the Chief of staff, once it has one. A
- * company that removed them doesn't get them back: the seed row stays.
+ * Writes the default check-ins once per company, for the Chief of staff, once it has one; true
+ * once written, now or before. A company that removed them doesn't get them back.
  */
 export const seedCheckIns = Effect.fn("KinPulse.seedCheckIns")(function* (
   orgId: KinOrgId,
@@ -67,7 +67,7 @@ export const seedCheckIns = Effect.fn("KinPulse.seedCheckIns")(function* (
   const sql = yield* SqlClient.SqlClient;
   const [done] = yield* sql`SELECT 1 FROM kin_pulse_seeds
     WHERE org_id = ${orgId} AND seed = 'check-ins'`;
-  if (done !== undefined) return false;
+  if (done !== undefined) return true;
   const chief = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
   if (chief === undefined) return false;
   const [owner] = yield* sql<{ personId: string }>`SELECT owner_person_id AS "personId"

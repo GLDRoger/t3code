@@ -19,7 +19,7 @@ import * as KinPulse from "./KinPulse.ts";
 import { DAY_MS } from "./thresholds.ts";
 
 /** An unanswered nudge holds off the next for this long; after it, Kin may try once more. */
-export const NUDGE_BACK_OFF_MS = 7 * DAY_MS;
+const NUDGE_BACK_OFF_MS = 7 * DAY_MS;
 const decodeHours = Schema.decodeUnknownOption(Schema.fromJsonString(KinWorkHours));
 const refuse = (message: string) => new KinChatError({ reason: "not_allowed", message });
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
@@ -109,13 +109,11 @@ export const nudge = Effect.fn("KinPulse.nudge")(function* (input: {
     ON CONFLICT (org_id, person_id, day) DO NOTHING RETURNING day`;
   if (claimed.length === 0)
     return yield* refuse(`${person.name} was already nudged today. One nudge a day: leave it.`);
-  yield* input
-    .post(chatId, `pulse-nudge:${personId}:${day}`)
-    .pipe(
-      Effect.tapError(() =>
-        sql`DELETE FROM kin_pulse_nudges
+  yield* input.post(chatId, `pulse-nudge:${personId}:${day}`).pipe(
+    Effect.tapError(() =>
+      sql`DELETE FROM kin_pulse_nudges
           WHERE org_id = ${orgId} AND person_id = ${personId} AND day = ${day}`.pipe(Effect.ignore),
-      ),
-    );
+    ),
+  );
   return { person: person.name, chatId, day };
 });
