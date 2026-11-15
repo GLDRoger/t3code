@@ -117,6 +117,8 @@ const LABELS: Record<Exclude<keyof ProfilePatch, "bank" | "brand" | "logo">, str
   pan: "PAN",
   placeOfSupply: "Place of supply",
   sac: "SAC",
+  lutNumber: "LUT number",
+  lutDate: "LUT date",
   legalName: "Legal name",
   tradeName: "Trade name",
   address: "Address",
@@ -152,7 +154,7 @@ export const changeLines = (current: KinCompanyProfileData, patch: ProfilePatch)
       line(`Bank ${BANK_LABELS[key].toLowerCase()}`, current.bank[key], patch.bank?.[key]),
     ),
     ...(Object.keys(LABELS) as Array<keyof typeof LABELS>).flatMap((key) =>
-      line(LABELS[key], current[key], patch[key]),
+      line(LABELS[key], current[key] ?? null, patch[key]),
     ),
     ...(patch.logo === undefined || patch.logo?.sha256 === current.logo?.sha256
       ? []

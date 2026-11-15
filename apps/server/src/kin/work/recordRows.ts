@@ -169,6 +169,19 @@ const takesPayments = (sql: SqlClient.SqlClient) =>
  * The columns every read selects, with the derived ones: a running worker, the last PR, the client
  * and project as they are now, and the label they lend it. Joins stay inside the entry's org.
  */
+/**
+ * The one rule for what a figure, a chart or a file counts: an entry `r` that isn't void, dropped
+ * or undone, unless the filter it answers names dropped entries itself. Every query that adds up
+ * or exports amounts uses it or `countedPayment`; `counted.test.ts` finds one that doesn't.
+ */
+export const countedEntry = (
+  sql: SqlClient.SqlClient,
+  asked?: ReadonlyArray<KinRecordState> | undefined,
+) => (asked?.includes("dropped") === true ? sql`1 = 1` : sql`r.state <> 'dropped'`);
+/** A payment `p` not taken back, on an entry `r` that counts. */
+export const countedPayment = (sql: SqlClient.SqlClient) =>
+  sql`p.voided_at IS NULL AND ${countedEntry(sql)}`;
+
 /** An entry's money day: its own date, else when it was added. Filters, groups and Money share it. */
 export const moneyDay = (sql: SqlClient.SqlClient) => sql`COALESCE(r.date_at, r.created_at)`;
 

@@ -15,12 +15,21 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Docs from "../work/docs.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
-import { dayIn } from "../work/money.ts";
+import { isMoney, parseFields } from "../work/lists.ts";
+import { dayIn, formatMoney } from "../work/money.ts";
 import { ownerZone, type RecordRow } from "../work/recordRows.ts";
 import { turnSensitive } from "../work/workerAttempts.ts";
 import { gatherFacts, jobSensitive } from "./facts.ts";
 import { issuedNumber } from "./numbering.ts";
-import { assembleInputs, needsEntry, type Value } from "./recipe.ts";
+import { computeData } from "./compute.ts";
+import {
+  amountProblem,
+  assembleInputs,
+  declaredFigures,
+  issuable,
+  needsEntry,
+  type Value,
+} from "./recipe.ts";
 import { recipeLabelled } from "./recipeLabels.ts";
 import { KinDocRenderer } from "./render.ts";
 import type { Taken } from "./returnPath.ts";
@@ -65,6 +74,8 @@ export type MakeRequest = {
   readonly entry: string | undefined;
   /** Only the recipe's inputs that are the requester's; never a figure Kin stores. */
   readonly given: Readonly<Record<string, unknown>>;
+  /** A doc whose own text is the recipe's body, such as a PRD made a PDF with report. */
+  readonly doc?: string | undefined;
   readonly title: string;
   readonly requester: Requester;
   /** Names the job: the same key again returns what it made. */
@@ -124,6 +135,73 @@ type Plan = {
   readonly logo: { readonly bytes: Uint8Array; readonly extension: string } | null;
 };
 
+/** The doc's latest text as the body (and its title as the title) of a recipe that lays out Markdown. */
+const fromDoc = Effect.fn("KinDocMaker.fromDoc")(function* (
+  request: MakeRequest,
+  recipe: StoredRecipe,
+) {
+  if (request.doc === undefined) return { given: request.given, sensitive: false };
+  const takes = (name: string) =>
+    recipe.inputs.some((one) => one.name === name && one.from === "agent");
+  if (!takes("body"))
+    return yield* invalid(
+      `The ${recipe.name} recipe doesn't lay out a doc's text; the report recipe does. ${NOTHING}`,
+    );
+  const row = yield* Docs.docRow(request.orgId, { key: request.doc });
+  const latest = yield* Docs.versionOf(request.orgId, row.recordId);
+  if (latest === undefined || latest.bodyKind !== "markdown")
+    return yield* invalid(
+      `${row.key} is a file, not text, so it is already what it is. ${NOTHING}`,
+    );
+  return {
+    given: {
+      ...(takes("title") ? { title: latest.title } : {}),
+      body: latest.body,
+      ...request.given,
+    },
+    sensitive: row.sensitive === 1 || row.inheritedSensitive === 1,
+  };
+});
+
+/**
+ * What an issued document comes to, as its recipe declares it, when that is what its entry
+ * records: a document never shows a total its entry doesn't. `undefined` for any other document.
+ */
+const issuedFigures = (recipe: StoredRecipe, final: Plan) => {
+  const entry = final.entry;
+  if (entry === undefined || final.number === null || final.draft || !issuable(recipe))
+    return undefined;
+  const problem = amountProblem(recipe);
+  if (problem !== undefined) return invalid(`${NOTHING} ${problem}`);
+  const computed = computeData(final.inputs, recipe.computed);
+  if ("error" in computed) return invalid(`${NOTHING} ${computed.error}`);
+  const figures = declaredFigures(recipe, computed.data);
+  if ("error" in figures) return invalid(`${NOTHING} The ${recipe.name} recipe: ${figures.error}.`);
+  const recorded =
+    entry.amountMinor === null
+      ? null
+      : { minor: entry.amountMinor, currency: entry.currency ?? "" };
+  if (
+    recorded === null ||
+    recorded.minor !== figures.total.minor ||
+    recorded.currency !== figures.total.currency
+  )
+    return invalid(
+      `${NOTHING} ${final.number}'s document comes to ${formatMoney(figures.total)}, but ${entry.key} is recorded at ${recorded === null ? "no amount" : formatMoney(recorded)}. Correct whichever is wrong, then make it again.`,
+    );
+  const stored = parseFields(entry.fieldsJson).tax;
+  if (
+    stored !== undefined &&
+    stored !== null &&
+    isMoney(stored) &&
+    (stored.minor !== figures.tax.minor || stored.currency !== figures.tax.currency)
+  )
+    return invalid(
+      `${NOTHING} ${final.number}'s document charges ${formatMoney(figures.tax)} of tax, but ${entry.key} records ${formatMoney(stored)}. Correct whichever is wrong, then make it again.`,
+    );
+  return figures;
+};
+
 /** The exact inputs from stored rows and the requester's own, and what follows from them. */
 const plan = Effect.fn("KinDocMaker.plan")(function* (request: MakeRequest, recipe: StoredRecipe) {
   const records = yield* KinRecords;
@@ -142,8 +220,9 @@ const plan = Effect.fn("KinDocMaker.plan")(function* (request: MakeRequest, reci
     return yield* invalid(
       `The ${recipe.name} recipe is for ${recipe.list} entries, and ${entry.key} isn't one. ${NOTHING}`,
     );
-  const gathered = yield* gatherFacts(request.orgId, recipe, entry, request.given);
-  const assembled = assembleInputs(recipe, request.given, gathered.facts, gathered.currency);
+  const source = yield* fromDoc(request, recipe);
+  const gathered = yield* gatherFacts(request.orgId, recipe, entry, source.given);
+  const assembled = assembleInputs(recipe, source.given, gathered.facts, gathered.currency);
   if ("error" in assembled) return yield* assembled.error;
   // The logo's bytes are part of what was rendered, though the template sees only its path.
   const inputsHash = sha256(
@@ -164,6 +243,7 @@ const plan = Effect.fn("KinDocMaker.plan")(function* (request: MakeRequest, reci
     draft: recipe.numbered && gathered.number === null,
     sensitive:
       fromTurn ||
+      source.sensitive ||
       jobSensitive(recipe, assembled.inputs, gathered) ||
       (yield* recipeLabelled(request.orgId, recipe)),
     docOrigin:
@@ -184,6 +264,8 @@ export const makeDocument = Effect.fn("KinDocMaker.make")(function* (request: Ma
       recipe: request.recipe,
       entry: request.entry ?? null,
       given: request.given,
+      // Only when set, so a request made before docs could be named keeps its fingerprint.
+      ...(request.doc === undefined ? {} : { doc: request.doc }),
       title: request.title,
       preview: request.preview === true,
     }),
@@ -266,6 +348,8 @@ export const makeDocument = Effect.fn("KinDocMaker.make")(function* (request: Ma
       if (final.inputsHash !== first.inputsHash)
         return yield* invalid(`${NOTHING} The figures changed while Kin was rendering; ask again.`);
       const sensitive = final.sensitive || first.sensitive;
+      const figures = issuedFigures(recipe, final);
+      if (isChatError(figures)) return yield* figures;
       const inserted = yield* sql`INSERT INTO kin_doc_jobs (org_id, worker_id, agent_id, wakeup_id,
           mode, recipe, recipe_commit, entry_record_id, inputs_sha256, number, sensitive,
           doc_origin, worktree_path, branch, chat_id, audience, answered_message_id,
@@ -284,6 +368,12 @@ export const makeDocument = Effect.fn("KinDocMaker.make")(function* (request: Ma
         ON CONFLICT (org_id, worker_id) DO NOTHING RETURNING worker_id`;
       if (inserted.length === 0)
         return yield* invalid(`${NOTHING} This request is already being made; ask again.`);
+      if (figures !== undefined)
+        yield* sql`INSERT INTO kin_doc_job_figures (org_id, worker_id, entry_record_id, number,
+            total_minor, tax_minor, currency, taxes_json, rendered_at)
+          VALUES (${request.orgId}, ${jobId}, ${final.entry!.recordId}, ${final.number},
+            ${figures.total.minor}, ${figures.tax.minor}, ${figures.total.currency},
+            ${canonical(figures.taxes)}, ${now})`;
       const owner: KinWorkPrincipal =
         requester._tag === "agent"
           ? { _tag: "agent", agentId: requester.agentId }
