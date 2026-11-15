@@ -420,7 +420,7 @@ it.effect("a turn others read gets only Work's tasks, and a member reaches only 
       "record_hand_back",
       "touch_log",
     ]);
-    assert.lengthOf(Object.keys(KinWorkToolkit.tools), 13);
+    assert.lengthOf(Object.keys(KinWorkToolkit.tools), 15);
     for (const tool of Object.keys(KinWorkToolkit.tools))
       assert.strictEqual(yield* sharedToolAllowed(shared, tool, {}), view.has(tool), tool);
     // Only the owner names who else holds a task.
