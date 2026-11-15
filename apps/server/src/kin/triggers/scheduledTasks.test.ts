@@ -646,6 +646,6 @@ it.effect(
       const teammate = { ...owner, personId: KinPersonId.make("teammate-a") };
       const refused = yield* CheckIns.list([teammate], orgId).pipe(Effect.flip);
       assert.equal(refused._tag, "KinChatError");
-    }).pipe(Effect.provide(layer), Effect.provide(identity));
+    }).pipe(Effect.provide(Layer.merge(layer, identity)));
   },
 );
