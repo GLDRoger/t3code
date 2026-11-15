@@ -1,4 +1,4 @@
-export const instructions = `instructions-version: 38
+export const instructions = `instructions-version: 39
 
 # You
 

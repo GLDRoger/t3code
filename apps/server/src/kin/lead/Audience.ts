@@ -1,4 +1,4 @@
-import type { KinAgentId, KinOrgId } from "@t3tools/contracts";
+import { KinPersonId, type KinAgentId, type KinOrgId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -127,6 +127,87 @@ type Turn = {
 };
 
 /**
+ * The people behind a turn, from stored rows only. Readers: every current human member of each
+ * chat it answers in or was asked from (else the lead's owner chat). Askers: whoever's act it
+ * carries out, by stored author, reactor, `origin.personId` or a task's assigner. Someone whose
+ * words a task quotes is neither. `owner` is the lead's owner.
+ */
+const peopleBehind = Effect.fn("KinAudience.peopleBehind")(function* (turn: Turn) {
+  const sql = yield* SqlClient.SqlClient;
+  const [lead] = yield* sql<{ owner: string; ownerChatId: string }>`
+    SELECT a.owner_person_id AS owner, l.owner_chat_id AS "ownerChatId" FROM kin_leads l
+    JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+    WHERE l.org_id = ${turn.orgId} AND l.agent_id = ${turn.agentId} ORDER BY l.agent_id`;
+  if (lead === undefined) return undefined;
+  const events = yield* sql<{
+    chatId: string | null;
+    originChatId: string | null;
+    asker: string | null;
+    originPersonId: string | null;
+  }>`
+    SELECT CASE WHEN e.tag IN ${sql.in(CHAT_ANSWER_TAGS)} THEN json_extract(e.json, '$.chatId') END AS "chatId",
+      json_extract(e.json, '$.origin.chatId') AS "originChatId",
+      json_extract(e.json, '$.origin.personId') AS "originPersonId",
+      CASE
+        WHEN e.tag IN ('chat.message', 'widget.action') THEN (SELECT m.author_person_id
+          FROM kin_messages m WHERE m.org_id = e.org_id AND m.author_kind = 'human'
+            AND m.message_id = json_extract(e.json, '$.messageId')
+            AND m.chat_id = json_extract(e.json, '$.chatId'))
+        WHEN e.tag IN ('chat.reaction', 'record.changed')
+          AND json_extract(e.json, '$.provenance._tag') = 'human'
+          THEN json_extract(e.json, '$.provenance.personId')
+        END AS asker
+    FROM kin_events e
+    WHERE e.org_id = ${turn.orgId} AND e.agent_id = ${turn.agentId} AND e.wakeup_id = ${turn.wakeupId}
+    ORDER BY e.event_id`;
+  const chats = new Set<string>();
+  const askers = new Set<KinPersonId>();
+  let answersChat = false;
+  for (const event of events) {
+    if (event.chatId !== null) {
+      answersChat = true;
+      chats.add(event.chatId);
+    }
+    if (event.originChatId !== null) chats.add(event.originChatId);
+    if (event.asker !== null) askers.add(KinPersonId.make(event.asker));
+    if (event.originPersonId !== null) askers.add(KinPersonId.make(event.originPersonId));
+  }
+  if (!answersChat) chats.add(lead.ownerChatId);
+  const members = yield* sql<{ personId: string }>`SELECT DISTINCT person_id AS "personId"
+    FROM kin_chat_members WHERE org_id = ${turn.orgId} AND chat_id IN ${sql.in([...chats])}
+      AND principal_kind = 'person' AND left_at IS NULL AND person_id IS NOT NULL
+    ORDER BY person_id`;
+  return {
+    owner: KinPersonId.make(lead.owner),
+    readers: new Set(members.map((row) => KinPersonId.make(row.personId))),
+    askers,
+  };
+});
+
+/**
+ * Whether a person is owner-level for this lead: today, its owner. The one place the rule lives,
+ * so co-owners join it in one change.
+ */
+const ownerLevel = (person: KinPersonId, owner: KinPersonId) => person === owner;
+
+/**
+ * The people behind a turn whose view a `view` tool reads at: every one who is not owner-level,
+ * and which of them asked. Empty means the owner alone.
+ */
+export const turnPeople = Effect.fn("KinAudience.turnPeople")(function* (turn: Turn) {
+  const behind = yield* peopleBehind(turn);
+  if (behind === undefined) return undefined;
+  const people = [...new Set([...behind.readers, ...behind.askers])]
+    .filter((person) => !ownerLevel(person, behind.owner))
+    .toSorted();
+  return {
+    people,
+    askers: people.filter((person) => behind.askers.has(person)),
+    owner: behind.owner,
+  };
+});
+
+/**
  * The one audience every capability check uses. `owner_only` only while the prompt was built for
  * the owner alone and the turn still is: unrecorded counts as shared, and a turn found shared once
  * stays shared until it ends (`shared_since`), whoever leaves the chat afterwards.
@@ -233,7 +314,7 @@ export const ownerOnlyChat = Effect.fn("KinAudience.ownerOnlyChat")(function* (
 
 /**
  * Whether the turn was aborted because someone besides the owner joined a chat it answers in
- * (`abortPrivateTurns`): it may do nothing more anywhere.
+ * (`abortChatTurns`): it may do nothing more anywhere.
  */
 export const aborted = Effect.fn("KinAudience.aborted")(function* (turn: Turn) {
   const sql = yield* SqlClient.SqlClient;
@@ -243,16 +324,14 @@ export const aborted = Effect.fn("KinAudience.aborted")(function* (turn: Turn) {
 });
 
 /**
- * In the join's transaction: aborts every running turn answering or asked from `chatId` that is
- * private or was built before the chat was shared, or any such turn once `floorRaised` (it read
- * below the new history floor), unless `personId` is its lead's owner or its reply settled.
- * Returns the turns the caller must stop after commit.
+ * In the join's transaction: aborts every running turn answering or asked from `chatId`, whatever
+ * its audience (its prompt may hold what the newcomer may not read), unless `personId` is its
+ * lead's owner or its reply settled. Returns the turns the caller must stop after commit.
  */
-export const abortPrivateTurns = Effect.fn("KinAudience.abortPrivateTurns")(function* (input: {
+export const abortChatTurns = Effect.fn("KinAudience.abortChatTurns")(function* (input: {
   readonly orgId: KinOrgId;
   readonly chatId: string;
   readonly personId: string;
-  readonly floorRaised: boolean;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const now = yield* Clock.currentTimeMillis;
@@ -260,8 +339,6 @@ export const abortPrivateTurns = Effect.fn("KinAudience.abortPrivateTurns")(func
     UPDATE kin_wakeups AS w SET aborted_at = ${now}, shared_since = COALESCE(shared_since, ${now})
     WHERE w.org_id = ${input.orgId} AND w.status = 'running' AND w.aborted_at IS NULL
       AND w.settled_at IS NULL
-      AND (${input.floorRaised ? 1 : 0} = 1 OR w.audience IS NOT 'shared' OR EXISTS (SELECT 1 FROM kin_chats c
-        WHERE c.org_id = w.org_id AND c.chat_id = ${input.chatId} AND w.started_at <= c.shared_at))
       AND EXISTS (SELECT 1 FROM kin_agents a WHERE a.org_id = w.org_id
         AND a.agent_id = w.agent_id AND a.owner_person_id IS NOT ${input.personId})
       AND (EXISTS (SELECT 1 FROM kin_events e

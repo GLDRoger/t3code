@@ -117,7 +117,7 @@ export class KinStop extends Context.Service<
     ) => Effect.Effect<KinOrgState, StopError>;
     readonly attach: (fanOut: KinStopFanOut) => Effect.Effect<void, never, Scope.Scope>;
     /**
-     * After the commit that marked them (`abortPrivateTurns`): stops each wake-up's run without
+     * After the commit that marked them (`abortChatTurns`): stops each wake-up's run without
      * showing anything. Its events wait for a fresh wake-up; no person's authority is involved.
      */
     readonly abortTurns: (
