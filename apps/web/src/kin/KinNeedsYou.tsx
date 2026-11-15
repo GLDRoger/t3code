@@ -107,8 +107,44 @@ export function KinNeedsYou(
   };
   const total = split.rows.length + rows.length;
   const limit = expanded ? total : KIN_NEEDS_YOU_SHOWN;
-  const shownAttention = split.rows.slice(0, limit);
-  const shown = rows.slice(0, Math.max(0, limit - shownAttention.length));
+  // The money row leads, so a long run of attention rows never hides it.
+  const lead = split.moneyRow === null ? 0 : 1;
+  const shownAttention = split.rows.slice(0, Math.max(0, limit - lead));
+  const shown = [
+    ...rows.slice(0, lead),
+    ...rows.slice(lead, lead + Math.max(0, limit - lead - shownAttention.length)),
+  ];
+  const needRow = (row: (typeof rows)[number]) => {
+    const Icon = ICON[row.kind];
+    return (
+      <li key={row.id}>
+        <button
+          type="button"
+          onClick={() => open(row.open)}
+          className="flex w-full items-start gap-3 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
+        >
+          <Icon
+            aria-hidden
+            className={cn(
+              "mt-0.5 size-4 shrink-0",
+              row.late ? "text-destructive-foreground" : "text-muted-foreground",
+            )}
+          />
+          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <span className="truncate text-sm text-foreground">{row.title}</span>
+            <span
+              className={cn(
+                "truncate text-xs",
+                row.late ? "text-destructive-foreground" : "text-muted-foreground",
+              )}
+            >
+              {row.detail}
+            </span>
+          </span>
+        </button>
+      </li>
+    );
+  };
   return (
     <KinWorkSection
       title={KIN_WORK_HOME.needsYou}
@@ -124,6 +160,7 @@ export function KinNeedsYou(
         <p className="px-2 text-sm text-muted-foreground">{KIN_WORK_HOME.nothingNeedsYou}</p>
       ) : (
         <ul className="flex flex-col">
+          {shown.slice(0, lead).map(needRow)}
           {shownAttention.map((row) => (
             <KinAttentionItem
               key={row.id}
@@ -134,37 +171,7 @@ export function KinNeedsYou(
               onOpen={openAttention}
             />
           ))}
-          {shown.map((row) => {
-            const Icon = ICON[row.kind];
-            return (
-              <li key={row.id}>
-                <button
-                  type="button"
-                  onClick={() => open(row.open)}
-                  className="flex w-full items-start gap-3 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
-                >
-                  <Icon
-                    aria-hidden
-                    className={cn(
-                      "mt-0.5 size-4 shrink-0",
-                      row.late ? "text-destructive-foreground" : "text-muted-foreground",
-                    )}
-                  />
-                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <span className="truncate text-sm text-foreground">{row.title}</span>
-                    <span
-                      className={cn(
-                        "truncate text-xs",
-                        row.late ? "text-destructive-foreground" : "text-muted-foreground",
-                      )}
-                    >
-                      {row.detail}
-                    </span>
-                  </span>
-                </button>
-              </li>
-            );
-          })}
+          {shown.slice(lead).map(needRow)}
         </ul>
       )}
       <KinAttentionHandled rows={attention.handled} handler={handler} />
