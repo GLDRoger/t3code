@@ -370,6 +370,7 @@ it.live(
           "kin_leads",
           "people_read",
           "kin_hand_off",
+          "kin_take_private",
           "kin_ask",
           "kin_chart",
           "kin_visual",

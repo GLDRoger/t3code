@@ -16,15 +16,18 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
 
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
-import { SHARED_REFUSAL, effectiveAudience } from "./Audience.ts";
+import { SHARED_REFUSAL, aborted, effectiveAudience } from "./Audience.ts";
+import { wakeEvent } from "./ChatWake.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { resolveLead } from "./LeadMemory.ts";
 import { messageBodyLimit } from "./LeadPrompt.ts";
@@ -58,6 +61,23 @@ export const HandOffResult = Schema.Struct({
   // The lead it went to, by name, to tell the owner.
   to: Schema.String,
   passed: Schema.Literal(true),
+});
+export const TakePrivateInput = Schema.Struct({
+  sourceEventId: TrimmedNonEmptyString.annotate({
+    description: "The event of the person's own message in this group that you are taking private.",
+  }),
+  agent: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(80)).annotate({
+      description:
+        "Another agent in this group who should answer it, by name or domain. Leave out to answer it yourself.",
+    }),
+  ),
+});
+export const TakePrivateResult = Schema.Struct({
+  // Who asked, by name, and the agent answering them in their direct chat.
+  person: Schema.String,
+  agent: Schema.String,
+  continued: Schema.Literal(true),
 });
 
 const NOTHING = "Nothing was passed on.";
@@ -119,7 +139,7 @@ const fromOwnerAlone = (event: KinEvent, self: Colleague) => {
   }
 };
 const fold = (value: string) => value.trim().toLowerCase();
-const describe = (leads: ReadonlyArray<Colleague>) =>
+const describe = (leads: ReadonlyArray<{ readonly name: string; readonly domain: string }>) =>
   leads.map((lead) => `${lead.name} (${lead.domain})`).join(", ");
 
 /**
@@ -138,6 +158,15 @@ export class KinHandoff extends Context.Service<
       scope: McpInvocationScope,
       input: typeof HandOffInput.Type,
     ) => Effect.Effect<typeof HandOffResult.Type, KinChatError>;
+    /**
+     * A person's own message in a group goes on in their direct chat with this lead or another in
+     * the group: Kin posts their words there as theirs, which wakes that lead with that person's
+     * access and nothing of the group's chat. Once per message.
+     */
+    readonly takePrivate: (
+      scope: McpInvocationScope,
+      input: typeof TakePrivateInput.Type,
+    ) => Effect.Effect<typeof TakePrivateResult.Type, KinChatError>;
   }
 >()("t3/kin/lead/Handoff/KinHandoff") {}
 
@@ -145,6 +174,7 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const identity = yield* KinIdentity;
   const chat = yield* KinChatService;
+  const repo = yield* KinChatRepository;
   const queue = yield* KinEventQueue;
   const lead = (scope: McpInvocationScope) =>
     resolveLead(scope).pipe(
@@ -185,6 +215,163 @@ const make = Effect.gen(function* () {
       ORDER BY event_id`;
     return yield* decodeEvents(rows.map((row) => row.json));
   });
+
+  /** A person's own text in a live group, from this wake-up's stored events and messages. */
+  const groupAsk = Effect.fn("KinHandoff.groupAsk")(function* (ctx: Lead, sourceEventId: string) {
+    const [stored] = yield* sql<{ json: string }>`SELECT json FROM kin_events
+      WHERE org_id = ${ctx.orgId} AND agent_id = ${ctx.agentId} AND wakeup_id = ${ctx.wakeupId}
+        AND event_id = ${sourceEventId} ORDER BY event_id`;
+    if (stored === undefined) return yield* missing();
+    const event = yield* decodeEvent(stored.json);
+    if (event._tag !== "chat.message" || event.origin !== undefined) return undefined;
+    const message = yield* repo
+      .getMessage({ orgId: ctx.orgId, messageId: event.messageId })
+      .pipe(Effect.map(Option.getOrUndefined));
+    if (
+      message === undefined ||
+      message.chatId !== event.chatId ||
+      message.author._tag !== "human" ||
+      message.kind !== "text" ||
+      message.status !== "posted"
+    )
+      return undefined;
+    const [room] = yield* sql<{ title: string | null }>`SELECT title FROM kin_chats
+      WHERE org_id = ${ctx.orgId} AND chat_id = ${event.chatId} AND kind <> 'direct'
+        AND archived_at IS NULL ORDER BY chat_id`;
+    if (room === undefined) return undefined;
+    const [person] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+      WHERE org_id = ${ctx.orgId} AND person_id = ${message.author.personId} ORDER BY person_id`;
+    return {
+      message,
+      personId: message.author.personId,
+      personName: person?.name ?? "them",
+      room: room.title ?? "the group",
+    };
+  });
+
+  /** The live leads in a chat now, who joined first first. */
+  const roomAgents = Effect.fn("KinHandoff.roomAgents")(function* (ctx: Lead, chatId: string) {
+    return yield* sql<{ agentId: KinAgentId; name: string; domain: string }>`
+      SELECT l.agent_id AS "agentId", l.name, l.domain FROM kin_chat_members m
+      JOIN kin_leads l ON l.org_id = m.org_id AND l.agent_id = m.agent_id
+      JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = m.agent_id
+        AND a.role = 'lead' AND a.retired_at IS NULL
+      WHERE m.org_id = ${ctx.orgId} AND m.chat_id = ${chatId} AND m.principal_kind = 'agent'
+        AND m.left_at IS NULL
+      ORDER BY m.joined_at, l.agent_id`;
+  });
+
+  /** One of these by name, else by domain; the refusal names the ones there are. */
+  const pick = <T extends { readonly name: string; readonly domain: string }>(
+    agents: ReadonlyArray<T>,
+    to: string,
+  ) => {
+    const wanted = fold(to);
+    const byName = agents.filter((entry) => fold(entry.name) === wanted);
+    const matches =
+      byName.length > 0 ? byName : agents.filter((entry) => fold(entry.domain) === wanted);
+    if (matches.length === 1) return Effect.succeed(matches[0]!);
+    return Effect.fail(
+      new KinChatError({
+        reason: matches.length === 0 ? "not_found" : "invalid_state",
+        message: `${matches.length === 0 ? "No agent here answers to that name or domain" : "Several agents answer to that"}. The agents are: ${describe(agents)}. ${NOTHING} Call again with one of those names.`,
+      }),
+    );
+  };
+
+  /**
+   * In a group: the agent there whose domain owns a person's message answers it there, as if they
+   * had named it. One agent per message, and it can't be passed on again.
+   */
+  const passInRoom = Effect.fn("KinHandoff.passInRoom")(function* (
+    ctx: Lead,
+    input: typeof HandOffInput.Type,
+  ) {
+    const ask = yield* groupAsk(ctx, input.sourceEventId);
+    if (ask === undefined)
+      return yield* refuse(
+        "In a chat with other people, only a person's own message in a group can be passed on, to an agent in that group. Answer what everyone here may see.",
+      );
+    const others = (yield* roomAgents(ctx, ask.message.chatId)).filter(
+      (entry) => entry.agentId !== ctx.agentId,
+    );
+    if (others.length === 0)
+      return yield* refuse(
+        "No other agent is in this group. Answer it yourself, or take it private with kin_take_private.",
+      );
+    const target = yield* pick(others, input.to);
+    const { messageId } = ask.message;
+    const claimed = yield* sql<{ toAgentId: KinAgentId }>`INSERT INTO kin_handoffs
+        (org_id, message_id, from_agent_id, to_agent_id, event_id, created_at)
+      VALUES (${ctx.orgId}, ${messageId}, ${ctx.agentId}, ${target.agentId},
+        ${wakeEvent(ask.message, target.agentId, undefined).eventId}, ${yield* Clock.currentTimeMillis})
+      ON CONFLICT (org_id, message_id) DO NOTHING RETURNING to_agent_id AS "toAgentId"`;
+    if (claimed.length === 0) {
+      const [record] = yield* sql<{ toAgentId: KinAgentId }>`SELECT to_agent_id AS "toAgentId"
+        FROM kin_handoffs WHERE org_id = ${ctx.orgId} AND message_id = ${messageId}
+        ORDER BY message_id`;
+      if (record?.toAgentId === target.agentId) return { to: target.name, passed: true as const };
+      return yield* refuse(
+        "This was already passed on, and a request goes to one agent only. Answer what you can, or say in one line who has it.",
+      );
+    }
+    // The same event a mention makes: an agent named in the message already has it, so it answers once.
+    yield* queue
+      .enqueue(wakeEvent(ask.message, target.agentId, undefined))
+      .pipe(Effect.catchTags({ KinEventQueueConflict: () => Effect.void }));
+    return { to: target.name, passed: true as const };
+  });
+
+  const takePrivate = Effect.fn("KinHandoff.takePrivate")(function* (
+    scope: McpInvocationScope,
+    input: typeof TakePrivateInput.Type,
+  ) {
+    const ctx = yield* lead(scope);
+    const ask = yield* groupAsk(ctx, input.sourceEventId);
+    if (ask === undefined)
+      return yield* refuse(
+        "Only a person's own message in a group can be taken private. Answer it here with what everyone here may see.",
+      );
+    const agents = yield* roomAgents(ctx, ask.message.chatId);
+    const target =
+      input.agent === undefined
+        ? agents.find((entry) => entry.agentId === ctx.agentId)
+        : yield* pick(agents, input.agent);
+    if (target === undefined) return yield* missing();
+    const key = `private:${ask.message.messageId}`;
+    const claimed = yield* sql`INSERT INTO kin_handoffs
+        (org_id, message_id, from_agent_id, to_agent_id, event_id, created_at)
+      VALUES (${ctx.orgId}, ${key}, ${ctx.agentId}, ${target.agentId}, ${key},
+        ${yield* Clock.currentTimeMillis})
+      ON CONFLICT (org_id, message_id) DO NOTHING RETURNING to_agent_id`;
+    if (claimed.length === 0) {
+      const [record] = yield* sql<{ toAgentId: KinAgentId }>`SELECT to_agent_id AS "toAgentId"
+        FROM kin_handoffs WHERE org_id = ${ctx.orgId} AND message_id = ${key} ORDER BY message_id`;
+      if (record?.toAgentId !== target.agentId)
+        return yield* refuse(
+          "This was already taken private with another agent. Say in one line that it is answered directly.",
+        );
+    }
+    const asker = { _tag: "person" as const, orgId: ctx.orgId, personId: ask.personId };
+    const direct = yield* chat.createDirect(asker, { orgId: ctx.orgId, agentId: target.agentId });
+    // The person's own words, posted as theirs in their own chat: that wakes the lead there at
+    // their access, from stored rows, and carries nothing of the group's chat or this turn.
+    yield* chat.notice({
+      orgId: ctx.orgId,
+      chatId: direct.chatId,
+      audience: "chat",
+      messageId: KinMessageId.make(
+        `kin-private-${NodeCrypto.createHash("sha256").update(key).digest("hex").slice(0, 32)}`,
+      ),
+      body: `From ${ask.room}. ${target.name} answers you here.`,
+    });
+    yield* chat.send(asker, {
+      chatId: direct.chatId,
+      clientMessageId: key,
+      body: ask.message.body,
+    });
+    return { person: ask.personName, agent: target.name, continued: true as const };
+  }, guarded("KinHandoff.takePrivate"));
 
   const leads = Effect.fn("KinHandoff.leads")(function* (scope: McpInvocationScope) {
     const ctx = yield* lead(scope);
@@ -238,12 +425,14 @@ const make = Effect.gen(function* () {
     const ctx = yield* lead(scope);
     return yield* sql.withTransaction(
       Effect.gen(function* () {
-        // The gate refuses it too; this holds in the write itself, after a join or an abort.
+        const access = Effect.provideService(SqlClient.SqlClient, sql);
+        if (yield* aborted(ctx).pipe(access)) return yield* refuse(SHARED_REFUSAL);
+        // Others read this turn: only within the group it answers, never to a private chat.
         if (
           (yield* effectiveAudience(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql))) !==
           "owner_only"
         )
-          return yield* refuse(SHARED_REFUSAL);
+          return yield* passInRoom(ctx, input);
         const all = yield* colleagues(ctx);
         const self = all.find((entry) => entry.agentId === ctx.agentId);
         if (self === undefined || self.memberId === null) return yield* missing();
@@ -252,6 +441,9 @@ const make = Effect.gen(function* () {
             AND event_id = ${input.sourceEventId} ORDER BY event_id`;
         if (stored === undefined) return yield* missing();
         const event = yield* decodeEvent(stored.json);
+        // Asked in a group of the owner and agents: the agent there answers it there.
+        if (event._tag === "chat.message" && event.chatId !== self.ownerChatId)
+          return yield* passInRoom(ctx, input);
         // One hop: what was passed on is answered where it landed, so two leads can't trade it.
         if (event._tag === "chat.message" && event.origin !== undefined)
           return yield* refuse(
@@ -366,7 +558,7 @@ const make = Effect.gen(function* () {
     );
   }, guarded("KinHandoff.handOff"));
 
-  return KinHandoff.of({ leads, handOff });
+  return KinHandoff.of({ leads, handOff, takePrivate });
 });
 
 export const layer = Layer.effect(KinHandoff, make);

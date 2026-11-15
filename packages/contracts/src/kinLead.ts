@@ -168,6 +168,10 @@ export const KinLeadsListResult = Schema.Struct({
   contacts: Schema.optional(Schema.Array(KinLeadContact)),
   // The agent every teammate may message; null when off. Older hosts leave it out.
   teamAgentId: Schema.optional(Schema.NullOr(KinAgentId)),
+  // The company chat while it is on, and who answers there by default. Older hosts leave it out.
+  companyChat: Schema.optional(
+    Schema.NullOr(Schema.Struct({ chatId: KinChatId, leadAgentId: Schema.NullOr(KinAgentId) })),
+  ),
 });
 export type KinLeadsListResult = typeof KinLeadsListResult.Type;
 /** Omitted fields stay as they are. */

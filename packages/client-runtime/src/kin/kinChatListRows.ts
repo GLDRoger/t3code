@@ -1,4 +1,8 @@
-import type { KinChatSummary } from "@t3tools/contracts";
+import {
+  KIN_COMPANY_CHAT_TEAM_ID,
+  type KinChatMembersResult,
+  type KinChatSummary,
+} from "@t3tools/contracts";
 
 import { KIN_RETIRED_LABEL, kinRetiredDirectAgentId } from "./kinAgentRetire.ts";
 import { kinAttachmentSummary } from "./kinAttachments.ts";
@@ -22,6 +26,8 @@ export interface KinChatListRow {
   readonly fresh: boolean;
   /** A direct chat whose agent is retired: kept to read, listed after everything else. */
   readonly retired: boolean;
+  /** The company chat, everyone on the team in it: always first. */
+  readonly company: boolean;
 }
 
 // A card posted without words has no body to preview, so its id's prefix says what it was.
@@ -70,11 +76,13 @@ export function kinChatListRows(
       working: row.chat.working === true,
       fresh,
       retired,
+      company: row.chat.teamId === KIN_COMPANY_CHAT_TEAM_ID,
     };
   });
-  const live = rows.filter((row) => !row.retired);
+  const live = rows.filter((row) => !row.retired && !row.company);
   const settled = (row: KinChatListRow) => row.fresh && !row.needsYou && !row.working;
   return [
+    ...rows.filter((row) => row.company),
     ...live.filter((row) => !settled(row)),
     ...live.filter(settled),
     ...rows.filter((row) => row.retired),
@@ -99,3 +107,25 @@ export const KIN_TEAMMATE_WELCOME = {
   title: "Welcome to the team",
   detail: "When someone on your team starts a chat with you, it shows up here.",
 };
+
+/** Who is in a group, people then agents: "You, Priya, Sam · Chief of staff, Finance". */
+export function kinRoomLine(
+  members: KinChatMembersResult["members"],
+  me: ReadonlySet<string>,
+): string {
+  const here = members.filter((member) => member.leftAt === null);
+  const mine = here.some(
+    (member) => member.principal._tag === "person" && me.has(member.principal.personId),
+  );
+  const others = here.flatMap((member) =>
+    member.principal._tag === "person" && !me.has(member.principal.personId)
+      ? [member.displayName]
+      : [],
+  );
+  const agents = here
+    .filter((member) => member.principal._tag === "agent")
+    .map((member) => member.displayName);
+  return [[...(mine ? ["You"] : []), ...others].join(", "), agents.join(", ")]
+    .filter((part) => part !== "")
+    .join(" · ");
+}
