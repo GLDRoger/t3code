@@ -70,6 +70,10 @@ export const ReadInput = Schema.Struct({
     description:
       "Its account's or card's last four digits, only when the owner wrote them in this chat and the statement doesn't show them.",
   }),
+  currency: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/))).annotate({
+    description:
+      "With pages: the code of the currency the statement's amounts are in, such as USD, as its pages print it. Kin takes it only when the statement's own text names it.",
+  }),
   refresh: Schema.optional(Schema.Boolean).annotate({
     description:
       "Match the rows Kin already read against the current invoices and expenses again, as after they changed. It never reads the pages again and never replaces a card the owner confirmed.",
@@ -391,6 +395,7 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
       account: input.account,
       bank: input.bank,
       kind: input.kind,
+      currency: input.currency,
     });
     if (done._tag === "more") return readingResult(base, done.reading);
     if (done._tag === "check")
