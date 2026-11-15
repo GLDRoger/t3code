@@ -42,10 +42,11 @@ import * as Docs from "../work/docs.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import * as LeadMoney from "../work/leadMoney.ts";
 import * as LeadWork from "../work/leadWork.ts";
-import { moneySummary } from "../work/moneyViews.ts";
+import { moneySection, moneySummary } from "../work/moneyViews.ts";
 import * as OwnerDocs from "../work/ownerDocs.ts";
 import * as OwnerMoney from "../work/ownerMoney.ts";
 import * as OwnerWork from "../work/ownerWork.ts";
+import * as Amounts from "./amounts.ts";
 import { computeData } from "./compute.ts";
 import * as DocJobs from "./DocJobs.ts";
 import { gatherFacts, jobSensitive } from "./facts.ts";
@@ -92,12 +93,27 @@ const cards: Array<{
   readonly documents: ReadonlyArray<{ readonly key: string }>;
   readonly lastError: string | null;
 }> = [];
-const chat = Layer.mock(KinChatService)({
-  setTaskCardDocuments: (input) =>
-    Effect.sync(() => {
-      cards.push({ documents: input.documents, lastError: input.lastError });
-    }).pipe(Effect.as({} as never)),
-});
+// Notices Kin posted, by chat.
+const notices: Array<{ readonly chatId: string; readonly body: string }> = [];
+const chat = Layer.unwrap(
+  Effect.map(SqlClient.SqlClient, (sql) =>
+    Layer.mock(KinChatService)({
+      setTaskCardDocuments: (input) =>
+        Effect.sync(() => {
+          cards.push({ documents: input.documents, lastError: input.lastError });
+        }).pipe(Effect.as({} as never)),
+      notice: (input) =>
+        Effect.gen(function* () {
+          notices.push({ chatId: input.chatId, body: input.body });
+          yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+              author_member_id, author_role, kind, body, mentions_json, status, created_at)
+            VALUES (${input.messageId}, ${input.orgId}, ${input.chatId}, ${9000 + notices.length},
+              'system', NULL, 'member', 'system', ${input.body}, '[]', 'posted', ${at})`;
+          return {} as never;
+        }).pipe(Effect.orDie),
+    }),
+  ),
+);
 // Doc cards the agent's call showed in the chat, by the key of the doc each shows.
 const shownCards: Array<string> = [];
 // Kin's card for the owner, stored as the chat service stores a lead's question; no level gate here.
@@ -268,6 +284,7 @@ const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   rendered.length = 0;
   shownCards.length = 0;
+  notices.length = 0;
   sent.length = 0;
   failing.reason = undefined;
   yield* TestClock.setTime(Date.parse("2026-11-12T06:00:00.000Z"));
@@ -589,6 +606,16 @@ describe("recipe documents", () => {
         sourceEventId: "event-3",
       });
       assert.deepStrictEqual([again.issued, again.documents], [false, []]);
+      // F24: a void isn't final for the agent either: undone, it is owed again with its number.
+      const issueAs = (more: Partial<typeof LeadDocuments.IssueInput.Type>) =>
+        LeadDocuments.issue(scope, {
+          entry: KinRecordKey.make("INV-1"),
+          sourceEventId: "event-3",
+          ...more,
+        });
+      assert.strictEqual((yield* issueAs({ void: true })).state, "dropped");
+      const back = yield* issueAs({ unvoid: true });
+      assert.deepStrictEqual([back.state, back.number], ["waiting", "INV/26-27/001"]);
       // The accountant's pack lists it by its number, from Kin's own exporter.
       const pack = yield* LeadDocuments.make(scope, {
         title: "November pack",
@@ -642,6 +669,139 @@ describe("recipe documents", () => {
         ],
         [["tds", "received"], "₹0.00"],
       );
+
+      // F51: expenses confirmed, undone and confirmed again: the file, the totals a chart is drawn
+      // from and Money all count the live copy once.
+      const track = yield* turn(10, "Track expenses");
+      const proposed = yield* LeadMoney.define(scope, {
+        sourceEventId: track,
+        template: "expenses",
+      });
+      const yes = yield* turn(11, "Yes, and the CloudNest bill");
+      yield* LeadMoney.define(scope, { sourceEventId: yes, proposal: proposed.proposal! });
+      const spent = { list: "expenses", amount: "13,468.85", date: "2026-11-03" };
+      yield* LeadWork.create(scope, {
+        sourceEventId: yes,
+        records: [{ ...spent, title: "Hosting" }],
+      });
+      yield* records.update(orgId, system, "EXP-1", { state: "dropped" });
+      yield* LeadWork.create(scope, {
+        sourceEventId: yes,
+        records: [{ ...spent, title: "Hosting again" }],
+      });
+      const month = yield* LeadDocuments.make(scope, {
+        title: "November pack again",
+        recipe: "accountant-pack",
+        inputs: { month: "2026-11" },
+        sourceEventId: yes,
+      });
+      const expensesCsv = Docs.toVersion(
+        (yield* Docs.versionOf(orgId, (yield* versionsOf(month.documents[3]!.key)).doc.recordId))!,
+      ).file!;
+      const expenses = yield* (yield* FileSystem.FileSystem).readFileString(
+        `${config.attachmentsDir}/${expensesCsv.attachmentId}.csv`,
+      );
+      assert.notInclude(expenses, "EXP-1");
+      assert.include(expenses, "EXP-2");
+      const listed = yield* LeadWork.query(scope, { list: "expenses", groupBy: "month" });
+      const money = yield* moneySummary(orgId, Date.parse("2026-11-12T06:00:00.000Z"));
+      assert.deepStrictEqual(
+        [listed.totals, listed.groups?.[0]?.totals, money.spent.thisMonth.total],
+        [["₹13,468.85"], ["₹13,468.85"], [{ minor: 1_346_885, currency: "INR" }]],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("are issued with the total their own document comes to, never with none", () =>
+    Effect.gen(function* () {
+      const work = yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      yield* LeadWork.create(scope, {
+        sourceEventId: work,
+        records: [
+          {
+            list: "invoices",
+            title: "Website build",
+            client: "Invented Acme",
+            state: "open",
+            due: "2026-11-05",
+          },
+        ],
+      });
+      const issueIt = (entry: string) =>
+        LeadDocuments.issue(scope, { entry: KinRecordKey.make(entry), sourceEventId: work });
+      // No amount and no document to work one out from: nothing is issued, no number taken.
+      const bare = yield* issueIt("INV-2").pipe(Effect.flip);
+      assert.match(bare.message, /^INV-2 has no amount/);
+      const next = yield* OwnerMoney.nextNumber(people, { orgId, key: KinRecordKey.make("INV-2") });
+      assert.strictEqual(next.number, "INV/26-27/001");
+      // F14: drafted from its lines alone, it is issued with the total its PDF shows, tax split.
+      yield* LeadDocuments.make(
+        scope,
+        invoice({
+          entry: "INV-2",
+          title: "Invoice INV-2",
+          inputs: {
+            lines: [{ description: "Design", sac: "998391", quantity: "2", rate: "₹1,00,000" }],
+          },
+        }),
+      );
+      const issued = yield* issueIt("INV-2");
+      const row = (yield* records.get(orgId, "INV-2"))!;
+      assert.deepStrictEqual(
+        [issued.number, row.amountMinor, row.currency, JSON.parse(row.fieldsJson).tax],
+        ["INV/26-27/001", 23_600_000, "INR", { minor: 3_600_000, currency: "INR" }],
+      );
+      assert.deepStrictEqual(
+        [latestData().number, latestData().tax.total.text],
+        ["INV/26-27/001", "₹2,36,000.00"],
+      );
+      // F47: Money, and the figures the morning brief reads, see it owed and overdue.
+      const now = Date.parse("2026-11-12T06:00:00.000Z");
+      const section = moneySection(yield* moneySummary(orgId, now), "Asia/Kolkata");
+      assert.deepStrictEqual(
+        [section?.owedToUs, section?.overdue, section?.byClient[0]?.daysOverdue],
+        ["₹2,36,000.00", "₹2,36,000.00", 6],
+      );
+
+      // Issued before this fix with no amount: repaired from its own document when it can be,
+      // else named to the owner in one notice, never guessed.
+      yield* LeadWork.create(scope, {
+        sourceEventId: work,
+        records: [{ list: "invoices", title: "Retainer", client: "Invented Acme", state: "open" }],
+      });
+      yield* OwnerMoney.issue(people, { orgId, key: KinRecordKey.make("INV-1") });
+      yield* sql`UPDATE kin_records SET amount_minor = NULL, currency = NULL,
+          fields_json = json_remove(fields_json, '$.tax')
+        WHERE org_id = ${orgId} AND key = 'INV-2'`;
+      yield* sql`INSERT INTO kin_issued_numbers (org_id, register_id, series, seq, number,
+          record_id, issued_at, issued_by_kind, issued_by_id)
+        SELECT org_id, 'invoices', 'INV|26-27', 9, 'INV/26-27/009', record_id, 0, 'agent', ${lead}
+        FROM kin_records WHERE org_id = ${orgId} AND key = 'INV-3'`;
+      yield* sql`UPDATE kin_records SET state = 'waiting' WHERE org_id = ${orgId} AND key = 'INV-3'`;
+      const repaired = yield* Amounts.repairIssuedAmounts(orgId);
+      assert.deepStrictEqual(repaired, {
+        repaired: ["INV-2"],
+        left: [{ key: "INV-3", number: "INV/26-27/009" }],
+      });
+      const again = (yield* records.get(orgId, "INV-2"))!;
+      assert.deepStrictEqual(
+        [again.amountMinor, JSON.parse(again.fieldsJson).tax],
+        [23_600_000, { minor: 3_600_000, currency: "INR" }],
+      );
+      assert.deepStrictEqual(notices, [
+        {
+          chatId: "lead-chat",
+          body: "Kin found an issued invoice with no amount, so it isn't counted in what you're owed: INV/26-27/009 (INV-3). Kin can't work its total out from a document, so tell your agent its amount and it will record it.",
+        },
+      ]);
+      // Once only: a later start repairs nothing more and says nothing again.
+      assert.deepStrictEqual(yield* Amounts.repairIssuedAmounts(orgId), {
+        repaired: [],
+        left: [{ key: "INV-3", number: "INV/26-27/009" }],
+      });
+      assert.lengthOf(notices, 1);
     }).pipe(Effect.provide(layer)),
   );
 

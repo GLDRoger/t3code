@@ -9,6 +9,8 @@ import { KinRecords } from "../work/KinRecords.ts";
 import { type FieldValues, parseFields } from "../work/lists.ts";
 import { dayIn } from "../work/money.ts";
 import {
+  countedEntry,
+  countedPayment,
   fromImport,
   notedReceiptNumbers,
   ownerZone,
@@ -149,7 +151,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
         JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
         LEFT JOIN kin_records p2 ON p2.org_id = r.org_id AND p2.record_id = r.party_id
         LEFT JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
-        WHERE p.org_id = ${orgId} AND p.voided_at IS NULL AND r.register_id = 'invoices'
+        WHERE p.org_id = ${orgId} AND ${countedPayment(sql)} AND r.register_id = 'invoices'
           AND p.withheld = 0 AND substr(p.paid_on, 1, 7) = ${month}
         ORDER BY p.paid_on, p.payment_id LIMIT ${MAX_ROWS}`;
       tables.set(
@@ -200,8 +202,8 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
       FROM kin_records r
       LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.party_id
       LEFT JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
-      WHERE r.org_id = ${orgId} AND r.register_id = ${list.id} AND r.date_at IS NOT NULL
-        AND r.date_at >= ${start} AND r.date_at < ${end}
+      WHERE r.org_id = ${orgId} AND r.register_id = ${list.id} AND ${countedEntry(sql)}
+        AND r.date_at IS NOT NULL AND r.date_at >= ${start} AND r.date_at < ${end}
       ORDER BY r.date_at, r.key LIMIT ${MAX_ROWS * 2}`;
     const inMonth = rows
       .filter((row) => dayIn(row.dateAt, zone).startsWith(month))

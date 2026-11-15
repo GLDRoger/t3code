@@ -943,6 +943,60 @@ describe("invoices", () => {
           reason: "not_allowed",
         });
       assert.strictEqual((yield* records.pay(orgId, system, "INV-1", once)).row.paid, 6_000_100);
+
+      // F20: "paid ₹1,00,000, deducted ₹18,000 TDS" is one settlement: cash, and tax withheld.
+      yield* LeadWork.create(scope, {
+        sourceEventId: overpaid,
+        records: [
+          {
+            list: "invoices",
+            title: "Invented November retainer",
+            client: "Invented Acme",
+            amount: "1,18,000",
+          },
+        ],
+      });
+      const unsettled = yield* OwnerMoney.money(people, { orgId });
+      const tds = {
+        sourceEventId: overpaid,
+        key: "INV-2",
+        amount: "1,00,000",
+        withheld: "18,000",
+        paidOn: "2026-11-09",
+      };
+      const settled = yield* LeadMoney.payment(scope, tds);
+      assert.deepStrictEqual(
+        [settled.received, settled.tdsWithheld, settled.balance, settled.state],
+        ["₹1,00,000.00", "₹18,000.00", "₹0.00", "done"],
+      );
+      const retried = yield* LeadMoney.payment(scope, tds);
+      assert.deepStrictEqual(
+        [retried.paymentId, retried.tdsPaymentId],
+        [settled.paymentId, settled.tdsPaymentId],
+      );
+      const settledMoney = yield* OwnerMoney.money(people, { orgId });
+      const minor = (money: ReadonlyArray<{ readonly minor: number }>) => money[0]?.minor ?? 0;
+      assert.deepStrictEqual(
+        [
+          minor(settledMoney.received.thisMonth) - minor(unsettled.received.thisMonth),
+          settledMoney.tdsDeducted?.thisMonth,
+        ],
+        [10_000_000, [{ minor: 1_800_000, currency: "INR" }]],
+      );
+      // More than is owed records neither part.
+      yield* LeadWork.create(scope, {
+        sourceEventId: overpaid,
+        records: [
+          { list: "invoices", title: "Invented extra", client: "Invented Acme", amount: "1,000" },
+        ],
+      });
+      yield* LeadMoney.payment(scope, {
+        ...tds,
+        key: "INV-3",
+        amount: "900",
+        withheld: "101",
+      }).pipe(Effect.flip);
+      assert.strictEqual((yield* records.get(orgId, "INV-3"))!.paid, 0);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -1045,6 +1099,25 @@ describe("invoices", () => {
         const records = yield* KinRecords.KinRecords;
         const row = yield* records.get(orgId, "INV-5");
         assert.include(row!.fieldsJson, "INV/27-28/001");
+        // F22: dated before one issued already, it still takes the next number, and says so.
+        yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [
+            {
+              list: "invoices",
+              title: "Invented March work",
+              client: "Invented Acme",
+              amount: "1 lakh",
+              state: "open",
+              date: "2027-03-20",
+            },
+          ],
+        });
+        const backdated = yield* OwnerMoney.issue(people, { orgId, key: "INV-6" });
+        const notice =
+          "INV/27-28/002 is dated 20 Mar 2027, before INV/27-28/001 (1 Apr 2027), which was issued first: its number comes after invoices dated later.";
+        assert.deepStrictEqual([backdated.number, backdated.notice], ["INV/27-28/002", notice]);
+        assert.strictEqual((yield* records.get(orgId, "INV-6"))!.notes, notice);
       }).pipe(Effect.provide(layer)),
   );
 });

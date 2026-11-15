@@ -14,6 +14,7 @@ import { toolAdmitted } from "../lead/SharedTools.ts";
 import { shown } from "../work/leadDocs.ts";
 import { parseAmount } from "../work/money.ts";
 import { admitted, askedBy, type Lead, leadTool, sourceOf, writerFor } from "../work/leadWork.ts";
+import { issueEntry } from "./amounts.ts";
 import type { DocumentInput } from "./DocJobs.ts";
 import { canonical, makeDocument, remakeForEntry, type Requester } from "./make.ts";
 import * as Numbers from "./numbering.ts";
@@ -164,6 +165,10 @@ export const IssueInput = Schema.Struct({
   void: Schema.optional(Schema.Boolean).annotate({
     description: "Void it instead: it keeps its number, and the number is never used again.",
   }),
+  unvoid: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Take a void back: it is owed again with the number it had, or paid if its payments cover it.",
+  }),
   sourceEventId: TrimmedNonEmptyString,
 });
 export const IssueResult = Schema.Struct({
@@ -177,6 +182,8 @@ export const IssueResult = Schema.Struct({
     Schema.Struct({ key: Schema.String, title: Schema.String, version: Schema.Number }),
   ),
   problems: Schema.Array(Schema.String),
+  /** Said plainly when its number follows entries dated after it: tell the owner. */
+  notice: Schema.optional(Schema.String),
 });
 
 export const issue = leadTool("KinDocuments.issue", (lead, input: typeof IssueInput.Type) =>
@@ -184,13 +191,23 @@ export const issue = leadTool("KinDocuments.issue", (lead, input: typeof IssueIn
     yield* admitted(lead, "kin_issue", input);
     yield* sourceOf(lead, input.sourceEventId);
     const writer = yield* writerFor(lead);
+    if (input.void === true && input.unvoid === true)
+      return yield* new KinChatError({
+        reason: "invalid_state",
+        message: "Pass void or unvoid, not both. Nothing changed.",
+      });
     const result =
       input.void === true
         ? yield* Numbers.voidEntry(lead.orgId, writer, input.entry)
-        : yield* Numbers.issue(lead.orgId, writer, input.entry);
+        : input.unvoid === true
+          ? yield* Numbers.unvoidEntry(lead.orgId, writer, input.entry)
+          : yield* issueEntry(lead.orgId, writer, input.entry);
     // Asked again, it makes any of its documents that don't carry the number yet.
     const remade =
-      input.void !== true && result.number !== null && result.state !== "dropped"
+      input.void !== true &&
+      input.unvoid !== true &&
+      result.number !== null &&
+      result.state !== "dropped"
         ? yield* remakeForEntry({
             orgId: lead.orgId,
             entryKey: result.key,
@@ -210,6 +227,7 @@ export const issue = leadTool("KinDocuments.issue", (lead, input: typeof IssueIn
         version: doc.version,
       })),
       problems: remade.problems,
+      ...("notice" in result && result.notice !== undefined ? { notice: result.notice } : {}),
     };
   }),
 );

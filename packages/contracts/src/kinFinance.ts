@@ -373,6 +373,8 @@ export const KinIssueResult = Schema.Struct({
   ),
   /** Why a document couldn't be made again; the number stands either way. */
   problems: Schema.Array(Schema.String),
+  /** Said plainly when its number follows entries dated after it, as a backdated one's does. */
+  notice: Schema.optional(Schema.String),
 });
 export type KinIssueResult = typeof KinIssueResult.Type;
 /** The number Issue would give the entry now; another issue first may take it. */

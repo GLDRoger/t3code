@@ -1,18 +1,27 @@
-import { KinChatError, type KinNumberingRule, type KinOrgId } from "@t3tools/contracts";
+import {
+  KinChatError,
+  type KinNumberingRule,
+  type KinOrgId,
+  type KinRecordState,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import type { Figures } from "./amounts.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
+import { isMoney, parseFields } from "../work/lists.ts";
 import { dayIn, financialYearOf } from "../work/money.ts";
 import {
   endOfDay,
   notFound,
   ownerZone,
   receiptNumbersIn,
+  type RecordRow,
   workFailure,
 } from "../work/recordRows.ts";
-import { listDef, numberingOf, unknownList } from "../work/registers.ts";
+import { type ListDef, listDef, numberingOf, unknownList } from "../work/registers.ts";
 
 /**
  * Numbers a list issues (CGST Rule 46(b)): consecutive within a series, at most 16 characters of
@@ -48,6 +57,9 @@ export const seriesOf = (rule: KinNumberingRule, number: string) => {
   return { series: `${IMPORTED_SERIES}|${number}`, seq: 1 };
 };
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+const isChatError = Schema.is(KinChatError);
+/** As every issue answers, so a caller reads `notice` whichever way it went. */
+const answered = (issued: Issued): Issued => issued;
 
 /** `26-27` for any day from 1 April 2026 to 31 March 2027. */
 const financialYear = (day: string) => financialYearOf(day).slice(4);
@@ -70,8 +82,10 @@ export const ruleProblem = (rule: KinNumberingRule) =>
 export type Issued = {
   readonly key: string;
   readonly number: string | null;
-  readonly state: string;
+  readonly state: KinRecordState;
   readonly issued: boolean;
+  /** Said plainly when its number follows entries dated after it. */
+  readonly notice?: string;
 };
 
 /** The number an entry was issued, if it has one. */
@@ -129,6 +143,8 @@ export const issue = Effect.fn("KinNumbers.issue")(function* (
   orgId: KinOrgId,
   writer: Writer,
   key: string,
+  /** What the entry's own document comes to (`amounts.ts`): its amount and tax once issued. */
+  figures?: Figures,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
@@ -142,9 +158,11 @@ export const issue = Effect.fn("KinNumbers.issue")(function* (
       if (rule === undefined) return yield* invalid(`${def.name} doesn't number its entries.`);
       const had = yield* issuedNumber(orgId, row.recordId);
       if (had !== undefined)
-        return { key: row.key, number: had, state: row.state, issued: false } satisfies Issued;
+        return answered({ key: row.key, number: had, state: row.state, issued: false });
       if (row.state === "dropped")
         return yield* invalid(`${row.key} is void, so it gets no number. Make a new one instead.`);
+      const priced = def.amount ? pricedBy(row, def, figures) : {};
+      if (isChatError(priced)) return yield* priced;
       const { now, zone, day, year, series, floor } = yield* seriesToday(orgId, def.id, rule);
       if (floor > 0)
         yield* sql`INSERT INTO kin_number_series (org_id, register_id, series, last_seq)
@@ -176,6 +194,21 @@ export const issue = Effect.fn("KinNumbers.issue")(function* (
       if (def.fields.some((field) => field.key === "number"))
         yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', ${number})
             WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
+      const dated = row.dateAt === null && def.builtIn === null ? endOfDay(day, zone) : row.dateAt;
+      // Allowed, as the owner may need it, but never silent: its number follows later-dated ones.
+      const [later] =
+        dated === null
+          ? []
+          : yield* sql<{ number: string; dateAt: number }>`SELECT n.number, r.date_at AS "dateAt"
+              FROM kin_issued_numbers n
+              JOIN kin_records r ON r.org_id = n.org_id AND r.record_id = n.record_id
+              WHERE n.org_id = ${orgId} AND n.register_id = ${def.id} AND n.series = ${series}
+                AND n.record_id <> ${row.recordId} AND r.date_at > ${dated}
+              ORDER BY r.date_at DESC, n.seq DESC LIMIT 1`;
+      const notice =
+        later === undefined || dated === null || dayIn(later.dateAt, zone) <= dayIn(dated, zone)
+          ? undefined
+          : `${number} is dated ${shownDay(dayIn(dated, zone))}, before ${later.number} (${shownDay(dayIn(later.dateAt, zone))}), which was issued first: its number comes after ${def.noun}s dated later.`;
       const updated = yield* records.update(
         orgId,
         writer,
@@ -187,14 +220,50 @@ export const issue = Effect.fn("KinNumbers.issue")(function* (
           ...(row.dateAt === null && def.builtIn === null
             ? { dateAt: endOfDay(day, zone), dateAllDay: true }
             : {}),
+          ...priced,
+          ...(notice === undefined
+            ? {}
+            : { notes: row.notes === "" ? notice : `${row.notes}\n\n${notice}` }),
         },
         undefined,
         [{ field: "number", from: null, to: number }],
       );
-      return { key: updated.key, number, state: updated.state, issued: true } satisfies Issued;
+      return answered({
+        key: updated.key,
+        number,
+        state: updated.state,
+        issued: true,
+        ...(notice === undefined ? {} : { notice }),
+      });
     }),
   );
 }, workFailure);
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const shownDay = (day: string) =>
+  `${Number(day.slice(8, 10))} ${MONTHS[Number(day.slice(5, 7)) - 1]} ${day.slice(0, 4)}`;
+
+/**
+ * What issuing writes to an entry with an amount: its document's total and tax when it has one,
+ * else its own amount. One with neither is refused: an issued entry always carries its amount.
+ */
+const pricedBy = (row: RecordRow, def: ListDef, figures: Figures | undefined) => {
+  if (figures?._tag === "figures") {
+    const taxField = def.fields.some((field) => field.key === "tax" && field.type === "money");
+    const stored = parseFields(row.fieldsJson).tax;
+    const taxed = stored !== undefined && isMoney(stored) && stored.minor === figures.tax.minor;
+    return {
+      ...(row.amountMinor === null ? { amount: figures.total } : {}),
+      ...(taxField && !taxed ? { fields: { tax: figures.tax } } : {}),
+    };
+  }
+  if (row.amountMinor !== null) return {};
+  return invalid(
+    figures?._tag === "unworkable"
+      ? `${row.key} has no amount, and Kin can't work it out from its document: ${figures.reason} Nothing was issued.`
+      : `${row.key} has no amount. Make its document from its lines, or give it its amount, then issue it. Nothing was issued.`,
+  );
+};
 
 /**
  * The highest number in `series` an imported payment, not taken back, holds in its note as the

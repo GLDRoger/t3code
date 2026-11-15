@@ -2,7 +2,6 @@ import {
   KIN_RECORD_CHANGES_CAP,
   KinChatError,
   type KinOrgId,
-  KinRecordState,
   type KinWorkAssignInput,
   type KinWorkConfirmInput,
   type KinWorkCreateInput,
@@ -168,10 +167,7 @@ export const list = Effect.fn("KinWork.list")(function* (
       ? undefined
       : yield* records.totals(
           input.orgId,
-          // A void entry's amount is not money: sums leave it out unless the filter asks for it.
-          input.states === undefined && input.open === undefined
-            ? { ...filter, states: KinRecordState.literals.filter((state) => state !== "dropped") }
-            : filter,
+          filter,
           input.totalsBy === "none" ? undefined : input.totalsBy,
           true,
         );

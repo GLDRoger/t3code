@@ -6,6 +6,7 @@ import {
   KinGstin,
   KinListFieldType,
   KinListId,
+  type KinMoney,
   KinRecordKey,
   KinChatId,
   KinRecordState,
@@ -273,7 +274,11 @@ export const PaymentInput = Schema.Struct({
   key: KinRecordKey.annotate({ description: "The invoice, such as INV-4." }),
   amount: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(60))).annotate({
     description:
-      'What was received, as said: "1,20,000" or "1.2 lakh". In the invoice\'s currency.',
+      'The cash that came in, as said: "1,20,000" or "1.2 lakh". In the invoice\'s currency.',
+  }),
+  withheld: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(60))).annotate({
+    description:
+      'TDS the client deducted, as said, such as "18,000": it settles the invoice but is not cash received.',
   }),
   paidOn: Schema.optional(KinDay).annotate({
     description: "The day it was received, in the owner's time zone.",
@@ -287,9 +292,12 @@ export const PaymentResult = Schema.Struct({
   key: Schema.String,
   state: Schema.String,
   amount: Schema.String,
+  /** Cash received only; TDS the client deducted is `tdsWithheld`. */
   received: Schema.String,
+  tdsWithheld: Schema.optional(Schema.String),
   balance: Schema.String,
   paymentId: Schema.optional(Schema.String),
+  tdsPaymentId: Schema.optional(Schema.String),
   sensitive: Schema.Literal(true),
 });
 
@@ -301,19 +309,44 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
   const before = yield* records.get(lead.orgId, input.key);
   if (before === undefined) return yield* notFound(input.key);
   let paymentId: string | undefined;
+  let tdsPaymentId: string | undefined;
   if (input.void !== undefined) {
     yield* records.voidPayment(lead.orgId, writer, input.key, input.void);
   } else {
-    if (input.amount === undefined || input.paidOn === undefined)
-      return yield* invalid("A payment needs amount and paidOn, or void to take one back.");
-    const parsed = parseAmount(input.amount, before.currency ?? "INR");
-    if ("error" in parsed) return yield* parsed.error;
-    paymentId = (yield* records.pay(lead.orgId, writer, input.key, {
-      amount: parsed.money,
-      paidOn: input.paidOn,
-      ...(input.note === undefined ? {} : { note: input.note }),
-      originKey: `lead:${lead.agentId}:${input.sourceEventId}:${retryKey(`${input.key}|${parsed.money.minor}|${input.paidOn}`)}`,
-    })).paymentId;
+    const paidOn = input.paidOn;
+    if ((input.amount === undefined && input.withheld === undefined) || paidOn === undefined)
+      return yield* invalid(
+        "A payment needs amount (cash received), withheld (TDS) or both, and paidOn; or void to take one back.",
+      );
+    const parsed = (text: string | undefined) => {
+      if (text === undefined) return Effect.undefined;
+      const one = parseAmount(text, before.currency ?? "INR");
+      return "error" in one ? Effect.fail(one.error) : Effect.succeed(one.money);
+    };
+    const cash = yield* parsed(input.amount);
+    const tds = yield* parsed(input.withheld);
+    const originKey = (money: KinMoney, part: string) =>
+      `lead:${lead.agentId}:${input.sourceEventId}:${retryKey(`${input.key}|${part}${money.minor}|${paidOn}`)}`;
+    // One settlement: the cash and the tax withheld are recorded together or not at all.
+    const settled = yield* (yield* SqlClient.SqlClient).withTransaction(
+      Effect.gen(function* () {
+        const one = (money: KinMoney | undefined, withheld: boolean) =>
+          money === undefined
+            ? Effect.undefined
+            : records
+                .pay(lead.orgId, writer, input.key, {
+                  amount: money,
+                  paidOn,
+                  ...(input.note === undefined ? {} : { note: input.note }),
+                  ...(withheld ? { withheld: true } : {}),
+                  originKey: originKey(money, withheld ? "tds|" : ""),
+                })
+                .pipe(Effect.map((paid) => paid.paymentId));
+        return { cash: yield* one(cash, false), tds: yield* one(tds, true) };
+      }),
+    );
+    paymentId = settled.cash ?? settled.tds;
+    tdsPaymentId = settled.tds;
   }
   const after = yield* records.get(lead.orgId, input.key);
   if (after === undefined) return yield* notFound(input.key);
@@ -323,9 +356,13 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
     key: after.key,
     state: after.state,
     amount: formatMoney({ minor: amount, currency }),
-    received: formatMoney({ minor: after.paid, currency }),
+    received: formatMoney({ minor: after.paid - after.withheld, currency }),
+    ...(after.withheld === 0
+      ? {}
+      : { tdsWithheld: formatMoney({ minor: after.withheld, currency }) }),
     balance: formatMoney({ minor: Math.max(amount - after.paid, 0), currency }),
     ...(paymentId === undefined ? {} : { paymentId }),
+    ...(tdsPaymentId === undefined ? {} : { tdsPaymentId }),
     sensitive: true as const,
   };
 });
