@@ -371,6 +371,7 @@ describe("KinLeadProvision", () => {
           githubLogin: null,
           createdAt: "2026-11-09T00:00:00.000Z",
         });
+        yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = ${teammate}`;
         // A lead the teammate brought, as members will: written directly, as no path makes one yet.
         yield* repo.insertAgent({
           orgId: ada.orgId,

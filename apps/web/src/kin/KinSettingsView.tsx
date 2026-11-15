@@ -1,9 +1,6 @@
-import { useAtomValue } from "@effect/atom-react";
-import { kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import type { EnvironmentId, KinOrgId } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { ArrowLeftIcon, SettingsIcon } from "lucide-react";
-import { useMemo } from "react";
 
 import { ApprovalsSettings } from "../components/settings/ApprovalsSettings";
 import { SettingsPageContainer, SettingsSection } from "../components/settings/settingsLayout";
@@ -11,13 +8,13 @@ import { searchableSetting } from "../components/settings/settingsSearch";
 import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../components/WorkspaceBreadcrumb";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { Button } from "../components/ui/button";
-import { connectionAtomRuntime } from "../connection/runtime";
 import { isElectron } from "../env";
 import { isChatOnlySession } from "../environments/primary";
 import { KinCompanyProfileSettings } from "./KinCompanyProfile";
 import { KinDailyLimitSetting } from "./KinDailyLimit";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { useKinHost } from "./useKinHost";
+import { useKinOwnerLevel } from "./useKinOwnerLevel";
 
 const KIN_SETTINGS_TITLE = "Settings";
 
@@ -36,11 +33,7 @@ function OwnerLevelSettingsButton(props: {
   readonly orgId: KinOrgId;
 }) {
   const { environmentId, orgId } = props;
-  const atom = useMemo(
-    () => kinOwnerLevelAtom(connectionAtomRuntime, environmentId),
-    [environmentId],
-  );
-  if (!useAtomValue(atom)) return null;
+  if (!useKinOwnerLevel(environmentId)) return null;
   return (
     <Button
       size="icon-xs"

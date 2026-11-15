@@ -603,9 +603,9 @@ const profileIn = Effect.fn("KinLeadProvision.profileIn")(function* (lead: LeadS
 });
 
 /**
- * The lead a person may retire or restore, by the authority that may make it: the org's owner,
- * any of the org's; its creator, their own once members may create (`mayCreate`); anyone else's
- * reads as not found. The host's command acts as the owner. Inside the caller's transaction.
+ * The lead a person may retire or restore, by the authority that may make it: the owner or a
+ * co-owner, any of the org's; its creator, their own once members may create (`mayCreate`);
+ * anyone else's reads as not found. The host's command acts as the owner. Inside the transaction.
  */
 const retirable = Effect.fn("KinLeadProvision.retirable")(function* (input: {
   readonly by: LeadActor;
@@ -620,9 +620,13 @@ const retirable = Effect.fn("KinLeadProvision.retirable")(function* (input: {
   if (orgId !== input.orgId) return yield* missing;
   const [lead] = yield* leadsIn(orgId, { liveOnly: false, agentId: input.agentId });
   if (lead === undefined) return yield* missing;
-  if (person !== undefined && person.personId !== owner.personId) {
+  const ownerTier =
+    person === undefined ||
+    person.personId === owner.personId ||
+    (yield* ownerLevel(person.orgId, person.personId).pipe(Effect.orElseSucceed(() => false)));
+  if (person !== undefined && !ownerTier) {
+    if (lead.ownerPersonId !== person.personId) return yield* missing;
     yield* mayCreate(person);
-    if (lead.ownerPersonId !== owner.personId) return yield* missing;
   }
   return { lead, by: person?.personId ?? null };
 });

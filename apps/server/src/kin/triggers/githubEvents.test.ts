@@ -103,7 +103,7 @@ const seed = Effect.gen(function* () {
   yield* TestClock.setTime(1794009600000);
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Kin', ${timestamp})`;
-  yield* sql`INSERT INTO kin_people VALUES ('owner', ${orgId}, 'owner', 'Owner', NULL, ${timestamp})`;
+  yield* sql`INSERT INTO kin_people VALUES ('owner', ${orgId}, 'owner', 'Owner', NULL, ${timestamp}, NULL)`;
   yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at, retired_at) VALUES ('lead', ${orgId}, 'Lead', 'lead', 'owner', ${timestamp}, NULL)`;
   yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at) VALUES ('chat', ${orgId}, 'direct', 'direct', 0, ${timestamp})`;
   yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id) VALUES ('lead', ${orgId}, 'Lead', 0, '{}', '[]', 'chat')`;

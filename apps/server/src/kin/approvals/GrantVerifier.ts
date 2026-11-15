@@ -146,13 +146,13 @@ const make = Effect.gen(function* () {
     actionId: KinPendingAction["id"],
   ) {
     if (caller.people.length === 0)
-      return yield* fail("not_owner", "Only the owner can decide this.");
+      return yield* fail("not_owner", "Only the owner or a co-owner can decide this.");
     for (const person of caller.people) {
       const action = yield* actions.get({ orgId: person.orgId, actionId });
       if (Option.isSome(action)) {
         // Phase 1 requirements are all the owner role; phase 3 and 5 add kinds here (spec §3).
         if (!(yield* roles.isOwnerLevel(person)))
-          return yield* fail("not_owner", "Only the owner can decide this.");
+          return yield* fail("not_owner", "Only the owner or a co-owner can decide this.");
         return { action: action.value, person };
       }
     }

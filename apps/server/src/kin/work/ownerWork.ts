@@ -91,7 +91,8 @@ const viewerOf = Effect.fn("KinWork.viewer")(function* (
     person,
     teammate:
       person.orgId !== owner.orgId ||
-      !(yield* ownerLevel(orgId, person.personId).pipe(Effect.mapError(() => ownerOnly))),
+      (person.personId !== owner.personId &&
+        !(yield* ownerLevel(orgId, person.personId).pipe(Effect.mapError(() => ownerOnly)))),
   };
 });
 type Viewer = Effect.Success<ReturnType<typeof viewerOf>>;

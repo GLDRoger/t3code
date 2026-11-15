@@ -19,6 +19,7 @@ import { KIN_PLACE_PATH, type KinPlace } from "./kinPlaces";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinMoneySummary } from "./useKinMoney";
 import { useKinClientCounts, useKinDocsRecent } from "./useKinPlaces";
+import { useKinOwnerLevel } from "./useKinOwnerLevel";
 import { useKinWork, type KinWorkTarget } from "./useKinWork";
 
 const ICON: Record<KinPlace, LucideIcon> = {
@@ -67,13 +68,19 @@ function PlaceEntry(
 /** Tasks, Money, Clients and Docs straight from the chat list, each with its live figure. */
 export function KinPlaceEntries(props: KinWorkTarget & { readonly onOpen: () => void }) {
   const state = useKinWork(props);
+  const ownerLevel = useKinOwnerLevel(props.environmentId);
   // A teammate, or a host that couldn't be read: no ways in rather than dead ones.
   if (state._tag === "refused" || state._tag === "failed") return null;
   const summary = state._tag === "ready" ? state.live.summary : null;
   const seq = state._tag === "ready" && !state.stale ? state.live.seq : null;
+  const tasks = (
+    <PlaceEntry {...props} place="tasks" line={summary === null ? null : kinTasksLine(summary)} />
+  );
+  // Money, Clients and Docs are the owner's and co-owners'; a member has Tasks.
+  if (!ownerLevel) return tasks;
   return (
     <>
-      <PlaceEntry {...props} place="tasks" line={summary === null ? null : kinTasksLine(summary)} />
+      {tasks}
       <MoneyEntry {...props} seq={seq} enabled={state._tag === "ready"} />
       {summary !== null && !kinWorkHostClients(summary) ? null : (
         <ClientsEntry {...props} seq={seq} enabled={state._tag === "ready"} />

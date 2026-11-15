@@ -28,6 +28,13 @@ export const CHAT_ANSWER_TAGS = [
  * A chat's people, for the owner tier: `others`, those in it now who are not owner-level, and
  * `formerOthers`, everyone who ever was. A chat someone else could once read stays below it.
  */
+interface ChatPeople {
+  readonly others: number;
+  readonly formerOthers: number;
+  readonly sharedAt: number | null;
+}
+const ownerTierChat = (row: ChatPeople) =>
+  row.others === 0 && (row.sharedAt === null || row.formerOthers === 0);
 const othersIn = (sql: SqlClient.SqlClient, current: boolean, agentId: string) =>
   sql`(SELECT COUNT(*) FROM kin_chat_members m
     WHERE m.org_id = c.org_id AND m.chat_id = c.chat_id AND m.principal_kind = 'person'
@@ -116,13 +123,12 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
       if (event.originChatId !== null) chats.add(event.originChatId);
     }
     if (!answersChat) chats.add(lead.ownerChatId);
-    const rows = yield* sql<{ others: number; formerOthers: number }>`
+    const rows = yield* sql<ChatPeople>`
       SELECT ${othersIn(sql, true, input.agentId)} AS others,
-        ${othersIn(sql, false, input.agentId)} AS "formerOthers"
+        ${othersIn(sql, false, input.agentId)} AS "formerOthers", c.shared_at AS "sharedAt"
       FROM kin_chats c WHERE c.org_id = ${input.orgId} AND c.chat_id IN ${sql.in([...chats])}
       ORDER BY c.chat_id`;
-    return rows.length === chats.size &&
-      rows.every((row) => row.others === 0 && row.formerOthers === 0)
+    return rows.length === chats.size && rows.every(ownerTierChat)
       ? ("owner_only" as const)
       : ("shared" as const);
   },
@@ -336,12 +342,12 @@ export const ownerOnlyChat = Effect.fn("KinAudience.ownerOnlyChat")(function* (
   chatId: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ others: number; formerOthers: number }>`
+  const rows = yield* sql<ChatPeople>`
     SELECT ${othersIn(sql, true, turn.agentId)} AS others,
-      ${othersIn(sql, false, turn.agentId)} AS "formerOthers"
+      ${othersIn(sql, false, turn.agentId)} AS "formerOthers", c.shared_at AS "sharedAt"
     FROM kin_chats c WHERE c.org_id = ${turn.orgId} AND c.chat_id = ${chatId}
     ORDER BY c.chat_id`;
-  return rows.every((row) => row.others === 0 && row.formerOthers === 0);
+  return rows.every(ownerTierChat);
 });
 
 /**

@@ -413,8 +413,8 @@ const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_orgs (org_id, name, created_at)
     VALUES ('org_01', 'Kin', '2026-11-07T00:00:00.000Z')`;
-  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
-    VALUES (${owner}, 'org_01', 'nishchay', 'Nishchay', '2026-11-07T00:00:00.000Z')`;
+  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+    VALUES (${owner}, 'org_01', 'nishchay', 'Nishchay', '2026-11-07T00:00:00.000Z', 'owner')`;
   yield* insertKey("org_01");
   return { sql, actions: yield* PendingActions.KinPendingActions };
 });
