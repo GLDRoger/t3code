@@ -190,6 +190,8 @@ const samples = {
   KinPresence: [presence, { ...presence, wakeupId: null, state: "seen", label: null }],
   KinDraft: [draft],
   KinOrg: [org],
+  KinRoleTag: ["tech", "front-end", "q4"],
+  KinRoleTags: [[], ["tech", "sales"]],
   KinPerson: [person, { ...person, githubLogin: "owner" }],
   KinAgent: [agent],
   KinChat: [chat],

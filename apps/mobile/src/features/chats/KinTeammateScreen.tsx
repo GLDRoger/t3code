@@ -142,6 +142,7 @@ function KinTeammateDetails(props: {
   readonly onClose: () => void;
 }) {
   const { teammate, actions } = props;
+  const navigation = useNavigation();
   const offered = kinTeammateActions(teammate);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
@@ -188,6 +189,20 @@ function KinTeammateDetails(props: {
         </View>
       </View>
       {shown === null ? null : <ErrorBanner message={shown} />}
+      {teammate.personId === null ? null : (
+        <ListSection>
+          <ListRow
+            label="Profile"
+            {...(teammate.roles === "" ? {} : { description: teammate.roles })}
+            icon="person.crop.circle"
+            onPress={() => {
+              const { personId } = teammate;
+              if (personId === null) return;
+              navigation.navigate("KinProfile", { ...props.target, personId });
+            }}
+          />
+        </ListSection>
+      )}
       {teammate.personId === null ? (
         <ListSection
           title="Agents"

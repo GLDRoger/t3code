@@ -10,6 +10,7 @@ import {
   type KinPeopleRemoveAccessInput,
   type KinPeopleRevokeInviteInput,
   type KinPersonId,
+  type KinPersonProfile,
 } from "@t3tools/contracts";
 import { KIN_INVITE_LINK_PATH } from "@t3tools/shared/remote";
 import * as Schema from "effect/Schema";
@@ -17,6 +18,7 @@ import { AsyncResult } from "effect/reactivity";
 
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
 import type { KinAvatarView } from "./kinScreenState.ts";
+import { kinRoleLine } from "./kinProfiles.ts";
 
 export const KIN_TEAM_TITLE = "Team";
 export const KIN_TEAM_ADD = "Add teammate";
@@ -48,6 +50,8 @@ export interface KinTeamList {
   readonly people: KinPeopleListResult["people"];
   readonly joined: KinPeopleListResult["joined"];
   readonly invites: KinPeopleListInvitesResult["invites"];
+  /** Everyone's roles, when read; rows show them under the name. */
+  readonly profiles?: ReadonlyArray<KinPersonProfile> | undefined;
 }
 
 /** What the owner did that the host hasn't confirmed yet, and the last refusal. */
@@ -77,6 +81,8 @@ export interface KinTeammate {
   readonly state: KinTeammateState;
   /** The row's second line: whether they have joined, and what is still out. */
   readonly detail: string;
+  /** Their role tags, as one line; empty when none. */
+  readonly roles: string;
 }
 
 const dayFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
@@ -95,6 +101,9 @@ export function kinTeamView(
   const joined = new Set<string>(list.joined);
   const invites = list.invites.filter((invite) => !edits.cancelled.has(invite.inviteId));
   const rows: Array<KinTeammate> = [];
+  const roles = new Map(
+    (list.profiles ?? []).map((profile) => [profile.personId, kinRoleLine(profile.roleTags)]),
+  );
   for (const person of list.people) {
     const you = person.personId === ownerPersonId;
     // Removing access also cancels the person's unused links.
@@ -113,6 +122,7 @@ export function kinTeamView(
       personId: person.personId,
       inviteId: you ? null : (invite?.inviteId ?? null),
       state,
+      roles: roles.get(person.personId) ?? "",
       detail:
         state === "you"
           ? "You"
@@ -134,6 +144,7 @@ export function kinTeamView(
       personId: null,
       inviteId: invite.inviteId,
       state: "invited",
+      roles: "",
       detail: `Hasn't joined yet. The link works until ${formatKinInviteDay(invite.expiresAt)}.`,
     });
   }

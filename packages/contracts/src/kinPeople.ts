@@ -9,7 +9,17 @@ import {
   type AuthEnvironmentScope,
 } from "./auth.ts";
 import { AuthSessionId, IsoDateTime, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { KinChatError, KinOrgId, KinPerson, KinPersonId, KinTrimmedText } from "./kinChat.ts";
+import {
+  KinAgentId,
+  KinAttachment,
+  KinChatError,
+  KinOrgId,
+  KinPerson,
+  KinPersonId,
+  KinRoleTags,
+  KinTrimmedText,
+} from "./kinChat.ts";
+import { TimeOfDay, TimeZone } from "./kinTime.ts";
 
 export const KinInviteId = TrimmedNonEmptyString.pipe(Schema.brand("KinInviteId"));
 export type KinInviteId = typeof KinInviteId.Type;
@@ -118,6 +128,61 @@ export const KinPeopleSetGithubLoginInput = Schema.Struct({
 });
 export type KinPeopleSetGithubLoginInput = typeof KinPeopleSetGithubLoginInput.Type;
 
+export const KIN_PROFILE_NAME_MAX = 80;
+export const KIN_PROFILE_SKILLS_MAX = 300;
+/** Days are 0 (Sunday) to 6; start and end are local times in the person's time zone. */
+export const KinWorkHours = Schema.Struct({
+  days: Schema.Array(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 6 }))).check(
+    Schema.isMaxLength(7),
+  ),
+  start: TimeOfDay,
+  end: TimeOfDay,
+});
+export type KinWorkHours = typeof KinWorkHours.Type;
+
+/** Who someone is, in their own words. Everyone in the org reads it. */
+export const KinPersonProfile = Schema.Struct({
+  personId: KinPersonId,
+  displayName: KinTrimmedText,
+  handle: KinTrimmedText,
+  // An attachment id; the host serves it to anyone in the org.
+  pictureId: Schema.NullOr(TrimmedNonEmptyString),
+  roleTags: KinRoleTags,
+  skills: Schema.String,
+  timeZone: Schema.NullOr(TimeZone),
+  workHours: Schema.NullOr(KinWorkHours),
+});
+export type KinPersonProfile = typeof KinPersonProfile.Type;
+export const KinPeopleProfilesResult = Schema.Struct({
+  profiles: Schema.Array(KinPersonProfile),
+  ownerPersonId: KinPersonId,
+});
+export type KinPeopleProfilesResult = typeof KinPeopleProfilesResult.Type;
+
+/**
+ * Omitted fields stay as they are. Anyone edits their own; the owner edits anyone's name and role
+ * tags. `picture` is a fresh upload, or null to remove it.
+ */
+export const KinPeopleUpdateProfileInput = Schema.Struct({
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  displayName: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(KIN_PROFILE_NAME_MAX))),
+  roleTags: Schema.optional(KinRoleTags),
+  skills: Schema.optional(Schema.String.check(Schema.isMaxLength(KIN_PROFILE_SKILLS_MAX))),
+  timeZone: Schema.optional(Schema.NullOr(TimeZone)),
+  workHours: Schema.optional(Schema.NullOr(KinWorkHours)),
+  picture: Schema.optional(Schema.NullOr(KinAttachment)),
+});
+export type KinPeopleUpdateProfileInput = typeof KinPeopleUpdateProfileInput.Type;
+
+/** The agent every teammate may message, or null for none. Owner only. */
+export const KinOrgSetTeamAgentInput = Schema.Struct({
+  orgId: KinOrgId,
+  agentId: Schema.NullOr(KinAgentId),
+});
+export type KinOrgSetTeamAgentInput = typeof KinOrgSetTeamAgentInput.Type;
+export const KinOrgSetTeamAgentResult = Schema.Struct({ teamAgentId: Schema.NullOr(KinAgentId) });
+export type KinOrgSetTeamAgentResult = typeof KinOrgSetTeamAgentResult.Type;
 /** The owner's own name, as agents address them and teammates see them. Owner only. */
 export const KinPeopleSetOwnerNameInput = Schema.Struct({
   orgId: KinOrgId,
@@ -161,6 +226,9 @@ export const KIN_PEOPLE_WS_METHODS = {
   peopleRevokeDevice: "kin.people.revokeDevice",
   peopleRemoveAccess: "kin.people.removeAccess",
   peopleSetGithubLogin: "kin.people.setGithubLogin",
+  peopleProfiles: "kin.people.profiles",
+  peopleUpdateProfile: "kin.people.updateProfile",
+  orgSetTeamAgent: "kin.org.setTeamAgent",
   peopleSetOwnerName: "kin.people.setOwnerName",
 } as const;
 
@@ -207,6 +275,21 @@ export const KinPeopleRpcs = [
     success: KinPerson,
     error: KinPeopleError,
   }),
+  Rpc.make(KIN_PEOPLE_WS_METHODS.peopleProfiles, {
+    payload: KinPeopleListInput,
+    success: KinPeopleProfilesResult,
+    error: KinPeopleError,
+  }),
+  Rpc.make(KIN_PEOPLE_WS_METHODS.peopleUpdateProfile, {
+    payload: KinPeopleUpdateProfileInput,
+    success: KinPersonProfile,
+    error: KinPeopleError,
+  }),
+  Rpc.make(KIN_PEOPLE_WS_METHODS.orgSetTeamAgent, {
+    payload: KinOrgSetTeamAgentInput,
+    success: KinOrgSetTeamAgentResult,
+    error: KinPeopleError,
+  }),
   Rpc.make(KIN_PEOPLE_WS_METHODS.peopleSetOwnerName, {
     payload: KinPeopleSetOwnerNameInput,
     success: KinPerson,
@@ -225,6 +308,11 @@ export const KIN_PEOPLE_RPC_SCOPES = {
   [KIN_PEOPLE_WS_METHODS.peopleRemoveAccess]: AuthAccessWriteScope,
   // A member links their own handle from a chat-only session; the service checks ownership.
   [KIN_PEOPLE_WS_METHODS.peopleSetGithubLogin]: AuthKinChatScope,
+  // Everyone in the org reads profiles; the service checks who may edit whose.
+  [KIN_PEOPLE_WS_METHODS.peopleProfiles]: AuthKinChatScope,
+  [KIN_PEOPLE_WS_METHODS.peopleUpdateProfile]: AuthKinChatScope,
+  // The service lets only the owner set it.
+  [KIN_PEOPLE_WS_METHODS.orgSetTeamAgent]: AuthKinChatScope,
   // The owner names themself from their phone's chat session; the service checks ownership.
   [KIN_PEOPLE_WS_METHODS.peopleSetOwnerName]: AuthKinChatScope,
 } as const satisfies Record<

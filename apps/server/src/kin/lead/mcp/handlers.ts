@@ -14,6 +14,7 @@ import { KinLevelGate } from "../LevelGate.ts";
 import { quote } from "../LeadPrompt.ts";
 import { LeadMemory, resolveLead } from "../LeadMemory.ts";
 import { KinWorkers } from "../Workers.ts";
+import { readPeople } from "../peopleRead.ts";
 import { KinLeadToolkit } from "./tools.ts";
 
 const isKinChatError = Schema.is(KinChatError);
@@ -45,6 +46,12 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
     Effect.fn("KinLeadToolkit.leads")(function* () {
       return yield* (yield* KinHandoff).leads(yield* McpInvocationContext);
     }),
+  ),
+  people_read: McpToolAccess.reads(
+    Effect.fn("KinLeadToolkit.peopleRead")(function* () {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      return yield* readPeople(lead.orgId);
+    }, Effect.mapError(failure)),
   ),
   kin_hand_off: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.handOff")(function* (input) {

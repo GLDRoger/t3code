@@ -123,6 +123,8 @@ export const SHARED_TOOLS = {
   kin_chat_read: inAskedChat,
   // Lists only the names of the leads in the asked chat (`KinHandoff.leads`).
   kin_leads: "allowed",
+  // What everyone in the org sees on profiles; no workload.
+  people_read: "allowed",
   // Ends the turn; a shared turn's summary reaches no journal (`LeadMemory.end`).
   kin_end: "allowed",
   kin_delegate: ownerDelegates,

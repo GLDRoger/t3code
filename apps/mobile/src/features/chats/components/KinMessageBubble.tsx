@@ -95,18 +95,37 @@ function KinAttachments(props: {
 }
 
 /** Who wrote the messages under it, in a chat with more than one other author. */
-function KinAuthorLine(props: { readonly label: string; readonly avatar: KinAvatarView }) {
-  return (
+function KinAuthorLine(props: {
+  readonly label: string;
+  readonly avatar: KinAvatarView;
+  readonly onPress?: (() => void) | undefined;
+}) {
+  const line = (
+    <>
+      <KinAvatar avatar={props.avatar} size="mini" />
+      <Text textRole="caption" className="font-t3-medium text-foreground-muted">
+        {props.label}
+      </Text>
+    </>
+  );
+  return props.onPress === undefined ? (
     <View
       className="flex-row items-center gap-1.5 px-1"
       importantForAccessibility="no-hide-descendants"
       accessibilityElementsHidden
     >
-      <KinAvatar avatar={props.avatar} size="mini" />
-      <Text textRole="caption" className="font-t3-medium text-foreground-muted">
-        {props.label}
-      </Text>
+      {line}
     </View>
+  ) : (
+    <Pressable
+      className="flex-row items-center gap-1.5 px-1"
+      accessibilityRole="button"
+      accessibilityLabel={`${props.label}, profile`}
+      hitSlop={8}
+      onPress={props.onPress}
+    >
+      {line}
+    </Pressable>
   );
 }
 
@@ -137,6 +156,8 @@ export function KinMessageBubble(props: {
   readonly direct: boolean;
   /** Opens an attached image or PDF full screen. */
   readonly onPressPreview: (source: FilePreviewSource) => void;
+  /** Opens a teammate's profile from their name. */
+  readonly onOpenPerson?: (personId: KinPersonId) => void;
 }) {
   const { row, onReact, onOpenActions } = props;
   const { message } = row;
@@ -229,7 +250,16 @@ export function KinMessageBubble(props: {
       className={cn("gap-1 px-4", rowSpacing(row.continues), row.own ? "items-end" : "items-start")}
     >
       {row.showAuthor && !props.direct && message.author._tag !== "system" ? (
-        <KinAuthorLine label={row.authorLabel} avatar={kinAuthorAvatar(message.author)} />
+        <KinAuthorLine
+          label={row.authorLabel}
+          avatar={kinAuthorAvatar(message.author)}
+          onPress={
+            message.author._tag === "human" && props.onOpenPerson !== undefined
+              ? () =>
+                  message.author._tag === "human" && props.onOpenPerson?.(message.author.personId)
+              : undefined
+          }
+        />
       ) : null}
       {attachments.length > 0 ? (
         <KinAttachments

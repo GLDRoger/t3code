@@ -715,6 +715,7 @@ describe("KinLeadProvision", () => {
           domain: "engineering",
           charter: "",
           intro: "",
+          roleTags: [],
           model: "claude-opus-4-6",
           ownerChatId: tech.ownerChatId,
           working: false,
