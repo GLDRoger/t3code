@@ -383,7 +383,7 @@ export class KinChatRepository extends Context.Service<
     ) => Effect.Effect<boolean, RepositoryError>;
     readonly addWaiting: (input: KinWaitingItem) => Effect.Effect<boolean, RepositoryError>;
     readonly registerAgentThread: (
-      input: KinAgentThread,
+      input: KinAgentThread & { readonly chatId?: string | undefined },
     ) => Effect.Effect<KinAgentThread, RepositoryError>;
     readonly createChat: (
       input: Omit<KinChat, "lastSeq"> & {
@@ -1392,7 +1392,7 @@ const make = Effect.gen(function* () {
                 });
               return existing.value;
             }
-            yield* sql`INSERT INTO kin_agent_threads (org_id, thread_id, agent_id, started_at, ended_at) VALUES (${input.orgId}, ${input.threadId}, ${input.agentId}, ${input.startedAt}, ${input.endedAt})
+            yield* sql`INSERT INTO kin_agent_threads (org_id, thread_id, agent_id, started_at, ended_at, chat_id) VALUES (${input.orgId}, ${input.threadId}, ${input.agentId}, ${input.startedAt}, ${input.endedAt}, ${input.chatId ?? null})
  ON CONFLICT (thread_id) DO NOTHING RETURNING thread_id`;
             return yield* requireRecord(agentThreadOne(input));
           }),

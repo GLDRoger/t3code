@@ -96,6 +96,8 @@ import {
   teamPairs,
   teamSees,
   teamSeq,
+  viewGuard,
+  viewSees,
 } from "./teamView.ts";
 
 /** Who is writing and how: a lead in its turn, the owner from a client, or Kin from an event. */
@@ -111,6 +113,11 @@ export type Writer = {
   readonly askedBy?: KinPersonId | null;
   /** A teammate from their own app: `teamGuard` decides the write inside its transaction. */
   readonly teammate?: boolean;
+  /** A lead's turn others read: `viewGuard` decides the write inside its transaction. */
+  readonly view?: {
+    readonly people: ReadonlyArray<KinPersonId>;
+    readonly askers: ReadonlyArray<KinPersonId>;
+  };
 };
 /** Whose words a write's text is: the person writing, else the human a lead wrote it for. */
 const textBy = (writer: Writer) =>
@@ -197,6 +204,8 @@ export type QueryInput = {
   readonly at?: number;
   /** Only what this teammate may see (`teamView.ts`), and the change number of only that. */
   readonly team?: KinPersonId;
+  /** Only what every one of these people may see (`viewSees`). */
+  readonly view?: ReadonlyArray<KinPersonId>;
 };
 
 /** An entry the owner closed or took from a lead while it held it open, after that commits. */
@@ -811,6 +820,10 @@ const make = Effect.gen(function* () {
         changes: false,
         input,
       }).pipe(provideSql);
+    if (writer.view !== undefined)
+      yield* viewGuard(orgId, writer.view, { row: existing, changes: false, input }).pipe(
+        provideSql,
+      );
     if (existing !== undefined) {
       const [stored] = yield* sql<{ hash: string | null }>`SELECT request_hash AS hash
         FROM kin_records WHERE org_id = ${orgId} AND record_id = ${recordId}`;
@@ -1060,6 +1073,10 @@ const make = Effect.gen(function* () {
             changes: true,
             input: patch,
           }).pipe(provideSql);
+        if (writer.view !== undefined)
+          yield* viewGuard(orgId, writer.view, { row, changes: true, input: patch }).pipe(
+            provideSql,
+          );
         const now = yield* Clock.currentTimeMillis;
         const before = toRecord(row, now);
         const def = yield* resolveList(orgId, row.registerId);
@@ -1791,6 +1808,7 @@ const make = Effect.gen(function* () {
   const filterOf = (orgId: KinOrgId, input: QueryInput, now: number) => {
     const where = [sql`r.org_id = ${orgId}`, sql`r.register_id = ${input.list ?? "work"}`];
     if (input.team !== undefined) where.push(teamSees(sql, input.team));
+    if (input.view !== undefined) where.push(viewSees(sql, input.view));
     if (input.partyId !== undefined) where.push(sql`r.party_id IS ${input.partyId}`);
     if (input.projectId !== undefined) where.push(sql`r.project_id = ${input.projectId}`);
     if (input.repo !== undefined) where.push(sql`lower(r.repo) = lower(${input.repo})`);

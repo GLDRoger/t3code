@@ -422,6 +422,15 @@ export const make = Effect.gen(function* () {
             Effect.provideService(SqlClient.SqlClient, sql),
             Effect.mapError(toPersistenceSqlError("KinPeople.removeAccessTurns")),
           );
+          if (stopped.threads.length > 0)
+            yield* sql.afterCommit(
+              Effect.forEach(
+                stopped.threads,
+                (threadId) =>
+                  identity.endAgentThread({ orgId: input.orgId, threadId }).pipe(Effect.ignore),
+                { discard: true },
+              ),
+            );
           for (const member of yield* repo.listMembersByPerson(input)) {
             if (member.leftAt !== null) continue;
             for (const item of yield* repo.leaveChat({ ...member, leftAt }))

@@ -79,6 +79,8 @@ type AgentThreadInput = {
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
   readonly threadId: ThreadId;
+  /** The chat a shared turn's thread answers in; none for the owner's thread. */
+  readonly chatId?: string;
 };
 
 // Build once and share between WS handlers and the /kin/mcp toolkit; the visibility set is instance-local.

@@ -132,21 +132,6 @@ export const KinDocVersion = Schema.Struct({
 });
 export type KinDocVersion = typeof KinDocVersion.Type;
 
-/** What a doc is, set by the agent that writes it and changed by the owner. */
-export const KIN_DOC_KINDS = [
-  "prd",
-  "proposal",
-  "quote",
-  "spec",
-  "notes",
-  "report",
-  "playbook",
-  "policy",
-  "other",
-] as const;
-export const KinDocKind = Schema.Literals(KIN_DOC_KINDS);
-export type KinDocKind = typeof KinDocKind.Type;
-
 /** One row of the Docs screen. Group by `party`, `project` or `owner` on the client. */
 export const KinDocRow = Schema.Struct({
   recordId: KinRecordId,
@@ -156,10 +141,6 @@ export const KinDocRow = Schema.Struct({
   owner: KinWorkPrincipal,
   party: Schema.optional(KinRecordRef),
   project: Schema.optional(KinRecordRef),
-  /** Absent from hosts before kinds; a doc nobody gave a kind is `other`. */
-  kind: Schema.optional(KinDocKind),
-  /** Filed as the company's own, not a client's: playbooks, policies. Never with a client or project. */
-  company: Schema.optional(Schema.Literal(true)),
   sensitive: Schema.Boolean,
   /** True when its client or project is labelled sensitive, whatever its own label says. */
   sensitiveInherited: Schema.optional(Schema.Literal(true)),
@@ -219,11 +200,6 @@ export const KinDocsListInput = Schema.Struct({
   archived: Schema.optional(Schema.Boolean),
   /** Case-insensitive match on the title and the latest version's text. */
   text: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
-  kind: Schema.optional(KinDocKind),
-  /** `company`: the company's own docs. `unfiled`: no client, project or company. */
-  home: Schema.optional(Schema.Literals(["company", "unfiled"])),
-  /** `false` leaves out files made from a recipe, `true` lists only them; absent lists both. */
-  files: Schema.optional(Schema.Boolean),
   cursor: Schema.optional(PageCursor),
   limit: Schema.optional(PageLimit),
 });
@@ -399,21 +375,6 @@ export const KinRecipeUndoResult = Schema.Struct({
 });
 export type KinRecipeUndoResult = typeof KinRecipeUndoResult.Type;
 
-/**
- * The owner files a doc: its kind, and its home, a client and project or the company. `company`
- * clears the client and project; a client or project clears `company`. A stale `rev` is a conflict.
- */
-export const KinDocFileInput = Schema.Struct({
-  orgId: KinOrgId,
-  key: KinRecordKey,
-  rev: NonNegativeInt,
-  kind: Schema.optional(KinDocKind),
-  party: Schema.optional(Schema.NullOr(KinRecordKey)),
-  project: Schema.optional(Schema.NullOr(KinRecordKey)),
-  company: Schema.optional(Schema.Boolean),
-});
-export type KinDocFileInput = typeof KinDocFileInput.Type;
-
 /** The owner's label on a doc; only a person lowers one, so this is how a doc stops being sensitive. */
 export const KinDocLabelInput = Schema.Struct({
   orgId: KinOrgId,
@@ -527,7 +488,6 @@ const KIN_DOCS_WS_METHODS = {
   render: "kin.docs.render",
   undoRecipe: "kin.docs.undoRecipe",
   label: "kin.docs.label",
-  file: "kin.docs.file",
   clearRecipeLabel: "kin.docs.clearRecipeLabel",
   labelRecipe: "kin.docs.labelRecipe",
   setDefaultRecipe: "kin.docs.setDefaultRecipe",
@@ -580,7 +540,6 @@ export const KinDocsRpcs = [
     error,
   }),
   Rpc.make(KIN_DOCS_WS_METHODS.label, { payload: KinDocLabelInput, success: KinDocDetail, error }),
-  Rpc.make(KIN_DOCS_WS_METHODS.file, { payload: KinDocFileInput, success: KinDocDetail, error }),
   Rpc.make(KIN_DOCS_WS_METHODS.clearRecipeLabel, {
     payload: KinRecipeClearLabelInput,
     success: KinRecipeClearLabelResult,
@@ -613,8 +572,6 @@ export const KIN_DOCS_RPC_SCOPES = {
   [KIN_DOCS_WS_METHODS.undoRecipe]: AuthOrchestrationOperateScope,
   // Lowers what an agent may show others: the owner's call, as the entry labels beside it are.
   [KIN_DOCS_WS_METHODS.label]: AuthOrchestrationOperateScope,
-  // Where a doc is filed, as the entry edits beside it are; it starts no agent work.
-  [KIN_DOCS_WS_METHODS.file]: AuthOrchestrationOperateScope,
   [KIN_DOCS_WS_METHODS.clearRecipeLabel]: AuthOrchestrationOperateScope,
   [KIN_DOCS_WS_METHODS.labelRecipe]: AuthOrchestrationOperateScope,
   // Which recipe makes a list's documents, as undoing a recipe's change is.

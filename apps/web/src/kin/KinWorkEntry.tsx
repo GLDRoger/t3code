@@ -77,7 +77,6 @@ import {
   KinInvoicePayments,
   KinMoneyActionNotice,
 } from "./KinInvoice";
-import { KinInvoiceCurrency } from "./KinMoneyEstimate";
 import { KinNotesVersions } from "./KinConfirm";
 import { KinEntryFilePicker, KinEntryPick, KinEntryText } from "./KinWorkEntryEdit";
 import { KinWorkPrivateMark, KinWorkSection as Section } from "./KinWorkParts";
@@ -90,7 +89,6 @@ import {
   useKinListContext,
   useKinLists,
   useKinMoneyActions,
-  useKinRates,
 } from "./useKinMoney";
 import { kinWorkChoicesAtom, type KinWorkDirectory, type KinWorkTarget } from "./useKinWork";
 
@@ -489,7 +487,6 @@ export function KinListEntry(
   const entry = kinListEntryView(item, def, context);
   const invoice = kinIsInvoice(item) ? kinInvoiceView(item, def, props.now) : null;
   const money = useKinMoneyActions(props);
-  const rates = useKinRates(props, invoice !== null);
   const changes = useKinEntryChanges(props, item.key);
   const agent = useKinAskAgent(props);
   const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
@@ -583,10 +580,7 @@ export function KinListEntry(
             ) : null}
           </div>
           {invoice !== null ? (
-            <>
-              <KinInvoiceCurrency {...props} item={item} rates={rates} settled={invoice.settled} />
-              <KinInvoiceFigures invoice={invoice} />
-            </>
+            <KinInvoiceFigures invoice={invoice} />
           ) : entry.balance === null ? null : (
             <dl className="grid grid-cols-2 gap-x-6 text-sm">
               <div className="flex flex-col">

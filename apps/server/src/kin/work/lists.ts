@@ -1,5 +1,4 @@
 import {
-  KIN_DOC_KINDS,
   KIN_SENSITIVE_FIELDS,
   KinChatError,
   KinFieldValue,
@@ -67,11 +66,10 @@ export const LISTS: Record<ListName, List> = {
     name: "Docs",
     prefix: "D",
     noun: "doc",
-    // Archived is dropped; a doc is never done. Its category is its kind.
+    // Archived is dropped; a doc is never done.
     states: ["open", "dropped"],
-    categories: KIN_DOC_KINDS,
-    // `home: "company"` files it as the company's own rather than a client's.
-    fields: ["home"],
+    categories: [],
+    fields: [],
   },
 };
 

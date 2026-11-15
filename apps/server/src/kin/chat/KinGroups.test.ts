@@ -700,6 +700,8 @@ it.effect(
       yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = ${running.wakeupId}`;
       assert.deepStrictEqual(yield* seen(running), ["Invented-priya-plan", "Invented-owner-card"]);
       const waiting = yield* say(owner, chatId, "Invented-owner-aside");
+      yield* sql`INSERT INTO kin_agent_threads (thread_id, org_id, agent_id, started_at, chat_id)
+        VALUES ('kin-shared:launch', ${orgId}, ${tech}, ${at}, ${chatId})`;
 
       yield* groups.addMember([owner], {
         chatId,
@@ -708,6 +710,12 @@ it.effect(
       const [stopped] = yield* sql<{ aborted: number | null }>`SELECT aborted_at AS aborted
         FROM kin_wakeups WHERE wakeup_id = ${running.wakeupId}`;
       assert.isNotNull(stopped?.aborted ?? null);
+      // The chat's thread ends with the join: no later turn there resumes what was said before.
+      assert.deepStrictEqual(
+        yield* sql`SELECT ended_at IS NOT NULL AS ended FROM kin_agent_threads
+          WHERE thread_id = 'kin-shared:launch'`,
+        [{ ended: 1 }],
+      );
       assert.deepStrictEqual(
         (yield* events)
           .filter((row) => row.messageId === waiting.messageId)
