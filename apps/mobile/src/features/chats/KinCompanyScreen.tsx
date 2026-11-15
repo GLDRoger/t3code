@@ -14,6 +14,7 @@ import { KIN_BRAND } from "@t3tools/client-runtime/kin/kinBrand";
 import { kinListSend } from "@t3tools/client-runtime/kin/kinLists";
 import { EnvironmentId, KinOrgId, type KinCompanyProfile } from "@t3tools/contracts";
 import * as Option from "effect/Option";
+import { AsyncResult } from "effect/reactivity";
 import * as Schema from "effect/Schema";
 import { useState } from "react";
 import { View } from "react-native";
@@ -21,6 +22,7 @@ import { View } from "react-native";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
 import { Notice } from "../../components/ui/Notice";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -201,6 +203,7 @@ function Profile(
             </ListSection>
           ))
         )}
+        <CompanyTimeZone environmentId={environmentId} orgId={orgId} />
         {brandSaved ? <Notice message={KIN_BRAND.saved} icon="checkmark.circle" /> : null}
         <KinBrandRows
           environmentId={environmentId}
@@ -256,5 +259,25 @@ function Profile(
         </ListSection>
       ))}
     </KinWorkFrame>
+  );
+}
+
+/** What check-ins, due days and the agents' times follow; the owner's phone keeps it set. */
+function CompanyTimeZone(props: KinWorkTarget) {
+  const result = useAtomValue(
+    kinClient.workZone({ environmentId: props.environmentId, input: { orgId: props.orgId } }),
+  );
+  const zone = Option.getOrNull(AsyncResult.value(result));
+  if (zone === null) return null;
+  return (
+    <ListSection title={KIN_COMPANY.timeZone}>
+      <ListRowLayout
+        icon="clock"
+        label={zone.timeZone}
+        description={
+          zone.fromHost === true ? KIN_COMPANY.timeZoneFromHost : KIN_COMPANY.timeZoneUse
+        }
+      />
+    </ListSection>
   );
 }

@@ -20,6 +20,10 @@ export const KIN_COMPANY = {
   cancel: "Cancel",
   saved: "Saved.",
   notSet: "Not set",
+  timeZone: "Time zone",
+  timeZoneUse: "Check-ins, due days and your agents' times follow it. Your phone keeps it current.",
+  timeZoneFromHost:
+    "None set yet, so Kin uses the computer's. Open Kin on your phone to set yours.",
   empty: "Nothing here yet. Add what goes on your invoices.",
   changed:
     "These changed while you were editing. What you typed is still here. Check what's new, then save again.",

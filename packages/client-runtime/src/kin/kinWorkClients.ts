@@ -216,7 +216,7 @@ export function kinTouchAt(day: string, now: Date): string | undefined {
 
 export interface KinTouchView {
   readonly id: string;
-  /** "Call with Asha", "Invoice issued: INV-3". */
+  /** "Call · Asha" (who on our side), "Invoice issued: INV-3". */
   readonly title: string;
   readonly note: string | null;
   readonly when: string;
@@ -230,7 +230,7 @@ function kinTouchView(touch: KinClientTouch, now: Date): KinTouchView {
   return {
     id: touch.id,
     title: touch.logged
-      ? `${base}${touch.who === null ? "" : ` with ${touch.who}`}`
+      ? `${base}${touch.who === null ? "" : ` · ${touch.who}`}`
       : `${base}${touch.record === null ? "" : `: ${touch.record.key}`}`,
     note: touch.logged ? (note === "" ? null : note) : (touch.record?.title ?? null),
     when: formatKinTime(new Date(touch.at), now),
