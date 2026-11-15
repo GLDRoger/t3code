@@ -813,7 +813,12 @@ function KinPaymentForm(props: KinWorkTarget & { readonly itemKey: KinRecordKey 
   const changes = useKinEntryChanges(props, itemKey);
   const now = new Date(useNowMinuteMs());
   const today = kinWorkDayOf(now);
-  const [draft, setDraft] = useState<KinPaymentDraft>({ amount: "", paidOn: today, note: "" });
+  const [draft, setDraft] = useState<KinPaymentDraft>({
+    amount: "",
+    paidOn: today,
+    note: "",
+    tds: "",
+  });
   const [problem, setProblem] = useState<string | null>(null);
   const [requestId] = useState(uuidv4);
   const [month, setMonth] = useState<string | null>(null);
@@ -860,6 +865,7 @@ function KinPaymentForm(props: KinWorkTarget & { readonly itemKey: KinRecordKey 
     setProblem(null);
     const saved = await changes.pay({
       amount: checked.amount,
+      ...(checked.tds === undefined ? {} : { tds: checked.tds }),
       paidOn: draft.paidOn,
       ...(draft.note.trim() === "" ? {} : { note: draft.note.trim() }),
       clientRequestId: requestId,
@@ -876,7 +882,7 @@ function KinPaymentForm(props: KinWorkTarget & { readonly itemKey: KinRecordKey 
         label: KIN_LISTS.entry.paySave,
         onPress: () => void save(),
         loading: changes.busy,
-        disabled: changes.busy || draft.amount.trim() === "",
+        disabled: changes.busy || (draft.amount.trim() === "" && draft.tds?.trim() === ""),
       }}
     >
       <View className="gap-1 px-2">
@@ -898,6 +904,16 @@ function KinPaymentForm(props: KinWorkTarget & { readonly itemKey: KinRecordKey 
           placeholder={entry.balance.leftText}
           onChangeText={(amount) => setDraft({ ...draft, amount })}
         />
+        {entry.takesTds ? (
+          <KinWorkTextField
+            label={KIN_LISTS.entry.payTds}
+            value={draft.tds ?? ""}
+            keyboard="numbers"
+            disabled={changes.busy}
+            placeholder={KIN_LISTS.entry.payTdsPlaceholder}
+            onChangeText={(tds) => setDraft({ ...draft, tds })}
+          />
+        ) : null}
       </ListSection>
       <ListSection>
         <Menu

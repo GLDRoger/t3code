@@ -249,9 +249,10 @@ function PaymentForm(props: {
     amount: "",
     paidOn: props.today,
     note: "",
+    tds: "",
   });
   const [problem, setProblem] = useState<string | null>(null);
-  const ids = { amount: useId(), day: useId(), note: useId() };
+  const ids = { amount: useId(), day: useId(), note: useId(), tds: useId() };
   if (left === null) return null;
   return (
     <form
@@ -290,6 +291,19 @@ function PaymentForm(props: {
           />
         </div>
       </div>
+      {props.entry.takesTds ? (
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor={ids.tds}>{KIN_LISTS.entry.payTds}</Label>
+          <Input
+            id={ids.tds}
+            inputMode="decimal"
+            autoComplete="off"
+            placeholder={KIN_LISTS.entry.payTdsPlaceholder}
+            value={draft.tds}
+            onChange={(event) => setDraft({ ...draft, tds: event.target.value })}
+          />
+        </div>
+      ) : null}
       <div className="flex flex-col gap-1.5">
         <Label htmlFor={ids.note}>{KIN_LISTS.entry.payNote}</Label>
         <Input
@@ -501,6 +515,7 @@ export function KinListEntry(
     if (checked === null || !checked.ok) return Promise.resolve(false);
     return changes.pay({
       amount: checked.amount,
+      ...(checked.tds === undefined ? {} : { tds: checked.tds }),
       paidOn: draft.paidOn,
       ...(draft.note.trim() === "" ? {} : { note: draft.note.trim() }),
       clientRequestId: randomUUID(),

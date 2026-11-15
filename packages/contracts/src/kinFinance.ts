@@ -260,6 +260,8 @@ export const KinPaymentInput = Schema.Struct({
   amount: KinMoney,
   paidOn: KinDay,
   note: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
+  /** Tax the client deducted at source (TDS), recorded with the cash; an amount of 0 is TDS alone. */
+  tds: Schema.optional(KinMoney),
   /** A retry with the same id records nothing more. */
   clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
 });
