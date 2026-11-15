@@ -2,14 +2,20 @@ import { FileDiff } from "@pierre/diffs/react";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_DOCS,
+  KIN_DOC_HOMES,
+  KIN_DOC_KIND_LABELS,
+  kinDocKindOf,
+  kinDocUnfiled,
   kinDocDiffSummary,
+  kinDocPdfInput,
   kinDocRestoreOutcome,
   kinDocVersionView,
 } from "@t3tools/client-runtime/kin/kinDocs";
 import { KIN_DOC_CHANGES } from "@t3tools/client-runtime/kin/kinDocChanges";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { KinDocDetail, KinRecordKey } from "@t3tools/contracts";
-import { ArrowLeftIcon, XIcon } from "lucide-react";
+import { AsyncResult } from "effect/reactivity";
+import { ArrowLeftIcon, FolderInputIcon, XIcon } from "lucide-react";
 import { useState } from "react";
 
 import { DiffWorkerPoolProvider } from "../components/DiffWorkerPoolProvider";
@@ -49,9 +55,11 @@ import {
   resolveFileDiffPath,
 } from "../lib/diffRendering";
 import { PREFERRED_HIGHLIGHTER } from "../lib/syntaxHighlighting";
+import { randomUUID } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinDocChangesView } from "./KinDocChangesView";
+import { KinDocFileDialog } from "./KinDocFileDialog";
 import { KinDocReader } from "./KinDocReader";
 import { KinWorkNotice } from "./KinWorkParts";
 import { kinClient } from "./kinClient";
@@ -95,6 +103,19 @@ export function KinDocPage(
   const { state, refresh } = useKinDoc(props, key, comparing?.to ?? where.version ?? null);
   const doc = state._tag === "ready" ? state.value : null;
   const canRestore = useAtomValue(kinClient.docRestore.permissionAtom(environmentId));
+  const canRender = useAtomValue(kinClient.docRender.permissionAtom(environmentId));
+  const render = useAtomCommand(kinClient.docRender, { reportFailure: false });
+  const canPdf = doc !== null && canRender && kinDocPdfInput(orgId, doc, "pdf") !== null;
+  const exportPdf = async () => {
+    const pdfInput = doc === null ? null : kinDocPdfInput(orgId, doc, randomUUID());
+    if (pdfInput === null) return;
+    const toast = toastManager.add({ type: "loading", title: KIN_DOCS.exportingPdf });
+    const result = await render({ environmentId, input: pdfInput });
+    toastManager.close(toast);
+    const made = AsyncResult.isSuccess(result) ? result.value.documents[0] : undefined;
+    if (made === undefined) return setProblem(KIN_DOCS.exportPdfFailed);
+    onGo({ doc: made.key });
+  };
   const restore = useAtomCommand(kinClient.docRestore, { reportFailure: false });
   const ask = useKinDocAsk(props, doc, names.me);
   const [actions, setActions] = useState<HTMLElement | null>(null);
@@ -103,6 +124,8 @@ export function KinDocPage(
   const [problem, setProblem] = useState<string | null>(null);
   /** The version that was latest before a restore, which restoring again undoes. */
   const [undo, setUndo] = useState<number | null>(null);
+  const [filing, setFiling] = useState(false);
+  const canFile = useAtomValue(kinClient.docFile.permissionAtom(environmentId));
 
   const run = async (target: NonNullable<Restoring>, undoing: boolean) => {
     if (!kinHostConnected(environmentId)) {
@@ -218,6 +241,12 @@ export function KinDocPage(
           )}
         </div>
       )}
+      {doc === null || comparing !== undefined ? null : (
+        <KinDocFiling doc={doc} canFile={canFile} onFile={() => setFiling(true)} />
+      )}
+      {filing && doc !== null ? (
+        <KinDocFileDialog {...props} doc={doc} onClose={() => setFiling(false)} />
+      ) : null}
       {state._tag === "refused" ? (
         <KinWorkNotice {...KIN_DOCS.unavailable} />
       ) : state._tag === "gone" ? (
@@ -272,6 +301,7 @@ export function KinDocPage(
           onSeeChanges={(to) => onGo({ doc: key, changes: { to } })}
           onOpenLatest={() => onGo({ doc: key })}
           onHistory={() => onGo({ ...where, history: true })}
+          onExportPdf={canPdf ? () => void exportPdf() : null}
           onRestore={
             canRestore ? (version) => setRestoring({ version, latest: doc.latest.version }) : null
           }
@@ -324,6 +354,41 @@ export function KinDocPage(
 }
 
 /** What differs between two versions, in the app's own diff view, and the way back. */
+/** What kind of doc this is and where it is filed, with the way to change either. */
+function KinDocFiling(props: {
+  readonly doc: KinDocDetail;
+  readonly canFile: boolean;
+  readonly onFile: () => void;
+}) {
+  const { doc } = props;
+  const kind = kinDocKindOf(doc);
+  const unfiled = kinDocUnfiled(doc);
+  const home =
+    doc.company === true
+      ? KIN_DOC_HOMES.company
+      : [doc.party?.title, doc.project?.title].filter(Boolean).join(" · ");
+  return (
+    <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center gap-1.5 px-6 pt-3">
+      <Badge size="sm" variant="outline">
+        {KIN_DOC_KIND_LABELS[kind].one}
+      </Badge>
+      {unfiled ? (
+        <Badge size="sm" variant="warning">
+          {KIN_DOC_HOMES.unfiled}
+        </Badge>
+      ) : (
+        <span className="truncate text-xs text-muted-foreground">{home}</span>
+      )}
+      {props.canFile ? (
+        <Button size="xs" variant="ghost" onClick={props.onFile}>
+          <FolderInputIcon />
+          {unfiled ? KIN_DOC_HOMES.file : "Change"}
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
 function KinDocChanges(
   props: KinWorkTarget & {
     readonly doc: KinDocDetail;

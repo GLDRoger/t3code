@@ -61,8 +61,11 @@ const noChoicesAtom: ReturnType<typeof kinWorkChoicesAtom> = Atom.make(AsyncResu
 /** How many active clients and open projects there are, read again whenever Work changes. */
 export function useKinClientCounts(target: KinWorkTarget, enabled: boolean, seq: number | null) {
   const atom = kinWorkChoicesAtom(target);
-  const held = Option.getOrNull(AsyncResult.value(useAtomValue(enabled ? atom : noChoicesAtom)));
+  const result = useAtomValue(enabled ? atom : noChoicesAtom);
+  const held = Option.getOrNull(AsyncResult.value(result));
   useRereadOnChange(enabled ? seq : null, () => appAtomRegistry.refresh(atom));
+  // A teammate's read of clients is refused; they get no way in rather than a dead one.
+  if (AsyncResult.isFailure(result)) return "refused" as const;
   return held === null ? null : { clients: held.clients.length, projects: held.projects.length };
 }
 

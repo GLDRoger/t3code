@@ -23,7 +23,7 @@ import type {
 import { AsyncResult } from "effect/reactivity";
 
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
-import { formatKinChartValue } from "./kinChart.ts";
+import { formatKinChartValue, KIN_CURRENCY_SYMBOLS } from "./kinChart.ts";
 import {
   isKinChatError,
   isKinWorkAuthorizationError,
@@ -94,6 +94,8 @@ export const KIN_LISTS = {
     payDay: "Received on",
     payNote: "Note",
     payNotePlaceholder: "Bank transfer, UPI reference…",
+    payTds: "TDS deducted",
+    payTdsPlaceholder: "0",
     paySave: "Record payment",
     takeBack: "Take back",
     takenBack: "Taken back",
@@ -154,7 +156,7 @@ export const KIN_LISTS = {
 const moneyUnit = (currency: string) => ({ kind: "money" as const, currency });
 
 /** How many digits follow the point in `currency`: 2 for rupees, 0 for yen. */
-const kinMinorDigits = (currency: string) =>
+export const kinMinorDigits = (currency: string) =>
   (formatKinChartValue(moneyUnit(currency), 1, "full", true).split(".")[1] ?? "").length;
 
 /** An exact amount: "₹4,20,000", with paise only when there are some unless `paise` keeps them. */
@@ -181,11 +183,14 @@ const afterLabel = (when: string) =>
 export const kinTotalsText = (totals: KinMoneyTotals, nothing = KIN_MONEY_NOTHING) =>
   totals.length === 0 ? nothing : kinTotalsLines(totals).join(" and ");
 
+// Longest first, so "S$" is Singapore dollars before "$" is read as US ones.
 const SYMBOLS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/US\$/, "USD"],
+  ...Object.entries(KIN_CURRENCY_SYMBOLS)
+    .filter(([code]) => code !== "INR")
+    .sort(([, a], [, b]) => b.length - a.length)
+    .map(([code, sign]) => [new RegExp(sign.replace(/[$]/g, "\\$&")), code] as const),
   [/₹|\brs\.?(?=\s|\d|$)/i, "INR"],
-  [/\$/, "USD"],
-  [/€/, "EUR"],
-  [/£/, "GBP"],
 ];
 
 /**
@@ -984,6 +989,8 @@ export interface KinListEntryView {
   /** Files no field of the list holds any more. */
   readonly otherFiles: ReadonlyArray<KinFileRef>;
   readonly payments: ReadonlyArray<KinPaymentView>;
+  /** An invoice's payment form also takes the TDS the client deducted. */
+  readonly takesTds: boolean;
   /** Every status the list uses, to move the entry to. */
   readonly states: ReadonlyArray<{
     readonly state: KinRecordState;
@@ -1141,11 +1148,15 @@ export function kinListEntryView(
     facts,
     fields,
     otherFiles: (item.files ?? []).filter((file) => !held.has(file.attachmentId)),
+    takesTds: item.list === "invoices",
     payments: (item.payments ?? []).map((payment: KinPayment) => ({
       paymentId: payment.paymentId,
       amount: kinMoneyText(payment.amount, true),
       when: dayText(payment.paidOn, now),
-      note: payment.note.trim() === "" ? null : payment.note.trim(),
+      note:
+        [payment.withheld === true ? KIN_LISTS.entry.payTds : null, payment.note.trim()]
+          .filter((part) => part !== null && part !== "")
+          .join(" · ") || null,
       voided: payment.voidedAt !== null,
     })),
     states: (def?.states ?? [item.state]).map((state) => ({
@@ -1253,6 +1264,8 @@ export interface KinPaymentDraft {
   /** `YYYY-MM-DD`. */
   readonly paidOn: string;
   readonly note: string;
+  /** TDS the client deducted, on an invoice; blank for none. */
+  readonly tds?: string;
 }
 
 /** What was typed as a payment, or why it can't be recorded. */
@@ -1260,18 +1273,26 @@ export function kinPaymentCheck(
   draft: KinPaymentDraft,
   left: KinMoney,
 ):
-  | { readonly ok: true; readonly amount: KinMoney }
+  | { readonly ok: true; readonly amount: KinMoney; readonly tds?: KinMoney }
   | { readonly ok: false; readonly problem: string } {
-  const amount = kinParseAmount(draft.amount, left.currency);
-  if (amount === null)
+  const tdsText = draft.tds?.trim() ?? "";
+  const tds = tdsText === "" ? null : kinParseAmount(tdsText, left.currency);
+  if (tdsText !== "" && (tds === null || tds.minor === 0))
+    return { ok: false, problem: "Enter the TDS deducted, like 4,000, or leave it blank." };
+  // With TDS, the cash received may be left blank: the client kept it all as tax.
+  const amount =
+    tds !== null && draft.amount.trim() === ""
+      ? { minor: 0, currency: left.currency }
+      : kinParseAmount(draft.amount, left.currency);
+  if (amount === null || (amount.minor === 0 && tds === null))
     return { ok: false, problem: "Enter the amount received, like 40,000 or 40000.50." };
-  if (amount.minor > left.minor)
+  if (amount.minor + (tds?.minor ?? 0) > left.minor)
     return {
       ok: false,
       problem: `That's more than the ${kinMoneyText(left, true)} still owed.`,
     };
   if (!DAY.test(draft.paidOn)) return { ok: false, problem: "Pick the day it was received." };
-  return { ok: true, amount };
+  return tds === null ? { ok: true, amount } : { ok: true, amount, tds };
 }
 
 export type KinListOutcome<A> =

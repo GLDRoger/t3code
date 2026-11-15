@@ -1085,7 +1085,8 @@ it.effect("in a teammate's turn the lead reads and changes Work as their own scr
     const hidden = yield* ownerTask("private");
     const shared = yield* ownerTask("shared", { amount: { minor: 500_000, currency: "INR" } });
     const theirs = yield* ownerTask("theirs", { owner: { _tag: "person", personId: mateId } });
-    yield* OwnerWork.share([owner], { orgId, keys: [shared.key], shared: true });
+    const sharing = yield* OwnerWork.share([owner], { orgId, keys: [shared.key], shared: true });
+    assert.strictEqual(sharing.records[0]?.shared, true);
     const scope = scopeOf(lead);
     const listed = yield* LeadWork.query(scope, {});
     assert.deepStrictEqual(keysOf(listed), keysOf(yield* OwnerWork.list([mate], { orgId })));
@@ -1376,7 +1377,13 @@ it.effect(
         rev: current.rev,
         sensitive: true,
       });
-      yield* OwnerWork.share([owner], { orgId, keys: [priced.key], shared: false });
+      const unshared = yield* OwnerWork.share([owner], {
+        orgId,
+        keys: [priced.key],
+        shared: false,
+      });
+      // The row says it is shared only while it is, so the owner's switch shows the truth.
+      assert.notProperty(unshared.records[0], "shared");
       assert.deepStrictEqual(keysOf(yield* OwnerWork.list([mate], { orgId })), [
         "W-4",
         forPlain.key,

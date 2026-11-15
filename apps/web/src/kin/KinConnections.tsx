@@ -64,6 +64,7 @@ import { Switch } from "../components/ui/switch";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinConfirm } from "./KinConfirm";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
+import { KinVisualHosts } from "./KinVisualHosts";
 import { kinClient } from "./kinClient";
 import { useKinHost } from "./useKinHost";
 import { useNowMinuteMs } from "./useKinClock";
@@ -90,7 +91,10 @@ export function KinConnectionsSettings() {
       </EmptyHeader>
     </Empty>
   ) : (
-    <ConnectionsList environmentId={target.environmentId} orgId={target.orgId} />
+    <>
+      <ConnectionsList environmentId={target.environmentId} orgId={target.orgId} />
+      <KinVisualHosts environmentId={target.environmentId} orgId={target.orgId} />
+    </>
   );
 }
 

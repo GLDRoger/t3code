@@ -271,7 +271,7 @@ describe("rows", () => {
     expect(label(new Map([["m-ravi", "Ravi"]]))).toEqual(["Ravi"]);
   });
 
-  it("shows a card tap as the button's label, never its JSON or card", () => {
+  it("shows a card tap as the button's label, never its JSON, card or a choice it answered", () => {
     const tap = (messageId: string, body: string) =>
       ({
         ...all.find((m) => m.author._tag === "human")!,
@@ -283,6 +283,7 @@ describe("rows", () => {
     const rows = messageRows(
       [
         tap("choice", JSON.stringify({ actionId: "choose", text: 'Chose "Ship it" on "Ship?"' })),
+        tap("ship", JSON.stringify({ text: 'Chose "Ship it" on "Ship?"' })),
         tap(
           "reminder",
           JSON.stringify({ text: 'Tapped "Done" on the reminder "Say "hi" to Sam"' }),
