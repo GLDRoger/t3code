@@ -30,7 +30,7 @@ const same = (a: KinRefreshes, b: KinRefreshes) =>
 
 /**
  * The revisions this viewer may see. The owner reads every topic. A teammate reads only the time
- * zone, people's profiles and their own lead list, which moves only when what that list shows them changed, so a
+ * zone, people's profiles, Needs attention and their own lead list, which moves only when what that list shows them changed, so a
  * change to something they can't read never reaches them, not even as a moved number.
  */
 export const subscribeRefreshes = (
@@ -65,8 +65,14 @@ export const subscribeRefreshes = (
               shown = next;
             }
             heard = now;
-            // Everyone's profile is readable by the whole org.
-            return { timeZone: now.timeZone, people: now.people, leads } satisfies KinRefreshes;
+            // Everyone's profile is readable by the whole org. Pulse moves only say "read your
+            // Needs attention again"; the read shows them only what they may see.
+            return {
+              timeZone: now.timeZone,
+              people: now.people,
+              leads,
+              pulse: now.pulse,
+            } satisfies KinRefreshes;
           }),
         ),
         Stream.changesWith(same),

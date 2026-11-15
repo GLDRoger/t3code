@@ -1,0 +1,345 @@
+import {
+  KIN_GOAL_MEASURES,
+  KinChatError,
+  KinGoalMeasure,
+  KinRecordId,
+  TrimmedNonEmptyString,
+  type KinGoal,
+  type KinGoalSaveInput,
+  type KinMoney,
+  type KinOrgId,
+} from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
+
+import type { PersonIdentity } from "../chat/KinIdentity.ts";
+import { KinRecords, requestHashOf } from "./KinRecords.ts";
+import { fieldText, isMoney, parseFields, type FieldValue } from "./lists.ts";
+import { DEFAULT_CURRENCY, dayIn, formatMoney, parseAmount } from "./money.ts";
+import { inList, ownerWriter, theOwner } from "./ownerWork.ts";
+import { playbookThreshold } from "./playbooks.ts";
+import { countedPayment, endOfDay, ownerZone, startOfDay } from "./recordRows.ts";
+
+/**
+ * Company goals: entries of the built-in `goals` list. The server counts each one's progress
+ * from Kin's own rows, so a goal only states what it measures, its target and its dates.
+ */
+
+/** What `record_create` and `record_update` take for a goal (list goals); due is its date. */
+export const GoalInputs = {
+  measure: Schema.optional(KinGoalMeasure).annotate({
+    description:
+      "A goal's measure: revenue_received (money in, from Money), clients_won, tasks_done, or manual (a number you keep current).",
+  }),
+  target: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(60))).annotate({
+    description: 'A goal\'s target: money as said for revenue_received ("40 lakh"), else a number.',
+  }),
+  current: Schema.optional(Schema.NullOr(Schema.Finite)).annotate({
+    description: "A manual goal's number now; say where it came from in notes.",
+  }),
+  unit: Schema.optional(Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(40)))).annotate(
+    { description: 'What a manual goal counts, such as "hires".' },
+  ),
+};
+export const GOAL_INPUTS = ["measure", "target", "current", "unit"] as const;
+
+const isMeasure = (text: string | null): text is KinGoalMeasure =>
+  text !== null && (KIN_GOAL_MEASURES as ReadonlyArray<string>).includes(text);
+export const isMoneyMeasure = (measure: KinGoalMeasure) => measure === "revenue_received";
+
+const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+
+/** A target as said: money for revenue, else a whole count. */
+const goalTarget = (measure: KinGoalMeasure, text: string) => {
+  if (isMoneyMeasure(measure)) {
+    const parsed = parseAmount(text, DEFAULT_CURRENCY);
+    return "error" in parsed ? Effect.fail(parsed.error) : Effect.succeed<FieldValue>(parsed.money);
+  }
+  const count = Number(text.replace(/[\s,]/g, ""));
+  return Number.isFinite(count) && count > 0
+    ? Effect.succeed<FieldValue>(String(count))
+    : Effect.fail(invalid(`A ${measure.replaceAll("_", " ")} goal's target is a number.`));
+};
+
+/** The goal fields an agent row or update names, checked; `undefined` leaves one as it is. */
+export const goalFields = Effect.fn("KinGoals.fields")(function* (
+  row: {
+    readonly measure?: string | undefined;
+    readonly target?: string | undefined;
+    readonly current?: number | null | undefined;
+    readonly unit?: string | null | undefined;
+  },
+  before?: Readonly<Record<string, FieldValue>>,
+) {
+  const measure = row.measure ?? (before === undefined ? undefined : fieldText(before, "measure"));
+  if (row.measure !== undefined && !isMeasure(row.measure))
+    return yield* invalid(`A goal measures ${KIN_GOAL_MEASURES.join(", ")}.`);
+  if (row.target !== undefined && (measure === undefined || measure === null))
+    return yield* invalid("Say what the goal measures with its target.");
+  const fields: Record<string, FieldValue | null> = {};
+  if (row.measure !== undefined) fields.measure = row.measure;
+  if (row.target !== undefined && isMeasure(measure ?? null))
+    fields.target = yield* goalTarget(measure as KinGoalMeasure, row.target);
+  if (row.current !== undefined)
+    fields.current = row.current === null ? null : String(row.current);
+  if (row.unit !== undefined) fields.unit = row.unit;
+  return fields;
+});
+
+interface GoalRow {
+  readonly recordId: string;
+  readonly key: string;
+  readonly title: string;
+  readonly rev: number;
+  readonly state: "open" | "done" | "dropped";
+  readonly dueAt: number | null;
+  readonly createdAt: number;
+  readonly fields: string;
+}
+
+/** How far a straight line from start to target has got by `at`. */
+const paceAt = (target: number, start: number, end: number | null, at: number) =>
+  end === null || at >= end ? target : at <= start ? 0 : (target * (at - start)) / (end - start);
+
+/**
+ * Every goal not dropped, with progress counted now. `money` false leaves out goals that count
+ * money, for people the owner keeps money from.
+ */
+export const goalsNow = Effect.fn("KinGoals.now")(function* (
+  orgId: KinOrgId,
+  at: number,
+  options: { readonly money: boolean },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const zone = yield* ownerZone(orgId);
+  const rows = yield* sql<GoalRow>`SELECT r.record_id AS "recordId", r.key, r.title, r.rev,
+      r.state, r.due_at AS "dueAt", r.created_at AS "createdAt", r.fields_json AS fields
+    FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.register_id = 'goals' AND r.state <> 'dropped'
+    ORDER BY r.state = 'done', r.due_at IS NULL, r.due_at, LENGTH(r.key), r.key`;
+  const behindPercent = (yield* playbookThreshold(orgId, "goal_behind_percent")).value;
+  const goals: Array<KinGoal> = [];
+  for (const row of rows) {
+    const fields = parseFields(row.fields);
+    const measureText = fieldText(fields, "measure");
+    if (!isMeasure(measureText)) continue;
+    const measure = measureText;
+    if (isMoneyMeasure(measure) && !options.money) continue;
+    const startsOn = fieldText(fields, "startsOn") ?? dayIn(row.createdAt, zone);
+    const start = startOfDay(startsOn, zone);
+    const end = row.dueAt;
+    const until = Math.min(at, end ?? at);
+    const targetField = fields.target;
+    const money: KinMoney | undefined =
+      targetField !== undefined && isMoney(targetField) ? targetField : undefined;
+    const target =
+      money !== undefined
+        ? money.minor
+        : typeof targetField === "string"
+          ? Number(targetField)
+          : Number.NaN;
+    if (!Number.isFinite(target) || target <= 0) continue;
+    const current = yield* progressOf(orgId, measure, {
+      start,
+      until,
+      startsOn,
+      untilDay: dayIn(until, zone),
+      currency: money?.currency ?? DEFAULT_CURRENCY,
+      manual: Number(fieldText(fields, "current") ?? 0) || 0,
+    });
+    const expected = paceAt(target, start, end, at);
+    const unit = fieldText(fields, "unit");
+    goals.push({
+      recordId: KinRecordId.make(row.recordId),
+      key: row.key,
+      title: row.title,
+      rev: row.rev,
+      state: row.state,
+      measure,
+      ...(money === undefined ? {} : { currency: money.currency }),
+      ...(unit === null ? {} : { unit }),
+      target,
+      current,
+      expected,
+      startsOn,
+      dueOn: end === null ? null : dayIn(end, zone),
+      behind:
+        row.state === "open" &&
+        end !== null &&
+        at > start &&
+        current < target &&
+        current < expected * (1 - behindPercent / 100),
+    });
+  }
+  return { goals, behindPercent };
+});
+
+const progressOf = Effect.fn("KinGoals.progress")(function* (
+  orgId: KinOrgId,
+  measure: KinGoalMeasure,
+  period: {
+    readonly start: number;
+    readonly until: number;
+    readonly startsOn: string;
+    readonly untilDay: string;
+    readonly currency: string;
+    readonly manual: number;
+  },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  switch (measure) {
+    case "manual":
+      return period.manual;
+    case "revenue_received": {
+      // As Money's "received": payments on invoices and advances, TDS withheld not counted.
+      const [row] = yield* sql<{ minor: number | null }>`SELECT SUM(p.amount_minor) AS minor
+        FROM kin_record_payments p
+        JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
+        WHERE p.org_id = ${orgId} AND ${countedPayment(sql)} AND p.withheld = 0
+          AND r.register_id IN ('invoices', 'receipts') AND p.currency = ${period.currency}
+          AND p.paid_on >= ${period.startsOn} AND p.paid_on <= ${period.untilDay}`;
+      return row?.minor ?? 0;
+    }
+    case "clients_won": {
+      const [row] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_records r
+        WHERE r.org_id = ${orgId} AND r.register_id = 'clients' AND r.state <> 'dropped'
+          AND COALESCE(r.category, 'client') = 'client'
+          AND r.created_at >= ${period.start} AND r.created_at <= ${period.until}`;
+      return row?.count ?? 0;
+    }
+    case "tasks_done": {
+      const [row] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_records r
+        WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.state = 'done'
+          AND r.closed_at >= ${period.start} AND r.closed_at <= ${period.until}`;
+      return row?.count ?? 0;
+    }
+  }
+});
+
+/** A goal's figures as a person or an agent reads them: "₹12,00,000 of ₹40,00,000". */
+export const goalFigure = (goal: KinGoal, value: number, withUnit = true) =>
+  goal.currency === undefined
+    ? `${Math.round(value)}${goal.unit === undefined || !withUnit ? "" : ` ${goal.unit}`}`
+    : formatMoney({ minor: Math.round(value), currency: goal.currency });
+
+/** One line per goal for a prompt: where it stands against its line. */
+export const goalLine = (goal: KinGoal) =>
+  [
+    `${goal.key} ${goal.title}: ${goalFigure(goal, goal.current, false)} of ${goalFigure(goal, goal.target)}`,
+    goal.dueOn === null ? null : `by ${goal.dueOn}`,
+    goal.state === "done"
+      ? "reached"
+      : goal.dueOn === null
+        ? null
+        : `${goalFigure(goal, goal.expected)} expected by now${goal.behind ? ", behind" : ""}`,
+  ]
+    .filter((part) => part !== null)
+    .join(", ");
+
+/** A failed read of Kin's rows reaches a client as Kin being unavailable, logged here. */
+const unavailableOn = (cause: unknown) =>
+  Effect.logWarning("Kin goals read failed", { cause }).pipe(
+    Effect.andThen(
+      Effect.fail(new KinChatError({ reason: "unavailable", message: "Kin is unavailable." })),
+    ),
+  );
+
+const isOwnerOf = Effect.fn("KinGoals.isOwner")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  orgId: KinOrgId,
+) {
+  return yield* theOwner(people, orgId).pipe(
+    Effect.as(true),
+    Effect.catchTags({ KinChatError: () => Effect.succeed(false) }),
+  );
+});
+
+/** Goals for a screen: the owner sees every one; anyone else, those that don't count money. */
+export const list = Effect.fn("KinGoals.list")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  orgId: KinOrgId,
+) {
+  if (!people.some((person) => person.orgId === orgId))
+    return yield* new KinChatError({ reason: "not_found", message: "Kin couldn't find that." });
+  const at = yield* Clock.currentTimeMillis;
+  const { goals } = yield* goalsNow(orgId, at, { money: yield* isOwnerOf(people, orgId) }).pipe(
+    Effect.catchTags({ SqlError: unavailableOn }),
+  );
+  return { goals, asOf: DateTime.makeUnsafe(at) };
+});
+
+/** The owner adds a goal, or changes, reaches or drops one. */
+export const save = Effect.fn("KinGoals.save")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinGoalSaveInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  const records = yield* KinRecords;
+  const zone = yield* ownerZone(input.orgId);
+  if (input.dueOn < input.startsOn) return yield* invalid("A goal's date comes after its start.");
+  const fields = {
+    ...(yield* goalFields({
+      measure: input.measure,
+      target: input.target,
+      ...(input.current === undefined ? {} : { current: input.current }),
+      ...(input.unit === undefined ? {} : { unit: input.unit }),
+    })),
+    startsOn: input.startsOn,
+  };
+  const due = { dueAt: endOfDay(input.dueOn, zone), dueAllDay: true };
+  const writer = ownerWriter(person);
+  const sensitive = isMoneyMeasure(input.measure);
+  const row =
+    input.key === undefined
+      ? (yield* records.create(input.orgId, writer, {
+          list: "goals",
+          originKey: `owner:${input.clientRequestId}`,
+          requestHash: requestHashOf(input),
+          title: input.title,
+          owner: { _tag: "person", personId: person.personId },
+          fields,
+          ...due,
+          ...(sensitive ? { sensitive: true } : {}),
+          ...(input.state === undefined ? {} : { state: input.state }),
+        })).row
+      : yield* Effect.gen(function* () {
+          yield* inList(input.orgId, input.key!, "goals");
+          return yield* records.update(
+            input.orgId,
+            writer,
+            input.key!,
+            {
+              title: input.title,
+              fields,
+              ...due,
+              ...(sensitive ? { sensitive: true } : {}),
+              ...(input.state === undefined ? {} : { state: input.state }),
+            },
+            input.rev,
+          );
+        });
+  const at = yield* Clock.currentTimeMillis;
+  const { goals } = yield* goalsNow(input.orgId, at, { money: true }).pipe(
+    Effect.catchTags({ SqlError: unavailableOn }),
+  );
+  const goal = goals.find((one) => one.key === row.key);
+  if (goal !== undefined) return goal;
+  // A dropped goal leaves the list; answer with what was saved.
+  return {
+    recordId: KinRecordId.make(row.recordId),
+    key: row.key,
+    title: row.title,
+    rev: row.rev,
+    state: row.state === "done" || row.state === "open" ? row.state : "dropped",
+    measure: input.measure,
+    target: 0,
+    current: 0,
+    expected: 0,
+    startsOn: input.startsOn,
+    dueOn: input.dueOn,
+    behind: false,
+  } satisfies KinGoal;
+});

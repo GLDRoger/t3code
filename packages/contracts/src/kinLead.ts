@@ -591,6 +591,8 @@ export const KinEvent = Schema.Union([
   Schema.TaggedStruct("routine", {
     ...EventBase,
     routine: KinLeadRoutine,
+    // A morning brief that is also the week's: its prompt adds goals and the week (`weekly.ts`).
+    weekly: Schema.optional(Schema.Literal(true)),
     dueAt: Schema.optional(CanonicalUtcTimestamp),
     lateByMs: Schema.optional(NonNegativeInt),
     foldedRoutines: Schema.optional(

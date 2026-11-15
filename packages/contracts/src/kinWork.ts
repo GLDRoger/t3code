@@ -82,6 +82,7 @@ export const KinWorkListName = Schema.Literals([
   "contacts",
   "projects",
   "milestones",
+  "goals",
 ]);
 export type KinWorkListName = typeof KinWorkListName.Type;
 /** A client or a vendor: one list, by kind. */

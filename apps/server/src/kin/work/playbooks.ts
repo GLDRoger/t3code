@@ -9,7 +9,7 @@ import * as SqlClient from "effect/sql/SqlClient";
  * Confirm or see anything is stored access, never a playbook.
  */
 
-type Unit = "days" | "hours" | "tasks";
+type Unit = "days" | "hours" | "tasks" | "percent";
 type KeyDef = {
   readonly unit: Unit;
   readonly min: number;
@@ -36,6 +36,8 @@ const PLAYBOOK_KEYS = {
   client_cold_after_days: { unit: "days", min: 1, max: 365, default: 30, client: true },
   reply_owed_hours: { unit: "hours", min: 1, max: 336, default: 24, client: true },
   renewal_heads_up_days: { unit: "days", min: 1, max: 120, default: 14, client: true },
+  // How far under the straight line to its target a goal may fall before it counts as behind.
+  goal_behind_percent: { unit: "percent", min: 1, max: 90, default: 20 },
 } as const satisfies Record<string, KeyDef>;
 export type PlaybookKey = keyof typeof PLAYBOOK_KEYS;
 const isKey = (key: string): key is PlaybookKey => Object.hasOwn(PLAYBOOK_KEYS, key);

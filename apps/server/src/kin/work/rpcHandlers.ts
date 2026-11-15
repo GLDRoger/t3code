@@ -2,6 +2,7 @@ import {
   KinChatError,
   KinDocsRpcs,
   KinFinanceRpcs,
+  KinPulseRpcs,
   KinRefreshRpcs,
   KinStatementRpcs,
   KinWorkRpcs,
@@ -16,6 +17,8 @@ import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { announceRefreshes, subscribeRefreshes } from "../chat/refreshes.ts";
 import { KinServer } from "../KinServer.ts";
+import * as Pulse from "../pulse/people.ts";
+import * as Goals from "./goals.ts";
 import * as Clients from "./ownerClients.ts";
 import * as Docs from "./ownerDocs.ts";
 import * as Money from "./ownerMoney.ts";
@@ -26,6 +29,7 @@ const group = RpcGroup.make(...KinWorkRpcs, ...KinDocsRpcs);
 const finance = RpcGroup.make(...KinFinanceRpcs);
 const statements = RpcGroup.make(...KinStatementRpcs);
 const refreshes = RpcGroup.make(...KinRefreshRpcs);
+const pulse = RpcGroup.make(...KinPulseRpcs);
 const disabled = new KinChatError({
   reason: "disabled",
   message: "Kin is not running on this host.",
@@ -256,6 +260,20 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.refreshes.subscribe": (input) => stream((people) => subscribeRefreshes(people, input)),
       "kin.refreshes.announce": Effect.fn("KinWork.rpc.announceRefreshes")(function* (input) {
         return yield* call((people) => announceRefreshes(people, input));
+      }),
+    }),
+    ...pulse.of({
+      "kin.pulse.read": Effect.fn("KinPulse.rpc.read")(function* (input) {
+        return yield* call((people) => Pulse.read(people, input));
+      }),
+      "kin.pulse.handle": Effect.fn("KinPulse.rpc.handle")(function* (input) {
+        return yield* call((people) => Pulse.handle(people, input));
+      }),
+      "kin.goals.list": Effect.fn("KinGoals.rpc.list")(function* (input) {
+        return yield* call((people) => Goals.list(people, input.orgId));
+      }),
+      "kin.goals.save": Effect.fn("KinGoals.rpc.save")(function* (input) {
+        return yield* call((people) => Goals.save(people, input));
       }),
     }),
   };
