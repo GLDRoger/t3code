@@ -43,7 +43,11 @@ export function KinWorkFrame(
         <ScreenScrollView
           className="flex-1"
           {...(form
-            ? { keyboardShouldPersistTaps: "handled", keyboardDismissMode: "interactive" }
+            ? {
+                keyboardShouldPersistTaps: "handled",
+                keyboardDismissMode: "interactive",
+                automaticallyAdjustKeyboardInsets: true,
+              }
             : {})}
           contentInsetAdjustmentBehavior="automatic"
           contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}

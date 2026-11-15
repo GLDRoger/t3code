@@ -178,8 +178,8 @@ export function KinCashSection(props: Section) {
                 <Text textRole="footnote" className="text-foreground-muted">
                   {one.totalLabel}
                 </Text>
-                <View className="items-end">
-                  <Text textRole="body" className="tabular-nums text-foreground">
+                <View className="min-w-0 flex-1 items-end">
+                  <Text textRole="body" className="text-right tabular-nums text-foreground">
                     {one.total ?? KIN_CASH.withheld}
                   </Text>
                   {one.totalEstimate === null ? null : (
@@ -412,9 +412,9 @@ function BudgetRow(props: { readonly view: KinBudgetView; readonly onPress?: () 
           className={cn(
             "h-full rounded-full",
             view.status === "over"
-              ? "bg-danger"
+              ? "bg-danger-foreground"
               : view.status === "near"
-                ? "bg-warning"
+                ? "bg-warning-foreground"
                 : "bg-primary",
           )}
           style={{ width: `${Math.round(view.share * 100)}%` }}
