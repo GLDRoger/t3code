@@ -13,7 +13,7 @@ import * as Schema from "effect/Schema";
 import { formatMoney } from "./money.ts";
 
 /**
- * The built-in lists and what each allows. Code depends on all five, so they are fixed here; the
+ * The built-in lists and what each allows. Code depends on each, so they are fixed here; the
  * lists people define later (slice 5) get the same shape from configuration.
  */
 
@@ -82,6 +82,16 @@ export const LISTS: Record<ListName, List> = {
     states: ["open", "done", "dropped"],
     categories: [],
     fields: [],
+  },
+  // The company's own goals: `measure` is a `KinGoalMeasure`, `target` money or a count as text,
+  // `current` a manual goal's number, `startsOn` a day; due is the target date (`goals.ts`).
+  goals: {
+    name: "Goals",
+    prefix: "G",
+    noun: "goal",
+    states: ["open", "done", "dropped"],
+    categories: [],
+    fields: ["measure", "target", "current", "unit", "startsOn"],
   },
   docs: {
     name: "Docs",

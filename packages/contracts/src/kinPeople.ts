@@ -6,7 +6,13 @@ import {
   EnvironmentAuthorizationError,
   type AuthEnvironmentScope,
 } from "./auth.ts";
-import { AuthSessionId, IsoDateTime, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  AuthSessionId,
+  IsoDateTime,
+  NonNegativeInt,
+  PositiveInt,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 import {
   KinAgentId,
   KinAttachment,
@@ -167,6 +173,8 @@ export const KinPersonProfile = Schema.Struct({
   skills: Schema.String,
   timeZone: Schema.NullOr(TimeZone),
   workHours: Schema.NullOr(KinWorkHours),
+  /** The tasks they hold now; only the owner reads it. */
+  load: Schema.optional(Schema.Struct({ open: NonNegativeInt, late: NonNegativeInt })),
 });
 export type KinPersonProfile = typeof KinPersonProfile.Type;
 export const KinPeopleProfilesResult = Schema.Struct({

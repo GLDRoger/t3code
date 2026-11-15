@@ -11,6 +11,7 @@ import {
   type KinListOpen,
   type KinMoneyFigure,
 } from "@t3tools/client-runtime/kin/kinMoney";
+import type { KinAttentionOpen } from "@t3tools/client-runtime/kin/kinAttention";
 import { KIN_WORK_HOME, kinWorkAskDraft } from "@t3tools/client-runtime/kin/kinWorkHome";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import { useAtomValue } from "@effect/atom-react";
@@ -32,6 +33,8 @@ import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListSection } from "../../components/ui/ListSection";
+import { KinAttentionSection } from "./KinAttention";
+import { KinGoals } from "./KinGoals";
 import { KinReceiptsSection } from "./KinInvoice";
 import { KinEstimateText, KinSetRateLink } from "./KinMoneyEstimate";
 import {
@@ -363,9 +366,24 @@ export function KinMoneyArea(props: Shared) {
   }
   const summary = state.value;
   const view = kinMoneyView(summary, kinListsOf(lists));
+  const openRecord = (to: KinAttentionOpen) => {
+    if (to.type === "record") navigation.navigate("KinWorkItem", { ...target, task: to.key });
+  };
+  const top = (
+    <>
+      <KinGoals {...target} seq={seq} />
+      <KinAttentionSection
+        {...target}
+        scope={{ type: "money" }}
+        names={names}
+        onOpen={openRecord}
+      />
+    </>
+  );
   if (view.empty) {
     return (
       <AreaFrame {...frame}>
+        <View className="gap-4">{top}</View>
         <EmptyState
           variant="plain"
           {...KIN_MONEY.none}
@@ -412,6 +430,7 @@ export function KinMoneyArea(props: Shared) {
   const openEntry = (task: string) => navigation.navigate("KinWorkItem", { ...target, task });
   return (
     <AreaFrame {...frame}>
+      {top}
       <View className="gap-4">
         <View className="flex-row gap-4 px-2">
           <Figure figure={view.owed} onOpen={openList} estimates={estimates} />

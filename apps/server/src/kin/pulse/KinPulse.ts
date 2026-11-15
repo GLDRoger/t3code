@@ -31,6 +31,7 @@ import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { viewSees } from "../work/teamView.ts";
 import { clientSenses } from "./senses/clients.ts";
+import { goalSenses } from "./senses/goals.ts";
 import { moneySenses } from "./senses/money.ts";
 import { iso, type SenseContext, type SensedFact } from "./senses/shared.ts";
 import { systemSenses } from "./senses/system.ts";
@@ -92,6 +93,7 @@ const sense = Effect.fn("KinPulse.sense")(function* (orgId: KinOrgId, at: number
     ...(yield* moneySenses(ctx)),
     ...(yield* systemSenses(ctx)),
     ...(yield* clientSenses(ctx)),
+    ...(yield* goalSenses(ctx)),
   ];
   return facts.toSorted(
     (a, b) =>
