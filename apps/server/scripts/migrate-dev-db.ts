@@ -201,6 +201,14 @@ const CLEARED_TABLES: ReadonlyArray<string> = [
   "peer_environment_links",
 ];
 
+// Kin's connections name the owner's outside accounts; a dev server never shows or calls them.
+// Kin creates these tables itself, so an older source may not have them: never copied, not cleared.
+const UNCOPIED_TABLES: ReadonlyArray<string> = [
+  "kin_connections",
+  "kin_connection_tools",
+  "kin_connection_calls",
+];
+
 const PROVIDER_SESSIONS_TABLE = "orchestration_v2_projection_provider_sessions";
 const FTS5_SHADOW_SUFFIXES = ["_data", "_idx", "_content", "_docsize", "_config"];
 
@@ -238,7 +246,7 @@ const copySourceSlice = Effect.fn("copyDevDbSourceSlice")(function* (sourcePath:
   const references = yield* sql<{ name: string; parent: string }>`
     SELECT m.name, f."table" AS parent FROM src.sqlite_master m, pragma_foreign_key_list(m.name, 'src') f
     WHERE m.type = 'table'`;
-  const cleared = new Set(CLEARED_TABLES);
+  const cleared = new Set([...CLEARED_TABLES, ...UNCOPIED_TABLES]);
   for (let grew = true; grew;) {
     grew = false;
     for (const { name, parent } of references) {

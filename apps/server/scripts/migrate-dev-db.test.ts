@@ -99,6 +99,9 @@ const createFixtureSource = Effect.fn("createMigrateDevDbFixtureSource")(functio
         (environment_id, secret_name, label, urls_json, access, linked_at, expires_at)
         VALUES ('environment-box', 'peer-link-box', 'Box', '["https://box.example"]', 'auto',
           '2026-08-01', '2027-08-01')`;
+      // Kin's own track adds this table; a connection names one of the owner's outside accounts.
+      yield* sql`CREATE TABLE kin_connections (org_id TEXT, connection_id TEXT, label TEXT)`;
+      yield* sql`INSERT INTO kin_connections VALUES ('org', 'conn-1', 'PostHog')`;
     }),
   );
   return databasePath;
@@ -135,6 +138,7 @@ it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
             webhooks: number;
             transfers: number;
             links: number;
+            connections: number;
           }>`
             SELECT
               (SELECT COUNT(*) FROM auth_sessions) AS auth,
@@ -142,7 +146,8 @@ it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
               (SELECT COUNT(*) FROM scheduled_task_webhook_replay_keys) +
                 (SELECT COUNT(*) FROM scheduled_task_webhook_pending) AS webhooks,
               (SELECT COUNT(*) FROM orchestration_v2_projection_context_transfers) AS transfers,
-              (SELECT COUNT(*) FROM peer_environment_links) AS links`;
+              (SELECT COUNT(*) FROM peer_environment_links) AS links,
+              (SELECT COUNT(*) FROM kin_connections) AS connections`;
           return { threads, events, sessions, leftovers };
         }),
       );
@@ -164,6 +169,7 @@ it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
         webhooks: 0,
         transfers: 0,
         links: 0,
+        connections: 0,
       });
     }),
   );

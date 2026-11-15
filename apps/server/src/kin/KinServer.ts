@@ -29,6 +29,7 @@ import type { KinPresence } from "./reply/KinPresence.ts";
 import type { KinDocRenderer } from "./gendocs/render.ts";
 import type { KinWorkspace } from "./gendocs/workspace.ts";
 import type { KinRecords } from "./work/KinRecords.ts";
+import type { KinConnections } from "./connections/ConnectionsService.ts";
 
 export type Services =
   | KinIdentity
@@ -57,7 +58,8 @@ export type Services =
   | KinPresence
   | KinRecords
   | KinWorkspace
-  | KinDocRenderer;
+  | KinDocRenderer
+  | KinConnections;
 
 export class KinServer extends Context.Service<
   KinServer,

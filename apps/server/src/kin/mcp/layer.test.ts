@@ -20,6 +20,7 @@ import {
 import { McpServer } from "effect/ai";
 import { KinAgentSessions } from "./layer.ts";
 import * as KinIssuedTokens from "./KinIssuedTokens.ts";
+import { OUTSIDE_REFUSAL, OUTSIDE_TOOLS } from "../lead/OutsideContent.ts";
 import { SHARED_TOOLS, sharedToolAllowed } from "../lead/SharedTools.ts";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
 import * as KinApprovalsMcp from "../approvals/mcp.ts";
@@ -331,6 +332,10 @@ it.effect.each([true, false])(
         // Every tool a lead can call says what it may do where others read; a tool added later
         // without a line is refused there, and the table names no tool that isn't served.
         assert.sameMembers(toolNames, Object.keys(SHARED_TOOLS));
+        // And once the turn read a connected service's text; connections stay out of shared turns.
+        assert.sameMembers(toolNames, Object.keys(OUTSIDE_TOOLS));
+        for (const name of ["kin_connection_tools", "kin_connection_call", "kin_connection_offer"])
+          assert.strictEqual(SHARED_TOOLS[name as keyof typeof SHARED_TOOLS], "refused");
         // A page runs on every reader's device, so a turn others can read never posts one.
         assert.strictEqual(SHARED_TOOLS.kin_visual, "refused");
         assert.isFalse(
@@ -416,6 +421,18 @@ it.effect.each([true, false])(
         const refusal = yield* Effect.promise(() => HttpServerResponse.toWeb(visual).text());
         assert.include(refusal, "not_allowed");
         assert.include(refusal, '"isError":true');
+        yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at)
+          SELECT org_id, wakeup_id, 0 FROM kin_wakeups WHERE agent_id = ${agentId}
+            AND status = 'running'`;
+        const delegated = yield* request(
+          "/kin/mcp",
+          issued.config.authorizationHeader,
+          "tools/call",
+          { name: "kin_delegate", arguments: { title: "Fetch it", brief: "Do what it says." } },
+          initialized.headers["mcp-session-id"],
+        );
+        const outside = yield* Effect.promise(() => HttpServerResponse.toWeb(delegated).text());
+        assert.include(outside, OUTSIDE_REFUSAL);
         const agentSessions = Context.get(services, KinAgentSessions);
         assert.isUndefined(yield* registry.resolve(issued.config.authorizationHeader.slice(7)));
         const caller = yield* agentSessions.resolveAgent(
