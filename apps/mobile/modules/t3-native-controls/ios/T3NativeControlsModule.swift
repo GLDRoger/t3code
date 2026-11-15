@@ -42,6 +42,7 @@ public final class T3NativeControlsModule: Module {
       Prop("showsCompose") { (view: T3SidebarTabBarView, value: Bool) in view.showsCompose = value }
       Prop("compact") { (view: T3SidebarTabBarView, value: Bool) in view.compact = value }
       Prop("appearance") { (view: T3SidebarTabBarView, value: String) in view.appearance = value }
+      Prop("showsLabels") { (view: T3SidebarTabBarView, value: Bool) in view.showsLabels = value }
     }
 
     View(T3LayoutMetricsView.self) {

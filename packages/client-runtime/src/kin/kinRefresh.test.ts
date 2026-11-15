@@ -37,6 +37,7 @@ describe("kinRefreshTriggers", () => {
     expect(read()).toEqual(["1:0", "1:0", "1:0"]);
     heard({ memory: 4, company: 1, people: 9 });
     expect(read()).toEqual(["1:1", "1:0", "1:0"]);
+    expect(registry.get(triggers.moves("memory")(target))).toBe(1);
     // Reconnecting, or a host that can't say, changes nothing.
     registry.set(revisions, AsyncResult.initial(true));
     expect(read()).toEqual(["1:1", "1:0", "1:0"]);

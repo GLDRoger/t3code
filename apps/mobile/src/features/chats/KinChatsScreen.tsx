@@ -1,12 +1,13 @@
 import { LegendList } from "@legendapp/list/react-native";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
-import type { EnvironmentId, KinOrgId } from "@t3tools/contracts";
+import { EnvironmentId, type KinOrgId } from "@t3tools/contracts";
 import { useEffect, type ReactNode } from "react";
 import { View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
 import type { AppBarProps } from "../../components/ui/AppBar.types";
+import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
@@ -31,6 +32,8 @@ import {
 import { kinClient } from "./state/kinClient";
 import { rememberKinListAtom } from "./state/kinLastList";
 import { useKinInbox } from "./state/useKinInbox";
+
+const NO_ENVIRONMENT = EnvironmentId.make("kin:none");
 
 /** The Kin list as a page over coding threads: opening and leaving it is the switch between them. */
 export function KinChatsScreen() {
@@ -63,6 +66,9 @@ export function KinChatsList({
       : null;
   const newLeadAt =
     state._tag === "ready" && orgId !== null ? { environmentId: state.environmentId, orgId } : null;
+  const canAddLead = useAtomValue(
+    kinClient.leadCreate.permissionAtom(newLeadAt?.environmentId ?? NO_ENVIRONMENT),
+  );
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       {newLeadAt === null ? (
@@ -87,6 +93,12 @@ export function KinChatsList({
               </>
             )
           }
+          {...(newLeadAt === null || !canAddLead
+            ? {}
+            : {
+                onCreateFirstAgent: () =>
+                  navigation.navigate("KinLeadForm", { ...newLeadAt, suggest: "chief" }),
+              })}
           onOpenWaiting={() => navigation.navigate("KinWaiting")}
           onOpenChat={(chatId) => {
             if (state._tag !== "ready") return;
@@ -178,6 +190,8 @@ export function KinChatsView(props: {
   readonly bottomClearance?: number;
   readonly onOpenWaiting: () => void;
   readonly onOpenChat: (chatId: KinChatRowView["chatId"]) => void;
+  /** A company with no chats yet starts here: its first agent, the Chief of staff suggested. */
+  readonly onCreateFirstAgent?: () => void;
 }) {
   const { state, onOpenChat } = props;
   const view = state._tag === "ready" ? selectKinInboxView(state.inbox.value) : null;
@@ -204,10 +218,24 @@ export function KinChatsView(props: {
                 </View>
               )}
               {props.memory == null ? null : <View className="-mx-4">{props.memory}</View>}
-              <EmptyState
-                title="No chats yet"
-                detail={props.emptyDetail ?? "Chats with your agents show up here."}
-              />
+              {props.onCreateFirstAgent === undefined ? (
+                <EmptyState
+                  title="No chats yet"
+                  detail={props.emptyDetail ?? "Chats with your agents show up here."}
+                />
+              ) : (
+                <EmptyState
+                  title="Create your first agent"
+                  detail="Start with a Chief of staff: your front door for everything. You chat with it like a colleague, and it passes work to the agents you add later."
+                  action={
+                    <Button
+                      tone="primary"
+                      label="Create Chief of staff"
+                      onPress={props.onCreateFirstAgent}
+                    />
+                  }
+                />
+              )}
             </>
           )}
         </KinScreenState>

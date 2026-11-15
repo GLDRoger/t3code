@@ -5,7 +5,7 @@ import type {
   KinRefreshesSubscribeInput,
   KinRefreshTopic,
 } from "@t3tools/contracts";
-import { AsyncResult, Atom } from "effect/reactivity";
+import { AsyncResult, Atom, type AtomRegistry } from "effect/reactivity";
 import * as Stream from "effect/Stream";
 
 import type * as EnvironmentRegistry from "../connection/registry.ts";
@@ -60,25 +60,34 @@ export function kinRefreshTriggers(
   generation: (environmentId: EnvironmentId) => Atom.Atom<number>,
 ) {
   const heard = new Map<string, KinRefreshMoves>();
-  const family = Atom.family((key: string) => {
-    const [environmentId, orgId, topic] = JSON.parse(key) as [
-      EnvironmentId,
-      KinOrgId,
-      KinRefreshTopic,
-    ];
+  const parse = (key: string) => JSON.parse(key) as [EnvironmentId, KinOrgId, KinRefreshTopic];
+  const moves = Atom.family((key: string) => {
+    const [environmentId, orgId, topic] = parse(key);
     return Atom.make((get) => {
-      const session = get(generation(environmentId));
       const held = AsyncResult.getOrElse(
         get(revisions({ environmentId, input: { orgId } })),
         () => null,
       );
       const moved = kinRefreshMoved(heard.get(key), held?.[topic]);
       if (moved !== undefined) heard.set(key, moved);
-      return `${session}:${moved?.moves ?? 0}`;
-    }).pipe(Atom.withLabel(`${KIN_REFRESHES_LABEL}:${topic}:${environmentId}`));
+      return moved?.moves ?? 0;
+    }).pipe(Atom.withLabel(`${KIN_REFRESHES_LABEL}:${topic}:moves:${environmentId}`));
   });
-  return (topic: KinRefreshTopic) => (target: Target) =>
-    family(JSON.stringify([target.environmentId, target.input.orgId, topic]));
+  const family = Atom.family((key: string) => {
+    const [environmentId, , topic] = parse(key);
+    return Atom.make((get) => `${get(generation(environmentId))}:${get(moves(key))}`).pipe(
+      Atom.withLabel(`${KIN_REFRESHES_LABEL}:${topic}:${environmentId}`),
+    );
+  });
+  const keyOf = (topic: KinRefreshTopic, target: Target) =>
+    JSON.stringify([target.environmentId, target.input.orgId, topic]);
+  return Object.assign(
+    (topic: KinRefreshTopic) => (target: Target) => family(keyOf(topic, target)),
+    {
+      /** How often a topic has moved since this client first heard it; for a read over several orgs. */
+      moves: (topic: KinRefreshTopic) => (target: Target) => moves(keyOf(topic, target)),
+    },
+  );
 }
 
 const triggersByRuntime = new WeakMap<object, ReturnType<typeof kinRefreshTriggers>>();
@@ -98,4 +107,37 @@ export function createKinRefreshTriggers<R, ER>(
   );
   triggersByRuntime.set(runtime, triggers);
   return triggers;
+}
+
+/** The orgs the directory (`kin.orgs.list`) last named per environment; see `kinDirectoryTrigger`. */
+const kinDirectoryOrgsAtom = Atom.family((_environmentId: EnvironmentId) =>
+  Atom.make<ReadonlyArray<KinOrgId>>([]).pipe(Atom.keepAlive),
+);
+
+/** Notes the orgs a directory answer named, leaving the atom alone when they are the same. */
+export function noteKinDirectoryOrgs(
+  registry: AtomRegistry.AtomRegistry,
+  environmentId: EnvironmentId,
+  orgIds: ReadonlyArray<KinOrgId>,
+) {
+  const atom = kinDirectoryOrgsAtom(environmentId);
+  const unique = [...new Set(orgIds)];
+  if (unique.join("\n") !== registry.get(atom).join("\n")) registry.set(atom, unique);
+}
+
+/**
+ * The directory's refresh signal: a new session, or a move of the agents in any org it last named,
+ * so an agent made on another device has its name here. Orgs being noted move nothing.
+ */
+export function createKinDirectoryTrigger<R, ER>(
+  runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
+) {
+  const triggers = createKinRefreshTriggers(runtime);
+  return ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
+    Atom.make((get) => {
+      let moved = 0;
+      for (const orgId of get(kinDirectoryOrgsAtom(environmentId)))
+        moved += get(triggers.moves("leads")({ environmentId, input: { orgId } }));
+      return `${get(environmentSessionGenerationAtom(runtime, environmentId))}:${moved}`;
+    });
 }

@@ -1,3 +1,4 @@
+import { ProviderInstanceId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -7,6 +8,7 @@ import {
   kinLeadDraftCheck,
   kinLeadDraftOf,
   kinLeadModelName,
+  kinLeadStartingModels,
   kinLeadTrackingDetail,
 } from "./kinLeadPresentation.ts";
 
@@ -129,5 +131,25 @@ describe("lead model", () => {
     // A model no provider lists yet, or providers that haven't loaded.
     expect(kinLeadModelName("claude-sonnet-4-5", providers)).toBe("Claude Sonnet 4.5");
     expect(kinLeadModelName("claude-opus-4-6", undefined)).toBe("Claude Opus 4.6");
+  });
+});
+
+describe("a first agent's models", () => {
+  const claude = ProviderInstanceId.make("claudeAgent");
+  const model = (slug: string) => ({ instanceId: claude, model: slug });
+
+  it("starts on the strongest for harder work and the quickest for replies", () => {
+    expect(
+      kinLeadStartingModels([
+        model("claude-sonnet-4-5"),
+        model("claude-haiku-4-5"),
+        model("claude-opus-4-6"),
+      ]),
+    ).toEqual({ strong: model("claude-opus-4-6"), cheap: model("claude-haiku-4-5") });
+    expect(kinLeadStartingModels([model("claude-custom")])).toEqual({
+      strong: model("claude-custom"),
+      cheap: model("claude-custom"),
+    });
+    expect(kinLeadStartingModels([])).toBeNull();
   });
 });
