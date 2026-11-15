@@ -3,6 +3,7 @@ import {
   type KinReceiptsInput,
   KIN_RECORD_CHANGES_CAP,
   KinChatError,
+  type KinOrgId,
   type KinCompanyProfileInput,
   type KinCompanyProfileSetInput,
   type KinDatesInput,
@@ -37,7 +38,7 @@ import { listReceipts, makeReceipt as makeReceiptFor } from "../gendocs/receipts
 import { readProfile, setProfile } from "./companyProfile.ts";
 import { KinRecords } from "./KinRecords.ts";
 import { dates as datesView, moneySummary } from "./moneyViews.ts";
-import { found, ownerWriter, theOwner } from "./ownerWork.ts";
+import { found, ownerWriter, theOwner, viewerOf } from "./ownerWork.ts";
 import { iso, workFailure } from "./recordRows.ts";
 import {
   allLists,
@@ -49,6 +50,7 @@ import {
   toDefinition,
   unknownList,
 } from "./registers.ts";
+import { personSees, placesOf } from "./teamView.ts";
 
 /** What the owner's clients read and do with lists, money and the company profile. Owner only. */
 
@@ -62,13 +64,19 @@ export const lists = Effect.fn("KinMoney.lists")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinListsInput,
 ) {
-  yield* theOwner(people, input.orgId);
+  const team = yield* moneyReader(people, input.orgId);
+  const sql = yield* SqlClient.SqlClient;
   const all = yield* allLists(input.orgId);
-  const open = yield* openCounts(input.orgId);
+  const open = yield* openCounts(
+    input.orgId,
+    team === undefined ? undefined : personSees(sql, team),
+  );
   return {
     lists: [...all.values()]
       // Docs are a list underneath, with their own screens and RPCs.
       .filter((def) => def.id !== "docs" && (input.archived === true || def.archivedAt === null))
+      // Anyone else gets the lists they see an entry of, never Work's own.
+      .filter((def) => team === undefined || (def.builtIn === null && open.has(def.id)))
       .map((def) => toDefinition(def, open.get(def.id) ?? 0)),
   };
 }, workFailure);
@@ -237,9 +245,29 @@ export const money = Effect.fn("KinMoney.summary")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinMoneySummaryInput,
 ) {
-  yield* theOwner(people, input.orgId);
-  return yield* moneySummary(input.orgId, yield* Clock.currentTimeMillis);
+  const team = yield* moneyReader(people, input.orgId);
+  return yield* moneySummary(
+    input.orgId,
+    yield* Clock.currentTimeMillis,
+    team === undefined ? undefined : [team],
+  );
 }, workFailure);
+
+const noMoney = new KinChatError({
+  reason: "not_allowed",
+  message: "Only the owner or a co-owner can open Money for you.",
+});
+/** The caller; for anyone besides the owner, only with the Money place or a project they lead. */
+const moneyReader = Effect.fn("KinMoney.reader")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  orgId: KinOrgId,
+) {
+  const viewer = yield* viewerOf(people, orgId);
+  if (!viewer.teammate) return undefined;
+  const places = yield* placesOf(orgId, viewer.person.personId);
+  if (!places.reaches.money) return yield* noMoney;
+  return viewer.person.personId;
+});
 
 /** The owner's Issue tap: the entry's number from its list's series, the same one if asked twice. */
 export const issue = Effect.fn("KinMoney.issue")(function* (

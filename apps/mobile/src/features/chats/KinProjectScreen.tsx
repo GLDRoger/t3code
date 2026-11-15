@@ -9,6 +9,7 @@ import {
   KIN_PROJECTS,
   KIN_PROJECT_FAILED,
   KIN_PROJECT_GONE,
+  KIN_PROJECT_LEAD,
   kinProjectPageView,
   type KinProjectPageView,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
@@ -259,8 +260,19 @@ function KinProjectBody(
               onDismissProblem={() => setProblem(null)}
               onOpenTask={openTask}
               onOpenClient={(to) => openRecord("KinClient", { environmentId, orgId, party: to })}
+              onChangeLead={
+                canChange
+                  ? () =>
+                      navigation.navigate("KinProjectLead", {
+                        environmentId,
+                        orgId,
+                        project: view.key,
+                      })
+                  : null
+              }
               privacy={{
-                disabled: !canChange || busy || view.privacy.inherited,
+                shown: canChange,
+                disabled: busy || view.privacy.inherited,
                 onChange: (sensitive) => void change({ sensitive }),
               }}
               docs={
@@ -304,7 +316,14 @@ function KinProjectSummary(props: {
   readonly onDismissProblem: () => void;
   readonly onOpenTask: (key: KinRecordKey) => void;
   readonly onOpenClient: (key: KinRecordKey) => void;
-  readonly privacy: { readonly disabled: boolean; readonly onChange: (on: boolean) => void };
+  /** The owner's way to pick who leads it; null for anyone else. */
+  readonly onChangeLead: (() => void) | null;
+  /** The owner's switch; anyone else sees only the private mark. */
+  readonly privacy: {
+    readonly shown: boolean;
+    readonly disabled: boolean;
+    readonly onChange: (on: boolean) => void;
+  };
   /** The docs linked to the project. */
   readonly docs: ReactNode;
 }) {
@@ -359,6 +378,18 @@ function KinProjectSummary(props: {
           />
         </ListSection>
       )}
+      <ListSection title={KIN_PROJECT_LEAD.title}>
+        {props.onChangeLead === null ? (
+          <ListRowLayout label={view.lead.name} />
+        ) : (
+          <ListRow
+            icon="person.crop.circle"
+            label={view.lead.name}
+            detail={KIN_PROJECT_LEAD.change}
+            onPress={props.onChangeLead}
+          />
+        )}
+      </ListSection>
       {view.specChanged.length === 0 ? null : (
         <ListSection title={KIN_PROJECTS.specChanged}>
           {view.specChanged.map((row) => (
@@ -499,16 +530,18 @@ function KinProjectSummary(props: {
           </Text>
         </View>
       )}
-      <ListSection>
-        <ListToggleRow
-          icon="lock"
-          label={KIN_PROJECTS.privateLabel}
-          description={view.privacy.note}
-          value={view.privacy.private}
-          disabled={props.privacy.disabled}
-          onValueChange={props.privacy.onChange}
-        />
-      </ListSection>
+      {props.privacy.shown ? (
+        <ListSection>
+          <ListToggleRow
+            icon="lock"
+            label={KIN_PROJECTS.privateLabel}
+            description={view.privacy.note}
+            value={view.privacy.private}
+            disabled={props.privacy.disabled}
+            onValueChange={props.privacy.onChange}
+          />
+        </ListSection>
+      ) : null}
       <Text textRole="footnote" className="px-2 text-foreground-muted">
         {KIN_PROJECTS.tasks}
       </Text>

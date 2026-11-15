@@ -22,7 +22,7 @@ import { useKinAttention } from "./useKinAttention";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinMoneySummary } from "./useKinMoney";
 import { useKinClientCounts, useKinDocsRecent } from "./useKinPlaces";
-import { useKinOwnerLevel } from "./useKinOwnerLevel";
+import { useKinOwnerLevel, useKinPlaceReach } from "./useKinOwnerLevel";
 import { useKinWork, type KinWorkTarget } from "./useKinWork";
 
 const ICON: Record<KinPlace, LucideIcon> = {
@@ -79,21 +79,24 @@ function PlaceEntry(
 export function KinPlaceEntries(props: KinWorkTarget & { readonly onOpen: () => void }) {
   const state = useKinWork(props);
   const ownerLevel = useKinOwnerLevel(props.environmentId);
+  const reach = useKinPlaceReach(props.environmentId);
   // A teammate, or a host that couldn't be read: no ways in rather than dead ones.
   if (state._tag === "refused" || state._tag === "failed") return null;
   const summary = state._tag === "ready" ? state.live.summary : null;
   const seq = state._tag === "ready" && !state.stale ? state.live.seq : null;
   const tasks = <TasksEntry {...props} line={summary === null ? null : kinTasksLine(summary)} />;
-  // Money, Clients and Docs are the owner's and co-owners'; a member has Tasks.
-  if (!ownerLevel) return tasks;
+  // The owner and co-owners reach every place; a member those switched on or a project they lead.
+  const reaches = (place: "money" | "clients" | "docs") => ownerLevel || reach?.[place] === true;
   return (
     <>
       {tasks}
-      <MoneyEntry {...props} seq={seq} enabled={state._tag === "ready"} />
-      {summary !== null && !kinWorkHostClients(summary) ? null : (
+      {reaches("money") ? (
+        <MoneyEntry {...props} seq={seq} enabled={state._tag === "ready"} />
+      ) : null}
+      {!reaches("clients") || (summary !== null && !kinWorkHostClients(summary)) ? null : (
         <ClientsEntry {...props} seq={seq} enabled={state._tag === "ready"} />
       )}
-      <DocsEntry {...props} />
+      {reaches("docs") ? <DocsEntry {...props} /> : null}
     </>
   );
 }

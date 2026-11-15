@@ -146,21 +146,43 @@ export interface KinDockRefused {
   readonly docs: boolean;
 }
 
-/** Chats and Tasks, then for the owner or a co-owner each place the host hasn't refused. */
+/**
+ * Chats and Tasks, then each place the host hasn't refused: every one for the owner or a co-owner,
+ * for anyone else the ones the host says they reach (`kin.access.me`), none until it has.
+ */
 export function kinDockTabs(
   session: SessionGrantInput | null,
   ownerLevel: boolean,
   refused: KinDockRefused,
+  reaches: KinPlaceReach | null = null,
 ): ReadonlyArray<KinDockTab> {
   if (!grants(session)(KIN_WORK_RPC_SCOPES["kin.work.list"])) return ["chats"];
-  if (!ownerLevel) return ["chats", "tasks"];
+  const shown = (place: keyof KinDockRefused) =>
+    !refused[place] && (ownerLevel || reaches?.[place] === true);
   return [
     "chats",
     "tasks",
-    ...(refused.money ? [] : (["money"] as const)),
-    ...(refused.clients ? [] : (["clients"] as const)),
-    ...(refused.docs ? [] : (["docs"] as const)),
+    ...(shown("money") ? (["money"] as const) : []),
+    ...(shown("clients") ? (["clients"] as const) : []),
+    ...(shown("docs") ? (["docs"] as const) : []),
   ];
+}
+
+/** Which places someone besides the owner reaches: switched on for them, or a project they lead. */
+export type KinPlaceReach = KinDockRefused;
+export function kinPlaceReach(
+  me: {
+    readonly places?: KinDockRefused | undefined;
+    readonly leads?: ReadonlyArray<unknown> | undefined;
+  } | null,
+): KinPlaceReach | null {
+  if (me === null || me.places === undefined) return null;
+  const lead = (me.leads?.length ?? 0) > 0;
+  return {
+    money: me.places.money || lead,
+    clients: me.places.clients || lead,
+    docs: me.places.docs || lead,
+  };
 }
 
 /**

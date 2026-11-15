@@ -25,6 +25,7 @@ import {
   KinTrimmedText,
 } from "./kinChat.ts";
 import { TimeOfDay, TimeZone } from "./kinTime.ts";
+import { KinRecordRef } from "./kinWork.ts";
 
 export const KinInviteId = TrimmedNonEmptyString.pipe(Schema.brand("KinInviteId"));
 export type KinInviteId = typeof KinInviteId.Type;
@@ -44,10 +45,27 @@ export type KinGithubLogin = typeof KinGithubLogin.Type;
 
 export const KinPeopleListInput = Schema.Struct({ orgId: KinOrgId });
 export type KinPeopleListInput = typeof KinPeopleListInput.Type;
+/** The places a person sees beyond Chats and Tasks. Owner-level people see every place. */
+export const KinPersonPlaceSwitches = Schema.Struct({
+  clients: Schema.Boolean,
+  docs: Schema.Boolean,
+  money: Schema.Boolean,
+});
+export type KinPersonPlaceSwitches = typeof KinPersonPlaceSwitches.Type;
+/** A person's places and the projects they lead, each lead's project also opening its places. */
+export const KinPersonPlaces = Schema.Struct({
+  personId: KinPersonId,
+  ...KinPersonPlaceSwitches.fields,
+  leads: Schema.Array(KinRecordRef),
+});
+export type KinPersonPlaces = typeof KinPersonPlaces.Type;
+
 export const KinPeopleListResult = Schema.Struct({
   people: Schema.Array(KinPerson),
   // The people with a device that still opens Kin; the rest need a new invite link.
   joined: Schema.Array(KinPersonId),
+  // Absent from a host older than places.
+  places: Schema.optional(Schema.Array(KinPersonPlaces)),
 });
 export type KinPeopleListResult = typeof KinPeopleListResult.Type;
 
@@ -141,12 +159,25 @@ export const KinPeopleSetAccessInput = Schema.Struct({
 });
 export type KinPeopleSetAccessInput = typeof KinPeopleSetAccessInput.Type;
 
+/** The owner or a co-owner switches what a member may see; a switch left out stays as it is. */
+export const KinPeopleSetPlacesInput = Schema.Struct({
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  clients: Schema.optional(Schema.Boolean),
+  docs: Schema.optional(Schema.Boolean),
+  money: Schema.optional(Schema.Boolean),
+});
+export type KinPeopleSetPlacesInput = typeof KinPeopleSetPlacesInput.Type;
+
 export const KinAccessMeInput = Schema.Struct({ orgId: KinOrgId });
 export type KinAccessMeInput = typeof KinAccessMeInput.Type;
 /** The caller's own kind, which decides their dock and screens. */
 export const KinAccessMeResult = Schema.Struct({
   personId: KinPersonId,
   access: KinPersonAccess,
+  // Absent from a host older than places; an owner-level person's are all on.
+  places: Schema.optional(KinPersonPlaceSwitches),
+  leads: Schema.optional(Schema.Array(KinRecordRef)),
 });
 export type KinAccessMeResult = typeof KinAccessMeResult.Type;
 
@@ -251,6 +282,7 @@ export const KIN_PEOPLE_WS_METHODS = {
   peopleRemoveAccess: "kin.people.removeAccess",
   peopleSetGithubLogin: "kin.people.setGithubLogin",
   peopleSetAccess: "kin.people.setAccess",
+  peopleSetPlaces: "kin.people.setPlaces",
   accessMe: "kin.access.me",
   peopleProfiles: "kin.people.profiles",
   peopleUpdateProfile: "kin.people.updateProfile",
@@ -306,6 +338,11 @@ export const KinPeopleRpcs = [
     success: KinPerson,
     error: KinPeopleError,
   }),
+  Rpc.make(KIN_PEOPLE_WS_METHODS.peopleSetPlaces, {
+    payload: KinPeopleSetPlacesInput,
+    success: KinPersonPlaces,
+    error: KinPeopleError,
+  }),
   Rpc.make(KIN_PEOPLE_WS_METHODS.accessMe, {
     payload: KinAccessMeInput,
     success: KinAccessMeResult,
@@ -344,6 +381,7 @@ export const KIN_PEOPLE_RPC_SCOPES = {
   [KIN_PEOPLE_WS_METHODS.peopleRemoveAccess]: AuthKinChatScope,
   [KIN_PEOPLE_WS_METHODS.peopleSetGithubLogin]: AuthKinChatScope,
   [KIN_PEOPLE_WS_METHODS.peopleSetAccess]: AuthKinChatScope,
+  [KIN_PEOPLE_WS_METHODS.peopleSetPlaces]: AuthKinChatScope,
   [KIN_PEOPLE_WS_METHODS.accessMe]: AuthKinChatScope,
   // Everyone in the org reads profiles; the service checks who may edit whose.
   [KIN_PEOPLE_WS_METHODS.peopleProfiles]: AuthKinChatScope,

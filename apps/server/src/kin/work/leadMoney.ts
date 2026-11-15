@@ -39,6 +39,7 @@ import {
   refOrNull,
   retryKey,
   sourceOf,
+  viewOf,
   writerFor,
 } from "./leadWork.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
@@ -407,7 +408,9 @@ export const MoneyResult = Schema.Struct({
 });
 const runMoney = Effect.fnUntraced(function* (lead: Lead, _input: unknown) {
   const now = yield* Clock.currentTimeMillis;
-  const summary = yield* moneySummary(lead.orgId, now);
+  // In a turn others read: figures of only the money lines they all see, such as their project's.
+  const team = yield* viewOf(lead);
+  const summary = yield* moneySummary(lead.orgId, now, team?.people);
   const section = moneySection(summary, summary.timeZone);
   return {
     asOf: iso(now),
@@ -563,9 +566,17 @@ const runDates = Effect.fnUntraced(function* (lead: Lead, input: typeof DatesInp
   const to = endOfDay(input.to, zone) + 1;
   if (to <= from) return yield* invalid("to is on or after from.");
   const now = yield* Clock.currentTimeMillis;
+  const team = yield* viewOf(lead);
   const page = yield* dates(
     lead.orgId,
-    { from, to, lists: input.lists, open: input.open ?? true, limit: input.limit ?? 30 },
+    {
+      from,
+      to,
+      lists: input.lists,
+      open: input.open ?? true,
+      limit: input.limit ?? 30,
+      view: team?.people,
+    },
     now,
   );
   return {

@@ -16,6 +16,7 @@ import {
   kinJoinOffersApp,
   kinJoinStanding,
   kinJoinTarget,
+  kinPlaceReach,
   kinViewerOwnerLevel,
 } from "./kinJoin.ts";
 
@@ -140,6 +141,22 @@ describe("the app's shell", () => {
       "docs",
     ]);
     expect(kinDockTabs(teammate, false, none)).toEqual(["chats", "tasks"]);
+    // Anyone else gets the places the host says they reach, and still loses a refused one.
+    const reach = kinPlaceReach({
+      places: { money: false, clients: true, docs: false },
+      leads: [],
+    });
+    expect(kinDockTabs(teammate, false, none, reach)).toEqual(["chats", "tasks", "clients"]);
+    const lead = kinPlaceReach({
+      places: { money: false, clients: false, docs: false },
+      leads: [1],
+    });
+    expect(kinDockTabs(teammate, false, { ...none, docs: true }, lead)).toEqual([
+      "chats",
+      "tasks",
+      "money",
+      "clients",
+    ]);
     expect(kinDockTabs(null, true, none)).toEqual(["chats"]);
   });
 

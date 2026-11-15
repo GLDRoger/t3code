@@ -3,6 +3,7 @@ import {
   kinRpcAccess,
   type EnvironmentId,
   type KinAccessMeInput,
+  type KinAccessMeResult,
   type KinPersonAccess,
   type KinRpcAccess,
 } from "@t3tools/contracts";
@@ -58,7 +59,14 @@ function makeKinAccess<R, ER>(
   const ownerLevelAtom = Atom.family((environmentId: EnvironmentId) =>
     Atom.make((get) => kinOwnerLevel(get(accessAtom(environmentId)) ?? undefined)),
   );
-  return { accessAtom, ownerLevelAtom };
+  const meAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make((get): KinAccessMeResult | null => {
+      const [orgId] = get(kinDirectoryOrgsAtom(environmentId));
+      if (orgId === undefined) return null;
+      return AsyncResult.getOrElse(get(query({ environmentId, input: { orgId } })), () => null);
+    }).pipe(Atom.withLabel(`kin:access:me:${environmentId}`)),
+  );
+  return { accessAtom, ownerLevelAtom, meAtom };
 }
 
 const accessByRuntime = new WeakMap<object, ReturnType<typeof makeKinAccess>>();
@@ -80,6 +88,14 @@ export function kinAccessAtom<R, ER>(
   environmentId: EnvironmentId,
 ) {
   return kinAccessAtoms(runtime).accessAtom(environmentId);
+}
+
+/** The viewer's kind, places and the projects they lead, or null until the host has said. */
+export function kinAccessMeAtom<R, ER>(
+  runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
+  environmentId: EnvironmentId,
+) {
+  return kinAccessAtoms(runtime).meAtom(environmentId);
 }
 
 /** Whether the viewer is the owner or a co-owner; false until known. */

@@ -4,6 +4,8 @@ import type {
   KinContact,
   KinOrgId,
   KinPartiesInput,
+  KinPerson,
+  KinPersonId,
   KinPartyPage,
   KinPartyRow,
   KinProjectHealth,
@@ -32,6 +34,22 @@ import {
 } from "./kinWork.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+export const KIN_PROJECT_LEAD = {
+  title: "Project lead",
+  change: "Change",
+  choose: "Choose the project lead",
+  detail:
+    "The lead and their agent run this project without asking: its tasks, milestones, docs, the client's contacts, and draft quotes and invoices. Issuing, payments and anything sent out stay with the owner and co-owners.",
+  save: "Make lead",
+  failed: "The lead didn't change. Check your connection and try again.",
+} as const;
+
+/** Everyone who can lead a project, by name. */
+export const kinProjectLeadChoices = (people: ReadonlyArray<KinPerson> | null) =>
+  (people ?? [])
+    .map((person) => ({ personId: person.personId, name: person.displayName }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 
 export const KIN_CLIENTS = {
   title: "Clients",
@@ -629,6 +647,8 @@ export interface KinProjectPageView {
   readonly targetDay: string | null;
   /** "Led by Tech lead"; null when the owner leads it. */
   readonly ledBy: string | null;
+  /** Who leads it, by name ("You" for the viewer), and their person when a person does. */
+  readonly lead: { readonly name: string; readonly personId: KinPersonId | null };
   readonly privacy: KinWorkPrivacy;
   /** "3 not started · 2 in progress · 1 waiting · 5 done". */
   readonly counts: string;
@@ -788,6 +808,10 @@ export function kinProjectPageView(
     target: target === null ? KIN_PROJECTS.noTarget : `Target ${target}`,
     targetDay: kinWorkAllDay(project.targetAt, project.targetAllDay, names),
     ledBy: ledBy === "You" ? null : `Led by ${ledBy}`,
+    lead: {
+      name: ledBy,
+      personId: project.owner._tag === "person" ? project.owner.personId : null,
+    },
     privacy: project.sensitiveInherited
       ? kinWorkPrivacy({
           sensitive: project.sensitive,

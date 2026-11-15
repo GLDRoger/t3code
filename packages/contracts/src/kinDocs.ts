@@ -159,6 +159,8 @@ export const KinDocRow = Schema.Struct({
   sensitive: Schema.Boolean,
   /** True when its client or project is labelled sensitive, whatever its own label says. */
   sensitiveInherited: Schema.optional(Schema.Literal(true)),
+  /** The owner shared it with the team: members who can see Docs read it. */
+  shared: Schema.optional(Schema.Literal(true)),
   archived: Schema.Boolean,
   bodyKind: KinDocBodyKind,
   /** The latest version, with its "what changed" line. */
