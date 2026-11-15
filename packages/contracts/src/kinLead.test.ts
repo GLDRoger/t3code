@@ -95,6 +95,7 @@ const eventSamples = {
   },
   routine: { ...event, _tag: "routine", routine: "morning_brief" },
   watchdog: { ...event, _tag: "watchdog", finding: "Stale", itemIds: ["item-1"] },
+  pulse: { ...event, _tag: "pulse", factKeys: ["task_late:W-1:due=0"] },
   "worker.report": { ...event, _tag: "worker.report", workerId: "worker-1", report },
   "record.changed": {
     ...event,

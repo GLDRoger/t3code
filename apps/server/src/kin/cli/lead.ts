@@ -31,6 +31,7 @@ import { announceToServer, cliChanges } from "./announce.ts";
 import { githubCommand } from "./githubWebhook.ts";
 import { importCommand } from "./importCommand.ts";
 import { statementCommand } from "./statementCommand.ts";
+import { pulseCommand } from "./pulseCommand.ts";
 import { workerShellCommand } from "./workerShell.ts";
 
 export class KinLeadCliError extends Schema.TaggedError<KinLeadCliError>()("KinLeadCliError", {
@@ -367,6 +368,7 @@ export const kinCommand = Command.make("kin").pipe(
     githubCommand,
     importCommand,
     peopleCommand,
+    pulseCommand,
     statementCommand,
     workerShellCommand,
   ]),

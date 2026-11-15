@@ -51,6 +51,8 @@ import * as Workspace from "../gendocs/workspace.ts";
 import { handlers as docHandlers } from "../work/mcp/docHandlers.ts";
 import { handlers as statementHandlers } from "../work/mcp/statementHandlers.ts";
 import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
+import * as KinPulse from "../pulse/KinPulse.ts";
+import { handlers as pulseHandlers, KinPulseToolkit } from "../pulse/mcp.ts";
 import { importWork } from "../work/importWork.ts";
 import { reportIssuedWithoutAmount } from "../gendocs/amounts.ts";
 import { countedEntry } from "../work/recordRows.ts";
@@ -100,6 +102,7 @@ const routineRuntime = Layer.mergeAll(
   ScheduledTasks.layer,
   GithubEvents.consumerLayer,
   Watchdogs.runtimeLayer,
+  KinPulse.layer,
 ).pipe(
   Layer.provideMerge(LeadDelivery.layer),
   Layer.provideMerge(TriggerScheduler.layer),
@@ -292,6 +295,7 @@ const registration = Layer.mergeAll(
   McpHttpServer.toolkitRegistration(KinDocsToolkit, docHandlers),
   McpHttpServer.toolkitRegistration(KinStatementToolkit, statementHandlers),
   McpHttpServer.toolkitRegistration(KinDocumentToolkit, documentHandlers),
+  McpHttpServer.toolkitRegistration(KinPulseToolkit, pulseHandlers),
 );
 const toolkit = LeadMemory.layer.pipe(
   Layer.provide(KinSchedules.layer),
