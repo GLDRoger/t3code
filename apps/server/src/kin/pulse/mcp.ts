@@ -150,19 +150,24 @@ const runNudge = Effect.fnUntraced(function* (lead: Lead, input: typeof PulseNud
     factKey: input.factKey,
     text: input.text,
     chatFor: (personId) =>
-      chat.createDirect({ _tag: "person", orgId: lead.orgId, personId }, {
-        orgId: lead.orgId,
-        agentId: lead.agentId,
-      }).pipe(
-        Effect.map((direct) => direct.chatId),
-        Effect.mapError(
-          () =>
-            new KinChatError({
-              reason: "not_allowed",
-              message: `${input.person} can't message you, so you can't nudge them. Ask the owner, or the team agent.`,
-            }),
+      chat
+        .createDirect(
+          { _tag: "person", orgId: lead.orgId, personId },
+          {
+            orgId: lead.orgId,
+            agentId: lead.agentId,
+          },
+        )
+        .pipe(
+          Effect.map((direct) => direct.chatId),
+          Effect.mapError(
+            () =>
+              new KinChatError({
+                reason: "not_allowed",
+                message: `${input.person} can't message you, so you can't nudge them. Ask the owner, or the team agent.`,
+              }),
+          ),
         ),
-      ),
     post: (chatId, clientMessageId) =>
       post(agent, { chatId, body: input.text, intent: "question", clientMessageId }).pipe(
         Effect.asVoid,

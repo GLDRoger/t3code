@@ -1160,10 +1160,7 @@ export class KinLeadPrompt extends Context.Service<
               ]),
           ...(checkIns.length === 0
             ? []
-            : [
-                ownerPart("# Your check-ins (host clock)"),
-                ownerPart(checkIns.join("\n")),
-              ]),
+            : [ownerPart("# Your check-ins (host clock)"), ownerPart(checkIns.join("\n"))]),
           // Nothing owned and nothing new: the section would be noise.
           ...(work === undefined || (work.open === 0 && work.changed.length === 0)
             ? []

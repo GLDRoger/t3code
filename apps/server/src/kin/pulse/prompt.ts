@@ -99,9 +99,10 @@ export const checkInIndex = Effect.fn("KinLeadPrompt.checkIns")(function* (
     ORDER BY json_extract(t.schedule_json, '$.timeOfDay'), s.schedule_id`;
   return rows.map((row) => {
     const days: unknown = row.weekdays === null ? null : JSON.parse(row.weekdays);
-    const named = Array.isArray(days) && days.length > 0 && days.length < 7
-      ? ` ${days.map((day) => DAY_NAMES[Number(day)] ?? "?").join(", ")}`
-      : " every day";
+    const named =
+      Array.isArray(days) && days.length > 0 && days.length < 7
+        ? ` ${days.map((day) => DAY_NAMES[Number(day)] ?? "?").join(", ")}`
+        : " every day";
     const time = row.looseAt === null ? `at ${row.timeOfDay ?? "?"}` : `around ${row.looseAt}`;
     return `${row.scheduleId} ${row.title}: ${time}${named}${row.enabled === 1 ? "" : " (paused)"}`;
   });
