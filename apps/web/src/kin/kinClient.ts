@@ -33,6 +33,9 @@ import {
   type KinChatMembersInput,
   type KinCompanyProfileInput,
   type KinReceiptsInput,
+  type KinCashInput,
+  type KinOutlookInput,
+  type KinMoneyBudgetsInput,
   type KinRecipesInput,
   type KinListsInput,
   type KinMoneySummaryInput,
@@ -223,6 +226,21 @@ const workMoneyRead = createKinRpcCommand(connectionAtomRuntime, {
   tag: "kin.work.money",
 });
 const readWorkMoney = guardedRead(workMoneyRead);
+const workCashRead = createKinRpcCommand(connectionAtomRuntime, {
+  label: "kin:work:cash:read",
+  tag: "kin.work.cash",
+});
+const readWorkCash = guardedRead(workCashRead);
+const workOutlookRead = createKinRpcCommand(connectionAtomRuntime, {
+  label: "kin:work:outlook:read",
+  tag: "kin.work.outlook",
+});
+const readWorkOutlook = guardedRead(workOutlookRead);
+const workBudgetsRead = createKinRpcCommand(connectionAtomRuntime, {
+  label: "kin:work:budgets:read",
+  tag: "kin.work.budgets",
+});
+const readWorkBudgets = guardedRead(workBudgetsRead);
 const workDatesRead = createKinRpcCommand(connectionAtomRuntime, {
   label: "kin:work:dates:read",
   tag: "kin.work.dates",
@@ -972,6 +990,46 @@ export const kinClient = {
     staleTimeMs: 30_000,
     refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
       environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  /** Bank balances from confirmed statements; read again when a statement or Work changes. */
+  workCash: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:work:cash",
+    execute: Effect.fn("KinWebClient.workCash")(function* (input: KinCashInput) {
+      return yield* readWorkCash(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: kinRefreshOn("moneyStatements"),
+  }),
+  /** What is expected in and out in the next 30 days, and runway. */
+  workOutlook: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:work:outlook",
+    execute: Effect.fn("KinWebClient.workOutlook")(function* (input: KinOutlookInput) {
+      return yield* readWorkOutlook(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: kinRefreshOn("moneyStatements"),
+  }),
+  workBudgets: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:work:budgets",
+    execute: Effect.fn("KinWebClient.workBudgets")(function* (input: KinMoneyBudgetsInput) {
+      return yield* readWorkBudgets(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: kinRefreshOn("moneyBudgets"),
+  }),
+  workSetBudget: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:budget:set",
+    tag: "kin.work.setBudget",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+  }),
+  workEntryLines: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:entry-lines:read",
+    tag: "kin.work.entryLines",
+  }),
+  workInvoiceFromQuote: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:invoice-from-quote",
+    tag: "kin.work.invoiceFromQuote",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
   }),
   /** One page of everything dated in a window; the Dates view decides when. */
   workDates: workDatesRead,

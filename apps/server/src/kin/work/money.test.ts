@@ -37,6 +37,7 @@ import { budgetFlags, budgetsAnswer, budgetsView } from "./budgets.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
 import { moneySection } from "./moneyViews.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
+import * as OwnerMoneyAnswers from "./ownerMoneyAnswers.ts";
 import * as OwnerWork from "./ownerWork.ts";
 import { endOfDay } from "./recordRows.ts";
 
@@ -2294,9 +2295,19 @@ describe("money answers", () => {
         yield* seed;
         yield* defined(1, { template: "invoices" });
         yield* defined(3, { template: "expenses" });
+        yield* defined(7, { template: "quotes" });
         const records = yield* KinRecords.KinRecords;
         const create = (key: string, input: Omit<KinRecords.CreateInput, "originKey" | "owner">) =>
           records.create(orgId, system, { owner, originKey: key, ...input });
+        // A quote we sent is neither owed by us nor counted as coming in.
+        yield* create("quote", {
+          list: "quotes",
+          title: "Invented quoted work",
+          amount: inr(70_000),
+          state: "waiting",
+          dueAt: dueOn("2026-11-20"),
+          dueAllDay: true,
+        });
         const invoices = [
           ["Invented retainer", inr(118_000), "2026-11-30", "waiting"],
           ["Invented build", inr(50_000), "2026-12-25", "waiting"],
@@ -2674,6 +2685,68 @@ describe("money answers", () => {
           ],
         );
         assert.deepStrictEqual((yield* budgetsView(otherOrg, now)).budgets, []);
+
+        // The owner's app sets, changes and removes one; a retry of the same tap repeats it.
+        const app = (limitMinor: number | null, clientRequestId: string) =>
+          OwnerMoneyAnswers.setBudget(people, {
+            orgId,
+            category: "Meals",
+            project: launch.key,
+            currency: "INR",
+            limitMinor,
+            clientRequestId,
+          });
+        const launchMeals = (view: Effect.Success<ReturnType<typeof app>>) =>
+          view.budgets.find((one) => one.category === "meals" && one.project !== null);
+        assert.deepInclude(launchMeals(yield* app(1_000_000, "tap-1")), {
+          limit: { minor: 1_000_000, currency: "INR" },
+          spent: { minor: 2_000_000, currency: "INR" },
+          status: "over",
+        });
+        assert.deepInclude(launchMeals(yield* app(1_000_000, "tap-1")), { status: "over" });
+        assert.deepInclude(launchMeals(yield* app(5_000_000, "tap-2")), { status: "ok" });
+        assert.isUndefined(launchMeals(yield* app(null, "tap-3")));
+        assert.include(
+          yield* OwnerMoneyAnswers.setBudget(people, {
+            orgId,
+            category: "Invented snacks",
+            project: null,
+            currency: "INR",
+            limitMinor: 100,
+            clientRequestId: "tap-4",
+          }).pipe(Effect.flip),
+          { reason: "invalid_state" },
+        );
+        // A teammate's app reads and sets none of Money's answers.
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('teammate', ${orgId}, 'teammate', 'Teammate', ${at})`;
+        const teammate = [
+          { _tag: "person" as const, orgId, personId: KinPersonId.make("teammate") },
+        ];
+        for (const refused of [
+          Effect.asVoid(OwnerMoneyAnswers.cash(teammate, { orgId })),
+          Effect.asVoid(OwnerMoneyAnswers.outlook(teammate, { orgId })),
+          Effect.asVoid(OwnerMoneyAnswers.budgets(teammate, { orgId })),
+          Effect.asVoid(OwnerMoneyAnswers.entryLines(teammate, { orgId, key: launch.key })),
+          Effect.asVoid(
+            OwnerMoneyAnswers.invoiceFromQuote(teammate, {
+              orgId,
+              key: launch.key,
+              clientRequestId: "tap-5",
+            }),
+          ),
+          Effect.asVoid(
+            OwnerMoneyAnswers.setBudget(teammate, {
+              orgId,
+              category: "travel",
+              project: null,
+              currency: "INR",
+              limitMinor: 100,
+              clientRequestId: "tap-6",
+            }),
+          ),
+        ])
+          assert.include(yield* Effect.flip(refused), { reason: "not_allowed" });
 
         // A routine, or a request another lead passed on, sets no budget: the owner didn't ask.
         for (const [n, tag, json] of [

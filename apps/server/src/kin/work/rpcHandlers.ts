@@ -2,6 +2,7 @@ import {
   KinChatError,
   KinDocsRpcs,
   KinFinanceRpcs,
+  KinMoneyAnswerRpcs,
   KinRefreshRpcs,
   KinStatementRpcs,
   KinWorkRpcs,
@@ -19,11 +20,13 @@ import { KinServer } from "../KinServer.ts";
 import * as Clients from "./ownerClients.ts";
 import * as Docs from "./ownerDocs.ts";
 import * as Money from "./ownerMoney.ts";
+import * as MoneyAnswers from "./ownerMoneyAnswers.ts";
 import * as Statements from "./ownerStatements.ts";
 import * as Work from "./ownerWork.ts";
 
 const group = RpcGroup.make(...KinWorkRpcs, ...KinDocsRpcs);
 const finance = RpcGroup.make(...KinFinanceRpcs);
+const answers = RpcGroup.make(...KinMoneyAnswerRpcs);
 const statements = RpcGroup.make(...KinStatementRpcs);
 const refreshes = RpcGroup.make(...KinRefreshRpcs);
 const disabled = new KinChatError({
@@ -223,6 +226,26 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       }),
       "kin.work.makeReceipt": Effect.fn("KinWork.rpc.makeReceipt")(function* (input) {
         return yield* call((people) => Money.makeReceipt(people, input));
+      }),
+    }),
+    ...answers.of({
+      "kin.work.cash": Effect.fn("KinWork.rpc.cash")(function* (input) {
+        return yield* call((people) => MoneyAnswers.cash(people, input));
+      }),
+      "kin.work.outlook": Effect.fn("KinWork.rpc.outlook")(function* (input) {
+        return yield* call((people) => MoneyAnswers.outlook(people, input));
+      }),
+      "kin.work.budgets": Effect.fn("KinWork.rpc.budgets")(function* (input) {
+        return yield* call((people) => MoneyAnswers.budgets(people, input));
+      }),
+      "kin.work.setBudget": Effect.fn("KinWork.rpc.setBudget")(function* (input) {
+        return yield* call((people) => MoneyAnswers.setBudget(people, input));
+      }),
+      "kin.work.entryLines": Effect.fn("KinWork.rpc.entryLines")(function* (input) {
+        return yield* call((people) => MoneyAnswers.entryLines(people, input));
+      }),
+      "kin.work.invoiceFromQuote": Effect.fn("KinWork.rpc.invoiceFromQuote")(function* (input) {
+        return yield* call((people) => MoneyAnswers.invoiceFromQuote(people, input));
       }),
     }),
     ...statements.of({
