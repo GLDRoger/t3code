@@ -108,7 +108,8 @@ export function KinCompanyChatRow(props: {
   }));
   const current = held.companyChat?.leadAgentId ?? null;
   const shown = pending ?? current ?? OFF;
-  const label = choices.find((choice) => (choice.agentId ?? OFF) === shown)?.label ?? "";
+  // The trigger names only the agent, so it fits beside the title at phone width.
+  const label = kinTeamAgentLabel(held.leads, shown === OFF ? null : shown);
   const pick = async (value: string) => {
     if (value === (current ?? OFF)) return;
     setPending(value);
