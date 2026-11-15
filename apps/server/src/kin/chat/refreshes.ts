@@ -21,7 +21,8 @@ const same = (a: KinRefreshes, b: KinRefreshes) =>
   a.people === b.people &&
   a.leads === b.leads &&
   a.timeZone === b.timeZone &&
-  a.visualHosts === b.visualHosts;
+  a.visualHosts === b.visualHosts &&
+  a.connections === b.connections;
 
 /**
  * The revisions this viewer may see, by their kind at each change, so making someone a co-owner

@@ -715,10 +715,12 @@ it.effect(
         ),
       );
       const input = { orgId: person.orgId, limits: { leadUnits: 300, workerUnits: 600 } };
-      assert.deepStrictEqual((yield* client["kin.budget.set"](input)).limits, input.limits);
+      // Teammates' own limit stays unset when the owner sets only the org's.
+      const stored = { ...input.limits, teammateUnits: null };
+      assert.deepStrictEqual((yield* client["kin.budget.set"](input)).limits, stored);
       assert.deepStrictEqual(
         (yield* client["kin.budget.get"]({ orgId: person.orgId })).limits,
-        input.limits,
+        stored,
       );
       assert.include(
         yield* client["kin.budget.set"]({ ...input, orgId: KinOrgId.make("foreign") }).pipe(

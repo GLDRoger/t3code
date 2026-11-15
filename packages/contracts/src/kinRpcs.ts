@@ -39,6 +39,7 @@ import { KinPushRpcs, KIN_PUSH_RPC_SCOPES } from "./kinPush.ts";
 import { KinPeopleRpcs, KIN_PEOPLE_RPC_SCOPES } from "./kinPeople.ts";
 import { KinVisualRpcs, KIN_VISUAL_RPC_SCOPES } from "./kinVisual.ts";
 import { KinWorkerNetworkRpcs, KIN_WORKER_NETWORK_RPC_SCOPES } from "./kinWorkerNetwork.ts";
+import { KinConnectionRpcs, KIN_CONNECTION_RPC_SCOPES } from "./kinConnections.ts";
 import {
   KinGithubWebhookOrgInput,
   KinGithubWebhookSecretInput,
@@ -179,6 +180,7 @@ export const KinRpcs = [
   ...KinPushRpcs,
   ...KinPeopleRpcs,
   ...KinWorkerNetworkRpcs,
+  ...KinConnectionRpcs,
   ...KinRefreshRpcs,
 ] as const;
 export const KIN_RPC_SCOPES = {
@@ -194,6 +196,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_PEOPLE_RPC_SCOPES,
   ...KIN_VISUAL_RPC_SCOPES,
   ...KIN_WORKER_NETWORK_RPC_SCOPES,
+  ...KIN_CONNECTION_RPC_SCOPES,
   ...KIN_REFRESH_RPC_SCOPES,
   "kin.budget.get": AuthKinChatScope,
   "kin.budget.set": AuthKinChatScope,
@@ -369,6 +372,17 @@ export const KIN_RPC_ACCESS = {
   "kin.workers.network.allow": "owner_level",
   "kin.workers.network.remove": "owner_level",
   "kin.refreshes.subscribe": "person",
+  "kin.people.setOwnerName": "org_owner",
+  "kin.connections.list": "owner_level",
+  "kin.connections.get": "owner_level",
+  "kin.connections.add": "owner_level",
+  "kin.connections.setKey": "owner_level",
+  "kin.connections.refreshTools": "owner_level",
+  "kin.connections.setToolModes": "owner_level",
+  "kin.connections.acceptToolChanges": "owner_level",
+  "kin.connections.setReach": "owner_level",
+  "kin.connections.remove": "owner_level",
+  "kin.connections.calls": "owner_level",
 } as const satisfies Record<(typeof KinRpcs)[number]["_tag"], KinRpcAccess>;
 export const kinRpcAccess = (method: string): KinRpcAccess | undefined =>
   (KIN_RPC_ACCESS as Record<string, KinRpcAccess>)[method];
@@ -384,6 +398,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.people.setGithubLogin": "kin-people",
   "kin.people.setAccess": "kin-people",
   "kin.access.me": "kin-people",
+  "kin.people.setOwnerName": "kin-people",
 
   "kin.refreshes.subscribe": "kin-refreshes",
   "kin.budget.get": "kin-budget",
@@ -512,4 +527,14 @@ export const KIN_RPC_AGGREGATES = {
   "kin.workers.network.get": "kin-workers",
   "kin.workers.network.allow": "kin-workers",
   "kin.workers.network.remove": "kin-workers",
+  "kin.connections.list": "kin-connections",
+  "kin.connections.get": "kin-connections",
+  "kin.connections.add": "kin-connections",
+  "kin.connections.setKey": "kin-connections",
+  "kin.connections.refreshTools": "kin-connections",
+  "kin.connections.setToolModes": "kin-connections",
+  "kin.connections.acceptToolChanges": "kin-connections",
+  "kin.connections.setReach": "kin-connections",
+  "kin.connections.remove": "kin-connections",
+  "kin.connections.calls": "kin-connections",
 } as const;

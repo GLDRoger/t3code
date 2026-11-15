@@ -405,6 +405,20 @@ export class KinChatRepository extends Context.Service<
       },
     ) => Effect.Effect<Option.Option<KinMessage>, RepositoryError>;
     readonly insertMessage: (input: InsertMessage) => Effect.Effect<KinMessage, RepositoryError>;
+    /**
+     * A wake-up's one reply grows by its next segment: the same lead thread's posted text, while
+     * that wake-up runs. The new body keeps the old one as its start.
+     */
+    readonly extendAgentReply: (
+      input: ChatScope & {
+        readonly messageId: KinMessageId;
+        readonly agentId: KinAgentId;
+        readonly threadId: ThreadId;
+        readonly wakeupId: KinWakeupId;
+        readonly audience: WriteAudience;
+        readonly body: string;
+      },
+    ) => Effect.Effect<KinMessage, RepositoryError>;
     readonly history: (
       input: Scope & KinChatHistoryInput & { readonly viewerMemberId?: KinMemberId },
     ) => Effect.Effect<KinChatHistoryResult, RepositoryError>;
@@ -1437,6 +1451,40 @@ const make = Effect.gen(function* () {
         })(input).pipe(NodeSqliteClient.readOnly);
       },
       Effect.mapError(toRepositoryError("KinChatRepository.findClientMessage")),
+    ),
+    extendAgentReply: Effect.fn("KinChatRepository.extendAgentReply")(
+      function* (input) {
+        yield* decodeBody(input.body);
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const message = yield* requireRecord(messageOne(input));
+            if (
+              message.chatId !== input.chatId ||
+              message.author._tag !== "agent" ||
+              message.author.agentId !== input.agentId ||
+              message.author.threadId !== input.threadId ||
+              message.status !== "posted" ||
+              message.kind !== "text" ||
+              message.widgetId !== null ||
+              !input.body.startsWith(message.body)
+            )
+              return yield* new KinChatError({
+                reason: "not_found",
+                message: "Kin record not found.",
+              });
+            if (!(yield* wakeupRunning(input)))
+              return yield* new KinChatError({
+                reason: "not_allowed",
+                message: "Kin wake-up is not running.",
+              });
+            yield* ownerOnly(input.audience, input);
+            yield* sql`UPDATE kin_messages SET body = ${input.body}
+              WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND message_id = ${input.messageId}`;
+            return yield* requireRecord(messageOne(input));
+          }),
+        );
+      },
+      Effect.mapError(toRepositoryError("KinChatRepository.extendAgentReply")),
     ),
     insertMessage: Effect.fn("KinChatRepository.insertMessage")(
       function* (input) {

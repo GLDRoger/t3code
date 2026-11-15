@@ -178,6 +178,15 @@ export class KinChatService extends Context.Service<
       input: KinChatsCreateDirectInput,
     ) => Effect.Effect<KinChat, ServiceError>;
     readonly send: (identity: Caller, input: SendInput) => Effect.Effect<KinMessage, ServiceError>;
+    /** A wake-up's one reply in a chat grows by a later segment of the same turn, in place. */
+    readonly extendReply: (
+      agent: AgentIdentity,
+      input: {
+        readonly chatId: KinChatId;
+        readonly messageId: KinMessageId;
+        readonly body: string;
+      },
+    ) => Effect.Effect<KinMessage, ServiceError>;
     /** Whether this person is in the chat whose message carries the stored file. */
     readonly attachmentReadable: (
       caller: PersonCaller,
@@ -1045,7 +1054,7 @@ const make = Effect.gen(function* () {
     const authorization =
       identity._tag === "agent" && Option.isNone(existing)
         ? yield* floor.authorize(identity, chat, intent ?? "answer", input.floorGrant)
-        : { runId: null };
+        : { runId: null, owed: false };
     const message = yield* post(identity, member, {
       ...request,
       // Never the request's own: those name uploads, these the files kept for the chat.
@@ -1058,7 +1067,13 @@ const make = Effect.gen(function* () {
       widgetId: null,
       clientId: { kind: "send", id: request.clientMessageId },
     });
-    if (Option.isNone(existing) && identity._tag === "agent" && authorization.runId === null)
+    // A reply someone waits on doesn't use up the hourly room for unprompted notices.
+    if (
+      Option.isNone(existing) &&
+      identity._tag === "agent" &&
+      authorization.runId === null &&
+      authorization.owed !== true
+    )
       yield* floor.recordNotice(identity, message);
     return message;
   }, transaction);
@@ -1118,7 +1133,8 @@ const make = Effect.gen(function* () {
       clientId: { kind: "send", id: input.clientMessageId },
       publish: false,
     });
-    if (authorization.runId === null) yield* floor.recordNotice(identity, message);
+    if (authorization.runId === null && authorization.owed !== true)
+      yield* floor.recordNotice(identity, message);
     // Only a question waits on the people in the chat.
     const awaiting = (input.type === "choice" ? yield* repo.listMembers(member) : []).flatMap(
       (row) =>
@@ -1794,6 +1810,26 @@ const make = Effect.gen(function* () {
         if (member !== undefined && (yield* readable(member, owner.value.messageId))) return true;
         return yield* docFileReadable(caller, attachmentId);
       },
+    ),
+    extendReply: Effect.fn("KinChatService.extendReply")(
+      function* (agent, input) {
+        if (agent.wakeupId === undefined) return yield* notAllowed;
+        const member = yield* memberFor(agent, input.chatId);
+        yield* canWrite(agent, member);
+        const message = yield* repo.extendAgentReply({
+          ...input,
+          orgId: agent.orgId,
+          agentId: agent.agentId,
+          threadId: agent.threadId,
+          wakeupId: agent.wakeupId,
+          audience: yield* authorAudience(agent),
+        });
+        yield* sql.afterCommit(
+          hub.publish({ type: "message.posted", orgId: agent.orgId, message }),
+        );
+        return message;
+      },
+      (effect) => transaction(effect),
     ),
     send: Effect.fn("KinChatService.send")(function* (caller, input) {
       const requested = input.attachments ?? [];

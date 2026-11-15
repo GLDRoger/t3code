@@ -16,6 +16,7 @@ import type { AuthenticatedSession } from "../auth/EnvironmentAuth.ts";
 import { makeKinApprovalHandlers } from "./approvals/rpcHandlers.ts";
 import { KinIdentity } from "./chat/KinIdentity.ts";
 import { makeKinChatHandlers } from "./chat/rpcHandlers.ts";
+import { makeKinConnectionHandlers } from "./connections/rpcHandlers.ts";
 import { makeKinWorkerNetworkHandlers } from "./lead/workerNetworkRpcHandlers.ts";
 import { makeKinLevelHandlers } from "./levels/rpcHandlers.ts";
 import { makeKinMemoryHandlers } from "./memory/rpcHandlers.ts";
@@ -71,6 +72,7 @@ export const makeKinHandlers = Effect.fn("makeKinHandlers")(function* (
     ...(yield* makeKinPushHandlers(session)),
     ...(yield* makeKinWebhookHandlers(session)),
     ...(yield* makeKinWorkerNetworkHandlers(session)),
+    ...(yield* makeKinConnectionHandlers(session)),
   });
   const guarded: Record<string, unknown> = {};
   for (const [tag, handler] of Object.entries(handlers)) {

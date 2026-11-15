@@ -174,6 +174,10 @@ export const SHARED_TOOLS = {
   kin_issue: "refused",
   kin_recipe_undo: "refused",
   kin_receipt: "refused",
+  // Connected services are the owner's accounts; the service checks the audience again.
+  kin_connection_tools: "refused",
+  kin_connection_call: "refused",
+  kin_connection_offer: "refused",
 } satisfies Record<string, SharedToolPolicy>;
 
 /** Whether `name` may run with these arguments in a turn someone besides the owner reads. */

@@ -24,6 +24,7 @@ import {
   type KinPeopleSetAccessInput,
   type KinAccessMeInput,
   type KinAccessMeResult,
+  type KinPeopleSetOwnerNameInput,
   type AuthSessionId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -116,6 +117,11 @@ export class KinPeople extends Context.Service<
       session: AuthenticatedSession,
       input: KinAccessMeInput,
     ) => Effect.Effect<KinAccessMeResult, Failure>;
+    /** The owner's own name: what agents call them and teammates see. */
+    readonly setOwnerName: (
+      session: AuthenticatedSession,
+      input: KinPeopleSetOwnerNameInput,
+    ) => Effect.Effect<KinPerson, Failure>;
   }
 >()("t3/kin/people/KinPeople") {}
 
@@ -603,6 +609,29 @@ export const make = Effect.gen(function* () {
     if (access === undefined) return yield* missing;
     return { personId: caller.personId, access };
   });
+  const setOwnerName = Effect.fn("KinPeople.setOwnerName")(function* (
+    session: AuthenticatedSession,
+    input: KinPeopleSetOwnerNameInput,
+  ) {
+    const people = yield* identity.resolve(session);
+    const owner = people.find(
+      (p) => p.orgId === input.orgId && p.personId === identity.owner.personId,
+    );
+    if (owner === undefined)
+      return yield* people.some((p) => p.orgId === input.orgId) ? denied : missing;
+    return yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          yield* sql`UPDATE kin_people SET display_name = ${input.displayName}
+            WHERE org_id = ${input.orgId} AND person_id = ${owner.personId}`.pipe(
+            Effect.mapError(toPersistenceSqlError("KinPeople.setOwnerName")),
+          );
+          yield* refresh.touch(input.orgId, "people");
+          return yield* person(input.orgId, owner.personId);
+        }),
+      )
+      .pipe(Effect.mapError(sqlError("KinPeople.setOwnerName")));
+  });
   return KinPeople.of({
     setAccess,
     accessMe,
@@ -615,6 +644,7 @@ export const make = Effect.gen(function* () {
     revokeDevice,
     removeAccess,
     setGithubLogin,
+    setOwnerName,
   });
 });
 export const layer = Layer.effect(KinPeople, make);

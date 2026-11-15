@@ -43,5 +43,6 @@ export const makeKinPeopleHandlers = Effect.fn("makeKinPeopleHandlers")(function
     "kin.people.setGithubLogin": (input) => run((p) => p.setGithubLogin(session, input)),
     "kin.people.setAccess": (input) => run((p) => p.setAccess(session, input)),
     "kin.access.me": (input) => run((p) => p.accessMe(session, input)),
+    "kin.people.setOwnerName": (input) => run((p) => p.setOwnerName(session, input)),
   });
 });

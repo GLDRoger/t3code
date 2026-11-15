@@ -55,6 +55,11 @@ export class KinLevelGate extends Context.Service<
       agent: AgentIdentity,
       input: PostInput,
     ) => Effect.Effect<KinMessage, KinChatError>;
+    /** The turn's one reply grows by its next segment, gated like the post that began it. */
+    readonly extend: (
+      agent: AgentIdentity,
+      input: Parameters<KinChatService["Service"]["extendReply"]>[1],
+    ) => Effect.Effect<KinMessage, KinChatError>;
     readonly upsertWidget: (
       agent: AgentIdentity,
       input: WidgetInput,
@@ -311,6 +316,9 @@ const make = Effect.gen(function* () {
     read,
     post: Effect.fn("KinLevelGate.post")((agent, input) =>
       gated("gated post", agent, input.chatId, chat.send(agent, input)),
+    ),
+    extend: Effect.fn("KinLevelGate.extend")((agent, input) =>
+      gated("gated reply", agent, input.chatId, chat.extendReply(agent, input)),
     ),
     upsertWidget: Effect.fn("KinLevelGate.upsertWidget")((agent, input) =>
       gated("gated widget upsert", agent, input.chatId, chat.upsertWidget(agent, input)),

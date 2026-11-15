@@ -1,7 +1,7 @@
 import type { KinBudget, KinBudgetLimits } from "@t3tools/contracts";
 
-// The host's own defaults (`apps/server/src/kin/lead/KinBudget.ts`); choices scale both together.
-const USUAL: KinBudgetLimits = { leadUnits: 2_000_000, workerUnits: 6_000_000 };
+// The host's old defaults; it has no limit until the owner picks one. Choices scale both.
+const USUAL = { leadUnits: 2_000_000, workerUnits: 6_000_000 };
 const CHOICES = [
   { times: 0.5, label: "Half the usual" },
   { times: 1, label: "The usual" },

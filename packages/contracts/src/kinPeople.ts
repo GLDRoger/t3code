@@ -139,6 +139,12 @@ export const KinAccessMeResult = Schema.Struct({
   access: KinPersonAccess,
 });
 export type KinAccessMeResult = typeof KinAccessMeResult.Type;
+/** The owner's own name, as agents address them and teammates see them. Owner only. */
+export const KinPeopleSetOwnerNameInput = Schema.Struct({
+  orgId: KinOrgId,
+  displayName: KinTrimmedText.check(Schema.isMaxLength(80)),
+});
+export type KinPeopleSetOwnerNameInput = typeof KinPeopleSetOwnerNameInput.Type;
 
 /** POSTed to `/kin/invites/accept` by a device with no session yet. The secret is never logged. */
 export const KinInviteAcceptRequest = Schema.Struct({
@@ -178,6 +184,7 @@ export const KIN_PEOPLE_WS_METHODS = {
   peopleSetGithubLogin: "kin.people.setGithubLogin",
   peopleSetAccess: "kin.people.setAccess",
   accessMe: "kin.access.me",
+  peopleSetOwnerName: "kin.people.setOwnerName",
 } as const;
 
 const KinPeopleError = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -233,6 +240,11 @@ export const KinPeopleRpcs = [
     success: KinAccessMeResult,
     error: KinPeopleError,
   }),
+  Rpc.make(KIN_PEOPLE_WS_METHODS.peopleSetOwnerName, {
+    payload: KinPeopleSetOwnerNameInput,
+    success: KinPerson,
+    error: KinPeopleError,
+  }),
 ] as const;
 
 // Every Kin method takes a Kin session; who may call it is `KIN_RPC_ACCESS`, from stored kinds.
@@ -247,6 +259,8 @@ export const KIN_PEOPLE_RPC_SCOPES = {
   [KIN_PEOPLE_WS_METHODS.peopleSetGithubLogin]: AuthKinChatScope,
   [KIN_PEOPLE_WS_METHODS.peopleSetAccess]: AuthKinChatScope,
   [KIN_PEOPLE_WS_METHODS.accessMe]: AuthKinChatScope,
+  // The owner names themself from their phone's chat session; the service checks ownership.
+  [KIN_PEOPLE_WS_METHODS.peopleSetOwnerName]: AuthKinChatScope,
 } as const satisfies Record<
   (typeof KIN_PEOPLE_WS_METHODS)[keyof typeof KIN_PEOPLE_WS_METHODS],
   AuthEnvironmentScope
