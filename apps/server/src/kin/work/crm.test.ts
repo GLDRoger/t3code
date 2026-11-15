@@ -244,7 +244,13 @@ it.effect(
         kind: "client",
         terms: "Invented retainer, monthly",
       });
-      assert.deepStrictEqual(client.owed, { weOwe: 4, theyOwe: 2, late: 0, overdue: 0 });
+      assert.deepStrictEqual(client.owed, {
+        tasksWeOwe: 4,
+        tasksTheyOwe: 2,
+        tasksWeOweLate: 0,
+        tasksTheyOweLate: 0,
+        money: { unpaid: [], overdue: [], invoices: [] },
+      });
       assert.deepStrictEqual(
         client.contacts!.map((row) => [row.title, row.role ?? row.email]),
         [
@@ -1097,6 +1103,52 @@ it.effect(
         clientRequestId: "check-in",
       });
       assert.notInclude(yield* senses("C-1"), "client_cold");
+
+      // What a client owes counts its unpaid invoices by the rule Money uses, not only its tasks.
+      yield* sql`UPDATE kin_records SET state = 'waiting', due_at = ${3 * DAY} WHERE key = 'INV-1'`;
+      const owes = (yield* LeadWork.get(scope, { key: "C-1" })).owed!;
+      assert.deepStrictEqual(owes.money.overdue, owes.money.unpaid);
+      assert.match(owes.money.invoices[0]!, /^INV-1: .*500.* overdue, \d+ days past due$/);
+
+      // A client added today with work that ended long ago reads cold from that day, and a typed
+      // name finds it: any case, a start of it, or a close spelling.
+      yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [
+          { list: "clients", title: "Invented Harbourline Logistics" },
+          {
+            list: "projects",
+            title: "Invented tracking app",
+            client: "invented harbourline",
+            state: "done",
+            finishedOn: "1970-01-02",
+          },
+        ],
+      });
+      const harbour = (yield* LeadWork.get(scope, { key: "C-2" })).key;
+      assert.include(yield* senses(harbour), "client_cold");
+      for (const typed of [
+        "INVENTED HARBOURLINE LOGISTICS",
+        "Invented Harbor",
+        "Invnted Harbourline",
+      ])
+        assert.include(
+          yield* LeadWork.get(scope, {
+            key: (yield* LeadWork.create(scope, {
+              sourceEventId: "ask-event",
+              records: [{ title: `Invented call ${typed}`, client: typed }],
+            })).records[0]!.key,
+          }),
+          { client: "Invented Harbourline Logistics (C-2)" },
+        );
+      // No match names the nearest instead of saying there is none.
+      const missed = yield* Effect.flip(
+        LeadWork.create(scope, {
+          sourceEventId: "ask-event",
+          records: [{ title: "Invented call", client: "Invented Harbourlime Freight" }],
+        }),
+      );
+      assert.include(missed.message, "Nearest: Invented Harbourline Logistics (C-2)");
     }).pipe(Effect.provide(layer)),
 );
 

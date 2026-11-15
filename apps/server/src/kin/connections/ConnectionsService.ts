@@ -120,6 +120,8 @@ import {
   sendCard,
   sendMail,
   markQuotesSent,
+  sentMail,
+  SentMailView,
   sentToClient,
 } from "./Sending.ts";
 import { KinRecords } from "../work/KinRecords.ts";
@@ -196,10 +198,14 @@ export const KinConnectionToolsResult = Schema.Struct({
         note: Schema.optional(Schema.String),
         state: Schema.String,
         readTools: Schema.Number,
+        /** Tools that act, such as sending mail: each call waits for the owner's Confirm on a card. */
+        withConfirm: Schema.optional(Schema.Array(Schema.String)),
       }),
     ),
   ),
   canConnect: Schema.optional(Schema.Array(Schema.String)),
+  /** Mail Kin sent on a Confirm, newest first, with the thread a reply goes in. */
+  recentlySent: Schema.optional(Schema.Array(SentMailView)),
   /** The server's own text, quoted: tool names, titles, descriptions, schemas, instructions. */
   quoted: Schema.optional(Schema.String),
   note: Schema.optional(Schema.String),
@@ -1530,6 +1536,15 @@ const make = Effect.gen(function* () {
       provideSql,
       Effect.map((tools) => tools.filter((tool) => callable(tool) && tool.mode === "read")),
     );
+  const confirmable = (orgId: KinOrgId, row: ConnectionRow) =>
+    toolsOf(orgId, row.connectionId).pipe(
+      provideSql,
+      Effect.map((tools) =>
+        tools
+          .filter((tool) => callable(tool) && (tool.mode === "ask" || alwaysAsk(row, tool.name)))
+          .map((tool) => tool.name),
+      ),
+    );
 
   const tools = leadOp("tools", (scope, input: typeof KinConnectionToolsInput.Type) =>
     Effect.gen(function* () {
@@ -1545,8 +1560,8 @@ const make = Effect.gen(function* () {
       if (input.connection === undefined) {
         const rows = yield* liveConnections(turn.orgId).pipe(provideSql);
         const connections = yield* Effect.forEach(rows, (row) =>
-          readable(turn.orgId, row).pipe(
-            Effect.map((read) => {
+          Effect.all([readable(turn.orgId, row), confirmable(turn.orgId, row)]).pipe(
+            Effect.map(([read, withConfirm]) => {
               const sendsAs = sendAsOf(row).map((one) => one.address);
               return {
                 connection: row.connectionId,
@@ -1557,17 +1572,20 @@ const make = Effect.gen(function* () {
                 ...(row.note === null ? {} : { note: row.note }),
                 state: row.pausedAt === null ? row.state : "paused",
                 readTools: read.length,
+                ...(withConfirm.length === 0 ? {} : { withConfirm }),
               };
             }),
           ),
         );
         const connected = new Set(rows.map((row) => row.preset));
+        const recentlySent = yield* sentMail({ orgId: turn.orgId, limit: 10 }).pipe(provideSql);
         const several =
           rows.filter((row) => mailProviderOf(row) !== undefined).length > 1
             ? [SEVERAL_ACCOUNTS]
             : [];
         return {
           connections,
+          ...(recentlySent.length === 0 ? {} : { recentlySent }),
           canConnect: SERVICES.filter(
             (service) => service.service !== "custom" && !connected.has(service.service),
           ).map((service) => service.service),
@@ -2148,7 +2166,7 @@ const make = Effect.gen(function* () {
         });
       const decide = (state: string, reason: string | null) =>
         tx`UPDATE kin_connection_asks SET state = ${state}, reason = ${reason},
-          decided_at = ${input.now}
+          decided_at = ${input.now}, decided_by = ${input.personId}
         WHERE org_id = ${input.orgId} AND ask_id = ${row.askId} AND state = 'open'`;
       if (!input.confirmed) {
         yield* decide("declined", null);

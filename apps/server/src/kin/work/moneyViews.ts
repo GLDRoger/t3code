@@ -16,9 +16,9 @@ import {
   countedEntry,
   fieldDateAt,
   countedPayment,
-  invoiceDue,
   iso,
   moneyDay,
+  owedInvoices,
   ownerZone,
   type RecordRow,
   selectRecords,
@@ -212,34 +212,11 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
   const since = `${firstMonth}-01` < fyStart ? `${firstMonth}-01` : fyStart;
 
   // Owed: issued invoices' balances. Payments are in the invoice's own currency.
-  const invoices = yield* sql<{
-    recordId: string;
-    key: string;
-    title: string;
-    partyId: string | null;
-    partyKey: string | null;
-    partyTitle: string | null;
-    minor: number;
-    currency: string;
-    paid: number;
-    dueAt: number | null;
-  }>`SELECT r.record_id AS "recordId", r.key, r.title, r.party_id AS "partyId",
-      pa.key AS "partyKey", pa.title AS "partyTitle", r.amount_minor AS minor, r.currency,
-      (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
-        WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid,
-      ${invoiceDue(sql)} AS "dueAt"
-    FROM kin_records r
-    LEFT JOIN kin_records pa ON pa.org_id = r.org_id AND pa.record_id = r.party_id
-    WHERE r.org_id = ${orgId} AND r.register_id = 'invoices' AND ${countedEntry(sql)}
-      AND r.state = 'waiting' AND r.amount_minor IS NOT NULL AND ${seen}
-    ORDER BY r.due_at, r.key`;
-  const owing = invoices
-    .map((invoice) => ({
-      ...invoice,
-      balance: { minor: invoice.minor - invoice.paid, currency: invoice.currency },
-      overdue: invoice.dueAt !== null && invoice.dueAt < now,
-    }))
-    .filter((invoice) => invoice.balance.minor > 0);
+  const owing = yield* owedInvoices({
+    orgId,
+    now,
+    ...(view === undefined ? {} : { seen: viewSees(sql, view) }),
+  });
   const clients = new Map<string | null, typeof owing>();
   for (const invoice of owing)
     clients.set(invoice.partyId, [...(clients.get(invoice.partyId) ?? []), invoice]);

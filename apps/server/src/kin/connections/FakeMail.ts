@@ -31,9 +31,19 @@ export type FakeMailMessage = {
   readonly inReplyTo: string | null;
   readonly references: string | null;
   readonly body: string;
+  /** File names, for scripts and older mailbox files. */
   readonly attachments: ReadonlyArray<string>;
+  /** The files themselves, as a real mailbox serves them. */
+  readonly files?: ReadonlyArray<FakeMailFile>;
   readonly unread: boolean;
   readonly sent: boolean;
+};
+
+export type FakeMailFile = {
+  readonly name: string;
+  readonly mimeType: string;
+  /** The file's bytes, base64. */
+  readonly data: string;
 };
 
 export type FakeMailState = {
@@ -43,6 +53,11 @@ export type FakeMailState = {
   readonly codes: Record<string, { readonly address: string; readonly challenge: string }>;
   /** The scopes each account last granted: what its sign-in asked for. */
   readonly granted: Record<string, string>;
+  /** Outlook drafts made to be sent, by id. */
+  readonly drafts: Record<
+    string,
+    { readonly account: string; readonly raw: string; readonly threadId: string }
+  >;
   seq: number;
 };
 
@@ -57,6 +72,7 @@ const emptyFakeMail = (): FakeMailState => ({
   events: [],
   codes: {},
   granted: {},
+  drafts: {},
   seq: 0,
 });
 
@@ -69,7 +85,7 @@ const memoryStore = (state: FakeMailState = emptyFakeMail()): FakeMailStore => (
 export const fileStore = (path: string): FakeMailStore => ({
   load: () =>
     NodeFS.existsSync(path)
-      ? (JSON.parse(NodeFS.readFileSync(path, "utf8")) as FakeMailState)
+      ? { ...emptyFakeMail(), ...(JSON.parse(NodeFS.readFileSync(path, "utf8")) as FakeMailState) }
       : emptyFakeMail(),
   save: (state) => NodeFS.writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`),
 });
@@ -85,23 +101,66 @@ const nameIn = (who: string) => /^\s*"?([^"<]*?)"?\s*</.exec(who)?.[1]?.trim() |
 const rfc2822 = (ms: number) => new Date(ms).toUTCString().replace("GMT", "+0000");
 const iso = (ms: number) => new Date(ms).toISOString();
 
-/** The header block and text part of a MIME message as Kin builds it. */
-const parseMime = (raw: string) => {
-  const [head = "", ...rest] = raw.split(/\r?\n\r?\n/);
+const headerBlock = (head: string) => {
   const headers = new Map<string, string>();
   for (const line of head.replace(/\r?\n[ \t]+/g, " ").split(/\r?\n/)) {
     const at = line.indexOf(":");
     if (at > 0) headers.set(lower(line.slice(0, at).trim()), line.slice(at + 1).trim());
   }
+  return headers;
+};
+const split = (raw: string) => {
+  const at = /\r?\n\r?\n/.exec(raw);
+  return at === null
+    ? { head: raw, body: "" }
+    : { head: raw.slice(0, at.index), body: raw.slice(at.index + at[0].length) };
+};
+const decoded = (headers: Map<string, string>, body: string) =>
+  lower(headers.get("content-transfer-encoding") ?? "") === "base64"
+    ? Buffer.from(body.replace(/\s+/g, ""), "base64")
+    : Buffer.from(body, "utf8");
+
+/** A MIME message as Kin builds it: its headers, text part and attached files. */
+const parseMime = (raw: string) => {
+  const top = split(raw);
+  const headers = headerBlock(top.head);
   const words = (value: string) =>
     value.replace(/=\?utf-8\?b\?([^?]*)\?=/gi, (_, data: string) =>
       Buffer.from(data, "base64").toString("utf8"),
     );
-  const body = rest.join("\n\n");
-  const textPart =
-    /Content-Type: text\/plain[^\n]*\r?\nContent-Transfer-Encoding: base64\r?\n\r?\n([\s\S]*?)\r?\n--/i.exec(
-      body,
-    );
+  const boundary = /boundary="?([^";]+)"?/i.exec(headers.get("content-type") ?? "")?.[1];
+  const parts =
+    boundary === undefined
+      ? [{ headers, body: top.body }]
+      : top.body
+          .split(`--${boundary}`)
+          .slice(1)
+          .filter((part) => !part.startsWith("--"))
+          .map((part) => {
+            const one = split(part.replace(/^\r?\n/, ""));
+            return { headers: headerBlock(one.head), body: one.body.replace(/\r?\n$/, "") };
+          });
+  const nameOf = (part: (typeof parts)[number]) =>
+    /filename="([^"]+)"/i.exec(part.headers.get("content-disposition") ?? "")?.[1];
+  const textPart = parts.find(
+    (part) =>
+      nameOf(part) === undefined &&
+      lower(part.headers.get("content-type") ?? "text/plain").startsWith("text/plain"),
+  );
+  const files = parts.flatMap((part): ReadonlyArray<FakeMailFile> => {
+    const name = nameOf(part);
+    return name === undefined
+      ? []
+      : [
+          {
+            name,
+            mimeType: (part.headers.get("content-type") ?? "application/octet-stream")
+              .split(";")[0]!
+              .trim(),
+            data: decoded(part.headers, part.body).toString("base64"),
+          },
+        ];
+  });
   const header = (name: string) => headers.get(name) ?? null;
   const list = (name: string) =>
     (header(name) ?? "")
@@ -115,13 +174,12 @@ const parseMime = (raw: string) => {
     subject: words(header("subject") ?? ""),
     inReplyTo: header("in-reply-to"),
     references: header("references"),
-    text:
-      textPart === null
-        ? body
-        : Buffer.from(textPart[1]!.replace(/\s+/g, ""), "base64").toString("utf8"),
-    attachments: [...raw.matchAll(/filename="([^"]+)"/g)].map((match) => match[1]!),
+    text: textPart === undefined ? "" : decoded(textPart.headers, textPart.body).toString("utf8"),
+    files,
   };
 };
+
+const sizeOf = (file: FakeMailFile) => Buffer.from(file.data, "base64").length;
 
 export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
   const edit = <A>(change: (state: FakeMailState) => A) => {
@@ -175,6 +233,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
     readonly cc?: ReadonlyArray<string>;
     readonly threadId?: string;
     readonly at: number;
+    readonly files?: ReadonlyArray<FakeMailFile>;
   }) =>
     edit((state) => {
       const account = state.accounts.find((one) => owns(one, input.to));
@@ -197,7 +256,8 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         inReplyTo: last?.messageId ?? null,
         references: last === undefined ? null : [last.references, last.messageId].join(" ").trim(),
         body: input.body,
-        attachments: [],
+        attachments: (input.files ?? []).map((file) => file.name),
+        files: input.files ?? [],
         unread: true,
         sent: false,
       };
@@ -228,7 +288,8 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
       inReplyTo: mail.inReplyTo,
       references: mail.references,
       body: mail.text,
-      attachments: mail.attachments,
+      attachments: mail.files.map((file) => file.name),
+      files: mail.files,
       unread: false,
       sent: true,
     };
@@ -287,7 +348,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
     labelIds: message.sent ? ["SENT"] : ["INBOX", ...(message.unread ? ["UNREAD"] : [])],
     snippet: message.body.slice(0, 100),
     payload: {
-      mimeType: "text/plain",
+      mimeType: (message.files ?? []).length === 0 ? "text/plain" : "multipart/mixed",
       headers: [
         { name: "From", value: message.from },
         { name: "To", value: message.to.join(", ") },
@@ -298,7 +359,25 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         { name: "Message-ID", value: message.messageId },
         ...(message.references === null ? [] : [{ name: "References", value: message.references }]),
       ],
-      body: { data: Buffer.from(message.body).toString("base64url") },
+      ...((message.files ?? []).length === 0
+        ? { body: { data: Buffer.from(message.body).toString("base64url") } }
+        : {
+            body: { size: 0 },
+            parts: [
+              {
+                partId: "0",
+                mimeType: "text/plain",
+                filename: "",
+                body: { data: Buffer.from(message.body).toString("base64url") },
+              },
+              ...(message.files ?? []).map((file, index) => ({
+                partId: String(index + 1),
+                mimeType: file.mimeType,
+                filename: file.name,
+                body: { attachmentId: `${message.id}-a${index}`, size: sizeOf(file) },
+              })),
+            ],
+          }),
     },
   });
 
@@ -383,7 +462,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
     isRead: !message.unread,
     bodyPreview: message.body.slice(0, 100),
     internetMessageId: message.messageId,
-    hasAttachments: false,
+    hasAttachments: (message.files ?? []).length > 0,
     body: { contentType: "text", content: message.body },
     internetMessageHeaders:
       message.references === null ? [] : [{ name: "References", value: message.references }],
@@ -433,10 +512,35 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
             .map(graphMessage),
         });
       }
-      if (/^\/v1\.0\/me\/messages\/[^/]+\/attachments$/.test(path)) return json({ value: [] });
+      const attachmentsOf = /^\/v1\.0\/me\/messages\/([^/]+)\/attachments$/.exec(path)?.[1];
+      if (attachmentsOf !== undefined) {
+        const message = mine.find((one) => one.id === decodeURIComponent(attachmentsOf));
+        if (message === undefined) return json({ error: { code: "ErrorItemNotFound" } }, 404);
+        return json({
+          value: (message.files ?? []).map((file, index) => ({
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            id: `${message.id}-a${index}`,
+            name: file.name,
+            contentType: file.mimeType,
+            size: sizeOf(file),
+            contentBytes: file.data,
+          })),
+        });
+      }
       const mime = () => Buffer.from(text, "base64").toString("utf8");
-      if (path === `${GRAPH}/sendMail`) {
-        record(state, account, mime(), null);
+      if (path === `${GRAPH}/messages` && request.method === "POST") {
+        const id = next(state, "fd");
+        const threadId = next(state, "ft");
+        state.drafts[id] = { account: account.address, raw: mime(), threadId };
+        return json({ id, conversationId: threadId }, 201);
+      }
+      const draftSent = /^\/v1\.0\/me\/messages\/([^/]+)\/send$/.exec(path)?.[1];
+      if (draftSent !== undefined) {
+        const draft = state.drafts[decodeURIComponent(draftSent)];
+        if (draft === undefined || draft.account !== account.address)
+          return json({ error: { code: "ErrorItemNotFound" } }, 404);
+        delete state.drafts[decodeURIComponent(draftSent)];
+        record(state, account, draft.raw, draft.threadId);
         return new Response(null, { status: 202 });
       }
       const replyTo = /^\/v1\.0\/me\/messages\/([^/]+)\/reply$/.exec(path)?.[1];

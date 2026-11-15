@@ -423,3 +423,66 @@ const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effectDiscard(make);
+
+/** What a person reads when this host's agents can't run for want of a memory repository. */
+const noMemoryNotice = (lead: string) =>
+  `${lead} can't answer: this server has no memory repository set up for its agents, so none of them can start. Whoever runs the server can set KIN_MEMORY_REPOSITORIES.`;
+
+/**
+ * With no memory repository the runner never starts, so a person's message would meet silence.
+ * Instead each chat with an agent hears why, once.
+ */
+export const unconfiguredLayer = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const hub = yield* KinChatHub;
+    const repo = yield* KinChatRepository;
+    const explain = Effect.fn("KinChatWake.noMemory")(
+      function* (message: KinMessage) {
+        if (message.author._tag !== "human" || message.status !== "posted") return;
+        const [lead] = yield* sql<{ name: string }>`SELECT a.display_name AS name
+          FROM kin_chat_members m
+          JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = m.agent_id
+            AND a.role = 'lead' AND a.retired_at IS NULL
+          WHERE m.org_id = ${message.orgId} AND m.chat_id = ${message.chatId}
+            AND m.principal_kind = 'agent' AND m.left_at IS NULL
+          ORDER BY a.created_at, a.agent_id LIMIT 1`;
+        if (lead === undefined) return;
+        const messageId = KinMessageId.make(
+          `kin-no-memory-${NodeCrypto.createHash("sha256").update(message.chatId).digest("hex").slice(0, 32)}`,
+        );
+        if (Option.isSome(yield* repo.getMessage({ orgId: message.orgId, messageId }))) return;
+        const notice = yield* repo.insertMessage({
+          orgId: message.orgId,
+          chatId: message.chatId,
+          // Fixed words about this server, said where someone asked.
+          audience: "chat",
+          messageId,
+          author: { _tag: "system" },
+          kind: "system",
+          body: noMemoryNotice(lead.name),
+          intent: null,
+          mentions: [],
+          replyTo: null,
+          widgetId: null,
+          floorRunId: null,
+          status: "posted",
+          sentBy: null,
+          clientMessageId: null,
+          createdAt: DateTime.formatIso(yield* DateTime.now),
+          editedAt: null,
+        });
+        yield* hub.publish({ type: "message.posted", orgId: message.orgId, message: notice });
+        yield* Effect.logWarning("Kin agent can't answer: no memory repository is set", {
+          orgId: message.orgId,
+          chatId: message.chatId,
+        });
+      },
+      Effect.catchCause((cause) => Effect.logError("Kin no-memory notice failed", { cause })),
+    );
+    const events = yield* hub.subscribeAll;
+    yield* Stream.runForEach(events, (event) =>
+      event.type === "message.posted" ? explain(event.message) : Effect.void,
+    ).pipe(forkParked);
+  }),
+);

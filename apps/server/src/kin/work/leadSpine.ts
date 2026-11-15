@@ -18,6 +18,7 @@ import { versionOf } from "./docs.ts";
 import { type FieldValue, fieldList, fieldText, isMoney, parseFields } from "./lists.ts";
 import { formatMoney, parseAmount } from "./money.ts";
 import { principalOfText, principalText, specChangesOf } from "./projectSpine.ts";
+import { matchName } from "./nameMatch.ts";
 import { type RecordRow, selectRecords, toRecord } from "./recordRows.ts";
 
 /**
@@ -98,18 +99,25 @@ const milestoneRow = Effect.fn("KinLeadSpine.milestone")(function* (
   projectId: string | null | undefined,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ key: string; projectId: string | null }>`SELECT key,
-      project_id AS "projectId" FROM kin_records
+  const all = yield* sql<{ key: string; name: string; projectId: string | null }>`SELECT key,
+      title AS name, project_id AS "projectId" FROM kin_records
     WHERE org_id = ${orgId} AND register_id = 'milestones'
-      AND (key = ${text.toUpperCase()} OR (lower(title) = lower(${text})
-        AND (${projectId ?? null} IS NULL OR project_id = ${projectId ?? null})))
-    ORDER BY key = ${text.toUpperCase()} DESC, key LIMIT 3`;
+      AND (key = ${text.toUpperCase()}
+        OR ${projectId ?? null} IS NULL OR project_id = ${projectId ?? null})
+    ORDER BY key LIMIT 2000`;
+  const match = matchName(text, all);
+  const rows =
+    match._tag === "found" ? [match.item] : match._tag === "ambiguous" ? match.items : [];
   if (rows.length === 0)
     return yield* new KinChatError({
       reason: "not_found",
-      message: `No milestone ${text.slice(0, 60)}. Create it first with list milestones and its project.`,
+      message: `No milestone ${text.slice(0, 60)}.${
+        match._tag === "none" && match.nearest.length > 0
+          ? ` Nearest: ${match.nearest.map((one) => `${one.name} (${one.key})`).join(", ")}.`
+          : ""
+      } Create it first with list milestones and its project.`,
     });
-  if (rows.length > 1 && rows[0]!.key !== text.toUpperCase())
+  if (rows.length > 1)
     return yield* invalid(
       `Several milestones are named ${text.slice(0, 60)}: ${rows.map((row) => row.key).join(", ")}. Use the key.`,
     );

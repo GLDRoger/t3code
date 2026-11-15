@@ -126,7 +126,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_ask", {
     ...chat,
     description:
-      "Ask a question with 2-4 tap-to-answer options in the chat your reply goes to. Use it when the answer is one of a few choices; otherwise ask in plain text. Mark a yes/no pair with kind. It counts as your reply, and the tap arrives later as their answer. A choice is never an approval: privileged actions still need request_action.",
+      "Ask a question with 2-4 tap-to-answer options in the chat your reply goes to. Use it when the answer is one of a few choices; otherwise ask in plain text. Mark a yes/no pair with kind. It is your reply: don't restate it in a message, and add at most one short line it doesn't say. The tap arrives later as their answer. A choice is never an approval: privileged actions still need request_action.",
     parameters: ChoiceCard.AskInput,
     success: ChoiceCard.AskResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

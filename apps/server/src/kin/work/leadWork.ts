@@ -32,7 +32,10 @@ import { SHARED_REFUSAL, effectiveAudience, turnChat, turnPeople } from "../lead
 import { resolveLead } from "../lead/LeadMemory.ts";
 import { inCompanyChat, toolAdmitted } from "../lead/SharedTools.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
+import { sentMail, SentMailView } from "../connections/Sending.ts";
 import { partyPage, projectDetail } from "./crm.ts";
+import { matchName } from "./nameMatch.ts";
+import { lastContacts } from "./touches.ts";
 import { KinRecords, type Patch, type TotalsBy, type Writer } from "./KinRecords.ts";
 import {
   GOAL_INPUTS,
@@ -54,11 +57,12 @@ import {
   taskSpecChanged,
 } from "./leadSpine.ts";
 import { fieldList, fieldText, isMoney, LISTS, listOf, parseFields } from "./lists.ts";
-import { formatMoney, parseAmount } from "./money.ts";
+import { addUp, dayIn, formatMoney, parseAmount } from "./money.ts";
 import {
   endOfDay,
   iso,
   notFound,
+  owedInvoices,
   ownerZone,
   principalId,
   type RecordRow,
@@ -267,13 +271,21 @@ export const GetResult = Schema.Struct({
       }),
     ),
   ),
-  /** A client's: what each side owes, open, its contacts and its projects. */
+  /**
+   * A client's: open Work entries each side owes (counts), and the money it owes on issued
+   * invoices, by the rule Money and the pulse use (overdue is past its due day).
+   */
   owed: Schema.optional(
     Schema.Struct({
-      weOwe: Schema.Number,
-      theyOwe: Schema.Number,
-      late: Schema.Number,
-      overdue: Schema.Number,
+      tasksWeOwe: Schema.Number,
+      tasksTheyOwe: Schema.Number,
+      tasksWeOweLate: Schema.Number,
+      tasksTheyOweLate: Schema.Number,
+      money: Schema.Struct({
+        unpaid: Schema.Array(Schema.String),
+        overdue: Schema.Array(Schema.String),
+        invoices: Schema.Array(Schema.String),
+      }),
     }),
   ),
   contacts: Schema.optional(Schema.Array(Schema.Struct({ ...Row.fields }))),
@@ -287,6 +299,8 @@ export const GetResult = Schema.Struct({
       }),
     ),
   ),
+  /** An invoice's, quote's or client's mail Kin sent, newest first, with the thread to reply in. */
+  mailed: Schema.optional(Schema.Array(SentMailView)),
   /** A project's whole plan, people, docs and money, computed now. */
   plan: Schema.optional(ProjectRead),
   /** A project's, computed now. */
@@ -325,6 +339,12 @@ const CreateRow = Schema.Struct({
   amount: Schema.optional(Amount),
   currency: Schema.optional(Currency),
   date: Schema.optional(Day),
+  finishedOn: Schema.optional(
+    KinDay.annotate({
+      description:
+        "For one recorded already done, such as a project that ended in September: the day it ended.",
+    }),
+  ),
   repeat: Schema.optional(Repeat),
   fields: Schema.optional(FieldInputs),
   sensitive: Schema.optional(Schema.Literal(true)),
@@ -536,9 +556,26 @@ export const resolveWho = Effect.fn("KinWorkTools.resolveWho")(function* (lead: 
         _tag: "person",
         personId: KinPersonId.make(people[0].id),
       } satisfies KinWorkPrincipal;
+    // As typed: a start of a name or a close spelling only one person has.
+    const everyone = yield* sql<{ id: string; name: string }>`SELECT person_id AS id,
+        display_name AS name FROM kin_people WHERE org_id = ${lead.orgId} ORDER BY person_id`;
+    const typed = matchName(who, everyone);
+    if (typed._tag === "found")
+      return {
+        _tag: "person",
+        personId: KinPersonId.make(typed.item.id),
+      } satisfies KinWorkPrincipal;
+    const offer = typed._tag === "ambiguous" ? typed.items : typed.nearest;
     return yield* new KinChatError({
       reason: "not_found",
-      message: `No one called ${who.slice(0, 60)} is in the company. people_read lists who is. Nothing was written.`,
+      message: `No one called ${who.slice(0, 60)} is in the company.${
+        offer.length === 0
+          ? ""
+          : ` Nearest: ${offer
+              .slice(0, 3)
+              .map((one) => `${one.name} (${one.id})`)
+              .join(", ")}; ask "did you mean …?" if one may be them.`
+      } people_read lists who is. Nothing was written.`,
     });
   }
   return { _tag: "agent", agentId: KinAgentId.make(who) } satisfies KinWorkPrincipal;
@@ -762,33 +799,56 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
   } as typeof Row.Type;
 };
 
-/** A client or project the lead named by key or exact name, among the active ones. */
+/** A client or project the lead named by key, or by name as typed, among the active ones. */
 const resolveRef = Effect.fn("KinWorkTools.resolveRef")(function* (
   lead: Lead,
   text: string,
   list: "clients" | "projects",
 ) {
   const sql = yield* SqlClient.SqlClient;
-  // In a turn others read, one they may not all see is no client or project at all.
+  // In a turn others read, one they may not all see is never named, and never denied either.
   const team = yield* viewOf(lead);
-  const rows = yield* sql<{ recordId: string; key: string }>`SELECT r.record_id AS "recordId", r.key
+  const rows = yield* sql<{
+    recordId: string;
+    key: string;
+    name: string;
+    active: number;
+    seen: number;
+  }>`
+    SELECT r.record_id AS "recordId", r.key, r.title AS name,
+      r.state NOT IN ('done', 'dropped') AS active,
+      ${team === undefined ? sql`1` : viewSees(sql, team.people)} AS seen
     FROM kin_records r WHERE r.org_id = ${lead.orgId} AND r.register_id = ${list}
-      AND (r.key = ${text.toUpperCase()} OR (lower(r.title) = lower(${text})
-        AND r.state NOT IN ('done', 'dropped')))
-      AND ${team === undefined ? sql`1 = 1` : viewSees(sql, team.people)}
-    ORDER BY r.key = ${text.toUpperCase()} DESC, r.key LIMIT 3`;
+    ORDER BY r.key LIMIT ${REF_CANDIDATES}`;
+  const candidates = (seen: boolean) =>
+    rows.filter(
+      (row) => (row.seen === 1) === seen && (row.active === 1 || row.key === text.toUpperCase()),
+    );
   const noun = LISTS[list].noun;
-  if (rows.length === 0)
+  const match = matchName(text, candidates(true));
+  if (match._tag === "found") return match.item.recordId;
+  if (match._tag === "ambiguous")
+    return yield* invalid(
+      `Several ${list} could be ${text.slice(0, 60)}: ${match.items
+        .slice(0, 5)
+        .map((row) => `${row.name} (${row.key})`)
+        .join(", ")}. Ask which one is meant, or use the key.`,
+    );
+  if (matchName(text, candidates(false))._tag !== "none")
     return yield* new KinChatError({
       reason: "not_found",
-      message: `No ${noun} ${text.slice(0, 60)}. Find it with records_query list ${list}, or create it first.`,
+      message: `No ${noun} ${text.slice(0, 60)} that everyone in this chat may see. One may exist that someone here can't see, so don't say there is none and don't add it again: leave it off here, or ask the owner in his own chat.`,
     });
-  if (rows.length > 1 && rows[0]!.key !== text.toUpperCase())
-    return yield* invalid(
-      `Several ${list} are named ${text.slice(0, 60)}: ${rows.map((row) => row.key).join(", ")}. Use the key.`,
-    );
-  return rows[0]!.recordId;
+  return yield* new KinChatError({
+    reason: "not_found",
+    message: `No ${noun} called ${text.slice(0, 60)}.${
+      match.nearest.length === 0
+        ? ""
+        : ` Nearest: ${match.nearest.map((row) => `${row.name} (${row.key})`).join(", ")}; ask "did you mean …?" if one may be it.`
+    } Find it with records_query list ${list}, or create it if it's new.`,
+  });
 });
+const REF_CANDIDATES = 2000;
 export const refOrNull = Effect.fn("KinWorkTools.refOrNull")(function* (
   lead: Lead,
   text: string | null | undefined,
@@ -1162,6 +1222,64 @@ const groupsFor = Effect.fn("KinWorkTools.groups")(function* (
   return yield* labelGroups(lead, view, by, yield* records.groups(lead.orgId, filter, grouped));
 });
 
+/** What a client owes: its Work counts, and its money by the one owed-invoice rule. */
+const clientOwed = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  partyId: string,
+  party: {
+    readonly weOwe: number;
+    readonly theyOwe: number;
+    readonly late: number;
+    readonly overdue: number;
+  },
+  now: number,
+) {
+  const invoices = yield* owedInvoices({ orgId, now, partyId });
+  const zone = yield* ownerZone(orgId);
+  return {
+    tasksWeOwe: party.weOwe,
+    tasksTheyOwe: party.theyOwe,
+    tasksWeOweLate: party.late,
+    tasksTheyOweLate: party.overdue,
+    money: {
+      unpaid: addUp(invoices.map((one) => one.balance)).map(formatMoney),
+      overdue: addUp(invoices.filter((one) => one.overdue).map((one) => one.balance)).map(
+        formatMoney,
+      ),
+      invoices: invoices.map(
+        (one) =>
+          `${one.key}: ${formatMoney(one.balance)} ${
+            one.dueAt === null
+              ? "unpaid, no due date"
+              : one.overdue
+                ? `overdue, ${one.daysOverdue} days past due`
+                : `due ${dayIn(one.dueAt, zone)}`
+          }`,
+      ),
+    },
+  };
+});
+
+const MAILED_LISTS: ReadonlySet<string> = new Set(["invoices", "quotes", "receipts", "clients"]);
+/** What Kin mailed about a document, or to a client's contacts and with its documents. */
+const mailedFor = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  row: { readonly recordId: string; readonly registerId: string },
+) {
+  if (!MAILED_LISTS.has(row.registerId)) return [];
+  if (row.registerId !== "clients") return yield* sentMail({ orgId, recordIds: [row.recordId] });
+  const sql = yield* SqlClient.SqlClient;
+  const related = yield* sql<{ recordId: string; email: string | null }>`SELECT record_id AS
+      "recordId", json_extract(fields_json, '$.email') AS email
+    FROM kin_records WHERE org_id = ${orgId} AND party_id = ${row.recordId}
+      AND register_id IN ('invoices', 'quotes', 'receipts', 'contacts')
+    ORDER BY record_id`;
+  return yield* sentMail({
+    orgId,
+    recordIds: related.map((one) => one.recordId),
+    addresses: related.flatMap((one) => (typeof one.email === "string" ? [one.email] : [])),
+  });
+});
 const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.Type) {
   const records = yield* KinRecords;
   const team = yield* viewOf(lead);
@@ -1208,20 +1326,17 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
     list === "goals"
       ? (yield* goalsNow(lead.orgId, now, { money: true })).goals.find((one) => one.key === row.key)
       : undefined;
+  const mailed = yield* mailedFor(lead.orgId, row);
   return {
     ...rowFor(view, row, now),
+    ...(mailed.length === 0 ? {} : { mailed }),
     ...(goal === undefined ? {} : { progress: goalLine(goal) }),
     ...(specChanged ? { specChanged: true as const } : {}),
     ...(project === undefined ? {} : { plan: yield* projectRead(row, now, name) }),
     ...(page === undefined
       ? {}
       : {
-          owed: {
-            weOwe: page.party.weOwe,
-            theyOwe: page.party.theyOwe,
-            late: page.party.late,
-            overdue: page.party.overdue,
-          },
+          owed: yield* clientOwed(lead.orgId, row.recordId, page.party, now),
           contacts: (yield* records.query(lead.orgId, {
             list: "contacts",
             partyId: row.recordId,
@@ -1279,6 +1394,25 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
   };
 });
 export const get = leadTool("KinWorkTools.get", runGet);
+
+/**
+ * When one recorded already done ended: the day given, else its due day once past, else the
+ * client's last contact. Never the moment it was typed in, so a client long quiet reads so.
+ */
+const finishedAt = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  row: typeof CreateRow.Type,
+  partyId: string | null,
+  dueAt: number | undefined,
+) {
+  if (row.state !== "done" && row.state !== "dropped") return undefined;
+  const now = yield* Clock.currentTimeMillis;
+  if (row.finishedOn !== undefined)
+    return Math.min(now, endOfDay(row.finishedOn, yield* ownerZone(orgId)));
+  if (dueAt !== undefined && dueAt <= now) return dueAt;
+  if (partyId === null) return undefined;
+  return (yield* lastContacts(orgId, [partyId], now)).get(partyId);
+});
 
 const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateInput.Type) {
   yield* admitted(lead, "record_create", input);
@@ -1341,6 +1475,12 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
     const goal = yield* goalFields(row);
     const fields = { ...fieldsFrom(row), ...spineSet, ...goal };
     const inProject = projectId !== undefined ? projectId : spine.projectId;
+    const closedAt = yield* finishedAt(
+      lead.orgId,
+      row,
+      partyId ?? null,
+      "dueAt" in due && typeof due.dueAt === "number" ? due.dueAt : undefined,
+    );
     const { row: stored, created } = yield* records.create(lead.orgId, writer, {
       list,
       originKey,
@@ -1357,6 +1497,7 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
       ...(row.state === undefined ? {} : { state: row.state }),
       ...(waitingOn === undefined ? {} : { waitingOn }),
       ...due,
+      ...(closedAt === undefined ? {} : { closedAt }),
       ...money,
       ...spine.at,
       ...(row.notes === undefined ? {} : { notes: row.notes }),

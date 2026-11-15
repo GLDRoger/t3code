@@ -141,9 +141,9 @@ it.effect("starts configured Kin with the real prompt and the runner's pinned me
   }).pipe(provideDeterministicTestRuntime),
 );
 
-it.effect("leaves unconfigured Kin silent and inert without building its dependencies", () =>
+it.effect("unconfigured Kin builds no runner and says once in the log why agents can't run", () =>
   Effect.gen(function* () {
-    const entries: Array<unknown> = [];
+    const entries: Array<{ readonly message: unknown }> = [];
     yield* Layer.build(KinLead.layerServer).pipe(
       Effect.provide(
         Layer.mergeAll(
@@ -153,7 +153,10 @@ it.effect("leaves unconfigured Kin silent and inert without building its depende
         ),
       ),
     );
-    assert.deepStrictEqual(entries, []);
+    assert.deepStrictEqual(
+      entries.map((entry) => String(entry.message)),
+      ["Kin agents can't run: no memory repository is set (KIN_MEMORY_REPOSITORIES)"],
+    );
   }).pipe(Effect.provide(Layer.mergeAll(harness(), external)), provideDeterministicTestRuntime),
 );
 
