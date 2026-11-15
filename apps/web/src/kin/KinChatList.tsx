@@ -44,8 +44,8 @@ import { KinAvatar } from "./KinAvatar";
 import { kinClient } from "./kinClient";
 import { ApproveOnPhone } from "./KinCards";
 import { KinMemoryEntry } from "./KinMemoryView";
+import { KinPlaceEntries } from "./KinPlaceEntries";
 import { KinTeamEntry } from "./KinTeamView";
-import { KinWorkEntry } from "./KinWorkView";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { useNowMinuteMs } from "./useKinClock";
 import { KinStandInLine } from "./KinStandInLine";
@@ -83,7 +83,6 @@ export function KinChatList() {
   const matchRoute = useMatchRoute();
   const memoryOpen = matchRoute({ to: "/kin/$environmentId/$orgId/memory" }) !== false;
   const teamOpen = matchRoute({ to: "/kin/$environmentId/$orgId/team" }) !== false;
-  const workOpen = matchRoute({ to: "/kin/$environmentId/$orgId/work" }) !== false;
   if (state._tag === "loading") {
     return (
       <div className="flex flex-col gap-1" role="status" aria-label="Loading chats">
@@ -151,10 +150,9 @@ export function KinChatList() {
       />
       {mine === null ? null : (
         <>
-          <KinWorkEntry
+          <KinPlaceEntries
             environmentId={mine.environmentId}
             orgId={mine.orgId}
-            active={workOpen}
             onOpen={closeSidebar}
           />
           <KinMemoryEntry

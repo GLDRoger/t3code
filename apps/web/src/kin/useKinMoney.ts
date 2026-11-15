@@ -67,7 +67,7 @@ const refreshKinLists = (target: KinWorkTarget) => {
 };
 
 /** Reads again when Work says something changed; `seq` is null while that isn't known. */
-function useRereadOnChange(seq: number | null, reread: () => void) {
+export function useRereadOnChange(seq: number | null, reread: () => void) {
   const seen = useRef(seq);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the host's figures again when the host announces a change to Work
   useEffect(() => {

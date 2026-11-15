@@ -12,18 +12,25 @@ import {
   type KinSearchHitView,
   type KinSearchState,
 } from "@t3tools/client-runtime/kin/kinDocs";
+import {
+  KIN_LISTS,
+  kinListsIndex,
+  type KinListIndexRow,
+} from "@t3tools/client-runtime/kin/kinLists";
 import { KIN_WORK_STALE } from "@t3tools/client-runtime/kin/kinWork";
-import type { KinDocRow, KinRecordKey } from "@t3tools/contracts";
+import { KIN_WORK_HOME, kinPlaceLists } from "@t3tools/client-runtime/kin/kinWorkHome";
+import type { KinDocRow, KinListDefinition, KinListId, KinRecordKey } from "@t3tools/contracts";
 import { LegendList } from "@legendapp/list/react";
+import { MessageSquareIcon, TableIcon } from "lucide-react";
 import { useState } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
-import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { cn } from "../lib/utils";
 import {
+  KinFilter,
   KinWorkNotice,
   KinWorkPrivateMark,
   KinWorkRowSkeletons,
@@ -144,17 +151,39 @@ export function KinSearchHits(props: {
 }
 
 type Item =
-  | { readonly type: "group"; readonly id: string; readonly title: string; readonly count: number }
-  | { readonly type: "doc"; readonly id: string; readonly row: KinDocRow };
+  | {
+      readonly type: "group";
+      readonly id: string;
+      readonly title: string;
+      readonly count: number;
+      readonly lists?: true;
+    }
+  | { readonly type: "doc"; readonly id: string; readonly row: KinDocRow }
+  | { readonly type: "list"; readonly id: string; readonly row: KinListIndexRow };
 
 const DOCS_ONLY = ["docs"] as const;
+type Shown = "all" | "docs" | "lists";
+const SHOWN: ReadonlyArray<{ readonly value: Shown; readonly label: string }> = [
+  { value: "all", label: "Docs and lists" },
+  { value: "docs", label: KIN_DOCS.title },
+  { value: "lists", label: KIN_LISTS.title },
+];
+const CURRENT = "current";
+const ARCHIVED = "archived";
 
-/** Every doc under its client, project or keeper, with a search over what they say. */
+/**
+ * Every doc under its client, project or keeper, with the lists people keep (renewals, hiring,
+ * equipment) among them, and a search over what the docs say.
+ */
 export function KinDocsList(
   props: KinWorkTarget & {
     readonly directory: KinWorkDirectory;
     readonly stale: boolean;
     readonly onOpen: (key: KinRecordKey, section?: string) => void;
+    /** Every list there is, put-away ones included; null where lists can't be read. */
+    readonly lists: ReadonlyArray<KinListDefinition> | null;
+    readonly onOpenList: (list: KinListId) => void;
+    readonly onAskList: (() => void) | null;
   },
 ) {
   const { names } = props.directory;
@@ -163,16 +192,45 @@ export function KinDocsList(
   const { state, list } = useKinDocsList(props, props.stale ? null : (live?.seq ?? null));
   const { state: found, search } = useKinSearch(props, DOCS_ONLY);
   const [by, setBy] = useState<KinDocGrouping>("client");
+  const [shown, setShown] = useState<Shown>("all");
   const { filter } = state;
-  const searching = filter.text.trim() !== "";
-  // Typed words narrow the list on the host, so every doc is looked through, not just these rows.
-  const items: ReadonlyArray<Item> = kinDocGroups(state.records, by, names).flatMap(
-    (group): ReadonlyArray<Item> => [
-      { type: "group", id: `group:${group.id}`, title: group.title, count: group.rows.length },
-      ...group.rows.map((row): Item => ({ type: "doc", id: row.recordId, row })),
-    ],
+  const text = filter.text.trim().toLowerCase();
+  const searching = text !== "";
+  const index = kinListsIndex(kinPlaceLists(props.lists ?? []));
+  const lists = (filter.archived ? index.archived : index.active).filter((row) =>
+    row.name.toLowerCase().includes(text),
   );
-  const footer = kinDocsFooter(state.records.length, state.total, state.more);
+  const listItems: ReadonlyArray<Item> =
+    shown === "docs" || props.lists === null || (lists.length === 0 && props.onAskList === null)
+      ? []
+      : [
+          {
+            type: "group",
+            id: "group:lists",
+            title: KIN_LISTS.title,
+            count: lists.length,
+            lists: true,
+          },
+          ...lists.map((row): Item => ({ type: "list", id: `list:${row.list}`, row })),
+        ];
+  // Typed words narrow the list on the host, so every doc is looked through, not just these rows.
+  const docItems: ReadonlyArray<Item> =
+    shown === "lists"
+      ? []
+      : kinDocGroups(state.records, by, names).flatMap((group): ReadonlyArray<Item> => [
+          { type: "group", id: `group:${group.id}`, title: group.title, count: group.rows.length },
+          ...group.rows.map((row): Item => ({ type: "doc", id: row.recordId, row })),
+        ]);
+  const items = [...listItems, ...docItems];
+  const footer =
+    shown === "lists" ? null : kinDocsFooter(state.records.length, state.total, state.more);
+  const chip = [
+    shown === "all" ? null : SHOWN.find((held) => held.value === shown)?.label,
+    filter.archived ? KIN_DOCS.archived : null,
+    by === "client"
+      ? null
+      : `By ${KIN_DOC_GROUPINGS.find((held) => held.id === by)?.label.toLowerCase()}`,
+  ].filter((part) => part != null);
 
   if (refused) return <KinWorkNotice {...KIN_DOCS.unavailable} />;
   return (
@@ -200,39 +258,50 @@ export function KinDocsList(
               search.setText(event.currentTarget.value);
             }}
           />
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-            <ToggleGroup
-              variant="pill"
-              size="sm"
-              aria-label="Show"
-              value={[filter.archived ? "archived" : "current"]}
-              onValueChange={(value) => {
-                if (value[0] === undefined) return;
-                const archived = value[0] === "archived";
-                list.setFilter({ ...filter, archived });
-                search.setClosed(archived);
-              }}
-            >
-              <Toggle value="current">{KIN_DOCS.current}</Toggle>
-              <Toggle value="archived">{KIN_DOCS.archived}</Toggle>
-            </ToggleGroup>
-            <ToggleGroup
-              variant="pill"
-              size="sm"
-              aria-label="Group by"
-              value={[by]}
-              onValueChange={(value) => {
-                const next = KIN_DOC_GROUPINGS.find((held) => held.id === value[0]);
-                if (next !== undefined) setBy(next.id);
-              }}
-            >
-              {KIN_DOC_GROUPINGS.map((held) => (
-                <Toggle key={held.id} value={held.id}>
-                  {held.label}
-                </Toggle>
-              ))}
-            </ToggleGroup>
-          </div>
+          <KinFilter
+            chip={chip.length === 0 ? null : chip.join(" · ")}
+            onClear={() => {
+              setShown("all");
+              setBy("client");
+              list.setFilter({ ...filter, archived: false });
+              search.setClosed(false);
+            }}
+            groups={[
+              ...(props.lists === null
+                ? []
+                : [
+                    {
+                      label: KIN_WORK_HOME.show,
+                      value: shown,
+                      options: SHOWN,
+                      onChange: (value: string) =>
+                        setShown(SHOWN.find((held) => held.value === value)?.value ?? "all"),
+                    },
+                  ]),
+              {
+                label: "Which",
+                value: filter.archived ? ARCHIVED : CURRENT,
+                options: [
+                  { value: CURRENT, label: KIN_DOCS.current },
+                  { value: ARCHIVED, label: KIN_DOCS.archived },
+                ],
+                onChange: (value) => {
+                  const archived = value === ARCHIVED;
+                  list.setFilter({ ...filter, archived });
+                  search.setClosed(archived);
+                },
+              },
+              {
+                label: "Group docs by",
+                value: by,
+                options: KIN_DOC_GROUPINGS.map((held) => ({ value: held.id, label: held.label })),
+                onChange: (value) => {
+                  const next = KIN_DOC_GROUPINGS.find((held) => held.id === value);
+                  if (next !== undefined) setBy(next.id);
+                },
+              },
+            ]}
+          />
         </div>
       }
       ListEmptyComponent={
@@ -254,9 +323,11 @@ export function KinDocsList(
             <KinWorkNotice
               {...(searching
                 ? KIN_DOCS.noMatch
-                : filter.archived
-                  ? KIN_DOCS.emptyArchived
-                  : KIN_DOCS.empty)}
+                : shown === "lists"
+                  ? KIN_LISTS.none
+                  : filter.archived
+                    ? KIN_DOCS.emptyArchived
+                    : KIN_DOCS.empty)}
             />
           )}
         </div>
@@ -280,7 +351,7 @@ export function KinDocsList(
             </div>
           )}
           {/* The passages that match, each opening its doc at that section. */}
-          {searching && found.hits !== null && found.hits.length > 0 ? (
+          {searching && shown !== "lists" && found.hits !== null && found.hits.length > 0 ? (
             <div className="mx-auto w-full max-w-3xl px-4 pt-4">
               <h2 className="px-2 pb-1 text-xs font-medium text-muted-foreground">
                 {KIN_DOCS.passages}
@@ -297,10 +368,26 @@ export function KinDocsList(
       }
       renderItem={({ item }) =>
         item.type === "group" ? (
-          <div className="mx-auto w-full max-w-3xl px-6 pt-4 pb-1">
+          <div className="mx-auto flex min-h-10 w-full max-w-3xl items-end justify-between gap-2 px-6 pt-4 pb-1">
             <h2 className="text-xs font-medium text-muted-foreground">
               {item.title} · {item.count}
             </h2>
+            {item.lists === true && props.onAskList !== null ? (
+              <Button size="xs" variant="ghost" onClick={props.onAskList}>
+                <MessageSquareIcon />
+                {KIN_LISTS.ask}
+              </Button>
+            ) : null}
+          </div>
+        ) : item.type === "list" ? (
+          <div className="mx-auto w-full max-w-3xl border-b border-border/60 px-4 py-1">
+            <button type="button" onClick={() => props.onOpenList(item.row.list)} className={ROW}>
+              <TableIcon aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span className="truncate text-sm text-foreground">{item.row.name}</span>
+                <span className="truncate text-xs text-muted-foreground">{item.row.line}</span>
+              </span>
+            </button>
           </div>
         ) : (
           <div className="mx-auto w-full max-w-3xl border-b border-border/60 px-4 py-1">

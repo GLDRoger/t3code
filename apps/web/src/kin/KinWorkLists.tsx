@@ -1,5 +1,4 @@
 import { useAtomValue } from "@effect/atom-react";
-import { KIN_DATES } from "@t3tools/client-runtime/kin/kinDates";
 import {
   KIN_LISTS,
   KIN_LIST_LABEL_MAX,
@@ -16,7 +15,6 @@ import {
   kinListNothing,
   kinListRow,
   kinListStateLabel,
-  kinListsIndex,
   type KinListFilter,
   type KinListRowView,
 } from "@t3tools/client-runtime/kin/kinLists";
@@ -28,14 +26,7 @@ import type {
   KinListId,
   KinRecordKey,
 } from "@t3tools/contracts";
-import {
-  CalendarDaysIcon,
-  ChevronRightIcon,
-  MessageSquareIcon,
-  Settings2Icon,
-  TableIcon,
-  XIcon,
-} from "lucide-react";
+import { Settings2Icon, TableIcon, XIcon } from "lucide-react";
 import { useId, useState } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
@@ -73,147 +64,15 @@ import { KinWorkNotice, KinWorkRowSkeletons, KinWorkSection } from "./KinWorkPar
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
 import {
-  kinListsOf,
-  useKinAskAgent,
   useKinListChanges,
   useKinListContext,
   useKinListEntries,
   useKinLists,
-  type KinListsHandle,
 } from "./useKinMoney";
 import { useKinWorkChoices, type KinWorkDirectory, type KinWorkTarget } from "./useKinWork";
 
 const ANY = "any";
 const NONE = "none";
-const ROW =
-  "flex w-full items-center gap-3 rounded-md px-2 py-2 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset";
-
-/** Every list an agent set up, and the one view that looks across all of them by date. */
-export function KinWorkListsIndex(
-  props: KinWorkTarget & {
-    readonly live: KinWorkLive;
-    readonly stale: boolean;
-    readonly lists: KinListsHandle;
-    readonly onOpenList: (list: KinListId) => void;
-    readonly onDates: () => void;
-  },
-) {
-  const [showArchived, setShowArchived] = useState(false);
-  const all = useKinLists(props, {
-    enabled: showArchived,
-    archived: true,
-    seq: props.stale ? null : props.live.seq,
-  });
-  const agent = useKinAskAgent(props);
-  const { state } = props.lists;
-  if (state._tag === "refused") return <KinWorkNotice {...KIN_LISTS.onlyOwner} />;
-  if (state._tag === "failed" || state._tag === "gone") {
-    return (
-      <div className="mx-auto flex w-full max-w-3xl flex-col items-start gap-3 p-4">
-        <Alert variant="error">
-          <AlertDescription>{KIN_LISTS.loadFailed}. Check your connection.</AlertDescription>
-        </Alert>
-        <Button size="sm" variant="outline" onClick={props.lists.refresh}>
-          Retry
-        </Button>
-      </div>
-    );
-  }
-  if (state._tag === "loading") {
-    return (
-      <div className="mx-auto w-full max-w-3xl p-4" role="status" aria-label="Loading lists">
-        <KinWorkRowSkeletons />
-      </div>
-    );
-  }
-  const index = kinListsIndex(state.value.lists);
-  const archived = showArchived ? kinListsIndex(kinListsOf(all)).archived : [];
-  const ask =
-    agent === null ? null : (
-      <Button variant="outline" size="sm" onClick={() => agent.ask(KIN_LISTS.askMessage)}>
-        <MessageSquareIcon />
-        {KIN_LISTS.ask}
-      </Button>
-    );
-  return (
-    <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-8 scrollbar-gutter-both">
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 pt-3">
-        {props.stale ? (
-          <p role="status" className="text-xs text-muted-foreground">
-            {KIN_WORK_STALE}
-          </p>
-        ) : null}
-        <button type="button" onClick={props.onDates} className={ROW}>
-          <CalendarDaysIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <span className="text-sm text-foreground">{KIN_DATES.title}</span>
-            <span className="truncate text-xs text-muted-foreground">{KIN_DATES.summary}</span>
-          </span>
-          <ChevronRightIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-        </button>
-        {index.active.length === 0 ? (
-          <KinWorkNotice {...KIN_LISTS.none} {...(ask === null ? {} : { action: ask })} />
-        ) : (
-          <KinWorkSection title={KIN_LISTS.title} action={ask}>
-            <ul className="flex flex-col">
-              {index.active.map((row) => (
-                <li key={row.list}>
-                  <button type="button" onClick={() => props.onOpenList(row.list)} className={ROW}>
-                    <span className="min-w-0 flex-1 truncate text-sm text-foreground">
-                      {row.name}
-                    </span>
-                    <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-                      {row.line}
-                    </span>
-                    <ChevronRightIcon
-                      aria-hidden
-                      className="size-4 shrink-0 text-muted-foreground"
-                    />
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </KinWorkSection>
-        )}
-        {showArchived ? (
-          <KinWorkSection title={KIN_LISTS.archived}>
-            {all.state._tag === "loading" ? (
-              <KinWorkRowSkeletons />
-            ) : archived.length === 0 ? (
-              <p className="px-2 text-sm text-muted-foreground">Nothing has been put away.</p>
-            ) : (
-              <ul className="flex flex-col">
-                {archived.map((row) => (
-                  <li key={row.list}>
-                    <button
-                      type="button"
-                      onClick={() => props.onOpenList(row.list)}
-                      className={ROW}
-                    >
-                      <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">
-                        {row.name}
-                      </span>
-                      <ChevronRightIcon
-                        aria-hidden
-                        className="size-4 shrink-0 text-muted-foreground"
-                      />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </KinWorkSection>
-        ) : (
-          <div>
-            <Button size="xs" variant="ghost" onClick={() => setShowArchived(true)}>
-              {KIN_LISTS.showArchived}
-            </Button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
 
 /** One list, found among all of them: its page once it is known, or why there isn't one. */
 export function KinWorkListPage(
@@ -251,7 +110,7 @@ export function KinWorkListPage(
         title={state._tag === "ready" ? "This list isn't here" : KIN_LISTS.loadFailed}
         detail={
           state._tag === "ready"
-            ? "It may have been renamed. Open Lists to see what there is."
+            ? "It may have been renamed. Open Docs to see the lists there are."
             : "Check your connection and try again."
         }
         action={
@@ -260,7 +119,7 @@ export function KinWorkListPage(
             variant="outline"
             onClick={state._tag === "ready" ? props.onGone : lists.refresh}
           >
-            {state._tag === "ready" ? "Open Lists" : "Retry"}
+            {state._tag === "ready" ? "Open Docs" : "Retry"}
           </Button>
         }
       />

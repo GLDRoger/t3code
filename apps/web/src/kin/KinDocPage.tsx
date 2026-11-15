@@ -7,10 +7,9 @@ import {
   kinDocVersionView,
 } from "@t3tools/client-runtime/kin/kinDocs";
 import { KIN_DOC_CHANGES } from "@t3tools/client-runtime/kin/kinDocChanges";
-import { KIN_WORK_TITLE } from "@t3tools/client-runtime/kin/kinWork";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { KinDocDetail, KinRecordKey } from "@t3tools/contracts";
-import { ArrowLeftIcon } from "lucide-react";
+import { ArrowLeftIcon, XIcon } from "lucide-react";
 import { useState } from "react";
 
 import { DiffWorkerPoolProvider } from "../components/DiffWorkerPoolProvider";
@@ -80,8 +79,13 @@ export function KinDocPage(
     readonly onGo: (where: KinDocWhere | null) => void;
     /** The address of this doc, or one section of it, for Copy link. */
     readonly linkTo: (section: string | null) => string;
+    /** The place the doc was opened from, which Back returns to. */
+    readonly placeTitle: string;
+    /** Beside its place's list, under that place's header, rather than the whole page. */
+    readonly inPane: boolean;
   },
 ) {
+  const { placeTitle, inPane } = props;
   const { where, onGo } = props;
   const { environmentId, orgId } = props;
   const { names } = props.directory;
@@ -132,23 +136,29 @@ export function KinDocPage(
 
   return (
     <>
-      <WorkspacePageHeader electron={isElectron}>
-        <Button
-          size="icon-sm"
-          variant="ghost"
-          aria-label={comparing === undefined ? `Back to ${KIN_DOCS.title}` : "Back to the doc"}
-          className="md:hidden"
-          onClick={() => onGo(comparing === undefined ? null : { doc: key })}
-        >
-          <ArrowLeftIcon />
-        </Button>
-        <WorkspaceBreadcrumb ariaLabel={KIN_WORK_TITLE}>
-          <WorkspaceBreadcrumbItem className="max-md:hidden">
-            <Button size="xs" variant="ghost" onClick={() => onGo(null)}>
-              {KIN_DOCS.title}
-            </Button>
-          </WorkspaceBreadcrumbItem>
-          <WorkspaceBreadcrumbSeparator className="max-md:hidden" />
+      <WorkspacePageHeader electron={isElectron && !inPane} titlebarInset={!inPane}>
+        {inPane && comparing === undefined ? null : (
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            aria-label={comparing === undefined ? `Back to ${placeTitle}` : "Back to the doc"}
+            className={inPane ? undefined : "md:hidden"}
+            onClick={() => onGo(comparing === undefined ? null : { doc: key })}
+          >
+            <ArrowLeftIcon />
+          </Button>
+        )}
+        <WorkspaceBreadcrumb ariaLabel={KIN_DOCS.title}>
+          {inPane ? null : (
+            <>
+              <WorkspaceBreadcrumbItem className="max-md:hidden">
+                <Button size="xs" variant="ghost" onClick={() => onGo(null)}>
+                  {placeTitle}
+                </Button>
+              </WorkspaceBreadcrumbItem>
+              <WorkspaceBreadcrumbSeparator className="max-md:hidden" />
+            </>
+          )}
           {comparing === undefined ? (
             <WorkspaceBreadcrumbItem current>
               <span className="truncate">{doc?.title ?? key}</span>
@@ -168,6 +178,11 @@ export function KinDocPage(
           )}
         </WorkspaceBreadcrumb>
         <div ref={setActions} className="ms-auto flex items-center gap-1" />
+        {inPane ? (
+          <Button size="icon-sm" variant="ghost" aria-label="Close doc" onClick={() => onGo(null)}>
+            <XIcon />
+          </Button>
+        ) : null}
       </WorkspacePageHeader>
       {problem === null && undo === null ? null : (
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-2 px-6 pt-3">
@@ -210,7 +225,7 @@ export function KinDocPage(
           {...KIN_DOCS.gone}
           action={
             <Button size="sm" variant="outline" onClick={() => onGo(null)}>
-              Open {KIN_DOCS.title}
+              Back to {placeTitle}
             </Button>
           }
         />

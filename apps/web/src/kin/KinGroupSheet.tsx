@@ -225,9 +225,10 @@ export function KinGroupSheet(props: {
                 variant="outline"
                 className="self-start"
                 disabled={busy}
-                onClick={() =>
-                  appAtomRegistry.set(kinGroupFormAtom, { environmentId, orgId, chatId })
-                }
+                onClick={() => {
+                  props.onOpenChange(false);
+                  appAtomRegistry.set(kinGroupFormAtom, { environmentId, orgId, chatId });
+                }}
               >
                 Add agents or people
               </Button>
