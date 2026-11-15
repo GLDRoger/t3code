@@ -123,6 +123,8 @@ export const KIN_PROJECTS = {
   specChanged: "Spec changed",
   money: "Money",
   seeAllMoney: "See all in Money",
+  details: "Details",
+  count: (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`,
 };
 
 export const KIN_PROJECT_GONE = {

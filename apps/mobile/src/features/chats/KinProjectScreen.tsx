@@ -39,6 +39,7 @@ import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import {
+  KinFoldSection,
   KinWorkFrame,
   KinWorkLoading,
   KinWorkPrivateMark,
@@ -259,6 +260,16 @@ function KinProjectBody(
               onDismissProblem={() => setProblem(null)}
               onOpenTask={openTask}
               onOpenClient={(to) => openRecord("KinClient", { environmentId, orgId, party: to })}
+              onAddMilestone={
+                canChange && view.state === "open"
+                  ? () =>
+                      navigation.navigate("KinMilestoneForm", {
+                        environmentId,
+                        orgId,
+                        project: view.key,
+                      })
+                  : null
+              }
               privacy={{
                 disabled: !canChange || busy || view.privacy.inherited,
                 onChange: (sensitive) => void change({ sensitive }),
@@ -304,12 +315,14 @@ function KinProjectSummary(props: {
   readonly onDismissProblem: () => void;
   readonly onOpenTask: (key: KinRecordKey) => void;
   readonly onOpenClient: (key: KinRecordKey) => void;
+  readonly onAddMilestone: (() => void) | null;
   readonly privacy: { readonly disabled: boolean; readonly onChange: (on: boolean) => void };
   /** The docs linked to the project. */
   readonly docs: ReactNode;
 }) {
   const { view } = props;
-  const { party, nextDue } = view;
+  const { party } = view;
+  const count = KIN_PROJECTS.count;
   return (
     <View className="gap-5 px-4 pb-2">
       <View className="gap-1 px-2">
@@ -385,36 +398,14 @@ function KinProjectSummary(props: {
             />
           ))
         )}
+        {props.onAddMilestone === null ? null : (
+          <ListActionRow
+            icon="plus"
+            label={KIN_PROJECTS.addMilestone}
+            onPress={props.onAddMilestone}
+          />
+        )}
       </ListSection>
-      {view.people.length === 0 ? null : (
-        <ListSection title={KIN_PROJECTS.people}>
-          {view.people.map((row) => (
-            <ListRowLayout key={row.key} label={row.name} description={row.line} />
-          ))}
-        </ListSection>
-      )}
-      {view.meetings.length === 0 ? null : (
-        <ListSection title={KIN_PROJECTS.meetings}>
-          {view.meetings.map((row) => (
-            <KinWorkTaskRow
-              key={row.key}
-              inset
-              row={row}
-              saving={false}
-              onPress={() => props.onOpenTask(row.key)}
-              onAct={null}
-            />
-          ))}
-        </ListSection>
-      )}
-      {view.money.length === 0 ? null : (
-        <ListSection title={KIN_PROJECTS.money}>
-          {view.money.map((line) => (
-            <ListRowLayout key={line.label} label={line.label} detail={line.value} />
-          ))}
-        </ListSection>
-      )}
-      {props.docs}
       {view.blocked.length === 0 ? null : (
         <ListSection title={KIN_PROJECTS.blocked}>
           {view.blocked.map((row) => (
@@ -427,19 +418,21 @@ function KinProjectSummary(props: {
           ))}
         </ListSection>
       )}
-      {nextDue === null ? null : (
-        <ListSection title={KIN_PROJECTS.nextDue}>
-          <KinWorkTaskRow
-            inset
-            row={nextDue}
-            saving={false}
-            onPress={() => props.onOpenTask(nextDue.key)}
-            onAct={null}
-          />
-        </ListSection>
+      {view.money.length === 0 ? null : (
+        <KinFoldSection
+          title={KIN_PROJECTS.money}
+          summary={view.money.map((line) => `${line.label} ${line.value}`)[0] ?? null}
+        >
+          {view.money.map((line) => (
+            <ListRowLayout key={line.label} label={line.label} detail={line.value} />
+          ))}
+        </KinFoldSection>
       )}
       {view.pullRequests.length === 0 ? null : (
-        <ListSection title={KIN_PROJECTS.pullRequests}>
+        <KinFoldSection
+          title={KIN_PROJECTS.pullRequests}
+          summary={String(view.pullRequests.length)}
+        >
           {view.pullRequests.map((pull) => {
             const { href } = pull;
             return href === null ? (
@@ -460,46 +453,76 @@ function KinProjectSummary(props: {
               />
             );
           })}
-        </ListSection>
+        </KinFoldSection>
       )}
-      <View className="gap-2 px-2">
-        <Text textRole="footnote" className="text-foreground-muted">
-          {KIN_PROJECTS.changed}
-        </Text>
-        {view.changed.length === 0 ? (
-          <Text textRole="footnote" className="text-foreground-muted">
-            {KIN_PROJECTS.nothingChanged}
-          </Text>
-        ) : (
-          <KinWorkTimelineLines lines={view.changed} onOpenTask={props.onOpenTask} />
+      {view.people.length === 0 ? null : (
+        <KinFoldSection
+          title={KIN_PROJECTS.people}
+          summary={count(view.people.length, "person", "people")}
+        >
+          {view.people.map((row) => (
+            <ListRowLayout key={row.key} label={row.name} description={row.line} />
+          ))}
+        </KinFoldSection>
+      )}
+      {view.meetings.length === 0 ? null : (
+        <KinFoldSection
+          title={KIN_PROJECTS.meetings}
+          summary={count(view.meetings.length, "meeting", "meetings")}
+        >
+          {view.meetings.map((row) => (
+            <KinWorkTaskRow
+              key={row.key}
+              inset
+              row={row}
+              saving={false}
+              onPress={() => props.onOpenTask(row.key)}
+              onAct={null}
+            />
+          ))}
+        </KinFoldSection>
+      )}
+      {props.docs}
+      <KinFoldSection
+        title={KIN_PROJECTS.changed}
+        summary={
+          view.changed.length === 0
+            ? KIN_PROJECTS.nothingChanged
+            : count(view.changed.length, "change", "changes")
+        }
+      >
+        {view.changed.length === 0 ? null : (
+          <View className="gap-2 bg-grouped-card px-4 py-3">
+            <KinWorkTimelineLines lines={view.changed} onOpenTask={props.onOpenTask} />
+            {view.changedMore === null ? null : (
+              <Text textRole="footnote" className="text-foreground-muted">
+                {view.changedMore}
+              </Text>
+            )}
+          </View>
         )}
-        {view.changedMore === null ? null : (
-          <Text textRole="footnote" className="text-foreground-muted">
-            {view.changedMore}
-          </Text>
+      </KinFoldSection>
+      <KinFoldSection title={KIN_PROJECTS.details} summary={null}>
+        {view.repos.length === 0 ? null : (
+          <View className="gap-2 bg-grouped-card px-4 py-3">
+            <Text textRole="footnote" className="text-foreground-muted">
+              {KIN_PROJECTS.repos}
+            </Text>
+            <Text textRole="body" selectable className="text-foreground">
+              {view.repos.join("\n")}
+            </Text>
+          </View>
         )}
-      </View>
-      {view.repos.length === 0 ? null : (
-        <View className="gap-2 px-2">
-          <Text textRole="footnote" className="text-foreground-muted">
-            {KIN_PROJECTS.repos}
-          </Text>
-          <Text textRole="body" selectable className="text-foreground">
-            {view.repos.join("\n")}
-          </Text>
-        </View>
-      )}
-      {view.notes === null ? null : (
-        <View className="gap-2 px-2">
-          <Text textRole="footnote" className="text-foreground-muted">
-            {KIN_PROJECTS.notes}
-          </Text>
-          <Text textRole="body" selectable className="text-foreground">
-            {view.notes}
-          </Text>
-        </View>
-      )}
-      <ListSection>
+        {view.notes === null ? null : (
+          <View className="gap-2 bg-grouped-card px-4 py-3">
+            <Text textRole="footnote" className="text-foreground-muted">
+              {KIN_PROJECTS.notes}
+            </Text>
+            <Text textRole="body" selectable className="text-foreground">
+              {view.notes}
+            </Text>
+          </View>
+        )}
         <ListToggleRow
           icon="lock"
           label={KIN_PROJECTS.privateLabel}
@@ -508,7 +531,7 @@ function KinProjectSummary(props: {
           disabled={props.privacy.disabled}
           onValueChange={props.privacy.onChange}
         />
-      </ListSection>
+      </KinFoldSection>
       <Text textRole="footnote" className="px-2 text-foreground-muted">
         {KIN_PROJECTS.tasks}
       </Text>
