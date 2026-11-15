@@ -1,11 +1,7 @@
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
-import {
-  AuthOrchestrationOperateScope,
-  AuthSettingsWriteScope,
-  EnvironmentAuthorizationError,
-} from "./auth.ts";
+import { EnvironmentAuthorizationError, AuthKinChatScope } from "./auth.ts";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinAgentId, KinChatError, KinOrgId, KinWidgetId } from "./kinChat.ts";
 import { KinMemoryItemId, MemoryItemKind, MemoryTrust } from "./kinLead.ts";
@@ -185,10 +181,10 @@ export const KinMemoryRpcs = [
 ] as const;
 
 export const KIN_MEMORY_RPC_SCOPES = {
-  [KIN_MEMORY_WS_METHODS.undo]: AuthOrchestrationOperateScope,
+  [KIN_MEMORY_WS_METHODS.undo]: AuthKinChatScope,
   // What the leads remember is the owner's, and who may know it is an owner setting.
-  [KIN_MEMORY_WS_METHODS.list]: AuthSettingsWriteScope,
-  [KIN_MEMORY_WS_METHODS.setVisibility]: AuthSettingsWriteScope,
-  [KIN_MEMORY_WS_METHODS.confirmSuggestions]: AuthSettingsWriteScope,
-  [KIN_MEMORY_WS_METHODS.forget]: AuthSettingsWriteScope,
+  [KIN_MEMORY_WS_METHODS.list]: AuthKinChatScope,
+  [KIN_MEMORY_WS_METHODS.setVisibility]: AuthKinChatScope,
+  [KIN_MEMORY_WS_METHODS.confirmSuggestions]: AuthKinChatScope,
+  [KIN_MEMORY_WS_METHODS.forget]: AuthKinChatScope,
 } as const;

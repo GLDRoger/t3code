@@ -60,6 +60,7 @@ import { Route as ChatDraftDraftIdRouteImport } from './routes/_chat.draft.$draf
 import { Route as ChatEnvironmentIdThreadIdRouteImport } from './routes/_chat.$environmentId.$threadId'
 import { Route as ChatKinEnvironmentIdOrgIdWorkRouteImport } from './routes/_chat.kin.$environmentId.$orgId.work'
 import { Route as ChatKinEnvironmentIdOrgIdTeamRouteImport } from './routes/_chat.kin.$environmentId.$orgId.team'
+import { Route as ChatKinEnvironmentIdOrgIdSettingsRouteImport } from './routes/_chat.kin.$environmentId.$orgId.settings'
 import { Route as ChatKinEnvironmentIdOrgIdMemoryRouteImport } from './routes/_chat.kin.$environmentId.$orgId.memory'
 import { Route as ChatKinEnvironmentIdOrgIdPlacesRouteImport } from './routes/_chat.kin.$environmentId.$orgId._places'
 import { Route as ChatKinEnvironmentIdOrgIdChatIdRouteImport } from './routes/_chat.kin.$environmentId.$orgId.$chatId'
@@ -331,6 +332,12 @@ const ChatKinEnvironmentIdOrgIdTeamRoute =
     path: '/$environmentId/$orgId/team',
     getParentRoute: () => ChatKinRoute,
   } as any)
+const ChatKinEnvironmentIdOrgIdSettingsRoute =
+  ChatKinEnvironmentIdOrgIdSettingsRouteImport.update({
+    id: '/$environmentId/$orgId/settings',
+    path: '/$environmentId/$orgId/settings',
+    getParentRoute: () => ChatKinRoute,
+  } as any)
 const ChatKinEnvironmentIdOrgIdMemoryRoute =
   ChatKinEnvironmentIdOrgIdMemoryRouteImport.update({
     id: '/$environmentId/$orgId/memory',
@@ -426,6 +433,7 @@ export interface FileRoutesByFullPath {
   '/kin/$environmentId/$orgId/$chatId': typeof ChatKinEnvironmentIdOrgIdChatIdRoute
   '/kin/$environmentId/$orgId': typeof ChatKinEnvironmentIdOrgIdPlacesRouteWithChildren
   '/kin/$environmentId/$orgId/memory': typeof ChatKinEnvironmentIdOrgIdMemoryRoute
+  '/kin/$environmentId/$orgId/settings': typeof ChatKinEnvironmentIdOrgIdSettingsRoute
   '/kin/$environmentId/$orgId/team': typeof ChatKinEnvironmentIdOrgIdTeamRoute
   '/kin/$environmentId/$orgId/work': typeof ChatKinEnvironmentIdOrgIdWorkRoute
   '/kin/$environmentId/$orgId/clients': typeof ChatKinEnvironmentIdOrgIdPlacesClientsRoute
@@ -484,6 +492,7 @@ export interface FileRoutesByTo {
   '/kin/$environmentId/$orgId/$chatId': typeof ChatKinEnvironmentIdOrgIdChatIdRoute
   '/kin/$environmentId/$orgId': typeof ChatKinEnvironmentIdOrgIdPlacesRouteWithChildren
   '/kin/$environmentId/$orgId/memory': typeof ChatKinEnvironmentIdOrgIdMemoryRoute
+  '/kin/$environmentId/$orgId/settings': typeof ChatKinEnvironmentIdOrgIdSettingsRoute
   '/kin/$environmentId/$orgId/team': typeof ChatKinEnvironmentIdOrgIdTeamRoute
   '/kin/$environmentId/$orgId/work': typeof ChatKinEnvironmentIdOrgIdWorkRoute
   '/kin/$environmentId/$orgId/clients': typeof ChatKinEnvironmentIdOrgIdPlacesClientsRoute
@@ -545,6 +554,7 @@ export interface FileRoutesById {
   '/_chat/kin/$environmentId/$orgId/$chatId': typeof ChatKinEnvironmentIdOrgIdChatIdRoute
   '/_chat/kin/$environmentId/$orgId/_places': typeof ChatKinEnvironmentIdOrgIdPlacesRouteWithChildren
   '/_chat/kin/$environmentId/$orgId/memory': typeof ChatKinEnvironmentIdOrgIdMemoryRoute
+  '/_chat/kin/$environmentId/$orgId/settings': typeof ChatKinEnvironmentIdOrgIdSettingsRoute
   '/_chat/kin/$environmentId/$orgId/team': typeof ChatKinEnvironmentIdOrgIdTeamRoute
   '/_chat/kin/$environmentId/$orgId/work': typeof ChatKinEnvironmentIdOrgIdWorkRoute
   '/_chat/kin/$environmentId/$orgId/_places/clients': typeof ChatKinEnvironmentIdOrgIdPlacesClientsRoute
@@ -606,6 +616,7 @@ export interface FileRouteTypes {
     | '/kin/$environmentId/$orgId/$chatId'
     | '/kin/$environmentId/$orgId'
     | '/kin/$environmentId/$orgId/memory'
+    | '/kin/$environmentId/$orgId/settings'
     | '/kin/$environmentId/$orgId/team'
     | '/kin/$environmentId/$orgId/work'
     | '/kin/$environmentId/$orgId/clients'
@@ -664,6 +675,7 @@ export interface FileRouteTypes {
     | '/kin/$environmentId/$orgId/$chatId'
     | '/kin/$environmentId/$orgId'
     | '/kin/$environmentId/$orgId/memory'
+    | '/kin/$environmentId/$orgId/settings'
     | '/kin/$environmentId/$orgId/team'
     | '/kin/$environmentId/$orgId/work'
     | '/kin/$environmentId/$orgId/clients'
@@ -724,6 +736,7 @@ export interface FileRouteTypes {
     | '/_chat/kin/$environmentId/$orgId/$chatId'
     | '/_chat/kin/$environmentId/$orgId/_places'
     | '/_chat/kin/$environmentId/$orgId/memory'
+    | '/_chat/kin/$environmentId/$orgId/settings'
     | '/_chat/kin/$environmentId/$orgId/team'
     | '/_chat/kin/$environmentId/$orgId/work'
     | '/_chat/kin/$environmentId/$orgId/_places/clients'
@@ -1104,6 +1117,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatKinEnvironmentIdOrgIdTeamRouteImport
       parentRoute: typeof ChatKinRoute
     }
+    '/_chat/kin/$environmentId/$orgId/settings': {
+      id: '/_chat/kin/$environmentId/$orgId/settings'
+      path: '/$environmentId/$orgId/settings'
+      fullPath: '/kin/$environmentId/$orgId/settings'
+      preLoaderRoute: typeof ChatKinEnvironmentIdOrgIdSettingsRouteImport
+      parentRoute: typeof ChatKinRoute
+    }
     '/_chat/kin/$environmentId/$orgId/memory': {
       id: '/_chat/kin/$environmentId/$orgId/memory'
       path: '/$environmentId/$orgId/memory'
@@ -1185,6 +1205,7 @@ interface ChatKinRouteChildren {
   ChatKinEnvironmentIdOrgIdChatIdRoute: typeof ChatKinEnvironmentIdOrgIdChatIdRoute
   ChatKinEnvironmentIdOrgIdPlacesRoute: typeof ChatKinEnvironmentIdOrgIdPlacesRouteWithChildren
   ChatKinEnvironmentIdOrgIdMemoryRoute: typeof ChatKinEnvironmentIdOrgIdMemoryRoute
+  ChatKinEnvironmentIdOrgIdSettingsRoute: typeof ChatKinEnvironmentIdOrgIdSettingsRoute
   ChatKinEnvironmentIdOrgIdTeamRoute: typeof ChatKinEnvironmentIdOrgIdTeamRoute
   ChatKinEnvironmentIdOrgIdWorkRoute: typeof ChatKinEnvironmentIdOrgIdWorkRoute
 }
@@ -1195,6 +1216,8 @@ const ChatKinRouteChildren: ChatKinRouteChildren = {
   ChatKinEnvironmentIdOrgIdPlacesRoute:
     ChatKinEnvironmentIdOrgIdPlacesRouteWithChildren,
   ChatKinEnvironmentIdOrgIdMemoryRoute: ChatKinEnvironmentIdOrgIdMemoryRoute,
+  ChatKinEnvironmentIdOrgIdSettingsRoute:
+    ChatKinEnvironmentIdOrgIdSettingsRoute,
   ChatKinEnvironmentIdOrgIdTeamRoute: ChatKinEnvironmentIdOrgIdTeamRoute,
   ChatKinEnvironmentIdOrgIdWorkRoute: ChatKinEnvironmentIdOrgIdWorkRoute,
 }

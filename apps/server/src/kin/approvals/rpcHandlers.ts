@@ -6,6 +6,7 @@ import * as Stream from "effect/Stream";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { ApproverKeys, type KinKeyCaller } from "./ApproverKeys.ts";
 import * as Audit from "./Audit.ts";
@@ -39,16 +40,18 @@ export const makeKinApprovalHandlers = Effect.fn("makeKinApprovalHandlers")(func
       caller,
     };
   });
-  // Owner-only (spec section 11): membership in the org is not enough.
+  // Owner-level only (spec section 11): membership in the org is not enough.
   const asOwner = Effect.fn("KinApprovals.asOwner")(function* (orgId: KinOrgId) {
     if (Option.isNone(kin)) return yield* disabled;
     const identity = Context.get(kin.value, KinIdentity);
-    const people = yield* identity.resolve(session);
-    const { owner } = identity;
-    const isOwner = people.some(
-      (person) => person.orgId === owner.orgId && person.personId === owner.personId,
-    );
-    if (owner.orgId !== orgId || !isOwner) {
+    const person = (yield* identity.resolve(session)).find((p) => p.orgId === orgId);
+    const level =
+      person !== undefined &&
+      (yield* ownerLevel(orgId, person.personId).pipe(
+        Effect.provideContext(kin.value),
+        Effect.orElseSucceed(() => false),
+      ));
+    if (identity.owner.orgId !== orgId || !level) {
       return yield* new KinApprovalError({ reason: "not_owner", message: "Owner only." });
     }
     return audit;

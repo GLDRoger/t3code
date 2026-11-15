@@ -78,7 +78,7 @@ type StopError = KinChatError | PersistenceSqlError;
 const notFound = new KinChatError({ reason: "not_found", message: "Kin organization not found." });
 const notAllowed = new KinChatError({
   reason: "not_allowed",
-  message: "Only the organization owner can stop or resume Kin.",
+  message: "Only the owner or a co-owner can stop or resume Kin.",
 });
 const invalid = new KinChatError({ reason: "invalid_state", message: "Invalid Kin stop data." });
 const unavailable = new KinChatError({

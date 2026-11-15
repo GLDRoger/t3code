@@ -46,6 +46,7 @@ import * as KinBudget from "./KinBudget.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import {
   SHARED_THREAD_PREFIX,
+  ownerAlone,
   aborted,
   audienceChanged,
   effectiveAudience,
@@ -947,18 +948,18 @@ const make = Effect.gen(function* () {
               workspaceRoot: pinned.read,
               title: `Kin · ${record.orgName} · ${record.name}`,
             });
-            // The owner's turns share one thread; any other runs on its chat's own, so no
-            // model context crosses chats. Ended threads can't be registered again.
-            const chatId = shared
-              ? ((yield* turnChat(row).pipe(provideSql))?.chatId ?? null)
-              : null;
+            // The owner's own turns share one thread; any other, a co-owner's included, runs on
+            // its chat's own, so no model context crosses chats. Ended threads can't be
+            // registered again.
+            const alone = !shared && (yield* ownerAlone(row).pipe(provideSql));
+            const chatId = alone ? null : ((yield* turnChat(row).pipe(provideSql))?.chatId ?? null);
             const prefix = shared ? SHARED_THREAD_PREFIX : "kin:";
             const [live] = yield* sql<{ threadId: ThreadId }>`SELECT thread_id AS "threadId"
               FROM kin_agent_threads WHERE org_id = ${orgId} AND agent_id = ${agentId}
                 AND ended_at IS NULL AND chat_id IS ${chatId}
                 AND substr(thread_id, 1, ${prefix.length}) = ${prefix}
               ORDER BY started_at DESC, thread_id DESC LIMIT 1`;
-            let existingThreadId = shared && chatId === null ? null : (live?.threadId ?? null);
+            let existingThreadId = !alone && chatId === null ? null : (live?.threadId ?? null);
             if (existingThreadId !== null) {
               const existing = yield* threads
                 .getThreadProjection(existingThreadId)

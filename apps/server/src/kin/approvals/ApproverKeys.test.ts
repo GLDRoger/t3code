@@ -74,7 +74,7 @@ const noticesLayer = Layer.effect(
   ),
 );
 const rolesLayer = Layer.succeed(KinOrgRoles, {
-  isOwner: (ref) => Effect.succeed(ref.orgId === orgId && ref.personId === owner),
+  isOwnerLevel: (ref) => Effect.succeed(ref.orgId === orgId && ref.personId === owner),
 });
 const services = Layer.mergeAll(trustLayer, KeySeal.layerTest(), rolesLayer);
 

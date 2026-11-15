@@ -78,11 +78,28 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const chat = yield* KinChatService;
     const sql = yield* SqlClient.SqlClient;
+    /**
+     * To the owner's chat with the lead, saying who approved when it wasn't him, and to the chat
+     * the request came from when that is a co-owner's own, so whoever asked hears the result.
+     */
     const post = Effect.fnUntraced(function* (action: KinPendingAction, body: string) {
-      const [lead] = yield* sql<{ readonly chatId: string }>`
-        SELECT owner_chat_id AS "chatId" FROM kin_leads
-        WHERE org_id = ${action.orgId} AND agent_id = ${action.requestedBy.agentId}
-        ORDER BY agent_id`;
+      const [lead] = yield* sql<{
+        readonly chatId: string;
+        readonly askedIn: string | null;
+        readonly approver: string | null;
+      }>`
+        SELECT l.owner_chat_id AS "chatId",
+          (SELECT t.chat_id FROM kin_agent_threads t WHERE t.org_id = l.org_id
+            AND t.thread_id = ${action.requestedBy.threadId}) AS "askedIn",
+          (SELECT p.display_name FROM kin_grants g
+            JOIN kin_people p ON p.org_id = g.org_id AND p.person_id = g.approver_human_id
+            JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+            WHERE g.org_id = l.org_id AND g.action_id = ${action.id}
+              AND g.approver_human_id <> a.owner_person_id
+            ORDER BY g.revision DESC LIMIT 1) AS approver
+        FROM kin_leads l
+        WHERE l.org_id = ${action.orgId} AND l.agent_id = ${action.requestedBy.agentId}
+        ORDER BY l.agent_id`;
       if (lead === undefined) {
         yield* Effect.logInfo("Kin action notice has no chat", { actionId: action.id, body });
         return;
@@ -92,8 +109,17 @@ export const layer = Layer.effect(
         chatId: KinChatId.make(lead.chatId),
         messageId: KinMessageId.make(`kin-exec:${action.id}`),
         audience: "owner",
-        body,
+        body: lead.approver === null ? body : `${lead.approver} approved this. ${body}`,
       });
+      if (lead.askedIn !== null && lead.askedIn !== lead.chatId && lead.approver !== null)
+        // The result of their own request, so it may go where they and the lead talk.
+        yield* chat.notice({
+          orgId: action.orgId,
+          chatId: KinChatId.make(lead.askedIn),
+          messageId: KinMessageId.make(`kin-exec-asked:${action.id}`),
+          audience: "chat",
+          body,
+        });
     });
     return KinExecutionNotices.of({
       finished: Effect.fn("KinExecutionNotices.finished")(

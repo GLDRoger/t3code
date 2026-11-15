@@ -2,7 +2,6 @@
 import "../chat/KinChatService.ts";
 import { assert, it } from "@effect/vitest";
 import {
-  AuthKinChatScope,
   EnvironmentId,
   KinAgentId,
   type KinChatError,
@@ -13,13 +12,13 @@ import {
   KinPersonId,
   ProviderInstanceId,
   ThreadId,
+  kinRpcAccess,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { authorizeRpc } from "../../auth/RpcAuthorization.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinAttachmentStore } from "../chat/KinAttachmentStore.ts";
@@ -459,38 +458,32 @@ it.effect("a version's provenance comes from stored rows, never from what the ag
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect(
-  "every doc tool is refused in a turn others read, and a chat-only session gets no RPC",
-  () =>
-    Effect.gen(function* () {
-      yield* seed;
-      const created = yield* newDoc();
-      yield* turn("mate", "shared");
-      const shared = { orgId, agentId: lead, wakeupId: "wake" };
-      const tools = Object.keys(KinDocsToolkit.tools);
-      assert.lengthOf(tools, 9);
-      for (const tool of tools) {
-        assert.strictEqual(SHARED_TOOLS[tool as keyof typeof SHARED_TOOLS], "refused", tool);
-        assert.isFalse(yield* sharedToolAllowed(shared, tool, {}), tool);
-      }
-      // The writes check again inside, so a turn that turned shared mid-call writes nothing.
-      const edited = yield* Effect.flip(
-        LeadDocs.edit(scopeOf(lead), {
-          key: created.row.key,
-          sourceEventId: "ask-event",
-          summary: "Changed it",
-          operations: [{ op: "append", text: "More." }],
-        }),
-      );
-      assert.strictEqual(reasonOf(edited), "not_allowed");
-      assert.strictEqual((yield* Docs.versionOf(orgId, created.row.recordId))!.version, 1);
-      for (const rpc of KinDocsRpcs)
-        assert.isTrue(
-          (yield* Effect.exit(authorizeRpc([AuthKinChatScope], rpc._tag, { orgId })))._tag ===
-            "Failure",
-          rpc._tag,
-        );
-    }).pipe(Effect.provide(layer)),
+it.effect("every doc tool is refused in a turn others read, and a member reaches no doc RPC", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const created = yield* newDoc();
+    yield* turn("mate", "shared");
+    const shared = { orgId, agentId: lead, wakeupId: "wake" };
+    const tools = Object.keys(KinDocsToolkit.tools);
+    assert.lengthOf(tools, 9);
+    for (const tool of tools) {
+      assert.strictEqual(SHARED_TOOLS[tool as keyof typeof SHARED_TOOLS], "refused", tool);
+      assert.isFalse(yield* sharedToolAllowed(shared, tool, {}), tool);
+    }
+    // The writes check again inside, so a turn that turned shared mid-call writes nothing.
+    const edited = yield* Effect.flip(
+      LeadDocs.edit(scopeOf(lead), {
+        key: created.row.key,
+        sourceEventId: "ask-event",
+        summary: "Changed it",
+        operations: [{ op: "append", text: "More." }],
+      }),
+    );
+    assert.strictEqual(reasonOf(edited), "not_allowed");
+    assert.strictEqual((yield* Docs.versionOf(orgId, created.row.recordId))!.version, 1);
+    for (const rpc of KinDocsRpcs)
+      assert.notStrictEqual(kinRpcAccess(rpc._tag), "person", rpc._tag);
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect(
