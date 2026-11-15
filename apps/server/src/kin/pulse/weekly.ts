@@ -5,11 +5,17 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { goalLine, goalsNow } from "../work/goals.ts";
 import { addUp, dayIn, formatMoney } from "../work/money.ts";
 import { playbookThreshold } from "../work/playbooks.ts";
-import { countedEntry, countedPayment, moneyDay, ownerZone } from "../work/recordRows.ts";
+import {
+  countedEntry,
+  countedPayment,
+  invoiceDue,
+  moneyDay,
+  ownerZone,
+} from "../work/recordRows.ts";
 import { DAY_MS } from "./thresholds.ts";
 
 export const WEEKLY_RULE =
-  "This is the weekly brief. Lead with the goals and where each stands, then only what changed this week and what needs a decision.";
+  "This is the weekly brief. Lead with the goals and where each stands, then what changed this week, money still to come in, open quotes, renewals ahead, and what needs a decision. Write short headed sections of one or two lines each, not one paragraph. A meeting that already happened is not coming up; a follow-up you set is not a meeting. Ask each decision as one plain question.";
 /** The seeded weekly check-in's schedule (`checkin-<slug>`), which arrives as a pulse event. */
 const WEEKLY_CHECK_IN = "checkin-weekly";
 export const wantsWeekly = (events: ReadonlyArray<KinEvent>) =>
@@ -18,11 +24,17 @@ export const wantsWeekly = (events: ReadonlyArray<KinEvent>) =>
       (event._tag === "routine" && event.weekly === true) ||
       (event._tag === "pulse" && event.checkIn?.scheduleId === WEEKLY_CHECK_IN),
   );
+/** The seeded morning check-in, which carries what the retired morning brief did. */
+const MORNING_CHECK_IN = "checkin-morning";
+export const isMorningCheckIn = (event: KinEvent) =>
+  event._tag === "pulse" && event.checkIn?.scheduleId === MORNING_CHECK_IN;
 const WEEK_MS = 7 * DAY_MS;
 const FREE_HORIZON_MS = 3 * DAY_MS;
 const LATE_OVERLOAD = 3;
 const CAP = 20;
 const OPEN = ["open", "doing", "waiting"] as const;
+
+const RENEWALS_AHEAD_MS = 30 * DAY_MS;
 
 const totals = (amounts: ReadonlyArray<KinMoney>) => addUp(amounts).map(formatMoney);
 
@@ -38,6 +50,16 @@ export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (i
   const { orgId, now } = input;
   const zone = yield* ownerZone(orgId);
   const weekAgo = now - WEEK_MS;
+  const when = (ms: number) =>
+    new Intl.DateTimeFormat("en-GB", {
+      weekday: "short",
+      day: "numeric",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+      timeZone: zone,
+    }).format(ms);
   const goals = (yield* goalsNow(orgId, now, { money: true })).goals.filter(
     (goal) => goal.state === "open",
   );
@@ -111,22 +133,63 @@ export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (i
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND ${countedEntry(sql)}
       AND r.state = 'done' AND r.amount_minor IS NOT NULL AND ${moneyDay(sql)} >= ${weekAgo}
     ORDER BY r.key`;
-  const overdue = yield* sql<{
+  const unpaid = yield* sql<{
     key: string;
     client: string | null;
     minor: number;
     currency: string;
     paid: number;
-    dueAt: number;
-  }>`SELECT r.key, c.title AS client, r.amount_minor AS minor, r.currency, r.due_at AS "dueAt",
+    dueAt: number | null;
+  }>`SELECT r.key, c.title AS client, r.amount_minor AS minor, r.currency,
+      ${invoiceDue(sql)} AS "dueAt",
       (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
         WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid
     FROM kin_records r
     LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
     WHERE r.org_id = ${orgId} AND r.register_id = 'invoices' AND ${countedEntry(sql)}
-      AND r.state = 'waiting' AND r.amount_minor IS NOT NULL AND r.due_at < ${now}
-    ORDER BY r.due_at, r.key
+      AND r.state = 'waiting' AND r.amount_minor IS NOT NULL
+    ORDER BY "dueAt", r.key
     LIMIT ${CAP}`;
+  const owed = unpaid.filter((one) => one.minor > one.paid);
+  const isOverdue = (one: (typeof owed)[number]) => one.dueAt !== null && one.dueAt < now;
+
+  const quotes = yield* sql<{
+    key: string;
+    client: string | null;
+    minor: number | null;
+    currency: string | null;
+    state: string;
+  }>`SELECT r.key, c.title AS client, r.amount_minor AS minor, r.currency, r.state
+    FROM kin_records r
+    LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
+    WHERE r.org_id = ${orgId} AND r.register_id = 'quotes' AND r.state IN ('open', 'waiting')
+      AND ${countedEntry(sql)}
+    ORDER BY r.created_at, r.key
+    LIMIT ${CAP}`;
+
+  // Renewals within the month: Dates and Subscriptions entries, and open projects' renews-on day.
+  const renewals = yield* sql<{ key: string; title: string; on: string }>`SELECT r.key, r.title,
+      json_extract(r.fields_json, '$.renewsOn') AS "on"
+    FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.register_id = 'projects' AND r.state = 'open'
+      AND json_extract(r.fields_json, '$.renewsOn') BETWEEN ${dayIn(now, zone)}
+        AND ${dayIn(now + RENEWALS_AHEAD_MS, zone)}
+    ORDER BY "on", r.key LIMIT ${CAP}`;
+  const listedRenewals = yield* sql<{ key: string; title: string; dueAt: number }>`SELECT r.key,
+      r.title, r.due_at AS "dueAt"
+    FROM kin_records r
+    WHERE r.org_id = ${orgId}
+      AND ((r.register_id = 'dates' AND r.category = 'renewal') OR r.register_id = 'subscriptions')
+      AND r.state IN ${sql.in(OPEN)} AND r.due_at >= ${now} AND r.due_at < ${now + RENEWALS_AHEAD_MS}
+    ORDER BY r.due_at, r.key LIMIT ${CAP}`;
+
+  // Meetings: last week's, and whether their outcome was noted; and the week ahead's.
+  const meetings = yield* sql<{ key: string; title: string; at: number; state: string }>`SELECT
+      r.key, r.title, r.date_at AS at, r.state
+    FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.category = 'meeting'
+      AND r.state <> 'dropped' AND r.date_at >= ${weekAgo} AND r.date_at < ${now + WEEK_MS}
+    ORDER BY r.date_at, r.key LIMIT ${CAP}`;
 
   const load = yield* sql<{
     kind: string;
@@ -173,12 +236,38 @@ export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (i
     money: {
       inThisWeek: totals(received),
       outThisWeek: totals(spent),
-      overdue: overdue
-        .filter((one) => one.minor > one.paid)
+      unpaidTotal: totals(
+        owed.map((one) => ({ minor: one.minor - one.paid, currency: one.currency })),
+      ),
+      unpaid: owed.map(
+        (one) =>
+          `${one.key}${one.client === null ? "" : ` ${one.client}`}: ${formatMoney({ minor: one.minor - one.paid, currency: one.currency })} ${
+            one.dueAt === null
+              ? "unpaid, no due date"
+              : isOverdue(one)
+                ? `unpaid, ${Math.floor((now - one.dueAt) / DAY_MS)} days past due`
+                : `due ${dayIn(one.dueAt, zone)}`
+          }`,
+      ),
+      openQuotes: quotes.map(
+        (one) =>
+          `${one.key}${one.client === null ? "" : ` ${one.client}`}${one.minor === null || one.currency === null ? "" : `: ${formatMoney({ minor: one.minor, currency: one.currency })}`}, ${one.state === "open" ? "draft, not sent" : "sent, no answer yet"}`,
+      ),
+      renewalsThisMonth: [
+        ...renewals.map((one) => `${one.on} ${one.key} ${one.title} renews`),
+        ...listedRenewals.map((one) => `${dayIn(one.dueAt, zone)} ${one.key} ${one.title}`),
+      ],
+    },
+    meetings: {
+      lastWeek: meetings
+        .filter((one) => one.at < now)
         .map(
           (one) =>
-            `${one.key}${one.client === null ? "" : ` ${one.client}`}: ${formatMoney({ minor: one.minor - one.paid, currency: one.currency })}, ${Math.floor((now - one.dueAt) / DAY_MS)} days past due`,
+            `${when(one.at)} ${one.key} ${one.title}: ${one.state === "done" ? "outcome noted" : "happened, no outcome noted yet"}`,
         ),
+      comingUp: meetings
+        .filter((one) => one.at >= now)
+        .map((one) => `${when(one.at)} ${one.key} ${one.title}`),
     },
     people: { overloaded, free },
     nextWeek: next.map(

@@ -36,6 +36,13 @@ const KIN_PULSE_SENSES = [
   "pr_failing",
   "pr_review_waiting",
   "pr_ready",
+  "milestone_late",
+  "milestone_at_risk",
+  "project_no_plan",
+  "project_quiet",
+  "spec_changed",
+  "meeting_passed",
+  "meeting_soon",
 ] as const;
 export const KinPulseSense = Schema.Literals(KIN_PULSE_SENSES);
 export type KinPulseSense = typeof KinPulseSense.Type;

@@ -6,6 +6,7 @@ import {
   KinDocFile,
   type KinMailAddress,
   type KinOrgId,
+  KinPersonId,
   type KinSendCard,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -16,6 +17,7 @@ import type * as HttpClient from "effect/http/HttpClient";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { readStoredFile } from "../gendocs/brand.ts";
+import type { KinRecords } from "../work/KinRecords.ts";
 import { formatMoney } from "../work/money.ts";
 import { logTouch } from "../work/touches.ts";
 import { KinGatewayError } from "./McpGateway.ts";
@@ -615,4 +617,28 @@ export const sentToClient = Effect.fn("KinSending.sentToClient")(function* (sent
       originKey: `mail:${sent.askId}:${partyId}`,
       now: sent.now,
     });
+});
+
+/** A quote attached to a sent mail went out: a draft one now reads as sent. */
+export const markQuotesSent = Effect.fn("KinSending.markQuotesSent")(function* (
+  records: KinRecords["Service"],
+  sent: {
+    readonly orgId: KinOrgId;
+    readonly personId: string;
+    readonly entryRecordIds: ReadonlyArray<string>;
+  },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  if (sent.entryRecordIds.length === 0) return;
+  const drafts = yield* sql<{ key: string }>`SELECT key FROM kin_records
+    WHERE org_id = ${sent.orgId} AND register_id = 'quotes' AND state = 'open'
+      AND record_id IN ${sql.in([...new Set(sent.entryRecordIds)])}
+    ORDER BY key`;
+  for (const { key } of drafts)
+    yield* records.update(
+      sent.orgId,
+      { actor: { _tag: "person", personId: KinPersonId.make(sent.personId) }, via: "owner" },
+      key,
+      { state: "waiting" },
+    );
 });

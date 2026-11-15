@@ -185,6 +185,19 @@ export const countedEntry = (
 export const countedPayment = (sql: SqlClient.SqlClient) =>
   sql`p.voided_at IS NULL AND ${countedEntry(sql)}`;
 
+/**
+ * When an issued invoice `r` falls due: its due date, else (issued before Kin set one) its issue
+ * day. Overdue is past it, the same in the pulse, Money, the client page and every brief.
+ */
+export const invoiceDue = (sql: SqlClient.SqlClient) => sql`COALESCE(r.due_at, r.date_at)`;
+
+/** Payment days written in a client's terms, such as "Net 30" or "15 days"; undefined if none. */
+export const termsDays = (terms: string | null | undefined) => {
+  const found = /(?:net\s*(\d{1,3}))|(?:(\d{1,3})\s*(?:days?|d)\b)/i.exec(terms ?? "");
+  const days = Number(found?.[1] ?? found?.[2]);
+  return Number.isSafeInteger(days) && days >= 0 && days <= 365 ? days : undefined;
+};
+
 /** An entry's money day: its own date, else when it was added. Filters, groups and Money share it. */
 export const moneyDay = (sql: SqlClient.SqlClient) => sql`COALESCE(r.date_at, r.created_at)`;
 

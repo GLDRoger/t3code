@@ -5,6 +5,7 @@ import {
   type KinRecordState,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -19,8 +20,10 @@ import {
   ownerZone,
   receiptNumbersIn,
   type RecordRow,
+  termsDays,
   workFailure,
 } from "../work/recordRows.ts";
+import { playbookThreshold } from "../work/playbooks.ts";
 import { type ListDef, listDef, numberingOf, unknownList } from "../work/registers.ts";
 
 /**
@@ -114,6 +117,33 @@ const seriesToday = Effect.fn("KinNumbers.seriesToday")(function* (
   const floor = registerId === "receipts" ? yield* notedFloor(orgId, rule, year, series) : 0;
   return { now, zone, day, year, series, floor };
 });
+
+const shiftDay = (day: string, days: number) =>
+  DateTime.formatIsoDate(DateTime.makeUnsafe(Date.parse(`${day}T00:00:00Z`) + days * 86_400_000));
+
+/**
+ * Days an invoice issued with no due date is given to be paid: its client's terms when they
+ * name days ("Net 30"), else the playbook's `payment_due_days`.
+ */
+const paymentDays = Effect.fn("KinNumbers.paymentDays")(function* (
+  orgId: KinOrgId,
+  row: RecordRow,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [client] = yield* sql<{ id: string; terms: string | null }>`SELECT c.record_id AS id,
+      json_extract(c.fields_json, '$.terms') AS terms
+    FROM kin_records c
+    WHERE c.org_id = ${orgId} AND c.register_id = 'clients' AND c.record_id = COALESCE(
+      ${row.partyId}, (SELECT p.party_id FROM kin_records p
+        WHERE p.org_id = ${orgId} AND p.record_id = ${row.projectId}))`;
+  return (
+    termsDays(client?.terms) ??
+    (yield* playbookThreshold(orgId, "payment_due_days", client?.id)).value
+  );
+});
+
+/** Issuing makes an entry owed (an invoice is Issued); a quote stays a draft until it is sent. */
+const issuedOwes = (def: ListDef) => def.states.includes("waiting") && def.id !== "quotes";
 
 /**
  * The number issuing the entry `key` would give it now, read without taking it: `null` when it
@@ -215,14 +245,18 @@ export const issue = Effect.fn("KinNumbers.issue")(function* (
         later === undefined || dated === null || dayIn(later.dateAt, zone) <= dayIn(dated, zone)
           ? undefined
           : `${number} is dated ${shownDay(dayIn(dated, zone))}, before ${later.number} (${shownDay(dayIn(later.dateAt, zone))}), which was issued first: its number comes after entries dated later.`;
+      const dueDays =
+        def.id === "invoices" && row.dueAt === null ? yield* paymentDays(orgId, row) : undefined;
+      const issuedDay = dated === null ? day : dayIn(dated, zone);
       const updated = yield* records.update(
         orgId,
         writer,
         row.key,
         {
-          ...(row.state === "open" && def.states.includes("waiting")
-            ? { state: "waiting" as const }
-            : {}),
+          ...(dueDays === undefined
+            ? {}
+            : { dueAt: endOfDay(shiftDay(issuedDay, dueDays), zone), dueAllDay: true }),
+          ...(row.state === "open" && issuedOwes(def) ? { state: "waiting" as const } : {}),
           ...(row.dateAt === null && def.builtIn === null
             ? { dateAt: endOfDay(day, zone), dateAllDay: true }
             : {}),
@@ -381,7 +415,7 @@ export const adopt = Effect.fn("KinNumbers.adopt")(function* (
         orgId,
         writer,
         row.key,
-        row.state === "open" && def.states.includes("waiting") ? { state: "waiting" as const } : {},
+        row.state === "open" && issuedOwes(def) ? { state: "waiting" as const } : {},
         undefined,
         [{ field: "number", from: null, to: number }],
       );
@@ -417,7 +451,7 @@ export const unvoidEntry = Effect.fn("KinNumbers.unvoid")(function* (
       const state =
         paidUp && def.states.includes("done")
           ? ("done" as const)
-          : number !== null && def.states.includes("waiting")
+          : number !== null && issuedOwes(def)
             ? ("waiting" as const)
             : ("open" as const);
       const updated = yield* records.update(orgId, writer, row.key, { state });

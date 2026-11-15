@@ -17,7 +17,7 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { looseOffsetMs, queueCheckIn } from "./checkIn.ts";
 import { onHostClock } from "./checkInSeeds.ts";
 import * as KinPulse from "./KinPulse.ts";
-import { nudge } from "./nudge.ts";
+import { inHoursAt, nudge } from "./nudge.ts";
 import { type OutsideRead, type OutsideSource, poll } from "./outside.ts";
 
 // Invented company, people, mail and calendar only; nothing here reads a real database or service.
@@ -291,6 +291,20 @@ describe("pulse check-ins", () => {
         ]);
       }).pipe(Effect.provide(layer)),
   );
+
+  it("a person's own hours decide, in their zone or else the owner's, not the quiet hours", () => {
+    // 22:30 in Kolkata on a Sunday: inside Dev's 10:00–23:59 every day, though past 21:00.
+    const late = Date.UTC(2026, 10, 15, 17, 0);
+    const dev = {
+      timeZone: null,
+      workHours: '{"days":[0,1,2,3,4,5,6],"start":"10:00","end":"23:59"}',
+    };
+    assert.isTrue(inHoursAt(dev, "Asia/Kolkata", late));
+    assert.isFalse(inHoursAt({ timeZone: null, workHours: null }, "Asia/Kolkata", late));
+    assert.isFalse(
+      inHoursAt({ ...dev, timeZone: "Europe/London" }, "Asia/Kolkata", late - 9 * HOUR),
+    );
+  });
 
   it("seeded times move to the host clock, and their days with them across midnight", () => {
     const monday = Date.UTC(2026, 10, 16);

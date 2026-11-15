@@ -59,6 +59,7 @@ import * as RoutineContent from "./RoutineContent.ts";
 import * as LeadDelivery from "./LeadDelivery.ts";
 import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
 import { isOrgPaused } from "./orgState.ts";
+import { isMorningCheckIn } from "../pulse/weekly.ts";
 import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
 import { RETIRED_WORKER_REASON, retiredWorkerKey } from "./Retirement.ts";
 import { WorkerTracker } from "./WorkerTracker.ts";
@@ -916,6 +917,20 @@ const make = Effect.gen(function* () {
                 if (prepared !== null) routineFacts.set(event.eventId, prepared.body);
               }
             }
+            // The morning check-in carries the retired morning brief's sections as facts.
+            if (Option.isSome(routineContent))
+              for (const event of events.filter(isMorningCheckIn)) {
+                const facts = yield* routineContent.value
+                  .morningFacts(orgId, agentId)
+                  .pipe(
+                    Effect.catch((error) =>
+                      Effect.logWarning("Kin morning facts unavailable", {
+                        cause: error.cause,
+                      }).pipe(Effect.as(null)),
+                    ),
+                  );
+                if (facts !== null) routineFacts.set(event.eventId, facts);
+              }
             if (Option.isSome(routineContent)) {
               events = events.filter(
                 (event) =>

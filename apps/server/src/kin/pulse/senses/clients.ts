@@ -13,7 +13,9 @@ import {
 
 const consequence = (one: Touches.ClientSense) => {
   const silence =
-    one.lastAt === null ? "No logged contact yet" : `No logged contact for ${daysText(one.days)}`;
+    one.lastAt === null && one.days === 0
+      ? "No logged contact yet"
+      : `No logged contact for ${daysText(one.days)}`;
   if (one.sense === "client_quiet") return `${silence}, during an open project.`;
   if (one.sense === "client_cold") return `${silence}, and nothing open with them.`;
   return `Something we owe them is ${hoursText(one.late ?? 0)} past due.`;

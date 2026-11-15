@@ -58,6 +58,7 @@ interface Entry {
   readonly title?: string;
   readonly fields?: string;
   readonly closedAt?: number;
+  readonly projectId?: string;
 }
 
 const PREFIX: Record<string, string> = {
@@ -69,6 +70,8 @@ const PREFIX: Record<string, string> = {
   dates: "DT",
   expenses: "EXP",
   goals: "G",
+  projects: "P",
+  milestones: "M",
 };
 
 const insert = Effect.fn("test.insert")(function* (entry: Entry) {
@@ -77,14 +80,15 @@ const insert = Effect.fn("test.insert")(function* (entry: Entry) {
   yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
       owner_id, side, category, party_id, due_at, date_at, amount_minor, currency, repeat_json, confirmed,
       team_shared, created_by_kind, created_by_id, origin_key, created_at, updated_at, fields_json,
-      closed_at)
+      closed_at, project_id)
     VALUES (${orgId}, ${`r-${entry.id}`}, ${entry.list ?? "work"}, ${entry.id},
       ${entry.title ?? `Invented ${entry.id}`}, ${entry.state ?? "open"}, ${entry.ownerKind ?? "agent"},
       ${entry.ownerId ?? chief}, ${entry.side ?? "ours"}, ${entry.category ?? null}, ${entry.partyId ?? null},
       ${entry.dueAt ?? null}, ${entry.dateAt ?? null}, ${entry.amount ?? null},
       ${entry.amount === undefined ? null : "INR"}, ${entry.repeat ?? null},
       ${entry.confirmed ?? 1}, ${entry.teamShared ?? 0}, 'person', ${owner}, ${`origin-${entry.id}`},
-      ${created}, ${created}, ${entry.fields ?? "{}"}, ${entry.closedAt ?? null})`;
+      ${created}, ${created}, ${entry.fields ?? "{}"}, ${entry.closedAt ?? null},
+      ${entry.projectId === undefined ? null : `r-${entry.projectId}`})`;
 });
 
 const change = Effect.fn("test.change")(function* (id: string, at: number, fields = "[]") {
@@ -210,6 +214,53 @@ const seed = Effect.gen(function* () {
   yield* goal("G-3", { measure: "tasks_done", target: "20" });
   yield* goal("G-4", { measure: "manual", target: "10", current: "3", unit: "hires" });
   yield* insert({ id: "C-2", list: "clients", createdAt: B + DAY });
+
+  // The project spine: a retainer renewing on 20 Dec, a project with no plan, a milestone whose
+  // task lands after it, a task whose spec section is gone, and a meeting with Meera.
+  yield* insert({
+    id: "P-1",
+    list: "projects",
+    fields: JSON.stringify({
+      billing: "retainer",
+      renewsOn: "2026-12-20",
+      value: { minor: 40_000_00, currency: "INR" },
+    }),
+  });
+  yield* insert({ id: "P-2", list: "projects", fields: '{"billing":"fixed"}' });
+  yield* insert({
+    id: "P-4",
+    list: "projects",
+    state: "done",
+    partyId: "r-C-2",
+    closedAt: B + 10 * DAY,
+  });
+  yield* insert({ id: "P-3", list: "projects", createdAt: B });
+  yield* insert({ id: "M-1", list: "milestones", projectId: "P-3", dueAt: B + 10 * DAY });
+  yield* insert({
+    id: "W-12",
+    projectId: "P-3",
+    dueAt: B + 12 * DAY,
+    fields: '{"milestone":"M-1"}',
+  });
+  yield* change("W-12", B);
+  yield* insert({ id: "D-2", list: "docs", category: "spec", createdAt: B + 2 * DAY });
+  yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body, title, kind, summary,
+      operations_json, actor_kind, actor_id, via, origin_key, created_at)
+    VALUES (${orgId}, 'r-D-2', 1, ${"# Spec\n\n## Login\nPhone and OTP.\n"}, 'Spec', 'created',
+      'Seeded', '[]', 'person', ${owner}, 'owner', 'seed-D-2', 0)`;
+  yield* insert({
+    id: "W-13",
+    createdAt: B + 2 * DAY,
+    fields: '{"fromDoc":"D-2","fromSection":"payments","fromHash":"old"}',
+  });
+  yield* insert({
+    id: "W-14",
+    category: "meeting",
+    ownerKind: "person",
+    ownerId: mate,
+    dateAt: B + 5 * DAY,
+    fields: JSON.stringify({ attendees: [`person:${mate}`] }),
+  });
   yield* insert({ id: "W-11", state: "done", closedAt: B + 2 * DAY });
 
   yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
@@ -269,6 +320,18 @@ const SENSES: ReadonlyArray<readonly [string, string, number]> = [
   ["pr_review_waiting", "acme/app#1", B + 3 * DAY],
   ["pr_failing", "acme/app#1", B],
   ["pr_ready", "acme/app#2", B + DAY],
+  // A retainer's renews-on day, 14 days ahead by default (end of 20 Dec).
+  ["renewal_due", "P-1", B + 36 * DAY - 1],
+  ["project_no_plan", "P-2", B - 29 * DAY],
+  // Its task is due after it: at risk 3 days out, late once its day has passed.
+  ["milestone_at_risk", "M-1", B + 7 * DAY],
+  ["milestone_late", "M-1", B + 10 * DAY + 1],
+  ["project_quiet", "P-3", B + 7 * DAY],
+  ["spec_changed", "W-13", B + 2 * DAY],
+  ["meeting_soon", "W-14", B + 4 * DAY],
+  ["meeting_passed", "W-14", B + 5 * DAY + 2 * HOUR],
+  // C-2's silence counts from P-4, the project we finished for them, not from its creation.
+  ["client_cold", "C-2", B + 40 * DAY],
 ];
 
 const decodeEvent = Schema.decodeUnknownSync(KinEvent);
@@ -291,6 +354,22 @@ describe("KinPulse", () => {
           received_at, queued_at, budget_deferred)
         VALUES ('held', ${orgId}, ${chief}, 'github', 'P2', '{}', 0, 0, 1)`;
       assert.lengthOf(keyed((yield* read(B)).facts, "work_held", chief), 1);
+
+      // The same renewal kept in Dates for the project too is one fact, not two.
+      yield* insert({
+        id: "DT-2",
+        list: "dates",
+        category: "renewal",
+        projectId: "P-1",
+        dueAt: Date.UTC(2026, 11, 20, 23, 59, 59, 999),
+      });
+      const renewals = (yield* read(B + 40 * DAY)).facts.filter(
+        (fact) => fact.sense === "renewal_due" && fact.scope.projectKey === "P-1",
+      );
+      assert.deepStrictEqual(
+        renewals.map((fact) => fact.subject.key),
+        ["DT-2"],
+      );
 
       // A void invoice never counts; a moved due date is a new episode, so a new key.
       assert.lengthOf(keyed((yield* read(B + 60 * DAY)).facts, "invoice_overdue", "INV-2"), 0);
@@ -388,7 +467,11 @@ describe("KinPulse", () => {
       yield* seed;
       const at = B + 12 * DAY;
       const shown = (yield* read(at, { _tag: "people", people: [mate] })).facts;
-      assert.sameMembers([...new Set(shown.map((fact) => fact.subject.key))], ["W-8", "W-9"]);
+      // W-14 is Meera's own meeting: its follow-up is hers to see.
+      assert.sameMembers(
+        [...new Set(shown.map((fact) => fact.subject.key))],
+        ["W-8", "W-9", "W-14"],
+      );
       assert.isTrue(shown.every((fact) => fact.family === "work" && !fact.sensitive));
       const both = (yield* read(at, { _tag: "people", people: [mate, KinPersonId.make("other")] }))
         .facts;
@@ -418,7 +501,10 @@ describe("KinPulse", () => {
       // The weekly brief leads with goals, then overdue money from the same rows.
       const week = yield* buildWeeklySection({ orgId, now: at });
       assert.match(week.goals[0]!, /^G-1 .*₹1,00,000\.00 of ₹10,00,000\.00.*behind$/);
-      assert.isTrue(week.money.overdue.some((line) => line.startsWith("INV-1")));
+      assert.isTrue(week.money.unpaid.some((line) => /^INV-1:.*days past due$/.test(line)));
+      // The weekly brief carries the renewal and the open quote it was missing.
+      assert.include(week.money.renewalsThisMonth.join("\n"), "DT-1");
+      assert.deepStrictEqual(week.money.openQuotes, ["QT-1: ₹6,00,000.00, sent, no answer yet"]);
       // The seeded weekly check-in arrives as a pulse and gets the same section.
       const checkIn = (scheduleId: string) =>
         decodeEvent({

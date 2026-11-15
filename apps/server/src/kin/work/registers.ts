@@ -966,3 +966,26 @@ export const openCounts = Effect.fn("KinRegisters.openCounts")(function* (
     GROUP BY r.register_id ORDER BY r.register_id`;
   return new Map(rows.map((row) => [row.id, row.open]));
 });
+
+/** Lists a built-in recipe needs: made from the preset on first use, with no card to approve. */
+const RECIPE_LISTS: ReadonlyArray<PresetId> = ["quotes", "invoices"];
+export const isRecipeList = (id: string) => (RECIPE_LISTS as ReadonlyArray<string>).includes(id);
+
+/** The list by id, making a recipe's list from its preset when this org has none yet. */
+export const listOrPreset = Effect.fn("KinRegisters.listOrPreset")(function* (
+  orgId: KinOrgId,
+  id: string,
+  now: number,
+) {
+  const existing = yield* listDef(orgId, id);
+  if (existing !== undefined || !isRecipeList(id)) return existing;
+  const proposal = yield* proposalFor(orgId, { template: id as PresetId });
+  yield* defineList(orgId, proposal, now).pipe(
+    // Two first quotes at once: the other made it, which is the same list.
+    Effect.catchIf(
+      (error) => isChatError(error) && error.reason === "conflict",
+      () => Effect.void,
+    ),
+  );
+  return yield* listDef(orgId, id);
+});

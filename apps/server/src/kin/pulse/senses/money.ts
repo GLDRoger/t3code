@@ -1,9 +1,12 @@
+import { KinMoney } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { budgetsAnswer, budgetsView } from "../../work/budgets.ts";
 import { formatMinor } from "../../work/money.ts";
-import { countedEntry } from "../../work/recordRows.ts";
+import { countedEntry, endOfDay, invoiceDue } from "../../work/recordRows.ts";
 import { DAY_MS, type Threshold, threshold, toMs } from "../thresholds.ts";
 import {
   agentOrOwner,
@@ -25,6 +28,11 @@ import { SENSE_CAP } from "./work.ts";
 type ClientKey = "chase_invoice_after_days" | "quote_follow_up_days" | "renewal_heads_up_days";
 // The longest heads-up a playbook may set (`playbooks.ts` bounds).
 const RENEWAL_WIDEST_MS = 120 * DAY_MS;
+
+const decodeMoney = Schema.decodeUnknownOption(Schema.fromJsonString(KinMoney));
+/** A project's value as stored in its fields, when it is an amount. */
+const projectValue = (json: string | null) =>
+  json === null ? undefined : Option.getOrUndefined(decodeMoney(json));
 
 const amountText = (row: Pick<EntryRow, "amountMinor" | "currency">) =>
   row.amountMinor === null || row.currency === null
@@ -64,7 +72,7 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
 
   // invoice_overdue: issued, still owed, and past its due date (else its issue date) plus the grace.
   const invoices = yield* sql<EntryRow & { base: number; paid: number }>`SELECT * FROM (
-    SELECT ${entryColumns(sql)}, COALESCE(r.due_at, r.date_at) AS base,
+    SELECT ${entryColumns(sql)}, ${invoiceDue(sql)} AS base,
       (SELECT COALESCE(SUM(pay.amount_minor), 0) FROM kin_record_payments pay
         WHERE pay.org_id = r.org_id AND pay.record_id = r.record_id AND pay.voided_at IS NULL) AS paid
     FROM ${entryJoins(sql)}
@@ -138,13 +146,50 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
     );
   }
 
-  // renewal_due: a renewal in Dates coming up within the heads-up, or already passed and open.
-  const renewals = yield* sql<EntryRow>`SELECT ${entryColumns(sql)} FROM ${entryJoins(sql)}
-    WHERE r.org_id = ${orgId} AND r.register_id = 'dates' AND r.category = 'renewal'
+  // renewal_due: a renewal in Dates or Subscriptions, or an open project's renews-on day, coming
+  // up within the heads-up or passed and still open. One renewal is one fact.
+  const listed = yield* sql<EntryRow>`SELECT ${entryColumns(sql)} FROM ${entryJoins(sql)}
+    WHERE r.org_id = ${orgId}
+      AND ((r.register_id = 'dates' AND r.category = 'renewal') OR r.register_id = 'subscriptions')
       AND r.state IN ('open', 'doing', 'waiting') AND r.due_at IS NOT NULL
       AND r.due_at <= ${at + RENEWAL_WIDEST_MS}
     ORDER BY r.due_at, r.key LIMIT ${SENSE_CAP}`;
-  for (const row of renewals) {
+  const projects = yield* sql<EntryRow & { renewsOn: string; value: string | null }>`SELECT
+      ${entryColumns(sql)}, json_extract(r.fields_json, '$.renewsOn') AS "renewsOn",
+      json_extract(r.fields_json, '$.value') AS value
+    FROM ${entryJoins(sql)}
+    WHERE r.org_id = ${orgId} AND r.register_id = 'projects' AND r.state = 'open'
+      AND json_extract(r.fields_json, '$.renewsOn') IS NOT NULL
+    ORDER BY "renewsOn", r.key LIMIT ${SENSE_CAP}`;
+  const renewals: Array<EntryRow> = [...listed];
+  for (const project of projects) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(project.renewsOn)) continue;
+    const dueAt = endOfDay(project.renewsOn, ctx.zone);
+    if (dueAt > at + RENEWAL_WIDEST_MS) continue;
+    const day = project.renewsOn;
+    // The same renewal tracked in Dates too, for this project or its client, is that one.
+    if (
+      listed.some(
+        (row) =>
+          dayOf(ctx, row.dueAt!) === day &&
+          (row.projectKey === project.key ||
+            (row.projectKey === null &&
+              row.clientId !== null &&
+              row.clientId === project.clientId)),
+      )
+    )
+      continue;
+    const value = projectValue(project.value);
+    renewals.push({
+      ...project,
+      dueAt,
+      projectKey: project.key,
+      projectTitle: project.title,
+      amountMinor: value?.minor ?? null,
+      currency: value?.currency ?? null,
+    });
+  }
+  for (const row of renewals.toSorted((a, b) => a.dueAt! - b.dueAt! || (a.key < b.key ? -1 : 1))) {
     const renewal = yield* forClient("renewal_heads_up_days", row.clientId);
     if (row.dueAt! > at + toMs(renewal)) continue;
     const amount = amountText(row);

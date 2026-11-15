@@ -592,6 +592,7 @@ it.effect("a failed brief retries on its own with a counted attempt", () =>
                     cause: "fixture",
                   }),
                 ),
+              morningFacts: () => Effect.succeed(null),
             }),
           ),
           Layer.provideMerge(orchestrationHarness()),

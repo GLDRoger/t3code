@@ -323,9 +323,8 @@ const seed = Effect.gen(function* () {
       worker_projects_json, owner_chat_id)
     VALUES (${lead}, ${orgId}, 'Lead lead', 0, 'lead-thread', '{}', '[]', 'lead-chat')`;
   const asked = yield* turn(1, "Track invoices");
-  const proposed = yield* LeadMoney.define(scope, { sourceEventId: asked, template: "invoices" });
-  const yes = yield* turn(2, "Yes");
-  yield* LeadMoney.define(scope, { sourceEventId: yes, proposal: proposed.proposal! });
+  yield* LeadMoney.define(scope, { sourceEventId: asked, template: "invoices" });
+  yield* turn(2, "Yes");
   yield* OwnerMoney.setCompanyProfile(people, {
     orgId,
     rev: 0,
@@ -610,6 +609,9 @@ describe("recipe documents", () => {
         [first.number, first.issued, first.documents.length, first.problems.length],
         ["INV/26-27/001", true, 0, 1],
       );
+      // Issued with no due date, it is due the playbook's 15 payment days after its issue day.
+      const dated = (yield* (yield* KinRecords.KinRecords).get(orgId, "INV-1"))!;
+      assert.strictEqual(dated.dueAt! - dated.dateAt!, 15 * 86_400_000);
       failing.reason = undefined;
       const issued = yield* OwnerMoney.issue(people, { orgId, key: KinRecordKey.make("INV-1") });
       assert.deepStrictEqual(
@@ -1008,9 +1010,8 @@ describe("recipe documents", () => {
       yield* seed;
       const records = yield* KinRecords.KinRecords;
       const asked = yield* turn(10, "Track quotes");
-      const proposed = yield* LeadMoney.define(scope, { sourceEventId: asked, template: "quotes" });
+      yield* LeadMoney.define(scope, { sourceEventId: asked, template: "quotes" });
       const yes = yield* turn(11, "Yes. Quote Invented Acme for the design work, valid a month");
-      yield* LeadMoney.define(scope, { sourceEventId: yes, proposal: proposed.proposal! });
       yield* LeadWork.create(scope, {
         sourceEventId: yes,
         records: [
@@ -1036,7 +1037,8 @@ describe("recipe documents", () => {
       const quoted = (yield* records.get(orgId, "QT-1"))!;
       assert.deepStrictEqual(
         [issued.number, quoted.state, quoted.amountMinor, latestData().number],
-        ["QT/26-27/001", "waiting", 23_600_000, "QT/26-27/001"],
+        // Numbered, a quote is still a draft: it reads Sent only once it went out.
+        ["QT/26-27/001", "open", 23_600_000, "QT/26-27/001"],
       );
       // A quote is no money owed.
       const money = yield* moneySummary(orgId, Date.parse("2026-11-12T06:00:00.000Z"));
@@ -1075,10 +1077,16 @@ describe("recipe documents", () => {
         [drafted.state, drafted.partyId, drafted.title],
         ["open", quoted.partyId, "Design work"],
       );
+      // The client's own terms name their days, so those set the due date.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.terms', 'Net 30')
+        WHERE record_id = ${quoted.partyId}`;
       const billed = yield* LeadDocuments.issue(scope, {
         entry: KinRecordKey.make("INV-2"),
         sourceEventId: yes,
       });
+      const due = (yield* records.get(orgId, "INV-2"))!;
+      assert.strictEqual(due.dueAt! - due.dateAt!, 30 * 86_400_000);
       assert.deepStrictEqual(
         [billed.number, (yield* records.get(orgId, "INV-2"))!.amountMinor],
         ["INV/26-27/001", 23_600_000],
