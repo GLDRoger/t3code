@@ -65,8 +65,7 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
   ),
   people_read: McpToolAccess.reads(
     Effect.fn("KinLeadToolkit.peopleRead")(function* () {
-      const lead = yield* resolveLead(yield* McpInvocationContext);
-      return yield* readPeople(lead.orgId);
+      return yield* readPeople(yield* resolveLead(yield* McpInvocationContext));
     }, Effect.mapError(failure)),
   ),
   kin_hand_off: McpToolAccess.actsAsCaller(

@@ -34,6 +34,7 @@ import {
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -677,7 +678,32 @@ export const make = Effect.gen(function* () {
   ) {
     const people = yield* identity.resolve(session);
     if (!people.some((p) => p.orgId === orgId)) return yield* missing;
-    return { profiles: yield* profileRows(orgId), ownerPersonId: identity.owner.personId };
+    const rows = yield* profileRows(orgId);
+    const owner = people.some(
+      (p) => p.orgId === identity.owner.orgId && p.personId === identity.owner.personId,
+    );
+    if (!owner) return { profiles: rows, ownerPersonId: identity.owner.personId };
+    // The Team list's open and late counts: the owner's alone, as people_read's load is.
+    const now = yield* Clock.currentTimeMillis;
+    const held = yield* sql<{ personId: string; open: number; late: number }>`SELECT
+        owner_id AS "personId", COUNT(*) AS open,
+        SUM(due_at IS NOT NULL AND due_at < ${now}) AS late
+      FROM kin_records WHERE org_id = ${orgId} AND register_id = 'work' AND owner_kind = 'person'
+        AND state NOT IN ('done', 'dropped')
+      GROUP BY owner_id ORDER BY owner_id`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinPeople.load")),
+    );
+    const load = new Map(held.map((row) => [row.personId, row]));
+    return {
+      profiles: rows.map((profile) => ({
+        ...profile,
+        load: {
+          open: load.get(profile.personId)?.open ?? 0,
+          late: load.get(profile.personId)?.late ?? 0,
+        },
+      })),
+      ownerPersonId: identity.owner.personId,
+    };
   });
   /**
    * A person changes their own profile; the owner changes anyone's, a co-owner a member's. A new

@@ -665,15 +665,17 @@ export const KinEvent = Schema.Union([
     chatId: Schema.optional(KinChatId),
     origin: Schema.optional(KinEventOrigin),
   }),
-  // Code enqueues it when someone else gives this lead an entry (`assigned`), or when its owner
-  // closes or takes back an open one it holds (`withdrawn`). Its provenance is that human, the
-  // only authority the turn has; the entry's text is data.
+  // Code enqueues it when someone else gives this lead an entry (`assigned`), when its owner
+  // closes or takes back an open one it holds (`withdrawn`), or when whoever it gave one to gives
+  // it back (`handed_back`, with their words as `note`). Its provenance is the human whose
+  // authority the entry carries, the only authority the turn has; the entry's text is data.
   Schema.TaggedStruct("record.changed", {
     ...EventBase,
     recordId: KinRecordId,
     key: KinRecordKey,
     seq: NonNegativeInt,
-    reason: Schema.Literals(["assigned", "withdrawn"]),
+    reason: Schema.Literals(["assigned", "withdrawn", "handed_back"]),
+    note: Schema.optional(Schema.String.check(Schema.isMaxLength(280))),
     // Given by a teammate: their direct chat with the lead, where it reports, and `origin` naming
     // them, so the turn is theirs and never the owner's. From stored rows, as a worker report's.
     chatId: Schema.optional(KinChatId),
