@@ -88,7 +88,7 @@ export interface KinTeammate {
 }
 
 /** "3 open, 1 late", "2 open" or "Nothing open". */
-export const kinLoadLine = (load: { readonly open: number; readonly late: number }) =>
+const kinLoadLine = (load: { readonly open: number; readonly late: number }) =>
   load.open === 0
     ? "Nothing open"
     : load.late === 0

@@ -13,6 +13,7 @@ import {
   KinChatId,
   KinEvent,
   KinFinanceRpcs,
+  KinMemberId,
   KinOrgId,
   KinPersonId,
   KinRecordId,
@@ -1943,7 +1944,11 @@ it.effect(
         agentId: lead,
         key: "W-2",
         note: "I'm on the release",
-        provenance: { _tag: "human", personId: ownerId, memberId: "lead-chat-owner" },
+        provenance: {
+          _tag: "human",
+          personId: ownerId,
+          memberId: KinMemberId.make("lead-chat-owner"),
+        },
       });
       const returned = yield* OwnerWork.get([owner], { orgId, key: "W-2" });
       assert.deepInclude(returned, {
