@@ -2,6 +2,7 @@ import {
   KinChatError,
   type KinDocDetail,
   type KinDocDiffInput,
+  type KinDocFileInput,
   type KinDocGetInput,
   type KinDocHistoryInput,
   type KinDocLabelInput,
@@ -115,6 +116,25 @@ export const list = Effect.fn("KinDocs.list")(
       ...(input.owner === undefined
         ? []
         : [sql`r.owner_kind = ${input.owner._tag} AND r.owner_id = ${principalId(input.owner)}`]),
+      ...(input.kind === undefined
+        ? []
+        : input.kind === "other"
+          ? [sql`(r.category IS NULL OR r.category = 'other')`]
+          : [sql`r.category = ${input.kind}`]),
+      ...(input.home === undefined
+        ? []
+        : [
+            sql`r.party_id IS NULL AND r.project_id IS NULL`,
+            input.home === "company"
+              ? sql`json_extract(r.fields_json, '$.home') = 'company'`
+              : sql`json_extract(r.fields_json, '$.home') IS NOT 'company'`,
+          ]),
+      ...(input.files === undefined
+        ? []
+        : [
+            sql`${input.files ? sql`` : sql`NOT `}EXISTS (SELECT 1 FROM kin_doc_versions f
+              WHERE f.org_id = r.org_id AND f.record_id = r.record_id AND f.body_kind = 'file')`,
+          ]),
       ...(text === ""
         ? []
         : [
@@ -406,6 +426,35 @@ export const label = Effect.fn("KinDocs.label")(
       {
         sensitive: input.sensitive,
       },
+    );
+    return yield* detailOf(input.orgId, { key: input.key });
+  },
+  Effect.catchTags({ SqlError: () => unavailable }),
+);
+
+/** The owner files a doc: its kind, and its client and project or the company. */
+export const file = Effect.fn("KinDocs.file")(
+  function* (people: ReadonlyArray<PersonIdentity>, input: KinDocFileInput) {
+    const person = yield* theOwner(people, input.orgId);
+    const partyId =
+      input.party === undefined || input.party === null
+        ? input.party
+        : (yield* inList(input.orgId, input.party, "clients")).recordId;
+    const projectId =
+      input.project === undefined || input.project === null
+        ? input.project
+        : (yield* inList(input.orgId, input.project, "projects")).recordId;
+    yield* Docs.move(
+      input.orgId,
+      ownerWriter(person),
+      { key: input.key },
+      {
+        ...(partyId === undefined ? {} : { partyId }),
+        ...(projectId === undefined ? {} : { projectId }),
+        ...(input.kind === undefined ? {} : { kind: input.kind }),
+        ...(input.company === undefined ? {} : { company: input.company }),
+      },
+      input.rev,
     );
     return yield* detailOf(input.orgId, { key: input.key });
   },

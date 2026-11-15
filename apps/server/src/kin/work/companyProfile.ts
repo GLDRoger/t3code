@@ -42,6 +42,8 @@ const EMPTY: KinCompanyProfileData = {
   },
   logo: null,
   brand: { primaryColor: null, secondaryColor: null, font: null, footer: null },
+  homeCurrency: "INR",
+  rates: [],
 };
 /** A client only clears the logo; a new one is Kin's copy of a file, from an agent's card. */
 export type ProfilePatch = Omit<KinCompanyProfileSetInput, "orgId" | "rev" | "logo"> & {
@@ -112,7 +114,11 @@ const PatchJson = Schema.fromJsonString(
 );
 const encodePatch = Schema.encodeEffect(PatchJson);
 const decodePatch = Schema.decodeUnknownEffect(PatchJson);
-const LABELS: Record<Exclude<keyof ProfilePatch, "bank" | "brand" | "logo">, string> = {
+// Home currency and rates are the owner's own settings; no agent card proposes them.
+const LABELS: Record<
+  Exclude<keyof ProfilePatch, "bank" | "brand" | "logo" | "homeCurrency" | "rates">,
+  string
+> = {
   gstin: "GSTIN",
   pan: "PAN",
   placeOfSupply: "Place of supply",
