@@ -37,6 +37,7 @@ import {
   type Writer,
 } from "./KinRecords.ts";
 import { fieldList, LISTS, type ListName, parseFields } from "./lists.ts";
+import { milestoneLinks } from "./projectSpine.ts";
 import { isBuiltIn, listDef, unknownList } from "./registers.ts";
 import {
   endOfDay,
@@ -337,13 +338,44 @@ export const get = Effect.fn("KinWork.get")(function* (
     ? yield* teamSeq(input.orgId, viewer.person.personId).pipe(workFailure)
     : undefined;
   const row = yield* found(input.orgId, input);
-  return yield* shownTo(
+  const shown = yield* shownTo(
     viewer,
     yield* records.detail(row, KIN_RECORD_CHANGES_CAP),
     row,
     input,
     seq,
   );
+  const { milestone, tasks } = yield* milestoneLinks(row).pipe(workFailure);
+  if (milestone === undefined && tasks === undefined) return shown;
+  const now = yield* Clock.currentTimeMillis;
+  const led = yield* ledIds(viewer);
+  // A teammate reads a task's milestone where they read its project, and only tasks they see.
+  const seen = viewer.teammate
+    ? yield* teamVisible(input.orgId, viewer.person.personId, [
+        ...(milestone === undefined ? [] : [milestone.recordId]),
+        ...(tasks ?? []).map((task) => task.recordId),
+      ]).pipe(workFailure)
+    : undefined;
+  const sees = (recordId: string) => seen === undefined || seen.has(recordId);
+  return {
+    ...shown,
+    ...(milestone === undefined ||
+    !sees(milestone.recordId) ||
+    (viewer.teammate && plainTask(row, led))
+      ? {}
+      : { milestone }),
+    ...(tasks === undefined
+      ? {}
+      : {
+          tasks: tasks
+            .filter((task) => sees(task.recordId))
+            .map((task) =>
+              viewer.teammate && plainTask(task, led)
+                ? teamRecord(toRecord(task, now))
+                : toRecord(task, now),
+            ),
+        }),
+  };
 });
 
 /**

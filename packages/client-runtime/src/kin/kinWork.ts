@@ -707,6 +707,10 @@ export interface KinWorkItemView {
   /** The client or vendor it is for, and its project; null with none. */
   readonly party: KinWorkRef | null;
   readonly project: KinWorkRef | null;
+  /** A task's milestone; null with none. */
+  readonly milestone: KinWorkRef | null;
+  /** A milestone's tasks, open first; null on a task. */
+  readonly tasks: ReadonlyArray<KinWorkRowView> | null;
   /** Who has to do it. Only worth showing with a client. */
   readonly side: KinRecordSide;
   /** Whether it is kept to the owner, and whether that is its own label to change. */
@@ -761,6 +765,57 @@ export const KIN_WORK_SHARE = {
   off: "Teammates see this only if they hold it, or it's in a project they lead or are on.",
   failed: "Couldn't change who sees this. Try again.",
 };
+
+/** Who sees a task: the people on it and its project, the whole team, or only the owner's side. */
+export type KinWorkAudience = "people" | "team" | "me";
+
+export const KIN_WORK_MILESTONE = {
+  label: "Milestone",
+  tasks: "Tasks",
+  noTasks: "No tasks under it yet.",
+} as const;
+
+export const KIN_WORK_AUDIENCE = {
+  label: "Who can see this",
+  failed: "Couldn't change who sees this. Try again.",
+} as const;
+
+/**
+ * A task's one privacy control, as the host decides it: private only when marked, and its holder
+ * always sees it; unmarked, its maker, holder and project's people do, and the team once shared.
+ */
+export function kinWorkAudience(
+  view: Pick<KinWorkItemView, "privacy" | "shared" | "project">,
+  can: { readonly mark: boolean; readonly share: boolean },
+) {
+  const people = view.project === null ? "People on it" : "People on it and the project";
+  const current: KinWorkAudience = view.privacy.private ? "me" : view.shared ? "team" : "people";
+  const answer =
+    current === "me"
+      ? "Only you, co-owners and whoever has it"
+      : current === "team"
+        ? "Everyone on the team"
+        : view.project === null
+          ? "You and whoever has it"
+          : `You, whoever has it and the people on ${view.project.title}`;
+  const choices: ReadonlyArray<{ readonly id: KinWorkAudience; readonly label: string }> = [
+    ...(can.mark || current === "people" ? [{ id: "people" as const, label: people }] : []),
+    ...(can.share && (can.mark || current !== "me")
+      ? [{ id: "team" as const, label: "The whole team" }]
+      : []),
+    ...(can.mark ? [{ id: "me" as const, label: "Only me" }] : []),
+  ];
+  return { current, answer, choices: choices.length > 1 ? choices : [] };
+}
+
+/** What picking `to` changes, null where it stays: its private mark, and its sharing. */
+export const kinWorkAudienceMove = (
+  now: { readonly private: boolean; readonly shared: boolean },
+  to: KinWorkAudience,
+) => ({
+  private: now.private === (to === "me") ? null : to === "me",
+  shared: now.shared === (to === "team") ? null : to === "team",
+});
 
 export const KIN_ENTRY_SHARE: typeof KIN_WORK_SHARE = {
   label: "Share with team",
@@ -1118,6 +1173,11 @@ export function kinWorkItemView(
     party: item.party === undefined ? null : { key: item.party.key, title: item.party.title },
     project:
       item.project === undefined ? null : { key: item.project.key, title: item.project.title },
+    milestone:
+      item.milestone === undefined
+        ? null
+        : { key: item.milestone.key, title: item.milestone.title },
+    tasks: item.tasks === undefined ? null : item.tasks.map((task) => kinWorkRow(task, names, now)),
     side: item.side,
     // A task is private only by its own label; whoever holds it still sees it.
     privacy: kinWorkPrivacy({

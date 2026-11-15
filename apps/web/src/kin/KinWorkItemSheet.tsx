@@ -5,9 +5,9 @@ import {
   KIN_WORK_GONE,
   KIN_WORK_HAND_BACK,
   KIN_WORK_ITEM_FAILED,
+  KIN_WORK_MILESTONE,
   KIN_WORK_NEW_COPY,
   KIN_WORK_NOTES_MAX,
-  KIN_WORK_PRIVATE,
   KIN_WORK_TITLE_MAX,
   kinWorkAssignees,
   kinWorkDayOf,
@@ -87,14 +87,14 @@ import {
   SheetTitle,
 } from "../components/ui/sheet";
 import { Skeleton } from "../components/ui/skeleton";
-import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
 import { KinNotesVersions } from "./KinConfirm";
 import { KinListEntry } from "./KinWorkEntry";
-import { KinWorkShareRow } from "./KinWorkShareRow";
+import { KinWorkAudienceRow } from "./KinWorkShareRow";
+import { KinWorkRow } from "./KinWorkTasks";
 import { KinWorkSection as Section } from "./KinWorkParts";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
@@ -142,7 +142,12 @@ export function KinWorkItemSheet(
   const place = useKinWorkPlace(environmentId);
   const now = new Date(useNowMinuteMs());
   const state = kinWorkItemState(result, changed.answers[itemKey] ?? null);
-  useKinWorkItemWatch(props, itemKey, state._tag === "ready" ? state.item.seq : null);
+  useKinWorkItemWatch(
+    props,
+    itemKey,
+    state._tag === "ready" ? state.item.seq : null,
+    state._tag === "ready" ? state.item.tasks?.map((task) => task.key) : undefined,
+  );
   const saving = changed.pending[itemKey] !== undefined;
 
   return (
@@ -394,7 +399,6 @@ function KinWorkItem(
   const moved = edit === null ? null : kinWorkEditMoved(edit, props.item);
   const titleId = useId();
   const notesId = useId();
-  const privateId = useId();
   const { choices } = props;
   return (
     <>
@@ -521,45 +525,19 @@ function KinWorkItem(
                     onOpen={() => {
                       if (view.party !== null) props.onOpenClient(view.party.key);
                     }}
+                    {...(change === null || view.closed
+                      ? {}
+                      : {
+                          side: {
+                            value: view.side,
+                            onPick: (side) => change({ type: "place", side }),
+                          },
+                        })}
                   />
-                  {view.party === null ? null : change === null || view.closed ? (
+                  {view.party === null || view.side !== "theirs" ? null : (
                     <span className="text-xs text-muted-foreground">
-                      {view.side === "theirs"
-                        ? KIN_WORK_NEW_COPY.sideTheirs
-                        : KIN_WORK_NEW_COPY.sideOurs}
+                      {KIN_WORK_NEW_COPY.sideTheirs}
                     </span>
-                  ) : (
-                    <Menu>
-                      <MenuTrigger
-                        render={
-                          <Button
-                            size="xs"
-                            variant="outline"
-                            disabled={saving}
-                            aria-label={`${KIN_WORK_NEW_COPY.sideLabel}. Change`}
-                          />
-                        }
-                      >
-                        {view.side === "theirs"
-                          ? KIN_WORK_NEW_COPY.sideTheirs
-                          : KIN_WORK_NEW_COPY.sideOurs}
-                        <ChevronDownIcon />
-                      </MenuTrigger>
-                      <MenuPopup align="start">
-                        <MenuItem
-                          disabled={view.side === "ours"}
-                          onClick={() => change({ type: "place", side: "ours" })}
-                        >
-                          {KIN_WORK_NEW_COPY.sideOurs}
-                        </MenuItem>
-                        <MenuItem
-                          disabled={view.side === "theirs"}
-                          onClick={() => change({ type: "place", side: "theirs" })}
-                        >
-                          {KIN_WORK_NEW_COPY.sideTheirs}
-                        </MenuItem>
-                      </MenuPopup>
-                    </Menu>
                   )}
                 </dd>
               </>
@@ -583,32 +561,31 @@ function KinWorkItem(
                 </dd>
               </>
             )}
+            {view.milestone === null ? null : (
+              <>
+                <dt className="text-muted-foreground">{KIN_WORK_MILESTONE.label}</dt>
+                <dd className="flex min-w-0 items-center gap-2 text-foreground">
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    onClick={() => {
+                      if (view.milestone !== null) props.onOpenKey(view.milestone.key);
+                    }}
+                  >
+                    <span className="max-w-60 truncate">{view.milestone.title}</span>
+                  </Button>
+                </dd>
+              </>
+            )}
           </dl>
-          {change === null && !view.privacy.private ? null : (
-            <div className="flex items-start justify-between gap-4">
-              <div className="flex min-w-0 flex-col gap-0.5">
-                <Label htmlFor={privateId}>{KIN_WORK_PRIVATE}</Label>
-                <p className="text-xs text-muted-foreground">{view.privacy.note}</p>
-              </div>
-              <Switch
-                id={privateId}
-                size="sm"
-                checked={view.privacy.private}
-                // Its client or project keeps it private whatever its own label says.
-                disabled={change === null || saving || view.privacy.inherited}
-                onCheckedChange={(checked) => change?.({ type: "private", private: checked })}
-              />
-            </div>
-          )}
-          {change === null || view.privacy.private ? null : (
-            <KinWorkShareRow
-              environmentId={environmentId}
-              orgId={orgId}
-              itemKey={props.item.key}
-              shared={view.shared}
-              disabled={saving}
-            />
-          )}
+          <KinWorkAudienceRow
+            environmentId={environmentId}
+            orgId={orgId}
+            itemKey={props.item.key}
+            view={view}
+            disabled={saving}
+            onMark={change === null ? null : (on) => change({ type: "private", private: on })}
+          />
           {view.remarks.map((remark) => (
             <p key={remark} className="text-xs text-muted-foreground">
               {remark}
@@ -650,6 +627,26 @@ function KinWorkItem(
               <p className="text-xs text-muted-foreground">{KIN_WORK_ASSIGN.leadsHint}</p>
             )}
           </div>
+        )}
+        {view.tasks === null ? null : (
+          <Section title={KIN_WORK_MILESTONE.tasks}>
+            {view.tasks.length === 0 ? (
+              <p className="text-sm text-muted-foreground">{KIN_WORK_MILESTONE.noTasks}</p>
+            ) : (
+              <ul className="-mx-1 flex flex-col">
+                {view.tasks.map((row) => (
+                  <li key={row.key}>
+                    <KinWorkRow
+                      row={row}
+                      saving={false}
+                      onOpen={() => props.onOpenKey(row.key)}
+                      onAct={null}
+                    />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Section>
         )}
         {edit !== null ? (
           <form
@@ -792,8 +789,13 @@ function PlaceMenu(props: {
   /** Null where the task can't be changed, which leaves only opening it. */
   readonly onPick: ((value: KinWorkRef | null) => void) | null;
   readonly onOpen: () => void;
+  /** A client's: who owes the task, us or them. */
+  readonly side?: {
+    readonly value: "ours" | "theirs";
+    readonly onPick: (side: "ours" | "theirs") => void;
+  };
 }) {
-  const { value, onPick } = props;
+  const { value, onPick, side } = props;
   if (onPick === null) {
     return value === null ? null : (
       <Button size="xs" variant="ghost" onClick={props.onOpen}>
@@ -836,6 +838,16 @@ function PlaceMenu(props: {
           <>
             {props.choices.length === 0 ? null : <MenuSeparator />}
             <MenuItem onClick={() => onPick(null)}>{KIN_WORK_NEW_COPY.none}</MenuItem>
+          </>
+        )}
+        {value === null || side === undefined ? null : (
+          <>
+            <MenuSeparator />
+            <MenuItem onClick={() => side.onPick(side.value === "theirs" ? "ours" : "theirs")}>
+              {side.value === "theirs"
+                ? KIN_WORK_NEW_COPY.sideOurs
+                : `${KIN_WORK_NEW_COPY.sideTheirs}, not us`}
+            </MenuItem>
           </>
         )}
         {value === null && props.choices.length === 0 ? (

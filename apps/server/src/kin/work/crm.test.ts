@@ -1211,6 +1211,13 @@ it.effect(
         reason: "Mate: tech, free this week",
         project: "Invented app (P-1)",
       });
+      // A task's sheet names its milestone; a milestone's lists its tasks.
+      assert.equal((yield* OwnerWork.get([owner], { orgId, key: "W-1" })).milestone?.key, "M-1");
+      assert.deepStrictEqual(
+        (yield* OwnerWork.get([owner], { orgId, key: "M-1" })).tasks?.map((one) => one.key),
+        ["W-1", "W-2"],
+      );
+      assert.isUndefined((yield* OwnerWork.get([owner], { orgId, key: "W-3" })).milestone);
       // An unknown section is refused, naming the ones there are.
       const refused = yield* Effect.flip(
         LeadWork.create(scope, {

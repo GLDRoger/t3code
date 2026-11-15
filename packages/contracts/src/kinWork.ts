@@ -229,6 +229,10 @@ export type KinRecordChange = typeof KinRecordChange.Type;
 export const KinRecordDetail = Schema.Struct({
   ...KinRecord.fields,
   notes: KinText,
+  /** A task's milestone; absent with none, and from older hosts. */
+  milestone: Schema.optional(KinRecordRef),
+  /** A milestone's tasks, open first, at most 100; absent on anything else. */
+  tasks: Schema.optional(Schema.Array(KinRecord)),
   /** The chat and message it came from, when it came from one. */
   source: Schema.Struct({
     chatId: Schema.NullOr(KinChatId),
