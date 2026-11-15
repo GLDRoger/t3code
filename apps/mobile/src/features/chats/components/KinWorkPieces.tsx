@@ -11,7 +11,7 @@ import {
   type KinWorkFormProblem,
 } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { EnvironmentId, KinRecordKey } from "@t3tools/contracts";
-import { useState } from "react";
+import { type ComponentRef, useEffect, useRef, useState } from "react";
 import { Pressable, TextInput, View } from "react-native";
 
 import { AppActivityIndicator } from "../../../components/ui/AppActivityIndicator";
@@ -25,6 +25,7 @@ import { RowPressable } from "../../../components/ui/RowPressable";
 import { Notice } from "../../../components/ui/Notice";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
+import { useBarOverlap } from "../../../components/ui/useBarInset";
 import { cn } from "../../../lib/cn";
 import { useKinHostAt } from "../state/useKinHost";
 import { KinWorkStateSymbol } from "./KinWorkStateSymbol";
@@ -36,15 +37,25 @@ export function KinWorkFrame(
   props: Pick<Bar, "title" | "onBack" | "onClose" | "confirm" | "actions" | "menus" | "refresh"> & {
     /** A form: taps reach its buttons while the keyboard is up. */
     readonly form?: boolean;
+    /** A problem drawn at the top: the form scrolls up to it whenever it changes. */
+    readonly showTop?: string | null;
     readonly children: React.ReactNode;
   },
 ) {
-  const { form, children, ...bar } = props;
+  const { form, showTop, children, ...bar } = props;
+  const scroll = useRef<ComponentRef<typeof ScreenScrollView>>(null);
+  const barOverlap = useBarOverlap();
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- moves the native scroll view so a save's problem, drawn at the top, isn't left under the header
+  useEffect(() => {
+    if (showTop === null || showTop === undefined || showTop === "") return;
+    scroll.current?.scrollTo({ y: 0, animated: true });
+  }, [showTop]);
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar {...bar} />
       <ScreenContent surface="screen">
         <ScreenScrollView
+          ref={scroll}
           className="flex-1"
           {...(form
             ? {
@@ -53,8 +64,16 @@ export function KinWorkFrame(
                 automaticallyAdjustKeyboardInsets: true,
               }
             : {})}
-          contentInsetAdjustmentBehavior="automatic"
-          contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
+          // A form insets itself under the bar: React Native clamps a scroll above offset 0, so
+          // with UIKit's automatic inset a problem drawn at the top could never be scrolled to.
+          contentInsetAdjustmentBehavior={form ? "never" : "automatic"}
+          scrollIndicatorInsets={form ? { top: barOverlap } : undefined}
+          contentContainerStyle={{
+            padding: 16,
+            paddingTop: form ? 16 + barOverlap : 16,
+            paddingBottom: 32,
+            gap: 20,
+          }}
         >
           {children}
         </ScreenScrollView>
