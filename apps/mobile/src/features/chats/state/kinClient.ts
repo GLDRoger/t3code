@@ -699,6 +699,20 @@ export const kinClient = {
     tag: "kin.connections.remove",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.connectionId },
   }),
+  connectionSignInStart: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:connection:signInStart",
+    tag: "kin.connections.signInStart",
+  }),
+  connectionSignInFinish: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:connection:signInFinish",
+    tag: "kin.connections.signInFinish",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:signIn` },
+  }),
+  connectionSetSignInClient: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:connection:setSignInClient",
+    tag: "kin.connections.setSignInClient",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:client` },
+  }),
   /** The outside hosts the owner lets visuals load from. Owner only. */
   visualHosts: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:visual-hosts",
@@ -942,6 +956,12 @@ export const kinClient = {
   workUpdate: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:work:update",
     tag: "kin.work.update",
+  }),
+  /** The owner shares tasks with the team, or takes them back. */
+  workShare: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:share",
+    tag: "kin.work.share",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.keys.join(",") },
   }),
   workConfirm: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:work:confirm",

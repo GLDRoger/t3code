@@ -391,6 +391,9 @@ const KIN_RPC_ACCESS = {
   "kin.connections.setReach": "owner_level",
   "kin.connections.remove": "owner_level",
   "kin.connections.calls": "owner_level",
+  "kin.connections.signInStart": "owner_level",
+  "kin.connections.signInFinish": "owner_level",
+  "kin.connections.setSignInClient": "owner_level",
 } as const satisfies Record<(typeof KinRpcs)[number]["_tag"], KinRpcAccess>;
 export const kinRpcAccess = (method: string): KinRpcAccess | undefined =>
   (KIN_RPC_ACCESS as Record<string, KinRpcAccess>)[method];
@@ -551,4 +554,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.connections.setReach": "kin-connections",
   "kin.connections.remove": "kin-connections",
   "kin.connections.calls": "kin-connections",
+  "kin.connections.signInStart": "kin-connections",
+  "kin.connections.signInFinish": "kin-connections",
+  "kin.connections.setSignInClient": "kin-connections",
 } as const;

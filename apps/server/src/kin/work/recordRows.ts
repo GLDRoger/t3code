@@ -284,6 +284,7 @@ export const toRecord = (row: RecordRow, now: number): KinRecord => {
     ...(project === undefined ? {} : { project }),
     ...(row.repo === null ? {} : { repo: row.repo }),
     ...(row.inheritedSensitive === 1 ? { sensitiveInherited: true as const } : {}),
+    ...(row.teamShared === 1 ? { shared: true as const } : {}),
     ...moneyOf(row),
   };
 };

@@ -35,13 +35,25 @@ export const KinConnectionState = Schema.Literals([
 ]);
 export type KinConnectionState = typeof KinConnectionState.Type;
 
-/** A service the owner can add, or one whose sign-in isn't built yet (`available: false`). */
+/**
+ * What the Add sheet asks for. `org`: an optional organization to narrow to (Sentry).
+ * `secretUrl`: a server address that is itself a password (Zoho), kept with the credentials.
+ */
+export const KinConnectionField = Schema.Literals(["url", "key", "org", "secretUrl"]);
+export type KinConnectionField = typeof KinConnectionField.Type;
+
+/** A service the owner can add, or one that can't be added yet (`available: false`). */
 export const KinConnectionService = Schema.Struct({
   service: Schema.Union([KinConnectionPreset, Schema.Literal("custom")]),
   label: Schema.String,
   available: Schema.Boolean,
-  /** One line on where to make the key, for key presets. */
+  /** One line on where to make the key, for key presets, or what signing in involves. */
   setup: Schema.NullOr(Schema.String),
+  /** `key`: the owner pastes a key. `sign_in`: the owner signs in at the service. */
+  connect: Schema.Literals(["key", "sign_in"]),
+  fields: Schema.Array(KinConnectionField),
+  /** Signing in needs the owner's own sign-in client first (Google), and none is saved yet. */
+  needsSetup: Schema.Boolean,
 });
 export type KinConnectionService = typeof KinConnectionService.Type;
 
@@ -142,6 +154,8 @@ export const KinConnectionsView = Schema.Struct({
   orgId: KinOrgId,
   connections: Schema.Array(KinConnection),
   services: Schema.Array(KinConnectionService),
+  /** Where a service sends the browser back after sign-in; pasted into Google's client setup. */
+  signInAddress: Schema.String,
 });
 export type KinConnectionsView = typeof KinConnectionsView.Type;
 
@@ -243,6 +257,53 @@ export const KinConnectionCalls = Schema.Struct({
 });
 export type KinConnectionCalls = typeof KinConnectionCalls.Type;
 
+/** Where the sign-in page hands the result back: the browser that opened it, or the app. */
+export const KinConnectionSignInReturn = Schema.Literals(["web", "app", "app-dev", "app-preview"]);
+export type KinConnectionSignInReturn = typeof KinConnectionSignInReturn.Type;
+
+/** Starts a sign-in: for a new connection (`service`), or again for one (`connectionId`). */
+export const KinConnectionSignInStartInput = Schema.Struct({
+  orgId: KinOrgId,
+  service: Schema.optional(KinConnectionPreset),
+  connectionId: Schema.optional(KinConnectionId),
+  label: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(80))),
+  org: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isPattern(/^[\w.-]{1,100}(\/[\w.-]{1,100})?$/)),
+  ),
+  secretUrl: Schema.optional(KinConnectionKey),
+  returnTo: KinConnectionSignInReturn,
+});
+export type KinConnectionSignInStartInput = typeof KinConnectionSignInStartInput.Type;
+export const KinConnectionSignInStart = Schema.Struct({
+  signInId: Schema.String,
+  /** The service's sign-in page, opened in the device's browser. */
+  authorizationUrl: Schema.String,
+  /** The host that page is on, shown before opening it. */
+  host: Schema.String,
+  expiresAt: NonNegativeInt,
+});
+export type KinConnectionSignInStart = typeof KinConnectionSignInStart.Type;
+
+/** The address the service sent the browser back to, or just its query. */
+export const KinConnectionSignInFinishInput = Schema.Struct({
+  orgId: KinOrgId,
+  response: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(16_384)),
+});
+export type KinConnectionSignInFinishInput = typeof KinConnectionSignInFinishInput.Type;
+
+/** The owner's own sign-in client for a service (Google); `null` forgets it. */
+export const KinConnectionSetSignInClientInput = Schema.Struct({
+  orgId: KinOrgId,
+  service: Schema.Literal("google"),
+  client: Schema.NullOr(
+    Schema.Struct({
+      clientId: TrimmedNonEmptyString.check(Schema.isMaxLength(512)),
+      clientSecret: KinConnectionKey,
+    }),
+  ),
+});
+export type KinConnectionSetSignInClientInput = typeof KinConnectionSetSignInClientInput.Type;
+
 const KinError = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
 export const KinConnectionRpcs = [
   Rpc.make("kin.connections.list", {
@@ -300,6 +361,21 @@ export const KinConnectionRpcs = [
     success: KinConnectionCalls,
     error: KinError,
   }),
+  Rpc.make("kin.connections.signInStart", {
+    payload: KinConnectionSignInStartInput,
+    success: KinConnectionSignInStart,
+    error: KinError,
+  }),
+  Rpc.make("kin.connections.signInFinish", {
+    payload: KinConnectionSignInFinishInput,
+    success: KinConnectionDetail,
+    error: KinError,
+  }),
+  Rpc.make("kin.connections.setSignInClient", {
+    payload: KinConnectionSetSignInClientInput,
+    success: KinConnectionsView,
+    error: KinError,
+  }),
 ] as const;
 
 // Owner-level settings (`KIN_RPC_ACCESS`): what outside services agents reach, and with what key.
@@ -315,4 +391,7 @@ export const KIN_CONNECTION_RPC_SCOPES = {
   "kin.connections.setReach": AuthKinChatScope,
   "kin.connections.remove": AuthKinChatScope,
   "kin.connections.calls": AuthKinChatScope,
+  "kin.connections.signInStart": AuthKinChatScope,
+  "kin.connections.signInFinish": AuthKinChatScope,
+  "kin.connections.setSignInClient": AuthKinChatScope,
 } as const;

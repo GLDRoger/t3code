@@ -113,7 +113,8 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
         // Every request to a connection goes through the egress guard.
         Connections.layer.pipe(
           Layer.provide(ConnectionSecrets.layer),
-          Layer.provide(McpGateway.layer.pipe(Layer.provide(EgressGuard.layer))),
+          Layer.provide(McpGateway.layer),
+          Layer.provide(EgressGuard.layer),
         ),
       ).pipe(Layer.provideMerge(KinChat.layer)),
     ),
