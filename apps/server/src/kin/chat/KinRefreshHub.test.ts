@@ -20,11 +20,13 @@ import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as RetiredActions from "../approvals/retiredActions.ts";
+import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as Provision from "../lead/KinLeadProvision.ts";
+import * as KinRecords from "../work/KinRecords.ts";
 import { setProfile } from "../work/companyProfile.ts";
 import { KinIdentity } from "./KinIdentity.ts";
 import * as RefreshHub from "./KinRefreshHub.ts";
-import { subscribeRefreshes } from "./refreshes.ts";
+import { announceRefreshes, subscribeRefreshes } from "./refreshes.ts";
 
 const layer = Layer.mergeAll(Provision.layer, RetiredActions.hostLayer).pipe(
   Layer.provideMerge(RefreshHub.layer),
@@ -32,6 +34,10 @@ const layer = Layer.mergeAll(Provision.layer, RetiredActions.hostLayer).pipe(
   Layer.provideMerge(ServerSettings.layerTest({})),
 );
 const paired = Layer.effectDiscard(pairSession("phone")).pipe(Layer.provideMerge(layer));
+const withRecords = KinRecords.layer.pipe(
+  Layer.provideMerge(KinEventQueue.layer),
+  Layer.provideMerge(paired),
+);
 const owner: Provision.LeadCreator = {
   _tag: "session",
   session: {
@@ -147,6 +153,61 @@ describe("KinRefreshHub", () => {
         assert.deepStrictEqual(yield* Queue.take(priyaSees), { timeZone: 0, leads: 1 });
         assert.strictEqual(yield* Queue.size(priyaSees), 0);
       }).pipe(Effect.scoped, Effect.provide(paired)),
+  );
+
+  it.effect(
+    "moves Work choices when a client changes, and takes the owner's word for another process's writes",
+    () =>
+      Effect.gen(function* () {
+        const { owner: me } = yield* KinIdentity;
+        const records = yield* KinRecords.KinRecords;
+        const ownerSees = yield* Stream.toQueue(subscribeRefreshes([me], { orgId: me.orgId }), {
+          capacity: "unbounded",
+        });
+        const work = yield* Stream.toQueue(records.changes(me.orgId), { capacity: "unbounded" });
+        const start = yield* Queue.take(ownerSees);
+        const first = yield* Queue.take(work);
+        yield* records.create(
+          me.orgId,
+          { actor: { _tag: "system" }, via: "import" },
+          {
+            list: "clients",
+            title: "Invented Acme",
+            owner: { _tag: "person", personId: me.personId },
+            originKey: "acme",
+          },
+        );
+        yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+        assert.deepInclude(yield* Queue.take(ownerSees), {
+          workChoices: (start.workChoices ?? 0) + 1,
+        });
+        const created = yield* Queue.take(work);
+        assert.isAbove(created.seq, first.seq);
+        assert.strictEqual(created.key, "C-1");
+
+        // What the `kin` CLI wrote in its own process reaches these listeners through the owner.
+        yield* announceRefreshes([me], {
+          orgId: me.orgId,
+          topics: ["leads", "workChoices", "leads"],
+          records: true,
+        });
+        yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+        assert.deepInclude(yield* Queue.take(ownerSees), {
+          leads: (start.leads ?? 0) + 1,
+          workChoices: (start.workChoices ?? 0) + 2,
+        });
+        assert.deepStrictEqual(yield* Queue.take(work), { seq: created.seq + 1 });
+        const someone = { ...me, personId: KinPersonId.make("someone") };
+        assert.include(
+          yield* announceRefreshes([someone], {
+            orgId: me.orgId,
+            topics: ["leads"],
+            records: true,
+          }).pipe(Effect.flip),
+          { reason: "not_allowed" },
+        );
+        assert.strictEqual(yield* Queue.size(work), 0);
+      }).pipe(Effect.scoped, Effect.provide(withRecords)),
   );
 
   // Every write to a table behind one of these reads is in a file that tells the hub. A new file

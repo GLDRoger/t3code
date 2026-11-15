@@ -14,7 +14,7 @@ import * as Stream from "effect/Stream";
 
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
-import { subscribeRefreshes } from "../chat/refreshes.ts";
+import { announceRefreshes, subscribeRefreshes } from "../chat/refreshes.ts";
 import { KinServer } from "../KinServer.ts";
 import * as Clients from "./ownerClients.ts";
 import * as Docs from "./ownerDocs.ts";
@@ -248,6 +248,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
     }),
     ...refreshes.of({
       "kin.refreshes.subscribe": (input) => stream((people) => subscribeRefreshes(people, input)),
+      "kin.refreshes.announce": Effect.fn("KinWork.rpc.announceRefreshes")(function* (input) {
+        return yield* call((people) => announceRefreshes(people, input));
+      }),
     }),
   };
 });

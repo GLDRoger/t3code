@@ -33,6 +33,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
 
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { mentionsMoney } from "../memory/sensitivity.ts";
@@ -407,6 +408,8 @@ export class KinRecords extends Context.Service<
     readonly changes: (
       orgId: KinOrgId,
     ) => Stream.Stream<{ readonly seq: number; readonly key?: string }, KinChatError>;
+    /** Tells `changes` an org's entries moved with no change logged here: an undo, another process. */
+    readonly announce: (orgId: KinOrgId) => Effect.Effect<void, KinChatError>;
     /** The lead runtime stops a withdrawn entry's workers; the WS side has no thread services. */
     readonly attachWithdrawals: (
       onWithdrawn: (withdrawal: Withdrawal) => Effect.Effect<void>,
@@ -420,8 +423,12 @@ const make = Effect.gen(function* () {
   const ticks = yield* PubSub.unbounded<{
     readonly orgId: KinOrgId;
     readonly seq: number;
-    readonly key: string;
+    readonly key?: string;
   }>();
+  const refreshes = yield* KinRefreshObserver;
+  /** The clients and projects a task or project can be put under (`workChoices`) changed. */
+  const choicesMoved = (orgId: KinOrgId, list: string) =>
+    list === "clients" || list === "projects" ? refreshes.touch(orgId, "workChoices") : Effect.void;
   const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
   let onWithdrawn: ((withdrawal: Withdrawal) => Effect.Effect<void>) | undefined;
 
@@ -785,6 +792,7 @@ const make = Effect.gen(function* () {
       })),
     ];
     const seq = yield* logChange(orgId, writer, { recordId, key, rev: 1 }, "created", changes, now);
+    yield* choicesMoved(orgId, def.id);
     if (input.source !== undefined)
       yield* insertLink(
         orgId,
@@ -1229,6 +1237,7 @@ const make = Effect.gen(function* () {
         yield* sql`UPDATE kin_records SET ${sql.csv(sets)}
           WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
         yield* indexRecord(orgId, row.recordId).pipe(provideSql);
+        yield* choicesMoved(orgId, row.registerId);
         const seq = yield* logChange(
           orgId,
           writer,
@@ -1756,11 +1765,21 @@ const make = Effect.gen(function* () {
             Stream.make(first),
             Stream.fromEffectRepeat(PubSub.take(subscription)).pipe(
               Stream.filter((tick) => tick.orgId === orgId),
-              Stream.map((tick) => ({ seq: tick.seq, key: tick.key })),
+              Stream.map(({ seq, key }) => (key === undefined ? { seq } : { seq, key })),
             ),
           );
         }),
       ),
+    announce: Effect.fn("KinRecords.announce")(function* (orgId) {
+      // A number no change will take, past every one a client heard: an undo's entries took their
+      // changes with them, and clients read again only past what they already hold.
+      const [taken] = yield* failed(
+        sql<{ seq: number }>`UPDATE sqlite_sequence SET seq = seq + 1
+          WHERE name = 'kin_record_changes' RETURNING seq`,
+      );
+      const seq = taken?.seq ?? (yield* failed(latestSeq(orgId).pipe(provideSql)));
+      yield* PubSub.publish(ticks, { orgId, seq });
+    }),
   });
 });
 

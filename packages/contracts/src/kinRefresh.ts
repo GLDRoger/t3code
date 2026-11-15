@@ -1,7 +1,11 @@
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
-import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
+import {
+  AuthKinChatScope,
+  AuthOrchestrationOperateScope,
+  EnvironmentAuthorizationError,
+} from "./auth.ts";
 import { NonNegativeInt } from "./baseSchemas.ts";
 import { KinChatError, KinOrgId } from "./kinChat.ts";
 
@@ -17,6 +21,7 @@ export const KIN_REFRESH_TOPICS = [
   "leads",
   "timeZone",
   "visualHosts",
+  "workChoices",
   "moneyBudgets",
 ] as const;
 export const KinRefreshTopic = Schema.Literals(KIN_REFRESH_TOPICS);
@@ -34,12 +39,21 @@ export const KinRefreshes = Schema.Struct({
   leads: Schema.optional(NonNegativeInt),
   timeZone: Schema.optional(NonNegativeInt),
   visualHosts: Schema.optional(NonNegativeInt),
+  workChoices: Schema.optional(NonNegativeInt),
   moneyBudgets: Schema.optional(NonNegativeInt),
 });
 export type KinRefreshes = typeof KinRefreshes.Type;
 
 export const KinRefreshesSubscribeInput = Schema.Struct({ orgId: KinOrgId });
 export type KinRefreshesSubscribeInput = typeof KinRefreshesSubscribeInput.Type;
+
+/** What a write made outside the server, such as the `kin` CLI's, changed: its clients read again. */
+export const KinRefreshesAnnounceInput = Schema.Struct({
+  orgId: KinOrgId,
+  topics: Schema.Array(KinRefreshTopic).check(Schema.isMaxLength(KIN_REFRESH_TOPICS.length)),
+  records: Schema.Boolean,
+});
+export type KinRefreshesAnnounceInput = typeof KinRefreshesAnnounceInput.Type;
 
 /** The revisions now, then again after each settled burst of changes. */
 export const KinRefreshRpcs = [
@@ -49,9 +63,16 @@ export const KinRefreshRpcs = [
     error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
     stream: true,
   }),
+  Rpc.make("kin.refreshes.announce", {
+    payload: KinRefreshesAnnounceInput,
+    success: Schema.Struct({}),
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
 ] as const;
 
 // Any member: the server leaves out the topics the viewer can't read.
 export const KIN_REFRESH_RPC_SCOPES = {
   "kin.refreshes.subscribe": AuthKinChatScope,
+  // The owner's own writes from the host CLI; the server checks the caller is the owner.
+  "kin.refreshes.announce": AuthOrchestrationOperateScope,
 } as const;
