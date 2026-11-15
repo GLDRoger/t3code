@@ -6,6 +6,7 @@ import {
   KIN_DEFAULT_ACTION_IDENTIFIER,
   kinActionDelivery,
   kinNotificationRoute,
+  kinSettledNotificationIds,
 } from "./kinPushPayload";
 
 const chatLink = "/kin/env-1/kin-default/chats/chat-1";
@@ -217,5 +218,37 @@ describe("kinActionDelivery", () => {
     ["waits while the same tap is in flight", { ...ready, inFlight: true }, "wait"],
   ] as const)("%s", (_name, input, delivery) => {
     expect(kinActionDelivery(input)).toBe(delivery);
+  });
+});
+
+describe("kinSettledNotificationIds", () => {
+  it("picks this host's notifications for settled chats only", () => {
+    const note = (identifier: string, data: unknown) => ({
+      request: { identifier, content: { data } },
+    });
+    const message = (chatId: string, environmentId = "env-1") => ({
+      kin: 1,
+      orgId: "kin-default",
+      chatId,
+      deepLink: `/kin/${environmentId}/kin-default/chats/${chatId}`,
+    });
+    const presented = [
+      note("read", message("chat-1")),
+      note("unread", message("chat-2")),
+      note("read-card", { ...deferral, chatId: "chat-1" }),
+      note("other-host", message("chat-1", "env-2")),
+      // Upstream's thread notifications, and an approval no chat asked for.
+      note("t3", { deepLink: "/threads/1" }),
+      note("approval", {
+        kin: 1,
+        orgId: "kin-default",
+        deepLink: "/kin/env-1/kin-default/approvals",
+      }),
+      // A remote push's data arrives as a JSON string.
+      note("read-json", JSON.stringify(message("chat-1"))),
+    ];
+    expect(
+      kinSettledNotificationIds(presented, EnvironmentId.make("env-1"), (id) => id === "chat-1"),
+    ).toEqual(["read", "read-card", "read-json"]);
   });
 });
