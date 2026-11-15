@@ -442,6 +442,11 @@ const KinCompanyProfileFields = {
   /** The services accounting code its invoices usually carry. */
   sac: Schema.NullOr(Schema.String.check(Schema.isPattern(/^\d{4,8}$/))),
   bank: KinCompanyBank,
+  /** The letter of undertaking exports go under without IGST: its ARN, and the day it was filed. */
+  lutNumber: Schema.optional(
+    Schema.NullOr(Schema.String.check(Schema.isPattern(/^[A-Z0-9]{8,20}$/))),
+  ),
+  lutDate: Schema.optional(Schema.NullOr(KinDay)),
   // Profiles stored before the logo and brand existed read as having neither.
   logo: Schema.NullOr(KinCompanyLogo).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   brand: KinCompanyBrand.pipe(Schema.withDecodingDefaultKey(Effect.succeed(NO_BRAND))),
@@ -468,6 +473,8 @@ export const KinCompanyProfileSetInput = Schema.Struct({
   pan: Schema.optional(KinCompanyProfileFields.pan),
   placeOfSupply: Schema.optional(KinCompanyProfileFields.placeOfSupply),
   sac: Schema.optional(KinCompanyProfileFields.sac),
+  lutNumber: KinCompanyProfileFields.lutNumber,
+  lutDate: KinCompanyProfileFields.lutDate,
   bank: Schema.optional(
     Schema.Struct({
       accountName: Schema.optional(KinCompanyBank.fields.accountName),

@@ -96,7 +96,17 @@ export type Recipe = {
 
 const ENTRY_KEYS = ["key", "title", "state", "amount", "tax", "date", "due", "notes", "number"];
 const CLIENT_KEYS = ["name", "address", "gstin", "placeOfSupply", "terms"];
-const COMPANY_KEYS = ["legalName", "tradeName", "address", "gstin", "pan", "placeOfSupply", "sac"];
+const COMPANY_KEYS = [
+  "legalName",
+  "tradeName",
+  "address",
+  "gstin",
+  "pan",
+  "placeOfSupply",
+  "sac",
+  "lutNumber",
+  "lutDate",
+];
 const BANK_KEYS = ["accountName", "accountNumber", "ifsc", "bankName", "branch", "upi"];
 const BRAND_KEYS = ["primaryColor", "secondaryColor", "font", "footer"];
 const SYSTEM_KEYS = ["number", "draft", "today"];

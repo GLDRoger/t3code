@@ -1682,6 +1682,8 @@ describe("the company profile", () => {
       // A lead's set writes nothing: it shows the owner the exact change, old beside new.
       const change = {
         pan: "ABCDE1234F",
+        lutNumber: "AD2904260012345",
+        lutDate: "2026-04-01",
         bank: { accountNumber: "1234567890", ifsc: "ABCD0123456" },
       };
       const proposed = yield* LeadMoney.profile(scope, { sourceEventId: asked, set: change });
@@ -1689,6 +1691,8 @@ describe("the company profile", () => {
       assert.deepStrictEqual(proposed.proposed, [
         "Bank account number: none → 1234567890",
         "PAN: none → ABCDE1234F",
+        "LUT number: none → AD2904260012345",
+        "LUT date: none → 2026-04-01",
       ]);
       const unchanged = yield* OwnerMoney.companyProfile(people, { orgId });
       assert.deepStrictEqual([unchanged.pan, unchanged.rev], [null, 1]);
@@ -1713,6 +1717,7 @@ describe("the company profile", () => {
         [after.legalName, after.pan, after.bank.accountNumber, after.bank.ifsc, after.rev],
         ["Invented Private Limited", "ABCDE1234F", "1234567890", "ABCD0123456", 2],
       );
+      assert.deepStrictEqual([after.lutNumber, after.lutDate], ["AD2904260012345", "2026-04-01"]);
       assert.include(yield* Effect.flip(answer(ownerId, true)), { reason: "widget_changed" });
 
       // Cancel changes nothing, and a card made before another change is refused, not merged.

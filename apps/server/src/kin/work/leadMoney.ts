@@ -2,6 +2,7 @@ import {
   KinChatError,
   KinCompanyBank,
   KinCompanyBrand,
+  KinCompanyProfileSetInput,
   KinDay,
   KinGstin,
   KinListFieldType,
@@ -462,6 +463,8 @@ export const ProfileInput = Schema.Struct({
       ),
       placeOfSupply: Schema.optional(ProfileText),
       sac: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isPattern(/^\d{4,8}$/)))),
+      lutNumber: KinCompanyProfileSetInput.fields.lutNumber,
+      lutDate: KinCompanyProfileSetInput.fields.lutDate,
       bank: Schema.optional(
         Schema.Struct({
           accountName: Schema.optional(KinCompanyBank.fields.accountName),

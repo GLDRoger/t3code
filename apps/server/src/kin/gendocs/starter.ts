@@ -30,7 +30,8 @@ RECIPE.md starts with front matter between --- lines:
     entry.notes, entry.number or entry.fields.<field>: the entry it is for;
   - client.name, client.address, client.gstin, client.placeOfSupply, client.terms: that entry's client;
   - company.legalName, company.tradeName, company.address, company.gstin, company.pan,
-    company.placeOfSupply, company.sac, company.bank.<accountName|accountNumber|ifsc|bankName|branch|upi>;
+    company.placeOfSupply, company.sac, company.lutNumber, company.lutDate,
+    company.bank.<accountName|accountNumber|ifsc|bankName|branch|upi>;
   - company.logo: the logo's path in the render folder, such as /brand/logo.png, or null;
     company.brand.<primaryColor|secondaryColor|font|footer>: the company's look, each may be null;
   - entry.payments (a table): every payment on the entry not taken back, with columns receipt,
@@ -97,6 +98,8 @@ inputs:
   supplierPan: { type: text, from: company.pan, required: false }
   supplierPlace: { type: text, from: company.placeOfSupply, required: false }
   sac: { type: text, from: company.sac, required: false }
+  lutNumber: { type: text, from: company.lutNumber, required: false }
+  lutDate: { type: date, from: company.lutDate, required: false }
   bankAccountName: { type: text, from: company.bank.accountName, required: false }
   bankAccountNumber: { type: text, from: company.bank.accountNumber, required: false }
   bankIfsc: { type: text, from: company.bank.ifsc, required: false }
@@ -117,7 +120,7 @@ inputs:
   lines:
     type: table
     required: false
-    description: "What was supplied, one row each, as the owner said it: quantity times rate is the taxable value. Leave out to bill the entry's amount as one line."
+    description: "What was supplied, one row each, as the owner said it: quantity times rate is the taxable value; sac is the line's SAC or HSN code when the owner gave one, else the company's prints. Leave out to bill the entry's amount as one line."
     columns: { description: text, sac: text, quantity: decimal, unit: text, rate: money }
   gstRate: { type: decimal, required: false, description: "GST percent; 18 unless the owner said otherwise" }
   exportUnderLut: { type: boolean, required: false, description: "For an export: false only when the owner said IGST is paid on it" }
@@ -146,6 +149,7 @@ computed:
   issuedDay: { first: [issuedOn, today] }
   issuedText: { date: [issuedDay, "D MMM YYYY"] }
   dueText: { date: [dueOn, "D MMM YYYY"] }
+  lutText: { date: [lutDate, "D MMM YYYY"] }
   billedAt: { first: [billTo, clientAddress] }
   paidLines:
     each:
@@ -161,7 +165,9 @@ outputs: [invoice.pdf]
 One invoice PDF from the entry, its client and the company profile. Kin works out every figure:
 each line's value (quantity times rate), the tax lines (CGST and SGST, or UTGST, in the same
 state; IGST between states; none for an export under a letter of undertaking, with the
-endorsement and the country), the total and the amount in words. If the entry's amount and the
+endorsement, the LUT's number and date from the company profile, and the country), the total
+and the amount in words. Each line shows its SAC or HSN code, else the company's SAC; none is
+made up. If the entry's amount and the
 lines don't agree, nothing is made and the reason says by how much: tell the owner, don't change
 a figure. A draft (no number yet) carries a DRAFT mark. Each payment on it shows as a line, "Less advance
 received" (received before it was issued, or set against it from an advance's receipt), "Less TDS
@@ -272,7 +278,7 @@ endorsements and the footer) is at the top of template.typ.
   stroke: (x, y) => if y == 0 { (bottom: 0.8pt + accent) } else { (bottom: 0.4pt + rule) },
   inset: (x: 5pt, y: 6pt),
   align: (x, y) => if x >= 3 { right } else { left },
-  table.header(..("#", "Description", "SAC", "Qty", "Rate", "Taxable value").map(h => text(weight: "bold", h))),
+  table.header(..("#", "Description", "HSN/SAC", "Qty", "Rate", "Taxable value").map(h => text(weight: "bold", h))),
   ..lines.flatten(),
 )
 
@@ -304,7 +310,10 @@ endorsements and the footer) is at the top of template.typ.
 
 #if endorsement != none [
   #v(4mm)
-  #block(stroke: 0.6pt + ink, inset: 6pt, width: 100%, text(weight: "bold", endorsement))
+  #block(stroke: 0.6pt + ink, inset: 6pt, width: 100%)[
+    #text(weight: "bold", endorsement)
+    #if t.exportUnderLut and d.lutNumber != none [ \ LUT ARN #d.lutNumber#if d.lutText != none [, dated #d.lutText]]
+  ]
 ]
 
 #if d.bankAccountNumber != none [
@@ -344,6 +353,8 @@ endorsements and the footer) is at the top of template.typ.
   "supplierPan": "AAAAA1111A",
   "supplierPlace": "Karnataka",
   "sac": "998314",
+  "lutNumber": null,
+  "lutDate": null,
   "bankAccountName": null,
   "bankAccountNumber": "000111222333",
   "bankIfsc": "SMPL0000001",
